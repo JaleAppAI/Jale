@@ -1537,48 +1537,71 @@ describe('Processor Lambda', () => {
       mockQuery.mockResolvedValueOnce({ rowCount: 0, rows: [] }); // worker_application_defaults SELECT -- no row
     }
 
-    // computeNextStep's own two-query shape (job_applications JOIN jobs,
-    // then -- ONLY when every required_field is already answered --
-    // setInternalUserRlsContext + the worker_documents presence check).
-    // Mirrors computeNextStep's real early-return: a first unanswered field
-    // short-circuits before the RLS/doc queries ever fire.
-    function mockComputeNextStepRow(
+    // Sprint 23: the fill lane derives every step from the shared engine's
+    // single `loadRequirementSnapshot` SELECT (application-requirements.ts's
+    // SNAPSHOT_SQL) instead of computeNextStep's old job/doc query pair. The
+    // document SYNC (set_config + copyRequiredDocumentSnapshots + a re-read)
+    // only runs when the job asks for at least one document, so this helper
+    // mirrors that branch exactly -- a job with no docs is still ONE query.
+    //
+    // Defaults are STAGE 2 (`details_requested_at` set): the lane's stage
+    // gate exits an apply-stage application as `details_not_requested`, so
+    // an apply-stage default would silently turn every fill test into an
+    // exit test.
+    function mockFillSnapshotRow(
       row: Partial<{
         worker_id: string; job_id: string; application_status: string;
         application_answers: Record<string, unknown>; job_status: string;
-        required_fields: string[]; required_docs: string[];
+        required_fields: string[]; required_docs: string[]; optional_docs: string[];
+        details_requested_at: string | null; details_completed_at: string | null;
+        pre_application_prompts: unknown; prompt_answers: Record<string, string>;
       }> = {},
       haveDocs: string[] = [],
     ): void {
       const full = {
-        worker_id: 'user-1', job_id: 'job-1', application_status: 'pending',
-        application_answers: {}, job_status: 'active', required_fields: [], required_docs: [],
+        id: 'app-1', worker_id: 'user-1', job_id: 'job-1',
+        application_status: 'pending', application_answers: {}, prompt_answers: {},
+        details_requested_at: '2026-09-01T00:00:00.000Z', details_completed_at: null,
+        applied_at: '2026-09-01T00:00:00.000Z', updated_at: '2026-09-01T00:00:00.000Z',
+        job_status: 'active', job_title: 'Electrician',
+        required_fields: [], optional_fields: [], required_docs: [], optional_docs: [],
+        certification_requirements: null, pre_application_prompts: null,
+        have_docs: haveDocs,
         ...row,
       };
       mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [full] });
-      const answers = full.application_answers ?? {};
-      const fieldsAllAnswered = full.required_fields.every((k) => Object.prototype.hasOwnProperty.call(answers, k));
-      if (fieldsAllAnswered) {
-        mockQuery.mockResolvedValueOnce(ok()); // setInternalUserRlsContext
-        mockQuery.mockResolvedValueOnce({ rowCount: haveDocs.length, rows: haveDocs.map((doc_type) => ({ doc_type })) });
-      }
+
+      const docTypes = Array.from(new Set([...(full.required_docs ?? []), ...(full.optional_docs ?? [])]));
+      if (docTypes.length === 0) return;
+      mockQuery.mockResolvedValueOnce(ok()); // setInternalUserRlsContext (the sync writes worker_documents)
+      if (docTypes.some((d) => d !== 'certification_doc')) mockQuery.mockResolvedValueOnce(ok()); // non-cert snapshot copy
+      if (docTypes.includes('certification_doc')) mockQuery.mockResolvedValueOnce(ok()); // cert snapshot copy
+      mockQuery.mockResolvedValueOnce({
+        rowCount: haveDocs.length,
+        rows: haveDocs.map((doc_type) => ({ doc_type })),
+      });
     }
 
-    // countRemainingRequirements's single combined SELECT (the fill-arm
-    // intro's N/M counts).
-    function mockCountRemainingRow(row: Partial<{
-      application_answers: Record<string, unknown>;
-      required_fields: string[];
-      required_docs: string[];
-      have_docs: string[];
-    }> = {}): void {
-      mockQuery.mockResolvedValueOnce({
-        rowCount: 1,
-        rows: [{
-          application_answers: {}, required_fields: [], required_docs: [], have_docs: [],
-          ...row,
-        }],
-      });
+    // The engine's `mergeFieldAnswers`, which the per-turn field merge now
+    // goes through: its OWN snapshot load, then the size-guarded merge, then
+    // the worker_application_defaults write-back WhatsApp never had before.
+    // `markDetailsCompleteIfDone` is handed the in-memory snapshot, so it
+    // issues its UPDATE only when nothing is left -- callers that expect
+    // completion add that mock themselves.
+    function mockFieldMergeQueries(
+      row: Parameters<typeof mockFillSnapshotRow>[0] = {},
+      haveDocs: string[] = [],
+    ): void {
+      mockFillSnapshotRow(row, haveDocs);
+      mockQuery.mockResolvedValueOnce(ok()); // SAVEPOINT application_requirements_merge
+      mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [{ total: 64 }] }); // merge UPDATE ... RETURNING length(...)
+      mockQuery.mockResolvedValueOnce(ok()); // RELEASE SAVEPOINT
+      mockQuery.mockResolvedValueOnce(ok()); // INSERT INTO worker_application_defaults ... ON CONFLICT
+    }
+
+    // armFill's company lookup for the intro/completion copy.
+    function mockCompanyLookup(company = 'ABC'): void {
+      mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [{ company }] });
     }
 
     // buildFillDeps' updateStateContext -> updateConversation's
@@ -1632,12 +1655,9 @@ describe('Processor Lambda', () => {
           rowCount: 1,
           rows: [{ id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr' }],
         })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'job-1', required_docs: [] }] }) // helper job check
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set_config('app.allow_incomplete_docs', ...)
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // applyWorkerToJob: setInternalUserRlsContext
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'job-1', required_docs: [], optional_docs: [] }] }) // applyWorkerToJob: job check
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'app-1', job_id: 'job-1', status: 'pending', applied_at: 'ts' }] }); // INSERT job application
-      mockSeedNoDefaults();
-      mockComputeNextStepRow(); // no required_fields/required_docs -> 'complete', legacy reply
       mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [] }); // INSERT outbox accepted
       mockRecordTail();
 
@@ -1652,9 +1672,11 @@ describe('Processor Lambda', () => {
       );
 
       const applicationInsert = findQueryByPattern(/INSERT INTO job_applications/i);
+      // prompt_answers starts '{}' on this surface: an accept is a one-tap
+      // reply that cannot carry answers.
       expect(applicationInsert).toEqual(['job-1', 'user-1', JSON.stringify({})]);
-      // No required_fields/required_docs on this job -- computeNextStep
-      // reads 'complete' and the fill is never armed; legacy reply only.
+      // Sprint 23: no prompts on this job, so the confirmation is the whole
+      // reply -- nothing is collected and no lane is armed.
       expect(outboxBodies()).toContain(t('job_accepted', 'es'));
     });
 
@@ -2046,17 +2068,19 @@ describe('Processor Lambda', () => {
       ]);
     });
 
-    // Task 2 (WhatsApp application-fill spec, migration 077): "accept" now
-    // creates the application row upfront even when required docs are
-    // missing -- the app-layer bounce is skipped for this surface and the
-    // 022 DB guard is bypassed via a transaction-local GUC set immediately
-    // before the INSERT. Docs are collected conversationally after the row
-    // exists (spec §6) -- Task 9: since the worker has no resume on file,
-    // computeNextStep now reports a doc gap right after the apply, so the
-    // fill is ARMED (intro + first doc prompt) instead of the legacy
-    // job_accepted reply. See applications.ts's surface === 'whatsapp'
-    // branch and applications.test.ts for the apply-bypass itself.
-    it('typed accept with missing required docs arms the fill (docs collected conversationally) instead of the legacy reply', async () => {
+    // ── Sprint 23: accept is STAGE 1 ONLY ────────────────────────────────
+    //
+    // Every "accept arms the fill" case that used to live here is gone with
+    // the behavior. An accept now creates the row and, at most, asks the
+    // employer's own pre_application_prompts. The stage-2 collector is armed
+    // exclusively by `armFill`, reached from the details-requested template's
+    // Start button, an `aplicaciones` pick, or the idle fallback -- covered
+    // below and, for the arm itself, in application-fill.test.ts.
+    //
+    // The `guard_blocked` case is deleted rather than adapted: 091 drops the
+    // 022 trigger that raised it and the union member is gone, so the branch
+    // it exercised is unsatisfiable.
+    it('typed accept on a job with required docs does NOT arm stage 2', async () => {
       mockQuery
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-missing-docs' }] }) // claim
@@ -2073,21 +2097,18 @@ describe('Processor Lambda', () => {
         .mockResolvedValueOnce({
           rowCount: 1,
           rows: [{ id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr' }],
-        })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'job-1', required_docs: ['resume'] }] }) // helper job check
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // missing required docs -- worker has none
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set_config('app.allow_incomplete_docs', ...)
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'app-1', job_id: 'job-1', status: 'pending', applied_at: 'ts' }] }) // INSERT job application
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }); // document snapshot copy -- nothing to copy
-      mockSeedNoDefaults();
-      mockComputeNextStepRow({ required_docs: ['resume'] }); // gap: doc 'resume', no fields
-      mockStateContextUpdate(); // arm: fill_application_id set, pending_picker/fill_pending/fill_cert_more_pending scrubbed
-      mockCountRemainingRow({ required_docs: ['resume'] }); // nFields:0, nDocs:1
-      mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox intro
-      mockComputeNextStepRow({ required_docs: ['resume'] }); // promptNextStep -> computeNextStep again -> same 'doc' gap
-      mockStateContextUpdate(); // fill_last_prompt_at stamp
-      mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox doc prompt
+        }) // handleJobAction's own job SELECT
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // applyWorkerToJob: setInternalUserRlsContext
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{ id: 'job-1', required_docs: ['resume'], optional_docs: [] }],
+        }) // applyWorkerToJob: job check -- no allow_incomplete_docs GUC any more (091 dropped the guard)
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{ id: 'app-1', job_id: 'job-1', status: 'pending', applied_at: 'ts' }],
+        }) // INSERT job application
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // document snapshot copy (non-cert) -- nothing to copy
+        .mockResolvedValueOnce(ok()); // INSERT outbox job_accepted
       mockRecordTail();
 
       await handler(
@@ -2100,47 +2121,21 @@ describe('Processor Lambda', () => {
         {} as any,
       );
 
-      expect(findQueryByPattern(/INSERT INTO job_applications/i)).toEqual(['job-1', 'user-1', JSON.stringify({})]);
       const bodies = outboxBodies();
-      expect(bodies).not.toContain(t('job_accepted', 'en'));
-      expect(bodies).toContain(fillMessage('intro', 'en', { n_fields: '0', n_docs: '1' }));
-      expect(bodies).toContain(docPrompt('resume', 'en'));
-      // Assert the actual parsed content of the write that arms the fill --
-      // not just that some whatsapp_conversations update ran (an earlier,
-      // unrelated v2-routing writeback also updates state_context this same
-      // turn, before handleJobAction runs). Find the write that flips
-      // fill_application_id to the new application, and confirm
-      // pending_picker/fill_pending/fill_cert_more_pending are explicitly
-      // scrubbed to null in that SAME write (unconditionally, even though
-      // none of the three had a prior value here).
-      const armWrite = stateContextUpdates().find((sc) => sc.fill_application_id === 'app-1');
-      expect(armWrite).toBeDefined();
-      expect(armWrite!.pending_picker).toBeNull();
-      expect(armWrite!.fill_pending).toBeNull();
-      expect(armWrite!.fill_cert_more_pending).toBeNull();
-      // FINAL-REVIEW Finding 1a/3: the accept-time arm write is itself a
-      // fill ENTRY point -- a stale fill_relay_override/fill_offer_
-      // application_id left over from some earlier turn must not survive
-      // into this freshly-armed fill.
-      expect(armWrite!.fill_relay_override).toBeNull();
-      expect(armWrite!.fill_offer_application_id).toBeNull();
+      expect(bodies).toContain(t('job_accepted', 'en'));
+      expect(bodies).not.toContain(docPrompt('resume', 'en'));
+      // Nothing armed: no state_context write at all on this turn.
+      expect(stateContextUpdates().some((sc) => sc.fill_application_id === 'app-1')).toBe(false);
     });
 
-    // Stage 1b regression guard: WhatsApp "accept" happens before the bot
-    // has any chance to collect required_fields answers (it's a one-tap
-    // reply, not a form), so applyWorkerToJob must bypass the answers gate
-    // for this surface even when the job has non-empty required_fields and
-    // no answers were supplied. See applications.ts's surface === 'whatsapp'
-    // branch. The mirrored web-surface behavior (missing_answers, NOT
-    // applied, for the identical job/no-answers case) is covered by
-    // applications.test.ts and worker-jobs-apply.test.ts. Task 9: since no
-    // answers were supplied, computeNextStep now reports a field gap right
-    // after the apply, so the fill is ARMED (intro + first field question)
-    // instead of the legacy job_accepted reply.
-    it('typed accept still applies (bypassing the answers gate) on a job with non-empty required_fields, and arms the fill', async () => {
+    it('typed accept on a job with pre_application_prompts asks the first prompt instead of confirming', async () => {
+      const prompts = [
+        { id: 'p1', text: 'Do you have your own tools?' },
+        { id: 'p2', text: 'When can you start?' },
+      ];
       mockQuery
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-accept-reqfields' }] }) // claim
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-accept-prompts' }] }) // claim
         .mockResolvedValueOnce({
           rowCount: 1,
           rows: [convRow({
@@ -2155,32 +2150,39 @@ describe('Processor Lambda', () => {
           rowCount: 1,
           rows: [{
             id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr',
-            required_fields: ['work_authorization', 'date_available'], optional_fields: [],
+            pre_application_prompts: prompts,
           }],
-        })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
+        }) // handleJobAction's own job SELECT -- now carries the prompts
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // applyWorkerToJob: setInternalUserRlsContext
         .mockResolvedValueOnce({
           rowCount: 1,
-          rows: [{
-            id: 'job-1', required_docs: [], optional_docs: [],
-            required_fields: ['work_authorization', 'date_available'], optional_fields: [],
-          }],
-        }) // helper job check -- required_fields is non-empty, no answers supplied
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set_config('app.allow_incomplete_docs', ...)
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'app-1', job_id: 'job-1', status: 'pending', applied_at: 'ts' }] }); // INSERT job application
-      mockSeedNoDefaults();
-      mockComputeNextStepRow({ required_fields: ['work_authorization', 'date_available'] }); // gap: field 'work_authorization'
-      mockStateContextUpdate(); // arm
-      mockCountRemainingRow({ required_fields: ['work_authorization', 'date_available'] }); // nFields:2, nDocs:0
-      mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox intro
-      mockComputeNextStepRow({ required_fields: ['work_authorization', 'date_available'] }); // promptNextStep -> same field gap
-      mockStateContextUpdate(); // fill_last_prompt_at stamp
-      mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox field question
+          rows: [{ id: 'job-1', required_docs: [], optional_docs: [], pre_application_prompts: prompts }],
+        }) // applyWorkerToJob: job check
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{ id: 'app-1', job_id: 'job-1', status: 'pending', applied_at: 'ts' }],
+        }); // INSERT job application (prompt_answers starts '{}')
+      // armPromptLane -> advance: an UNSYNCED snapshot load (prompts need no
+      // document sync), then the arm write, then the first question.
+      mockQuery.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [{
+          id: 'app-1', worker_id: 'user-1', job_id: 'job-1',
+          application_status: 'pending', application_answers: {}, prompt_answers: {},
+          details_requested_at: null, details_completed_at: null,
+          applied_at: 'ts', updated_at: 'ts',
+          job_status: 'active', job_title: 'Electrician',
+          required_fields: [], optional_fields: [], required_docs: [], optional_docs: [],
+          certification_requirements: null, pre_application_prompts: prompts, have_docs: [],
+        }],
+      });
+      mockStateContextUpdate(); // prompt_application_id armed, fill keys scrubbed
+      mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox: first prompt
       mockRecordTail();
 
       await handler(
         makeSqsEvent({
-          MessageSid: 'SM-accept-reqfields',
+          MessageSid: 'SM-accept-prompts',
           From: 'whatsapp:+15125551234',
           Body: '1 accept',
         }),
@@ -2188,19 +2190,21 @@ describe('Processor Lambda', () => {
         {} as any,
       );
 
-      const applicationInsert = findQueryByPattern(/INSERT INTO job_applications/i);
-      expect(applicationInsert).toEqual(['job-1', 'user-1', JSON.stringify({})]);
       const bodies = outboxBodies();
+      expect(bodies).toContain(
+        fillMessage('prompt_ask', 'en', { i: '1', n: '2', text: 'Do you have your own tools?' }),
+      );
+      // The confirmation waits until the last prompt is answered.
       expect(bodies).not.toContain(t('job_accepted', 'en'));
-      expect(bodies).toContain(fillMessage('intro', 'en', { n_fields: '2', n_docs: '0' }));
-      expect(bodies).toContain(fieldQuestion('work_authorization', 'en'));
+      const armWrite = stateContextUpdates().find((sc) => sc.prompt_application_id === 'app-1');
+      expect(armWrite).toBeDefined();
+      // Mutual exclusion: arming the prompt lane clears every fill key.
+      expect(armWrite?.fill_application_id).toBeNull();
+      expect(armWrite?.fill_pending).toBeNull();
+      expect(armWrite?.applications_menu).toBeNull();
     });
 
-    // Task 9: already_applied (a worker re-accepting a job they already
-    // applied to) re-arms the fill exactly like a fresh 'applied' accept
-    // when collectable gaps remain -- the brief's "already_applied with
-    // gaps re-arms" case.
-    it('already_applied with a missing required field re-arms the fill and prompts the gap', async () => {
+    it('already_applied on a promptless job confirms with job_already_applied and arms nothing', async () => {
       mockQuery
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-reapply' }] }) // claim
@@ -2216,34 +2220,19 @@ describe('Processor Lambda', () => {
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
         .mockResolvedValueOnce({
           rowCount: 1,
-          rows: [{
-            id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr',
-            required_fields: ['work_authorization'], optional_fields: [],
-          }],
+          rows: [{ id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr' }],
         })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // applyWorkerToJob: setInternalUserRlsContext
         .mockResolvedValueOnce({
           rowCount: 1,
-          rows: [{ id: 'job-1', required_docs: [], optional_docs: [], required_fields: ['work_authorization'], optional_fields: [] }],
-        }) // helper job check
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set_config('app.allow_incomplete_docs', ...)
+          rows: [{ id: 'job-1', required_docs: [], optional_docs: [] }],
+        }) // applyWorkerToJob: job check
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // INSERT ... ON CONFLICT DO NOTHING -- already applied
-        // document snapshot copy (repair): docTypesToSnapshot is empty
-        // (required_docs=[] and optional_docs=[] on this job) -- the
-        // function short-circuits and issues NO query, so there is
-        // deliberately no mock entry for it here.
         .mockResolvedValueOnce({
           rowCount: 1,
           rows: [{ id: 'app-1', job_id: 'job-1', status: 'pending', applied_at: 'ts' }],
-        }); // existing application lookup -> already_applied
-      mockSeedNoDefaults();
-      mockComputeNextStepRow({ required_fields: ['work_authorization'] }); // gap: field 'work_authorization'
-      mockStateContextUpdate(); // arm
-      mockCountRemainingRow({ required_fields: ['work_authorization'] }); // nFields:1, nDocs:0
-      mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox intro
-      mockComputeNextStepRow({ required_fields: ['work_authorization'] }); // promptNextStep -> same field gap
-      mockStateContextUpdate(); // fill_last_prompt_at stamp
-      mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox field question
+        }) // existing application lookup
+        .mockResolvedValueOnce(ok()); // INSERT outbox job_already_applied
       mockRecordTail();
 
       await handler(
@@ -2256,321 +2245,209 @@ describe('Processor Lambda', () => {
         {} as any,
       );
 
-      const bodies = outboxBodies();
-      expect(bodies).not.toContain(t('job_already_applied', 'en'));
-      expect(bodies).toContain(fillMessage('intro', 'en', { n_fields: '1', n_docs: '0' }));
-      expect(bodies).toContain(fieldQuestion('work_authorization', 'en'));
+      expect(outboxBodies()).toContain(t('job_already_applied', 'en'));
+      // Nothing armed. (The v2 forced-idle writeback is itself an
+      // `UPDATE whatsapp_conversations`, so this asserts on the KEYS rather
+      // than on "no write happened".)
+      expect(stateContextUpdates().some((sc) => 'prompt_application_id' in sc || 'fill_application_id' in sc)).toBe(false);
     });
 
-    // Task 9: guard_blocked (the 022 DB CHECK guard rejecting an insert --
-    // the app-layer already bypasses this for whatsapp via the transaction-
-    // local GUC, so this exercises the defensive catch branch, not a normal
-    // path) replies with the generic fill guard_error text via the outbox
-    // text helper -- 'generic_error' has no TemplateKey entry, so this
-    // cannot go through queueReply.
-    it('guard_blocked replies with the fill guard_error text', async () => {
-      mockQuery
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-guard' }] }) // claim
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [convRow({
-            conversation_state: 'idle',
-            user_id: 'user-1',
-            language: 'en',
-            state_context: { recent_jobs: ['job-1'] },
-          })],
-        })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [{ id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr' }],
-        })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'job-1', required_docs: ['resume'] }] }) // helper job check
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // missing required docs -- worker has none
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set_config('app.allow_incomplete_docs', ...)
-        .mockRejectedValueOnce(
-          Object.assign(new Error('check violation'), {
-            code: '23514',
-            constraint: 'job_applications_required_docs_check',
+    // ── Sprint 23: the three doors into stage 2 ──────────────────────────
+    describe('application stage-2 entry points', () => {
+      // The fuller tail: these turns resolve to a bound worker, so
+      // processRecord's Phase 2 also drains the job-message outbox.
+      function mockBoundWorkerTail(): void {
+        mockQuery
+          .mockResolvedValueOnce(ok()) // processed db_committed
+          .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+          .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending whatsapp_outbox rows
+          .mockResolvedValueOnce(ok()) // set job outbox actor
+          .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending job outbox rows
+          .mockResolvedValueOnce(ok()) // clear job outbox actor
+          .mockResolvedValueOnce(ok()); // markCompleted
+      }
+
+      function mockConvTurn(sid: string, stateContext: Record<string, unknown> = {}): void {
+        mockQuery
+          .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+          .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: sid }] }) // claim
+          .mockResolvedValueOnce({
+            rowCount: 1,
+            rows: [convRow({
+              conversation_state: 'idle',
+              user_id: 'user-1',
+              language: 'en',
+              state_context: stateContext,
+            })],
+          })
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // v2 forced-idle writeback
+      }
+
+      it('the Start button arms stage 2: seeds defaults, scrubs both lanes, sends the intro then the first question', async () => {
+        mockConvTurn('SM-app-start');
+        mockFillSnapshotRow({ required_fields: ['work_authorization'] }); // handleApplicationStart's own load
+        mockSeedNoDefaults();
+        mockStateContextUpdate(); // arm write
+        mockFillSnapshotRow({ required_fields: ['work_authorization'] }); // armFill's post-seed counts
+        mockCompanyLookup('ABC');
+        mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox intro
+        mockFillSnapshotRow({ required_fields: ['work_authorization'] }); // promptNextStep's re-derive
+        mockStateContextUpdate(); // fill_last_prompt_at stamp
+        mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox field question
+        mockBoundWorkerTail();
+
+        await handler(
+          makeSqsEvent({
+            MessageSid: 'SM-app-start',
+            From: 'whatsapp:+15125551234',
+            Body: '',
+            ButtonPayload: 'application:start:app-aaaaaaaa-0000-4000-8000-00000000000a',
           }),
-        ); // INSERT job application -- rejected by the 022 guard
-      mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox guard_error
-      mockRecordTail();
+          {} as any,
+          {} as any,
+        );
 
-      await handler(
-        makeSqsEvent({
-          MessageSid: 'SM-guard',
-          From: 'whatsapp:+15125551234',
-          Body: '1 accept',
-        }),
-        {} as any,
-        {} as any,
-      );
-
-      expect(outboxBodies()).toContain(fillMessage('guard_error', 'en'));
-    });
-
-    // Task 9 / spec §6 item 8: a new accept while a DIFFERENT application's
-    // fill is already armed switches the anchor (same scrub), acking with
-    // 'switched_job' BEFORE the new intro.
-    it('a new accept mid-fill for a different job switches the anchor and acks switched_job before the new intro', async () => {
-      mockQuery
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-switch' }] }) // claim
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [convRow({
-            conversation_state: 'idle',
-            user_id: 'user-1',
-            language: 'en',
-            // Seeded with non-null pending_picker/fill_pending/
-            // fill_cert_more_pending so the scrub assertion below is
-            // load-bearing (review finding): if the anchor-switch scrub
-            // ever regressed, these values would still be sitting in the
-            // arm write's merged state_context instead of null.
-            state_context: {
-              recent_jobs: ['job-1', 'job-2'],
-              fill_application_id: 'app-old',
-              pending_picker: { kind: 'close_reason', conversationId: 'conv-stale' },
-              fill_pending: { key: 'home_address', stage: 'confirm', extracted: 'irrelevant' },
-              fill_cert_more_pending: true,
-              // FINAL-REVIEW Finding 1a/3: seeded non-null so the assertion
-              // below is load-bearing, same rationale as the three siblings.
-              fill_relay_override: true,
-              fill_offer_application_id: 'stale-offer-app',
-            },
-          })],
-        })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
-        // Task 10 seam: fill_application_id ('app-old') is set, so
-        // routeMessage gives handleFillMessage first refusal on "2 accept"
-        // before the typed-job-action router below ever sees it.
-        // handleFillMessage refreshes jobId (fetchApplicationJobId) before
-        // recognizing this body as a typed job action and escaping
-        // (handled:false) -- that one extra query is this row.
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ job_id: 'job-1' }] }) // handleFillMessage jobId refresh (app-old), then escapes
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [{
-            id: 'job-2', title: 'Plumber', company: 'ABC', location: 'El Paso', pay: '$28/hr',
-            required_fields: ['work_authorization'], optional_fields: [],
-          }],
-        })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [{ id: 'job-2', required_docs: [], optional_docs: [], required_fields: ['work_authorization'], optional_fields: [] }],
-        }) // helper job check
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set_config('app.allow_incomplete_docs', ...)
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'app-new', job_id: 'job-2', status: 'pending', applied_at: 'ts' }] }); // INSERT job application
-      mockSeedNoDefaults();
-      mockComputeNextStepRow({ job_id: 'job-2', required_fields: ['work_authorization'] }); // gap
-      mockStateContextUpdate(); // arm/switch
-      mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox switched_job (BEFORE the counts query -- matches processor.ts's order)
-      mockCountRemainingRow({ required_fields: ['work_authorization'] });
-      mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox intro
-      mockComputeNextStepRow({ job_id: 'job-2', required_fields: ['work_authorization'] }); // promptNextStep
-      mockStateContextUpdate(); // fill_last_prompt_at stamp
-      mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox field question
-      mockRecordTail();
-
-      await handler(
-        makeSqsEvent({
-          MessageSid: 'SM-switch',
-          From: 'whatsapp:+15125551234',
-          Body: '2 accept',
-        }),
-        {} as any,
-        {} as any,
-      );
-
-      const bodies = outboxBodies();
-      const switchedIdx = bodies.indexOf(fillMessage('switched_job', 'en'));
-      const introIdx = bodies.indexOf(fillMessage('intro', 'en', { n_fields: '1', n_docs: '0' }));
-      expect(switchedIdx).toBeGreaterThanOrEqual(0);
-      expect(introIdx).toBeGreaterThan(switchedIdx);
-
-      // Review finding (Important, coverage gap): the highest-risk leak
-      // scenario is exactly this one -- a switch away from an application
-      // that had real fill_pending/fill_cert_more_pending/pending_picker
-      // state in flight. Find the write that flips fill_application_id to
-      // the NEW application ('app-new', not the stale 'app-old' an earlier,
-      // unrelated v2-routing writeback also persists this same turn) and
-      // confirm it nulls out all three in that SAME write -- not just
-      // eventually, and not in some later write. These seeded non-null
-      // starting values make the assertion load-bearing: it would fail if
-      // the scrub were ever dropped.
-      const armWrite = stateContextUpdates().find((sc) => sc.fill_application_id === 'app-new');
-      expect(armWrite).toBeDefined();
-      expect(armWrite!.pending_picker).toBeNull();
-      expect(armWrite!.fill_pending).toBeNull();
-      expect(armWrite!.fill_cert_more_pending).toBeNull();
-      // FINAL-REVIEW Finding 1a/3: the seeded fill_relay_override/
-      // fill_offer_application_id from the OLD application must not survive
-      // the switch into the newly-armed one.
-      expect(armWrite!.fill_relay_override).toBeNull();
-      expect(armWrite!.fill_offer_application_id).toBeNull();
-    });
-
-    // Task 9: the intro appends the web_handoff note when computeNextStep's
-    // `uncollectable` list is non-empty (a legacy job still requiring 'ssn',
-    // which DOC_TYPES/job-fields.ts deliberately excludes from the
-    // collectable set).
-    it('the intro appends web_handoff when the job still requires an uncollectable doc (legacy ssn)', async () => {
-      mockQuery
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-ssn' }] }) // claim
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [convRow({
-            conversation_state: 'idle',
-            user_id: 'user-1',
-            language: 'en',
-            state_context: { recent_jobs: ['job-1'] },
-          })],
-        })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [{ id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr' }],
-        })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'job-1', required_docs: ['resume', 'ssn'] }] }) // helper job check
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // missing required docs -- worker has none
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set_config('app.allow_incomplete_docs', ...)
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'app-1', job_id: 'job-1', status: 'pending', applied_at: 'ts' }] }) // INSERT job application
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }); // document snapshot copy -- only 'resume' is collectable; still runs once (non-empty docTypesToSnapshot)
-      mockSeedNoDefaults();
-      mockComputeNextStepRow({ required_docs: ['resume', 'ssn'] }); // gap: doc 'resume'; uncollectable: ['ssn']
-      mockStateContextUpdate(); // arm
-      mockCountRemainingRow({ required_docs: ['resume', 'ssn'] });
-      mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox intro (+ web_handoff)
-      mockComputeNextStepRow({ required_docs: ['resume', 'ssn'] }); // promptNextStep
-      mockStateContextUpdate();
-      mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox doc prompt
-      mockRecordTail();
-
-      await handler(
-        makeSqsEvent({
-          MessageSid: 'SM-ssn',
-          From: 'whatsapp:+15125551234',
-          Body: '1 accept',
-        }),
-        {} as any,
-        {} as any,
-      );
-
-      const expectedIntro = `${fillMessage('intro', 'en', { n_fields: '0', n_docs: '1' })}\n\n${fillMessage('web_handoff', 'en', { doc: 'SSN card / ITIN' })}`;
-      expect(outboxBodies()).toContain(expectedIntro);
-    });
-
-    // Task 9: seedAnswersFromDefaults runs BEFORE computeNextStep/the intro
-    // counts, so a key the worker already has in worker_application_defaults
-    // is pre-filled and never asked -- the intro's N count and the first
-    // prompt both reflect the POST-seed gap set, not the job's raw
-    // required_fields count.
-    it('seeds a worker default before computing the intro, so the seeded field is skipped and never asked', async () => {
-      mockQuery
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-seed' }] }) // claim
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [convRow({
-            conversation_state: 'idle',
-            user_id: 'user-1',
-            language: 'en',
-            state_context: { recent_jobs: ['job-1'] },
-          })],
-        })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [{
-            id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr',
-            required_fields: ['work_authorization', 'date_available'], optional_fields: [],
-          }],
-        })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [{
-            id: 'job-1', required_docs: [], optional_docs: [],
-            required_fields: ['work_authorization', 'date_available'], optional_fields: [],
-          }],
-        }) // helper job check
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set_config('app.allow_incomplete_docs', ...)
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'app-1', job_id: 'job-1', status: 'pending', applied_at: 'ts' }] }); // INSERT job application
-      // seedAnswersFromDefaults: setRls, then a REAL defaults row with
-      // work_authorization already answered, then the application's
-      // (still-empty) current answers, then the batched seed UPDATE.
-      mockQuery.mockResolvedValueOnce(ok()); // deps.setRls
-      mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [{ answers: { work_authorization: true } }] }); // worker_application_defaults SELECT
-      mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [{ application_answers: {} }] }); // job_applications current answers SELECT
-      mockQuery.mockResolvedValueOnce(ok()); // seed UPDATE (application_answers || {"work_authorization":true})
-      // computeNextStep now sees work_authorization already answered
-      // (post-seed) -- the only remaining gap is date_available.
-      mockComputeNextStepRow({
-        required_fields: ['work_authorization', 'date_available'],
-        application_answers: { work_authorization: true },
+        const bodies = outboxBodies();
+        expect(bodies).toContain(
+          fillMessage('intro', 'en', { company: 'ABC', n_fields: '1', n_docs: '0' }),
+        );
+        expect(bodies).toContain(fieldQuestion('work_authorization', 'en'));
+        const armWrite = stateContextUpdates().find((sc) => typeof sc.fill_application_id === 'string');
+        expect(armWrite).toBeDefined();
+        expect(armWrite?.prompt_application_id).toBeNull();
+        expect(armWrite?.applications_menu).toBeNull();
       });
-      mockStateContextUpdate(); // arm
-      mockCountRemainingRow({
-        required_fields: ['work_authorization', 'date_available'],
-        application_answers: { work_authorization: true },
-      }); // nFields:1 (date_available only), nDocs:0
-      mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox intro
-      mockComputeNextStepRow({
-        required_fields: ['work_authorization', 'date_available'],
-        application_answers: { work_authorization: true },
-      }); // promptNextStep -> same gap, date_available
-      mockStateContextUpdate(); // fill_last_prompt_at stamp
-      mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox field question
-      mockRecordTail();
 
-      await handler(
-        makeSqsEvent({
-          MessageSid: 'SM-seed',
-          From: 'whatsapp:+15125551234',
-          Body: '1 accept',
-        }),
-        {} as any,
-        {} as any,
-      );
+      it('the Start button for ANOTHER worker\'s application is ignored silently', async () => {
+        mockConvTurn('SM-app-start-foreign');
+        // jobapp_whatsapp_select is USING (true), so ownership is ours to
+        // enforce -- and the refusal must not confirm the id exists.
+        mockFillSnapshotRow({ worker_id: 'someone-else', required_fields: ['work_authorization'] });
+        mockBoundWorkerTail();
 
-      const seedUpdate = mockQuery.mock.calls.find(
-        ([sql, params]) =>
-          /UPDATE job_applications/i.test(sql as string)
-          && Array.isArray(params)
-          && typeof params[0] === 'string'
-          && (params[0] as string) === JSON.stringify({ work_authorization: true }),
-      );
-      expect(seedUpdate).toBeDefined();
+        await handler(
+          makeSqsEvent({
+            MessageSid: 'SM-app-start-foreign',
+            From: 'whatsapp:+15125551234',
+            Body: '',
+            ButtonPayload: 'application:start:app-aaaaaaaa-0000-4000-8000-00000000000a',
+          }),
+          {} as any,
+          {} as any,
+        );
 
-      const bodies = outboxBodies();
-      // Intro counts reflect the POST-seed gap (1 field left), not the raw
-      // required_fields count (2).
-      expect(bodies).toContain(fillMessage('intro', 'en', { n_fields: '1', n_docs: '0' }));
-      expect(bodies).not.toContain(fillMessage('intro', 'en', { n_fields: '2', n_docs: '0' }));
-      // The seeded key is never asked; the next question is the one
-      // remaining gap.
-      expect(bodies).toContain(fieldQuestion('date_available', 'en'));
-      expect(bodies).not.toContain(fieldQuestion('work_authorization', 'en'));
+        expect(outboxBodies()).toEqual([]);
+        expect(stateContextUpdates().some((sc) => 'fill_application_id' in sc)).toBe(false);
+      });
+
+      it('the Start button before the employer asked replies application_not_requested_yet', async () => {
+        mockConvTurn('SM-app-start-early');
+        mockFillSnapshotRow({ details_requested_at: null, required_fields: ['work_authorization'] });
+        mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox
+        mockBoundWorkerTail();
+
+        await handler(
+          makeSqsEvent({
+            MessageSid: 'SM-app-start-early',
+            From: 'whatsapp:+15125551234',
+            Body: '',
+            ButtonPayload: 'application:start:app-aaaaaaaa-0000-4000-8000-00000000000a',
+          }),
+          {} as any,
+          {} as any,
+        );
+
+        expect(outboxBodies()).toEqual([t('application_not_requested_yet', 'en')]);
+        expect(stateContextUpdates().some((sc) => 'fill_application_id' in sc)).toBe(false);
+      });
+
+      it('the Later button writes NOTHING and just acknowledges', async () => {
+        mockConvTurn('SM-app-later');
+        mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox ack
+        mockBoundWorkerTail();
+
+        await handler(
+          makeSqsEvent({
+            MessageSid: 'SM-app-later',
+            From: 'whatsapp:+15125551234',
+            Body: '',
+            ButtonPayload: 'application:later:app-aaaaaaaa-0000-4000-8000-00000000000a',
+          }),
+          {} as any,
+          {} as any,
+        );
+
+        expect(outboxBodies()).toEqual([t('application_later_ack', 'en')]);
+        // Locked decision: Later is not a DB write -- the application is not
+        // even READ, let alone updated.
+        expect(stateContextUpdates().some((sc) => 'fill_application_id' in sc)).toBe(false);
+        expect(countQueryByPattern(/FROM job_applications/i)).toBe(0);
+      });
+
+      it('"applications" is answered by the list even while a fill is armed -- it never reaches the fill lane', async () => {
+        mockConvTurn('SM-app-list', { fill_application_id: 'app-1' });
+        mockQuery.mockResolvedValueOnce(ok()); // setInternalUserRlsContext (070's jobs_worker_read_applied)
+        mockQuery.mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{
+            id: 'app-9', title: 'Painter', status: 'contacted',
+            needs_details: true, company_name: 'RM Construction',
+          }],
+        }); // the one applications SELECT
+        mockStateContextUpdate(); // applications_menu armed
+        mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox list
+        mockBoundWorkerTail();
+
+        await handler(
+          makeSqsEvent({
+            MessageSid: 'SM-app-list',
+            From: 'whatsapp:+15125551234',
+            Body: 'applications',
+          }),
+          {} as any,
+          {} as any,
+        );
+
+        const body = outboxBodies()[0];
+        expect(body).toContain(t('applications_header', 'en'));
+        expect(body).toContain('1) Painter - RM Construction - Under review - Details needed');
+        expect(body).toContain(t('applications_footer', 'en'));
+        // The armed fill never saw the word: no field question, no re-derive
+        // beyond the list's own SELECT.
+        expect(outboxBodies()).toHaveLength(1);
+        const menuWrite = stateContextUpdates().find((sc) => sc.applications_menu);
+        expect((menuWrite?.applications_menu as { ids: string[] }).ids).toEqual(['app-9']);
+      });
+
+      it('a bare digit against the armed menu dispatches exactly like the Start button', async () => {
+        mockConvTurn('SM-app-pick', {
+          applications_menu: { ids: ['aaaaaaaa-0000-4000-8000-00000000000a'], at: Date.now() },
+        });
+        mockFillSnapshotRow({ required_fields: ['work_authorization'] });
+        mockSeedNoDefaults();
+        mockStateContextUpdate(); // arm write
+        mockFillSnapshotRow({ required_fields: ['work_authorization'] });
+        mockCompanyLookup('ABC');
+        mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox intro
+        mockFillSnapshotRow({ required_fields: ['work_authorization'] });
+        mockStateContextUpdate(); // fill_last_prompt_at stamp
+        mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox field question
+        mockBoundWorkerTail();
+
+        await handler(
+          makeSqsEvent({
+            MessageSid: 'SM-app-pick',
+            From: 'whatsapp:+15125551234',
+            Body: '1',
+          }),
+          {} as any,
+          {} as any,
+        );
+
+        expect(outboxBodies()).toContain(fieldQuestion('work_authorization', 'en'));
+      });
     });
 
-    // ── Task 10: processor dispatch — fill-lane precedence ────────────────
-    //
-    // The escape/relay-override PRECEDENCE logic itself is unit-tested
-    // exhaustively in application-fill.test.ts (handleFillMessage — escapes
-    // / relay-override). These integration tests lock down the WIRING that
-    // lives only in processor.ts: the seam actually gives handleFillMessage
-    // first refusal, an escape's handled:false correctly falls through to
-    // the pre-existing router below, and the dispatch tail re-prompts the
-    // pending fill question afterward (cooldown-guarded). Every OTHER test
-    // in this file has no `fill_application_id` set, so the full suite
-    // passing is itself the "no fill armed: byte-identical routing"
-    // regression check the task brief calls for.
     describe('Task 10: fill-lane dispatch precedence', () => {
       it('exact "trabajos" escapes to the jobs listing, then the dispatch tail re-prompts the pending field question', async () => {
         mockListMatchedJobsForWorker.mockResolvedValue([
@@ -2601,7 +2478,7 @@ describe('Processor Lambda', () => {
           .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context (jobs listing)
           .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation recent_jobs
           .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // INSERT template outbox job-2
-        mockComputeNextStepRow({ required_fields: ['work_authorization'], application_answers: {} }); // dispatch-tail re-prompt
+        mockFillSnapshotRow({ required_fields: ['work_authorization'], application_answers: {} }); // dispatch-tail re-prompt
         mockStateContextUpdate(); // fill_last_prompt_at stamp
         mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox field question
         mockRecordTail();
@@ -2637,7 +2514,7 @@ describe('Processor Lambda', () => {
           .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
           .mockResolvedValueOnce({ rowCount: 1, rows: [{ job_id: 'job-1' }] }) // Task 10 seam: jobId refresh, then escapes (help)
           .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // INSERT outbox help_menu_list_en
-        mockComputeNextStepRow({ required_fields: ['work_authorization'], application_answers: {} }); // dispatch-tail re-prompt
+        mockFillSnapshotRow({ required_fields: ['work_authorization'], application_answers: {} }); // dispatch-tail re-prompt
         mockStateContextUpdate(); // fill_last_prompt_at stamp
         mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox field question
         mockRecordTail();
@@ -2773,7 +2650,7 @@ describe('Processor Lambda', () => {
           .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE job conversation timestamps
           .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE application status
           .mockResolvedValueOnce({ rowCount: 0, rows: [] }); // no waiting employer messages
-        mockComputeNextStepRow({ worker_id: 'worker-1', job_id: 'job-fill-1', required_fields: ['work_authorization'], application_answers: {} }); // dispatch-tail re-prompt
+        mockFillSnapshotRow({ worker_id: 'worker-1', job_id: 'job-fill-1', required_fields: ['work_authorization'], application_answers: {} }); // dispatch-tail re-prompt
         mockStateContextUpdate(); // fill_last_prompt_at stamp
         mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox field question
         mockQuery
@@ -2840,12 +2717,15 @@ describe('Processor Lambda', () => {
           // Task 10 seam: handleFillMessage's jobId refresh.
           .mockResolvedValueOnce({ rowCount: 1, rows: [{ job_id: 'job-1' }] });
         // computeNextStep (current step): work_authorization is outstanding.
-        mockComputeNextStepRow({ required_fields: ['work_authorization', 'date_available'], application_answers: {} });
-        // mergeAnswer: setRls, then the validated UPDATE.
+        mockFillSnapshotRow({ required_fields: ['work_authorization', 'date_available'], application_answers: {} });
+        // Sprint 23: the merge goes through the shared engine's
+        // `mergeFieldAnswers` -- deps.setRls first (the defaults write-back
+        // lands on FORCE-RLS worker_application_defaults), then the engine's
+        // own snapshot load, the size-guarded merge, and the write-back.
         mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [] }); // set internal RLS context
-        mockQuery.mockResolvedValueOnce(ok()); // UPDATE job_applications
+        mockFieldMergeQueries({ required_fields: ['work_authorization', 'date_available'], application_answers: {} });
         // sendNextStepPrompt's own re-derive: date_available remains.
-        mockComputeNextStepRow({
+        mockFillSnapshotRow({
           required_fields: ['work_authorization', 'date_available'],
           application_answers: { work_authorization: true },
         });
@@ -2893,13 +2773,13 @@ describe('Processor Lambda', () => {
         expect(promptInsert).toBeDefined();
 
         // The dispatch tail did NOT double-prompt: exactly one
-        // whatsapp_outbox INSERT this turn, and exactly two
-        // job_applications JOIN jobs derives (current-step, then
-        // sendNextStepPrompt's own re-derive) -- handled:true returns
+        // whatsapp_outbox INSERT this turn, and exactly THREE snapshot loads
+        // (the current-step derive, mergeFieldAnswers' own re-read, and
+        // sendNextStepPrompt's re-derive) -- handled:true returns
         // immediately from the seam, so routeReadyWorkerCommands (and
-        // therefore maybeRepromptFill) never runs.
+        // therefore maybeRepromptFill) never runs and adds a fourth.
         expect(outboxInserts.length).toBe(1);
-        expect(countQueryByPattern(/FROM job_applications ja/i)).toBe(2);
+        expect(countQueryByPattern(/FROM job_applications ja/i)).toBe(3);
       });
 
       // Task 11: the seam gate itself (routeMessage) now fires when EITHER
@@ -2926,7 +2806,7 @@ describe('Processor Lambda', () => {
           })
           .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // v2 forced-idle writeback
         mockStateContextUpdate(); // resolveOfferOnlyTurn's accept write (offer cleared, fill_application_id armed)
-        mockComputeNextStepRow({ required_fields: ['work_authorization'], application_answers: {} }); // promptNextStep's re-derive
+        mockFillSnapshotRow({ required_fields: ['work_authorization'], application_answers: {} }); // promptNextStep's re-derive
         mockStateContextUpdate(); // fill_last_prompt_at stamp
         mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox: first field question
         mockQuery
@@ -3236,34 +3116,19 @@ describe('Processor Lambda', () => {
       expect(mockListMatchedJobsForWorker).toHaveBeenCalled();
     });
 
-    it('5. a job-accept button tap with an active draft discards it (with notice) before arming the fill', async () => {
+    it('5. a job-accept button tap with an active draft discards it (with notice) before the prompt lane asks', async () => {
       function ok(rowCount = 1): { rowCount: number; rows: unknown[] } {
         return { rowCount, rows: [] };
       }
-      // Mirrors "typed accept with missing required docs arms the fill" above
-      // (Task 9/10's proven mock shape for handleJobAction's accept path),
-      // entering via a job-alert BUTTON tap instead of typed text -- the one
-      // path that never reaches handleIdle's own discard hook (Step 3), so
-      // this is the only case that actually exercises step 4.2's guard
-      // inside handleJobAction rather than handleIdle's.
-      function mockSeedNoDefaults(): void {
-        mockQuery.mockResolvedValueOnce(ok()); // deps.setRls
-        mockQuery.mockResolvedValueOnce({ rowCount: 0, rows: [] }); // worker_application_defaults -- no row
-      }
-      function mockComputeNextStepRow(): void {
-        mockQuery.mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [{
-            worker_id: 'user-1', job_id: 'job-1', application_status: 'pending',
-            application_answers: {}, job_status: 'active',
-            required_fields: [], required_docs: ['resume'],
-          }],
-        });
-        // required_fields is empty -> vacuously "all answered" -> computeNextStep
-        // also checks document presence before deciding the gap is 'doc'.
-        mockQuery.mockResolvedValueOnce(ok()); // setInternalUserRlsContext
-        mockQuery.mockResolvedValueOnce({ rowCount: 0, rows: [] }); // worker_documents presence check -- none
-      }
+      // A job-alert BUTTON tap is the one accept path that never reaches
+      // handleIdle's own discard hook (Step 3), so this is the only case
+      // that exercises step 4.2's guard inside handleJobAction itself.
+      //
+      // Sprint 23: accept no longer arms the fill, so the guard now protects
+      // the PROMPT lane's free-text turns instead -- the job needs
+      // pre_application_prompts for the discard site to be reached at all,
+      // because a promptless accept solicits nothing.
+      const prompts = [{ id: 'p1', text: 'Do you have your own tools?' }];
 
       const draft = {
         post_id: 'post-1',
@@ -3291,27 +3156,36 @@ describe('Processor Lambda', () => {
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
         .mockResolvedValueOnce({
           rowCount: 1,
-          rows: [{ id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr' }],
+          rows: [{
+            id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr',
+            pre_application_prompts: prompts,
+          }],
         }) // handleJobAction's own job SELECT
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // applyWorkerToJob: setInternalUserRlsContext
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'job-1', required_docs: ['resume'] }] }) // applyWorkerToJob: job check
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // missingRequiredDocuments -- worker has none
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set_config('app.allow_incomplete_docs', ...)
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'app-1', job_id: 'job-1', status: 'pending', applied_at: 'ts' }] }) // INSERT job application
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }); // document snapshot copy -- nothing to copy
-      mockSeedNoDefaults();
-      mockComputeNextStepRow(); // gap: doc 'resume', no fields
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{ id: 'job-1', required_docs: [], optional_docs: [], pre_application_prompts: prompts }],
+        }) // applyWorkerToJob: job check
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{ id: 'app-1', job_id: 'job-1', status: 'pending', applied_at: 'ts' }],
+        }); // INSERT job application
       mockQuery.mockResolvedValueOnce(ok()); // discard: UPDATE whatsapp_conversations (post_draft -> null)
       mockQuery.mockResolvedValueOnce(ok()); // discard: INSERT outbox discarded_for_command reply
-      mockQuery.mockResolvedValueOnce(ok()); // arm: UPDATE whatsapp_conversations (fill_application_id set, ...)
       mockQuery.mockResolvedValueOnce({
         rowCount: 1,
-        rows: [{ application_answers: {}, required_fields: [], required_docs: ['resume'], have_docs: [] }],
-      }); // countRemainingRequirements
-      mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox intro
-      mockComputeNextStepRow(); // promptNextStep -> computeNextStep again -> same 'doc' gap
-      mockQuery.mockResolvedValueOnce(ok()); // fill_last_prompt_at stamp
-      mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox doc prompt
+        rows: [{
+          id: 'app-1', worker_id: 'user-1', job_id: 'job-1',
+          application_status: 'pending', application_answers: {}, prompt_answers: {},
+          details_requested_at: null, details_completed_at: null,
+          applied_at: 'ts', updated_at: 'ts',
+          job_status: 'active', job_title: 'Electrician',
+          required_fields: [], optional_fields: [], required_docs: [], optional_docs: [],
+          certification_requirements: null, pre_application_prompts: prompts, have_docs: [],
+        }],
+      }); // armPromptLane's snapshot load
+      mockQuery.mockResolvedValueOnce(ok()); // arm: UPDATE whatsapp_conversations (prompt_application_id set)
+      mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox: first prompt
       mockQuery.mockResolvedValueOnce(ok()); // processed db_committed
       mockQuery.mockResolvedValueOnce({ rowCount: 0, rows: [] }); // COMMIT
       mockQuery.mockResolvedValueOnce({ rowCount: 0, rows: [] }); // no pending outbox rows
@@ -3330,11 +3204,12 @@ describe('Processor Lambda', () => {
 
       const bodies = outboxBodies();
       expect(bodies).toContain(DISCARD_NOTICE_EN);
-      expect(bodies).toContain(fillMessage('intro', 'en', { n_fields: '0', n_docs: '1' }));
-      expect(bodies).toContain(docPrompt('resume', 'en'));
+      expect(bodies).toContain(
+        fillMessage('prompt_ask', 'en', { i: '1', n: '1', text: 'Do you have your own tools?' }),
+      );
       const discardWrite = stateContextUpdates().find((sc) => sc.post_draft === null);
       expect(discardWrite).toBeDefined();
-      const armWrite = stateContextUpdates().find((sc) => sc.fill_application_id === 'app-1');
+      const armWrite = stateContextUpdates().find((sc) => sc.prompt_application_id === 'app-1');
       expect(armWrite).toBeDefined();
     });
 
