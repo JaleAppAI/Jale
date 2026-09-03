@@ -119,6 +119,16 @@ import {
   type VoiceEventV2,
   type VoicePipelineExecutionInputV2,
 } from './lib/voice-events';
+// Sprint 23 L6: `startTrustTranscription` moved to lib/trust-transcription.ts
+// so the WEB door can start the SAME trust pipeline from an already-uploaded
+// S3 object (`fromS3Key`) without the Twilio download. `deriveExecutionArn`
+// and `setWorkerRlsContextByUserId` moved with it — both were helpers of that
+// function, and `ingestProfileVoiceNote`/the post lane below share them.
+import {
+  fromTwilioMedia as startTrustTranscriptionFromTwilioMedia,
+  deriveExecutionArn,
+  setWorkerRlsContextByUserId,
+} from './lib/trust-transcription';
 import {
   loadRuntimeControls,
   isVoiceIntakeEnabled,
@@ -805,131 +815,6 @@ function findKnownPayload(value: unknown): string | undefined {
   return undefined;
 }
 
-async function setWorkerRlsContextByUserId(
-  client: PoolClient,
-  userId: string,
-): Promise<void> {
-  const userRow = await client.query<{ cognito_sub: string }>(
-    `SELECT cognito_sub FROM users WHERE id = $1 AND user_type = 'worker'`,
-    [userId],
-  );
-  const cognitoSub = userRow.rows[0]?.cognito_sub;
-  if (!cognitoSub) throw new Error('worker cognito_sub missing before media write');
-  await setRlsContext(client, cognitoSub);
-}
-
-// ── v2 trust-question voice-note transcription kickoff ──────────
-//
-// Mirrors handleAwaitingMediaVoice's Twilio-download -> S3 -> StartExecution
-// pattern above, but for the v2 lane's trust.question.* steps: it never
-// advances the step or takes the run lock — recordTrustAnswer only runs when
-// the transcript comes back (onboarding/steps/trust.ts), so a typed answer
-// that arrives first still wins the race. Runs on the SAME client/
-// transaction as the rest of the turn (closed over by the v2Deps.voiceIntake
-// wiring above), so a StartExecution failure rolls back the S3 upload's
-// worker_profile_media row along with everything else in this turn.
-async function startTrustTranscription(
-  client: PoolClient,
-  input: {
-    workerId: string;
-    phone: string;
-    runId: string;
-    stepKey: string;
-    questionIndex: number;
-    language: Lang;
-    mediaUrl: string;
-    mediaContentType: string;
-    inboundMessageSid: string;
-  },
-): Promise<{ started: boolean; reason?: string; executionArn?: string }> {
-  const category = detectMediaCategory(input.mediaContentType);
-  if (category !== 'voice') return { started: false, reason: 'invalid_media_type' };
-
-  const bucketName = process.env.MEDIA_BUCKET_NAME;
-  const stateMachineArn = process.env.TRUST_PIPELINE_STATE_MACHINE_ARN;
-  if (!bucketName) throw new Error('MEDIA_BUCKET_NAME not set');
-  if (!stateMachineArn) throw new Error('TRUST_PIPELINE_STATE_MACHINE_ARN not set');
-
-  let mediaBuffer: Buffer;
-  try {
-    const twilioSecret = await getTwilioSecret();
-    mediaBuffer = await downloadTwilioMedia(input.mediaUrl, twilioSecret.accountSid, twilioSecret.authToken);
-  } catch (err) {
-    // Task 7/B5 fix: an expired/unreachable Twilio media URL must never
-    // throw bare here — this runs inside the claim transaction, so an
-    // uncaught throw aborts it, poisons the phone's FIFO message group, and
-    // burns all five retries. Degrade to the same graceful
-    // `{started: false}` path a rejected file already takes; the existing
-    // `v2_voice_failed` reprompt (handleTrustVoiceNote, onboarding/steps/
-    // trust.ts) handles it from here.
-    console.error(JSON.stringify({
-      metric: 'OnboardingTrustVoiceDownloadFailed',
-      reason: (err as { name?: string })?.name ?? 'unknown_error',
-    }));
-    return { started: false, reason: 'download_failed' };
-  }
-  // Twilio does not reject oversized uploads at the source; enforce the cap
-  // post-download rather than stranding the worker on a silent failure.
-  if (mediaBuffer.byteLength > MAX_VOICE_BYTES) return { started: false, reason: 'file_too_large' };
-
-  const mediaId = randomUUID();
-  const s3Key = buildS3Key(input.workerId, mediaId, 'voice');
-  await uploadMediaToS3(bucketName, s3Key, mediaBuffer, input.mediaContentType);
-
-  await setWorkerRlsContextByUserId(client, input.workerId);
-  await client.query(
-    `INSERT INTO worker_profile_media
-       (id, user_id, media_type, s3_key, content_type)
-     VALUES ($1, $2, 'voice_message', $3, $4)`,
-    [mediaId, input.workerId, s3Key, input.mediaContentType],
-  );
-
-  const transcriptionJobName = `jale-vt-${input.workerId.replace(/-/g, '')}-${Date.now()}`;
-  const mediaS3Uri = `s3://${bucketName}/${s3Key}`;
-  const transcriptOutputKey = `${input.workerId}/transcripts/${transcriptionJobName}.json`;
-
-  const sfnInput: VoicePipelineExecutionInputV2 = {
-    transcriptionJobName,
-    mediaS3Uri,
-    mediaBucketName: bucketName,
-    transcriptOutputKey,
-    v2: {
-      version: 'v2',
-      kind: 'trust_answer',
-      phone: input.phone,
-      runId: input.runId,
-      stepKey: input.stepKey,
-      language: input.language,
-      origMessageSid: input.inboundMessageSid,
-      startedAt: new Date().toISOString(),
-      questionIndex: input.questionIndex,
-    },
-  };
-
-  // Deterministic execution name (same shape as sendErrorFallback's `<sid>#err`
-  // idempotency key): an SQS redelivery of the same inbound voice note
-  // resolves to the SAME execution rather than starting a second
-  // transcription job. Deriving the ARN here (Task 5/B3), same pattern as
-  // `ingestProfileVoiceNote` below, gives the router a staleness anchor
-  // (`state_context.v2TrustVoiceExecutionArn`) synchronously, before the
-  // pipeline itself has run — it never has to wait for the async completion
-  // to learn what its own execution's ARN will be.
-  const executionName = `vt-${input.inboundMessageSid}`;
-  const executionArn = deriveExecutionArn(stateMachineArn, executionName);
-
-  try {
-    await sfn.send(new StartExecutionCommand({
-      stateMachineArn,
-      name: executionName,
-      input: JSON.stringify(sfnInput),
-    }));
-  } catch (err: any) {
-    if (err?.name !== 'ExecutionAlreadyExists') throw err;
-  }
-
-  return { started: true, executionArn };
-}
-
 // ── v2 full voice profile intake (Stream B) — ingestion kickoff ──
 //
 // Mirrors startTrustTranscription's Twilio-download -> S3 -> StartExecution
@@ -940,20 +825,6 @@ async function startTrustTranscription(
 // `#vp` event instead of writing `users`/outbox directly (Task 8d). Runs on
 // the SAME client/transaction as the rest of the turn, closed over by the
 // v2Deps.voiceIntake wiring below.
-
-/**
- * Step Functions execution ARNs are deterministic:
- * `arn:...:stateMachine:<name>` -> `arn:...:execution:<name>:<executionName>`.
- * Deriving it here (rather than trusting `StartExecutionCommand`'s response)
- * means the SAME value is available synchronously on `ExecutionAlreadyExists`
- * (a redelivered inbound voice note) as on a fresh start — both resolve to
- * the one execution the deterministic name identifies.
- */
-function deriveExecutionArn(stateMachineArn: string, executionName: string): string {
-  const parts = stateMachineArn.split(':');
-  const [, , , region, account, , stateMachineName] = parts;
-  return `arn:aws:states:${region}:${account}:execution:${stateMachineName}:${executionName}`;
-}
 
 async function ingestProfileVoiceNote(
   client: PoolClient,
@@ -1148,7 +1019,14 @@ async function routeMessage(
     recordLegalAcceptance: recordCanonicalWhatsAppConsent,
     voiceIntake: {
       enabled: isVoiceIntakeEnabled(runtimeControls, phoneHash),
-      startTrustTranscription: (input) => startTrustTranscription(client, input),
+      // Sprint 23 L6: the body of this lane now lives in
+      // `lib/trust-transcription.ts` (`fromTwilioMedia`), shared with the WEB
+      // door's `fromS3Key`. `getTwilioSecret` is injected rather than imported
+      // there so that module holds no secret of its own.
+      startTrustTranscription: (input) => startTrustTranscriptionFromTwilioMedia(client, {
+        ...input,
+        getTwilioSecret,
+      }),
       ingestProfileVoiceNote: (input) => ingestProfileVoiceNote(client, input),
     },
   };
