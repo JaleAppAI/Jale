@@ -42,7 +42,7 @@ const mockSfnSend = jest.fn();
 jest.mock('@aws-sdk/client-sfn', () => ({
   SFNClient: jest.fn(() => ({ send: mockSfnSend })),
   StartExecutionCommand: jest.fn((args) => ({ input: args, __type: 'StartExecution' })),
-}), { virtual: true });
+}));
 
 const mockLambdaSend = jest.fn();
 jest.mock('@aws-sdk/client-lambda', () => ({

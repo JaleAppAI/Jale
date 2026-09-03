@@ -10,7 +10,7 @@ const mockBedrockSend = jest.fn();
 jest.mock('@aws-sdk/client-bedrock-runtime', () => ({
   BedrockRuntimeClient: jest.fn(() => ({ send: mockBedrockSend })),
   ConverseCommand: jest.fn((args) => ({ input: args, __type: 'Converse' })),
-}), { virtual: true });
+}));
 
 const mockLambdaSend = jest.fn();
 jest.mock('@aws-sdk/client-lambda', () => ({
