@@ -979,8 +979,8 @@
   "worker_applications": {
     "title": "Mis aplicaciones",
     "applied": "Aplicado",
-    "empty": "Aún no ha postulado a ningún trabajo.",
-    "empty_body": "Los trabajos a los que postule aparecen aquí, con el estado de cada uno.",
+    "empty": "Aún no te has postulado a ningún trabajo.",
+    "empty_body": "Los trabajos a los que te postules aparecen aquí, con el estado de cada uno.",
     "empty_cta": "Buscar trabajos",
     "status": {
       "pending": "Aplicado",
@@ -1149,21 +1149,21 @@
     "work_authorization_required": "Requiere autorización de trabajo",
     "work_authorization_required_yes": "Requerida",
     "posted": "Publicado",
-    "upload_prompt": "Suba los documentos faltantes en su perfil.",
+    "upload_prompt": "Sube los documentos que faltan en tu perfil.",
     "upload_link": "Ir al perfil",
-    "apply": "Postularse",
+    "apply": "Postularme",
     "apply_success": "Postulación enviada. El empleador ya puede verla.",
-    "already_applied": "Ya se postuló",
+    "already_applied": "Ya te postulaste",
     "errors": {
       "missing_docs": "Faltan documentos: {docs}",
       "job_closed": "Este trabajo ya no acepta postulaciones.",
-      "profile_invalid": "Algunos datos de su perfil faltan o no son válidos. Revise su perfil e intente de nuevo.",
-      "not_signed_in": "Su sesión expiró. Inicie sesión de nuevo.",
-      "legal_required": "Acepte los términos más recientes antes de postularse.",
-      "account_not_ready": "Su cuenta todavía se está preparando. Cierre sesión, vuelva a iniciar sesión e intente de nuevo.",
-      "already_applied": "Ya se postuló a este trabajo.",
-      "server_error": "No pudimos enviar esta postulación ahora. Intente de nuevo en unos minutos.",
-      "apply_failed": "No pudimos enviar esta postulación. Revise su perfil y documentos, e intente de nuevo."
+      "profile_invalid": "Algunos datos de tu perfil faltan o no son válidos. Revisa tu perfil e inténtalo de nuevo.",
+      "not_signed_in": "Tu sesión expiró. Inicia sesión de nuevo.",
+      "legal_required": "Acepta los términos más recientes antes de postularte.",
+      "account_not_ready": "Tu cuenta todavía se está preparando. Cierra sesión, vuelve a iniciar sesión e inténtalo de nuevo.",
+      "already_applied": "Ya te postulaste a este trabajo.",
+      "server_error": "No pudimos enviar esta postulación ahora. Inténtalo de nuevo en unos minutos.",
+      "apply_failed": "No pudimos enviar esta postulación. Revisa tu perfil y tus documentos, e inténtalo de nuevo."
     },
     "not_found": {
       "title": "Trabajo no encontrado",
