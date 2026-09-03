@@ -1297,6 +1297,77 @@ describe('event-driven outbox wake queues', () => {
       expect(actions).toEqual(expect.arrayContaining(['sqs:SendMessage']));
     });
 
+    // ── S23 L6: voice answers on the web ─────────────────────────
+    //
+    // The whole feature adds ZERO API Gateway resources — three more action
+    // names on the `{action}` resource that already exists. What it DOES add
+    // is the two env vars and the three grants below; without any one of them
+    // the mic button fails at a different step, all of them at runtime.
+    test('carries the media bucket and trust pipeline so voice answers can start', () => {
+      const env = webDoorFn().Properties.Environment.Variables;
+      expect(env.MEDIA_BUCKET_NAME).toBeDefined();
+      expect(env.TRUST_PIPELINE_STATE_MACHINE_ARN).toBeDefined();
+    });
+
+    test('starts the SAME trust pipeline the processor does, not a second one', () => {
+      const webArn = JSON.stringify(
+        webDoorFn().Properties.Environment.Variables.TRUST_PIPELINE_STATE_MACHINE_ARN,
+      );
+      const processorFn = Object.values(template.findResources('AWS::Lambda::Function'))
+        .find((r: any) => /WhatsApp message processor|processor/i.test(r.Properties?.Description ?? '')) as any;
+      expect(JSON.stringify(processorFn.Properties.Environment.Variables.TRUST_PIPELINE_STATE_MACHINE_ARN))
+        .toBe(webArn);
+    });
+
+    test('its role can put/get under voice/* and start the trust execution', () => {
+      const fn = webDoorFn();
+      const roleRef = fn.Properties.Role['Fn::GetAtt'][0];
+      const policies = template.findResources('AWS::IAM::Policy');
+      const statements = Object.values(policies)
+        .filter((policy: any) => JSON.stringify(policy.Properties.Roles ?? []).includes(roleRef))
+        .flatMap((policy: any) => policy.Properties.PolicyDocument.Statement as any[]);
+      const actions = statements.flatMap((st) =>
+        Array.isArray(st.Action) ? st.Action : [st.Action]);
+
+      expect(actions).toEqual(expect.arrayContaining(['s3:PutObject']));
+      expect(actions).toEqual(expect.arrayContaining(['s3:GetObject']));
+      expect(actions).toEqual(expect.arrayContaining(['states:StartExecution']));
+
+      // SCOPED, not bucket-wide: a worker's photos, documents, work samples
+      // and post images live in the SAME bucket, and this door has no business
+      // reading, writing or even LISTING any of them. Every s3 statement on
+      // the role must name the prefix — which is also why the read is an
+      // explicit GetObject rather than `grantRead` (that adds bucket-wide
+      // s3:List*).
+      const s3Statements = statements.filter((st) => {
+        const acts = Array.isArray(st.Action) ? st.Action : [st.Action];
+        return acts.some((a: unknown) => typeof a === 'string' && a.startsWith('s3:'));
+      });
+      expect(s3Statements.length).toBeGreaterThan(0);
+      for (const st of s3Statements) {
+        expect(JSON.stringify(st.Resource)).toContain('voice/*');
+        const acts = Array.isArray(st.Action) ? st.Action : [st.Action];
+        expect(acts.some((a: unknown) => typeof a === 'string' && /^s3:(List|GetBucket)/.test(a))).toBe(false);
+      }
+    });
+
+    test('the trust receiver may write the web failure marker under voice/*', () => {
+      const receiver = Object.values(template.findResources('AWS::Lambda::Function'))
+        .find((r: any) => /voice-trust-receiver/.test(r.Properties?.Description ?? '')) as any;
+      const roleRef = receiver.Properties.Role['Fn::GetAtt'][0];
+      const statements = Object.values(template.findResources('AWS::IAM::Policy'))
+        .filter((policy: any) => JSON.stringify(policy.Properties.Roles ?? []).includes(roleRef))
+        .flatMap((policy: any) => policy.Properties.PolicyDocument.Statement as any[]);
+      const putStatements = statements.filter((st) => {
+        const acts = Array.isArray(st.Action) ? st.Action : [st.Action];
+        return acts.includes('s3:PutObject');
+      });
+      expect(putStatements.length).toBeGreaterThan(0);
+      for (const st of putStatements) {
+        expect(JSON.stringify(st.Resource)).toContain('voice/*');
+      }
+    });
+
     test.each([
       ['onboarding', 'GET'],
       // ONE `{action}` resource carries answers/back/language. ApiStack sits

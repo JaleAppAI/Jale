@@ -649,6 +649,13 @@ export class WhatsAppStack extends cdk.Stack {
       environment: {},
     });
     mediaBucket.grantRead(voiceTrustReceiverLambda.function);
+    // Sprint 23 L6: a WEB-origin completion does not re-enter the WhatsApp
+    // queue (see lambda/ai/voice-trust-receiver.ts). The browser polls the
+    // transcript object instead — and Transcribe writes NOTHING when a job
+    // fails, so the receiver persists an empty-text marker at the transcript
+    // key to turn "still working" into a definite 410. Scoped to the web
+    // door's own prefix; the receiver has no business writing anywhere else.
+    mediaBucket.grantPut(voiceTrustReceiverLambda.function, 'voice/*');
     // v2 re-entry (Task 5): a trust voice note started from the v2 lane
     // completes by sending a synthetic event back onto the same v2 inbound
     // FIFO queue the webhook uses — gated on the identical transport flag so
@@ -1174,9 +1181,38 @@ export class WhatsAppStack extends cdk.Stack {
         // the Terms and Privacy links, so the engine's legal prompt text (the
         // only thing those two feed) is never shown by this door, and the
         // handler's hardcoded jaleapp.ai/legal defaults stand.
+        //
+        // Sprint 23 L6 (voice answers on the web). The door presigns a PUT
+        // into the SAME media bucket the WhatsApp lane uploads to, and starts
+        // the SAME trust pipeline — one Transcribe path, one transcript
+        // format, one receiver, whichever door the worker used.
+        MEDIA_BUCKET_NAME: mediaBucket.bucketName,
+        TRUST_PIPELINE_STATE_MACHINE_ARN: trustVoicePipeline.stateMachine.stateMachineArn,
       },
+      // Not in the Node 20 runtime, unlike the @aws-sdk/client-* packages:
+      // without this the presigner import resolves to nothing at runtime and
+      // every voice-upload-url call 500s.
+      nodeModules: ['@aws-sdk/s3-request-presigner'],
     });
     whatsappDbSecret.grantRead(webOnboardingLambda.function);
+    // Sprint 23 L6. ONE prefix, `voice/*`, covers both the audio the browser
+    // PUTs (`voice/<workerId>/<uuid>.<ext>`) and the transcript the pipeline
+    // writes (`voice/<workerId>/transcripts/<job>.json`) — which is why this
+    // door's transcripts do NOT use the WhatsApp lane's `<workerId>/
+    // transcripts/` shape. Put for the presign, read for the HeadObject
+    // existence/size check and the transcript poll. Nothing outside the
+    // prefix, and nothing at all on the rest of the bucket.
+    mediaBucket.grantPut(webOnboardingLambda.function, 'voice/*');
+    // An EXPLICIT s3:GetObject rather than `grantRead`: grantRead also adds
+    // bucket-wide `s3:List*`/`s3:GetBucket*`, and this door has no reason to
+    // be able to enumerate a bucket that also holds every worker's photos,
+    // documents and work samples. It reads exactly two kinds of object, both
+    // under its own prefix, both by exact key.
+    webOnboardingLambda.function.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['s3:GetObject'],
+      resources: [`${mediaBucket.bucketArn}/voice/*`],
+    }));
+    trustVoicePipeline.stateMachine.grantStartExecution(webOnboardingLambda.function);
     props.questionGeneratorFn.grantInvoke(webOnboardingLambda.function);
     props.aliasGeneratorFn.grantInvoke(webOnboardingLambda.function);
     domainOutboxWakeQueue.grantSendMessages(webOnboardingLambda.function);
