@@ -2,6 +2,7 @@
 import { useTranslations } from 'next-intl';
 import { Badge } from '@/components/ui/badge';
 import type { RequirementsRemaining } from '@/lib/api/employer';
+import { remainingCount } from '@/lib/hire-gate';
 import type { ApplicationDetailsStatus } from '@/lib/status';
 
 /**
@@ -51,14 +52,3 @@ export function ApplicantDetailsIndicator({
     );
 }
 
-/**
- * How many things still block a hire. All four buckets are already
- * blocking-only by construction (`remainingView` drops optional fields/docs
- * and the uncollectable legacy `ssn`), so this is a plain sum -- the same
- * arithmetic the worker's own progress bar shows.
- */
-export function remainingCount(remaining?: RequirementsRemaining): number | null {
-    if (!remaining?.counts) return null;
-    const { prompts, fields, certifications, docs } = remaining.counts;
-    return prompts + fields + certifications + docs;
-}

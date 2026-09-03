@@ -36,8 +36,7 @@ import {
 } from '@/lib/api/employer';
 import type { WorkerPost } from '@/lib/api/worker';
 import { normalizeApplicationStatus } from '@/lib/status';
-import { remainingCount } from '@/components/employer/ApplicantDetailsIndicator';
-import { hireBlockReason } from '@/lib/hire-gate';
+import { hireBlockReason, remainingCount } from '@/lib/hire-gate';
 import { tradeLabel } from '@/lib/trades';
 import { displayAnswer, displayQuestion, normalizeAnswers } from '@/lib/trust-assessment';
 import { AnswerHighlights } from './AnswerHighlights';

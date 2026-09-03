@@ -1,10 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
 import { screen } from '@testing-library/react';
-import {
-    ApplicantDetailsIndicator,
-    remainingCount,
-} from '@/components/employer/ApplicantDetailsIndicator';
+import { ApplicantDetailsIndicator } from '@/components/employer/ApplicantDetailsIndicator';
 import type { RequirementsRemaining } from '@/lib/api/employer';
 import { interpolate, message, renderIntl } from './render-intl';
 
@@ -67,13 +64,3 @@ describe('ApplicantDetailsIndicator', () => {
     });
 });
 
-describe('remainingCount', () => {
-    it('sums all four blocking buckets', () => {
-        expect(remainingCount(remaining({ prompts: 1, fields: 2, certifications: 3, docs: 4 }))).toBe(10);
-    });
-
-    it('is null when there is no remaining doc to read, and 0 when there genuinely is nothing left', () => {
-        expect(remainingCount(undefined)).toBeNull();
-        expect(remainingCount(remaining())).toBe(0);
-    });
-});

@@ -12,7 +12,24 @@
 // it (a stale page load, or the fail-open branch below, both reach it).
 // ---------------------------------------------------------------------------
 
+import type { RequirementsRemaining } from '@/lib/api/worker';
 import type { ApplicationDetailsStatus } from '@/lib/status';
+
+/**
+ * How many things still block a hire, as one number.
+ *
+ * All four buckets are blocking-only by construction -- the read endpoints'
+ * `remainingView` already drops optional fields/docs and the uncollectable
+ * legacy `ssn` -- so this is a plain sum, and it is the same arithmetic the
+ * worker's own progress bar shows. `null` (not `0`) when there is no remaining
+ * document to read: an API that has not shipped the field is not the same
+ * answer as an applicant with nothing left, and the two render differently.
+ */
+export function remainingCount(remaining?: RequirementsRemaining | null): number | null {
+    if (!remaining?.counts) return null;
+    const { prompts, fields, certifications, docs } = remaining.counts;
+    return prompts + fields + certifications + docs;
+}
 
 /** Why a hire is blocked -- the two states have different remedies. */
 export type HireBlockReason =

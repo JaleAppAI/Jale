@@ -1,5 +1,26 @@
 import { describe, expect, it } from 'vitest';
-import { hireBlockReason, hireBlocked } from '@/lib/hire-gate';
+import { hireBlockReason, hireBlocked, remainingCount } from '@/lib/hire-gate';
+import type { RequirementsRemaining } from '@/lib/api/worker';
+
+const remaining = (counts: Partial<RequirementsRemaining['counts']> = {}): RequirementsRemaining => ({
+    prompts: [], fields: [], certifications: { unclaimed: [], unproven: [] }, docs: [],
+    counts: { prompts: 0, fields: 0, certifications: 0, docs: 0, ...counts },
+    complete: false,
+});
+
+describe('remainingCount', () => {
+    it('sums all four blocking buckets', () => {
+        expect(remainingCount(remaining({ prompts: 1, fields: 2, certifications: 3, docs: 4 }))).toBe(10);
+    });
+
+    it('separates "nothing published" from "nothing left"', () => {
+        // `null` and `0` render differently -- one drops the count from the
+        // badge, the other says there is genuinely nothing outstanding.
+        expect(remainingCount(undefined)).toBeNull();
+        expect(remainingCount(null)).toBeNull();
+        expect(remainingCount(remaining())).toBe(0);
+    });
+});
 
 describe('hireBlockReason', () => {
     it('blocks, and says which remedy applies, before details are requested', () => {
