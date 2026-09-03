@@ -30,6 +30,15 @@ function resolve(tree: unknown, path: string): unknown {
         );
 }
 
+/** Looks up a nav item by `key` instead of a positional index, so inserting
+ *  a new primary-nav entry doesn't silently shift what an existing assertion
+ *  is actually testing. */
+function requireNavItem(items: NavItem[], key: string): NavItem {
+    const item = items.find((candidate) => candidate.key === key);
+    if (!item) throw new Error(`no nav item with key "${key}"`);
+    return item;
+}
+
 function expectLabelsResolve(items: NavItem[], namespace: string) {
     for (const [locale, tree] of [
         ['en', en],
@@ -64,10 +73,12 @@ describe('nav label keys', () => {
 
 describe('employerMobileNav', () => {
     it('is the sidebar items minus sidebar-only entries, reused rather than re-declared', () => {
-        // Templates is a management surface, not a daily destination -- it
-        // stays sidebar-only so the bar keeps to its four-tab ceiling.
+        // Templates is a management surface, not a daily destination, and
+        // applicants is a deep-dive view of data the dashboard/messages tabs
+        // already surface day to day -- both stay sidebar-only so the bar
+        // keeps to its four-tab ceiling.
         expect(employerMobileNav).toEqual([
-            ...employerPrimaryNav.filter((item) => item.key !== 'templates'),
+            ...employerPrimaryNav.filter((item) => item.key !== 'templates' && item.key !== 'applicants'),
             employerBillingNav,
             employerSettingsNav,
         ]);
@@ -100,9 +111,10 @@ describe('isNavItemActive on the employer tabs', () => {
     });
 
     it('marks messages active on its own subtree', () => {
-        expect(isNavItemActive(employerPrimaryNav[1], '/employer/conversations')).toBe(true);
-        expect(isNavItemActive(employerPrimaryNav[1], '/employer/conversations/abc')).toBe(true);
-        expect(isNavItemActive(employerPrimaryNav[1], '/employer/dashboard')).toBe(false);
+        const messagesTab = requireNavItem(employerPrimaryNav, 'messages');
+        expect(isNavItemActive(messagesTab, '/employer/conversations')).toBe(true);
+        expect(isNavItemActive(messagesTab, '/employer/conversations/abc')).toBe(true);
+        expect(isNavItemActive(messagesTab, '/employer/dashboard')).toBe(false);
     });
 
     it('does not mark settings active on an unrelated employer page', () => {

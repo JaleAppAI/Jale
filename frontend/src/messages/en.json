@@ -479,6 +479,16 @@
       }
     }
   },
+  "employer_applicants": {
+    "title": "Applicants",
+    "subtitle": "Everyone who has applied to your jobs, in one place.",
+    "all_jobs": "All jobs",
+    "empty_title": "No applicants yet",
+    "empty_body": "Applicants across all of your jobs will appear here.",
+    "applied_on": "Applied {date}",
+    "unknown_worker": "Unknown worker",
+    "not_scored": "Not scored yet"
+  },
   "employer_messages": {
     "title": "Messages",
     "subtitle": "Message applicants through WhatsApp while keeping the conversation tied to the job.",
@@ -575,6 +585,7 @@
     "nav": {
       "main": "Main",
       "dashboard": "Dashboard",
+      "applicants": "Applicants",
       "messages": "Messages",
       "billing": "Billing",
       "settings": "Settings",

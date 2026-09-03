@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useId, useRef, useState } from 'react';
-import type { FormEvent } from 'react';
+import type { FormEvent, KeyboardEvent } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/ui/empty-state';
@@ -89,6 +89,7 @@ export function ConversationThread({
   // A destructive dialog opens on its SAFE action rather than on the header's
   // dismiss button, which is what Modal picks by default.
   const closeCancelRef = useRef<HTMLButtonElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Both surfaces can be mounted at once (the drawer floats over the page), so
   // a hardcoded id would collide and point the textarea at the wrong message.
@@ -97,10 +98,16 @@ export function ConversationThread({
   // Called before the early returns below so the hook order never changes.
   const transcript = useStickToBottom(messages.length);
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function sendCurrentBody() {
     const trimmed = body.trim();
-    if (!trimmed || sending || !conversation || conversation.status === 'closed') return;
+    if (!trimmed) {
+      // The button no longer greys out on an empty box (it read as "missing"
+      // in user testing) — an empty submit answers by putting the cursor
+      // where the message goes.
+      textareaRef.current?.focus();
+      return;
+    }
+    if (sending || !conversation || conversation.status === 'closed') return;
     try {
       await onSend(trimmed);
       setBody('');
@@ -109,6 +116,20 @@ export function ConversationThread({
       // `errorMessage`. Catching is what keeps the draft in the box and keeps a
       // failed send from becoming an unhandled rejection in the console.
     }
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await sendCurrentBody();
+  }
+
+  // Enter sends, Shift+Enter keeps the newline, and a keydown that is part of
+  // an IME composition (isComposing) is the IME confirming a character, not
+  // the user asking to send.
+  function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
+    event.preventDefault();
+    void sendCurrentBody();
   }
 
   async function handleConfirmClose() {
@@ -139,6 +160,9 @@ export function ConversationThread({
   const initials = initialsFor(workerName);
   const isOpen = conversation.status === 'open';
   const lastMessage = messages[messages.length - 1];
+  const jobLocation = [conversation.job_city, conversation.job_state_region]
+    .filter(Boolean)
+    .join(', ');
 
   return (
     <section className="anim-fade-in flex min-h-[420px] flex-1 flex-col overflow-hidden bg-[var(--jale-card)]">
@@ -167,9 +191,12 @@ export function ConversationThread({
                 <h2 className="truncate text-sm font-bold text-[var(--jale-ink)]">{workerName}</h2>
                 <StatusDot open={isOpen} label={isOpen ? t('status_open') : t('status_closed')} />
               </div>
-              <p className="truncate text-[11px] font-medium text-[var(--jale-ink-2)]">
-                WhatsApp - {conversation.job_title}
+              <p className="truncate text-xs font-semibold text-[var(--jale-ink)]">
+                {conversation.job_title}
               </p>
+              {jobLocation ? (
+                <p className="truncate text-[11px] font-medium text-[var(--jale-ink-2)]">{jobLocation}</p>
+              ) : null}
               {!compact && lastMessage ? (
                 <p className="mt-0.5 text-[10px] tabular-nums text-[var(--jale-ink-2)]">
                   {formatTimeOfDay(lastMessage.created_at, locale)}
@@ -236,8 +263,10 @@ export function ConversationThread({
         ) : (
           <div className="flex gap-2">
             <textarea
+              ref={textareaRef}
               value={body}
               onChange={(event) => setBody(event.target.value)}
+              onKeyDown={handleComposerKeyDown}
               maxLength={2000}
               rows={compact ? 1 : 2}
               placeholder={t('composer_placeholder')}
@@ -251,7 +280,7 @@ export function ConversationThread({
                  indicator. The ring carries it in both themes. */
               className="min-h-[42px] flex-1 resize-none rounded-[var(--radius-input)] border border-[var(--jale-divider)] bg-[var(--jale-paper-2)] px-3 py-2 text-sm text-[var(--jale-ink)] outline-none placeholder:text-[var(--jale-ink-2)] focus:border-[var(--primary)] focus:bg-[var(--jale-card)] focus:shadow-[var(--shadow-focus)]"
             />
-            <Button type="submit" loading={sending} loadingLabel={tCommon('loading')} disabled={!body.trim()}>
+            <Button type="submit" loading={sending} loadingLabel={tCommon('loading')}>
               {t('send')}
             </Button>
           </div>

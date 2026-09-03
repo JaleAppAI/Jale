@@ -6,6 +6,8 @@ type InboxRow = {
   worker_name: string | null;
   job_id: string;
   job_title: string;
+  job_city: string | null;
+  job_state_region: string | null;
   job_status: string;
   application_status: string;
   applied_at: string;
@@ -18,7 +20,7 @@ type InboxRow = {
 
 export type InboxItem = InboxRow & { tab: 'active' | 'closed' };
 
-export type InboxJob = { job_id: string; title: string; status: string };
+export type InboxJob = { job_id: string; title: string; city: string | null; status: string };
 
 export type EmployerInbox = { items: InboxItem[]; jobs: InboxJob[] };
 
@@ -34,6 +36,8 @@ const INBOX_QUERY = `
     COALESCE(wp.full_name, u.full_name) AS worker_name,
     j.id AS job_id,
     j.title AS job_title,
+    j.city AS job_city,
+    j.state_region AS job_state_region,
     j.status AS job_status,
     ja.status AS application_status,
     ja.applied_at,
@@ -84,7 +88,7 @@ export async function listEmployerInbox(
   for (const item of items) {
     if (seen.has(item.job_id)) continue;
     seen.add(item.job_id);
-    jobs.push({ job_id: item.job_id, title: item.job_title, status: item.job_status });
+    jobs.push({ job_id: item.job_id, title: item.job_title, city: item.job_city, status: item.job_status });
   }
 
   return { items, jobs };

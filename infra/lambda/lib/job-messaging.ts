@@ -33,6 +33,8 @@ export type ConversationSummary = {
   id: string;
   job_id: string;
   job_title: string;
+  job_city: string | null;
+  job_state_region: string | null;
   worker_id: string;
   worker_name: string | null;
   status: 'open' | 'closed';
@@ -244,6 +246,8 @@ export async function listEmployerConversations(
        jc.id,
        jc.job_id,
        j.title AS job_title,
+       j.city AS job_city,
+       j.state_region AS job_state_region,
        jc.worker_id,
        COALESCE(wp.full_name, u.full_name) AS worker_name,
        jc.status,
@@ -281,6 +285,8 @@ export async function getEmployerConversationDetail(
        jc.job_id,
        jc.application_id,
        j.title AS job_title,
+       j.city AS job_city,
+       j.state_region AS job_state_region,
        jc.worker_id,
        COALESCE(wp.full_name, u.full_name) AS worker_name,
        jc.status,

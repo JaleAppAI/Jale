@@ -31,6 +31,7 @@ export function isNavItemActive(item: NavItem, pathname: string): boolean {
  */
 export const employerPrimaryNav: NavItem[] = [
     { key: 'dashboard', href: '/employer/dashboard', icon: 'grid', labelKey: 'nav.dashboard', exact: true },
+    { key: 'applicants', href: '/employer/applicants', icon: 'user', labelKey: 'nav.applicants' },
     { key: 'messages', href: '/employer/conversations', icon: 'message', labelKey: 'nav.messages' },
     { key: 'templates', href: '/employer/templates', icon: 'briefcase', labelKey: 'nav.templates' },
 ];
@@ -52,15 +53,25 @@ export const employerSettingsNav: NavItem = {
 };
 
 /**
+ * Sidebar-only primary-nav items: management/secondary surfaces that don't
+ * earn a slot in the four-tab mobile bar. Keep this list, not the mobile
+ * composition below, as the place a new item opts out of mobile — one set
+ * membership check instead of a second copy of the exclusion logic.
+ */
+const employerSidebarOnlyKeys = new Set(['templates', 'applicants']);
+
+/**
  * Employer mobile tab bar. Composed from the very same `NavItem`s the sidebar
  * renders — never a parallel list — so the two surfaces cannot drift apart on a
  * target, an icon or a label key. Four tabs is the practical ceiling for a
  * bottom bar at 360px; these are the four the sidebar leads with.
  */
 export const employerMobileNav: NavItem[] = [
-    // Templates is a management surface, not a daily destination — it stays
-    // sidebar-only so the bar keeps to its four-tab ceiling.
-    ...employerPrimaryNav.filter((item) => item.key !== 'templates'),
+    // Templates is a management surface, not a daily destination; applicants
+    // is a deep-dive/management view of the same data the dashboard and
+    // messages already surface day to day -- both stay sidebar-only so the
+    // bar keeps to its four-tab ceiling.
+    ...employerPrimaryNav.filter((item) => !employerSidebarOnlyKeys.has(item.key)),
     employerBillingNav,
     employerSettingsNav,
 ];

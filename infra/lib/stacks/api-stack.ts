@@ -493,6 +493,19 @@ export class ApiStack extends cdk.Stack {
     });
     props.dbSecret.grantRead(employerInboxLambda.function);
 
+    const employerApplicantsOverviewLambda = new JaleLambdaFunction(this, 'EmployerApplicantsOverviewLambda', {
+      entry: path.join(__dirname, '../../lambda/api/employer-applicants-overview.ts'),
+      description: 'Employer applicants overview endpoint',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: props.dbSecret.secretArn,
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+    });
+    props.dbSecret.grantRead(employerApplicantsOverviewLambda.function);
+
     // Employer templates list — employer auth, DB access
     const employerTemplatesListLambda = new JaleLambdaFunction(this, 'EmployerTemplatesListLambda', {
       entry: path.join(__dirname, '../../lambda/api/employer-templates-list.ts'),
@@ -946,6 +959,13 @@ export class ApiStack extends cdk.Stack {
 
     const employerInboxResource = this.employerResource.addResource('inbox');
     employerInboxResource.addMethod('GET', lambdaIntegration(employerInboxLambda.function), {
+      authorizer: employerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+
+    // GET /employer/applicants — applicants across all of this employer's jobs
+    const employerApplicantsResource = this.employerResource.addResource('applicants');
+    employerApplicantsResource.addMethod('GET', lambdaIntegration(employerApplicantsOverviewLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });

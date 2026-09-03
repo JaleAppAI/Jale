@@ -43,6 +43,9 @@ export const metadata: Metadata = {
   metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL || "https://jaleapp.ai"),
   title: "Jale",
   description: "Find work. Find workers.",
+  alternates: {
+    types: { 'application/rss+xml': '/feed.xml' },
+  },
 };
 
 export function generateStaticParams() {

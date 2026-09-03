@@ -21,7 +21,13 @@ jest.mock('../../../../lambda/whatsapp/lib/outbox', () => ({
   AmbiguousTwilioSendError: MockAmbiguousTwilioSendError,
   TwilioTemplateInvalidError: MockTwilioTemplateInvalidError,
 }));
-import { recordWorkerConversationReply, queueConversationMessageFromEmployer, closeWorkerConversation } from '../../../../lambda/lib/job-messaging';
+import {
+  recordWorkerConversationReply,
+  queueConversationMessageFromEmployer,
+  closeWorkerConversation,
+  listEmployerConversations,
+  getEmployerConversationDetail,
+} from '../../../../lambda/lib/job-messaging';
 
 const WORKER = 'aaaaaaaa-0000-0000-0000-000000000001';
 const CONV_A = 'bbbbbbbb-0000-0000-0000-00000000000a';
@@ -795,5 +801,19 @@ describe('template outbox visibility (spec 2026-08-13)', () => {
     expect(outboxInsert).toBeDefined();
     expect(outboxInsert!.sql).toContain('message_id');
     expect(outboxInsert!.params).toContain('msg-77');
+  });
+});
+
+describe('employer conversation list/detail — job city and state', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('selects the job city and state for the employer list and detail', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    await listEmployerConversations(client, EMPLOYER);
+    expect(mockQuery.mock.calls[0][0]).toMatch(/j\.city AS job_city/);
+
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    await getEmployerConversationDetail(client, 'conv-1', EMPLOYER);
+    expect(mockQuery.mock.calls[1][0]).toMatch(/j\.city AS job_city/);
   });
 });
