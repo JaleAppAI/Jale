@@ -126,13 +126,16 @@ const CEILING = 470;
 // served by dispatcher Lambdas (`lambda/lib/path-dispatch.ts`) and the dead
 // `GET /worker/referrals` was deleted. Every deployed URL is unchanged; the
 // `RESOLVES_TO` inventory at the bottom of this file is the proof.
+// → 399 once other work on this branch added routes ahead of this one → 407
+// once `GET /employer/applicants` (function, role/permission, method, CORS
+// preflight) was added.
 //
 // DELIBERATE COUPLING: an exact count also moves when aws-cdk-lib changes what
 // it emits, so an `npm update` of the CDK can fail this line with no route
 // change at all. That is the intended trade — a bump here is cheap and forces
 // someone to look at the diff, whereas silently absorbing +9 resources is how
 // the stack reached 501 in the first place.
-const MEASURED_RESOURCES = 399;
+const MEASURED_RESOURCES = 407;
 
 /**
  * Every `AWS::ApiGateway::Method` in the template, grouped by the resource it
