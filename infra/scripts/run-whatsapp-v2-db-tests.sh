@@ -103,6 +103,6 @@ exec npx jest --runInBand \
   test/unit/db/trust-extractions-086.integration.test.ts \
   test/unit/db/employer-worker-reads.integration.test.ts \
   test/unit/db/web-onboarding-hostile-inputs.integration.test.ts \
-  test/unit/db/application-stages-091.integration.test.ts
-  test/unit/db/worker-application-details.integration.test.ts
+  test/unit/db/application-stages-091.integration.test.ts \
+  test/unit/db/worker-application-details.integration.test.ts \
   test/unit/db/application-stage-notify.integration.test.ts
