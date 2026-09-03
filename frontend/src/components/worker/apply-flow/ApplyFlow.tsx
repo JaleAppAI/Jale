@@ -8,8 +8,8 @@ import { missingRequiredCertClaims, missingRequiredCertProofs } from '@/lib/cert
 import { partitionRequiredDocs } from '@/lib/job-requirements';
 import type { ApplicationDefaults, JobDetail, WorkerVaultDoc } from '@/lib/api/worker';
 import { ApplyStepNav } from './ApplyStepNav';
-import { QuestionsStep } from './QuestionsStep';
-import { DocumentsCertificationsStep, proofFilesFromVault } from './DocumentsCertificationsStep';
+import { QuestionsStep } from '../application-requirements/QuestionsStep';
+import { DocumentsCertificationsStep, proofFilesFromVault } from '../application-requirements/DocumentsCertificationsStep';
 import { ReviewStep, type ApplyFlowSubmitError, type ApplyFlowSubmitPayload } from './ReviewStep';
 
 export type { ApplyFlowSubmitError, ApplyFlowSubmitPayload };

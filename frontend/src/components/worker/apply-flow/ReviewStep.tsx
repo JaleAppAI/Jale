@@ -8,7 +8,7 @@ import { buildAnswersPayload, isFieldComplete, visibleFieldKeys } from '@/lib/ap
 import { buildCertClaimsPayload, type CertificationClaim } from '@/lib/certification-claims';
 import { REQUIREMENT_DOC_KEYS } from '@/lib/job-requirements';
 import type { JobDetail, JobDocType, WorkerVaultDoc } from '@/lib/api/worker';
-import { proofFilesFromVault } from './DocumentsCertificationsStep';
+import { proofFilesFromVault } from '../application-requirements/DocumentsCertificationsStep';
 
 /**
  * Wire payload `ApplyFlow.onSubmit` hands to its caller.
