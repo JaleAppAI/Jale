@@ -132,10 +132,18 @@ async function startPipeline(
   input: StartPipelineInput,
 ): Promise<TrustTranscriptionOutcome> {
   await setWorkerRlsContextByUserId(client, input.workerId);
+  // ON CONFLICT because the WEB door's `mediaId` is DETERMINISTIC — it is the
+  // uuid in the key the browser was handed, which is what makes a retried
+  // `voice-transcribe` resolve to the same execution and the same transcript
+  // key. Without this, that retry (an apiFetch 401 replay, a lost response, a
+  // double-tap) would die on the primary key and 500 instead of being the
+  // no-op it is. Unreachable on the WhatsApp lane, whose `fromTwilioMedia`
+  // mints a fresh uuid per call — but the SQL is shared, so it is stated here.
   await client.query(
     `INSERT INTO worker_profile_media
        (id, user_id, media_type, s3_key, content_type)
-     VALUES ($1, $2, 'voice_message', $3, $4)`,
+     VALUES ($1, $2, 'voice_message', $3, $4)
+     ON CONFLICT (id) DO NOTHING`,
     [input.mediaId, input.workerId, input.s3Key, input.contentType],
   );
 

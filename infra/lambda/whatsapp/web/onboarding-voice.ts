@@ -26,6 +26,14 @@
  * another worker is a 404, never a 403: a 403 would confirm the object exists,
  * which is precisely the fact a prefix guess is trying to establish.
  *
+ * 403 IS 404 HERE. This Lambda holds `s3:GetObject` on `voice/*` and nothing
+ * else — no bucket-wide `s3:ListBucket`, deliberately, because the same bucket
+ * holds every worker's photos, documents and work samples. S3 answers a caller
+ * without `ListBucket` with `AccessDenied` for a MISSING key rather than
+ * `NoSuchKey`, so absent and forbidden are literally the same response from
+ * where this door stands, and both are matched on the HTTP status rather than
+ * the error name.
+ *
  * WHY THE TRANSCRIPT LIVES UNDER THE SAME PREFIX. WhatsApp's pipeline writes
  * transcripts to `<workerId>/transcripts/`. This door writes them to
  * `voice/<workerId>/transcripts/` instead, so the audio and its transcript
@@ -109,6 +117,21 @@ function requireBucket(): string {
   const bucket = process.env.MEDIA_BUCKET_NAME;
   if (!bucket) throw new Error('MEDIA_BUCKET_NAME not set');
   return bucket;
+}
+
+/**
+ * "The object is not there, as far as this caller can tell."
+ *
+ * Matched on the HTTP STATUS, not the error name: without `s3:ListBucket` (see
+ * the module doc) S3 returns 403 `AccessDenied` for a key that does not exist,
+ * so a name-only check would turn every pre-completion poll into a 500 — and
+ * `WebOnboardingRequestFailed` is alarmed.
+ */
+function isMissingOrForbidden(err: unknown): boolean {
+  const status = (err as { $metadata?: { httpStatusCode?: number } })?.$metadata?.httpStatusCode;
+  if (status === 404 || status === 403) return true;
+  const name = (err as { name?: string })?.name;
+  return name === 'NotFound' || name === 'NoSuchKey' || name === 'AccessDenied' || name === 'Forbidden';
 }
 
 function invalid(): VoiceActionResult {
@@ -229,10 +252,7 @@ export async function startVoiceTranscription(
   try {
     head = await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
   } catch (err) {
-    const name = (err as { name?: string })?.name;
-    if (name === 'NotFound' || name === 'NoSuchKey') {
-      return { statusCode: 404, body: { error: 'not_found' } };
-    }
+    if (isMissingOrForbidden(err)) return { statusCode: 404, body: { error: 'not_found' } };
     throw err;
   }
 
@@ -307,10 +327,10 @@ export async function readVoiceResult(
   try {
     result = await readTranscriptResult(s3, bucket, key);
   } catch (err) {
-    const name = (err as { name?: string })?.name;
-    if (name === 'NoSuchKey' || name === 'NotFound') {
-      return { statusCode: 202, body: { status: 'pending' } };
-    }
+    // Transcribe writes this object ONCE, at the end. Until then S3 answers
+    // 403 (no ListBucket — see the module doc) or 404, and both mean the same
+    // thing to a browser that is waiting: not yet.
+    if (isMissingOrForbidden(err)) return { statusCode: 202, body: { status: 'pending' } };
     // A transcript object that exists but is not JSON is a dead attempt, not a
     // server fault the browser should retry forever.
     if (err instanceof SyntaxError) {

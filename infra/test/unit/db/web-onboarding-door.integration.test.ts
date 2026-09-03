@@ -1392,5 +1392,45 @@ maybeDescribe('R2-C23: the web onboarding door, end to end', () => {
       expect(response.statusCode).toBe(400);
       expect(response.body).toEqual({ error: 'invalid_request' });
     });
+
+    // The last link in the chain, and the only one nothing else proves end to
+    // end: the reviewed transcript goes back through the ORDINARY `answers`
+    // action, and `source: 'voice'` survives the whole way to
+    // `worker_trust_assessments.answer_source` and back out in the DTO.
+    // Everything before this point hands text to the browser; nothing before
+    // this point writes an answer.
+    test("a reviewed transcript is submitted as an ordinary answer and stays 'voice'", async () => {
+      const before = (await get('mic')).body;
+      expect(before.run.stepKey).toBe('trust.question.1');
+
+      const dictated = 'I frame houses and set trusses on residential remodels.';
+      const state = (await answers('mic', before.run.lockVersion, [
+        { stepKey: 'trust.question.1', value: { text: dictated, source: 'voice' } },
+      ])).body;
+
+      expect(state.trust.answers).toContainEqual(
+        expect.objectContaining({ index: 1, text: dictated, source: 'voice' }),
+      );
+
+      // The answers live in the `answers` jsonb array, one element per
+      // question, each carrying its own `answer_source`.
+      const row = await su.query<{ answer_source: string; answer_text: string }>(
+        `SELECT a->>'answer_source' AS answer_source, a->>'answer_text' AS answer_text
+           FROM worker_trust_assessments t,
+                LATERAL jsonb_array_elements(t.answers) a
+          WHERE t.user_id = $1 AND (a->>'question_index')::int = 0`,
+        [ids.mic],
+      );
+      expect(row.rows).toEqual([{ answer_source: 'voice', answer_text: dictated }]);
+
+      // And a TYPED answer on the next question is still 'text' — the tag
+      // follows the answer, not the worker or the session.
+      const typed = (await answers('mic', state.run.lockVersion, [
+        { stepKey: 'trust.question.2', value: { text: 'I read plans and run a crew of three.' } },
+      ])).body;
+      expect(typed.trust.answers).toContainEqual(
+        expect.objectContaining({ index: 2, source: 'text' }),
+      );
+    });
   });
 });

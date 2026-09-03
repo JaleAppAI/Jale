@@ -127,7 +127,14 @@ export function TrustQuestionStep({
     }, [releaseStream]);
 
     const canRecord = Boolean(onRecord) && recordMime !== null;
+    // Two different notions of "busy". `busy` is about the MIC: it must stay
+    // pressable while recording (that is how you stop), and only locks once
+    // the recording has been handed off. `voiceActive` is about the SCREEN:
+    // Back and Next both mutate the run and bump its `lock_version`, and the
+    // transcribe call carries the version read when recording started — so
+    // for as long as a recording is anywhere in flight, neither may fire.
     const busy = phase === 'uploading' || phase === 'transcribing';
+    const voiceActive = phase !== 'idle';
 
     async function handleRecorded(blob: Blob): Promise<void> {
         if (!onRecord || !recordMime) return;
@@ -240,7 +247,7 @@ export function TrustQuestionStep({
                 title={question}
                 subtitle={t('intro')}
                 onBack={onBack}
-                backDisabled={saving}
+                backDisabled={saving || voiceActive}
             />
             <StepBody>
                 <div className="flex items-stretch gap-2.5">
@@ -340,7 +347,7 @@ export function TrustQuestionStep({
                     size="lg"
                     loading={saving}
                     loadingLabel={tCommon('loading')}
-                    disabled={!ready || busy}
+                    disabled={!ready || voiceActive}
                     onClick={() => onSubmit([{
                         stepKey,
                         // `source` is the ONLY thing that tells the engine this

@@ -337,6 +337,27 @@ describe('TrustQuestionStep — voice answers', () => {
         expect(screen.getByRole('alert')).toHaveTextContent(message('worker_onboarding.trust.voice.failed'));
     });
 
+    // The transcribe call carries the lockVersion that was current when the
+    // mic was pressed. Both of these mutate the run and move that version, so
+    // for as long as a recording is in flight neither may be reachable —
+    // otherwise a worker who presses Next mid-sentence gets a 409 and is told
+    // to reload for no reason they can see.
+    it('locks Back and Next for as long as a recording is in flight', async () => {
+        installMediaRecorder();
+        installMicrophone();
+        const onRecord = vi.fn().mockResolvedValue({ kind: 'transcribed', transcript: TRANSCRIPT });
+
+        await record(onRecord);
+
+        expect(screen.getByRole('button', { name: message('worker_onboarding.question.cta') })).toBeDisabled();
+        expect(screen.getByRole('button', { name: /back|atrás/i })).toBeDisabled();
+
+        await userEvent.click(screen.getByRole('button', { name: message('worker_onboarding.trust.voice.stop') }));
+
+        // ...and released again once the transcript is back.
+        expect(screen.getByRole('button', { name: /back|atrás/i })).toBeEnabled();
+    });
+
     it('releases the microphone when the recording stops', async () => {
         installMediaRecorder();
         const track = installMicrophone();

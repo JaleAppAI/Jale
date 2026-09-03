@@ -206,6 +206,11 @@ describe('voice-transcribe', () => {
       String(sql).includes('INSERT INTO worker_profile_media'));
     expect(insert).toBeDefined();
     expect(insert[1]).toEqual([MEDIA_ID, WORKER, key, 'audio/webm']);
+    // ON CONFLICT, because this door's media id is DETERMINISTIC (it is the
+    // uuid in the key). A retried transcribe — an apiFetch 401 replay, a lost
+    // response, a double-tap — must be the no-op the deterministic execution
+    // name already makes it, not a 23505 the handler turns into a 500.
+    expect(String(insert[0])).toContain('ON CONFLICT (id) DO NOTHING');
   });
 
   it('is idempotent on ExecutionAlreadyExists — a browser retry resolves to the same execution', async () => {
@@ -247,6 +252,20 @@ describe('voice-transcribe', () => {
   it('404s when the object does not exist', async () => {
     const err: any = new Error('missing');
     err.name = 'NotFound';
+    mockS3Send.mockRejectedValueOnce(err);
+
+    const res = await startVoiceTranscription(fakeClient(), base);
+    expect(res.statusCode).toBe(404);
+    expect(mockSfnSend).not.toHaveBeenCalled();
+  });
+
+  // This Lambda has `s3:GetObject` on `voice/*` and NO `s3:ListBucket`, so S3
+  // answers AccessDenied — not NoSuchKey — for a key that is simply not there.
+  // Matching on the name alone would 500 on the commonest failure of all.
+  it('404s when S3 answers 403 for an absent key', async () => {
+    const err: any = new Error('Access Denied');
+    err.name = 'AccessDenied';
+    err.$metadata = { httpStatusCode: 403 };
     mockS3Send.mockRejectedValueOnce(err);
 
     const res = await startVoiceTranscription(fakeClient(), base);
@@ -324,6 +343,21 @@ describe('voice-result', () => {
   it('202s while the object does not exist yet', async () => {
     const err: any = new Error('missing');
     err.name = 'NoSuchKey';
+    mockS3Send.mockRejectedValueOnce(err);
+
+    const res = await readVoiceResult({ workerId: WORKER, transcriptOutputKey: transcriptKey });
+    expect(res.statusCode).toBe(202);
+    expect(res.body.status).toBe('pending');
+  });
+
+  // And the same thing said the other way. With no `s3:ListBucket` on this
+  // Lambda, a not-yet-written transcript comes back as 403, on EVERY poll
+  // before the job finishes. Reading that as an error would 500 several times
+  // per voice answer — and `WebOnboardingRequestFailed` is alarmed.
+  it('202s when S3 answers 403 rather than 404 for the not-yet-written object', async () => {
+    const err: any = new Error('Access Denied');
+    err.name = 'AccessDenied';
+    err.$metadata = { httpStatusCode: 403 };
     mockS3Send.mockRejectedValueOnce(err);
 
     const res = await readVoiceResult({ workerId: WORKER, transcriptOutputKey: transcriptKey });

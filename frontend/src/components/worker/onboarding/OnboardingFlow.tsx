@@ -395,6 +395,15 @@ export function OnboardingFlow({
                 const saved = flow.server.trust.answers.find((a) => a.index === index);
                 return (
                     <TrustQuestionStep
+                        // KEYED BY SCREEN. All three questions render the same
+                        // component at the same position, so without a key
+                        // React reuses ONE instance across q1/q2/q3 and the
+                        // recorder's local state — the phase, and above all a
+                        // "we could not make out any words" error — would
+                        // follow the worker onto the next question. Nothing in
+                        // there should outlive a question; the drafts live in
+                        // the reducer.
+                        key={screen}
                         index={index}
                         question={questionText(flow.server, index, locale)}
                         tradeLabel={tradeLabel((key) => tVocab(key), flow.draft.trade, flow.draft.customTrade)}
@@ -404,11 +413,15 @@ export function OnboardingFlow({
                         // matches what is in the box.
                         source={saved && saved.text === draftAnswer ? saved.source : 'text'}
                         onAnswerChange={(text) => dispatch({ type: 'set_answer', index, text })}
-                        // S23 L6. The lockVersion is read at CALL time, not
-                        // captured at render: presign -> upload -> transcribe
-                        // -> poll can run for a minute, and the run may have
-                        // been re-hydrated (a language change, a 409 refetch)
-                        // while the worker was talking.
+                        // S23 L6. The lockVersion this closes over is the one
+                        // current when RECORDING STARTED, and that is only safe
+                        // because the screen refuses to move while a recording
+                        // is in flight: TrustQuestionStep disables Back and
+                        // Next for the whole of `phase !== 'idle'`, so nothing
+                        // the worker can reach from here bumps the run's
+                        // version between the mic and the transcribe call. A
+                        // version that moves anyway (another tab) comes back as
+                        // a 409 -> `conflict`, which asks for a reload.
                         onRecord={(blob, contentType) => transcribeVoiceAnswer({
                             token,
                             blob,
