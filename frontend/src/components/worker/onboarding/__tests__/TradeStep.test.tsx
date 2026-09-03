@@ -85,6 +85,104 @@ describe('TradeStep', () => {
         ]);
     });
 
+    it('explains the dead Continue when the run is parked on a typed-in trade', () => {
+        // The engine is on `profile.custom_trade` (they answered Other on
+        // WhatsApp). Picking a standard trade here posts a `profile.trade`
+        // item that sits BEHIND the cursor, so the batch filters to nothing
+        // and Continue is correctly disabled. With no sentence it just reads
+        // as a dead end, so the fix is a line of copy pointing at Back.
+        renderIntl(<TradeStep {...props({
+            stepKey: 'profile.custom_trade',
+            draft: draft({ trade: 'plumber' }),
+        })} />);
+        expect(screen.getByRole('button', { name: message('worker_onboarding.trade.cta') })).toBeDisabled();
+        expect(screen.getByText(
+            interpolate(message('worker_onboarding.trade.switch_from_custom_hint'), {
+                back: message('worker_onboarding.common.back'),
+            }),
+        )).toBeInTheDocument();
+    });
+
+    it('says it in Spanish too', () => {
+        renderIntl(<TradeStep {...props({
+            stepKey: 'profile.custom_trade',
+            draft: draft({ trade: 'plumber' }),
+        })} />, 'es');
+        expect(screen.getByText(
+            interpolate(message('worker_onboarding.trade.switch_from_custom_hint', 'es'), {
+                back: message('worker_onboarding.common.back', 'es'),
+            }),
+        )).toBeInTheDocument();
+    });
+
+    it('keeps the hint off every screen where Continue actually works', () => {
+        const hint = () => screen.queryByText(
+            interpolate(message('worker_onboarding.trade.switch_from_custom_hint'), {
+                back: message('worker_onboarding.common.back'),
+            }),
+        );
+
+        // Normal cursor: nothing is parked, Continue is live.
+        const { rerender } = renderIntl(<TradeStep {...props({ draft: draft({ trade: 'plumber' }) })} />);
+        expect(hint()).not.toBeInTheDocument();
+
+        // Parked on custom_trade but STAYING on Other: the batch still
+        // carries `profile.custom_trade`, so Continue works and the hint
+        // would be a lie.
+        rerender(<TradeStep {...props({ stepKey: 'profile.custom_trade', draft: draft({ trade: 'other', customTrade: 'welder' }) })} />);
+        expect(screen.getByRole('button', { name: message('worker_onboarding.trade.cta') })).toBeEnabled();
+        expect(hint()).not.toBeInTheDocument();
+
+        // Nothing picked yet: Continue is disabled for the ordinary reason.
+        rerender(<TradeStep {...props({ stepKey: 'profile.custom_trade' })} />);
+        expect(hint()).not.toBeInTheDocument();
+    });
+
+    it('describes the dead Continue with that hint, in a polite live region', () => {
+        // The button is DISABLED, so it is unfocusable and a screen reader
+        // never lands on it -- the sentence has to be wired as its
+        // description or it is sighted-only copy. The region is also
+        // announced on appearance, since it shows up in response to a tap.
+        renderIntl(<TradeStep {...props({
+            stepKey: 'profile.custom_trade',
+            draft: draft({ trade: 'plumber' }),
+        })} />);
+
+        const cta = screen.getByRole('button', { name: message('worker_onboarding.trade.cta') });
+        const describedBy = cta.getAttribute('aria-describedby');
+        expect(describedBy).toBeTruthy();
+
+        const hint = document.getElementById(describedBy!);
+        expect(hint).not.toBeNull();
+        expect(hint).toHaveAttribute('aria-live', 'polite');
+        expect(hint).toHaveTextContent(
+            interpolate(message('worker_onboarding.trade.switch_from_custom_hint'), {
+                back: message('worker_onboarding.common.back'),
+            }),
+        );
+    });
+
+    it('leaves Continue undescribed when there is no hint to point at', () => {
+        renderIntl(<TradeStep {...props({ draft: draft({ trade: 'plumber' }) })} />);
+        expect(screen.getByRole('button', { name: message('worker_onboarding.trade.cta') }))
+            .not.toHaveAttribute('aria-describedby');
+    });
+
+    it('does not point at a Back button that is not there', () => {
+        // `onBack` is nullable. Telling a worker to tap Back on a screen with
+        // no Back link is worse than the silent dead end.
+        renderIntl(<TradeStep {...props({
+            stepKey: 'profile.custom_trade',
+            draft: draft({ trade: 'plumber' }),
+            onBack: null,
+        })} />);
+        expect(screen.queryByText(
+            interpolate(message('worker_onboarding.trade.switch_from_custom_hint'), {
+                back: message('worker_onboarding.common.back'),
+            }),
+        )).not.toBeInTheDocument();
+    });
+
     it('shows a rejected trade step inline', () => {
         renderIntl(<TradeStep {...props({ rejection: { stepKey: 'profile.custom_trade', reason: 'nope' }, draft: draft({ trade: 'other' }) })} />);
         expect(screen.getByRole('alert')).toHaveTextContent(message('worker_onboarding.rejection.generic'));

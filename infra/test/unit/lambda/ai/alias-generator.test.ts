@@ -20,7 +20,7 @@ describe('generateAndCacheAliases', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    process.env.BEDROCK_MODEL_ID = 'us.amazon.nova-lite-v1:0';
+    process.env.BEDROCK_MODEL_ID = 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
   });
 
   it('returns cached record on exact trade_key match and skips Bedrock', async () => {

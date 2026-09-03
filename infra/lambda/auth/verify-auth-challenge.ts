@@ -24,8 +24,11 @@ const cognito = new CognitoIdentityProviderClient({});
  * This trigger touches NO database: R2 made web signup phone-only, so there
  * is no staged name to promote here any more (migration 052's
  * stage_worker_pending_name / promote_worker_pending_name have no caller
- * left, and 092 drops them). The worker types their name at `profile.name`
- * inside the onboarding flow.
+ * left). The cleanup migration that drops them is 092 -- 091 is now the
+ * application-stages migration, and 090's header still says 091 only
+ * because it predates that renumbering and applied migrations are never
+ * edited. The worker types their name at `profile.name` inside the
+ * onboarding flow.
  */
 export const handler = async (
   event: VerifyAuthChallengeResponseTriggerEvent,

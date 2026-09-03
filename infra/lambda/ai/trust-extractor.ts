@@ -46,7 +46,7 @@ import {
 const bedrock = new BedrockRuntimeClient({});
 const sqsClient = new SQSClient({});
 const BEDROCK_MODEL_ID =
-  process.env.BEDROCK_MODEL_ID ?? 'us.amazon.nova-lite-v1:0';
+  process.env.BEDROCK_MODEL_ID ?? 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
 const STALE_MINUTES = 15;
 
 /**
@@ -214,8 +214,8 @@ export function validateExtraction(
 }
 
 /**
- * Strips code fences and tolerates trailing prose (the two ways Nova Lite
- * actually deviates from "return only JSON"), then validates. Mirrors the
+ * Strips code fences and tolerates trailing prose (the two ways models
+ * actually deviate from "return only JSON"), then validates. Mirrors the
  * scorer's parse/repair idiom; the repair here is structural (find the JSON
  * object) rather than key-quoting, because this response's keys are already
  * quoted in every observed deviation while trailing chatter is common.

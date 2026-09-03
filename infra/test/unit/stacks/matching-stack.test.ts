@@ -57,17 +57,49 @@ describe('MatchingStack', () => {
     });
   });
 
-  it('grants Bedrock invoke permission to employer rerank worker', () => {
-    template.hasResourceProperties('AWS::IAM::Policy', {
-      PolicyDocument: Match.objectLike({
-        Statement: Match.arrayWith([
-          Match.objectLike({
-            Action: 'bedrock:InvokeModel',
-            Effect: 'Allow',
-          }),
-        ]),
-      }),
+  // Pinned to the shared lib/bedrock-arns.ts baseline (Claude Haiku 4.5), not
+  // Match.anyValue(): this stack used to carry its OWN `const bedrockModelId`
+  // and its own copy-pasted 4-ARN list, which is exactly how it stayed on the
+  // retired Nova Lite id after WhatsAppStack moved to Haiku. An "env var
+  // exists" assertion would not have caught that.
+  it('pins the employer rerank worker to the shared Claude Haiku 4.5 model id', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Async employer candidate Bedrock reranker',
+      Environment: {
+        Variables: Match.objectLike({
+          BEDROCK_MODEL_ID: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+        }),
+      },
     });
+  });
+
+  // Full Resource-array assertion, mirroring whatsapp-stack.test.ts's shape.
+  // This harness stack is env-agnostic (no `env:` in beforeAll), so the
+  // region/account-bearing ARNs render as Fn::Join intrinsics and CDK cannot
+  // dedupe the `${region}` foundation-model entry against the us-east-1
+  // literal -- all 4 ARNs survive into the template here.
+  it('grants Bedrock invoke permission to employer rerank worker on exactly the 4 Haiku 4.5 ARNs', () => {
+    const policies = Object.values(template.findResources('AWS::IAM::Policy')) as any[];
+    const bedrockStatements = policies
+      .flatMap((p: any) => p.Properties.PolicyDocument.Statement as any[])
+      .filter((s: any) => {
+        const actions = Array.isArray(s.Action) ? s.Action : [s.Action];
+        return actions.includes('bedrock:InvokeModel');
+      });
+
+    expect(bedrockStatements).toHaveLength(1);
+    expect(bedrockStatements[0].Effect).toBe('Allow');
+    const resources = bedrockStatements[0].Resource as any[];
+    expect(resources).toHaveLength(4);
+    // Slots 0 and 2 carry region/account tokens (Fn::Join with Ref), so match
+    // their literal tails; slots 1 and 3 are plain strings.
+    expect(JSON.stringify(resources[0])).toContain('inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0');
+    expect(resources[1]).toBe('arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0');
+    expect(JSON.stringify(resources[2])).toContain('foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0');
+    expect(resources[3]).toBe('arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0');
+    for (const r of resources) {
+      expect(JSON.stringify(r)).not.toContain('nova-lite');
+    }
   });
 
   it('creates a disabled scheduled rerank rule', () => {

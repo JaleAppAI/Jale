@@ -1873,6 +1873,7 @@
       "subtitle": "Pick the one you do most.",
       "other_label": "Your trade",
       "other_placeholder": "Type your trade, e.g. welder, drywall, roofer",
+      "switch_from_custom_hint": "To pick one of these instead, tap {back} first.",
       "cta": "Continue"
     },
     "work": {

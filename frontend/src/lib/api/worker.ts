@@ -319,10 +319,13 @@ export type WorkerVaultDoc = {
   /** Row identity from the worker vault list endpoint (WK-T0 backend gap fix). */
   id: string;
   doc_type: DocType;
-  s3_key: string;
   file_name: string;
   file_size: number;
   uploaded_at: string;
+  /**
+   * The short-lived presigned GET. The raw `s3_key` deliberately does NOT
+   * travel — the vault list endpoint strips it and presigns server-side.
+   */
   url: string;
   /** Only meaningful when `doc_type` is `'certification_doc'`. */
   cert_name?: string | null;

@@ -9,7 +9,7 @@ import { TRADE_CATEGORIES } from '../lib/job-fields';
 
 const bedrock = new BedrockRuntimeClient({});
 const BEDROCK_MODEL_ID =
-  process.env.BEDROCK_MODEL_ID ?? 'us.amazon.nova-lite-v1:0';
+  process.env.BEDROCK_MODEL_ID ?? 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
 
 const MAX_ALIASES = 15;
 const MIN_ALIASES = 1;

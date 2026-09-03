@@ -16,11 +16,12 @@ import * as sns from 'aws-cdk-lib/aws-sns';
 import * as snsSubscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import { Construct } from 'constructs';
+import { BEDROCK_MODEL_ID, bedrockArns } from '../bedrock-arns';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
 import { JaleCognitoPool } from '../constructs/cognito-pool';
 import { VoiceTranscriptionPipeline } from '../constructs/voice-transcription-pipeline';
 import { normalizeWhatsappStatusCallbackUrl } from '../whatsapp-status-callback-url';
-import { lambdaIntegration } from '../api-integration';
+import { lambdaIntegration, addPathOnlyResource } from '../api-integration';
 
 export interface WhatsAppStackProps extends cdk.StackProps {
   /** VPC shared across all stacks */
@@ -281,10 +282,10 @@ export class WhatsAppStack extends cdk.Stack {
         // ConverseCommand for application-fill field extraction
         // (lib/application-fill-extraction.ts's makeBedrockExtractionClient)
         // but had no BEDROCK_MODEL_ID env at all — every extraction turn hit
-        // that module's `?? 'us.amazon.nova-lite-v1:0'` fallback. Same
-        // model ID as the ai-profile-writer Lambda below (BEDROCK_MODEL_ID
-        // env + bedrock:InvokeModel policy, ~line 489/522).
-        BEDROCK_MODEL_ID: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+        // that module's hardcoded fallback. Same model id as the
+        // ai-profile-writer Lambda below, and now the same shared constant
+        // every other Bedrock caller in the app uses (lib/bedrock-arns.ts).
+        BEDROCK_MODEL_ID,
         // Sprint 23: the stage-2 `web_handoff` note links the worker to their
         // own application page (application-fill.ts's `workerApplicationUrl`).
         // Unlike NotificationsStack/ReferralsStack this does NOT fail closed
@@ -588,7 +589,7 @@ export class WhatsAppStack extends cdk.Stack {
         TWILIO_SECRET_ARN: twilioSecret.secretName,
         TWILIO_REQUEST_TIMEOUT_MS: '4000',
         MEDIA_BUCKET_NAME: mediaBucket.bucketName,
-        BEDROCK_MODEL_ID: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+        BEDROCK_MODEL_ID,
         AI_EXTRACTION_CONFIDENCE_THRESHOLD: '0.75',
         AI_INDUSTRY_KEYWORDS: '[]',
         // Sprint 22 R1: QUESTION_GENERATOR_ARN removed — the v1 trust hand-off
@@ -622,12 +623,17 @@ export class WhatsAppStack extends cdk.Stack {
     // construction instead of by comment. ConverseCommand (used by both
     // Lambdas) only needs bedrock:InvokeModel, not a separate
     // bedrock:Converse action.
-    const bedrockHaiku45Arns = [
-      `arn:aws:bedrock:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0`,
-      'arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0',
-      `arn:aws:bedrock:${cdk.Stack.of(this).region}::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0`,
-      'arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0',
-    ];
+    //
+    // This list used to be spelled out inline here, which is how the rest of
+    // the app stayed on the retired Nova Lite id after this stack moved to
+    // Claude Haiku 4.5. It now comes from lib/bedrock-arns.ts, which every
+    // Bedrock-invoking stack shares; the ARNs it produces are byte-identical
+    // to the inline list it replaces (whatsapp-stack.test.ts's two 4-ARN
+    // assertions were left untouched across that change and still pass).
+    const bedrockHaiku45Arns = bedrockArns(
+      cdk.Stack.of(this).region,
+      cdk.Stack.of(this).account,
+    );
     aiProfileWriterLambda.function.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ['bedrock:InvokeModel'],
@@ -1101,7 +1107,8 @@ export class WhatsAppStack extends cdk.Stack {
     // X-Twilio-Signature (HMAC-SHA1 over the full URL + sorted body params).
     // Signature validation happens in the webhook Lambda; API Gateway just
     // forwards all POSTs to the Lambda. Matches the /health pattern.
-    const whatsappResource = props.api.root.addResource('whatsapp');
+    // Path-only: nothing on /whatsapp itself, only /webhook and /status-callback.
+    const whatsappResource = addPathOnlyResource(props.api.root, 'whatsapp');
     const webhookResource = whatsappResource.addResource('webhook');
     webhookResource.addMethod(
       'POST',
@@ -1292,18 +1299,21 @@ export class WhatsAppStack extends cdk.Stack {
     // attached to the method exactly as it is to the GET, and the handler
     // answers any method/action pair it does not route with 404 `not_found`.
     //
-    // NOTE FOR WHOEVER ADDS THE NEXT ROUTE: measured 2026-08-29 with the CI
-    // production context, JaleApiStack synthesizes to 431 resources against
-    // CloudFormation's hard maximum of 500 — 423 without this door. It was
+    // NOTE FOR WHOEVER ADDS THE NEXT ROUTE: measured 2026-09-02 with the CI
+    // production context, JaleApiStack synthesizes to 418 resources against
+    // CloudFormation's hard maximum of 500 — 410 without this door. It was
     // 501 (synth failed with TooManyResourcesInStack) until every method on
     // the shared RestApi moved to `lambdaIntegration()` from
     // `lib/api-integration.ts`, which drops the console-only
-    // `test-invoke-stage` Lambda::Permission and freed 70 resources. Use that
-    // helper — never `new apigateway.LambdaIntegration(...)` — for any method
-    // on this API. `test/unit/stacks/api-stack-resource-ceiling.test.ts`
-    // synthesizes the real composition and fails the build above 470, which
-    // is where splitting ApiStack (a nested stack, or a second RestApi for
-    // `/worker/*`) becomes the answer.
+    // `test-invoke-stage` Lambda::Permission and freed 70 resources (431), and
+    // then `addPathOnlyResource()` from the same file stopped building the 13
+    // no-op CORS preflights on path-only intermediate resources (418). Use
+    // both helpers — never `new apigateway.LambdaIntegration(...)`, and never
+    // a plain `addResource()` for a node that carries no method of its own.
+    // `test/unit/stacks/api-stack-resource-ceiling.test.ts` synthesizes the
+    // real composition, asserts the exact count, and fails the build above
+    // 470, which is where splitting ApiStack (a nested stack, or a second
+    // RestApi for `/worker/*`) becomes the answer.
     onboardingResource.addResource('{action}').addMethod('ANY', webOnboardingIntegration, workerAuth);
 
     // ═══════════════════════════════════════════════════════════════════

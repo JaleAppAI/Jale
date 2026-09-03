@@ -42,7 +42,7 @@ jest.mock('../../../../lambda/whatsapp/lib/outbox', () => ({
 
 process.env.DB_SECRET_ARN = 'arn:aws:secretsmanager:us-east-2:123:secret:jale/whatsapp/db';
 process.env.MEDIA_BUCKET_NAME = 'jale-worker-media-test';
-process.env.BEDROCK_MODEL_ID = 'us.amazon.nova-lite-v1:0';
+process.env.BEDROCK_MODEL_ID = 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
 process.env.AI_EXTRACTION_CONFIDENCE_THRESHOLD = '0.75';
 process.env.AI_INDUSTRY_KEYWORDS = '["electrician","plumber","carpenter"]';
 process.env.QUESTION_GENERATOR_ARN = 'arn:aws:lambda:us-east-2:123:function:question-generator';

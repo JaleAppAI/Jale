@@ -90,9 +90,13 @@ function buildMediaBoardApp(alarmTopicArn?: string): { template: Template; apiTe
   });
 
   // DocumentsStack creates the shared employer/workers/{worker_id} resource
-  // that MediaBoardStack's employer route hangs off of — it must exist on
-  // the app before MediaBoardStack synthesizes (documents-stack.ts:244-246).
-  new DocumentsStack(app, 'TestDocumentsStack', {
+  // that MediaBoardStack's employer {action} route hangs off of — it must
+  // exist on the app before MediaBoardStack synthesizes. Its bucket is also
+  // MediaBoardStack's `documentsBucket`: the employer-worker-detail dispatcher
+  // reads BOTH buckets, which is exactly why that dispatcher lives in
+  // MediaBoardStack (DocumentsStack cannot take the media bucket without
+  // closing a cycle through WhatsAppStack).
+  const documents = new DocumentsStack(app, 'TestDocumentsStack', {
     network,
     api,
     dbSecret: database.dbSecret,
@@ -105,6 +109,7 @@ function buildMediaBoardApp(alarmTopicArn?: string): { template: Template; apiTe
     api,
     dbSecret: database.dbSecret,
     mediaBucket: whatsapp.mediaBucket,
+    documentsBucket: documents.bucket,
     allowedOrigin: 'https://jaleapp.ai',
     requiredTosVersion: 'v1.0',
     ...(alarmTopicArn ? { alarmTopicArn } : {}),
@@ -127,8 +132,28 @@ describe('MediaBoardStack', () => {
     ({ template, apiTemplate } = buildMediaBoardApp());
   });
 
-  it('creates exactly 5 Lambda functions (upload-urls, create, list, delete, employer-posts)', () => {
-    template.resourceCountIs('AWS::Lambda::Function', 5);
+  it('creates exactly 7 Lambda functions (5 live + 2 retained for phase 1)', () => {
+    // Still five after the L1.2 consolidation, but two of them changed job:
+    // WorkerPostUploadUrls became WorkerPostsDispatch (POST
+    // /worker/posts/{post_id}), and EmployerWorkerPosts became
+    // EmployerWorkerDetail, which now also serves the `profile` and
+    // `documents` actions that used to be two Lambdas in DocumentsStack.
+    template.resourceCountIs('AWS::Lambda::Function', 7);
+    for (const description of [
+      'worker-posts-dispatch',
+      'worker-post-create',
+      'worker-posts-list',
+      'worker-post-delete',
+      'employer-worker-detail',
+    ]) {
+      template.hasResourceProperties('AWS::Lambda::Function', { Description: description });
+    }
+    // PHASE 1 retention: unrouted, kept one deploy so their cross-stack ARN
+    // exports outlive JaleApiStack's imports. Phase 2 drops them and this
+    // count returns to 5.
+    for (const description of ['worker-post-upload-urls', 'employer-worker-posts']) {
+      template.hasResourceProperties('AWS::Lambda::Function', { Description: description });
+    }
   });
 
   it('create Lambda has rekognition:DetectModerationLabels permission', () => {
@@ -143,21 +168,50 @@ describe('MediaBoardStack', () => {
 
   it('worker posts routes exist on the ApiStack template', () => {
     apiTemplate.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: 'posts' });
-    apiTemplate.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: 'upload-urls' });
     apiTemplate.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: '{post_id}' });
   });
 
-  it('employer worker-posts route (posts under employer/workers/{worker_id}) exists on the ApiStack template', () => {
-    // Both the worker posts resource and the employer posts resource share
-    // the PathPart 'posts' string — assert there are two distinct resources,
-    // not just that the string appears once.
+  it('has no literal upload-urls resource — the POST rides on {post_id}', () => {
+    // /worker/posts/upload-urls still RESOLVES (a literal segment binds the
+    // variable child when no literal sibling exists); what is gone is the
+    // Resource + OPTIONS + Method + Permission it used to cost. The
+    // end-to-end URL proof lives in api-stack-resource-ceiling.test.ts, which
+    // walks the real composition the way API Gateway does.
+    const uploadUrls = Object.values(apiTemplate.toJSON().Resources).filter(
+      (resource: any) =>
+        resource.Type === 'AWS::ApiGateway::Resource' && resource.Properties.PathPart === 'upload-urls',
+    );
+    expect(uploadUrls).toEqual([]);
+  });
+
+  it('{post_id} carries POST (dispatcher) and DELETE (its own Lambda) plus one OPTIONS', () => {
+    const resources = apiTemplate.toJSON().Resources as Record<string, any>;
+    const [postIdLogicalId] = Object.entries(resources).find(
+      ([, resource]: [string, any]) =>
+        resource.Type === 'AWS::ApiGateway::Resource' && resource.Properties.PathPart === '{post_id}',
+    )!;
+    const methods = Object.values(resources)
+      .filter(
+        (resource: any) =>
+          resource.Type === 'AWS::ApiGateway::Method' &&
+          resource.Properties.ResourceId?.Ref === postIdLogicalId,
+      )
+      .map((resource: any) => resource.Properties.HttpMethod)
+      .sort();
+    expect(methods).toEqual(['DELETE', 'OPTIONS', 'POST']);
+  });
+
+  it('employer posts is no longer its own resource — only /worker/posts remains', () => {
+    // Was two resources sharing the PathPart 'posts' (the worker board and
+    // employer/workers/{worker_id}/posts). The employer one collapsed into
+    // the {action} dispatcher node.
     const postsResources = Object.values(apiTemplate.toJSON().Resources).filter(
       (resource: any) => resource.Type === 'AWS::ApiGateway::Resource' && resource.Properties.PathPart === 'posts',
     );
-    expect(postsResources.length).toBe(2);
+    expect(postsResources.length).toBe(1);
   });
 
-  it('GET employer/workers/{worker_id}/posts is protected by EmployerAuthorizer', () => {
+  it('GET employer/workers/{worker_id}/{action} is protected by EmployerAuthorizer', () => {
     // The Lambda lives in MediaBoardStack while the Method/Resource live in
     // ApiStack, so the integration is a cross-stack Fn::ImportValue rather
     // than an in-stack Fn::GetAtt — match on the resource's logical id
@@ -166,12 +220,42 @@ describe('MediaBoardStack', () => {
       ([id, resource]: [string, any]) =>
         resource.Type === 'AWS::ApiGateway::Method' &&
         resource.Properties.HttpMethod === 'GET' &&
-        /employerworkersworkeridposts/i.test(id),
+        /employerworkersworkeridaction/i.test(id),
     );
     expect(method).toBeDefined();
     const [, methodResource]: any = method;
     expect(methodResource.Properties.AuthorizationType).toBe('COGNITO_USER_POOLS');
     expect(methodResource.Properties.AuthorizerId.Ref).toMatch(/EmployerAuthorizer/);
+  });
+
+  // Merging three Lambdas merges three IAM roles. The union must actually be
+  // a union: `documents` presigns GETs out of DocumentsStack's bucket and
+  // `posts` out of the media bucket, so a role holding only one of the two
+  // reads gives a 500 on exactly one of the three actions — the failure mode
+  // documents-stack.test.ts's per-role S3 assertions were written to catch.
+  it('the employer-worker-detail role can read BOTH the media and documents buckets', () => {
+    const statements = Object.values(template.toJSON().Resources)
+      .filter((resource: any) => resource.Type === 'AWS::IAM::Policy')
+      .filter((resource: any) =>
+        JSON.stringify(resource.Properties.Roles).includes('EmployerWorkerDetailFunctionServiceRole'))
+      .flatMap((resource: any) => resource.Properties.PolicyDocument.Statement);
+
+    const s3Statements = statements.filter((statement: any) =>
+      [].concat(statement.Action ?? []).some((action: any) => String(action).startsWith('s3:')));
+    expect(s3Statements.length).toBeGreaterThan(0);
+
+    const resourceArns = JSON.stringify(s3Statements.map((statement: any) => statement.Resource));
+    // Two distinct bucket references: the media bucket arrives as a
+    // cross-stack Fn::ImportValue from WhatsAppStack, the documents bucket as
+    // one from DocumentsStack.
+    const importedBuckets = new Set(
+      (resourceArns.match(/"Fn::ImportValue":"[^"]+"/g) ?? []).map((match) => match),
+    );
+    expect(importedBuckets.size).toBeGreaterThanOrEqual(2);
+    expect(
+      s3Statements.some((statement: any) =>
+        [].concat(statement.Action ?? []).includes('s3:GetObject*' as never)),
+    ).toBe(true);
   });
 
   it('has no moderation fail-open metric filter/alarm when alarmTopicArn is absent', () => {

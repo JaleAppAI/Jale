@@ -30,7 +30,7 @@ describe('employer-generate-description', () => {
     jest.clearAllMocks();
     process.env.GENERATION_CAP_TABLE = 'generation-cap-table';
     process.env.GENERATION_DAILY_LIMIT = '10';
-    process.env.BEDROCK_MODEL_ID = 'us.amazon.nova-lite-v1:0';
+    process.env.BEDROCK_MODEL_ID = 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
     process.env.ALLOWED_ORIGIN = 'https://jaleapp.ai';
     // Default: cap check always allows unless a test overrides it.
     mockDynamoSend.mockResolvedValue({ Attributes: { count: { N: '1' } } });

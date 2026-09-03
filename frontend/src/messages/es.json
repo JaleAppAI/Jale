@@ -1873,6 +1873,7 @@
       "subtitle": "Elige el que más haces.",
       "other_label": "Tu oficio",
       "other_placeholder": "Escribe tu oficio, p. ej. soldador, drywall, techador",
+      "switch_from_custom_hint": "Para elegir uno de estos, primero toca {back}.",
       "cta": "Continuar"
     },
     "work": {

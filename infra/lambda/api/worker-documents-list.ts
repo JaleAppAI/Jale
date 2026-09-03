@@ -47,10 +47,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     );
     await client.query('COMMIT');
 
+    // `s3_key` is selected but deliberately does NOT travel: it is the only
+    // thing the presign can key off, and it is internal bucket layout the
+    // worker's browser has no use for. The short-lived `url` is the whole
+    // contract. Same rule the employer side already follows.
     const documents = await Promise.all(
-      docsRes.rows.map(async (doc: any) => ({
+      docsRes.rows.map(async ({ s3_key, ...doc }: any) => ({
         ...doc,
-        url: await getSignedUrl(s3, new GetObjectCommand({ Bucket: process.env.DOCUMENTS_BUCKET!, Key: doc.s3_key }), { expiresIn: 900 }),
+        url: await getSignedUrl(s3, new GetObjectCommand({ Bucket: process.env.DOCUMENTS_BUCKET!, Key: s3_key }), { expiresIn: 900 }),
       })),
     );
 

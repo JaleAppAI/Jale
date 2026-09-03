@@ -74,7 +74,3 @@ infra/scripts/data/.cache/
 
 # Operator spike notes: sandbox object IDs and run records, never for the repo
 scripts/stripe-spike/RESULTS.md
-
-# provider-compare.sh operator output: real customer voice-note transcripts
-# and Bedrock extractions from a live comparison run, never for the repo
-infra/scripts/transcribe/provider-compare-out/

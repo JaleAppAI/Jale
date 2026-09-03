@@ -8,6 +8,7 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as path from 'node:path';
 import { Construct } from 'constructs';
+import { BEDROCK_MODEL_ID, bedrockArns } from '../bedrock-arns';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
 
 export interface MatchingStackProps extends cdk.StackProps {
@@ -72,7 +73,6 @@ export class MatchingStack extends cdk.Stack implements MatchingStackOutputs {
       deadLetterQueue: { queue: employerCandidateRerankDlq, maxReceiveCount: 3 },
     });
 
-    const bedrockModelId = 'us.amazon.nova-lite-v1:0';
     const region = cdk.Stack.of(this).region;
     const account = cdk.Stack.of(this).account;
 
@@ -85,7 +85,7 @@ export class MatchingStack extends cdk.Stack implements MatchingStackOutputs {
       environment: {
         DB_SECRET_ARN: props.dbSecret.secretArn,
         MATCHING_DB_SECRET_ARN: props.matchingDbSecret.secretArn,
-        BEDROCK_MODEL_ID: bedrockModelId,
+        BEDROCK_MODEL_ID,
       },
       nodeModules: ['@aws-sdk/client-bedrock-runtime'],
     });
@@ -94,12 +94,11 @@ export class MatchingStack extends cdk.Stack implements MatchingStackOutputs {
     this.employerCandidateRerankQueue.grantConsumeMessages(employerCandidateRerankLambda.function);
     employerCandidateRerankLambda.function.addToRolePolicy(new iam.PolicyStatement({
       actions: ['bedrock:InvokeModel'],
-      resources: [
-        `arn:aws:bedrock:${region}:${account}:inference-profile/${bedrockModelId}`,
-        'arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0',
-        `arn:aws:bedrock:${region}::foundation-model/amazon.nova-lite-v1:0`,
-        'arn:aws:bedrock:us-west-2::foundation-model/amazon.nova-lite-v1:0',
-      ],
+      // Shared with AiStack/ApiStack/WhatsAppStack via lib/bedrock-arns.ts.
+      // This stack used to declare its own model id and its own copy of this
+      // ARN list, which is how it stayed on the retired Nova Lite id after
+      // WhatsAppStack moved to Claude Haiku 4.5.
+      resources: bedrockArns(region, account),
     }));
     employerCandidateRerankLambda.function.addEventSource(
       new lambdaEventSources.SqsEventSource(this.employerCandidateRerankQueue, {

@@ -10,7 +10,7 @@ import { PAY_INTERVALS, TRADE_CATEGORIES } from '../lib/job-fields';
 const CORS_HEADERS = corsHeaders();
 const bedrock = new BedrockRuntimeClient({});
 const dynamo = new DynamoDBClient({});
-const BEDROCK_MODEL_ID = process.env.BEDROCK_MODEL_ID ?? 'us.amazon.nova-lite-v1:0';
+const BEDROCK_MODEL_ID = process.env.BEDROCK_MODEL_ID ?? 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
 
 const MAX_FIELD_LENGTH = 200;
 const MAX_EMPLOYER_NOTES_LENGTH = 500;
