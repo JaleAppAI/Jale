@@ -126,13 +126,16 @@ const CEILING = 470;
 // served by dispatcher Lambdas (`lambda/lib/path-dispatch.ts`) and the dead
 // `GET /worker/referrals` was deleted. Every deployed URL is unchanged; the
 // `RESOLVES_TO` inventory at the bottom of this file is the proof.
+// → 399 once other work on this branch added routes ahead of this one → 407
+// once `GET /employer/applicants` (function, role/permission, method, CORS
+// preflight) was added.
 //
 // DELIBERATE COUPLING: an exact count also moves when aws-cdk-lib changes what
 // it emits, so an `npm update` of the CDK can fail this line with no route
 // change at all. That is the intended trade — a bump here is cheap and forces
 // someone to look at the diff, whereas silently absorbing +9 resources is how
 // the stack reached 501 in the first place.
-const MEASURED_RESOURCES = 399;
+const MEASURED_RESOURCES = 407;
 
 /**
  * Every `AWS::ApiGateway::Method` in the template, grouped by the resource it
@@ -166,24 +169,26 @@ function pathOf(resources: Record<string, { Properties: Record<string, any> }>, 
 
 /**
  * The ten automatic cross-stack exports of the LEGACY Lambda ARNs — the
- * functions the four dispatchers replace. JaleApiStack's Methods used to
- * integrate with these functions, and CDK published one
+ * functions the four dispatchers replaced. JaleApiStack's Methods used to
+ * integrate with those functions, and CDK published one
  * `ExportsOutputFnGetAtt<ConstructId>Arn<hash>` Output per reference from the
  * producer stack.
  *
- * PHASE 1 (this commit) keeps every one of them alive while JaleApiStack stops
- * importing them, because CloudFormation refuses to delete an export that is
- * still in use and JaleApiStack — the importer — updates AFTER its producers:
+ * Phase 1 (the previous commit) kept all ten alive with `Stack.exportValue()`
+ * while JaleApiStack stopped importing them, because CloudFormation refuses to
+ * delete an export that is still in use and JaleApiStack — the importer —
+ * updates AFTER its producers.
  *
- *   Export JaleDocumentsStack:ExportsOutputFnGetAtt…Arn… cannot be deleted as
- *   it is in use by JaleApiStack
+ * PHASE 2 (this commit) deletes the functions and the exports. That is safe
+ * ONLY because the phase-1 deploy already removed every import: the names are
+ * pinned literally here so the assertion below is a real deletion check
+ * against the exact strings phase 1 published, not a fuzzy match.
  *
- * PHASE 2 deletes the functions and these exports, which is safe only once the
- * deployed JaleApiStack no longer imports them. The names are pinned literally
- * because that is the whole contract: `Stack.exportValue()` must reproduce the
- * name CDK generated automatically, character for character, or the deployed
- * export is dropped anyway and the phase-1 deploy fails exactly as the
- * single-phase one would.
+ * DEPLOY ORDER STILL MATTERS: this commit must not reach an environment that
+ * has not had phase 1 applied. On such an environment the deployed
+ * JaleApiStack still imports these ten, and the producer updates would fail
+ * with "Export … cannot be deleted as it is in use by JaleApiStack" — exactly
+ * the wall phase 1 exists to get past.
  */
 const LEGACY_ARN_EXPORTS: Record<string, string[]> = {
   JaleDocumentsStack: [
@@ -517,23 +522,19 @@ describe('JaleApiStack resource ceiling (real bin/jale-app.ts composition)', () 
     return current;
   }
 
-  it('PHASE 1: retains the ten legacy ARN exports while ApiStack stops importing them', () => {
-    // The two halves of the phase-1 contract, asserted together because
-    // either one alone is useless:
+  it('PHASE 2: the ten legacy ARN exports are gone, and nothing imports them', () => {
+    // The mirror image of phase 1's assertion, and the reason the two commits
+    // are separate. Phase 1 asserted these ten names were PRESENT (retained by
+    // `Stack.exportValue()`) while JaleApiStack stopped importing them; this
+    // asserts they are now ABSENT, which is only deployable on top of a
+    // phase-1 deploy.
     //
-    //   (a) every legacy export still EXISTS in its producer stack, with the
-    //       exact auto-generated name the deployed template published. This
-    //       is what `Stack.exportValue()` in documents-stack.ts,
-    //       media-board-stack.ts and referrals-stack.ts buys. Without it the
-    //       producer update fails and the release rolls back.
-    //   (b) JaleApiStack no longer IMPORTS any of them — the routes really did
-    //       move to the dispatchers. Without this the phase-2 deploy would hit
-    //       the same in-use-export wall this commit exists to avoid, one
-    //       release later.
-    //
-    // Phase 2 replaces this test with its mirror image: the ten names must be
-    // ABSENT from the producers (and still unimported here).
-    const missing: string[] = [];
+    // Keeping the second half — that JaleApiStack imports none of them — is
+    // not redundant: a future change that reintroduced one of these Lambdas
+    // AND routed to it would resurrect the export under the same name, and
+    // the next attempt to remove it would hit the same in-use wall. Failing
+    // here is much cheaper than failing in a changeset.
+    const lingering: string[] = [];
     for (const [stackId, exportNames] of Object.entries(LEGACY_ARN_EXPORTS)) {
       const outputs = (producerTemplates[stackId].toJSON().Outputs ?? {}) as Record<string, any>;
       const present = new Set(
@@ -541,9 +542,9 @@ describe('JaleApiStack resource ceiling (real bin/jale-app.ts composition)', () 
           .map((output) => output?.Export?.Name)
           .filter((name): name is string => typeof name === 'string'),
       );
-      for (const name of exportNames) if (!present.has(name)) missing.push(`${stackId} lost ${name}`);
+      for (const name of exportNames) if (present.has(name)) lingering.push(`${stackId} still exports ${name}`);
     }
-    expect(missing).toEqual([]);
+    expect(lingering).toEqual([]);
 
     const apiJson = JSON.stringify(apiTemplate.toJSON());
     const stillImported = Object.values(LEGACY_ARN_EXPORTS)

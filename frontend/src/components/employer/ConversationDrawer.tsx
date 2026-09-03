@@ -253,7 +253,7 @@ export function ConversationDrawer() {
                               </span>
                             </span>
                             <span className="block truncate text-xs text-[var(--jale-ink-2)]">
-                              {item.job_title}
+                              {item.job_city ? `${item.job_title} · ${item.job_city}` : item.job_title}
                             </span>
                             <span className="mt-1 flex items-center gap-1.5">
                               <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#25D366]" />

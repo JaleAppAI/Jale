@@ -89,16 +89,9 @@ describe('DocumentsStack', () => {
     });
   });
 
-  it('creates exactly 12 Lambda functions (5 live + 7 retained for phase 1)', () => {
-    // PHASE 1 count. Phase 2 drops the seven retained legacy Lambdas and this
-    // becomes 5. They are unrouted here and exist only to keep their
-    // cross-stack ARN exports alive for one deploy -- see the block in
-    // documents-stack.ts for why deleting them in the same deploy that
-    // repoints the routes would fail the changeset.
-    //
-    // The five that actually serve traffic: the route consolidation collapsed
-    // seven Lambdas into two dispatchers and moved one pair out of this stack
-    // entirely:
+  it('creates exactly 5 Lambda functions', () => {
+    // Was 10. The L1.2 route consolidation collapsed seven Lambdas into two
+    // dispatchers and moved one pair out of this stack entirely:
     //   workerDocumentsDispatch  <- uploadUrl + confirm + submit
     //                               (POST /worker/documents/{action})
     //   workerVaultDispatch      <- uploadUrlAuth + confirmAuth
@@ -108,25 +101,13 @@ describe('DocumentsStack', () => {
     //     stack that can grant both buckets without a cycle.
     // Unmerged and still their own Lambdas: uploadToken, documentsList and
     // docDelete (whose grantDelete must not join a dispatcher's union).
-    template.resourceCountIs('AWS::Lambda::Function', 12);
+    template.resourceCountIs('AWS::Lambda::Function', 5);
     for (const description of [
       'worker-documents-dispatch',
       'worker-vault-dispatch',
       'employer-upload-token',
       'worker-documents-list',
       'worker-doc-delete',
-    ]) {
-      template.hasResourceProperties('AWS::Lambda::Function', { Description: description });
-    }
-    // Retained, unrouted, byte-for-byte as before the consolidation.
-    for (const description of [
-      'worker-doc-upload-url',
-      'worker-doc-confirm',
-      'worker-doc-submit',
-      'employer-worker-profile',
-      'employer-worker-docs',
-      'worker-doc-upload-url-auth',
-      'worker-doc-confirm-auth',
     ]) {
       template.hasResourceProperties('AWS::Lambda::Function', { Description: description });
     }

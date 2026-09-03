@@ -132,13 +132,13 @@ describe('MediaBoardStack', () => {
     ({ template, apiTemplate } = buildMediaBoardApp());
   });
 
-  it('creates exactly 7 Lambda functions (5 live + 2 retained for phase 1)', () => {
+  it('creates exactly 5 Lambda functions (posts-dispatch, create, list, delete, employer-worker-detail)', () => {
     // Still five after the L1.2 consolidation, but two of them changed job:
     // WorkerPostUploadUrls became WorkerPostsDispatch (POST
     // /worker/posts/{post_id}), and EmployerWorkerPosts became
     // EmployerWorkerDetail, which now also serves the `profile` and
     // `documents` actions that used to be two Lambdas in DocumentsStack.
-    template.resourceCountIs('AWS::Lambda::Function', 7);
+    template.resourceCountIs('AWS::Lambda::Function', 5);
     for (const description of [
       'worker-posts-dispatch',
       'worker-post-create',
@@ -146,12 +146,6 @@ describe('MediaBoardStack', () => {
       'worker-post-delete',
       'employer-worker-detail',
     ]) {
-      template.hasResourceProperties('AWS::Lambda::Function', { Description: description });
-    }
-    // PHASE 1 retention: unrouted, kept one deploy so their cross-stack ARN
-    // exports outlive JaleApiStack's imports. Phase 2 drops them and this
-    // count returns to 5.
-    for (const description of ['worker-post-upload-urls', 'employer-worker-posts']) {
       template.hasResourceProperties('AWS::Lambda::Function', { Description: description });
     }
   });

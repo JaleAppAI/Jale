@@ -12,6 +12,8 @@ function baseRow(overrides: Record<string, unknown> = {}) {
     worker_name: 'Maria Garcia',
     job_id: 'job-1',
     job_title: 'Line Cook',
+    job_city: 'Austin',
+    job_state_region: 'TX',
     job_status: 'active',
     application_status: 'pending',
     applied_at: '2026-07-01T00:00:00Z',
@@ -71,8 +73,8 @@ describe('listEmployerInbox', () => {
     ]));
     const inbox = await listEmployerInbox(client, EMPLOYER);
     expect(inbox.jobs).toEqual([
-      { job_id: 'job-1', title: 'Line Cook', status: 'active' },
-      { job_id: 'job-2', title: 'Dishwasher', status: 'closed' },
+      { job_id: 'job-1', title: 'Line Cook', city: 'Austin', status: 'active' },
+      { job_id: 'job-2', title: 'Dishwasher', city: 'Austin', status: 'closed' },
     ]);
   });
 
@@ -104,5 +106,13 @@ describe('listEmployerInbox', () => {
     await listEmployerInbox(client, EMPLOYER);
     const [sql] = mockQuery.mock.calls[0];
     expect(sql).toMatch(/ORDER BY\s+\(c\.id IS NOT NULL\) DESC/);
+  });
+
+  it('selects the job city and state for each row', async () => {
+    mockQuery.mockResolvedValueOnce(rowsResult([]));
+    await listEmployerInbox(client, EMPLOYER);
+    const [sql] = mockQuery.mock.calls[0];
+    expect(sql).toMatch(/j\.city AS job_city/);
+    expect(sql).toMatch(/j\.state_region AS job_state_region/);
   });
 });

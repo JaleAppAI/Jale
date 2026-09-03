@@ -344,12 +344,38 @@ export type EmployerCandidatesResponse = {
   computed_at: string;
 };
 
+export type ApplicantOverviewItem = {
+  application_id: string;
+  worker_id: string;
+  worker_name: string | null;
+  job_id: string;
+  job_title: string;
+  job_city: string | null;
+  job_status: JobStatus;
+  application_status: ApplicationStatus;
+  applied_at: string;
+  skills: string[];
+  availability: string | null;
+  years_experience: number | null;
+  /** From the ranking cache; null means "not scored yet", never zero. */
+  match_score: number | null;
+  score_band: ScoreBand | null;
+};
+
+export type ApplicantsOverviewResponse = {
+  applicants: ApplicantOverviewItem[];
+  jobs: { job_id: string; title: string; city: string | null; status: JobStatus }[];
+  total: number;
+};
+
 export type EmployerConversationStatus = 'open' | 'closed';
 
 export type EmployerConversationSummary = {
   id: string;
   job_id: string;
   job_title: string;
+  job_city: string | null;
+  job_state_region: string | null;
   worker_id: string;
   worker_name: string | null;
   status: EmployerConversationStatus;
@@ -386,6 +412,8 @@ export type InboxItem = {
   worker_name: string | null;
   job_id: string;
   job_title: string;
+  job_city: string | null;
+  job_state_region: string | null;
   job_status: JobStatus;
   application_status: ApplicationStatus;
   applied_at: string;
@@ -400,6 +428,7 @@ export type InboxItem = {
 export type InboxJob = {
   job_id: string;
   title: string;
+  city: string | null;
   status: JobStatus;
 };
 
@@ -835,6 +864,15 @@ export async function getInbox(
 ): Promise<EmployerInboxResponse> {
   const res = await apiFetch('/employer/inbox', { signal }, token);
   if (!res.ok) throw await parseApiError(res, 'inbox_fetch_failed');
+  return res.json();
+}
+
+export async function getApplicantsOverview(
+  token: string,
+  signal?: AbortSignal,
+): Promise<ApplicantsOverviewResponse> {
+  const res = await apiFetch('/employer/applicants', { signal }, token);
+  if (!res.ok) throw await parseApiError(res, 'fetch_failed');
   return res.json();
 }
 

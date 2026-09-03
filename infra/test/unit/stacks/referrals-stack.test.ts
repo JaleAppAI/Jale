@@ -130,10 +130,17 @@ describe('ReferralsStack', () => {
     });
   });
 
-  test('worker-referrals Lambda exists', () => {
-    template.hasResourceProperties('AWS::Lambda::Function', {
-      Description: 'Worker referral history endpoint',
-    });
+  // GET /worker/referrals and its Lambda were deleted as dead code (L1.3):
+  // nothing ever called the route -- `frontend/src/lib/api/worker.ts` only
+  // reaches /worker/referrals/claim -- and it cost JaleApiStack a Method + a
+  // Permission plus four resources here. Asserted as an ABSENCE so the route
+  // cannot quietly come back without someone reading this note.
+  test('worker-referrals history Lambda no longer exists', () => {
+    expect(
+      Object.keys(template.findResources('AWS::Lambda::Function', {
+        Properties: { Description: 'Worker referral history endpoint' },
+      })),
+    ).toEqual([]);
   });
 
   // ── Secret isolation: each Lambda gets ONLY its own secret ───────────────
@@ -212,18 +219,6 @@ describe('ReferralsStack', () => {
     expect(env).not.toHaveProperty('REFERRALS_DB_SECRET_ARN');
   });
 
-  test('worker-referrals Lambda has DB_SECRET_ARN and PUBLIC_SITE_BASE_URL but NOT REFERRALS_DB_SECRET_ARN', () => {
-    const resources = template.findResources('AWS::Lambda::Function', {
-      Properties: { Description: 'Worker referral history endpoint' },
-    });
-    const fns = Object.values(resources);
-    expect(fns).toHaveLength(1);
-    const env = (fns[0] as any).Properties.Environment?.Variables ?? {};
-    expect(env).toHaveProperty('DB_SECRET_ARN');
-    expect(env).toHaveProperty('PUBLIC_SITE_BASE_URL', 'https://jaleapp.ai');
-    expect(env).not.toHaveProperty('REFERRALS_DB_SECRET_ARN');
-  });
-
   test('worker-facing Lambdas reference the app DB secret (jale_admin), NOT jale/referrals/db', () => {
     const referralsSecretResources = dbTemplate.findResources('AWS::SecretsManager::Secret', {
       Properties: { Name: 'jale/referrals/db' },
@@ -231,7 +226,7 @@ describe('ReferralsStack', () => {
     const referralsSecretLogicalIds = Object.keys(referralsSecretResources);
     expect(referralsSecretLogicalIds.length).toBe(1);
 
-    for (const description of ['Worker job share-link minting endpoint', 'Worker referral history endpoint']) {
+    for (const description of ['Worker job share-link minting endpoint', 'Worker referral claim endpoint']) {
       const fnResources = template.findResources('AWS::Lambda::Function', {
         Properties: { Description: description },
       });
@@ -314,16 +309,10 @@ describe('ReferralsStack', () => {
   });
 
   test('/worker/referrals carries NO method of its own -- not even a CORS preflight', () => {
-    // PHASE 1: the dead GET is gone from the API (nothing ever called it --
-    // frontend/src/lib/api/worker.ts only reaches /worker/referrals/claim),
-    // while its Lambda is RETAINED one deploy longer so the cross-stack export
-    // of its ARN can outlive JaleApiStack's import of it. Phase 2 deletes the
-    // Lambda; this route assertion is identical in both phases.
-    //
-    // With no method left, /worker/referrals exists only to carry /claim, so
-    // it is built with addPathOnlyResource(): no OPTIONS either. An OPTIONS
+    // With GET gone the node exists only to carry /claim, so it is built with
+    // addPathOnlyResource(): no method at all, OPTIONS included. An OPTIONS
     // there could never be reached (a browser preflights the URL of a request
-    // it is about to send, and no request can target a path with no method),
+    // it is about to send, and no request can target a path with no method)
     // and an OPTIONS-only resource fails the JaleApiStack invariant in
     // test/unit/stacks/api-stack-resource-ceiling.test.ts.
     const resources = apiTemplate.toJSON().Resources as Record<string, any>;
@@ -337,16 +326,6 @@ describe('ReferralsStack', () => {
         resource.Properties.ResourceId?.Ref === referralsLogicalId,
     );
     expect(methods).toEqual([]);
-  });
-
-  test('the worker-referrals Lambda is retained (phase 1) even though its route is gone', () => {
-    // Phase 2 flips this to an absence assertion. Retaining it is what keeps
-    // JaleReferralsStack:ExportsOutputFnGetAttWorkerReferralsLambdaFunction...
-    // Arn... alive for the one deploy in which JaleApiStack stops importing
-    // it -- CloudFormation will not delete an export that is still in use.
-    template.hasResourceProperties('AWS::Lambda::Function', {
-      Description: 'Worker referral history endpoint',
-    });
   });
 
   test('worker-referral-claim Lambda exists', () => {
