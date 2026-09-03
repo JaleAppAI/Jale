@@ -99,6 +99,16 @@ export type ReleaseRenderRequest =
       language: PreferredLanguage;
       sourceType: string;
       sourceId: string;
+      /**
+       * The intent's stored payload (sprint 23). Without it a deferred
+       * `account` intent released at worker.ready could only ever produce the
+       * generic "Account update (<sourceType>)" line -- so an application
+       * stage change that arrived while the worker was still onboarding lost
+       * its real copy, its buttons, and its link. Optional/nullable: intents
+       * queued before this field existed carry no payload and still render
+       * the generic notice.
+       */
+      payload?: Record<string, unknown> | null;
     }
   | {
       /**

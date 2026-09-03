@@ -114,6 +114,18 @@ export class WhatsAppStack extends cdk.Stack {
     const tosVersion = this.node.tryGetContext('requiredTosVersion') ?? '1.0';
     const allowedOrigin =
       this.node.tryGetContext('allowedOrigin') ?? 'https://jaleapp.ai';
+
+    // Sprint 23: the public site origin the processor mints worker-facing
+    // application links against. Sourced the same way NotificationsStack and
+    // ReferralsStack source it (context first, then the CI env var) but with
+    // a fallback instead of a synth-time throw -- see PUBLIC_SITE_BASE_URL on
+    // the processor Lambda below for why. Trailing slashes are stripped so
+    // the consumer can always join with a single '/'.
+    const publicSiteBaseUrl = String(
+      this.node.tryGetContext('publicSiteBaseUrl')
+      ?? process.env.JALE_PUBLIC_SITE_BASE_URL
+      ?? 'https://jaleapp.ai',
+    ).replace(/\/+$/, '');
     const inboundV2TransportContext =
       this.node.tryGetContext('whatsappInboundV2TransportEnabled');
     const inboundV2TransportEnabled =
@@ -273,6 +285,13 @@ export class WhatsAppStack extends cdk.Stack {
         // model ID as the ai-profile-writer Lambda below (BEDROCK_MODEL_ID
         // env + bedrock:InvokeModel policy, ~line 489/522).
         BEDROCK_MODEL_ID: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+        // Sprint 23: the stage-2 `web_handoff` note links the worker to their
+        // own application page (application-fill.ts's `workerApplicationUrl`).
+        // Unlike NotificationsStack/ReferralsStack this does NOT fail closed
+        // at synth -- the WhatsApp copy degrades to a still-correct
+        // jaleapp.ai link rather than a dead email, and this stack already
+        // takes the same `?? 'https://jaleapp.ai'` shape for `allowedOrigin`.
+        PUBLIC_SITE_BASE_URL: publicSiteBaseUrl,
       },
       // Task 15 (confirmed blocker, not just the IAM/env gap): processor.ts
       // imports handleFillMessage from lib/application-fill.ts, which

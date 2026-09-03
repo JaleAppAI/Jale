@@ -27,6 +27,14 @@ import type {
   ReleaseRenderRequest,
 } from './onboarding-types';
 import { registerCategoryRenderer } from './worker-delivery-gateway';
+import {
+  buildApplicationStageMessage,
+  buildApplicationStageUrl,
+} from '../../lib/application-stage-notify';
+
+/** Mirrors the id shape `buildApplicationStageMessage` asserts. Validated
+ * HERE first so that function's throw is unreachable from a renderer. */
+const STAGE_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 import { t, type Lang } from './templates';
 import { formatPayRangeLocalized, payNotSpecifiedLabel } from '../../lib/job-fields';
 
@@ -97,7 +105,7 @@ interface VerifiedRecipient {
  * worker via a single parameterized SELECT. Returns null when there is no
  * verified number to send to — callers must not fabricate one.
  */
-async function loadVerifiedRecipient(
+export async function loadVerifiedRecipient(
   client: PoolClient,
   workerId: string,
 ): Promise<VerifiedRecipient | null> {
@@ -136,6 +144,58 @@ function buildSecurityNoticeMessage(lang: Lang): ReleaseRenderedMessage {
       ? 'Aviso de seguridad: detectamos actividad en tu cuenta. Si no fuiste tu, contacta soporte.'
       : 'Security notice: we detected activity on your account. If this was not you, contact support.';
   return { body, contentTemplate: null, contentVariables: null };
+}
+
+/**
+ * Sprint 23: the ONE place an `account` intent's payload is turned into real
+ * copy. Both doors into the 'account' category use it --
+ *   - `renderAccount` (this file), which serves any process where
+ *     `registerApplicationStageRenderer()` has not claimed the category, and
+ *   - `createReleaseRenderer`'s `account_notice` arm, which is the ONLY path
+ *     for an intent that was DEFERRED while the worker finished onboarding.
+ * Without this, a details-requested ping that arrived mid-onboarding was
+ * released as "Account update (application_stage)" -- no job, no employer,
+ * no link, no buttons.
+ *
+ * Returns null for anything that is not a well-formed application_stage
+ * payload so the caller falls back to the generic notice. Every field is
+ * validated BEFORE `buildApplicationStageMessage` is called, because that
+ * function THROWS on a non-UUID application id and a renderer must never
+ * throw into a release batch.
+ */
+export function buildApplicationStagePayloadMessage(
+  language: PreferredLanguage,
+  payload: Record<string, unknown> | null | undefined,
+): ReleaseRenderedMessage | null {
+  if (!payload || payload.kind !== 'application_stage') return null;
+
+  const status = payload.status;
+  if (status !== 'details_requested' && status !== 'hired') return null;
+
+  const { applicationId, jobTitle, companyName, frontendBaseUrl } = payload;
+  if (
+    typeof applicationId !== 'string' || !STAGE_UUID_REGEX.test(applicationId)
+    || typeof jobTitle !== 'string' || jobTitle.length === 0
+    || typeof companyName !== 'string' || companyName.length === 0
+    || typeof frontendBaseUrl !== 'string' || frontendBaseUrl.length === 0
+  ) {
+    return null;
+  }
+
+  const message = buildApplicationStageMessage(language, {
+    kind: status,
+    jobTitle,
+    companyName,
+    applicationId,
+    url: buildApplicationStageUrl(frontendBaseUrl, language, applicationId),
+  });
+  return {
+    // Template-first: the body travels as the fallback content variable so
+    // the send still works before the ContentSid is seeded (outbox.ts).
+    body: null,
+    contentTemplate: message.contentTemplate,
+    contentVariables: message.contentVariables,
+  };
 }
 
 function buildAccountNoticeMessage(lang: Lang, sourceType: string): ReleaseRenderedMessage {
@@ -314,7 +374,7 @@ function buildEmployerChatSummaryMessage(
 
 // ── Category renderers (one per canonical MessageCategory member) ──
 
-function toLang(language: PreferredLanguage): Lang {
+export function toLang(language: PreferredLanguage): Lang {
   return language;
 }
 
@@ -407,7 +467,9 @@ const renderSecurity: CategoryRenderer = async (client, input) => {
 const renderAccount: CategoryRenderer = async (client, input) => {
   const recipient = await loadVerifiedRecipient(client, input.workerId);
   if (!recipient) return null;
-  const message = buildAccountNoticeMessage(toLang(recipient.language), input.sourceType);
+  const message =
+    buildApplicationStagePayloadMessage(recipient.language, input.payload as Record<string, unknown>)
+    ?? buildAccountNoticeMessage(toLang(recipient.language), input.sourceType);
   return { whatsappNumber: recipient.whatsappNumber, ...message };
 };
 
@@ -477,7 +539,10 @@ export function createReleaseRenderer(): ReleaseRenderer {
         case 'onboarding_complete':
           return buildOnboardingCompleteMessage(request.language);
         case 'account_notice':
-          return buildAccountNoticeMessage(request.language, request.sourceType);
+          return (
+            buildApplicationStagePayloadMessage(request.language, request.payload)
+            ?? buildAccountNoticeMessage(request.language, request.sourceType)
+          );
         case 'referred_job':
           return buildReferredJobMessage(request.language, request.job, request.referred);
         case 'job_alert_digest':

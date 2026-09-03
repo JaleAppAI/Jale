@@ -11,6 +11,7 @@ const HELP_MENU_LIST_DEFINITIONS = {
     button: 'View commands',
     items: [
       { id: 'command:jobs', item: 'Jobs', description: 'See opportunities' },
+      { id: 'command:applications', item: 'Applications', description: 'See your applications' },
       { id: 'command:profile', item: 'Profile', description: 'See your profile' },
       { id: 'command:chats', item: 'Chats', description: 'Open employer chats' },
       { id: 'command:help', item: 'Help', description: 'Show these commands' },
@@ -22,12 +23,73 @@ const HELP_MENU_LIST_DEFINITIONS = {
     button: 'Ver comandos',
     items: [
       { id: 'command:jobs', item: 'Trabajos', description: 'Ver oportunidades' },
+      { id: 'command:applications', item: 'Aplicaciones', description: 'Ver tus solicitudes' },
       { id: 'command:profile', item: 'Perfil', description: 'Ver tu perfil' },
       { id: 'command:chats', item: 'Chats', description: 'Abrir chats con empleadores' },
       { id: 'command:help', item: 'Ayuda', description: 'Ver estos comandos' },
     ],
   },
 };
+
+/**
+ * Sprint 23 application-stage templates. Bodies are BYTE-IDENTICAL to the
+ * fallback bodies `buildApplicationStageMessage`
+ * (lambda/lib/application-stage-notify.ts) produces, with its variables in
+ * place: {{1}} job title, {{2}} company, {{3}} `app-<uuid>`, {{4}} the
+ * worker's stage-2 URL. If either side is edited, edit both -- the template
+ * is what a WhatsApp user sees outside the 24h session window and the
+ * fallback body is what they see inside it.
+ *
+ * Only the `application_update_*` pair carries buttons; `application_hired_*`
+ * is informational and there is nothing to tap. The button ids embed {{3}},
+ * so a tap arrives as `application:start:app-<uuid>` and is parsed by
+ * `parseApplicationButtonPayload` (whatsapp/lib/flows.ts).
+ */
+const QUICK_REPLY_DEFINITIONS = {
+  application_update_es: {
+    language: 'es',
+    body:
+      '{{2}} quiere avanzar con tu aplicacion para {{1}} y necesita algunos datos mas. '
+      + 'Escribe "aplicaciones" para responder aqui, o entra en {{4}}',
+    actions: [
+      { title: 'Empezar', id: 'application:start:{{3}}' },
+      { title: 'Despues', id: 'application:later:{{3}}' },
+    ],
+  },
+  application_update_en: {
+    language: 'en',
+    body:
+      '{{2}} wants to move forward with your application for {{1}} and needs a few more details. '
+      + 'Reply "applications" to answer here, or go to {{4}}',
+    actions: [
+      { title: 'Start answering', id: 'application:start:{{3}}' },
+      { title: 'Later', id: 'application:later:{{3}}' },
+    ],
+  },
+  application_hired_es: {
+    language: 'es',
+    body:
+      'Buenas noticias: {{2}} te selecciono para {{1}}. '
+      + 'Te contactaran para los siguientes pasos. Detalles: {{4}}',
+    actions: [],
+  },
+  application_hired_en: {
+    language: 'en',
+    body:
+      'Good news: {{2}} selected you for {{1}}. '
+      + 'They will contact you about next steps. Details: {{4}}',
+    actions: [],
+  },
+};
+
+/**
+ * Template names that must be RE-CREATED even when the secret already holds
+ * a ContentSid for them. A Twilio Content resource is immutable, so a change
+ * to a list's items (sprint 23 adds the Aplicaciones row) can only ship as a
+ * new Content -- the skip-if-present rule the other definitions use would
+ * silently keep serving the old menu forever.
+ */
+const FORCE_RECREATE = new Set(['help_menu_list_en', 'help_menu_list_es']);
 
 const NEW_TEMPLATES = {
   onboarding_voice_choice_es: 'HXc5c30aac43f61d77aed3cb7578106947',
@@ -110,11 +172,64 @@ async function createListPickerContent(name, definition, accountSid, authToken) 
   return json.sid;
 }
 
+/**
+ * Create a `twilio/quick-reply` Content definition and return its ContentSid.
+ * The sibling of `createListPickerContent` for the sprint-23 stage templates,
+ * which (unlike the hardcoded NEW_TEMPLATES SIDs) are not pre-created in the
+ * Twilio console. A definition with no `actions` is sent as a plain
+ * `twilio/text` Content -- Twilio rejects a quick-reply with an empty button
+ * list.
+ */
+async function createQuickReplyContent(name, definition, accountSid, authToken) {
+  const auth = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
+  const types = definition.actions.length > 0
+    ? {
+        'twilio/quick-reply': {
+          body: definition.body,
+          actions: definition.actions.map((action) => ({
+            type: 'QUICK_REPLY',
+            title: action.title,
+            id: action.id,
+          })),
+        },
+      }
+    : { 'twilio/text': { body: definition.body } };
+
+  const res = await fetch(CONTENT_API_URL, {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${auth}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ friendly_name: name, language: definition.language, types }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Twilio Content API create failed for ${name}: HTTP ${res.status} ${text}`);
+  }
+  const json = await res.json();
+  if (!json.sid) {
+    throw new Error(`Twilio Content API create for ${name} returned no sid`);
+  }
+  return json.sid;
+}
+
 async function createMissingListPickerTemplates(existingTemplates, accountSid, authToken) {
   const created = {};
   for (const [name, definition] of Object.entries(HELP_MENU_LIST_DEFINITIONS)) {
-    if (existingTemplates?.[name]) continue;
+    // FORCE_RECREATE: a Content resource is immutable, so a changed item list
+    // has to become a new one even though a SID is already stored.
+    if (existingTemplates?.[name] && !FORCE_RECREATE.has(name)) continue;
     created[name] = await createListPickerContent(name, definition, accountSid, authToken);
+  }
+  return created;
+}
+
+async function createMissingQuickReplyTemplates(existingTemplates, accountSid, authToken) {
+  const created = {};
+  for (const [name, definition] of Object.entries(QUICK_REPLY_DEFINITIONS)) {
+    if (existingTemplates?.[name] && !FORCE_RECREATE.has(name)) continue;
+    created[name] = await createQuickReplyContent(name, definition, accountSid, authToken);
   }
   return created;
 }
@@ -134,9 +249,15 @@ async function main() {
     secret.accountSid,
     secret.authToken,
   );
-  const expectedTemplates = { ...NEW_TEMPLATES, ...createdListPickers };
+  const createdQuickReplies = await createMissingQuickReplyTemplates(
+    secret.templates,
+    secret.accountSid,
+    secret.authToken,
+  );
+  const createdContent = { ...createdListPickers, ...createdQuickReplies };
+  const expectedTemplates = { ...NEW_TEMPLATES, ...createdContent };
 
-  const templates = mergeTemplates(secret.templates, createdListPickers);
+  const templates = mergeTemplates(secret.templates, createdContent);
   const nextSecret = { ...secret, templates };
 
   const verifyBeforeWrite = Object.fromEntries(
@@ -170,6 +291,9 @@ async function main() {
   console.log(`Updated ${SECRET_ID} in ${REGION}; verified ${Object.keys(expectedTemplates).length} onboarding SIDs and ${templateCount} total template entries.`);
   if (Object.keys(createdListPickers).length > 0) {
     console.log(`Created list-picker Content templates: ${Object.keys(createdListPickers).join(', ')}`);
+  }
+  if (Object.keys(createdQuickReplies).length > 0) {
+    console.log(`Created quick-reply Content templates: ${Object.keys(createdQuickReplies).join(', ')}`);
   }
 }
 

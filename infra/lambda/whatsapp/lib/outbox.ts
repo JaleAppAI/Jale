@@ -7,7 +7,17 @@ import {
 } from './twilio-secret';
 import type { RenderedOutboxMessage } from './onboarding-types';
 
-const FALLBACK_BODY_KEY = '__fallback_body';
+/**
+ * The content-variable key that carries a plain-text fallback body.
+ * `sendTwilioWhatsAppMessage` strips it before sending ContentVariables and
+ * falls back to its value as a plain `Body` when the content template has no
+ * ContentSid seeded in the Twilio secret yet.
+ *
+ * EXPORTED (sprint 23) so `lib/application-stage-notify.ts` -- which used to
+ * mirror the literal with a FOLLOW-UP note -- can import it instead of
+ * duplicating it.
+ */
+export const FALLBACK_BODY_KEY = '__fallback_body';
 
 // H3: poison-message guard for the scheduled admin dispatcher. A row that Twilio
 // hard-rejects (4xx) flips to 'failed' and would otherwise be re-selected and
