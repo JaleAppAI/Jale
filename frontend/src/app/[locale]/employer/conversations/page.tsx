@@ -392,7 +392,7 @@ export default function EmployerConversationsPage() {
                     active={jobFilter === job.job_id}
                     onClick={() => setJobFilter((current) => (current === job.job_id ? null : job.job_id))}
                   >
-                    {job.title}
+                    {job.city ? `${job.title} · ${job.city}` : job.title}
                   </FilterChip>
                 ))}
               </div>
@@ -519,7 +519,9 @@ export default function EmployerConversationsPage() {
                   <p className="truncate text-sm font-bold text-[var(--jale-ink)]">
                     {selectedItem.worker_name ?? t('unknown_worker')}
                   </p>
-                  <p className="truncate text-xs text-[var(--jale-ink-2)]">{selectedItem.job_title}</p>
+                  <p className="truncate text-xs text-[var(--jale-ink-2)]">
+                    {selectedItem.job_city ? `${selectedItem.job_title} · ${selectedItem.job_city}` : selectedItem.job_title}
+                  </p>
                 </div>
               </div>
 
@@ -638,7 +640,9 @@ function InboxRow({
           </span>
         </span>
 
-        <span className="mt-0.5 block truncate text-[11px] text-[var(--jale-ink-2)]">{item.job_title}</span>
+        <span className="mt-0.5 block truncate text-[11px] text-[var(--jale-ink-2)]">
+          {item.job_city ? `${item.job_title} · ${item.job_city}` : item.job_title}
+        </span>
 
         <span className="mt-1 flex items-center gap-1.5">
           {/* `#25D366` is WhatsApp's brand green -- the one sanctioned literal,

@@ -1,7 +1,7 @@
 'use client';
 
-import { useId, useState } from 'react';
-import type { FormEvent } from 'react';
+import { useId, useRef, useState } from 'react';
+import type { FormEvent, KeyboardEvent } from 'react';
 import { useTranslations, useFormatter } from 'next-intl';
 import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/ui/empty-state';
@@ -43,14 +43,27 @@ export function EmptyThreadComposer({
   const format = useFormatter();
   const [body, setBody] = useState('');
   const errorId = useId();
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const workerName = item.worker_name ?? t('unknown_worker');
   const appliedDate = formatAppliedDate(item.applied_at, format);
+  const jobLine = [
+    item.job_city ? `${item.job_title} · ${item.job_city}` : item.job_title,
+    appliedDate ? t('applied_on', { date: appliedDate }) : null,
+  ]
+    .filter(Boolean)
+    .join(' - ');
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function sendCurrentBody() {
     const trimmed = body.trim();
-    if (!trimmed || sending) return;
+    if (!trimmed) {
+      // The button no longer greys out on an empty box (it read as "missing"
+      // in user testing) — an empty submit answers by putting the cursor
+      // where the message goes.
+      textareaRef.current?.focus();
+      return;
+    }
+    if (sending) return;
     try {
       await onSend(trimmed);
       setBody('');
@@ -58,6 +71,19 @@ export function EmptyThreadComposer({
       // The caller reports this through `errorMessage`. Catching here is what
       // preserves the draft and keeps the rejection off the console.
     }
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await sendCurrentBody();
+  }
+
+  // Enter sends, Shift+Enter newline, IME confirmation ignored — mirrors
+  // ConversationThread so both composers behave identically.
+  function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
+    event.preventDefault();
+    void sendCurrentBody();
   }
 
   return (
@@ -100,7 +126,7 @@ export function EmptyThreadComposer({
                 </span>
               </div>
               <p className="truncate text-[11px] font-medium text-[var(--jale-ink-2)]">
-                {appliedDate ? `${item.job_title} - ${t('applied_on', { date: appliedDate })}` : item.job_title}
+                {jobLine}
               </p>
             </div>
           </div>
@@ -126,8 +152,10 @@ export function EmptyThreadComposer({
 
         <div className="flex gap-2">
           <textarea
+            ref={textareaRef}
             value={body}
             onChange={(event) => setBody(event.target.value)}
+            onKeyDown={handleComposerKeyDown}
             maxLength={2000}
             rows={2}
             placeholder={t('composer_placeholder')}
@@ -137,7 +165,7 @@ export function EmptyThreadComposer({
                `ConversationThread.tsx`. Border-only was 2.20:1 in dark. */
             className="min-h-[42px] flex-1 resize-none rounded-[var(--radius-input)] border border-[var(--jale-divider)] bg-[var(--jale-paper-2)] px-3 py-2 text-sm text-[var(--jale-ink)] outline-none placeholder:text-[var(--jale-ink-2)] focus:border-[var(--primary)] focus:bg-[var(--jale-card)] focus:shadow-[var(--shadow-focus)]"
           />
-          <Button type="submit" loading={sending} loadingLabel={tCommon('loading')} disabled={!body.trim()}>
+          <Button type="submit" loading={sending} loadingLabel={tCommon('loading')}>
             {t('send')}
           </Button>
         </div>

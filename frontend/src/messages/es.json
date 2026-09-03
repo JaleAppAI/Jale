@@ -479,6 +479,16 @@
       }
     }
   },
+  "employer_applicants": {
+    "title": "Postulantes",
+    "subtitle": "Todos los que han aplicado a tus trabajos, en un solo lugar.",
+    "all_jobs": "Todos los trabajos",
+    "empty_title": "Aún no hay postulantes",
+    "empty_body": "Los postulantes de todos tus trabajos aparecerán aquí.",
+    "applied_on": "Aplicó {date}",
+    "unknown_worker": "Trabajador desconocido",
+    "not_scored": "Sin puntaje aún"
+  },
   "employer_messages": {
     "title": "Mensajes",
     "subtitle": "Mensajee a los candidatos por WhatsApp manteniendo la conversación vinculada al empleo.",
@@ -575,6 +585,7 @@
     "nav": {
       "main": "Principal",
       "dashboard": "Panel",
+      "applicants": "Postulantes",
       "messages": "Mensajes",
       "billing": "Facturación",
       "settings": "Configuración",
