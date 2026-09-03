@@ -38,6 +38,7 @@ interface ListPickerDefinition {
 const QUICK_REPLY_DEFINITIONS = literal<Record<string, QuickReplyDefinition>>('QUICK_REPLY_DEFINITIONS');
 const HELP_MENU_LIST_DEFINITIONS = literal<Record<string, ListPickerDefinition>>('HELP_MENU_LIST_DEFINITIONS');
 const FORCE_RECREATE = literal<Set<string>>('FORCE_RECREATE');
+const WHATSAPP_APPROVAL_CATEGORY = literal<string>('WHATSAPP_APPROVAL_CATEGORY');
 
 const APPLICATION_TEMPLATES: ReadonlyArray<[string, PreferredLanguage, 'details_requested' | 'hired']> = [
   ['application_update_es', 'es', 'details_requested'],
@@ -167,5 +168,38 @@ describe('seed-whatsapp-twilio-templates.mjs — help menu recreation', () => {
       .find((i) => i.id === 'command:applications')!.item).toBe('Aplicaciones');
     expect(HELP_MENU_LIST_DEFINITIONS.help_menu_list_en.items
       .find((i) => i.id === 'command:applications')!.item).toBe('Applications');
+  });
+});
+
+describe('seed-whatsapp-twilio-templates.mjs — WhatsApp approval submission', () => {
+  // A Content resource that is never submitted is never approved, and an
+  // unapproved template cannot be sent outside the 24h window -- which is
+  // exactly when an employer-triggered stage notification goes out. The script
+  // therefore has to submit, not merely create.
+  it('submits application templates through the ApprovalRequests/whatsapp endpoint', () => {
+    expect(SOURCE).toMatch(/\/ApprovalRequests\/whatsapp`/);
+    expect(SOURCE).toMatch(/ensureWhatsAppApprovals\(\s*verifiedSecret\.templates/);
+  });
+
+  it('classifies all four as UTILITY (transactional updates about an existing application)', () => {
+    expect(WHATSAPP_APPROVAL_CATEGORY).toBe('UTILITY');
+    expect(SOURCE).toMatch(/category: WHATSAPP_APPROVAL_CATEGORY/);
+  });
+
+  it('submits only templates that have never been submitted, and never re-submits', () => {
+    // Re-submitting a pending/approved/rejected template is a Twilio 4xx at
+    // best and a lost approval at worst; the gate is the literal string Twilio
+    // reports for a fresh Content resource.
+    expect(SOURCE).toMatch(/status === 'unsubmitted'/);
+    expect(SOURCE).toMatch(/json\?\.whatsapp\?\.status \?\? 'unsubmitted'/);
+  });
+
+  it.each(APPLICATION_TEMPLATES)('%s is a valid WhatsApp template name (lowercase, digits, underscores)', (name) => {
+    expect(name).toMatch(/^[a-z0-9_]+$/);
+  });
+
+  it('never submits the help-menu list pickers (session messages need no approval)', () => {
+    expect(SOURCE).toMatch(/for \(const name of Object\.keys\(QUICK_REPLY_DEFINITIONS\)\)[\s\S]*?whatsappApprovalStatus/);
+    expect(SOURCE).not.toMatch(/HELP_MENU_LIST_DEFINITIONS[\s\S]{0,200}ApprovalRequests/);
   });
 });

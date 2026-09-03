@@ -214,6 +214,77 @@ async function createQuickReplyContent(name, definition, accountSid, authToken) 
   return json.sid;
 }
 
+/**
+ * WhatsApp approval for the sprint-23 application templates.
+ *
+ * Creating a Content resource is not enough: Meta must approve a template
+ * before Twilio will send it OUTSIDE the 24-hour session window, which is
+ * exactly when an employer-triggered stage notification arrives. Until then
+ * the sender falls back to the plain body and Meta rejects it -- nothing
+ * reaches the worker. So every application_* template is submitted for
+ * approval here, once: a template whose approval status is anything other than
+ * `unsubmitted` (received / pending / approved / rejected / paused / disabled)
+ * is left alone and only reported.
+ *
+ * Category is UTILITY for all four: they are transactional updates about an
+ * application the worker already made. The help-menu list pickers are session
+ * messages (always inside the window) and need no approval.
+ */
+const WHATSAPP_APPROVAL_CATEGORY = 'UTILITY';
+
+function twilioAuthHeader(accountSid, authToken) {
+  return `Basic ${Buffer.from(`${accountSid}:${authToken}`).toString('base64')}`;
+}
+
+async function whatsappApprovalStatus(sid, accountSid, authToken) {
+  const res = await fetch(`${CONTENT_API_URL}/${sid}/ApprovalRequests`, {
+    headers: { Authorization: twilioAuthHeader(accountSid, authToken) },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Twilio approval status read failed for ${sid}: HTTP ${res.status} ${text}`);
+  }
+  const json = await res.json();
+  return json?.whatsapp?.status ?? 'unsubmitted';
+}
+
+async function requestWhatsAppApproval(sid, name, accountSid, authToken) {
+  const res = await fetch(`${CONTENT_API_URL}/${sid}/ApprovalRequests/whatsapp`, {
+    method: 'POST',
+    headers: {
+      Authorization: twilioAuthHeader(accountSid, authToken),
+      'Content-Type': 'application/json',
+    },
+    // `name` must be lowercase letters, digits and underscores -- every
+    // application_* key already is.
+    body: JSON.stringify({ name, category: WHATSAPP_APPROVAL_CATEGORY }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Twilio approval request failed for ${name} (${sid}): HTTP ${res.status} ${text}`);
+  }
+  const json = await res.json();
+  return json?.status ?? 'received';
+}
+
+/**
+ * Submit every application_* template that has never been submitted; report
+ * the WhatsApp approval status of all of them. Returns `{ name: status }`.
+ */
+async function ensureWhatsAppApprovals(templates, accountSid, authToken) {
+  const report = {};
+  for (const name of Object.keys(QUICK_REPLY_DEFINITIONS)) {
+    const sid = templates?.[name];
+    if (!sid) continue;
+    let status = await whatsappApprovalStatus(sid, accountSid, authToken);
+    if (status === 'unsubmitted') {
+      status = await requestWhatsAppApproval(sid, name, accountSid, authToken);
+    }
+    report[name] = status;
+  }
+  return report;
+}
+
 async function createMissingListPickerTemplates(existingTemplates, accountSid, authToken) {
   const created = {};
   for (const [name, definition] of Object.entries(HELP_MENU_LIST_DEFINITIONS)) {
@@ -294,6 +365,15 @@ async function main() {
   }
   if (Object.keys(createdQuickReplies).length > 0) {
     console.log(`Created quick-reply Content templates: ${Object.keys(createdQuickReplies).join(', ')}`);
+  }
+
+  const approvals = await ensureWhatsAppApprovals(
+    verifiedSecret.templates,
+    secret.accountSid,
+    secret.authToken,
+  );
+  for (const [name, status] of Object.entries(approvals)) {
+    console.log(`WhatsApp approval ${name}: ${status}`);
   }
 }
 
