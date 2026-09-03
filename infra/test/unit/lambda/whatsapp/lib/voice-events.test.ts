@@ -5,6 +5,7 @@
 import {
   buildSyntheticVoiceInboundBody,
   parseVoiceTranscriptEvent,
+  resolveVoiceOrigin,
   syntheticVoiceSid,
   VOICE_EVENT_FIELD,
   type TrustVoiceEventV2,
@@ -89,7 +90,11 @@ describe('buildSyntheticVoiceInboundBody / parseVoiceTranscriptEvent round-trip'
     expect(params.Body).toBe('');
 
     const parsed = parseVoiceTranscriptEvent(params);
-    expect(parsed).toEqual(trustEvent);
+    // Sprint 23 L6: `origin` is normalized ON PARSE, so a trust event built
+    // without one comes back marked `whatsapp` rather than round-tripping to
+    // `undefined`. That is the point of the default — no consumer downstream
+    // has to remember which absence means which door.
+    expect(parsed).toEqual({ ...trustEvent, origin: 'whatsapp' });
   });
 
   it('round-trips a profile_intake event with all fields preserved', () => {
@@ -235,5 +240,92 @@ describe('VoicePipelineExecutionInputV2 shape', () => {
       },
     };
     expect(input.transcriptionJobName).toBe('jale-vt-worker1-123');
+  });
+});
+
+// ── Sprint 23 L6: `origin` ───────────────────────────────────────────────
+describe('voice origin', () => {
+  it('resolves an absent, undefined or unrecognized origin to whatsapp', () => {
+    expect(resolveVoiceOrigin(undefined)).toBe('whatsapp');
+    expect(resolveVoiceOrigin(null)).toBe('whatsapp');
+    expect(resolveVoiceOrigin('whatsapp')).toBe('whatsapp');
+    expect(resolveVoiceOrigin('WEB')).toBe('whatsapp');
+    expect(resolveVoiceOrigin(1)).toBe('whatsapp');
+  });
+
+  it('resolves the exact string web to web', () => {
+    expect(resolveVoiceOrigin('web')).toBe('web');
+  });
+
+  // The wire compatibility guarantee: a trust event that predates `origin`
+  // must still parse, and must come back marked whatsapp rather than
+  // undefined so no consumer has to remember the default.
+  it('parses a pre-Sprint-23 trust event (no origin) and normalizes it to whatsapp', () => {
+    const sid = '2'.repeat(34);
+    const legacy = {
+      version: 'v2',
+      kind: 'trust_answer',
+      status: 'COMPLETED',
+      phone: '+15125551234',
+      runId: 'run-1',
+      stepKey: 'trust.question.2',
+      language: 'en',
+      origMessageSid: sid,
+      startedAt: '2026-08-14T00:00:00.000Z',
+      questionIndex: 1,
+      executionArn: 'arn:aws:states:us-east-2:1:execution:sm:vt-x',
+      transcript: 'five years',
+    };
+    const parsed = parseVoiceTranscriptEvent({
+      MessageSid: `${sid}#vt`,
+      [VOICE_EVENT_FIELD]: JSON.stringify(legacy),
+    }) as TrustVoiceEventV2 | null;
+
+    expect(parsed).not.toBeNull();
+    expect(parsed!.origin).toBe('whatsapp');
+    expect(parsed!.transcript).toBe('five years');
+  });
+
+  it('preserves a web origin through a round trip', () => {
+    const sid = 'web:abc';
+    const evt: TrustVoiceEventV2 = {
+      version: 'v2',
+      kind: 'trust_answer',
+      status: 'COMPLETED',
+      phone: '+15125551234',
+      runId: 'run-1',
+      stepKey: 'trust.question.1',
+      language: 'en',
+      origMessageSid: sid,
+      startedAt: '2026-09-02T00:00:00.000Z',
+      questionIndex: 0,
+      executionArn: 'arn:aws:states:us-east-2:1:execution:sm:vtw-x',
+      origin: 'web',
+    };
+    const decoded = decodeFormBody(buildSyntheticVoiceInboundBody(evt));
+    const parsed = parseVoiceTranscriptEvent(decoded) as TrustVoiceEventV2 | null;
+    expect(parsed!.origin).toBe('web');
+  });
+
+  it('accepts origin on the execution input envelope (compile-time)', () => {
+    const input: VoicePipelineExecutionInputV2 = {
+      transcriptionJobName: 'jale-vtw-abc',
+      mediaS3Uri: 's3://bucket/voice/worker1/abc.webm',
+      mediaBucketName: 'bucket',
+      transcriptOutputKey: 'voice/worker1/transcripts/jale-vtw-abc.json',
+      v2: {
+        version: 'v2',
+        kind: 'trust_answer',
+        phone: '+15125551234',
+        runId: 'run-1',
+        stepKey: 'trust.question.1',
+        language: 'en',
+        origMessageSid: 'web:abc',
+        startedAt: '2026-09-02T00:00:00.000Z',
+        questionIndex: 0,
+        origin: 'web',
+      },
+    };
+    expect(input.v2.origin).toBe('web');
   });
 });
