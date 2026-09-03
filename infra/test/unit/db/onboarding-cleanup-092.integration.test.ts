@@ -342,14 +342,22 @@ maybeDescribe('migration 092: the two column-scoped REVOKEs took nothing else', 
     await su.query(`DELETE FROM users WHERE id = $1`, [workerId]);
   });
 
-  test('010 kept its other three users columns for jale_matching', async () => {
+  test('010 kept its other three users columns for jale_matching, and 014 kept its five', async () => {
+    // 092's second REVOKE names jale_matching, and 010 put the two trust
+    // columns inside a FIVE-column grant -- so the failure mode is a revoke
+    // that takes id / user_type / main_trade with them. 014 later granted
+    // five more columns to the same role on the same table, so the correct
+    // end state is 010's three plus 014's five, exactly.
     const rows = await su.query<{ column_name: string }>(
       `SELECT DISTINCT column_name FROM information_schema.column_privileges
         WHERE grantee = 'jale_matching' AND table_schema = 'public'
           AND table_name = 'users' AND privilege_type = 'SELECT'
         ORDER BY column_name`,
     );
-    expect(rows.rows.map((r) => r.column_name)).toEqual(['id', 'main_trade', 'user_type']);
+    expect(rows.rows.map((r) => r.column_name)).toEqual([
+      'availability', 'city', 'id', 'main_trade', 'main_trade_other',
+      'trade_competency_score', 'user_type', 'years_experience',
+    ]);
   });
 });
 
