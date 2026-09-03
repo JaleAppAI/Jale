@@ -425,16 +425,24 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         await rollback();
         return fail(400, 'invalid_answers', { errors: {} });
       }
-      // `__proto__` is refused HERE rather than left to the engine. Nothing
-      // is ever written for it either way -- the engine skips any key the job
-      // does not ask for -- but it records the rejection as
+      // `__proto__` is refused HERE because the ENGINE cannot refuse it.
+      // `mergeFieldAnswers` records a rejected key as
       // `errors['__proto__'] = 'unknown_answer_key'`, and on a plain object
-      // that assignment runs Object.prototype's `__proto__` SETTER instead of
-      // creating an own property. A string value makes that setter a no-op,
-      // so the map stays EMPTY, the engine reads "no errors", and a batch
-      // that was entirely rejected comes back 200. The prototype is never
-      // touched and no answer is stored; the lie is only in the status code,
-      // and this is where it stops. (The engine is another lane's file.)
+      // that assignment runs Object.prototype's `__proto__` SETTER rather
+      // than creating an own property; a string value makes the setter a
+      // no-op, so the map stays EMPTY and the all-or-nothing gate
+      // (`Object.keys(errors).length > 0`) never fires. The batch then falls
+      // through with `toMerge = {}` and the engine WRITES: `application_answers
+      // || '{}'::jsonb, updated_at = now()` is a real tuple write, followed by
+      // the defaults upsert and the completion check -- a fully rejected batch
+      // answering 200 over a bumped `updated_at`.
+      //
+      // No answer VALUE is stored and no prototype is touched, so this is not
+      // a pollution hole; it is a false success with a side effect. The fix
+      // belongs in `lib/application-requirements.ts` (every other caller,
+      // including the WhatsApp per-turn merge, still has it) -- that file is
+      // another lane's, so this door stops it at its own edge and the defect
+      // is reported upstream.
       if (keys.includes('__proto__')) {
         await rollback();
         // A COMPUTED key, not the literal `{__proto__: ...}` -- the literal
