@@ -51,6 +51,8 @@
  * that superuser connection; every role-scoped call goes through a separate
  * pool authenticated as `jale_whatsapp` (test-whatsapp-pw).
  */
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { Client, Pool, type PoolClient } from 'pg';
 
@@ -197,6 +199,61 @@ maybeDescribe('migration 092: the dropped objects are absent', () => {
           AND NOT tgisinternal`,
     );
     expect(hireTrigger.rows).toEqual([{ count: '1' }]);
+  });
+
+  // Promoted from an adversarial probe run during the L8 gate. The pre-flight
+  // block is the file's entire safety model -- no statement in 092 uses
+  // CASCADE, so a live dependent must stop the migration with a NAMED list
+  // rather than a bare 2BP01 three statements later. Nothing else proves the
+  // block actually fires: on a correct database it is a silent no-op, so a
+  // block that had been broken into always-passing shape (a typo in the
+  // deptype filter, a refobjid that never matches) would look identical.
+  //
+  // The block is read out of the migration FILE and executed verbatim, not
+  // reimplemented here -- a copy would drift. The whole case runs inside one
+  // transaction that is rolled back, so the recreated trigger never escapes
+  // into the suites that follow.
+  test('the pre-flight guard FIRES, by name, when a dependent still exists', async () => {
+    const migration = fs.readFileSync(
+      path.join(__dirname, '..', '..', '..', 'db', 'migrations', '092_onboarding_cleanup_drops.sql'),
+      'utf8',
+    );
+    // Part (a) is the first DO block in the file; part (b)'s first DROP ends it.
+    const start = migration.indexOf('DO $$');
+    const end = migration.indexOf('-- ── (b)');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const preflight = migration.slice(start, end);
+    expect(preflight).toContain('pre-flight');
+
+    await su.query('BEGIN');
+    try {
+      // The exact state 092 must refuse: 091 reverted, or the 022 guard
+      // re-attached by hand.
+      await su.query(
+        `CREATE OR REPLACE FUNCTION enforce_job_application_required_docs()
+         RETURNS TRIGGER AS $f$ BEGIN RETURN NEW; END; $f$ LANGUAGE plpgsql`,
+      );
+      await su.query(
+        `CREATE TRIGGER job_applications_required_docs_guard
+           BEFORE INSERT ON job_applications
+           FOR EACH ROW EXECUTE FUNCTION enforce_job_application_required_docs()`,
+      );
+
+      await expect(su.query(preflight)).rejects.toMatchObject({
+        message: expect.stringContaining(
+          'migration 092 pre-flight: functions still carry dependents',
+        ),
+      });
+    } finally {
+      await su.query('ROLLBACK');
+    }
+
+    // And the rollback really put the database back.
+    const after = await su.query<{ count: string }>(
+      `SELECT count(*) FROM pg_proc WHERE proname = 'enforce_job_application_required_docs'`,
+    );
+    expect(after.rows).toEqual([{ count: '0' }]);
   });
 
   test('nothing else on users moved: RLS is still FORCEd and every surviving policy is present', async () => {
