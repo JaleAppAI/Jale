@@ -11,10 +11,16 @@ import type { JobDetail, JobDocType, WorkerVaultDoc } from '@/lib/api/worker';
 import { proofFilesFromVault } from './DocumentsCertificationsStep';
 
 /**
- * Wire payload `ApplyFlow.onSubmit` hands to its caller -- a 1:1 map onto
- * `applyToJob`'s two optional trailing params (`lib/api/worker.ts`), so
- * Wave-3's page integration is a straight
- * `applyToJob(token, id, payload.answers, payload.certification_claims)`.
+ * Wire payload `ApplyFlow.onSubmit` hands to its caller.
+ *
+ * STALE AS OF SPRINT 23 WAVE 1: it used to map 1:1 onto `applyToJob`'s two
+ * trailing params, but apply now takes `prompt_answers` alone -- field
+ * answers and certification claims belong to the stage-2 door
+ * (`postApplicationAnswers` / `postApplicationCertifications` in
+ * `lib/api/worker.ts`). The page therefore builds this payload and does not
+ * send it. Kept structurally intact on purpose: wave 2 re-points this flow
+ * at the new doors, and reshaping it here would be a UI change this wave is
+ * explicitly not making.
  */
 export type ApplyFlowSubmitPayload = {
   answers: Record<string, unknown>;

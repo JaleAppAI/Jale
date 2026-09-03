@@ -83,9 +83,9 @@ export type { ApplyFlowSubmitError, ApplyFlowSubmitPayload };
  * never a blocker to applying) -- only `.answers` is read here.
  *
  * `onSubmit` receives a fully-built `ApplyFlowSubmitPayload` (see
- * `ReviewStep.tsx`) -- a 1:1 map onto `applyToJob`'s `answers`/
- * `certification_claims` params, so the integration is a straight
- * pass-through: `applyToJob(token, id, payload.answers, payload.certification_claims)`.
+ * `ReviewStep.tsx`). That payload no longer matches `applyToJob`, which
+ * takes `prompt_answers` alone as of sprint 23 -- see the note on the type
+ * itself; the page currently drops it. Wave 2 owns the rewire.
  *
  * `submitError`'s shape (`ApplyFlowSubmitError`, defined in `ReviewStep.tsx`
  * and re-exported here) is ALSO a WK-T3-defined contract, not specified by

@@ -255,14 +255,28 @@ export default function WorkerJobDetailPage() {
     );
   }
 
-  /** `ApplyFlow`'s `onSubmit` -- a straight pass-through onto `applyToJob`'s
-   * two trailing params, per `ReviewStep.tsx`'s documented payload contract. */
+  /**
+   * `ApplyFlow`'s `onSubmit`.
+   *
+   * SPRINT 23, WAVE 1: apply is now stage 1 only and its body is
+   * `{ prompt_answers }` -- the field answers and certification claims this
+   * payload still carries moved to the stage-2 door
+   * (`postApplicationAnswers` / `postApplicationCertifications`), which the
+   * employer opens by requesting details. The backend accepts and IGNORES
+   * the legacy keys, so sending them would be discarded.
+   *
+   * Until the wave-2 UI collects prompt answers there is nothing to send, so
+   * this passes `{}`. CONSEQUENCE, deliberate and scoped to this window: a
+   * job that DOES ask pre-application prompts is refused here with a 400
+   * `missing_prompt_answers`. `ApplyFlow`/`ReviewStep` keep building
+   * `payload` untouched -- wave 2 owns re-pointing them.
+   */
   async function doApply(payload: ApplyFlowSubmitPayload) {
     if (!idToken || !id) return;
     setSubmitError(null);
     setSubmitting(true);
     try {
-      const application = await applyToJob(idToken, id, payload.answers, payload.certification_claims);
+      const application = await applyToJob(idToken, id, {});
       setApplyFeedback({ tone: 'success', message: t('apply_success') });
       // Reflect the outcome locally before asking the server again: the POST
       // already succeeded, so the page must show "applied" even if the

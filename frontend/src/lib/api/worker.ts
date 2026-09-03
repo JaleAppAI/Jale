@@ -1,6 +1,18 @@
 import { apiFetch } from '../api';
 import { ApiError, parseApiError } from './errors';
-import type { ApplicationStatus, JobStatus } from '../status';
+import type {
+  ApplicationDetailsStatus,
+  ApplicationStage,
+  ApplicationStatus,
+  JobStatus,
+} from '../status';
+
+/**
+ * Re-exported so a caller that already imports from this module for the
+ * application types does not have to reach into `lib/status` for the two
+ * enums that only ever appear next to them.
+ */
+export type { ApplicationDetailsStatus, ApplicationStage };
 
 export interface UploadUrlResponse {
   url: string;
@@ -98,6 +110,52 @@ export async function submitUpload(token: string): Promise<void> {
 
 // Authenticated marketplace helpers
 
+/**
+ * One employer-authored question a worker answers at APPLY time
+ * (`jobs.pre_application_prompts`, migration 091). `id` is employer-minted
+ * and stable: it is the key the answer is stored under, so an edit that
+ * re-uses the text but mints a new id ORPHANS every existing answer. Callers
+ * editing a job must round-trip the ids they were given.
+ */
+export type PreApplicationPrompt = { id: string; text: string };
+
+/**
+ * What an application still owes, as published by the READ endpoints
+ * (`remainingView` in `infra/lambda/lib/application-stage-view.ts` -- six
+ * keys). Every array is in the job's own column order, so it can be rendered
+ * as a checklist without re-sorting.
+ *
+ * `complete` deliberately ignores optional fields/docs and uncollectable
+ * (legacy `ssn`) docs: nothing a worker can do would ever clear those, so
+ * they must not hold an application open.
+ */
+export type RequirementsRemaining = {
+  /** Unanswered prompt ids. */
+  prompts: string[];
+  /** Unanswered REQUIRED field keys. */
+  fields: string[];
+  certifications: { unclaimed: string[]; unproven: string[] };
+  /** Missing required doc types that some flow can actually collect. */
+  docs: string[];
+  counts: { prompts: number; fields: number; certifications: number; docs: number };
+  complete: boolean;
+};
+
+/**
+ * The FULLER shape the stage-2 door's own state document carries: the same
+ * six keys plus the three buckets the list endpoints drop. Kept separate
+ * rather than making the extras optional on `RequirementsRemaining`, because
+ * a list row genuinely never has them and a reader that treats them as
+ * "maybe absent" would render an empty optional-docs list as "nothing
+ * optional left" on the very surface that does know.
+ */
+export type ApplicationRequirementsRemaining = RequirementsRemaining & {
+  /** Required docs no flow can collect (legacy `ssn`). Never blocking. */
+  uncollectableDocs: string[];
+  optionalFields: string[];
+  optionalDocs: string[];
+};
+
 export type Job = {
   id: string;
   title: string;
@@ -144,6 +202,13 @@ export type Job = {
   /** 'HH:MM', 24h. */
   shift_end?: string | null;
   certification_requirements?: Array<{ name: string; tier: 'required' | 'optional'; proof_required: boolean }> | null;
+  /**
+   * The employer's apply-time questions (migration 091). Every job read
+   * publishes it -- list rows included -- and it is `[]` for a job that asks
+   * none, but it stays optional here for a payload from a cached pre-sprint-23
+   * client: readers must treat absence as "no prompts", never crash.
+   */
+  pre_application_prompts?: PreApplicationPrompt[];
 };
 
 export type JobDetail = Job & {
@@ -173,6 +238,24 @@ export type JobDetail = Job & {
    * SELECT alongside `public_listing_enabled`. Null for a free-typed
    * location that was never resolved to a picked city. */
   city_key?: string | null;
+  /**
+   * The four stage-2 keys (migration 091). Present ONLY when this worker has
+   * already applied -- `worker-jobs-detail.ts` omits the whole block
+   * otherwise, because there is no application and therefore no stage to
+   * report. Read them as a set: `already_applied` being true is what makes
+   * them meaningful.
+   */
+  application_id?: string;
+  details_status?: ApplicationDetailsStatus;
+  stage?: ApplicationStage;
+  /**
+   * NOTE the deliberate disagreement with `missing_docs` above: `remaining.docs`
+   * is JOB-SCOPED (docs attached to THIS job), which is what the employer's
+   * hire gate measures, while `missing_docs` is the worker's vault-or-job view
+   * of the same question. Both are correct answers to different questions --
+   * see the `have_docs` contract in `lib/application-stage-view.ts`.
+   */
+  remaining?: RequirementsRemaining;
 };
 
 export type Application = {
@@ -186,6 +269,21 @@ export type Application = {
    * the backend adds the field. Never 'paused' — the API coalesces it to
    * 'closed' (billing privacy). */
   job_status?: JobStatus;
+  /**
+   * The stage-2 columns (migration 091). Optional for the same reason
+   * `job_status` is: the frontend may ship before the backend does.
+   *
+   * `details_status` and `stage` are derived from the TIMESTAMPS, never from
+   * `status`, so an employer who moves a `details_requested` applicant on to
+   * `talking` does not reset the stage -- the two can and do disagree.
+   */
+  details_status?: ApplicationDetailsStatus;
+  stage?: ApplicationStage;
+  details_requested_at?: string | null;
+  details_completed_at?: string | null;
+  /** The single badgeable number: prompts + fields + certifications + docs. */
+  remaining_count?: number;
+  remaining?: RequirementsRemaining;
 };
 
 export type WorkerTrade = 'electrician' | 'plumber' | 'carpenter' | 'concrete' | 'painting' | 'other';
@@ -295,36 +393,32 @@ export async function getJob(token: string, id: string, signal?: AbortSignal): P
 export type CertificationClaim = { name: string; has: boolean; doc_ids?: string[] };
 
 /**
- * `answers` (job_applications.application_answers) is optional and only
- * meaningful when the job has any required/optional custom fields --
- * `ApplicationAnswersForm` builds it via `buildAnswersPayload`. Omitting it
- * entirely (jobs with no configured fields) sends the same bare POST this
- * call always sent.
+ * APPLY -- stage 1, and stage 1 only (sprint 23, migration 091).
  *
- * Two NEW 400 codes ride the same taxonomy `missing_docs` already used:
- * `missing_answers` carries `missing_fields` (the still-unanswered required
- * field keys) and `invalid_answers` carries `detail` (the specific
- * validator failure, e.g. `invalid_desired_pay`) -- both allowlisted onto
- * `ApiError.payload` by `parseApiError`.
+ * The body is now `{ prompt_answers }` and NOTHING else. Field answers and
+ * certification claims moved to stage 2 (`postApplicationAnswers` /
+ * `postApplicationCertifications` below), which the employer opens by asking
+ * for details; sending them here would be discarded, so they are not in the
+ * signature. The backend still ACCEPTS the legacy `answers` /
+ * `certification_claims` keys for one release
+ * (`infra/lambda/api/worker-jobs-apply.ts`), purely so a CloudFront-cached
+ * pre-sprint-23 bundle keeps working -- that is a compat window for old
+ * clients, not a payload this one should keep sending.
  *
- * `certification_claims` (WK-T0) is sent as a TOP-LEVEL sibling of `answers`,
- * never nested inside it, and is omitted from the body entirely when the
- * caller does not pass it -- existing call sites keep sending exactly the
- * same body they always sent.
+ * `promptAnswers` is keyed on `PreApplicationPrompt.id` and must cover EVERY
+ * prompt the job asks; an incomplete set is a 400 `missing_prompt_answers`
+ * carrying `missing` (the unanswered ids, allowlisted onto `ApiError.payload`),
+ * and a malformed one -- a blank answer, an unknown id, an over-long answer --
+ * is a 400 `invalid_prompt_answers`. Pass `{}` for a job with no prompts.
  */
 export async function applyToJob(
   token: string,
   id: string,
-  answers?: Record<string, unknown>,
-  certification_claims?: Array<CertificationClaim>,
+  promptAnswers: Record<string, string>,
 ): Promise<Application> {
-  const hasBody = answers !== undefined || certification_claims !== undefined;
-  const body: { answers?: Record<string, unknown>; certification_claims?: Array<CertificationClaim> } = {};
-  if (answers !== undefined) body.answers = answers;
-  if (certification_claims !== undefined) body.certification_claims = certification_claims;
   const res = await apiFetch(
     `/worker/jobs/${id}/apply`,
-    { method: 'POST', body: hasBody ? JSON.stringify(body) : undefined },
+    { method: 'POST', body: JSON.stringify({ prompt_answers: promptAnswers }) },
     token,
   );
   // A 400 from the required-docs guard carries `missing_docs`; the job page
@@ -332,6 +426,221 @@ export async function applyToJob(
   // `err.payload.missing_docs` and `err.missing_docs`.
   if (!res.ok) throw await parseApiError(res, 'apply_failed');
   return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Stage 2: the application-requirements door (S23 L2.4)
+//
+// `/worker/applications/{applicationId}` and its three write routes are the
+// WEB door onto the same requirements engine WhatsApp runs
+// (`infra/lambda/lib/application-requirements.ts`). Like the onboarding door
+// above, every one of them answers with the WHOLE state document, so a caller
+// never has to guess what a write changed: hydrate from the response and
+// re-render.
+//
+// The door only accepts writes while the employer has the stage OPEN. Before
+// `details_requested` and after the application closes, a write is refused
+// with the fresh state attached -- see `ApplicationSaveResult`'s `blocked`.
+// ---------------------------------------------------------------------------
+
+/**
+ * The state document `GET /worker/applications/{id}` returns, and that every
+ * successful write returns again.
+ *
+ * `next_step` is typed LOOSELY on purpose. Server-side it is a six-member
+ * discriminated union (`prompt | field | certification | doc | complete |
+ * exit`, see `RequirementStep`), and it is the part of this contract most
+ * likely to grow a member; narrowing it here would turn a backend addition
+ * into a frontend compile error on a field no current caller branches on.
+ * Read `kind` and widen this type when a caller actually needs the rest.
+ */
+export type ApplicationRequirementsState = {
+  application: {
+    id: string;
+    job_id: string;
+    status: ApplicationStatus;
+    details_status: ApplicationDetailsStatus;
+    stage: ApplicationStage;
+    details_requested_at: string | null;
+    details_completed_at: string | null;
+    applied_at: string | null;
+    updated_at: string | null;
+  };
+  job: {
+    id: string;
+    title: string | null;
+    /** Resolved through `employer_display_name()`; null for an orphaned job. */
+    company_name: string | null;
+    status: JobStatus;
+    required_fields: JobFieldKey[];
+    optional_fields: JobFieldKey[];
+    required_docs: DocType[];
+    optional_docs: DocType[];
+    certification_requirements: Array<{ name: string; tier: 'required' | 'optional'; proof_required: boolean }>;
+    pre_application_prompts: PreApplicationPrompt[];
+  };
+  /** Field answers only -- the reserved `certifications` key is split out. */
+  answers: Record<string, unknown>;
+  certifications: CertificationClaim[];
+  prompt_answers: Record<string, string>;
+  /** Presence over the job's required + optional docs. */
+  documents: Array<{ doc_type: string; present: boolean }>;
+  remaining: ApplicationRequirementsRemaining;
+  next_step: { kind: string; [key: string]: unknown };
+};
+
+/**
+ * The three write doors return a UNION instead of throwing for their
+ * documented 4xx codes, for the same reason `postOnboardingAnswers` does:
+ * `ALLOWED_PAYLOAD_KEYS` in `./errors` is a closed allowlist and an
+ * `ApiError` physically cannot carry the per-key `errors` map or the fresh
+ * `state` these bodies ship. Widening the allowlist for one endpoint would
+ * loosen the guarantee it exists to give.
+ *
+ * Everything else -- 5xx, offline, timeout, `worker_not_found`, an
+ * unrecognized 4xx, or a 409 whose body did not survive a proxy -- still
+ * throws `ApiError`. A 403 `legal_required` never reaches here at all:
+ * `apiFetch` turns it into `LegalWallError` so the redirect still happens.
+ */
+export type ApplicationSaveResult =
+  /** 200. The state AFTER the merge -- it may have flipped `details_status`. */
+  | { kind: 'saved'; state: ApplicationRequirementsState }
+  /**
+   * 400 `invalid_answers`. `errors` maps the offending key to a reason code;
+   * it is EMPTY for a shape-level rejection (not an object, no keys, too many
+   * keys), which is still a 400 the form must render rather than throw.
+   * The merge is all-or-nothing: nothing in the batch was stored.
+   */
+  | { kind: 'invalid'; errors: Record<string, string> }
+  /**
+   * 409. The stage is not open (`stage_locked`: the employer has not asked
+   * for details yet) or the application is over (`application_closed`). Both
+   * carry the fresh state, so the caller re-renders without a second GET.
+   */
+  | { kind: 'blocked'; reason: 'stage_locked' | 'application_closed'; state: ApplicationRequirementsState }
+  /**
+   * `payload_too_large`, from EITHER status: 413 is the pre-DB body cap
+   * (16 KB, measured before parsing) and 400 is the post-merge column
+   * overflow the door can only see after merging. Different events, one thing
+   * for the worker to do -- write less.
+   */
+  | { kind: 'too_large' }
+  /** 404 `not_found`: no such application, or not this worker's. */
+  | { kind: 'not_found' }
+  /** 409: this worker is at migration 078's per-certification document cap. */
+  | { kind: 'certification_document_limit' };
+
+export async function getApplicationRequirements(
+  token: string,
+  applicationId: string,
+  signal?: AbortSignal,
+): Promise<ApplicationRequirementsState> {
+  const res = await apiFetch(`/worker/applications/${applicationId}`, { signal }, token);
+  if (!res.ok) throw await parseApiError(res, 'fetch_failed');
+  return res.json();
+}
+
+/**
+ * The shared 200/4xx parser for the three write doors -- one implementation,
+ * because all three answer with the same status/code vocabulary
+ * (`mapFailure` in `api/worker-application-details.ts`) and three copies
+ * would drift the first time a code was added.
+ *
+ * Reads the body through `clone()`: `apiFetch` has already read the original
+ * stream on the way past for any 409 (the provisioning retry) and any 403
+ * (the legal wall). An unparseable body falls through to the thrown
+ * `ApiError` rather than producing a half-built union member.
+ */
+async function parseApplicationSaveResult(res: Response): Promise<ApplicationSaveResult> {
+  if (res.ok) return { kind: 'saved', state: await res.json() };
+
+  if (res.status === 400 || res.status === 404 || res.status === 409 || res.status === 413) {
+    const parsed = await res.clone().json().catch(() => null) as {
+      error?: unknown;
+      errors?: unknown;
+      state?: unknown;
+    } | null;
+    const code = typeof parsed?.error === 'string' ? parsed.error : '';
+    const state = parsed?.state !== null && typeof parsed?.state === 'object'
+      ? parsed.state as ApplicationRequirementsState
+      : undefined;
+
+    if (res.status === 400 && code === 'invalid_answers') {
+      // A non-object `errors` degrades to an empty map: the union member is
+      // still the right answer, and the caller iterates this.
+      const errors = parsed?.errors !== null && typeof parsed?.errors === 'object' && !Array.isArray(parsed?.errors)
+        ? parsed.errors as Record<string, string>
+        : {};
+      return { kind: 'invalid', errors };
+    }
+    // Matched on the CODE, not the status: the two `payload_too_large`
+    // rejections arrive as 400 and 413 respectively.
+    if (code === 'payload_too_large') return { kind: 'too_large' };
+    if (res.status === 409 && code === 'certification_document_limit') {
+      return { kind: 'certification_document_limit' };
+    }
+    if (res.status === 409 && (code === 'stage_locked' || code === 'application_closed') && state !== undefined) {
+      return { kind: 'blocked', reason: code, state };
+    }
+    // ONLY the bare `not_found`. A 404 `worker_not_found` means the session's
+    // worker row is gone -- an account-level failure, not something a form can
+    // render -- and must keep throwing.
+    if (res.status === 404 && code === 'not_found') return { kind: 'not_found' };
+  }
+
+  throw await parseApiError(res, 'save_failed');
+}
+
+/**
+ * Field answers, keyed by the `required_fields`/`optional_fields` vocabulary.
+ * At most 20 keys per call (the door rejects a larger batch outright rather
+ * than truncating it), and the merge is all-or-nothing.
+ */
+export async function postApplicationAnswers(
+  token: string,
+  applicationId: string,
+  answers: Record<string, unknown>,
+): Promise<ApplicationSaveResult> {
+  const res = await apiFetch(
+    `/worker/applications/${applicationId}/answers`,
+    { method: 'POST', body: JSON.stringify({ answers }) },
+    token,
+  );
+  return parseApplicationSaveResult(res);
+}
+
+/** Certification-requirement claims, the same shape apply used to carry. */
+export async function postApplicationCertifications(
+  token: string,
+  applicationId: string,
+  claims: CertificationClaim[],
+): Promise<ApplicationSaveResult> {
+  const res = await apiFetch(
+    `/worker/applications/${applicationId}/certifications`,
+    { method: 'POST', body: JSON.stringify({ claims }) },
+    token,
+  );
+  return parseApplicationSaveResult(res);
+}
+
+/**
+ * Prompt answers, keyed on prompt id. WRITE-ONCE: an id that already has an
+ * answer keeps the stored one (the merge is `new || existing`), so this
+ * finishes a partial set rather than editing one. Deliberately NOT
+ * stage-gated -- prompts belong to the apply stage, and a worker who
+ * abandoned them mid-flow on WhatsApp completes them here.
+ */
+export async function postApplicationPromptAnswers(
+  token: string,
+  applicationId: string,
+  answers: Record<string, string>,
+): Promise<ApplicationSaveResult> {
+  const res = await apiFetch(
+    `/worker/applications/${applicationId}/prompt-answers`,
+    { method: 'POST', body: JSON.stringify({ answers }) },
+    token,
+  );
+  return parseApplicationSaveResult(res);
 }
 
 export async function getApplications(
