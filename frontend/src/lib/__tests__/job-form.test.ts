@@ -4,6 +4,7 @@ import {
   DURATION_BUCKETS, WORK_DAYS, DURATION_BUCKET_LABELS, type DurationBucket,
   deriveLegacyExpectedDuration, deriveLegacyShiftSchedule,
   payRangeExceeds, validateJobNumbers, validateStepBasics, validateStepDetails, validateFullJobForm,
+  validateStepRequirements,
   type CertificationRequirement,
 } from '@/lib/job-form';
 import type { EmployerJobDetail } from '@/lib/api/employer';
@@ -1098,5 +1099,93 @@ describe('jobFormFromTemplatePayload: FE-T3 additive fields', () => {
     expect(form.shift_start).toBe('');
     expect(form.shift_end).toBe('');
     expect(form.certification_requirements).toEqual([]);
+  });
+});
+
+describe('pre-application prompts (migration 091)', () => {
+  it('starts empty on a fresh form', () => {
+    expect(initialForm.pre_application_prompts).toEqual([]);
+  });
+
+  it('ALWAYS emits the key, `[]` included -- the same always-send contract as the four arrays', () => {
+    const payload = jobFormToCreatePayload(base);
+    expect('pre_application_prompts' in payload).toBe(true);
+    expect(payload.pre_application_prompts).toEqual([]);
+
+    const edit = jobFormToEditPayload(base, { state_region: '' });
+    expect(edit.pre_application_prompts).toEqual([]);
+  });
+
+  it('trims each question and drops the blank row an untouched Add leaves behind', () => {
+    const payload = jobFormToCreatePayload({
+      ...base,
+      pre_application_prompts: [
+        { id: 'p1', text: '  What tools do you bring?  ' },
+        { id: 'p2', text: '   ' },
+      ],
+    });
+    expect(payload.pre_application_prompts).toEqual([{ id: 'p1', text: 'What tools do you bring?' }]);
+  });
+
+  it('round-trips a stored job byte-identically, ids included, so the lock sees no change', () => {
+    // The post-applicants lock compares the arriving list against the stored
+    // one by CONTENT. A re-minted id would read as an edit and 409
+    // `field_locked` -- making every later save of the job fail, even a title
+    // fix (the same scar `seedCertificationRequirements` carries).
+    const stored = [
+      { id: 'aaaa-1', text: 'Tell me about the biggest pour you have finished.' },
+      { id: 'bbbb-2', text: 'What tools do you bring to a job?' },
+    ];
+    const job: EmployerJobDetail = { ...baseJob, applicant_count: 3, pre_application_prompts: stored };
+    const form = jobToForm(job);
+    expect(form.pre_application_prompts).toEqual(stored);
+    expect(jobFormToEditPayload(form, form).pre_application_prompts).toEqual(stored);
+  });
+
+  it('reads a job from before the feature as asking nothing', () => {
+    expect(jobToForm(baseJob).pre_application_prompts).toEqual([]);
+    expect(jobToForm({ ...baseJob, pre_application_prompts: null as never }).pre_application_prompts).toEqual([]);
+  });
+
+  it('carries prompts through a saved template payload', () => {
+    const { form } = jobFormFromTemplatePayload({
+      title: 'x', location: 'El Paso, TX', job_type: 'contract' as const,
+      pre_application_prompts: [{ id: 't1', text: 'How far will you drive?' }],
+    } as never);
+    expect(form.pre_application_prompts).toEqual([{ id: 't1', text: 'How far will you drive?' }]);
+  });
+});
+
+describe('validateFullJobForm: prompt codes', () => {
+  // `base` is deliberately trade_category 'other' with no custom trade text,
+  // so it fails step 1 on its own -- these cases need a form whose only
+  // possible complaint is the prompts.
+  const valid: JobForm = {
+    ...base,
+    trade_category: 'concrete',
+    city_key: 'el-paso-tx', city: 'El Paso', state: 'TX', state_region: 'TX',
+  };
+
+  it('rejects a blank question row', () => {
+    expect(validateFullJobForm({ ...valid, pre_application_prompts: [{ id: 'p1', text: '  ' }] }))
+      .toBe('prompt_blank');
+    expect(validateStepRequirements({ ...valid, pre_application_prompts: [{ id: 'p1', text: '  ' }] }))
+      .toBe('prompt_blank');
+  });
+
+  it('rejects a question past the hard 500-character bound, not the 300 counter guide', () => {
+    expect(validateFullJobForm({ ...valid, pre_application_prompts: [{ id: 'p1', text: 'x'.repeat(301) }] }))
+      .toBeNull();
+    expect(validateFullJobForm({ ...valid, pre_application_prompts: [{ id: 'p1', text: 'x'.repeat(501) }] }))
+      .toBe('prompt_too_long');
+  });
+
+  it('reports the earlier step first -- a broken step 1 outranks a broken prompt', () => {
+    expect(validateFullJobForm({ ...valid, title: '', pre_application_prompts: [{ id: 'p1', text: '' }] }))
+      .toBe('required');
+  });
+
+  it('passes a job that asks nothing', () => {
+    expect(validateFullJobForm(valid)).toBeNull();
   });
 });

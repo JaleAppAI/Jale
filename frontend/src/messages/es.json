@@ -834,7 +834,7 @@
     "post_job_docs": {
       "step_label": "Paso 2 de 2",
       "title": "Requisitos de documentos",
-      "subtitle": "¿Qué documentos necesitan los postulantes? Todos opcionales por defecto.",
+      "subtitle": "Sus preguntas de postulación, y luego lo que pedirá cuando solicite los datos de alguien.",
       "optional_label": "Opcional",
       "required_label": "Requerido",
       "next": "Siguiente: Requisitos de documentos",
@@ -938,7 +938,17 @@
     "forbidden": {
       "title": "Sin acceso a este postulante",
       "body": "Solo puede abrir trabajadores que se hayan postulado a uno de sus empleos."
-    }
+    },
+    "hire_option_blocked": "Contratado — datos incompletos",
+    "hire_blocked_not_requested": "Para marcarlo como contratado, primero solicite sus datos.",
+    "hire_blocked_requested": "Contratado se desbloquea cuando sus datos estén completos — faltan {count}.",
+    "hire_blocked_requested_no_count": "Contratado se desbloquea cuando sus datos estén completos.",
+    "prompt_answers_title": "Sobre este empleo — con sus propias palabras",
+    "prompt_answers_question_removed": "Pregunta eliminada",
+    "details_incomplete_title": "Todavía no puede marcarlo como contratado — este trabajador no ha completado sus datos.",
+    "details_incomplete_fields": "Aún faltan: {items}",
+    "details_incomplete_docs": "Documentos que aún faltan: {items}",
+    "details_incomplete_certifications": "Certificaciones que aún faltan: {items}"
   },
   "upload_page": {
     "title": "Suba sus documentos",
@@ -1249,7 +1259,19 @@
       "filtered_title": "Ningún postulante coincide con estos filtros",
       "filtered_body": "Cambie los filtros, o quítelos para ver a todos los que se postularon.",
       "clear_filters": "Quitar filtros",
-      "trust_pill": "Confianza {score}"
+      "trust_pill": "Confianza {score}",
+      "request_details": "Solicitar datos",
+      "request_details_sent": "Datos solicitados — le avisaremos.",
+      "details": {
+        "not_requested": "Datos: no solicitados",
+        "requested": "Datos: solicitados · faltan {count}",
+        "requested_no_count": "Datos: solicitados",
+        "complete": "Datos: completos"
+      },
+      "own_words": {
+        "title": "Con sus propias palabras",
+        "question_removed": "Pregunta eliminada"
+      }
     },
     "ranking": {
       "loading": "Calculando qué tan bien coincide cada postulante con este empleo...",
@@ -1306,7 +1328,8 @@
   },
   "job_requirements": {
     "picker": {
-      "rule_line": "Los elementos Requeridos deben completarse para postularse. Los Opcionales se pueden omitir. Los que están Desactivados no se piden.",
+      "rule_line": "Los elementos Requeridos deben completarse cuando usted solicite los datos. Los Opcionales se pueden omitir. Los que están Desactivados no se piden.",
+      "after_request_note": "Estos se piden solo después de que usted solicite los datos a un postulante.",
       "count_badge": "{required, plural, one {# requerido} other {# requeridos}} · {optional, plural, one {# opcional} other {# opcionales}}",
       "locked_note": "Los requisitos están bloqueados — este trabajo ya tiene postulantes",
       "sensitive": "Sensible",
@@ -1315,11 +1338,32 @@
       "proof_hint": "Pide al postulante adjuntar el certificado con su postulación.",
       "no_certifications_yet": "No se han seleccionado certificaciones. Agréguelas en Pago y horario.",
       "cert_tier_aria": "Nivel de requisito de {name}",
-      "cert_hint_required_proof": "Los postulantes deben subir el comprobante de esta certificación con su postulación inicial.",
-      "cert_hint_required_attest": "Los postulantes confirmarán que tienen esta certificación — no necesitan subir nada. Puede pedir verla en persona.",
-      "cert_hint_optional": "Los postulantes pueden compartirla si la tienen. Nunca bloquea una postulación.",
-      "doc_hint_required": "Los postulantes deben subir este documento para postularse.",
-      "doc_hint_optional": "Los postulantes pueden adjuntarlo — no es necesario para postularse."
+      "cert_hint_required_proof": "Los postulantes deben subir el comprobante de esta certificación cuando usted solicite los datos.",
+      "cert_hint_required_attest": "Los postulantes confirman que tienen esta certificación cuando usted solicite los datos — no necesitan subir nada. Puede pedir verla en persona.",
+      "cert_hint_optional": "Los postulantes pueden compartirla cuando usted solicite los datos. Nunca bloquea una postulación.",
+      "doc_hint_required": "Los postulantes deben subir este documento cuando usted solicite los datos.",
+      "doc_hint_optional": "Los postulantes pueden adjuntarlo cuando usted solicite los datos — nunca es obligatorio."
+    },
+    "prompts": {
+      "section_title": "Preguntas de postulación",
+      "section_subtitle": "Se preguntan al postularse. El trabajador contesta con sus propias palabras — no se le pide nada más para postularse.",
+      "empty": "Aún no hay preguntas — los trabajadores se postulan con un toque.",
+      "add": "Agregar una pregunta",
+      "question_number": "Pregunta {number}",
+      "placeholder": "Pregunte una sola cosa, corta y en palabras sencillas. Ejemplo: ¿Qué herramientas traes a un trabajo?",
+      "counter": "{count}/{max}",
+      "move_up": "Subir",
+      "move_down": "Bajar",
+      "remove": "Quitar",
+      "move_up_aria": "Subir la pregunta {number}",
+      "move_down_aria": "Bajar la pregunta {number}",
+      "remove_aria": "Quitar la pregunta {number}",
+      "tip": "Cuantas más preguntas haga, más trabajadores abandonan antes de terminar. Le sugerimos 2 o menos.",
+      "tip_warning": "Tiene {count} preguntas — espere menos postulaciones completadas.",
+      "validation_blank": "Cada pregunta necesita texto, o quite la que está vacía.",
+      "validation_too_long": "Una de sus preguntas es demasiado larga. Mantenga cada una por debajo de {max} caracteres.",
+      "invalid_rejected": "No pudimos guardar estas preguntas. Acórtelas, o quite las vacías, e intente de nuevo.",
+      "locked_rejected": "Este empleo ya tiene postulantes, así que sus preguntas están bloqueadas. Recargue la página para ver las guardadas."
     },
     "groups": {
       "documents": "Documentos",

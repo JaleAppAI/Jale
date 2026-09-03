@@ -2,6 +2,14 @@ import { splitDedupe } from '@/lib/text';
 import type { EmployerJobDetail, JobWritePayload } from '@/lib/api/employer';
 import { locationDatasetFailed } from '@/lib/location-search';
 import {
+  type PromptDraft,
+  normalizePrompts,
+  sanitizePrompts,
+  validatePrompts,
+  type PromptValidationCode,
+} from '@/lib/pre-application-prompts';
+export type { PromptDraft } from '@/lib/pre-application-prompts';
+import {
   type RequirementsMap,
   type RequirementState,
   type CertificationRequirement,
@@ -126,6 +134,14 @@ export type JobForm = {
    * forces `certification_doc` off whenever this is non-empty.
    */
   certification_requirements: CertificationRequirement[];
+  /**
+   * The employer's apply-time questions (migration 091). Editor rows, ids
+   * included -- `lib/pre-application-prompts.ts` owns the algebra, and the ids
+   * here are ROUND-TRIPPED, never re-minted: the backend's post-applicants
+   * lock compares this list by content, so a fresh id on an existing prompt
+   * reads as a change and 409s `field_locked` on every later save.
+   */
+  pre_application_prompts: PromptDraft[];
 };
 
 export const initialForm: JobForm = {
@@ -140,6 +156,7 @@ export const initialForm: JobForm = {
   certifications: '', requirements: initialRequirements(),
   expected_duration_bucket: '', work_days: [], shift_start: '', shift_end: '',
   certification_requirements: [],
+  pre_application_prompts: [],
 };
 
 // Structural shape of the LocationPicker's onChange payload. Declared here
@@ -288,12 +305,30 @@ export function validateStepDetails(
   return null;
 }
 
-/** validateStepBasics, then validateStepDetails -- basics errors take priority. */
+/**
+ * The requirements step's own gate (migration 091's prompt bounds). Split out
+ * so a caller can tell a step-3 failure from a step-1/2 one and land the
+ * employer on the panel that owns the failing control -- `PostJobModal` does
+ * exactly that, and the two single-screen modals just show the sentence.
+ */
+export function validateStepRequirements(form: JobForm): PromptValidationCode | null {
+  return validatePrompts(form.pre_application_prompts);
+}
+
+export type JobFormErrorCode =
+  | StepBasicsErrorCode
+  | 'number' | 'pay_range' | 'headcount' | 'shift_incomplete'
+  | PromptValidationCode;
+
+/**
+ * validateStepBasics, then validateStepDetails, then the requirements step --
+ * in wizard order, so the earliest broken step is the one named.
+ */
 export function validateFullJobForm(
   form: JobForm,
   opts?: { minWorkers?: number },
-): StepBasicsErrorCode | 'number' | 'pay_range' | 'headcount' | 'shift_incomplete' | null {
-  return validateStepBasics(form) ?? validateStepDetails(form, opts);
+): JobFormErrorCode | null {
+  return validateStepBasics(form) ?? validateStepDetails(form, opts) ?? validateStepRequirements(form);
 }
 
 // ---------------------------------------------------------------------------
@@ -432,6 +467,15 @@ function jobFormToBasePayload(form: JobForm): BasePayload {
     optional_docs: finalOptionalDocs,
     required_fields,
     optional_fields,
+    // ALWAYS sent, `[]` included -- the same always-send contract as the four
+    // arrays above, and for the same reason: the backend's post-applicants
+    // lock compares what arrives against what is stored, so omitting the key
+    // on a locked job is fine but sending a DIFFERENT list is a 409. Every id
+    // here came from the read (`jobToForm`/`sanitizePrompts`) or from the
+    // editor's one mint site, so an unedited form round-trips byte-identically
+    // and passes that comparison. `normalizePrompts` trims and drops the blank
+    // row an untouched "Add a question" leaves behind.
+    pre_application_prompts: normalizePrompts(form.pre_application_prompts),
     pay_min: parseOptionalNumber(form.pay_min),
     pay_max: parseOptionalNumber(form.pay_max),
     pay_interval: form.pay_interval,
@@ -663,6 +707,9 @@ export function jobToForm(job: EmployerJobDetail): JobForm {
     shift_start: normalizeShiftTime(job.shift_start),
     shift_end: normalizeShiftTime(job.shift_end),
     certification_requirements: seedCertificationRequirements(job),
+    // Ids preserved verbatim; malformed/absent lists degrade to no prompts.
+    // NEVER re-minted here -- see `lib/pre-application-prompts.ts`'s header.
+    pre_application_prompts: sanitizePrompts(job.pre_application_prompts),
   };
 }
 

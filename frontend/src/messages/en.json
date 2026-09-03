@@ -834,7 +834,7 @@
     "post_job_docs": {
       "step_label": "Step 2 of 2",
       "title": "Document Requirements",
-      "subtitle": "Which documents do applicants need? All optional by default.",
+      "subtitle": "Your apply-time questions, then what you'll ask for once you request someone's details.",
       "optional_label": "Optional",
       "required_label": "Required",
       "next": "Next: Document Requirements",
@@ -938,7 +938,17 @@
     "forbidden": {
       "title": "No access to this applicant",
       "body": "You can only open workers who applied to one of your own jobs."
-    }
+    },
+    "hire_option_blocked": "Hired — details not complete",
+    "hire_blocked_not_requested": "To mark as hired, request their details first.",
+    "hire_blocked_requested": "Hired unlocks once their details are complete — {count} left.",
+    "hire_blocked_requested_no_count": "Hired unlocks once their details are complete.",
+    "prompt_answers_title": "About this job — in their own words",
+    "prompt_answers_question_removed": "Question removed",
+    "details_incomplete_title": "Can't mark as hired yet — this worker hasn't completed their details.",
+    "details_incomplete_fields": "Still missing: {items}",
+    "details_incomplete_docs": "Documents still missing: {items}",
+    "details_incomplete_certifications": "Certifications still missing: {items}"
   },
   "upload_page": {
     "title": "Upload your documents",
@@ -1249,7 +1259,19 @@
       "filtered_title": "No applicants match these filters",
       "filtered_body": "Change the filters, or clear them to see everyone who applied.",
       "clear_filters": "Clear filters",
-      "trust_pill": "Trust {score}"
+      "trust_pill": "Trust {score}",
+      "request_details": "Request details",
+      "request_details_sent": "Details requested — we'll let them know.",
+      "details": {
+        "not_requested": "Details: not requested",
+        "requested": "Details: requested · {count} left",
+        "requested_no_count": "Details: requested",
+        "complete": "Details: complete"
+      },
+      "own_words": {
+        "title": "In their own words",
+        "question_removed": "Question removed"
+      }
     },
     "ranking": {
       "loading": "Scoring how well each applicant matches this job...",
@@ -1306,7 +1328,8 @@
   },
   "job_requirements": {
     "picker": {
-      "rule_line": "Required items must be completed to apply. Optional items can be skipped. Off items are not asked.",
+      "rule_line": "Required items must be completed when you request details. Optional items can be skipped. Off items are not asked.",
+      "after_request_note": "These are asked only after you request details from an applicant.",
       "count_badge": "{required} required · {optional} optional",
       "locked_note": "Requirements are locked — this job already has applicants",
       "sensitive": "Sensitive",
@@ -1315,11 +1338,32 @@
       "proof_hint": "Asks the applicant to attach the certificate with their application.",
       "no_certifications_yet": "No certifications selected. Add them in Pay and schedule.",
       "cert_tier_aria": "{name} requirement level",
-      "cert_hint_required_proof": "Applicants must upload proof of this certification with their initial application.",
-      "cert_hint_required_attest": "Applicants will confirm they have this certification — no upload needed. You can ask to see it in person.",
-      "cert_hint_optional": "Applicants can share this if they have it. It never blocks an application.",
-      "doc_hint_required": "Applicants must upload this document to apply.",
-      "doc_hint_optional": "Applicants may attach this — not needed to apply."
+      "cert_hint_required_proof": "Applicants must upload proof of this certification when you request details.",
+      "cert_hint_required_attest": "Applicants confirm they have this certification when you request details — no upload needed. You can ask to see it in person.",
+      "cert_hint_optional": "Applicants can share this when you request details. It never blocks an application.",
+      "doc_hint_required": "Applicants must upload this document when you request details.",
+      "doc_hint_optional": "Applicants may attach this when you request details — never required."
+    },
+    "prompts": {
+      "section_title": "Pre-application questions",
+      "section_subtitle": "Asked at apply time. The worker answers in their own words — nothing else is asked to apply.",
+      "empty": "No questions yet — workers apply with one tap.",
+      "add": "Add a question",
+      "question_number": "Question {number}",
+      "placeholder": "Ask one short thing in plain words. Example: What tools do you bring to a job?",
+      "counter": "{count}/{max}",
+      "move_up": "Move up",
+      "move_down": "Move down",
+      "remove": "Remove",
+      "move_up_aria": "Move question {number} up",
+      "move_down_aria": "Move question {number} down",
+      "remove_aria": "Remove question {number}",
+      "tip": "The more questions you ask, the more workers stop before finishing. We suggest 2 or fewer.",
+      "tip_warning": "You have {count} questions — expect fewer completed applications.",
+      "validation_blank": "Every question needs text, or remove the empty one.",
+      "validation_too_long": "One of your questions is too long. Keep each one under {max} characters.",
+      "invalid_rejected": "We couldn't save these questions. Shorten them, or remove the empty ones, and try again.",
+      "locked_rejected": "This job already has applicants, so its questions are locked. Reload the page to see the saved ones."
     },
     "groups": {
       "documents": "Documents",
