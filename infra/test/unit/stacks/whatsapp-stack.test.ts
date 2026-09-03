@@ -1368,6 +1368,32 @@ describe('event-driven outbox wake queues', () => {
       }
     });
 
+    // L6 moved the web lane's transcripts to `voice/<worker>/transcripts/`,
+    // and the thing that WRITES them is the pipeline's state machine (via
+    // Transcribe's OutputBucketName), not anything this lane owns. Its grant
+    // is bucket-wide today; scoped to some older prefix it would leave every
+    // web voice answer polling to its 60s cap with no error anywhere.
+    test('the trust pipeline may write transcripts anywhere under the media bucket', () => {
+      const machine = Object.values(template.findResources('AWS::StepFunctions::StateMachine'))
+        // The aws-sdk integration lower-cases the verb: `transcribe:startTranscriptionJob`.
+        .find((r: any) => /starttranscriptionjob/i.test(JSON.stringify(r.Properties?.DefinitionString ?? ''))) as any;
+      expect(machine).toBeDefined();
+      const roleRef = machine.Properties.RoleArn['Fn::GetAtt'][0];
+      const statements = Object.values(template.findResources('AWS::IAM::Policy'))
+        .filter((policy: any) => JSON.stringify(policy.Properties.Roles ?? []).includes(roleRef))
+        .flatMap((policy: any) => policy.Properties.PolicyDocument.Statement as any[]);
+      const writes = statements.filter((st) => {
+        const acts = Array.isArray(st.Action) ? st.Action : [st.Action];
+        return acts.some((a: string) => a === 's3:PutObject' || a === 's3:PutObject*');
+      });
+      expect(writes.length).toBeGreaterThan(0);
+      // Bucket-wide: the object arn ends in `/*` with nothing in between.
+      expect(writes.some((st) => JSON.stringify(st.Resource).includes('/*"'))).toBe(true);
+      for (const st of writes) {
+        expect(JSON.stringify(st.Resource)).not.toContain('transcripts/');
+      }
+    });
+
     test.each([
       ['onboarding', 'GET'],
       // ONE `{action}` resource carries answers/back/language. ApiStack sits
