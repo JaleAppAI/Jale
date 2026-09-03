@@ -1360,6 +1360,8 @@
       "remove_aria": "Remove question {number}",
       "tip": "The more questions you ask, the more workers stop before finishing. We suggest 2 or fewer.",
       "tip_warning": "You have {count} questions — expect fewer completed applications.",
+      "locked_title": "This job already has applicants, so the questions are locked. Everyone who applies to a job answers the same questions.",
+      "locked_hint": "To ask something different, post a new job.",
       "validation_blank": "Every question needs text, or remove the empty one.",
       "validation_too_long": "One of your questions is too long. Keep each one under {max} characters.",
       "invalid_rejected": "We couldn't save these questions. Shorten them, or remove the empty ones, and try again.",

@@ -13,7 +13,11 @@
 // ---------------------------------------------------------------------------
 
 import type { RequirementsRemaining } from '@/lib/api/worker';
-import type { ApplicationDetailsStatus } from '@/lib/status';
+import {
+    TERMINAL_APPLICATION_STATUSES,
+    type ApplicationDetailsStatus,
+    type ApplicationStatus,
+} from '@/lib/status';
 
 /**
  * How many things still block a hire, as one number.
@@ -67,4 +71,27 @@ export function hireBlocked(profile: {
     details_status?: ApplicationDetailsStatus;
 } | null | undefined): boolean {
     return hireBlockReason(profile) !== null;
+}
+
+/**
+ * Whether to offer "Request details" for this application.
+ *
+ * Shared by the applicant CARD (job page) and the applicant PAGE (worker
+ * detail), so the two can never disagree about when the button exists.
+ *
+ * FAIL-OPEN, same reasoning as `hireBlockReason`: an absent `details_status`
+ * means the API has not shipped the vocabulary, not that details are already
+ * requested. Hiding the one control that moves an application forward on the
+ * strength of a field the backend simply does not send yet would break the
+ * page against the old API rather than degrade against it -- and the PATCH is
+ * the authority either way.
+ */
+export function canRequestDetails(application: {
+    status?: ApplicationStatus;
+    details_status?: ApplicationDetailsStatus;
+} | null | undefined): boolean {
+    if (!application) return false;
+    const { status, details_status: detailsStatus } = application;
+    if (status && TERMINAL_APPLICATION_STATUSES.includes(status)) return false;
+    return detailsStatus !== 'requested' && detailsStatus !== 'complete';
 }

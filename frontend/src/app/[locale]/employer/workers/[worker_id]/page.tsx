@@ -36,7 +36,7 @@ import {
 } from '@/lib/api/employer';
 import type { WorkerPost } from '@/lib/api/worker';
 import { normalizeApplicationStatus } from '@/lib/status';
-import { hireBlockReason, remainingCount } from '@/lib/hire-gate';
+import { canRequestDetails, hireBlockReason, remainingCount } from '@/lib/hire-gate';
 import { tradeLabel } from '@/lib/trades';
 import { displayAnswer, displayQuestion, normalizeAnswers } from '@/lib/trust-assessment';
 import { AnswerHighlights } from './AnswerHighlights';
@@ -109,6 +109,10 @@ export default function WorkerProfilePage() {
     // labels must read the same words the job form and the vault use.
     const tReq = useTranslations('job_requirements');
     const tDocTypes = useTranslations('doc_types');
+    // Read-only: the Request details action says the SAME words here as on the
+    // applicant card, so an employer who learns it in one place recognises it
+    // in the other. The keys live with the card, which owns that vocabulary.
+    const tListing = useTranslations('employer_job_listing');
     const errorMessage = useErrorMessage();
 
     const { idToken } = useAuth();
@@ -237,6 +241,59 @@ export default function WorkerProfilePage() {
      * the array variant belongs to a different code, so anything that is not
      * the three-bucket object degrades to the bare headline.
      */
+    /*
+     * The same action as the applicant card's, on the page an employer lands on
+     * when they open a candidate: the select can technically reach
+     * `details_requested`, but that makes the primary next step a two-control
+     * chore behind a dropdown. `canRequestDetails` is the shared predicate, so
+     * the two surfaces show and hide the button on identical rules.
+     */
+    const [requestingDetails, setRequestingDetails] = useState(false);
+    const [detailsJustRequested, setDetailsJustRequested] = useState(false);
+    const showRequestDetails = !detailsJustRequested
+        && canRequestDetails({ status: savedStatus, details_status: profile?.details_status });
+
+    const handleRequestDetails = useCallback(async () => {
+        if (!idToken || !linkValid || !profile || requestingDetails) return;
+        setRequestingDetails(true);
+        setSaveFeedback(null);
+        try {
+            const updated = await updateApplicantStatus(
+                idToken, jobId, workerId, 'details_requested',
+            );
+            setDetailsJustRequested(true);
+            /*
+             * Optimistic for the same reason the card is: the PATCH answers
+             * with `{ status }` only, and the stage-2 fields it moved are
+             * republished by the next profile READ. Both are written here so
+             * the hire hint and the disabled option agree with the button that
+             * just disappeared. `remaining` is untouched -- requesting details
+             * answers none of it.
+             */
+            setData((prev) => ({
+                ...prev,
+                profile: {
+                    ...prev.profile,
+                    application_status: updated.status ?? 'details_requested',
+                    details_status: 'requested' as const,
+                },
+            }));
+            setStatusDraft(null);
+            setSaveFeedback({ tone: 'success', message: tListing('applicants.request_details_sent') });
+        } catch (err) {
+            try {
+                handleLegalWall(err, returnUrl);
+            } catch {
+                setSaveFeedback({ tone: 'danger', message: errorMessage(err) });
+            }
+        } finally {
+            setRequestingDetails(false);
+        }
+    }, [
+        errorMessage, handleLegalWall, idToken, jobId, linkValid, profile,
+        requestingDetails, returnUrl, setData, tListing, workerId,
+    ]);
+
     const hireGateMessage = useCallback((err: ApiError): string => {
         const headline = t('details_incomplete_title');
         const missing = err.payload.missing;
@@ -818,6 +875,24 @@ export default function WorkerProfilePage() {
                                     >
                                         {t('save_status')}
                                     </Button>
+                                    {/* Beside Save, not instead of it: Save
+                                        commits whatever the select holds, this
+                                        is the one-press version of the move an
+                                        employer makes next in almost every
+                                        case. Disappears once details are
+                                        requested -- there is nothing to ask
+                                        twice. */}
+                                    {showRequestDetails ? (
+                                        <Button
+                                            variant="outline"
+                                            onClick={() => void handleRequestDetails()}
+                                            disabled={saving}
+                                            loading={requestingDetails}
+                                            loadingLabel={tCommon('loading')}
+                                        >
+                                            {tListing('applicants.request_details')}
+                                        </Button>
+                                    ) : null}
                                 </div>
 
                                 {/* Scoped to the control that produced it: the old

@@ -62,12 +62,26 @@ export function PreApplicationPromptsEditor({
                 <p className="mt-1 text-xs text-[var(--jale-ink-2)]">{t('prompts.section_subtitle')}</p>
             </div>
 
+            {/*
+              The locked state explains itself twice, in two different voices,
+              because it answers two different questions. This banner says WHY
+              the controls are dead -- and, crucially, that the lock protects a
+              fairness rule (everyone answers the same questions), not an
+              arbitrary restriction. The note at the bottom says what to do
+              about it. `picker.locked_note` is deliberately NOT reused: it
+              speaks about requirements, and an employer looking at a frozen
+              question would not connect the two.
+            */}
             {locked && (
-                <p className="text-xs font-semibold text-[var(--jale-ink-2)]">{t('picker.locked_note')}</p>
+                <InlineFeedback tone="warning">{t('prompts.locked_title')}</InlineFeedback>
             )}
 
             {prompts.length === 0 ? (
-                <p className="text-xs text-[var(--jale-ink-2)]">{t('prompts.empty')}</p>
+                // The empty line invites an action ("workers apply with one
+                // tap" is an argument for leaving it that way). Locked, there
+                // is no action to invite and the banner above has already said
+                // everything true about this state.
+                locked ? null : <p className="text-xs text-[var(--jale-ink-2)]">{t('prompts.empty')}</p>
             ) : (
                 <ul className="grid gap-2">
                     {prompts.map((prompt, index) => (
@@ -138,6 +152,10 @@ export function PreApplicationPromptsEditor({
             {/* Hidden, not disabled, at the cap: there is nothing to explain --
                 ten questions is far past the point the tip below is warning
                 about, and a permanently dead button reads as a bug. */}
+            {/* Hidden at the cap, but rendered DISABLED when locked: the cap is
+                a state the employer can still act their way out of (remove one),
+                so a missing button reads as the list being complete; a locked
+                job cannot, so the dead control is the honest signal. */}
             {canAddPrompt(prompts) && (
                 <div>
                     <button
@@ -160,17 +178,24 @@ export function PreApplicationPromptsEditor({
             )}
 
             {/*
-              ALWAYS visible, never dismissible: it is the one place an employer
-              is told what asking more costs them, and it has to be readable
-              BEFORE they add the third question, not after. Above the
+              Unlocked: ALWAYS visible, never dismissible -- it is the one place
+              an employer is told what asking more costs them, and it has to be
+              readable BEFORE they add the third question, not after. Above the
               recommendation the same advice speaks in the warning tone and
               names the count they actually have.
+
+              Locked: that advice is noise (nothing here can change any more),
+              so the slot carries the one action still available instead.
             */}
-            <InlineFeedback tone={tipLevel === 'warning' ? 'warning' : 'info'}>
-                {tipLevel === 'warning'
-                    ? t('prompts.tip_warning', { count: prompts.length })
-                    : t('prompts.tip')}
-            </InlineFeedback>
+            {locked ? (
+                <InlineFeedback tone="info">{t('prompts.locked_hint')}</InlineFeedback>
+            ) : (
+                <InlineFeedback tone={tipLevel === 'warning' ? 'warning' : 'info'}>
+                    {tipLevel === 'warning'
+                        ? t('prompts.tip_warning', { count: prompts.length })
+                        : t('prompts.tip')}
+                </InlineFeedback>
+            )}
         </div>
     );
 }

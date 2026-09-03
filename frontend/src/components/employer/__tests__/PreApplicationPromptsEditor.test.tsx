@@ -135,22 +135,65 @@ describe('PreApplicationPromptsEditor — the drop-off tip', () => {
 });
 
 describe('PreApplicationPromptsEditor — locked (the job already has applicants)', () => {
-    const locked = () =>
-        renderIntl(<PreApplicationPromptsEditor prompts={rows(2)} onChange={vi.fn()} locked />);
+    const locked = (prompts = rows(2)) =>
+        renderIntl(<PreApplicationPromptsEditor prompts={prompts} onChange={vi.fn()} locked />);
 
-    it('reuses the picker’s existing locked note rather than a second vocabulary', () => {
+    it('says WHY the questions are frozen, in the warning voice', () => {
         locked();
-        expect(screen.getByText(message('job_requirements.picker.locked_note'))).toBeInTheDocument();
+        const banner = screen.getByText(message('job_requirements.prompts.locked_title'));
+        expect(banner).toBeInTheDocument();
+        // Warning tone -> role="alert": this interrupts, because the employer
+        // is about to try editing something that cannot be edited.
+        expect(banner.closest('[role="alert"]')).not.toBeNull();
+    });
+
+    it('says what CAN still be done, in the quiet voice, in place of the tip', () => {
+        locked();
+        expect(screen.getByText(message('job_requirements.prompts.locked_hint'))).toBeInTheDocument();
+        // The how-many-questions advice is noise once none can change.
+        expect(screen.queryByText(message('job_requirements.prompts.tip'))).toBeNull();
+        expect(
+            screen.queryByText(interpolate(message('job_requirements.prompts.tip_warning'), { count: 2 })),
+        ).toBeNull();
+    });
+
+    it('does NOT borrow the picker’s requirements-flavoured locked note', () => {
+        locked();
+        expect(screen.queryByText(message('job_requirements.picker.locked_note'))).toBeNull();
+    });
+
+    it('still shows every stored question, read-only, exactly as it will be asked', () => {
+        locked(rows(3));
+        const textareas = screen.getAllByRole('textbox') as HTMLTextAreaElement[];
+        expect(textareas.map((el) => el.value)).toEqual(['Question 1?', 'Question 2?', 'Question 3?']);
+        for (const textarea of textareas) expect(textarea).toBeDisabled();
+        // Numbering survives, so the order the worker meets them is visible.
+        expect(
+            screen.getByText(interpolate(message('job_requirements.prompts.question_number'), { number: 3 })),
+        ).toBeInTheDocument();
+    });
+
+    it('drops the character counters -- nothing here is being typed', () => {
+        locked();
+        expect(
+            screen.queryByText(interpolate(message('job_requirements.prompts.counter'), {
+                count: 'Question 1?'.length, max: SOFT_PROMPT_CHARS,
+            })),
+        ).toBeNull();
     });
 
     it('freezes every control, Add included', () => {
         locked();
-        for (const textarea of screen.getAllByRole('textbox')) expect(textarea).toBeDisabled();
         expect(
             screen.getByRole('button', { name: new RegExp(message('job_requirements.prompts.add')) }),
         ).toBeDisabled();
+        for (const number of [1, 2]) {
+            expect(screen.getByRole('button', {
+                name: interpolate(message('job_requirements.prompts.remove_aria'), { number }),
+            })).toBeDisabled();
+        }
         expect(screen.getByRole('button', {
-            name: interpolate(message('job_requirements.prompts.remove_aria'), { number: 1 }),
+            name: interpolate(message('job_requirements.prompts.move_down_aria'), { number: 1 }),
         })).toBeDisabled();
     });
 
@@ -161,6 +204,22 @@ describe('PreApplicationPromptsEditor — locked (the job already has applicants
             screen.getByRole('button', { name: new RegExp(message('job_requirements.prompts.add')) }),
         );
         expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it('a locked job that asks nothing states the fact without inviting an edit', () => {
+        locked([]);
+        expect(screen.getByText(message('job_requirements.prompts.locked_title'))).toBeInTheDocument();
+        expect(screen.queryByText(message('job_requirements.prompts.empty'))).toBeNull();
+    });
+
+    it('speaks Spanish', () => {
+        renderIntl(<PreApplicationPromptsEditor prompts={rows(2)} onChange={vi.fn()} locked />, 'es');
+        expect(
+            screen.getByText(message('job_requirements.prompts.locked_title', 'es')),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByText(message('job_requirements.prompts.locked_hint', 'es')),
+        ).toBeInTheDocument();
     });
 });
 

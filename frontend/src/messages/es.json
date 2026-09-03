@@ -1360,6 +1360,8 @@
       "remove_aria": "Quitar la pregunta {number}",
       "tip": "Cuantas más preguntas haga, más trabajadores abandonan antes de terminar. Le sugerimos 2 o menos.",
       "tip_warning": "Tiene {count} preguntas — espere menos postulaciones completadas.",
+      "locked_title": "Este empleo ya tiene postulantes, así que las preguntas están bloqueadas. Todos los que se postulan a un empleo contestan las mismas preguntas.",
+      "locked_hint": "Para preguntar algo distinto, publique un empleo nuevo.",
       "validation_blank": "Cada pregunta necesita texto, o quite la que está vacía.",
       "validation_too_long": "Una de sus preguntas es demasiado larga. Mantenga cada una por debajo de {max} caracteres.",
       "invalid_rejected": "No pudimos guardar estas preguntas. Acórtelas, o quite las vacías, e intente de nuevo.",

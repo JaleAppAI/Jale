@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hireBlockReason, hireBlocked, remainingCount } from '@/lib/hire-gate';
+import { canRequestDetails, hireBlockReason, hireBlocked, remainingCount } from '@/lib/hire-gate';
 import type { RequirementsRemaining } from '@/lib/api/worker';
 
 const remaining = (counts: Partial<RequirementsRemaining['counts']> = {}): RequirementsRemaining => ({
@@ -57,5 +57,41 @@ describe('hireBlocked', () => {
         expect(hireBlocked({ details_status: 'requested' })).toBe(true);
         expect(hireBlocked({ details_status: 'complete' })).toBe(false);
         expect(hireBlocked(undefined)).toBe(false);
+    });
+});
+
+describe('canRequestDetails', () => {
+    it('offers the action on a live application nobody has asked yet', () => {
+        expect(canRequestDetails({ status: 'pending', details_status: 'not_requested' })).toBe(true);
+        expect(canRequestDetails({ status: 'contacted', details_status: 'not_requested' })).toBe(true);
+    });
+
+    it('withdraws it once details are outstanding or in -- nothing to ask twice', () => {
+        expect(canRequestDetails({ status: 'details_requested', details_status: 'requested' })).toBe(false);
+        expect(canRequestDetails({ status: 'talking', details_status: 'complete' })).toBe(false);
+    });
+
+    it('withdraws it on a terminal application, whatever the details say', () => {
+        // Both directions: a hire is done, and a rejection is not reopened by
+        // asking the worker for paperwork.
+        expect(canRequestDetails({ status: 'hired', details_status: 'complete' })).toBe(false);
+        expect(canRequestDetails({ status: 'not_interested', details_status: 'not_requested' })).toBe(false);
+    });
+
+    it('keeps offering it while the employer moves a requested applicant along', () => {
+        // `status` and `details_status` legitimately disagree -- but a
+        // `contacted` applicant whose details are already requested must not
+        // be asked again.
+        expect(canRequestDetails({ status: 'contacted', details_status: 'requested' })).toBe(false);
+    });
+
+    it('FAILS OPEN when the API publishes no details_status', () => {
+        expect(canRequestDetails({ status: 'pending' })).toBe(true);
+        expect(canRequestDetails({})).toBe(true);
+    });
+
+    it('has nothing to offer without an application at all', () => {
+        expect(canRequestDetails(null)).toBe(false);
+        expect(canRequestDetails(undefined)).toBe(false);
     });
 });

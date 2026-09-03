@@ -48,6 +48,8 @@ const ADDED_KEY_PATHS = [
     'job_requirements.prompts.remove_aria',
     'job_requirements.prompts.tip',
     'job_requirements.prompts.tip_warning',
+    'job_requirements.prompts.locked_title',
+    'job_requirements.prompts.locked_hint',
     'job_requirements.prompts.validation_blank',
     'job_requirements.prompts.validation_too_long',
     'job_requirements.prompts.invalid_rejected',

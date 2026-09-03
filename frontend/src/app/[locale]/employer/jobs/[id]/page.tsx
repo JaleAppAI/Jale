@@ -53,7 +53,8 @@ import type {
 import { classifyError, type ErrorKind } from '@/lib/api/errors';
 import { planLimitModel, type PlanLimitModel } from '@/lib/plan-limit';
 import { answerEntries } from '@/lib/format-application-answers';
-import { TERMINAL_APPLICATION_STATUSES, type WritableJobStatus } from '@/lib/status';
+import type { WritableJobStatus } from '@/lib/status';
+import { canRequestDetails } from '@/lib/hire-gate';
 import { formatLongDate, formatStartDate } from '@/lib/date';
 import { buildCandidateMatchMap, type ApplicantMatch } from './candidate-matches';
 import { TrustScorePill } from './TrustScorePill';
@@ -1061,19 +1062,13 @@ function ApplicantRow({
     const promptAnswers = applicant.prompt_answers ?? [];
 
     /*
-     * Fail-open on `details_status === undefined`: an API that does not
-     * publish stage-2 vocabulary yet gets the button OFFERED, not hidden. The
-     * PATCH is the authority either way -- and hiding the one action that
-     * moves an application forward, on the strength of a field the backend
-     * simply hasn't shipped, would break the page against the old API rather
-     * than degrade it.
+     * `canRequestDetails` (lib/hire-gate) is shared with the applicant PAGE so
+     * the card and the page can never disagree about when this action exists.
+     * It fails open on an absent `details_status` -- see that function.
+     * `detailsRequested` is this row's own optimistic latch on top of it.
      */
     const detailsStatus = applicant.details_status;
-    const terminal = TERMINAL_APPLICATION_STATUSES.includes(applicant.status);
-    const canRequestDetails = !terminal
-        && !detailsRequested
-        && detailsStatus !== 'requested'
-        && detailsStatus !== 'complete';
+    const showRequestDetails = !detailsRequested && canRequestDetails(applicant);
 
     async function handleRequestDetails() {
         if (!idToken || requesting) return;
@@ -1263,7 +1258,7 @@ function ApplicantRow({
                 {/* The primary action on this card, and the first control in
                     the row: everything else here (profile, message) is a way
                     of looking, this is the one that moves the application. */}
-                {canRequestDetails ? (
+                {showRequestDetails ? (
                     <Button
                         type="button"
                         size="sm"
