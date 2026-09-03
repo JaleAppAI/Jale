@@ -406,6 +406,21 @@ export default function WorkerJobDetailPage() {
       reportProblem(tReq('errors.invalid_answers'));
       return;
     }
+    // Sprint 23's two apply-time codes. They MUST be named before the generic
+    // 400 arm below, whose `profile_invalid` copy sends the worker to their
+    // profile -- a place where nothing they do could ever fix an unanswered
+    // employer prompt. Deliberately reusing the ratified `job_requirements`
+    // strings rather than minting prompt-specific copy: this wave ships no
+    // prompt UI, so the honest message is the generic "some required answers
+    // are missing", and wave 2 replaces both with the real form.
+    if (applyErr.status === 400 && applyErr.code === 'missing_prompt_answers') {
+      reportProblem(tReq('errors.missing_answers'));
+      return;
+    }
+    if (applyErr.status === 400 && applyErr.code === 'invalid_prompt_answers') {
+      reportProblem(tReq('errors.invalid_answers'));
+      return;
+    }
     if (applyErr.status === 400) {
       reportProblem(t('errors.profile_invalid'));
       return;
