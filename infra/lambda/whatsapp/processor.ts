@@ -58,6 +58,8 @@ import {
   isHelpCommand,
   isSupportCommand,
   isProfileCommand,
+  isApplicationsCommand,
+  parseApplicationButtonPayload,
   parseButtonPayload,
   parseCommandPayload,
   parseEmployerConversationButtonPayload,
@@ -76,9 +78,7 @@ import {
   MAX_DOCUMENT_BYTES,
 } from './lib/media';
 import {
-  computeNextStep,
-  countRemainingRequirements,
-  seedAnswersFromDefaults,
+  armFill,
   promptNextStep,
   handleFillMessage,
   localizeDocList,
@@ -86,6 +86,24 @@ import {
   type FillDeps,
   type FillStateContext,
 } from './lib/application-fill';
+import {
+  armPromptLane,
+  handlePromptMessage,
+  repromptPromptLane,
+  type PromptContext,
+  type PromptDeps,
+} from './lib/application-prompts';
+import {
+  anyNeedsDetails,
+  loadWorkerApplications,
+  parseApplicationsMenuPick,
+  sendApplicationsList,
+  sendApplicationsListRows,
+  type ApplicationsContext,
+  type ApplicationsDeps,
+} from './lib/applications-command';
+import { loadRequirementSnapshot } from '../lib/application-requirements';
+import { parsePreApplicationPromptList } from '../lib/pre-application-prompts';
 import {
   handlePostLaneMessage,
   discardActiveDraft,
@@ -770,7 +788,7 @@ function extractInteractivePayload(raw: string | undefined): string | undefined 
 
 function findKnownPayload(value: unknown): string | undefined {
   if (typeof value === 'string') {
-    return /^(legal|profile|trust|media|conversation|command|otp):/.test(value) ? value : undefined;
+    return /^(legal|profile|trust|media|conversation|command|otp|application):/.test(value) ? value : undefined;
   }
   if (Array.isArray(value)) {
     for (const item of value) {
@@ -1213,6 +1231,24 @@ async function routeMessage(
       return await handleEmployerConversationButton(client, conv, msg, conversationPayload, routerDeps);
     }
 
+    // Sprint 23: the details-requested template's two quick replies. Routed
+    // BEFORE `parseButtonPayload` -- the job-alert parser's `accept|decline|
+    // info:job-<id>` grammar cannot match `application:*`, but keeping the
+    // more specific payload first means a future widening of either grammar
+    // cannot silently steal these taps.
+    const applicationPayload = parseApplicationButtonPayload(msg.buttonPayload);
+    if (applicationPayload && conv.user_id) {
+      if (applicationPayload.action === 'later') {
+        // LATER IS NOT A DB WRITE (locked decision): nothing is recorded, no
+        // state is armed. The worker simply comes back through
+        // "aplicaciones" whenever they want.
+        await queueReply(client, msg.messageSid, msg.from, 'application_later_ack', conv.language);
+        return conv.user_id;
+      }
+      await handleApplicationStart(client, conv, applicationPayload.applicationId, msg.from, msg.messageSid);
+      return conv.user_id;
+    }
+
     const parsed = parseButtonPayload(msg.buttonPayload);
     if (parsed && (conv.conversation_state === 'idle' || conv.user_id)) {
       await handleJobButton(client, conv, parsed, from, msg.messageSid);
@@ -1264,6 +1300,44 @@ async function routeMessage(
   // and returns `{handled:false}` (one-shot, no nagging) -- same fall-through
   // contract as every other `handled:false` escape below.
   const fillStateContext = conv.state_context as unknown as FillStateContext | undefined;
+
+  // Sprint 23: the `aplicaciones` command. Dispatched AFTER the command-payload
+  // unwrap (so the help-menu list item's `command:applications` lands here as
+  // plain text) and BEFORE both lane gates, so the word can never be eaten by
+  // the fill lane's Bedrock extraction as an answer to a field question. A
+  // still-armed lane is left ALONE -- listing applications is not an exit --
+  // and this returns before the dispatch tail, exactly like every other
+  // self-contained command reply.
+  if (conv.user_id && isApplicationsCommand(msg.body)) {
+    await discardStalePostDraft(client, conv, msg);
+    // 070's jobs_worker_read_applied policy is keyed on this GUC; without it
+    // the join drops every non-active job the worker applied to.
+    await setInternalUserRlsContext(client, conv.user_id);
+    await sendApplicationsList(
+      client,
+      buildApplicationsCtx(conv),
+      msg.messageSid,
+      msg.from,
+      buildApplicationsDeps(conv),
+    );
+    return conv.user_id;
+  }
+
+  // Sprint 23 prompt lane (stage 1). Sits beside the fill gate and is checked
+  // FIRST: the two are mutually exclusive by construction (arming either
+  // scrubs the other's keys), so the order only matters for a corrupt row --
+  // in which case the newer, shorter lane winning is the safer default.
+  const promptLaneArmed = typeof fillStateContext?.prompt_application_id === 'string';
+  if (promptLaneArmed && conv.user_id) {
+    const promptResult = await handlePromptMessage(
+      client,
+      buildPromptCtx(conv),
+      msg,
+      buildPromptDeps(conv),
+    );
+    if (promptResult.handled) return conv.user_id;
+  }
+
   const fillLaneArmed =
     typeof fillStateContext?.fill_application_id === 'string'
     || typeof fillStateContext?.fill_offer_application_id === 'string';
@@ -1273,6 +1347,19 @@ async function routeMessage(
     // handled:false => an escape/command/relay-override turn, or a
     // declined/one-shot continue-other offer -- fall through to the normal
     // routing below exactly as if no fill were armed.
+  }
+
+  // A bare digit against the one-shot `aplicaciones` menu -- the SAME
+  // dispatch the Start button performs. Deliberately AFTER both lane gates:
+  // an in-flight question owns the worker's digits (a fill confirmation, a
+  // menu answer), and `parseApplicationsMenuPick` additionally stands down
+  // whenever a `pending_picker` is set.
+  const menuPick = conv.user_id
+    ? parseApplicationsMenuPick(conv.state_context as unknown as Record<string, unknown>, msg.body)
+    : null;
+  if (menuPick && conv.user_id) {
+    await handleApplicationStart(client, conv, menuPick, msg.from, msg.messageSid);
+    return conv.user_id;
   }
 
   const readyResult = await routeReadyWorkerCommands(client, conv, msg);
@@ -1290,8 +1377,13 @@ async function routeMessage(
   // every other `handled:true` path already queued its own next-step prompt
   // this turn) -- that branch returns immediately, before `routeReadyWorkerCommands`
   // (and therefore this check) ever runs.
-  if (typeof (conv.state_context as unknown as FillStateContext | undefined)?.fill_application_id === 'string') {
+  const tailState = conv.state_context as unknown as FillStateContext | undefined;
+  if (typeof tailState?.fill_application_id === 'string') {
     await maybeRepromptFill(client, conv, msg);
+  } else if (typeof tailState?.prompt_application_id === 'string') {
+    // Same contract as the fill tail: an escape queued its own reply, so the
+    // worker's outstanding prompt is re-sent, cooldown-guarded.
+    await repromptPromptLane(client, buildPromptCtx(conv), msg.messageSid, msg.from, buildPromptDeps(conv));
   }
 
   return readyResult;
@@ -1900,6 +1992,28 @@ async function handleIdle(
     return null;
   }
 
+  // Sprint 23: a worker the employer is actively waiting on gets their
+  // applications instead of the generic "I did not understand that". This is
+  // the third and last door into stage 2 (the other two being the
+  // details-requested template's Start button and the `aplicaciones`
+  // command) -- and the one that catches a worker who replied to the
+  // notification in their own words instead of tapping anything.
+  if (conv.user_id) {
+    await setInternalUserRlsContext(client, conv.user_id);
+    const applications = await loadWorkerApplications(client, conv.user_id);
+    if (anyNeedsDetails(applications)) {
+      await sendApplicationsListRows(
+        client,
+        buildApplicationsCtx(conv),
+        applications,
+        msg.messageSid,
+        msg.from,
+        buildApplicationsDeps(conv),
+      );
+      return null;
+    }
+  }
+
   // Conversation relay now runs in routeMessage (tryConversationRelay) before
   // handleIdle is reached. Reserved keywords (JOBS) and typed job actions fall
   // through to here; everything else is the idle help fallback.
@@ -2041,6 +2155,120 @@ async function discardStalePostDraft(
   }
 }
 
+/**
+ * Sprint 23: the prompt lane and the `aplicaciones` command share the fill
+ * lane's `updateStateContext` contract EXACTLY (persist the spread-merged
+ * patch AND mutate `conv.state_context` in place via `makeStateContextUpdater`),
+ * which is what lets all three lanes read each other's writes within one turn
+ * without a second round trip. Neither needs Bedrock, Twilio media, or S3, so
+ * their dep objects are deliberately much smaller than `FillDeps`.
+ */
+function buildPromptCtx(conv: ConversationRow): PromptContext {
+  return {
+    conversationId: conv.id,
+    workerId: conv.user_id ?? '',
+    lang: conv.language,
+    stateContext: (conv.state_context ?? {}) as unknown as Record<string, unknown>,
+  };
+}
+
+function buildPromptDeps(conv: ConversationRow): PromptDeps {
+  return {
+    queueReplyText: (client, inboundSid, to, body) => queueOutboxText(client, inboundSid, to, body),
+    updateStateContext: makeStateContextUpdater(conv),
+    nowMs: () => Date.now(),
+  };
+}
+
+function buildApplicationsCtx(conv: ConversationRow): ApplicationsContext {
+  return {
+    conversationId: conv.id,
+    workerId: conv.user_id ?? '',
+    lang: conv.language,
+    stateContext: (conv.state_context ?? {}) as unknown as Record<string, unknown>,
+  };
+}
+
+function buildApplicationsDeps(conv: ConversationRow): ApplicationsDeps {
+  return {
+    queueReplyText: (client, inboundSid, to, body) => queueOutboxText(client, inboundSid, to, body),
+    updateStateContext: makeStateContextUpdater(conv),
+    nowMs: () => Date.now(),
+  };
+}
+
+/**
+ * THE stage-2 entry point, shared by the `application:start:app-<uuid>`
+ * button and a digit picked from the `aplicaciones` menu -- both must behave
+ * identically, so neither owns a copy of these checks.
+ *
+ * OWNERSHIP FIRST, and it is silent: `jobapp_whatsapp_select` is
+ * `USING (true)` (028), so a forged/replayed payload naming ANOTHER worker's
+ * application would otherwise arm this worker's fill against it. A mismatch
+ * gets no reply at all -- answering would confirm the id exists -- just a
+ * metric line.
+ *
+ * The remaining branches are ordered most-terminal first, so a hired worker
+ * is never told "we have not asked for details yet".
+ */
+async function handleApplicationStart(
+  client: PoolClient,
+  conv: ConversationRow,
+  applicationId: string,
+  from: string,
+  inboundMessageSid: string,
+): Promise<void> {
+  const workerId = conv.user_id;
+  if (!workerId) return;
+
+  const snapshot = await loadRequirementSnapshot(client, applicationId, {
+    syncDocumentSnapshots: true,
+  });
+  if (!snapshot) {
+    await queueText(client, inboundMessageSid, from, fillMessage('exit_application_gone', conv.language));
+    return;
+  }
+  if (snapshot.workerId !== workerId) {
+    console.log(JSON.stringify({
+      event: 'ApplicationStartOwnershipMismatch',
+      conversationId: conv.id,
+    }));
+    return;
+  }
+  if (snapshot.applicationStatus === 'hired') {
+    await queueReply(client, inboundMessageSid, from, 'application_hired_info', conv.language);
+    return;
+  }
+  if (snapshot.jobStatus === 'filled' || snapshot.jobStatus === 'closed') {
+    await queueText(client, inboundMessageSid, from, fillMessage('exit_job_inactive', conv.language));
+    return;
+  }
+  if (snapshot.applicationStatus === 'not_interested') {
+    await queueText(client, inboundMessageSid, from, fillMessage('exit_application_closed', conv.language));
+    return;
+  }
+  if (snapshot.detailsCompletedAt) {
+    await queueReply(client, inboundMessageSid, from, 'application_already_complete', conv.language);
+    return;
+  }
+  if (snapshot.stage === 'apply') {
+    await queueReply(client, inboundMessageSid, from, 'application_not_requested_yet', conv.language);
+    return;
+  }
+
+  // Arming the fill means free text and photos are coming -- a dormant
+  // post-board draft would otherwise eat them (Task 15's discard contract).
+  await discardStalePostDraft(client, conv, { from, messageSid: inboundMessageSid });
+  await armFill(
+    client,
+    buildFillCtx(conv),
+    snapshot,
+    inboundMessageSid,
+    from,
+    buildFillDeps(conv),
+  );
+}
+
 function buildFillDeps(conv: ConversationRow): FillDeps {
   return {
     extraction: makeBedrockExtractionClient(),
@@ -2069,9 +2297,11 @@ async function handleJobAction(
     location: string;
     pay_min: number | null; pay_max: number | null; pay_interval: string | null;
     pay_raw: string | null;
-    required_fields: string[] | null;
-    optional_fields: string[] | null;
+    pre_application_prompts: unknown;
   }>(
+    // Sprint 23: `required_fields`/`optional_fields` are no longer read here.
+    // Nothing at accept time consults them any more -- the stage-2 arm
+    // (`armFill`) reads them off the snapshot it already loaded.
     `SELECT id,
             title,
             COALESCE(company, 'Jale') AS company,
@@ -2080,8 +2310,7 @@ async function handleJobAction(
             pay_max,
             pay_interval,
             pay AS pay_raw,
-            required_fields,
-            optional_fields
+            pre_application_prompts
        FROM jobs
       WHERE id = $1
         AND status = 'active'`,
@@ -2098,6 +2327,8 @@ async function handleJobAction(
   const workerId = conv.user_id;
 
   if (action === 'accept') {
+    // STAGE 1 ONLY (sprint 23). The apply creates the row and nothing else:
+    // no documents gate, no questionnaire, no `app.allow_incomplete_docs`.
     const applyResult = await applyWorkerToJob(client, {
       workerId,
       jobId,
@@ -2106,92 +2337,28 @@ async function handleJobAction(
 
     if (applyResult.status === 'applied' || applyResult.status === 'already_applied') {
       const applicationId = (applyResult.application as { id: string }).id;
-      // Captured BEFORE the arm write below mutates conv.state_context --
-      // this is what makes a mid-fill accept on a DIFFERENT application a
-      // "switch" (spec §6 item 8 / task brief requirement 3). fill_* keys
-      // are not part of ProfileStateContext's typed shape (they belong to
-      // this feature's own loose Record<string, unknown> convention -- see
-      // FillContext's jsdoc in application-fill.ts), hence the cast.
-      const previousApplicationId = (conv.state_context as unknown as Record<string, unknown> | undefined)
-        ?.fill_application_id as string | undefined;
 
-      const deps = buildFillDeps(conv);
-      const ctx: FillContext = {
-        conversationId: conv.id,
-        workerId,
-        jobId,
-        lang: conv.language,
-        // fill_application_id is set here on the in-memory ctx (not yet
-        // persisted) so seedAnswersFromDefaults' merge choke point --
-        // reused from the same code path handleFillMessage uses -- can
-        // resolve the target application before the real arm write below.
-        stateContext: {
-          ...(conv.state_context as unknown as Record<string, unknown>),
-          fill_application_id: applicationId,
-        },
-      };
-
-      await seedAnswersFromDefaults(
-        client,
-        ctx,
-        job.rows[0].required_fields ?? [],
-        job.rows[0].optional_fields ?? [],
-        deps,
-      );
-
-      const nextStep = await computeNextStep(client, applicationId);
-
-      if (nextStep.kind === 'field' || nextStep.kind === 'doc') {
-        // Task 15 (step 4.2): arming the fill here means the worker is about
-        // to answer field/doc prompts with free text and photos -- a
-        // dormant post-board draft left over from before this accept would
-        // otherwise sit forever (this arm point is reachable straight from
-        // a job-alert BUTTON tap, which never passes through handleIdle's
-        // own discard hook above).
+      // The employer's own pre-application questions -- the ONLY thing asked
+      // at apply time, and only when the job actually has some. The stage-2
+      // collector is NOT armed here (locked decision): until the employer
+      // requests details there is nothing to collect.
+      const prompts = parsePreApplicationPromptList(job.rows[0].pre_application_prompts);
+      if (prompts.length > 0) {
+        // Free text is about to be solicited -- a dormant post-board draft
+        // would otherwise swallow the worker's first answer.
         await discardStalePostDraft(client, conv, { from, messageSid: inboundMessageSid });
-
-        // Arm (or re-arm/switch) the fill. Anchor-switch scrub (Task 8
-        // forward note): pending_picker/fill_pending/fill_cert_more_pending
-        // are cleared unconditionally at every fill entry, whether this is
-        // a fresh arm, a same-application re-arm, or a switch to a
-        // different application. FINAL-REVIEW Finding 1a/3:
-        // fill_relay_override/fill_offer_application_id are cleared here too
-        // -- this arm write is itself a fill ENTRY point, so a stale
-        // override or offer id left over from a previous fill's exit (or
-        // from before this fix, any exit at all) must not survive into the
-        // freshly-armed fill and swallow the worker's first answer here.
-        await deps.updateStateContext(client, conv.id, {
-          fill_application_id: applicationId,
-          pending_picker: null,
-          fill_pending: null,
-          fill_cert_more_pending: null,
-          fill_relay_override: null,
-          fill_offer_application_id: null,
-        });
-
-        const isSwitch = previousApplicationId !== undefined && previousApplicationId !== applicationId;
-        if (isSwitch) {
-          await queueText(client, inboundMessageSid, from, fillMessage('switched_job', conv.language));
-        }
-
-        const counts = await countRemainingRequirements(client, applicationId);
-        let introBody = fillMessage('intro', conv.language, {
-          n_fields: String(counts.nFields),
-          n_docs: String(counts.nDocs),
-        });
-        if (nextStep.uncollectable.length > 0) {
-          introBody += `\n\n${fillMessage('web_handoff', conv.language, {
-            doc: localizeDocList(nextStep.uncollectable, conv.language),
-          })}`;
-        }
-        await queueText(client, inboundMessageSid, from, introBody);
-
-        await promptNextStep(client, ctx, inboundMessageSid, from, deps);
+        await armPromptLane(
+          client,
+          buildPromptCtx(conv),
+          applicationId,
+          inboundMessageSid,
+          from,
+          buildPromptDeps(conv),
+          { completeKey: applyResult.status === 'applied' ? 'job_accepted' : 'job_already_applied' },
+        );
         return;
       }
 
-      // No collectable gaps remain -- legacy behavior exactly as today, fill
-      // NOT armed.
       await queueReply(
         client,
         inboundMessageSid,
@@ -2199,19 +2366,11 @@ async function handleJobAction(
         applyResult.status === 'applied' ? 'job_accepted' : 'job_already_applied',
         conv.language,
       );
-    } else if (applyResult.status === 'guard_blocked') {
-      // 'generic_error' does not exist in templates.ts / the TemplateKey
-      // union queueReply is typed on -- this comes from the fill-prompts
-      // module via the outbox text helper instead.
-      await queueText(client, inboundMessageSid, from, fillMessage('guard_error', conv.language));
     } else {
-      // applyWorkerToJob can still return job_closed/forbidden/
-      // certification_document_limit (none reachable for whatsapp's
-      // bypassed answers/cert-claims gates, but forbidden/job_closed remain
-      // possible races) -- same fallback the pre-Task-9 code used for every
-      // non-applied/already_applied/guard_blocked status. `missing_documents`
-      // is never reachable here (applyWorkerToJob's surface==='whatsapp'
-      // branch bypasses that gate entirely -- see applications.ts).
+      // job_closed / forbidden / certification_document_limit / the two
+      // prompt-answer codes (web-only -- WhatsApp never posts prompt answers
+      // through applyWorkerToJob). Same fallback the pre-sprint-23 code used
+      // for every non-applied/already_applied status.
       await queueReply(client, inboundMessageSid, from, 'job_not_found', conv.language);
     }
   } else if (action === 'decline') {

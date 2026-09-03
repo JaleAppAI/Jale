@@ -42,6 +42,14 @@ export type TemplateKey =
   | 'job_documents_required'
   | 'job_declined'
   | 'job_not_found'
+  // ── Sprint 23: application stages ──
+  | 'applications_header'
+  | 'applications_footer'
+  | 'applications_none'
+  | 'application_not_requested_yet'
+  | 'application_already_complete'
+  | 'application_hired_info'
+  | 'application_later_ack'
   // Errors
   | 'unknown_message'
   | 'processing_error'
@@ -188,8 +196,8 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
     en: 'I did not understand that message.\n\nSend "Help" to see commands.',
   },
   help_menu: {
-    es: 'Comandos\n\nTrabajos - Ver oportunidades\nPerfil - Ver tu perfil\nChats - Abrir tus chats con empleadores\nCerrar - Cerrar el chat actual\nAyuda - Ver estos comandos\n\nEn una alerta de trabajo, usa los botones.\n\nSi ves una lista numerada, responde con el numero del trabajo:\n[numero] aceptar - Aplicar\n[numero] info - Ver detalles\n[numero] no - Omitir',
-    en: 'Commands\n\nJobs - See opportunities\nProfile - See your profile\nChats - Open your employer chats\nClose - Close the current chat\nHelp - Show these commands\n\nOn a job alert, use the buttons.\n\nIf you see a numbered list, reply with the job number:\n[number] accept - Apply\n[number] info - See details\n[number] no - Skip',
+    es: 'Comandos\n\nTrabajos - Ver oportunidades\nAplicaciones - Ver tus solicitudes\nPerfil - Ver tu perfil\nChats - Abrir tus chats con empleadores\nCerrar - Cerrar el chat actual\nAyuda - Ver estos comandos\n\nEn una alerta de trabajo, usa los botones.\n\nSi ves una lista numerada, responde con el numero del trabajo:\n[numero] aceptar - Aplicar\n[numero] info - Ver detalles\n[numero] no - Omitir',
+    en: 'Commands\n\nJobs - See opportunities\nApplications - See your applications\nProfile - See your profile\nChats - Open your employer chats\nClose - Close the current chat\nHelp - Show these commands\n\nOn a job alert, use the buttons.\n\nIf you see a numbered list, reply with the job number:\n[number] accept - Apply\n[number] info - See details\n[number] no - Skip',
   },
   profile_not_ready: {
     es: 'Tu perfil aun no esta listo.\n\nTermina las preguntas primero. Envia "Ayuda" para ver comandos.',
@@ -199,9 +207,12 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
     es: 'No hay trabajos disponibles ahora.\n\nTe avisaremos cuando lleguen oportunidades.',
     en: 'No jobs are available right now.\n\nWe will let you know when opportunities come in.',
   },
+  // Sprint 23: apply is stage 1 only. The employer sees the profile and the
+  // prompt answers now; the questionnaire/documents are asked for later, and
+  // only if the employer wants to move forward.
   job_accepted: {
-    es: 'Aplicacion enviada.\n\nEl empleador recibira tu informacion.',
-    en: 'Application sent.\n\nThe employer will receive your information.',
+    es: 'Aplicacion enviada. El empleador ya ve tu perfil y tus respuestas. Si quiere avanzar contigo, te pediremos algunos datos mas por aqui. Escribe "aplicaciones" para ver tus solicitudes.',
+    en: 'Application sent. The employer can now see your profile and your answers. If they want to move forward, we will ask you for a few more details here. Reply "applications" to see your applications.',
   },
   job_already_applied: {
     es: 'Ya aplicaste a este trabajo.\n\nTe avisaremos cuando el empleador actualice tu solicitud.',
@@ -218,6 +229,36 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
   job_not_found: {
     es: 'Ese trabajo ya no esta disponible.\n\nEnvia "Trabajos" para ver opciones actuales.',
     en: 'That job is no longer available.\n\nSend "Jobs" to see current options.',
+  },
+
+  // ── Sprint 23: application stages ──
+  applications_header: {
+    es: 'Tus solicitudes',
+    en: 'Your applications',
+  },
+  applications_footer: {
+    es: 'Responde con el numero para completar tus datos.',
+    en: 'Reply with the number to complete your details.',
+  },
+  applications_none: {
+    es: 'Todavia no tienes solicitudes.\n\nEscribe "trabajos" para ver oportunidades.',
+    en: 'You do not have any applications yet.\n\nReply "jobs" to see opportunities.',
+  },
+  application_not_requested_yet: {
+    es: 'Todavia no te pedimos datos adicionales para esa solicitud. Te avisaremos aqui cuando el empleador los pida.',
+    en: 'We have not asked you for extra details on that application yet. We will let you know here when the employer asks.',
+  },
+  application_already_complete: {
+    es: 'Ya enviamos tus datos para esa solicitud. No falta nada por ahora.',
+    en: 'We already sent your details for that application. Nothing is missing right now.',
+  },
+  application_hired_info: {
+    es: 'Ya te contrataron para ese trabajo. El empleador te va a contactar para los siguientes pasos.',
+    en: 'You were already hired for that job. The employer will contact you about next steps.',
+  },
+  application_later_ack: {
+    es: 'Sin problema. Escribe "aplicaciones" cuando quieras continuar.',
+    en: 'No problem. Reply "applications" when you want to continue.',
   },
 
   unknown_message: {
