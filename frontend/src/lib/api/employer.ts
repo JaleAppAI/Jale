@@ -11,6 +11,18 @@ import type {
   WorkerPost,
 } from './worker';
 export type { ApplicationStatus } from '../status';
+/**
+ * The stage-2 vocabulary the employer surfaces read off `Applicant` /
+ * `WorkerProfile`. Declared in `./worker` (the stage-2 door's own module) and
+ * re-exported here so an employer component never has to import from the
+ * worker client to type a prop it was handed by this one.
+ */
+export type {
+  ApplicationDetailsStatus,
+  ApplicationStage,
+  PreApplicationPrompt,
+  RequirementsRemaining,
+} from './worker';
 
 // The typed-error layer now lives in `./errors` (it is shared with worker.ts
 // and with apiFetch's transport errors). Re-exported here so existing
