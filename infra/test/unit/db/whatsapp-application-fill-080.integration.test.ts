@@ -244,10 +244,16 @@ maybeDescribe('migration 080 WhatsApp application-fill DB contract', () => {
   // What still needs a real database on THIS file's side is the inverse
   // property: the doc-less INSERT that 080 could only reach through a GUC now
   // succeeds with no GUC at all, and the bypass has become inert rather than
-  // load-bearing. 091 deliberately KEPT the function (only 092 drops it), so
-  // that is asserted too -- a premature function drop would make reverting 091
-  // more than one CREATE TRIGGER.
-  it('the 022/080 guard trigger is gone (091): a doc-less INSERT succeeds with no GUC, and the GUC is inert', async () => {
+  // load-bearing.
+  //
+  // 091 deliberately KEPT the function so a revert would be one CREATE
+  // TRIGGER; migration 092 then dropped it, which is why the function
+  // assertion below is now an ABSENCE. Both facts are asserted together on
+  // purpose: `enforce_job_application_required_docs` must be gone while
+  // 091's replacement `enforce_job_application_hire_requirements` is still
+  // there, because dropping the wrong one of that pair would silently
+  // un-gate every hire.
+  it('the 022/080 guard trigger and (092) its function are gone: a doc-less INSERT succeeds with no GUC, and the GUC is inert', async () => {
     const client = new Client({ connectionString: databaseUrl });
     await client.connect();
     try {
@@ -297,7 +303,7 @@ maybeDescribe('migration 080 WhatsApp application-fill DB contract', () => {
       await client.end();
     }
 
-    // The trigger is really gone, and 091 kept the function on purpose.
+    // The trigger is really gone (091), and so is the function (092).
     const trigger = await setup.query<{ count: string }>(
       `SELECT count(*) FROM pg_trigger
         WHERE tgname = 'job_applications_required_docs_guard'
@@ -310,7 +316,16 @@ maybeDescribe('migration 080 WhatsApp application-fill DB contract', () => {
       `SELECT count(*) FROM pg_proc
         WHERE proname = 'enforce_job_application_required_docs'`,
     );
-    expect(fn.rows).toEqual([{ count: '1' }]);
+    expect(fn.rows).toEqual([{ count: '0' }]);
+
+    // ...while 091's replacement gate, whose name differs by two words, is
+    // untouched. 092 dropping the wrong one of this pair would leave every
+    // hire un-gated and no other assertion in the repo would notice.
+    const hireFn = await setup.query<{ count: string }>(
+      `SELECT count(*) FROM pg_proc
+        WHERE proname = 'enforce_job_application_hire_requirements'`,
+    );
+    expect(hireFn.rows).toEqual([{ count: '1' }]);
   });
 
   it('6th certification INSERT under one cert_name raises 23514 certification_document_name_limit under RLS context', async () => {

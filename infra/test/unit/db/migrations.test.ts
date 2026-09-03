@@ -123,6 +123,7 @@ describe('database migrations', () => {
       '089',
       '090',
       '091',
+      '092',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -1051,5 +1052,137 @@ describe('database migrations', () => {
     expect(sql).toContain('t.tgqual IS NOT NULL');
     expect(sql).toContain('pg_get_expr(i.indpred, i.indrelid)');
     expect(sql).toContain("provolatile <> 'i'");
+  });
+
+  // 092 is a DROP-only migration, which makes a content test unusually
+  // load-bearing: the difference between a correct line and a catastrophic
+  // one is a single pair of parentheses (`REVOKE SELECT (email)` vs `REVOKE
+  // SELECT`) or a single keyword (`CASCADE`). Neither mistake fails any
+  // typecheck, and on a testbed whose only WhatsApp traffic is the suites
+  // that run AFTER it, a widened revoke can even look green. So the shape of
+  // every destructive statement is pinned here, and the negatives matter as
+  // much as the positives.
+  it('092 drops exactly the dead onboarding objects, without CASCADE, and keeps itself self-verifying', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '092_onboarding_cleanup_drops.sql'), 'utf8');
+
+    // One transaction, as jale_admin.
+    expect(sql).toContain('Connect as: jale_admin (NOT the RDS master user)');
+    expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+    expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+
+    // DEPLOY ORDER: the OPPOSITE of 090/091. Code first, then apply. This is
+    // the one fact an operator must not get wrong, so it is pinned verbatim.
+    expect(sql).toContain('APPLY THIS MIGRATION *AFTER* DEPLOYING THE CODE');
+    expect(sql).toContain('1. deploy the code that stops referencing these objects');
+    expect(sql).toContain('2. apply THIS file');
+
+    // ── (a) the pg_depend pre-flight, BEFORE any drop ──
+    // Ordering is the point: a post-hoc audit cannot see what a CASCADE
+    // would have eaten, so the probe must precede the first DROP.
+    expect(sql).toContain('pg_catalog.pg_describe_object(d.classid, d.objid, d.objsubid)');
+    expect(sql).toContain("AND d.deptype = 'n'");
+    expect(sql).toContain('migration 092 pre-flight: users columns still carry dependents');
+    expect(sql).toContain('migration 092 pre-flight: functions still carry dependents');
+    expect(sql.indexOf('pre-flight')).toBeLessThan(sql.indexOf('DROP FUNCTION'));
+
+    // NO CASCADE in any STATEMENT. A drop that finds a live dependent must
+    // fail loud (2BP01), never take the dependent with it. The header
+    // discusses CASCADE in prose (it is the decision this file is built
+    // around), so the check runs over the SQL with `--` comment lines
+    // stripped -- 088's line-anchoring technique, applied to a word that
+    // legitimately appears in commentary.
+    const statements = sql
+      .split('\n')
+      .filter((line) => !line.trimStart().startsWith('--'))
+      .join('\n');
+    // The keyword only ever appears in DDL as the last token of a clause, so
+    // it is the punctuation that distinguishes `DROP COLUMN x CASCADE,` /
+    // `... CASCADE;` from the two RAISE messages that say the word.
+    expect(statements).not.toMatch(/\bCASCADE\s*[;,)]/i);
+    // ...and the prose that explains why is not allowed to disappear either.
+    expect(sql).toContain('Nothing here is CASCADE');
+
+    // ── (b) 053, in full ──
+    expect(sql).toContain(
+      'DROP FUNCTION IF EXISTS public.bypass_onboarding_for_web_worker(UUID, UUID, TEXT, TEXT, TEXT)',
+    );
+    expect(sql).toContain('DROP POLICY IF EXISTS users_web_worker_bypass_definer ON public.users');
+    // COLUMN-SCOPED revoke. The bare form would take 004's fourteen-column
+    // lookup grant, 041's tos_accepted_at and 049's privacy_accepted_at with
+    // it and break every WhatsApp inbound turn.
+    expect(sql).toContain('REVOKE SELECT (email) ON public.users FROM jale_whatsapp');
+    // Over the comment-stripped text: the header names the dangerous bare
+    // form in prose precisely so a future editor knows why the parentheses
+    // are there.
+    expect(statements).not.toMatch(/REVOKE\s+SELECT\s+ON\s+(public\.)?users/i);
+    expect(statements).not.toMatch(/REVOKE\s+ALL[^;]*ON\s+(public\.)?users/i);
+    expect(sql).toContain('A bare `REVOKE SELECT ON users FROM jale_whatsapp`');
+
+    // ── (c) 052's first half only ──
+    expect(sql).toContain('DROP FUNCTION IF EXISTS public.stage_worker_pending_name(TEXT, TEXT)');
+    expect(sql).toContain('DROP FUNCTION IF EXISTS public.promote_worker_pending_name(TEXT)');
+    expect(sql).toContain('DROP COLUMN IF EXISTS pending_full_name');
+    expect(sql).toContain('DROP COLUMN IF EXISTS pending_full_name_set_at');
+    // 052's SECOND half is live and must not be touched here.
+    expect(sql).not.toMatch(/REVOKE[^;]*worker_skills/i);
+    expect(sql).not.toMatch(/DROP POLICY[^;]*worker_skills_whatsapp_delete/i);
+
+    // ── (d) 006's v1 trust columns, with BOTH grantee roles named ──
+    // REVOKE has no IF EXISTS and a column-scoped REVOKE naming a dropped
+    // column is a hard 42703, so these two must be guarded by a column
+    // existence check or the SECOND apply of this file fails.
+    expect(sql).toContain("REVOKE SELECT (trust_signals, trust_signals_completed_at),");
+    expect(sql).toContain("UPDATE (trust_signals, trust_signals_completed_at)");
+    expect(sql).toContain("ON public.users FROM jale_matching");
+    expect(sql).toContain("column_name = 'trust_signals'\n  ) THEN");
+    expect(sql).toContain('DROP COLUMN IF EXISTS trust_signals');
+    expect(sql).toContain('DROP COLUMN IF EXISTS trust_signals_completed_at');
+
+    // ── (e) the 022/080 guard function -- and NOT 091's hire gate ──
+    expect(sql).toContain('DROP FUNCTION IF EXISTS public.enforce_job_application_required_docs()');
+    expect(sql).not.toMatch(/DROP FUNCTION[^;]*enforce_job_application_hire_requirements/);
+    expect(sql).not.toMatch(/DROP TRIGGER[^;]*job_applications_hire_requirements_guard/);
+
+    // Nothing outside the four groups. This migration creates nothing,
+    // grants nothing, deletes no rows and drops no table.
+    expect(sql).not.toMatch(/^CREATE (TABLE|POLICY|TRIGGER|INDEX)/m);
+    expect(sql).not.toMatch(/^GRANT/m);
+    expect(sql).not.toMatch(/^DELETE FROM/m);
+    expect(sql).not.toMatch(/DROP TABLE/);
+    // The only DROP FUNCTION statements are the four named above.
+    expect(sql.match(/^DROP FUNCTION/gm)).toHaveLength(4);
+    expect(sql.match(/^DROP POLICY/gm)).toHaveLength(1);
+
+    // ── (f) the self-audit's own error strings: absent, then still-present ──
+    expect(sql).toContain('migration 092: bypass_onboarding_for_web_worker still exists');
+    expect(sql).toContain('migration 092: policy users_web_worker_bypass_definer still exists on users');
+    expect(sql).toContain('migration 092: jale_whatsapp still holds SELECT on users.email');
+    // The email absence check MUST pin privilege_type: column_privileges
+    // expands 004's table-level INSERT across every column, so an unscoped
+    // EXISTS fails a correct migration on a row this file never touches.
+    expect(sql).toContain("AND privilege_type = 'SELECT'");
+    expect(sql).toContain('migration 092: stage_worker_pending_name still exists');
+    expect(sql).toContain('migration 092: promote_worker_pending_name still exists');
+    expect(sql).toContain('migration 092: users.% still exists');
+    expect(sql).toContain('migration 092: enforce_job_application_required_docs() still exists');
+    expect(sql).toContain('migration 092: job_applications_required_docs_guard trigger is back');
+    // The half that catches a revoke or a drop that took too much. Asserting
+    // absence is easy; these are what make the audit worth having.
+    expect(sql).toContain('migration 092: users must keep RLS ENABLE + FORCE');
+    expect(sql).toContain(
+      'migration 092: a REVOKE took more than users.email/trust_signals -- jale_whatsapp lost: %',
+    );
+    expect(sql).toContain('migration 092: jale_whatsapp unexpectedly has broad SELECT on users');
+    expect(sql).toContain('migration 092: the jale_matching revoke took users.% as well');
+    expect(sql).toContain('migration 092: policy % disappeared from users');
+    expect(sql).toContain('migration 092: jale_whatsapp lost DELETE on worker_skills (052 half two is kept)');
+    expect(sql).toContain('migration 092: worker_skills_whatsapp_delete policy disappeared');
+    expect(sql).toContain('migration 092: % must still exist');
+    expect(sql).toContain('migration 092: 091 hire gate trigger is missing -- the wrong guard was dropped');
+    // The three users columns 010 granted jale_matching that must survive,
+    // and the two 004/041/049 lists, are enumerated in the audit itself.
+    expect(sql).toContain("FOREACH col IN ARRAY ARRAY['id', 'user_type', 'main_trade']");
+    expect(sql).toContain("'tos_accepted_at',\n                             'privacy_accepted_at']");
+    expect(sql).toContain("'public.enforce_job_application_hire_requirements()',");
   });
 });

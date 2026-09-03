@@ -100,6 +100,7 @@ const expectedBaselineMigrations = [
   '089_admin_analytics_rls_repair.sql',
   '090_email_outbox_delivery_metadata.sql',
   '091_application_stages.sql',
+  '092_onboarding_cleanup_drops.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -720,7 +721,24 @@ describe('migration apply order baseline', () => {
   maybeIt('applies migrations 001-034 against a local Postgres database', async () => {
     const columns = await applyMigrationsAndReadColumns(databaseUrl!);
 
-    expect(columns.get('users')?.get('trust_signals')).toBe('jsonb');
+    // users.trust_signals / trust_signals_completed_at (006) and
+    // pending_full_name / _set_at (052) are the END STATE of the WHOLE chain,
+    // which now runs through 092's cleanup drops -- so the assertion is
+    // absence, not type. 006's and 052's own file content is still pinned
+    // above; this block is about what the cluster looks like after every
+    // migration has run, and a `.toBe('jsonb')` here would mean 092 silently
+    // never applied.
+    for (const dropped of [
+      'trust_signals', 'trust_signals_completed_at',
+      'pending_full_name', 'pending_full_name_set_at',
+    ]) {
+      expect(columns.get('users')?.get(dropped)).toBeUndefined();
+    }
+    // The neighbouring users columns 092 must NOT have taken with them.
+    expect(columns.get('users')?.get('email')).toBe('text');
+    expect(columns.get('users')?.get('full_name')).toBe('text');
+    expect(columns.get('users')?.get('trade_competency_score')).toBeDefined();
+
     expect(columns.get('worker_profiles')?.get('years_experience')).toBe('integer');
     expect(columns.get('jobs')?.get('required_docs')).toBe('_text');
     expect(columns.get('jobs')?.get('pay_min')).toBe('integer');

@@ -233,9 +233,15 @@ const WORKER_PROFILES_UPDATE = `
  * columns (tos_accepted_at, tos_version, privacy_accepted_at,
  * privacy_version). CLEAR (onboarding/profile answers + trades + trust):
  * city, main_trade, main_trade_other, years_experience, has_transportation,
- * availability, full_name (a profile.name answer), trust_signals
- * (-> '{}'::jsonb — NOT NULL since migration 006), trust_signals_completed_at
- * (-> NULL), trade_competency_score (-> NULL).
+ * availability, full_name (a profile.name answer), trade_competency_score
+ * (-> NULL).
+ *
+ * `trust_signals` / `trust_signals_completed_at` used to be reset here too.
+ * They were migration 006's v1 trust layer; v2 keeps its answers in
+ * worker_trust_assessments (reset separately, above) and its extractions in
+ * worker_trust_extractions, and migration 092 DROPS both columns. Naming
+ * either one here after 092 is applied is a 42703 that aborts the whole
+ * single-transaction reset, so they are gone from this statement.
  */
 const USERS_UPDATE = `
   UPDATE users
@@ -246,8 +252,6 @@ const USERS_UPDATE = `
          has_transportation = NULL,
          availability = NULL,
          full_name = NULL,
-         trust_signals = '{}'::jsonb,
-         trust_signals_completed_at = NULL,
          trade_competency_score = NULL
    WHERE id = $1
 `;
