@@ -47,6 +47,7 @@ import {
 import { isAvailabilityKey, isExperienceKey, isTradeKey } from '../../lib/worker-vocab';
 import { isUnimplementedBoundStep } from '../onboarding/gate';
 import { hydrateSessionFromRun, persistDurableStateContext } from '../onboarding/durable-context';
+import { maybeSkipLegalReview } from '../onboarding/transitions';
 import {
   advanceWorkflow,
   appendTransition,
@@ -297,10 +298,11 @@ export function createWebSession(input: {
   };
 }
 
-function webMessage(phone: string, fields: { body?: string; interactivePayload?: string }): OnboardingV2InboundMessage {
+export function webMessage(phone: string, fields: WebEngineFields): OnboardingV2InboundMessage {
   return {
     from: phone,
     body: fields.body ?? '',
+    ...(fields.answerSource ? { answerSource: fields.answerSource } : {}),
     // `worker_workflow_transitions.inbound_message_sid` is plain TEXT. The
     // `web:` prefix is what makes a run's history legible: which steps were
     // answered in a browser and which over WhatsApp.
@@ -311,8 +313,16 @@ function webMessage(phone: string, fields: { body?: string; interactivePayload?:
 
 // ── Value -> engine message ──────────────────────────────────────────────
 
+/** The engine-message fields a web value can translate into. */
+export interface WebEngineFields {
+  body?: string;
+  interactivePayload?: string;
+  /** Only ever set by the trust steps, only ever `'voice'`. */
+  answerSource?: 'text' | 'voice';
+}
+
 type Mapped =
-  | { ok: true; fields: { body?: string; interactivePayload?: string } }
+  | { ok: true; fields: WebEngineFields }
   | { ok: false; reason: string };
 
 function asString(value: unknown): string | null {
@@ -451,9 +461,18 @@ export function mapAnswerToEngineMessage(
       const trimmed = text.trim();
       if (trimmed.length < TRUST_ANSWER_MIN_CHARS) return { ok: false, reason: 'too_short' };
       if (trimmed.length > TRUST_ANSWER_MAX_CHARS) return { ok: false, reason: 'too_long' };
+      // Sprint 23 L6: a dictated answer reaches this door as ORDINARY TEXT —
+      // the worker read the transcript, fixed it, and pressed the same button
+      // a typed answer presses. Only the browser knows it began as speech, so
+      // `source` is taken at its word and recorded on the assessment row.
+      // Anything other than the exact string `voice` is text; a client cannot
+      // invent a third provenance. The field is OMITTED for text rather than
+      // set to `'text'` — absence is what every other step and every WhatsApp
+      // message already means by it.
+      const voiceSource = wrapper?.source === 'voice' ? { answerSource: 'voice' as const } : {};
       // Sent as a plain body, and NOT through the command gate: an answer
       // that happens to read "back" or "hola" is an answer.
-      return { ok: true, fields: { body: trimmed } };
+      return { ok: true, fields: { body: trimmed, ...voiceSource } };
     }
 
     default:
@@ -656,6 +675,49 @@ export async function healPreAuthStep(
   const healed = await deps.repo.loadWorkerGate(client, input.workerId);
   if (!healed?.runId) throw new Error('worker_gate_missing_after_preauth_heal');
   return healed;
+}
+
+// ── L7: the cohort ToS skip, on this door ────────────────────────────────
+
+/**
+ * The web door's call into `maybeSkipLegalReview` (onboarding/transitions.ts),
+ * which owns the rule and the audit story. This wrapper exists only to build
+ * the synthetic engine message and to hydrate the session first, so the skip's
+ * onward hop through `advanceProfileToNextStep` sees the same durable bag every
+ * other web request does.
+ *
+ * Returns the gate to serve the request from — the SKIPPED one when it fired
+ * (the run has moved and `lock_version` has advanced), the caller's own gate
+ * otherwise.
+ */
+export async function skipLegalIfAlreadyAccepted(
+  client: PoolClient,
+  deps: OnboardingV2Deps,
+  input: { workerId: string; gate: WorkerGate; session: OnboardingV2Session; now: Date },
+): Promise<WorkerGate> {
+  const gate = input.gate;
+  if (gate.currentStepKey !== 'legal.review' || gate.status !== 'active') return gate;
+
+  await hydrateSessionFromRun(client, input.session, gate.runId as string);
+  const skipped = await maybeSkipLegalReview(
+    client,
+    input.session,
+    webMessage(input.session.whatsapp_number, {}),
+    deps,
+    gate,
+    input.now,
+  );
+  if (!skipped) return gate;
+
+  console.log(JSON.stringify({
+    metric: 'WebOnboardingLegalSkipped',
+    runId: gate.runId,
+    toStepKey: skipped.stepKey,
+  }));
+
+  const fresh = await deps.repo.loadWorkerGate(client, input.workerId);
+  if (!fresh?.runId) throw new Error('worker_gate_missing_after_legal_skip');
+  return fresh;
 }
 
 export async function applyBack(

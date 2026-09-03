@@ -121,6 +121,9 @@ describe('database migrations', () => {
       '087',
       '088',
       '089',
+      '090',
+      '091',
+      '092',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -852,5 +855,334 @@ describe('database migrations', () => {
 
     // Forward-only: 087 must not try to edit or drop 086's objects.
     expect(sql).not.toMatch(/DROP FUNCTION/);
+  });
+
+  // Same reason as the 082/088/089 blocks above: on RDS there is no Jest, so
+  // 091's own terminal DO block is the ONLY thing that verifies it in
+  // production. Pinning its literal strings here means deleting or weakening
+  // that block fails a test that runs everywhere, with no database at all.
+  // The CHECK string and the object names are pinned as literals because the
+  // whole point of 091 is WHICH statuses/columns/grants exist -- a paraphrase
+  // would pass while the schema was wrong.
+  it('091 adds the application-stage vocabulary and keeps itself self-verifying', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '091_application_stages.sql'), 'utf8');
+
+    // ── One transaction, forward-only, migrate-before-deploy ──
+    expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+    expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+    expect(sql).toContain('APPLY THIS MIGRATION *BEFORE* DEPLOYING THE CODE');
+    // 024 needed NOT VALID because it NARROWED the domain; a widened CHECK
+    // must not copy that shape.
+    expect(sql).not.toMatch(/NOT VALID/);
+    expect(sql).not.toMatch(/VALIDATE CONSTRAINT/);
+
+    // (a) The widened status domain, as the exact literal the app layer's
+    // APPLICATION_STATUSES mirrors -- details_requested sits between talking
+    // and hired.
+    expect(sql).toContain(
+      "CHECK (status IN ('pending', 'contacted', 'talking', 'details_requested', 'hired', 'not_interested'))",
+    );
+    expect(sql).toContain('CREATE INDEX IF NOT EXISTS idx_job_applications_status_details_requested');
+    expect(sql).toContain("WHERE status = 'details_requested'");
+
+    // (b) Stage timestamps, nullable with no default.
+    expect(sql).toContain('ADD COLUMN IF NOT EXISTS details_requested_at TIMESTAMPTZ');
+    expect(sql).toContain('ADD COLUMN IF NOT EXISTS details_completed_at TIMESTAMPTZ');
+
+    // (c) jobs.pre_application_prompts + the IMMUTABLE STRICT validator and
+    // its exact bounds (the app layer hand-syncs these three numbers).
+    expect(sql).toContain("ADD COLUMN IF NOT EXISTS pre_application_prompts JSONB NOT NULL DEFAULT '[]'::jsonb");
+    expect(sql).toContain('CREATE OR REPLACE FUNCTION public.pre_application_prompts_valid(p JSONB)');
+    expect(sql).toMatch(/^IMMUTABLE$/m);
+    expect(sql).toMatch(/^STRICT$/m);
+    expect(sql).toContain('WHEN jsonb_array_length(p) > 10 THEN false');
+    expect(sql).toContain("'^[A-Za-z0-9_-]{1,40}$'");
+    expect(sql).toContain("char_length(e.value ->> 'text') > 500");
+    expect(sql).toContain("(SELECT count(*) FROM jsonb_object_keys(e.value) AS k) <> 2");
+    expect(sql).toContain("count(DISTINCT x.value ->> 'id')");
+    expect(sql).toContain('ADD CONSTRAINT jobs_pre_application_prompts_valid');
+    expect(sql).toContain('CHECK (public.pre_application_prompts_valid(pre_application_prompts))');
+    // 077's precedent: jale_public_jobs is the one column-scoped reader on
+    // jobs, and public-job.ts enumerates columns.
+    expect(sql).toContain('GRANT SELECT (pre_application_prompts) ON jobs TO jale_public_jobs');
+    // A pure invoker-rights validator evaluated inside a CHECK must keep its
+    // default PUBLIC EXECUTE, unlike the definer functions in 072/088/089.
+    expect(sql).not.toMatch(/REVOKE ALL ON FUNCTION public\.pre_application_prompts_valid/);
+
+    // (d) prompt_answers as its own column (not a reserved application_answers
+    // key), object-shaped, byte-capped under the 16384 answers cap.
+    expect(sql).toContain("ADD COLUMN IF NOT EXISTS prompt_answers JSONB NOT NULL DEFAULT '{}'::jsonb");
+    expect(sql).toContain('ADD CONSTRAINT job_applications_prompt_answers_valid');
+    expect(sql).toContain("jsonb_typeof(prompt_answers) = 'object'");
+    // 16384 BYTES -- the same number and measure as MAX_ANSWERS_JSON_LENGTH
+    // for application_answers, NOT a byte cap derived from the app's 10 x
+    // 1000-CHARACTER bound (which a CJK/emoji answer set legitimately blows
+    // past at 3-4 bytes per character).
+    expect(sql).toContain('octet_length(prompt_answers::text) <= 16384');
+    expect(sql).not.toContain('12288');
+
+    // (e) The hire gate: invoker rights, WHEN-clause-scoped, fail-closed, and
+    // job-scoped docs only.
+    expect(sql).toContain('CREATE OR REPLACE FUNCTION public.enforce_job_application_hire_requirements()');
+    // Line-anchored, 088's technique: the header and the audit block both
+    // discuss SECURITY DEFINER in prose, but an actual clause always stands
+    // alone on its own line. There must be none in this file.
+    expect(sql).not.toMatch(/^SECURITY DEFINER$/m);
+    expect(sql).toContain('BEFORE UPDATE OF status ON job_applications');
+    expect(sql).toContain("WHEN (NEW.status = 'hired' AND OLD.status IS DISTINCT FROM 'hired')");
+    expect(sql).toContain('CREATE TRIGGER job_applications_hire_requirements_guard');
+    expect(sql).toContain("CONSTRAINT = 'job_applications_hire_requirements_check'");
+    expect(sql).toContain("ERRCODE = '23514'");
+    expect(sql).toContain('"reason": "job_unreadable"');
+    expect(sql).toContain("'fields',         to_jsonb(v_missing_fields)");
+    expect(sql).toContain("'docs',           to_jsonb(v_missing_docs)");
+    expect(sql).toContain("'certifications', to_jsonb(v_missing_certs)");
+    // Legacy 'ssn' can no longer be supplied by any worker (032/073), so it
+    // must never block a hire.
+    expect(sql).toContain("WHERE d <> 'ssn'");
+    // 018 hides vault rows from an employer session entirely -- the gate must
+    // count job-scoped snapshots ONLY, the opposite of 022's predicate.
+    expect(sql).toContain('AND wd.job_id = NEW.job_id');
+    expect(sql).not.toContain('wd.job_id IS NULL OR wd.job_id = NEW.job_id');
+    // Required tier only, has=true, proof via non-empty doc_ids.
+    expect(sql).toContain("AND req.tier = 'required'");
+    expect(sql).toContain("AND c.value ->> 'has' = 'true'");
+    expect(sql).toContain("jsonb_array_length(c.value -> 'doc_ids') > 0");
+
+    // (e) 022/080's INSERT guard trigger goes; its FUNCTION deliberately
+    // stays until 092 so a revert is one CREATE TRIGGER.
+    expect(sql).toContain('DROP TRIGGER IF EXISTS job_applications_required_docs_guard ON job_applications');
+    expect(sql).not.toMatch(/DROP FUNCTION[\s\S]*enforce_job_application_required_docs/);
+
+    // (f) Grants: the two worker-writable columns, and NOT the employer-only
+    // details_requested_at.
+    expect(sql).toContain(
+      'GRANT UPDATE (prompt_answers, details_completed_at) ON job_applications TO jale_whatsapp',
+    );
+    expect(sql).not.toMatch(/GRANT UPDATE \([^)]*details_requested_at/);
+    // 081's deferred write-back, lifted with a row-scoped policy alongside
+    // (the grant alone reaches zero rows under 079's FORCE RLS).
+    expect(sql).toContain('GRANT INSERT, UPDATE ON worker_application_defaults TO jale_whatsapp');
+    expect(sql).toContain(
+      'DROP POLICY IF EXISTS worker_application_defaults_whatsapp_write ON worker_application_defaults',
+    );
+    expect(sql).toContain('CREATE POLICY worker_application_defaults_whatsapp_write');
+    expect(sql).toContain('ON worker_application_defaults FOR ALL TO jale_whatsapp');
+    expect(sql).toContain(
+      "USING (worker_id::text = current_setting('app.current_internal_user_id', true))",
+    );
+    expect(sql).toContain(
+      "WITH CHECK (worker_id::text = current_setting('app.current_internal_user_id', true))",
+    );
+    // Forward-only: 079's and 081's policies are committed and must not be
+    // edited or undone from here.
+    expect(sql).not.toMatch(/DROP POLICY IF EXISTS worker_application_defaults_self/);
+    expect(sql).not.toMatch(/DROP POLICY IF EXISTS worker_application_defaults_whatsapp_read/);
+    expect(sql).not.toMatch(/^REVOKE/m);
+    // No DELETE was ever granted on the defaults table (079/081's posture).
+    expect(sql).not.toMatch(/GRANT[^;]*DELETE[^;]*ON worker_application_defaults/);
+
+    // (g) The Nova -> Claude Haiku 4.5 trade_questions cache purge, and the
+    // deploy-order exception it carries (the Haiku generator PR must be
+    // deployed BEFORE this file is applied, or the purge is simply wasted).
+    expect(sql).toContain('1. deploy the Haiku question-generator PR');
+    expect(sql).toContain('2. apply THIS file');
+    expect(sql).toContain('3. deploy the application-stages code');
+    expect(sql).toContain(
+      "DELETE FROM public.trade_questions\n   WHERE is_seeded = false AND model_id LIKE '%nova%';",
+    );
+    expect(sql).toContain(
+      "RAISE NOTICE 'migration 091: purged % Nova-generated trade_questions cache row(s)', v_deleted;",
+    );
+    // The end state IS checked (086 Part 4 checked nothing), but as a WARNING:
+    // a surviving Nova row means the ordering rule was violated and the purge
+    // accomplished nothing, which the operator must hear -- yet aborting would
+    // roll back the status CHECK, the columns and the hire gate over one AI
+    // cache row that self-corrects on the next miss. Pinning RAISE WARNING
+    // keeps a later edit from promoting it to RAISE EXCEPTION.
+    expect(sql).toContain(
+      "SELECT count(*) INTO v_remaining\n    FROM public.trade_questions\n   WHERE is_seeded = false AND model_id LIKE '%nova%';",
+    );
+    expect(sql).toMatch(
+      /RAISE WARNING 'migration 091: % Nova-generated trade_questions row\(s\) survived the purge/,
+    );
+    expect(sql).not.toMatch(/RAISE EXCEPTION[^;]*trade_questions/);
+    // The five SEEDED standard trades must never be touched: no unqualified
+    // purge (086 Part 4's wider predicate), and nothing that names
+    // is_seeded = true or TRUNCATEs the table.
+    expect(sql).not.toMatch(/DELETE FROM public\.trade_questions\s+WHERE is_seeded = false;/);
+    expect(sql).not.toMatch(/DELETE FROM[^;]*trade_questions[^;]*is_seeded = true/);
+    expect(sql).not.toMatch(/TRUNCATE/);
+    // trade_questions is the only table this migration deletes rows from.
+    expect(sql.match(/^\s*DELETE FROM/gm)).toHaveLength(1);
+
+    // (h) The terminal self-audit block's own error strings -- the only
+    // RDS-side verification of everything above.
+    expect(sql).toContain('job_applications_status_check missing or not widened with details_requested');
+    expect(sql).toContain('idx_job_applications_status_details_requested missing or has no details_requested predicate');
+    expect(sql).toContain('missing, not timestamptz, or unexpectedly NOT NULL');
+    expect(sql).toContain('jobs.pre_application_prompts missing, nullable, not jsonb, or missing its empty-array default');
+    expect(sql).toContain('pre_application_prompts_valid is not IMMUTABLE (provolatile = %)');
+    expect(sql).toContain('pre_application_prompts_valid is not STRICT');
+    expect(sql).toContain('pre_application_prompts_valid smoke test failed');
+    expect(sql).toContain(
+      'SELECT public.pre_application_prompts_valid(\'[{"id": "a", "text": "x"}]\')',
+    );
+    expect(sql).toContain('AND NOT public.pre_application_prompts_valid(\'[{"id": "a"}]\')');
+    expect(sql).toContain('job_applications_prompt_answers_valid CHECK missing or malformed');
+    expect(sql).toContain('job_applications_hire_requirements_guard trigger missing on job_applications');
+    expect(sql).toContain('has no WHEN clause (hired -> hired would re-run the gate)');
+    expect(sql).toContain('must NOT be SECURITY DEFINER');
+    expect(sql).toContain('no longer raises under the job_applications_hire_requirements_check constraint name');
+    expect(sql).toContain('lost its fail-closed job_unreadable branch');
+    expect(sql).toContain('is still present -- stage 1 cannot create incomplete applications while it lives');
+    expect(sql).toContain('jale_whatsapp missing UPDATE grant on job_applications.%');
+    expect(sql).toContain(
+      'jale_whatsapp unexpectedly has UPDATE on job_applications.details_requested_at',
+    );
+    expect(sql).toContain('jale_public_jobs missing SELECT grant on jobs.pre_application_prompts');
+    expect(sql).toContain('worker_application_defaults must keep RLS ENABLE + FORCE');
+    expect(sql).toContain('worker_application_defaults must carry all three policies');
+    expect(sql).toContain('worker_application_defaults_whatsapp_write missing or wrong shape');
+    expect(sql).toContain('jale_whatsapp missing INSERT/UPDATE on worker_application_defaults');
+    expect(sql).toContain('jale_whatsapp unexpectedly has DELETE on worker_application_defaults');
+    // The audit block asserts the trigger's WHEN via tgqual and the index via
+    // its predicate expression -- name-only checks would pass on a drifted
+    // object.
+    expect(sql).toContain('t.tgqual IS NOT NULL');
+    expect(sql).toContain('pg_get_expr(i.indpred, i.indrelid)');
+    expect(sql).toContain("provolatile <> 'i'");
+  });
+
+  // 092 is a DROP-only migration, which makes a content test unusually
+  // load-bearing: the difference between a correct line and a catastrophic
+  // one is a single pair of parentheses (`REVOKE SELECT (email)` vs `REVOKE
+  // SELECT`) or a single keyword (`CASCADE`). Neither mistake fails any
+  // typecheck, and on a testbed whose only WhatsApp traffic is the suites
+  // that run AFTER it, a widened revoke can even look green. So the shape of
+  // every destructive statement is pinned here, and the negatives matter as
+  // much as the positives.
+  it('092 drops exactly the dead onboarding objects, without CASCADE, and keeps itself self-verifying', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '092_onboarding_cleanup_drops.sql'), 'utf8');
+
+    // One transaction, as jale_admin.
+    expect(sql).toContain('Connect as: jale_admin (NOT the RDS master user)');
+    expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+    expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+
+    // DEPLOY ORDER: the OPPOSITE of 090/091. Code first, then apply. This is
+    // the one fact an operator must not get wrong, so it is pinned verbatim.
+    expect(sql).toContain('APPLY THIS MIGRATION *AFTER* DEPLOYING THE CODE');
+    expect(sql).toContain('1. deploy the code that stops referencing these objects');
+    expect(sql).toContain('2. apply THIS file');
+
+    // ── (a) the pg_depend pre-flight, BEFORE any drop ──
+    // Ordering is the point: a post-hoc audit cannot see what a CASCADE
+    // would have eaten, so the probe must precede the first DROP.
+    expect(sql).toContain('pg_catalog.pg_describe_object(d.classid, d.objid, d.objsubid)');
+    expect(sql).toContain("AND d.deptype = 'n'");
+    expect(sql).toContain('migration 092 pre-flight: users columns still carry dependents');
+    expect(sql).toContain('migration 092 pre-flight: functions still carry dependents');
+    expect(sql.indexOf('pre-flight')).toBeLessThan(sql.indexOf('DROP FUNCTION'));
+
+    // NO CASCADE in any STATEMENT. A drop that finds a live dependent must
+    // fail loud (2BP01), never take the dependent with it. The header
+    // discusses CASCADE in prose (it is the decision this file is built
+    // around), so the check runs over the SQL with `--` comment lines
+    // stripped -- 088's line-anchoring technique, applied to a word that
+    // legitimately appears in commentary.
+    const statements = sql
+      .split('\n')
+      .filter((line) => !line.trimStart().startsWith('--'))
+      .join('\n');
+    // The keyword only ever appears in DDL as the last token of a clause, so
+    // it is the punctuation that distinguishes `DROP COLUMN x CASCADE,` /
+    // `... CASCADE;` from the two RAISE messages that say the word.
+    expect(statements).not.toMatch(/\bCASCADE\s*[;,)]/i);
+    // ...and the prose that explains why is not allowed to disappear either.
+    expect(sql).toContain('Nothing here is CASCADE');
+
+    // ── (b) 053, in full ──
+    expect(sql).toContain(
+      'DROP FUNCTION IF EXISTS public.bypass_onboarding_for_web_worker(UUID, UUID, TEXT, TEXT, TEXT)',
+    );
+    expect(sql).toContain('DROP POLICY IF EXISTS users_web_worker_bypass_definer ON public.users');
+    // COLUMN-SCOPED revoke. The bare form would take 004's fourteen-column
+    // lookup grant, 041's tos_accepted_at and 049's privacy_accepted_at with
+    // it and break every WhatsApp inbound turn.
+    expect(sql).toContain('REVOKE SELECT (email) ON public.users FROM jale_whatsapp');
+    // Over the comment-stripped text: the header names the dangerous bare
+    // form in prose precisely so a future editor knows why the parentheses
+    // are there.
+    expect(statements).not.toMatch(/REVOKE\s+SELECT\s+ON\s+(public\.)?users/i);
+    expect(statements).not.toMatch(/REVOKE\s+ALL[^;]*ON\s+(public\.)?users/i);
+    expect(sql).toContain('A bare `REVOKE SELECT ON users FROM jale_whatsapp`');
+
+    // ── (c) 052's first half only ──
+    expect(sql).toContain('DROP FUNCTION IF EXISTS public.stage_worker_pending_name(TEXT, TEXT)');
+    expect(sql).toContain('DROP FUNCTION IF EXISTS public.promote_worker_pending_name(TEXT)');
+    expect(sql).toContain('DROP COLUMN IF EXISTS pending_full_name');
+    expect(sql).toContain('DROP COLUMN IF EXISTS pending_full_name_set_at');
+    // 052's SECOND half is live and must not be touched here.
+    expect(sql).not.toMatch(/REVOKE[^;]*worker_skills/i);
+    expect(sql).not.toMatch(/DROP POLICY[^;]*worker_skills_whatsapp_delete/i);
+
+    // ── (d) 006's v1 trust columns, with BOTH grantee roles named ──
+    // REVOKE has no IF EXISTS and a column-scoped REVOKE naming a dropped
+    // column is a hard 42703, so these two must be guarded by a column
+    // existence check or the SECOND apply of this file fails.
+    expect(sql).toContain("REVOKE SELECT (trust_signals, trust_signals_completed_at),");
+    expect(sql).toContain("UPDATE (trust_signals, trust_signals_completed_at)");
+    expect(sql).toContain("ON public.users FROM jale_matching");
+    expect(sql).toContain("column_name = 'trust_signals'\n  ) THEN");
+    expect(sql).toContain('DROP COLUMN IF EXISTS trust_signals');
+    expect(sql).toContain('DROP COLUMN IF EXISTS trust_signals_completed_at');
+
+    // ── (e) the 022/080 guard function -- and NOT 091's hire gate ──
+    expect(sql).toContain('DROP FUNCTION IF EXISTS public.enforce_job_application_required_docs()');
+    expect(sql).not.toMatch(/DROP FUNCTION[^;]*enforce_job_application_hire_requirements/);
+    expect(sql).not.toMatch(/DROP TRIGGER[^;]*job_applications_hire_requirements_guard/);
+
+    // Nothing outside the four groups. This migration creates nothing,
+    // grants nothing, deletes no rows and drops no table.
+    expect(sql).not.toMatch(/^CREATE (TABLE|POLICY|TRIGGER|INDEX)/m);
+    expect(sql).not.toMatch(/^GRANT/m);
+    expect(sql).not.toMatch(/^DELETE FROM/m);
+    expect(sql).not.toMatch(/DROP TABLE/);
+    // The only DROP FUNCTION statements are the four named above.
+    expect(sql.match(/^DROP FUNCTION/gm)).toHaveLength(4);
+    expect(sql.match(/^DROP POLICY/gm)).toHaveLength(1);
+
+    // ── (f) the self-audit's own error strings: absent, then still-present ──
+    expect(sql).toContain('migration 092: bypass_onboarding_for_web_worker still exists');
+    expect(sql).toContain('migration 092: policy users_web_worker_bypass_definer still exists on users');
+    expect(sql).toContain('migration 092: jale_whatsapp still holds SELECT on users.email');
+    // The email absence check MUST pin privilege_type: column_privileges
+    // expands 004's table-level INSERT across every column, so an unscoped
+    // EXISTS fails a correct migration on a row this file never touches.
+    expect(sql).toContain("AND privilege_type = 'SELECT'");
+    expect(sql).toContain('migration 092: stage_worker_pending_name still exists');
+    expect(sql).toContain('migration 092: promote_worker_pending_name still exists');
+    expect(sql).toContain('migration 092: users.% still exists');
+    expect(sql).toContain('migration 092: enforce_job_application_required_docs() still exists');
+    expect(sql).toContain('migration 092: job_applications_required_docs_guard trigger is back');
+    // The half that catches a revoke or a drop that took too much. Asserting
+    // absence is easy; these are what make the audit worth having.
+    expect(sql).toContain('migration 092: users must keep RLS ENABLE + FORCE');
+    expect(sql).toContain(
+      'migration 092: a REVOKE took more than users.email/trust_signals -- jale_whatsapp lost: %',
+    );
+    expect(sql).toContain('migration 092: jale_whatsapp unexpectedly has broad SELECT on users');
+    expect(sql).toContain('migration 092: the jale_matching revoke took users.% as well');
+    expect(sql).toContain('migration 092: policy % disappeared from users');
+    expect(sql).toContain('migration 092: jale_whatsapp lost DELETE on worker_skills (052 half two is kept)');
+    expect(sql).toContain('migration 092: worker_skills_whatsapp_delete policy disappeared');
+    expect(sql).toContain('migration 092: % must still exist');
+    expect(sql).toContain('migration 092: 091 hire gate trigger is missing -- the wrong guard was dropped');
+    // The three users columns 010 granted jale_matching that must survive,
+    // and the two 004/041/049 lists, are enumerated in the audit itself.
+    expect(sql).toContain("FOREACH col IN ARRAY ARRAY['id', 'user_type', 'main_trade']");
+    expect(sql).toContain("'tos_accepted_at',\n                             'privacy_accepted_at']");
+    expect(sql).toContain("'public.enforce_job_application_hire_requirements()',");
   });
 });

@@ -35,9 +35,9 @@ describe('BastionStack', () => {
     template.resourceCountIs('AWS::EC2::Instance', 1);
   });
 
-  test('Instance is t4g.nano (ARM graviton)', () => {
+  test('Instance is t4g.micro (ARM graviton; nano OOM-killed dnf on first boot)', () => {
     template.hasResourceProperties('AWS::EC2::Instance', {
-      InstanceType: 't4g.nano',
+      InstanceType: 't4g.micro',
     });
   });
 
@@ -80,6 +80,11 @@ describe('BastionStack', () => {
     // tokens around it).
     const serialized = JSON.stringify(userDataFnBase64);
     expect(serialized).toContain('postgresql15');
+    // Swap is created BEFORE dnf: on 2026-09-01 a nano's first-boot install
+    // was OOM-killed, leaving no psql. The order matters.
+    expect(serialized.indexOf('swapon /swapfile')).toBeGreaterThan(-1);
+    expect(serialized.indexOf('swapon /swapfile')).toBeLessThan(serialized.indexOf('dnf install'));
+    expect(serialized).toContain('install_weak_deps=False');
     expect(serialized).toContain('jq');
   });
 

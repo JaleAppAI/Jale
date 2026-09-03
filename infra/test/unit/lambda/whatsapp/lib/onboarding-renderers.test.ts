@@ -12,7 +12,11 @@ import {
   registerOnboardingRenderers,
   createReleaseRenderer,
   categoryRenderers,
+  buildApplicationStagePayloadMessage,
 } from '../../../../../lambda/whatsapp/lib/onboarding-renderers';
+// The real constant, not a literal: outbox.ts exports it (sprint 23) precisely
+// so consumers stop mirroring '__fallback_body' by hand and drifting from it.
+import { FALLBACK_BODY_KEY } from '../../../../../lambda/whatsapp/lib/outbox';
 import {
   _clearCategoryRenderersForTests,
   enqueueWorkerMessage,
@@ -727,5 +731,245 @@ describe('job_alert category renderer: single-job template send', () => {
     expect(result!.contentTemplate).toBeNull();
     expect(result!.body).toContain('Electricista');
     expect(result!.body).toContain('Plomero');
+  });
+});
+
+// ── Sprint 23: application-stage copy on the 'account' category ──
+//
+// Before this, an application stage change that arrived while the worker was
+// still onboarding was DEFERRED and then released as the generic "Account
+// update (application_stage)" line: no job, no employer, no link, no
+// Start/Later buttons. buildApplicationStagePayloadMessage is the one place
+// the payload becomes real copy, and BOTH doors into the category use it, so
+// each door is covered below as well as the builder itself.
+describe('buildApplicationStagePayloadMessage', () => {
+  // Strict v4 UUID. application-stage-notify.ts's UUID_REGEX pins the version
+  // (1-5) and variant (8/9/a/b) nibbles, so the file's WORKER_ID fixture
+  // ('aaaaaaaa-0000-...') would NOT pass; a fixture that silently fails the
+  // guard turns every assertion below into a null check.
+  const APPLICATION_ID = '11111111-2222-4333-8444-555555555555';
+  const BASE_URL = 'https://jaleapp.ai';
+  const JOB_TITLE = 'Electrician';
+  const COMPANY_NAME = 'Acme Concrete';
+
+  function stagePayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      kind: 'application_stage',
+      status: 'details_requested',
+      applicationId: APPLICATION_ID,
+      jobId: 'job-1',
+      jobTitle: JOB_TITLE,
+      companyName: COMPANY_NAME,
+      frontendBaseUrl: BASE_URL,
+      ...overrides,
+    };
+  }
+
+  const languages: PreferredLanguage[] = ['en', 'es'];
+
+  it.each(languages)(
+    'details_requested renders application_update_%s with the four seeded variables',
+    (language) => {
+      const message = buildApplicationStagePayloadMessage(language, stagePayload());
+
+      expect(message).not.toBeNull();
+      // Template-first: whatsapp_outbox's body_or_template CHECK rejects a row
+      // carrying both, so `body` must be null and the copy must travel as the
+      // fallback content variable.
+      expect(message!.body).toBeNull();
+      expect(message!.contentTemplate).toBe(`application_update_${language}`);
+      expect(message!.contentVariables).toMatchObject({
+        '1': JOB_TITLE,
+        '2': COMPANY_NAME,
+        // {{3}} keeps the `app-` prefix on the wire; parseApplicationButtonPayload
+        // (flows.ts) strips it when the button comes back.
+        '3': `app-${APPLICATION_ID}`,
+        '4': `${BASE_URL}/${language}/worker/applications/${APPLICATION_ID}`,
+      });
+    },
+  );
+
+  it.each(languages)('hired renders application_hired_%s', (language) => {
+    const message = buildApplicationStagePayloadMessage(
+      language,
+      stagePayload({ status: 'hired' }),
+    );
+    expect(message!.contentTemplate).toBe(`application_hired_${language}`);
+    expect(message!.contentVariables!['3']).toBe(`app-${APPLICATION_ID}`);
+  });
+
+  it.each(languages)('always carries a plain-text fallback body in %s', (language) => {
+    // The ContentSids are seeded by hand after deploy; until they exist,
+    // outbox.ts sends this key's value as a plain Body instead of hard-failing.
+    for (const status of ['details_requested', 'hired']) {
+      const message = buildApplicationStagePayloadMessage(language, stagePayload({ status }));
+      const fallback = message!.contentVariables![FALLBACK_BODY_KEY];
+      expect(typeof fallback).toBe('string');
+      expect(fallback).toContain(JOB_TITLE);
+      expect(fallback).toContain(COMPANY_NAME);
+      expect(fallback).toContain(BASE_URL);
+      expect(fallback).not.toContain('{{');
+    }
+  });
+
+  it('produces different EN and ES copy', () => {
+    const en = buildApplicationStagePayloadMessage('en', stagePayload());
+    const es = buildApplicationStagePayloadMessage('es', stagePayload());
+    expect(JSON.stringify(en)).not.toEqual(JSON.stringify(es));
+  });
+
+  // Every rejection below must be a null RETURN, never a throw:
+  // buildApplicationStageMessage/buildApplicationStageUrl throw on a bad id,
+  // and a throw out of a release renderer takes down the whole release batch
+  // (worker-ready-release.test.ts locks that a renderer throw rolls back every
+  // mutation in the caller's transaction).
+  const rejected: ReadonlyArray<[string, Record<string, unknown> | null | undefined]> = [
+    ['a payload for another lane', { kind: 'trust_result', status: 'hired' }],
+    ['a payload with no kind at all', { status: 'hired', applicationId: '11111111-2222-4333-8444-555555555555' }],
+    ['an unknown status', { kind: 'application_stage', status: 'rejected' }],
+    [
+      // Passes flows.ts's LOOSE button regex but fails the strict RFC guard --
+      // the divergence between the two is a real (reported) mismatch.
+      'a uuid-shaped id that is not RFC-valid',
+      { kind: 'application_stage', status: 'hired', applicationId: '11111111-2222-3333-4444-555555555555', jobTitle: 'T', companyName: 'C', frontendBaseUrl: 'https://x.test' },
+    ],
+    ['a non-uuid id', { kind: 'application_stage', status: 'hired', applicationId: 'app-1', jobTitle: 'T', companyName: 'C', frontendBaseUrl: 'https://x.test' }],
+    ['a missing id', { kind: 'application_stage', status: 'hired', jobTitle: 'T', companyName: 'C', frontendBaseUrl: 'https://x.test' }],
+    ['an empty jobTitle', { kind: 'application_stage', status: 'hired', applicationId: '11111111-2222-4333-8444-555555555555', jobTitle: '', companyName: 'C', frontendBaseUrl: 'https://x.test' }],
+    ['an empty companyName', { kind: 'application_stage', status: 'hired', applicationId: '11111111-2222-4333-8444-555555555555', jobTitle: 'T', companyName: '', frontendBaseUrl: 'https://x.test' }],
+    ['an empty frontendBaseUrl', { kind: 'application_stage', status: 'hired', applicationId: '11111111-2222-4333-8444-555555555555', jobTitle: 'T', companyName: 'C', frontendBaseUrl: '' }],
+    ['a non-string jobTitle', { kind: 'application_stage', status: 'hired', applicationId: '11111111-2222-4333-8444-555555555555', jobTitle: 42, companyName: 'C', frontendBaseUrl: 'https://x.test' }],
+    ['a null payload', null],
+    ['an undefined payload', undefined],
+    ['an empty payload', {}],
+  ];
+
+  it.each(rejected)('returns null (never throws) for %s', (_label, payload) => {
+    let result: unknown;
+    expect(() => {
+      result = buildApplicationStagePayloadMessage('es', payload);
+    }).not.toThrow();
+    expect(result).toBeNull();
+  });
+});
+
+describe('account category renderer (sprint 23 application stages)', () => {
+  const APPLICATION_ID = '11111111-2222-4333-8444-555555555555';
+  const stagePayload = {
+    kind: 'application_stage',
+    status: 'details_requested',
+    applicationId: APPLICATION_ID,
+    jobTitle: 'Electrician',
+    companyName: 'Acme Concrete',
+    frontendBaseUrl: 'https://jaleapp.ai',
+  };
+
+  it('renders the stage message for an application_stage payload', async () => {
+    const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'es' });
+    const result = await categoryRenderers.account(
+      client,
+      baseInput({ category: 'account', sourceType: 'application_stage', payload: stagePayload }),
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.whatsappNumber).toBe(RAW_PHONE);
+    expect(result!.body).toBeNull();
+    expect(result!.contentTemplate).toBe('application_update_es');
+    expect(result!.contentVariables!['3']).toBe(`app-${APPLICATION_ID}`);
+  });
+
+  it('falls back to the generic account notice for any other payload', async () => {
+    const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'en' });
+    const result = await categoryRenderers.account(
+      client,
+      baseInput({ category: 'account', sourceType: 'trust_result', payload: { kind: 'trust_result' } }),
+    );
+
+    expect(result!.contentTemplate).toBeNull();
+    expect(result!.body).toBe('Account update (trust_result). Open the Jale app for details.');
+  });
+
+  it('falls back to the generic notice rather than throwing on a malformed stage payload', async () => {
+    const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'en' });
+    const result = await categoryRenderers.account(
+      client,
+      baseInput({
+        category: 'account',
+        sourceType: 'application_stage',
+        payload: { ...stagePayload, applicationId: 'not-a-uuid' },
+      }),
+    );
+
+    expect(result!.contentTemplate).toBeNull();
+    expect(result!.body).toContain('Account update (application_stage)');
+  });
+
+  it('still returns null when the worker has no verified number', async () => {
+    const client = mockClient({ whatsappNumber: null });
+    const result = await categoryRenderers.account(
+      client,
+      baseInput({ category: 'account', sourceType: 'application_stage', payload: stagePayload }),
+    );
+    expect(result).toBeNull();
+  });
+});
+
+describe('createReleaseRenderer — account_notice carries the intent payload', () => {
+  const APPLICATION_ID = '11111111-2222-4333-8444-555555555555';
+
+  function accountRequest(
+    payload: Record<string, unknown> | null,
+    language: PreferredLanguage = 'es',
+  ): ReleaseRenderRequest {
+    return {
+      kind: 'account_notice',
+      workerId: WORKER_ID,
+      language,
+      sourceType: 'application_stage',
+      sourceId: APPLICATION_ID,
+      payload,
+    };
+  }
+
+  const stagePayload = {
+    kind: 'application_stage',
+    status: 'details_requested',
+    applicationId: APPLICATION_ID,
+    jobTitle: 'Electrician',
+    companyName: 'Acme Concrete',
+    frontendBaseUrl: 'https://jaleapp.ai',
+  };
+
+  it('renders the real stage copy for a deferred application_stage intent', async () => {
+    const result = await createReleaseRenderer().render(accountRequest(stagePayload));
+    expect(result.body).toBeNull();
+    expect(result.contentTemplate).toBe('application_update_es');
+    expect(result.contentVariables).toMatchObject({
+      '1': 'Electrician',
+      '2': 'Acme Concrete',
+      '3': `app-${APPLICATION_ID}`,
+      '4': `https://jaleapp.ai/es/worker/applications/${APPLICATION_ID}`,
+    });
+  });
+
+  it('renders application_hired_* for a hired stage', async () => {
+    const result = await createReleaseRenderer().render(
+      accountRequest({ ...stagePayload, status: 'hired' }, 'en'),
+    );
+    expect(result.contentTemplate).toBe('application_hired_en');
+  });
+
+  it('keeps the generic notice for an intent with no payload (pre-sprint-23 rows)', async () => {
+    const result = await createReleaseRenderer().render(accountRequest(null));
+    expect(result.contentTemplate).toBeNull();
+    expect(result.body).toContain('Actualizacion de cuenta (application_stage)');
+  });
+
+  it('keeps the generic notice for a malformed payload instead of throwing the batch', async () => {
+    const result = await createReleaseRenderer().render(
+      accountRequest({ ...stagePayload, applicationId: 'not-a-uuid' }),
+    );
+    expect(result.contentTemplate).toBeNull();
+    expect(result.body).toContain('Actualizacion de cuenta (application_stage)');
   });
 });

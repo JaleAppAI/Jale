@@ -1,49 +1,35 @@
 import type { PoolClient } from 'pg';
 import { setInternalUserRlsContext } from './db';
-import { isPlainObject, validateApplicationAnswers } from './application-answers';
-import {
-  findCertificationProofGaps,
-  parseCertificationRequirements,
-  validateCertificationClaims,
-  type CertificationClaim,
-} from './certification-claims';
-import { upsertWorkerApplicationDefaults } from './worker-application-defaults';
+import { parsePreApplicationPromptList, validatePromptAnswers } from './pre-application-prompts';
 
 export type ApplySurface = 'web' | 'whatsapp';
 
+// STAGE 1 ONLY (sprint 23). An apply now creates the row and nothing more:
+// the questionnaire answers, certification claims and documents that used to
+// gate this call are collected in stage 2, through
+// lib/application-requirements.ts, after the employer requests details.
+// Every result that belonged to those gates -- missing_documents,
+// missing_answers, invalid_answers, the three certification-claim codes, and
+// guard_blocked (the 022 trigger 091 drops) -- is gone with them.
 export type ApplyWorkerResult =
   | { status: 'applied'; application: Record<string, unknown> }
   | { status: 'already_applied'; application: Record<string, unknown> }
-  | { status: 'missing_documents'; missing_docs: string[] }
-  | { status: 'missing_answers'; missing_fields: string[] }
-  | { status: 'invalid_answers'; error: string }
-  | { status: 'invalid_certification_claims' }
-  | { status: 'missing_certification_claims' }
-  | { status: 'missing_certification_proof'; certs: string[] }
+  | { status: 'missing_prompt_answers'; missing: string[] }
+  | { status: 'invalid_prompt_answers' }
   | { status: 'certification_document_limit' }
   | { status: 'job_closed' }
-  | { status: 'forbidden' }
-  | { status: 'guard_blocked' };
+  | { status: 'forbidden' };
 
 interface ApplyWorkerToJobInput {
   workerId: string;
   jobId: string;
   surface: ApplySurface;
-  answers?: Record<string, unknown>;
-  // WEB SURFACE ONLY -- see the certification-requirements block below.
-  // Raw, unvalidated request value; shape is checked by
-  // validateCertificationClaims (certification-claims.ts), never here.
-  certificationClaims?: unknown;
+  // WEB SURFACE ONLY. Raw, unvalidated request value: shape, known-id and
+  // completeness checks all happen in validatePromptAnswers
+  // (pre-application-prompts.ts), never here. WhatsApp ignores this field
+  // entirely -- see the surface split in applyWorkerToJob.
+  promptAnswers?: unknown;
 }
-
-// Must match MAX_ANSWERS_JSON_LENGTH in application-answers.ts, which is
-// module-private there. Hand-synced, same caveat 078_worker_documents_cert_name.sql
-// documents for its own MAX_CERTIFICATION_LENGTH duplication -- nothing
-// enforces the two constants stay equal. This is the RECHECK of that same
-// cap on the answers object AFTER certification_claims are merged in under
-// the 'certifications' key (validateApplicationAnswers's own check ran
-// before that merge and only ever saw the pre-merge object).
-const MAX_MERGED_ANSWERS_JSON_LENGTH = 16384;
 
 // Both 078_worker_documents_cert_name.sql trigger caps raise ERRCODE 23514
 // with these exact CONSTRAINT names -- see that migration's header for why
@@ -60,9 +46,10 @@ export const CERTIFICATION_DOCUMENT_LIMIT_CONSTRAINTS = new Set([
 
 // Snapshots the vault/job-scoped worker_documents rows for every doc type in
 // `docTypes` (required + optional docs the worker actually has -- a missing
-// optional doc is fine and simply doesn't get a row). Split into two
-// statements because certification_doc has different copy semantics from
-// every other doc type:
+// doc is fine and simply doesn't get a row; as of sprint 23 EVERY apply is
+// document-incomplete by design, so this is routinely a partial copy).
+// Split into two statements because certification_doc has different copy
+// semantics from every other doc type:
 //
 // - Non-cert types: at most one row per (worker, doc_type) is meaningful,
 //   so DISTINCT ON (doc_type) picks the best candidate (same-job row over
@@ -80,8 +67,10 @@ export const CERTIFICATION_DOCUMENT_LIMIT_CONSTRAINTS = new Set([
 //   rather than relying only on ON CONFLICT, because a future unique index
 //   shape (or none at all) must not be required for this function's
 //   idempotency: the already_applied path calls this again on every
-//   re-apply, and it must never insert duplicate rows for docs already
-//   copied.
+//   re-apply, and the stage-2 engine
+//   (application-requirements.ts loadRequirementSnapshot, with
+//   syncDocumentSnapshots) calls it on every worker-side read and write --
+//   it must never insert duplicate rows for docs already copied.
 //
 //   KNOWN LATENT ISSUE, not fixed here (out of this function's scope, flagged
 //   in 078's header): this dedup is by s3_key only and this function never
@@ -146,82 +135,71 @@ export async function copyRequiredDocumentSnapshots(
   }
 }
 
-// WEB SURFACE ONLY. Runs validateCertificationClaims (the pure,
-// surface-agnostic validator) and then does the ONE thing that validator
-// cannot do without a DB connection: confirms every claimed doc id is a
-// worker_documents row OWNED BY THIS WORKER with doc_type =
-// 'certification_doc' (a legacy unlabeled cert file -- cert_name IS NULL --
-// is still a VALID proof attachment; cert_name equality is never required).
-// An id that fails that check is dropped from its claim's doc_ids -- not
-// rejected as a hard error on its own -- so a claim with at least one other
-// valid id still stands; findCertificationProofGaps (certification-claims.ts)
-// is re-run against the DB-filtered claims afterward to catch the case
-// where filtering left a required+proof_required claim with zero ids left.
-// This also means only DB-CONFIRMED doc ids are ever written to
-// application_answers.certifications -- never a stray/hostile id a worker
-// referenced but does not actually own.
-async function resolveCertificationClaims(
+// The DB half of a certification claim -- the ONE thing the pure validators
+// in certification-claims.ts cannot do without a connection: confirm every
+// claimed doc id is a worker_documents row OWNED BY THIS WORKER with
+// doc_type = 'certification_doc'. A legacy unlabeled cert file (cert_name
+// IS NULL) is still a VALID proof attachment, so cert_name is deliberately
+// never part of the filter.
+//
+// Returns the surviving ids as a Set so the caller can DROP the ones that
+// failed from a claim's doc_ids -- not reject the claim outright -- letting
+// a claim with at least one other valid id still stand. That filtering is
+// what keeps a stray or hostile id (another worker's document, or a
+// non-certification upload) out of
+// job_applications.application_answers.certifications: only DB-CONFIRMED
+// ids are ever written.
+//
+// Extracted from the former private `resolveCertificationClaims` when the
+// apply path stopped taking claims (sprint 23): `mergeCertificationClaims`
+// (application-requirements.ts) is now the only caller, and it re-runs the
+// pure proof-gap check itself against the filtered result.
+export async function resolveCertificationDocIds(
   client: PoolClient,
   workerId: string,
-  rawClaims: unknown,
-  certificationRequirements: ReturnType<typeof parseCertificationRequirements>,
-): Promise<
-  | { ok: true; certifications: CertificationClaim[] }
-  | { ok: false; result: ApplyWorkerResult }
-> {
-  const validated = validateCertificationClaims(rawClaims, certificationRequirements);
-  if (!validated.ok) {
-    if (validated.error === 'missing_certification_proof') {
-      return { ok: false, result: { status: 'missing_certification_proof', certs: validated.certs } };
-    }
-    return { ok: false, result: { status: validated.error } };
-  }
+  docIds: readonly string[],
+): Promise<Set<string>> {
+  const unique = Array.from(new Set(docIds));
+  if (unique.length === 0) return new Set<string>();
 
-  const allDocIds = Array.from(new Set(validated.certifications.flatMap((claim) => claim.doc_ids ?? [])));
-  let validDocIds = new Set<string>();
-  if (allDocIds.length > 0) {
-    const docsRes = await client.query<{ id: string }>(
-      `SELECT id FROM worker_documents
-        WHERE worker_id = $1
-          AND doc_type = 'certification_doc'
-          AND id = ANY($2::uuid[])`,
-      [workerId, allDocIds],
-    );
-    validDocIds = new Set(docsRes.rows.map((row) => row.id));
-  }
-
-  const certifications = validated.certifications.map((claim) =>
-    claim.doc_ids ? { ...claim, doc_ids: claim.doc_ids.filter((id) => validDocIds.has(id)) } : claim,
-  );
-
-  const certs = findCertificationProofGaps(certifications, certificationRequirements);
-  if (certs.length > 0) {
-    return { ok: false, result: { status: 'missing_certification_proof', certs } };
-  }
-
-  return { ok: true, certifications };
-}
-
-async function missingRequiredDocuments(
-  client: PoolClient,
-  workerId: string,
-  jobId: string,
-  requiredDocs: string[],
-): Promise<string[]> {
-  if (requiredDocs.length === 0) return [];
-
-  const docsRes = await client.query<{ doc_type: string }>(
-    `SELECT DISTINCT doc_type
-       FROM worker_documents
+  const docsRes = await client.query<{ id: string }>(
+    `SELECT id FROM worker_documents
       WHERE worker_id = $1
-        AND doc_type = ANY($2::text[])
-        AND (job_id IS NULL OR job_id = $3::uuid)`,
-    [workerId, requiredDocs, jobId],
+        AND doc_type = 'certification_doc'
+        AND id = ANY($2::uuid[])`,
+    [workerId, unique],
   );
-  const present = new Set(docsRes.rows.map((row) => row.doc_type));
-  return requiredDocs.filter((docType) => !present.has(docType));
+  return new Set(docsRes.rows.map((row) => row.id));
 }
 
+/**
+ * STAGE 1: create the application row, and nothing else.
+ *
+ * Sprint 23 reduced this to the minimum an apply can be. What it no longer
+ * does, and where each of those went:
+ *   - the required-documents bounce: gone. Every apply is
+ *     document-incomplete by design now, and 091 DROPS the 022 BEFORE-INSERT
+ *     `job_applications_required_docs_guard` that enforced it at the DB
+ *     level -- which is also why the `app.allow_incomplete_docs` GUC the
+ *     WhatsApp surface used to set is dead and no longer set for any
+ *     surface. Docs are collected in stage 2.
+ *   - the answers gate (`validateApplicationAnswers`) and the certification
+ *     -claims gate: gone, along with the long "(a)-(f) recipe to close this
+ *     gap" comment that described building them for WhatsApp. That flow
+ *     SHIPPED (migration 080, whatsapp/lib/application-fill.ts) and its
+ *     surface-agnostic core now lives in lib/application-requirements.ts,
+ *     serving both doors.
+ *   - the `worker_application_defaults` write-back: moved into
+ *     `mergeFieldAnswers`, so it happens for BOTH surfaces (B4.0 §9) rather
+ *     than web-only.
+ *
+ * What it gained: the employer's `pre_application_prompts`. On web these
+ * must all be answered in the request (the apply screen asks them), so a
+ * short or malformed set bounces before the INSERT. On WhatsApp they cannot
+ * possibly precede the row -- "accept" is a one-tap reply -- so the column
+ * starts `{}` and the bot collects them conversationally right afterwards,
+ * through `mergePromptAnswers`.
+ */
 export async function applyWorkerToJob(
   client: PoolClient,
   input: ApplyWorkerToJobInput,
@@ -235,15 +213,19 @@ export async function applyWorkerToJob(
   // "permission denied for table jobs" (42501). The lock is not needed for
   // correctness — the INSERT ... ON CONFLICT (job_id, worker_id) DO NOTHING
   // below makes the apply idempotent under concurrency.
+  //
+  // The requirement columns stage 2 owns (required_fields, optional_fields,
+  // certification_requirements) are deliberately NOT selected: nothing in
+  // stage 1 reads them, and re-deriving them here is how a second,
+  // divergent "what's missing" computation gets started.
+  // application-requirements.ts is the single source of truth for that.
   const jobRes = await client.query<{
     id: string;
     required_docs: string[] | null;
     optional_docs: string[] | null;
-    required_fields: string[] | null;
-    optional_fields: string[] | null;
-    certification_requirements: unknown;
+    pre_application_prompts: unknown;
   }>(
-    `SELECT id, required_docs, optional_docs, required_fields, optional_fields, certification_requirements FROM jobs WHERE id = $1 AND status = 'active'`,
+    `SELECT id, required_docs, optional_docs, pre_application_prompts FROM jobs WHERE id = $1 AND status = 'active'`,
     [jobId],
   );
   if (jobRes.rows.length === 0) {
@@ -253,177 +235,52 @@ export async function applyWorkerToJob(
   const job = jobRes.rows[0];
   const requiredDocs = job.required_docs ?? [];
   const optionalDocs = job.optional_docs ?? [];
-  // Same required_fields/optional_fields column order feeds both this
-  // validator and worker-jobs-detail.ts's independent missing_fields /
-  // optional_unanswered computation -- the two agree because both filter
-  // the same array in place, not because either one is sorted. Keep it
-  // that way; don't reorder one without the other.
-  const requiredFields = job.required_fields ?? [];
-  const optionalFields = job.optional_fields ?? [];
-  // INVARIANT enforced elsewhere, not here: a job with a non-empty
-  // certification_requirements can never also list certification_doc in
-  // required_docs/optional_docs -- the employer job-CREATE path rejects
-  // that combination outright (a separate task owns that validation). So
-  // missingRequiredDocuments below never needs to special-case
-  // certification_doc: per-certification proof presence is entirely
-  // gated by validateCertificationClaims/resolveCertificationClaims further
-  // down, never by this required-docs check.
-  const certificationRequirements = parseCertificationRequirements(job.certification_requirements);
 
-  const missingDocs = await missingRequiredDocuments(client, workerId, jobId, requiredDocs);
-  // WhatsApp collects docs conversationally AFTER the row exists (fill flow,
-  // spec §6); the 022 DB guard is bypassed via GUC for this surface only, so
-  // the app-layer bounce below is skipped for whatsapp and every other
-  // surface keeps bouncing here exactly as before.
-  if (missingDocs.length > 0 && surface !== 'whatsapp') {
-    return { status: 'missing_documents', missing_docs: missingDocs };
-  }
-
-  // WhatsApp applies happen BEFORE the bot has had a chance to collect any
-  // structured answers -- "accept" is a one-tap reply, not a form. Gating
-  // this surface on required_fields would make every WhatsApp accept bounce
-  // off missing_answers before the (not-yet-built) conversational fill flow
-  // ever runs. So WhatsApp skips the answers gate entirely: it is a
-  // transition state that persists whatever (if anything) the caller
-  // already has, and defers real collection to a future incremental
-  // answers-fill flow that writes application_answers directly (the
-  // jale_whatsapp UPDATE grant for that already exists, see
-  // 073_job_application_requirements.sql). Remove this bypass once that
-  // flow ships and the bot can supply an already-validated `answers` object
-  // before calling accept.
-  //
-  // Only the shape (plain object) is enforced here, not the field-level
-  // validator -- an unvalidated non-object value (array/string/etc.) must
-  // never reach application_answers, since every reader (worker-jobs-detail,
-  // employer-job-applicants) assumes an object to Object.keys()/hasOwnProperty
-  // over.
-  //
-  // THE COMPLETE RECIPE TO CLOSE THIS GAP (for the WhatsApp fill-flow, once
-  // it exists) -- everything a caller needs, in one place, in order:
-  //   (a) Run validateApplicationAnswers(requiredFields, optionalFields, answers)
-  //       exactly like the web branch below -- same function, same rules,
-  //       no WhatsApp-specific relaxation.
-  //   (b) If the job's certification_requirements is non-empty (parsed via
-  //       parseCertificationRequirements, certification-claims.ts), run
-  //       validateCertificationClaims(claims, certificationRequirements)
-  //       against whatever claims the bot has collected, and ALSO do the
-  //       DB ownership/type check resolveCertificationClaims does above
-  //       (worker_documents, doc_type = 'certification_doc', owned by this
-  //       worker -- a legacy unlabeled cert file is still valid proof) --
-  //       (a) and (b) never route through each other; certification_claims
-  //       is a top-level sibling of answers, not a field inside it.
-  //   (c) Merge the DB-validated certifications array from (b) into the
-  //       validated answers object from (a) under the RESERVED key
-  //       'certifications' -- see certification-claims.ts's header for why
-  //       that key can never collide with a real answer key.
-  //   (d) Re-check the merged object against MAX_MERGED_ANSWERS_JSON_LENGTH
-  //       (16KB, this file) -- the (a)-stage check only ever saw the
-  //       pre-merge object.
-  //   (e) Call upsertWorkerApplicationDefaults (worker-application-defaults.ts)
-  //       with the merged object minus its 'certifications' key, exactly as
-  //       the web branch does below -- same function, no reimplementation.
-  //   (f) Add the grant migration 079_worker_application_defaults.sql's
-  //       header already describes:
-  //         GRANT SELECT, INSERT, UPDATE ON worker_application_defaults TO jale_whatsapp;
-  //       Without it, step (e) fails with 42501 the first time this runs
-  //       over the jale_whatsapp role.
-  // Until all of (a)-(f) ship together, WhatsApp keeps bypassing every one
-  // of these gates below, as it already does today.
-  let answersToStore: Record<string, unknown> = {};
-  if (surface === 'whatsapp') {
-    if (input.answers !== undefined && isPlainObject(input.answers)) {
-      answersToStore = input.answers;
-    }
-  } else {
-    const validated = validateApplicationAnswers(requiredFields, optionalFields, input.answers ?? {});
+  // Prompt answers are stored in their OWN column, not under a reserved key
+  // inside application_answers (B4.0 §1): that keeps the 16 KB answers cap
+  // and every Object.keys(application_answers) reader untouched, and makes
+  // the write-once top-up a single SQL expression (mergePromptAnswers).
+  let promptAnswersToStore: Record<string, string> = {};
+  if (surface === 'web') {
+    // parsePreApplicationPromptList fails OPEN on a corrupt column value
+    // (non-array -> no prompts), so a hand-edited row degrades to "this job
+    // asks nothing" instead of 500-ing every apply.
+    const prompts = parsePreApplicationPromptList(job.pre_application_prompts);
+    const validated = validatePromptAnswers(prompts, input.promptAnswers);
     if (!validated.ok) {
-      // Narrow via `'missing' in validated` rather than `error === 'missing_answers'`:
-      // the third union member's `error` is typed as plain `string`, so TS can't
-      // discriminate on the literal alone.
-      if ('missing' in validated) {
-        return { status: 'missing_answers', missing_fields: validated.missing };
+      if (validated.error === 'missing_prompt_answers') {
+        return { status: 'missing_prompt_answers', missing: validated.missing };
       }
-      return { status: 'invalid_answers', error: validated.error };
+      return { status: 'invalid_prompt_answers' };
     }
-    answersToStore = validated.value;
-
-    // WEB SURFACE ONLY, and only when the job actually asks for certs --
-    // most jobs' certification_requirements is empty, and this whole block
-    // must be a no-op for them (byte-for-byte the pre-existing behavior).
-    if (certificationRequirements.length > 0) {
-      const claimsResult = await resolveCertificationClaims(
-        client,
-        workerId,
-        input.certificationClaims,
-        certificationRequirements,
-      );
-      if (!claimsResult.ok) {
-        return claimsResult.result;
-      }
-      // Reserved key -- see certification-claims.ts. answersToStore can
-      // never already carry this key: validateApplicationAnswers rejects a
-      // client-supplied 'certifications' answers key with
-      // 'unknown_answer_key', since it is never a member of
-      // REQUIRED_FIELD_TYPES / jobs_required_fields_valid (073) or
-      // jobs_optional_fields_valid (074).
-      answersToStore = { ...answersToStore, certifications: claimsResult.certifications };
-
-      // RECHECK, not the original check: validateApplicationAnswers only
-      // ever measured the pre-merge object above. The merge just added an
-      // arbitrary-length certifications array (bounded in practice by
-      // MAX_CERTIFICATION_FILES-scale doc_ids arrays, but not by anything
-      // this function enforces) that could push the combined object over
-      // the same cap. Same error code as the original oversize case
-      // (application-answers.ts) -- to a caller this is observationally
-      // identical to "answers were too large", just discovered one merge
-      // later.
-      if (JSON.stringify(answersToStore).length > MAX_MERGED_ANSWERS_JSON_LENGTH) {
-        return { status: 'invalid_answers', error: 'invalid_answers' };
-      }
-    }
-
-    // WEB SURFACE ONLY, AFTER validation (and after any certification-claims
-    // merge above) succeeds: save these answers as the worker's prefill
-    // defaults for future applications. 'certifications' is stripped first
-    // -- worker_application_defaults.answers holds only the free-form
-    // questionnaire keys (REQUIRED_FIELD_TYPES), never certification claims,
-    // which are per-job by nature and meaningless as a cross-job default.
-    // A failure here is NEVER swallowed: it propagates out of this
-    // try-less block and up through the caller (worker-jobs-apply.ts),
-    // which rolls back the whole apply transaction. Saving a worker's
-    // defaults is not allowed to silently fail while the application itself
-    // still commits.
-    const { certifications: _certifications, ...defaultsAnswers } = answersToStore;
-    await upsertWorkerApplicationDefaults(client, workerId, defaultsAnswers);
+    promptAnswersToStore = validated.value;
   }
+  // WhatsApp: the accept is a one-tap button reply that cannot carry
+  // answers, so the row starts with an empty object and the prompt lane
+  // collects them on the following turns via mergePromptAnswers (write-once
+  // per id at the SQL level). Any promptAnswers a caller passes on this
+  // surface is ignored rather than trusted -- it has been through no
+  // validator here.
 
   const docTypesToSnapshot = Array.from(new Set([...requiredDocs, ...optionalDocs]));
 
   try {
-    if (surface === 'whatsapp') {
-      // Transaction-local (SET LOCAL semantics via the third `true` arg): the
-      // 022 trigger guard on job_applications reads this GUC and skips the
-      // required-docs check for the INSERT below only. Nothing outside this
-      // transaction is affected. See 077_whatsapp_application_fill.sql.
-      await client.query(`SELECT set_config('app.allow_incomplete_docs', 'on', true)`);
-    }
     const insertRes = await client.query(
-      `INSERT INTO job_applications (job_id, worker_id, status, application_answers)
-       VALUES ($1, $2, 'pending', $3::jsonb)
+      `INSERT INTO job_applications (job_id, worker_id, status, application_answers, prompt_answers)
+       VALUES ($1, $2, 'pending', '{}'::jsonb, $3::jsonb)
        ON CONFLICT (job_id, worker_id) DO NOTHING
        RETURNING id, job_id, status, applied_at`,
-      [jobId, workerId, JSON.stringify(answersToStore)],
+      [jobId, workerId, JSON.stringify(promptAnswersToStore)],
     );
 
     if (insertRes.rows.length === 0) {
-      // already_applied: NEVER patch application_answers here, even though
-      // `answersToStore` may hold freshly-validated data -- the write-once
-      // contract for v1 is that answers are set exactly once, at the
-      // INSERT that creates the row. This path (re-apply on an existing
-      // application) intentionally discards answersToStore. Incremental
-      // fills (e.g. a WhatsApp conversational flow topping up missing
-      // fields after the fact) are a future separate UPDATE path, not this
-      // idempotent re-apply path -- so no UPDATE of any kind runs here.
+      // already_applied: NEVER patch the row here, even though
+      // `promptAnswersToStore` may hold freshly-validated data -- this
+      // idempotent re-apply path intentionally discards it. Stage-2 top-ups
+      // (and prompt answers, which are write-once PER ID via
+      // `mergePromptAnswers` in application-requirements.ts) go through that
+      // module's own UPDATE paths, never through this one. So no UPDATE of
+      // any kind runs here.
       await copyRequiredDocumentSnapshots(client, workerId, jobId, docTypesToSnapshot);
       const existingRes = await client.query(
         `SELECT id, job_id, status, applied_at
@@ -442,9 +299,6 @@ export async function applyWorkerToJob(
   } catch (err: any) {
     if (err?.code === '42501') {
       return { status: 'forbidden' };
-    }
-    if (err?.code === '23514' && err?.constraint === 'job_applications_required_docs_check') {
-      return { status: 'guard_blocked' };
     }
     // Both copyRequiredDocumentSnapshots call sites above (fresh apply and
     // already_applied repair) are inside this same try block, so one catch

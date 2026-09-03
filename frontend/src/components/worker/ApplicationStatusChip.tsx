@@ -16,10 +16,26 @@ import type { ApplicationStatus, LegacyApplicationStatus } from '@/lib/status';
  * cannot leave this chip painting the old colour. Only the label is ours, and
  * it is keyed off the normalized status so the legacy `reviewed`/`rejected`
  * values still resolve to a real sentence.
+ *
+ * `short` picks the `status_short` block (sprint 23). It exists for ONE
+ * status: `details_requested`'s long label is a whole sentence ("Employer
+ * wants to hire you — complete your details"), which is right in a banner and
+ * far too long for an 11px chip in a list row. The short block covers every
+ * status rather than just that one, so a chip never mixes two vocabularies.
  */
-export function ApplicationStatusChip({ status }: { status: ApplicationStatus | LegacyApplicationStatus }) {
-  const t = useTranslations('worker_applications.status');
+export function ApplicationStatusChip({
+  status,
+  short = false,
+}: {
+  status: ApplicationStatus | LegacyApplicationStatus;
+  short?: boolean;
+}) {
+  const t = useTranslations('worker_applications');
   const normalized = normalizeApplicationStatus(status);
 
-  return <ApplicationStatusBadge status={normalized}>{t(normalized)}</ApplicationStatusBadge>;
+  return (
+    <ApplicationStatusBadge status={normalized}>
+      {t(`${short ? 'status_short' : 'status'}.${normalized}`)}
+    </ApplicationStatusBadge>
+  );
 }

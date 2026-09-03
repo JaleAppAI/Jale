@@ -19,6 +19,11 @@ import { ListPageSkeleton } from '@/components/ui/page-skeletons';
 import { Spinner } from '@/components/ui/spinner';
 import { WorkerJobCard } from '@/components/worker/WorkerJobCard';
 import { apiFetch } from '@/lib/api';
+import { getApplications, type Application } from '@/lib/api/worker';
+import {
+  DetailsRequestedBanner,
+  DetailsRequestedMultiBanner,
+} from '@/components/worker/DetailsRequestedBanner';
 import { getJobs, updateWorkerProfile } from '@/lib/api/worker';
 import type { Job, PreferredCity } from '@/lib/api/worker';
 
@@ -125,6 +130,30 @@ export default function WorkerHomePage() {
 
     return () => window.clearTimeout(handle);
   }, [search]);
+
+  /**
+   * Applications waiting on the worker, fetched BEST-EFFORT alongside the
+   * profile.
+   *
+   * Deliberately not part of `usePageData`: this page's data is the job feed,
+   * and a failed applications call must never take the feed's phase with it.
+   * A worker who cannot see the banner still gets it on WhatsApp and on the
+   * applications list, so an empty array on failure is an honest degradation
+   * rather than a lost message.
+   */
+  const [needingDetails, setNeedingDetails] = useState<Application[]>([]);
+  useEffect(() => {
+    if (!idToken) return;
+    const controller = new AbortController();
+    getApplications(idToken, controller.signal)
+      // `details_status`, not `status`: the timestamp-derived field is the one
+      // that survives an employer moving the applicant on to `talking`.
+      .then(({ applications }) => setNeedingDetails(
+        applications.filter((a) => a.details_status === 'requested'),
+      ))
+      .catch(() => {});
+    return () => controller.abort();
+  }, [idToken]);
 
   useEffect(() => {
     if (!idToken) return;
@@ -265,6 +294,22 @@ export default function WorkerHomePage() {
   return (
     <AppShell role="worker" title={t('title')}>
       <main className="mx-auto max-w-2xl px-4 py-6 md:px-6">
+        {/* Above the search box, per the prototype's W3b: an employer waiting
+            on this worker outranks browsing for another job. */}
+        {needingDetails.length === 1 ? (
+          <div className="mb-4">
+            <DetailsRequestedBanner
+              applicationId={needingDetails[0].application_id}
+              companyName={needingDetails[0].company_name}
+              remainingCount={needingDetails[0].remaining_count}
+            />
+          </div>
+        ) : needingDetails.length > 1 ? (
+          <div className="mb-4">
+            <DetailsRequestedMultiBanner count={needingDetails.length} />
+          </div>
+        ) : null}
+
         {/* Controls render immediately and stay live through every phase — a
             worker can retype a search while the first request is still out. */}
         <div className="relative mb-3">

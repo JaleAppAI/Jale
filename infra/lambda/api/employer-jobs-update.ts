@@ -7,6 +7,7 @@ import { setJobCoordinates } from '../lib/location';
 import { parseCityFields, parseCityFromLocation } from '../lib/city-fields';
 import { resolveJobLocationFields } from '../lib/job-location-parse';
 import { enqueueVisibilityPing, enqueueVisibilityTransition, isEffectivelyVisible } from '../lib/job-visibility';
+import { parsePreApplicationPrompts, promptsNormalized } from '../lib/pre-application-prompts';
 import { checkCompliance } from '../legal/check-compliance';
 
 const CORS_HEADERS = corsHeaders();
@@ -196,6 +197,13 @@ const EDITABLE_COLUMNS = [
   // 077's one-way CHECKs / the "full row write on every PATCH" doctrine).
   'trade_category_other', 'expected_duration_bucket', 'work_days',
   'shift_start', 'shift_end', 'certification_requirements',
+  // Sprint 23 (091): appended at the END for the same reason BE-T2's six
+  // were -- every positional index above stays put. PRESERVE-on-omit, not
+  // exact-replace (see the hasPreApplicationPromptsKey handling below): an
+  // employer editor that never rendered the prompts control must not
+  // silently delete the questions, and with applicants present a
+  // clear-on-omit would trip the lock on every unrelated edit.
+  'pre_application_prompts',
 ] as const;
 
 async function handleFieldEdit(
@@ -245,6 +253,16 @@ async function handleFieldEdit(
     return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_optional_fields', valid: optionalFieldsResult.valid }) };
   }
   const optionalFieldsInput = optionalFieldsResult.value;
+
+  // Preserve-on-omit like the three arrays above. `parsePreApplicationPrompts`
+  // maps absent/null to `[]`, which is the CREATE default but would be a
+  // CLEAR here -- so the hasOwnProperty flag, not the parsed value, decides.
+  const hasPreApplicationPromptsKey = Object.prototype.hasOwnProperty.call(body, 'pre_application_prompts');
+  const promptsResult = parsePreApplicationPrompts(body.pre_application_prompts);
+  if (!promptsResult.ok) {
+    return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: promptsResult.error }) };
+  }
+  const preApplicationPromptsInput = promptsResult.value;
 
   // Recomputed on every edit (location is always present in this full-replacement
   // payload); explicit city/state_region body fields win over the parse -- an
@@ -311,6 +329,7 @@ async function handleFieldEdit(
       applicant_count: number; hired_count: number;
       city: string | null; state_region: string | null;
       certification_requirements: Array<{ name: string; tier: string; proof_required: boolean }> | null;
+      pre_application_prompts: unknown;
     }>(
       `SELECT jobs.job_type,
               jobs.required_docs,
@@ -321,6 +340,7 @@ async function handleFieldEdit(
               jobs.city,
               jobs.state_region,
               jobs.certification_requirements,
+              jobs.pre_application_prompts,
               (SELECT COUNT(*)::int FROM job_applications WHERE job_id = jobs.id) AS applicant_count
          FROM jobs JOIN users u ON u.id = jobs.employer_id
         WHERE jobs.id = $1 AND u.cognito_sub = $2
@@ -342,6 +362,12 @@ async function handleFieldEdit(
     const optional_docs = hasOptionalDocsKey ? optionalDocsInput : (cur.optional_docs ?? []);
     const required_fields = hasRequiredFieldsKey ? requiredFieldsInput : (cur.required_fields ?? []);
     const optional_fields = hasOptionalFieldsKey ? optionalFieldsInput : (cur.optional_fields ?? []);
+    // Written back verbatim when omitted, so the lock comparison below is
+    // equal BY CONSTRUCTION and the UPDATE is a no-op round-trip on this
+    // column rather than a clear.
+    const pre_application_prompts = hasPreApplicationPromptsKey
+      ? preApplicationPromptsInput
+      : (Array.isArray(cur.pre_application_prompts) ? cur.pre_application_prompts : []);
 
     // Tier-overlap rejection BEFORE hitting the DB CHECK -- computed on the
     // EFFECTIVE (post-preserve-merge) values, not the raw body, so an
@@ -401,6 +427,15 @@ async function handleFieldEdit(
       if (certReqsNormalized(f.certification_requirements) !== certReqsNormalized(cur.certification_requirements)) {
         lockedFields.push('certification_requirements');
       }
+      // Same lock, same 409, same reasoning as certification_requirements --
+      // and one more: job_applications.prompt_answers is KEYED on these ids,
+      // so editing the list after someone answered would orphan an answer
+      // (id removed) or silently re-label it (text changed under a live id).
+      // promptsNormalized compares CONTENT, not bytes, so the jsonb key-order
+      // round-trip is not an edit; ORDER is significant, so a reorder is.
+      if (promptsNormalized(pre_application_prompts) !== promptsNormalized(cur.pre_application_prompts)) {
+        lockedFields.push('pre_application_prompts');
+      }
       if (lockedFields.length > 0) {
         await client.query('ROLLBACK');
         return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'field_locked', fields: lockedFields }) };
@@ -448,6 +483,9 @@ async function handleFieldEdit(
       // jobs_certification_requirements_valid's "IS NULL OR ...= 'array'"
       // CHECK on every legacy row that never set this field.
       certification_requirements: f.certification_requirements === null ? null : JSON.stringify(f.certification_requirements),
+      // NOT NULL DEFAULT '[]' in 091 -- always a real array, so it never
+      // needs the null-vs-"null" dance certification_requirements does above.
+      pre_application_prompts: JSON.stringify(pre_application_prompts),
       // Matching identity (city_key/state): an omitted triple replaces the
       // stored keys on purpose -- a fresh parse of the new location text, or
       // NULL when unparseable. A stale key must never keep matching the old
@@ -476,6 +514,7 @@ async function handleFieldEdit(
       shift_start: 'time',
       shift_end: 'time',
       certification_requirements: 'jsonb',
+      pre_application_prompts: 'jsonb',
     };
     const setClausesWithCasts = (Object.entries(CAST_OVERRIDES) as [typeof EDITABLE_COLUMNS[number], string][]).reduce(
       (clauses, [col, cast]) => {
@@ -496,6 +535,7 @@ async function handleFieldEdit(
          trade_category, required_experience_years, required_experience_months, certifications,
          city_key, city, state, state_region,
          trade_category_other, expected_duration_bucket, work_days, shift_start, shift_end, certification_requirements,
+         pre_application_prompts,
          public_code, public_listing_enabled,
          (SELECT COUNT(*)::int FROM job_applications WHERE job_id = jobs.id) AS applicant_count`,
       [...params, jobId],

@@ -207,8 +207,10 @@ SELECT
   u.has_transportation,
   u.availability,
   u.trade_competency_score,
-  u.trust_signals_completed_at AS trust_signals_completed_at,
-  u.trust_signals,
+  -- users.trust_signals / trust_signals_completed_at (migration 006's v1
+  -- trust layer) were DROPPED by migration 092. The v2 equivalents this
+  -- script already prints are worker_trust_assessments.answers and the
+  -- worker_trust_extractions rows below.
   u.created_at,
   u.updated_at
 FROM users u

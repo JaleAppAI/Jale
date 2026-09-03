@@ -2,6 +2,7 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { cityAnchorsFrom, listMatchedJobsForWorker, loadWorkerPreferredCities } from '../lib/job-matching';
+import { parsePreApplicationPromptList } from '../lib/pre-application-prompts';
 import { checkCompliance } from '../legal/check-compliance';
 
 const CORS_HEADERS = corsHeaders();
@@ -82,11 +83,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     await client.query('COMMIT');
 
     const shape = (list: typeof jobs) =>
-      list.map(({ company, required_docs, match_components, ...job }) => ({
+      list.map(({ company, required_docs, match_components, pre_application_prompts, ...job }) => ({
         ...job,
         company,
         company_name: company,
         required_docs: required_docs ?? [],
+        // job-matching passes the column through raw; parsed HERE (fail-open,
+        // so a corrupt row reads as "asks no prompts") so the feed card can
+        // tell a one-tap apply from one that will ask questions.
+        pre_application_prompts: parsePreApplicationPromptList(pre_application_prompts),
       }));
 
     return {

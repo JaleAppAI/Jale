@@ -176,6 +176,40 @@ if (productionCognitoSesContexts.length !== 4) {
   );
 }
 
+// SES configuration set. NotificationsStack creates the set + the SNS event
+// destination; BillingStack's sweeper tags outgoing mail with it. If the flag
+// reaches only CI synth and not the production commands, every one of those
+// resources synthesizes to nothing in prod and the whole bounce/complaint lane
+// deploys as a silent no-op -- no error, no alarm, no signal at all. The
+// paired match pins the flag immediately after whatsappInboundV2TransportEnabled
+// so a single dropped flag in one of the 4 commands fails here.
+//
+// Deliberately NOT guarded for non-emptiness the way COGNITO_EMAIL_FROM_ADDRESS
+// is: the variable is optional by design. An unset GitHub var expands to '',
+// which bin/jale-app.ts treats as absent, and that is the supported way to keep
+// the feedback lane dark until the cutover.
+requireIncludes(
+  '.github/workflows/_reusable-deploy.yml',
+  reusableDeploy,
+  'JALE_SES_CONFIGURATION_SET_NAME: ${{ vars.JALE_SES_CONFIGURATION_SET_NAME }}',
+);
+const productionSesConfigurationSetContexts =
+  reusableDeploy.match(
+    /-c whatsappInboundV2TransportEnabled=true -c sesConfigurationSetName="\$JALE_SES_CONFIGURATION_SET_NAME"/g,
+  ) ?? [];
+if (productionSesConfigurationSetContexts.length !== 4) {
+  fail(
+    '.github/workflows/_reusable-deploy.yml must pass the SES configuration set '
+      + '(-c sesConfigurationSetName="$JALE_SES_CONFIGURATION_SET_NAME" immediately after '
+      + 'whatsappInboundV2TransportEnabled) in all 4 production CDK plan/diff/deploy commands',
+  );
+}
+
+// CI synth must exercise the wired path: with no name the configuration set,
+// the event destination and the feedback Lambda are all absent from the
+// template, so nothing about them would ever be asserted before production.
+requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c sesConfigurationSetName=');
+
 requireIncludes('scripts/run-admin-migration.ps1', adminMigration, '026_admin_panel.sql');
 requireIncludes('scripts/run-admin-migration.ps1', adminMigration, 'jale_admin_console');
 if (adminMigration.includes('ALTER ROLE jale_whatsapp') || adminMigration.includes('ALTER ROLE jale_matching')) {

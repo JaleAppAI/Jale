@@ -702,6 +702,7 @@
         "pending": "New",
         "contacted": "Contacted",
         "talking": "In conversation",
+        "details_requested": "Details requested",
         "hired": "Hired",
         "not_interested": "Not selected"
       }
@@ -833,7 +834,7 @@
     "post_job_docs": {
       "step_label": "Step 2 of 2",
       "title": "Document Requirements",
-      "subtitle": "Which documents do applicants need? All optional by default.",
+      "subtitle": "Your apply-time questions, then what you'll ask for once you request someone's details.",
       "optional_label": "Optional",
       "required_label": "Required",
       "next": "Next: Document Requirements",
@@ -937,7 +938,17 @@
     "forbidden": {
       "title": "No access to this applicant",
       "body": "You can only open workers who applied to one of your own jobs."
-    }
+    },
+    "hire_option_blocked": "Hired — details not complete",
+    "hire_blocked_not_requested": "To mark as hired, request their details first.",
+    "hire_blocked_requested": "Hired unlocks once their details are complete — {count} left.",
+    "hire_blocked_requested_no_count": "Hired unlocks once their details are complete.",
+    "prompt_answers_title": "About this job — in their own words",
+    "prompt_answers_question_removed": "Question removed",
+    "details_incomplete_title": "Can't mark as hired yet — this worker hasn't completed their details.",
+    "details_incomplete_fields": "Still missing: {items}",
+    "details_incomplete_docs": "Documents still missing: {items}",
+    "details_incomplete_certifications": "Certifications still missing: {items}"
   },
   "upload_page": {
     "title": "Upload your documents",
@@ -975,8 +986,28 @@
       "pending": "Applied",
       "contacted": "Employer contacted",
       "talking": "In conversation",
+      "details_requested": "Employer wants to hire you — complete your details",
       "hired": "Hired",
       "not_interested": "Not selected"
+    },
+    "status_short": {
+      "pending": "Applied",
+      "contacted": "Contacted",
+      "talking": "In conversation",
+      "details_requested": "Details needed",
+      "hired": "Hired",
+      "not_interested": "Not selected"
+    },
+    "details_banner": {
+      "one_head": "Action needed — complete your details.",
+      "one_body": "{company} wants to move forward.",
+      "one_cta": "Complete details",
+      "many_head": "{count} applications need your details",
+      "many_body": "{count} employers want to move forward with you.",
+      "many_cta": "See applications",
+      "multi_body": "Start with the one at the top.",
+      "row_left": "{count} items left",
+      "row_body": "{company} asked for your details."
     },
     "stats": {
       "total": "Total applications",
@@ -986,6 +1017,98 @@
     "job_status": {
       "closed": "Closed",
       "filled": "Filled"
+    }
+  },
+  "worker_application_details": {
+    "back": "Back to my applications",
+    "title": "Complete your details",
+    "subtitle": "{company} wants to hire you for {job}. A few more things and you’re set.",
+    "subtitle_no_company": "Your employer wants to hire you for {job}. A few more things and you’re set.",
+    "progress": {
+      "left": "{count} left",
+      "none_left": "Nothing left",
+      "bits": "{fields} details · {docs} documents · {certs} certifications",
+      "aria_label": "Your progress"
+    },
+    "steps": {
+      "details": "Details",
+      "documents": "Documents & certifications",
+      "review": "Check & finish",
+      "aria_label": "Steps",
+      "step_label": "Step {current} of {total}",
+      "completed": "completed"
+    },
+    "hints": {
+      "details": "Answers from your last application are filled in — edit anything. Every save keeps your progress.",
+      "documents": "Files already in your vault count automatically."
+    },
+    "prefilled_hint": "From your last application",
+    "continue_button": "Save and continue",
+    "documents_continue": "Continue",
+    "notice": {
+      "other_door": "You also answered this on WhatsApp — we loaded the latest. Check it and continue."
+    },
+    "prompts": {
+      "title": "First, the employer’s questions",
+      "intro": "{company} asked these when you applied. Finish them and we’ll move on to the rest.",
+      "intro_no_company": "Your employer asked these when you applied. Finish them and we’ll move on to the rest.",
+      "submit": "Save and continue"
+    },
+    "review": {
+      "summary_title": "What we’ll send",
+      "answered": "Answered",
+      "skipped": "Skipped",
+      "not_answered": "Not answered",
+      "docs": "Documents attached",
+      "certs": "Certifications confirmed",
+      "of": "{done} of {total}",
+      "will_see": "This is what {company} will see.",
+      "will_see_no_company": "This is what your employer will see.",
+      "saved_note": "Saved to your profile so next time is faster.",
+      "finish": "Finish",
+      "still_missing": "Still missing: {items}",
+      "go_fix": "Go to Documents & certifications"
+    },
+    "complete": {
+      "chip": "All set",
+      "title": "Your details are with the employer",
+      "body": "{company} has everything they asked for. We’ll let you know when they update your application.",
+      "body_no_company": "Your employer has everything they asked for. We’ll let you know when they update your application.",
+      "status_chip": "Details complete",
+      "back_to_applications": "Back to my applications",
+      "view_job": "View job"
+    },
+    "terminal": {
+      "not_requested": "Nothing to add yet — the employer hasn’t asked for more details.",
+      "not_requested_body": "If {company} asks, we’ll message you on WhatsApp and show it here.",
+      "not_requested_body_no_company": "If your employer asks, we’ll message you on WhatsApp and show it here.",
+      "already_complete": "Nothing left to do — you already sent everything for this application.",
+      "already_complete_body": "{company} has it all.",
+      "already_complete_body_no_company": "Your employer has it all.",
+      "closed": "This job is closed.",
+      "closed_body": "The employer took it down, so there is nothing to send. Your profile keeps everything you already answered.",
+      "view_job": "View job",
+      "find_jobs": "Find other jobs"
+    },
+    "cert_question": "Do you have {name}?",
+    "cert_use_vault": "Use {file} from your vault",
+    "cert_upload_new": "Upload new",
+    "cert_unverified_note": "You can continue without proof — it will show as claimed, unverified.",
+    "cert_attest_note": "No upload needed — the employer may ask to see this in person.",
+    "cert_proof_note": "Upload a photo or file of this certification to continue.",
+    "cert_from_vault": "from your vault",
+    "legacy_doc_notice": "This can’t be uploaded online — the employer may ask for it in person.",
+    "unknown_doc_notice": "We don’t recognize this requirement — ask the employer what they need.",
+    "errors": {
+      "required_questions": "Answer the required questions to continue ({count} left).",
+      "required_doc": "{label} is required for this job.",
+      "required_cert": "{name} is required for this job.",
+      "cert_proof": "Attach proof of {name} to continue.",
+      "invalid_field": "We couldn’t save this one — check it and try again.",
+      "invalid_batch": "We couldn’t save some of these. The ones marked below need another look.",
+      "too_large": "That’s too much text to store. Shorten your longest answers and try again.",
+      "certification_document_limit": "You’ve reached the file limit for this certification. Remove one in your profile first.",
+      "not_found": "We can’t find this application any more."
     }
   },
   "worker_home": {
@@ -1074,64 +1197,41 @@
     "duration": "Expected duration",
     "what_you_need": {
       "title": "What you’ll need",
-      "in_vault": "already in your vault",
-      "proof_in_vault": "proof in your vault",
-      "proof_needed": "proof needed",
+      "to_apply_prompts": "To apply: {count} short questions · about {minutes} min",
+      "to_apply_one_tap": "To apply: one tap — no questions",
+      "later_eyebrow": "If the employer wants to hire you, they’ll ask for:",
+      "fields_row": "{count} details ({required} required)",
+      "after_they_ask": "After they ask",
+      "in_vault": "In your vault",
+      "proof_in_vault": "Proof in your vault",
+      "proof_needed": "Proof needed",
+      "not_yet": "Not yet",
       "required": "Required",
       "optional": "Optional",
-      "questions_summary": "{count} quick questions",
-      "questions_required": "{count} required",
-      "estimate": "Apply — about {minutes} minutes",
+      "vault_note": "Anything already in your vault counts on its own — you won’t upload it twice.",
       "vault_check_failed": "Can’t check your vault right now",
-      "hint_doc_required": "You’ll need to upload this to apply.",
-      "hint_doc_optional": "Optional — you can apply without it.",
-      "hint_cert_required_proof": "You’ll confirm you have this and attach proof.",
-      "hint_cert_required_attest": "You’ll just confirm you have this — no upload needed.",
+      "hint_doc_required": "They’ll ask you to upload this.",
+      "hint_doc_optional": "Optional — they won’t hold your application for it.",
+      "hint_cert_required_proof": "They’ll ask you to confirm it and attach proof.",
+      "hint_cert_required_attest": "They’ll just ask you to confirm it — no upload needed.",
       "hint_cert_optional": "Share it if you have it — it won’t block your application."
     },
     "apply_flow": {
-      "steps": {
-        "questions": "Questions",
-        "documents": "Documents & Certifications",
-        "review": "Review & submit",
-        "aria_label": "Application steps",
-        "step_label": "Step {current} of {total}",
-        "completed": "completed"
-      },
-      "hints": {
-        "questions": "Prefilled answers come from your last application — edit anything, changes save for next time.",
-        "documents": "Items already in your vault are matched automatically.",
-        "review": "Check everything — answers can’t be changed after you apply."
-      },
+      "back_to_details": "Back to the job",
+      "title": "Apply to {job}",
+      "intro_prompts": "{company} asks {count} quick questions. Answer in your own words.",
+      "intro_one_tap": "No questions for this job — send your application with one tap.",
+      "placeholder": "However you’d say it out loud.",
+      "chars": "{count}/{max}",
+      "too_long": "That’s over {max} characters — trim it a little.",
+      "blank_hint": "Write something here — even one line is enough.",
+      "later_note": "Documents and details come later, only if the employer wants to hire you.",
+      "submit": "Send application",
       "continue_button": "Continue application",
-      "back_to_details": "Back to job details",
-      "back_to_jobs": "Back to jobs",
       "progress_saved": "Your progress is saved.",
-      "prefilled_hint": "From your last application — edit if needed",
-      "legacy_doc_notice": "This can’t be uploaded online — the employer may ask for it in person.",
-      "unknown_doc_notice": "We don’t recognize this requirement — ask the employer what they need before you apply.",
-      "cert_question": "Do you have {name}?",
-      "cert_use_vault": "Use {file} from your vault",
-      "cert_upload_new": "Upload new",
-      "cert_unverified_note": "You can apply without proof — it will show as claimed, unverified.",
-      "cert_attest_note": "No upload needed — the employer may ask to see this in person.",
-      "cert_proof_note": "Upload a photo or file of this certification to continue.",
-      "cert_from_vault": "from your vault",
-      "review_answers": "{answered} of {total} questions answered",
-      "review_skipped": "{label} (optional) — skipped",
-      "review_not_attached": "{label} (optional) — not attached",
-      "review_claimed_proof": "{name} — claimed · proof attached",
-      "review_claimed_no_proof": "{name} — claimed, no proof (will show as unverified)",
-      "review_not_claimed": "{name} ({tier}) — not claimed",
-      "review_note": "Your answers will be saved to your profile for faster future applications. Applications can’t be edited after you submit.",
-      "submit": "Submit application",
-      "submitted_title": "Application sent",
       "errors": {
-        "required_questions": "Answer the required questions to continue ({count} left).",
-        "required_doc": "{label} is required for this job.",
-        "required_cert": "{name} is required for this job.",
-        "cert_proof": "Attach proof of {name} to continue.",
-        "missing_certification_proof": "This job requires proof of: {certs}."
+        "missing_prompt_answers": "Answer every question before you send this ({count} left).",
+        "invalid_prompt_answers": "We couldn’t save one of your answers. Check the length and try again."
       }
     }
   },
@@ -1239,7 +1339,19 @@
       "filtered_title": "No applicants match these filters",
       "filtered_body": "Change the filters, or clear them to see everyone who applied.",
       "clear_filters": "Clear filters",
-      "trust_pill": "Trust {score}"
+      "trust_pill": "Trust {score}",
+      "request_details": "Request details",
+      "request_details_sent": "Details requested — we'll let them know.",
+      "details": {
+        "not_requested": "Details: not requested",
+        "requested": "Details: requested · {count} left",
+        "requested_no_count": "Details: requested",
+        "complete": "Details: complete"
+      },
+      "own_words": {
+        "title": "In their own words",
+        "question_removed": "Question removed"
+      }
     },
     "ranking": {
       "loading": "Scoring how well each applicant matches this job...",
@@ -1296,7 +1408,8 @@
   },
   "job_requirements": {
     "picker": {
-      "rule_line": "Required items must be completed to apply. Optional items can be skipped. Off items are not asked.",
+      "rule_line": "Required items must be completed when you request details. Optional items can be skipped. Off items are not asked.",
+      "after_request_note": "These are asked only after you request details from an applicant.",
       "count_badge": "{required} required · {optional} optional",
       "locked_note": "Requirements are locked — this job already has applicants",
       "sensitive": "Sensitive",
@@ -1305,11 +1418,34 @@
       "proof_hint": "Asks the applicant to attach the certificate with their application.",
       "no_certifications_yet": "No certifications selected. Add them in Pay and schedule.",
       "cert_tier_aria": "{name} requirement level",
-      "cert_hint_required_proof": "Applicants must upload proof of this certification with their initial application.",
-      "cert_hint_required_attest": "Applicants will confirm they have this certification — no upload needed. You can ask to see it in person.",
-      "cert_hint_optional": "Applicants can share this if they have it. It never blocks an application.",
-      "doc_hint_required": "Applicants must upload this document to apply.",
-      "doc_hint_optional": "Applicants may attach this — not needed to apply."
+      "cert_hint_required_proof": "Applicants must upload proof of this certification when you request details.",
+      "cert_hint_required_attest": "Applicants confirm they have this certification when you request details — no upload needed. You can ask to see it in person.",
+      "cert_hint_optional": "Applicants can share this when you request details. It never blocks an application.",
+      "doc_hint_required": "Applicants must upload this document when you request details.",
+      "doc_hint_optional": "Applicants may attach this when you request details — never required."
+    },
+    "prompts": {
+      "section_title": "Pre-application questions",
+      "section_subtitle": "Asked at apply time. The worker answers in their own words — nothing else is asked to apply.",
+      "empty": "No questions yet — workers apply with one tap.",
+      "add": "Add a question",
+      "question_number": "Question {number}",
+      "placeholder": "Ask one short thing in plain words. Example: What tools do you bring to a job?",
+      "counter": "{count}/{max}",
+      "move_up": "Move up",
+      "move_down": "Move down",
+      "remove": "Remove",
+      "move_up_aria": "Move question {number} up",
+      "move_down_aria": "Move question {number} down",
+      "remove_aria": "Remove question {number}",
+      "tip": "The more questions you ask, the more workers stop before finishing. We suggest 2 or fewer.",
+      "tip_warning": "You have {count} questions — expect fewer completed applications.",
+      "locked_title": "This job already has applicants, so the questions are locked. Everyone who applies to a job answers the same questions.",
+      "locked_hint": "To ask something different, post a new job.",
+      "validation_blank": "Every question needs text, or remove the empty one.",
+      "validation_too_long": "One of your questions is too long. Keep each one under {max} characters.",
+      "invalid_rejected": "We couldn't save these questions. Shorten them, or remove the empty ones, and try again.",
+      "locked_rejected": "This job already has applicants, so its questions are locked. Reload the page to see the saved ones."
     },
     "groups": {
       "documents": "Documents",
@@ -1737,6 +1873,7 @@
       "subtitle": "Pick the one you do most.",
       "other_label": "Your trade",
       "other_placeholder": "Type your trade, e.g. welder, drywall, roofer",
+      "switch_from_custom_hint": "To pick one of these instead, tap {back} first.",
       "cta": "Continue"
     },
     "work": {
@@ -1760,7 +1897,23 @@
     },
     "trust": {
       "complete_cta": "Complete your questions",
-      "complete_note": "You won't be able to change your answers after this."
+      "complete_note": "You won't be able to change your answers after this.",
+      "voice": {
+        "cancel": "Cancel",
+        "conflict": "Your answers moved on somewhere else. Reload the page and try again.",
+        "denied": "We could not use your microphone. Check your browser permissions, or type your answer.",
+        "failed": "We could not turn that into text. Try again, or type your answer.",
+        "no_speech": "We could not make out any words. Try again somewhere quieter, or type your answer.",
+        "ready": "Here it is — read it over and fix anything we got wrong.",
+        "recording": "Recording… tap to stop.",
+        "start": "Record your answer",
+        "stop": "Stop recording",
+        "timeout": "This is taking too long. Try again, or type your answer.",
+        "too_long": "That recording is too long. Keep it under 5 MB, or type your answer.",
+        "transcribing": "Writing down what you said…",
+        "unsupported": "This browser cannot record. Type your answer instead.",
+        "uploading": "Sending your recording…"
+      }
     },
     "photo": {
       "title": "Add a photo?",

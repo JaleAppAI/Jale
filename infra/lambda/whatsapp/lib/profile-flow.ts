@@ -16,24 +16,6 @@ export function profileQuestionBody(field: ProfileField, lang: Lang): string {
   return t(FIELD_PROMPT_KEY[field], lang);
 }
 
-async function tableColumnExists(
-  client: PoolClient,
-  tableName: string,
-  columnName: string,
-): Promise<boolean> {
-  const r = await client.query<{ exists: boolean }>(
-    `SELECT EXISTS (
-       SELECT 1
-         FROM information_schema.columns
-        WHERE table_schema = ANY (current_schemas(false))
-          AND table_name = $1
-          AND column_name = $2
-     ) AS exists`,
-    [tableName, columnName],
-  );
-  return r.rows[0]?.exists === true;
-}
-
 export async function loadProfileFromDb(
   client: PoolClient,
   userId: string,
@@ -56,12 +38,6 @@ export async function loadTradeFromDb(
     [userId],
   );
   return r.rows[0]?.main_trade ?? 'other';
-}
-
-export async function trustSignalColumnsAvailable(client: PoolClient): Promise<boolean> {
-  const hasSignals = await tableColumnExists(client, 'users', 'trust_signals');
-  if (!hasSignals) return false;
-  return tableColumnExists(client, 'users', 'trust_signals_completed_at');
 }
 
 export async function upsertWorkerProfileFromUsers(

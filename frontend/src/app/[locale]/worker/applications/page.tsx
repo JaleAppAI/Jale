@@ -13,11 +13,15 @@ import { ListPageSkeleton } from '@/components/ui/page-skeletons';
 import { PanelHeader } from '@/components/ui/panel-header';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ApplicationStatusChip } from '@/components/worker/ApplicationStatusChip';
+import {
+  DetailsRequestedBanner,
+  DetailsRequestedMultiBanner,
+} from '@/components/worker/DetailsRequestedBanner';
 import { JobStatusBadge } from '@/components/ui/badge';
 import { getApplications } from '@/lib/api/worker';
 import { formatLongDate } from '@/lib/date';
 import type { Application } from '@/lib/api/worker';
-import { normalizeApplicationStatus } from '@/lib/status';
+import { normalizeApplicationStatus, TERMINAL_APPLICATION_STATUSES } from '@/lib/status';
 import { visibleJobStatusBadge } from '@/lib/jobStatusDisplay';
 
 export const dynamic = 'force-dynamic';
@@ -76,13 +80,20 @@ export default function WorkerApplicationsPage() {
   // so the page owes the reader a skeleton rather than a screen of zeroes.
   const showSkeleton = phase === 'auth' || phase === 'loading';
 
-  // Derived from the already-fetched list: terminal statuses are hired /
-  // not_interested (legacy values normalize onto them); everything else is active.
+  // Derived from the already-fetched list: TERMINAL_APPLICATION_STATUSES is
+  // hired / not_interested (legacy values normalize onto them); everything
+  // else -- including the new `details_requested` -- is active.
   const list = apps ?? [];
   const normalizedStatuses = list.map((a) => normalizeApplicationStatus(a.status));
   const totalCount = list.length;
   const hiredCount = normalizedStatuses.filter((s) => s === 'hired').length;
-  const activeCount = normalizedStatuses.filter((s) => s !== 'hired' && s !== 'not_interested').length;
+  const activeCount = normalizedStatuses.filter((s) => !TERMINAL_APPLICATION_STATUSES.includes(s)).length;
+
+  // Rows waiting on the WORKER. Read off `details_status` -- the TIMESTAMP-
+  // derived field -- never off `status`, so an employer who moved a
+  // details_requested applicant along to `talking` does not make the row stop
+  // asking for the details it is still waiting on (B4.0 #7).
+  const needingDetails = list.filter((a) => a.details_status === 'requested');
 
   return (
     <AppShell role="worker" title={t('title')}>
@@ -109,6 +120,12 @@ export default function WorkerApplicationsPage() {
                   <MetricCard label={t('stats.hired')} value={hiredCount} tone="green" />
                 </div>
 
+                {needingDetails.length > 1 ? (
+                  <div className="mb-5">
+                    <DetailsRequestedMultiBanner count={needingDetails.length} onList />
+                  </div>
+                ) : null}
+
                 <DashboardPanel className="overflow-hidden">
                   <PanelHeader title={t('title')} />
                   {empty ? (
@@ -126,8 +143,14 @@ export default function WorkerApplicationsPage() {
                     >
                       {list.map((a) => {
                         const jobStatusBadge = visibleJobStatusBadge(a.job_status);
+                        const needsDetails = a.details_status === 'requested';
                         return (
                           <li key={a.application_id}>
+                            {/* The row keeps pointing at the JOB. The banner
+                                below it is the only thing that leads to the
+                                details form -- a row whose whole surface
+                                silently changed destination would strand a
+                                worker who just wanted to re-read the posting. */}
                             <Link
                               href={`/worker/jobs/${a.job_id}`}
                               className="flex items-start gap-3 px-4 py-4 transition-colors hover:bg-[var(--jale-paper-2)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)] md:px-5"
@@ -145,7 +168,7 @@ export default function WorkerApplicationsPage() {
                                     {a.job_title}
                                   </p>
                                   <span className="mt-0.5 shrink-0">
-                                    <ApplicationStatusChip status={a.status} />
+                                    <ApplicationStatusChip status={a.status} short />
                                   </span>
                                 </div>
                                 <p className="mt-0.5 text-xs font-medium text-[var(--jale-ink-2)]">
@@ -163,6 +186,20 @@ export default function WorkerApplicationsPage() {
                                 </p>
                               </div>
                             </Link>
+                            {/* A SIBLING of the row link, never nested inside
+                                it: the banner carries its own link, and an
+                                anchor inside an anchor is invalid HTML that
+                                browsers resolve by silently dropping one. */}
+                            {needsDetails ? (
+                              <div className="px-4 pb-4 md:px-5">
+                                <DetailsRequestedBanner
+                                  applicationId={a.application_id}
+                                  companyName={a.company_name}
+                                  remainingCount={a.remaining_count}
+                                  compact
+                                />
+                              </div>
+                            ) : null}
                           </li>
                         );
                       })}

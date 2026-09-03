@@ -15,8 +15,10 @@ import {
   LANGUAGE_OPTIONS,
   type JobForm, type WorkDay,
   initialForm, jobFormToCreatePayload, jobFormFromTemplatePayload,
-  validateStepBasics, validateStepDetails, validateFullJobForm, applyLocationToJobForm,
+  validateStepBasics, validateStepDetails, validateFullJobForm, validateStepRequirements,
+  applyLocationToJobForm,
 } from '@/lib/job-form';
+import { MAX_PROMPT_CHARS } from '@/lib/pre-application-prompts';
 import { Button } from '@/components/ui/button';
 import { CertificationsPicker } from '@/components/employer/CertificationsPicker';
 import { CheckboxCard } from '@/components/ui/checkbox-card';
@@ -29,6 +31,7 @@ import { LocationPicker } from '@/components/ui/LocationPicker';
 import { Modal } from '@/components/ui/modal';
 import { PayFields } from '@/components/employer/PayFields';
 import { PlanLimitNotice } from '@/components/employer/PlanLimitDialog';
+import { PreApplicationPromptsEditor } from '@/components/employer/PreApplicationPromptsEditor';
 import { PayReferenceHint } from '@/components/PayReferenceHint';
 import { RequirementsPicker } from '@/components/employer/RequirementsPicker';
 import { ScheduleFields } from '@/components/employer/ScheduleFields';
@@ -269,7 +272,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
    * either yet.
    */
   const validationMessage = (
-    code: ReturnType<typeof validateStepBasics> | ReturnType<typeof validateStepDetails>,
+    code: ReturnType<typeof validateFullJobForm>,
   ): string | null => {
     switch (code) {
       case null:
@@ -288,16 +291,23 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
         return t('modal.validation_pay_range');
       case 'headcount':
         return t('modal.validation_headcount');
+      // Step 3's two, from the prompts editor. Unlike the codes above these
+      // DO get their own sentences: the employer has to know which of the two
+      // things is wrong with a question before they can fix it.
+      case 'prompt_blank':
+        return tReq('prompts.validation_blank');
+      case 'prompt_too_long':
+        return tReq('prompts.validation_too_long', { max: MAX_PROMPT_CHARS });
       default:
         return null;
     }
   };
 
-  /** Step 1 -> `validateStepBasics`, step 2 -> `validateStepDetails`, step 3 has no gate of its own. */
+  /** Step 1 -> `validateStepBasics`, step 2 -> `validateStepDetails`, step 3 -> the prompts editor. */
   const validateStepAt = (n: Step): string | null => {
     if (n === 1) return validationMessage(validateStepBasics(form));
     if (n === 2) return validationMessage(validateStepDetails(form));
-    return null;
+    return validationMessage(validateStepRequirements(form));
   };
 
   /**
@@ -347,13 +357,16 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     const wantsTemplate = opts?.skipTemplate ? false : saveAsTemplate;
 
     setJobLimit(null);
-    const validationError = validationMessage(validateFullJobForm(form));
+    const validationCode = validateFullJobForm(form);
+    const validationError = validationMessage(validationCode);
     if (validationError) {
       setError(validationError);
       // Land on whichever step actually owns the failing field, same as a
       // blocked forward jump, so the employer isn't left on step 3 staring
-      // at a message about step 1.
-      setStep(validateStepBasics(form) ? 1 : 2);
+      // at a message about step 1 -- or, now, on step 1 staring at one about
+      // a question they typed on step 3.
+      const promptFailure = validationCode === 'prompt_blank' || validationCode === 'prompt_too_long';
+      setStep(promptFailure ? 3 : validateStepBasics(form) ? 1 : 2);
       return;
     }
 
@@ -455,6 +468,11 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
         setError(tReq('errors.city_required'));
       } else if (err instanceof ApiError && err.code === 'requirements_tier_overlap') {
         setError(tReq('errors.tier_overlap'));
+      } else if (err instanceof ApiError && err.code === 'invalid_pre_application_prompts') {
+        // The backend's own bound check on the prompt list. Reachable despite
+        // `validateStepRequirements` above -- the two agree on today's rules,
+        // and this is what says so honestly when a future one diverges.
+        setError(tReq('prompts.invalid_rejected'));
       } else {
         setError(errorMessage(err, { unknown: t('modal.error') }));
       }
@@ -761,6 +779,14 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
 
       {step === 3 && (
         <div className="grid gap-5">
+        {/* ABOVE the picker, deliberately: these are the only questions an
+            applicant meets while applying. Everything the picker configures
+            below now waits for "Request details". */}
+        <PreApplicationPromptsEditor
+          prompts={form.pre_application_prompts}
+          onChange={(next) => setForm((current) => ({ ...current, pre_application_prompts: next }))}
+        />
+
         <RequirementsPicker
           requirements={form.requirements}
           onChange={(next) => setForm((current) => ({ ...current, requirements: next }))}

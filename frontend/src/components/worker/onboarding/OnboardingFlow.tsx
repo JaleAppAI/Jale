@@ -32,6 +32,7 @@ import { TermsStep } from './TermsStep';
 import { AboutYouStep } from './AboutYouStep';
 import { TradeStep } from './TradeStep';
 import { WorkStep } from './WorkStep';
+import { transcribeVoiceAnswer } from '@/lib/onboarding-voice';
 import { TrustQuestionStep } from './TrustQuestionStep';
 import { PhotoStep } from './PhotoStep';
 import { DoneStep } from './DoneStep';
@@ -394,6 +395,15 @@ export function OnboardingFlow({
                 const saved = flow.server.trust.answers.find((a) => a.index === index);
                 return (
                     <TrustQuestionStep
+                        // KEYED BY SCREEN. All three questions render the same
+                        // component at the same position, so without a key
+                        // React reuses ONE instance across q1/q2/q3 and the
+                        // recorder's local state — the phase, and above all a
+                        // "we could not make out any words" error — would
+                        // follow the worker onto the next question. Nothing in
+                        // there should outlive a question; the drafts live in
+                        // the reducer.
+                        key={screen}
                         index={index}
                         question={questionText(flow.server, index, locale)}
                         tradeLabel={tradeLabel((key) => tVocab(key), flow.draft.trade, flow.draft.customTrade)}
@@ -403,6 +413,23 @@ export function OnboardingFlow({
                         // matches what is in the box.
                         source={saved && saved.text === draftAnswer ? saved.source : 'text'}
                         onAnswerChange={(text) => dispatch({ type: 'set_answer', index, text })}
+                        // S23 L6. The lockVersion this closes over is the one
+                        // current when RECORDING STARTED, and that is only safe
+                        // because the screen refuses to move while a recording
+                        // is in flight: TrustQuestionStep disables Back and
+                        // Next for the whole of `phase !== 'idle'`, so nothing
+                        // the worker can reach from here bumps the run's
+                        // version between the mic and the transcribe call. A
+                        // version that moves anyway (another tab) comes back as
+                        // a 409 -> `conflict`, which asks for a reload.
+                        onRecord={(blob, contentType) => transcribeVoiceAnswer({
+                            token,
+                            blob,
+                            contentType,
+                            stepKey: `trust.question.${index}`,
+                            questionIndex: index - 1,
+                            lockVersion: flow.server.run.lockVersion,
+                        })}
                         rejection={flow.rejection}
                         saving={flow.saving}
                         error={errorText}

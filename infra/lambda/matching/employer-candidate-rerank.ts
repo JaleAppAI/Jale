@@ -27,7 +27,7 @@ interface ParsedRerankResponse {
   ranked_candidates: ParsedRerankCandidate[];
 }
 
-const BEDROCK_MODEL_ID = process.env.BEDROCK_MODEL_ID ?? 'us.amazon.nova-lite-v1:0';
+const BEDROCK_MODEL_ID = process.env.BEDROCK_MODEL_ID ?? 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
 const MAX_LLM_CANDIDATES = 50;
 
 function stripFences(rawText: string): string {

@@ -147,5 +147,19 @@ export interface TwilioSecret {
     employer_message_resume_en?: string;
     admin_support_reply_es?: string;
     admin_support_reply_en?: string;
+    // Sprint 23 application stages. Both pairs carry FOUR variables --
+    // {{1}} job title, {{2}} company, {{3}} `app-<uuid>`, {{4}} the worker's
+    // stage-2 URL -- fixed by `buildApplicationStageMessage`
+    // (lib/application-stage-notify.ts) and MUST match the seeded template.
+    // Only the `application_update_*` pair carries buttons:
+    //   Empezar / Start answering -> application:start:{{3}}
+    //   Despues  / Later          -> application:later:{{3}}
+    // Until a ContentSid is present under these exact keys,
+    // sendTwilioWhatsAppMessage falls back to the `__fallback_body` content
+    // variable, so the notification works before the secret is seeded.
+    application_update_es?: string;
+    application_update_en?: string;
+    application_hired_es?: string;
+    application_hired_en?: string;
   };
 }

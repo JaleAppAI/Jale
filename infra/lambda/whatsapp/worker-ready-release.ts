@@ -604,6 +604,10 @@ export async function releaseWorkerReady(
         language,
         sourceType: intent.sourceType,
         sourceId: intent.sourceId,
+        // Sprint 23: carry the payload so an `application_stage` intent that
+        // was deferred through onboarding renders its REAL copy (and the
+        // Start/Later buttons) on release instead of the generic notice.
+        payload: intent.payload,
       },
       intents: [intent],
     });

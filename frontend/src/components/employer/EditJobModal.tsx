@@ -9,6 +9,7 @@ import {
     type JobForm,
     jobFormToEditPayload, jobToForm, validateFullJobForm, applyLocationToJobForm,
 } from '@/lib/job-form';
+import { MAX_PROMPT_CHARS } from '@/lib/pre-application-prompts';
 import { Button } from '@/components/ui/button';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { JobFormFields } from '@/components/employer/JobFormFields';
@@ -116,6 +117,13 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
                 return setError(t('modal.validation_pay_range'));
             case 'headcount':
                 return setError(t('modal.validation_headcount'));
+            // The prompts editor's two, which DO get their own sentences --
+            // "something is required" would not tell an employer which of
+            // their questions is the problem.
+            case 'prompt_blank':
+                return setError(tReq('prompts.validation_blank'));
+            case 'prompt_too_long':
+                return setError(tReq('prompts.validation_too_long', { max: MAX_PROMPT_CHARS }));
         }
         setLoading(true);
         setError('');
@@ -130,8 +138,19 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
             // else goes through the classifier so the employer never reads a raw
             // backend code (`err.message`).
             const code = err instanceof ApiError ? err.code : null;
-            if (code === 'field_locked') {
+            // `field_locked` names the frozen columns in `fields` (sprint 23
+            // added `pre_application_prompts` to that set). When the prompts
+            // are what was refused, say so in the prompts' own words: the
+            // generic locked note talks about requirements, and an employer
+            // who just retyped a question would not connect the two. Any
+            // OTHER locked field keeps the existing sentence.
+            const lockedFields = err instanceof ApiError ? err.payload.fields ?? [] : [];
+            if (code === 'field_locked' && lockedFields.includes('pre_application_prompts')) {
+                setError(tReq('prompts.locked_rejected'));
+            } else if (code === 'field_locked') {
                 setError(t('modal.locked_note'));
+            } else if (code === 'invalid_pre_application_prompts') {
+                setError(tReq('prompts.invalid_rejected'));
             } else if (code === 'city_required') {
                 setError(tReq('errors.city_required'));
             } else if (code === 'requirements_tier_overlap') {

@@ -30,6 +30,25 @@ export type ApiErrorPayload = {
   /** `missing_certification_proof`: the still-unproven certification names. */
   certs?: string[];
   /**
+   * TWO codes, two SHAPES, one key -- the backend named them both `missing`
+   * (sprint 23, migration 091) and this allowlist follows the wire:
+   *  - 400 `missing_prompt_answers` (worker apply): `string[]`, the prompt ids
+   *    left unanswered.
+   *  - 409 `details_incomplete` (employer applicant status PATCH): the three
+   *    buckets still blocking a hire.
+   * A reader must discriminate on `ApiError.code`, never on the shape alone.
+   * Both variants are validated below before they are let through, so a
+   * malformed value drops the key rather than reaching a `.map()` in the UI.
+   */
+  missing?: string[] | { fields: string[]; docs: string[]; certifications: string[] };
+  /**
+   * `field_locked` (409, employer job update): the writable keys the request
+   * tried to change on a job that already has applicants -- e.g.
+   * `['pre_application_prompts']`. The UI names the locked field rather than
+   * saying "something is locked"; a malformed value drops the key.
+   */
+  fields?: string[];
+  /**
    * `job_limit_reached`: the active jobs holding the employer's slots, oldest
    * first. Forward-compat -- no backend sends this yet, so the limit dialog
    * derives the list client-side (see `lib/plan-limit`'s `blockingJobsFrom`)
@@ -59,6 +78,8 @@ const ALLOWED_PAYLOAD_KEYS = [
   'missing_fields',
   'detail',
   'certs',
+  'missing',
+  'fields',
   'blocking_jobs',
 ] as const;
 
@@ -121,8 +142,15 @@ function pickAllowedPayload(body: Record<string, unknown>): ApiErrorPayload {
     // renders a label per entry, the other a joined cert-name list), so a
     // malformed value would crash the page rather than degrade it. Everything
     // else is passed through as the backend sent it.
-    if ((key === 'missing_docs' || key === 'missing_fields' || key === 'certs') && !isStringArray(value)) continue;
+    if (
+      (key === 'missing_docs' || key === 'missing_fields' || key === 'certs' || key === 'fields')
+      && !isStringArray(value)
+    ) continue;
     if (key === 'detail' && typeof value !== 'string') continue;
+    // Both `missing` shapes are rendered as lists, so a malformed one would
+    // crash the surface rather than degrade it -- same reasoning as
+    // `missing_docs` above, applied to each variant.
+    if (key === 'missing' && !isStringArray(value) && !isHireGateMissing(value)) continue;
     if (key === 'blocking_jobs') {
       // One bad entry poisons the list: the dialog renders a row per entry, so
       // a partially-valid list is still one it cannot trust. Drop the whole key
@@ -134,6 +162,17 @@ function pickAllowedPayload(body: Record<string, unknown>): ApiErrorPayload {
     (payload as Record<string, unknown>)[key] = value;
   }
   return payload;
+}
+
+/** The `details_incomplete` variant of `missing`: all three buckets, all string arrays. */
+function isHireGateMissing(
+  value: unknown,
+): value is { fields: string[]; docs: string[]; certifications: string[] } {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  return isStringArray(candidate.fields)
+    && isStringArray(candidate.docs)
+    && isStringArray(candidate.certifications);
 }
 
 function isStringArray(value: unknown): value is string[] {

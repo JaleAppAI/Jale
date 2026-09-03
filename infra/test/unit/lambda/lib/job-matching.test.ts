@@ -755,6 +755,30 @@ describe('listMatchedJobsForWorker', () => {
     expect(jobsCall?.[0]).toContain('j.trade_category_other');
   });
 
+  it('091: SELECTs pre_application_prompts and passes it through to the shaped job', async () => {
+    const query = buildQuery([
+      coordinateColumnsRoute(),
+      workerRoute(worker({ main_trade_other: 'Soldador' })),
+      tradeAliasesRoute([{
+        trade_key: 'welder', canonical_en: 'Welder', canonical_es: 'Soldador',
+        aliases: ['welder', 'soldador'], trade_category: null,
+      }]),
+      jobsListRoute([job({
+        id: 'job-1',
+        title: 'Welder',
+        pre_application_prompts: [{ id: 'p1', text: 'A' }],
+      })]),
+    ]);
+
+    const jobs = await listMatchedJobsForWorker({ query } as never, 'worker-1', { limit: 5, channel: 'api' });
+
+    const jobsCall = findCall(query, /FROM jobs j/);
+    expect(jobsCall?.[0]).toContain('j.pre_application_prompts');
+    // Raw pass-through here -- each surface parses it (the shared
+    // parsePreApplicationPromptList) so this module stays DB-shaped.
+    expect(jobs[0].pre_application_prompts).toEqual([{ id: 'p1', text: 'A' }]);
+  });
+
   it('folds accents so "Albañil" resolves the seeded concrete trade_aliases row', async () => {
     const concreteRow: TradeAliasRow = {
       trade_key: 'concrete',

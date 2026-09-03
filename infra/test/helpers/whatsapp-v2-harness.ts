@@ -977,8 +977,17 @@ export class WhatsAppV2Harness {
     // here, per harness construction, to this instance's own fake profile
     // store. Tests only ever drive one harness at a time, so this rebind is
     // safe: it stays pointed at whichever harness constructed it last.
-    (HARNESS_CLIENT as unknown as { query: (sql: string, params: unknown[]) => Promise<{ rows: unknown[] }> }).query =
-      async (_sql: string, params: unknown[]) => {
+    (HARNESS_CLIENT as unknown as { query: (sql: string, params: unknown[]) => Promise<{ rows: unknown[]; rowCount?: number }> }).query =
+      async (sql: string, params: unknown[]) => {
+        // Sprint 23 L7: `maybeSkipLegalReview` asks for consent evidence
+        // (`legal_consent_log` JOIN `users.tos_version`) through the same
+        // client. This harness has no consent store, and every worker it
+        // drives is a first-timer who must still see the Terms — so the
+        // evidence query is EMPTY here. Answering it with the profile row
+        // below would read as "consent on file" and skip legal.review in
+        // every conversation. The skip itself is proven against the real
+        // tables in web-onboarding-door.integration.test.ts §9.
+        if (/legal_consent_log/.test(sql)) return { rows: [], rowCount: 0 };
         const workerId = params[0] as string;
         const p = this.profileFake._profiles.get(workerId);
         return {

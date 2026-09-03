@@ -145,9 +145,19 @@ export function RequirementsPicker({
 
   return (
     <div className="grid gap-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
+      <div className="grid gap-1.5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          {/*
+            The section's own framing line, above the per-state rule: as of
+            sprint 23 NONE of these rows is asked at apply time -- every one of
+            them waits until the employer requests details from an applicant.
+            The prompts editor above this picker is what an applicant actually
+            meets, and without this sentence the two sections read as one list.
+          */}
+          <p className="text-xs font-semibold text-[var(--jale-ink)]">{t('picker.after_request_note')}</p>
+          <Badge tone="info">{t('picker.count_badge', { required, optional })}</Badge>
+        </div>
         <p className="text-xs text-[var(--jale-ink-2)]">{t('picker.rule_line')}</p>
-        <Badge tone="info">{t('picker.count_badge', { required, optional })}</Badge>
       </div>
 
       {locked && (

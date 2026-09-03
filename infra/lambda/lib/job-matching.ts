@@ -57,6 +57,10 @@ export interface MatchableJobRow {
   trade_category_other?: string | null;
   required_experience_years?: string | number | null;
   certifications?: string[] | null;
+  /** Raw `jobs.pre_application_prompts` (091). Passed through unparsed --
+   * each surface runs `parsePreApplicationPromptList` itself. Optional so
+   * every existing fixture and caller-built row still typechecks. */
+  pre_application_prompts?: unknown;
   latitude: string | number | null;
   longitude: string | number | null;
 }
@@ -95,6 +99,8 @@ export interface MatchedJob {
   trade_category?: string | null;
   required_experience_years?: string | number | null;
   certifications?: string[] | null;
+  /** Raw `jobs.pre_application_prompts` (091) -- see `MatchableJobRow`. */
+  pre_application_prompts?: unknown;
   match_score: number;
   match_components: MatchComponents;
   match_reasons: string[];
@@ -528,6 +534,7 @@ export function scoreJobCandidate(
     trade_category: job.trade_category,
     required_experience_years: job.required_experience_years,
     certifications: job.certifications,
+    pre_application_prompts: job.pre_application_prompts,
     match_score: matchScore,
     match_components: components,
     match_reasons: reasons,
@@ -807,6 +814,7 @@ function matchableJobColumns(jobCoordinates: { latitude: string; longitude: stri
             j.trade_category_other,
             j.required_experience_years,
             j.certifications,
+            j.pre_application_prompts,
             ${jobCoordinates.latitude} AS latitude,
             ${jobCoordinates.longitude} AS longitude`;
 }

@@ -21,17 +21,19 @@ import { PayReferenceHint } from '@/components/PayReferenceHint';
 import { ShareJobPanel } from '@/components/worker/ShareJobPanel';
 import { WhatYouNeedPanel } from '@/components/worker/WhatYouNeedPanel';
 import { ProfileCompleteModal, type ProfileCompleteValues } from '@/components/worker/ProfileCompleteModal';
-import { ApplyFlow, type ApplyFlowSubmitError, type ApplyFlowSubmitPayload } from '@/components/worker/apply-flow/ApplyFlow';
+import { ApplyFlow, type ApplyFlowSubmitError } from '@/components/worker/apply-flow/ApplyFlow';
+import { DetailsRequestedBanner } from '@/components/worker/DetailsRequestedBanner';
 import { apiFetch, isLegalWallError } from '@/lib/api';
 import { ApiError, classifyError, parseApiError, type ErrorKind } from '@/lib/api/errors';
-import { applyFlowReducer, initialApplyFlowState, flowHasProgress } from '@/lib/apply-flow-view';
+import { applyFlowReducer, initialApplyFlowState, flowHasProgress, promptAnswersPayload } from '@/lib/apply-flow-view';
+import { missingPromptAnswers } from '@/lib/application-requirements-flow';
 import { formatLongDate, formatStartDate } from '@/lib/date';
 import { docTypeLabel } from '@/lib/doc-types';
 import { durationLabel, scheduleSummary, type Translator } from '@/lib/job-detail-display';
 import { formatPay } from '@/lib/pay';
 import {
-  getJob, applyToJob, updateWorkerProfile, getVaultDocuments, getApplicationDefaults,
-  type JobDetail, type WorkerApiError, type WorkerVaultDoc, type ApplicationDefaults,
+  getJob, applyToJob, updateWorkerProfile, getVaultDocuments,
+  type JobDetail, type WorkerApiError, type WorkerVaultDoc,
 } from '@/lib/api/worker';
 import { visibleJobStatusBadge } from '@/lib/jobStatusDisplay';
 
@@ -59,7 +61,6 @@ export default function WorkerJobDetailPage() {
   // NEVER employer_dashboard.jobs.status.*, whose es "Lleno" is employer
   // vocabulary kept off worker surfaces.
   const tApps = useTranslations('worker_applications');
-  const tReq = useTranslations('job_requirements');
   // `public_job.language_*` reused for the same reason `tApps` above avoids
   // `employer_dashboard.jobs.status.*`: that flat Any/English/Spanish
   // vocabulary carries no page-specific framing, and `public_job` is the
@@ -94,19 +95,12 @@ export default function WorkerJobDetailPage() {
   // component per its doc comment) and reset only on a job-id change --
   // never in place -- via the effect below.
   const [viewMode, setViewMode] = useState<'details' | 'apply'>('details');
-  const [applyState, applyDispatch] = useReducer(applyFlowReducer, undefined, () => initialApplyFlowState([]));
+  const [applyState, applyDispatch] = useReducer(applyFlowReducer, undefined, initialApplyFlowState);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<ApplyFlowSubmitError | null>(null);
-  const [defaults, setDefaults] = useState<ApplicationDefaults | null>(null);
-  // Guards the once-per-job-id `getApplicationDefaults` fetch ("on first open
-  // of the flow") the same way `ApplyFlow`'s own `appliedDefaultsForJobRef`
-  // guards its one-time `apply_defaults` dispatch -- both keyed on job.id,
-  // not fetched-once-ever, since a worker can navigate this same page
-  // instance from one job to another (`usePageData`'s `deps: [id]`).
-  const defaultsLoadedForJobRef = useRef<string | null>(null);
-  // One shared vault fetch for both `WhatYouNeedPanel` (details view) and
-  // `ApplyFlow` (apply view) -- `null` means "failed or not yet loaded",
-  // which both components already degrade on independently.
+  // The vault fetch now serves `WhatYouNeedPanel` alone: stage 1 asks for no
+  // documents, so `ApplyFlow` no longer needs it. `null` means "failed or not
+  // yet loaded", which the panel already degrades on.
   const [vaultDocs, setVaultDocs] = useState<readonly WorkerVaultDoc[] | null>(null);
 
   const {
@@ -141,10 +135,8 @@ export default function WorkerJobDetailPage() {
     if (!job) return;
     if (appliedJobIdRef.current === job.id) return;
     appliedJobIdRef.current = job.id;
-    const certNames = (job.certification_requirements ?? []).map((cert) => cert.name);
-    applyDispatch({ type: 'reset', certNames });
+    applyDispatch({ type: 'reset' });
     setSubmitError(null);
-    setDefaults(null);
     setViewMode('details');
   }, [job]);
 
@@ -200,24 +192,16 @@ export default function WorkerJobDetailPage() {
   }
 
   /**
-   * Opens the in-page apply flow and, on its first open for THIS job.id,
-   * kicks off the best-effort `getApplicationDefaults` prefill fetch
-   * (failures swallowed to `null` -- per that call's own doc comment this is
-   * a convenience pre-fill, never a blocker to applying). Reused by both the
-   * direct Apply tap (profile already complete) and by `handleModalSubmit`
-   * (profile just completed) -- the flow always opens next, replacing the
-   * old ApplicationAnswersForm modal AND the old direct-`doApply()` shortcut
-   * for jobs with nothing to ask: every apply now goes through the flow's
-   * own Review step to submit.
+   * Opens the one-screen apply flow.
+   *
+   * The `getApplicationDefaults` prefill fetch that used to fire here is GONE:
+   * stage 1 collects the employer's prompts and nothing else, and there is no
+   * such thing as a stored default answer to a question this employer wrote.
+   * Defaults are merged at the stage-2 door instead -- and increasingly by the
+   * backend itself, which seeds them when the employer arms the stage.
    */
   function openApplyFlow() {
     setViewMode('apply');
-    if (job && idToken && defaultsLoadedForJobRef.current !== job.id) {
-      defaultsLoadedForJobRef.current = job.id;
-      void getApplicationDefaults(idToken)
-        .then(setDefaults)
-        .catch(() => setDefaults(null));
-    }
   }
 
   async function handleApplyClick() {
@@ -255,14 +239,20 @@ export default function WorkerJobDetailPage() {
     );
   }
 
-  /** `ApplyFlow`'s `onSubmit` -- a straight pass-through onto `applyToJob`'s
-   * two trailing params, per `ReviewStep.tsx`'s documented payload contract. */
-  async function doApply(payload: ApplyFlowSubmitPayload) {
-    if (!idToken || !id) return;
+  /**
+   * `ApplyFlow`'s `onSubmit`. Stage 1, whole: `{ prompt_answers }` and nothing
+   * else. `promptAnswersPayload` trims every answer and drops any id the job
+   * no longer asks about, so a stale draft entry cannot become a 400
+   * `invalid_prompt_answers`.
+   */
+  async function doApply() {
+    if (!idToken || !id || !job) return;
     setSubmitError(null);
     setSubmitting(true);
     try {
-      const application = await applyToJob(idToken, id, payload.answers, payload.certification_claims);
+      const application = await applyToJob(
+        idToken, id, promptAnswersPayload(job.pre_application_prompts ?? [], applyState),
+      );
       setApplyFeedback({ tone: 'success', message: t('apply_success') });
       // Reflect the outcome locally before asking the server again: the POST
       // already succeeded, so the page must show "applied" even if the
@@ -332,7 +322,7 @@ export default function WorkerJobDetailPage() {
   async function handleApplyError(err: unknown, opts: { fromFlow: boolean } = { fromFlow: false }) {
     const { fromFlow } = opts;
     const reportProblem = (message: string) => {
-      if (fromFlow) setSubmitError({ kind: 'generic', message });
+      if (fromFlow) setSubmitError({ message });
       else showApplyError(message);
     };
 
@@ -342,25 +332,11 @@ export default function WorkerJobDetailPage() {
       return;
     }
 
-    // These two 400 codes can only ever come back from a flow submission
-    // (`ApplyFlow`'s Review step already gates locally on the same
-    // `certification-claims.ts` rules `worker-jobs-apply` enforces
-    // server-side) -- they exist as a stale-gate backstop, mirroring
-    // `missing_answers` below. `missing_certification_proof` carries the
-    // still-unproven cert names (`lib/api/errors.ts`'s `certs` payload key);
-    // `ReviewStep` does the `{certs}` join itself. `missing_certification_claims`
-    // carries no payload at all, so it maps to the closest existing generic
-    // "some required answers are missing" copy (`errors.required_cert` needs
-    // a `{name}` this code's body does not carry).
-    if (fromFlow && err instanceof ApiError && err.code === 'missing_certification_proof') {
-      setSubmitError({ kind: 'missing_certification_proof', certs: err.payload.certs ?? [] });
-      return;
-    }
-    if (fromFlow && err instanceof ApiError && err.code === 'missing_certification_claims') {
-      setSubmitError({ kind: 'generic', message: tReq('errors.missing_answers') });
-      return;
-    }
-
+    // The certification-claim and field-answer 400s that used to be handled
+    // here are unreachable now: apply sends `{ prompt_answers }` alone, so
+    // `worker-jobs-apply` has nothing to validate against those rules. The
+    // whole `missing_certification_*` / `missing_answers` / `invalid_answers`
+    // family belongs to the stage-2 door and is handled there.
     const applyErr = err as WorkerApiError;
     if (applyErr.status === 400 && applyErr.missing_docs?.length) {
       // The one payload-carrying branch: it names the documents that are
@@ -370,22 +346,29 @@ export default function WorkerJobDetailPage() {
       }));
       return;
     }
-    if (applyErr.status === 400 && applyErr.code === 'missing_answers') {
-      // The gate should have blocked this locally (`canSubmitAnswers`) --
-      // this is the backstop for a stale gate (job requirements changed
-      // between load and submit) or a client bypassing the gate entirely.
-      const missingFields = applyErr.missing_fields;
-      reportProblem(
-        missingFields?.length
-          ? tReq('errors.missing_answers_fields', {
-              fields: missingFields.map((key) => tReq(`fields.${key}`)).join(', '),
-            })
-          : tReq('errors.missing_answers'),
-      );
+    // Sprint 23's two apply-time codes, now with a real form behind them.
+    // They MUST be named before the generic 400 arm below, whose
+    // `profile_invalid` copy sends the worker to their profile -- a place
+    // where nothing they do could ever fix an unanswered employer prompt.
+    //
+    // Both are BACKSTOPS: `ApplyFlow` gates Submit on the same predicate the
+    // door enforces, so reaching either means the job's prompts changed
+    // between load and submit. `missing` carries the still-unanswered ids.
+    if (applyErr.status === 400 && applyErr.code === 'missing_prompt_answers') {
+      // `payload.missing` is the allowlisted prompt-id array for THIS code
+      // (`lib/api/errors.ts` documents the two shapes that share the key); the
+      // local recount is the fallback for a body that lost it to a proxy.
+      const reported = err instanceof ApiError && Array.isArray(err.payload.missing)
+        ? err.payload.missing.length
+        : 0;
+      const stillMissing = reported > 0
+        ? reported
+        : missingPromptAnswers(job?.pre_application_prompts ?? [], applyState.answers).length;
+      reportProblem(tFlow('errors.missing_prompt_answers', { count: stillMissing }));
       return;
     }
-    if (applyErr.status === 400 && applyErr.code === 'invalid_answers') {
-      reportProblem(tReq('errors.invalid_answers'));
+    if (applyErr.status === 400 && applyErr.code === 'invalid_prompt_answers') {
+      reportProblem(tFlow('errors.invalid_prompt_answers'));
       return;
     }
     if (applyErr.status === 400) {
@@ -640,12 +623,8 @@ export default function WorkerJobDetailPage() {
               <ApplyFlow
                 key={job.id}
                 job={job}
-                token={idToken}
                 state={applyState}
                 dispatch={applyDispatch}
-                vaultDocs={vaultDocs}
-                onVaultChanged={fetchVaultDocs}
-                defaults={defaults}
                 onSubmit={doApply}
                 submitting={submitting}
                 submitError={submitError}
@@ -762,6 +741,21 @@ export default function WorkerJobDetailPage() {
                   <WhatYouNeedPanel job={job} vaultDocs={vaultDocs} />
                 ) : null}
 
+                {/* W3d: the same banner the applications list and the home
+                    page show, so it does not matter where the worker lands.
+                    `application_id` only arrives once they have applied -- the
+                    banner needs it for its link, so both are required. */}
+                {job.already_applied && job.details_status === 'requested' && job.application_id ? (
+                  <DetailsRequestedBanner
+                    applicationId={job.application_id}
+                    companyName={job.company_name}
+                    remainingCount={job.remaining?.counts
+                      ? job.remaining.counts.prompts + job.remaining.counts.fields
+                        + job.remaining.counts.certifications + job.remaining.counts.docs
+                      : undefined}
+                  />
+                ) : null}
+
                 {job.public_listing_enabled && job.status === 'active' ? (
                   <DashboardPanel>
                     <div className="p-5 md:p-6">
@@ -790,7 +784,7 @@ export default function WorkerJobDetailPage() {
                           <span className="text-sm font-medium text-[var(--jale-ink-2)]">
                             {t('already_applied')}
                           </span>
-                          <ApplicationStatusChip status={job.application_status ?? 'pending'} />
+                          <ApplicationStatusChip status={job.application_status ?? 'pending'} short />
                         </>
                       ) : (
                         <Button

@@ -188,6 +188,10 @@ export function normalizeCommandText(text: string): string {
 const COMMAND_KEYWORDS = [
   'help', 'ayuda', 'commands', 'comandos', 'jobs', 'trabajos', 'empleos',
   'profile', 'perfil', 'skip', 'saltar', 'chats', 'mensajes', 'cerrar', 'close',
+  // Sprint 23. All three sit well over 1 Damerau-Levenshtein edit from
+  // 'cancelar' (the fill/prompt lanes' exact cancel word), so widening the
+  // fuzzy vocabulary here cannot make `matchCommandFuzzy` swallow a cancel.
+  'applications', 'aplicaciones', 'solicitudes',
 ];
 
 function damerauLevenshteinDistance(a: string, b: string): number {
@@ -288,6 +292,21 @@ export function isProfileCommand(text: string): boolean {
   return fuzzy === 'profile' || fuzzy === 'perfil';
 }
 
+/**
+ * Sprint 23: the `aplicaciones` command. EXACT-match grammar (plus the
+ * shared 1-edit fuzzy tolerance), deliberately NOT `isJobsKeyword`'s
+ * prefix grammar -- these words are long enough that a worker typing a
+ * sentence that merely starts with one is far likelier to be answering a
+ * question than issuing a command, and the fill/prompt lanes route through
+ * this predicate before any answer parsing.
+ */
+export function isApplicationsCommand(text: string): boolean {
+  const n = normalizeCommandText(text);
+  if (/^(applications?|aplicacion(es)?|solicitud(es)?)$/.test(n)) return true;
+  const fuzzy = matchCommandFuzzy(n);
+  return fuzzy === 'applications' || fuzzy === 'aplicaciones' || fuzzy === 'solicitudes';
+}
+
 export function isSkipKeyword(text: string): boolean {
   const n = normalizeCommandText(text);
   if (/^(skip|saltar)$/.test(n)) return true;
@@ -313,11 +332,12 @@ export function isAccept(text: string, lang: Lang): boolean {
 const EN_LANG_WORDS = new Set([
   // 'chats'/'info' are shared with the Spanish menu (templates.ts) — not a language signal.
   'help', 'commands', 'command', 'jobs', 'job', 'profile', 'skip',
-  'close', 'accept', 'yes', 'decline',
+  'close', 'accept', 'yes', 'decline', 'applications', 'application',
 ]);
 const ES_LANG_WORDS = new Set([
   'ayuda', 'comandos', 'comando', 'trabajos', 'trabajo', 'empleos', 'empleo',
   'perfil', 'saltar', 'mensajes', 'cerrar', 'aceptar', 'acepto', 'rechazar',
+  'aplicaciones', 'aplicacion', 'solicitudes', 'solicitud',
   'si', 'sí',
 ]);
 
@@ -378,6 +398,29 @@ export function parseButtonPayload(payload: string): ButtonPayload | null {
   return { action: m[1] as ButtonPayload['action'], jobId: m[2] };
 }
 
+export interface ApplicationButtonPayload {
+  action: 'start' | 'later';
+  /** The `app-<uuid>` form the template's {{3}} variable carries. */
+  applicationId: string;
+}
+
+/**
+ * Sprint 23: the two quick-reply buttons on the `application_update_*`
+ * template -- `application:start:app-<uuid>` / `application:later:app-<uuid>`.
+ * The `app-` prefix mirrors the job alert's `job-<uuid>` convention and is
+ * minted by `buildApplicationStageMessage` (lib/application-stage-notify.ts);
+ * the bare UUID is returned here so callers never re-strip it.
+ */
+export function parseApplicationButtonPayload(
+  payload: string | undefined,
+): ApplicationButtonPayload | null {
+  const m = payload?.match(
+    /^application:(start|later):app-([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/,
+  );
+  if (!m) return null;
+  return { action: m[1] as ApplicationButtonPayload['action'], applicationId: m[2] };
+}
+
 export function parseEmployerConversationButtonPayload(
   payload: string,
 ): EmployerConversationButtonPayload | null {
@@ -389,10 +432,10 @@ export function parseEmployerConversationButtonPayload(
   };
 }
 
-export type CommandPayload = 'jobs' | 'profile' | 'chats' | 'help';
+export type CommandPayload = 'jobs' | 'profile' | 'chats' | 'help' | 'applications';
 
 export function parseCommandPayload(payload: string | undefined): CommandPayload | null {
-  const m = payload?.match(/^command:(jobs|profile|chats|help)$/);
+  const m = payload?.match(/^command:(jobs|profile|chats|help|applications)$/);
   return m ? (m[1] as CommandPayload) : null;
 }
 

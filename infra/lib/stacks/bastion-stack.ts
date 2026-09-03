@@ -43,9 +43,15 @@ export class BastionStack extends cdk.Stack {
       // Gateway so `dnf install postgresql15` can pull from AL2023 repos.
       // Isolated subnets would work for reaching RDS but not for yum.
       subnetSelection: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      // MICRO (1 GiB), not NANO (512 MiB): on 2026-09-01 the first-boot
+      // `dnf install postgresql15 jq` was OOM-killed on a nano (cloud-init
+      // log: "Killed dnf install -y postgresql15 jq"), leaving the bastion
+      // with no psql and every run-migrations.sh call failing with exit 127.
+      // dnf on AL2023 routinely needs >512 MiB; the swapfile below is the
+      // second guard.
       instanceType: ec2.InstanceType.of(
         ec2.InstanceClass.T4G,
-        ec2.InstanceSize.NANO,
+        ec2.InstanceSize.MICRO,
       ),
       machineImage: ec2.MachineImage.latestAmazonLinux2023({
         cpuType: ec2.AmazonLinuxCpuType.ARM_64,
@@ -55,8 +61,15 @@ export class BastionStack extends cdk.Stack {
     // UserData runs once at first boot. postgresql15-server is excluded —
     // we only need the client binary. jq lets the migration script parse
     // the jale_admin secret JSON without a Python dependency.
+    // A 1 GiB swapfile FIRST so dnf cannot be OOM-killed even on a small
+    // instance, then the client packages with weak deps off (smaller
+    // transaction, less memory). `set -e` so a failed install is visible in
+    // cloud-init-output.log rather than silently leaving psql absent.
     this.bastionHost.instance.addUserData(
-      'dnf install -y postgresql15 jq',
+      'set -e',
+      'fallocate -l 1G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile',
+      'dnf install -y --setopt=install_weak_deps=False postgresql15 jq',
+      'command -v psql',
     );
 
     // Explicit CfnSecurityGroupIngress so the rule resource lands in this

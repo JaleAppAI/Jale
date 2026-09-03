@@ -61,6 +61,13 @@ export interface PublicJobActive {
     tier: 'required' | 'optional';
     proof_required: boolean;
   }> | null;
+  /**
+   * The employer's apply-time questions (sprint 23, migration 091), published
+   * here so the public page can show what a worker will be asked BEFORE they
+   * sign up. `public-job.ts` parses the column to `[]` when a job asks none;
+   * optional for a payload cached from before the rollout.
+   */
+  pre_application_prompts?: Array<{ id: string; text: string }>;
 }
 
 export interface PublicJobClosed {

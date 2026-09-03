@@ -5,20 +5,31 @@ import type { PoolClient } from 'pg';
 // submitted questionnaire answers, offered back as pre-fill defaults on a
 // future application.
 //
-// Surface-agnostic: this is a second entry point Ivan's WhatsApp fill-flow
-// is expected to call IDENTICALLY once it lands (same function, same
-// argument shape, no web-only types). Two things that flow must still do
-// itself before it can:
-//   1. Add the follow-up migration 079's header describes:
-//        GRANT SELECT, INSERT, UPDATE ON worker_application_defaults TO jale_whatsapp;
-//      jale_whatsapp holds NO grant on this table as of 079 -- calling this
-//      function over that role today gets a bare "permission denied for
-//      table worker_application_defaults" (42501), not a graceful error.
-//   2. Strip the reserved 'certifications' key from `answers` first, same
-//      as the web caller does (see applications.ts) -- this table holds
-//      only the free-form questionnaire answer keys
-//      (REQUIRED_FIELD_TYPES / job-fields.ts), never certification claims.
-//      This function does not strip it itself and trusts the caller.
+// Surface-agnostic, and as of sprint 23 there is exactly ONE caller for
+// both surfaces: `mergeFieldAnswers` (lib/application-requirements.ts)
+// writes the defaults back after every successful stage-2 field merge,
+// whether the worker is on web or on WhatsApp. The apply path no longer
+// touches this table at all -- stage 1 collects no questionnaire answers.
+//
+// GRANT STATUS -- 081's deferral is now CLOSED: 079 granted nothing to
+// jale_whatsapp and 081 granted SELECT only, so this upsert used to fail
+// with 42501 over that role, which is why the WhatsApp fill flow
+// deliberately did not write defaults back. 091_application_stages.sql adds
+//   GRANT INSERT, UPDATE ON worker_application_defaults TO jale_whatsapp;
+// plus the own-worker write policy `worker_application_defaults_whatsapp_write`
+// (USING + WITH CHECK on the app.current_internal_user_id GUC), because the
+// shared engine now runs as jale_whatsapp for BOTH doors. This table is
+// FORCE RLS, so the CALLER must have set that GUC
+// (`setInternalUserRlsContext`) before calling either function here.
+//
+// The caller must still strip the reserved 'certifications' key from
+// `answers` -- this table holds only the free-form questionnaire answer
+// keys (REQUIRED_FIELD_TYPES / job-fields.ts), never certification claims,
+// which are per-job by nature and meaningless as a cross-job default. This
+// function does not strip it itself and trusts the caller. (In practice
+// `mergeFieldAnswers` cannot even receive that key: it rejects any key
+// outside the job's required/optional field lists, and the 073/074 CHECKs
+// keep 'certifications' out of both.)
 //
 // MERGE semantics via the jsonb `||` operator, NEVER a replace: an existing
 // key in the stored `answers` that the new write does not mention survives
@@ -47,4 +58,27 @@ export async function upsertWorkerApplicationDefaults(
            updated_at = now()`,
     [workerId, JSON.stringify(answers)],
   );
+}
+
+/**
+ * Reads a worker's saved prefill defaults. Returns `{}` -- never null and
+ * never undefined -- for a worker with no row yet (their very first
+ * application) or a row whose `answers` column is NULL, so callers can walk
+ * the object unconditionally.
+ *
+ * Does NOT set the RLS GUC: worker_application_defaults is FORCE RLS (079,
+ * keyed on `app.current_internal_user_id`) and the caller owns that context
+ * -- `seedAnswersFromDefaults` sets it immediately before calling this, and
+ * the API doors set it once per request. Same split as
+ * `upsertWorkerApplicationDefaults` above.
+ */
+export async function loadWorkerApplicationDefaults(
+  client: PoolClient,
+  workerId: string,
+): Promise<Record<string, unknown>> {
+  const res = await client.query<{ answers: Record<string, unknown> | null }>(
+    `SELECT answers FROM worker_application_defaults WHERE worker_id = $1`,
+    [workerId],
+  );
+  return res.rows[0]?.answers ?? {};
 }

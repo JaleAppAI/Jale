@@ -551,20 +551,24 @@ maybeDescribe('R2-C6/087: a web-started worker continues on WhatsApp', () => {
     test('reconcile_worker_signup creates the users row with cognito_sub + phone and NO name', async () => {
       const row = await su.query<{
         cognito_sub: string; phone: string; user_type: string;
-        full_name: string | null; pending_full_name: string | null; email: string | null;
+        full_name: string | null; email: string | null;
       }>(
-        `SELECT cognito_sub, phone, user_type, full_name, pending_full_name, email
+        `SELECT cognito_sub, phone, user_type, full_name, email
            FROM users WHERE cognito_sub = $1`,
         [subs.signup],
       );
       expect(row.rows).toHaveLength(1);
       expect(row.rows[0].user_type).toBe('worker');
       expect(row.rows[0].phone).toBe(phones.signup);
-      // R2 web signup is PHONE ONLY: no fullName is sent, nothing is staged
-      // for promote_worker_pending_name, and no email exists at all. The
-      // name is collected inside the flow, at `profile.name`.
+      // R2 web signup is PHONE ONLY: no fullName is sent, nothing is staged,
+      // and no email exists at all. The name is collected inside the flow, at
+      // `profile.name`.
+      //
+      // `pending_full_name` was read here as well until migration 092 DROPPED
+      // it along with stage_worker_pending_name / promote_worker_pending_name
+      // -- the staging lane this assertion proved was unused no longer exists
+      // to be unused, so naming the column here is now a 42703.
       expect(row.rows[0].full_name).toBeNull();
-      expect(row.rows[0].pending_full_name).toBeNull();
       expect(row.rows[0].email).toBeNull();
     });
 

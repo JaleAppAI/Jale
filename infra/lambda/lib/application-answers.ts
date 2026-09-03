@@ -37,7 +37,16 @@ export const EDUCATION_LEVELS = [
   'trade_school',
 ] as const;
 
-const MAX_ANSWERS_JSON_LENGTH = 16384;
+// Exported since sprint 23: `application-requirements.ts` re-checks this
+// SAME cap on the POST-MERGE total (`persistMergedAnswers` returns
+// `length(application_answers::text)`), because the check below only ever
+// measures the object handed to THIS validator, never the accumulated
+// column after a jsonb `||` merge. It used to be hand-copied into
+// applications.ts as MAX_MERGED_ANSWERS_JSON_LENGTH with a "nothing keeps
+// these equal" caveat; there is now one constant. Measured in CHARACTERS
+// (JSON.stringify().length), so the SQL side must use `length(...)`, not
+// `octet_length(...)`.
+export const MAX_ANSWERS_JSON_LENGTH = 16384;
 
 // Digits, space, parentheses, plus, hyphen, and period only. Length bound
 // (7..20) is enforced inline so a single regex covers the whole
@@ -63,10 +72,13 @@ function hasOnlyAllowedKeys(obj: Record<string, unknown>, allowed: readonly stri
  * pre-trim string so padding with whitespace cannot smuggle extra
  * characters past it; `min` is a content floor enforced on the TRIMMED
  * string, so a whitespace-only value cannot satisfy a required field. The
- * TRIMMED value is what gets stored.
+ * TRIMMED value is what gets stored. A U+0000 NUL byte is rejected outright
+ * -- Postgres jsonb cannot store it, and it would otherwise reach the
+ * column and raise at write time instead of failing validation.
  */
 function boundedString(value: unknown, min: number, max: number): string | null {
   if (typeof value !== 'string') return null;
+  if (value.includes('\u0000')) return null;
   if (value.length > max) return null;
   const trimmed = value.trim();
   if (trimmed.length < min) return null;

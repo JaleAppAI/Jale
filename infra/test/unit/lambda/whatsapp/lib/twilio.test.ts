@@ -3,6 +3,7 @@ import {
   validateTwilioSignature,
   parseFormBody,
   reconstructWebhookUrl,
+  type TwilioSecret,
 } from '../../../../../lambda/whatsapp/lib/twilio';
 import { createHmac } from 'node:crypto';
 
@@ -148,5 +149,71 @@ describe('twilio.ts — reconstructWebhookUrl', () => {
 
   it('tolerates undefined fields gracefully', () => {
     expect(reconstructWebhookUrl({}, {})).toBe('https://');
+  });
+});
+
+// ── Sprint 23: application-stage entries on TwilioSecret['templates'] ──
+
+describe('twilio.ts — TwilioSecret application-stage template keys', () => {
+  // The four names are a contract between three places: the seed script that
+  // creates the Content resources, `buildApplicationStageMessage`'s
+  // `contentTemplate`, and outbox.ts's ContentSid lookup. This suite owns the
+  // type end of it — a key typo'd here compiles as an excess property error,
+  // which is the only compile-time signal the lookup will ever silently miss.
+  const APPLICATION_TEMPLATE_KEYS = [
+    'application_update_es',
+    'application_update_en',
+    'application_hired_es',
+    'application_hired_en',
+  ] as const;
+
+  // Placeholder ContentSids: shaped like Twilio's HX ids but deliberately not
+  // hex, so nothing here can be mistaken for a real credential.
+  function seededSecret(): TwilioSecret {
+    return {
+      accountSid: 'AC123',
+      authToken: 'token',
+      messagingServiceSid: 'MG123',
+      templates: {
+        job_alert_es: 'HXplaceholder-job-alert-es',
+        application_update_es: 'HXplaceholder-application-update-es',
+        application_update_en: 'HXplaceholder-application-update-en',
+        application_hired_es: 'HXplaceholder-application-hired-es',
+        application_hired_en: 'HXplaceholder-application-hired-en',
+      },
+    };
+  }
+
+  it('accepts all four keys and carries them through a JSON round trip', () => {
+    // Secrets Manager stores the secret as a JSON string, so the shape the
+    // Lambda reads back is always the parse of a stringify.
+    const roundTripped = JSON.parse(JSON.stringify(seededSecret())) as TwilioSecret;
+    for (const key of APPLICATION_TEMPLATE_KEYS) {
+      expect(roundTripped.templates?.[key]).toBe(`HXplaceholder-${key.replace(/_/g, '-')}`);
+    }
+  });
+
+  it('leaves the pre-existing template entries untouched', () => {
+    const roundTripped = JSON.parse(JSON.stringify(seededSecret())) as TwilioSecret;
+    expect(roundTripped.templates?.job_alert_es).toBe('HXplaceholder-job-alert-es');
+    expect(Object.keys(roundTripped.templates ?? {})).toHaveLength(
+      APPLICATION_TEMPLATE_KEYS.length + 1,
+    );
+  });
+
+  it('keeps every application key OPTIONAL, which is what the fallback path needs', () => {
+    // Until the seed script runs, none of these exist in the live secret.
+    // sendTwilioWhatsAppMessage degrades to the `__fallback_body` content
+    // variable in that case, so an un-seeded secret must remain a legal
+    // TwilioSecret rather than a type error.
+    const unseeded: TwilioSecret = {
+      accountSid: 'AC123',
+      authToken: 'token',
+      messagingServiceSid: 'MG123',
+      templates: {},
+    };
+    for (const key of APPLICATION_TEMPLATE_KEYS) {
+      expect(unseeded.templates?.[key]).toBeUndefined();
+    }
   });
 });

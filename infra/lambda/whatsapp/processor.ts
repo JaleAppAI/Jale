@@ -58,6 +58,8 @@ import {
   isHelpCommand,
   isSupportCommand,
   isProfileCommand,
+  isApplicationsCommand,
+  parseApplicationButtonPayload,
   parseButtonPayload,
   parseCommandPayload,
   parseEmployerConversationButtonPayload,
@@ -76,16 +78,31 @@ import {
   MAX_DOCUMENT_BYTES,
 } from './lib/media';
 import {
-  computeNextStep,
-  countRemainingRequirements,
-  seedAnswersFromDefaults,
+  armFill,
   promptNextStep,
   handleFillMessage,
-  localizeDocList,
   type FillContext,
   type FillDeps,
   type FillStateContext,
 } from './lib/application-fill';
+import {
+  armPromptLane,
+  handlePromptMessage,
+  repromptPromptLane,
+  type PromptContext,
+  type PromptDeps,
+} from './lib/application-prompts';
+import {
+  anyNeedsDetails,
+  loadWorkerApplications,
+  parseApplicationsMenuPick,
+  sendApplicationsList,
+  sendApplicationsListRows,
+  type ApplicationsContext,
+  type ApplicationsDeps,
+} from './lib/applications-command';
+import { loadRequirementSnapshot } from '../lib/application-requirements';
+import { parsePreApplicationPromptList } from '../lib/pre-application-prompts';
 import {
   handlePostLaneMessage,
   discardActiveDraft,
@@ -102,6 +119,16 @@ import {
   type VoiceEventV2,
   type VoicePipelineExecutionInputV2,
 } from './lib/voice-events';
+// Sprint 23 L6: `startTrustTranscription` moved to lib/trust-transcription.ts
+// so the WEB door can start the SAME trust pipeline from an already-uploaded
+// S3 object (`fromS3Key`) without the Twilio download. `deriveExecutionArn`
+// and `setWorkerRlsContextByUserId` moved with it — both were helpers of that
+// function, and `ingestProfileVoiceNote`/the post lane below share them.
+import {
+  fromTwilioMedia as startTrustTranscriptionFromTwilioMedia,
+  deriveExecutionArn,
+  setWorkerRlsContextByUserId,
+} from './lib/trust-transcription';
 import {
   loadRuntimeControls,
   isVoiceIntakeEnabled,
@@ -770,7 +797,7 @@ function extractInteractivePayload(raw: string | undefined): string | undefined 
 
 function findKnownPayload(value: unknown): string | undefined {
   if (typeof value === 'string') {
-    return /^(legal|profile|trust|media|conversation|command|otp):/.test(value) ? value : undefined;
+    return /^(legal|profile|trust|media|conversation|command|otp|application):/.test(value) ? value : undefined;
   }
   if (Array.isArray(value)) {
     for (const item of value) {
@@ -788,131 +815,6 @@ function findKnownPayload(value: unknown): string | undefined {
   return undefined;
 }
 
-async function setWorkerRlsContextByUserId(
-  client: PoolClient,
-  userId: string,
-): Promise<void> {
-  const userRow = await client.query<{ cognito_sub: string }>(
-    `SELECT cognito_sub FROM users WHERE id = $1 AND user_type = 'worker'`,
-    [userId],
-  );
-  const cognitoSub = userRow.rows[0]?.cognito_sub;
-  if (!cognitoSub) throw new Error('worker cognito_sub missing before media write');
-  await setRlsContext(client, cognitoSub);
-}
-
-// ── v2 trust-question voice-note transcription kickoff ──────────
-//
-// Mirrors handleAwaitingMediaVoice's Twilio-download -> S3 -> StartExecution
-// pattern above, but for the v2 lane's trust.question.* steps: it never
-// advances the step or takes the run lock — recordTrustAnswer only runs when
-// the transcript comes back (onboarding/steps/trust.ts), so a typed answer
-// that arrives first still wins the race. Runs on the SAME client/
-// transaction as the rest of the turn (closed over by the v2Deps.voiceIntake
-// wiring above), so a StartExecution failure rolls back the S3 upload's
-// worker_profile_media row along with everything else in this turn.
-async function startTrustTranscription(
-  client: PoolClient,
-  input: {
-    workerId: string;
-    phone: string;
-    runId: string;
-    stepKey: string;
-    questionIndex: number;
-    language: Lang;
-    mediaUrl: string;
-    mediaContentType: string;
-    inboundMessageSid: string;
-  },
-): Promise<{ started: boolean; reason?: string; executionArn?: string }> {
-  const category = detectMediaCategory(input.mediaContentType);
-  if (category !== 'voice') return { started: false, reason: 'invalid_media_type' };
-
-  const bucketName = process.env.MEDIA_BUCKET_NAME;
-  const stateMachineArn = process.env.TRUST_PIPELINE_STATE_MACHINE_ARN;
-  if (!bucketName) throw new Error('MEDIA_BUCKET_NAME not set');
-  if (!stateMachineArn) throw new Error('TRUST_PIPELINE_STATE_MACHINE_ARN not set');
-
-  let mediaBuffer: Buffer;
-  try {
-    const twilioSecret = await getTwilioSecret();
-    mediaBuffer = await downloadTwilioMedia(input.mediaUrl, twilioSecret.accountSid, twilioSecret.authToken);
-  } catch (err) {
-    // Task 7/B5 fix: an expired/unreachable Twilio media URL must never
-    // throw bare here — this runs inside the claim transaction, so an
-    // uncaught throw aborts it, poisons the phone's FIFO message group, and
-    // burns all five retries. Degrade to the same graceful
-    // `{started: false}` path a rejected file already takes; the existing
-    // `v2_voice_failed` reprompt (handleTrustVoiceNote, onboarding/steps/
-    // trust.ts) handles it from here.
-    console.error(JSON.stringify({
-      metric: 'OnboardingTrustVoiceDownloadFailed',
-      reason: (err as { name?: string })?.name ?? 'unknown_error',
-    }));
-    return { started: false, reason: 'download_failed' };
-  }
-  // Twilio does not reject oversized uploads at the source; enforce the cap
-  // post-download rather than stranding the worker on a silent failure.
-  if (mediaBuffer.byteLength > MAX_VOICE_BYTES) return { started: false, reason: 'file_too_large' };
-
-  const mediaId = randomUUID();
-  const s3Key = buildS3Key(input.workerId, mediaId, 'voice');
-  await uploadMediaToS3(bucketName, s3Key, mediaBuffer, input.mediaContentType);
-
-  await setWorkerRlsContextByUserId(client, input.workerId);
-  await client.query(
-    `INSERT INTO worker_profile_media
-       (id, user_id, media_type, s3_key, content_type)
-     VALUES ($1, $2, 'voice_message', $3, $4)`,
-    [mediaId, input.workerId, s3Key, input.mediaContentType],
-  );
-
-  const transcriptionJobName = `jale-vt-${input.workerId.replace(/-/g, '')}-${Date.now()}`;
-  const mediaS3Uri = `s3://${bucketName}/${s3Key}`;
-  const transcriptOutputKey = `${input.workerId}/transcripts/${transcriptionJobName}.json`;
-
-  const sfnInput: VoicePipelineExecutionInputV2 = {
-    transcriptionJobName,
-    mediaS3Uri,
-    mediaBucketName: bucketName,
-    transcriptOutputKey,
-    v2: {
-      version: 'v2',
-      kind: 'trust_answer',
-      phone: input.phone,
-      runId: input.runId,
-      stepKey: input.stepKey,
-      language: input.language,
-      origMessageSid: input.inboundMessageSid,
-      startedAt: new Date().toISOString(),
-      questionIndex: input.questionIndex,
-    },
-  };
-
-  // Deterministic execution name (same shape as sendErrorFallback's `<sid>#err`
-  // idempotency key): an SQS redelivery of the same inbound voice note
-  // resolves to the SAME execution rather than starting a second
-  // transcription job. Deriving the ARN here (Task 5/B3), same pattern as
-  // `ingestProfileVoiceNote` below, gives the router a staleness anchor
-  // (`state_context.v2TrustVoiceExecutionArn`) synchronously, before the
-  // pipeline itself has run — it never has to wait for the async completion
-  // to learn what its own execution's ARN will be.
-  const executionName = `vt-${input.inboundMessageSid}`;
-  const executionArn = deriveExecutionArn(stateMachineArn, executionName);
-
-  try {
-    await sfn.send(new StartExecutionCommand({
-      stateMachineArn,
-      name: executionName,
-      input: JSON.stringify(sfnInput),
-    }));
-  } catch (err: any) {
-    if (err?.name !== 'ExecutionAlreadyExists') throw err;
-  }
-
-  return { started: true, executionArn };
-}
-
 // ── v2 full voice profile intake (Stream B) — ingestion kickoff ──
 //
 // Mirrors startTrustTranscription's Twilio-download -> S3 -> StartExecution
@@ -923,20 +825,6 @@ async function startTrustTranscription(
 // `#vp` event instead of writing `users`/outbox directly (Task 8d). Runs on
 // the SAME client/transaction as the rest of the turn, closed over by the
 // v2Deps.voiceIntake wiring below.
-
-/**
- * Step Functions execution ARNs are deterministic:
- * `arn:...:stateMachine:<name>` -> `arn:...:execution:<name>:<executionName>`.
- * Deriving it here (rather than trusting `StartExecutionCommand`'s response)
- * means the SAME value is available synchronously on `ExecutionAlreadyExists`
- * (a redelivered inbound voice note) as on a fresh start — both resolve to
- * the one execution the deterministic name identifies.
- */
-function deriveExecutionArn(stateMachineArn: string, executionName: string): string {
-  const parts = stateMachineArn.split(':');
-  const [, , , region, account, , stateMachineName] = parts;
-  return `arn:aws:states:${region}:${account}:execution:${stateMachineName}:${executionName}`;
-}
 
 async function ingestProfileVoiceNote(
   client: PoolClient,
@@ -1131,7 +1019,14 @@ async function routeMessage(
     recordLegalAcceptance: recordCanonicalWhatsAppConsent,
     voiceIntake: {
       enabled: isVoiceIntakeEnabled(runtimeControls, phoneHash),
-      startTrustTranscription: (input) => startTrustTranscription(client, input),
+      // Sprint 23 L6: the body of this lane now lives in
+      // `lib/trust-transcription.ts` (`fromTwilioMedia`), shared with the WEB
+      // door's `fromS3Key`. `getTwilioSecret` is injected rather than imported
+      // there so that module holds no secret of its own.
+      startTrustTranscription: (input) => startTrustTranscriptionFromTwilioMedia(client, {
+        ...input,
+        getTwilioSecret,
+      }),
       ingestProfileVoiceNote: (input) => ingestProfileVoiceNote(client, input),
     },
   };
@@ -1205,6 +1100,32 @@ async function routeMessage(
     }
   }
 
+  // Sprint 23: the details-requested template's two quick replies. Routed
+  // BEFORE the job-alert button block: the `accept|decline|info:job-<id>`
+  // grammar cannot match `application:*` today, but keeping the more
+  // specific payload first means a future widening of either grammar cannot
+  // silently steal these taps.
+  //
+  // Reads `interactivePayload ?? buttonPayload`, the same pair
+  // `parseLegalReplyPayload` uses just below, rather than `buttonPayload`
+  // alone: a WhatsApp quick reply usually arrives as ButtonPayload, but the
+  // extraction above (processRecord) also recovers a known payload from
+  // ListId / InteractiveData / ChannelMetadata / the raw Body -- the exact
+  // channel quirks `findKnownPayload` exists for. Matching only
+  // ButtonPayload would drop the tap on every one of those.
+  const applicationPayload = parseApplicationButtonPayload(msg.interactivePayload ?? msg.buttonPayload);
+  if (applicationPayload && conv.user_id) {
+    if (applicationPayload.action === 'later') {
+      // LATER IS NOT A DB WRITE (locked decision): nothing is recorded and no
+      // lane is armed. The worker comes back through "aplicaciones" whenever
+      // they want.
+      await queueReply(client, msg.messageSid, msg.from, 'application_later_ack', conv.language);
+      return conv.user_id;
+    }
+    await handleApplicationStart(client, conv, applicationPayload.applicationId, msg.from, msg.messageSid);
+    return conv.user_id;
+  }
+
   // Button-payload taps on job alerts are self-identifying. Route them first
   // — they can arrive in any state except onboarding (worker must be linked).
   if (msg.buttonPayload) {
@@ -1264,6 +1185,44 @@ async function routeMessage(
   // and returns `{handled:false}` (one-shot, no nagging) -- same fall-through
   // contract as every other `handled:false` escape below.
   const fillStateContext = conv.state_context as unknown as FillStateContext | undefined;
+
+  // Sprint 23: the `aplicaciones` command. Dispatched AFTER the command-payload
+  // unwrap (so the help-menu list item's `command:applications` lands here as
+  // plain text) and BEFORE both lane gates, so the word can never be eaten by
+  // the fill lane's Bedrock extraction as an answer to a field question. A
+  // still-armed lane is left ALONE -- listing applications is not an exit --
+  // and this returns before the dispatch tail, exactly like every other
+  // self-contained command reply.
+  if (conv.user_id && isApplicationsCommand(msg.body)) {
+    await discardStalePostDraft(client, conv, msg);
+    // 070's jobs_worker_read_applied policy is keyed on this GUC; without it
+    // the join drops every non-active job the worker applied to.
+    await setInternalUserRlsContext(client, conv.user_id);
+    await sendApplicationsList(
+      client,
+      buildApplicationsCtx(conv),
+      msg.messageSid,
+      msg.from,
+      buildApplicationsDeps(conv),
+    );
+    return conv.user_id;
+  }
+
+  // Sprint 23 prompt lane (stage 1). Sits beside the fill gate and is checked
+  // FIRST: the two are mutually exclusive by construction (arming either
+  // scrubs the other's keys), so the order only matters for a corrupt row --
+  // in which case the newer, shorter lane winning is the safer default.
+  const promptLaneArmed = typeof fillStateContext?.prompt_application_id === 'string';
+  if (promptLaneArmed && conv.user_id) {
+    const promptResult = await handlePromptMessage(
+      client,
+      buildPromptCtx(conv),
+      msg,
+      buildPromptDeps(conv),
+    );
+    if (promptResult.handled) return conv.user_id;
+  }
+
   const fillLaneArmed =
     typeof fillStateContext?.fill_application_id === 'string'
     || typeof fillStateContext?.fill_offer_application_id === 'string';
@@ -1273,6 +1232,19 @@ async function routeMessage(
     // handled:false => an escape/command/relay-override turn, or a
     // declined/one-shot continue-other offer -- fall through to the normal
     // routing below exactly as if no fill were armed.
+  }
+
+  // A bare digit against the one-shot `aplicaciones` menu -- the SAME
+  // dispatch the Start button performs. Deliberately AFTER both lane gates:
+  // an in-flight question owns the worker's digits (a fill confirmation, a
+  // menu answer), and `parseApplicationsMenuPick` additionally stands down
+  // whenever a `pending_picker` is set.
+  const menuPick = conv.user_id
+    ? parseApplicationsMenuPick(conv.state_context as unknown as Record<string, unknown>, msg.body)
+    : null;
+  if (menuPick && conv.user_id) {
+    await handleApplicationStart(client, conv, menuPick, msg.from, msg.messageSid);
+    return conv.user_id;
   }
 
   const readyResult = await routeReadyWorkerCommands(client, conv, msg);
@@ -1290,8 +1262,13 @@ async function routeMessage(
   // every other `handled:true` path already queued its own next-step prompt
   // this turn) -- that branch returns immediately, before `routeReadyWorkerCommands`
   // (and therefore this check) ever runs.
-  if (typeof (conv.state_context as unknown as FillStateContext | undefined)?.fill_application_id === 'string') {
+  const tailState = conv.state_context as unknown as FillStateContext | undefined;
+  if (typeof tailState?.fill_application_id === 'string') {
     await maybeRepromptFill(client, conv, msg);
+  } else if (typeof tailState?.prompt_application_id === 'string') {
+    // Same contract as the fill tail: an escape queued its own reply, so the
+    // worker's outstanding prompt is re-sent, cooldown-guarded.
+    await repromptPromptLane(client, buildPromptCtx(conv), msg.messageSid, msg.from, buildPromptDeps(conv));
   }
 
   return readyResult;
@@ -1900,6 +1877,28 @@ async function handleIdle(
     return null;
   }
 
+  // Sprint 23: a worker the employer is actively waiting on gets their
+  // applications instead of the generic "I did not understand that". This is
+  // the third and last door into stage 2 (the other two being the
+  // details-requested template's Start button and the `aplicaciones`
+  // command) -- and the one that catches a worker who replied to the
+  // notification in their own words instead of tapping anything.
+  if (conv.user_id) {
+    await setInternalUserRlsContext(client, conv.user_id);
+    const applications = await loadWorkerApplications(client, conv.user_id);
+    if (anyNeedsDetails(applications)) {
+      await sendApplicationsListRows(
+        client,
+        buildApplicationsCtx(conv),
+        applications,
+        msg.messageSid,
+        msg.from,
+        buildApplicationsDeps(conv),
+      );
+      return null;
+    }
+  }
+
   // Conversation relay now runs in routeMessage (tryConversationRelay) before
   // handleIdle is reached. Reserved keywords (JOBS) and typed job actions fall
   // through to here; everything else is the idle help fallback.
@@ -2041,6 +2040,126 @@ async function discardStalePostDraft(
   }
 }
 
+/**
+ * Sprint 23: the prompt lane and the `aplicaciones` command share the fill
+ * lane's `updateStateContext` contract EXACTLY (persist the spread-merged
+ * patch AND mutate `conv.state_context` in place via `makeStateContextUpdater`),
+ * which is what lets all three lanes read each other's writes within one turn
+ * without a second round trip. Neither needs Bedrock, Twilio media, or S3, so
+ * their dep objects are deliberately much smaller than `FillDeps`.
+ */
+function buildPromptCtx(conv: ConversationRow): PromptContext {
+  return {
+    conversationId: conv.id,
+    workerId: conv.user_id ?? '',
+    lang: conv.language,
+    stateContext: (conv.state_context ?? {}) as unknown as Record<string, unknown>,
+  };
+}
+
+function buildPromptDeps(conv: ConversationRow): PromptDeps {
+  return {
+    queueReplyText: (client, inboundSid, to, body) => queueOutboxText(client, inboundSid, to, body),
+    updateStateContext: makeStateContextUpdater(conv),
+    nowMs: () => Date.now(),
+  };
+}
+
+function buildApplicationsCtx(conv: ConversationRow): ApplicationsContext {
+  return {
+    conversationId: conv.id,
+    workerId: conv.user_id ?? '',
+    lang: conv.language,
+    stateContext: (conv.state_context ?? {}) as unknown as Record<string, unknown>,
+  };
+}
+
+function buildApplicationsDeps(conv: ConversationRow): ApplicationsDeps {
+  return {
+    queueReplyText: (client, inboundSid, to, body) => queueOutboxText(client, inboundSid, to, body),
+    updateStateContext: makeStateContextUpdater(conv),
+    nowMs: () => Date.now(),
+  };
+}
+
+/**
+ * THE stage-2 entry point, shared by the `application:start:app-<uuid>`
+ * button and a digit picked from the `aplicaciones` menu -- both must behave
+ * identically, so neither owns a copy of these checks.
+ *
+ * OWNERSHIP FIRST, and it is silent: `jobapp_whatsapp_select` is
+ * `USING (true)` (028), so a forged/replayed payload naming ANOTHER worker's
+ * application would otherwise arm this worker's fill against it. A mismatch
+ * gets no reply at all -- answering would confirm the id exists -- just a
+ * metric line. A VANISHED row is answered the same silent way on purpose:
+ * replying to one case and not the other would turn this handler into an
+ * existence oracle for application ids.
+ *
+ * The load is deliberately UNSYNCED. `syncDocumentSnapshots: true` sets
+ * `app.current_internal_user_id` to the SNAPSHOT's worker and INSERTs
+ * worker_documents rows for them (application-requirements.ts) -- so running
+ * it before the ownership check would let a forged id both write rows for a
+ * stranger and leave a foreign identity in the GUC for the rest of this
+ * turn's transaction. `armFill` does its own synced load once the id is
+ * proven ours, and the gates below (status, stage, the two timestamps) all
+ * read columns the unsynced snapshot already carries.
+ *
+ * The remaining branches are ordered most-terminal first, so a hired worker
+ * is never told "we have not asked for details yet".
+ */
+async function handleApplicationStart(
+  client: PoolClient,
+  conv: ConversationRow,
+  applicationId: string,
+  from: string,
+  inboundMessageSid: string,
+): Promise<void> {
+  const workerId = conv.user_id;
+  if (!workerId) return;
+
+  const snapshot = await loadRequirementSnapshot(client, applicationId);
+  if (!snapshot || snapshot.workerId !== workerId) {
+    console.log(JSON.stringify({
+      event: 'ApplicationStartOwnershipMismatch',
+      conversationId: conv.id,
+      found: snapshot !== null,
+    }));
+    return;
+  }
+  if (snapshot.applicationStatus === 'hired') {
+    await queueReply(client, inboundMessageSid, from, 'application_hired_info', conv.language);
+    return;
+  }
+  if (snapshot.jobStatus === 'filled' || snapshot.jobStatus === 'closed') {
+    await queueText(client, inboundMessageSid, from, fillMessage('exit_job_inactive', conv.language));
+    return;
+  }
+  if (snapshot.applicationStatus === 'not_interested') {
+    await queueText(client, inboundMessageSid, from, fillMessage('exit_application_closed', conv.language));
+    return;
+  }
+  if (snapshot.detailsCompletedAt) {
+    await queueReply(client, inboundMessageSid, from, 'application_already_complete', conv.language);
+    return;
+  }
+  if (snapshot.stage === 'apply') {
+    await queueReply(client, inboundMessageSid, from, 'application_not_requested_yet', conv.language);
+    return;
+  }
+
+  // Arming the fill means free text and photos are coming -- a dormant
+  // post-board draft would otherwise eat them (Task 15's discard contract).
+  await discardStalePostDraft(client, conv, { from, messageSid: inboundMessageSid });
+  await armFill(
+    client,
+    buildFillCtx(conv),
+    snapshot,
+    inboundMessageSid,
+    from,
+    buildFillDeps(conv),
+  );
+}
+
 function buildFillDeps(conv: ConversationRow): FillDeps {
   return {
     extraction: makeBedrockExtractionClient(),
@@ -2069,9 +2188,11 @@ async function handleJobAction(
     location: string;
     pay_min: number | null; pay_max: number | null; pay_interval: string | null;
     pay_raw: string | null;
-    required_fields: string[] | null;
-    optional_fields: string[] | null;
+    pre_application_prompts: unknown;
   }>(
+    // Sprint 23: `required_fields`/`optional_fields` are no longer read here.
+    // Nothing at accept time consults them any more -- the stage-2 arm
+    // (`armFill`) reads them off the snapshot it already loaded.
     `SELECT id,
             title,
             COALESCE(company, 'Jale') AS company,
@@ -2080,8 +2201,7 @@ async function handleJobAction(
             pay_max,
             pay_interval,
             pay AS pay_raw,
-            required_fields,
-            optional_fields
+            pre_application_prompts
        FROM jobs
       WHERE id = $1
         AND status = 'active'`,
@@ -2098,6 +2218,8 @@ async function handleJobAction(
   const workerId = conv.user_id;
 
   if (action === 'accept') {
+    // STAGE 1 ONLY (sprint 23). The apply creates the row and nothing else:
+    // no documents gate, no questionnaire, no `app.allow_incomplete_docs`.
     const applyResult = await applyWorkerToJob(client, {
       workerId,
       jobId,
@@ -2106,92 +2228,28 @@ async function handleJobAction(
 
     if (applyResult.status === 'applied' || applyResult.status === 'already_applied') {
       const applicationId = (applyResult.application as { id: string }).id;
-      // Captured BEFORE the arm write below mutates conv.state_context --
-      // this is what makes a mid-fill accept on a DIFFERENT application a
-      // "switch" (spec §6 item 8 / task brief requirement 3). fill_* keys
-      // are not part of ProfileStateContext's typed shape (they belong to
-      // this feature's own loose Record<string, unknown> convention -- see
-      // FillContext's jsdoc in application-fill.ts), hence the cast.
-      const previousApplicationId = (conv.state_context as unknown as Record<string, unknown> | undefined)
-        ?.fill_application_id as string | undefined;
 
-      const deps = buildFillDeps(conv);
-      const ctx: FillContext = {
-        conversationId: conv.id,
-        workerId,
-        jobId,
-        lang: conv.language,
-        // fill_application_id is set here on the in-memory ctx (not yet
-        // persisted) so seedAnswersFromDefaults' merge choke point --
-        // reused from the same code path handleFillMessage uses -- can
-        // resolve the target application before the real arm write below.
-        stateContext: {
-          ...(conv.state_context as unknown as Record<string, unknown>),
-          fill_application_id: applicationId,
-        },
-      };
-
-      await seedAnswersFromDefaults(
-        client,
-        ctx,
-        job.rows[0].required_fields ?? [],
-        job.rows[0].optional_fields ?? [],
-        deps,
-      );
-
-      const nextStep = await computeNextStep(client, applicationId);
-
-      if (nextStep.kind === 'field' || nextStep.kind === 'doc') {
-        // Task 15 (step 4.2): arming the fill here means the worker is about
-        // to answer field/doc prompts with free text and photos -- a
-        // dormant post-board draft left over from before this accept would
-        // otherwise sit forever (this arm point is reachable straight from
-        // a job-alert BUTTON tap, which never passes through handleIdle's
-        // own discard hook above).
+      // The employer's own pre-application questions -- the ONLY thing asked
+      // at apply time, and only when the job actually has some. The stage-2
+      // collector is NOT armed here (locked decision): until the employer
+      // requests details there is nothing to collect.
+      const prompts = parsePreApplicationPromptList(job.rows[0].pre_application_prompts);
+      if (prompts.length > 0) {
+        // Free text is about to be solicited -- a dormant post-board draft
+        // would otherwise swallow the worker's first answer.
         await discardStalePostDraft(client, conv, { from, messageSid: inboundMessageSid });
-
-        // Arm (or re-arm/switch) the fill. Anchor-switch scrub (Task 8
-        // forward note): pending_picker/fill_pending/fill_cert_more_pending
-        // are cleared unconditionally at every fill entry, whether this is
-        // a fresh arm, a same-application re-arm, or a switch to a
-        // different application. FINAL-REVIEW Finding 1a/3:
-        // fill_relay_override/fill_offer_application_id are cleared here too
-        // -- this arm write is itself a fill ENTRY point, so a stale
-        // override or offer id left over from a previous fill's exit (or
-        // from before this fix, any exit at all) must not survive into the
-        // freshly-armed fill and swallow the worker's first answer here.
-        await deps.updateStateContext(client, conv.id, {
-          fill_application_id: applicationId,
-          pending_picker: null,
-          fill_pending: null,
-          fill_cert_more_pending: null,
-          fill_relay_override: null,
-          fill_offer_application_id: null,
-        });
-
-        const isSwitch = previousApplicationId !== undefined && previousApplicationId !== applicationId;
-        if (isSwitch) {
-          await queueText(client, inboundMessageSid, from, fillMessage('switched_job', conv.language));
-        }
-
-        const counts = await countRemainingRequirements(client, applicationId);
-        let introBody = fillMessage('intro', conv.language, {
-          n_fields: String(counts.nFields),
-          n_docs: String(counts.nDocs),
-        });
-        if (nextStep.uncollectable.length > 0) {
-          introBody += `\n\n${fillMessage('web_handoff', conv.language, {
-            doc: localizeDocList(nextStep.uncollectable, conv.language),
-          })}`;
-        }
-        await queueText(client, inboundMessageSid, from, introBody);
-
-        await promptNextStep(client, ctx, inboundMessageSid, from, deps);
+        await armPromptLane(
+          client,
+          buildPromptCtx(conv),
+          applicationId,
+          inboundMessageSid,
+          from,
+          buildPromptDeps(conv),
+          { completeKey: applyResult.status === 'applied' ? 'job_accepted' : 'job_already_applied' },
+        );
         return;
       }
 
-      // No collectable gaps remain -- legacy behavior exactly as today, fill
-      // NOT armed.
       await queueReply(
         client,
         inboundMessageSid,
@@ -2199,19 +2257,11 @@ async function handleJobAction(
         applyResult.status === 'applied' ? 'job_accepted' : 'job_already_applied',
         conv.language,
       );
-    } else if (applyResult.status === 'guard_blocked') {
-      // 'generic_error' does not exist in templates.ts / the TemplateKey
-      // union queueReply is typed on -- this comes from the fill-prompts
-      // module via the outbox text helper instead.
-      await queueText(client, inboundMessageSid, from, fillMessage('guard_error', conv.language));
     } else {
-      // applyWorkerToJob can still return job_closed/forbidden/
-      // certification_document_limit (none reachable for whatsapp's
-      // bypassed answers/cert-claims gates, but forbidden/job_closed remain
-      // possible races) -- same fallback the pre-Task-9 code used for every
-      // non-applied/already_applied/guard_blocked status. `missing_documents`
-      // is never reachable here (applyWorkerToJob's surface==='whatsapp'
-      // branch bypasses that gate entirely -- see applications.ts).
+      // job_closed / forbidden / certification_document_limit / the two
+      // prompt-answer codes (web-only -- WhatsApp never posts prompt answers
+      // through applyWorkerToJob). Same fallback the pre-sprint-23 code used
+      // for every non-applied/already_applied status.
       await queueReply(client, inboundMessageSid, from, 'job_not_found', conv.language);
     }
   } else if (action === 'decline') {
@@ -2232,6 +2282,7 @@ async function handleJobAction(
   }
 }
 
-// localizeDocList moved to lib/application-fill.ts (Task 11) so its
-// completion-arm `web_handoff` append can reuse the same labels/fallback
-// this intro-arm append (above) uses -- imported at the top of this file.
+// localizeDocList lives in lib/application-fill.ts (Task 11). Sprint 23
+// deleted this file's accept-time intro (the fill is armed from the stage-2
+// notification now), so the completion arm in that module is its only
+// caller and this file no longer imports it.

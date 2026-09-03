@@ -59,6 +59,32 @@ jest.mock('@aws-sdk/client-sqs', () => ({
   SendMessageCommand: class { constructor(public readonly input: unknown) {} },
 }));
 
+// S23 L6. The voice actions reach S3 and Step Functions; neither exists here.
+// What this suite proves about them is the part no unit test can: that the
+// `worker_profile_media` INSERT `voice-transcribe` performs actually passes the
+// real RLS policy as the real `jale_whatsapp` role.
+const s3Calls: any[] = [];
+jest.mock('@aws-sdk/client-s3', () => ({
+  S3Client: class {
+    async send(command: any) {
+      s3Calls.push(command);
+      if (command.__cmd === 'Head') return { ContentLength: 4242, ContentType: 'audio/webm' };
+      return {};
+    }
+  },
+  PutObjectCommand: class { constructor(input: any) { Object.assign(this, { __cmd: 'Put', ...input }); } },
+  HeadObjectCommand: class { constructor(input: any) { Object.assign(this, { __cmd: 'Head', ...input }); } },
+  GetObjectCommand: class { constructor(input: any) { Object.assign(this, { __cmd: 'Get', ...input }); } },
+}));
+jest.mock('@aws-sdk/s3-request-presigner', () => ({
+  getSignedUrl: async () => 'https://s3.test.invalid/presigned',
+}));
+const sfnCalls: any[] = [];
+jest.mock('@aws-sdk/client-sfn', () => ({
+  SFNClient: class { async send(command: unknown) { sfnCalls.push(command); return {}; } },
+  StartExecutionCommand: class { constructor(public readonly input: any) {} },
+}));
+
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { handler } = require('../../../lambda/whatsapp/web/worker-onboarding');
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -93,7 +119,9 @@ maybeDescribe('R2-C23: the web onboarding door, end to end', () => {
   const subs: Record<string, string> = {};
   const phones: Record<string, string> = {};
   const WORKERS = ['happy', 'zip', 'city', 'confirm', 'resume', 'wa', 'lock', 'ready', 'suspended',
-    'batch', 'photo', 'preauth', 'revert', 'voice', 'cap'] as const;
+    'batch', 'photo', 'preauth', 'revert', 'voice', 'cap',
+    // S23 L7 (cohort ToS skip) and L6 (voice answers).
+    'tosdone', 'tosstale', 'toshalf', 'mic'] as const;
 
   /** The exact shape API Gateway's Cognito authorizer hands the Lambda. */
   function event(
@@ -185,6 +213,10 @@ maybeDescribe('R2-C23: the web onboarding door, end to end', () => {
 
     process.env.REQUIRED_TOS_VERSION = '1.0';
     process.env.DOMAIN_OUTBOX_WAKE_QUEUE_URL = 'https://sqs.test.invalid/queue/domain-wake';
+    // S23 L6: the two the voice actions read (whatsapp-stack.ts sets both).
+    process.env.MEDIA_BUCKET_NAME = 'jale-worker-media-test';
+    process.env.TRUST_PIPELINE_STATE_MACHINE_ARN =
+      'arn:aws:states:us-east-2:123456789012:stateMachine:TrustVoicePipeline';
   }, 60_000);
 
   afterAll(async () => {
@@ -198,6 +230,9 @@ maybeDescribe('R2-C23: the web onboarding door, end to end', () => {
       await su.query(`DELETE FROM worker_domain_outbox WHERE aggregate_id = ANY($1::uuid[])`, [fixtureIds]);
       // legal_consent_log's FK is plain RESTRICT; everything else cascades.
       await su.query(`DELETE FROM legal_consent_log WHERE user_id = ANY($1::uuid[])`, [fixtureIds]);
+      // S23 L6: so is worker_profile_media's (011) — `voice-transcribe` writes
+      // one row per recording and they hold the users rows hostage otherwise.
+      await su.query(`DELETE FROM worker_profile_media WHERE user_id = ANY($1::uuid[])`, [fixtureIds]);
       await su.query(`DELETE FROM users WHERE id = ANY($1::uuid[])`, [fixtureIds]);
     }
     await su.end();
@@ -1134,6 +1169,268 @@ maybeDescribe('R2-C23: the web onboarding door, end to end', () => {
           [ids.happy],
         );
       }
+    });
+  });
+
+  // =======================================================================
+  // 9. S23 L7 — the cohort ToS skip, against the real legal_consent_log
+  // =======================================================================
+  //
+  // Web signup takes consent BEFORE `worker_workflow_runs` exists, and a run
+  // is always born at `legal.review`. There is a cohort of workers parked
+  // there being asked to accept a document their own `users` row already says
+  // they accepted. The skip has to read `legal_consent_log` as `jale_whatsapp`
+  // — a role whose only policy on that table is 004's `wa_consent_select` —
+  // and read `users.tos_version`, a COLUMN-level grant (004:104). Neither is
+  // provable with a fake client, which is why this case is here.
+
+  describe('9. the cohort ToS skip', () => {
+    async function recordWebConsent(key: string, version: string): Promise<void> {
+      await su.query(
+        `INSERT INTO legal_consent_log (user_id, document_type, document_version, user_agent)
+         VALUES ($1, 'tos', $2, 'web'), ($1, 'privacy', $2, 'web')`,
+        [ids[key], version],
+      );
+      await su.query(
+        `UPDATE users SET tos_version = $2, tos_accepted_at = now(),
+                          privacy_version = $2, privacy_accepted_at = now()
+          WHERE id = $1`,
+        [ids[key], version],
+      );
+    }
+
+    test('a worker whose consent is already on file never sees the Terms screen', async () => {
+      await recordWebConsent('tosdone', '1.0');
+      const before = await su.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM legal_consent_log WHERE user_id = $1`, [ids.tosdone],
+      );
+
+      const response = await get('tosdone');
+
+      expect(response.statusCode).toBe(200);
+      // The very first GET lands past the Terms, on the first field they owe.
+      expect(response.body.run.stepKey).toBe('profile.name');
+
+      // NO second consent row was written: this is the recognition of a
+      // consent, not a new one.
+      const after = await su.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM legal_consent_log WHERE user_id = $1`, [ids.tosdone],
+      );
+      expect(after.rows[0].n).toBe(before.rows[0].n);
+
+      // Selected BY REASON, not by recency: the run is started and skipped in
+      // the SAME transaction, so both transitions share a `created_at` and
+      // there is no ordering column that could separate them.
+      const transitions = await su.query<{ reason: string; from_step_key: string; to_step_key: string }>(
+        `SELECT t.reason, t.from_step_key, t.to_step_key
+           FROM worker_workflow_transitions t
+           JOIN worker_workflow_runs r ON r.id = t.run_id
+          WHERE r.user_id = $1
+          ORDER BY t.reason`,
+        [ids.tosdone],
+      );
+      expect(transitions.rows).toContainEqual({
+        reason: 'legal_already_accepted',
+        from_step_key: 'legal.review',
+        to_step_key: 'profile.name',
+      });
+      // And NOT the ordinary Accept branch, which would have taken consent.
+      expect(transitions.rows.map((r) => r.reason)).not.toContain('legal_accept');
+
+      const context = await su.query<{ context: Record<string, unknown> }>(
+        `SELECT context FROM worker_workflow_runs WHERE user_id = $1`, [ids.tosdone],
+      );
+      expect(context.rows[0].context).toMatchObject({ legalSkipped: true });
+      expect(context.rows[0].context).not.toHaveProperty('legalAcceptedAt');
+    });
+
+    test('the skip is idempotent — a second request does not re-run it', async () => {
+      const first = await get('tosdone');
+      const second = await get('tosdone');
+      expect(second.body.run.stepKey).toBe('profile.name');
+      expect(second.body.run.lockVersion).toBe(first.body.run.lockVersion);
+    });
+
+    // Versioning the Terms is pointless if a stale acceptance carries a
+    // worker past the new ones.
+    test('a consent for a DIFFERENT version does not skip', async () => {
+      await recordWebConsent('tosstale', '0.9');
+      const response = await get('tosstale');
+      expect(response.statusCode).toBe(200);
+      expect(response.body.run.stepKey).toBe('legal.review');
+    });
+
+    // A log row whose users.tos_version disagrees is a half-written consent —
+    // exactly the identity-split failure recordCanonicalWhatsAppConsent
+    // verifies against. Half is not consent.
+    test('a log row with no matching users.tos_version does not skip', async () => {
+      await su.query(
+        `INSERT INTO legal_consent_log (user_id, document_type, document_version, user_agent)
+         VALUES ($1, 'tos', '1.0', 'web')`,
+        [ids.toshalf],
+      );
+      const response = await get('toshalf');
+      expect(response.statusCode).toBe(200);
+      expect(response.body.run.stepKey).toBe('legal.review');
+    });
+
+    // The regression that matters most: a first-time worker must still be
+    // asked, and accepting must still write the consent rows.
+    test('a first-time worker still sees the Terms and their acceptance is still recorded', async () => {
+      const before = await get('mic');
+      expect(before.body.run.stepKey).toBe('legal.review');
+
+      await answers('mic', before.body.run.lockVersion, [{ stepKey: 'legal.review', value: 'accept' }]);
+
+      const rows = await su.query<{ document_type: string; document_version: string }>(
+        `SELECT document_type, document_version FROM legal_consent_log
+          WHERE user_id = $1 ORDER BY document_type`,
+        [ids.mic],
+      );
+      expect(rows.rows).toEqual([
+        { document_type: 'privacy', document_version: '1.0' },
+        { document_type: 'tos', document_version: '1.0' },
+      ]);
+    });
+  });
+
+  // =======================================================================
+  // 10. S23 L6 — voice answers, where they touch the database
+  // =======================================================================
+
+  describe('10. voice answers', () => {
+    const voiceCall = (key: string, action: string, body: unknown) =>
+      call(subs[key], { method: 'POST', resource: `/worker/onboarding/${action}`, body });
+
+    test('voice-transcribe writes worker_profile_media as jale_whatsapp under the real RLS policy', async () => {
+      // 'mic' accepted the Terms in section 9; walk them to the first trust
+      // question, which is the only place a voice answer is offered.
+      let state = (await get('mic')).body;
+      state = (await answers('mic', state.run.lockVersion, [
+        { stepKey: 'profile.name', value: 'Beto Ruiz' },
+        { stepKey: 'profile.location', value: { kind: 'city_state', city: 'El Paso', state: 'TX' } },
+      ])).body;
+      state = (await answers('mic', state.run.lockVersion, [{ stepKey: 'profile.trade', value: 'carpenter' }])).body;
+      state = (await answers('mic', state.run.lockVersion, [
+        { stepKey: 'profile.experience', value: '2-4' },
+        { stepKey: 'profile.transportation', value: true },
+        { stepKey: 'profile.availability', value: 'full_time' },
+      ])).body;
+      expect(state.run.stepKey).toBe('trust.question.1');
+
+      const presigned = await voiceCall('mic', 'voice-upload-url', {
+        stepKey: 'trust.question.1', questionIndex: 0,
+        contentType: 'audio/webm;codecs=opus', sizeBytes: 4242,
+      });
+      expect(presigned.statusCode).toBe(200);
+      expect(presigned.body.key).toMatch(new RegExp(`^voice/${ids.mic}/[0-9a-f-]{36}\\.webm$`));
+
+      const started = await voiceCall('mic', 'voice-transcribe', {
+        key: presigned.body.key, stepKey: 'trust.question.1', questionIndex: 0,
+        lockVersion: state.run.lockVersion,
+      });
+      expect(started.statusCode).toBe(202);
+      expect(started.body.transcriptOutputKey).toMatch(
+        new RegExp(`^voice/${ids.mic}/transcripts/jale-vtw-[0-9a-f]{32}\\.json$`),
+      );
+
+      // THE POINT: the row is really there, written by the real role through
+      // the real policy (011's worker_profile_media_self / 083's _self_internal).
+      const media = await su.query<{ s3_key: string; media_type: string; content_type: string }>(
+        `SELECT s3_key, media_type, content_type FROM worker_profile_media WHERE user_id = $1`,
+        [ids.mic],
+      );
+      expect(media.rows).toEqual([{
+        s3_key: presigned.body.key, media_type: 'voice_message', content_type: 'audio/webm',
+      }]);
+
+      // Starting a transcription must NOT move the run — a typed answer that
+      // arrives first still wins, exactly as on WhatsApp.
+      const after = (await get('mic')).body;
+      expect(after.run.stepKey).toBe('trust.question.1');
+      expect(after.run.lockVersion).toBe(state.run.lockVersion);
+    });
+
+    test("another worker's voice key is 404, and nothing is written for either of them", async () => {
+      const state = (await get('mic')).body;
+      const foreign = `voice/${ids.happy}/${randomUUID()}.webm`;
+      const response = await voiceCall('mic', 'voice-transcribe', {
+        key: foreign, stepKey: 'trust.question.1', questionIndex: 0,
+        lockVersion: state.run.lockVersion,
+      });
+      expect(response.statusCode).toBe(404);
+      expect(response.body).toEqual({ error: 'not_found' });
+      const media = await su.query(`SELECT 1 FROM worker_profile_media WHERE s3_key = $1`, [foreign]);
+      expect(media.rowCount).toBe(0);
+    });
+
+    test('a stale lockVersion is a 409 carrying the fresh state, and starts nothing', async () => {
+      const before = sfnCalls.length;
+      const response = await voiceCall('mic', 'voice-transcribe', {
+        key: `voice/${ids.mic}/${randomUUID()}.webm`,
+        stepKey: 'trust.question.1', questionIndex: 0, lockVersion: -1,
+      });
+      expect(response.statusCode).toBe(409);
+      expect(response.body.error).toBe('lock_conflict');
+      expect(response.body.state.run.stepKey).toBe('trust.question.1');
+      expect(sfnCalls.length).toBe(before);
+    });
+
+    test('an unauthenticated voice request is 401 before any DB work', async () => {
+      const result: APIGatewayProxyResult = await handler({
+        httpMethod: 'POST', resource: '/worker/onboarding/{action}',
+        path: '/worker/onboarding/voice-upload-url', pathParameters: { action: 'voice-upload-url' },
+        body: JSON.stringify({}), requestContext: {},
+      } as unknown as APIGatewayProxyEvent);
+      expect(result.statusCode).toBe(401);
+    });
+
+    test('an oversized body is refused before the pool is touched', async () => {
+      const response = await voiceCall('mic', 'voice-result', {
+        transcriptOutputKey: 'x'.repeat(17 * 1024),
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.body).toEqual({ error: 'invalid_request' });
+    });
+
+    // The last link in the chain, and the only one nothing else proves end to
+    // end: the reviewed transcript goes back through the ORDINARY `answers`
+    // action, and `source: 'voice'` survives the whole way to
+    // `worker_trust_assessments.answer_source` and back out in the DTO.
+    // Everything before this point hands text to the browser; nothing before
+    // this point writes an answer.
+    test("a reviewed transcript is submitted as an ordinary answer and stays 'voice'", async () => {
+      const before = (await get('mic')).body;
+      expect(before.run.stepKey).toBe('trust.question.1');
+
+      const dictated = 'I frame houses and set trusses on residential remodels.';
+      const state = (await answers('mic', before.run.lockVersion, [
+        { stepKey: 'trust.question.1', value: { text: dictated, source: 'voice' } },
+      ])).body;
+
+      expect(state.trust.answers).toContainEqual(
+        expect.objectContaining({ index: 1, text: dictated, source: 'voice' }),
+      );
+
+      // The answers live in the `answers` jsonb array, one element per
+      // question, each carrying its own `answer_source`.
+      const row = await su.query<{ answer_source: string; answer_text: string }>(
+        `SELECT a->>'answer_source' AS answer_source, a->>'answer_text' AS answer_text
+           FROM worker_trust_assessments t,
+                LATERAL jsonb_array_elements(t.answers) a
+          WHERE t.user_id = $1 AND (a->>'question_index')::int = 0`,
+        [ids.mic],
+      );
+      expect(row.rows).toEqual([{ answer_source: 'voice', answer_text: dictated }]);
+
+      // And a TYPED answer on the next question is still 'text' — the tag
+      // follows the answer, not the worker or the session.
+      const typed = (await answers('mic', state.run.lockVersion, [
+        { stepKey: 'trust.question.2', value: { text: 'I read plans and run a crew of three.' } },
+      ])).body;
+      expect(typed.trust.answers).toContainEqual(
+        expect.objectContaining({ index: 2, source: 'text' }),
+      );
     });
   });
 });

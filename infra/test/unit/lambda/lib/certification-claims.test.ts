@@ -1,5 +1,7 @@
 import {
   findCertificationProofGaps,
+  findMissingCertifications,
+  normalizeCertificationClaims,
   parseCertificationRequirements,
   validateCertificationClaims,
   type CertificationRequirement,
@@ -202,5 +204,93 @@ describe('findCertificationProofGaps', () => {
       [requiredWithProof],
     );
     expect(gaps).toEqual([]);
+  });
+});
+
+describe('normalizeCertificationClaims (shape-only, stage-2 door)', () => {
+  it('parses a well-formed claim list and keeps doc_ids', () => {
+    expect(normalizeCertificationClaims(
+      [{ name: 'osha30', has: true, doc_ids: [DOC_ID_1] }],
+      [requiredWithProof],
+    )).toEqual([{ name: 'osha30', has: true, doc_ids: [DOC_ID_1] }]);
+  });
+
+  it('drops a claim whose name is not a live requirement (tier drift), never errors on it', () => {
+    expect(normalizeCertificationClaims(
+      [{ name: 'osha30', has: true }, { name: 'gone', has: true }],
+      [requiredWithProof],
+    )).toEqual([{ name: 'osha30', has: true }]);
+  });
+
+  it('is SHAPE-ONLY: it never enforces the required tier or proof presence (unlike validateCertificationClaims)', () => {
+    // validateCertificationClaims would reject both of these outright.
+    expect(normalizeCertificationClaims([], [requiredWithProof])).toEqual([]);
+    expect(normalizeCertificationClaims([{ name: 'osha30', has: true, doc_ids: [] }], [requiredWithProof]))
+      .toEqual([{ name: 'osha30', has: true, doc_ids: [] }]);
+  });
+
+  it('de-dupes a repeated name with last-one-wins, matching validateCertificationClaims', () => {
+    expect(normalizeCertificationClaims(
+      [{ name: 'osha30', has: false }, { name: 'osha30', has: true }],
+      [requiredWithProof],
+    )).toEqual([{ name: 'osha30', has: true }]);
+  });
+
+  it('treats an absent value as an empty list', () => {
+    expect(normalizeCertificationClaims(undefined, [requiredWithProof])).toEqual([]);
+  });
+
+  it('returns null for a malformed payload at any level', () => {
+    expect(normalizeCertificationClaims('nope', [requiredWithProof])).toBeNull();
+    expect(normalizeCertificationClaims([{ name: 'osha30' }], [requiredWithProof])).toBeNull();
+    expect(normalizeCertificationClaims([{ name: 'osha30', has: 'yes' }], [requiredWithProof])).toBeNull();
+    expect(normalizeCertificationClaims([{ name: '', has: true }], [requiredWithProof])).toBeNull();
+    expect(normalizeCertificationClaims([{ name: 'osha30', has: true, doc_ids: ['../../x'] }], [requiredWithProof])).toBeNull();
+  });
+
+  it('rejects a malformed entry even when its name is not a live requirement (shape is checked first)', () => {
+    expect(normalizeCertificationClaims([{ name: 'gone', has: 'yes' }], [requiredWithProof])).toBeNull();
+  });
+});
+
+describe('findMissingCertifications', () => {
+  it('splits required-tier gaps into unclaimed then unproven', () => {
+    expect(findMissingCertifications(
+      [{ name: 'osha30', has: true, doc_ids: [] }],
+      [requiredNoProof, requiredWithProof],
+    )).toEqual({ unclaimed: ['osha10'], unproven: ['osha30'] });
+  });
+
+  it('reports has=false as unclaimed, not unproven', () => {
+    expect(findMissingCertifications(
+      [{ name: 'osha30', has: false }],
+      [requiredWithProof],
+    )).toEqual({ unclaimed: ['osha30'], unproven: [] });
+  });
+
+  it('never reports an optional-tier certification, claimed or not, proof or not', () => {
+    const optionalWithProof: CertificationRequirement = { name: 'welding', tier: 'optional', proof_required: true };
+    expect(findMissingCertifications([], [optionalWithProof])).toEqual({ unclaimed: [], unproven: [] });
+    expect(findMissingCertifications([{ name: 'welding', has: true }], [optionalWithProof]))
+      .toEqual({ unclaimed: [], unproven: [] });
+  });
+
+  it('is empty once every required cert is claimed and every proof-required one carries an id', () => {
+    expect(findMissingCertifications(
+      [{ name: 'osha10', has: true }, { name: 'osha30', has: true, doc_ids: [DOC_ID_2] }],
+      [requiredNoProof, requiredWithProof],
+    )).toEqual({ unclaimed: [], unproven: [] });
+  });
+
+  it('reuses findCertificationProofGaps for the unproven half', () => {
+    const claims = [{ name: 'osha30', has: true, doc_ids: [] }];
+    expect(findMissingCertifications(claims, [requiredWithProof]).unproven)
+      .toEqual(findCertificationProofGaps(claims, [requiredWithProof]));
+  });
+
+  it('preserves requirement column order in both buckets', () => {
+    const a: CertificationRequirement = { name: 'a', tier: 'required', proof_required: false };
+    const b: CertificationRequirement = { name: 'b', tier: 'required', proof_required: false };
+    expect(findMissingCertifications([], [b, a])).toEqual({ unclaimed: ['b', 'a'], unproven: [] });
   });
 });

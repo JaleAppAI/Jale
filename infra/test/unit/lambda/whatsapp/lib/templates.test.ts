@@ -281,3 +281,115 @@ describe('v2 templates', () => {
     }
   });
 });
+
+// ── Sprint 23: application stages ──
+
+const SPRINT23_APPLICATION_KEYS: TemplateKey[] = [
+  'applications_header',
+  'applications_footer',
+  'applications_none',
+  'application_not_requested_yet',
+  'application_already_complete',
+  'application_hired_info',
+  'application_later_ack',
+];
+
+describe('sprint 23 application-stage templates', () => {
+  test.each(SPRINT23_APPLICATION_KEYS)('%s has distinct non-empty EN and ES copy', (key) => {
+    const en = t(key, 'en');
+    const es = t(key, 'es');
+    expect(en.trim().length).toBeGreaterThan(0);
+    expect(es.trim().length).toBeGreaterThan(0);
+    expect(en).not.toBe(es);
+  });
+
+  // Unaccented ASCII on BOTH sides, matching every other string in this module
+  // and the V2_FALLBACK_TRUST_QUESTIONS check in interactive-templates.test.ts.
+  // A non-ASCII byte here reaches Twilio as a GSM-7 escape and silently
+  // re-segments the message.
+  test.each(SPRINT23_APPLICATION_KEYS)('%s is plain ASCII in both languages', (key) => {
+    expect(t(key, 'en')).toMatch(/^[\x00-\x7F]*$/);
+    expect(t(key, 'es')).toMatch(/^[\x00-\x7F]*$/);
+  });
+
+  it('leaves no unsubstituted {{placeholder}} in either language', () => {
+    for (const key of SPRINT23_APPLICATION_KEYS) {
+      expect(t(key, 'en')).not.toContain('{{');
+      expect(t(key, 'es')).not.toContain('{{');
+    }
+  });
+
+  // The header/footer pair frames the numbered list the `aplicaciones` command
+  // prints, so the footer must tell the worker what the numbers are for.
+  it('the applications list footer asks for the number', () => {
+    expect(t('applications_footer', 'es')).toContain('numero');
+    expect(t('applications_footer', 'en')).toContain('number');
+  });
+
+  // The keyword named in the empty/never-asked copy has to be one
+  // isApplicationsCommand / isJobsKeyword actually accepts, or the escape
+  // hatch is dead text.
+  it('points at keywords the command parsers accept', () => {
+    expect(t('applications_none', 'es')).toContain('trabajos');
+    expect(t('applications_none', 'en')).toContain('jobs');
+    expect(t('application_later_ack', 'es')).toContain('aplicaciones');
+    expect(t('application_later_ack', 'en')).toContain('applications');
+  });
+});
+
+describe('sprint 23: job_accepted is stage-1-only copy', () => {
+  // Apply is now stage 1 alone: the employer sees the profile and prompt
+  // answers, and the questionnaire/documents are requested later and only if
+  // they want to move forward. The exact strings are asserted because the
+  // seeded Twilio `application_update_*` bodies and the `aplicaciones` command
+  // are written against this promise — a reworded confirmation that drops the
+  // "we will ask you for more details" clause makes the later ping look
+  // unsolicited.
+  it('promises a later details request and names the aplicaciones command (ES)', () => {
+    expect(t('job_accepted', 'es')).toBe(
+      'Aplicacion enviada. El empleador ya ve tu perfil y tus respuestas. '
+      + 'Si quiere avanzar contigo, te pediremos algunos datos mas por aqui. '
+      + 'Escribe "aplicaciones" para ver tus solicitudes.',
+    );
+  });
+
+  it('promises a later details request and names the applications command (EN)', () => {
+    expect(t('job_accepted', 'en')).toBe(
+      'Application sent. The employer can now see your profile and your answers. '
+      + 'If they want to move forward, we will ask you for a few more details here. '
+      + 'Reply "applications" to see your applications.',
+    );
+  });
+
+  it('no longer claims the application is complete or mentions documents', () => {
+    for (const lang of ['en', 'es'] as Lang[]) {
+      expect(t('job_accepted', lang)).not.toMatch(/document|documento/i);
+    }
+  });
+});
+
+describe('sprint 23: help_menu advertises the aplicaciones command', () => {
+  // buildHelpMenuInteractivePrompt uses this copy as the list picker's
+  // fallbackBody, so a worker outside the list-picker path still has to be
+  // told the command exists.
+  it('lists Aplicaciones with its description in Spanish', () => {
+    expect(t('help_menu', 'es')).toContain('Aplicaciones - Ver tus solicitudes');
+  });
+
+  it('lists Applications with its description in English', () => {
+    expect(t('help_menu', 'en')).toContain('Applications - See your applications');
+  });
+
+  // The list picker's rows are ordered Jobs, Applications, Profile, Chats,
+  // Help (scripts/seed-whatsapp-twilio-templates.mjs); the plain-text fallback
+  // must not contradict that ordering.
+  it('places the new row directly after the jobs row in both languages', () => {
+    const es = t('help_menu', 'es');
+    expect(es.indexOf('Trabajos')).toBeLessThan(es.indexOf('Aplicaciones'));
+    expect(es.indexOf('Aplicaciones')).toBeLessThan(es.indexOf('Perfil'));
+
+    const en = t('help_menu', 'en');
+    expect(en.indexOf('Jobs')).toBeLessThan(en.indexOf('Applications'));
+    expect(en.indexOf('Applications')).toBeLessThan(en.indexOf('Profile'));
+  });
+});

@@ -25,7 +25,7 @@ const bedrock = new BedrockRuntimeClient({});
 const sqsClient = new SQSClient({});
 
 const BEDROCK_MODEL_ID =
-  process.env.BEDROCK_MODEL_ID ?? 'us.amazon.nova-lite-v1:0';
+  process.env.BEDROCK_MODEL_ID ?? 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
 
 const CONFIDENCE_THRESHOLD = parseFloat(
   process.env.AI_EXTRACTION_CONFIDENCE_THRESHOLD ?? '0.75',

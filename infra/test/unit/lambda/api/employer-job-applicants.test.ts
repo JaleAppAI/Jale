@@ -146,4 +146,153 @@ describe('employer-job-applicants Lambda', () => {
     const body = JSON.parse(res.body);
     expect(body.applicants[0].not_provided).toEqual([]);
   });
+
+  // ---------------------------------------------------------------------------
+  // Application stages (091)
+  // ---------------------------------------------------------------------------
+
+  describe('application stages (091)', () => {
+    const JOB_ROW = {
+      id: JOB_ID,
+      optional_fields: [],
+      optional_docs: [],
+      required_fields: ['years_experience'],
+      required_docs: ['resume'],
+      certification_requirements: null,
+      pre_application_prompts: [{ id: 'p1', text: 'Do you own tools?' }, { id: 'p2', text: '¿Transporte?' }],
+    };
+    const APPLICANT_ROW = {
+      application_id: 'app-1',
+      worker_id: 'worker-1',
+      full_name: 'Jane Doe',
+      phone: '555-0100',
+      status: 'pending',
+      applied_at: 'ts',
+      skills: [],
+      availability: null,
+      years_experience: null,
+      location: null,
+      application_answers: {},
+      prompt_answers: {},
+      details_requested_at: null,
+      details_completed_at: null,
+      have_docs: [],
+      missing_optional_docs: [],
+    };
+
+    function mockRun(job: Record<string, unknown> = {}, applicants: Array<Record<string, unknown>> = [{}]) {
+      mockQuery
+        .mockResolvedValueOnce({}) // BEGIN
+        .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] })
+        .mockResolvedValueOnce({ rows: [{ ...JOB_ROW, ...job }], rowCount: 1 })
+        .mockResolvedValueOnce({
+          rows: applicants.map((over) => ({ ...APPLICANT_ROW, ...over })),
+          rowCount: applicants.length,
+        })
+        .mockResolvedValueOnce({}); // COMMIT
+    }
+
+    const applicantSql = () =>
+      mockQuery.mock.calls.find(([q]) => String(q).includes('FROM job_applications ja'))?.[0] as string;
+    const jobSql = () =>
+      mockQuery.mock.calls.find(([q]) => String(q).includes('FROM jobs WHERE id ='))?.[0] as string;
+
+    it('selects the stage columns and a JOB-SCOPED have_docs, and the job requirement columns once', async () => {
+      mockRun();
+      expect((await handler(makeEvent())).statusCode).toBe(200);
+
+      const sql = applicantSql();
+      expect(sql).toContain('ja.prompt_answers');
+      expect(sql).toContain('ja.details_requested_at');
+      expect(sql).toContain('ja.details_completed_at');
+      // Job-scoped: the vault (`job_id IS NULL`) does NOT count, matching
+      // what 091's hire gate measures. The separate vault-or-job
+      // missing_optional_docs probe above is a different contract.
+      expect(sql).toContain('WHERE wd.worker_id = ja.worker_id');
+      expect(sql).toContain('AND wd.job_id = ja.job_id');
+      expect(sql).toContain('AS have_docs');
+
+      // The job's requirement columns come from the ownership SELECT (one
+      // row for the whole page), never re-joined per applicant.
+      const job = jobSql();
+      expect(job).toContain('required_fields');
+      expect(job).toContain('certification_requirements');
+      expect(job).toContain('pre_application_prompts');
+    });
+
+    it('returns the parsed prompt list alongside applicants/total', async () => {
+      mockRun();
+      const body = JSON.parse((await handler(makeEvent())).body);
+      expect(body.pre_application_prompts).toEqual([
+        { id: 'p1', text: 'Do you own tools?' }, { id: 'p2', text: '¿Transporte?' },
+      ]);
+      expect(body.total).toBe(1);
+    });
+
+    it('reports not_requested/apply with everything outstanding before the employer asks', async () => {
+      mockRun();
+      const applicant = JSON.parse((await handler(makeEvent())).body).applicants[0];
+      expect(applicant.details_status).toBe('not_requested');
+      expect(applicant.stage).toBe('apply');
+      expect(applicant.details_requested_at).toBeNull();
+      expect(applicant.details_completed_at).toBeNull();
+      expect(applicant.remaining).toEqual({
+        prompts: ['p1', 'p2'],
+        fields: ['years_experience'],
+        certifications: { unclaimed: [], unproven: [] },
+        docs: ['resume'],
+        counts: { prompts: 2, fields: 1, certifications: 0, docs: 1 },
+        complete: false,
+      });
+      // The three buckets no read endpoint publishes.
+      expect(applicant.remaining.uncollectableDocs).toBeUndefined();
+      expect(applicant.remaining.optionalFields).toBeUndefined();
+      expect(applicant.remaining.optionalDocs).toBeUndefined();
+    });
+
+    it('reports requested/details once details_requested_at is set', async () => {
+      mockRun({}, [{
+        status: 'details_requested',
+        prompt_answers: { p1: 'Yes', p2: 'Sí' },
+        details_requested_at: '2026-09-01T00:00:00Z',
+        have_docs: ['resume'],
+      }]);
+      const applicant = JSON.parse((await handler(makeEvent())).body).applicants[0];
+      // The status CASE remap is unchanged and details_requested passes through.
+      expect(applicant.status).toBe('details_requested');
+      expect(applicant.details_status).toBe('requested');
+      expect(applicant.stage).toBe('details');
+      expect(applicant.remaining.fields).toEqual(['years_experience']);
+      expect(applicant.remaining.docs).toEqual([]);
+    });
+
+    it('reports complete once nothing is outstanding, before details_completed_at flips', async () => {
+      mockRun({}, [{
+        application_answers: { years_experience: 4 },
+        prompt_answers: { p1: 'Yes', p2: 'Sí' },
+        details_requested_at: '2026-09-01T00:00:00Z',
+        have_docs: ['resume'],
+      }]);
+      const applicant = JSON.parse((await handler(makeEvent())).body).applicants[0];
+      expect(applicant.details_status).toBe('complete');
+      expect(applicant.remaining.complete).toBe(true);
+    });
+
+    it('joins prompt answers to their questions in prompt order, orphans last', async () => {
+      mockRun({}, [{ prompt_answers: { deleted: 'Old', p2: 'Sí', p1: 'Yes' } }]);
+      const applicant = JSON.parse((await handler(makeEvent())).body).applicants[0];
+      expect(applicant.prompt_answers).toEqual([
+        { prompt_id: 'p1', question: 'Do you own tools?', text: 'Yes' },
+        { prompt_id: 'p2', question: '¿Transporte?', text: 'Sí' },
+        { prompt_id: 'deleted', question: null, text: 'Old' },
+      ]);
+    });
+
+    it('drops the internal have_docs helper column from the response', async () => {
+      mockRun({}, [{ have_docs: ['resume'] }]);
+      const applicant = JSON.parse((await handler(makeEvent())).body).applicants[0];
+      expect(applicant.have_docs).toBeUndefined();
+      expect(applicant.missing_optional_docs).toBeUndefined();
+    });
+  });
 });

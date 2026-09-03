@@ -11,7 +11,7 @@ const bedrock = new BedrockRuntimeClient({});
 const ssm = new SSMClient({});
 const sqsClient = new SQSClient({});
 const BEDROCK_MODEL_ID =
-  process.env.BEDROCK_MODEL_ID ?? 'us.amazon.nova-lite-v1:0';
+  process.env.BEDROCK_MODEL_ID ?? 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
 const STALE_MINUTES = 15;
 
 const RUBRIC_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes

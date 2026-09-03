@@ -211,7 +211,10 @@ describe('worker-jobs-detail', () => {
     expect(body.optional_docs).toEqual(['driver_license']);
     // Nothing answered yet (not applied) -- everything required/optional is unanswered.
     expect(body.missing_fields).toEqual(['work_authorization']);
-    expect(body.optional_unanswered).toEqual(['date_available']);
+    // 091: optional_unanswered is now optionalFields U missing optional DOCS
+    // (the engine's remaining.optionalFields U optionalDocs), so a skipped
+    // optional upload is reported the same way a skipped optional field is.
+    expect(body.optional_unanswered).toEqual(['date_available', 'driver_license']);
   });
 
   it('computes missing_fields/optional_unanswered from the stored application_answers when already applied', async () => {
@@ -258,5 +261,145 @@ describe('worker-jobs-detail', () => {
     expect(body.optional_docs).toEqual([]);
     expect(body.missing_fields).toEqual([]);
     expect(body.optional_unanswered).toEqual([]);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Application stages (091)
+  // ---------------------------------------------------------------------------
+
+  describe('application stages (091)', () => {
+    const JOB = {
+      id: 'job-1', title: 'T', location: 'L', job_type: 'full-time', description: 'D',
+      created_at: 'ts', company_name: 'Acme',
+      required_docs: ['resume'], optional_docs: [],
+      required_fields: ['work_authorization'], optional_fields: [],
+      certification_requirements: null,
+      pre_application_prompts: [{ id: 'p1', text: 'Do you own tools?' }],
+    };
+
+    function mockRun(over: {
+      job?: Record<string, unknown>;
+      docs?: Array<Record<string, unknown>>;
+      application?: Record<string, unknown> | null;
+    } = {}) {
+      const { job = {}, docs = [], application = null } = over;
+      mockQuery.mockImplementation((q: string) => {
+        if (q.trim().startsWith('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-id' }] });
+        if (q.includes('FROM jobs')) return Promise.resolve({ rows: [{ ...JOB, ...job }] });
+        if (q.includes('FROM worker_documents')) return Promise.resolve({ rows: docs });
+        if (q.includes('FROM job_applications')) return Promise.resolve({ rows: application ? [application] : [] });
+        return Promise.resolve({});
+      });
+    }
+
+    async function body(over = {}) {
+      mockRun(over);
+      const res = await handler(baseEvent);
+      expect(res.statusCode).toBe(200);
+      return JSON.parse(res.body);
+    }
+
+    it('selects pre_application_prompts and returns the parsed list', async () => {
+      const b = await body();
+      expect(b.pre_application_prompts).toEqual([{ id: 'p1', text: 'Do you own tools?' }]);
+      const jobsSql = mockQuery.mock.calls.find(([q]) => String(q).includes('FROM jobs'))?.[0] as string;
+      expect(jobsSql).toContain('j.pre_application_prompts');
+    });
+
+    it('adds no stage keys at all before the worker has applied', async () => {
+      const b = await body();
+      expect(b.already_applied).toBe(false);
+      expect(b.application_id).toBeUndefined();
+      expect(b.details_status).toBeUndefined();
+      expect(b.stage).toBeUndefined();
+      expect(b.remaining).toBeUndefined();
+      // The three legacy keys stay populated pre-apply, exactly as before.
+      expect(b.missing_docs).toEqual(['resume']);
+      expect(b.missing_fields).toEqual(['work_authorization']);
+    });
+
+    it('adds the stage keys once an application exists', async () => {
+      const b = await body({
+        docs: [{ doc_type: 'resume', job_scoped: true }],
+        application: {
+          application_id: 'app-1', status: 'details_requested',
+          application_answers: {}, prompt_answers: { p1: 'Yes' },
+          details_requested_at: '2026-09-01T00:00:00Z', details_completed_at: null,
+        },
+      });
+      expect(b.application_id).toBe('app-1');
+      expect(b.application_status).toBe('details_requested');
+      expect(b.details_status).toBe('requested');
+      expect(b.stage).toBe('details');
+      expect(b.remaining).toEqual({
+        prompts: [],
+        fields: ['work_authorization'],
+        certifications: { unclaimed: [], unproven: [] },
+        docs: [],
+        counts: { prompts: 0, fields: 1, certifications: 0, docs: 0 },
+        complete: false,
+      });
+    });
+
+    it('reports outstanding prompts on an apply-stage application', async () => {
+      const b = await body({
+        application: {
+          application_id: 'app-1', status: 'pending',
+          application_answers: {}, prompt_answers: {},
+          details_requested_at: null, details_completed_at: null,
+        },
+      });
+      expect(b.details_status).toBe('not_requested');
+      expect(b.stage).toBe('apply');
+      expect(b.remaining.prompts).toEqual(['p1']);
+    });
+
+    it('never leaks the raw prompt answers to the worker', async () => {
+      const b = await body({
+        application: {
+          application_id: 'app-1', status: 'pending',
+          application_answers: { work_authorization: true }, prompt_answers: { p1: 'Yes' },
+          details_requested_at: null, details_completed_at: null,
+        },
+      });
+      expect(b.application_answers).toBeUndefined();
+      expect(b.prompt_answers).toBeUndefined();
+    });
+
+    // ── The two doc scopes ────────────────────────────────────────────────
+    // `remaining` must agree with the EMPLOYER's view (job-scoped), while
+    // `missing_docs` keeps answering the worker's own question ("do I still
+    // need to upload this?"), which vault rows DO satisfy. Same probe, two
+    // sets -- otherwise every vault-holding worker would be told to re-upload.
+
+    it('keeps missing_docs on the vault-or-job set while remaining.docs stays job-scoped', async () => {
+      const b = await body({
+        docs: [{ doc_type: 'resume', job_scoped: false }], // vault only, not attached to this job
+        application: {
+          application_id: 'app-1', status: 'pending',
+          application_answers: { work_authorization: true }, prompt_answers: { p1: 'Yes' },
+          details_requested_at: '2026-09-01T00:00:00Z', details_completed_at: null,
+        },
+      });
+      expect(b.missing_docs).toEqual([]);
+      expect(b.remaining.docs).toEqual(['resume']);
+    });
+
+    it('probes required AND optional doc types, and marks which rows are job-scoped', async () => {
+      await body({ job: { required_docs: [], optional_docs: ['driver_license'] } });
+      const docsSql = mockQuery.mock.calls.find(([q]) => String(q).includes('FROM worker_documents'))?.[0] as string;
+      // Previously required-only: without the widening, every optional doc
+      // read as missing no matter what the worker holds.
+      expect(docsSql).toContain('doc_type = ANY($2::text[])');
+      expect(docsSql).toContain('AND (job_id IS NULL OR job_id = $3::uuid)');
+      expect(docsSql).toContain('AS job_scoped');
+      const params = mockQuery.mock.calls.find(([q]) => String(q).includes('FROM worker_documents'))?.[1] as unknown[];
+      expect(params[1]).toEqual(['driver_license']);
+    });
+
+    it('drops an uncollectable legacy required doc from missing_docs (no flow can collect ssn)', async () => {
+      const b = await body({ job: { required_docs: ['resume', 'ssn'] } });
+      expect(b.missing_docs).toEqual(['resume']);
+    });
   });
 });

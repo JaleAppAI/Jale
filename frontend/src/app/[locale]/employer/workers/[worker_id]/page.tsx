@@ -24,6 +24,7 @@ import { Select } from '@/components/ui/select';
 import { MediaBoardGrid } from '@/components/media-board/MediaBoardGrid';
 import { PostLightbox } from '@/components/media-board/PostLightbox';
 import {
+    ApiError,
     createUploadToken,
     getEmployerWorkerPosts,
     getWorkerDocuments,
@@ -35,6 +36,7 @@ import {
 } from '@/lib/api/employer';
 import type { WorkerPost } from '@/lib/api/worker';
 import { normalizeApplicationStatus } from '@/lib/status';
+import { canRequestDetails, hireBlockReason, remainingCount } from '@/lib/hire-gate';
 import { tradeLabel } from '@/lib/trades';
 import { displayAnswer, displayQuestion, normalizeAnswers } from '@/lib/trust-assessment';
 import { AnswerHighlights } from './AnswerHighlights';
@@ -46,6 +48,7 @@ const APPLICATION_STATUSES: ApplicationStatus[] = [
     'pending',
     'contacted',
     'talking',
+    'details_requested',
     'hired',
     'not_interested',
 ];
@@ -102,6 +105,14 @@ export default function WorkerProfilePage() {
     const tShared = useTranslations('employer_dashboard');
     const tCommon = useTranslations('common');
     const tMedia = useTranslations('media_board');
+    // Read-only, for the hire gate's missing-bucket list: field and document
+    // labels must read the same words the job form and the vault use.
+    const tReq = useTranslations('job_requirements');
+    const tDocTypes = useTranslations('doc_types');
+    // Read-only: the Request details action says the SAME words here as on the
+    // applicant card, so an employer who learns it in one place recognises it
+    // in the other. The keys live with the card, which owns that vocabulary.
+    const tListing = useTranslations('employer_job_listing');
     const errorMessage = useErrorMessage();
 
     const { idToken } = useAuth();
@@ -127,7 +138,7 @@ export default function WorkerProfilePage() {
     const jobHref = `/employer/jobs/${jobId}`;
     const returnUrl = `/employer/workers/${workerId}?job_id=${jobId}`;
 
-    const { phase, data, errorKind, retry, setData } = usePageData<ApplicantView>({
+    const { phase, data, errorKind, retry, setData, refresh } = usePageData<ApplicantView>({
         // `signal` aborts on unmount and on a deps change, and both reads
         // forward it, so an abandoned navigation cancels the requests instead
         // of leaving them to finish unwatched. usePageData's request fencing
@@ -194,6 +205,125 @@ export default function WorkerProfilePage() {
     const savedStatus = profile ? normalizeApplicationStatus(profile.application_status) : 'pending';
     const selectedStatus = statusDraft ?? savedStatus;
 
+    /*
+     * The hire gate (migration 091). `hireBlockReason` fails open on an API
+     * that publishes no stage-2 vocabulary, so this only ever narrows the
+     * control when the backend has actually told us the details are
+     * outstanding -- the 409 handler below stays the authority either way.
+     *
+     * The disabled option is additionally suppressed once the applicant IS
+     * hired: a select whose current value points at a disabled option renders
+     * blank (or refuses the selection) in several browsers, and a pre-gate
+     * hire is a real row.
+     */
+    const blockReason = hireBlockReason(profile);
+    const hireOptionDisabled = blockReason !== null && savedStatus !== 'hired';
+    const remainingLeft = remainingCount(profile?.remaining ?? undefined);
+    const promptAnswers = profile?.prompt_answers ?? [];
+
+    const hireHint = (() => {
+        if (!hireOptionDisabled) return null;
+        if (blockReason === 'not_requested') return t('hire_blocked_not_requested');
+        return remainingLeft === null
+            ? t('hire_blocked_requested_no_count')
+            : t('hire_blocked_requested', { count: remainingLeft });
+    })();
+
+    /**
+     * Turns a 409 `details_incomplete` into a sentence that names the three
+     * buckets the trigger actually counted. Each bucket is labelled in the
+     * vocabulary its own surface uses -- field keys through the job form's
+     * catalogue, doc types through the vault's -- with the raw key as the
+     * fallback, because the backend may name something this build has no label
+     * for and a blank list item is worse than an unfamiliar word.
+     *
+     * `payload.missing` carries TWO shapes across the API (see `api/errors`);
+     * the array variant belongs to a different code, so anything that is not
+     * the three-bucket object degrades to the bare headline.
+     */
+    /*
+     * The same action as the applicant card's, on the page an employer lands on
+     * when they open a candidate: the select can technically reach
+     * `details_requested`, but that makes the primary next step a two-control
+     * chore behind a dropdown. `canRequestDetails` is the shared predicate, so
+     * the two surfaces show and hide the button on identical rules.
+     */
+    const [requestingDetails, setRequestingDetails] = useState(false);
+    const [detailsJustRequested, setDetailsJustRequested] = useState(false);
+    const showRequestDetails = !detailsJustRequested
+        && canRequestDetails({ status: savedStatus, details_status: profile?.details_status });
+
+    const handleRequestDetails = useCallback(async () => {
+        if (!idToken || !linkValid || !profile || requestingDetails) return;
+        setRequestingDetails(true);
+        setSaveFeedback(null);
+        try {
+            const updated = await updateApplicantStatus(
+                idToken, jobId, workerId, 'details_requested',
+            );
+            setDetailsJustRequested(true);
+            /*
+             * Optimistic for the same reason the card is: the PATCH answers
+             * with `{ status }` only, and the stage-2 fields it moved are
+             * republished by the next profile READ. Both are written here so
+             * the hire hint and the disabled option agree with the button that
+             * just disappeared. `remaining` is untouched -- requesting details
+             * answers none of it.
+             */
+            setData((prev) => ({
+                ...prev,
+                profile: {
+                    ...prev.profile,
+                    application_status: updated.status ?? 'details_requested',
+                    details_status: 'requested' as const,
+                },
+            }));
+            setStatusDraft(null);
+            setSaveFeedback({ tone: 'success', message: tListing('applicants.request_details_sent') });
+        } catch (err) {
+            try {
+                handleLegalWall(err, returnUrl);
+            } catch {
+                setSaveFeedback({ tone: 'danger', message: errorMessage(err) });
+            }
+        } finally {
+            setRequestingDetails(false);
+        }
+    }, [
+        errorMessage, handleLegalWall, idToken, jobId, linkValid, profile,
+        requestingDetails, returnUrl, setData, tListing, workerId,
+    ]);
+
+    const hireGateMessage = useCallback((err: ApiError): string => {
+        const headline = t('details_incomplete_title');
+        const missing = err.payload.missing;
+        if (!missing || Array.isArray(missing)) return headline;
+
+        const parts: string[] = [headline];
+        if (missing.fields.length > 0) {
+            parts.push(t('details_incomplete_fields', {
+                items: missing.fields
+                    .map((key) => (tReq.has(`fields.${key}`) ? tReq(`fields.${key}`) : key))
+                    .join(', '),
+            }));
+        }
+        if (missing.docs.length > 0) {
+            parts.push(t('details_incomplete_docs', {
+                items: missing.docs
+                    .map((key) => (tDocTypes.has(key) ? tDocTypes(key) : key))
+                    .join(', '),
+            }));
+        }
+        if (missing.certifications.length > 0) {
+            // Certification names are employer-typed free text, not a closed
+            // vocabulary -- there is nothing to translate them against.
+            parts.push(t('details_incomplete_certifications', {
+                items: missing.certifications.join(', '),
+            }));
+        }
+        return parts.join(' ');
+    }, [t, tDocTypes, tReq]);
+
     const handleShareLink = useCallback(async () => {
         if (!idToken || !linkValid) return;
         setSharingLink(true);
@@ -232,7 +362,22 @@ export default function WorkerProfilePage() {
             try {
                 handleLegalWall(err, returnUrl);
             } catch {
-                setSaveFeedback({ tone: 'danger', message: errorMessage(err) });
+                /*
+                 * The database's own hire gate, surfaced. Reachable even with
+                 * the disabled option above: this page may have been loaded
+                 * before the worker's details went stale, and the option is
+                 * deliberately NOT disabled on the fail-open path. Retrying
+                 * `hired` unchanged will keep failing, so the message names
+                 * what is actually missing and the profile is re-read -- the
+                 * indicator and the hint then agree with the refusal.
+                 */
+                if (err instanceof ApiError && err.code === 'details_incomplete') {
+                    setSaveFeedback({ tone: 'danger', message: hireGateMessage(err) });
+                    setStatusDraft(null);
+                    refresh();
+                } else {
+                    setSaveFeedback({ tone: 'danger', message: errorMessage(err) });
+                }
             }
         } finally {
             setSaving(false);
@@ -250,6 +395,8 @@ export default function WorkerProfilePage() {
         statusDraft,
         tCommon,
         workerId,
+        hireGateMessage,
+        refresh,
     ]);
 
     const availabilityLabel = (value: WorkerProfile['availability']) => {
@@ -542,6 +689,41 @@ export default function WorkerProfilePage() {
                     <DashboardPanel className="mt-5">
                         <PanelHeader title={t('trust_title')} />
                         <div className="px-5 py-4">
+                            {/*
+                                FIRST in this panel, above the score and above
+                                the worker's three profile answers: those speak
+                                about the trade in general, this is what the
+                                worker said about THIS job, and it is the only
+                                thing here written for this employer.
+                            */}
+                            {promptAnswers.length > 0 ? (
+                                <div className="mb-4">
+                                    <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">
+                                        {t('prompt_answers_title')}
+                                    </p>
+                                    <ul className="space-y-3">
+                                        {promptAnswers.map((entry) => (
+                                            <li
+                                                key={entry.prompt_id}
+                                                className="rounded-[10px] border border-[var(--jale-divider)] p-3"
+                                            >
+                                                <p className="whitespace-pre-wrap text-sm font-semibold text-[var(--jale-ink)]">
+                                                    {/* The employer deleted this
+                                                        question after it was
+                                                        answered. The answer stands;
+                                                        it is labelled, never filed
+                                                        under a neighbour. */}
+                                                    {entry.question ?? t('prompt_answers_question_removed')}
+                                                </p>
+                                                <p className="mt-1 whitespace-pre-wrap text-sm text-[var(--jale-ink-2)]">
+                                                    {entry.text}
+                                                </p>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            ) : null}
+
                             {!trustAssessment ? (
                                 <p className="text-sm text-[var(--jale-ink-2)]">{t('trust_empty')}</p>
                             ) : (
@@ -665,12 +847,25 @@ export default function WorkerProfilePage() {
                                                 setStatusDraft(event.target.value as ApplicationStatus)
                                             }
                                         >
-                                            {APPLICATION_STATUSES.map((status) => (
-                                                <option key={status} value={status}>
-                                                    {tShared(`applicants.status.${status}`)}
-                                                </option>
-                                            ))}
+                                            {APPLICATION_STATUSES.map((status) => {
+                                                // `hired` is the one option the
+                                                // database can refuse. When it
+                                                // would, it is offered disabled
+                                                // and RELABELLED -- a greyed
+                                                // "Hired" says nothing about why.
+                                                const blocked = status === 'hired' && hireOptionDisabled;
+                                                return (
+                                                    <option key={status} value={status} disabled={blocked}>
+                                                        {blocked
+                                                            ? t('hire_option_blocked')
+                                                            : tShared(`applicants.status.${status}`)}
+                                                    </option>
+                                                );
+                                            })}
                                         </Select>
+                                        {hireHint ? (
+                                            <p className="mt-1.5 text-xs text-[var(--jale-ink-2)]">{hireHint}</p>
+                                        ) : null}
                                     </div>
                                     <Button
                                         onClick={handleSaveStatus}
@@ -680,6 +875,24 @@ export default function WorkerProfilePage() {
                                     >
                                         {t('save_status')}
                                     </Button>
+                                    {/* Beside Save, not instead of it: Save
+                                        commits whatever the select holds, this
+                                        is the one-press version of the move an
+                                        employer makes next in almost every
+                                        case. Disappears once details are
+                                        requested -- there is nothing to ask
+                                        twice. */}
+                                    {showRequestDetails ? (
+                                        <Button
+                                            variant="outline"
+                                            onClick={() => void handleRequestDetails()}
+                                            disabled={saving}
+                                            loading={requestingDetails}
+                                            loadingLabel={tCommon('loading')}
+                                        >
+                                            {tListing('applicants.request_details')}
+                                        </Button>
+                                    ) : null}
                                 </div>
 
                                 {/* Scoped to the control that produced it: the old

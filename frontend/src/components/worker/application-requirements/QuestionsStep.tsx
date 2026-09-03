@@ -3,19 +3,25 @@ import { useId, useState, type Dispatch } from 'react';
 import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
-import type { ApplyFlowAction, ApplyFlowState } from '@/lib/apply-flow-view';
+import type { FieldEditAction, RequirementsFlowState } from '@/lib/application-requirements-flow';
 import { missingRequiredFields, visibleFieldKeys, type AnswerDraft } from '@/lib/application-answers-form';
-import type { JobDetail } from '@/lib/api/worker';
+import type { JobFieldKey } from '@/lib/api/worker';
 import { QuestionFieldRow } from './FieldControls';
 
 /**
- * Step 1 of the in-page apply flow: the job's checked custom-field questions
- * (`job.required_fields`/`optional_fields`), rendered through the copied
- * `QuestionFieldRow` controls from `FieldControls.tsx`.
+ * Step 1 of the STAGE-2 details flow: the job's checked custom-field questions
+ * (`required_fields`/`optional_fields`), rendered through the
+ * `QuestionFieldRow` controls in `FieldControls.tsx`.
+ *
+ * These questions used to be asked at apply time. Sprint 23 moved them behind
+ * the employer's "request details", so the fields now arrive as plain arrays
+ * off the stage-2 state document rather than off a `JobDetail`, and Continue
+ * is `onContinue` rather than a dispatched `next`: the flow SAVES on the way
+ * past, and a step that could advance itself would skip that.
  *
  * Fully controlled: every keystroke dispatches `update_field`/`toggle_skip`
- * straight to the parent-owned `ApplyFlowState` reducer -- this component
- * holds no draft of its own. The one piece of local state (`attempted`) is a
+ * straight to the parent-owned `RequirementsFlowState` reducer -- this
+ * component holds no draft of its own. The one piece of local state (`attempted`) is a
  * transient "did the worker just try to continue" UI flag, not flow data; it
  * is set on a blocked Continue click and STAYS true across further edits
  * (never reset by `update`/`onSkip`) so that fixing one of several missing
@@ -24,18 +30,21 @@ import { QuestionFieldRow } from './FieldControls';
  * the instant that field becomes complete.
  */
 export function QuestionsStep({
-  job, state, dispatch,
+  requiredFields, optionalFields, state, dispatch, onContinue, saving, invalidFields,
 }: {
-  job: JobDetail;
-  state: ApplyFlowState;
-  dispatch: Dispatch<ApplyFlowAction>;
+  requiredFields: readonly JobFieldKey[];
+  optionalFields: readonly JobFieldKey[];
+  state: RequirementsFlowState;
+  dispatch: Dispatch<FieldEditAction>;
+  onContinue: () => void;
+  saving: boolean;
+  /** Per-key reasons from the door's 400 `invalid_answers`. */
+  invalidFields: Record<string, string>;
 }) {
-  const tFlow = useTranslations('worker_job_detail.apply_flow');
+  const tFlow = useTranslations('worker_application_details');
   const fieldId = useId();
   const [attempted, setAttempted] = useState(false);
 
-  const requiredFields = job.required_fields ?? [];
-  const optionalFields = job.optional_fields ?? [];
   const fieldsToShow = visibleFieldKeys(requiredFields, optionalFields);
   const missing = missingRequiredFields(requiredFields, state.draft);
 
@@ -59,12 +68,12 @@ export function QuestionsStep({
       setAttempted(true);
       return;
     }
-    dispatch({ type: 'next' });
+    onContinue();
   }
 
   return (
     <div className="grid gap-5">
-      <p className="text-sm text-[var(--jale-ink-2)]">{tFlow('hints.questions')}</p>
+      <p className="text-sm text-[var(--jale-ink-2)]">{tFlow('hints.details')}</p>
 
       {fieldsToShow.length === 0 ? null : (
         // A job that checked no custom fields at all still routes through
@@ -81,7 +90,9 @@ export function QuestionsStep({
             draft={state.draft}
             update={update}
             fieldId={fieldId}
-            missing={attempted && missing.includes(key)}
+            // A key the DOOR rejected is marked whether or not the worker has
+            // tried to continue: the server has already spoken about it.
+            missing={(attempted && missing.includes(key)) || key in invalidFields}
             prefilled={state.prefilledKeys.has(key)}
           />
         ))
@@ -93,9 +104,13 @@ export function QuestionsStep({
         </InlineFeedback>
       ) : null}
 
-      <div className="flex justify-end">
-        <Button onClick={handleContinue}>{tFlow('continue_button')}</Button>
-      </div>
+      {Object.keys(invalidFields).length > 0 ? (
+        <InlineFeedback tone="danger">{tFlow('errors.invalid_batch')}</InlineFeedback>
+      ) : null}
+
+      <Button className="w-full" size="lg" loading={saving} onClick={handleContinue}>
+        {tFlow('continue_button')}
+      </Button>
     </div>
   );
 }

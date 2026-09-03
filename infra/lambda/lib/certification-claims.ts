@@ -227,3 +227,69 @@ export function validateCertificationClaims(
 
   return { ok: true, certifications };
 }
+
+/**
+ * SHAPE-ONLY normalization for the stage-2 certification door
+ * (`mergeCertificationClaims`, application-requirements.ts). Runs
+ * `parseClaims` and then drops claims whose name is not a live requirement
+ * (tier drift, same rule and same last-one-wins de-dup as
+ * `validateCertificationClaims`), and STOPS THERE.
+ *
+ * The difference from `validateCertificationClaims` is the whole point:
+ * that function is an all-at-once SUBMISSION gate -- it rejects a payload
+ * that leaves a required cert unclaimed, or a proof-required cert without a
+ * doc id. Stage 2 collects certifications incrementally, one at a time,
+ * across turns and across surfaces, so a partial claim set is normal
+ * progress, not an error. What is still missing is reported by
+ * `findMissingCertifications` below (and surfaced as the next step /
+ * remaining counts), never as a rejection here.
+ *
+ * Returns null -- not a partial list -- for a payload that is malformed at
+ * any level, INCLUDING an entry whose name is not a live requirement: shape
+ * is checked before tier drift, so hostile input cannot smuggle a bad
+ * `doc_ids` value past validation by naming a cert the job no longer asks
+ * for.
+ */
+export function normalizeCertificationClaims(
+  raw: unknown,
+  certificationRequirements: readonly CertificationRequirement[],
+): CertificationClaim[] | null {
+  const parsed = parseClaims(raw);
+  if (parsed === null) return null;
+
+  const requirementNames = new Set(certificationRequirements.map((req) => req.name));
+  const byName = new Map<string, CertificationClaim>();
+  for (const claim of parsed) {
+    if (requirementNames.has(claim.name)) byName.set(claim.name, claim);
+  }
+  return Array.from(byName.values());
+}
+
+/**
+ * The two required-tier certification gaps, split so a caller can ask for
+ * the right thing next: a cert that has not been CLAIMED at all
+ * (`unclaimed` -- never claimed, or claimed has=false) versus one claimed
+ * has=true whose proof is missing (`unproven`, delegated verbatim to
+ * `findCertificationProofGaps` so the proof-walk exists in exactly one
+ * place).
+ *
+ * Optional-tier certifications are NEVER reported in either bucket:
+ * unclaimed is fine, and claimed-without-proof stands as a
+ * claimed-but-unverified assertion. Both buckets preserve
+ * `certification_requirements` column order.
+ *
+ * This is the incremental counterpart to `validateCertificationClaims`'s
+ * precedence rule ("unclaimed wins over unproven"): the caller gets BOTH
+ * lists and decides -- `nextStep` asks for the unclaimed ones first, while
+ * the employer-facing `remaining` counts want the total.
+ */
+export function findMissingCertifications(
+  certifications: readonly CertificationClaim[],
+  certificationRequirements: readonly CertificationRequirement[],
+): { unclaimed: string[]; unproven: string[] } {
+  const byName = new Map(certifications.map((claim) => [claim.name, claim] as const));
+  const unclaimed = certificationRequirements
+    .filter((req) => req.tier === 'required' && byName.get(req.name)?.has !== true)
+    .map((req) => req.name);
+  return { unclaimed, unproven: findCertificationProofGaps(certifications, certificationRequirements) };
+}

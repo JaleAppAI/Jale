@@ -35,6 +35,7 @@ import { DeleteJobDialog } from '@/components/employer/DeleteJobDialog';
 import { EditJobModal } from '@/components/employer/EditJobModal';
 import { PlanLimitDialog } from '@/components/employer/PlanLimitDialog';
 import { PublicListingCard } from '@/components/employer/PublicListingCard';
+import { ApplicantDetailsIndicator } from '@/components/employer/ApplicantDetailsIndicator';
 import {
     ApiError,
     deleteJob,
@@ -43,13 +44,17 @@ import {
     getJobCandidates,
     getJobs,
     startConversation,
+    updateApplicantStatus,
     updateJobStatus,
 } from '@/lib/api/employer';
-import type { Applicant, ApplicantFilters, EmployerJobDetail } from '@/lib/api/employer';
+import type {
+    Applicant, ApplicantFilters, ApplicationStatus, EmployerJobDetail,
+} from '@/lib/api/employer';
 import { classifyError, type ErrorKind } from '@/lib/api/errors';
 import { planLimitModel, type PlanLimitModel } from '@/lib/plan-limit';
 import { answerEntries } from '@/lib/format-application-answers';
 import type { WritableJobStatus } from '@/lib/status';
+import { canRequestDetails } from '@/lib/hire-gate';
 import { formatLongDate, formatStartDate } from '@/lib/date';
 import { buildCandidateMatchMap, type ApplicantMatch } from './candidate-matches';
 import { TrustScorePill } from './TrustScorePill';
@@ -168,6 +173,29 @@ export default function JobDetailPage() {
     const job = data?.job ?? null;
     const applicants = data?.applicants ?? [];
     const appliedFilters = data?.appliedFilters ?? EMPTY_APPLICANT_FILTERS;
+
+    /*
+     * Optimistic, because the PATCH answers with `{ status }` and nothing
+     * else: the stage-2 fields it moved (`details_status`, and the timestamp
+     * behind it) are only republished by the next applicants READ. Refetching
+     * the whole list to move one badge would drop the employer's filters into
+     * a spinner, so the row is corrected in place with what the request is
+     * known to have done -- and nothing else. `remaining` is deliberately left
+     * alone: requesting details answers none of it.
+     */
+    const markDetailsRequested = useCallback(
+        (applicationId: string, status: ApplicationStatus) => {
+            setData((prev) => ({
+                ...prev,
+                applicants: prev.applicants.map((row) => (
+                    row.application_id === applicationId
+                        ? { ...row, status, details_status: 'requested' as const }
+                        : row
+                )),
+            }));
+        },
+        [setData],
+    );
 
     /*
      * The control updates instantly; the REQUEST waits for a pause. Firing on
@@ -806,6 +834,7 @@ export default function JobDetailPage() {
                                             <ApplicantRow
                                                 key={applicant.application_id}
                                                 applicant={applicant}
+                                                onDetailsRequested={markDetailsRequested}
                                                 match={
                                                     matches.get(applicant.application_id) ??
                                                     matches.get(applicant.worker_id)
@@ -991,6 +1020,7 @@ function ApplicantRow({
     jobId,
     jobTitle,
     locale,
+    onDetailsRequested,
     t,
     tShared,
     tMessages,
@@ -1001,6 +1031,8 @@ function ApplicantRow({
     jobId: string;
     jobTitle: string;
     locale: string;
+    /** Moves this row's badges the moment the PATCH succeeds -- see the page. */
+    onDetailsRequested: (applicationId: string, status: ApplicationStatus) => void;
     t: ReturnType<typeof useTranslations>;
     tShared: ReturnType<typeof useTranslations>;
     tMessages: ReturnType<typeof useTranslations>;
@@ -1010,8 +1042,12 @@ function ApplicantRow({
     const router = useRouter();
     const errorMessage = useErrorMessage();
     const tReq = useTranslations('job_requirements');
+    const tCommon = useTranslations('common');
     const [starting, setStarting] = useState(false);
     const [messageError, setMessageError] = useState<string | null>(null);
+    const [requesting, setRequesting] = useState(false);
+    const [detailsRequested, setDetailsRequested] = useState(false);
+    const [requestError, setRequestError] = useState<string | null>(null);
 
     const displayName = applicant.full_name?.trim() || t('applicants.unknown_name');
     const appliedLabel = formatLongDate(applicant.applied_at, locale) ?? applicant.applied_at;
@@ -1023,6 +1059,33 @@ function ApplicantRow({
     // an absent value must render nothing, never crash the row.
     const answers = answerEntries(applicant.application_answers, tReq);
     const notProvided = applicant.not_provided ?? [];
+    const promptAnswers = applicant.prompt_answers ?? [];
+
+    /*
+     * `canRequestDetails` (lib/hire-gate) is shared with the applicant PAGE so
+     * the card and the page can never disagree about when this action exists.
+     * It fails open on an absent `details_status` -- see that function.
+     * `detailsRequested` is this row's own optimistic latch on top of it.
+     */
+    const detailsStatus = applicant.details_status;
+    const showRequestDetails = !detailsRequested && canRequestDetails(applicant);
+
+    async function handleRequestDetails() {
+        if (!idToken || requesting) return;
+        setRequesting(true);
+        setRequestError(null);
+        try {
+            const updated = await updateApplicantStatus(
+                idToken, jobId, applicant.worker_id, 'details_requested',
+            );
+            setDetailsRequested(true);
+            onDetailsRequested(applicant.application_id, updated.status ?? 'details_requested');
+        } catch (err) {
+            setRequestError(errorMessage(err));
+        } finally {
+            setRequesting(false);
+        }
+    }
 
     async function handleMessageWorker() {
         if (!idToken || starting) return;
@@ -1060,9 +1123,19 @@ function ApplicantRow({
                         <p className="min-w-0 truncate text-sm font-bold text-[var(--jale-ink)]">
                             {displayName}
                         </p>
-                        <ApplicationStatusBadge status={applicant.status}>
-                            {tShared(`applicants.status.${applicant.status}`)}
-                        </ApplicationStatusBadge>
+                        <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                            <ApplicationStatusBadge status={applicant.status}>
+                                {tShared(`applicants.status.${applicant.status}`)}
+                            </ApplicationStatusBadge>
+                            {/* Beside the status, not instead of it: the two
+                                answer different questions and legitimately
+                                disagree (an applicant can be "In conversation"
+                                with their details still outstanding). */}
+                            <ApplicantDetailsIndicator
+                                status={detailsRequested ? 'requested' : detailsStatus}
+                                remaining={applicant.remaining}
+                            />
+                        </span>
                     </div>
 
                     <p className="mt-1 text-xs text-[var(--jale-ink-2)]">
@@ -1108,6 +1181,34 @@ function ApplicantRow({
                         </div>
                     ) : null}
 
+                    {/* ABOVE the structured answers, deliberately: this is the
+                        worker in their own voice, and it is the only thing on
+                        the card they actually wrote to get here. The answers
+                        box below is form data collected later. */}
+                    {promptAnswers.length > 0 ? (
+                        <div className="mt-3 rounded-[10px] border border-[var(--jale-divider)] p-3">
+                            <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">
+                                {t('applicants.own_words.title')}
+                            </p>
+                            <ul className="grid gap-2.5">
+                                {promptAnswers.map((entry) => (
+                                    <li key={entry.prompt_id}>
+                                        <p className="whitespace-pre-wrap text-xs font-semibold text-[var(--jale-ink)]">
+                                            {/* The employer has since deleted this
+                                                question. The ANSWER still stands,
+                                                so it is labelled rather than
+                                                dropped or filed under a neighbour. */}
+                                            {entry.question ?? t('applicants.own_words.question_removed')}
+                                        </p>
+                                        <p className="mt-0.5 whitespace-pre-wrap text-sm text-[var(--jale-ink-2)]">
+                                            {entry.text}
+                                        </p>
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+                    ) : null}
+
                     {(answers.length > 0 || notProvided.length > 0) ? (
                         <div className="mt-3 rounded-[10px] border border-[var(--jale-divider)] p-3">
                             {answers.length > 0 ? (
@@ -1143,7 +1244,32 @@ function ApplicantRow({
                 </InlineFeedback>
             ) : null}
 
+            {requestError ? (
+                <InlineFeedback tone="danger" onDismiss={() => setRequestError(null)}>
+                    {requestError}
+                </InlineFeedback>
+            ) : null}
+
+            {detailsRequested ? (
+                <InlineFeedback tone="success">{t('applicants.request_details_sent')}</InlineFeedback>
+            ) : null}
+
             <div className="flex flex-wrap gap-2 sm:pl-[3rem]">
+                {/* The primary action on this card, and the first control in
+                    the row: everything else here (profile, message) is a way
+                    of looking, this is the one that moves the application. */}
+                {showRequestDetails ? (
+                    <Button
+                        type="button"
+                        size="sm"
+                        variant="primary"
+                        onClick={() => void handleRequestDetails()}
+                        loading={requesting}
+                        loadingLabel={tCommon('loading')}
+                    >
+                        {t('applicants.request_details')}
+                    </Button>
+                ) : null}
                 <Link
                     href={`/employer/workers/${applicant.worker_id}?job_id=${jobId}`}
                     className="inline-flex h-9 items-center justify-center rounded-full border border-[var(--jale-divider)] px-4 text-xs font-semibold leading-none text-[var(--jale-ink)] transition-colors duration-150 hover:bg-[var(--jale-paper-2)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"

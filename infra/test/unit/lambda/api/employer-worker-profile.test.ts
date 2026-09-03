@@ -82,6 +82,23 @@ describe('employer-worker-profile Lambda', () => {
     applied_at: new Date().toISOString(),
   };
 
+  /** The 091 columns the profile SELECT now also carries. Kept OUT of
+   * `mockProfile` so the full-response pin above proves they are stripped. */
+  const stageColumns = {
+    application_id: 'app-uuid',
+    application_answers: {},
+    prompt_answers: {},
+    details_requested_at: null,
+    details_completed_at: null,
+    required_fields: [],
+    optional_fields: [],
+    required_docs: [],
+    optional_docs: [],
+    certification_requirements: null,
+    pre_application_prompts: [],
+    have_docs: [],
+  };
+
   it('returns 401 if cognitoSub is missing', async () => {
     const res = await handler(makeEvent(null));
     expect(res.statusCode).toBe(401);
@@ -109,13 +126,28 @@ describe('employer-worker-profile Lambda', () => {
   it('returns 200 with worker profile including safe onboarding facts', async () => {
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
     setupMockQuery({
-      profile: { rows: [mockProfile] },
+      profile: { rows: [{ ...mockProfile, ...stageColumns }] },
       assessment: { rows: [] },
     });
     const res = await handler(makeEvent('employer-sub'));
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toEqual({
       ...mockProfile,
+      // 091: the shared stage vocabulary. `application_answers` and the
+      // job's requirement columns are selected purely to feed the engine
+      // and are STRIPPED -- this endpoint has never exposed raw answer
+      // values and must not start.
+      application_id: 'app-uuid',
+      details_status: 'not_requested',
+      stage: 'apply',
+      details_requested_at: null,
+      details_completed_at: null,
+      remaining: {
+        prompts: [], fields: [], certifications: { unclaimed: [], unproven: [] }, docs: [],
+        counts: { prompts: 0, fields: 0, certifications: 0, docs: 0 },
+        complete: true,
+      },
+      prompt_answers: [],
       trust_assessment: null,
       trust_extraction: null,
     });
@@ -475,5 +507,103 @@ describe('employer-worker-profile Lambda', () => {
     });
     await handler(makeEvent('employer-sub'));
     expect(mockSetInternalUserRlsContext).toHaveBeenCalledWith(expect.anything(), 'employer-id');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Application stages (091)
+  // ---------------------------------------------------------------------------
+
+  describe('application stages (091)', () => {
+    const PROMPTS = [{ id: 'p1', text: 'Do you own tools?' }, { id: 'p2', text: '¿Transporte?' }];
+
+    async function run(over: Record<string, unknown> = {}) {
+      mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+      setupMockQuery({ profile: { rows: [{ ...mockProfile, ...stageColumns, ...over }] } });
+      const res = await handler(makeEvent('employer-sub'));
+      expect(res.statusCode).toBe(200);
+      return JSON.parse(res.body);
+    }
+
+    const profileSql = () =>
+      mockQuery.mock.calls.find(([q]) => String(q).includes('FROM job_applications ja'))?.[0] as string;
+
+    it('selects the application id, the stage columns, the job requirements and a JOB-SCOPED have_docs', async () => {
+      await run();
+      const sql = profileSql();
+      expect(sql).toContain('ja.id AS application_id');
+      expect(sql).toContain('ja.application_answers');
+      expect(sql).toContain('ja.prompt_answers');
+      expect(sql).toContain('ja.details_requested_at');
+      expect(sql).toContain('ja.details_completed_at');
+      expect(sql).toContain('j.required_fields');
+      expect(sql).toContain('j.certification_requirements');
+      expect(sql).toContain('j.pre_application_prompts');
+      // Job-scoped, no vault fallback and no document sync: this is a
+      // jale_admin employer session.
+      expect(sql).toContain('AND wd.job_id = ja.job_id');
+      expect(sql).toContain('AS have_docs');
+    });
+
+    it('strips the raw engine inputs from the response', async () => {
+      const body = await run({
+        application_answers: { years_experience: 4 },
+        required_fields: ['years_experience'],
+        have_docs: ['resume'],
+        pre_application_prompts: PROMPTS,
+      });
+      expect(body.application_answers).toBeUndefined();
+      expect(body.have_docs).toBeUndefined();
+      expect(body.required_fields).toBeUndefined();
+      expect(body.optional_fields).toBeUndefined();
+      expect(body.required_docs).toBeUndefined();
+      expect(body.optional_docs).toBeUndefined();
+      expect(body.certification_requirements).toBeUndefined();
+      expect(body.pre_application_prompts).toBeUndefined();
+    });
+
+    it('reports requested with what is still outstanding', async () => {
+      const body = await run({
+        application_status: 'details_requested',
+        details_requested_at: '2026-09-01T00:00:00Z',
+        pre_application_prompts: PROMPTS,
+        prompt_answers: { p1: 'Yes' },
+        required_fields: ['years_experience'],
+        required_docs: ['resume'],
+        have_docs: [],
+      });
+      expect(body.details_status).toBe('requested');
+      expect(body.stage).toBe('details');
+      expect(body.details_requested_at).toBe('2026-09-01T00:00:00Z');
+      expect(body.remaining).toEqual({
+        prompts: ['p2'],
+        fields: ['years_experience'],
+        certifications: { unclaimed: [], unproven: [] },
+        docs: ['resume'],
+        counts: { prompts: 1, fields: 1, certifications: 0, docs: 1 },
+        complete: false,
+      });
+    });
+
+    it('joins prompt answers to their questions, orphans last', async () => {
+      const body = await run({
+        pre_application_prompts: PROMPTS,
+        prompt_answers: { p2: 'Sí', deleted: 'Old', p1: 'Yes' },
+      });
+      expect(body.prompt_answers).toEqual([
+        { prompt_id: 'p1', question: 'Do you own tools?', text: 'Yes' },
+        { prompt_id: 'p2', question: '¿Transporte?', text: 'Sí' },
+        { prompt_id: 'deleted', question: null, text: 'Old' },
+      ]);
+    });
+
+    it('reports complete from details_completed_at', async () => {
+      const body = await run({
+        details_requested_at: '2026-09-01T00:00:00Z',
+        details_completed_at: '2026-09-02T00:00:00Z',
+        required_fields: ['years_experience'],
+      });
+      expect(body.details_status).toBe('complete');
+      expect(body.remaining.complete).toBe(false);
+    });
   });
 });

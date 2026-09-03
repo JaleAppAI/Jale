@@ -31,6 +31,21 @@ import type { PreferredLanguage } from './onboarding-types';
 // the record falls through to ordinary empty-body text handling — a
 // harmless reprompt — rather than throwing.
 
+/**
+ * Which door started the pipeline. `'whatsapp'` is the historical (and only
+ * pre-Sprint-23) value, so it is ALWAYS the default when the field is absent:
+ * an execution that was already in flight when this shipped carries no
+ * `origin`, and must keep behaving exactly as it did.
+ */
+export type VoiceOrigin = 'web' | 'whatsapp';
+
+export const DEFAULT_VOICE_ORIGIN: VoiceOrigin = 'whatsapp';
+
+/** `origin ?? 'whatsapp'`, with anything unrecognized treated as WhatsApp. */
+export function resolveVoiceOrigin(origin: unknown): VoiceOrigin {
+  return origin === 'web' ? 'web' : DEFAULT_VOICE_ORIGIN;
+}
+
 interface VoiceEventCommon {
   version: 'v2';
   status: 'COMPLETED' | 'FAILED';
@@ -56,6 +71,15 @@ export interface TrustVoiceEventV2 extends VoiceEventCommon {
    * can never silently overwrite a corrected answer.
    */
   executionArn: string;
+  /**
+   * Which door recorded the answer. OPTIONAL on the wire (old in-flight
+   * executions predate it) — read it through `resolveVoiceOrigin`, never
+   * directly, so an absent value means `'whatsapp'` rather than `undefined`.
+   *
+   * A `'web'` event must NEVER reach the WhatsApp inbound queue: see
+   * `lambda/ai/voice-trust-receiver.ts`.
+   */
+  origin?: VoiceOrigin;
 }
 
 export interface VoiceExtractionFields {
@@ -92,6 +116,8 @@ export interface VoicePipelineExecutionInputV2 {
   v2: Omit<VoiceEventCommon, 'status'> & {
     kind: VoiceEventV2['kind'];
     questionIndex?: number;
+    /** Absent on executions started before Sprint 23; means `'whatsapp'`. */
+    origin?: VoiceOrigin;
   };
 }
 
@@ -159,6 +185,12 @@ export function parseVoiceTranscriptEvent(
   const evt = parsed as Partial<VoiceEventV2>;
   if (evt.version !== 'v2') return null;
   if (evt.kind !== expectedKind) return null;
+
+  // Normalize the origin ONCE, here, so no consumer has to remember that an
+  // absent field means WhatsApp.
+  if (evt.kind === 'trust_answer') {
+    (evt as TrustVoiceEventV2).origin = resolveVoiceOrigin((evt as TrustVoiceEventV2).origin);
+  }
 
   return evt as VoiceEventV2;
 }

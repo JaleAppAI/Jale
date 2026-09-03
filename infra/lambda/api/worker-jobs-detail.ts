@@ -1,7 +1,9 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
-import { isPlainObject } from '../lib/application-answers';
+import { computeRemaining, detailsStatusFor } from '../lib/application-requirements';
+import { remainingView, snapshotFromRow } from '../lib/application-stage-view';
+import { parsePreApplicationPromptList } from '../lib/pre-application-prompts';
 import { checkCompliance } from '../legal/check-compliance';
 
 const CORS_HEADERS = corsHeaders();
@@ -54,6 +56,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
               j.trade_category_other, j.expected_duration_bucket, j.work_days, j.shift_start, j.shift_end, j.certification_requirements,
               j.public_listing_enabled, j.city_key,
               j.required_fields, j.optional_fields, j.optional_docs,
+              j.pre_application_prompts,
               employer_display_name(j.employer_id) AS company_name
        FROM jobs j
        WHERE j.id = $1
@@ -78,41 +81,86 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const requiredFields: string[] = Array.isArray(job.required_fields) ? job.required_fields : [];
     const optionalFields: string[] = Array.isArray(job.optional_fields) ? job.optional_fields : [];
 
-    const docsRes = requiredDocs.length > 0
+    // ── TWO doc scopes from ONE probe ────────────────────────────────────
+    // `job_scoped` marks the rows already attached to THIS job -- the only
+    // ones 091's hire gate and the employer's `remaining` count. The full
+    // set (vault rows included) is what the WORKER's own "do I still need to
+    // upload this?" question means, and it is what missing_docs has always
+    // answered; narrowing it to job-scoped would tell every vault-holding
+    // worker to re-upload, since only a worker-session document sync
+    // materializes those job rows and this handler deliberately runs none
+    // (jale_admin session -- the sync sets a worker GUC and writes to
+    // FORCE-RLS worker_documents).
+    //
+    // The probe now covers OPTIONAL doc types too: without that widening,
+    // every optional doc would read as missing no matter what the worker
+    // holds, and optional_unanswered below would name all of them.
+    const probeDocTypes = Array.from(new Set([...requiredDocs, ...optionalDocs]));
+    const docsRes = probeDocTypes.length > 0
       ? await client.query(
-        `SELECT DISTINCT doc_type FROM worker_documents
-         WHERE worker_id = $1
-           AND doc_type = ANY($2::text[])
-           AND (job_id IS NULL OR job_id = $3::uuid)`,
-        [workerId, requiredDocs, jobId],
+        `SELECT DISTINCT doc_type, (job_id IS NOT NULL AND job_id = $3::uuid) AS job_scoped
+           FROM worker_documents
+          WHERE worker_id = $1
+            AND doc_type = ANY($2::text[])
+            AND (job_id IS NULL OR job_id = $3::uuid)`,
+        [workerId, probeDocTypes, jobId],
       )
       : { rows: [] };
-    const uploadedTypes = new Set(docsRes.rows.map((r: any) => r.doc_type));
-    const missing_docs = requiredDocs.filter(d => !uploadedTypes.has(d));
+    const docRows: any[] = Array.isArray(docsRes.rows) ? docsRes.rows : [];
+    const vaultOrJobDocs = docRows.map((r) => r.doc_type);
+    const jobScopedDocs = docRows.filter((r) => r.job_scoped).map((r) => r.doc_type);
 
     const appRes = await client.query(
-      `SELECT CASE status
+      `SELECT id AS application_id,
+              CASE status
                 WHEN 'reviewed' THEN 'contacted'
                 WHEN 'rejected' THEN 'not_interested'
                 ELSE status
               END AS status,
-              application_answers
+              application_answers,
+              prompt_answers,
+              details_requested_at,
+              details_completed_at
        FROM job_applications
        WHERE job_id = $1 AND worker_id = $2`,
       [jobId, workerId],
     );
     const already_applied = appRes.rows.length > 0;
-    const application_status = already_applied ? appRes.rows[0].status : null;
-    // Before the worker has applied, nothing has been answered -- every
-    // required/optional field is unanswered. Once applied, key presence
-    // (never the value) drives both lists. Guarded with isPlainObject
-    // because application_answers is JSONB NOT NULL DEFAULT '{}' and node-pg
-    // returns it pre-parsed; a non-object shape here would otherwise corrupt
-    // Object.keys() silently.
-    const rawAnswers = already_applied ? appRes.rows[0].application_answers : undefined;
-    const answeredKeys = new Set(isPlainObject(rawAnswers) ? Object.keys(rawAnswers) : []);
-    const missing_fields = requiredFields.filter((field) => !answeredKeys.has(field));
-    const optional_unanswered = optionalFields.filter((field) => !answeredKeys.has(field));
+    const app = already_applied ? appRes.rows[0] : {};
+    const application_status = already_applied ? app.status : null;
+
+    // The hand-rolled key-presence lists are gone: BOTH bucket sets below now
+    // come from the shared pure engine, so this page can never disagree with
+    // what the employer sees or with what the stage-2 door will ask for.
+    // Before the worker applies there is no application row at all -- the
+    // snapshot is then built from the job's columns alone and everything
+    // reads as outstanding, exactly as before.
+    const jobColumns = {
+      job_id: jobId,
+      job_status: job.status,
+      required_fields: requiredFields,
+      optional_fields: optionalFields,
+      required_docs: requiredDocs,
+      optional_docs: optionalDocs,
+      certification_requirements: job.certification_requirements,
+      pre_application_prompts: job.pre_application_prompts,
+    };
+
+    // Published `remaining`: JOB-SCOPED docs, so it agrees with the employer
+    // surfaces and with 091's hire gate.
+    const remaining = computeRemaining(snapshotFromRow({ ...jobColumns, ...app, have_docs: jobScopedDocs }));
+    // Legacy worker-facing keys: the SAME engine on the VAULT-OR-JOB set,
+    // which is what those three keys have always meant. See the probe above.
+    const workerRemaining = computeRemaining(snapshotFromRow({ ...jobColumns, ...app, have_docs: vaultOrJobDocs }));
+
+    // `docs` (not requiredDocs minus uploaded) so an UNCOLLECTABLE legacy
+    // required doc -- 'ssn', which no flow can collect -- stops being shown
+    // to a worker who can never satisfy it.
+    const missing_docs = workerRemaining.docs;
+    const missing_fields = workerRemaining.fields;
+    // Widened by 091 to include missing OPTIONAL DOCS alongside unanswered
+    // optional fields, matching the employer's `not_provided` list.
+    const optional_unanswered = [...workerRemaining.optionalFields, ...workerRemaining.optionalDocs];
 
     await client.query('COMMIT');
     // Never spread `job` directly into the response after this point without
@@ -129,11 +177,22 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         optional_docs: optionalDocs,
         required_fields: requiredFields,
         optional_fields: optionalFields,
+        pre_application_prompts: parsePreApplicationPromptList(job.pre_application_prompts),
         already_applied,
         application_status,
         missing_docs,
         missing_fields,
         optional_unanswered,
+        // Stage vocabulary only once there IS an application -- there is no
+        // stage to report for a job the worker has not applied to.
+        ...(already_applied
+          ? {
+            application_id: app.application_id,
+            details_status: detailsStatusFor(app, remaining),
+            stage: app.details_requested_at ? 'details' : 'apply',
+            remaining: remainingView(remaining),
+          }
+          : {}),
       }),
     };
   } catch (err) {

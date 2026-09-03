@@ -226,74 +226,106 @@ maybeDescribe('migration 080 WhatsApp application-fill DB contract', () => {
     }
   });
 
-  it('job_applications INSERT with missing required docs fails 23514 without GUC and succeeds with set_config(..., true)', async () => {
+  // ── MIGRATION 091 SUPERSEDED THE TWO TESTS THAT USED TO LIVE HERE ──
+  // 080 taught the 022 BEFORE INSERT required-docs guard an
+  // `app.allow_incomplete_docs` GUC bypass so the WhatsApp accept could create
+  // an application before docs were collected. The two cases removed here
+  // asserted (1) that the guard raised 23514/job_applications_required_docs_check
+  // without the GUC and passed with it, and (2) that the GUC was
+  // transaction-local so the next transaction was guarded again.
+  //
+  // 091_application_stages.sql DROPPED the trigger outright: the stage model
+  // collects nothing from the requirement vocabulary at apply time, so EVERY
+  // application is incomplete by design on both doors, and the equivalent
+  // enforcement moved to the transition to 'hired'
+  // (job_applications_hire_requirements_guard, covered by
+  // application-stages-091.integration.test.ts). The GUC is now dead code.
+  //
+  // What still needs a real database on THIS file's side is the inverse
+  // property: the doc-less INSERT that 080 could only reach through a GUC now
+  // succeeds with no GUC at all, and the bypass has become inert rather than
+  // load-bearing.
+  //
+  // 091 deliberately KEPT the function so a revert would be one CREATE
+  // TRIGGER; migration 092 then dropped it, which is why the function
+  // assertion below is now an ABSENCE. Both facts are asserted together on
+  // purpose: `enforce_job_application_required_docs` must be gone while
+  // 091's replacement `enforce_job_application_hire_requirements` is still
+  // there, because dropping the wrong one of that pair would silently
+  // un-gate every hire.
+  it('the 022/080 guard trigger and (092) its function are gone: a doc-less INSERT succeeds with no GUC, and the GUC is inert', async () => {
     const client = new Client({ connectionString: databaseUrl });
     await client.connect();
     try {
-      // No GUC: workerGuard has zero worker_documents rows, jobRequireResumeId
-      // requires 'resume' -> the 022 guard (080's GUC-aware rewrite) raises.
+      // No GUC. workerGuard has zero worker_documents rows and
+      // jobRequireResumeId requires 'resume' -- before 091 this raised
+      // 23514/job_applications_required_docs_check.
       await client.query('BEGIN');
       await client.query('SET LOCAL ROLE jale_whatsapp');
       await setWorkerIdentity(client, workerGuard);
-      await expect(client.query(
-        `INSERT INTO job_applications (job_id, worker_id, status, application_answers)
-         VALUES ($1, $2, 'pending', '{}'::jsonb)`,
-        [jobRequireResumeId, workerGuard],
-      )).rejects.toMatchObject({ code: '23514', constraint: 'job_applications_required_docs_check' });
-      await client.query('ROLLBACK');
-
-      // Same worker/job (no row was ever created above, so no unique-constraint
-      // collision), GUC set: bypass lets the INSERT through despite the same
-      // missing docs.
-      await client.query('BEGIN');
-      await client.query('SET LOCAL ROLE jale_whatsapp');
-      await setWorkerIdentity(client, workerGuard);
-      await client.query(`SELECT set_config('app.allow_incomplete_docs', 'on', true)`);
-      const inserted = await client.query(
+      const noGuc = await client.query(
         `INSERT INTO job_applications (job_id, worker_id, status, application_answers)
          VALUES ($1, $2, 'pending', '{}'::jsonb)
          RETURNING id`,
         [jobRequireResumeId, workerGuard],
       );
-      expect(inserted.rows).toHaveLength(1);
+      expect(noGuc.rows).toHaveLength(1);
       await client.query('COMMIT');
-    } finally {
-      await client.end();
-    }
-  });
 
-  it('GUC is transaction-local: next transaction is guarded again', async () => {
-    // Same connection across two transactions -- proves the SET LOCAL-style
-    // set_config(..., true) call does not leak past its own transaction.
-    const client = new Client({ connectionString: databaseUrl });
-    await client.connect();
-    try {
+      // The bypass GUC is now inert: setting it changes nothing, and NOT
+      // setting it in the following transaction changes nothing either (what
+      // the deleted transaction-locality test proved about a live guard).
       await client.query('BEGIN');
       await client.query('SET LOCAL ROLE jale_whatsapp');
       await setWorkerIdentity(client, workerGuardTxLocalA);
       await client.query(`SELECT set_config('app.allow_incomplete_docs', 'on', true)`);
-      await client.query(
+      const withGuc = await client.query(
         `INSERT INTO job_applications (job_id, worker_id, status, application_answers)
-         VALUES ($1, $2, 'pending', '{}'::jsonb)`,
+         VALUES ($1, $2, 'pending', '{}'::jsonb)
+         RETURNING id`,
         [jobRequireResumeId, workerGuardTxLocalA],
       );
+      expect(withGuc.rows).toHaveLength(1);
       await client.query('COMMIT');
 
-      // Fresh transaction on the same connection/session; the GUC was never
-      // re-set here, so it must be back to its unset default and the guard
-      // must fire again for a different worker applying to the same job.
       await client.query('BEGIN');
       await client.query('SET LOCAL ROLE jale_whatsapp');
       await setWorkerIdentity(client, workerGuardTxLocalB);
-      await expect(client.query(
+      const nextTx = await client.query(
         `INSERT INTO job_applications (job_id, worker_id, status, application_answers)
-         VALUES ($1, $2, 'pending', '{}'::jsonb)`,
+         VALUES ($1, $2, 'pending', '{}'::jsonb)
+         RETURNING id`,
         [jobRequireResumeId, workerGuardTxLocalB],
-      )).rejects.toMatchObject({ code: '23514', constraint: 'job_applications_required_docs_check' });
-      await client.query('ROLLBACK');
+      );
+      expect(nextTx.rows).toHaveLength(1);
+      await client.query('COMMIT');
     } finally {
       await client.end();
     }
+
+    // The trigger is really gone (091), and so is the function (092).
+    const trigger = await setup.query<{ count: string }>(
+      `SELECT count(*) FROM pg_trigger
+        WHERE tgname = 'job_applications_required_docs_guard'
+          AND tgrelid = 'public.job_applications'::regclass
+          AND NOT tgisinternal`,
+    );
+    expect(trigger.rows).toEqual([{ count: '0' }]);
+
+    const fn = await setup.query<{ count: string }>(
+      `SELECT count(*) FROM pg_proc
+        WHERE proname = 'enforce_job_application_required_docs'`,
+    );
+    expect(fn.rows).toEqual([{ count: '0' }]);
+
+    // ...while 091's replacement gate, whose name differs by two words, is
+    // untouched. 092 dropping the wrong one of this pair would leave every
+    // hire un-gated and no other assertion in the repo would notice.
+    const hireFn = await setup.query<{ count: string }>(
+      `SELECT count(*) FROM pg_proc
+        WHERE proname = 'enforce_job_application_hire_requirements'`,
+    );
+    expect(hireFn.rows).toEqual([{ count: '1' }]);
   });
 
   it('6th certification INSERT under one cert_name raises 23514 certification_document_name_limit under RLS context', async () => {

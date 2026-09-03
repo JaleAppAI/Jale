@@ -16,11 +16,12 @@ import * as sns from 'aws-cdk-lib/aws-sns';
 import * as snsSubscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import { Construct } from 'constructs';
+import { BEDROCK_MODEL_ID, bedrockArns } from '../bedrock-arns';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
 import { JaleCognitoPool } from '../constructs/cognito-pool';
 import { VoiceTranscriptionPipeline } from '../constructs/voice-transcription-pipeline';
 import { normalizeWhatsappStatusCallbackUrl } from '../whatsapp-status-callback-url';
-import { lambdaIntegration } from '../api-integration';
+import { lambdaIntegration, addPathOnlyResource } from '../api-integration';
 
 export interface WhatsAppStackProps extends cdk.StackProps {
   /** VPC shared across all stacks */
@@ -45,6 +46,17 @@ export interface WhatsAppStackProps extends cdk.StackProps {
    * which already depends on ApiStack.
    */
   readonly workerResource: apigateway.Resource;
+  /**
+   * ApiStack's `/worker/applications` resource. S23 L2.4 hangs the stage-2
+   * details door — `GET /worker/applications/{applicationId}` and
+   * `ANY /worker/applications/{applicationId}/{action}` — off it. Same
+   * reasoning as `workerResource`: `job_applications` is FORCE RLS and the
+   * only worker-scoped UPDATE policy is `jobapp_whatsapp_update` (028), for
+   * role `jale_whatsapp`, so the handler needs this stack's
+   * `jale/whatsapp/db` secret. REQUIRED, not optional: an optional prop
+   * would let a future composition silently drop the route.
+   */
+  readonly workerApplicationsResource: apigateway.Resource;
   /** ApiStack's worker Cognito authorizer — the same one every other
    * `/worker/*` route uses. */
   readonly workerAuthorizer: apigateway.IAuthorizer;
@@ -103,6 +115,18 @@ export class WhatsAppStack extends cdk.Stack {
     const tosVersion = this.node.tryGetContext('requiredTosVersion') ?? '1.0';
     const allowedOrigin =
       this.node.tryGetContext('allowedOrigin') ?? 'https://jaleapp.ai';
+
+    // Sprint 23: the public site origin the processor mints worker-facing
+    // application links against. Sourced the same way NotificationsStack and
+    // ReferralsStack source it (context first, then the CI env var) but with
+    // a fallback instead of a synth-time throw -- see PUBLIC_SITE_BASE_URL on
+    // the processor Lambda below for why. Trailing slashes are stripped so
+    // the consumer can always join with a single '/'.
+    const publicSiteBaseUrl = String(
+      this.node.tryGetContext('publicSiteBaseUrl')
+      ?? process.env.JALE_PUBLIC_SITE_BASE_URL
+      ?? 'https://jaleapp.ai',
+    ).replace(/\/+$/, '');
     const inboundV2TransportContext =
       this.node.tryGetContext('whatsappInboundV2TransportEnabled');
     const inboundV2TransportEnabled =
@@ -258,10 +282,17 @@ export class WhatsAppStack extends cdk.Stack {
         // ConverseCommand for application-fill field extraction
         // (lib/application-fill-extraction.ts's makeBedrockExtractionClient)
         // but had no BEDROCK_MODEL_ID env at all — every extraction turn hit
-        // that module's `?? 'us.amazon.nova-lite-v1:0'` fallback. Same
-        // model ID as the ai-profile-writer Lambda below (BEDROCK_MODEL_ID
-        // env + bedrock:InvokeModel policy, ~line 489/522).
-        BEDROCK_MODEL_ID: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+        // that module's hardcoded fallback. Same model id as the
+        // ai-profile-writer Lambda below, and now the same shared constant
+        // every other Bedrock caller in the app uses (lib/bedrock-arns.ts).
+        BEDROCK_MODEL_ID,
+        // Sprint 23: the stage-2 `web_handoff` note links the worker to their
+        // own application page (application-fill.ts's `workerApplicationUrl`).
+        // Unlike NotificationsStack/ReferralsStack this does NOT fail closed
+        // at synth -- the WhatsApp copy degrades to a still-correct
+        // jaleapp.ai link rather than a dead email, and this stack already
+        // takes the same `?? 'https://jaleapp.ai'` shape for `allowedOrigin`.
+        PUBLIC_SITE_BASE_URL: publicSiteBaseUrl,
       },
       // Task 15 (confirmed blocker, not just the IAM/env gap): processor.ts
       // imports handleFillMessage from lib/application-fill.ts, which
@@ -558,7 +589,7 @@ export class WhatsAppStack extends cdk.Stack {
         TWILIO_SECRET_ARN: twilioSecret.secretName,
         TWILIO_REQUEST_TIMEOUT_MS: '4000',
         MEDIA_BUCKET_NAME: mediaBucket.bucketName,
-        BEDROCK_MODEL_ID: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+        BEDROCK_MODEL_ID,
         AI_EXTRACTION_CONFIDENCE_THRESHOLD: '0.75',
         AI_INDUSTRY_KEYWORDS: '[]',
         // Sprint 22 R1: QUESTION_GENERATOR_ARN removed — the v1 trust hand-off
@@ -592,12 +623,17 @@ export class WhatsAppStack extends cdk.Stack {
     // construction instead of by comment. ConverseCommand (used by both
     // Lambdas) only needs bedrock:InvokeModel, not a separate
     // bedrock:Converse action.
-    const bedrockHaiku45Arns = [
-      `arn:aws:bedrock:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0`,
-      'arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0',
-      `arn:aws:bedrock:${cdk.Stack.of(this).region}::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0`,
-      'arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0',
-    ];
+    //
+    // This list used to be spelled out inline here, which is how the rest of
+    // the app stayed on the retired Nova Lite id after this stack moved to
+    // Claude Haiku 4.5. It now comes from lib/bedrock-arns.ts, which every
+    // Bedrock-invoking stack shares; the ARNs it produces are byte-identical
+    // to the inline list it replaces (whatsapp-stack.test.ts's two 4-ARN
+    // assertions were left untouched across that change and still pass).
+    const bedrockHaiku45Arns = bedrockArns(
+      cdk.Stack.of(this).region,
+      cdk.Stack.of(this).account,
+    );
     aiProfileWriterLambda.function.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ['bedrock:InvokeModel'],
@@ -619,6 +655,13 @@ export class WhatsAppStack extends cdk.Stack {
       environment: {},
     });
     mediaBucket.grantRead(voiceTrustReceiverLambda.function);
+    // Sprint 23 L6: a WEB-origin completion does not re-enter the WhatsApp
+    // queue (see lambda/ai/voice-trust-receiver.ts). The browser polls the
+    // transcript object instead — and Transcribe writes NOTHING when a job
+    // fails, so the receiver persists an empty-text marker at the transcript
+    // key to turn "still working" into a definite 410. Scoped to the web
+    // door's own prefix; the receiver has no business writing anywhere else.
+    mediaBucket.grantPut(voiceTrustReceiverLambda.function, 'voice/*');
     // v2 re-entry (Task 5): a trust voice note started from the v2 lane
     // completes by sending a synthetic event back onto the same v2 inbound
     // FIFO queue the webhook uses — gated on the identical transport flag so
@@ -1064,7 +1107,8 @@ export class WhatsAppStack extends cdk.Stack {
     // X-Twilio-Signature (HMAC-SHA1 over the full URL + sorted body params).
     // Signature validation happens in the webhook Lambda; API Gateway just
     // forwards all POSTs to the Lambda. Matches the /health pattern.
-    const whatsappResource = props.api.root.addResource('whatsapp');
+    // Path-only: nothing on /whatsapp itself, only /webhook and /status-callback.
+    const whatsappResource = addPathOnlyResource(props.api.root, 'whatsapp');
     const webhookResource = whatsappResource.addResource('webhook');
     webhookResource.addMethod(
       'POST',
@@ -1144,9 +1188,38 @@ export class WhatsAppStack extends cdk.Stack {
         // the Terms and Privacy links, so the engine's legal prompt text (the
         // only thing those two feed) is never shown by this door, and the
         // handler's hardcoded jaleapp.ai/legal defaults stand.
+        //
+        // Sprint 23 L6 (voice answers on the web). The door presigns a PUT
+        // into the SAME media bucket the WhatsApp lane uploads to, and starts
+        // the SAME trust pipeline — one Transcribe path, one transcript
+        // format, one receiver, whichever door the worker used.
+        MEDIA_BUCKET_NAME: mediaBucket.bucketName,
+        TRUST_PIPELINE_STATE_MACHINE_ARN: trustVoicePipeline.stateMachine.stateMachineArn,
       },
+      // Not in the Node 20 runtime, unlike the @aws-sdk/client-* packages:
+      // without this the presigner import resolves to nothing at runtime and
+      // every voice-upload-url call 500s.
+      nodeModules: ['@aws-sdk/s3-request-presigner'],
     });
     whatsappDbSecret.grantRead(webOnboardingLambda.function);
+    // Sprint 23 L6. ONE prefix, `voice/*`, covers both the audio the browser
+    // PUTs (`voice/<workerId>/<uuid>.<ext>`) and the transcript the pipeline
+    // writes (`voice/<workerId>/transcripts/<job>.json`) — which is why this
+    // door's transcripts do NOT use the WhatsApp lane's `<workerId>/
+    // transcripts/` shape. Put for the presign, read for the HeadObject
+    // existence/size check and the transcript poll. Nothing outside the
+    // prefix, and nothing at all on the rest of the bucket.
+    mediaBucket.grantPut(webOnboardingLambda.function, 'voice/*');
+    // An EXPLICIT s3:GetObject rather than `grantRead`: grantRead also adds
+    // bucket-wide `s3:List*`/`s3:GetBucket*`, and this door has no reason to
+    // be able to enumerate a bucket that also holds every worker's photos,
+    // documents and work samples. It reads exactly two kinds of object, both
+    // under its own prefix, both by exact key.
+    webOnboardingLambda.function.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['s3:GetObject'],
+      resources: [`${mediaBucket.bucketArn}/voice/*`],
+    }));
+    trustVoicePipeline.stateMachine.grantStartExecution(webOnboardingLambda.function);
     props.questionGeneratorFn.grantInvoke(webOnboardingLambda.function);
     props.aliasGeneratorFn.grantInvoke(webOnboardingLambda.function);
     domainOutboxWakeQueue.grantSendMessages(webOnboardingLambda.function);
@@ -1226,18 +1299,81 @@ export class WhatsAppStack extends cdk.Stack {
     // attached to the method exactly as it is to the GET, and the handler
     // answers any method/action pair it does not route with 404 `not_found`.
     //
-    // NOTE FOR WHOEVER ADDS THE NEXT ROUTE: measured 2026-08-29 with the CI
-    // production context, JaleApiStack synthesizes to 431 resources against
-    // CloudFormation's hard maximum of 500 — 423 without this door. It was
+    // NOTE FOR WHOEVER ADDS THE NEXT ROUTE: measured 2026-09-02 with the CI
+    // production context, JaleApiStack synthesizes to 418 resources against
+    // CloudFormation's hard maximum of 500 — 410 without this door. It was
     // 501 (synth failed with TooManyResourcesInStack) until every method on
     // the shared RestApi moved to `lambdaIntegration()` from
     // `lib/api-integration.ts`, which drops the console-only
-    // `test-invoke-stage` Lambda::Permission and freed 70 resources. Use that
-    // helper — never `new apigateway.LambdaIntegration(...)` — for any method
-    // on this API. `test/unit/stacks/api-stack-resource-ceiling.test.ts`
-    // synthesizes the real composition and fails the build above 470, which
-    // is where splitting ApiStack (a nested stack, or a second RestApi for
-    // `/worker/*`) becomes the answer.
+    // `test-invoke-stage` Lambda::Permission and freed 70 resources (431), and
+    // then `addPathOnlyResource()` from the same file stopped building the 13
+    // no-op CORS preflights on path-only intermediate resources (418). Use
+    // both helpers — never `new apigateway.LambdaIntegration(...)`, and never
+    // a plain `addResource()` for a node that carries no method of its own.
+    // `test/unit/stacks/api-stack-resource-ceiling.test.ts` synthesizes the
+    // real composition, asserts the exact count, and fails the build above
+    // 470, which is where splitting ApiStack (a nested stack, or a second
+    // RestApi for `/worker/*`) becomes the answer.
     onboardingResource.addResource('{action}').addMethod('ANY', webOnboardingIntegration, workerAuth);
+
+    // ═══════════════════════════════════════════════════════════════════
+    // S23 L2.4 — WORKER APPLICATION DETAILS DOOR (web "stage 2")
+    //
+    //   GET  /worker/applications/{applicationId}
+    //   POST /worker/applications/{applicationId}/answers
+    //   POST /worker/applications/{applicationId}/certifications
+    //   POST /worker/applications/{applicationId}/prompt-answers
+    //
+    // Same reason as the onboarding door above: `job_applications` is FORCE
+    // RLS and the ONLY worker-scoped UPDATE policy is
+    // `jobapp_whatsapp_update` (migration 028) for role `jale_whatsapp`,
+    // keyed on `app.current_internal_user_id`. Migration 091 adds that
+    // role's UPDATE on `prompt_answers` / `details_completed_at` and its
+    // INSERT/UPDATE on `worker_application_defaults`. So the handler needs
+    // THIS stack's `jale/whatsapp/db` secret and cannot be an ApiStack
+    // Lambda; ApiStack owns `/worker/applications` and exports it, this
+    // stack hangs the child routes off it.
+    //
+    // NO generator ARNs, NO wake queue, NO documents bucket: every write it
+    // makes goes through `lib/application-requirements.ts` over the DB
+    // connection. `whatsappDbSecret.grantRead` is the only grant, and
+    // `whatsapp-stack.test.ts` asserts the absence of the others.
+    // ═══════════════════════════════════════════════════════════════════
+
+    const applicationDetailsLambda = new JaleLambdaFunction(this, 'WorkerApplicationDetailsLambda', {
+      entry: path.join(__dirname, '../../lambda/api/worker-application-details.ts'),
+      description: 'Worker application details — the web stage-2 requirements door',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      // API Gateway hard-caps a REST integration at 29s. A merge syncs the
+      // worker's vault documents onto the job before it validates anything,
+      // so this must return a 5xx we control rather than API Gateway's 504.
+      timeout: 28,
+      environment: {
+        // jale_whatsapp, for the RLS reason above. getDbPool() reads this.
+        DB_SECRET_ARN: whatsappDbSecret.secretName,
+        // Unlike the onboarding door this IS an ordinary `/worker/*` route,
+        // so it carries the legal wall (004 grants jale_whatsapp SELECT on
+        // `users.tos_version`).
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+    });
+    whatsappDbSecret.grantRead(applicationDetailsLambda.function);
+
+    const applicationDetailsIntegration = lambdaIntegration(applicationDetailsLambda.function);
+    // CORS preflight is inherited from the RestApi's
+    // `defaultCorsPreflightOptions` (ApiStack), like every sibling
+    // `/worker/*` route.
+    const applicationResource = props.workerApplicationsResource.addResource('{applicationId}');
+    applicationResource.addMethod('GET', applicationDetailsIntegration, workerAuth);
+    // ONE `{action}` resource carrying answers / certifications /
+    // prompt-answers, for the resource-budget reason spelled out on the
+    // onboarding door above: three named siblings would cost 12 ApiStack
+    // resources, this shape costs 4 on top of the `{applicationId}` node.
+    // ANY, because the resource has to answer POST and refuse everything
+    // else IN THE HANDLER (405) — it is not a widening, the Cognito worker
+    // authorizer is attached exactly as it is to the GET.
+    applicationResource.addResource('{action}').addMethod('ANY', applicationDetailsIntegration, workerAuth);
   }
 }

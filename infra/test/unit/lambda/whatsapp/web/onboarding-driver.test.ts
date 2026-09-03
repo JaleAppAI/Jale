@@ -160,6 +160,24 @@ describe('mapAnswerToEngineMessage', () => {
   describe('trust answers', () => {
     const long = 'I frame houses and hang interior doors on remodels.';
 
+    // Sprint 23 L6: a dictated answer is ordinary text by the time it reaches
+    // this door — the worker reviewed the transcript. `source` is the ONLY
+    // signal that it began as speech, and it is recorded on the assessment
+    // row (`worker_trust_assessments.answer_source`).
+    test('carry source:voice through as answerSource, and nothing else', () => {
+      expect(mapAnswerToEngineMessage('trust.question.1', { text: long, source: 'voice' }, noConfirm))
+        .toEqual({ ok: true, fields: { body: long, answerSource: 'voice' } });
+    });
+
+    test('omit answerSource for text, and for any provenance a client invents', () => {
+      expect(mapAnswerToEngineMessage('trust.question.1', { text: long, source: 'text' }, noConfirm))
+        .toEqual({ ok: true, fields: { body: long } });
+      expect(mapAnswerToEngineMessage('trust.question.1', { text: long, source: 'telepathy' }, noConfirm))
+        .toEqual({ ok: true, fields: { body: long } });
+      expect(mapAnswerToEngineMessage('trust.question.1', { text: long, source: ['voice'] }, noConfirm))
+        .toEqual({ ok: true, fields: { body: long } });
+    });
+
     test('accept the {text} wrapper the client sends', () => {
       expect(mapAnswerToEngineMessage('trust.question.1', { text: long }, noConfirm))
         .toEqual({ ok: true, fields: { body: long } });

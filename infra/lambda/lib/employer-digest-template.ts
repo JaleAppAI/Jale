@@ -27,6 +27,7 @@
  * employer_digest_settings.language. Spanish copy is formal (usted).
  */
 
+import { base64EncodedLength } from './email-mime';
 import {
   clipPreheader,
   emailButtonHtml,
@@ -42,13 +43,37 @@ export const DIGEST_SUBJECT_MAX = 200;
 export const DIGEST_BODY_TEXT_MAX = 100000;
 export const DIGEST_BODY_HTML_MAX = 200000;
 /**
- * The budget the job loop actually spends against. DIGEST_BODY_HTML_MAX is the
- * database CHECK; this is the INBOX limit: Gmail clips a message at roughly
- * 102 kB of the transfer-ENCODED part and hides everything after the cut
- * behind a "[Message clipped]" link — including the unsubscribe footer. 70k
- * characters keeps the encoded part under that even at base64's 4/3 expansion.
+ * The INBOX limit, and the budget the job loop actually spends against.
+ * DIGEST_BODY_HTML_MAX above is the database CHECK; this pair is about Gmail,
+ * which clips a message at roughly 102 kB of the transfer-ENCODED bytes and
+ * hides everything after the cut — the unsubscribe footer included — behind a
+ * "[Message clipped]" link.
+ *
+ * ── Why this is measured in BYTES and not characters ──────────────
+ * Until sprint 22 R3-E the budget was `bodyHtml.length` against 70,000
+ * CHARACTERS. That was wrong in exactly the case the product is built for: a
+ * Spanish digest. Job titles, worker names and city names are accented free
+ * text, every accented character is two UTF-8 bytes, and the clip is on bytes.
+ * Measured against the real MIME builder, a six-job Spanish digest at the old
+ * cap encoded to 115,874 bytes — clipped, with the unsubscribe footer on the
+ * wrong side of the cut. The identical English digest encoded to 98,428 and
+ * looked fine, which is why the character budget survived review.
+ *
+ * ── What the two numbers mean ─────────────────────────────────────
+ * DIGEST_ENCODED_BODY_SOFT_MAX is the real constraint: the maximum size of the
+ * two base64 body parts AFTER encoding, already net of the message envelope.
+ * 102,400 minus ~1.4 kB of our own headers and boundaries, minus a reserve for
+ * the headers SES adds downstream (Message-ID, DKIM-Signature, Feedback-ID),
+ * leaves this. DIGEST_BODY_HTML_SOFT_MAX is a secondary rail on the HTML part
+ * alone, in UTF-8 bytes, that binds only if a digest ever has a near-empty
+ * text body.
+ *
+ * At these values a realistic ASCII digest still fits SIX ten-candidate jobs
+ * (unchanged), and the accented Spanish equivalent fits FOUR. The tripwire in
+ * employer-digest-template.test.ts asserts both against the real builder.
  */
-export const DIGEST_BODY_HTML_SOFT_MAX = 70_000;
+export const DIGEST_ENCODED_BODY_SOFT_MAX = 96_000;
+export const DIGEST_BODY_HTML_SOFT_MAX = 65_000;
 /** Candidates rendered per job before the "+N more" line takes over. */
 export const DIGEST_MAX_CANDIDATES_PER_JOB = 10;
 
@@ -377,12 +402,23 @@ export function renderEmployerDigest(model: EmployerDigestModel): RenderedDigest
   // renderEmailShell inserts both fragments verbatim and exactly once, so an
   // empty-card render measures every byte the shell and footer contribute and
   // the finished length is that plus the card's.
-  const shellFixed = shell('').length;
-  let usedText = headText.length
+  const shellFixed = Buffer.byteLength(shell(''), 'utf8');
+  // Bytes for the two byte budgets, characters for DIGEST_BODY_TEXT_MAX --
+  // which mirrors email_outbox's CHECK, and PostgreSQL's length() counts
+  // characters, not bytes.
+  let usedTextChars = headText.length
     + Math.max(footers.plainText.length, footers.truncatedText.length);
-  let usedHtml = shellFixed
-    + card.intro.length
-    + Math.max(card.tailPlain.length, card.tailTruncated.length);
+  let usedTextBytes = Buffer.byteLength(headText, 'utf8')
+    + Math.max(
+      Buffer.byteLength(footers.plainText, 'utf8'),
+      Buffer.byteLength(footers.truncatedText, 'utf8'),
+    );
+  let usedHtmlBytes = shellFixed
+    + Buffer.byteLength(card.intro, 'utf8')
+    + Math.max(
+      Buffer.byteLength(card.tailPlain, 'utf8'),
+      Buffer.byteLength(card.tailTruncated, 'utf8'),
+    );
 
   const includedText: string[] = [];
   const includedHtml: string[] = [];
@@ -390,12 +426,17 @@ export function renderEmployerDigest(model: EmployerDigestModel): RenderedDigest
   for (const job of model.jobs) {
     const blockText = jobBlockText(copy, job);
     const blockHtml = jobBlockHtml(copy, job);
-    if (usedHtml + blockHtml.length > DIGEST_BODY_HTML_SOFT_MAX
-      || usedText + blockText.length > DIGEST_BODY_TEXT_MAX) {
+    const nextTextBytes = usedTextBytes + Buffer.byteLength(blockText, 'utf8');
+    const nextHtmlBytes = usedHtmlBytes + Buffer.byteLength(blockHtml, 'utf8');
+    const nextEncoded = base64EncodedLength(nextTextBytes) + base64EncodedLength(nextHtmlBytes);
+    if (nextEncoded > DIGEST_ENCODED_BODY_SOFT_MAX
+      || nextHtmlBytes > DIGEST_BODY_HTML_SOFT_MAX
+      || usedTextChars + blockText.length > DIGEST_BODY_TEXT_MAX) {
       break;
     }
-    usedText += blockText.length;
-    usedHtml += blockHtml.length;
+    usedTextChars += blockText.length;
+    usedTextBytes = nextTextBytes;
+    usedHtmlBytes = nextHtmlBytes;
     includedText.push(blockText);
     includedHtml.push(blockHtml);
   }

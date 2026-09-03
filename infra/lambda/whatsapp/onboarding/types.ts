@@ -44,6 +44,17 @@ export interface OnboardingV2InboundMessage {
   /** Present only on a synthetic voice-pipeline completion re-entry (see
    * lib/voice-events.ts) — never set on a real inbound Twilio message. */
   voiceEvent?: VoiceEventV2;
+  /**
+   * How the worker PRODUCED this answer, when the channel knows and the
+   * message shape does not say (Sprint 23 L6). On WhatsApp it is never set:
+   * a voice answer arrives as media or as a `#vt` re-entry, both of which are
+   * self-describing. On the WEB a dictated answer arrives as ordinary text —
+   * the worker reviewed and edited the transcript before sending it — so the
+   * browser is the only thing that knows it started as speech, and this is how
+   * it says so. Recorded on `worker_trust_assessments.answer_source`
+   * (ai/trust-scorer.ts reads it); it never changes control flow.
+   */
+  answerSource?: 'text' | 'voice';
 }
 
 export type RouteResult =

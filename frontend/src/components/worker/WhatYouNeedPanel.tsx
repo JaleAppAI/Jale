@@ -57,10 +57,19 @@ type Row = {
 };
 
 /**
- * Pre-apply preview panel for the worker job detail page: how many questions
- * the job asks, which documents/certifications it wants (Required/Optional),
- * which of those the worker's vault already satisfies, and a rough time
- * estimate (`estimateApplyMinutes`).
+ * Pre-apply preview panel for the worker job detail page, REFRAMED for the two
+ * stages (sprint 23).
+ *
+ * The old panel said "here is everything you must produce to apply", which is
+ * now simply false: applying costs the employer's questions or one tap, and
+ * everything else is only ever asked for if they want to hire you. So the
+ * panel splits in two, exactly as the prototype's W1 does -- a lead line for
+ * what it takes TODAY, then an eyebrow ("If the employer wants to hire you,
+ * they'll ask for:") over the doc/cert rows, which keep their vault badges
+ * because a document already in the vault genuinely is one less thing later.
+ *
+ * The field questions move UNDER that eyebrow as a single counted row rather
+ * than a headline number: they are no longer part of applying.
  *
  * Degrades gracefully when `vaultDocs` is `null` (the vault fetch failed):
  * the full requirement list (question count, every doc/cert with its
@@ -82,8 +91,10 @@ export function WhatYouNeedPanel({
   const requiredFields = job.required_fields ?? [];
   const optionalFields = job.optional_fields ?? [];
   const fieldsToShow = visibleFieldKeys(requiredFields, optionalFields);
-  const questionCount = fieldsToShow.length;
-  const requiredQuestionCount = requiredFields.length;
+  const fieldCount = fieldsToShow.length;
+  const requiredFieldCount = requiredFields.length;
+
+  const prompts = job.pre_application_prompts ?? [];
 
   const requiredDocs = job.required_docs ?? [];
   const optionalDocs = job.optional_docs ?? [];
@@ -139,37 +150,57 @@ export function WhatYouNeedPanel({
     };
   });
 
-  const estimate = estimateApplyMinutes(questionCount, docKeys.length, certs.length);
+  // The estimate is now about STAGE ONE only, so it is fed the prompt count
+  // and nothing else: the docs and certs it used to include are no longer part
+  // of applying, and counting them would price a task the worker is not being
+  // asked to do.
+  const estimate = estimateApplyMinutes(prompts.length, 0, 0);
 
   return (
     <DashboardPanel>
       <PanelHeader title={t('title')} />
       <div className="space-y-4 p-5 md:p-6">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+        {/* What it takes TODAY. */}
+        <InlineFeedback tone="info">
           <span className="font-semibold text-[var(--jale-ink)]">
-            {t('questions_summary', { count: questionCount })}
+            {prompts.length > 0
+              ? t('to_apply_prompts', { count: prompts.length, minutes: estimate })
+              : t('to_apply_one_tap')}
           </span>
-          {requiredQuestionCount > 0 ? (
-            <span className="text-[var(--jale-ink-2)]">
-              {t('questions_required', { count: requiredQuestionCount })}
-            </span>
-          ) : null}
-        </div>
+        </InlineFeedback>
 
-        <p className="text-xs font-semibold uppercase tracking-wide text-[var(--jale-ink-2)]">
-          {t('estimate', { minutes: estimate })}
-        </p>
+        {fieldCount > 0 || docRows.length > 0 || certRows.length > 0 ? (
+          <>
+            <p className="text-xs font-semibold uppercase tracking-wide text-[var(--jale-ink-2)]">
+              {t('later_eyebrow')}
+            </p>
 
-        {vaultDocs === null ? (
-          <InlineFeedback tone="warning">{t('vault_check_failed')}</InlineFeedback>
-        ) : null}
+            {vaultDocs === null ? (
+              <InlineFeedback tone="warning">{t('vault_check_failed')}</InlineFeedback>
+            ) : null}
 
-        {docRows.length > 0 || certRows.length > 0 ? (
-          <ul className="divide-y divide-[var(--jale-divider)] overflow-hidden rounded-[var(--radius-input)] border border-[var(--jale-divider)]">
-            {[...docRows, ...certRows].map((row) => (
-              <WhatYouNeedRowView key={row.key} row={row} />
-            ))}
-          </ul>
+            <ul className="divide-y divide-[var(--jale-divider)] overflow-hidden rounded-[var(--radius-input)] border border-[var(--jale-divider)]">
+              {/* The field questions as ONE counted row, so they read as part
+                  of the later ask rather than as the headline they used to be. */}
+              {fieldCount > 0 ? (
+                <li className="px-3.5 py-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="min-w-0 text-sm font-medium text-[var(--jale-ink)]">
+                      {t('fields_row', { count: fieldCount, required: requiredFieldCount })}
+                    </span>
+                    <Badge tone="neutral">{t('after_they_ask')}</Badge>
+                  </div>
+                </li>
+              ) : null}
+              {[...docRows, ...certRows].map((row) => (
+                <WhatYouNeedRowView key={row.key} row={row} />
+              ))}
+            </ul>
+
+            {docRows.length > 0 || certRows.length > 0 ? (
+              <p className="text-xs text-[var(--jale-ink-2)]">{t('vault_note')}</p>
+            ) : null}
+          </>
         ) : null}
       </div>
     </DashboardPanel>
@@ -198,6 +229,7 @@ function WhatYouNeedRowView({ row }: { row: Row }) {
           {row.status === 'in_vault' ? <Badge tone="success">{t('in_vault')}</Badge> : null}
           {row.status === 'proof_in_vault' ? <Badge tone="success">{t('proof_in_vault')}</Badge> : null}
           {row.status === 'proof_needed' ? <Badge tone="warning">{t('proof_needed')}</Badge> : null}
+          {row.status === 'none' ? <Badge tone="neutral">{t('not_yet')}</Badge> : null}
         </span>
       </div>
       {/*

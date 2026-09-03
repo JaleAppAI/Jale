@@ -13,9 +13,14 @@ const SUITE_049 = 'test/unit/db/whatsapp-flow-049.integration.test.ts';
 // chk_trade_other incident): real adapters against the real schema, plus the
 // full remaining profile-flow SQL as jale_whatsapp.
 const SUITE_PROFILE_CONSTRAINTS = 'test/unit/db/worker-profiles-constraints.integration.test.ts';
-// migration 052 (2026-07-27 review): worker_skills DELETE reset + the
-// trust-answer upsert-by-question_index fix, both against real Postgres.
-const SUITE_052 = 'test/unit/db/whatsapp-onboarding-052.integration.test.ts';
+// The migration-052 entry that used to sit here is GONE. Migration 092
+// dropped 052's pending-name half (both definers and both users columns), so
+// its five staging cases had nothing left to exercise. Its other four cases
+// covered objects 092 deliberately KEEPS -- 052's worker_skills DELETE grant
+// and policy, saveTrustAnswer's upsert-by-question_index, and
+// findPreviousStepKey -- and those moved verbatim into the 092 suite rather
+// than being deleted with the file. Deregistering a suite must never be a
+// quiet way to lose coverage.
 // Reset CLI bind-list gate (2026-07-27): runReset shipped binding the full
 // [userId, phone, phoneHash] list to every per-table statement, which real
 // Postgres rejects on the first `user_id = $1` predicate. Only a real
@@ -24,9 +29,12 @@ const SUITE_RESET = 'test/unit/db/whatsapp-onboarding-reset.integration.test.ts'
 const SUITE_RETRIGGER = 'test/unit/db/retrigger-sweep-definer.integration.test.ts';
 // migration 080 (2026-08-20): WhatsApp application-fill DB contract --
 // jale_whatsapp DELETE-then-INSERT on worker_documents under RLS, the 073
-// application_answers column grant, the 022 guard's transaction-local GUC
-// bypass, the 075/078 cert caps (both constraint names) under RLS including
-// the RLS-scoped-COUNT footgun, and the snapshot-copy savepoint rollback.
+// application_answers column grant, the 075/078 cert caps (both constraint
+// names) under RLS including the RLS-scoped-COUNT footgun, and the
+// snapshot-copy savepoint rollback. Migration 091 retired the 022 INSERT
+// guard this suite used to exercise through its GUC bypass, so its two GUC
+// cases became one absence assertion (the doc-less INSERT now succeeds with
+// no GUC, and the GUC is inert).
 const SUITE_080 = 'test/unit/db/whatsapp-application-fill-080.integration.test.ts';
 // S22 R2-C0 / R2-C23 (2026-08-28): the WEB door onto the v2 onboarding
 // engine. The spike proves `jale_whatsapp` can drive the state machine for a
@@ -56,6 +64,47 @@ const SUITE_EMPLOYER_READS = 'test/unit/db/employer-worker-reads.integration.tes
 // The R2 hostile-input battery: SQL/encoding/boundary/envelope/lock/RLS probes
 // driven through the real web-door handler against the real policies.
 const SUITE_HOSTILE_INPUTS = 'test/unit/db/web-onboarding-hostile-inputs.integration.test.ts';
+// Sprint 23 L2.1: the migration-091 application-stages contract. The hire
+// trigger is deliberately NOT security definer -- it reads jobs and
+// worker_documents under the CALLER's RLS and fails closed when the job row
+// is invisible -- so its entire behavior (including the vault-only doc that
+// must NOT satisfy it) exists only where real policies do. Same for the
+// column-scoped jale_whatsapp grants: details_requested_at is withheld on
+// purpose, and a mocked pool would let that write through.
+const SUITE_STAGES_091 = 'test/unit/db/application-stages-091.integration.test.ts';
+// Sprint 23 L2.4: the WEB stage-2 details door. Belongs here for the same
+// reason as its neighbours -- `jobapp_whatsapp_select` is USING (true), so the
+// door's own `worker_id = $2` is the ONLY cross-tenant boundary, and
+// `jobapp_whatsapp_update` keys on a GUC whose absence is a zero-row UPDATE
+// (a SQL SUCCESS a mocked pool renders as a green 200 over a write that never
+// happened). It also drives 091's BEFORE-UPDATE hire gate to a PASS, which
+// nothing else in the repo does.
+const SUITE_APPLICATION_DETAILS = 'test/unit/db/worker-application-details.integration.test.ts';
+// Sprint 23 L2.5: the employer stage notification. It belongs here for the
+// same reason as the two above -- the whole feature turns on
+// `users_employer_applicant_read` (020b:261-269) seeing the EMPLOYER's users.id
+// in app.current_internal_user_id. Under a mocked pool every variant passes;
+// against the real policies the wrong GUC silently drops every notification.
+// Sprint 23 L3: the WhatsApp lane's two NEW statements -- the `aplicaciones`
+// listing and the continue-other offer filter. Both belong here for the same
+// reason as their neighbours: `jobapp_whatsapp_select` is USING (true), so
+// the listing's own `worker_id = $1` is the ONLY thing keeping one worker out
+// of another's applications, and a mocked pool proves nothing about that. The
+// listing also resolves the company through `employer_display_name` (031), a
+// SECURITY DEFINER path jale_whatsapp can only reach because it holds no
+// grant on employer_profiles at all.
+const SUITE_APPLICATIONS_COMMAND = 'test/unit/db/whatsapp-applications-command.integration.test.ts';
+const SUITE_STAGE_NOTIFY = 'test/unit/db/application-stage-notify.integration.test.ts';
+// Sprint 23 L8: the migration-092 cleanup contract. Every assertion in it is
+// a catalog or ACL fact, which is exactly the class a mocked pool cannot
+// hold: that five dead objects are ABSENT, that the two column-scoped
+// REVOKEs took nothing else with them (the failure mode is a bare
+// `REVOKE SELECT ON users`, which type-checks fine and breaks every inbound
+// WhatsApp turn), and that the web onboarding door and the WhatsApp bind
+// path still complete for a web-registered worker without 053's bypass
+// definer. It also carries the four surviving cases from the deleted 052
+// suite.
+const SUITE_CLEANUP_092 = 'test/unit/db/onboarding-cleanup-092.integration.test.ts';
 
 // The guard must fail closed regardless of the ambient environment. The final
 // verification battery exports JALE_TEST_DATABASE_URL to run the guarded
@@ -77,10 +126,19 @@ describe('test:whatsapp-v2-db fail-closed URL guard', () => {
     // chronologically by migration/feature, so a new suite is APPENDED rather
     // than slotted alphabetically.
     expect(suites).toEqual([
-      SUITE_042, SUITE_CONCURRENCY, SUITE_049, SUITE_PROFILE_CONSTRAINTS, SUITE_052,
+      SUITE_042, SUITE_CONCURRENCY, SUITE_049, SUITE_PROFILE_CONSTRAINTS,
       SUITE_RESET, SUITE_RETRIGGER, SUITE_080, SUITE_WEB_SPIKE, SUITE_WEB_DOOR, SUITE_CROSSOVER,
       SUITE_EXTRACTIONS_086, SUITE_EMPLOYER_READS, SUITE_HOSTILE_INPUTS,
+      SUITE_STAGES_091,
+      SUITE_APPLICATION_DETAILS,
+      SUITE_APPLICATIONS_COMMAND,
+      SUITE_CLEANUP_092,
+      SUITE_STAGE_NOTIFY,
     ]);
+    // The deregistered migration-052 suite must be gone from the script
+    // entirely -- including from any tombstone comment, which this file's own
+    // extraction regex would read back as a live list entry.
+    expect(script).not.toContain('whatsapp-onboarding-052');
     expect(script).toContain('--runInBand');
     // No other db integration suite leaks into this focused command.
     expect(script).not.toMatch(

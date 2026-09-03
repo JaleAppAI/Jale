@@ -204,7 +204,15 @@ function serializeField(key: RequirementFieldKey, draft: AnswerDraft): unknown {
 }
 
 /**
- * Builds the `answers` payload for `applyToJob`. Renders every required
+ * Builds the `answers` payload.
+ *
+ * SPRINT 23: this no longer feeds `applyToJob`, which takes `prompt_answers`
+ * alone -- field answers moved to the stage-2 door
+ * (`postApplicationAnswers` in `lib/api/worker.ts`), which takes the SAME
+ * `{ [key]: value }` object, so the builder itself is unchanged and wave 2
+ * re-points the caller.
+ *
+ * Renders every required
  * field (assumed complete -- callers gate submit on `canSubmitAnswers`
  * first) and every optional field the worker did NOT skip and did complete.
  * An incomplete or skipped optional field is simply omitted, never sent as

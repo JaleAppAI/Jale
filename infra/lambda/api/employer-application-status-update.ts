@@ -1,11 +1,16 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { getDbPool, setRlsContext } from '../lib/db';
+import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { APPLICATION_STATUSES } from '../lib/job-fields';
 import { enqueueVisibilityTransition, isEffectivelyVisible } from '../lib/job-visibility';
+import { parseHireGateError } from '../lib/application-requirements';
+import { enqueueApplicationStageNotification } from '../lib/application-stage-notify';
 import { checkCompliance } from '../legal/check-compliance';
 
 const CORS_HEADERS = corsHeaders();
+const DEFAULT_FRONTEND_BASE_URL = 'https://jaleapp.ai';
+/** employer_display_name() itself COALESCEs to this (031:61). */
+const EMPLOYER_NAME_FALLBACK = 'Empleador';
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
@@ -71,7 +76,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // explicitly re-reads status afterward and enqueues the transition.
     const jobCheck = await client.query(
       `SELECT jobs.id, jobs.number_of_workers_needed, jobs.workers_hired,
-              jobs.status, jobs.public_listing_enabled, jobs.public_code
+              jobs.status, jobs.public_listing_enabled, jobs.public_code,
+              jobs.employer_id, jobs.title, u.id AS employer_user_id
        FROM jobs
        JOIN users u ON u.id = jobs.employer_id
        WHERE jobs.id = $1 AND u.cognito_sub = $2
@@ -82,6 +88,22 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       await client.query('ROLLBACK');
       return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'forbidden' }) };
     }
+
+    const job = jobCheck.rows[0];
+
+    // `app.current_internal_user_id` must hold the EMPLOYER's users.id for the
+    // rest of this transaction -- the same thing employer-job-applicants.ts:55
+    // does. Two readers below depend on it:
+    //   * `users_employer_applicant_read` (020b:261-269, repaired by 038) is
+    //     the ONLY jale_admin SELECT policy that exposes a worker row, and it
+    //     matches on `employer_has_applicant_relationship(<this GUC>, users.id)`.
+    //     The stage notification's renderer reads the worker's phone through
+    //     it; with the GUC unset (or pointed at the worker) that SELECT returns
+    //     zero rows and every notification is silently dropped as
+    //     `renderer_unavailable`.
+    //   * `worker_message_intents_definer` / the 042 `*_definer` policies admit
+    //     jale_admin regardless, so nothing else in the enqueue needs a switch.
+    await setInternalUserRlsContext(client, job.employer_user_id);
 
     const application = await client.query(
       `SELECT id, status
@@ -95,20 +117,48 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 404, headers: CORS_HEADERS, body: JSON.stringify({ error: 'not_found' }) };
     }
 
-    const job = jobCheck.rows[0];
     const currentStatus = application.rows[0].status;
+    // Transitions stay any->any; `changed` only gates the worker notification.
+    const changed = currentStatus !== status;
     if (status === 'hired' && currentStatus !== 'hired' && job.workers_hired >= job.number_of_workers_needed) {
       await client.query('ROLLBACK');
       return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'headcount_full' }) };
     }
 
-    const result = await client.query(
-      `UPDATE job_applications
-       SET status = $1
-       WHERE job_id = $2 AND worker_id = $3
-       RETURNING id AS application_id, job_id, worker_id, status, applied_at, updated_at`,
-      [status, jobId, workerId],
-    );
+    // Sprint 23 (091): details_requested_at is stamped on the FIRST move into
+    // details_requested and never cleared again -- an employer who bounces the
+    // application back to 'talking' and re-requests must not restart the
+    // stage-2 clock, and details_completed_at (written by the worker-side
+    // door) must keep its meaning. COALESCE + the ELSE branch make this a
+    // no-op for every other transition.
+    //
+    // 091 also installs a BEFORE UPDATE trigger that raises 23514 with
+    // constraint `job_applications_hire_requirements_check` when this UPDATE
+    // moves the row to 'hired' while requirements are still missing. That is a
+    // client error, not a server fault: parseHireGateError turns it into a
+    // 409 with the missing buckets.
+    let result;
+    try {
+      result = await client.query(
+        `UPDATE job_applications
+         SET status = $1,
+             updated_at = now(),
+             details_requested_at = CASE WHEN $1 = 'details_requested' THEN COALESCE(details_requested_at, now()) ELSE details_requested_at END
+         WHERE job_id = $2 AND worker_id = $3
+         RETURNING id AS application_id, job_id, worker_id, status, applied_at, updated_at,
+                   details_requested_at, details_completed_at`,
+        [status, jobId, workerId],
+      );
+    } catch (err) {
+      const missing = parseHireGateError(err);
+      if (!missing) throw err;
+      await client.query('ROLLBACK');
+      return {
+        statusCode: 409,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({ error: 'details_incomplete', missing }),
+      };
+    }
 
     if (result.rowCount === 0) {
       await client.query('ROLLBACK');
@@ -127,6 +177,47 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       const wasVisible = isEffectivelyVisible(job.status, job.public_listing_enabled);
       const isVisible = isEffectivelyVisible(statusAfter, job.public_listing_enabled);
       await enqueueVisibilityTransition(client, jobId, job.public_code, wasVisible, isVisible);
+    }
+
+    // Sprint 23: the two stage changes the worker must hear about off-app.
+    // Only on an actual transition -- a PATCH that re-asserts the current
+    // status is a no-op and must not re-ping.
+    //
+    // This block is deliberately LAST before COMMIT. employer_display_name()
+    // flips a transaction-local GUC that widens employer_profiles reads until
+    // COMMIT (031:56; see the same warning at worker-jobs-detail.ts:44-46), so
+    // nothing employer-adjacent may run after it -- including the visibility
+    // re-read above, which is why that block stays ahead of this one.
+    if (changed && (status === 'details_requested' || status === 'hired')) {
+      const companyRes = await client.query(
+        `SELECT employer_display_name($1) AS company_name`,
+        [job.employer_id],
+      );
+      const companyName: string = companyRes.rows?.[0]?.company_name ?? EMPLOYER_NAME_FALLBACK;
+      const applicationId: string = result.rows[0].application_id;
+
+      const notified = await enqueueApplicationStageNotification(client, {
+        applicationId,
+        workerId,
+        kind: status,
+        jobId,
+        jobTitle: job.title, // jobs.title is NOT NULL (003:15).
+        companyName,
+        frontendBaseUrl: process.env.FRONTEND_BASE_URL ?? DEFAULT_FRONTEND_BASE_URL,
+        updatedAt: result.rows[0].updated_at,
+      });
+
+      // A worker with no verified WhatsApp number cannot be rendered. That is
+      // not a reason to refuse the employer's status change -- record it and
+      // commit. Every other enqueue failure propagates to the 500 path, which
+      // rolls the status change back.
+      if (notified.outcome === 'renderer_unavailable') {
+        console.log(JSON.stringify({
+          metric: 'ApplicationStageNotifySkipped',
+          reason: notified.reason,
+          applicationId,
+        }));
+      }
     }
 
     await client.query('COMMIT');

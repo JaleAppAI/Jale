@@ -15,7 +15,8 @@ jest.mock('../../../../lambda/lib/db', () => ({
 
 jest.mock('@aws-sdk/client-s3', () => ({
   S3Client: jest.fn().mockImplementation(() => ({ send: mockS3Send })),
-  GetObjectCommand: jest.fn().mockImplementation((input) => input),
+  GetObjectCommand: jest.fn().mockImplementation((input) => ({ __cmd: 'Get', ...input })),
+  PutObjectCommand: jest.fn().mockImplementation((input) => ({ __cmd: 'Put', ...input })),
 }));
 
 jest.mock('@aws-sdk/client-sqs', () => ({
@@ -229,6 +230,21 @@ describe('handleVoiceTrustCompletion — v2 branch', () => {
     expect(evt.transcript).toBeUndefined();
   });
 
+  // Sprint 23 L6: `origin` is OPTIONAL on the wire. Every execution that was
+  // already in flight when it shipped carries none, and must keep re-entering
+  // the WhatsApp queue exactly as before — this is the half of the trap that
+  // is easy to forget.
+  it('an event with NO origin still requeues onto the WhatsApp queue and writes nothing to S3', async () => {
+    mockS3Send.mockResolvedValueOnce({
+      Body: { transformToString: () => Promise.resolve('{"results":{"transcripts":[{"transcript":"five years"}]}}') },
+    });
+
+    await handleVoiceTrustCompletion({ status: 'COMPLETED', executionContext: v2Context, executionArn: V2_EXECUTION_ARN });
+
+    expect(mockSqsSend).toHaveBeenCalledTimes(1);
+    expect(mockS3Send.mock.calls.filter(([c]) => c.__cmd === 'Put')).toHaveLength(0);
+  });
+
   it('never logs the transcript text or the phone number', async () => {
     mockS3Send.mockResolvedValueOnce({
       Body: { transformToString: () => Promise.resolve('{"results":{"transcripts":[{"transcript":"a secret transcript"}]}}') },
@@ -241,6 +257,115 @@ describe('handleVoiceTrustCompletion — v2 branch', () => {
     expect(loggedText).not.toContain('a secret transcript');
     expect(loggedText).not.toContain(v2Context.v2.phone);
     logSpy.mockRestore();
+  });
+});
+
+// ── Sprint 23 L6: the WEB-ORIGIN TRAP ───────────────────────────────────
+//
+// A web worker may have NO WhatsApp conversation at all. Re-entering the
+// inbound FIFO queue would make the processor call
+// `getOrCreateConversationForUpdate` and MINT one for them — a WhatsApp
+// conversation for someone who never used WhatsApp, which then receives
+// onboarding prompts. So a `origin: 'web'` completion must stop here: the
+// browser is polling the transcript object directly (`voice-result`), which
+// is the only channel it needs.
+describe('handleVoiceTrustCompletion — web-origin completions never re-enter the WhatsApp queue', () => {
+  const { handleVoiceTrustCompletion } = require('../../../../lambda/ai/voice-trust-receiver');
+
+  const webContext = {
+    v2: {
+      version: 'v2' as const,
+      kind: 'trust_answer' as const,
+      phone: '+15551234567',
+      runId: 'run-1',
+      stepKey: 'trust.question.1',
+      language: 'en' as const,
+      origMessageSid: 'web:1a2b3c',
+      startedAt: '2026-09-02T00:00:00.000Z',
+      questionIndex: 0,
+      origin: 'web' as const,
+    },
+    mediaBucketName: 'jale-bucket',
+    transcriptOutputKey: 'voice/worker-1/transcripts/jale-vtw-abc.json',
+  };
+
+  const WEB_EXECUTION_ARN = 'arn:aws:states:us-east-1:123456789012:execution:trust-voice-pipeline:vtw-abc';
+
+  function putCalls(): any[] {
+    return mockS3Send.mock.calls.map(([c]) => c).filter((c) => c.__cmd === 'Put');
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.WHATSAPP_INBOUND_V2_QUEUE_URL = 'https://sqs.us-east-1.amazonaws.com/123/v2-queue.fifo';
+    mockSqsSend.mockResolvedValue({});
+    mockS3Send.mockResolvedValue({});
+  });
+
+  it('a successful transcription sends NO SQS message and writes nothing — Transcribe already wrote the object the browser polls', async () => {
+    mockS3Send.mockResolvedValueOnce({
+      Body: { transformToString: () => Promise.resolve('{"results":{"transcripts":[{"transcript":"five years framing"}]}}') },
+    });
+
+    await handleVoiceTrustCompletion({ status: 'COMPLETED', executionContext: webContext, executionArn: WEB_EXECUTION_ARN });
+
+    expect(mockSqsSend).not.toHaveBeenCalled();
+    expect(mockDbConnect).not.toHaveBeenCalled();
+    expect(putCalls()).toHaveLength(0);
+  });
+
+  // Without this the 410 branch of `voice-result` is unreachable: Transcribe
+  // writes NOTHING when a job fails, so the browser would poll a key that
+  // never appears until its own 60s cap expires.
+  it('a FAILED transcription persists an empty-text marker at the transcript key, and still sends no SQS message', async () => {
+    await handleVoiceTrustCompletion({ status: 'FAILED', executionContext: webContext, executionArn: WEB_EXECUTION_ARN });
+
+    expect(mockSqsSend).not.toHaveBeenCalled();
+    const puts = putCalls();
+    expect(puts).toHaveLength(1);
+    expect(puts[0].Bucket).toBe('jale-bucket');
+    expect(puts[0].Key).toBe(webContext.transcriptOutputKey);
+    expect(JSON.parse(puts[0].Body)).toEqual({ jaleTranscriptVersion: 1, text: '', provider: 'failed' });
+  });
+
+  it('a whitespace-only transcript is persisted as the same failure marker', async () => {
+    mockS3Send.mockResolvedValueOnce({
+      Body: { transformToString: () => Promise.resolve('{"results":{"transcripts":[{"transcript":"   "}]}}') },
+    });
+
+    await handleVoiceTrustCompletion({ status: 'COMPLETED', executionContext: webContext, executionArn: WEB_EXECUTION_ARN });
+
+    expect(mockSqsSend).not.toHaveBeenCalled();
+    expect(putCalls()).toHaveLength(1);
+  });
+
+  it('an S3 read failure still resolves, marks the attempt failed, and sends no SQS message', async () => {
+    mockS3Send.mockRejectedValueOnce(new Error('S3 unavailable'));
+
+    await expect(
+      handleVoiceTrustCompletion({ status: 'COMPLETED', executionContext: webContext, executionArn: WEB_EXECUTION_ARN }),
+    ).resolves.toBeUndefined();
+
+    expect(mockSqsSend).not.toHaveBeenCalled();
+    expect(putCalls()).toHaveLength(1);
+  });
+
+  // Belt and braces: the marker write itself failing must not throw either,
+  // or Step Functions retries the completion task against a job that is
+  // already finished.
+  it('a failed marker write is swallowed, not thrown', async () => {
+    mockS3Send.mockRejectedValueOnce(new Error('S3 write denied'));
+
+    await expect(
+      handleVoiceTrustCompletion({ status: 'FAILED', executionContext: webContext, executionArn: WEB_EXECUTION_ARN }),
+    ).resolves.toBeUndefined();
+    expect(mockSqsSend).not.toHaveBeenCalled();
+  });
+
+  it('still requires the executionArn — the contract is the same on both origins', async () => {
+    await expect(
+      handleVoiceTrustCompletion({ status: 'COMPLETED', executionContext: webContext }),
+    ).rejects.toThrow(/executionArn missing/);
   });
 });
 

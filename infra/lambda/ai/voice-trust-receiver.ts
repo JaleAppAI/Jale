@@ -1,12 +1,14 @@
 import type { Handler } from 'aws-lambda';
-import { S3Client } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import { readTranscriptResult } from '../lib/transcript';
 import type { Lang } from '../whatsapp/lib/templates';
 import {
   buildSyntheticVoiceInboundBody,
+  resolveVoiceOrigin,
   syntheticVoiceSid,
   type VoiceEventV2,
+  type VoiceOrigin,
 } from '../whatsapp/lib/voice-events';
 import { hashNormalizedPhone } from '../whatsapp/lib/runtime-controls';
 
@@ -49,6 +51,12 @@ export interface V2TrustExecutionContext {
     origMessageSid: string;
     startedAt: string;
     questionIndex: number;
+    /**
+     * Sprint 23 L6. ABSENT on every execution started before it shipped, and
+     * on every WhatsApp execution that omits it — read through
+     * `resolveVoiceOrigin`, never directly.
+     */
+    origin?: VoiceOrigin;
   };
   mediaBucketName: string;
   transcriptOutputKey: string;
@@ -82,6 +90,39 @@ function inboundV2QueueUrl(): string {
   const url = process.env.WHATSAPP_INBOUND_V2_QUEUE_URL;
   if (!url) throw new Error('WHATSAPP_INBOUND_V2_QUEUE_URL not set');
   return url;
+}
+
+/**
+ * The object `voice-result` polls when Transcribe produced nothing usable.
+ *
+ * Transcribe writes `transcriptOutputKey` ITSELF on success, so the happy web
+ * path needs no write here at all. But a FAILED job writes NOTHING, and the
+ * browser is polling that exact key — without a marker it would poll until its
+ * own 60s cap with no way to tell "still working" from "never coming". The
+ * marker is a `jaleTranscriptVersion: 1` payload with empty text, so
+ * `readTranscriptResult` parses it unchanged and the empty-text branch on the
+ * door turns it into a 410.
+ *
+ * Best effort: a write failure here must not throw, or Step Functions retries
+ * a completion task whose transcription job is already over.
+ */
+async function persistWebFailureMarker(
+  bucket: string,
+  key: string,
+): Promise<void> {
+  try {
+    await s3.send(new PutObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      ContentType: 'application/json',
+      Body: JSON.stringify({ jaleTranscriptVersion: 1, text: '', provider: 'failed' }),
+    }));
+  } catch (err) {
+    console.error(JSON.stringify({
+      metric: 'VoiceTrustReceiverWebMarkerWriteFailed',
+      reason: (err as { name?: string })?.name ?? 'unknown_error',
+    }));
+  }
 }
 
 /**
@@ -134,6 +175,29 @@ async function handleV2VoiceTrustCompletion(
     }
   }
 
+  // ── THE WEB-ORIGIN TRAP ───────────────────────────────────────────
+  //
+  // A web worker may have no WhatsApp conversation at all. The synthetic
+  // inbound event below re-enters the processor, which calls
+  // `getOrCreateConversationForUpdate` — minting a WhatsApp conversation for
+  // someone who has never messaged us, and then prompting them there. So a
+  // web-origin completion STOPS HERE. The browser is polling the transcript
+  // object directly (`POST /worker/onboarding/voice-result`), and the answer
+  // is recorded when the worker submits it through the ordinary `answers`
+  // action — the same one a typed answer uses.
+  if (resolveVoiceOrigin(v2.origin) === 'web') {
+    if (finalStatus !== 'COMPLETED') {
+      await persistWebFailureMarker(ctx.mediaBucketName, ctx.transcriptOutputKey);
+    }
+    console.log(JSON.stringify({
+      metric: 'VoiceTrustReceiverWebCompleted',
+      kind: v2.kind,
+      stepKey: v2.stepKey,
+      status: finalStatus,
+    }));
+    return;
+  }
+
   const evt: VoiceEventV2 = {
     version: 'v2',
     kind: 'trust_answer',
@@ -146,6 +210,7 @@ async function handleV2VoiceTrustCompletion(
     startedAt: v2.startedAt,
     questionIndex: v2.questionIndex,
     executionArn,
+    origin: 'whatsapp',
     ...(finalStatus === 'COMPLETED'
       ? { transcript, transcriptOutputKey: ctx.transcriptOutputKey }
       : {}),

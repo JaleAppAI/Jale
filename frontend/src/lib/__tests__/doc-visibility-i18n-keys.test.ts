@@ -41,7 +41,7 @@ const ADDED_KEY_PATHS = [
     // upload path for (legacy 'ssn'). Those keys no longer block Continue, so
     // this sentence is the ONLY thing telling the worker the requirement is
     // real and handled off-platform.
-    'worker_job_detail.apply_flow.legacy_doc_notice',
+    'worker_application_details.legacy_doc_notice',
 ] as const;
 
 describe('doc visibility i18n keys', () => {

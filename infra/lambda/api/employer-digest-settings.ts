@@ -8,7 +8,7 @@ import { checkCompliance } from '../legal/check-compliance';
  * PATCH /employer/settings/digest
  *
  * The employer's own read/write path for employer_digest_settings (migration
- * 080). One Lambda serves both verbs, matching api/employer-profile.ts.
+ * 082). One Lambda serves both verbs, matching api/employer-profile.ts.
  *
  * PATCH, not PUT: lib/http.ts's corsHeaders() advertises
  * `GET,POST,PATCH,DELETE,OPTIONS` and PUT is absent, so a PUT would fail
@@ -26,6 +26,27 @@ import { checkCompliance } from '../legal/check-compliance';
  * by itself start sending mail. GET is therefore a pure SELECT that reports
  * the opt-out defaults (enabled=false) when no row exists; the row is only
  * created by an actual PATCH.
+ *
+ * ── Re-enabling invalidates the old unsubscribe links ────────────
+ * `unsubscribe_token_version` is bumped on the false -> true transition ONLY,
+ * inside the same upsert. The counter is the ONLY revocation mechanism the
+ * unsubscribe token has -- lib/unsubscribe-token.ts embeds no expiry, ON
+ * PURPOSE, because a link in an inbox has no natural lifetime and an expired
+ * one reads to the recipient as "this product ignored my opt-out". So the
+ * links have to be killed by an event instead, and turning the digest back on
+ * is that event: every link mailed during the previous ON period is now
+ * pointing at a preference the employer has since reversed, and a mail client
+ * prefetching one of those would silently undo the change they just made.
+ *
+ * The bump is deliberately NOT on the true -> false transition. Turning the
+ * digest off already makes every old link a no-op in effect (the definer flips
+ * a row that is already flipped), and bumping there would spend a version on
+ * an outcome that already holds.
+ *
+ * A brand-new row starts at the column default of 1 with no bump: nothing has
+ * ever been mailed to it, so there is nothing to revoke. LEAST() pins the
+ * SMALLINT ceiling -- migration 090's definer does the same, and between them
+ * they are the only two writers of this column.
  *
  * ── Timezone validation is two-layered, and the DB owns layer two ─
  * This handler pins only the LEXICAL shape. It deliberately does NOT gate on
@@ -69,6 +90,35 @@ interface PatchInput {
   timezone: string | null;
   language: string | null;
 }
+
+/**
+ * The PATCH upsert, hoisted to a constant so the PostgreSQL-backed suite can
+ * run the STATEMENT THIS HANDLER ACTUALLY SENDS against a real database rather
+ * than a copy of it. The token-version bump is a two-writer invariant (the
+ * other writer is migration 090's bounce definer) and a mocked assertion on
+ * SQL text cannot show that it fires on the right transition.
+ */
+export const DIGEST_SETTINGS_UPSERT_SQL = `INSERT INTO employer_digest_settings
+     (employer_id, enabled, send_hour_local, timezone, language)
+   VALUES (
+     $1,
+     COALESCE($2::boolean, ${DEFAULT_SETTINGS.enabled}),
+     COALESCE($3::smallint, ${DEFAULT_SETTINGS.send_hour_local}),
+     COALESCE($4::text, '${DEFAULT_SETTINGS.timezone}'),
+     COALESCE($5::text, '${DEFAULT_SETTINGS.language}')
+   )
+   ON CONFLICT (employer_id) DO UPDATE SET
+     enabled = COALESCE($2::boolean, employer_digest_settings.enabled),
+     send_hour_local = COALESCE($3::smallint, employer_digest_settings.send_hour_local),
+     timezone = COALESCE($4::text, employer_digest_settings.timezone),
+     language = COALESCE($5::text, employer_digest_settings.language),
+     unsubscribe_token_version = CASE
+       WHEN COALESCE($2::boolean, employer_digest_settings.enabled)
+            AND NOT employer_digest_settings.enabled
+       THEN LEAST(employer_digest_settings.unsubscribe_token_version + 1, 32767)
+       ELSE employer_digest_settings.unsubscribe_token_version
+     END
+   RETURNING enabled, send_hour_local, timezone, language`;
 
 function fail(statusCode: number, error: string, extra: Record<string, unknown> = {}): APIGatewayProxyResult {
   return { statusCode, headers: CORS_HEADERS, body: JSON.stringify({ error, ...extra }) };
@@ -201,21 +251,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     const upserted = await client.query<DigestSettingsRow>(
-      `INSERT INTO employer_digest_settings
-         (employer_id, enabled, send_hour_local, timezone, language)
-       VALUES (
-         $1,
-         COALESCE($2::boolean, ${DEFAULT_SETTINGS.enabled}),
-         COALESCE($3::smallint, ${DEFAULT_SETTINGS.send_hour_local}),
-         COALESCE($4::text, '${DEFAULT_SETTINGS.timezone}'),
-         COALESCE($5::text, '${DEFAULT_SETTINGS.language}')
-       )
-       ON CONFLICT (employer_id) DO UPDATE SET
-         enabled = COALESCE($2::boolean, employer_digest_settings.enabled),
-         send_hour_local = COALESCE($3::smallint, employer_digest_settings.send_hour_local),
-         timezone = COALESCE($4::text, employer_digest_settings.timezone),
-         language = COALESCE($5::text, employer_digest_settings.language)
-       RETURNING enabled, send_hour_local, timezone, language`,
+      DIGEST_SETTINGS_UPSERT_SQL,
       [employerId, patch!.enabled, patch!.sendHourLocal, patch!.timezone, patch!.language],
     );
     const row = upserted.rows[0];

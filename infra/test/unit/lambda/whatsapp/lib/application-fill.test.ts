@@ -1,17 +1,51 @@
 // infra/test/unit/lambda/whatsapp/lib/application-fill.test.ts
 //
-// Verifies computeNextStep — the DB-derived progress engine for the
-// WhatsApp application-fill flow. All DB access goes through a single
-// mocked `client.query`, matched by call order / SQL shape, following
-// conversation-router.test.ts's conventions.
+// Verifies the WhatsApp application-fill lane after sprint 23 rewired it onto
+// the shared engine (lambda/lib/application-requirements.ts). Everything this
+// module used to own -- its private `computeNextStep`, its
+// `countRemainingRequirements`, its own `seedAnswersFromDefaults` and
+// `persistMergedAnswers` -- now lives in that engine and is unit-tested in
+// test/unit/lambda/lib/application-requirements.test.ts. What is tested HERE
+// is the lane: the narrower step gate (`fillStepFor`/`computeFillStep`), the
+// stage-2 arm (`armFill`), the per-turn dispatcher (`handleFillMessage`) and
+// the terminal arms (`promptNextStep` -> completion / lifecycle exit).
+//
+// ── WHY THE DB DOUBLE IS SQL-SHAPE-ROUTED, NOT A CALL QUEUE ──────────────
+// The pre-sprint-23 version of this file drove `client.query` with a strict
+// `mockResolvedValueOnce` queue and asserted on `mockQuery.mock.calls[N]`
+// with hardcoded indices. Both are unusable now: ONE logical operation
+// (`mergeFieldAnswers`) is a snapshot load + a SAVEPOINT + the merge UPDATE +
+// a RELEASE + a defaults upsert + a conditional completion stamp, and the
+// snapshot load is itself 1 or 3 statements depending on whether the job asks
+// for documents. A queue encodes that arithmetic in every test and breaks on
+// any engine-internal reordering.
+//
+// So `installDbFake()` below installs ONE `mockImplementation` that routes on
+// SQL SHAPE and answers from mutable STATE (`fake`). Tests declare state
+// ("this application is stage 2, needs work_authorization, has no docs on
+// file") instead of a call sequence. The fake also APPLIES writes to that
+// state -- a merge UPDATE really merges into the fixture's answers, a
+// worker_documents INSERT really makes the doc present -- so a turn's
+// follow-up prompt advances for the same reason production advances, and
+// SAVEPOINT/ROLLBACK really restores. Any statement the router does not
+// recognize THROWS with the SQL text, so an unmocked query fails loudly
+// instead of silently resolving to `undefined`.
+//
+// Assertions look calls up by SQL shape (`findCall`/`findCallIndex`), never
+// by index. Where ORDER is the thing under test (S3 PUT before the DB write,
+// setRls before the write, the completion stamp before the completion reply)
+// the order is asserted with `invocationCallOrder`, computed from a
+// find-by-shape index.
 //
 // job-fields.ts (DOC_TYPES / REQUIRED_FIELD_TYPES) is left UNMOCKED
 // intentionally: it is pure data, no I/O.
 //
-// ../../lib/db is mocked because worker_documents is a FORCE ROW LEVEL
-// SECURITY table (005_document_vault.sql) whose SELECT policy requires
-// app.current_internal_user_id to be set to the worker's id first —
-// computeNextStep must call setInternalUserRlsContext before querying it.
+// ../../lib/db is mocked: `setInternalUserRlsContext` is how the engine's
+// document-sync path arms worker_documents' FORCE ROW LEVEL SECURITY policy
+// (005_document_vault.sql), and mocking it both (a) lets the RLS-ordering
+// tests below assert on it directly and (b) keeps its `SELECT set_config(...)`
+// out of the query stream, so "how many statements does one snapshot load
+// cost" stays readable.
 
 const mockQuery = jest.fn();
 const client: any = { query: mockQuery };
@@ -21,17 +55,16 @@ jest.mock('../../../../../lambda/lib/db', () => ({
 }));
 
 // Real `validateApplicationAnswers` by default (pass-through wrapper) --
-// only the merge-backstop test below overrides it for one call, to
-// simulate a validator that (hypothetically, in the future) accepts a
-// >8192-byte value; every other test exercises the genuine validator so
-// e.g. string-trimming behavior is authentic, not asserted-by-mock.
+// only the merge-backstop / invalid-answer tests below override it for one
+// call; every other test exercises the genuine validator so e.g.
+// string-trimming behavior is authentic, not asserted-by-mock.
 jest.mock('../../../../../lambda/lib/application-answers', () => {
   const actual = jest.requireActual('../../../../../lambda/lib/application-answers');
   return { ...actual, validateApplicationAnswers: jest.fn(actual.validateApplicationAnswers) };
 });
 
-// Task 8: media.ts's uploadDocumentToS3 makes a real S3 PutObjectCommand
-// call -- mocked so doc-step tests never hit AWS. sniffDocumentType,
+// media.ts's uploadDocumentToS3 makes a real S3 PutObjectCommand call --
+// mocked so doc-step tests never hit AWS. sniffDocumentType,
 // MediaTooLargeError, ALLOWED_DOCUMENT_TYPES stay REAL (pure, no I/O) so the
 // magic-byte sniff and the mismatch/error-type checks under test are
 // authentic, not asserted-by-mock. downloadTwilioMediaBounded is never
@@ -43,9 +76,13 @@ jest.mock('../../../../../lambda/whatsapp/lib/media', () => {
 });
 
 import {
-  computeNextStep,
-  countRemainingRequirements,
-  seedAnswersFromDefaults,
+  computeFillStep,
+  fillStepFor,
+  fillCountsFor,
+  workerApplicationUrl,
+  matchesFillEscape,
+  localizeDocList,
+  armFill,
   handleFillMessage,
   promptNextStep,
   isFillCancel,
@@ -55,6 +92,10 @@ import {
   type FillPendingConfirm,
   type FillPendingEntryAnother,
 } from '../../../../../lambda/whatsapp/lib/application-fill';
+import {
+  loadRequirementSnapshot,
+  type RequirementSnapshot,
+} from '../../../../../lambda/lib/application-requirements';
 import { setInternalUserRlsContext } from '../../../../../lambda/lib/db';
 import { validateApplicationAnswers } from '../../../../../lambda/lib/application-answers';
 import type { IncomingMessage } from '../../../../../lambda/whatsapp/lib/conversation-router';
@@ -66,282 +107,366 @@ import { t } from '../../../../../lambda/whatsapp/lib/templates';
 const APPLICATION_ID = 'aaaaaaaa-0000-0000-0000-00000000000a';
 const WORKER_ID = 'bbbbbbbb-0000-0000-0000-00000000000b';
 const JOB_ID = 'cccccccc-0000-0000-0000-00000000000c';
+const CONVERSATION_ID = 'dddddddd-0000-0000-0000-00000000000d';
+const OTHER_APPLICATION_ID = 'eeeeeeee-0000-0000-0000-00000000000e';
+const OTHER_APPLICATION_ID_2 = 'ffffffff-0000-0000-0000-00000000000f';
+const OTHER_JOB_ID = 'cccccccc-0000-0000-0000-00000000001c';
+const OTHER_JOB_ID_2 = 'cccccccc-0000-0000-0000-00000000002c';
+const FROM = 'whatsapp:+15550000000';
+const NOW_MS = 1_700_000_000_000;
 
-// Builds a row shaped like the first SELECT's result (job_applications JOIN
-// jobs). Callers override only the fields the test cares about.
-function appRow(overrides: Partial<{
-  job_status: string;
-  application_status: string;
-  required_fields: string[];
-  required_docs: string[];
-  application_answers: Record<string, unknown>;
-  worker_id: string;
-  job_id: string;
-}> = {}) {
+// The employer name `employer_display_name(...)` resolves to for JOB_ID --
+// sprint 23's `intro` and `completion` copy both substitute `{{company}}`.
+const COMPANY = 'Acme Concrete';
+
+// Stage-2 default (task requirement 4): `details_requested_at` NON-NULL and
+// `details_completed_at` NULL. `RequirementSnapshot.stage` is derived from
+// the TIMESTAMP, never the literal status (application-requirements.ts:258),
+// and `fillStepFor` exits an 'apply'-stage snapshot as `details_not_requested`
+// -- so a fixture that forgets this makes every fill test exit instead of
+// asking anything.
+const DETAILS_REQUESTED_AT = '2026-09-01T10:00:00.000Z';
+
+// ─────────────────────────────────────────────────────────────────────────
+// THE DB FAKE. One `mockImplementation`, routed on SQL shape, answering from
+// (and writing into) the mutable `fake` state below.
+// ─────────────────────────────────────────────────────────────────────────
+
+/** Every statement shape the lane + engine can issue this file. Also reused
+ * as the find-by-shape patterns in assertions, so a pattern and its route
+ * can never drift apart. */
+const SQL = {
+  /** application-requirements.ts:218 SNAPSHOT_SQL. */
+  snapshot: /SELECT ja\.id, ja\.worker_id, ja\.job_id/,
+  /** application-fill.ts:834 findContinueOtherOffer -- also a
+   * job_applications-JOIN-jobs select, told apart by its worker_id key. */
+  offerScan: /FROM job_applications ja JOIN jobs j[\s\S]*ja\.worker_id = \$1/,
+  /** application-fill.ts:755 fetchApplicationJobId (media path). */
+  jobIdOnly: /SELECT job_id FROM job_applications WHERE id = \$1/,
+  /** application-fill.ts:782 fetchApplicationJobContext (text path, step 5). */
+  jobContext: /SELECT job_applications\.job_id, jobs\.required_fields/,
+  /** application-requirements.ts:295 -- the post-sync doc re-read. */
+  docReread: /SELECT DISTINCT doc_type FROM worker_documents/,
+  /** applications.ts:101 copyRequiredDocumentSnapshots, non-cert branch. */
+  copyNonCert: /INSERT INTO worker_documents[\s\S]*SELECT DISTINCT ON \(doc_type\)/,
+  /** applications.ts:117 copyRequiredDocumentSnapshots, certification branch. */
+  copyCert: /INSERT INTO worker_documents[\s\S]*FROM worker_documents src/,
+  /** application-fill.ts:1207 -- the lane's own single-row doc write. */
+  docInsert: /INSERT INTO worker_documents \(worker_id, job_id, doc_type[\s\S]*VALUES \(\$1, \$2, \$3/,
+  docDelete: /DELETE FROM worker_documents WHERE worker_id = \$1 AND job_id = \$2 AND doc_type = \$3/,
+  /** application-requirements.ts:594 persistMergedAnswers -- THE merge. */
+  mergeUpdate: /UPDATE job_applications\s+SET application_answers = application_answers \|\| \$1::jsonb/,
+  /** application-requirements.ts:924 markDetailsCompleteIfDone. NOTE: this
+   * and `mergeUpdate` are BOTH `UPDATE job_applications`, so no assertion may
+   * match on that prefix alone any more. */
+  detailsComplete: /UPDATE job_applications\s+SET details_completed_at = now\(\)/,
+  defaultsSelect: /SELECT answers FROM worker_application_defaults WHERE worker_id = \$1/,
+  defaultsUpsert: /INSERT INTO worker_application_defaults/,
+  seedAnswersSelect: /SELECT application_answers FROM job_applications WHERE id = \$1/,
+  company: /SELECT employer_display_name\(/,
+  savepoint: /^\s*SAVEPOINT (\S+)/,
+  releaseSavepoint: /^\s*RELEASE SAVEPOINT (\S+)/,
+  rollbackSavepoint: /^\s*ROLLBACK TO SAVEPOINT (\S+)/,
+  setConfig: /SELECT set_config\(/,
+};
+
+interface AppFixture {
+  /** The SNAPSHOT_SQL row, or null for a vanished application. */
+  row: Record<string, any> | null;
+  /** JOB-SCOPED worker_documents doc types (what `have_docs` reports). */
+  haveDocs: string[];
+  /** Vault docs (job_id IS NULL). `copyRequiredDocumentSnapshots` folds the
+   * requested ones into `haveDocs` -- the engine header's whole reason for
+   * `syncDocumentSnapshots: true`: without it a vault-only resume reads as
+   * missing forever and the bot re-asks every turn. */
+  vaultDocs: string[];
+}
+
+interface FakeDb {
+  apps: Map<string, AppFixture>;
+  /** Doc types written by a CONCURRENT transaction -- unioned into every
+   * doc read and deliberately NOT savepoint-managed (another transaction's
+   * row does not roll back with ours). This is what a 23505/23514 doc INSERT
+   * failure actually means: the rows are already there. */
+  concurrentDocs: string[];
+  /** worker_application_defaults.answers, or null for "no row yet". */
+  defaults: Record<string, unknown> | null;
+  /** Every payload written through `upsertWorkerApplicationDefaults`. */
+  defaultsWritten: Record<string, unknown>[];
+  /** findContinueOtherOffer's candidate rows. */
+  otherApps: { id: string; title: string }[];
+  company: string;
+  /** Override for the merge UPDATE's `RETURNING length(...) AS total` --
+   * the post-merge column size the engine's SAVEPOINT guard compares against
+   * MAX_ANSWERS_JSON_LENGTH (16384). Defaults to the real serialized size. */
+  answersTotal?: number;
+  /** Override for fetchApplicationJobContext's `required_fields` ONLY, so a
+   * test can make that read and SNAPSHOT_SQL disagree (a real intra-turn
+   * race: the employer edits the job between the two SELECTs). */
+  jobContextRequiredFields?: string[];
+  /** Thrown by copyRequiredDocumentSnapshots (both branches). */
+  copyError?: unknown;
+  /** Thrown by the lane's own worker_documents INSERT. */
+  docInsertError?: unknown;
+  savepoints: Map<string, () => void>;
+}
+
+let fake: FakeDb;
+
+function freshApp(overrides: Record<string, unknown> = {}, fixture: Partial<AppFixture> = {}): AppFixture {
   return {
-    job_status: 'active',
-    application_status: 'pending',
-    required_fields: [],
-    required_docs: [],
-    application_answers: {},
-    worker_id: WORKER_ID,
-    job_id: JOB_ID,
-    ...overrides,
+    row: {
+      id: APPLICATION_ID,
+      worker_id: WORKER_ID,
+      job_id: JOB_ID,
+      application_status: 'pending',
+      application_answers: {},
+      prompt_answers: {},
+      details_requested_at: DETAILS_REQUESTED_AT,
+      details_completed_at: null,
+      applied_at: '2026-08-30T00:00:00.000Z',
+      updated_at: '2026-09-01T00:00:00.000Z',
+      job_status: 'active',
+      job_title: 'Concrete Finisher',
+      required_fields: [],
+      optional_fields: [],
+      required_docs: [],
+      optional_docs: [],
+      certification_requirements: [],
+      pre_application_prompts: [],
+      ...overrides,
+    },
+    haveDocs: [],
+    vaultDocs: [],
+    ...fixture,
   };
 }
 
-function mockAppRow(row: ReturnType<typeof appRow>) {
-  mockQuery.mockResolvedValueOnce({ rows: [row], rowCount: 1 });
+function freshFake(): FakeDb {
+  return {
+    apps: new Map([[APPLICATION_ID, freshApp()]]),
+    concurrentDocs: [],
+    defaults: null,
+    defaultsWritten: [],
+    otherApps: [],
+    company: COMPANY,
+    savepoints: new Map(),
+  };
 }
 
-function mockDocRows(docTypes: string[]) {
-  mockQuery.mockResolvedValueOnce({
-    rows: docTypes.map((doc_type) => ({ doc_type })),
-    rowCount: docTypes.length,
+/** Replaces THE application fixture's row fields (stage-2 defaults kept for
+ * anything not named) and, optionally, its document state. */
+function setApp(overrides: Record<string, unknown> = {}, fixture: Partial<AppFixture> = {}): void {
+  fake.apps.set(APPLICATION_ID, freshApp(overrides, fixture));
+}
+
+/** Registers an ADDITIONAL application (a continue-other candidate). */
+function setOtherApp(id: string, overrides: Record<string, unknown> = {}, fixture: Partial<AppFixture> = {}): void {
+  fake.apps.set(id, freshApp({ id, ...overrides }, fixture));
+}
+
+/** The application row is gone (deleted, or its job CASCADE-deleted). */
+function setAppMissing(): void {
+  fake.apps.set(APPLICATION_ID, { row: null, haveDocs: [], vaultDocs: [] });
+}
+
+function appByJob(jobId: string): AppFixture | undefined {
+  for (const fixture of fake.apps.values()) {
+    if (fixture.row?.job_id === jobId) return fixture;
+  }
+  return undefined;
+}
+
+/** Job-scoped docs as the DB would report them: our own rows plus whatever a
+ * concurrent transaction already committed. */
+function visibleDocs(fixture: AppFixture | undefined): string[] {
+  return Array.from(new Set([...(fixture?.haveDocs ?? []), ...fake.concurrentDocs]));
+}
+
+function takeSavepoint(name: string): void {
+  const saved = Array.from(fake.apps.entries()).map(([id, f]) => [id, {
+    answers: JSON.parse(JSON.stringify(f.row?.application_answers ?? {})),
+    detailsCompletedAt: f.row?.details_completed_at ?? null,
+    haveDocs: [...f.haveDocs],
+    vaultDocs: [...f.vaultDocs],
+  }] as const);
+  fake.savepoints.set(name, () => {
+    for (const [id, snap] of saved) {
+      const f = fake.apps.get(id);
+      if (!f) continue;
+      if (f.row) {
+        f.row.application_answers = snap.answers;
+        f.row.details_completed_at = snap.detailsCompletedAt;
+      }
+      f.haveDocs = [...snap.haveDocs];
+      f.vaultDocs = [...snap.vaultDocs];
+    }
   });
 }
 
-describe('computeNextStep', () => {
-  beforeEach(() => jest.clearAllMocks());
+function installDbFake(): void {
+  mockQuery.mockImplementation(async (sql: unknown, params?: unknown[]) => {
+    const text = String(sql);
+    const args = (params ?? []) as any[];
+    const ok = (rows: any[] = []) => ({ rows, rowCount: rows.length });
 
-  it('walks required_fields in array order, skipping answered keys', async () => {
-    mockAppRow(appRow({
-      required_fields: ['work_authorization', 'date_available', 'desired_pay'],
-      application_answers: { work_authorization: true },
-    }));
+    // ── transaction control ──────────────────────────────────────────────
+    let m = text.match(SQL.savepoint);
+    if (m && !/^\s*(RELEASE|ROLLBACK)/.test(text)) {
+      takeSavepoint(m[1]);
+      return ok();
+    }
+    m = text.match(SQL.releaseSavepoint);
+    if (m) {
+      fake.savepoints.delete(m[1]);
+      return ok();
+    }
+    m = text.match(SQL.rollbackSavepoint);
+    if (m) {
+      fake.savepoints.get(m[1])?.();
+      fake.savepoints.delete(m[1]);
+      return ok();
+    }
+    // Never reached while ../../lib/db is mocked; routed anyway so unmocking
+    // it later is not a cliff.
+    if (SQL.setConfig.test(text)) return ok([{ set_config: String(args[0] ?? '') }]);
 
-    const result = await computeNextStep(client, APPLICATION_ID);
+    // ── reads ────────────────────────────────────────────────────────────
+    if (SQL.snapshot.test(text)) {
+      const fixture = fake.apps.get(String(args[0]));
+      if (!fixture?.row) return ok();
+      return ok([{ ...fixture.row, have_docs: visibleDocs(fixture) }]);
+    }
+    if (SQL.offerScan.test(text)) {
+      return ok(fake.otherApps.map((entry) => ({ ...entry })));
+    }
+    if (SQL.jobIdOnly.test(text)) {
+      const fixture = fake.apps.get(String(args[0]));
+      return fixture?.row ? ok([{ job_id: fixture.row.job_id }]) : ok();
+    }
+    if (SQL.jobContext.test(text)) {
+      const fixture = fake.apps.get(String(args[0]));
+      if (!fixture?.row) return ok();
+      return ok([{
+        job_id: fixture.row.job_id,
+        required_fields: fake.jobContextRequiredFields ?? fixture.row.required_fields,
+      }]);
+    }
+    if (SQL.docReread.test(text)) {
+      return ok(visibleDocs(appByJob(String(args[1]))).map((doc_type) => ({ doc_type })));
+    }
+    if (SQL.defaultsSelect.test(text)) {
+      return fake.defaults === null ? ok() : ok([{ answers: fake.defaults }]);
+    }
+    if (SQL.seedAnswersSelect.test(text)) {
+      const fixture = fake.apps.get(String(args[0]));
+      return fixture?.row ? ok([{ application_answers: fixture.row.application_answers }]) : ok();
+    }
+    if (SQL.company.test(text)) return ok([{ company: fake.company }]);
 
-    expect(result).toEqual({ kind: 'field', key: 'date_available', uncollectable: [] });
-    // Only the application/job SELECT ran — the docs query never fires
-    // while an unanswered field remains.
-    expect(mockQuery).toHaveBeenCalledTimes(1);
+    // ── document writes ──────────────────────────────────────────────────
+    if (SQL.copyNonCert.test(text) || SQL.copyCert.test(text)) {
+      if (fake.copyError) throw fake.copyError;
+      const fixture = appByJob(String(args[0]));
+      const wanted: string[] = SQL.copyCert.test(text) ? ['certification_doc'] : (args[2] as string[]);
+      if (fixture) {
+        for (const docType of wanted) {
+          if (fixture.vaultDocs.includes(docType) && !fixture.haveDocs.includes(docType)) {
+            fixture.haveDocs.push(docType);
+          }
+        }
+      }
+      return ok();
+    }
+    if (SQL.docDelete.test(text)) {
+      const fixture = appByJob(String(args[1]));
+      if (fixture) fixture.haveDocs = fixture.haveDocs.filter((d) => d !== String(args[2]));
+      return { rows: [], rowCount: 1 };
+    }
+    if (SQL.docInsert.test(text)) {
+      const docType = String(args[2]);
+      if (fake.docInsertError) {
+        // A 23505/23514 here means the rows ALREADY EXIST -- committed by
+        // another transaction (or by an earlier turn), so they survive our
+        // ROLLBACK TO SAVEPOINT and the follow-up prompt must advance past
+        // this slot.
+        fake.concurrentDocs.push(docType);
+        throw fake.docInsertError;
+      }
+      const fixture = appByJob(String(args[1]));
+      if (fixture && !fixture.haveDocs.includes(docType)) fixture.haveDocs.push(docType);
+      return { rows: [], rowCount: 1 };
+    }
+
+    // ── answer writes ────────────────────────────────────────────────────
+    if (SQL.mergeUpdate.test(text)) {
+      const fixture = fake.apps.get(String(args[1]));
+      if (!fixture?.row) return ok();
+      Object.assign(fixture.row.application_answers, JSON.parse(String(args[0])));
+      const total = fake.answersTotal ?? JSON.stringify(fixture.row.application_answers).length;
+      return { rows: [{ total }], rowCount: 1 };
+    }
+    if (SQL.detailsComplete.test(text)) {
+      const fixture = fake.apps.get(String(args[0]));
+      if (!fixture?.row || fixture.row.details_completed_at) return { rows: [], rowCount: 0 };
+      fixture.row.details_completed_at = '2026-09-02T00:00:00.000Z';
+      return { rows: [], rowCount: 1 };
+    }
+    if (SQL.defaultsUpsert.test(text)) {
+      fake.defaultsWritten.push(JSON.parse(String(args[1])));
+      return { rows: [], rowCount: 1 };
+    }
+
+    throw new Error(`application-fill.test DB fake: unmocked SQL -> ${text.replace(/\s+/g, ' ').trim()}`);
   });
+}
 
-  it('fields before docs: an unanswered field wins even when a required doc is also missing', async () => {
-    mockAppRow(appRow({
-      required_fields: ['work_authorization'],
-      application_answers: {},
-      required_docs: ['resume'],
-    }));
+// ── find-by-SQL-shape assertion helpers ─────────────────────────────────
+//
+// These replace every `mockQuery.mock.calls[N]` in the pre-sprint-23 file.
+// A miss THROWS with the full observed statement list, so a stale pattern is
+// a loud failure instead of an `undefined` destructured three lines later.
 
-    const result = await computeNextStep(client, APPLICATION_ID);
+function observedSql(): string {
+  return mockQuery.mock.calls
+    .map(([s]: any[], i: number) => `  [${i}] ${String(s).replace(/\s+/g, ' ').trim().slice(0, 160)}`)
+    .join('\n');
+}
 
-    expect(result).toEqual({ kind: 'field', key: 'work_authorization', uncollectable: [] });
-    expect(mockQuery).toHaveBeenCalledTimes(1);
-  });
+function findCallIndex(pattern: RegExp): number {
+  const index = mockQuery.mock.calls.findIndex(([s]: any[]) => pattern.test(String(s)));
+  if (index === -1) throw new Error(`No query matched ${pattern}. Observed:\n${observedSql()}`);
+  return index;
+}
 
-  it('docs walk in required_docs array order, skipping present doc rows', async () => {
-    mockAppRow(appRow({
-      required_fields: [],
-      required_docs: ['resume', 'driver_license', 'work_auth_doc'],
-    }));
-    mockDocRows(['resume']);
+function findCall(pattern: RegExp): [string, any[]] {
+  const [sql, params] = mockQuery.mock.calls[findCallIndex(pattern)];
+  return [String(sql), (params ?? []) as any[]];
+}
 
-    const result = await computeNextStep(client, APPLICATION_ID);
+function findCalls(pattern: RegExp): [string, any[]][] {
+  return mockQuery.mock.calls
+    .filter(([s]: any[]) => pattern.test(String(s)))
+    .map(([sql, params]: any[]) => [String(sql), (params ?? []) as any[]] as [string, any[]]);
+}
 
-    expect(result).toEqual({ kind: 'doc', docType: 'driver_license', uncollectable: [] });
-  });
+function hasCall(pattern: RegExp): boolean {
+  return mockQuery.mock.calls.some(([s]: any[]) => pattern.test(String(s)));
+}
 
-  it('a doc uploaded via web mid-flow is skipped (presence diff)', async () => {
-    // The doc-presence query itself filters on (job_id IS NULL OR job_id =
-    // $2), so a web-vault upload (job_id NULL) surfaces here exactly like a
-    // per-job upload: it just shows up as a present doc_type row.
-    mockAppRow(appRow({
-      required_fields: [],
-      required_docs: ['resume', 'driver_license'],
-    }));
-    mockDocRows(['resume']); // uploaded via web, no job tie
+/** Global invocation order of the FIRST query matching `pattern` -- jest's
+ * `invocationCallOrder` counter is shared across every mock, so these are
+ * directly comparable with `deps.*` and `setInternalUserRlsContext` orders. */
+function queryOrder(pattern: RegExp): number {
+  return mockQuery.mock.invocationCallOrder[findCallIndex(pattern)];
+}
 
-    const result = await computeNextStep(client, APPLICATION_ID);
+function replyOrder(deps: FillDeps, index = 0): number {
+  return (deps.queueReplyText as jest.Mock).mock.invocationCallOrder[index];
+}
 
-    expect(result).toEqual({ kind: 'doc', docType: 'driver_license', uncollectable: [] });
-  });
+// ── per-turn fixtures ───────────────────────────────────────────────────
 
-  it('the doc-presence query matches worker_id and (job_id IS NULL OR job_id = $2)', async () => {
-    mockAppRow(appRow({ required_fields: [], required_docs: ['resume'] }));
-    mockDocRows([]);
-
-    await computeNextStep(client, APPLICATION_ID);
-
-    const [sql, params] = mockQuery.mock.calls[1];
-    expect(sql).toMatch(/worker_id\s*=\s*\$1/);
-    expect(sql).toMatch(/\(job_id IS NULL OR job_id = \$2\)/);
-    expect(params).toEqual([WORKER_ID, JOB_ID]);
-  });
-
-  it('sets the worker_documents RLS context before querying it', async () => {
-    mockAppRow(appRow({ required_fields: [], required_docs: ['resume'] }));
-    mockDocRows([]);
-
-    await computeNextStep(client, APPLICATION_ID);
-
-    expect(setInternalUserRlsContext).toHaveBeenCalledWith(client, WORKER_ID);
-    // Call-order: the RLS context must be set before the worker_documents
-    // query fires, or its FORCE ROW LEVEL SECURITY policy silently returns
-    // zero rows and every required doc reads as missing forever.
-    const rlsCallOrder = (setInternalUserRlsContext as jest.Mock).mock.invocationCallOrder[0];
-    const docsQueryCallOrder = mockQuery.mock.invocationCallOrder[1];
-    expect(rlsCallOrder).toBeLessThan(docsQueryCallOrder);
-  });
-
-  it('does not set the worker_documents RLS context when the walk ends on a field step', async () => {
-    mockAppRow(appRow({
-      required_fields: ['work_authorization'],
-      application_answers: {},
-    }));
-
-    await computeNextStep(client, APPLICATION_ID);
-
-    expect(setInternalUserRlsContext).not.toHaveBeenCalled();
-  });
-
-  it('ssn is excluded from the walk and reported in uncollectable', async () => {
-    mockAppRow(appRow({
-      required_fields: [],
-      required_docs: ['ssn', 'resume'],
-    }));
-    mockDocRows([]);
-
-    const result = await computeNextStep(client, APPLICATION_ID);
-
-    expect(result).toEqual({ kind: 'doc', docType: 'resume', uncollectable: ['ssn'] });
-  });
-
-  it('complete when only uncollectable items remain', async () => {
-    mockAppRow(appRow({
-      required_fields: [],
-      required_docs: ['ssn'],
-    }));
-    mockDocRows([]);
-
-    const result = await computeNextStep(client, APPLICATION_ID);
-
-    expect(result).toEqual({ kind: 'complete', uncollectable: ['ssn'] });
-  });
-
-  it('exit application_gone when the application row is missing', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-
-    const result = await computeNextStep(client, APPLICATION_ID);
-
-    expect(result).toEqual({ kind: 'exit', reason: 'application_gone', uncollectable: [] });
-    expect(mockQuery).toHaveBeenCalledTimes(1);
-  });
-
-  it.each(['filled', 'closed'])('exit job_inactive when job status is %s', async (job_status) => {
-    mockAppRow(appRow({ job_status, required_docs: ['ssn'] }));
-
-    const result = await computeNextStep(client, APPLICATION_ID);
-
-    expect(result).toEqual({ kind: 'exit', reason: 'job_inactive', uncollectable: ['ssn'] });
-    // No field/doc queries once the job is inactive.
-    expect(mockQuery).toHaveBeenCalledTimes(1);
-  });
-
-  it.each(['hired', 'not_interested'])(
-    'exit application_closed when application status is %s',
-    async (application_status) => {
-      mockAppRow(appRow({ application_status, required_docs: ['ssn'] }));
-
-      const result = await computeNextStep(client, APPLICATION_ID);
-
-      expect(result).toEqual({ kind: 'exit', reason: 'application_closed', uncollectable: ['ssn'] });
-      expect(mockQuery).toHaveBeenCalledTimes(1);
-    },
-  );
-
-  it.each(['contacted', 'talking'])(
-    'continues (does not exit) when application status is %s',
-    async (application_status) => {
-      mockAppRow(appRow({
-        application_status,
-        required_fields: [],
-        required_docs: [],
-      }));
-      mockDocRows([]);
-
-      const result = await computeNextStep(client, APPLICATION_ID);
-
-      expect(result).toEqual({ kind: 'complete', uncollectable: [] });
-    },
-  );
-
-  it('continues (does not exit) when job status is paused (spec §9: active AND paused continue)', async () => {
-    mockAppRow(appRow({
-      job_status: 'paused',
-      required_fields: [],
-      required_docs: [],
-    }));
-    mockDocRows([]);
-
-    const result = await computeNextStep(client, APPLICATION_ID);
-
-    expect(result).toEqual({ kind: 'complete', uncollectable: [] });
-  });
-
-  it('a key added to required_fields mid-fill becomes the next step (requirements widening)', async () => {
-    // Originally required_fields was ['work_authorization', 'desired_pay']
-    // and both were answered. The employer then widened required_fields to
-    // insert 'date_available' in the middle — unanswered, mid-array, with
-    // an ALREADY-answered key after it. The array-order walk must surface
-    // it regardless of what comes later in the array.
-    mockAppRow(appRow({
-      required_fields: ['work_authorization', 'date_available', 'desired_pay'],
-      application_answers: { work_authorization: true, desired_pay: '25/hour' },
-    }));
-
-    const result = await computeNextStep(client, APPLICATION_ID);
-
-    expect(result).toEqual({ kind: 'field', key: 'date_available', uncollectable: [] });
-  });
-
-  it('a stored false answer counts as answered (hasOwnProperty, not truthiness)', async () => {
-    mockAppRow(appRow({
-      required_fields: ['worked_here_before', 'education'],
-      application_answers: { worked_here_before: false },
-    }));
-
-    const result = await computeNextStep(client, APPLICATION_ID);
-
-    expect(result).toEqual({ kind: 'field', key: 'education', uncollectable: [] });
-  });
-
-  it('a stored null answer counts as answered (hasOwnProperty, not truthiness)', async () => {
-    mockAppRow(appRow({
-      required_fields: ['worked_here_before', 'education'],
-      application_answers: { worked_here_before: null },
-    }));
-
-    const result = await computeNextStep(client, APPLICATION_ID);
-
-    expect(result).toEqual({ kind: 'field', key: 'education', uncollectable: [] });
-  });
-
-  it('the application/job SELECT joins on ja.id = $1 with the applicationId param', async () => {
-    mockAppRow(appRow());
-    mockDocRows([]);
-
-    await computeNextStep(client, APPLICATION_ID);
-
-    const [sql, params] = mockQuery.mock.calls[0];
-    expect(sql).toMatch(/FROM job_applications ja/);
-    expect(sql).toMatch(/JOIN jobs j ON j\.id = ja\.job_id/);
-    expect(sql).toMatch(/ja\.id = \$1/);
-    expect(params).toEqual([APPLICATION_ID]);
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────
-// handleFillMessage / promptNextStep / isFillCancel / parseFillConfirmation
-// (Task 7). `validateApplicationAnswers` runs for REAL in every test below
-// except the merge-backstop one -- string trimming, array-length caps, etc.
-// are all genuine validator behavior, not asserted-by-mock.
-// ─────────────────────────────────────────────────────────────────────────
-
-const CONVERSATION_ID = 'dddddddd-0000-0000-0000-00000000000d';
-const FROM = 'whatsapp:+15550000000';
-const NOW_MS = 1_700_000_000_000;
 let sidCounter = 0;
 
 function incomingMsg(body: string, overrides: Partial<IncomingMessage> = {}): IncomingMessage {
@@ -399,71 +524,602 @@ const JPEG_BYTES = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 
 const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
 const PDF_BYTES = Buffer.from('%PDF-1.4\n%mock-pdf-body');
 
-function mockJobIdRow(jobId: string = JOB_ID) {
-  mockQuery.mockResolvedValueOnce({ rows: [{ job_id: jobId }], rowCount: 1 });
-}
-
-function mockUpdateOk() {
-  mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
-}
-
 function lastReply(deps: FillDeps): string {
   const calls = (deps.queueReplyText as jest.Mock).mock.calls;
   return calls[calls.length - 1][3];
 }
 
-describe('handleFillMessage', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-    (validateApplicationAnswers as jest.Mock).mockImplementation(
-      jest.requireActual('../../../../../lambda/lib/application-answers').validateApplicationAnswers,
+function allReplies(deps: FillDeps): string[] {
+  return (deps.queueReplyText as jest.Mock).mock.calls.map((c: any[]) => c[3]);
+}
+
+const realValidate = jest.requireActual('../../../../../lambda/lib/application-answers').validateApplicationAnswers;
+
+/** The one beforeEach every describe shares: fresh state, fresh router,
+ * genuine validator. `mockReset` (not `clearAllMocks` alone) is used on
+ * `mockQuery` so no stale implementation or once-queue can leak between
+ * tests -- the router is then reinstalled. */
+function resetFake(): void {
+  jest.clearAllMocks();
+  mockQuery.mockReset();
+  fake = freshFake();
+  installDbFake();
+  (validateApplicationAnswers as jest.Mock).mockImplementation(realValidate);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// computeFillStep / fillStepFor -- the lane's step gate. Replaces the deleted
+// `describe('computeNextStep')`: the walk itself (fields order, docs order,
+// hasOwnProperty semantics, requirement widening) is the shared engine's and
+// is covered in test/unit/lambda/lib/application-requirements.test.ts; what
+// is pinned here is the LANE'S gate order and its two sprint-23 insertions
+// (`details_not_requested`, `details_completed_at`), plus the deliberate
+// absence of a certification step.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('computeFillStep / fillStepFor', () => {
+  beforeEach(resetFake);
+
+  it('walks required_fields in array order, skipping answered keys', async () => {
+    setApp({
+      required_fields: ['work_authorization', 'date_available', 'desired_pay'],
+      application_answers: { work_authorization: true },
+    });
+
+    const { step } = await computeFillStep(client, APPLICATION_ID);
+
+    expect(step).toEqual({ kind: 'field', key: 'date_available', uncollectable: [] });
+  });
+
+  it('fields before docs: an unanswered field wins even when a required doc is also missing', async () => {
+    setApp({ required_fields: ['work_authorization'], required_docs: ['resume'] });
+
+    const { step } = await computeFillStep(client, APPLICATION_ID);
+
+    expect(step).toEqual({ kind: 'field', key: 'work_authorization', uncollectable: [] });
+  });
+
+  it('docs walk in required_docs array order, skipping present doc rows', async () => {
+    setApp(
+      { required_docs: ['resume', 'driver_license', 'work_auth_doc'] },
+      { haveDocs: ['resume'] },
+    );
+
+    const { step } = await computeFillStep(client, APPLICATION_ID);
+
+    expect(step).toEqual({ kind: 'doc', docType: 'driver_license', uncollectable: [] });
+  });
+
+  it('a vault-only doc is synced onto the job and never re-asked (syncDocumentSnapshots)', async () => {
+    // The engine header's binding reason for `syncDocumentSnapshots: true`:
+    // `have_docs` is JOB-SCOPED (091's hire gate counts job rows only), so
+    // without the copy a resume uploaded through the web vault (job_id NULL)
+    // would read as missing forever. The vault-inclusive predicate that used
+    // to live in this lane's own doc probe now lives in
+    // copyRequiredDocumentSnapshots (applications.ts:109).
+    setApp(
+      { required_docs: ['resume', 'driver_license'] },
+      { haveDocs: [], vaultDocs: ['resume'] },
+    );
+
+    const { step } = await computeFillStep(client, APPLICATION_ID);
+
+    expect(step).toEqual({ kind: 'doc', docType: 'driver_license', uncollectable: [] });
+    const [copySql, copyParams] = findCall(SQL.copyNonCert);
+    expect(copySql).toMatch(/\(job_id IS NULL OR job_id = \$1::uuid\)/);
+    expect(copyParams).toEqual([JOB_ID, WORKER_ID, ['resume', 'driver_license']]);
+    const [rereadSql, rereadParams] = findCall(SQL.docReread);
+    expect(rereadSql).toMatch(/worker_id = \$1 AND job_id = \$2/);
+    expect(rereadParams).toEqual([WORKER_ID, JOB_ID]);
+  });
+
+  it('sets the worker_documents RLS context before the snapshot copy write', async () => {
+    setApp({ required_docs: ['resume'] });
+
+    await computeFillStep(client, APPLICATION_ID);
+
+    expect(setInternalUserRlsContext).toHaveBeenCalledWith(client, WORKER_ID);
+    // worker_documents is FORCE ROW LEVEL SECURITY (005): with the GUC unset
+    // the copy writes nothing and the re-read returns zero rows, so every
+    // required doc reads as missing forever.
+    const rlsOrder = (setInternalUserRlsContext as jest.Mock).mock.invocationCallOrder[0];
+    expect(rlsOrder).toBeLessThan(queryOrder(SQL.copyNonCert));
+    expect(rlsOrder).toBeLessThan(queryOrder(SQL.docReread));
+  });
+
+  it('a job with no documents issues exactly ONE query -- no GUC, no copy, no re-read', async () => {
+    setApp({ required_fields: ['work_authorization'] });
+
+    const { step } = await computeFillStep(client, APPLICATION_ID);
+
+    expect(step).toEqual({ kind: 'field', key: 'work_authorization', uncollectable: [] });
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(hasCall(SQL.copyNonCert)).toBe(false);
+    expect(hasCall(SQL.docReread)).toBe(false);
+    expect(setInternalUserRlsContext).not.toHaveBeenCalled();
+  });
+
+  it('uncollectable ssn never blocks the walk and is reported separately', async () => {
+    setApp({ required_docs: ['ssn', 'resume'] });
+
+    const { step } = await computeFillStep(client, APPLICATION_ID);
+
+    expect(step).toEqual({ kind: 'doc', docType: 'resume', uncollectable: ['ssn'] });
+  });
+
+  it('complete when only uncollectable items remain', async () => {
+    setApp({ required_docs: ['ssn'] });
+
+    const { step } = await computeFillStep(client, APPLICATION_ID);
+
+    expect(step).toEqual({ kind: 'complete', uncollectable: ['ssn'] });
+  });
+
+  it('exit application_gone when the application row is missing (and the snapshot is null)', async () => {
+    setAppMissing();
+
+    const { step, snapshot } = await computeFillStep(client, APPLICATION_ID);
+
+    expect(step).toEqual({ kind: 'exit', reason: 'application_gone', uncollectable: [] });
+    expect(snapshot).toBeNull();
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('fillStepFor(null) is application_gone without touching the DB', () => {
+    expect(fillStepFor(null)).toEqual({ kind: 'exit', reason: 'application_gone', uncollectable: [] });
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it.each(['filled', 'closed'])('exit job_inactive when job status is %s', async (job_status) => {
+    setApp({ job_status, required_docs: ['ssn'] });
+
+    const { step } = await computeFillStep(client, APPLICATION_ID);
+
+    expect(step).toEqual({ kind: 'exit', reason: 'job_inactive', uncollectable: ['ssn'] });
+  });
+
+  it.each(['hired', 'not_interested'])(
+    'exit application_closed when application status is %s',
+    async (application_status) => {
+      setApp({ application_status, required_docs: ['ssn'] });
+
+      const { step } = await computeFillStep(client, APPLICATION_ID);
+
+      expect(step).toEqual({ kind: 'exit', reason: 'application_closed', uncollectable: ['ssn'] });
+    },
+  );
+
+  it('exit details_not_requested for an apply-stage snapshot (sprint 23 stage gate)', async () => {
+    // B4.0 section 7 / application-fill.ts:130 -- the lane arms only after
+    // the employer asked, and applies the gate on EVERY turn.
+    setApp({ details_requested_at: null, required_fields: ['work_authorization'] });
+
+    const { step } = await computeFillStep(client, APPLICATION_ID);
+
+    expect(step).toEqual({ kind: 'exit', reason: 'details_not_requested', uncollectable: [] });
+  });
+
+  it('the stage gate reads the TIMESTAMP, not the literal status: details_requested -> contacted keeps the fill alive', async () => {
+    setApp({ application_status: 'contacted', required_fields: ['work_authorization'] });
+
+    const { step } = await computeFillStep(client, APPLICATION_ID);
+
+    expect(step).toEqual({ kind: 'field', key: 'work_authorization', uncollectable: [] });
+  });
+
+  it('details_completed_at set reads as complete even with an outstanding field', async () => {
+    setApp({
+      details_completed_at: '2026-09-01T12:00:00.000Z',
+      required_fields: ['work_authorization'],
+    });
+
+    const { step } = await computeFillStep(client, APPLICATION_ID);
+
+    expect(step).toEqual({ kind: 'complete', uncollectable: [] });
+  });
+
+  it('certifications are deliberately NOT a step in this lane: a cert-only gap reads as complete', async () => {
+    // application-fill.ts:76-82 -- the certification-claim collector is
+    // web-only, so `fillStepFor` never returns a certification step. See the
+    // production finding recorded in the completion tests below for what the
+    // worker is actually told in this state.
+    setApp({
+      certification_requirements: [{ name: 'OSHA 10', tier: 'required', proof_required: false }],
+    });
+
+    const { step } = await computeFillStep(client, APPLICATION_ID);
+
+    expect(step).toEqual({ kind: 'complete', uncollectable: [] });
+  });
+
+  it('paused jobs and contacted/talking applications continue (spec section 9)', async () => {
+    for (const overrides of [
+      { job_status: 'paused' },
+      { application_status: 'contacted' },
+      { application_status: 'talking' },
+    ]) {
+      resetFake();
+      setApp(overrides);
+      const { step } = await computeFillStep(client, APPLICATION_ID);
+      expect(step).toEqual({ kind: 'complete', uncollectable: [] });
+    }
+  });
+
+  it('the snapshot SELECT joins on ja.id = $1 with the applicationId param', async () => {
+    await computeFillStep(client, APPLICATION_ID);
+
+    const [sql, params] = findCall(SQL.snapshot);
+    expect(sql).toMatch(/FROM job_applications ja JOIN jobs j ON j\.id = ja\.job_id/);
+    expect(sql).toMatch(/ja\.id = \$1/);
+    expect(params).toEqual([APPLICATION_ID]);
+  });
+
+  it('returns the snapshot alongside the step so completion needs no second synced load', async () => {
+    setApp({ required_fields: ['work_authorization'] });
+
+    const { snapshot } = await computeFillStep(client, APPLICATION_ID);
+
+    expect(snapshot).toMatchObject({
+      applicationId: APPLICATION_ID,
+      workerId: WORKER_ID,
+      jobId: JOB_ID,
+      stage: 'details',
+      requiredFields: ['work_authorization'],
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// fillCountsFor -- the intro's "N questions and M documents", now PURE
+// (replaces the deleted `countRemainingRequirements` describe: that function
+// moved to the shared engine and is tested there).
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('fillCountsFor', () => {
+  beforeEach(resetFake);
+
+  async function snapshotOf(overrides: Record<string, unknown>, fixture: Partial<AppFixture> = {}) {
+    setApp(overrides, fixture);
+    const { snapshot } = await computeFillStep(client, APPLICATION_ID);
+    return snapshot;
+  }
+
+  it('counts unanswered required fields and undelivered required docs', async () => {
+    const snapshot = await snapshotOf({
+      application_answers: { work_authorization: true },
+      required_fields: ['work_authorization', 'date_available', 'desired_pay'],
+      required_docs: ['resume', 'driver_license'],
+    }, { haveDocs: ['resume'] });
+
+    expect(fillCountsFor(snapshot)).toEqual({ nFields: 2, nDocs: 1, uncollectable: [] });
+  });
+
+  it('reports uncollectable doc types (legacy ssn) separately, never counted in nDocs', async () => {
+    const snapshot = await snapshotOf({ required_docs: ['ssn'] });
+
+    expect(fillCountsFor(snapshot)).toEqual({ nFields: 0, nDocs: 0, uncollectable: ['ssn'] });
+  });
+
+  it('zero counts when every field is answered and every doc is on file', async () => {
+    const snapshot = await snapshotOf({
+      application_answers: { work_authorization: true },
+      required_fields: ['work_authorization'],
+      required_docs: ['resume'],
+    }, { haveDocs: ['resume'] });
+
+    expect(fillCountsFor(snapshot)).toEqual({ nFields: 0, nDocs: 0, uncollectable: [] });
+  });
+
+  it('a null snapshot (vanished application) counts nothing rather than throwing', () => {
+    expect(fillCountsFor(null)).toEqual({ nFields: 0, nDocs: 0, uncollectable: [] });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// workerApplicationUrl / matchesFillEscape / localizeDocList -- the small
+// exported helpers the arm and completion arms compose their copy from.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('workerApplicationUrl', () => {
+  const ORIGINAL = process.env.PUBLIC_SITE_BASE_URL;
+
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.PUBLIC_SITE_BASE_URL;
+    else process.env.PUBLIC_SITE_BASE_URL = ORIGINAL;
+  });
+
+  it('honors PUBLIC_SITE_BASE_URL (wired onto the processor Lambda by whatsapp-stack.ts)', () => {
+    process.env.PUBLIC_SITE_BASE_URL = 'https://staging.example.com';
+
+    expect(workerApplicationUrl('es', APPLICATION_ID)).toBe(
+      `https://staging.example.com/es/worker/applications/${APPLICATION_ID}`,
     );
   });
 
-  it('deterministic boolean: "1" stores true for work_authorization and prompts next step', async () => {
+  it('strips trailing slashes so the path never doubles up', () => {
+    process.env.PUBLIC_SITE_BASE_URL = 'https://staging.example.com///';
+
+    expect(workerApplicationUrl('en', APPLICATION_ID)).toBe(
+      `https://staging.example.com/en/worker/applications/${APPLICATION_ID}`,
+    );
+  });
+
+  it('falls back to the literal production base rather than emitting "undefined/..."', () => {
+    delete process.env.PUBLIC_SITE_BASE_URL;
+
+    expect(workerApplicationUrl('en', APPLICATION_ID)).toBe(
+      `https://jaleapp.ai/en/worker/applications/${APPLICATION_ID}`,
+    );
+  });
+});
+
+describe('matchesFillEscape', () => {
+  it.each(['chats', 'cerrar', 'ayuda', 'soporte', 'perfil', 'aplicaciones', 'applications'])(
+    'reserved command "%s" is an escape',
+    (body) => {
+      expect(matchesFillEscape(body)).toBe(true);
+    },
+  );
+
+  it.each(['jobs', 'trabajos', 'empleos', 'job', 'trabajo', 'empleo'])(
+    'the EXACT jobs keyword "%s" is an escape',
+    (body) => {
+      expect(matchesFillEscape(body)).toBe(true);
+    },
+  );
+
+  it.each(['1 aceptar', '3 no', '2 info'])('typed job action "%s" is an escape', (body) => {
+    expect(matchesFillEscape(body)).toBe(true);
+  });
+
+  it.each([
+    'trabajo de pintor 5 anos', // NOT isJobsKeyword's prefix grammar (spec 6.3)
+    'hola',
+    '1',
+    'si',
+    '1990-04-03',
+    '25 an hour',
+  ])('"%s" is a legitimate answer, not an escape', (body) => {
+    expect(matchesFillEscape(body)).toBe(false);
+  });
+});
+
+describe('localizeDocList', () => {
+  it('localizes known doc types and falls back to the raw code for unknown ones', () => {
+    expect(localizeDocList(['ssn', 'work_auth_doc'], 'en')).toBe('SSN card / ITIN, Work authorization document');
+    expect(localizeDocList(['ssn'], 'es')).toBe('Tarjeta SSN / ITIN');
+    expect(localizeDocList(['mystery_doc'], 'en')).toBe('mystery_doc');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// armFill (sprint 23) -- THE one place stage 2 is armed. Its snapshot
+// argument is produced by running the REAL `loadRequirementSnapshot` through
+// the fake, so the camelCase shape armFill gates on can never drift from the
+// snake_case row fixture.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('armFill', () => {
+  beforeEach(resetFake);
+
+  /** Loads the production-shaped snapshot, then CLEARS the call log (keeping
+   * the router installed) so every assertion below sees only armFill's own
+   * traffic. */
+  async function loadSnapshotAndClear(): Promise<RequirementSnapshot> {
+    const snapshot = await loadRequirementSnapshot(client, APPLICATION_ID, { syncDocumentSnapshots: true });
+    mockQuery.mockClear();
+    (setInternalUserRlsContext as jest.Mock).mockClear();
+    return snapshot!;
+  }
+
+  it.each([
+    ['an apply-stage application', { details_requested_at: null }, 'details_not_requested'],
+    ['a hired application', { application_status: 'hired' }, 'application_closed'],
+    ['a filled job', { job_status: 'filled' }, 'job_inactive'],
+    ['a closed job', { job_status: 'closed' }, 'job_inactive'],
+  ])('refuses to arm %s and returns the gate reason, writing nothing', async (_label, overrides, reason) => {
+    setApp({ ...overrides, required_fields: ['work_authorization'] });
+    const snapshot = await loadSnapshotAndClear();
+    const ctx = makeCtx({ stateContext: {} });
+    const deps = makeDeps(ctx);
+
+    const outcome = await armFill(client, ctx, snapshot, 'SMarm', FROM, deps);
+
+    expect(outcome).toEqual({ armed: false, reason });
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(deps.updateStateContext).not.toHaveBeenCalled();
+    expect(deps.queueReplyText).not.toHaveBeenCalled();
+  });
+
+  it('arms: seeds from defaults, writes the arm patch, sends the company-named intro, then the first question', async () => {
+    setApp({ required_fields: ['work_authorization', 'date_available'] });
+    fake.defaults = { work_authorization: true };
+    const snapshot = await loadSnapshotAndClear();
+    const ctx = makeCtx({ stateContext: {} });
+    const deps = makeDeps(ctx);
+
+    const outcome = await armFill(client, ctx, snapshot, 'SMarm', FROM, deps);
+
+    expect(outcome).toEqual({ armed: true });
+    // The seed merged work_authorization, so the intro advertises the ONE
+    // question actually left -- armFill re-derives the counts post-seed.
+    expect(allReplies(deps)).toEqual([
+      fillMessage('intro', 'en', { company: COMPANY, n_fields: '1', n_docs: '0' }),
+      fieldQuestion('date_available', 'en'),
+    ]);
+    expect(ctx.jobId).toBe(JOB_ID);
+  });
+
+  it('seeds BEFORE the intro (order): the intro can never advertise a question the seed just answered', async () => {
+    setApp({ required_fields: ['work_authorization', 'date_available'] });
+    fake.defaults = { work_authorization: true };
+    const snapshot = await loadSnapshotAndClear();
+    const ctx = makeCtx({ stateContext: {} });
+    const deps = makeDeps(ctx);
+
+    await armFill(client, ctx, snapshot, 'SMarm', FROM, deps);
+
+    expect(queryOrder(SQL.defaultsSelect)).toBeLessThan(replyOrder(deps, 0));
+    expect(queryOrder(SQL.mergeUpdate)).toBeLessThan(replyOrder(deps, 0));
+    const [, seedParams] = findCall(SQL.mergeUpdate);
+    expect(JSON.parse(seedParams[0])).toEqual({ work_authorization: true });
+    expect(seedParams[1]).toBe(APPLICATION_ID);
+  });
+
+  it('a worker with no defaults row seeds nothing and still arms', async () => {
+    setApp({ required_fields: ['work_authorization'] });
+    fake.defaults = null;
+    const snapshot = await loadSnapshotAndClear();
+    const ctx = makeCtx({ stateContext: {} });
+    const deps = makeDeps(ctx);
+
+    const outcome = await armFill(client, ctx, snapshot, 'SMarm', FROM, deps);
+
+    expect(outcome).toEqual({ armed: true });
+    expect(hasCall(SQL.mergeUpdate)).toBe(false);
+    expect(lastReply(deps)).toBe(fieldQuestion('work_authorization', 'en'));
+  });
+
+  it('the arm write clears BOTH lanes\' keys and the one-shot applications menu', async () => {
+    // FILL_SCRUB (application-fill.ts:934): the fill lane and the sprint-23
+    // prompt lane are mutually exclusive, and a stale numbered menu must
+    // never stay addressable across an arm.
+    setApp({ required_fields: ['work_authorization'] });
+    const snapshot = await loadSnapshotAndClear();
+    const ctx = makeCtx({
+      stateContext: {
+        fill_pending: { key: 'desired_pay', stage: 'confirm', extracted: 1 } satisfies FillPendingConfirm,
+        fill_cert_more_pending: true,
+        fill_relay_override: true,
+        fill_offer_application_id: 'stale-offer-id',
+        prompt_application_id: 'stale-prompt-app',
+        prompt_last_prompt_at: 123,
+        applications_menu: { ids: ['x'], at: 1 },
+        pending_picker: { kind: 'chats' as const, threads: [] },
+      },
+    });
+    const deps = makeDeps(ctx);
+
+    await armFill(client, ctx, snapshot, 'SMarm', FROM, deps);
+
+    expect(deps.updateStateContext).toHaveBeenCalledWith(client, CONVERSATION_ID, {
+      fill_application_id: APPLICATION_ID,
+      fill_pending: null,
+      fill_cert_more_pending: null,
+      fill_relay_override: null,
+      fill_offer_application_id: null,
+      prompt_application_id: null,
+      prompt_last_prompt_at: null,
+      applications_menu: null,
+      pending_picker: null,
+    });
+  });
+
+  it('switched_job is sent only when a DIFFERENT application was already armed', async () => {
+    setApp({ required_fields: ['work_authorization'] });
+    const snapshot = await loadSnapshotAndClear();
+    const ctx = makeCtx({ stateContext: { fill_application_id: OTHER_APPLICATION_ID } });
+    const deps = makeDeps(ctx);
+
+    await armFill(client, ctx, snapshot, 'SMarm', FROM, deps);
+
+    expect(allReplies(deps)[0]).toBe(fillMessage('switched_job', 'en'));
+  });
+
+  it.each([
+    ['nothing was armed', undefined],
+    ['the SAME application was already armed', APPLICATION_ID],
+  ])('switched_job is NOT sent when %s', async (_label, previous) => {
+    setApp({ required_fields: ['work_authorization'] });
+    const snapshot = await loadSnapshotAndClear();
+    const ctx = makeCtx({
+      stateContext: previous === undefined ? {} : { fill_application_id: previous },
+    });
+    const deps = makeDeps(ctx);
+
+    await armFill(client, ctx, snapshot, 'SMarm', FROM, deps);
+
+    expect(allReplies(deps)).not.toContain(fillMessage('switched_job', 'en'));
+  });
+
+  it('appends the web_handoff note (doc + url) to the intro when an uncollectable doc remains', async () => {
+    setApp({ required_fields: ['work_authorization'], required_docs: ['ssn'] });
+    const snapshot = await loadSnapshotAndClear();
+    const ctx = makeCtx({ stateContext: {} });
+    const deps = makeDeps(ctx);
+
+    await armFill(client, ctx, snapshot, 'SMarm', FROM, deps);
+
+    expect(allReplies(deps)[0]).toBe(
+      `${fillMessage('intro', 'en', { company: COMPANY, n_fields: '1', n_docs: '0' })}\n\n`
+      + `${fillMessage('web_handoff', 'en', {
+        doc: localizeDocList(['ssn'], 'en'),
+        url: workerApplicationUrl('en', APPLICATION_ID),
+      })}`,
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// handleFillMessage -- field-step collection (parse, extract, confirm).
+// `validateApplicationAnswers` runs for REAL in every test below except the
+// two that deliberately override it.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('handleFillMessage', () => {
+  beforeEach(resetFake);
+
+  it('deterministic boolean: "1" stores true for work_authorization, writes the defaults back, and prompts next step', async () => {
     const ctx = makeCtx();
     const deps = makeDeps(ctx);
-    const msg = incomingMsg('1');
+    setApp({ required_fields: ['work_authorization', 'date_available'] });
 
-    mockJobIdRow();
-    mockAppRow(appRow({
-      required_fields: ['work_authorization', 'date_available'],
-      application_answers: {},
-    }));
-    mockUpdateOk();
-    mockAppRow(appRow({
-      required_fields: ['work_authorization', 'date_available'],
-      application_answers: { work_authorization: true },
-    }));
-
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, incomingMsg('1'), deps);
 
     expect(result).toEqual({ handled: true });
-    // jobId is refreshed every turn (surfaced from the dedicated lookup),
-    // even though nothing in Task 7 itself consumes it yet.
+    // jobId is refreshed every turn from the step-5 job-context lookup.
     expect(ctx.jobId).toBe(JOB_ID);
 
-    const [updateSql, updateParams] = mockQuery.mock.calls[2];
-    expect(updateSql).toMatch(/UPDATE job_applications/);
+    const [updateSql, updateParams] = findCall(SQL.mergeUpdate);
     expect(updateSql).toMatch(/application_answers = application_answers \|\| \$1::jsonb/);
     expect(updateParams).toEqual([JSON.stringify({ work_authorization: true }), APPLICATION_ID]);
+
+    // NEW in sprint 23: the merge now also writes the worker's cross-job
+    // defaults back (B4.0 section 9) -- WhatsApp never did this before the
+    // engine swap, so answering here pre-fills the NEXT application.
+    expect(fake.defaultsWritten).toEqual([{ work_authorization: true }]);
 
     expect(lastReply(deps)).toBe(fieldQuestion('date_available', 'en'));
     expect(ctx.stateContext.fill_last_prompt_at).toBe(NOW_MS);
   });
 
+  it('the merge is bounded by the engine SAVEPOINT: SAVEPOINT before the UPDATE, RELEASE after', async () => {
+    const ctx = makeCtx();
+    const deps = makeDeps(ctx);
+    setApp({ required_fields: ['work_authorization', 'date_available'] });
+
+    await handleFillMessage(client, ctx, incomingMsg('1'), deps);
+
+    const savepointIndex = mockQuery.mock.calls.findIndex(
+      ([s]: any[]) => /^SAVEPOINT application_requirements_merge/.test(String(s)),
+    );
+    const releaseIndex = mockQuery.mock.calls.findIndex(
+      ([s]: any[]) => /^RELEASE SAVEPOINT application_requirements_merge/.test(String(s)),
+    );
+    expect(savepointIndex).toBeGreaterThanOrEqual(0);
+    expect(savepointIndex).toBeLessThan(findCallIndex(SQL.mergeUpdate));
+    expect(releaseIndex).toBeGreaterThan(findCallIndex(SQL.mergeUpdate));
+  });
+
   it('date answer echoes long-form confirm via fill_pending (no immediate write)', async () => {
     const ctx = makeCtx();
     const deps = makeDeps(ctx);
-    const msg = incomingMsg('1990-04-03');
+    setApp({ required_fields: ['date_of_birth'] });
 
-    mockJobIdRow();
-    mockAppRow(appRow({ required_fields: ['date_of_birth'], application_answers: {} }));
-
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, incomingMsg('1990-04-03'), deps);
 
     expect(result).toEqual({ handled: true });
-    expect(mockQuery).toHaveBeenCalledTimes(2); // jobId lookup + computeNextStep only -- no UPDATE
+    expect(hasCall(SQL.mergeUpdate)).toBe(false);
     expect(ctx.stateContext.fill_pending).toEqual({
       key: 'date_of_birth', stage: 'confirm', extracted: '1990-04-03',
     });
@@ -473,6 +1129,12 @@ describe('handleFillMessage', () => {
   });
 
   it('confirm "1 si" merges validated value: UPDATE ... application_answers || $1 and clears fill_pending', async () => {
+    // BINDING PIN (application-requirements.ts:580-587): the merge statement
+    // text and its `[mergedJson, applicationId]` parameter pair are the one
+    // contract the shared engine promises this lane. Only HOW the call is
+    // selected changed (find-by-shape, not calls[1]); the two assertions
+    // themselves are verbatim. The appended RETURNING is fine -- the regex is
+    // unanchored and adds no parameter.
     const ctx = makeCtx({
       stateContext: {
         fill_application_id: APPLICATION_ID,
@@ -480,19 +1142,12 @@ describe('handleFillMessage', () => {
       },
     });
     const deps = makeDeps(ctx);
-    const msg = incomingMsg('1 si');
+    setApp({ required_fields: ['date_of_birth', 'desired_pay'] });
 
-    mockJobIdRow();
-    mockUpdateOk();
-    mockAppRow(appRow({
-      required_fields: ['date_of_birth', 'desired_pay'],
-      application_answers: { date_of_birth: '1990-04-03' },
-    }));
-
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, incomingMsg('1 si'), deps);
 
     expect(result).toEqual({ handled: true });
-    const [updateSql, updateParams] = mockQuery.mock.calls[1];
+    const [updateSql, updateParams] = findCall(SQL.mergeUpdate);
     expect(updateSql).toMatch(/UPDATE job_applications\s+SET application_answers = application_answers \|\| \$1::jsonb, updated_at = now\(\)\s+WHERE id = \$2/);
     expect(updateParams).toEqual([JSON.stringify({ date_of_birth: '1990-04-03' }), APPLICATION_ID]);
     expect(ctx.stateContext.fill_pending).toBeNull();
@@ -510,14 +1165,13 @@ describe('handleFillMessage', () => {
       },
     });
     const deps = makeDeps(ctx);
-    const msg = incomingMsg('2');
+    setApp({ required_fields: ['home_address'] });
 
-    mockJobIdRow();
-
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, incomingMsg('2'), deps);
 
     expect(result).toEqual({ handled: true });
-    expect(mockQuery).toHaveBeenCalledTimes(1); // jobId lookup only -- no write, no re-derive
+    expect(mockQuery).toHaveBeenCalledTimes(1); // the step-5 job-context lookup only
+    expect(hasCall(SQL.jobContext)).toBe(true);
     expect(ctx.stateContext.fill_pending).toBeNull();
     expect(lastReply(deps)).toBe(fieldRetryHint('home_address', 'en'));
   });
@@ -531,11 +1185,9 @@ describe('handleFillMessage', () => {
       stateContext: { fill_application_id: APPLICATION_ID, fill_pending: originalPending },
     });
     const deps = makeDeps(ctx);
-    const msg = incomingMsg('maybe?');
+    setApp({ required_fields: ['home_address'] });
 
-    mockJobIdRow();
-
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, incomingMsg('maybe?'), deps);
 
     expect(result).toEqual({ handled: true });
     expect(deps.updateStateContext).not.toHaveBeenCalled(); // fill_pending is KEPT, not scrubbed
@@ -551,15 +1203,12 @@ describe('handleFillMessage', () => {
         confidence: { street: 0.9, city: 0.9, state: 0.9, zip: 0.9 },
       }),
     });
-    const msg = incomingMsg('vivo en 1 Main St Kyle TX 78640');
+    setApp({ required_fields: ['home_address'] });
 
-    mockJobIdRow();
-    mockAppRow(appRow({ required_fields: ['home_address'], application_answers: {} }));
-
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, incomingMsg('vivo en 1 Main St Kyle TX 78640'), deps);
 
     expect(result).toEqual({ handled: true });
-    expect(mockQuery).toHaveBeenCalledTimes(2); // jobId + computeNextStep -- no write yet
+    expect(hasCall(SQL.mergeUpdate)).toBe(false); // no write yet
     expect(ctx.stateContext.fill_pending).toEqual({
       key: 'home_address',
       stage: 'confirm',
@@ -577,16 +1226,13 @@ describe('handleFillMessage', () => {
   ])('%s re-prompts with the mapped message, nothing written', async (_label, extraction, expectedMessage) => {
     const ctx = makeCtx();
     const deps = makeDeps(ctx, { extraction });
-    const msg = incomingMsg('preparatoria');
+    setApp({ required_fields: ['education'] });
 
-    mockJobIdRow();
-    mockAppRow(appRow({ required_fields: ['education'], application_answers: {} }));
-
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, incomingMsg('preparatoria'), deps);
 
     expect(result).toEqual({ handled: true });
-    expect(mockQuery).toHaveBeenCalledTimes(2); // no UPDATE
-    expect(deps.updateStateContext).not.toHaveBeenCalled(); // nothing written, fill_pending untouched
+    expect(hasCall(SQL.mergeUpdate)).toBe(false);
+    expect(deps.updateStateContext).not.toHaveBeenCalled();
     expect(lastReply(deps)).toBe(expectedMessage);
   });
 
@@ -594,16 +1240,13 @@ describe('handleFillMessage', () => {
     const ctx = makeCtx();
     const invoke = jest.fn();
     const deps = makeDeps(ctx, { extraction: { invoke } });
-    const msg = incomingMsg('x'.repeat(2000));
+    setApp({ required_fields: ['education'] });
 
-    mockJobIdRow();
-    mockAppRow(appRow({ required_fields: ['education'], application_answers: {} }));
-
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, incomingMsg('x'.repeat(2000)), deps);
 
     expect(result).toEqual({ handled: true });
     expect(invoke).not.toHaveBeenCalled();
-    expect(mockQuery).toHaveBeenCalledTimes(2);
+    expect(hasCall(SQL.mergeUpdate)).toBe(false);
     expect(deps.updateStateContext).not.toHaveBeenCalled();
     expect(lastReply(deps)).toBe(fillMessage('answer_too_long', 'en'));
   });
@@ -617,43 +1260,34 @@ describe('handleFillMessage', () => {
       },
     });
     const deps = makeDeps(ctx);
+    setApp({ required_fields: ['references', 'military_service'] });
 
     // Step A: confirm the single entry -> "add another?" prompt, no merge yet.
-    mockJobIdRow();
     const resultA = await handleFillMessage(client, ctx, incomingMsg('1'), deps);
 
     expect(resultA).toEqual({ handled: true });
-    expect(mockQuery).toHaveBeenCalledTimes(1); // jobId lookup only
+    expect(hasCall(SQL.mergeUpdate)).toBe(false);
     expect(ctx.stateContext.fill_pending).toEqual({
       key: 'references', stage: 'entry_another', entries: [oneReference],
     } satisfies FillPendingEntryAnother);
     expect(lastReply(deps)).toBe(fillMessage('entry_another', 'en'));
 
     // Step B: "no more" -> validate + merge the WHOLE array once.
-    mockJobIdRow();
-    mockUpdateOk();
-    mockAppRow(appRow({
-      required_fields: ['references', 'military_service'],
-      application_answers: { references: [oneReference] },
-    }));
-
     const resultB = await handleFillMessage(client, ctx, incomingMsg('2 no'), deps);
 
     expect(resultB).toEqual({ handled: true });
-    const [updateSql, updateParams] = mockQuery.mock.calls[2];
-    expect(updateSql).toMatch(/UPDATE job_applications/);
+    const [, updateParams] = findCall(SQL.mergeUpdate);
     expect(updateParams).toEqual([JSON.stringify({ references: [oneReference] }), APPLICATION_ID]);
+    expect(findCalls(SQL.mergeUpdate)).toHaveLength(1); // merged exactly once
     expect(ctx.stateContext.fill_pending).toBeNull();
     expect(lastReply(deps)).toBe(fieldQuestion('military_service', 'en'));
   });
 
   it('array key cap: confirming the 3rd entry auto-finalizes (merges the full 3-entry array), no entry_another offered', async () => {
-    // Review fix (Finding 1): validateReferences/validateWorkHistory
-    // (application-answers.ts) reject arrays >3 -- without a matching cap
-    // here, a confirmed 4th entry would sit in fill_pending.entries only
-    // for the whole-array validation to fail at finalize time, discarding
-    // every already-confirmed entry. The 3rd CONFIRMED entry must
-    // auto-finalize instead of offering "add another?".
+    // validateReferences/validateWorkHistory (application-answers.ts) reject
+    // arrays >3 -- without a matching cap here, a confirmed 4th entry would
+    // sit in fill_pending.entries only for the whole-array validation to fail
+    // at finalize time, discarding every already-confirmed entry.
     const e1 = { name: 'Ref One', relationship: 'supervisor', phone: '555-000-0001' };
     const e2 = { name: 'Ref Two', relationship: 'coworker', phone: '555-000-0002' };
     const e3 = { name: 'Ref Three', relationship: 'manager', phone: '555-000-0003' };
@@ -664,26 +1298,17 @@ describe('handleFillMessage', () => {
       },
     });
     const deps = makeDeps(ctx);
-
-    mockJobIdRow();
-    mockUpdateOk();
-    mockAppRow(appRow({
-      required_fields: ['references', 'military_service'],
-      application_answers: { references: [e1, e2, e3] },
-    }));
+    setApp({ required_fields: ['references', 'military_service'] });
 
     const result = await handleFillMessage(client, ctx, incomingMsg('1'), deps);
 
     expect(result).toEqual({ handled: true });
-    const [updateSql, updateParams] = mockQuery.mock.calls[1];
-    expect(updateSql).toMatch(/UPDATE job_applications/);
+    const [, updateParams] = findCall(SQL.mergeUpdate);
     expect(updateParams).toEqual([JSON.stringify({ references: [e1, e2, e3] }), APPLICATION_ID]);
     expect(ctx.stateContext.fill_pending).toBeNull();
     // Only ONE reply: the "merged, here's the next question" message --
     // entry_another is never offered once the cap is hit.
-    expect((deps.queueReplyText as jest.Mock).mock.calls).toHaveLength(1);
-    expect(lastReply(deps)).not.toBe(fillMessage('entry_another', 'en'));
-    expect(lastReply(deps)).toBe(fieldQuestion('military_service', 'en'));
+    expect(allReplies(deps)).toEqual([fieldQuestion('military_service', 'en')]);
   });
 
   it('array key below cap: two entries + explicit "2 no" still finalizes with exactly those 2 entries', async () => {
@@ -696,51 +1321,56 @@ describe('handleFillMessage', () => {
       },
     });
     const deps = makeDeps(ctx);
-
-    mockJobIdRow();
-    mockUpdateOk();
-    mockAppRow(appRow({
-      required_fields: ['references', 'military_service'],
-      application_answers: { references: [e1, e2] },
-    }));
+    setApp({ required_fields: ['references', 'military_service'] });
 
     const result = await handleFillMessage(client, ctx, incomingMsg('2 no'), deps);
 
     expect(result).toEqual({ handled: true });
-    const [, updateParams] = mockQuery.mock.calls[1];
+    const [, updateParams] = findCall(SQL.mergeUpdate);
     expect(updateParams).toEqual([JSON.stringify({ references: [e1, e2] }), APPLICATION_ID]);
     expect(ctx.stateContext.fill_pending).toBeNull();
   });
 
-  it('CANCELAR clears fill_application_id, fill_pending, fill_relay_override, and fill_offer_application_id; sends canceled copy', async () => {
-    // Finding 1a/3: a stale fill_relay_override or fill_offer_application_id
-    // surviving a CANCELAR would poison the NEXT fill arm (the worker's
-    // first free-text answer gets swallowed by the stale override, or a
-    // stray "1"/"si" re-arms a long-finished offer) -- CANCELAR must scrub
-    // both alongside fill_application_id/fill_pending.
+  it('CANCELAR clears every fill key, the PROMPT-lane keys, and the applications menu; sends canceled copy', async () => {
+    // FILL_SCRUB (application-fill.ts:934) is shared by entry and every exit.
+    // The prompt-lane keys are in it because the two lanes are mutually
+    // exclusive; a stale fill_relay_override or fill_offer_application_id
+    // would otherwise poison the worker's NEXT arm.
     const ctx = makeCtx({
       stateContext: {
         fill_application_id: APPLICATION_ID,
         fill_pending: { key: 'work_authorization', stage: 'confirm', extracted: true } satisfies FillPendingConfirm,
+        fill_cert_more_pending: true,
         fill_relay_override: true,
         fill_offer_application_id: 'stale-offer-id',
+        prompt_application_id: 'stale-prompt-app',
+        prompt_last_prompt_at: 123,
+        applications_menu: { ids: ['x'], at: 1 },
       },
     });
     const deps = makeDeps(ctx);
-    const msg = incomingMsg('  CanceLAR  ');
 
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, incomingMsg('  CanceLAR  '), deps);
 
     expect(result).toEqual({ handled: true });
-    expect(mockQuery).not.toHaveBeenCalled(); // no jobId lookup, no computeNextStep -- guard short-circuits first
-    expect(ctx.stateContext.fill_application_id).toBeNull();
-    expect(ctx.stateContext.fill_pending).toBeNull();
-    expect(ctx.stateContext.fill_relay_override).toBeNull();
-    expect(ctx.stateContext.fill_offer_application_id).toBeNull();
+    expect(mockQuery).not.toHaveBeenCalled(); // the guard short-circuits before any query
+    expect(deps.updateStateContext).toHaveBeenCalledWith(client, CONVERSATION_ID, {
+      fill_application_id: null,
+      fill_pending: null,
+      fill_cert_more_pending: null,
+      fill_relay_override: null,
+      fill_offer_application_id: null,
+      prompt_application_id: null,
+      prompt_last_prompt_at: null,
+      applications_menu: null,
+    });
     expect(lastReply(deps)).toBe(fillMessage('canceled', 'en'));
   });
 
   it('answers merge runs after deps.setRls and uses validated.value[key], never raw extraction', async () => {
+    // setRls FIRST is binding: the engine's defaults write-back lands on
+    // FORCE-RLS worker_application_defaults, and the engine only sets the GUC
+    // itself on the document-sync path (skipped for a job with no docs).
     const rawExtracted = { street: '1 Main St', apartment: '  Unit 5  ', city: 'Kyle', state: 'TX', zip: '78640' };
     const ctx = makeCtx({
       stateContext: {
@@ -749,25 +1379,15 @@ describe('handleFillMessage', () => {
       },
     });
     const deps = makeDeps(ctx);
-    const msg = incomingMsg('1');
+    setApp({ required_fields: ['home_address'] });
 
-    mockJobIdRow();
-    mockUpdateOk();
-    mockAppRow(appRow({ required_fields: ['home_address'], application_answers: { home_address: rawExtracted } }));
-    mockDocRows([]);
-    // required_fields is now fully answered -> computeNextStep returns
-    // 'complete', so sendCompletionPrompt's continue-other scan also runs
-    // (Task 11) -- no other applications for this worker.
-    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-
-    await handleFillMessage(client, ctx, msg, deps);
+    await handleFillMessage(client, ctx, incomingMsg('1'), deps);
 
     expect(deps.setRls).toHaveBeenCalledWith(client, WORKER_ID);
     const setRlsOrder = (deps.setRls as jest.Mock).mock.invocationCallOrder[0];
-    const updateOrder = mockQuery.mock.invocationCallOrder[1]; // [0]=jobId lookup, [1]=UPDATE
-    expect(setRlsOrder).toBeLessThan(updateOrder);
+    expect(setRlsOrder).toBeLessThan(queryOrder(SQL.mergeUpdate));
 
-    const [, updateParams] = mockQuery.mock.calls[1];
+    const [, updateParams] = findCall(SQL.mergeUpdate);
     const written = JSON.parse(updateParams[0]);
     // The validator TRIMS apartment -- this is validated.value[key], never
     // the raw (untrimmed) extracted object.
@@ -785,38 +1405,27 @@ describe('handleFillMessage', () => {
       },
     });
     const deps = makeDeps(ctx);
-    const msg = incomingMsg('1');
+    setApp({ required_fields: ['home_address'] });
 
-    mockJobIdRow();
-
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, incomingMsg('1'), deps);
 
     expect(result).toEqual({ handled: true });
-    expect(mockQuery).toHaveBeenCalledTimes(1); // jobId lookup only -- no UPDATE, nothing written
-    expect(deps.setRls).not.toHaveBeenCalled();
+    // MAX_PER_MERGE_JSON_LENGTH is checked before the SAVEPOINT, so neither
+    // the guard nor the UPDATE ever runs.
+    expect(hasCall(SQL.mergeUpdate)).toBe(false);
+    expect(hasCall(/^SAVEPOINT application_requirements_merge/)).toBe(false);
     expect(lastReply(deps)).toBe(fillMessage('answer_too_long', 'en'));
   });
 
   it('desired_pay success: next prompt embeds the normalized amount/interval echo', async () => {
     const ctx = makeCtx();
     const deps = makeDeps(ctx);
-    const msg = incomingMsg('25/hour');
+    setApp({ required_fields: ['desired_pay', 'work_authorization'] });
 
-    mockJobIdRow();
-    mockAppRow(appRow({
-      required_fields: ['desired_pay', 'work_authorization'],
-      application_answers: {},
-    }));
-    mockUpdateOk();
-    mockAppRow(appRow({
-      required_fields: ['desired_pay', 'work_authorization'],
-      application_answers: { desired_pay: { amount: 25, interval: 'hourly' } },
-    }));
-
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, incomingMsg('25/hour'), deps);
 
     expect(result).toEqual({ handled: true });
-    const [, updateParams] = mockQuery.mock.calls[2];
+    const [, updateParams] = findCall(SQL.mergeUpdate);
     expect(updateParams).toEqual([
       JSON.stringify({ desired_pay: { amount: 25, interval: 'hourly' } }),
       APPLICATION_ID,
@@ -833,65 +1442,168 @@ describe('handleFillMessage', () => {
     ['25/hora', 25, 'hourly'],
     ['25 por hora', 25, 'hourly'],
     ['$25 hourly', 25, 'hourly'],
-  ] as const)('desired_pay regex fix (Finding 2): "%s" parses to amount %i / %s', async (body, amount, interval) => {
+  ] as const)('desired_pay: "%s" parses to amount %i / %s', async (body, amount, interval) => {
     // "25 an hour" is the LITERAL worked example in this key's own
-    // fieldQuestion/fieldRetryHint copy (application-fill-prompts.ts) --
-    // the brief's original regex could not parse its own example.
+    // fieldQuestion/fieldRetryHint copy (application-fill-prompts.ts).
     const ctx = makeCtx();
     const deps = makeDeps(ctx);
-
-    mockJobIdRow();
-    mockAppRow(appRow({ required_fields: ['desired_pay', 'work_authorization'], application_answers: {} }));
-    mockUpdateOk();
-    mockAppRow(appRow({
-      required_fields: ['desired_pay', 'work_authorization'],
-      application_answers: { desired_pay: { amount, interval } },
-    }));
+    setApp({ required_fields: ['desired_pay', 'work_authorization'] });
 
     const result = await handleFillMessage(client, ctx, incomingMsg(body), deps);
 
     expect(result).toEqual({ handled: true });
-    // [0]=jobId lookup, [1]=computeNextStep (current step), [2]=UPDATE.
-    const [, updateParams] = mockQuery.mock.calls[2];
+    const [, updateParams] = findCall(SQL.mergeUpdate);
     expect(updateParams).toEqual([JSON.stringify({ desired_pay: { amount, interval } }), APPLICATION_ID]);
   });
 
   it('desired_pay "25 al ano" returns null (no yearly interval) and re-prompts', async () => {
     const ctx = makeCtx();
     const deps = makeDeps(ctx);
-    const msg = incomingMsg('25 al ano');
+    setApp({ required_fields: ['desired_pay'] });
 
-    mockJobIdRow();
-    mockAppRow(appRow({ required_fields: ['desired_pay'], application_answers: {} }));
-
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, incomingMsg('25 al ano'), deps);
 
     expect(result).toEqual({ handled: true });
-    expect(mockQuery).toHaveBeenCalledTimes(2); // no UPDATE
+    expect(hasCall(SQL.mergeUpdate)).toBe(false);
     expect(lastReply(deps)).toBe(fieldRetryHint('desired_pay', 'en'));
   });
 });
 
 // ─────────────────────────────────────────────────────────────────────────
-// handleFillMessage — numbered-menu deterministic pre-parse (FINAL-REVIEW
-// Finding 2). `education`/`military_service`/`worked_here_before` are
-// extraction-bucket keys whose own FIELD_QUESTIONS copy is a numbered menu
-// ("Responde con 1, 2, ... o 7." / "1. Si / 2. No") -- Bedrock extraction
-// never sees that menu text, so a fully-compliant bare-digit reply was
-// previously routed to extraction anyway, likely failing the confidence
-// gate and looping the most compliant workers. These tests lock the fix:
-// an unambiguous menu answer merges DIRECTLY (like work_authorization's own
-// deterministic path) with NO extraction call and NO confirm echo; anything
-// else still falls through to extraction unchanged.
+// mergeFieldAnswers failure mapping. Every `MergeFailureReason` the shared
+// engine can return has to land on worker-facing copy -- the lifecycle ones
+// reuse the SAME exit copy `sendExitPrompt` sends, so a job that closed
+// between the question and the answer reads identically whichever code path
+// notices first (application-fill.ts:713 mergeFailureMessage).
 // ─────────────────────────────────────────────────────────────────────────
 
-describe('handleFillMessage — numbered-menu deterministic pre-parse (Finding 2)', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-    (validateApplicationAnswers as jest.Mock).mockImplementation(
-      jest.requireActual('../../../../../lambda/lib/application-answers').validateApplicationAnswers,
-    );
+describe('handleFillMessage — mergeFieldAnswers failure reasons', () => {
+  beforeEach(resetFake);
+
+  function confirmingCtx() {
+    return makeCtx({
+      stateContext: {
+        fill_application_id: APPLICATION_ID,
+        fill_pending: { key: 'date_of_birth', stage: 'confirm', extracted: '1990-04-03' } satisfies FillPendingConfirm,
+      },
+    });
+  }
+
+  it('too_large (post-merge column over MAX_ANSWERS_JSON_LENGTH) -> answer_too_long, rolled back to the savepoint', async () => {
+    const ctx = confirmingCtx();
+    const deps = makeDeps(ctx);
+    setApp({ required_fields: ['date_of_birth'] });
+    fake.answersTotal = 20_000; // > 16384
+
+    const result = await handleFillMessage(client, ctx, incomingMsg('1'), deps);
+
+    expect(result).toEqual({ handled: true });
+    expect(hasCall(/^ROLLBACK TO SAVEPOINT application_requirements_merge/)).toBe(true);
+    expect(fake.defaultsWritten).toEqual([]); // never reached
+    expect(lastReply(deps)).toBe(fillMessage('answer_too_long', 'en'));
+    expect(ctx.stateContext.fill_pending).toBeNull();
   });
+
+  it('not_found (application vanished between question and answer) -> exit_application_gone copy', async () => {
+    const ctx = confirmingCtx();
+    const deps = makeDeps(ctx);
+    setAppMissing();
+
+    const result = await handleFillMessage(client, ctx, incomingMsg('1'), deps);
+
+    expect(result).toEqual({ handled: true });
+    expect(hasCall(SQL.mergeUpdate)).toBe(false);
+    expect(lastReply(deps)).toBe(fillMessage('exit_application_gone', 'en'));
+  });
+
+  it('closed (application hired mid-turn) -> exit_application_closed copy', async () => {
+    const ctx = confirmingCtx();
+    const deps = makeDeps(ctx);
+    setApp({ required_fields: ['date_of_birth'], application_status: 'hired' });
+
+    const result = await handleFillMessage(client, ctx, incomingMsg('1'), deps);
+
+    expect(result).toEqual({ handled: true });
+    expect(hasCall(SQL.mergeUpdate)).toBe(false);
+    expect(lastReply(deps)).toBe(fillMessage('exit_application_closed', 'en'));
+  });
+
+  it('stage_locked (details never requested) -> exit_details_not_requested copy', async () => {
+    const ctx = confirmingCtx();
+    const deps = makeDeps(ctx);
+    setApp({ required_fields: ['date_of_birth'], details_requested_at: null });
+
+    const result = await handleFillMessage(client, ctx, incomingMsg('1'), deps);
+
+    expect(result).toEqual({ handled: true });
+    expect(hasCall(SQL.mergeUpdate)).toBe(false);
+    expect(lastReply(deps)).toBe(fillMessage('exit_details_not_requested', 'en'));
+  });
+
+  it('certification_document_limit (078 cap tripped by the doc sync) -> cert_cap copy', async () => {
+    const ctx = confirmingCtx();
+    const deps = makeDeps(ctx);
+    // The cap is raised by copyRequiredDocumentSnapshots inside the engine's
+    // own snapshot load, so the job must ask for a document for the sync to
+    // run at all.
+    setApp({ required_fields: ['date_of_birth'], required_docs: ['certification_doc'] });
+    fake.copyError = Object.assign(new Error('cap reached'), {
+      code: '23514', constraint: 'certification_document_limit',
+    });
+
+    const result = await handleFillMessage(client, ctx, incomingMsg('1'), deps);
+
+    expect(result).toEqual({ handled: true });
+    expect(hasCall(SQL.mergeUpdate)).toBe(false);
+    expect(lastReply(deps)).toBe(fillMessage('cert_cap', 'en'));
+  });
+
+  it('invalid (the validator rejects the confirmed value) -> the per-key retry hint', async () => {
+    const ctx = confirmingCtx();
+    const deps = makeDeps(ctx);
+    setApp({ required_fields: ['date_of_birth'] });
+    (validateApplicationAnswers as jest.Mock).mockReturnValueOnce({ ok: false, error: 'invalid_date_of_birth' });
+
+    const result = await handleFillMessage(client, ctx, incomingMsg('1'), deps);
+
+    expect(result).toEqual({ handled: true });
+    expect(hasCall(SQL.mergeUpdate)).toBe(false);
+    expect(lastReply(deps)).toBe(fieldRetryHint('date_of_birth', 'en'));
+    expect(ctx.stateContext.fill_pending).toBeNull();
+  });
+
+  it('invalid via unknown_answer_key: the engine refuses a key THIS job no longer asks for', async () => {
+    // The lane's own de-required guard (application-fill.ts:1443) normally
+    // catches this from `ctx.requiredFields`. This test pins the ENGINE'S
+    // backstop underneath it, by making the two reads of the same turn
+    // disagree -- a real intra-turn race: `fetchApplicationJobContext` (step
+    // 5) still sees the key, then the employer's edit commits, and the merge's
+    // own snapshot no longer lists it.
+    const ctx = confirmingCtx();
+    const deps = makeDeps(ctx);
+    setApp({ required_fields: ['desired_pay'] });
+    fake.jobContextRequiredFields = ['date_of_birth', 'desired_pay'];
+
+    const result = await handleFillMessage(client, ctx, incomingMsg('1'), deps);
+
+    expect(result).toEqual({ handled: true });
+    expect(hasCall(SQL.mergeUpdate)).toBe(false);
+    expect(lastReply(deps)).toBe(fieldRetryHint('date_of_birth', 'en'));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// handleFillMessage — numbered-menu deterministic pre-parse.
+// `education`/`military_service`/`worked_here_before` are extraction-bucket
+// keys whose own FIELD_QUESTIONS copy is a numbered menu ("Responde con 1,
+// 2, ... o 7." / "1. Si / 2. No") -- Bedrock extraction never sees that menu
+// text, so a fully-compliant bare-digit reply was previously routed to
+// extraction anyway, likely failing the confidence gate and looping the most
+// compliant workers.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('handleFillMessage — numbered-menu deterministic pre-parse', () => {
+  beforeEach(resetFake);
 
   it.each([
     ['1', 'none'],
@@ -905,21 +1617,13 @@ describe('handleFillMessage — numbered-menu deterministic pre-parse (Finding 2
     const ctx = makeCtx();
     const invoke = jest.fn();
     const deps = makeDeps(ctx, { extraction: { invoke } });
-
-    mockJobIdRow();
-    mockAppRow(appRow({ required_fields: ['education', 'military_service'], application_answers: {} }));
-    mockUpdateOk();
-    mockAppRow(appRow({
-      required_fields: ['education', 'military_service'],
-      application_answers: { education: { level } },
-    }));
+    setApp({ required_fields: ['education', 'military_service'] });
 
     const result = await handleFillMessage(client, ctx, incomingMsg(digit), deps);
 
     expect(result).toEqual({ handled: true });
     expect(invoke).not.toHaveBeenCalled(); // never reaches Bedrock extraction
-    const [updateSql, updateParams] = mockQuery.mock.calls[2];
-    expect(updateSql).toMatch(/UPDATE job_applications/);
+    const [, updateParams] = findCall(SQL.mergeUpdate);
     expect(updateParams).toEqual([JSON.stringify({ education: { level } }), APPLICATION_ID]);
     expect(lastReply(deps)).toBe(fieldQuestion('military_service', 'en'));
   });
@@ -934,21 +1638,13 @@ describe('handleFillMessage — numbered-menu deterministic pre-parse (Finding 2
     const ctx = makeCtx();
     const invoke = jest.fn();
     const deps = makeDeps(ctx, { extraction: { invoke } });
-
-    mockJobIdRow();
-    mockAppRow(appRow({ required_fields: ['military_service', 'worked_here_before'], application_answers: {} }));
-    mockUpdateOk();
-    mockAppRow(appRow({
-      required_fields: ['military_service', 'worked_here_before'],
-      application_answers: { military_service: { served } },
-    }));
+    setApp({ required_fields: ['military_service', 'worked_here_before'] });
 
     const result = await handleFillMessage(client, ctx, incomingMsg(body), deps);
 
     expect(result).toEqual({ handled: true });
     expect(invoke).not.toHaveBeenCalled();
-    const [updateSql, updateParams] = mockQuery.mock.calls[2];
-    expect(updateSql).toMatch(/UPDATE job_applications/);
+    const [, updateParams] = findCall(SQL.mergeUpdate);
     expect(updateParams).toEqual([JSON.stringify({ military_service: { served } }), APPLICATION_ID]);
     expect(lastReply(deps)).toBe(fieldQuestion('worked_here_before', 'en'));
   });
@@ -963,21 +1659,13 @@ describe('handleFillMessage — numbered-menu deterministic pre-parse (Finding 2
     const ctx = makeCtx();
     const invoke = jest.fn();
     const deps = makeDeps(ctx, { extraction: { invoke } });
-
-    mockJobIdRow();
-    mockAppRow(appRow({ required_fields: ['worked_here_before', 'education'], application_answers: {} }));
-    mockUpdateOk();
-    mockAppRow(appRow({
-      required_fields: ['worked_here_before', 'education'],
-      application_answers: { worked_here_before: { answer } },
-    }));
+    setApp({ required_fields: ['worked_here_before', 'education'] });
 
     const result = await handleFillMessage(client, ctx, incomingMsg(body), deps);
 
     expect(result).toEqual({ handled: true });
     expect(invoke).not.toHaveBeenCalled();
-    const [updateSql, updateParams] = mockQuery.mock.calls[2];
-    expect(updateSql).toMatch(/UPDATE job_applications/);
+    const [, updateParams] = findCall(SQL.mergeUpdate);
     expect(updateParams).toEqual([JSON.stringify({ worked_here_before: { answer } }), APPLICATION_ID]);
     expect(lastReply(deps)).toBe(fieldQuestion('education', 'en'));
   });
@@ -987,9 +1675,7 @@ describe('handleFillMessage — numbered-menu deterministic pre-parse (Finding 2
     const deps = makeDeps(ctx, {
       extraction: fakeExtraction({ value: { level: 'high_school' }, confidence: { level: 0.9 } }),
     });
-
-    mockJobIdRow();
-    mockAppRow(appRow({ required_fields: ['education'], application_answers: {} }));
+    setApp({ required_fields: ['education'] });
 
     const result = await handleFillMessage(client, ctx, incomingMsg('preparatoria'), deps);
 
@@ -1002,9 +1688,7 @@ describe('handleFillMessage — numbered-menu deterministic pre-parse (Finding 2
     const deps = makeDeps(ctx, {
       extraction: fakeExtraction({ value: { served: true, branch: 'Army' }, confidence: { served: 0.9, branch: 0.9 } }),
     });
-
-    mockJobIdRow();
-    mockAppRow(appRow({ required_fields: ['military_service'], application_answers: {} }));
+    setApp({ required_fields: ['military_service'] });
 
     const result = await handleFillMessage(client, ctx, incomingMsg('si, en el ejercito'), deps);
 
@@ -1017,9 +1701,7 @@ describe('handleFillMessage — numbered-menu deterministic pre-parse (Finding 2
     const deps = makeDeps(ctx, {
       extraction: fakeExtraction({ value: { answer: true, when: '2022' }, confidence: { answer: 0.9, when: 0.9 } }),
     });
-
-    mockJobIdRow();
-    mockAppRow(appRow({ required_fields: ['worked_here_before'], application_answers: {} }));
+    setApp({ required_fields: ['worked_here_before'] });
 
     const result = await handleFillMessage(client, ctx, incomingMsg('si, en 2022'), deps);
 
@@ -1033,37 +1715,32 @@ describe('handleFillMessage — numbered-menu deterministic pre-parse (Finding 2
 });
 
 // ─────────────────────────────────────────────────────────────────────────
-// handleFillMessage — document steps (Task 8). Real S3 key format:
+// handleFillMessage — document steps. Real S3 key format:
 // documents/${jobId}/${workerId}/${docType}/${uuid}.${ext} (worker-doc-
 // upload-url.ts:93 scheme). copyRequiredDocumentSnapshots (applications.ts)
-// runs FOR REAL here (not mocked) so its own INSERT...SELECT queries flow
-// through the same mockQuery chain -- only uploadDocumentToS3 (media.ts,
-// real S3 I/O) is mocked.
+// runs FOR REAL here (not mocked) so its own INSERT...SELECT statements flow
+// through the same routed fake -- only uploadDocumentToS3 (media.ts, real S3
+// I/O) is mocked.
 // ─────────────────────────────────────────────────────────────────────────
 
-describe('handleFillMessage — document steps (Task 8)', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-  });
+describe('handleFillMessage — document steps', () => {
+  beforeEach(resetFake);
 
-  it('media at doc step (non-cert): sniff ok -> S3 put -> SAVEPOINT -> DELETE-then-INSERT with version id -> snapshot copy -> next prompt', async () => {
+  const mediaMsg = (overrides: Partial<IncomingMessage> = {}) =>
+    incomingMsg('', {
+      numMedia: 1,
+      mediaUrl: 'https://twilio.example/media/1',
+      mediaContentType: 'image/jpeg',
+      ...overrides,
+    });
+
+  it('media at doc step (non-cert): S3 PUT before the DB write, SAVEPOINT, DELETE-then-INSERT with version id, snapshot copy, next prompt', async () => {
     const ctx = makeCtx();
     const deps = makeDeps(ctx, { downloadMedia: jest.fn(async () => JPEG_BYTES) });
-    const msg = incomingMsg('', { numMedia: 1, mediaUrl: 'https://twilio.example/media/1', mediaContentType: 'image/jpeg' });
     (uploadDocumentToS3 as jest.Mock).mockResolvedValueOnce({ versionId: 'v-123' });
+    setApp({ required_docs: ['resume', 'driver_license'] });
 
-    mockJobIdRow(); // [0]
-    mockAppRow(appRow({ required_fields: [], required_docs: ['resume', 'driver_license'] })); // [1]
-    mockDocRows([]); // [2] -- resume missing -> doc:resume
-    mockUpdateOk(); // [3] SAVEPOINT
-    mockUpdateOk(); // [4] DELETE
-    mockUpdateOk(); // [5] INSERT
-    mockUpdateOk(); // [6] copyRequiredDocumentSnapshots (non-cert branch, 1 query)
-    mockUpdateOk(); // [7] RELEASE
-    mockAppRow(appRow({ required_fields: [], required_docs: ['resume', 'driver_license'] })); // [8] promptNextStep's computeNextStep
-    mockDocRows(['resume']); // [9] -- driver_license now missing
-
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, mediaMsg(), deps);
 
     expect(result).toEqual({ handled: true });
     expect(uploadDocumentToS3).toHaveBeenCalledWith(
@@ -1072,13 +1749,18 @@ describe('handleFillMessage — document steps (Task 8)', () => {
       JPEG_BYTES,
       'image/jpeg',
     );
+    // Spec section 4.3's orphan-tolerated invariant: the S3 object is written
+    // BEFORE the row that points at it.
+    const s3Order = (uploadDocumentToS3 as jest.Mock).mock.invocationCallOrder[0];
+    expect(s3Order).toBeLessThan(queryOrder(SQL.docInsert));
+    // deps.setRls arms worker_documents' FORCE RLS policy before the write.
+    expect((deps.setRls as jest.Mock).mock.invocationCallOrder[0]).toBeLessThan(queryOrder(SQL.docInsert));
+    expect(findCallIndex(/^SAVEPOINT fill_doc/)).toBeLessThan(findCallIndex(SQL.docInsert));
 
-    const [deleteSql, deleteParams] = mockQuery.mock.calls[4];
-    expect(deleteSql).toMatch(/DELETE FROM worker_documents WHERE worker_id = \$1 AND job_id = \$2 AND doc_type = \$3/);
+    const [, deleteParams] = findCall(SQL.docDelete);
     expect(deleteParams).toEqual([WORKER_ID, JOB_ID, 'resume']);
 
-    const [insertSql, insertParams] = mockQuery.mock.calls[5];
-    expect(insertSql).toMatch(/INSERT INTO worker_documents/);
+    const [, insertParams] = findCall(SQL.docInsert);
     expect(insertParams).toEqual([
       WORKER_ID, JOB_ID, 'resume',
       expect.stringContaining('documents/'),
@@ -1088,33 +1770,21 @@ describe('handleFillMessage — document steps (Task 8)', () => {
       'v-123',
       null, // cert_name -- always NULL for non-cert doc types (078's CHECK requires it)
     ]);
-
-    expect(mockQuery).toHaveBeenCalledTimes(10);
+    expect(hasCall(/^RELEASE SAVEPOINT fill_doc/)).toBe(true);
     expect(lastReply(deps)).toBe(docPrompt('driver_license', 'en'));
   });
 
   it('certification_doc: plain INSERT (no DELETE), replies entry_another (cert loop), arms fill_cert_more_pending, does NOT advance', async () => {
     const ctx = makeCtx();
     const deps = makeDeps(ctx, { downloadMedia: jest.fn(async () => JPEG_BYTES) });
-    const msg = incomingMsg('', { numMedia: 1, mediaUrl: 'https://twilio.example/media/1', mediaContentType: 'image/jpeg' });
     (uploadDocumentToS3 as jest.Mock).mockResolvedValueOnce({ versionId: 'v-456' });
+    setApp({ required_docs: ['certification_doc'] });
 
-    mockJobIdRow(); // [0]
-    mockAppRow(appRow({ required_fields: [], required_docs: ['certification_doc'] })); // [1]
-    mockDocRows([]); // [2] -- doc:certification_doc
-    mockUpdateOk(); // [3] SAVEPOINT
-    mockUpdateOk(); // [4] INSERT (no DELETE for certification_doc)
-    mockUpdateOk(); // [5] copyRequiredDocumentSnapshots (cert branch, 1 query)
-    mockUpdateOk(); // [6] RELEASE
-
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, mediaMsg(), deps);
 
     expect(result).toEqual({ handled: true });
-    for (const [sql] of mockQuery.mock.calls) {
-      expect(sql).not.toMatch(/DELETE FROM worker_documents/);
-    }
-    const [insertSql, insertParams] = mockQuery.mock.calls[4];
-    expect(insertSql).toMatch(/INSERT INTO worker_documents/);
+    expect(hasCall(SQL.docDelete)).toBe(false);
+    const [, insertParams] = findCall(SQL.docInsert);
     expect(insertParams).toEqual([
       WORKER_ID, JOB_ID, 'certification_doc',
       expect.stringContaining('documents/'),
@@ -1124,9 +1794,9 @@ describe('handleFillMessage — document steps (Task 8)', () => {
       'v-456',
       null, // cert_name -- WhatsApp never collects a label; NULL lands in 078's unlabeled bucket
     ]);
-
-    // promptNextStep never ran: no 8th/9th query re-deriving the step.
-    expect(mockQuery).toHaveBeenCalledTimes(7);
+    // promptNextStep never ran: only ONE snapshot load happened this turn
+    // (the step derive), never a second one re-deriving after the store.
+    expect(findCalls(SQL.snapshot)).toHaveLength(1);
     expect(lastReply(deps)).toBe(fillMessage('entry_another', 'en'));
     expect(ctx.stateContext.fill_cert_more_pending).toBe(true);
   });
@@ -1136,120 +1806,83 @@ describe('handleFillMessage — document steps (Task 8)', () => {
     async (constraintName) => {
       const ctx = makeCtx();
       const deps = makeDeps(ctx, { downloadMedia: jest.fn(async () => JPEG_BYTES) });
-      const msg = incomingMsg('', { numMedia: 1, mediaUrl: 'https://twilio.example/media/1', mediaContentType: 'image/jpeg' });
       (uploadDocumentToS3 as jest.Mock).mockResolvedValueOnce({ versionId: 'v-789' });
+      setApp({ required_docs: ['certification_doc', 'driver_license'] });
+      fake.docInsertError = Object.assign(new Error('cap reached'), {
+        code: '23514', constraint: constraintName,
+      });
 
-      mockJobIdRow(); // [0]
-      mockAppRow(appRow({ required_fields: [], required_docs: ['certification_doc', 'driver_license'] })); // [1]
-      mockDocRows([]); // [2] -- doc:certification_doc
-      mockUpdateOk(); // [3] SAVEPOINT
-      const capError = Object.assign(new Error('cap reached'), { code: '23514', constraint: constraintName });
-      mockQuery.mockRejectedValueOnce(capError); // [4] INSERT rejects
-      mockUpdateOk(); // [5] ROLLBACK TO SAVEPOINT
-      mockAppRow(appRow({ required_fields: [], required_docs: ['certification_doc', 'driver_license'] })); // [6] promptNextStep
-      mockDocRows(['certification_doc']); // [7] -- cap implies existing rows; driver_license now next
-
-      const result = await handleFillMessage(client, ctx, msg, deps);
+      const result = await handleFillMessage(client, ctx, mediaMsg(), deps);
 
       expect(result).toEqual({ handled: true });
-      expect(mockQuery.mock.calls[5][0]).toMatch(/ROLLBACK TO SAVEPOINT/);
-      const replies = (deps.queueReplyText as jest.Mock).mock.calls.map((c) => c[3]);
-      expect(replies).toEqual([fillMessage('cert_cap', 'en'), docPrompt('driver_license', 'en')]);
+      expect(hasCall(/^ROLLBACK TO SAVEPOINT fill_doc/)).toBe(true);
+      // 'satisfied' -> the requirement counts as met (the cap means rows
+      // already exist), so the walk advances to the next doc.
+      expect(allReplies(deps)).toEqual([fillMessage('cert_cap', 'en'), docPrompt('driver_license', 'en')]);
     },
   );
 
   it('non-cert 23505 -> ROLLBACK TO SAVEPOINT -> treated satisfied -> advances silently (first-write-wins)', async () => {
     const ctx = makeCtx();
     const deps = makeDeps(ctx, { downloadMedia: jest.fn(async () => JPEG_BYTES) });
-    const msg = incomingMsg('', { numMedia: 1, mediaUrl: 'https://twilio.example/media/1', mediaContentType: 'image/jpeg' });
     (uploadDocumentToS3 as jest.Mock).mockResolvedValueOnce({ versionId: 'v-abc' });
+    setApp({ required_docs: ['resume', 'driver_license'] });
+    fake.docInsertError = Object.assign(new Error('duplicate'), { code: '23505' });
 
-    mockJobIdRow(); // [0]
-    mockAppRow(appRow({ required_fields: [], required_docs: ['resume', 'driver_license'] })); // [1]
-    mockDocRows([]); // [2] -- doc:resume
-    mockUpdateOk(); // [3] SAVEPOINT
-    mockUpdateOk(); // [4] DELETE
-    const raceError = Object.assign(new Error('duplicate'), { code: '23505' });
-    mockQuery.mockRejectedValueOnce(raceError); // [5] INSERT rejects
-    mockUpdateOk(); // [6] ROLLBACK TO SAVEPOINT
-    mockAppRow(appRow({ required_fields: [], required_docs: ['resume', 'driver_license'] })); // [7] promptNextStep
-    mockDocRows(['resume']); // [8] -- a concurrent write already landed it
-
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, mediaMsg(), deps);
 
     expect(result).toEqual({ handled: true });
-    expect(mockQuery.mock.calls[6][0]).toMatch(/ROLLBACK TO SAVEPOINT/);
+    expect(hasCall(/^ROLLBACK TO SAVEPOINT fill_doc/)).toBe(true);
     // No cert_cap / error reply -- exactly one reply, the advanced next-step prompt.
-    expect((deps.queueReplyText as jest.Mock).mock.calls).toHaveLength(1);
-    expect(lastReply(deps)).toBe(docPrompt('driver_license', 'en'));
+    expect(allReplies(deps)).toEqual([docPrompt('driver_license', 'en')]);
   });
 
   it('other SQLSTATE -> ROLLBACK TO SAVEPOINT -> rethrows (never mapped to satisfied/stay_pending)', async () => {
     const ctx = makeCtx();
     const deps = makeDeps(ctx, { downloadMedia: jest.fn(async () => JPEG_BYTES) });
-    const msg = incomingMsg('', { numMedia: 1, mediaUrl: 'https://twilio.example/media/1', mediaContentType: 'image/jpeg' });
     (uploadDocumentToS3 as jest.Mock).mockResolvedValueOnce({ versionId: 'v-def' });
+    setApp({ required_docs: ['resume'] });
+    fake.docInsertError = Object.assign(new Error('server exploded'), { code: 'XX000' });
 
-    mockJobIdRow(); // [0]
-    mockAppRow(appRow({ required_fields: [], required_docs: ['resume'] })); // [1]
-    mockDocRows([]); // [2]
-    mockUpdateOk(); // [3] SAVEPOINT
-    mockUpdateOk(); // [4] DELETE
-    const weirdError = Object.assign(new Error('server exploded'), { code: 'XX000' });
-    mockQuery.mockRejectedValueOnce(weirdError); // [5] INSERT rejects
-    mockUpdateOk(); // [6] ROLLBACK TO SAVEPOINT
+    await expect(handleFillMessage(client, ctx, mediaMsg(), deps)).rejects.toThrow('server exploded');
 
-    await expect(handleFillMessage(client, ctx, msg, deps)).rejects.toThrow('server exploded');
-
-    expect(mockQuery.mock.calls[6][0]).toMatch(/ROLLBACK TO SAVEPOINT/);
-    expect(mockQuery).toHaveBeenCalledTimes(7); // never reached promptNextStep
+    expect(hasCall(/^ROLLBACK TO SAVEPOINT fill_doc/)).toBe(true);
+    expect(findCalls(SQL.snapshot)).toHaveLength(1); // never reached promptNextStep
     expect(deps.queueReplyText).not.toHaveBeenCalled();
   });
 
   it('sniff mismatch vs claimed type -> doc_invalid_type reply, step stays pending, no S3 put', async () => {
     const ctx = makeCtx();
     const deps = makeDeps(ctx, { downloadMedia: jest.fn(async () => PNG_BYTES) }); // real bytes sniff to image/png
-    const msg = incomingMsg('', { numMedia: 1, mediaUrl: 'https://twilio.example/media/1', mediaContentType: 'image/jpeg' }); // claimed jpeg
+    setApp({ required_docs: ['resume'] });
 
-    mockJobIdRow(); // [0]
-    mockAppRow(appRow({ required_fields: [], required_docs: ['resume'] })); // [1]
-    mockDocRows([]); // [2]
-
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, mediaMsg({ mediaContentType: 'image/jpeg' }), deps);
 
     expect(result).toEqual({ handled: true });
     expect(uploadDocumentToS3).not.toHaveBeenCalled();
-    expect(mockQuery).toHaveBeenCalledTimes(3); // no SAVEPOINT/writes, no promptNextStep re-derive
+    expect(hasCall(SQL.docInsert)).toBe(false);
+    expect(hasCall(/^SAVEPOINT fill_doc/)).toBe(false);
     expect(lastReply(deps)).toBe(fillMessage('doc_invalid_type', 'en'));
   });
 
   it('oversize buffer (MediaTooLargeError) -> doc_too_large reply, no S3 put', async () => {
     const ctx = makeCtx();
     const deps = makeDeps(ctx, { downloadMedia: jest.fn(async () => { throw new MediaTooLargeError(); }) });
-    const msg = incomingMsg('', { numMedia: 1, mediaUrl: 'https://twilio.example/media/1', mediaContentType: 'image/jpeg' });
+    setApp({ required_docs: ['resume'] });
 
-    mockJobIdRow(); // [0]
-    mockAppRow(appRow({ required_fields: [], required_docs: ['resume'] })); // [1]
-    mockDocRows([]); // [2]
-
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, mediaMsg(), deps);
 
     expect(result).toEqual({ handled: true });
     expect(uploadDocumentToS3).not.toHaveBeenCalled();
-    expect(mockQuery).toHaveBeenCalledTimes(3);
     expect(lastReply(deps)).toBe(fillMessage('doc_too_large', 'en'));
   });
 
   it('downloadMedia throws a generic error -> doc_download_failed reply, no S3 put, NO rethrow (turn commits)', async () => {
     const ctx = makeCtx();
     const deps = makeDeps(ctx, { downloadMedia: jest.fn(async () => { throw new Error('twilio 502'); }) });
-    const msg = incomingMsg('', { numMedia: 1, mediaUrl: 'https://twilio.example/media/1', mediaContentType: 'image/jpeg' });
+    setApp({ required_docs: ['resume'] });
 
-    mockJobIdRow(); // [0]
-    mockAppRow(appRow({ required_fields: [], required_docs: ['resume'] })); // [1]
-    mockDocRows([]); // [2]
-
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, mediaMsg(), deps);
 
     expect(result).toEqual({ handled: true }); // never rejects -- the turn commits
     expect(uploadDocumentToS3).not.toHaveBeenCalled();
@@ -1259,21 +1892,10 @@ describe('handleFillMessage — document steps (Task 8)', () => {
   it('NumMedia>1 -> processes the first attachment, prepends doc_take_first to the resulting reply', async () => {
     const ctx = makeCtx();
     const deps = makeDeps(ctx, { downloadMedia: jest.fn(async () => JPEG_BYTES) });
-    const msg = incomingMsg('', { numMedia: 2, mediaUrl: 'https://twilio.example/media/1', mediaContentType: 'image/jpeg' });
     (uploadDocumentToS3 as jest.Mock).mockResolvedValueOnce({ versionId: 'v-multi' });
+    setApp({ required_docs: ['resume', 'driver_license'] });
 
-    mockJobIdRow(); // [0]
-    mockAppRow(appRow({ required_fields: [], required_docs: ['resume', 'driver_license'] })); // [1]
-    mockDocRows([]); // [2]
-    mockUpdateOk(); // [3] SAVEPOINT
-    mockUpdateOk(); // [4] DELETE
-    mockUpdateOk(); // [5] INSERT
-    mockUpdateOk(); // [6] copy snapshot
-    mockUpdateOk(); // [7] RELEASE
-    mockAppRow(appRow({ required_fields: [], required_docs: ['resume', 'driver_license'] })); // [8]
-    mockDocRows(['resume']); // [9]
-
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, mediaMsg({ numMedia: 2 }), deps);
 
     expect(result).toEqual({ handled: true });
     expect(uploadDocumentToS3).toHaveBeenCalledWith(DOCUMENTS_BUCKET, expect.any(String), JPEG_BYTES, 'image/jpeg');
@@ -1283,48 +1905,35 @@ describe('handleFillMessage — document steps (Task 8)', () => {
   it('audio content type at a doc step -> voice_note_not_supported (templates.ts key, not v2_voice_not_supported), no download attempted', async () => {
     const ctx = makeCtx();
     const deps = makeDeps(ctx);
-    const msg = incomingMsg('', { numMedia: 1, mediaUrl: 'https://twilio.example/media/1', mediaContentType: 'audio/ogg' });
+    setApp({ required_docs: ['resume'] });
 
-    mockJobIdRow(); // [0]
-    mockAppRow(appRow({ required_fields: [], required_docs: ['resume'] })); // [1]
-    mockDocRows([]); // [2]
-
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, mediaMsg({ mediaContentType: 'audio/ogg' }), deps);
 
     expect(result).toEqual({ handled: true });
     expect(deps.downloadMedia).not.toHaveBeenCalled();
     expect(uploadDocumentToS3).not.toHaveBeenCalled();
-    expect(mockQuery).toHaveBeenCalledTimes(3);
     expect(lastReply(deps)).toBe(t('voice_note_not_supported', 'en'));
   });
 
   it('media at a FIELD step -> field_step_media reply, nothing written', async () => {
     const ctx = makeCtx();
     const deps = makeDeps(ctx);
-    const msg = incomingMsg('', { numMedia: 1, mediaUrl: 'https://twilio.example/media/1', mediaContentType: 'image/jpeg' });
+    setApp({ required_fields: ['work_authorization'] });
 
-    mockJobIdRow(); // [0]
-    mockAppRow(appRow({ required_fields: ['work_authorization'], application_answers: {} })); // [1] -- field kind, no docs query
-
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, mediaMsg(), deps);
 
     expect(result).toEqual({ handled: true });
     expect(deps.downloadMedia).not.toHaveBeenCalled();
     expect(deps.updateStateContext).not.toHaveBeenCalled();
-    expect(mockQuery).toHaveBeenCalledTimes(2);
     expect(lastReply(deps)).toBe(fillMessage('field_step_media', 'en'));
   });
 
   it('free text at a doc step -> re-sends the doc prompt when outside the reprompt cooldown', async () => {
     const ctx = makeCtx();
     const deps = makeDeps(ctx);
-    const msg = incomingMsg('hola');
+    setApp({ required_docs: ['resume'] });
 
-    mockJobIdRow(); // [0]
-    mockAppRow(appRow({ required_fields: [], required_docs: ['resume'] })); // [1]
-    mockDocRows([]); // [2]
-
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, incomingMsg('hola'), deps);
 
     expect(result).toEqual({ handled: true });
     expect(lastReply(deps)).toBe(docPrompt('resume', 'en'));
@@ -1336,80 +1945,56 @@ describe('handleFillMessage — document steps (Task 8)', () => {
       stateContext: { fill_application_id: APPLICATION_ID, fill_last_prompt_at: NOW_MS - 1000 },
     });
     const deps = makeDeps(ctx);
-    const msg = incomingMsg('hola');
+    setApp({ required_docs: ['resume'] });
 
-    mockJobIdRow(); // [0]
-    mockAppRow(appRow({ required_fields: [], required_docs: ['resume'] })); // [1]
-    mockDocRows([]); // [2]
-
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, incomingMsg('hola'), deps);
 
     expect(result).toEqual({ handled: true });
     expect(deps.queueReplyText).not.toHaveBeenCalled();
   });
 
   it('outcome contract: stay_pending never triggers promptNextStep; stored does', async () => {
-    // Scenario A: stay_pending (invalid type) -- only the 3 derive-step
-    // queries run, no SAVEPOINT/write, no second computeNextStep call.
+    // Scenario A: stay_pending (invalid type) -- no write and no SECOND
+    // snapshot load (i.e. no promptNextStep re-derive).
     const ctxA = makeCtx();
     const depsA = makeDeps(ctxA, { downloadMedia: jest.fn(async () => PNG_BYTES) });
-    mockJobIdRow();
-    mockAppRow(appRow({ required_fields: [], required_docs: ['resume'] }));
-    mockDocRows([]);
-    await handleFillMessage(client, ctxA, incomingMsg('', {
-      numMedia: 1, mediaUrl: 'https://twilio.example/media/1', mediaContentType: 'image/jpeg',
-    }), depsA);
-    expect(mockQuery).toHaveBeenCalledTimes(3);
+    setApp({ required_docs: ['resume'] });
+
+    await handleFillMessage(client, ctxA, mediaMsg({ mediaContentType: 'image/jpeg' }), depsA);
+
+    expect(findCalls(SQL.snapshot)).toHaveLength(1);
     expect(lastReply(depsA)).toBe(fillMessage('doc_invalid_type', 'en'));
 
-    jest.clearAllMocks();
-
-    // Scenario B: stored -- promptNextStep DOES run (2 extra queries, and a
-    // DIFFERENT reply -- the next doc's prompt, not a doc-step error).
+    // Scenario B: stored -- promptNextStep DOES run (a second snapshot load,
+    // and a DIFFERENT reply -- the next doc's prompt, not a doc-step error).
+    resetFake();
     const ctxB = makeCtx();
     const depsB = makeDeps(ctxB, { downloadMedia: jest.fn(async () => JPEG_BYTES) });
     (uploadDocumentToS3 as jest.Mock).mockResolvedValueOnce({ versionId: 'v-contract' });
-    mockJobIdRow();
-    mockAppRow(appRow({ required_fields: [], required_docs: ['resume', 'driver_license'] }));
-    mockDocRows([]);
-    mockUpdateOk(); // SAVEPOINT
-    mockUpdateOk(); // DELETE
-    mockUpdateOk(); // INSERT
-    mockUpdateOk(); // copy snapshot
-    mockUpdateOk(); // RELEASE
-    mockAppRow(appRow({ required_fields: [], required_docs: ['resume', 'driver_license'] }));
-    mockDocRows(['resume']);
-    await handleFillMessage(client, ctxB, incomingMsg('', {
-      numMedia: 1, mediaUrl: 'https://twilio.example/media/1', mediaContentType: 'image/jpeg',
-    }), depsB);
-    expect(mockQuery).toHaveBeenCalledTimes(10);
+    setApp({ required_docs: ['resume', 'driver_license'] });
+
+    await handleFillMessage(client, ctxB, mediaMsg(), depsB);
+
+    expect(findCalls(SQL.snapshot)).toHaveLength(2);
     expect(lastReply(depsB)).toBe(docPrompt('driver_license', 'en'));
   });
 
-  it('cert loop: fill_cert_more_pending routes the next media straight to certification_doc, bypassing computeNextStep', async () => {
+  it('cert loop: fill_cert_more_pending routes the next media straight to certification_doc, bypassing the step derive', async () => {
     const ctx = makeCtx({
       stateContext: { fill_application_id: APPLICATION_ID, fill_cert_more_pending: true },
     });
     const deps = makeDeps(ctx, { downloadMedia: jest.fn(async () => PDF_BYTES) });
-    const msg = incomingMsg('', { numMedia: 1, mediaUrl: 'https://twilio.example/media/2', mediaContentType: 'application/pdf' });
     (uploadDocumentToS3 as jest.Mock).mockResolvedValueOnce({ versionId: 'v-second-cert' });
+    setApp({ required_docs: ['certification_doc'] }, { haveDocs: ['certification_doc'] });
 
-    mockJobIdRow(); // [0]
-    mockUpdateOk(); // [1] SAVEPOINT
-    mockUpdateOk(); // [2] INSERT (no DELETE for certification_doc)
-    mockUpdateOk(); // [3] copy snapshot
-    mockUpdateOk(); // [4] RELEASE
-
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, mediaMsg({
+      mediaUrl: 'https://twilio.example/media/2', mediaContentType: 'application/pdf',
+    }), deps);
 
     expect(result).toEqual({ handled: true });
-    // computeNextStep never ran -- no job_applications/jobs join query.
-    for (const [sql] of mockQuery.mock.calls) {
-      expect(sql).not.toMatch(/FROM job_applications ja/);
-    }
-    expect(mockQuery).toHaveBeenCalledTimes(5);
-    const [insertSql, insertParams] = mockQuery.mock.calls[2];
-    expect(insertSql).toMatch(/INSERT INTO worker_documents/);
+    // computeFillStep never ran -- no snapshot SELECT at all this turn.
+    expect(hasCall(SQL.snapshot)).toBe(false);
+    const [, insertParams] = findCall(SQL.docInsert);
     expect(insertParams[2]).toBe('certification_doc');
     expect(lastReply(deps)).toBe(fillMessage('entry_another', 'en'));
     expect(ctx.stateContext.fill_cert_more_pending).toBe(true);
@@ -1420,36 +2005,31 @@ describe('handleFillMessage — document steps (Task 8)', () => {
       stateContext: { fill_application_id: APPLICATION_ID, fill_cert_more_pending: true },
     });
     const deps = makeDeps(ctx);
-    const msg = incomingMsg('2 no');
+    setApp({ required_docs: ['driver_license'] });
 
-    mockJobIdRow(); // [0]
-    mockAppRow(appRow({ required_fields: [], required_docs: ['driver_license'] })); // [1]
-    mockDocRows([]); // [2]
-
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, incomingMsg('2 no'), deps);
 
     expect(result).toEqual({ handled: true });
     expect(ctx.stateContext.fill_cert_more_pending).toBeFalsy();
     expect(lastReply(deps)).toBe(docPrompt('driver_license', 'en'));
   });
 
-  // Review fix (Critical, bug A): "1"/"si" is the exact affirmative
-  // entry_another's own copy invites ("Responde con 1 o 2") -- it must NOT
-  // be treated the same as "no". The flag stays armed and the worker gets
-  // told to send the file, with NO advance (no promptNextStep call, i.e.
-  // no computeNextStep-derived query beyond the jobId lookup).
+  // "1"/"si" is the exact affirmative entry_another's own copy invites
+  // ("Responde con 1 o 2") -- it must NOT be treated the same as "no". The
+  // flag stays armed and the worker gets told to send the file, with NO
+  // advance (no step re-derive beyond the job-context lookup).
   it.each(['1', '1 si', 'si', 'yes'])('cert loop: "%s" keeps fill_cert_more_pending armed and re-sends docPrompt(certification_doc), no advance', async (body) => {
     const ctx = makeCtx({
       stateContext: { fill_application_id: APPLICATION_ID, fill_cert_more_pending: true },
     });
     const deps = makeDeps(ctx);
-
-    mockJobIdRow(); // [0] -- no computeNextStep call at all
+    setApp({ required_docs: ['certification_doc'] });
 
     const result = await handleFillMessage(client, ctx, incomingMsg(body), deps);
 
     expect(result).toEqual({ handled: true });
-    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(mockQuery).toHaveBeenCalledTimes(1); // the job-context lookup only
+    expect(hasCall(SQL.snapshot)).toBe(false);
     expect(ctx.stateContext.fill_cert_more_pending).toBe(true);
     expect(lastReply(deps)).toBe(docPrompt('certification_doc', 'en'));
   });
@@ -1459,61 +2039,52 @@ describe('handleFillMessage — document steps (Task 8)', () => {
       stateContext: { fill_application_id: APPLICATION_ID, fill_cert_more_pending: true },
     });
     const deps = makeDeps(ctx);
-
-    mockJobIdRow(); // [0]
+    setApp({ required_docs: ['certification_doc'] });
 
     const result = await handleFillMessage(client, ctx, incomingMsg('maybe later'), deps);
 
     expect(result).toEqual({ handled: true });
-    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(hasCall(SQL.snapshot)).toBe(false);
     expect(ctx.stateContext.fill_cert_more_pending).toBe(true);
     expect(lastReply(deps)).toBe(fillMessage('reconfirm', 'en'));
   });
 
-  // Review fix (Critical, bug B) -- the important regression test: a
-  // retryable error (invalid type here) on a SECOND cert attempt must NOT
-  // clear the loop flag. Before the fix, the flag was cleared unconditionally
-  // whenever the outcome wasn't 'stored', so the worker's next (valid) retry
-  // would route through computeNextStep to whatever's ACTUALLY next and get
-  // stored under the WRONG doc_type instead of certification_doc.
+  // The important regression test: a retryable error (invalid type here) on a
+  // SECOND cert attempt must NOT clear the loop flag, or the worker's next
+  // (valid) retry would route through the step derive to whatever's ACTUALLY
+  // next and get stored under the WRONG doc_type.
   it('cert loop: invalid file during an active loop keeps the flag armed; the next valid upload still stores as certification_doc', async () => {
     const ctx = makeCtx({
       stateContext: { fill_application_id: APPLICATION_ID, fill_cert_more_pending: true },
     });
     const deps = makeDeps(ctx, { downloadMedia: jest.fn(async () => PNG_BYTES) }); // claimed pdf, sniffs png -> mismatch
-    const badMsg = incomingMsg('', { numMedia: 1, mediaUrl: 'https://twilio.example/media/bad', mediaContentType: 'application/pdf' });
+    setApp({ required_docs: ['certification_doc'] }, { haveDocs: ['certification_doc'] });
 
-    mockJobIdRow(); // [0] -- flag bypasses computeNextStep
-
-    const badResult = await handleFillMessage(client, ctx, badMsg, deps);
+    const badResult = await handleFillMessage(client, ctx, mediaMsg({
+      mediaUrl: 'https://twilio.example/media/bad', mediaContentType: 'application/pdf',
+    }), deps);
 
     expect(badResult).toEqual({ handled: true });
     expect(uploadDocumentToS3).not.toHaveBeenCalled();
-    expect(mockQuery).toHaveBeenCalledTimes(1); // no SAVEPOINT/write, no promptNextStep re-derive
+    expect(hasCall(SQL.docInsert)).toBe(false);
     expect(lastReply(deps)).toBe(fillMessage('doc_invalid_type', 'en'));
     expect(ctx.stateContext.fill_cert_more_pending).toBe(true); // NOT cleared
 
-    jest.clearAllMocks();
+    mockQuery.mockClear();
+    (uploadDocumentToS3 as jest.Mock).mockClear();
+    (deps.queueReplyText as jest.Mock).mockClear();
     (deps.downloadMedia as jest.Mock).mockImplementation(async () => JPEG_BYTES);
     (uploadDocumentToS3 as jest.Mock).mockResolvedValueOnce({ versionId: 'v-retry-good' });
-    const goodMsg = incomingMsg('', { numMedia: 1, mediaUrl: 'https://twilio.example/media/good', mediaContentType: 'image/jpeg' });
 
-    mockJobIdRow(); // [0]
-    mockUpdateOk(); // [1] SAVEPOINT
-    mockUpdateOk(); // [2] INSERT (no DELETE for certification_doc)
-    mockUpdateOk(); // [3] copy snapshot
-    mockUpdateOk(); // [4] RELEASE
-
-    const goodResult = await handleFillMessage(client, ctx, goodMsg, deps);
+    const goodResult = await handleFillMessage(client, ctx, mediaMsg({
+      mediaUrl: 'https://twilio.example/media/good',
+    }), deps);
 
     expect(goodResult).toEqual({ handled: true });
     // Still routed as certification_doc, NOT mis-routed to some other doc
-    // type via computeNextStep.
-    for (const [sql] of mockQuery.mock.calls) {
-      expect(sql).not.toMatch(/FROM job_applications ja/);
-    }
-    const [insertSql, insertParams] = mockQuery.mock.calls[2];
-    expect(insertSql).toMatch(/INSERT INTO worker_documents/);
+    // type via a step re-derive.
+    expect(hasCall(SQL.snapshot)).toBe(false);
+    const [, insertParams] = findCall(SQL.docInsert);
     expect(insertParams[2]).toBe('certification_doc');
     expect(lastReply(deps)).toBe(fillMessage('entry_another', 'en'));
     expect(ctx.stateContext.fill_cert_more_pending).toBe(true);
@@ -1524,23 +2095,17 @@ describe('handleFillMessage — document steps (Task 8)', () => {
       stateContext: { fill_application_id: APPLICATION_ID, fill_cert_more_pending: true },
     });
     const deps = makeDeps(ctx, { downloadMedia: jest.fn(async () => JPEG_BYTES) });
-    const msg = incomingMsg('', { numMedia: 1, mediaUrl: 'https://twilio.example/media/cap', mediaContentType: 'image/jpeg' });
     (uploadDocumentToS3 as jest.Mock).mockResolvedValueOnce({ versionId: 'v-cap' });
+    setApp({ required_docs: ['certification_doc', 'driver_license'] }, { haveDocs: ['certification_doc'] });
+    fake.docInsertError = Object.assign(new Error('cap reached'), {
+      code: '23514', constraint: 'certification_document_limit',
+    });
 
-    mockJobIdRow(); // [0] -- flag bypasses computeNextStep
-    mockUpdateOk(); // [1] SAVEPOINT
-    const capError = Object.assign(new Error('cap reached'), { code: '23514', constraint: 'certification_document_limit' });
-    mockQuery.mockRejectedValueOnce(capError); // [2] INSERT rejects
-    mockUpdateOk(); // [3] ROLLBACK TO SAVEPOINT
-    mockAppRow(appRow({ required_fields: [], required_docs: ['certification_doc', 'driver_license'] })); // [4] promptNextStep
-    mockDocRows(['certification_doc']); // [5]
-
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, mediaMsg({ mediaUrl: 'https://twilio.example/media/cap' }), deps);
 
     expect(result).toEqual({ handled: true });
     expect(ctx.stateContext.fill_cert_more_pending).toBeFalsy();
-    const replies = (deps.queueReplyText as jest.Mock).mock.calls.map((c) => c[3]);
-    expect(replies).toEqual([fillMessage('cert_cap', 'en'), docPrompt('driver_license', 'en')]);
+    expect(allReplies(deps)).toEqual([fillMessage('cert_cap', 'en'), docPrompt('driver_license', 'en')]);
   });
 
   it('CANCELAR also clears fill_cert_more_pending', async () => {
@@ -1556,23 +2121,22 @@ describe('handleFillMessage — document steps (Task 8)', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────
-// handleFillMessage — escapes / relay-override (Task 10, spec §6). The
-// processor-level seam/dispatch-tail wiring lives in processor.test.ts;
-// these tests lock down the precedence logic INSIDE handleFillMessage
-// itself: which bodies return {handled:false} (an escape, fill state KEPT)
-// vs {handled:true} (consumed by the fill), and in what order when two
-// grammars could otherwise both match the same string.
+// handleFillMessage — escapes / relay-override (spec section 6). The
+// processor-level seam/dispatch-tail wiring lives in processor.test.ts; these
+// tests lock down the precedence logic INSIDE handleFillMessage itself: which
+// bodies return {handled:false} (an escape, fill state KEPT) vs
+// {handled:true} (consumed by the fill), and in what order when two grammars
+// could otherwise both match the same string.
 // ─────────────────────────────────────────────────────────────────────────
 
-describe('handleFillMessage — escapes / relay-override (Task 10)', () => {
-  beforeEach(() => jest.clearAllMocks());
+describe('handleFillMessage — escapes / relay-override', () => {
+  beforeEach(resetFake);
 
   it('a buttonPayload mid-fill escapes unconditionally, before even the media check -- no query, fill state untouched', async () => {
     const ctx = makeCtx();
     const deps = makeDeps(ctx);
-    const msg = incomingMsg('', { buttonPayload: 'accept:job-xyz', numMedia: 1 });
 
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, incomingMsg('', { buttonPayload: 'accept:job-xyz', numMedia: 1 }), deps);
 
     expect(result).toEqual({ handled: false });
     expect(mockQuery).not.toHaveBeenCalled();
@@ -1584,16 +2148,15 @@ describe('handleFillMessage — escapes / relay-override (Task 10)', () => {
   it('an interactivePayload mid-fill escapes unconditionally -- no query, fill state untouched', async () => {
     const ctx = makeCtx();
     const deps = makeDeps(ctx);
-    const msg = incomingMsg('', { interactivePayload: 'command:jobs' });
 
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, incomingMsg('', { interactivePayload: 'command:jobs' }), deps);
 
     expect(result).toEqual({ handled: false });
     expect(mockQuery).not.toHaveBeenCalled();
     expect(ctx.stateContext.fill_application_id).toBe(APPLICATION_ID);
   });
 
-  it('a bare 1-2 digit body escapes to the picker when pending_picker is set (spec §6.4) -- checked before any query', async () => {
+  it('a bare 1-2 digit body escapes to the picker when pending_picker is set (spec 6.4) -- checked before any query', async () => {
     const ctx = makeCtx({
       stateContext: {
         fill_application_id: APPLICATION_ID,
@@ -1633,13 +2196,7 @@ describe('handleFillMessage — escapes / relay-override (Task 10)', () => {
       },
     });
     const deps = makeDeps(ctx);
-
-    mockJobIdRow();
-    mockUpdateOk();
-    mockAppRow(appRow({
-      required_fields: ['work_authorization', 'desired_pay'],
-      application_answers: { work_authorization: true },
-    }));
+    setApp({ required_fields: ['work_authorization', 'desired_pay'] });
 
     const result = await handleFillMessage(client, ctx, incomingMsg('1'), deps);
 
@@ -1651,57 +2208,45 @@ describe('handleFillMessage — escapes / relay-override (Task 10)', () => {
     const ctx = makeCtx();
     const deps = makeDeps(ctx);
 
-    mockJobIdRow();
-
     const result = await handleFillMessage(client, ctx, incomingMsg('trabajos'), deps);
 
     expect(result).toEqual({ handled: false });
-    expect(mockQuery).toHaveBeenCalledTimes(1); // jobId refresh only
+    expect(mockQuery).toHaveBeenCalledTimes(1); // the job-context refresh only
     expect(deps.queueReplyText).not.toHaveBeenCalled();
     expect(ctx.stateContext.fill_application_id).toBe(APPLICATION_ID);
   });
 
-  it('"trabajo de pintor 5 anos" is a legitimate field answer, NOT the jobs escape (spec §6.3: exact match only, not isJobsKeyword\'s prefix grammar)', async () => {
+  it('"trabajo de pintor 5 anos" is a legitimate field answer, NOT the jobs escape (spec 6.3: exact match only)', async () => {
     const ctx = makeCtx();
     const deps = makeDeps(ctx, {
       extraction: fakeExtraction({ value: { level: 'high_school' }, confidence: { level: 0.2 } }),
     });
-
-    mockJobIdRow();
-    mockAppRow(appRow({ required_fields: ['education'], application_answers: {} }));
+    setApp({ required_fields: ['education'] });
 
     const result = await handleFillMessage(client, ctx, incomingMsg('trabajo de pintor 5 anos'), deps);
 
     expect(result).toEqual({ handled: true });
-    expect(mockQuery).toHaveBeenCalledTimes(2); // jobId + computeNextStep -- treated as an answer
     expect(lastReply(deps)).toBe(fieldRetryHint('education', 'en'));
   });
 
-  it.each([
-    ['chats'],
-    ['cerrar'],
-    ['ayuda'],
-    ['soporte'],
-    ['perfil'],
-  ])('command escape "%s" returns handled:false with fill state kept', async (body) => {
+  it.each([['chats'], ['cerrar'], ['ayuda'], ['soporte'], ['perfil']])(
+    'command escape "%s" returns handled:false with fill state kept',
+    async (body) => {
+      const ctx = makeCtx();
+      const deps = makeDeps(ctx);
+
+      const result = await handleFillMessage(client, ctx, incomingMsg(body), deps);
+
+      expect(result).toEqual({ handled: false });
+      expect(mockQuery).toHaveBeenCalledTimes(1); // the job-context refresh only
+      expect(deps.queueReplyText).not.toHaveBeenCalled();
+      expect(ctx.stateContext.fill_application_id).toBe(APPLICATION_ID);
+    },
+  );
+
+  it('a typed job action ("3 aceptar") with no confirmation in flight escapes (spec section 6, item 9)', async () => {
     const ctx = makeCtx();
     const deps = makeDeps(ctx);
-
-    mockJobIdRow();
-
-    const result = await handleFillMessage(client, ctx, incomingMsg(body), deps);
-
-    expect(result).toEqual({ handled: false });
-    expect(mockQuery).toHaveBeenCalledTimes(1); // jobId refresh only
-    expect(deps.queueReplyText).not.toHaveBeenCalled();
-    expect(ctx.stateContext.fill_application_id).toBe(APPLICATION_ID);
-  });
-
-  it('a typed job action ("3 aceptar") with no confirmation in flight escapes (spec §6, item 9)', async () => {
-    const ctx = makeCtx();
-    const deps = makeDeps(ctx);
-
-    mockJobIdRow();
 
     const result = await handleFillMessage(client, ctx, incomingMsg('3 aceptar'), deps);
 
@@ -1709,7 +2254,7 @@ describe('handleFillMessage — escapes / relay-override (Task 10)', () => {
     expect(mockQuery).toHaveBeenCalledTimes(1);
   });
 
-  it('"1 si" while fill_pending is awaiting confirmation is consumed as the confirmation FIRST, never as a typed job action escape (spec §6.3 exception)', async () => {
+  it('"1 si" while fill_pending is awaiting confirmation is consumed as the confirmation FIRST, never as a typed job action escape (spec 6.3 exception)', async () => {
     const ctx = makeCtx({
       stateContext: {
         fill_application_id: APPLICATION_ID,
@@ -1717,20 +2262,13 @@ describe('handleFillMessage — escapes / relay-override (Task 10)', () => {
       },
     });
     const deps = makeDeps(ctx);
-
-    mockJobIdRow();
-    mockUpdateOk();
-    mockAppRow(appRow({
-      required_fields: ['work_authorization', 'desired_pay'],
-      application_answers: { work_authorization: true },
-    }));
+    setApp({ required_fields: ['work_authorization', 'desired_pay'] });
 
     const result = await handleFillMessage(client, ctx, incomingMsg('1 si'), deps);
 
     expect(result).toEqual({ handled: true });
     expect(ctx.stateContext.fill_pending).toBeNull();
-    const [updateSql] = mockQuery.mock.calls[1];
-    expect(updateSql).toMatch(/UPDATE job_applications/);
+    expect(hasCall(SQL.mergeUpdate)).toBe(true);
     expect(lastReply(deps)).toBe(fieldQuestion('desired_pay', 'en'));
   });
 
@@ -1739,10 +2277,7 @@ describe('handleFillMessage — escapes / relay-override (Task 10)', () => {
       stateContext: { fill_application_id: APPLICATION_ID, fill_cert_more_pending: true },
     });
     const deps = makeDeps(ctx);
-
-    mockJobIdRow();
-    mockAppRow(appRow({ required_fields: [], required_docs: ['driver_license'] }));
-    mockDocRows([]);
+    setApp({ required_docs: ['driver_license'] });
 
     const result = await handleFillMessage(client, ctx, incomingMsg('2 no'), deps);
 
@@ -1751,16 +2286,13 @@ describe('handleFillMessage — escapes / relay-override (Task 10)', () => {
     expect(lastReply(deps)).toBe(docPrompt('driver_license', 'en'));
   });
 
-  it('relay-override is consumed exactly once: clears the flag and falls through so the free text relays (spec §4.2)', async () => {
+  it('relay-override is consumed exactly once: clears the flag and falls through so the free text relays (spec 4.2)', async () => {
     const ctx = makeCtx({
       stateContext: { fill_application_id: APPLICATION_ID, fill_relay_override: true },
     });
     const deps = makeDeps(ctx);
-    const msg = incomingMsg('Hola, tengo una pregunta sobre el trabajo');
 
-    mockJobIdRow();
-
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, incomingMsg('Hola, tengo una pregunta sobre el trabajo'), deps);
 
     expect(result).toEqual({ handled: false });
     expect(deps.updateStateContext).toHaveBeenCalledWith(client, CONVERSATION_ID, { fill_relay_override: null });
@@ -1773,19 +2305,7 @@ describe('handleFillMessage — escapes / relay-override (Task 10)', () => {
       stateContext: { fill_application_id: APPLICATION_ID, fill_relay_override: false },
     });
     const deps = makeDeps(ctx);
-
-    mockJobIdRow();
-    mockAppRow(appRow({ required_fields: ['work_authorization'], application_answers: {} }));
-    mockUpdateOk();
-    mockAppRow(appRow({
-      required_fields: ['work_authorization'],
-      application_answers: { work_authorization: true },
-    }));
-    mockDocRows([]);
-    // required_fields is now fully answered -> computeNextStep returns
-    // 'complete', so sendCompletionPrompt's continue-other scan also runs
-    // (Task 11) -- no other applications for this worker.
-    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    setApp({ required_fields: ['work_authorization'] });
 
     const result = await handleFillMessage(client, ctx, incomingMsg('1'), deps);
 
@@ -1804,7 +2324,7 @@ describe('handleFillMessage — escapes / relay-override (Task 10)', () => {
     expect(result).toEqual({ handled: true });
     expect(mockQuery).not.toHaveBeenCalled();
     expect(ctx.stateContext.fill_application_id).toBeNull();
-    expect(ctx.stateContext.fill_relay_override).toBeNull(); // Finding 1a: scrubbed, not left armed
+    expect(ctx.stateContext.fill_relay_override).toBeNull();
     expect(lastReply(deps)).toBe(fillMessage('canceled', 'en'));
   });
 
@@ -1813,16 +2333,15 @@ describe('handleFillMessage — escapes / relay-override (Task 10)', () => {
       stateContext: { fill_application_id: APPLICATION_ID, fill_relay_override: true },
     });
     const deps = makeDeps(ctx);
-    const msg = incomingMsg('', { numMedia: 1, mediaUrl: 'https://twilio.example/media/x', mediaContentType: 'image/jpeg' });
+    setApp({ required_fields: ['work_authorization'] });
 
-    mockJobIdRow();
-    mockAppRow(appRow({ required_fields: ['work_authorization'], application_answers: {} }));
-
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, incomingMsg('', {
+      numMedia: 1, mediaUrl: 'https://twilio.example/media/x', mediaContentType: 'image/jpeg',
+    }), deps);
 
     expect(result).toEqual({ handled: true });
     expect(lastReply(deps)).toBe(fillMessage('field_step_media', 'en'));
-    // The flag is only ever consumed on a TEXT turn (spec §4.2's "next
+    // The flag is only ever consumed on a TEXT turn (spec 4.2's "next
     // free-text message") -- the media branch never even inspects it.
     expect(ctx.stateContext.fill_relay_override).toBe(true);
   });
@@ -1833,8 +2352,6 @@ describe('handleFillMessage — escapes / relay-override (Task 10)', () => {
     });
     const deps = makeDeps(ctx);
 
-    mockJobIdRow();
-
     const result = await handleFillMessage(client, ctx, incomingMsg('ayuda'), deps);
 
     expect(result).toEqual({ handled: false });
@@ -1844,219 +2361,17 @@ describe('handleFillMessage — escapes / relay-override (Task 10)', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────
-// seedAnswersFromDefaults (Task 9). Called directly (not through
-// handleFillMessage) with a worker's `worker_application_defaults.answers`
-// bag -- `deps.setRls` is the injected mock (never itself touches
-// `mockQuery`, matching every other FillDeps test above), so the SELECT/
-// UPDATE call-count assertions below count ONLY this function's own
-// `client.query` calls: [0] defaults SELECT, [1] job_applications SELECT
-// (skipped entirely when there is no defaults row), [2] the batched UPDATE
-// (skipped entirely when nothing validates).
+// promptNextStep -- the field/doc prompt plus the two terminal arms
+// (completion, lifecycle exit).
 // ─────────────────────────────────────────────────────────────────────────
-
-describe('seedAnswersFromDefaults', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-    (validateApplicationAnswers as jest.Mock).mockImplementation(
-      jest.requireActual('../../../../../lambda/lib/application-answers').validateApplicationAnswers,
-    );
-  });
-
-  function mockDefaultsRow(answers: Record<string, unknown> | null) {
-    mockQuery.mockResolvedValueOnce(
-      answers ? { rows: [{ answers }], rowCount: 1 } : { rows: [], rowCount: 0 },
-    );
-  }
-
-  function mockCurrentAnswers(answers: Record<string, unknown>) {
-    mockQuery.mockResolvedValueOnce({ rows: [{ application_answers: answers }], rowCount: 1 });
-  }
-
-  function mockSeedUpdateOk() {
-    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
-  }
-
-  it('seeds a default field absent from application_answers and returns its key', async () => {
-    const ctx = makeCtx({ stateContext: { fill_application_id: APPLICATION_ID } });
-    const deps = makeDeps(ctx);
-
-    mockDefaultsRow({ work_authorization: true });
-    mockCurrentAnswers({});
-    mockSeedUpdateOk();
-
-    const seeded = await seedAnswersFromDefaults(client, ctx, ['work_authorization'], [], deps);
-
-    expect(seeded).toEqual(['work_authorization']);
-    expect(mockQuery).toHaveBeenCalledTimes(3);
-    const [, updateParams] = mockQuery.mock.calls[2];
-    expect(JSON.parse((updateParams as unknown[])[0] as string)).toEqual({ work_authorization: true });
-    expect((updateParams as unknown[])[1]).toBe(APPLICATION_ID);
-  });
-
-  it('never overwrites a key already present in application_answers, even if the default disagrees', async () => {
-    const ctx = makeCtx();
-    const deps = makeDeps(ctx);
-
-    mockDefaultsRow({ work_authorization: false });
-    mockCurrentAnswers({ work_authorization: true });
-
-    const seeded = await seedAnswersFromDefaults(client, ctx, ['work_authorization'], [], deps);
-
-    expect(seeded).toEqual([]);
-    expect(mockQuery).toHaveBeenCalledTimes(2); // defaults + current answers -- no UPDATE
-  });
-
-  it('skips a key whose stored default fails validation, silently -- never seeded, never an error', async () => {
-    const ctx = makeCtx();
-    const deps = makeDeps(ctx);
-
-    mockDefaultsRow({ work_authorization: 'yes' }); // not a boolean -- fails validateWorkAuthorization
-    mockCurrentAnswers({});
-
-    const seeded = await seedAnswersFromDefaults(client, ctx, ['work_authorization'], [], deps);
-
-    expect(seeded).toEqual([]);
-    expect(mockQuery).toHaveBeenCalledTimes(2); // no UPDATE -- nothing validated
-  });
-
-  it('batches every seeded key (required + optional) into exactly one UPDATE', async () => {
-    const ctx = makeCtx();
-    const deps = makeDeps(ctx);
-
-    mockDefaultsRow({ work_authorization: true, date_available: '2026-09-01', education: 'college' });
-    mockCurrentAnswers({ education: 'ged' }); // already answered -- must not be touched
-    mockSeedUpdateOk();
-
-    const seeded = await seedAnswersFromDefaults(
-      client,
-      ctx,
-      ['work_authorization', 'date_available'],
-      ['education'],
-      deps,
-    );
-
-    expect(seeded.sort()).toEqual(['date_available', 'work_authorization']);
-    expect(mockQuery).toHaveBeenCalledTimes(3); // defaults + current + ONE update
-    const [, updateParams] = mockQuery.mock.calls[2];
-    expect(JSON.parse((updateParams as unknown[])[0] as string)).toEqual({
-      work_authorization: true,
-      date_available: '2026-09-01',
-    });
-  });
-
-  it('worker with no defaults row: seeds nothing and never queries job_applications', async () => {
-    const ctx = makeCtx();
-    const deps = makeDeps(ctx);
-
-    mockDefaultsRow(null);
-
-    const seeded = await seedAnswersFromDefaults(client, ctx, ['work_authorization'], [], deps);
-
-    expect(seeded).toEqual([]);
-    expect(mockQuery).toHaveBeenCalledTimes(1); // the defaults SELECT only
-  });
-
-  it('an empty defaults answers bag ({}) also seeds nothing without a second query', async () => {
-    const ctx = makeCtx();
-    const deps = makeDeps(ctx);
-
-    mockDefaultsRow({});
-
-    const seeded = await seedAnswersFromDefaults(client, ctx, ['work_authorization'], [], deps);
-
-    expect(seeded).toEqual([]);
-    expect(mockQuery).toHaveBeenCalledTimes(1);
-  });
-
-  it('runs deps.setRls before any SELECT (call-order)', async () => {
-    const ctx = makeCtx();
-    const deps = makeDeps(ctx);
-
-    mockDefaultsRow({ work_authorization: true });
-    mockCurrentAnswers({});
-    mockSeedUpdateOk();
-
-    await seedAnswersFromDefaults(client, ctx, ['work_authorization'], [], deps);
-
-    expect(deps.setRls).toHaveBeenCalledWith(client, WORKER_ID);
-    const setRlsOrder = (deps.setRls as jest.Mock).mock.invocationCallOrder[0];
-    const firstQueryOrder = mockQuery.mock.invocationCallOrder[0];
-    expect(setRlsOrder).toBeLessThan(firstQueryOrder);
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────
-// countRemainingRequirements (Task 9) -- the fill-arm intro's N/M counts.
-// One combined SELECT (job_applications JOIN jobs + a correlated
-// worker_documents subquery), matching computeNextStep's own two data
-// sources but returning COUNTS rather than the first gap.
-// ─────────────────────────────────────────────────────────────────────────
-
-describe('countRemainingRequirements', () => {
-  beforeEach(() => jest.clearAllMocks());
-
-  function mockCountRow(overrides: Partial<{
-    application_answers: Record<string, unknown>;
-    required_fields: string[];
-    required_docs: string[];
-    have_docs: string[];
-  }> = {}) {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{
-        application_answers: {},
-        required_fields: [],
-        required_docs: [],
-        have_docs: [],
-        ...overrides,
-      }],
-      rowCount: 1,
-    });
-  }
-
-  it('counts unanswered required fields and undelivered required docs', async () => {
-    mockCountRow({
-      application_answers: { work_authorization: true },
-      required_fields: ['work_authorization', 'date_available', 'desired_pay'],
-      required_docs: ['resume', 'driver_license'],
-      have_docs: ['resume'],
-    });
-
-    const counts = await countRemainingRequirements(client, APPLICATION_ID);
-
-    expect(counts).toEqual({ nFields: 2, nDocs: 1, uncollectable: [] });
-    expect(mockQuery).toHaveBeenCalledTimes(1);
-  });
-
-  it('reports uncollectable doc types (e.g. legacy ssn) separately, never counted in nDocs', async () => {
-    mockCountRow({ required_docs: ['ssn'], have_docs: [] });
-
-    const counts = await countRemainingRequirements(client, APPLICATION_ID);
-
-    expect(counts).toEqual({ nFields: 0, nDocs: 0, uncollectable: ['ssn'] });
-  });
-
-  it('zero counts when every field is answered and every doc is on file', async () => {
-    mockCountRow({
-      application_answers: { work_authorization: true },
-      required_fields: ['work_authorization'],
-      required_docs: ['resume'],
-      have_docs: ['resume'],
-    });
-
-    const counts = await countRemainingRequirements(client, APPLICATION_ID);
-
-    expect(counts).toEqual({ nFields: 0, nDocs: 0, uncollectable: [] });
-  });
-});
 
 describe('promptNextStep', () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(resetFake);
 
   it('sends the field question and stamps fill_last_prompt_at', async () => {
     const ctx = makeCtx();
     const deps = makeDeps(ctx);
-
-    mockAppRow(appRow({ required_fields: ['work_authorization'], application_answers: {} }));
+    setApp({ required_fields: ['work_authorization'] });
 
     await promptNextStep(client, ctx, 'SMinbound', FROM, deps);
 
@@ -2064,21 +2379,10 @@ describe('promptNextStep', () => {
     expect(ctx.stateContext.fill_last_prompt_at).toBe(NOW_MS);
   });
 
-  // ── Task 11: completion, continue-other offer, lifecycle exits ─────────
-
-  const OTHER_APPLICATION_ID = 'eeeeeeee-0000-0000-0000-00000000000e';
-  const OTHER_APPLICATION_ID_2 = 'ffffffff-0000-0000-0000-00000000000f';
-
-  function mockOtherAppsRow(rows: { id: string; title: string }[]) {
-    mockQuery.mockResolvedValueOnce({ rows, rowCount: rows.length });
-  }
-
-  it('complete: sends completion copy and scrubs ALL fill keys (fill_application_id, fill_pending, fill_cert_more_pending, fill_relay_override, fill_offer_application_id) in one write', async () => {
-    // Finding 3: a pre-existing STALE fill_offer_application_id (from some
-    // earlier, long-finished offer) must be cleared even when THIS
-    // completion finds no new offer -- sendCompletionPrompt now always
-    // writes the key (offerId or null), never leaves a stale one standing.
-    // Finding 1a: fill_relay_override must not survive a completion either.
+  it('complete: names the employer, scrubs every fill key AND the prompt-lane keys in one write', async () => {
+    // A pre-existing STALE fill_offer_application_id must be cleared even
+    // when THIS completion finds no new offer, and fill_relay_override must
+    // not survive either -- neither has any other exit-time scrub site.
     const ctx = makeCtx({
       stateContext: {
         fill_application_id: APPLICATION_ID,
@@ -2086,58 +2390,71 @@ describe('promptNextStep', () => {
         fill_cert_more_pending: true,
         fill_relay_override: true,
         fill_offer_application_id: 'stale-offer-id',
+        prompt_application_id: 'stale-prompt-app',
+        prompt_last_prompt_at: 42,
+        applications_menu: { ids: ['x'], at: 1 },
       },
     });
     const deps = makeDeps(ctx);
 
-    mockAppRow(appRow({ required_fields: [], required_docs: [] })); // [0] computeNextStep
-    mockDocRows([]); // [1]
-    mockOtherAppsRow([]); // [2] findContinueOtherOffer -- no other applications
-
     await promptNextStep(client, ctx, 'SMinbound', FROM, deps);
 
-    expect(lastReply(deps)).toBe(fillMessage('completion', 'en'));
+    expect(lastReply(deps)).toBe(fillMessage('completion', 'en', { company: COMPANY }));
     expect(ctx.stateContext.fill_application_id).toBeNull();
     expect(ctx.stateContext.fill_pending).toBeNull();
-    expect(ctx.stateContext.fill_cert_more_pending).toBeNull(); // Task 8 forward-note fix
-    expect(ctx.stateContext.fill_relay_override).toBeNull(); // Finding 1a
-    expect(ctx.stateContext.fill_offer_application_id).toBeNull(); // Finding 3: stale offer cleared, no offer found
-    expect((deps.queueReplyText as jest.Mock).mock.calls).toHaveLength(1); // completion only, no offer message
+    expect(ctx.stateContext.fill_cert_more_pending).toBeNull();
+    expect(ctx.stateContext.fill_relay_override).toBeNull();
+    expect(ctx.stateContext.fill_offer_application_id).toBeNull();
+    expect(ctx.stateContext.prompt_application_id).toBeNull();
+    expect(ctx.stateContext.prompt_last_prompt_at).toBeNull();
+    expect(ctx.stateContext.applications_menu).toBeNull();
+    expect(allReplies(deps)).toHaveLength(1); // completion only, no offer message
     // Exactly one state_context write carries the whole scrub.
     expect(deps.updateStateContext as jest.Mock).toHaveBeenCalledTimes(1);
   });
 
-  it('complete with uncollectable docs remaining: appends the web_handoff note naming them', async () => {
+  it('complete: stamps details_completed_at BEFORE telling the worker their details went out', async () => {
+    // BINDING order (application-fill.ts:853-868): the employer's applicant
+    // list and 091's hire gate both read details_completed_at.
     const ctx = makeCtx();
     const deps = makeDeps(ctx);
 
-    mockAppRow(appRow({ required_fields: [], required_docs: ['ssn'] })); // [0]
-    mockDocRows([]); // [1]
-    mockOtherAppsRow([]); // [2]
+    await promptNextStep(client, ctx, 'SMinbound', FROM, deps);
+
+    expect(queryOrder(SQL.detailsComplete)).toBeLessThan(replyOrder(deps, 0));
+    const [, params] = findCall(SQL.detailsComplete);
+    expect(params).toEqual([APPLICATION_ID]);
+    expect(findCall(SQL.detailsComplete)[0]).toMatch(/details_completed_at IS NULL/);
+  });
+
+  it('complete with uncollectable docs remaining: appends the web_handoff note naming them AND the worker\'s own stage-2 URL', async () => {
+    const ctx = makeCtx();
+    const deps = makeDeps(ctx);
+    setApp({ required_docs: ['ssn'] });
 
     await promptNextStep(client, ctx, 'SMinbound', FROM, deps);
 
     expect(lastReply(deps)).toBe(
-      `${fillMessage('completion', 'en')}\n\n${fillMessage('web_handoff', 'en', { doc: 'SSN card / ITIN' })}`,
+      `${fillMessage('completion', 'en', { company: COMPANY })}\n\n`
+      + `${fillMessage('web_handoff', 'en', {
+        doc: localizeDocList(['ssn'], 'en'),
+        url: workerApplicationUrl('en', APPLICATION_ID),
+      })}`,
     );
   });
 
-  it('complete with another incomplete application: offers continue_other for it and sets fill_offer_application_id in the SAME write', async () => {
+  it('complete with another incomplete application: offers continue_other and sets fill_offer_application_id in the SAME write', async () => {
     const ctx = makeCtx();
     const deps = makeDeps(ctx);
-
-    mockAppRow(appRow({ required_fields: [], required_docs: [] })); // [0] the just-completed app
-    mockDocRows([]); // [1]
-    mockOtherAppsRow([{ id: OTHER_APPLICATION_ID, title: 'Cook' }]); // [2]
-    mockAppRow(appRow({ required_fields: ['work_authorization'], application_answers: {} })); // [3] candidate's computeNextStep -> field
+    fake.otherApps = [{ id: OTHER_APPLICATION_ID, title: 'Cook' }];
+    setOtherApp(OTHER_APPLICATION_ID, { job_id: OTHER_JOB_ID, required_fields: ['work_authorization'] });
 
     await promptNextStep(client, ctx, 'SMinbound', FROM, deps);
 
     expect(ctx.stateContext.fill_offer_application_id).toBe(OTHER_APPLICATION_ID);
     expect(ctx.stateContext.fill_application_id).toBeNull();
-    const replies = (deps.queueReplyText as jest.Mock).mock.calls.map((c) => c[3]);
-    expect(replies).toEqual([
-      fillMessage('completion', 'en'),
+    expect(allReplies(deps)).toEqual([
+      fillMessage('completion', 'en', { company: COMPANY }),
       fillMessage('continue_other', 'en', { job_title: 'Cook' }),
     ]);
     // The offer id rides in the SAME write as the scrub -- never a second one.
@@ -2149,19 +2466,31 @@ describe('promptNextStep', () => {
     );
   });
 
-  it('continue-other scan skips an already-complete candidate and offers the next one', async () => {
+  it('the continue-other SQL narrows on the stage columns themselves (sprint 23)', async () => {
     const ctx = makeCtx();
     const deps = makeDeps(ctx);
 
-    mockAppRow(appRow({ required_fields: [], required_docs: [] })); // [0] the just-completed app
-    mockDocRows([]); // [1]
-    mockOtherAppsRow([
+    await promptNextStep(client, ctx, 'SMinbound', FROM, deps);
+
+    const [sql, params] = findCall(SQL.offerScan);
+    // An application nobody asked details for is NOT something to offer to
+    // continue, and re-deriving that per candidate would burn a synced load.
+    expect(sql).toMatch(/ja\.details_requested_at IS NOT NULL/);
+    expect(sql).toMatch(/ja\.details_completed_at IS NULL/);
+    expect(sql).toMatch(/j\.status IN \('active','paused'\)/);
+    expect(sql).toMatch(/ja\.status IN \('pending','contacted','talking'\)/);
+    expect(params).toEqual([WORKER_ID, APPLICATION_ID]);
+  });
+
+  it('continue-other scan skips an already-complete candidate and offers the next one', async () => {
+    const ctx = makeCtx();
+    const deps = makeDeps(ctx);
+    fake.otherApps = [
       { id: OTHER_APPLICATION_ID, title: 'Already Done' },
       { id: OTHER_APPLICATION_ID_2, title: 'Still Open' },
-    ]); // [2]
-    mockAppRow(appRow({ required_fields: [], required_docs: [] })); // [3] candidate 1 -> complete (no gap)
-    mockDocRows([]); // [4]
-    mockAppRow(appRow({ required_fields: ['work_authorization'], application_answers: {} })); // [5] candidate 2 -> field
+    ];
+    setOtherApp(OTHER_APPLICATION_ID, { job_id: OTHER_JOB_ID }); // no gap
+    setOtherApp(OTHER_APPLICATION_ID_2, { job_id: OTHER_JOB_ID_2, required_fields: ['work_authorization'] });
 
     await promptNextStep(client, ctx, 'SMinbound', FROM, deps);
 
@@ -2169,34 +2498,37 @@ describe('promptNextStep', () => {
     expect(lastReply(deps)).toBe(fillMessage('continue_other', 'en', { job_title: 'Still Open' }));
   });
 
-  it('continue-other scan caps at 5 candidates: a real gap on the 6th is never offered', async () => {
+  it('continue-other scan caps at 5 candidates: a real gap on the 6th is never even loaded', async () => {
     const ctx = makeCtx();
     const deps = makeDeps(ctx);
-
-    mockAppRow(appRow({ required_fields: [], required_docs: [] })); // [0] the just-completed app
-    mockDocRows([]); // [1]
     const candidateIds = Array.from({ length: 6 }, (_, i) => `cand-${i}`);
-    mockOtherAppsRow(candidateIds.map((id) => ({ id, title: `Job ${id}` }))); // [2]
-    // The first 5 are each already complete (no gap) -- 2 queries apiece.
-    for (let i = 0; i < 5; i++) {
-      mockAppRow(appRow({ required_fields: [], required_docs: [] }));
-      mockDocRows([]);
-    }
-    // The 6th (never scanned) would have a real gap -- no mock needed since
-    // computeNextStep must never be called for it.
+    fake.otherApps = candidateIds.map((id) => ({ id, title: `Job ${id}` }));
+    candidateIds.forEach((id, i) => {
+      // The first five are already complete; the SIXTH has a real gap and
+      // must never be reached.
+      setOtherApp(id, {
+        job_id: `job-${i}`,
+        required_fields: i === 5 ? ['work_authorization'] : [],
+      });
+    });
 
     await promptNextStep(client, ctx, 'SMinbound', FROM, deps);
 
-    expect(ctx.stateContext.fill_offer_application_id).toBeNull(); // Finding 3: always written, even when no offer found
-    expect((deps.queueReplyText as jest.Mock).mock.calls).toHaveLength(1); // completion only, no offer
-    // 2 (completed app) + 1 (other-apps SELECT) + 5*2 (five scanned candidates) = 13.
-    expect(mockQuery).toHaveBeenCalledTimes(13);
+    expect(ctx.stateContext.fill_offer_application_id).toBeNull(); // always written, even with no offer
+    expect(allReplies(deps)).toHaveLength(1); // completion only, no offer
+    const loadedIds = findCalls(SQL.snapshot).map(([, params]) => params[0]);
+    expect(loadedIds).toContain('cand-4');
+    expect(loadedIds).not.toContain('cand-5');
   });
 
+  // The full EXIT_MESSAGE_KEYS table (application-fill.ts:920): every
+  // lifecycle reason maps to its copy, and every exit runs the SAME full
+  // scrub the completion arm does -- but never an offer.
   it.each([
-    ['job_inactive' as const, 'filled'],
-    ['application_closed' as const, 'hired'],
-  ])('exit %s: mapped message, full scrub (incl. fill_cert_more_pending, fill_relay_override, fill_offer_application_id), no offer attempted', async (reason, statusValue) => {
+    ['job_inactive', { job_status: 'filled' }, 'exit_job_inactive'],
+    ['application_closed', { application_status: 'hired' }, 'exit_application_closed'],
+    ['details_not_requested', { details_requested_at: null }, 'exit_details_not_requested'],
+  ] as const)('exit %s: mapped copy, full scrub, no continue-other scan', async (_reason, overrides, messageKey) => {
     const ctx = makeCtx({
       stateContext: {
         fill_application_id: APPLICATION_ID,
@@ -2204,30 +2536,30 @@ describe('promptNextStep', () => {
         fill_cert_more_pending: true,
         fill_relay_override: true,
         fill_offer_application_id: 'stale-offer-id',
+        prompt_application_id: 'stale-prompt-app',
+        prompt_last_prompt_at: 7,
+        applications_menu: { ids: ['x'], at: 1 },
       },
     });
     const deps = makeDeps(ctx);
-
-    if (reason === 'job_inactive') {
-      mockAppRow(appRow({ job_status: statusValue }));
-    } else {
-      mockAppRow(appRow({ application_status: statusValue }));
-    }
+    setApp({ ...overrides, required_fields: ['work_authorization'] });
 
     await promptNextStep(client, ctx, 'SMinbound', FROM, deps);
 
-    const expectedKey = reason === 'job_inactive' ? 'exit_job_inactive' : 'exit_application_closed';
-    expect(lastReply(deps)).toBe(fillMessage(expectedKey, 'en'));
+    expect(lastReply(deps)).toBe(fillMessage(messageKey, 'en'));
     expect(ctx.stateContext.fill_application_id).toBeNull();
     expect(ctx.stateContext.fill_pending).toBeNull();
     expect(ctx.stateContext.fill_cert_more_pending).toBeNull();
-    expect(ctx.stateContext.fill_relay_override).toBeNull(); // Finding 1a
-    expect(ctx.stateContext.fill_offer_application_id).toBeNull(); // Finding 3
-    // Only the one derive query ran -- no continue-other scan on an exit.
-    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(ctx.stateContext.fill_relay_override).toBeNull();
+    expect(ctx.stateContext.fill_offer_application_id).toBeNull();
+    expect(ctx.stateContext.prompt_application_id).toBeNull();
+    expect(ctx.stateContext.prompt_last_prompt_at).toBeNull();
+    expect(ctx.stateContext.applications_menu).toBeNull();
+    expect(hasCall(SQL.offerScan)).toBe(false);
+    expect(hasCall(SQL.detailsComplete)).toBe(false);
   });
 
-  it('exit application_gone (application row missing): mapped message, full scrub, no offer attempted', async () => {
+  it('exit application_gone (application row missing): mapped copy, full scrub, one query only', async () => {
     const ctx = makeCtx({
       stateContext: {
         fill_application_id: APPLICATION_ID,
@@ -2237,55 +2569,58 @@ describe('promptNextStep', () => {
       },
     });
     const deps = makeDeps(ctx);
-
-    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // computeNextStep: application row gone
+    setAppMissing();
 
     await promptNextStep(client, ctx, 'SMinbound', FROM, deps);
 
     expect(lastReply(deps)).toBe(fillMessage('exit_application_gone', 'en'));
     expect(ctx.stateContext.fill_application_id).toBeNull();
     expect(ctx.stateContext.fill_cert_more_pending).toBeNull();
-    expect(ctx.stateContext.fill_relay_override).toBeNull(); // Finding 1a
-    expect(ctx.stateContext.fill_offer_application_id).toBeNull(); // Finding 3
+    expect(ctx.stateContext.fill_relay_override).toBeNull();
+    expect(ctx.stateContext.fill_offer_application_id).toBeNull();
     expect(mockQuery).toHaveBeenCalledTimes(1);
   });
 
-  it('fill_relay_override IS scrubbed by completion (Finding 1a: a stale override must not survive to poison the NEXT fill arm)', async () => {
-    // This test previously PINNED the opposite (wrong) behavior with a wrong
-    // rationale ("one-turn, harmless, self-clearing on the next text turn").
-    // That reasoning only holds while a fill/offer key is armed --
-    // handleFillMessage's ONLY consume site for fill_relay_override (step 10)
-    // is reachable only then. Once completion/exit/CANCELAR clears
-    // fill_application_id, the flag has no consume site left and survives
-    // to the NEXT fill arm, where it swallows the worker's first free-text
-    // answer (e.g. their DOB) and relays it into the stale focused thread.
-    const ctx = makeCtx({
-      stateContext: { fill_application_id: APPLICATION_ID, fill_relay_override: true },
-    });
+  it('an outstanding CERTIFICATION is not stamped and DOES get the web_handoff link', async () => {
+    // `fillStepFor` (application-fill.ts) never returns a certification step
+    // -- that collector is web-only -- so a cert-only gap takes the
+    // completion arm. Two halves must hold together:
+    //   - `markDetailsCompleteIfDone` REFUSES to stamp (computeRemaining()
+    //     .complete is false), so the employer's list and 091's hire gate
+    //     still read the application as incomplete; and
+    //   - the worker gets the `web_handoff` link naming the certification,
+    //     which is exactly what the module header promises. Before the fix
+    //     the link was appended only for an uncollectable DOC (the legacy
+    //     `ssn` bucket), so a cert-only gap told the worker they were done
+    //     and gave them no way to finish.
+    const ctx = makeCtx();
     const deps = makeDeps(ctx);
-
-    mockAppRow(appRow({ required_fields: [], required_docs: [] }));
-    mockDocRows([]);
-    mockOtherAppsRow([]);
+    setApp({
+      certification_requirements: [{ name: 'OSHA 10', tier: 'required', proof_required: false }],
+    });
 
     await promptNextStep(client, ctx, 'SMinbound', FROM, deps);
 
-    expect(ctx.stateContext.fill_application_id).toBeNull();
-    expect(ctx.stateContext.fill_relay_override).toBeNull();
+    expect(hasCall(SQL.detailsComplete)).toBe(false); // the engine refuses to stamp
+    const reply = allReplies(deps).join('\n');
+    expect(reply).toContain(fillMessage('completion', 'en', { company: COMPANY }));
+    // The employer's own requirement name is what the link names.
+    expect(reply).toContain(fillMessage('web_handoff', 'en', {
+      doc: 'OSHA 10',
+      url: workerApplicationUrl('en', APPLICATION_ID),
+    }));
   });
 });
 
 // ─────────────────────────────────────────────────────────────────────────
-// handleFillMessage — continue-other offer resolution (Task 11). The seam
-// gate itself (processor.ts) is covered at the integration level in
-// processor.test.ts; these lock down `resolveOfferOnlyTurn`'s own behavior
-// when `fill_application_id` is unset but `fill_offer_application_id` is.
+// handleFillMessage — continue-other offer resolution. The seam gate itself
+// (processor.ts) is covered at the integration level in processor.test.ts;
+// these lock down `resolveOfferOnlyTurn`'s own behavior when
+// `fill_application_id` is unset but `fill_offer_application_id` is.
 // ─────────────────────────────────────────────────────────────────────────
 
-describe('handleFillMessage — continue-other offer resolution (Task 11)', () => {
-  const OFFER_APPLICATION_ID = 'a1a1a1a1-0000-0000-0000-0000000000a1';
-
-  beforeEach(() => jest.clearAllMocks());
+describe('handleFillMessage — continue-other offer resolution', () => {
+  beforeEach(resetFake);
 
   it('neither fill_application_id nor fill_offer_application_id set: handled:false, untouched', async () => {
     const ctx = makeCtx({ stateContext: {} });
@@ -2299,33 +2634,47 @@ describe('handleFillMessage — continue-other offer resolution (Task 11)', () =
   });
 
   it('offer reply "1" arms the offered application, clears the offer, and prompts its first gap', async () => {
-    const ctx = makeCtx({ stateContext: { fill_offer_application_id: OFFER_APPLICATION_ID } });
+    const ctx = makeCtx({ stateContext: { fill_offer_application_id: OTHER_APPLICATION_ID } });
     const deps = makeDeps(ctx);
-
-    mockAppRow(appRow({ required_fields: ['work_authorization'], application_answers: {} })); // promptNextStep's computeNextStep
+    setOtherApp(OTHER_APPLICATION_ID, { job_id: OTHER_JOB_ID, required_fields: ['work_authorization'] });
 
     const result = await handleFillMessage(client, ctx, incomingMsg('1'), deps);
 
     expect(result).toEqual({ handled: true });
-    expect(ctx.stateContext.fill_application_id).toBe(OFFER_APPLICATION_ID);
+    expect(ctx.stateContext.fill_application_id).toBe(OTHER_APPLICATION_ID);
     expect(ctx.stateContext.fill_offer_application_id).toBeNull();
     expect(lastReply(deps)).toBe(fieldQuestion('work_authorization', 'en'));
   });
 
   it.each(['si', 'yes', '1 si'])('offer reply "%s" also arms the offered application (parseFillConfirmation\'s full yes bucket)', async (body) => {
-    const ctx = makeCtx({ stateContext: { fill_offer_application_id: OFFER_APPLICATION_ID } });
+    const ctx = makeCtx({ stateContext: { fill_offer_application_id: OTHER_APPLICATION_ID } });
     const deps = makeDeps(ctx);
-
-    mockAppRow(appRow({ required_fields: ['work_authorization'], application_answers: {} }));
+    setOtherApp(OTHER_APPLICATION_ID, { job_id: OTHER_JOB_ID, required_fields: ['work_authorization'] });
 
     const result = await handleFillMessage(client, ctx, incomingMsg(body), deps);
 
     expect(result).toEqual({ handled: true });
-    expect(ctx.stateContext.fill_application_id).toBe(OFFER_APPLICATION_ID);
+    expect(ctx.stateContext.fill_application_id).toBe(OTHER_APPLICATION_ID);
+  });
+
+  it('an offered application that went stale (details never requested) exits instead of asking', async () => {
+    // promptNextStep re-derives rather than trusting the offer's snapshot --
+    // the offered application may have changed between the offer and the reply.
+    const ctx = makeCtx({ stateContext: { fill_offer_application_id: OTHER_APPLICATION_ID } });
+    const deps = makeDeps(ctx);
+    setOtherApp(OTHER_APPLICATION_ID, {
+      job_id: OTHER_JOB_ID, required_fields: ['work_authorization'], details_requested_at: null,
+    });
+
+    const result = await handleFillMessage(client, ctx, incomingMsg('1'), deps);
+
+    expect(result).toEqual({ handled: true });
+    expect(lastReply(deps)).toBe(fillMessage('exit_details_not_requested', 'en'));
+    expect(ctx.stateContext.fill_application_id).toBeNull();
   });
 
   it('any non-"1" reply after the offer clears fill_offer_application_id and routes normally (one-shot, no nagging)', async () => {
-    const ctx = makeCtx({ stateContext: { fill_offer_application_id: OFFER_APPLICATION_ID } });
+    const ctx = makeCtx({ stateContext: { fill_offer_application_id: OTHER_APPLICATION_ID } });
     const deps = makeDeps(ctx);
 
     const result = await handleFillMessage(client, ctx, incomingMsg('no gracias'), deps);
@@ -2337,11 +2686,12 @@ describe('handleFillMessage — continue-other offer resolution (Task 11)', () =
   });
 
   it('media while only the offer is armed clears the offer and returns handled:false (routes to normal media handling)', async () => {
-    const ctx = makeCtx({ stateContext: { fill_offer_application_id: OFFER_APPLICATION_ID } });
+    const ctx = makeCtx({ stateContext: { fill_offer_application_id: OTHER_APPLICATION_ID } });
     const deps = makeDeps(ctx);
-    const msg = incomingMsg('', { numMedia: 1, mediaUrl: 'https://twilio.example/media/1', mediaContentType: 'image/jpeg' });
 
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, incomingMsg('', {
+      numMedia: 1, mediaUrl: 'https://twilio.example/media/1', mediaContentType: 'image/jpeg',
+    }), deps);
 
     expect(result).toEqual({ handled: false });
     expect(ctx.stateContext.fill_offer_application_id).toBeNull();
@@ -2350,13 +2700,16 @@ describe('handleFillMessage — continue-other offer resolution (Task 11)', () =
 });
 
 // ─────────────────────────────────────────────────────────────────────────
-// handleFillMessage — de-required fill_pending discard (Task 11 amendment).
+// handleFillMessage — de-required fill_pending discard. Two layers, both
+// live: the lane's own guard (application-fill.ts:1443, from
+// `fetchApplicationJobContext`) and, underneath it, the engine's
+// `unknown_answer_key` rejection (covered in the failure-reason describe).
 // ─────────────────────────────────────────────────────────────────────────
 
-describe('handleFillMessage — de-required fill_pending discard (Task 11)', () => {
-  beforeEach(() => jest.clearAllMocks());
+describe('handleFillMessage — de-required fill_pending discard', () => {
+  beforeEach(resetFake);
 
-  it('fill_pending for a key no longer required is discarded silently on next turn (re-derives instead of merging)', async () => {
+  it('fill_pending for a key no longer required is discarded SILENTLY on the next turn (re-derives instead of merging)', async () => {
     const ctx = makeCtx({
       stateContext: {
         fill_application_id: APPLICATION_ID,
@@ -2364,26 +2717,19 @@ describe('handleFillMessage — de-required fill_pending discard (Task 11)', () 
       },
     });
     const deps = makeDeps(ctx);
-
-    // Step 5's job-context refresh: the employer removed work_authorization
-    // from required_fields while this confirmation was in flight --
-    // desired_pay is still required.
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ job_id: JOB_ID, required_fields: ['desired_pay'] }],
-      rowCount: 1,
-    });
-    // The discard path re-derives via promptNextStep's own computeNextStep.
-    mockAppRow(appRow({ required_fields: ['desired_pay'], application_answers: {} }));
+    // The employer removed work_authorization from required_fields while
+    // this confirmation was in flight; desired_pay is still required.
+    setApp({ required_fields: ['desired_pay'] });
 
     const result = await handleFillMessage(client, ctx, incomingMsg('1'), deps);
 
     expect(result).toEqual({ handled: true });
     expect(ctx.stateContext.fill_pending).toBeNull();
-    // Never merged the stale work_authorization answer.
-    for (const [sql] of mockQuery.mock.calls) {
-      expect(sql).not.toMatch(/UPDATE job_applications/);
-    }
-    expect(lastReply(deps)).toBe(fieldQuestion('desired_pay', 'en'));
+    // Never merged the stale work_authorization answer. NOTE: matching on
+    // `/UPDATE job_applications/` alone would be wrong now -- the completion
+    // stamp shares that prefix.
+    expect(hasCall(SQL.mergeUpdate)).toBe(false);
+    expect(allReplies(deps)).toEqual([fieldQuestion('desired_pay', 'en')]);
   });
 
   it('fill_pending for a key that IS still required merges normally (guard is a no-op)', async () => {
@@ -2394,22 +2740,12 @@ describe('handleFillMessage — de-required fill_pending discard (Task 11)', () 
       },
     });
     const deps = makeDeps(ctx);
-
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ job_id: JOB_ID, required_fields: ['work_authorization', 'desired_pay'] }],
-      rowCount: 1,
-    });
-    mockUpdateOk(); // the merge UPDATE
-    mockAppRow(appRow({
-      required_fields: ['work_authorization', 'desired_pay'],
-      application_answers: { work_authorization: true },
-    }));
+    setApp({ required_fields: ['work_authorization', 'desired_pay'] });
 
     const result = await handleFillMessage(client, ctx, incomingMsg('1'), deps);
 
     expect(result).toEqual({ handled: true });
-    const [updateSql, updateParams] = mockQuery.mock.calls[1];
-    expect(updateSql).toMatch(/UPDATE job_applications/);
+    const [, updateParams] = findCall(SQL.mergeUpdate);
     expect(updateParams).toEqual([JSON.stringify({ work_authorization: true }), APPLICATION_ID]);
     expect(lastReply(deps)).toBe(fieldQuestion('desired_pay', 'en'));
   });
@@ -2425,10 +2761,9 @@ describe('isFillCancel', () => {
   });
 
   // Duplicated (not imported) from flows.ts's private COMMAND_KEYWORDS +
-  // damerauLevenshteinDistance -- flows.ts belongs to another lane (Task 10)
-  // and does not export either (same rationale onboarding-language.ts
-  // documents for its own duplicate copy of this function). Spec §6.2 /
-  // §14 requires and documents: min distance 5, against 'cerrar'/'saltar'.
+  // damerauLevenshteinDistance -- flows.ts does not export either (same
+  // rationale onboarding-language.ts documents for its own duplicate copy).
+  // Spec 6.2 / 14 requires and documents: min distance 5, vs 'cerrar'/'saltar'.
   const COMMAND_KEYWORDS = [
     'help', 'ayuda', 'commands', 'comandos', 'jobs', 'trabajos', 'empleos',
     'profile', 'perfil', 'skip', 'saltar', 'chats', 'mensajes', 'cerrar', 'close',
@@ -2455,7 +2790,7 @@ describe('isFillCancel', () => {
     for (const d of distances) {
       expect(d).toBeGreaterThan(1);
     }
-    expect(Math.min(...distances)).toBe(5); // spec §14's documented value, vs cerrar/saltar
+    expect(Math.min(...distances)).toBe(5); // spec 14's documented value, vs cerrar/saltar
   });
 });
 
@@ -2477,26 +2812,29 @@ describe('parseFillConfirmation', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────
-// PII sentinel guard (Task 14, spec §11). `logStep` (application-fill.ts)
-// is the ONLY console.log/error/warn call site anywhere in the fill flow
-// (application-fill.ts / application-fill-extraction.ts /
-// application-fill-prompts.ts) — it emits exactly
-// `{ event: 'ApplicationFillStep', key, outcome, reason }`, where `key` is
-// a FillFieldKey/CollectableDocType/fixed literal and `reason` is a fixed
-// enum literal, never worker-supplied text or an extracted value. These
+// PII sentinel guard (spec section 11). `logStep` is the ONLY
+// console.log/error/warn call site in the fill flow (application-fill.ts /
+// application-fill-extraction.ts / application-fill-prompts.ts) -- it emits
+// exactly `{ event: 'ApplicationFillStep', key, outcome, reason }`, where
+// `key` is a FillFieldKey/CollectableDocType/fixed literal and `reason` is a
+// fixed enum literal, never worker-supplied text or an extracted value. These
 // tests plant sentinel strings in the free text a worker sends, in the
 // extraction double's returned value/summaryVars, and in the generated S3
-// key, then prove none of them ever reach a spied console call — while
-// also proving the spies were genuinely capturing real log traffic (the
-// structured ApplicationFillStep events) rather than silently missing
-// everything.
-describe('handleFillMessage — PII sentinel guard (Task 14)', () => {
+// key, then prove none of them ever reach a spied console call -- while also
+// proving the spies were genuinely capturing real log traffic (the structured
+// ApplicationFillStep events) rather than silently missing everything.
+//
+// The shared engine's own `logStep` (application-requirements.ts:124) emits
+// the SAME event name by design, so the structural check below covers both.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('handleFillMessage — PII sentinel guard', () => {
   let logSpy: jest.SpyInstance;
   let errorSpy: jest.SpyInstance;
   let warnSpy: jest.SpyInstance;
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    resetFake();
     logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
     errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -2511,8 +2849,8 @@ describe('handleFillMessage — PII sentinel guard (Task 14)', () => {
   /** Every arg of every spied call, flattened to strings, so a sentinel
    * hiding inside a JSON.stringify'd object argument is caught too. */
   function allLoggedText(): string[] {
-    const calls = [...logSpy.mock.calls, ...errorSpy.mock.calls, ...warnSpy.mock.calls];
-    return calls.flatMap((args) =>
+    const spyCalls = [...logSpy.mock.calls, ...errorSpy.mock.calls, ...warnSpy.mock.calls];
+    return spyCalls.flatMap((args) =>
       args.map((a: unknown) => (typeof a === 'string' ? a : JSON.stringify(a))),
     );
   }
@@ -2526,10 +2864,10 @@ describe('handleFillMessage — PII sentinel guard (Task 14)', () => {
     }
   }
 
-  /** Structural check, independent of any particular sentinel string:
-   * every console.log call in this flow must be exactly the
-   * ApplicationFillStep shape (event/key/outcome/reason and nothing else)
-   * — metadata only, never a message body, prompt, or extracted value. */
+  /** Structural check, independent of any particular sentinel string: every
+   * console.log call in this flow must be exactly the ApplicationFillStep
+   * shape (event/key/outcome/reason and nothing else) -- metadata only,
+   * never a message body, prompt, or extracted value. */
   function assertAllLogCallsAreMetadataOnly() {
     for (const [first, ...rest] of logSpy.mock.calls) {
       expect(rest).toEqual([]);
@@ -2564,28 +2902,18 @@ describe('handleFillMessage — PII sentinel guard (Task 14)', () => {
         confidence: { street: 0.9, city: 0.9, state: 0.9, zip: 0.9 },
       }),
     });
-    const msg = incomingMsg(`vivo en ${SENTINEL_FREETEXT}, Kyle TX 78640`);
+    // A second required field is left unanswered so the merge turn lands on
+    // the next field rather than falling through to the completion path.
+    setApp({ required_fields: ['home_address', 'date_available'] });
 
-    mockJobIdRow();
-    mockAppRow(appRow({ required_fields: ['home_address', 'date_available'], application_answers: {} }));
-
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(
+      client, ctx, incomingMsg(`vivo en ${SENTINEL_FREETEXT}, Kyle TX 78640`), deps,
+    );
 
     expect(result).toEqual({ handled: true });
     expect(ctx.stateContext.fill_pending).toMatchObject({ key: 'home_address', stage: 'confirm' });
     expect(findStepLog('home_address', 'confirm_pending')).toBe(true);
     assertNoSentinelLogged(SENTINEL_FREETEXT, SENTINEL_ADDRESS);
-
-    // Confirm ("1 si") merges the sentinel-laden extracted value. A second
-    // required field (date_available) is left unanswered so computeNextStep
-    // returns the next field directly, without falling through to the docs
-    // query / completion path.
-    mockJobIdRow();
-    mockUpdateOk();
-    mockAppRow(appRow({
-      required_fields: ['home_address', 'date_available'],
-      application_answers: { home_address: { street: SENTINEL_ADDRESS, city: 'Kyle', state: 'TX', zip: '78640' } },
-    }));
 
     const result2 = await handleFillMessage(client, ctx, incomingMsg('1 si'), deps);
 
@@ -2599,14 +2927,7 @@ describe('handleFillMessage — PII sentinel guard (Task 14)', () => {
   it('deterministic parse turn (work_authorization): logs key/outcome only, no message text', async () => {
     const ctx = makeCtx();
     const deps = makeDeps(ctx);
-
-    mockJobIdRow();
-    mockAppRow(appRow({ required_fields: ['work_authorization', 'date_available'], application_answers: {} }));
-    mockUpdateOk();
-    mockAppRow(appRow({
-      required_fields: ['work_authorization', 'date_available'],
-      application_answers: { work_authorization: true },
-    }));
+    setApp({ required_fields: ['work_authorization', 'date_available'] });
 
     const result = await handleFillMessage(client, ctx, incomingMsg('1'), deps);
 
@@ -2618,21 +2939,12 @@ describe('handleFillMessage — PII sentinel guard (Task 14)', () => {
   it('doc upload turn: the generated S3 key and stored file_name never appear in any logged line', async () => {
     const ctx = makeCtx();
     const deps = makeDeps(ctx, { downloadMedia: jest.fn(async () => JPEG_BYTES) });
-    const msg = incomingMsg('', { numMedia: 1, mediaUrl: 'https://twilio.example/media/1', mediaContentType: 'image/jpeg' });
     (uploadDocumentToS3 as jest.Mock).mockResolvedValueOnce({ versionId: 'v-sentinel' });
+    setApp({ required_docs: ['resume', 'driver_license'] });
 
-    mockJobIdRow(); // [0]
-    mockAppRow(appRow({ required_fields: [], required_docs: ['resume', 'driver_license'] })); // [1]
-    mockDocRows([]); // [2]
-    mockUpdateOk(); // [3] SAVEPOINT
-    mockUpdateOk(); // [4] DELETE
-    mockUpdateOk(); // [5] INSERT
-    mockUpdateOk(); // [6] copyRequiredDocumentSnapshots
-    mockUpdateOk(); // [7] RELEASE
-    mockAppRow(appRow({ required_fields: [], required_docs: ['resume', 'driver_license'] })); // [8] promptNextStep
-    mockDocRows(['resume']); // [9]
-
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, incomingMsg('', {
+      numMedia: 1, mediaUrl: 'https://twilio.example/media/1', mediaContentType: 'image/jpeg',
+    }), deps);
 
     expect(result).toEqual({ handled: true });
     const s3Key = (uploadDocumentToS3 as jest.Mock).mock.calls[0][1] as string;
@@ -2668,17 +2980,14 @@ describe('handleFillMessage — PII sentinel guard (Task 14)', () => {
     const SENTINEL_FREETEXT = 'SENTINEL_ERRORPATH_FREETEXT_XYZZY';
     const SENTINEL_VALUE = 'SENTINEL_ERRORPATH_VALUE_XYZZY';
     const ctx = makeCtx();
-    // Missing city/state/zip -> validateApplicationAnswers rejects the
-    // shape -> extractFieldAnswer resolves { ok: false, reason: 'invalid' }.
+    // Missing city/state/zip -> validateApplicationAnswers rejects the shape
+    // -> extractFieldAnswer resolves { ok: false, reason: 'invalid' }.
     const deps = makeDeps(ctx, {
       extraction: fakeExtraction({ value: { street: SENTINEL_VALUE } }),
     });
-    const msg = incomingMsg(SENTINEL_FREETEXT);
+    setApp({ required_fields: ['home_address'] });
 
-    mockJobIdRow();
-    mockAppRow(appRow({ required_fields: ['home_address'], application_answers: {} }));
-
-    const result = await handleFillMessage(client, ctx, msg, deps);
+    const result = await handleFillMessage(client, ctx, incomingMsg(SENTINEL_FREETEXT), deps);
 
     expect(result).toEqual({ handled: true });
     expect(deps.updateStateContext).not.toHaveBeenCalled();

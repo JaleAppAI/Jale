@@ -4,6 +4,7 @@ import { resolveEntitlements } from '../lib/entitlements';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { formatPayRange, JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs, parseRequiredFields } from '../lib/job-fields';
 import { resolveJobLocationFields } from '../lib/job-location-parse';
+import { parsePreApplicationPrompts } from '../lib/pre-application-prompts';
 import { setJobCoordinates } from '../lib/location';
 import { parseCityFields, parseCityFromLocation } from '../lib/city-fields';
 import { checkCompliance } from '../legal/check-compliance';
@@ -51,6 +52,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       shift_start?: string | null;
       shift_end?: string | null;
       certification_requirements?: { name: string; tier: 'required' | 'optional'; proof_required: boolean }[] | null;
+      pre_application_prompts?: { id?: string; text: string }[] | null;
       city_key?: string;
       city?: string | null;
       state?: string;
@@ -125,6 +127,18 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (requirementsOverlapKeys.length > 0) {
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'requirements_tier_overlap', keys: requirementsOverlapKeys }) };
     }
+
+    // Sprint 23 (091): the employer's stage-1 questions. Absent/null is a
+    // legal `[]` (parsePreApplicationPrompts' own rule), so omitting the
+    // field on create is never an error -- it just asks nothing. Ids are
+    // minted here when the body supplies only `text`; a SUPPLIED id is
+    // preserved verbatim (never re-minted), because job_applications
+    // .prompt_answers is keyed on it.
+    const promptsResult = parsePreApplicationPrompts(body.pre_application_prompts);
+    if (!promptsResult.ok) {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: promptsResult.error }) };
+    }
+    const pre_application_prompts = promptsResult.value;
 
     // Explicit city/state_region body fields win over the parse -- an employer
     // must always be able to correct a location the parser can't handle.
@@ -279,11 +293,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          work_days,
          shift_start,
          shift_end,
-         certification_requirements
+         certification_requirements,
+         pre_application_prompts
        )
        VALUES (
          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::date, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
-         $29, $30, $31, $32::time, $33::time, $34::jsonb
+         $29, $30, $31, $32::time, $33::time, $34::jsonb, $35::jsonb
        )
        RETURNING id, title, location, pay, job_type, status, required_docs, optional_docs, required_fields, optional_fields, created_at,
          pay_min, pay_max, pay_interval, start_date, expected_duration, shift_schedule,
@@ -292,7 +307,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          GREATEST(number_of_workers_needed - workers_hired, 0) AS open_count,
          trade_category, required_experience_years, required_experience_months, certifications,
          city_key, city, state, state_region,
-         trade_category_other, expected_duration_bucket, work_days, shift_start, shift_end, certification_requirements`,
+         trade_category_other, expected_duration_bucket, work_days, shift_start, shift_end, certification_requirements, pre_application_prompts`,
       [
         userId,
         title.trim(),
@@ -331,6 +346,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         jobFields.value.shift_start,
         jobFields.value.shift_end,
         certificationRequirementsParam,
+        // NOT NULL DEFAULT '[]' in 091 -- always written, never null, so the
+        // `JSON.stringify(null) -> jsonb scalar null` trap that
+        // certification_requirements has to dodge above cannot arise here.
+        JSON.stringify(pre_application_prompts),
       ],
     );
     const job = result.rows[0];

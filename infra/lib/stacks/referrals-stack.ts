@@ -11,7 +11,7 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import { Construct } from 'constructs';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
-import { lambdaIntegration } from '../api-integration';
+import { lambdaIntegration, addPathOnlyResource } from '../api-integration';
 
 export interface ReferralsStackProps extends cdk.StackProps {
   readonly vpc: ec2.IVpc;
@@ -101,7 +101,6 @@ export interface ReferralsStackProps extends cdk.StackProps {
  *   GET  /public/jobs/{code}/referrer             → public-job-referrer Lambda (UNAUTHENTICATED)
  *   POST /public/jobs/{code}/apply-intent        → public-job-apply-intent Lambda (UNAUTHENTICATED)
  *   POST /worker/jobs/{jobId}/share               → worker-job-share Lambda (worker auth)
- *   GET  /worker/referrals                       → worker-referrals Lambda (worker auth)
  *   POST /worker/referrals/claim                 → worker-referral-claim Lambda (worker auth)
  *   POST /employer/jobs/{jobId}/share             → employer-job-share Lambda (employer auth)
  *
@@ -114,7 +113,7 @@ export interface ReferralsStackProps extends cdk.StackProps {
  *   public-job-referrer      : REFERRALS_DB_SECRET_ARN (jale_public_jobs) only
  *   public-job-apply-intent : REFERRALS_DB_SECRET_ARN (jale_public_jobs) only
  *   worker-job-share         : DB_SECRET_ARN (app DB / jale_admin) only
- *   worker-referrals         : DB_SECRET_ARN (app DB / jale_admin) only
+ *   worker-referrals         : DB_SECRET_ARN (app DB / jale_admin) only (phase 1: retained, unrouted)
  *   worker-referral-claim    : DB_SECRET_ARN (app DB / jale_admin) only
  *   employer-job-share       : DB_SECRET_ARN (app DB / jale_admin) only
  *   visibility-outbox-drain  : DB_SECRET_ARN (app DB / jale_admin) plus the
@@ -268,8 +267,18 @@ export class ReferralsStack extends cdk.Stack {
     });
     props.appDbSecret.grantRead(workerJobShareLambda.function);
 
-    // ── Lambda: worker-referrals (GET /worker/referrals) ──
-    // App DB (jale_admin) only. Worker-authenticated.
+    // ── PHASE 1 ONLY: worker-referrals, the deleted GET /worker/referrals ──
+    //
+    // The route is gone (dead code: nothing ever called it — see the mount
+    // below), but the Lambda is retained for exactly one deploy so its
+    // automatic cross-stack ARN export survives the deploy in which
+    // JaleApiStack stops importing it. JaleApiStack depends on this stack and
+    // so updates second; deleting the function now would fail this stack's
+    // changeset with "Export
+    // JaleReferralsStack:ExportsOutputFnGetAttWorkerReferralsLambdaFunction...
+    // Arn... cannot be deleted as it is in use by JaleApiStack". Phase 2 (the
+    // next commit) deletes the Lambda, its handler and its test. See
+    // documents-stack.ts for the full note.
     const workerReferralsLambda = new JaleLambdaFunction(this, 'WorkerReferralsLambda', {
       entry: path.join(__dirname, '../../lambda/api/worker-referrals.ts'),
       description: 'Worker referral history endpoint',
@@ -282,6 +291,8 @@ export class ReferralsStack extends cdk.Stack {
       ...lambdaProps,
     });
     props.appDbSecret.grantRead(workerReferralsLambda.function);
+    this.exportValue(workerReferralsLambda.function.functionArn);
+    // ── end phase 1 retention ──────────────────────────────────────────────
 
     // ── Lambda: worker-referral-claim (POST /worker/referrals/claim) ──
     // App DB (jale_admin) only. Worker-authenticated. Writes worker_attribution
@@ -567,13 +578,17 @@ export class ReferralsStack extends cdk.Stack {
         authorizationType: apigateway.AuthorizationType.COGNITO,
       });
 
-    // GET  /worker/referrals
     // POST /worker/referrals/claim
-    const workerReferralsResource = props.workerResource.addResource('referrals');
-    workerReferralsResource.addMethod('GET', lambdaIntegration(workerReferralsLambda.function), {
-      authorizer: props.workerAuthorizer,
-      authorizationType: apigateway.AuthorizationType.COGNITO,
-    });
+    //
+    // Path-only parent: `GET /worker/referrals` (a referral-history endpoint
+    // and its Lambda) was removed as dead code — nothing in the frontend ever
+    // called it, `frontend/src/lib/api/worker.ts` only reaches
+    // /worker/referrals/claim. With no method of its own, /worker/referrals
+    // must be built with addPathOnlyResource() so its unreachable CORS
+    // OPTIONS is never created either: an OPTIONS-only resource fails the
+    // JaleApiStack invariant in
+    // `test/unit/stacks/api-stack-resource-ceiling.test.ts`.
+    const workerReferralsResource = addPathOnlyResource(props.workerResource, 'referrals');
     workerReferralsResource
       .addResource('claim')
       .addMethod('POST', lambdaIntegration(workerReferralClaimLambda.function), {

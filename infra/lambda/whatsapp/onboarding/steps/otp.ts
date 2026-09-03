@@ -15,6 +15,7 @@ import {
 } from '../../lib/onboarding-language';
 import type { OnboardingV2Deps, OnboardingV2InboundMessage, OnboardingV2Session, RouteResult } from '../types';
 import { claimPendingReferral } from '../../lib/referral-claims';
+import { maybeSkipLegalReview } from '../transitions';
 import { sendPreAuthPrompt, sendPreAuthText, sendStepPrompt, readHistory } from '../delivery';
 
 export async function handleOtpStep(
@@ -141,6 +142,15 @@ export async function handleOtpStep(
       }));
       return { handled: false, handoff: 'ready', workerId: gate.userId, stepKey: 'ready' };
     }
+
+    // L7: a worker who accepted these exact Terms on the WEB (or on WhatsApp
+    // from another number) must not have the Terms screen as the first thing
+    // WhatsApp ever says to them. The skip walks the run straight on to the
+    // first profile question they still owe us, and takes no new consent —
+    // see `maybeSkipLegalReview`. Returns null for everyone else, including
+    // every first-time worker, who still sees the Terms.
+    const skipped = await maybeSkipLegalReview(client, session, msg, deps, gate, now);
+    if (skipped) return skipped;
 
     const stepKey = gate.currentStepKey ?? 'legal.review';
     await sendStepPrompt(client, deps, gate.userId, stepKey, gate.preferredLanguage, now, gate.runId!, msg.messageSid, `bind:${now.getTime()}`);

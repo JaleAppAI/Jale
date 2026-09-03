@@ -2,6 +2,7 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getPublicJobsDbPool } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { normalizeCode, isValidJobCode } from '../lib/referral-codes';
+import { parsePreApplicationPromptList } from '../lib/pre-application-prompts';
 
 /**
  * GET /public/jobs/{code}
@@ -23,9 +24,11 @@ const CORS_HEADERS = corsHeaders();
 // list in migration 056, extended by migration 061's column-scoped grant of
 // city/state_region/updated_at (added for the public job page's schema.org
 // jobLocation), and further extended by migration 077's column-scoped grant
-// of the six BE-T2 structured fields below. employer_id and any OTHER geo
-// column from 009 remain deliberately absent from that grant and must never
-// be added here.
+// of the six BE-T2 structured fields below, and by migration 091's
+// column-scoped grant of pre_application_prompts (the public job page shows
+// the employer's stage-1 questions before a visitor signs up). employer_id
+// and any OTHER geo column from 009 remain deliberately absent from that
+// grant and must never be added here.
 const PUBLIC_JOB_COLUMNS = `
   id, public_code AS code, title, company, location, city, state_region,
   job_type, description,
@@ -35,7 +38,7 @@ const PUBLIC_JOB_COLUMNS = `
   transportation_required, work_authorization_required,
   number_of_workers_needed, required_docs, status, created_at,
   trade_category_other, expected_duration_bucket, work_days,
-  shift_start, shift_end, certification_requirements
+  shift_start, shift_end, certification_requirements, pre_application_prompts
 `;
 
 export const handler = async (
@@ -69,6 +72,11 @@ export const handler = async (
     }
 
     const job = jobResult.rows[0];
+
+    // Fails OPEN, like every other reader of this column: a corrupt or
+    // hand-edited row degrades to "this job asks no prompts" rather than
+    // 500-ing an unauthenticated, crawler-visible page.
+    job.pre_application_prompts = parsePreApplicationPromptList(job.pre_application_prompts);
 
     // Older jobs predate the `company` column backfill; fall back to the
     // employer's profile via the SECURITY DEFINER function rather than

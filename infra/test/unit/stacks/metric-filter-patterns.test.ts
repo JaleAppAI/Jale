@@ -159,6 +159,7 @@ function buildStacks(): Record<string, cdk.Stack> {
     // S22 R2-C23: the web onboarding door hangs /worker/onboarding* off the
     // ApiStack's worker resource, so WhatsAppStack needs both.
     workerResource: api.workerResource,
+    workerApplicationsResource: api.workerApplicationsResource,
     workerAuthorizer: api.workerAuthorizer,
     questionGeneratorFn: ai.questionGeneratorFn.function,
     aliasGeneratorFn: ai.aliasGeneratorFn.function,
@@ -174,6 +175,7 @@ function buildStacks(): Record<string, cdk.Stack> {
     api,
     dbSecret: database.dbSecret,
     mediaBucket: whatsapp.mediaBucket,
+    documentsBucket: documents.bucket,
     allowedOrigin: 'https://jaleapp.ai',
     requiredTosVersion: 'v1.0',
     alarmTopicArn: ALARM_TOPIC_ARN,

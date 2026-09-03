@@ -26,7 +26,20 @@ describe('WhatsAppStack', () => {
   // for every test in this file.
   let processorAssetDir: string;
 
+  // Sprint 23: PUBLIC_SITE_BASE_URL resolves context -> JALE_PUBLIC_SITE_BASE_URL
+  // -> a literal fallback. The shared app below passes NO `publicSiteBaseUrl`
+  // context, which makes it the fallback fixture -- but only with the CI
+  // synth's env var out of the way. Same save/delete/restore shape
+  // notifications-stack.test.ts:72-89 uses for the identical variable.
+  const savedPublicSiteBaseUrl = process.env.JALE_PUBLIC_SITE_BASE_URL;
+
+  afterAll(() => {
+    if (savedPublicSiteBaseUrl === undefined) delete process.env.JALE_PUBLIC_SITE_BASE_URL;
+    else process.env.JALE_PUBLIC_SITE_BASE_URL = savedPublicSiteBaseUrl;
+  });
+
   beforeAll(() => {
+    delete process.env.JALE_PUBLIC_SITE_BASE_URL;
     const app = new cdk.App({
       context: {
         otpSmsFromNumber: '+13252210992',
@@ -90,6 +103,7 @@ describe('WhatsAppStack', () => {
       workerPool: auth.workerPool,
       api: api.api,
       workerResource: api.workerResource,
+      workerApplicationsResource: api.workerApplicationsResource,
       workerAuthorizer: api.workerAuthorizer,
       questionGeneratorFn: ai.questionGeneratorFn.function,
       aliasGeneratorFn: ai.aliasGeneratorFn.function,
@@ -144,6 +158,29 @@ describe('event-driven outbox wake queues', () => {
         /SQS processor/.test(resource.Properties?.Description ?? '')) as any;
       expect(processor.Properties.Environment.Variables.WORKER_INTENT_WAKE_QUEUE_URL).toBeDefined();
       expect(processor.Properties.Environment.Variables.DOMAIN_OUTBOX_WAKE_QUEUE_URL).toBeDefined();
+    });
+
+    // Sprint 23: the processor mints the worker's own application page link
+    // (application-fill.ts's `workerApplicationUrl`, and the stage-2
+    // `web_handoff` note) against this origin. Unlike NotificationsStack and
+    // ReferralsStack this stack does NOT fail closed at synth -- the copy
+    // degrades to a still-correct jaleapp.ai link rather than a dead one --
+    // so the fallback is the behavior worth pinning.
+    test('processor receives PUBLIC_SITE_BASE_URL', () => {
+      const functions = template.findResources('AWS::Lambda::Function');
+      const processor = Object.values(functions).find((resource: any) =>
+        /SQS processor/.test(resource.Properties?.Description ?? '')) as any;
+      expect(processor.Properties.Environment.Variables.PUBLIC_SITE_BASE_URL).toBeDefined();
+    });
+
+    test('PUBLIC_SITE_BASE_URL falls back to https://jaleapp.ai with no context and no env var', () => {
+      // The shared app passes no publicSiteBaseUrl context and the beforeAll
+      // above cleared JALE_PUBLIC_SITE_BASE_URL, so this IS the fallback path.
+      const functions = template.findResources('AWS::Lambda::Function');
+      const processor = Object.values(functions).find((resource: any) =>
+        /SQS processor/.test(resource.Properties?.Description ?? '')) as any;
+      expect(processor.Properties.Environment.Variables.PUBLIC_SITE_BASE_URL)
+        .toBe('https://jaleapp.ai');
     });
 
     test('both drains have SQS event-source mappings in addition to recovery schedules', () => {
@@ -307,9 +344,10 @@ describe('event-driven outbox wake queues', () => {
   });
 
   // ── Lambda functions ───────────────────────────────────────────
-  // 13 since S22 R2-C23 added the web onboarding door.
-  test('Stack creates 13 Lambda functions including the worker-intent drain', () => {
-    template.resourceCountIs('AWS::Lambda::Function', 13);
+  // 13 since S22 R2-C23 added the web onboarding door; 14 since S23 L2.4
+  // added the worker application details door.
+  test('Stack creates 14 Lambda functions including the worker-intent drain', () => {
+    template.resourceCountIs('AWS::Lambda::Function', 14);
   });
 
   test('worker-intent outbox drain has Twilio + DB configuration and a one-minute schedule', () => {
@@ -1259,6 +1297,103 @@ describe('event-driven outbox wake queues', () => {
       expect(actions).toEqual(expect.arrayContaining(['sqs:SendMessage']));
     });
 
+    // ── S23 L6: voice answers on the web ─────────────────────────
+    //
+    // The whole feature adds ZERO API Gateway resources — three more action
+    // names on the `{action}` resource that already exists. What it DOES add
+    // is the two env vars and the three grants below; without any one of them
+    // the mic button fails at a different step, all of them at runtime.
+    test('carries the media bucket and trust pipeline so voice answers can start', () => {
+      const env = webDoorFn().Properties.Environment.Variables;
+      expect(env.MEDIA_BUCKET_NAME).toBeDefined();
+      expect(env.TRUST_PIPELINE_STATE_MACHINE_ARN).toBeDefined();
+    });
+
+    test('starts the SAME trust pipeline the processor does, not a second one', () => {
+      const webArn = JSON.stringify(
+        webDoorFn().Properties.Environment.Variables.TRUST_PIPELINE_STATE_MACHINE_ARN,
+      );
+      const processorFn = Object.values(template.findResources('AWS::Lambda::Function'))
+        .find((r: any) => /WhatsApp message processor|processor/i.test(r.Properties?.Description ?? '')) as any;
+      expect(JSON.stringify(processorFn.Properties.Environment.Variables.TRUST_PIPELINE_STATE_MACHINE_ARN))
+        .toBe(webArn);
+    });
+
+    test('its role can put/get under voice/* and start the trust execution', () => {
+      const fn = webDoorFn();
+      const roleRef = fn.Properties.Role['Fn::GetAtt'][0];
+      const policies = template.findResources('AWS::IAM::Policy');
+      const statements = Object.values(policies)
+        .filter((policy: any) => JSON.stringify(policy.Properties.Roles ?? []).includes(roleRef))
+        .flatMap((policy: any) => policy.Properties.PolicyDocument.Statement as any[]);
+      const actions = statements.flatMap((st) =>
+        Array.isArray(st.Action) ? st.Action : [st.Action]);
+
+      expect(actions).toEqual(expect.arrayContaining(['s3:PutObject']));
+      expect(actions).toEqual(expect.arrayContaining(['s3:GetObject']));
+      expect(actions).toEqual(expect.arrayContaining(['states:StartExecution']));
+
+      // SCOPED, not bucket-wide: a worker's photos, documents, work samples
+      // and post images live in the SAME bucket, and this door has no business
+      // reading, writing or even LISTING any of them. Every s3 statement on
+      // the role must name the prefix — which is also why the read is an
+      // explicit GetObject rather than `grantRead` (that adds bucket-wide
+      // s3:List*).
+      const s3Statements = statements.filter((st) => {
+        const acts = Array.isArray(st.Action) ? st.Action : [st.Action];
+        return acts.some((a: unknown) => typeof a === 'string' && a.startsWith('s3:'));
+      });
+      expect(s3Statements.length).toBeGreaterThan(0);
+      for (const st of s3Statements) {
+        expect(JSON.stringify(st.Resource)).toContain('voice/*');
+        const acts = Array.isArray(st.Action) ? st.Action : [st.Action];
+        expect(acts.some((a: unknown) => typeof a === 'string' && /^s3:(List|GetBucket)/.test(a))).toBe(false);
+      }
+    });
+
+    test('the trust receiver may write the web failure marker under voice/*', () => {
+      const receiver = Object.values(template.findResources('AWS::Lambda::Function'))
+        .find((r: any) => /voice-trust-receiver/.test(r.Properties?.Description ?? '')) as any;
+      const roleRef = receiver.Properties.Role['Fn::GetAtt'][0];
+      const statements = Object.values(template.findResources('AWS::IAM::Policy'))
+        .filter((policy: any) => JSON.stringify(policy.Properties.Roles ?? []).includes(roleRef))
+        .flatMap((policy: any) => policy.Properties.PolicyDocument.Statement as any[]);
+      const putStatements = statements.filter((st) => {
+        const acts = Array.isArray(st.Action) ? st.Action : [st.Action];
+        return acts.includes('s3:PutObject');
+      });
+      expect(putStatements.length).toBeGreaterThan(0);
+      for (const st of putStatements) {
+        expect(JSON.stringify(st.Resource)).toContain('voice/*');
+      }
+    });
+
+    // L6 moved the web lane's transcripts to `voice/<worker>/transcripts/`,
+    // and the thing that WRITES them is the pipeline's state machine (via
+    // Transcribe's OutputBucketName), not anything this lane owns. Its grant
+    // is bucket-wide today; scoped to some older prefix it would leave every
+    // web voice answer polling to its 60s cap with no error anywhere.
+    test('the trust pipeline may write transcripts anywhere under the media bucket', () => {
+      const machine = Object.values(template.findResources('AWS::StepFunctions::StateMachine'))
+        // The aws-sdk integration lower-cases the verb: `transcribe:startTranscriptionJob`.
+        .find((r: any) => /starttranscriptionjob/i.test(JSON.stringify(r.Properties?.DefinitionString ?? ''))) as any;
+      expect(machine).toBeDefined();
+      const roleRef = machine.Properties.RoleArn['Fn::GetAtt'][0];
+      const statements = Object.values(template.findResources('AWS::IAM::Policy'))
+        .filter((policy: any) => JSON.stringify(policy.Properties.Roles ?? []).includes(roleRef))
+        .flatMap((policy: any) => policy.Properties.PolicyDocument.Statement as any[]);
+      const writes = statements.filter((st) => {
+        const acts = Array.isArray(st.Action) ? st.Action : [st.Action];
+        return acts.some((a: string) => a === 's3:PutObject' || a === 's3:PutObject*');
+      });
+      expect(writes.length).toBeGreaterThan(0);
+      // Bucket-wide: the object arn ends in `/*` with nothing in between.
+      expect(writes.some((st) => JSON.stringify(st.Resource).includes('/*"'))).toBe(true);
+      for (const st of writes) {
+        expect(JSON.stringify(st.Resource)).not.toContain('transcripts/');
+      }
+    });
+
     test.each([
       ['onboarding', 'GET'],
       // ONE `{action}` resource carries answers/back/language. ApiStack sits
@@ -1322,6 +1457,112 @@ describe('event-driven outbox wake queues', () => {
       const all = apiTemplate.toJSON().Resources as Record<string, { Type: string }>;
       const mine = Object.keys(all).filter((id) => /Onboarding/i.test(id));
       expect(mine.length).toBe(8);
+    });
+  });
+
+  // ── S23 L2.4: the worker application details door ──────────────
+  //
+  // Same split as the onboarding door above: the Lambda is a WhatsAppStack
+  // resource (it needs this stack's `jale/whatsapp/db` secret), the ROUTES
+  // are ApiStack resources because `props.workerApplicationsResource
+  // .addResource()` creates its children in that resource's scope.
+  describe('worker application details door', () => {
+    function detailsFn(): any {
+      const functions = template.findResources('AWS::Lambda::Function');
+      return Object.values(functions).find((resource: any) =>
+        /application details/i.test(resource.Properties?.Description ?? '')) as any;
+    }
+
+    test('a single Lambda serves all four routes, inside the VPC', () => {
+      const fn = detailsFn();
+      expect(fn).toBeDefined();
+      expect(fn.Properties.VpcConfig).toBeDefined();
+      // API Gateway hard-caps a REST integration at 29s; a merge syncs the
+      // worker's vault documents onto the job first.
+      expect(fn.Properties.Timeout).toBeLessThanOrEqual(28);
+    });
+
+    test('connects as jale_whatsapp — the ONLY role with a worker UPDATE policy on job_applications', () => {
+      // `jobapp_whatsapp_update` (migration 028) is keyed on
+      // app.current_internal_user_id and exists for no other API role, so
+      // running this door as jale_admin would silently write nothing.
+      const env = detailsFn().Properties.Environment.Variables;
+      expect(env.DB_SECRET_ARN).toBe('jale/whatsapp/db');
+      // Unlike the onboarding door, this one IS legally gated.
+      expect(env.REQUIRED_TOS_VERSION).toBeDefined();
+      expect(env.ALLOWED_ORIGIN).toBeDefined();
+    });
+
+    test('its role reads the DB secret and NOTHING else — no invoke, no queue', () => {
+      const fn = detailsFn();
+      const roleRef = fn.Properties.Role['Fn::GetAtt'][0];
+      const policies = template.findResources('AWS::IAM::Policy');
+      const statements = Object.values(policies)
+        .filter((policy: any) => JSON.stringify(policy.Properties.Roles ?? []).includes(roleRef))
+        .flatMap((policy: any) => policy.Properties.PolicyDocument.Statement as any[]);
+      const actions = statements.flatMap((st) =>
+        Array.isArray(st.Action) ? st.Action : [st.Action]);
+
+      expect(actions).toEqual(expect.arrayContaining(['secretsmanager:GetSecretValue']));
+      // Every write this door makes goes through the shared engine over the
+      // DB connection. A grant appearing here means something else crept in.
+      expect(actions).not.toEqual(expect.arrayContaining(['lambda:InvokeFunction']));
+      expect(actions).not.toEqual(expect.arrayContaining(['sqs:SendMessage']));
+      expect(actions).not.toEqual(expect.arrayContaining(['s3:PutObject']));
+    });
+
+    test.each([
+      ['{applicationId}', 'GET'],
+      // ONE `{action}` resource carries answers / certifications /
+      // prompt-answers, for the ApiStack resource-budget reason documented
+      // on the onboarding door.
+      ['{action}', 'ANY'],
+    ])('/worker/applications/%s serves %s behind the worker Cognito authorizer', (part, method) => {
+      const resources = apiTemplate.findResources('AWS::ApiGateway::Resource');
+      const applicationsId = Object.entries(resources).find(
+        ([, r]: [string, any]) => r.Properties.PathPart === 'applications',
+      )![0];
+      // `{action}` is an ambiguous PathPart (the onboarding door has one
+      // too), so walk down from /worker/applications rather than matching
+      // the part name globally.
+      const childrenOf = (parentId: string) => Object.entries(resources).filter(
+        ([, r]: [string, any]) =>
+          JSON.stringify(r.Properties.ParentId) === JSON.stringify({ Ref: parentId }),
+      );
+      const [applicationId] = childrenOf(applicationsId)
+        .find(([, r]: [string, any]) => r.Properties.PathPart === '{applicationId}')!;
+      const logicalId = part === '{applicationId}'
+        ? applicationId
+        : childrenOf(applicationId).find(
+          ([, r]: [string, any]) => r.Properties.PathPart === part,
+        )![0];
+
+      const methods = apiTemplate.findResources('AWS::ApiGateway::Method');
+      const match = Object.values(methods).find((m: any) =>
+        m.Properties.HttpMethod === method
+        && JSON.stringify(m.Properties.ResourceId) === JSON.stringify({ Ref: logicalId })) as any;
+
+      expect(match).toBeDefined();
+      expect(match.Properties.AuthorizationType).toBe('COGNITO_USER_POOLS');
+      expect(match.Properties.AuthorizerId).toBeDefined();
+    });
+
+    test('{action} is the ONLY child of /worker/applications/{applicationId}', () => {
+      // ANY on `{action}` matches every single-segment path below
+      // {applicationId}, so a named sibling added later by another stack
+      // would keep its route but lose the traffic to this handler's 404.
+      const resources = apiTemplate.findResources('AWS::ApiGateway::Resource');
+      const applicationsId = Object.entries(resources).find(
+        ([, r]: [string, any]) => r.Properties.PathPart === 'applications',
+      )![0];
+      const [applicationId] = Object.entries(resources).find(
+        ([, r]: [string, any]) => r.Properties.PathPart === '{applicationId}'
+          && JSON.stringify(r.Properties.ParentId) === JSON.stringify({ Ref: applicationsId }),
+      )!;
+      const children = Object.values(resources).filter(
+        (r: any) => JSON.stringify(r.Properties.ParentId) === JSON.stringify({ Ref: applicationId }),
+      );
+      expect(children.map((c: any) => c.Properties.PathPart)).toEqual(['{action}']);
     });
   });
 });
@@ -1391,6 +1632,7 @@ describe('WhatsAppStack — v2 inbound transport enabled', () => {
       workerPool: auth.workerPool,
       api: api.api,
       workerResource: api.workerResource,
+      workerApplicationsResource: api.workerApplicationsResource,
       workerAuthorizer: api.workerAuthorizer,
       questionGeneratorFn: ai.questionGeneratorFn.function,
       aliasGeneratorFn: ai.aliasGeneratorFn.function,
@@ -1462,5 +1704,103 @@ describe('WhatsAppStack — v2 inbound transport enabled', () => {
     const serialized = JSON.stringify(policies);
     expect(serialized).toContain(v2QueueId);
     expect(serialized).toContain('sqs:SendMessage');
+  });
+});
+
+// ── Sprint 23: PUBLIC_SITE_BASE_URL from -c publicSiteBaseUrl ───────────
+//
+// Self-contained (own app/stacks/template), same pattern the v2-transport
+// describe above uses: this scenario needs a DIFFERENT context value than the
+// rest of the file's shared `template`, so it stands up its own stack rather
+// than mutating the shared one. The context value carries a TRAILING SLASH on
+// purpose -- the stack strips it so every consumer can join with a single '/'
+// and never mint a `https://host//en/worker/...` link.
+describe('WhatsAppStack — publicSiteBaseUrl context override', () => {
+  let template: Template;
+  const savedPublicSiteBaseUrl = process.env.JALE_PUBLIC_SITE_BASE_URL;
+
+  afterAll(() => {
+    if (savedPublicSiteBaseUrl === undefined) delete process.env.JALE_PUBLIC_SITE_BASE_URL;
+    else process.env.JALE_PUBLIC_SITE_BASE_URL = savedPublicSiteBaseUrl;
+  });
+
+  beforeAll(() => {
+    // Set to a DIFFERENT origin than the context, so the assertion below also
+    // proves context wins over the env var rather than merely agreeing with it.
+    process.env.JALE_PUBLIC_SITE_BASE_URL = 'https://env-should-lose.example.invalid';
+    const app = new cdk.App({
+      context: {
+        otpSmsFromNumber: '+13252210992',
+        whatsappStatusCallbackUrl:
+          'https://callbacks.example.test/prod/whatsapp/status-callback',
+        publicSiteBaseUrl: 'https://staging.jaleapp.ai/',
+      },
+    });
+    const network = new NetworkStack(app, 'TestNetworkStackPublicSite');
+    const database = new DatabaseStack(app, 'TestDatabaseStackPublicSite', { network });
+    const auth = new AuthStack(app, 'TestAuthStackPublicSite', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
+    });
+    const ai = new AiStack(app, 'TestAiStackPublicSite', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      aiDbSecret: database.aiDbSecret,
+      alarmTopicArn: 'arn:aws:sns:us-east-2:123456789012:jale-ai-alarms-test',
+    });
+    const api = new ApiStack(app, 'TestApiStackPublicSite', {
+      workerPool: auth.workerPool,
+      employerPool: auth.employerPool,
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
+      aliasGeneratorFn: ai.aliasGeneratorFn.function,
+      whatsappStatusCallbackUrl: 'https://callbacks.example.test/prod/whatsapp/status-callback',
+    });
+    new LegalStack(app, 'TestLegalStackPublicSite', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
+      api: api.api,
+      dualAuthorizer: api.dualAuthorizer,
+    });
+    const docsBucketStack = new cdk.Stack(app, 'TestDocsBucketStackPublicSite');
+    const docsKey = new kms.Key(docsBucketStack, 'TestDocsKey');
+    const docsBucket = new s3.Bucket(docsBucketStack, 'TestDocsBucket', {
+      encryptionKey: docsKey,
+      encryption: s3.BucketEncryption.KMS,
+    });
+    const whatsapp = new WhatsAppStack(app, 'TestWhatsAppStackPublicSite', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
+      workerPool: auth.workerPool,
+      api: api.api,
+      workerResource: api.workerResource,
+      workerApplicationsResource: api.workerApplicationsResource,
+      workerAuthorizer: api.workerAuthorizer,
+      questionGeneratorFn: ai.questionGeneratorFn.function,
+      aliasGeneratorFn: ai.aliasGeneratorFn.function,
+      trustAssessmentQueue: ai.trustAssessmentQueue,
+      trustExtractionQueue: ai.trustExtractionQueue,
+      statusCallbackUrl: 'https://callbacks.example.test/prod/whatsapp/status-callback',
+      alarmTopicArn: 'arn:aws:sns:us-east-2:123456789012:jale-whatsapp-alarms-test',
+      documentsBucket: docsBucket,
+    });
+    template = Template.fromStack(whatsapp);
+  });
+
+  test('the processor honors -c publicSiteBaseUrl and strips its trailing slash', () => {
+    const functions = template.findResources('AWS::Lambda::Function');
+    const processor = Object.values(functions).find((resource: any) =>
+      /SQS processor/.test(resource.Properties?.Description ?? '')) as any;
+    expect(processor.Properties.Environment.Variables.PUBLIC_SITE_BASE_URL)
+      .toBe('https://staging.jaleapp.ai');
   });
 });
