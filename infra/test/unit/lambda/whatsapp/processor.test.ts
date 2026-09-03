@@ -2340,6 +2340,73 @@ describe('Processor Lambda', () => {
         expect(stateContextUpdates().some((sc) => 'fill_application_id' in sc)).toBe(false);
       });
 
+      it('a foreign application whose job REQUIRES documents is refused before any write', async () => {
+        // Ownership must be proven on an UNSYNCED load. `loadRequirementSnapshot`
+        // with `syncDocumentSnapshots: true` first sets
+        // app.current_internal_user_id to the SNAPSHOT's worker and then
+        // INSERTs worker_documents rows for them -- so checking ownership
+        // after a synced load would let a forged payload both write rows for
+        // a stranger and leave a foreign identity in the GUC for the rest of
+        // the turn's transaction. The sibling test above cannot catch that:
+        // its fixture has no required docs, so the sync short-circuits.
+        mockConvTurn('SM-app-start-foreign-docs');
+        mockQuery.mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{
+            id: 'app-1', worker_id: 'someone-else', job_id: 'job-1',
+            application_status: 'pending', application_answers: {}, prompt_answers: {},
+            details_requested_at: '2026-09-01T00:00:00.000Z', details_completed_at: null,
+            applied_at: '2026-09-01T00:00:00.000Z', updated_at: '2026-09-01T00:00:00.000Z',
+            job_status: 'active', job_title: 'Electrician',
+            required_fields: [], optional_fields: [],
+            required_docs: ['resume'], optional_docs: [],
+            certification_requirements: null, pre_application_prompts: null,
+            have_docs: [],
+          }],
+        });
+        mockBoundWorkerTail();
+
+        await handler(
+          makeSqsEvent({
+            MessageSid: 'SM-app-start-foreign-docs',
+            From: 'whatsapp:+15125551234',
+            Body: '',
+            ButtonPayload: 'application:start:app-aaaaaaaa-0000-4000-8000-00000000000a',
+          }),
+          {} as any,
+          {} as any,
+        );
+
+        expect(outboxBodies()).toEqual([]);
+        expect(countQueryByPattern(/INSERT INTO worker_documents/i)).toBe(0);
+        const rlsIds = mockQuery.mock.calls
+          .filter(([sql]) => /set_config\('app\.current_internal_user_id'/.test(sql as string))
+          .map(([, params]) => (params as unknown[] | undefined)?.[0]);
+        expect(rlsIds).not.toContain('someone-else');
+        expect(stateContextUpdates().some((sc) => 'fill_application_id' in sc)).toBe(false);
+      });
+
+      it('a Start tap for an application that no longer exists is refused the SAME silent way', async () => {
+        // Replying to one refusal and not the other would make this handler
+        // an existence oracle for application ids.
+        mockConvTurn('SM-app-start-gone');
+        mockQuery.mockResolvedValueOnce({ rowCount: 0, rows: [] }); // snapshot: vanished
+        mockBoundWorkerTail();
+
+        await handler(
+          makeSqsEvent({
+            MessageSid: 'SM-app-start-gone',
+            From: 'whatsapp:+15125551234',
+            Body: '',
+            ButtonPayload: 'application:start:app-aaaaaaaa-0000-4000-8000-00000000000a',
+          }),
+          {} as any,
+          {} as any,
+        );
+
+        expect(outboxBodies()).toEqual([]);
+      });
+
       it('the Start button before the employer asked replies application_not_requested_yet', async () => {
         mockConvTurn('SM-app-start-early');
         mockFillSnapshotRow({ details_requested_at: null, required_fields: ['work_authorization'] });

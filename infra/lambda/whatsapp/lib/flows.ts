@@ -302,7 +302,7 @@ export function isProfileCommand(text: string): boolean {
  */
 export function isApplicationsCommand(text: string): boolean {
   const n = normalizeCommandText(text);
-  if (/^(applications?|aplicacion(es)?|solicitudes?)$/.test(n)) return true;
+  if (/^(applications?|aplicacion(es)?|solicitud(es)?)$/.test(n)) return true;
   const fuzzy = matchCommandFuzzy(n);
   return fuzzy === 'applications' || fuzzy === 'aplicaciones' || fuzzy === 'solicitudes';
 }

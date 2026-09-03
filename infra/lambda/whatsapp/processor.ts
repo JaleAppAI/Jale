@@ -81,7 +81,6 @@ import {
   armFill,
   promptNextStep,
   handleFillMessage,
-  localizeDocList,
   type FillContext,
   type FillDeps,
   type FillStateContext,
@@ -2214,7 +2213,18 @@ function buildApplicationsDeps(conv: ConversationRow): ApplicationsDeps {
  * `USING (true)` (028), so a forged/replayed payload naming ANOTHER worker's
  * application would otherwise arm this worker's fill against it. A mismatch
  * gets no reply at all -- answering would confirm the id exists -- just a
- * metric line.
+ * metric line. A VANISHED row is answered the same silent way on purpose:
+ * replying to one case and not the other would turn this handler into an
+ * existence oracle for application ids.
+ *
+ * The load is deliberately UNSYNCED. `syncDocumentSnapshots: true` sets
+ * `app.current_internal_user_id` to the SNAPSHOT's worker and INSERTs
+ * worker_documents rows for them (application-requirements.ts) -- so running
+ * it before the ownership check would let a forged id both write rows for a
+ * stranger and leave a foreign identity in the GUC for the rest of this
+ * turn's transaction. `armFill` does its own synced load once the id is
+ * proven ours, and the gates below (status, stage, the two timestamps) all
+ * read columns the unsynced snapshot already carries.
  *
  * The remaining branches are ordered most-terminal first, so a hired worker
  * is never told "we have not asked for details yet".
@@ -2229,17 +2239,12 @@ async function handleApplicationStart(
   const workerId = conv.user_id;
   if (!workerId) return;
 
-  const snapshot = await loadRequirementSnapshot(client, applicationId, {
-    syncDocumentSnapshots: true,
-  });
-  if (!snapshot) {
-    await queueText(client, inboundMessageSid, from, fillMessage('exit_application_gone', conv.language));
-    return;
-  }
-  if (snapshot.workerId !== workerId) {
+  const snapshot = await loadRequirementSnapshot(client, applicationId);
+  if (!snapshot || snapshot.workerId !== workerId) {
     console.log(JSON.stringify({
       event: 'ApplicationStartOwnershipMismatch',
       conversationId: conv.id,
+      found: snapshot !== null,
     }));
     return;
   }
@@ -2399,6 +2404,7 @@ async function handleJobAction(
   }
 }
 
-// localizeDocList moved to lib/application-fill.ts (Task 11) so its
-// completion-arm `web_handoff` append can reuse the same labels/fallback
-// this intro-arm append (above) uses -- imported at the top of this file.
+// localizeDocList lives in lib/application-fill.ts (Task 11). Sprint 23
+// deleted this file's accept-time intro (the fill is armed from the stage-2
+// notification now), so the completion arm in that module is its only
+// caller and this file no longer imports it.

@@ -8,9 +8,11 @@ import {
   isHelpCommand,
   isSupportCommand,
   isProfileCommand,
+  isApplicationsCommand,
   isAccept,
   isDecline,
   parseButtonPayload,
+  parseApplicationButtonPayload,
   parseEmployerConversationButtonPayload,
   parseLegalReplyPayload,
   parseMediaPayload,
@@ -236,6 +238,9 @@ describe('flows.ts — parseCommandPayload', () => {
     expect(parseCommandPayload('command:profile')).toBe('profile');
     expect(parseCommandPayload('command:chats')).toBe('chats');
     expect(parseCommandPayload('command:help')).toBe('help');
+    // Sprint 23: the help-menu list picker gained an Aplicaciones/Applications
+    // row whose id is this payload (scripts/seed-whatsapp-twilio-templates.mjs).
+    expect(parseCommandPayload('command:applications')).toBe('applications');
   });
 
   it('rejects unknown or missing payloads', () => {
@@ -629,5 +634,158 @@ describe('new media state types', () => {
 
   test('isSkipKeyword tolerates stray punctuation', () => {
     expect(isSkipKeyword('skip.')).toBe(true);
+  });
+});
+
+// ── Sprint 23: the aplicaciones command and its quick-reply buttons ──
+
+describe('flows.ts — parseApplicationButtonPayload', () => {
+  // A strict v4 UUID: the `application_update_*` template's {{3}} is minted by
+  // buildApplicationStageMessage (lib/application-stage-notify.ts), which
+  // refuses anything that is not RFC-shaped, so only such an id can ever ride
+  // a real button.
+  const APPLICATION_ID = '11111111-2222-4333-8444-555555555555';
+
+  it('parses both verbs and returns the BARE uuid, with the app- prefix stripped', () => {
+    // The prefix exists only to mirror the job alert's `job-<uuid>` wire
+    // convention; callers index job_applications by the bare id, so a caller
+    // that re-stripped it would corrupt the lookup.
+    expect(parseApplicationButtonPayload(`application:start:app-${APPLICATION_ID}`)).toEqual({
+      action: 'start',
+      applicationId: APPLICATION_ID,
+    });
+    expect(parseApplicationButtonPayload(`application:later:app-${APPLICATION_ID}`)).toEqual({
+      action: 'later',
+      applicationId: APPLICATION_ID,
+    });
+  });
+
+  it('accepts an uppercase-hex uuid (Twilio echoes the id back byte for byte)', () => {
+    expect(
+      parseApplicationButtonPayload(`application:start:app-${APPLICATION_ID.toUpperCase()}`),
+    ).toEqual({ action: 'start', applicationId: APPLICATION_ID.toUpperCase() });
+  });
+
+  test.each([
+    [`application:start:${APPLICATION_ID}`, 'the app- prefix is missing'],
+    ['application:start:app-not-a-uuid', 'the id is not a uuid'],
+    [`application:start:app-${APPLICATION_ID}-extra`, 'the id has trailing junk'],
+    [`application:cancel:app-${APPLICATION_ID}`, 'the verb is unknown'],
+    [`accept:job-${APPLICATION_ID}`, 'it is a job-alert payload'],
+    ['', 'it is empty'],
+    [undefined, 'it is undefined'],
+  ] as ReadonlyArray<[string | undefined, string]>)('returns null for %p (%s)', (payload) => {
+    expect(parseApplicationButtonPayload(payload)).toBeNull();
+  });
+});
+
+describe('flows.ts — isApplicationsCommand', () => {
+  test.each([
+    'applications', 'Applications', 'APPLICATIONS', 'application',
+    'aplicaciones', 'Aplicaciones', 'aplicacion',
+    'solicitudes', 'Solicitudes',
+    'aplicaciones.', ' Aplicaciones ', '¡aplicaciones!',
+    // One Damerau-Levenshtein edit — matchCommandFuzzy's tolerance.
+    'aplicacionees', 'aplicacines', 'applicatons', 'solicitudee',
+  ])('isApplicationsCommand("%s") -> true', (input) => {
+    expect(isApplicationsCommand(input)).toBe(true);
+  });
+
+  test.each([
+    // EXACT-match grammar, deliberately unlike isJobsKeyword's prefix
+    // grammar: a worker mid-questionnaire whose answer happens to open with
+    // one of these long words is answering, not issuing a command.
+    'aplicaciones de trabajo',
+    'applications please',
+    'solicitudes que envie',
+    'mis aplicaciones',
+    // Far enough from every keyword that the fuzzy matcher declines.
+    'aplicar', 'apply', 'solicitar', 'appl',
+    '',
+  ])('isApplicationsCommand("%s") -> false', (input) => {
+    expect(isApplicationsCommand(input)).toBe(false);
+  });
+
+  // Regression: the alternation used to read `solicitudes?`, so the optional
+  // 's' hung off "solicitude" -- it accepted that non-word and rejected the
+  // real Spanish singular, which is two edits from 'solicitudes' and so also
+  // missed the fuzzy pass. detectCommandLanguage's ES_LANG_WORDS lists
+  // 'solicitud', so the two used to disagree.
+  it('accepts the Spanish singular "solicitud"', () => {
+    expect(isApplicationsCommand('solicitud')).toBe(true);
+    expect(detectCommandLanguage('solicitud')).toBe('es');
+  });
+
+  it('answers a typed command in the language it was written in', () => {
+    expect(detectCommandLanguage('applications')).toBe('en');
+    expect(detectCommandLanguage('aplicaciones')).toBe('es');
+    expect(detectCommandLanguage('solicitudes')).toBe('es');
+  });
+});
+
+describe('flows.ts — COMMAND_KEYWORDS cannot swallow the fill lane\'s cancel word', () => {
+  // The fill/prompt lanes treat the EXACT word "cancelar" as "abandon this
+  // application" (application-fill.ts's isFillCancel). matchCommandFuzzy runs
+  // on the same inbound text, so a keyword within one edit of "cancelar" would
+  // silently reroute a cancel into a command and strand the worker.
+  //
+  // The sibling lock in application-fill.test.ts hardcodes its own copy of
+  // COMMAND_KEYWORDS and was NOT updated for sprint 23, so it does not cover
+  // the three new words. This one reads the real array out of flows.ts, which
+  // cannot go stale. (flows.ts exports neither the array nor the distance
+  // function; this file already reads its own source for source-level
+  // invariants — see the ConversationState scans above.)
+  function damerauLevenshteinDistance(a: string, b: string): number {
+    const d: number[][] = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+    for (let i = 0; i <= a.length; i++) d[i][0] = i;
+    for (let j = 0; j <= b.length; j++) d[0][j] = j;
+    for (let i = 1; i <= a.length; i++) {
+      for (let j = 1; j <= b.length; j++) {
+        const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+        d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+        if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+          d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+        }
+      }
+    }
+    return d[a.length][b.length];
+  }
+
+  function readCommandKeywords(): string[] {
+    const source = readFileSync(
+      join(__dirname, '../../../../../lambda/whatsapp/lib/flows.ts'),
+      'utf8',
+    );
+    const block = /const COMMAND_KEYWORDS = \[([\s\S]*?)\];/.exec(source);
+    expect(block).not.toBeNull();
+    // The array body carries a comment that itself quotes 'cancelar'; a naive
+    // quoted-word sweep would capture it and then compare it to itself.
+    const withoutComments = block![1]
+      .split('\n')
+      .filter((line) => !/^\s*\/\//.test(line))
+      .join('\n');
+    return [...withoutComments.matchAll(/'([a-z]+)'/g)].map((m) => m[1]);
+  }
+
+  it('reads the live keyword list, including the three sprint-23 additions', () => {
+    const keywords = readCommandKeywords();
+    expect(keywords).toEqual(
+      expect.arrayContaining(['applications', 'aplicaciones', 'solicitudes']),
+    );
+    expect(keywords).not.toContain('cancelar');
+  });
+
+  it('keeps every keyword more than 1 Damerau-Levenshtein edit from "cancelar"', () => {
+    const distances = readCommandKeywords().map((kw) => damerauLevenshteinDistance('cancelar', kw));
+    for (const d of distances) {
+      expect(d).toBeGreaterThan(1);
+    }
+    // cerrar/saltar remain the closest pair, unchanged by sprint 23.
+    expect(Math.min(...distances)).toBe(5);
+  });
+
+  it('never fuzzy-matches "cancelar" itself to a command', () => {
+    expect(matchCommandFuzzy('cancelar')).toBeNull();
+    expect(isApplicationsCommand('cancelar')).toBe(false);
   });
 });

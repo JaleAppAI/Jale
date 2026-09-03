@@ -860,13 +860,46 @@ export async function findContinueOtherOffer(
  *      (e.g. a certification this lane cannot collect) -- that is its call,
  *      not this lane's.
  *   2. the `completion` copy (naming the employer), plus the `web_handoff`
- *      note with the worker's own stage-2 URL when an uncollectable doc
- *      (legacy `ssn`) remains.
+ *      note with the worker's own stage-2 URL when anything this lane cannot
+ *      collect remains: an uncollectable doc (legacy `ssn`) OR -- the case
+ *      the engine swap introduced -- an outstanding CERTIFICATION. The
+ *      module header promises the worker finishes a cert through that link,
+ *      and `markDetailsCompleteIfDone` returning false is the authoritative
+ *      "not actually done" signal, so the two are wired together here:
+ *      without this a cert-only gap said "we sent your details" and gave the
+ *      worker no way to finish, while the employer's list still read
+ *      incomplete.
  *   3. the offer/scrub write, then the `continue_other` message.
  *
  * Scrub set: every fill key, the prompt lane's keys, and the one-shot
  * applications menu -- see `FILL_SCRUB` for why each one is in there.
  */
+/**
+ * What the `web_handoff` line names. Uncollectable docs first (the legacy
+ * `ssn` bucket, which is why this lane always had the line at all). If there
+ * are none and the engine still REFUSED to stamp `details_completed_at`, the
+ * gap is something the walk in `fillStepFor` skips -- today only a
+ * certification -- so name the certifications themselves: they are the
+ * employer's own free-text requirement names, which read correctly in both
+ * languages. Returns '' when there is genuinely nothing left, which is the
+ * ordinary completion and gets no link.
+ */
+function webHandoffItems(
+  uncollectable: string[],
+  stamped: boolean,
+  snapshot: RequirementSnapshot | null,
+  lang: Lang,
+): string {
+  if (uncollectable.length > 0) return localizeDocList(uncollectable, lang);
+  if (stamped || !snapshot) return '';
+  const remaining = computeRemaining(snapshot);
+  // Already-stamped rows also return false from markDetailsCompleteIfDone
+  // (the UPDATE matches zero rows), so gate on the real outstanding set
+  // rather than on `stamped` alone.
+  const certs = [...remaining.certifications.unclaimed, ...remaining.certifications.unproven];
+  return certs.join(', ');
+}
+
 async function sendCompletionPrompt(
   client: PoolClient,
   ctx: FillContext,
@@ -878,13 +911,14 @@ async function sendCompletionPrompt(
   snapshot: RequirementSnapshot | null,
   leadIn?: string,
 ): Promise<void> {
-  await markDetailsCompleteIfDone(client, applicationId, snapshot);
+  const stamped = await markDetailsCompleteIfDone(client, applicationId, snapshot);
 
   const company = await loadJobCompanyName(client, snapshot?.jobId ?? ctx.jobId);
   let body = fillMessage('completion', ctx.lang, { company });
-  if (uncollectable.length > 0) {
+  const handoff = webHandoffItems(uncollectable, stamped, snapshot, ctx.lang);
+  if (handoff) {
     body += `\n\n${fillMessage('web_handoff', ctx.lang, {
-      doc: localizeDocList(uncollectable, ctx.lang),
+      doc: handoff,
       url: workerApplicationUrl(ctx.lang, applicationId),
     })}`;
   }
