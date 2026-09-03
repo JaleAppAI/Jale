@@ -100,16 +100,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (applyResult.status === 'forbidden') {
       return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'apply_forbidden' }) };
     }
-    if (applyResult.status === 'guard_blocked') {
-      // UNREACHABLE. 091 drops the 022 trigger that produced this and
-      // applyWorkerToJob no longer maps it; the union member survives only
-      // to keep whatsapp/processor.ts:2202 compiling (see ApplyWorkerResult).
-      // Kept here purely so the exhaustive narrowing below still holds --
-      // delete both together in the WhatsApp lane.
-      console.error('worker-jobs-apply: unexpected guard_blocked (022 guard is dropped)');
-      return { statusCode: 500, headers: CORS_HEADERS, body: JSON.stringify({ error: 'internal_error' }) };
-    }
-
     return { statusCode: 201, headers: CORS_HEADERS, body: JSON.stringify(applyResult.application) };
   } catch (err) {
     if (client) { try { await client.query('ROLLBACK'); } catch {} }

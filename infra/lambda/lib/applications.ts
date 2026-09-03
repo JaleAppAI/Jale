@@ -10,7 +10,7 @@ export type ApplySurface = 'web' | 'whatsapp';
 // lib/application-requirements.ts, after the employer requests details.
 // Every result that belonged to those gates -- missing_documents,
 // missing_answers, invalid_answers, the three certification-claim codes, and
-// guard_blocked -- is gone with them.
+// guard_blocked (the 022 trigger 091 drops) -- is gone with them.
 export type ApplyWorkerResult =
   | { status: 'applied'; application: Record<string, unknown> }
   | { status: 'already_applied'; application: Record<string, unknown> }
@@ -18,17 +18,7 @@ export type ApplyWorkerResult =
   | { status: 'invalid_prompt_answers' }
   | { status: 'certification_document_limit' }
   | { status: 'job_closed' }
-  | { status: 'forbidden' }
-  // DEPRECATED, NEVER PRODUCED. Retained in the union for ONE release only
-  // so the Ivan-owned `else if (applyResult.status === 'guard_blocked')`
-  // branch at whatsapp/processor.ts:2202 keeps typechecking -- removing the
-  // member would make that comparison a TS2367 "no overlap" error in a file
-  // this lane does not own. The 022 trigger that raised it
-  // (`job_applications_required_docs_guard`, 23514
-  // `job_applications_required_docs_check`) is DROPPED by 091, so nothing
-  // can return this any more; the mapping in the catch block below is gone.
-  // DELETE together with that processor branch in the WhatsApp lane.
-  | { status: 'guard_blocked' };
+  | { status: 'forbidden' };
 
 interface ApplyWorkerToJobInput {
   workerId: string;
