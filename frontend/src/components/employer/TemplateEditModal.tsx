@@ -7,6 +7,7 @@ import {
   type JobForm, initialForm, jobFormFromTemplatePayload, jobFormToCreatePayload,
   validateFullJobForm, applyLocationToJobForm,
 } from '@/lib/job-form';
+import { MAX_PROMPT_CHARS } from '@/lib/pre-application-prompts';
 import { planLimitModel, type PlanLimitModel } from '@/lib/plan-limit';
 import { Button } from '@/components/ui/button';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
@@ -92,6 +93,12 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
         return setError(t('modal.validation_pay_range'));
       case 'headcount':
         return setError(t('modal.validation_headcount'));
+      // The prompts editor's two -- see EditJobModal for why these get their
+      // own sentences rather than the generic `validation_required`.
+      case 'prompt_blank':
+        return setError(tReq('prompts.validation_blank'));
+      case 'prompt_too_long':
+        return setError(tReq('prompts.validation_too_long', { max: MAX_PROMPT_CHARS }));
     }
     setLoading(true);
     try {
@@ -114,6 +121,8 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
         setError(tReq('errors.city_required'));
       } else if (err instanceof ApiError && err.code === 'requirements_tier_overlap') {
         setError(tReq('errors.tier_overlap'));
+      } else if (err instanceof ApiError && err.code === 'invalid_pre_application_prompts') {
+        setError(tReq('prompts.invalid_rejected'));
       } else {
         setError(t('templates.save_error'));
       }

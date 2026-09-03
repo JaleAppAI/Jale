@@ -14,6 +14,7 @@ import { Input } from '@/components/ui/input';
 import { LocationPicker } from '@/components/ui/LocationPicker';
 import { PayFields } from '@/components/employer/PayFields';
 import { PayReferenceHint } from '@/components/PayReferenceHint';
+import { PreApplicationPromptsEditor } from '@/components/employer/PreApplicationPromptsEditor';
 import { RequirementsPicker } from '@/components/employer/RequirementsPicker';
 import { ScheduleFields } from '@/components/employer/ScheduleFields';
 import { Select } from '@/components/ui/select';
@@ -223,6 +224,17 @@ export function JobFormFields({
           onUpdate('certification_requirements', next);
           onUpdate('certifications', '');
         }}
+      />
+
+      {/* ABOVE the picker, mirroring PostJobModal's step 3: the prompts are
+          the only thing an applicant meets while applying, and everything the
+          picker configures below waits for "Request details". `locked` is the
+          same post-applicants freeze -- the backend refuses a changed prompt
+          list with 409 `field_locked`, so the control has to refuse first. */}
+      <PreApplicationPromptsEditor
+        prompts={form.pre_application_prompts}
+        onChange={(next) => onUpdate('pre_application_prompts', next)}
+        locked={locked}
       />
 
       {/* Work authorization is no longer a standalone checkbox here -- the
