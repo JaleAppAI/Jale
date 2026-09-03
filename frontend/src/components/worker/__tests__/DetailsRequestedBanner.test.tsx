@@ -14,7 +14,7 @@ vi.mock('@/i18n/navigation', () => ({
   ),
 }));
 
-const { DetailsRequestedBanner, DetailsRequestedMultiBanner } = await import('../DetailsRequestedBanner');
+import { DetailsRequestedBanner, DetailsRequestedMultiBanner } from '../DetailsRequestedBanner';
 
 describe('DetailsRequestedBanner', () => {
   it('links to THIS application, not to the list', () => {

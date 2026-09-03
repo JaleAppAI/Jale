@@ -1055,6 +1055,7 @@
     },
     "review": {
       "summary_title": "What we’ll send",
+      "answered": "Answered",
       "skipped": "Skipped",
       "not_answered": "Not answered",
       "docs": "Documents attached",

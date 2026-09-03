@@ -15,7 +15,7 @@ import { missingRequiredCertClaims, missingRequiredCertProofs } from '@/lib/cert
 import { matchCertProof, type CertRequirement } from '@/lib/certification-match';
 import {
   confirmAuthUpload, getAuthUploadUrl, uploadFileToS3,
-  type JobDocType, type WorkerVaultDoc,
+  type DocType, type JobDocType, type WorkerVaultDoc,
 } from '@/lib/api/worker';
 import { UploadButton, YesNo } from './FieldControls';
 
@@ -132,8 +132,16 @@ export function DocumentsCertificationsStep({
    * three keys.
    */
   requirements: {
-    required_docs: readonly JobDocType[];
-    optional_docs: readonly JobDocType[];
+    /**
+     * `DocType`, not `JobDocType`: the stage-2 state document publishes the
+     * raw column, legacy `ssn` included. `partitionRequiredDocs` below is what
+     * separates the keys this step can actually render an upload for from the
+     * ones it can only NAME -- widening the prop is what lets that split
+     * happen here instead of forcing every caller to pre-filter and lose the
+     * unsupported keys the step is supposed to surface.
+     */
+    required_docs: readonly DocType[];
+    optional_docs: readonly DocType[];
     certification_requirements: readonly CertRequirement[];
   };
   certClaims: CertClaimDraft;

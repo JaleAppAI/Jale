@@ -1055,6 +1055,7 @@
     },
     "review": {
       "summary_title": "Lo que vamos a enviar",
+      "answered": "Contestado",
       "skipped": "Saltado",
       "not_answered": "Sin contestar",
       "docs": "Documentos adjuntos",
