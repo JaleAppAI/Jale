@@ -27,6 +27,7 @@ describe('badge status adapters', () => {
         'pending',
         'contacted',
         'talking',
+        'details_requested',
         'hired',
         'not_interested',
     ];
@@ -45,6 +46,7 @@ describe('badge status adapters', () => {
             'neutral', // pending
             'info', // contacted
             'info', // talking
+            'warning', // details_requested
             'success', // hired
             'danger', // not_interested
         ]);

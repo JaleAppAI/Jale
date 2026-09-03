@@ -17,7 +17,7 @@ import { JobStatusBadge } from '@/components/ui/badge';
 import { getApplications } from '@/lib/api/worker';
 import { formatLongDate } from '@/lib/date';
 import type { Application } from '@/lib/api/worker';
-import { normalizeApplicationStatus } from '@/lib/status';
+import { normalizeApplicationStatus, TERMINAL_APPLICATION_STATUSES } from '@/lib/status';
 import { visibleJobStatusBadge } from '@/lib/jobStatusDisplay';
 
 export const dynamic = 'force-dynamic';
@@ -76,13 +76,14 @@ export default function WorkerApplicationsPage() {
   // so the page owes the reader a skeleton rather than a screen of zeroes.
   const showSkeleton = phase === 'auth' || phase === 'loading';
 
-  // Derived from the already-fetched list: terminal statuses are hired /
-  // not_interested (legacy values normalize onto them); everything else is active.
+  // Derived from the already-fetched list: TERMINAL_APPLICATION_STATUSES is
+  // hired / not_interested (legacy values normalize onto them); everything
+  // else -- including the new `details_requested` -- is active.
   const list = apps ?? [];
   const normalizedStatuses = list.map((a) => normalizeApplicationStatus(a.status));
   const totalCount = list.length;
   const hiredCount = normalizedStatuses.filter((s) => s === 'hired').length;
-  const activeCount = normalizedStatuses.filter((s) => s !== 'hired' && s !== 'not_interested').length;
+  const activeCount = normalizedStatuses.filter((s) => !TERMINAL_APPLICATION_STATUSES.includes(s)).length;
 
   return (
     <AppShell role="worker" title={t('title')}>

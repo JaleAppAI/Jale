@@ -46,6 +46,7 @@ const APPLICATION_STATUSES: ApplicationStatus[] = [
     'pending',
     'contacted',
     'talking',
+    'details_requested',
     'hired',
     'not_interested',
 ];
