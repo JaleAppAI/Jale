@@ -1051,6 +1051,7 @@
     "prompts": {
       "title": "Primero, las preguntas del empleador",
       "intro": "{company} las hizo cuando te postulaste. Termínalas y seguimos con lo demás.",
+      "intro_no_company": "El empleador las hizo cuando te postulaste. Termínalas y seguimos con lo demás.",
       "submit": "Guardar y seguir"
     },
     "review": {
@@ -1062,6 +1063,7 @@
       "certs": "Certificaciones confirmadas",
       "of": "{done} de {total}",
       "will_see": "Esto es lo que verá {company}.",
+      "will_see_no_company": "Esto es lo que verá el empleador.",
       "saved_note": "Guardado en tu perfil para que la próxima vez sea más rápido.",
       "finish": "Terminar",
       "still_missing": "Todavía falta: {items}",
@@ -1071,6 +1073,7 @@
       "chip": "Todo listo",
       "title": "Tus datos ya están con el empleador",
       "body": "{company} tiene todo lo que pidió. Te avisamos cuando cambien tu postulación.",
+      "body_no_company": "El empleador tiene todo lo que pidió. Te avisamos cuando cambien tu postulación.",
       "status_chip": "Datos completos",
       "back_to_applications": "Volver a mis postulaciones",
       "view_job": "Ver el empleo"
@@ -1078,8 +1081,10 @@
     "terminal": {
       "not_requested": "Nada que agregar por ahora — el empleador no ha pedido más datos.",
       "not_requested_body": "Si {company} los pide, te escribimos por WhatsApp y lo verás aquí.",
+      "not_requested_body_no_company": "Si el empleador los pide, te escribimos por WhatsApp y lo verás aquí.",
       "already_complete": "Nada que hacer — ya enviaste todo para esta postulación.",
       "already_complete_body": "{company} lo tiene todo.",
+      "already_complete_body_no_company": "El empleador lo tiene todo.",
       "closed": "Este empleo está cerrado.",
       "closed_body": "El empleador lo quitó, así que no hay nada que enviar. Tu perfil guarda todo lo que ya contestaste.",
       "view_job": "Ver el empleo",

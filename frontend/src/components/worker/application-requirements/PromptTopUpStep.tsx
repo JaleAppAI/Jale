@@ -60,7 +60,9 @@ export function PromptTopUpStep({
           {t('title')}
         </h2>
         <p className="mt-1.5 text-sm text-[var(--jale-ink-2)]">
-          {t('intro', { company: companyName ?? '' }).replace(/\s{2,}/g, ' ').trim()}
+          {companyName
+            ? t('intro', { company: companyName })
+            : t('intro_no_company')}
         </p>
       </div>
 

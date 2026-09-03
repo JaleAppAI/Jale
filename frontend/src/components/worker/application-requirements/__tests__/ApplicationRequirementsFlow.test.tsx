@@ -136,6 +136,19 @@ describe('ApplicationRequirementsFlow — terminal panels', () => {
     expect(screen.queryByRole('navigation')).not.toBeInTheDocument();
   });
 
+  it('names "your employer" instead of a blank when the job has no company', () => {
+    // `company_name` is nullable (an orphaned job). Interpolating '' used to
+    // leave a subject-less sentence -- "has it all." -- so each {company}
+    // string has a `_no_company` twin.
+    renderFlow(serverState({
+      application: { details_completed_at: '2026-09-02T00:00:00Z' },
+      job: { company_name: null },
+    }));
+    expect(
+      screen.getByText(message('worker_application_details.terminal.already_complete_body_no_company')),
+    ).toBeInTheDocument();
+  });
+
   it('every terminal panel keeps a way out', () => {
     renderFlow(serverState({ application: { details_completed_at: '2026-09-02T00:00:00Z' } }));
     expect(screen.getByRole('button', {

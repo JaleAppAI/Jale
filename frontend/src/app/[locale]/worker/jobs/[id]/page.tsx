@@ -784,7 +784,7 @@ export default function WorkerJobDetailPage() {
                           <span className="text-sm font-medium text-[var(--jale-ink-2)]">
                             {t('already_applied')}
                           </span>
-                          <ApplicationStatusChip status={job.application_status ?? 'pending'} />
+                          <ApplicationStatusChip status={job.application_status ?? 'pending'} short />
                         </>
                       ) : (
                         <Button

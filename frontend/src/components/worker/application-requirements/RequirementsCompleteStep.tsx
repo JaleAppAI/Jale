@@ -37,7 +37,7 @@ export function RequirementsCompleteStep({
           {t('title')}
         </h2>
         <p className="mt-1.5 text-sm text-[var(--jale-ink-2)]">
-          {t('body', { company: companyName ?? '' }).replace(/\s{2,}/g, ' ').trim()}
+          {companyName ? t('body', { company: companyName }) : t('body_no_company')}
         </p>
       </div>
 

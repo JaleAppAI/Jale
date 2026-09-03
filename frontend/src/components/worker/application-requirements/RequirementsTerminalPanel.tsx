@@ -31,11 +31,14 @@ export function RequirementsTerminalPanel({
   const t = useTranslations('worker_application_details.terminal');
 
   const tone = screen === 'already_complete' ? 'success' : screen === 'closed' ? 'warning' : 'info';
-  // Only two of the three name the employer, and both have a fallback: an
-  // orphaned job resolves `company_name` to null.
+  // Only two of the three name the employer, and both have a `_no_company`
+  // twin: an orphaned job resolves `company_name` to null, and interpolating
+  // an empty string there leaves a sentence with no subject.
   const body = screen === 'closed'
     ? t('closed_body')
-    : t(`${screen}_body`, { company: companyName ?? '' }).replace(/\s{2,}/g, ' ').trim();
+    : companyName
+      ? t(`${screen}_body`, { company: companyName })
+      : t(`${screen}_body_no_company`);
 
   return (
     <div className="anim-fade-in grid gap-4">

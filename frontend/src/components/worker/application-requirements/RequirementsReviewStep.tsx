@@ -98,9 +98,9 @@ export function RequirementsReviewStep({
         </>
       ) : (
         <InlineFeedback tone="info">
-          {t('will_see', { company: state.server.job.company_name ?? '' })
-            .replace(/\s{2,}/g, ' ')
-            .trim()}
+          {state.server.job.company_name
+            ? t('will_see', { company: state.server.job.company_name })
+            : t('will_see_no_company')}
         </InlineFeedback>
       )}
 
