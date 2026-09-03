@@ -26,7 +26,20 @@ describe('WhatsAppStack', () => {
   // for every test in this file.
   let processorAssetDir: string;
 
+  // Sprint 23: PUBLIC_SITE_BASE_URL resolves context -> JALE_PUBLIC_SITE_BASE_URL
+  // -> a literal fallback. The shared app below passes NO `publicSiteBaseUrl`
+  // context, which makes it the fallback fixture -- but only with the CI
+  // synth's env var out of the way. Same save/delete/restore shape
+  // notifications-stack.test.ts:72-89 uses for the identical variable.
+  const savedPublicSiteBaseUrl = process.env.JALE_PUBLIC_SITE_BASE_URL;
+
+  afterAll(() => {
+    if (savedPublicSiteBaseUrl === undefined) delete process.env.JALE_PUBLIC_SITE_BASE_URL;
+    else process.env.JALE_PUBLIC_SITE_BASE_URL = savedPublicSiteBaseUrl;
+  });
+
   beforeAll(() => {
+    delete process.env.JALE_PUBLIC_SITE_BASE_URL;
     const app = new cdk.App({
       context: {
         otpSmsFromNumber: '+13252210992',
@@ -145,6 +158,29 @@ describe('event-driven outbox wake queues', () => {
         /SQS processor/.test(resource.Properties?.Description ?? '')) as any;
       expect(processor.Properties.Environment.Variables.WORKER_INTENT_WAKE_QUEUE_URL).toBeDefined();
       expect(processor.Properties.Environment.Variables.DOMAIN_OUTBOX_WAKE_QUEUE_URL).toBeDefined();
+    });
+
+    // Sprint 23: the processor mints the worker's own application page link
+    // (application-fill.ts's `workerApplicationUrl`, and the stage-2
+    // `web_handoff` note) against this origin. Unlike NotificationsStack and
+    // ReferralsStack this stack does NOT fail closed at synth -- the copy
+    // degrades to a still-correct jaleapp.ai link rather than a dead one --
+    // so the fallback is the behavior worth pinning.
+    test('processor receives PUBLIC_SITE_BASE_URL', () => {
+      const functions = template.findResources('AWS::Lambda::Function');
+      const processor = Object.values(functions).find((resource: any) =>
+        /SQS processor/.test(resource.Properties?.Description ?? '')) as any;
+      expect(processor.Properties.Environment.Variables.PUBLIC_SITE_BASE_URL).toBeDefined();
+    });
+
+    test('PUBLIC_SITE_BASE_URL falls back to https://jaleapp.ai with no context and no env var', () => {
+      // The shared app passes no publicSiteBaseUrl context and the beforeAll
+      // above cleared JALE_PUBLIC_SITE_BASE_URL, so this IS the fallback path.
+      const functions = template.findResources('AWS::Lambda::Function');
+      const processor = Object.values(functions).find((resource: any) =>
+        /SQS processor/.test(resource.Properties?.Description ?? '')) as any;
+      expect(processor.Properties.Environment.Variables.PUBLIC_SITE_BASE_URL)
+        .toBe('https://jaleapp.ai');
     });
 
     test('both drains have SQS event-source mappings in addition to recovery schedules', () => {
@@ -1571,5 +1607,103 @@ describe('WhatsAppStack — v2 inbound transport enabled', () => {
     const serialized = JSON.stringify(policies);
     expect(serialized).toContain(v2QueueId);
     expect(serialized).toContain('sqs:SendMessage');
+  });
+});
+
+// ── Sprint 23: PUBLIC_SITE_BASE_URL from -c publicSiteBaseUrl ───────────
+//
+// Self-contained (own app/stacks/template), same pattern the v2-transport
+// describe above uses: this scenario needs a DIFFERENT context value than the
+// rest of the file's shared `template`, so it stands up its own stack rather
+// than mutating the shared one. The context value carries a TRAILING SLASH on
+// purpose -- the stack strips it so every consumer can join with a single '/'
+// and never mint a `https://host//en/worker/...` link.
+describe('WhatsAppStack — publicSiteBaseUrl context override', () => {
+  let template: Template;
+  const savedPublicSiteBaseUrl = process.env.JALE_PUBLIC_SITE_BASE_URL;
+
+  afterAll(() => {
+    if (savedPublicSiteBaseUrl === undefined) delete process.env.JALE_PUBLIC_SITE_BASE_URL;
+    else process.env.JALE_PUBLIC_SITE_BASE_URL = savedPublicSiteBaseUrl;
+  });
+
+  beforeAll(() => {
+    // Set to a DIFFERENT origin than the context, so the assertion below also
+    // proves context wins over the env var rather than merely agreeing with it.
+    process.env.JALE_PUBLIC_SITE_BASE_URL = 'https://env-should-lose.example.invalid';
+    const app = new cdk.App({
+      context: {
+        otpSmsFromNumber: '+13252210992',
+        whatsappStatusCallbackUrl:
+          'https://callbacks.example.test/prod/whatsapp/status-callback',
+        publicSiteBaseUrl: 'https://staging.jaleapp.ai/',
+      },
+    });
+    const network = new NetworkStack(app, 'TestNetworkStackPublicSite');
+    const database = new DatabaseStack(app, 'TestDatabaseStackPublicSite', { network });
+    const auth = new AuthStack(app, 'TestAuthStackPublicSite', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
+    });
+    const ai = new AiStack(app, 'TestAiStackPublicSite', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      aiDbSecret: database.aiDbSecret,
+      alarmTopicArn: 'arn:aws:sns:us-east-2:123456789012:jale-ai-alarms-test',
+    });
+    const api = new ApiStack(app, 'TestApiStackPublicSite', {
+      workerPool: auth.workerPool,
+      employerPool: auth.employerPool,
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
+      aliasGeneratorFn: ai.aliasGeneratorFn.function,
+      whatsappStatusCallbackUrl: 'https://callbacks.example.test/prod/whatsapp/status-callback',
+    });
+    new LegalStack(app, 'TestLegalStackPublicSite', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
+      api: api.api,
+      dualAuthorizer: api.dualAuthorizer,
+    });
+    const docsBucketStack = new cdk.Stack(app, 'TestDocsBucketStackPublicSite');
+    const docsKey = new kms.Key(docsBucketStack, 'TestDocsKey');
+    const docsBucket = new s3.Bucket(docsBucketStack, 'TestDocsBucket', {
+      encryptionKey: docsKey,
+      encryption: s3.BucketEncryption.KMS,
+    });
+    const whatsapp = new WhatsAppStack(app, 'TestWhatsAppStackPublicSite', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
+      workerPool: auth.workerPool,
+      api: api.api,
+      workerResource: api.workerResource,
+      workerApplicationsResource: api.workerApplicationsResource,
+      workerAuthorizer: api.workerAuthorizer,
+      questionGeneratorFn: ai.questionGeneratorFn.function,
+      aliasGeneratorFn: ai.aliasGeneratorFn.function,
+      trustAssessmentQueue: ai.trustAssessmentQueue,
+      trustExtractionQueue: ai.trustExtractionQueue,
+      statusCallbackUrl: 'https://callbacks.example.test/prod/whatsapp/status-callback',
+      alarmTopicArn: 'arn:aws:sns:us-east-2:123456789012:jale-whatsapp-alarms-test',
+      documentsBucket: docsBucket,
+    });
+    template = Template.fromStack(whatsapp);
+  });
+
+  test('the processor honors -c publicSiteBaseUrl and strips its trailing slash', () => {
+    const functions = template.findResources('AWS::Lambda::Function');
+    const processor = Object.values(functions).find((resource: any) =>
+      /SQS processor/.test(resource.Properties?.Description ?? '')) as any;
+    expect(processor.Properties.Environment.Variables.PUBLIC_SITE_BASE_URL)
+      .toBe('https://staging.jaleapp.ai');
   });
 });

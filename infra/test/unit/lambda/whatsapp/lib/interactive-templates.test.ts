@@ -103,6 +103,27 @@ describe('interactive onboarding templates', () => {
       fallbackBody: t('help_menu', 'es'),
     });
   });
+
+  // Sprint 23: the seeded list picker gained an Aplicaciones/Applications row
+  // (command:applications). The Content resource is immutable, so the seed
+  // script force-recreates help_menu_list_* -- but a worker whose send falls
+  // back to plain text (no ContentSid yet, or outside the list-picker path)
+  // only ever sees this fallbackBody, so the row has to be in both.
+  it('keeps the aplicaciones row in the help menu fallback body', () => {
+    expect(buildHelpMenuInteractivePrompt('es').fallbackBody).toContain(
+      'Aplicaciones - Ver tus solicitudes',
+    );
+    expect(buildHelpMenuInteractivePrompt('en').fallbackBody).toContain(
+      'Applications - See your applications',
+    );
+  });
+
+  it('still names the two registered help-menu Content templates', () => {
+    // The seed script's FORCE_RECREATE set is keyed on these exact names; a
+    // rename here would leave the old menu live forever.
+    expect(buildHelpMenuInteractivePrompt('es').templateName).toBe('help_menu_list_es');
+    expect(buildHelpMenuInteractivePrompt('en').templateName).toBe('help_menu_list_en');
+  });
 });
 
 const LANGS: Lang[] = ['en', 'es'];

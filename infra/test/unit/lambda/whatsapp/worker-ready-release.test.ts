@@ -519,6 +519,64 @@ describe('releaseWorkerReady', () => {
     ]);
   });
 
+  // Sprint 23: an application stage change that lands while the worker is
+  // still onboarding is DEFERRED, and the release renderer is the ONLY path
+  // that ever renders it. Without the payload on the request it could only
+  // produce the generic "Account update (application_stage)" line -- no job,
+  // no employer, no link, no Start/Later buttons. Assert on the render
+  // request rather than the rendered body: releaseWorkerReady is handed a
+  // renderer, so the request is the whole of its contract here.
+  it('carries an account intent payload through to the release renderer', async () => {
+    const stagePayload = {
+      kind: 'application_stage',
+      status: 'details_requested',
+      applicationId: '11111111-2222-4333-8444-555555555555',
+      jobId: 'job-1',
+      jobTitle: 'Electricista',
+      companyName: 'ACME',
+      frontendBaseUrl: 'https://jaleapp.ai',
+    };
+    const intents = [
+      intentRow({
+        id: 'acct-stage-1', category: 'account', owner_service: 'account',
+        source_type: 'application_stage', source_id: '11111111-2222-4333-8444-555555555555',
+        priority: 30, payload: stagePayload,
+      }),
+    ];
+    const { client } = scriptedClient({ eventStatus: 'processing', intents });
+    const { render, requests } = recordingRenderer();
+
+    await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+
+    const notice = requests.find((r) => r.kind === 'account_notice') as Extract<
+      ReleaseRenderRequest, { kind: 'account_notice' }
+    >;
+    expect(notice).toBeDefined();
+    expect(notice.sourceType).toBe('application_stage');
+    expect(notice.payload).toEqual(stagePayload);
+  });
+
+  // Intents queued before the field existed carry no payload; the request must
+  // still be well-formed so the renderer falls back to the generic notice.
+  it('passes an empty payload straight through for an intent that carries no stage data', async () => {
+    const intents = [
+      intentRow({
+        id: 'acct-legacy-1', category: 'account', owner_service: 'account',
+        source_type: 'trust_result', source_id: 'trust-1', priority: 20, payload: {},
+      }),
+    ];
+    const { client } = scriptedClient({ eventStatus: 'processing', intents });
+    const { render, requests } = recordingRenderer();
+
+    await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+
+    const notice = requests.find((r) => r.kind === 'account_notice') as Extract<
+      ReleaseRenderRequest, { kind: 'account_notice' }
+    >;
+    expect(notice).toBeDefined();
+    expect(notice.payload).toEqual({});
+  });
+
   it('allocates contiguous, strictly increasing release_sequence values across the whole release', async () => {
     const intents = [
       intentRow({ id: 'ja-1', category: 'job_alert', source_id: 'job-1', priority: 30, payload: { score: 5 } }),
