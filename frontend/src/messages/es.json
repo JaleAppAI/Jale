@@ -1760,7 +1760,23 @@
     },
     "trust": {
       "complete_cta": "Completa tus preguntas",
-      "complete_note": "Después de esto no podrás cambiar tus respuestas."
+      "complete_note": "Después de esto no podrás cambiar tus respuestas.",
+      "voice": {
+        "cancel": "Cancelar",
+        "conflict": "Tus respuestas cambiaron en otro lugar. Recarga la página e inténtalo de nuevo.",
+        "denied": "No pudimos usar tu micrófono. Revisa los permisos del navegador o escribe tu respuesta.",
+        "failed": "No pudimos convertir eso en texto. Inténtalo de nuevo o escribe tu respuesta.",
+        "no_speech": "No entendimos ninguna palabra. Inténtalo en un lugar más silencioso o escribe tu respuesta.",
+        "ready": "Aquí está — léelo y corrige lo que esté mal.",
+        "recording": "Grabando… toca para detener.",
+        "start": "Graba tu respuesta",
+        "stop": "Detener la grabación",
+        "timeout": "Está tardando demasiado. Inténtalo de nuevo o escribe tu respuesta.",
+        "too_long": "Esa grabación es muy larga. Que no pase de 5 MB, o escribe tu respuesta.",
+        "transcribing": "Escribiendo lo que dijiste…",
+        "unsupported": "Este navegador no puede grabar. Escribe tu respuesta.",
+        "uploading": "Enviando tu grabación…"
+      }
     },
     "photo": {
       "title": "¿Agregar una foto?",

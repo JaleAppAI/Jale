@@ -1760,7 +1760,23 @@
     },
     "trust": {
       "complete_cta": "Complete your questions",
-      "complete_note": "You won't be able to change your answers after this."
+      "complete_note": "You won't be able to change your answers after this.",
+      "voice": {
+        "cancel": "Cancel",
+        "conflict": "Your answers moved on somewhere else. Reload the page and try again.",
+        "denied": "We could not use your microphone. Check your browser permissions, or type your answer.",
+        "failed": "We could not turn that into text. Try again, or type your answer.",
+        "no_speech": "We could not make out any words. Try again somewhere quieter, or type your answer.",
+        "ready": "Here it is — read it over and fix anything we got wrong.",
+        "recording": "Recording… tap to stop.",
+        "start": "Record your answer",
+        "stop": "Stop recording",
+        "timeout": "This is taking too long. Try again, or type your answer.",
+        "too_long": "That recording is too long. Keep it under 5 MB, or type your answer.",
+        "transcribing": "Writing down what you said…",
+        "unsupported": "This browser cannot record. Type your answer instead.",
+        "uploading": "Sending your recording…"
+      }
     },
     "photo": {
       "title": "Add a photo?",

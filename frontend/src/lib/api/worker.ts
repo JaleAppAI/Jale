@@ -723,3 +723,171 @@ export async function patchOnboardingLanguage(
   if (!res.ok) throw await parseApiError(res, 'save_failed');
   return res.json();
 }
+
+// ---------------------------------------------------------------------------
+// Voice answers on the web onboarding (S23 L6)
+//
+// Three more actions on the SAME `/worker/onboarding/{action}` resource — the
+// API has no room for a `voice/*` subtree, and did not need one. The shape is:
+//
+//   presign -> PUT the recording straight to S3 -> start the transcription
+//   -> poll -> put the text in the worker's textarea for them to fix
+//
+// The transcript is never submitted on the worker's behalf. Dictation in a
+// noisy yard is not accurate enough to commit unseen; they read it, edit it,
+// and press the same button a typed answer presses (`postOnboardingAnswers`,
+// with `source: 'voice'` on the value).
+//
+// Every helper below returns a DISCRIMINATED RESULT rather than throwing, for
+// the same reason `postOnboardingAnswers` does: none of these failures is
+// exceptional. A denied microphone, a transcription that heard only wind, an
+// expired upload URL — each is an ordinary thing that happens to a worker
+// standing on a job site, and each has its own sentence to show them. Only a
+// genuinely unexpected transport failure becomes the generic `failed`.
+// ---------------------------------------------------------------------------
+
+/** Exactly the MIME types the door's allowlist accepts. */
+export const VOICE_CONTENT_TYPES = [
+  'audio/webm',
+  'audio/ogg',
+  'audio/mp4',
+  'audio/mpeg',
+  'audio/wav',
+] as const;
+
+/** The door's own cap (`MAX_WEB_VOICE_BYTES`), mirrored so a too-long recording
+ * is stopped here rather than by a 400 after the upload. */
+export const MAX_VOICE_BYTES = 5 * 1024 * 1024;
+
+export type VoiceUploadTarget = { key: string; url: string; expiresAt: string };
+
+export type VoiceUploadUrlResult =
+  | { kind: 'ready'; target: VoiceUploadTarget }
+  /** The recording is unusable as it stands: wrong container, or too big. */
+  | { kind: 'rejected'; reason: 'invalid_content_type' | 'file_too_large' }
+  | { kind: 'failed' };
+
+export async function postOnboardingVoiceUploadUrl(
+  token: string,
+  body: { stepKey: string; questionIndex: number; contentType: string; sizeBytes: number },
+  signal?: AbortSignal,
+): Promise<VoiceUploadUrlResult> {
+  let res: Response;
+  try {
+    res = await apiFetch(
+      '/worker/onboarding/voice-upload-url',
+      { method: 'POST', body: JSON.stringify(body), signal },
+      token,
+    );
+  } catch {
+    return { kind: 'failed' };
+  }
+  if (res.ok) return { kind: 'ready', target: await res.json() };
+
+  const parsed = await res.clone().json().catch(() => null) as { error?: unknown } | null;
+  if (parsed?.error === 'invalid_content_type' || parsed?.error === 'file_too_large') {
+    return { kind: 'rejected', reason: parsed.error };
+  }
+  return { kind: 'failed' };
+}
+
+/**
+ * Raw `fetch`, deliberately: a presigned S3 PUT carries its signature in the
+ * URL and MUST NOT be sent an `Authorization` header — S3 would treat it as a
+ * competing SigV4 credential and refuse the request.
+ */
+export async function putVoiceRecording(
+  url: string,
+  blob: Blob,
+  contentType: string,
+  signal?: AbortSignal,
+): Promise<{ kind: 'uploaded' } | { kind: 'failed' }> {
+  try {
+    const res = await fetch(url, {
+      method: 'PUT',
+      body: blob,
+      // Must match the type that was SIGNED, not `blob.type` (which carries
+      // codec parameters MediaRecorder added).
+      headers: { 'Content-Type': contentType },
+      signal,
+    });
+    return res.ok ? { kind: 'uploaded' } : { kind: 'failed' };
+  } catch {
+    return { kind: 'failed' };
+  }
+}
+
+export type VoiceTranscribeStartResult =
+  | { kind: 'started'; transcriptOutputKey: string }
+  /** The other door moved the run; the caller should re-read and not retry. */
+  | { kind: 'lock_conflict' }
+  | { kind: 'step_mismatch' }
+  | { kind: 'failed' };
+
+export async function postOnboardingVoiceTranscribe(
+  token: string,
+  body: { key: string; stepKey: string; questionIndex: number; lockVersion: number },
+  signal?: AbortSignal,
+): Promise<VoiceTranscribeStartResult> {
+  let res: Response;
+  try {
+    res = await apiFetch(
+      '/worker/onboarding/voice-transcribe',
+      { method: 'POST', body: JSON.stringify(body), signal },
+      token,
+    );
+  } catch {
+    return { kind: 'failed' };
+  }
+  if (res.status === 202) {
+    const parsed = await res.json().catch(() => null) as { transcriptOutputKey?: unknown } | null;
+    return typeof parsed?.transcriptOutputKey === 'string'
+      ? { kind: 'started', transcriptOutputKey: parsed.transcriptOutputKey }
+      : { kind: 'failed' };
+  }
+  const parsed = await res.clone().json().catch(() => null) as { error?: unknown } | null;
+  if (res.status === 409 && parsed?.error === 'lock_conflict') return { kind: 'lock_conflict' };
+  if (res.status === 422 && parsed?.error === 'step_mismatch') return { kind: 'step_mismatch' };
+  return { kind: 'failed' };
+}
+
+export type VoiceResultOutcome =
+  /** 202 — Transcribe writes its output once, at the end, so this is
+   * "still working", not "nothing there". */
+  | { kind: 'pending' }
+  | { kind: 'transcribed'; transcript: string; confidence?: number }
+  /** 410 — the attempt is over and produced nothing usable. Not retryable. */
+  | { kind: 'unusable' }
+  | { kind: 'failed' };
+
+export async function postOnboardingVoiceResult(
+  token: string,
+  body: { transcriptOutputKey: string },
+  signal?: AbortSignal,
+): Promise<VoiceResultOutcome> {
+  let res: Response;
+  try {
+    res = await apiFetch(
+      '/worker/onboarding/voice-result',
+      { method: 'POST', body: JSON.stringify(body), signal },
+      token,
+    );
+  } catch {
+    return { kind: 'failed' };
+  }
+  if (res.status === 202) return { kind: 'pending' };
+  if (res.status === 410) return { kind: 'unusable' };
+  if (res.ok) {
+    const parsed = await res.json().catch(() => null) as
+      { transcript?: unknown; confidence?: unknown } | null;
+    if (typeof parsed?.transcript !== 'string' || parsed.transcript.trim().length === 0) {
+      return { kind: 'unusable' };
+    }
+    return {
+      kind: 'transcribed',
+      transcript: parsed.transcript,
+      ...(typeof parsed.confidence === 'number' ? { confidence: parsed.confidence } : {}),
+    };
+  }
+  return { kind: 'failed' };
+}

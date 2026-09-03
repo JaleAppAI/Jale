@@ -32,6 +32,7 @@ import { TermsStep } from './TermsStep';
 import { AboutYouStep } from './AboutYouStep';
 import { TradeStep } from './TradeStep';
 import { WorkStep } from './WorkStep';
+import { transcribeVoiceAnswer } from '@/lib/onboarding-voice';
 import { TrustQuestionStep } from './TrustQuestionStep';
 import { PhotoStep } from './PhotoStep';
 import { DoneStep } from './DoneStep';
@@ -403,6 +404,19 @@ export function OnboardingFlow({
                         // matches what is in the box.
                         source={saved && saved.text === draftAnswer ? saved.source : 'text'}
                         onAnswerChange={(text) => dispatch({ type: 'set_answer', index, text })}
+                        // S23 L6. The lockVersion is read at CALL time, not
+                        // captured at render: presign -> upload -> transcribe
+                        // -> poll can run for a minute, and the run may have
+                        // been re-hydrated (a language change, a 409 refetch)
+                        // while the worker was talking.
+                        onRecord={(blob, contentType) => transcribeVoiceAnswer({
+                            token,
+                            blob,
+                            contentType,
+                            stepKey: `trust.question.${index}`,
+                            questionIndex: index - 1,
+                            lockVersion: flow.server.run.lockVersion,
+                        })}
                         rejection={flow.rejection}
                         saving={flow.saving}
                         error={errorText}
