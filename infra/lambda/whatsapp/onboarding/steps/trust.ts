@@ -271,5 +271,11 @@ export async function handleTrustQuestion(
     return { handled: true, workerId: gate.userId, stepKey };
   }
 
-  return recordTrustAnswer(client, session, msg, deps, gate, lang, now, stepKey, answerText, 'text');
+  // `answerSource` is the WEB door's way of saying "this text was dictated"
+  // (Sprint 23 L6). Absent — every WhatsApp message — it is plain text, which
+  // is exactly what this path always assumed.
+  return recordTrustAnswer(
+    client, session, msg, deps, gate, lang, now, stepKey, answerText,
+    msg.answerSource === 'voice' ? 'voice' : 'text',
+  );
 }

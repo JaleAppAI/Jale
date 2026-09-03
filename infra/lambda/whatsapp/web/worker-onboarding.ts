@@ -1,14 +1,20 @@
 /**
  * `/worker/onboarding*` — the web door's HTTP surface (Sprint 22 R2-C23).
  *
- *   GET    /worker/onboarding            -> the whole OnboardingState
- *   POST   /worker/onboarding/answers    -> apply a batch of step answers
- *   POST   /worker/onboarding/back       -> step the run back one
- *   PATCH  /worker/onboarding/language   -> persist en/es
+ *   GET    /worker/onboarding                 -> the whole OnboardingState
+ *   POST   /worker/onboarding/answers         -> apply a batch of step answers
+ *   POST   /worker/onboarding/back            -> step the run back one
+ *   PATCH  /worker/onboarding/language        -> persist en/es
+ *   POST   /worker/onboarding/voice-upload-url -> presigned PUT for a voice answer
+ *   POST   /worker/onboarding/voice-transcribe -> start the trust transcription
+ *   POST   /worker/onboarding/voice-result     -> poll the transcript
  *
- * ONE Lambda, four routes. They share a connection, a transaction shape, a
- * deps graph and an error vocabulary; four functions would have been four
- * copies of the same forty lines.
+ * ONE Lambda, seven actions on ONE `{action}` resource. They share a
+ * connection, a transaction shape, a deps graph and an error vocabulary; seven
+ * functions would have been seven copies of the same forty lines — and seven
+ * API Gateway resources this account does not have (see `whatsapp-stack.ts`
+ * on the ceiling). The three voice actions live in `./onboarding-voice.ts`;
+ * everything they need from this file is the entry sequence above them.
  *
  * WHY THIS LIVES UNDER `lambda/whatsapp/` AND CONNECTS AS `jale_whatsapp`.
  * The engine's every write — `worker_workflow_runs`, `worker_workflow_
@@ -51,6 +57,11 @@ import {
   type WebAnswerItem,
 } from './onboarding-driver';
 import { buildOnboardingState, type OnboardingStateDto } from './onboarding-state';
+import {
+  createVoiceUploadUrl,
+  readVoiceResult,
+  startVoiceTranscription,
+} from './onboarding-voice';
 
 const CORS_HEADERS = corsHeaders();
 
@@ -395,6 +406,53 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           }));
         }
       }
+    } else if (method === 'POST' && suffix === 'voice-upload-url') {
+      // No lockVersion: minting a presigned URL changes nothing about the run,
+      // and demanding one would 409 a worker for pressing the mic on a tab
+      // whose language toggle had just bumped the version.
+      const outcome = await createVoiceUploadUrl({
+        workerId,
+        stepKey: body.stepKey,
+        questionIndex: body.questionIndex,
+        contentType: body.contentType,
+        sizeBytes: body.sizeBytes,
+        now,
+      });
+      result = json(outcome.statusCode, outcome.body);
+    } else if (method === 'POST' && suffix === 'voice-transcribe') {
+      // lockVersion IS required here: the pipeline is started against a
+      // specific step, and a run the other door has moved on from must not
+      // silently transcribe into a question the worker is no longer being
+      // asked.
+      const lockVersion = parseLockVersion(body);
+      if (lockVersion === null) {
+        await client.query('ROLLBACK');
+        committed = true;
+        return fail(400, 'invalid_request');
+      }
+      if (lockVersion !== gate.lockVersion) {
+        result = await conflict(client, workerId, gate);
+      } else {
+        const outcome = await startVoiceTranscription(client, {
+          workerId,
+          phone,
+          runId: gate.runId as string,
+          language: gate.preferredLanguage,
+          currentStepKey: gate.currentStepKey,
+          key: body.key,
+          stepKey: body.stepKey,
+          questionIndex: body.questionIndex,
+        });
+        result = json(outcome.statusCode, outcome.body);
+      }
+    } else if (method === 'POST' && suffix === 'voice-result') {
+      // A pure read of an object under this worker's own prefix; no lock, no
+      // run state, nothing to conflict with.
+      const outcome = await readVoiceResult({
+        workerId,
+        transcriptOutputKey: body.transcriptOutputKey,
+      });
+      result = json(outcome.statusCode, outcome.body);
     } else if (method === 'PATCH' && suffix === 'language') {
       const preferredLanguage = requestedLanguage(body);
       const lockVersion = parseLockVersion(body);

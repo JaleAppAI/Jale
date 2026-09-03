@@ -297,10 +297,11 @@ export function createWebSession(input: {
   };
 }
 
-function webMessage(phone: string, fields: { body?: string; interactivePayload?: string }): OnboardingV2InboundMessage {
+export function webMessage(phone: string, fields: WebEngineFields): OnboardingV2InboundMessage {
   return {
     from: phone,
     body: fields.body ?? '',
+    ...(fields.answerSource ? { answerSource: fields.answerSource } : {}),
     // `worker_workflow_transitions.inbound_message_sid` is plain TEXT. The
     // `web:` prefix is what makes a run's history legible: which steps were
     // answered in a browser and which over WhatsApp.
@@ -311,8 +312,16 @@ function webMessage(phone: string, fields: { body?: string; interactivePayload?:
 
 // ── Value -> engine message ──────────────────────────────────────────────
 
+/** The engine-message fields a web value can translate into. */
+export interface WebEngineFields {
+  body?: string;
+  interactivePayload?: string;
+  /** Only ever set by the trust steps, only ever `'voice'`. */
+  answerSource?: 'text' | 'voice';
+}
+
 type Mapped =
-  | { ok: true; fields: { body?: string; interactivePayload?: string } }
+  | { ok: true; fields: WebEngineFields }
   | { ok: false; reason: string };
 
 function asString(value: unknown): string | null {
@@ -451,9 +460,18 @@ export function mapAnswerToEngineMessage(
       const trimmed = text.trim();
       if (trimmed.length < TRUST_ANSWER_MIN_CHARS) return { ok: false, reason: 'too_short' };
       if (trimmed.length > TRUST_ANSWER_MAX_CHARS) return { ok: false, reason: 'too_long' };
+      // Sprint 23 L6: a dictated answer reaches this door as ORDINARY TEXT —
+      // the worker read the transcript, fixed it, and pressed the same button
+      // a typed answer presses. Only the browser knows it began as speech, so
+      // `source` is taken at its word and recorded on the assessment row.
+      // Anything other than the exact string `voice` is text; a client cannot
+      // invent a third provenance. The field is OMITTED for text rather than
+      // set to `'text'` — absence is what every other step and every WhatsApp
+      // message already means by it.
+      const voiceSource = wrapper?.source === 'voice' ? { answerSource: 'voice' as const } : {};
       // Sent as a plain body, and NOT through the command gate: an answer
       // that happens to read "back" or "hola" is an answer.
-      return { ok: true, fields: { body: trimmed } };
+      return { ok: true, fields: { body: trimmed, ...voiceSource } };
     }
 
     default:
