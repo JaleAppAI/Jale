@@ -86,7 +86,10 @@ describe('application-fill-prompts.ts', () => {
 
     const canceled = prompts.fillMessage('canceled', 'es');
     expect(canceled).not.toMatch(/sitio web/);
-    expect(canceled.toLowerCase()).toContain('aceptar');
+    // Sprint 23 re-aimed this line: the fill is armed from the employer's
+    // stage-2 request now, not from "N aceptar", so a canceled form is
+    // resumed through the aplicaciones menu.
+    expect(canceled.toLowerCase()).toContain('aplicaciones');
     // tu-preterite ("cancelaste"), not the usted-imperative ("cancele") --
     // matches completaste/cambiaste elsewhere in this file.
     expect(canceled).toContain('cancelaste');
