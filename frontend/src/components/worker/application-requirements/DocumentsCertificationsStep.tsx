@@ -9,13 +9,13 @@ import { Spinner } from '@/components/ui/spinner';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { docTypeLabel } from '@/lib/doc-types';
 import { REQUIREMENT_DOC_KEYS, partitionRequiredDocs, whatYouNeedHintKey, workerCertNoteKey } from '@/lib/job-requirements';
-import type { ApplyFlowAction, ApplyFlowState } from '@/lib/apply-flow-view';
-import type { CertClaim } from '@/lib/certification-claims';
+import type { FieldEditAction } from '@/lib/application-requirements-flow';
+import type { CertClaim, CertClaimDraft } from '@/lib/certification-claims';
 import { missingRequiredCertClaims, missingRequiredCertProofs } from '@/lib/certification-claims';
 import { matchCertProof, type CertRequirement } from '@/lib/certification-match';
 import {
   confirmAuthUpload, getAuthUploadUrl, uploadFileToS3,
-  type JobDetail, type JobDocType, type WorkerVaultDoc,
+  type JobDocType, type WorkerVaultDoc,
 } from '@/lib/api/worker';
 import { UploadButton, YesNo } from './FieldControls';
 
@@ -123,21 +123,32 @@ export function proofFilesFromVault(
  * state without leaving the flow.
  */
 export function DocumentsCertificationsStep({
-  job, state, dispatch, token, vaultDocs, onVaultChanged,
+  requirements, certClaims, dispatch, token, vaultDocs, onVaultChanged, onContinue,
 }: {
-  job: JobDetail;
-  state: ApplyFlowState;
-  dispatch: Dispatch<ApplyFlowAction>;
+  /**
+   * The job's three requirement arrays, straight off the stage-2 state
+   * document. A narrow object rather than the whole `JobDetail` this used to
+   * take: the stage-2 door never loads one, and the step only ever read these
+   * three keys.
+   */
+  requirements: {
+    required_docs: readonly JobDocType[];
+    optional_docs: readonly JobDocType[];
+    certification_requirements: readonly CertRequirement[];
+  };
+  certClaims: CertClaimDraft;
+  dispatch: Dispatch<FieldEditAction>;
   token: string;
   vaultDocs: readonly WorkerVaultDoc[] | null;
   onVaultChanged: () => void | Promise<void>;
+  onContinue: () => void;
 }) {
   const t = useTranslations('job_requirements');
   // The shared doc catalogue names the legacy/unsupported requirements the
   // notices below report -- it replaced a `worker_job_detail.doc_labels.ssn`
   // lookup that could only ever name that one key.
   const tDocTypes = useTranslations('doc_types');
-  const tFlow = useTranslations('worker_job_detail.apply_flow');
+  const tFlow = useTranslations('worker_application_details');
   const tWhatYouNeed = useTranslations('worker_job_detail.what_you_need');
   const tCommon = useTranslations('common');
   const errorMessage = useErrorMessage();
@@ -151,9 +162,9 @@ export function DocumentsCertificationsStep({
   // successful upload, so this retry affordance is the only path back.
   const [retryingVault, setRetryingVault] = useState(false);
 
-  const requiredDocs = job.required_docs ?? [];
-  const optionalDocs = job.optional_docs ?? [];
-  const certs = job.certification_requirements ?? [];
+  const requiredDocs = requirements.required_docs ?? [];
+  const optionalDocs = requirements.optional_docs ?? [];
+  const certs = requirements.certification_requirements ?? [];
   const hasCerts = certs.length > 0;
 
   // certification_doc is excluded UNCONDITIONALLY, not just when hasCerts:
@@ -213,8 +224,8 @@ export function DocumentsCertificationsStep({
     .map((entry) => entry.doc);
 
   const proofFiles = proofFilesFromVault(certs, vaultDocs);
-  const missingClaims = missingRequiredCertClaims(certs, state.certClaims);
-  const missingProofs = missingRequiredCertProofs(certs, state.certClaims, proofFiles);
+  const missingClaims = missingRequiredCertClaims(certs, certClaims);
+  const missingProofs = missingRequiredCertProofs(certs, certClaims, proofFiles);
 
   const canContinue = missingLegacyDocs.length === 0 && missingClaims.length === 0 && missingProofs.length === 0;
 
@@ -243,7 +254,7 @@ export function DocumentsCertificationsStep({
       setAttempted(true);
       return;
     }
-    dispatch({ type: 'next' });
+    onContinue();
   }
 
   async function handleRetryVault() {
@@ -335,7 +346,7 @@ export function DocumentsCertificationsStep({
             <CertClaimRow
               key={cert.name}
               cert={cert}
-              claim={state.certClaims[cert.name] ?? { has: null }}
+              claim={certClaims[cert.name] ?? { has: null }}
               onSetHas={(has) => dispatch({ type: 'set_cert_claim', name: cert.name, has })}
               vaultDocs={vaultDocs}
               uploading={uploadingKey === `certification_doc:${cert.name}`}
@@ -351,9 +362,9 @@ export function DocumentsCertificationsStep({
         <InlineFeedback tone="danger" onDismiss={() => setUploadError(null)}>{uploadError}</InlineFeedback>
       ) : null}
 
-      <div className="flex justify-end">
-        <Button onClick={handleContinue}>{tFlow('continue_button')}</Button>
-      </div>
+      <Button className="w-full" size="lg" onClick={handleContinue}>
+        {tFlow('documents_continue')}
+      </Button>
     </div>
   );
 }
@@ -371,7 +382,7 @@ function SingleDocRow({
 }) {
   const t = useTranslations('job_requirements');
   const tDocs = useTranslations('worker_profile.documents');
-  const tFlow = useTranslations('worker_job_detail.apply_flow');
+  const tFlow = useTranslations('worker_application_details');
   // Same worker-voiced hint the pre-apply "What you'll need" panel shows for
   // this document, so the promise made on the job page and the explanation
   // given inside the flow are one string, not two that can drift. Suppressed
@@ -436,7 +447,7 @@ function CertificationDocRow({
   missing: boolean;
 }) {
   const t = useTranslations('job_requirements');
-  const tFlow = useTranslations('worker_job_detail.apply_flow');
+  const tFlow = useTranslations('worker_application_details');
   const atMax = count >= LEGACY_MAX_CERTIFICATION_FILES;
   return (
     <div className="flex items-center justify-between gap-3">
@@ -498,7 +509,7 @@ export function CertClaimRow({
   missingProof: boolean;
 }) {
   const t = useTranslations('job_requirements');
-  const tFlow = useTranslations('worker_job_detail.apply_flow');
+  const tFlow = useTranslations('worker_application_details');
 
   const match = vaultDocs ? matchCertProof(cert.name, vaultDocs) : undefined;
   // `matchCertProof` returns the narrow `VaultDocLike` shape (id/doc_type/

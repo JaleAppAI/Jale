@@ -230,7 +230,7 @@ describe('initialStepIndex', () => {
   });
 
   it('skips to documents when only a doc is outstanding', () => {
-    expect(initialStepIndex(remaining({ docs: ['drivers_license'] }))).toBe(1);
+    expect(initialStepIndex(remaining({ docs: ['driver_license'] }))).toBe(1);
   });
 
   it('skips to documents for an unclaimed certification', () => {
@@ -260,13 +260,13 @@ describe('requirementsTotals', () => {
       job: {
         pre_application_prompts: [{ id: 'p1', text: 'q' }, { id: 'p2', text: 'q' }],
         required_fields: ['work_authorization', 'date_available', 'home_address'],
-        required_docs: ['resume', 'drivers_license'],
+        required_docs: ['resume', 'driver_license'],
         certification_requirements: [{ name: 'OSHA 10', tier: 'required', proof_required: true }],
       },
       remaining: remaining({
         prompts: [],
         fields: ['home_address'],
-        docs: ['drivers_license'],
+        docs: ['driver_license'],
         certifications: { unclaimed: [], unproven: ['OSHA 10'] },
         complete: false,
       }),

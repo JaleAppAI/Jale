@@ -46,8 +46,8 @@ const ADDED_KEY_PATHS = [
     'job_requirements.picker.doc_hint_optional',
 
     // worker_job_detail.apply_flow — named-cert claim rows (workerCertNoteKey).
-    'worker_job_detail.apply_flow.cert_attest_note',
-    'worker_job_detail.apply_flow.cert_proof_note',
+    'worker_application_details.cert_attest_note',
+    'worker_application_details.cert_proof_note',
 
     // worker_job_detail.what_you_need — second line on each doc/cert row of
     // the pre-apply panel, reused by the apply flow's document rows

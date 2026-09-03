@@ -998,6 +998,17 @@
       "hired": "Contratado",
       "not_interested": "No seleccionado"
     },
+    "details_banner": {
+      "one_head": "Falta algo — completa tus datos.",
+      "one_body": "{company} quiere seguir adelante.",
+      "one_cta": "Completar datos",
+      "many_head": "{count} postulaciones necesitan tus datos",
+      "many_body": "{count} empleadores quieren seguir adelante contigo.",
+      "many_cta": "Ver postulaciones",
+      "multi_body": "Empieza por la de arriba.",
+      "row_left": "Faltan {count} cosas",
+      "row_body": "{company} te pidió tus datos."
+    },
     "stats": {
       "total": "Postulaciones totales",
       "active": "Activas",
@@ -1006,6 +1017,92 @@
     "job_status": {
       "closed": "Cerrado",
       "filled": "Cubierto"
+    }
+  },
+  "worker_application_details": {
+    "back": "Volver a mis postulaciones",
+    "title": "Completa tus datos",
+    "subtitle": "{company} te quiere contratar para {job}. Unas cosas más y quedas listo.",
+    "subtitle_no_company": "El empleador te quiere contratar para {job}. Unas cosas más y quedas listo.",
+    "progress": {
+      "left": "Faltan {count}",
+      "none_left": "No falta nada",
+      "bits": "{fields} datos · {docs} documentos · {certs} certificaciones",
+      "aria_label": "Tu avance"
+    },
+    "steps": {
+      "details": "Datos",
+      "documents": "Documentos y certificaciones",
+      "review": "Revisar y terminar",
+      "aria_label": "Pasos",
+      "step_label": "Paso {current} de {total}",
+      "completed": "completado"
+    },
+    "hints": {
+      "details": "Las respuestas de tu última postulación ya están puestas — cambia lo que quieras. Cada guardado conserva tu avance.",
+      "documents": "Los archivos que ya están en tu bóveda cuentan automáticamente."
+    },
+    "prefilled_hint": "De tu última postulación",
+    "continue_button": "Guardar y seguir",
+    "documents_continue": "Seguir",
+    "notice": {
+      "other_door": "También contestaste esto en WhatsApp — cargamos lo último. Revísalo y sigue."
+    },
+    "prompts": {
+      "title": "Primero, las preguntas del empleador",
+      "intro": "{company} las hizo cuando te postulaste. Termínalas y seguimos con lo demás.",
+      "submit": "Guardar y seguir"
+    },
+    "review": {
+      "summary_title": "Lo que vamos a enviar",
+      "skipped": "Saltado",
+      "not_answered": "Sin contestar",
+      "docs": "Documentos adjuntos",
+      "certs": "Certificaciones confirmadas",
+      "of": "{done} de {total}",
+      "will_see": "Esto es lo que verá {company}.",
+      "saved_note": "Guardado en tu perfil para que la próxima vez sea más rápido.",
+      "finish": "Terminar",
+      "still_missing": "Todavía falta: {items}",
+      "go_fix": "Ir a Documentos y certificaciones"
+    },
+    "complete": {
+      "chip": "Todo listo",
+      "title": "Tus datos ya están con el empleador",
+      "body": "{company} tiene todo lo que pidió. Te avisamos cuando cambien tu postulación.",
+      "status_chip": "Datos completos",
+      "back_to_applications": "Volver a mis postulaciones",
+      "view_job": "Ver el empleo"
+    },
+    "terminal": {
+      "not_requested": "Nada que agregar por ahora — el empleador no ha pedido más datos.",
+      "not_requested_body": "Si {company} los pide, te escribimos por WhatsApp y lo verás aquí.",
+      "already_complete": "Nada que hacer — ya enviaste todo para esta postulación.",
+      "already_complete_body": "{company} lo tiene todo.",
+      "closed": "Este empleo está cerrado.",
+      "closed_body": "El empleador lo quitó, así que no hay nada que enviar. Tu perfil guarda todo lo que ya contestaste.",
+      "view_job": "Ver el empleo",
+      "find_jobs": "Buscar otros empleos"
+    },
+    "cert_question": "¿Tienes {name}?",
+    "cert_use_vault": "Usar {file} de tu bóveda",
+    "cert_upload_new": "Subir otro",
+    "cert_unverified_note": "Puedes seguir sin comprobante — aparecerá como declarada, sin verificar.",
+    "cert_attest_note": "No hay que subir nada — el empleador puede pedirte verla en persona.",
+    "cert_proof_note": "Sube una foto o un archivo de esta certificación para seguir.",
+    "cert_from_vault": "de tu bóveda",
+    "legacy_doc_notice": "Esto no se puede subir en línea — el empleador puede pedírtelo en persona.",
+    "unknown_doc_notice": "No reconocemos este requisito — pregúntale al empleador qué necesita.",
+    "errors": {
+      "required_questions": "Contesta las preguntas obligatorias para seguir (faltan {count}).",
+      "required_doc": "{label} es obligatorio para este empleo.",
+      "required_cert": "{name} es obligatoria para este empleo.",
+      "cert_proof": "Adjunta el comprobante de {name} para seguir.",
+      "invalid_field": "No pudimos guardar este — revísalo e inténtalo de nuevo.",
+      "invalid_batch": "No pudimos guardar algunos. Los marcados abajo necesitan otra revisión.",
+      "too_large": "Es demasiado texto para guardar. Acorta tus respuestas más largas e inténtalo de nuevo.",
+      "certification_document_limit": "Llegaste al límite de archivos para esta certificación. Quita uno en tu perfil primero.",
+      "not_found": "Ya no encontramos esta postulación."
     }
   },
   "worker_home": {
@@ -1093,65 +1190,42 @@
     "shift_hours": "Horario del turno",
     "duration": "Duración esperada",
     "what_you_need": {
-      "title": "Lo que necesita",
-      "in_vault": "ya en su bóveda",
-      "proof_in_vault": "comprobante en su bóveda",
-      "proof_needed": "comprobante necesario",
-      "required": "Requerido",
+      "title": "Qué necesitas",
+      "to_apply_prompts": "Para postularte: {count} preguntas cortas · unos {minutes} min",
+      "to_apply_one_tap": "Para postularte: un toque — sin preguntas",
+      "later_eyebrow": "Si el empleador te quiere contratar, te pedirá:",
+      "fields_row": "{count} datos ({required} obligatorios)",
+      "after_they_ask": "Cuando lo pidan",
+      "in_vault": "En tu bóveda",
+      "proof_in_vault": "Comprobante en tu bóveda",
+      "proof_needed": "Falta comprobante",
+      "not_yet": "Todavía no",
+      "required": "Obligatorio",
       "optional": "Opcional",
-      "questions_summary": "{count} preguntas rápidas",
-      "questions_required": "{count} requeridas",
-      "estimate": "Postularse — unos {minutes} minutos",
-      "vault_check_failed": "No podemos revisar su bóveda en este momento",
-      "hint_doc_required": "Necesita subir esto para postularse.",
-      "hint_doc_optional": "Opcional — puede postularse sin esto.",
-      "hint_cert_required_proof": "Confirmará que la tiene y adjuntará el comprobante.",
-      "hint_cert_required_attest": "Solo confirmará que la tiene — no necesita subir nada.",
-      "hint_cert_optional": "Compártala si la tiene — no bloquea su postulación."
+      "vault_note": "Lo que ya está en tu bóveda cuenta solo — no lo subes dos veces.",
+      "vault_check_failed": "No podemos revisar tu bóveda ahora mismo",
+      "hint_doc_required": "Te pedirán subir esto.",
+      "hint_doc_optional": "Opcional — no detienen tu postulación por esto.",
+      "hint_cert_required_proof": "Te pedirán confirmarla y adjuntar comprobante.",
+      "hint_cert_required_attest": "Solo te pedirán confirmarla — no hay que subir nada.",
+      "hint_cert_optional": "Compártela si la tienes — no bloquea tu postulación."
     },
     "apply_flow": {
-      "steps": {
-        "questions": "Preguntas",
-        "documents": "Documentos y certificaciones",
-        "review": "Revisar y enviar",
-        "aria_label": "Pasos de la postulación",
-        "step_label": "Paso {current} de {total}",
-        "completed": "completado"
-      },
-      "hints": {
-        "questions": "Las respuestas prellenadas vienen de su última postulación — edite lo que quiera, los cambios se guardan para la próxima vez.",
-        "documents": "Los elementos que ya están en su bóveda se emparejan automáticamente.",
-        "review": "Revise todo — las respuestas no se pueden cambiar después de postularse."
-      },
-      "continue_button": "Continuar postulación",
-      "back_to_details": "Volver al detalle del empleo",
-      "back_to_jobs": "Volver a trabajos",
-      "progress_saved": "Su progreso está guardado.",
-      "prefilled_hint": "De su última postulación — edite si es necesario",
-      "legacy_doc_notice": "Esto no se puede subir en línea — el empleador puede pedírselo en persona.",
-      "unknown_doc_notice": "No reconocemos este requisito — pregúntele al empleador qué necesita antes de postularse.",
-      "cert_question": "¿Tiene {name}?",
-      "cert_use_vault": "Usar {file} de su bóveda",
-      "cert_upload_new": "Subir nuevo",
-      "cert_unverified_note": "Puede postularse sin comprobante — se mostrará como declarado, sin verificar.",
-      "cert_attest_note": "No necesita subir nada — el empleador puede pedirle verla en persona.",
-      "cert_proof_note": "Suba una foto o un archivo de esta certificación para continuar.",
-      "cert_from_vault": "de su bóveda",
-      "review_answers": "{answered} de {total} preguntas respondidas",
-      "review_skipped": "{label} (opcional) — omitido",
-      "review_not_attached": "{label} (opcional) — no adjuntado",
-      "review_claimed_proof": "{name} — declarado · comprobante adjunto",
-      "review_claimed_no_proof": "{name} — declarado, sin comprobante (se mostrará como sin verificar)",
-      "review_not_claimed": "{name} ({tier}) — no declarado",
-      "review_note": "Sus respuestas se guardarán en su perfil para postulaciones futuras más rápidas. Las postulaciones no se pueden editar después de enviarlas.",
+      "back_to_details": "Volver al empleo",
+      "title": "Postularte a {job}",
+      "intro_prompts": "{company} hace {count} preguntas rápidas. Contesta con tus propias palabras.",
+      "intro_one_tap": "Este empleo no tiene preguntas — envía tu postulación con un toque.",
+      "placeholder": "Como lo dirías en voz alta.",
+      "chars": "{count}/{max}",
+      "too_long": "Eso pasa de {max} caracteres — recorta un poco.",
+      "blank_hint": "Escribe algo aquí — con una línea basta.",
+      "later_note": "Los documentos y los datos vienen después, solo si el empleador te quiere contratar.",
       "submit": "Enviar postulación",
-      "submitted_title": "Postulación enviada",
+      "continue_button": "Seguir con la postulación",
+      "progress_saved": "Guardamos lo que llevas.",
       "errors": {
-        "required_questions": "Responda las preguntas requeridas para continuar ({count} restantes).",
-        "required_doc": "Se requiere {label} para este trabajo.",
-        "required_cert": "Se requiere {name} para este trabajo.",
-        "cert_proof": "Adjunte comprobante de {name} para continuar.",
-        "missing_certification_proof": "Este trabajo requiere comprobante de: {certs}."
+        "missing_prompt_answers": "Contesta todas las preguntas antes de enviar (faltan {count}).",
+        "invalid_prompt_answers": "No pudimos guardar una de tus respuestas. Revisa el largo e inténtalo de nuevo."
       }
     }
   },
