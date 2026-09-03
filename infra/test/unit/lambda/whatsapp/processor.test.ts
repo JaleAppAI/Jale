@@ -2419,6 +2419,100 @@ describe('Processor Lambda', () => {
         expect((menuWrite?.applications_menu as { ids: string[] }).ids).toEqual(['app-9']);
       });
 
+      it('the idle fallback sends the applications list instead of idle_help when the employer is waiting', async () => {
+        // The third door into stage 2: a worker who replied to the
+        // details-requested notification in their own words instead of
+        // tapping anything. Without this they got "I did not understand
+        // that" while an employer sat waiting on them.
+        mockConvTurn('SM-idle-needs-details');
+        mockQuery
+          .mockResolvedValueOnce({ rowCount: 1, rows: [{ tos_version: '1.0' }] }) // relay: workerHasAcceptedTos
+          .mockResolvedValueOnce(ok()) // relay: setInternalUserRlsContext
+          .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // relay: accepted open threads -- none
+          .mockResolvedValueOnce({ rowCount: 0, rows: [] }); // relay: unaccepted open threads -- none
+        mockQuery.mockResolvedValueOnce(ok()); // idle fallback: setInternalUserRlsContext
+        mockQuery.mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{
+            id: 'app-9', title: 'Painter', status: 'contacted',
+            needs_details: true, company_name: 'RM Construction',
+          }],
+        }); // idle fallback: the applications SELECT
+        mockStateContextUpdate(); // applications_menu armed
+        mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox list
+        mockBoundWorkerTail();
+
+        await handler(
+          makeSqsEvent({
+            MessageSid: 'SM-idle-needs-details',
+            From: 'whatsapp:+15125551234',
+            Body: 'zzz zzz',
+          }),
+          {} as any,
+          {} as any,
+        );
+
+        const bodies = outboxBodies();
+        expect(bodies).not.toContain(t('idle_help', 'en'));
+        expect(bodies[0]).toContain(t('applications_header', 'en'));
+        expect(bodies[0]).toContain(t('applications_footer', 'en'));
+      });
+
+      it('the idle fallback still says idle_help when nothing needs details', async () => {
+        mockConvTurn('SM-idle-no-details');
+        mockQuery
+          .mockResolvedValueOnce({ rowCount: 1, rows: [{ tos_version: '1.0' }] }) // relay: workerHasAcceptedTos
+          .mockResolvedValueOnce(ok()) // relay: setInternalUserRlsContext
+          .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // relay: accepted open threads
+          .mockResolvedValueOnce({ rowCount: 0, rows: [] }); // relay: unaccepted open threads
+        mockQuery.mockResolvedValueOnce(ok()); // idle fallback: setInternalUserRlsContext
+        mockQuery.mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{
+            id: 'app-9', title: 'Painter', status: 'pending',
+            needs_details: false, company_name: 'RM Construction',
+          }],
+        }); // nothing outstanding
+        mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox idle_help
+        mockBoundWorkerTail();
+
+        await handler(
+          makeSqsEvent({
+            MessageSid: 'SM-idle-no-details',
+            From: 'whatsapp:+15125551234',
+            Body: 'zzz zzz',
+          }),
+          {} as any,
+          {} as any,
+        );
+
+        expect(outboxBodies()).toEqual([t('idle_help', 'en')]);
+        // Nothing is armed when there is nothing to pick.
+        expect(stateContextUpdates().some((sc) => sc.applications_menu)).toBe(false);
+      });
+
+      it('recovers an application payload that arrived in the BODY, not ButtonPayload', async () => {
+        // findKnownPayload's `application:` prefix is what makes the
+        // ListId / InteractiveData / ChannelMetadata / raw-Body recovery
+        // paths work for these taps; without it the worker's Later tap would
+        // be read as ordinary free text.
+        mockConvTurn('SM-app-body-payload');
+        mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox ack
+        mockBoundWorkerTail();
+
+        await handler(
+          makeSqsEvent({
+            MessageSid: 'SM-app-body-payload',
+            From: 'whatsapp:+15125551234',
+            Body: 'application:later:app-aaaaaaaa-0000-4000-8000-00000000000a',
+          }),
+          {} as any,
+          {} as any,
+        );
+
+        expect(outboxBodies()).toEqual([t('application_later_ack', 'en')]);
+      });
+
       it('a bare digit against the armed menu dispatches exactly like the Start button', async () => {
         mockConvTurn('SM-app-pick', {
           applications_menu: { ids: ['aaaaaaaa-0000-4000-8000-00000000000a'], at: Date.now() },

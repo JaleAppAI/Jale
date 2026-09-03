@@ -80,6 +80,15 @@ const SUITE_APPLICATION_DETAILS = 'test/unit/db/worker-application-details.integ
 // `users_employer_applicant_read` (020b:261-269) seeing the EMPLOYER's users.id
 // in app.current_internal_user_id. Under a mocked pool every variant passes;
 // against the real policies the wrong GUC silently drops every notification.
+// Sprint 23 L3: the WhatsApp lane's two NEW statements -- the `aplicaciones`
+// listing and the continue-other offer filter. Both belong here for the same
+// reason as their neighbours: `jobapp_whatsapp_select` is USING (true), so
+// the listing's own `worker_id = $1` is the ONLY thing keeping one worker out
+// of another's applications, and a mocked pool proves nothing about that. The
+// listing also resolves the company through `employer_display_name` (031), a
+// SECURITY DEFINER path jale_whatsapp can only reach because it holds no
+// grant on employer_profiles at all.
+const SUITE_APPLICATIONS_COMMAND = 'test/unit/db/whatsapp-applications-command.integration.test.ts';
 const SUITE_STAGE_NOTIFY = 'test/unit/db/application-stage-notify.integration.test.ts';
 
 // The guard must fail closed regardless of the ambient environment. The final
@@ -107,6 +116,7 @@ describe('test:whatsapp-v2-db fail-closed URL guard', () => {
       SUITE_EXTRACTIONS_086, SUITE_EMPLOYER_READS, SUITE_HOSTILE_INPUTS,
       SUITE_STAGES_091,
       SUITE_APPLICATION_DETAILS,
+      SUITE_APPLICATIONS_COMMAND,
       SUITE_STAGE_NOTIFY,
     ]);
     expect(script).toContain('--runInBand');

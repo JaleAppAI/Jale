@@ -825,7 +825,7 @@ async function loadJobCompanyName(client: PoolClient, jobId: string): Promise<st
  * IS NULL` mirrors the gate in `fillStepFor`; the per-candidate
  * `computeFillStep` below is still what decides there is a REAL gap.
  */
-async function findContinueOtherOffer(
+export async function findContinueOtherOffer(
   client: PoolClient,
   workerId: string,
   excludeApplicationId: string,

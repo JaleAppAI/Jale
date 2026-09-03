@@ -1223,30 +1223,38 @@ async function routeMessage(
     }
   }
 
+  // Sprint 23: the details-requested template's two quick replies. Routed
+  // BEFORE the job-alert button block: the `accept|decline|info:job-<id>`
+  // grammar cannot match `application:*` today, but keeping the more
+  // specific payload first means a future widening of either grammar cannot
+  // silently steal these taps.
+  //
+  // Reads `interactivePayload ?? buttonPayload`, the same pair
+  // `parseLegalReplyPayload` uses just below, rather than `buttonPayload`
+  // alone: a WhatsApp quick reply usually arrives as ButtonPayload, but the
+  // extraction above (processRecord) also recovers a known payload from
+  // ListId / InteractiveData / ChannelMetadata / the raw Body -- the exact
+  // channel quirks `findKnownPayload` exists for. Matching only
+  // ButtonPayload would drop the tap on every one of those.
+  const applicationPayload = parseApplicationButtonPayload(msg.interactivePayload ?? msg.buttonPayload);
+  if (applicationPayload && conv.user_id) {
+    if (applicationPayload.action === 'later') {
+      // LATER IS NOT A DB WRITE (locked decision): nothing is recorded and no
+      // lane is armed. The worker comes back through "aplicaciones" whenever
+      // they want.
+      await queueReply(client, msg.messageSid, msg.from, 'application_later_ack', conv.language);
+      return conv.user_id;
+    }
+    await handleApplicationStart(client, conv, applicationPayload.applicationId, msg.from, msg.messageSid);
+    return conv.user_id;
+  }
+
   // Button-payload taps on job alerts are self-identifying. Route them first
   // — they can arrive in any state except onboarding (worker must be linked).
   if (msg.buttonPayload) {
     const conversationPayload = parseEmployerConversationButtonPayload(msg.buttonPayload);
     if (conversationPayload) {
       return await handleEmployerConversationButton(client, conv, msg, conversationPayload, routerDeps);
-    }
-
-    // Sprint 23: the details-requested template's two quick replies. Routed
-    // BEFORE `parseButtonPayload` -- the job-alert parser's `accept|decline|
-    // info:job-<id>` grammar cannot match `application:*`, but keeping the
-    // more specific payload first means a future widening of either grammar
-    // cannot silently steal these taps.
-    const applicationPayload = parseApplicationButtonPayload(msg.buttonPayload);
-    if (applicationPayload && conv.user_id) {
-      if (applicationPayload.action === 'later') {
-        // LATER IS NOT A DB WRITE (locked decision): nothing is recorded, no
-        // state is armed. The worker simply comes back through
-        // "aplicaciones" whenever they want.
-        await queueReply(client, msg.messageSid, msg.from, 'application_later_ack', conv.language);
-        return conv.user_id;
-      }
-      await handleApplicationStart(client, conv, applicationPayload.applicationId, msg.from, msg.messageSid);
-      return conv.user_id;
     }
 
     const parsed = parseButtonPayload(msg.buttonPayload);
