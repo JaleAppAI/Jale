@@ -671,8 +671,14 @@ maybeDescribe('R2: the web onboarding door under hostile input', () => {
         `SELECT main_trade, main_trade_other FROM users WHERE id = $1`, [ids[key]],
       );
       expect(stored.rows[0].main_trade).toBe('other');
-      expect(stored.rows[0].main_trade_other).toBe(HOMOGLYPH_CARPENTER);
-      expect(stored.rows[0].main_trade_other).not.toBe('carpenter');
+      // Sprint 24 (D4): saveCustomTrade canonicalises through trade_aliases and
+      // otherwise stores the TIDIED text (whitespace collapsed, first letter
+      // upper-cased). A Cyrillic-led homoglyph misses every alias, so it keeps
+      // its own letters -- capitalised, never normalised into the ASCII trade.
+      expect(stored.rows[0].main_trade_other).toBe(
+        HOMOGLYPH_CARPENTER.charAt(0).toUpperCase() + HOMOGLYPH_CARPENTER.slice(1),
+      );
+      expect(stored.rows[0].main_trade_other.toLowerCase()).not.toBe('carpenter');
     }, 120_000);
   });
 
