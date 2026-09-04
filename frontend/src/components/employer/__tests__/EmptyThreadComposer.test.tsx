@@ -65,4 +65,13 @@ describe('EmptyThreadComposer', () => {
     expect(onSend).not.toHaveBeenCalled();
     expect(composer()).toHaveFocus();
   });
+
+  // Same prominence change as ConversationThread's composer -- the two send
+  // controls must not read differently for the same action.
+  it('renders send as the primary CTA at the large size', () => {
+    renderIntl(<EmptyThreadComposer item={item} onSend={vi.fn()} />);
+    const send = screen.getByRole('button', { name: message('employer_messages.send') });
+    expect(send.className).toContain('h-12');
+    expect(send.className).toContain('--jale-blue-500');
+  });
 });
