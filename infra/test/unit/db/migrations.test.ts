@@ -124,6 +124,7 @@ describe('database migrations', () => {
       '090',
       '091',
       '092',
+      '093',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -1184,5 +1185,83 @@ describe('database migrations', () => {
     expect(sql).toContain("FOREACH col IN ARRAY ARRAY['id', 'user_type', 'main_trade']");
     expect(sql).toContain("'tos_accepted_at',\n                             'privacy_accepted_at']");
     expect(sql).toContain("'public.enforce_job_application_hire_requirements()',");
+  });
+
+  // 093 adds ONE function to 043's fenced worker-intent transport. Its whole
+  // reason to exist is a distinction 043 cannot express: a retry that must
+  // NOT consume the five-attempt budget, because the reason for the failure
+  // (a WhatsApp template Meta has not approved yet) is not the row's fault
+  // and no number of attempts fixes it. Two facts in it are load-bearing and
+  // invisible to a typecheck, so they are pinned here:
+  //   * attempt_count is never assigned -- the entire point;
+  //   * BOTH lease columns are nulled on BOTH branches, or 043's
+  //     whatsapp_outbox_worker_intent_lease_consistency CHECK fires (it
+  //     permits a set token only together with a set deadline AND
+  //     status = 'send_unknown').
+  it('093 adds a defer-without-counting RPC to 043 transport, fenced and budget-neutral', () => {
+    const sql = fs.readFileSync(
+      path.join(migrationsDir, '093_worker_intent_outbox_defer.sql'), 'utf8',
+    );
+
+    expect(sql).toContain('Connect as jale_admin');
+    expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+    expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+
+    // The signature the drain calls by name and arity.
+    expect(sql).toContain('CREATE OR REPLACE FUNCTION public.defer_worker_intent_outbox(');
+    expect(sql).toContain('p_id UUID, p_lease_token UUID, p_error TEXT, p_delay_seconds INTEGER');
+    expect(sql).toContain('RETURNS BOOLEAN');
+    expect(sql).toContain('LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp');
+
+    // 043's fence, in FULL: the token equality AND the un-expired deadline.
+    // Token-only would let a row whose lease already lapsed (and whose
+    // delivery state is therefore unknown) be pushed back to 'pending'.
+    expect(sql).toContain('AND worker_intent_lease_token = p_lease_token');
+    expect(sql).toContain('AND worker_intent_leased_until > pg_catalog.now()');
+    expect(sql).toContain("AND status = 'send_unknown'");
+    expect(sql).toContain("AND source_type = 'worker_intent'");
+
+    // The 48h ceiling, and the delay the caller asks for.
+    expect(sql).toContain("interval '48 hours'");
+    expect(sql).toContain('make_interval(secs => p_delay_seconds)');
+
+    const statements = sql
+      .split('\n')
+      .filter((line) => !line.trimStart().startsWith('--'))
+      .join('\n');
+    const body = statements.slice(
+      statements.indexOf('CREATE OR REPLACE FUNCTION public.defer_worker_intent_outbox('),
+      statements.indexOf('ALTER FUNCTION public.defer_worker_intent_outbox'),
+    );
+    expect(body.length).toBeGreaterThan(0);
+
+    // attempt_count must appear in NO assignment inside the function body. A
+    // defer that increments it is fail_worker_intent_outbox with extra steps.
+    expect(body).not.toMatch(/attempt_count\s*=/);
+
+    // Both lease columns nulled on both branches (043's CHECK).
+    expect(body).toContain('worker_intent_lease_token = NULL');
+    expect(body).toContain('worker_intent_leased_until = NULL');
+
+    // Least privilege, mirroring every other 043 definer.
+    expect(sql).toContain(
+      'ALTER FUNCTION public.defer_worker_intent_outbox(UUID, UUID, TEXT, INTEGER) OWNER TO jale_admin',
+    );
+    expect(sql).toContain(
+      'REVOKE ALL ON FUNCTION public.defer_worker_intent_outbox(UUID, UUID, TEXT, INTEGER) FROM PUBLIC',
+    );
+    expect(sql).toContain(
+      'GRANT EXECUTE ON FUNCTION public.defer_worker_intent_outbox(UUID, UUID, TEXT, INTEGER) TO jale_whatsapp',
+    );
+    // No table grant is widened: the whole point of a definer is that
+    // jale_whatsapp still cannot UPDATE a worker_intent row directly.
+    expect(statements).not.toMatch(/GRANT[^;]*ON\s+(public\.)?whatsapp_outbox/i);
+
+    // Self-verifying, like 082/091/092: the file proves its own end state.
+    expect(sql).toContain('migration 093: defer_worker_intent_outbox is missing');
+    expect(sql).toContain('migration 093: defer_worker_intent_outbox must be SECURITY DEFINER');
+    expect(sql).toContain('migration 093: jale_whatsapp cannot execute defer_worker_intent_outbox');
+    // 043's three RPCs must all still be there -- this file adds, never replaces.
+    expect(sql).toContain('migration 093: 043 RPC % disappeared');
   });
 });
