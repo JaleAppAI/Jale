@@ -103,6 +103,27 @@ export interface ApplicationStageMessage {
  *
  * ASCII-only, unaccented, informal-"tu" Spanish, matching the convention in
  * `whatsapp/lib/templates.ts` and the renderers in `onboarding-renderers.ts`.
+ *
+ * ── BYTE-IDENTICAL TO THE SEEDED TEMPLATES. Edit both, or neither. ──
+ *
+ * Each body below is the corresponding `QUICK_REPLY_DEFINITIONS` body in
+ * `scripts/seed-whatsapp-twilio-templates.mjs` with {{1}} {{2}} {{3}} {{4}}
+ * substituted. The template is what a worker sees OUTSIDE WhatsApp's 24-hour
+ * session window; this string travels as `__fallback_body` and is what they
+ * see INSIDE it. If the two drift, one notification reads two different ways
+ * depending on when the employer happened to trigger it.
+ * `test/unit/scripts/seed-whatsapp-twilio-templates.test.ts` asserts the
+ * equality by deriving the expected string from THIS function, so a change on
+ * either side fails there.
+ *
+ * The wording is deliberately, flatly transactional (2026-09-04, D6): Meta
+ * recategorised the first submission to MARKETING off the back of the old
+ * "Good news:" / "Buenas noticias:" openings, and a MARKETING template cannot
+ * be sent outside the session window at all -- which is the only window this
+ * lane ever sends in. So: a fixed opening that names the job, a statement of
+ * fact, and the two ways to respond. No promotional register, no exclamation
+ * marks, and no variable at the very start or end of the string (Meta rejects
+ * that outright). Those rules are enforced by the same test file.
  */
 export function buildApplicationStageMessage(
   lang: PreferredLanguage,
@@ -116,15 +137,19 @@ export function buildApplicationStageMessage(
   const body =
     input.kind === 'details_requested'
       ? lang === 'es'
-        ? `Actualizacion de aplicacion: ${companyName} quiere avanzar con tu aplicacion para ${jobTitle} y necesita algunos datos mas. `
-          + `Escribe "aplicaciones" para responder aqui, o usa ${url} para responder cuando quieras.`
-        : `Application update: ${companyName} wants to move forward with your application for ${jobTitle} and needs a few more details. `
-          + `Reply "applications" to answer here, or use ${url} to respond when ready.`
+        ? `Actualizacion de tu aplicacion para ${jobTitle}: ${companyName} solicito algunos datos adicionales `
+          + `para continuar con la revision. Escribe "aplicaciones" para responder aqui, `
+          + `o abre ${url} para completarlos en linea.`
+        : `Application update for ${jobTitle}: ${companyName} requested additional details `
+          + `before continuing the review. Reply "applications" to answer here, `
+          + `or open ${url} to submit them online.`
       : lang === 'es'
-        ? `Buenas noticias: ${companyName} te selecciono para ${jobTitle}. `
-          + `Referencia: app-${input.applicationId}. Consulta ${url} para ver los detalles y proximos pasos.`
-        : `Good news: ${companyName} selected you for ${jobTitle}. `
-          + `Reference: app-${input.applicationId}. Use ${url} to view details and next steps.`;
+        ? `Actualizacion del estado de tu aplicacion para ${jobTitle}: ${companyName} te selecciono `
+          + `para este puesto. Tu referencia de aplicacion es app-${input.applicationId}. `
+          + `Abre ${url} para ver los detalles y los siguientes pasos.`
+        : `Application status update for ${jobTitle}: ${companyName} selected you for this position. `
+          + `Your application reference is app-${input.applicationId}. `
+          + `Open ${url} to review the details and the next steps.`;
 
   const contentTemplate =
     input.kind === 'details_requested' ? `application_update_${lang}` : `application_hired_${lang}`;

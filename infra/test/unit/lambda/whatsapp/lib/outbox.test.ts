@@ -137,7 +137,7 @@ describe('worker-intent outbox drain', () => {
         '1': 'Concrete Finisher', '2': 'Rucoba & Maya',
         '3': 'app-11111111-2222-4333-8444-555555555555',
         '4': 'https://jaleapp.ai/en/worker/applications/11111111-2222-4333-8444-555555555555',
-        __fallback_body: 'Application update: ...',
+        __fallback_body: 'Application update for Concrete Finisher: ...',
       },
       attempt_count: 1, lease_token: 'lease-63016',
       ...overrides,

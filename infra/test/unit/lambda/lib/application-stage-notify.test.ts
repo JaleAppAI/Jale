@@ -62,8 +62,9 @@ describe('buildApplicationStageMessage', () => {
 
     expect(message.contentTemplate).toBe('application_update_es');
     expect(message.body).toBe(
-      'Actualizacion de aplicacion: RM Construction quiere avanzar con tu aplicacion para Concrete Finisher y necesita algunos datos mas. '
-      + `Escribe "aplicaciones" para responder aqui, o usa https://jaleapp.ai/es/worker/applications/${APPLICATION_ID} para responder cuando quieras.`,
+      'Actualizacion de tu aplicacion para Concrete Finisher: RM Construction solicito algunos datos adicionales '
+      + 'para continuar con la revision. Escribe "aplicaciones" para responder aqui, '
+      + `o abre https://jaleapp.ai/es/worker/applications/${APPLICATION_ID} para completarlos en linea.`,
     );
     expect(message.contentVariables).toEqual({
       '1': 'Concrete Finisher',
@@ -80,8 +81,9 @@ describe('buildApplicationStageMessage', () => {
 
     expect(message.contentTemplate).toBe('application_update_en');
     expect(message.body).toBe(
-      'Application update: RM Construction wants to move forward with your application for Concrete Finisher and needs a few more details. '
-      + `Reply "applications" to answer here, or use ${url} to respond when ready.`,
+      'Application update for Concrete Finisher: RM Construction requested additional details '
+      + 'before continuing the review. Reply "applications" to answer here, '
+      + `or open ${url} to submit them online.`,
     );
     expect(message.contentVariables['4']).toBe(url);
     expect(message.contentVariables.__fallback_body).toBe(message.body);
@@ -92,8 +94,9 @@ describe('buildApplicationStageMessage', () => {
 
     expect(message.contentTemplate).toBe('application_hired_es');
     expect(message.body).toBe(
-      'Buenas noticias: RM Construction te selecciono para Concrete Finisher. '
-      + `Referencia: app-${APPLICATION_ID}. Consulta ${base.url} para ver los detalles y proximos pasos.`,
+      'Actualizacion del estado de tu aplicacion para Concrete Finisher: RM Construction te selecciono '
+      + `para este puesto. Tu referencia de aplicacion es app-${APPLICATION_ID}. `
+      + `Abre ${base.url} para ver los detalles y los siguientes pasos.`,
     );
   });
 
@@ -103,8 +106,9 @@ describe('buildApplicationStageMessage', () => {
 
     expect(message.contentTemplate).toBe('application_hired_en');
     expect(message.body).toBe(
-      'Good news: RM Construction selected you for Concrete Finisher. '
-      + `Reference: app-${APPLICATION_ID}. Use ${url} to view details and next steps.`,
+      'Application status update for Concrete Finisher: RM Construction selected you for this position. '
+      + `Your application reference is app-${APPLICATION_ID}. `
+      + `Open ${url} to review the details and the next steps.`,
     );
   });
 
@@ -112,6 +116,46 @@ describe('buildApplicationStageMessage', () => {
     for (const lang of ['en', 'es'] as const) {
       for (const kind of ['details_requested', 'hired'] as const) {
         expect(buildApplicationStageMessage(lang, { ...base, kind }).body).toMatch(/^[\x00-\x7F]*$/);
+      }
+    }
+  });
+
+  // D6 (2026-09-04). These four strings travel as `__fallback_body` AND, with
+  // {{n}} in place of the values, as the seeded WhatsApp Content templates
+  // (scripts/seed-whatsapp-twilio-templates.mjs) -- byte-identically, asserted
+  // in that script's own suite. So the rules Meta rejects or recategorises on
+  // apply here too, and they are checked on this side as well: a MARKETING
+  // classification makes the template unsendable outside the 24h window,
+  // which is the only window this lane ever sends in.
+  it('keeps every body strictly transactional (no promotional register)', () => {
+    for (const lang of ['en', 'es'] as const) {
+      for (const kind of ['details_requested', 'hired'] as const) {
+        const { body } = buildApplicationStageMessage(lang, { ...base, kind });
+        for (const phrase of [
+          'good news', 'great news', 'buenas noticias', 'opportunity', 'oportunidad',
+          'congratulations', 'felicidades', 'gratis', 'free',
+        ]) {
+          expect(body.toLowerCase()).not.toContain(phrase);
+        }
+        expect(body).not.toContain('!');
+      }
+    }
+  });
+
+  it('opens every body with fixed text that names the job, never a value', () => {
+    // "Variables can't be at the start or end of the template" was a literal
+    // Meta rejection reason. On this side the values are already substituted,
+    // so the check is that the body does not BEGIN with one of them.
+    for (const lang of ['en', 'es'] as const) {
+      for (const kind of ['details_requested', 'hired'] as const) {
+        const { body } = buildApplicationStageMessage(lang, { ...base, kind });
+        expect(body.startsWith(base.jobTitle)).toBe(false);
+        expect(body.startsWith(base.companyName)).toBe(false);
+        expect(body.indexOf(base.jobTitle)).toBeGreaterThan(15);
+        // ...and the job title is named in the opening clause, before the
+        // first sentence break, so a reviewer sees what the message is about.
+        expect(body.indexOf(base.jobTitle)).toBeLessThan(body.indexOf(':') + 1);
+        expect(body.trimEnd().endsWith('.')).toBe(true);
       }
     }
   });

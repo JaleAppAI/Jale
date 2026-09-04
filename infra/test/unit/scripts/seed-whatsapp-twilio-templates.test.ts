@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { buildApplicationStageMessage } from '../../../lambda/lib/application-stage-notify';
+import { FALLBACK_BODY_KEY } from '../../../lambda/whatsapp/lib/outbox';
 import type { PreferredLanguage } from '../../../lambda/whatsapp/lib/onboarding-types';
 
 /**
@@ -61,20 +62,23 @@ describe('seed-whatsapp-twilio-templates.mjs — sprint 23 application templates
 
   // ── The body rules, after the 2026-09-04 resubmission (D6) ──
   //
-  // The byte-identical-to-the-fallback-body assertion that used to live here
-  // is GONE, deliberately. Meta recategorised three of the four templates to
-  // MARKETING while they were pending, which makes them unsendable in the
-  // only window that matters, and the promotional-sounding openings the
-  // fallback bodies carry ("Good news:", "Buenas noticias:") are what invited
-  // that. The renderer (lambda/lib/application-stage-notify.ts) is not this
-  // lane's to edit, so the template copy and the in-window fallback copy now
-  // diverge BY DESIGN: the template is the Meta-approved, strictly
-  // transactional wording, and the fallback is what a worker sees inside an
-  // open session where Meta polices nothing.
+  // TWO contracts live here now, and both are load-bearing:
   //
-  // What replaces it is the contract that still has to hold -- the VARIABLE
-  // NUMBERING AND MEANING the renderer supplies, plus the structural rules
-  // Meta rejects on -- checked below against the real function.
+  //  1. BYTE-IDENTITY with the renderer's fallback body. The seeded Content
+  //     body is what a worker sees OUTSIDE WhatsApp's 24h session window;
+  //     `__fallback_body` (built by buildApplicationStageMessage) is what they
+  //     see inside it. If the two diverge, one notification reads two
+  //     different ways depending on when the employer happened to trigger it,
+  //     and nothing else in the codebase would catch it.
+  //  2. The META SHAPE rules the first submission was rejected or
+  //     recategorised on: no variable at the start or end, a fixed
+  //     transactional opening, only the indices the renderer fills, and no
+  //     promotional register. These are new in sprint 24 (D6) and are the
+  //     reason the copy on BOTH sides changed.
+  //
+  // The two together are what make the D6 rewrite safe: (2) fixes the copy
+  // for Meta, and (1) forces the renderer to move with it rather than leaving
+  // in-window workers on the old promotional wording.
   const APPLICATION_ID = '11111111-2222-4333-8444-555555555555';
 
   function rendererMessage(lang: PreferredLanguage, kind: 'details_requested' | 'hired') {
@@ -91,6 +95,27 @@ describe('seed-whatsapp-twilio-templates.mjs — sprint 23 application templates
     '%s is the template name the renderer asks the sender for',
     (name, lang, kind) => {
       expect(rendererMessage(lang, kind).contentTemplate).toBe(name);
+    },
+  );
+
+  // Contract 1. The expected string is DERIVED from the real function, so the
+  // two sides cannot drift: editing either the template copy or
+  // buildApplicationStageMessage without the other fails right here.
+  it.each(APPLICATION_TEMPLATES)(
+    '%s body is byte-identical to the fallback body once {{n}} are substituted',
+    (name, lang, kind) => {
+      const { body: expected, contentVariables } = rendererMessage(lang, kind);
+
+      const substituted = QUICK_REPLY_DEFINITIONS[name].body
+        .replace(/\{\{1\}\}/g, contentVariables['1'])
+        .replace(/\{\{2\}\}/g, contentVariables['2'])
+        .replace(/\{\{3\}\}/g, contentVariables['3'])
+        .replace(/\{\{4\}\}/g, contentVariables['4']);
+
+      expect(substituted).toBe(expected);
+      // ...and the fallback the sender actually transmits is that same string,
+      // not a second copy of it built somewhere else.
+      expect(contentVariables[FALLBACK_BODY_KEY]).toBe(expected);
     },
   );
 

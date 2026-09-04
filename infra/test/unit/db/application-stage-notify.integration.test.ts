@@ -332,7 +332,14 @@ maybeDescribe('application stage notification against the real RLS policies', ()
     const { outbox } = await readIntentAndOutbox(appHired);
     expect(outbox).toHaveLength(1);
     expect(outbox[0].content_template).toBe('application_hired_es');
+    // D6 (2026-09-04): the hired copy no longer opens "Buenas noticias" --
+    // that promotional register is what got the template recategorised to
+    // MARKETING, which cannot be sent outside the 24h window. The assertion
+    // is on the transactional opening the renderer and the seeded template
+    // now share byte-for-byte.
     expect((outbox[0].content_variables as Record<string, string>).__fallback_body)
-      .toContain('Buenas noticias');
+      .toContain('Actualizacion del estado de tu aplicacion para');
+    expect((outbox[0].content_variables as Record<string, string>).__fallback_body)
+      .not.toContain('Buenas noticias');
   });
 });
