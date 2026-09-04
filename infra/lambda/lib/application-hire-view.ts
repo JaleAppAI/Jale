@@ -11,21 +11,25 @@
 // NULL column degrades to `null` rather than throwing. A celebration modal is
 // the worst possible place for a 500.
 //
-// ── WHY THE JOB FACTS ARE FORMATTED HERE AND NOT IN THE BROWSER ──
+// ── WHICH COLUMN, NOT WHAT COPY ──
 // The celebration repeats the job's start date, location, pay and shift
-// beneath "You've been hired". Two of those are stored twice -- location as
-// both `jobs.location` free text and the 065 `city`/`state` pair, pay as both
-// the `jobs.pay` string `formatPayRange()` wrote at create time and the 023/033
-// `pay_min`/`pay_max`/`pay_interval` triple -- so "which one do I show?" is a
-// server decision with a single answer, not something each client re-derives.
+// beneath "You've been hired", and two of those facts are stored twice:
+// location as both `jobs.location` free text and the 065 `city`/`state` pair,
+// pay as both the `jobs.pay` string `formatPayRange()` wrote at create time
+// and the 023/033 `pay_min`/`pay_max`/`pay_interval` triple. "Which column do
+// I read?" IS a server decision with one answer -- so `location` is resolved
+// here, once, rather than re-derived by every client.
 //
-// `formatPayRangeLocalized` (lib/job-fields.ts) deliberately is NOT reused for
-// the fallback: it takes a locale this endpoint has no input for, and its
-// one-sided wording ("Desde $20/hora") is not the shape the frontend contract
-// for this feature specifies. The hyphen in the two-bound form matches
-// `formatPayRange()`, which is what wrote the `jobs.pay` string this function
-// prefers -- two dash styles for one concept in the same UI slot would be the
-// real defect.
+// Composing worker-facing COPY is not. The pay line is rendered by the
+// frontend's own `formatPay(job, t)` (frontend/src/lib/pay.ts), which is
+// next-intl-aware and already formats these exact four fields for the worker
+// job card, the job detail page and the public job page. This endpoint takes
+// no locale input, so anything it synthesised would be English ("up to $26")
+// in a Spanish-facing modal, and would give one job two different pay lines on
+// two screens. Hence: `pay` is the stored string or null -- NEVER built -- and
+// the structured triple travels raw. `formatPayRangeLocalized`
+// (lib/job-fields.ts) is not reused for the same reason: it needs a locale
+// nothing here has.
 
 /**
  * The columns a caller must have selected, with the `job_`-prefixed aliases
@@ -60,7 +64,19 @@ export interface HireSummary {
   acknowledged_at: string | null;
   start_date: string | null;
   location: string | null;
+  /**
+   * The stored `jobs.pay` free text, trimmed, or null. Never synthesised from
+   * the bounds below -- see the header. The frontend's `formatPay` prefers the
+   * structured triple and falls back to this string, and it already screens
+   * the API's "Pay not specified" sentinel, so this passes through verbatim.
+   */
   pay: string | null;
+  /** 023 `jobs.pay_min` (INTEGER), for the client's own formatter. */
+  pay_min: number | null;
+  /** 023 `jobs.pay_max` (INTEGER). */
+  pay_max: number | null;
+  /** 033 `jobs.pay_interval`, raw: 'hourly'|'daily'|'weekly'|'monthly'|'fixed'. */
+  pay_interval: string | null;
   shift_schedule: string | null;
 }
 
@@ -110,41 +126,6 @@ function hireLocation(row: HireRow): string | null {
 }
 
 /**
- * `jobs.pay` when it says anything, else a range built from the structured
- * columns, else null.
- *
- * The string comes first because it is what the employer typed or what
- * `formatPayRange()` wrote for them, and it is what every other surface
- * (employer job page, public listing, WhatsApp job alert) already shows for
- * this job. The structured fallback covers the rows written before 023/033 by
- * a path that never filled `pay`, and the deploy window in which a job is
- * created by one code version and read by another.
- */
-function hirePay(row: HireRow): string | null {
-  const stored = text(row.job_pay);
-  if (stored) return stored;
-
-  const min = amount(row.job_pay_min);
-  const max = amount(row.job_pay_max);
-  if (min === null && max === null) return null;
-
-  let base: string;
-  if (min !== null && max !== null) {
-    // An equal pair is one amount, not a range of one -- the same collapse
-    // `formatPayRange()` makes, so the fallback cannot read differently from
-    // the string it stands in for.
-    base = min === max ? `$${min}` : `$${min}-$${max}`;
-  } else if (min !== null) {
-    base = `$${min}+`;
-  } else {
-    base = `up to $${max}`;
-  }
-
-  const interval = text(row.job_pay_interval);
-  return interval ? `${base}/${interval}` : base;
-}
-
-/**
  * The `hire` object for a row whose status is `hired`, or null when the row
  * carries no hire timestamp at all.
  *
@@ -165,7 +146,11 @@ export function buildHireSummary(row: HireRow): HireSummary | null {
     acknowledged_at: isoTimestamp(row.hired_ack_at),
     start_date: text(row.job_start_date),
     location: hireLocation(row),
-    pay: hirePay(row),
+    // Raw, all four. The client formats them; see the header.
+    pay: text(row.job_pay),
+    pay_min: amount(row.job_pay_min),
+    pay_max: amount(row.job_pay_max),
+    pay_interval: text(row.job_pay_interval),
     shift_schedule: text(row.job_shift_schedule),
   };
 }

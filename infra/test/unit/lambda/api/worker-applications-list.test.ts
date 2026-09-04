@@ -252,7 +252,11 @@ describe('worker-applications-list', () => {
         acknowledged_at: null,
         start_date: '2026-09-15',
         location: 'El Paso, TX',
+        // Raw pay fields: the browser's formatPay(job, t) renders the line.
         pay: '$22-$26/hour',
+        pay_min: 22,
+        pay_max: 26,
+        pay_interval: 'hourly',
         shift_schedule: 'Lunes a viernes, 7am-3pm',
       });
     });
@@ -293,9 +297,14 @@ describe('worker-applications-list', () => {
       ]);
     });
 
-    it('falls back to the structured pay columns when jobs.pay is empty', async () => {
+    it('publishes the structured pay columns raw and never a synthesised string', async () => {
       const r = await row({ status: 'hired', job_pay: null });
-      expect(r.hire.pay).toBe('$22-$26/hourly');
+      // No server-side fallback: an empty jobs.pay is null on the wire, and
+      // the bounds go out for the client's own i18n formatter to render.
+      expect(r.hire.pay).toBeNull();
+      expect(r.hire.pay_min).toBe(22);
+      expect(r.hire.pay_max).toBe(26);
+      expect(r.hire.pay_interval).toBe('hourly');
     });
 
     it('nulls every job fact the job does not carry, and still celebrates', async () => {
@@ -308,7 +317,8 @@ describe('worker-applications-list', () => {
       expect(r.hire).toEqual({
         hired_at: '2026-09-04T15:30:00.000Z',
         seen_at: null, acknowledged_at: null,
-        start_date: null, location: null, pay: null, shift_schedule: null,
+        start_date: null, location: null, shift_schedule: null,
+        pay: null, pay_min: null, pay_max: null, pay_interval: null,
       });
     });
   });

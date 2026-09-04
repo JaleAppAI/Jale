@@ -38,9 +38,13 @@ describe('buildHireSummary', () => {
       start_date: '2026-09-15',
       // Both parts present, so the structured pair wins over the free text.
       location: 'El Paso, TX',
-      // jobs.pay is non-empty, so it is used verbatim -- it is what the
-      // employer's own job page shows.
+      // The stored jobs.pay string, verbatim -- and the structured triple
+      // RAW alongside it. Nothing here is formatted: the browser renders the
+      // pay line with its own i18n-aware formatPay(job, t).
       pay: '$22-$26/hour',
+      pay_min: 22,
+      pay_max: 26,
+      pay_interval: 'hourly',
       shift_schedule: 'Lunes a viernes, 7am-3pm',
     });
   });
@@ -95,54 +99,87 @@ describe('buildHireSummary', () => {
     });
   });
 
+  // -- pay travels RAW, in four fields --------------------------------
+  // The celebration's pay line is rendered by the frontend's own
+  // `formatPay(job, t)` (frontend/src/lib/pay.ts), which already formats
+  // exactly these four fields, in the worker's language, for the job card.
+  // Synthesising a string here would put untranslated English in a
+  // Spanish-facing modal AND give one job two different pay lines on two
+  // screens. So `pay` is the stored text or null -- never built -- and the
+  // 023/033 triple is passed through for the client to format.
   describe('pay', () => {
-    it('prefers the stored jobs.pay string, trimmed', () => {
+    it('passes the stored jobs.pay string through, trimmed', () => {
       expect(buildHireSummary({ ...HIRED, job_pay: '  $30/hour  ' })!.pay).toBe('$30/hour');
     });
 
-    it('formats both bounds from the structured columns when jobs.pay is empty', () => {
-      for (const blank of [null, '', '   ']) {
-        expect(buildHireSummary({ ...HIRED, job_pay: blank })!.pay).toBe('$22-$26/hourly');
+    it('nulls a blank jobs.pay WITHOUT synthesising one from the bounds', () => {
+      for (const blank of [null, undefined, '', '   ']) {
+        const summary = buildHireSummary({ ...HIRED, job_pay: blank })!;
+        expect(summary.pay).toBeNull();
+        // The bounds still publish: this is precisely the row the client
+        // formats for itself.
+        expect(summary.pay_min).toBe(22);
+        expect(summary.pay_max).toBe(26);
+        expect(summary.pay_interval).toBe('hourly');
       }
     });
 
-    it('collapses an equal pair to a single amount, as formatPayRange does', () => {
-      expect(buildHireSummary({
-        ...HIRED, job_pay: null, job_pay_min: 25, job_pay_max: 25,
-      })!.pay).toBe('$25/hourly');
-    });
-
-    it('renders a one-sided range from whichever bound exists', () => {
-      expect(buildHireSummary({
-        ...HIRED, job_pay: null, job_pay_max: null,
-      })!.pay).toBe('$22+/hourly');
-      expect(buildHireSummary({
-        ...HIRED, job_pay: null, job_pay_min: null,
-      })!.pay).toBe('up to $26/hourly');
-    });
-
-    it('omits the interval suffix when the interval is unknown', () => {
-      for (const blank of [null, '', '  ']) {
-        expect(buildHireSummary({ ...HIRED, job_pay: null, job_pay_interval: blank })!.pay)
-          .toBe('$22-$26');
+    // The regression guard for this whole decision. If anyone re-introduces a
+    // server-side fallback, `pay` stops being null here.
+    it('never emits a synthesised pay string, whatever the bounds say', () => {
+      for (const over of [
+        { job_pay_min: 22, job_pay_max: 26 },
+        { job_pay_min: 25, job_pay_max: 25 },
+        { job_pay_min: 22, job_pay_max: null },
+        { job_pay_min: null, job_pay_max: 26 },
+      ]) {
+        expect(buildHireSummary({ ...HIRED, job_pay: null, ...over })!.pay).toBeNull();
       }
     });
 
-    it('accepts the numeric bounds as strings (a pg type-parser change must not break it)', () => {
-      expect(buildHireSummary({
-        ...HIRED, job_pay: null, job_pay_min: '22', job_pay_max: '26',
-      })!.pay).toBe('$22-$26/hourly');
+    it('coerces the bounds to numbers, including the numeric-string shape a pg type-parser change would produce', () => {
+      const summary = buildHireSummary({ ...HIRED, job_pay_min: '22', job_pay_max: '26.5' })!;
+      expect(summary.pay_min).toBe(22);
+      expect(summary.pay_max).toBe(26.5);
+      // Numbers, not strings: the frontend's PayFields type says number, and
+      // a string would render correctly only by accident.
+      expect(typeof summary.pay_min).toBe('number');
     });
 
-    it('is null when neither the string nor either bound is usable', () => {
-      expect(buildHireSummary({
-        ...HIRED, job_pay: null, job_pay_min: null, job_pay_max: null,
-      })!.pay).toBeNull();
-      // A non-finite bound is not a pay range. NaN/Infinity would otherwise
-      // render as "$NaN/hourly" in a celebration modal.
-      expect(buildHireSummary({
-        ...HIRED, job_pay: '', job_pay_min: 'twenty', job_pay_max: null,
-      })!.pay).toBeNull();
+    it('nulls a bound that is not a finite number', () => {
+      for (const junk of [null, undefined, '', '   ', 'twenty', NaN, Infinity, {}, []]) {
+        const summary = buildHireSummary({ ...HIRED, job_pay_min: junk, job_pay_max: junk })!;
+        expect(summary.pay_min).toBeNull();
+        expect(summary.pay_max).toBeNull();
+      }
+    });
+
+    it('passes the interval token through raw, whatever it is', () => {
+      // The 033 CHECK allows exactly these five.
+      for (const token of ['hourly', 'daily', 'weekly', 'monthly', 'fixed']) {
+        expect(buildHireSummary({ ...HIRED, job_pay_interval: token })!.pay_interval).toBe(token);
+      }
+      // A token this backend does not recognize is still the job's own value.
+      // The client decides what to render for it (its formatPay drops an
+      // unmapped interval); reinterpreting it here would be a second opinion.
+      expect(buildHireSummary({ ...HIRED, job_pay_interval: 'per_yard' })!.pay_interval)
+        .toBe('per_yard');
+    });
+
+    it('nulls a blank or missing interval', () => {
+      for (const blank of [null, undefined, '', '  ']) {
+        expect(buildHireSummary({ ...HIRED, job_pay_interval: blank })!.pay_interval).toBeNull();
+      }
+    });
+
+    it('publishes all four pay fields as null for a job that states no rate', () => {
+      const summary = buildHireSummary({
+        ...HIRED, job_pay: null, job_pay_min: null, job_pay_max: null, job_pay_interval: null,
+      })!;
+      expect(summary.pay).toBeNull();
+      expect(summary.pay_min).toBeNull();
+      expect(summary.pay_max).toBeNull();
+      expect(summary.pay_interval).toBeNull();
     });
   });
 

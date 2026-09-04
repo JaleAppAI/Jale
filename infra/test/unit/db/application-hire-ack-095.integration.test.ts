@@ -700,6 +700,11 @@ maybeDescribe('sprint 24: migration 095 stamps and grants the hire acknowledgeme
         start_date: '2026-09-15',
         location: 'El Paso, TX',
         pay: '$22-$26/hour',
+        // The INTEGER bounds come back from pg as JS numbers, and the
+        // interval as its raw 033 token -- the client formats them.
+        pay_min: 22,
+        pay_max: 26,
+        pay_interval: 'hourly',
         shift_schedule: 'L-V 7am-3pm',
       });
       // Pre-acknowledged, so the web shows NOTHING for this historical hire --
