@@ -20,6 +20,7 @@ import {
   parseProfilePayloadAnswer,
   parseTypedJobAction,
   parseApplicationReference,
+  parseTypedApplyToken,
   computeNextField,
   PROFILE_FIELDS,
   isSkipKeyword,
@@ -29,6 +30,7 @@ import {
   type ConversationState,
   type ProfileStateContext,
 } from '../../../../../lambda/whatsapp/lib/flows';
+import { parseApplyToken } from '../../../../../lambda/lib/referral-codes';
 
 describe('flows.ts — keyword detection', () => {
   describe('isGreetingKeyword', () => {
@@ -648,6 +650,94 @@ describe('flows.ts — parseApplicationReference', () => {
     ];
     for (const input of hostile) {
       expect(() => parseApplicationReference(input)).not.toThrow();
+    }
+  });
+});
+
+// Sprint 24 C4 review 1: the AUTHENTICATED router's own apply-token parser.
+//
+// `parseApplyToken` (lambda/lib/referral-codes.ts) is deliberately loose --
+// it scans for `JALE` + optional separators + any eight Crockford-mappable
+// characters, with no trailing boundary, so a person retyping a code from
+// memory still gets matched. Pre-auth that is right: the first message from
+// an unknown phone is either a code or a greeting, and a false positive
+// merely parks nothing.
+//
+// Post-auth it is NOT right, because a worker with an open employer thread is
+// mid-conversation: "Jale trabajos" parses as the token TRABAJ0S (O maps to
+// 0), which would answer "job code not found" and the employer would never
+// see the message. This parser is the strict variant used there.
+describe('flows.ts — parseTypedApplyToken', () => {
+  const TOKEN = 'ABCD1234';
+
+  test.each([
+    // THE shape that matters: the prefilled message
+    // `public-job-apply-intent.ts` builds for the wa.me link, in both
+    // locales. It carries leading prose, so a whole-message-only parser
+    // would miss every real referral arrival.
+    [`Quiero postularme a este trabajo: JALE-${TOKEN}`, TOKEN],
+    [`I want to apply for this job: JALE-${TOKEN}`, TOKEN],
+    [`JALE-${TOKEN}`, TOKEN],
+    [`jale-abcd1234`, TOKEN],
+    [`JALE - ${TOKEN}`, TOKEN],
+    [`JALE:${TOKEN}`, TOKEN],
+    [`JALE_${TOKEN}`, TOKEN],
+    [`hola, mi codigo es JALE-${TOKEN}`, TOKEN],
+    [`JALE-${TOKEN}!`, TOKEN],
+    // Crockford decoding still applies to the captured characters, exactly
+    // as the lib does it: I/L -> 1, O -> 0.
+    ['JALE-LOOP1234', '100P1234'],
+  ])('parses %s', (input, expected) => {
+    expect(parseTypedApplyToken(input)).toBe(expected);
+  });
+
+  test.each([
+    '',
+    'JALE',
+    'JALE-',
+    // The false positive this parser exists to kill. The loose lib parser
+    // DOES match these (asserted below), which is why the authenticated
+    // router must not use it.
+    'Jale trabajos',
+    'jale necesito trabajo',
+    'Hola Jale, quiero trabajar',
+    // A separator is required, so a hand-typed space-only form is not
+    // recognised post-auth. Pre-auth still catches it via the lib parser,
+    // and the prefilled link never produces it.
+    `JALE ${TOKEN}`,
+    // Boundaries on both ends.
+    `MIJALE-${TOKEN}`,
+    `JALE-${TOKEN}EXTRA`,
+    'JALE-ABCD12',
+    // U is excluded from the alphabet on purpose (profanity, not
+    // ambiguity), so it is a genuine typo and must not be rewritten.
+    'JALE-ABCDU234',
+  ])('rejects "%s"', (input) => {
+    expect(parseTypedApplyToken(input)).toBeNull();
+  });
+
+  it('is strictly narrower than the pre-auth parser on exactly the prose that broke', () => {
+    // Guards the reason this function exists: if someone later points the
+    // authenticated router back at `parseApplyToken`, this documents what
+    // that costs.
+    expect(parseApplyToken('Jale trabajos')).toBe('TRABAJ0S');
+    expect(parseTypedApplyToken('Jale trabajos')).toBeNull();
+    // ...while both agree on a real code.
+    expect(parseApplyToken(`JALE-${TOKEN}`)).toBe(TOKEN);
+    expect(parseTypedApplyToken(`JALE-${TOKEN}`)).toBe(TOKEN);
+  });
+
+  it('never throws on hostile input', () => {
+    const hostile: Array<string | null | undefined> = [
+      null,
+      undefined,
+      'JALE-'.repeat(20000),
+      `JALE-${'a'.repeat(100000)}`,
+      '🔥 JALE- 💥',
+      ` JALE-${TOKEN}`,
+    ];
+    for (const input of hostile) {
+      expect(() => parseTypedApplyToken(input)).not.toThrow();
     }
   });
 });

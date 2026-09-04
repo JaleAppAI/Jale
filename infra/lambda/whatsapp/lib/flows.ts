@@ -20,6 +20,7 @@ import {
   type ExperienceKey,
   type AvailabilityKey,
 } from '../../lib/worker-vocab';
+import { parseApplyToken } from '../../lib/referral-codes';
 
 // ── Conversation state types ────────────────────────────────────
 
@@ -506,6 +507,53 @@ export function parseApplicationReference(body: string | null | undefined): stri
   if (!body) return null;
   const m = body.match(APPLICATION_REFERENCE_PATTERN);
   return m ? m[1].toLowerCase() : null;
+}
+
+/**
+ * Sprint 24 C4 (review 1): the apply-token parser for the AUTHENTICATED
+ * router. Strict where `parseApplyToken` (lambda/lib/referral-codes.ts) is
+ * deliberately loose.
+ *
+ * That looseness is correct pre-auth: `JALE` + any separator (or none) + any
+ * eight Crockford-mappable characters, no trailing boundary, so a person
+ * retyping a code from memory is still matched, and a false positive on a
+ * first message merely parks nothing.
+ *
+ * Post-auth the same looseness is a bug: an onboarded worker may be mid
+ * conversation with an employer, and "Jale trabajos" parses as the token
+ * TRABAJ0S (Crockford maps O to 0). Answering that with "job code not found"
+ * would swallow a message the employer was waiting for. So here a
+ * PUNCTUATION separator is required -- `-`, `_` or `:`, optionally spaced --
+ * which is exactly what every real arrival carries:
+ *   - the prefilled wa.me text (`public-job-apply-intent.ts`) is
+ *     "Quiero postularme a este trabajo: JALE-XXXXXXXX" / "I want to apply
+ *     for this job: JALE-XXXXXXXX", so LEADING PROSE MUST STILL PARSE -- a
+ *     whole-message-only grammar would miss every real referral;
+ *   - anything a worker copies is `formatApplyToken`'s own `JALE-` form.
+ * The cost is that a hand-typed "JALE ABCD1234" (space, no punctuation) is
+ * not recognised once onboarded; pre-auth still catches it.
+ *
+ * Boundaries on both ends: no alphanumeric immediately before `JALE` (so
+ * "MIJALE-..." is not a code) and none immediately after the eight
+ * characters (so "JALE-ABCD1234EXTRA" is not one either).
+ *
+ * DECODING IS NOT REIMPLEMENTED HERE. The captured characters are handed
+ * back to the lib with a canonical prefix, so Crockford's rules (I/L to 1,
+ * O to 0, U rejected as a genuine typo) and the length/alphabet validation
+ * stay in one place and cannot drift from the pre-auth path. The lib's own
+ * `normalizeCode` is NOT used for this: it strips a leading `JALE` again,
+ * which would silently disagree with `parseApplyToken` on the (nonsense but
+ * reachable) body "JALE-JALEXXXX".
+ *
+ * Pure and total: never throws, never logs. Inbound bodies are untrusted.
+ */
+const TYPED_APPLY_TOKEN_PATTERN = /(?:^|[^0-9a-z])jale[ \t]*[-_:][ \t]*([0-9a-z]{8})(?![0-9a-z])/i;
+
+export function parseTypedApplyToken(body: string | null | undefined): string | null {
+  if (!body) return null;
+  const m = body.match(TYPED_APPLY_TOKEN_PATTERN);
+  if (!m) return null;
+  return parseApplyToken(`JALE-${m[1]}`);
 }
 
 export function parseEmployerConversationButtonPayload(
