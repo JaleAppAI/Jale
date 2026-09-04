@@ -111,8 +111,9 @@ describe('templates.ts — t()', () => {
     expect(help).toContain('Close');
     expect(help).toContain('Help');
     expect(help).toContain('use the buttons');
-    expect(help).toContain('[number] accept');
-    expect(help).not.toContain('1 accept');
+    // Sprint 24 C1: the advertised verb follows the relabelled buttons.
+    expect(help).toContain('[number] interested');
+    expect(help).not.toContain('1 interested');
   });
 
   it('help menu lists the main commands in Spanish', () => {
@@ -123,7 +124,7 @@ describe('templates.ts — t()', () => {
     expect(help).toContain('Cerrar');
     expect(help).toContain('Ayuda');
     expect(help).toContain('usa los botones');
-    expect(help).toContain('[numero] aceptar');
+    expect(help).toContain('[numero] me interesa');
   });
 
   it('inserts a substituted value containing $& and $1 literally, without treating it as a replacement pattern', () => {
@@ -391,5 +392,28 @@ describe('sprint 23: help_menu advertises the aplicaciones command', () => {
     const en = t('help_menu', 'en');
     expect(en.indexOf('Jobs')).toBeLessThan(en.indexOf('Applications'));
     expect(en.indexOf('Applications')).toBeLessThan(en.indexOf('Profile'));
+  });
+});
+
+describe('sprint 24: help_menu advertises the interested verbs', () => {
+  // Luis relabelled the Twilio job-alert buttons to "interested / not
+  // interested"; the typed grammar in this copy has to say the same thing,
+  // or the help menu teaches a verb the buttons no longer show.
+  // parseTypedJobAction still accepts the old verbs -- only what we
+  // ADVERTISE changes here.
+  it('teaches "[numero] me interesa / info / no" in Spanish', () => {
+    const es = t('help_menu', 'es');
+    expect(es).toContain('[numero] me interesa - Aplicar');
+    expect(es).toContain('[numero] info - Ver detalles');
+    expect(es).toContain('[numero] no - Omitir');
+    expect(es).not.toContain('[numero] aceptar');
+  });
+
+  it('teaches "[number] interested / info / no" in English', () => {
+    const en = t('help_menu', 'en');
+    expect(en).toContain('[number] interested - Apply');
+    expect(en).toContain('[number] info - See details');
+    expect(en).toContain('[number] no - Skip');
+    expect(en).not.toContain('[number] accept');
   });
 });

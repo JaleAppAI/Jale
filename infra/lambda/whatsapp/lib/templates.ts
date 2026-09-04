@@ -196,8 +196,8 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
     en: 'I did not understand that message.\n\nSend "Help" to see commands.',
   },
   help_menu: {
-    es: 'Comandos\n\nTrabajos - Ver oportunidades\nAplicaciones - Ver tus solicitudes\nPerfil - Ver tu perfil\nChats - Abrir tus chats con empleadores\nCerrar - Cerrar el chat actual\nAyuda - Ver estos comandos\n\nEn una alerta de trabajo, usa los botones.\n\nSi ves una lista numerada, responde con el numero del trabajo:\n[numero] aceptar - Aplicar\n[numero] info - Ver detalles\n[numero] no - Omitir',
-    en: 'Commands\n\nJobs - See opportunities\nApplications - See your applications\nProfile - See your profile\nChats - Open your employer chats\nClose - Close the current chat\nHelp - Show these commands\n\nOn a job alert, use the buttons.\n\nIf you see a numbered list, reply with the job number:\n[number] accept - Apply\n[number] info - See details\n[number] no - Skip',
+    es: 'Comandos\n\nTrabajos - Ver oportunidades\nAplicaciones - Ver tus solicitudes\nPerfil - Ver tu perfil\nChats - Abrir tus chats con empleadores\nCerrar - Cerrar el chat actual\nAyuda - Ver estos comandos\n\nEn una alerta de trabajo, usa los botones.\n\nSi ves una lista numerada, responde con el numero del trabajo:\n[numero] me interesa - Aplicar\n[numero] info - Ver detalles\n[numero] no - Omitir',
+    en: 'Commands\n\nJobs - See opportunities\nApplications - See your applications\nProfile - See your profile\nChats - Open your employer chats\nClose - Close the current chat\nHelp - Show these commands\n\nOn a job alert, use the buttons.\n\nIf you see a numbered list, reply with the job number:\n[number] interested - Apply\n[number] info - See details\n[number] no - Skip',
   },
   profile_not_ready: {
     es: 'Tu perfil aun no esta listo.\n\nTermina las preguntas primero. Envia "Ayuda" para ver comandos.',

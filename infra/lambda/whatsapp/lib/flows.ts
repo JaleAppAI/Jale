@@ -159,19 +159,74 @@ export interface TypedJobAction {
   action: 'accept' | 'decline' | 'info';
 }
 
+/**
+ * Sprint 24 C1: the job-alert buttons are labelled "interested / not
+ * interested" now, so those are the words a worker types back. The button
+ * PAYLOAD grammar (`parseButtonPayload`, `accept|decline|info:job-...`) is
+ * deliberately untouched -- the labels changed, the payload ids did not.
+ *
+ * NEGATIVES ARE LISTED FIRST and tested first, because "no me interesa"
+ * CONTAINS "me interesa" (and "not interested" contains "interested"): with
+ * the positives first, a worker declining a job would be applied to it. The
+ * `$` anchor already forces the regex to prefer the longer alternative, so
+ * this ordering is belt AND braces -- the classification below re-checks the
+ * decline list before the accept list.
+ *
+ * The historical verbs stay: the help menu advertised "aceptar/accept" for
+ * months, and a relabelled button must not break a worker who learned the
+ * old word.
+ */
+const TYPED_DECLINE_VERBS = [
+  'no me interesa',
+  'not interested',
+  'no',
+  'decline',
+  'rechazar',
+] as const;
+
+const TYPED_ACCEPT_VERBS = [
+  // `normalizeCommandText` lowercases but does NOT strip diacritics -- which
+  // is why the pre-existing list already carried both 'si' and 'sí' -- so
+  // both spellings of the accented phrase are listed too.
+  'sí me interesa',
+  'si me interesa',
+  'me interesa',
+  'interesa',
+  "i'm interested",
+  'im interested',
+  'interested',
+  'aceptar',
+  'accept',
+  'si',
+  'sí',
+  'yes',
+] as const;
+
+const TYPED_JOB_ACTION_PATTERN = new RegExp(
+  `^(\\d+)\\s+(${[...TYPED_DECLINE_VERBS, ...TYPED_ACCEPT_VERBS, 'info'].join('|')})$`,
+);
+
+/**
+ * Phone keyboards autocorrect a typed `'` to U+2019 (and iOS sometimes to
+ * U+02BC), and `normalizeCommandText` only trims punctuation at the EDGES --
+ * an apostrophe inside "i'm interested" survives it. Folding the curly forms
+ * to the plain one keeps the verb list a single spelling.
+ */
+function normalizeTypedVerb(text: string): string {
+  return normalizeCommandText(text).replace(/[\u2018\u2019\u02bc]/g, "'");
+}
+
 export function parseTypedJobAction(text: string): TypedJobAction | null {
-  const m = normalizeCommandText(text).match(
-    /^(\d+)\s+(aceptar|accept|si|sí|yes|no|decline|rechazar|info)$/,
-  );
+  const m = normalizeTypedVerb(text).match(TYPED_JOB_ACTION_PATTERN);
   if (!m) return null;
   const index = parseInt(m[1], 10) - 1;
   if (index < 0) return null;
   const verb = m[2];
-  if (['aceptar', 'accept', 'si', 'sí', 'yes'].includes(verb)) {
-    return { index, action: 'accept' };
-  }
-  if (['no', 'decline', 'rechazar'].includes(verb)) {
+  if ((TYPED_DECLINE_VERBS as readonly string[]).includes(verb)) {
     return { index, action: 'decline' };
+  }
+  if ((TYPED_ACCEPT_VERBS as readonly string[]).includes(verb)) {
+    return { index, action: 'accept' };
   }
   return { index, action: 'info' };
 }

@@ -553,6 +553,46 @@ describe('flows.ts — parseTypedJobAction', () => {
   test.each(['Trabajos', '1', 'apply 1', ''])('rejects "%s"', (input) => {
     expect(parseTypedJobAction(input)).toBeNull();
   });
+
+  // Sprint 24 C1: the buttons say "interested / not interested" now, and
+  // workers type back what the button says. The old verbs keep working --
+  // the help copy advertised them for months and a worker who learned
+  // "1 aceptar" must not be broken by a relabel.
+  describe('interested / not interested verbs', () => {
+    test.each([
+      ['1 me interesa', { index: 0, action: 'accept' }],
+      ['2 interesa', { index: 1, action: 'accept' }],
+      // normalizeCommandText lowercases but does NOT strip diacritics, so
+      // the accented and unaccented spellings are two distinct inputs.
+      ['3 si me interesa', { index: 2, action: 'accept' }],
+      ['3 s\u00ed me interesa', { index: 2, action: 'accept' }],
+      ['1 interested', { index: 0, action: 'accept' }],
+      ["2 i'm interested", { index: 1, action: 'accept' }],
+      // Phone keyboards autocorrect the apostrophe to U+2019.
+      ['2 i\u2019m interested', { index: 1, action: 'accept' }],
+      ['2 im interested', { index: 1, action: 'accept' }],
+      ['1 no me interesa', { index: 0, action: 'decline' }],
+      ['2 not interested', { index: 1, action: 'decline' }],
+      // Trailing punctuation is stripped by normalizeCommandText, as for
+      // every other verb.
+      ['1 me interesa!', { index: 0, action: 'accept' }],
+    ])('parses "%s"', (input, expected) => {
+      expect(parseTypedJobAction(input)).toEqual(expected);
+    });
+
+    // The whole point of ordering the negatives first: "no me interesa"
+    // CONTAINS "me interesa", so a positive-first alternation would apply
+    // the worker to a job they just declined.
+    it('reads "no me interesa" as a decline, never as an accept', () => {
+      expect(parseTypedJobAction('1 no me interesa')).toEqual({ index: 0, action: 'decline' });
+      expect(parseTypedJobAction('1 not interested')).toEqual({ index: 0, action: 'decline' });
+    });
+
+    test.each(['me interesa', 'interested', '1 interesado', '1 interesting'])(
+      'rejects "%s"',
+      (input) => expect(parseTypedJobAction(input)).toBeNull(),
+    );
+  });
 });
 
 describe('flows.ts — PROFILE_FIELDS structural', () => {
