@@ -195,7 +195,7 @@ describe('templates.ts — detectLanguage', () => {
 const V2_KEYS: TemplateKey[] = [
   'v2_start_invitation', 'v2_start_cooldown_note',
   'v2_otp_sent', 'v2_otp_invalid', 'v2_otp_expired', 'v2_otp_locked',
-  'v2_otp_resend_cooldown', 'v2_otp_send_cap',
+  'v2_otp_resend_cooldown', 'v2_otp_send_cap', 'v2_otp_send_failed',
   'v2_legal_prompt', 'v2_legal_declined',
   'v2_ask_name', 'v2_name_invalid',
   'v2_ask_location', 'v2_location_invalid',
@@ -271,6 +271,23 @@ describe('v2 templates', () => {
       expect(s).toContain('60');
       expect(s).not.toContain('{{');
     }
+  });
+
+  // Sprint 24 A3: the copy a worker sees when the OTP SMS could not be sent.
+  it('v2_otp_send_failed names SMS, invites a retry, and stays plain ASCII', () => {
+    const es = t('v2_otp_send_failed', 'es');
+    const en = t('v2_otp_send_failed', 'en');
+    expect(es).toContain('SMS');
+    expect(en).toContain('SMS');
+    expect(es.toLowerCase()).toContain('intenta de nuevo');
+    expect(en.toLowerCase()).toContain('try again');
+    // A non-ASCII byte reaches Twilio as a GSM-7 escape and re-segments the
+    // message -- every other string in this module is unaccented ASCII.
+    expect(es).toMatch(/^[\x00-\x7F]*$/);
+    expect(en).toMatch(/^[\x00-\x7F]*$/);
+    // No blame, no dead end: both recoveries the worker actually has.
+    expect(es.toLowerCase()).toContain('otro numero');
+    expect(en.toLowerCase()).toContain('another number');
   });
 
   it('the start invitation offers both languages and never reveals account existence', () => {

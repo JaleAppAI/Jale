@@ -76,6 +76,7 @@ export type TemplateKey =
   | 'v2_otp_locked'
   | 'v2_otp_resend_cooldown'
   | 'v2_otp_send_cap'
+  | 'v2_otp_send_failed'
   | 'v2_legal_prompt'
   | 'v2_legal_declined'
   | 'v2_ask_name'
@@ -355,6 +356,16 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
   v2_otp_send_cap: {
     es: 'Pediste demasiados codigos. Intenta de nuevo mas tarde.',
     en: 'You requested too many codes. Please try again later.',
+  },
+  // Sprint 24 A3: the SMS itself could not be sent (Twilio rejected the
+  // destination, e.g. error 21408 for an unenabled region). Names the
+  // channel that failed, offers both recoveries the worker actually has,
+  // and blames nothing on them. Unaccented ASCII like every other string in
+  // this module -- a non-ASCII byte reaches Twilio as a GSM-7 escape and
+  // silently re-segments the message.
+  v2_otp_send_failed: {
+    es: 'No pudimos enviarte el codigo por SMS a este numero. Intenta de nuevo en unos minutos o escribenos desde otro numero.',
+    en: "We couldn't send your code by SMS to this number. Try again in a few minutes or message us from another number.",
   },
   v2_legal_prompt: {
     es: 'Antes de continuar, revisa nuestros Terminos ({{tos_url}}) y nuestro Aviso de Privacidad ({{privacy_url}}). Responde ACEPTAR para continuar, RECHAZAR para detenerte, o REVISAR TERMINOS para verlos otra vez.',

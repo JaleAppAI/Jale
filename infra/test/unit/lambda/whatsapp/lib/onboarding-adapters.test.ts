@@ -210,6 +210,89 @@ describe('IdentityAdapter.issueChallenge', () => {
       expect.objectContaining({ status: 'throttled', retryAfterSeconds: expect.any(Number) }),
     );
   });
+
+  // ── Sprint 24 A3: the OTP SMS itself failing to send ──────────────────
+  //
+  // CreateAuthChallenge (lambda/auth/create-auth-challenge.ts) sends the SMS
+  // through Twilio and RETHROWS on failure; Cognito surfaces that to
+  // InitiateAuth as UserLambdaValidationException. Before this, the throw
+  // escaped issueChallenge -> handleStartStep -> routeMessage and the inbound
+  // SQS record died in whatsapp-inbound-v2-dlq.fifo (three real messages did).
+  describe('an OTP whose SMS could not be sent', () => {
+    const PHONE = 'whatsapp:+15125550100';
+    let logSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      logSpy.mockRestore();
+    });
+
+    function adapterWithInitiateAuthError(err: unknown) {
+      mockCognitoDispatch({
+        AdminGetUser: () => happyAdminGetUserResponse(PHONE),
+        AdminAddUserToGroup: () => ({}),
+        InitiateAuth: () => {
+          throw err;
+        },
+      });
+      return createIdentityAdapter({
+        userPoolId: 'pool-1',
+        clientId: 'client-1',
+        clock,
+        reconcileUserRow,
+      });
+    }
+
+    it('returns send_failed (never throws) and logs a static metric', async () => {
+      // The real production error, verbatim in `message` -- classification
+      // must key off `name`, never this text.
+      const err: any = new Error(
+        'CreateAuthChallenge failed with error Twilio SMS OTP send failed: '
+        + "Permission to send an SMS has not been enabled for the region indicated by the 'To' number.",
+      );
+      err.name = 'UserLambdaValidationException';
+      const identity = adapterWithInitiateAuthError(err);
+
+      await expect(identity.issueChallenge({ whatsappNumber: PHONE, lang: 'en' }))
+        .resolves.toEqual({ status: 'send_failed' });
+
+      const logged = logSpy.mock.calls.map((call) => String(call[0]));
+      expect(logged.some((line) => line.includes('WorkerOtpChallengeSendFailed'))).toBe(true);
+      // Metric name + static reasons only: no phone number, no provider text.
+      for (const line of logged) {
+        expect(line).not.toContain('15125550100');
+        expect(line).not.toContain('Twilio');
+        expect(line).not.toContain('region');
+      }
+    });
+
+    it('classifies on err.code as well as err.name (SDK error shapes differ)', async () => {
+      const err: any = new Error('lambda validation failed');
+      err.name = 'Error';
+      err.code = 'UserLambdaValidationException';
+      const identity = adapterWithInitiateAuthError(err);
+
+      await expect(identity.issueChallenge({ whatsappNumber: PHONE, lang: 'en' }))
+        .resolves.toEqual({ status: 'send_failed' });
+    });
+
+    it('never classifies on the message text alone', async () => {
+      // Same message, no UserLambdaValidationException identity: this is an
+      // unknown failure and must still surface as a throw (retry/DLQ), not
+      // be silently swallowed as a send failure.
+      const err: any = new Error('CreateAuthChallenge failed with error Twilio SMS OTP send failed');
+      err.name = 'InternalErrorException';
+      const identity = adapterWithInitiateAuthError(err);
+
+      await expect(identity.issueChallenge({ whatsappNumber: PHONE, lang: 'en' }))
+        .rejects.toThrow('CreateAuthChallenge failed');
+      expect(logSpy.mock.calls.map((call) => String(call[0])).some((line) => line.includes('WorkerOtpChallengeSendFailed')))
+        .toBe(false);
+    });
+  });
 });
 
 // ── IdentityAdapter.verifyChallenge ─────────────────────────────────────
