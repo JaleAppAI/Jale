@@ -21,6 +21,9 @@ jobs:
   workflow-guard:
     name: Workflow guardrails
     runs-on: ubuntu-latest
+    # Normal runtime is ~10-12s; 20 minutes leaves headroom without letting a
+    # hang burn the shared 360-minute ceiling.
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,6 +39,9 @@ jobs:
   scripts:
     name: Script syntax
     runs-on: ubuntu-latest
+    # Normal runtime is ~10-20s; 20 minutes leaves headroom without letting a
+    # hang burn the shared 360-minute ceiling.
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -69,9 +75,24 @@ jobs:
   infra:
     name: Infra build, test, synth
     runs-on: ubuntu-latest
+    # Observed runtime is ~16-24 min (npm run test:ci --runInBand shells out to
+    # `npm install` ~25 times for NodejsFunction bundling, then CDK synth); 45
+    # minutes gives ~2x headroom over the worst run seen while still failing
+    # well short of GitHub's 360-minute ceiling if npm's audit endpoint (or
+    # anything else) stalls those installs.
+    timeout-minutes: 45
     env:
       CDK_DEFAULT_ACCOUNT: '111111111111'
       CDK_DEFAULT_REGION: ${{ inputs.aws-region }}
+      # Scoped to this job only (not workflow-level): the security job below
+      # runs `npm audit --omit=dev --audit-level=high` as an explicit gate and
+      # must keep hitting the audit endpoint. Here we only want the *incidental*
+      # audit/funding calls that npm makes on every install skipped -- npm ci in
+      # the setup step, and more importantly the ~25 npm installs CDK's
+      # NodejsFunction bundling shells out to during jest and synth, which
+      # otherwise each stall 5-7 min when npm's audit endpoint is degraded.
+      NPM_CONFIG_AUDIT: 'false'
+      NPM_CONFIG_FUND: 'false'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -90,10 +111,18 @@ jobs:
         # test:ci is plain `jest` — the default `test` script carries
         # --maxWorkers=2 (a dev-host OOM cap), and jest rejects combining
         # --maxWorkers with --runInBand in one invocation.
+        # NPM_CONFIG_PREFER_OFFLINE: the NodejsFunction bundling this step
+        # triggers reinstalls the same Lambda dependency sets repeatedly;
+        # prefer the runner's npm cache over hitting the registry when a
+        # satisfying copy is already there.
+        env:
+          NPM_CONFIG_PREFER_OFFLINE: 'true'
         run: npm run test:ci -- --runInBand
 
       - name: CDK synth backend stacks
         working-directory: infra
+        env:
+          NPM_CONFIG_PREFER_OFFLINE: 'true'
         run: npx cdk synth --all -c environment=${{ inputs.cdk-environment }} -c skipFrontend=true -c emailFromAddress=ci-synth@jaleapp.ai -c sesVerifiedIdentityArn=arn:aws:ses:${{ inputs.aws-region }}:111111111111:identity/jaleapp.ai -c sesEmailFromAddress=ci-synth@jaleapp.ai -c sesEmailRegion=us-east-1 -c whatsappStatusCallbackUrl=https://api.example.invalid/whatsapp/status-callback -c whatsappAlarmTopicArn=arn:aws:sns:${{ inputs.aws-region }}:111111111111:jale-ci-whatsapp-alarms -c billingAlarmTopicArn=arn:aws:sns:${{ inputs.aws-region }}:111111111111:jale-ci-whatsapp-alarms -c publicSiteBaseUrl=https://ci-synth.example.invalid -c sesConfigurationSetName=jale-ci-employer-email -c whatsappBusinessNumber=15550000000 --output "$RUNNER_TEMP/jale-cdk-synth-backend"
 
       - name: Upload backend synth artifact
@@ -106,6 +135,9 @@ jobs:
   frontend:
     name: Frontend build
     runs-on: ubuntu-latest
+    # Normal runtime is ~1 min; 20 minutes leaves headroom without letting a
+    # hang burn the shared 360-minute ceiling.
+    timeout-minutes: 20
     env:
       NEXT_PUBLIC_API_BASE_URL: http://localhost:3000/api
       NEXT_PUBLIC_WORKER_POOL_ID: us-east-1_placeholder
@@ -128,6 +160,9 @@ jobs:
   admin:
     name: Admin build and contract checks
     runs-on: ubuntu-latest
+    # Normal runtime is ~1-1.5 min; 20 minutes leaves headroom without letting
+    # a hang burn the shared 360-minute ceiling.
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -162,6 +197,11 @@ jobs:
   security:
     name: Security checks
     runs-on: ubuntu-latest
+    # Normal runtime is under 1 min; 20 minutes leaves headroom without
+    # letting a hang burn the shared 360-minute ceiling. This job keeps the
+    # real `npm audit` gate (no NPM_CONFIG_AUDIT override here) and is
+    # unaffected by the infra job's audit-skip env, which is scoped locally.
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
