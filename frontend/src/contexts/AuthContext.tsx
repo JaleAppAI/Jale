@@ -3,6 +3,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { apiFetch } from '@/lib/api';
 import { getAuthBridge, registerAuthBridge } from '@/lib/auth-bridge';
 import { buildLoginUrl } from '@/lib/login-url';
+import { clearSession as clearStoredSession, readSession, writeSession } from '@/lib/session-storage';
 import { locales } from '@/i18n/locales';
 
 interface AuthState {
@@ -27,10 +28,6 @@ type UserType = 'worker' | 'employer';
 
 const AuthContext = createContext<AuthState | null>(null);
 
-function parseUserType(value: string | null): UserType | null {
-    return value === 'worker' || value === 'employer' ? value : null;
-}
-
 function inferUserTypeFromPath(): UserType | null {
     if (typeof window === 'undefined') return null;
     const pathname = window.location.pathname;
@@ -54,11 +51,17 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
     const [isLoading, setIsLoading] = useState(true);
     const refreshInFlight = useRef<Promise<string | null> | null>(null);
 
+    // Picks the stored session up on every load, for BOTH user types — worker
+    // and employer share this provider, so `@/lib/session-storage` is the one
+    // place either session is read or written.
     useEffect(() => {
-        const rt = sessionStorage.getItem('refreshToken');
-        const ut = parseUserType(sessionStorage.getItem('userType')) ?? inferUserTypeFromPath();
+        const stored = readSession();
+        const rt = stored?.refreshToken ?? null;
+        const ut = stored?.userType ?? inferUserTypeFromPath();
         if (rt) {
-            if (ut) sessionStorage.setItem('userType', ut);
+            // Pin the type we inferred so a later refresh does not have to
+            // guess it again from a path that may have changed.
+            if (ut) writeSession({ refreshToken: rt, userType: ut });
             setRefreshToken(rt);
             setUserType(ut);
             apiFetch('/auth/refresh', {
@@ -70,14 +73,12 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
                     setAccessToken(data.accessToken);
                     setIdToken(data.idToken);
                 } else {
-                    sessionStorage.removeItem('refreshToken');
-                    sessionStorage.removeItem('userType');
+                    clearStoredSession();
                     setRefreshToken(null);
                     setUserType(null);
                 }
             }).catch(() => {
-                sessionStorage.removeItem('refreshToken');
-                sessionStorage.removeItem('userType');
+                clearStoredSession();
                 setRefreshToken(null);
                 setUserType(null);
             }).finally(() => setIsLoading(false));
@@ -91,15 +92,15 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
         setIdToken(tokens.idToken);
         setRefreshToken(tokens.refreshToken);
         setUserType(ut);
-        sessionStorage.setItem('refreshToken', tokens.refreshToken);
-        sessionStorage.setItem('userType', ut);
+        writeSession({ refreshToken: tokens.refreshToken, userType: ut });
     };
 
-    // Drops every trace of the session, locally. Stable identity (only setters
-    // and sessionStorage), so the bridge below registers exactly once.
+    // Drops every trace of the session, locally — including the pre-migration
+    // per-tab copy, so a sign-out cannot be undone by the next load promoting
+    // a token it left behind. Stable identity (only setters and the storage
+    // module), so the bridge below registers exactly once.
     const clearSession = useCallback(() => {
-        sessionStorage.removeItem('refreshToken');
-        sessionStorage.removeItem('userType');
+        clearStoredSession();
         setAccessToken(null);
         setIdToken(null);
         setRefreshToken(null);
@@ -122,11 +123,13 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
         if (refreshInFlight.current) return refreshInFlight.current;
 
         const run = (async (): Promise<string | null> => {
-            // sessionStorage, not component state, is the source of truth here:
-            // the bridge is registered once and must never close over a stale
-            // token.
-            const rt = sessionStorage.getItem('refreshToken');
-            const ut = parseUserType(sessionStorage.getItem('userType'));
+            // Storage, not component state, is the source of truth here: the
+            // bridge is registered once and must never close over a stale
+            // token. Reading it also picks up a rotation done by another tab,
+            // which is only possible now the session is shared.
+            const stored = readSession();
+            const rt = stored?.refreshToken ?? null;
+            const ut = stored?.userType ?? null;
             if (!rt) {
                 clearSession();
                 return null;
@@ -174,7 +177,7 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
             refreshIdToken,
             onSessionExpired: () => {
                 // Read the identity BEFORE clearing it -- the login URL needs it.
-                const ut = parseUserType(sessionStorage.getItem('userType')) ?? inferUserTypeFromPath();
+                const ut = readSession()?.userType ?? inferUserTypeFromPath();
                 const { pathname, search } = window.location;
                 clearSession();
                 window.location.assign(
