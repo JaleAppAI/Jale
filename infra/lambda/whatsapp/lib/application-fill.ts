@@ -1590,6 +1590,35 @@ async function resolveChangeMenu(
   return { handled: true };
 }
 
+/**
+ * F2 (sprint 24): drop a menu that this turn is NOT going to resolve.
+ *
+ * `resolveChangeMenu` is what makes the menu one-shot, but it lives at step
+ * (5b) of `handleFillMessage` and three earlier branches return before it
+ * ever runs -- the button/interactive payload escape (1), the media turn (2)
+ * and the picker-digit escape (4). A menu left standing through any of them
+ * hijacks the worker's NEXT bare digit: work_authorization, education,
+ * military_service, worked_here_before and both entry loops are all answered
+ * with exactly '1'/'2', so the digit would clear a stored answer instead of
+ * answering the question that was just asked (the F2 scenario: CAMBIAR ->
+ * menu -> the requested photo -> next numbered question -> '1' silently
+ * un-answers something).
+ *
+ * Conditional on the key being present so a turn with no menu armed issues
+ * no write at all -- the three call sites are on the hot path for every
+ * button tap, photo and picker reply, and two of them are documented (and
+ * tested) as costing zero queries.
+ */
+async function dropStaleChangeMenu(
+  client: PoolClient,
+  ctx: FillContext,
+  deps: FillDeps,
+): Promise<void> {
+  if (!ctx.stateContext.fill_change_menu) return;
+  await deps.updateStateContext(client, ctx.conversationId, { fill_change_menu: null });
+  logStep('change', 'menu_dropped_unresolved');
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Task 8: document collection (spec §8). `handleDocUpload` does the actual
 // download/sniff/S3-put/DB-write for ONE attachment; `handleFillMediaTurn`
@@ -2289,6 +2318,10 @@ export async function handleFillMessage(
 
   // (1) Button/interactive-payload escape -- see this function's jsdoc.
   if (msg.buttonPayload || msg.interactivePayload) {
+    // F2: everything else about this escape is unchanged (fill state KEPT),
+    // but a one-shot CAMBIAR menu is not fill state -- leaving it armed
+    // would let the worker's next bare digit clear an answer.
+    await dropStaleChangeMenu(client, ctx, deps);
     return { handled: false };
   }
 
@@ -2299,6 +2332,8 @@ export async function handleFillMessage(
   // below consume ctx.jobId, and this branch never reaches the text path's
   // own refresh further down.
   if (msg.numMedia > 0) {
+    // F2: a photo is not a menu pick, and this branch never reaches (5b).
+    await dropStaleChangeMenu(client, ctx, deps);
     ctx.jobId = (await fetchApplicationJobId(client, applicationId)) ?? ctx.jobId;
     return handleFillMediaTurn(client, ctx, msg, deps, applicationId);
   }
@@ -2332,6 +2367,9 @@ export async function handleFillMessage(
 
   // (4) Picker-digit escape -- see this function's jsdoc.
   if (ctx.stateContext.pending_picker && /^\d{1,2}$/.test(body.trim())) {
+    // F2: the picker owns this digit (spec §6.4), so the menu does NOT get
+    // to resolve against it -- and must not survive to eat the next one.
+    await dropStaleChangeMenu(client, ctx, deps);
     return { handled: false };
   }
 

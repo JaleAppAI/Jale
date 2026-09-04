@@ -1630,6 +1630,132 @@ describe('handleFillMessage — CAMBIAR/CHANGE correction menu', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────
+// F2 (sprint 24): the CAMBIAR menu is a ONE-SHOT and must not outlive the
+// turn after it was sent.
+//
+// `resolveChangeMenu` (step 5b) is what makes it one-shot -- but three
+// branches of `handleFillMessage` return BEFORE 5b ever runs: the
+// button/interactive payload escape (1), the media turn (2) and the
+// picker-digit escape (4). A menu left standing through any of them hijacks
+// the NEXT bare digit the worker types: several fields (work_authorization,
+// education, military_service, worked_here_before, the entry loops) are
+// answered with exactly '1'/'2', so the digit clears a stored answer instead
+// of answering the question that was just asked.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('handleFillMessage — the CAMBIAR menu is a one-shot (F2)', () => {
+  beforeEach(resetFake);
+
+  /** Arms a menu over one reused field, on an application that still has
+   * `work_authorization` outstanding -- so the question the worker is being
+   * asked is answered with a bare '1', the exact digit a stale menu eats. */
+  async function armedMenu(deps?: FillDeps): Promise<{ ctx: FillContext; deps: FillDeps }> {
+    setApp({
+      required_fields: ['education', 'work_authorization'],
+      application_answers: { education: { level: 'high_school' } },
+    });
+    const ctx = makeCtx({
+      stateContext: {
+        fill_application_id: APPLICATION_ID,
+        fill_reused: { fields: ['education'], docs: [] },
+      },
+    });
+    const useDeps = deps ?? makeDeps(ctx);
+    await handleFillMessage(client, ctx, incomingMsg('CAMBIAR'), useDeps);
+    expect(ctx.stateContext.fill_change_menu).toEqual({
+      items: [{ kind: 'field', key: 'education' }],
+      at: NOW_MS,
+    });
+    return { ctx, deps: useDeps };
+  }
+
+  it('a media turn drops the menu, so the next digit answers the question instead of clearing an answer', async () => {
+    const { ctx, deps } = await armedMenu();
+
+    // The worker sends a photo rather than a number. The current step is a
+    // FIELD step, so the media branch answers `field_step_media` and the
+    // outstanding question (work_authorization) still stands.
+    const media = await handleFillMessage(client, ctx, incomingMsg('', {
+      numMedia: 1, mediaUrl: 'https://api.twilio.test/m1', mediaContentType: 'image/jpeg',
+    }), deps);
+
+    expect(media).toEqual({ handled: true });
+    expect(lastReply(deps)).toBe(fillMessage('field_step_media', 'en'));
+    expect(ctx.stateContext.fill_change_menu).toBeNull();
+
+    // ...so THIS '1' answers work_authorization and never touches education.
+    await handleFillMessage(client, ctx, incomingMsg('1'), deps);
+    expect(hasCall(SQL.clearAnswer)).toBe(false);
+    expect(fake.apps.get(APPLICATION_ID)!.row!.application_answers).toEqual({
+      education: { level: 'high_school' },
+      work_authorization: true,
+    });
+  });
+
+  it('a media turn that STORES a document also drops the menu', async () => {
+    // TWO required docs on purpose: with only one, storing it completes the
+    // application and `FILL_SCRUB` clears the menu for an unrelated reason,
+    // so the test would pass against the bug.
+    setApp(
+      { required_docs: ['resume', 'driver_license'], application_answers: {} },
+      { haveDocs: [], vaultDocs: [] },
+    );
+    const ctx = makeCtx({
+      stateContext: {
+        fill_application_id: APPLICATION_ID,
+        fill_reused: { fields: [], docs: ['resume'] },
+      },
+    });
+    const deps = makeDeps(ctx, { downloadMedia: jest.fn(async () => PDF_BYTES) });
+    (uploadDocumentToS3 as jest.Mock).mockResolvedValue({ versionId: 'v1' });
+    await handleFillMessage(client, ctx, incomingMsg('CAMBIAR'), deps);
+    expect(ctx.stateContext.fill_change_menu).not.toBeNull();
+
+    await handleFillMessage(client, ctx, incomingMsg('', {
+      numMedia: 1, mediaUrl: 'https://api.twilio.test/m1', mediaContentType: 'application/pdf',
+    }), deps);
+
+    expect(findCall(SQL.docInsert)[1][2]).toBe('resume');
+    // The fill advanced to the NEXT doc (no completion, so no FILL_SCRUB)...
+    expect(lastReply(deps)).toBe(docPrompt('driver_license', 'en'));
+    expect(hasCall(SQL.detailsComplete)).toBe(false);
+    // ...and the menu is gone anyway.
+    expect(ctx.stateContext.fill_change_menu).toBeNull();
+  });
+
+  it('a picker digit drops the menu and STILL escapes to the picker', async () => {
+    const { ctx, deps } = await armedMenu();
+    // A CHATS/list picker armed after the menu was sent: spec 6.4 gives the
+    // picker every bare digit, so this '1' is NOT a menu pick.
+    await deps.updateStateContext(client, CONVERSATION_ID, {
+      pending_picker: { kind: 'chats' as const, threads: [] },
+    });
+
+    const res = await handleFillMessage(client, ctx, incomingMsg('1'), deps);
+
+    expect(res).toEqual({ handled: false });
+    expect(ctx.stateContext.fill_change_menu).toBeNull();
+    // The digit went to the picker, so nothing of the fill's own was touched.
+    expect(hasCall(SQL.clearAnswer)).toBe(false);
+    expect(hasCall(SQL.mergeUpdate)).toBe(false);
+  });
+
+  it('a button payload drops the menu and STILL escapes', async () => {
+    const { ctx, deps } = await armedMenu();
+
+    const res = await handleFillMessage(client, ctx, incomingMsg('', {
+      buttonPayload: 'accept:job-xyz',
+    }), deps);
+
+    expect(res).toEqual({ handled: false });
+    expect(ctx.stateContext.fill_change_menu).toBeNull();
+    expect(hasCall(SQL.clearAnswer)).toBe(false);
+    // The escape itself is unchanged: fill state is KEPT, no reply queued.
+    expect(ctx.stateContext.fill_application_id).toBe(APPLICATION_ID);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
 // handleFillMessage -- field-step collection (parse, extract, confirm).
 // `validateApplicationAnswers` runs for REAL in every test below except the
 // two that deliberately override it.
