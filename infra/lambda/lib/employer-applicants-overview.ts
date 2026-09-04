@@ -16,6 +16,13 @@ export type ApplicantOverviewItem = {
   /** From the employer_candidate_rankings cache; null when never computed. */
   match_score: number | null;
   score_band: 'strong' | 'good' | 'fair' | null;
+  /**
+   * `users.trade_competency_score` (012:122) -- how the worker came across
+   * when asked about their trade, NOT how well they fit this job. An INTEGER
+   * column, so node-pg hands it back as a number; null means never assessed,
+   * which the pill renders differently from a zero.
+   */
+  trust_score: number | null;
 };
 
 export type OverviewJob = { job_id: string; title: string; city: string | null; status: string };
@@ -57,7 +64,13 @@ const OVERVIEW_QUERY = `
     wp.availability,
     wp.years_experience,
     ecr.score AS match_score,
-    ecr.score_band
+    ecr.score_band,
+    -- Same expression employer-candidate-ranking.ts:338 uses, so the cross-job
+    -- overview and the per-job list can never show a different trust number
+    -- for the same worker. The users JOIN below is already there for the name,
+    -- and users_employer_applicant_read (020b:261-269) is what admits the row
+    -- -- the caller sets app.current_internal_user_id before this runs.
+    u.trade_competency_score AS trust_score
   FROM job_applications ja
   JOIN jobs j ON j.id = ja.job_id AND j.employer_id = $1
   JOIN users u ON u.id = ja.worker_id
