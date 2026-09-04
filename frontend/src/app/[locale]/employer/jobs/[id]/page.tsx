@@ -54,7 +54,12 @@ import { classifyError, type ErrorKind } from '@/lib/api/errors';
 import { planLimitModel, type PlanLimitModel } from '@/lib/plan-limit';
 import { answerEntries } from '@/lib/format-application-answers';
 import type { WritableJobStatus } from '@/lib/status';
-import { canRequestDetails, canResendDetails, detailsRequestFeedbackKey } from '@/lib/hire-gate';
+import {
+    canRequestDetails,
+    canResendDetails,
+    detailsRequestFeedbackKey,
+    detailsRequestFeedbackTone,
+} from '@/lib/hire-gate';
 import { formatLongDate, formatStartDate } from '@/lib/date';
 import { buildCandidateMatchMap, type ApplicantMatch } from './candidate-matches';
 import { TrustScorePill } from './TrustScorePill';
@@ -1046,11 +1051,12 @@ function ApplicantRow({
     const [starting, setStarting] = useState(false);
     const [messageError, setMessageError] = useState<string | null>(null);
     const [requesting, setRequesting] = useState(false);
-    // The sentence describing what the last request actually did. Holds a
-    // rendered message rather than a boolean (sprint 24, B7): there are now
-    // four possible outcomes, and which one applies is only known once the
-    // PATCH answers.
-    const [detailsFeedback, setDetailsFeedback] = useState<string | null>(null);
+    // What the last request actually did. Holds a rendered message AND its
+    // tone rather than a boolean (sprint 24, B7): there are now four possible
+    // outcomes, which one applies is only known once the PATCH answers, and
+    // one of them ("no message was sent") must not be painted green.
+    const [detailsFeedback, setDetailsFeedback] =
+        useState<{ tone: FeedbackTone; message: string } | null>(null);
     const [requestError, setRequestError] = useState<string | null>(null);
 
     const displayName = applicant.full_name?.trim() || t('applicants.unknown_name');
@@ -1077,13 +1083,14 @@ function ApplicantRow({
      */
     const detailsStatus = applicant.details_status;
     const showRequestDetails = canRequestDetails(applicant);
-    const resendingDetails = canResendDetails(applicant.status);
+    const resendingDetails = canResendDetails(applicant.status, detailsStatus);
 
     async function handleRequestDetails() {
         if (!idToken || requesting) return;
-        // Only when the row already SITS at details_requested -- the backend
-        // refuses `resend` with a 400 for any other status.
-        const resend = canResendDetails(applicant.status);
+        // Only when the row already SITS at details_requested and the worker
+        // has not answered -- the backend refuses `resend` with a 400 for any
+        // other status, and chasing completed details is a lie.
+        const resend = canResendDetails(applicant.status, detailsStatus);
         setRequesting(true);
         setRequestError(null);
         try {
@@ -1093,12 +1100,14 @@ function ApplicantRow({
             );
             // The honest outcome, not a blanket "we'll let them know": a
             // worker with no WhatsApp on file used to read identically to a
-            // delivered message. Fails open to the old neutral copy against an
+            // delivered message. Tone follows the outcome too, so that case is
+            // not painted green. Fails open to the old neutral copy against an
             // API that publishes no outcome.
-            setDetailsFeedback(t(
-                `applicants.${detailsRequestFeedbackKey(updated)}`,
-                { name: displayName },
-            ));
+            const feedbackKey = detailsRequestFeedbackKey(updated);
+            setDetailsFeedback({
+                tone: detailsRequestFeedbackTone(feedbackKey),
+                message: t(`applicants.${feedbackKey}`, { name: displayName }),
+            });
             onDetailsRequested(applicant.application_id, updated.status ?? 'details_requested');
         } catch (err) {
             setRequestError(errorMessage(err));
@@ -1277,8 +1286,8 @@ function ApplicantRow({
             ) : null}
 
             {detailsFeedback ? (
-                <InlineFeedback tone="success" onDismiss={() => setDetailsFeedback(null)}>
-                    {detailsFeedback}
+                <InlineFeedback tone={detailsFeedback.tone} onDismiss={() => setDetailsFeedback(null)}>
+                    {detailsFeedback.message}
                 </InlineFeedback>
             ) : null}
 

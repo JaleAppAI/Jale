@@ -40,6 +40,7 @@ import {
     canRequestDetails,
     canResendDetails,
     detailsRequestFeedbackKey,
+    detailsRequestFeedbackTone,
     hireBlockReason,
     remainingCount,
     statusSelectOptions,
@@ -255,11 +256,13 @@ export default function WorkerProfilePage() {
     const showRequestDetails = canRequestDetails({
         status: savedStatus, details_status: profile?.details_status,
     });
-    const resendingDetails = canResendDetails(savedStatus);
+    const resendingDetails = canResendDetails(savedStatus, profile?.details_status);
 
     const handleRequestDetails = useCallback(async () => {
         if (!idToken || !linkValid || !profile || requestingDetails) return;
-        const resend = canResendDetails(normalizeApplicationStatus(profile.application_status));
+        const resend = canResendDetails(
+            normalizeApplicationStatus(profile.application_status), profile.details_status,
+        );
         setRequestingDetails(true);
         setSaveFeedback(null);
         try {
@@ -293,10 +296,14 @@ export default function WorkerProfilePage() {
              * picks the sentence and fails open to the old neutral copy on an
              * API that publishes no outcome.
              */
+            const feedbackKey = detailsRequestFeedbackKey(updated);
             setSaveFeedback({
-                tone: 'success',
+                // Tone follows the OUTCOME, never a blanket success: a green
+                // banner reading "no message was sent" is the exact confusion
+                // B7 exists to remove.
+                tone: detailsRequestFeedbackTone(feedbackKey),
                 message: tListing(
-                    `applicants.${detailsRequestFeedbackKey(updated)}`,
+                    `applicants.${feedbackKey}`,
                     { name: profile.full_name?.trim() || t('fallback_name') },
                 ),
             });

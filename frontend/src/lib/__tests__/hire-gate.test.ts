@@ -4,6 +4,7 @@ import {
     canRequestDetails,
     canResendDetails,
     detailsRequestFeedbackKey,
+    detailsRequestFeedbackTone,
     statusSelectOptions,
     hireBlockReason,
     hireBlocked,
@@ -75,14 +76,23 @@ describe('canRequestDetails', () => {
         expect(canRequestDetails({ status: 'contacted', details_status: 'not_requested' })).toBe(true);
     });
 
-    it('KEEPS offering it once details are outstanding or in -- the button becomes the resend', () => {
-        // Sprint 24 (B7) inverts the sprint-23 rule. `details_requested` is no
+    it('KEEPS offering it while the request is OUTSTANDING -- the button becomes the resend', () => {
+        // Sprint 24 (B7) relaxes the sprint-23 rule. `details_requested` is no
         // longer selectable in the status dropdown, so the button is the ONLY
-        // control that sends the notification -- hiding it once details were
-        // requested left an employer with no way to nudge a worker who never
-        // answered. `details_status` no longer participates at all.
+        // control that sends the notification -- hiding it the moment details
+        // were requested left an employer with no way to nudge a worker who
+        // never answered.
         expect(canRequestDetails({ status: 'details_requested', details_status: 'requested' })).toBe(true);
-        expect(canRequestDetails({ status: 'talking', details_status: 'complete' })).toBe(true);
+    });
+
+    it('withdraws it once the worker has actually COMPLETED their details', () => {
+        // The relaxation above stops here. Asking again for details the
+        // employer already has is not a nudge, it is a lie -- and the row can
+        // legitimately still read `details_requested` after the worker
+        // finished, because the status is the employer's to move.
+        expect(canRequestDetails({ status: 'details_requested', details_status: 'complete' })).toBe(false);
+        expect(canRequestDetails({ status: 'talking', details_status: 'complete' })).toBe(false);
+        expect(canRequestDetails({ status: 'contacted', details_status: 'complete' })).toBe(false);
     });
 
     it('withdraws it on a terminal application, whatever the details say', () => {
@@ -97,6 +107,7 @@ describe('canRequestDetails', () => {
         // disagreement withdraws the control any more -- only a TERMINAL
         // status does.
         expect(canRequestDetails({ status: 'contacted', details_status: 'requested' })).toBe(true);
+        expect(canRequestDetails({ status: 'talking', details_status: 'requested' })).toBe(true);
     });
 
     it('FAILS OPEN when the API publishes no details_status', () => {
@@ -127,18 +138,48 @@ describe('SELECTABLE_APPLICATION_STATUSES', () => {
 });
 
 describe('canResendDetails', () => {
-    it('is true only while the application actually sits at details_requested', () => {
-        expect(canResendDetails('details_requested')).toBe(true);
+    it('is true while the row sits at details_requested and the worker has NOT answered', () => {
+        expect(canResendDetails('details_requested', 'requested')).toBe(true);
+        // Fails open on an absent details_status, like the rest of this
+        // module: not knowing is not evidence the worker has answered.
+        expect(canResendDetails('details_requested', undefined)).toBe(true);
+        expect(canResendDetails('details_requested', 'not_requested')).toBe(true);
+    });
+
+    it('is false once the worker has COMPLETED their details', () => {
+        // There is nothing left to chase. The backend would happily re-send
+        // -- the row still says details_requested -- so this is the only guard.
+        expect(canResendDetails('details_requested', 'complete')).toBe(false);
     });
 
     it('is false for every other status, including the terminal ones', () => {
         for (const status of ['pending', 'contacted', 'talking', 'hired', 'not_interested'] as const) {
-            expect(canResendDetails(status)).toBe(false);
+            expect(canResendDetails(status, 'requested')).toBe(false);
         }
     });
 
     it('is false when the status is unknown', () => {
-        expect(canResendDetails(undefined)).toBe(false);
+        expect(canResendDetails(undefined, 'requested')).toBe(false);
+    });
+});
+
+describe('detailsRequestFeedbackTone', () => {
+    it('celebrates only the outcomes that actually reached the worker', () => {
+        expect(detailsRequestFeedbackTone('request_details_notified')).toBe('success');
+        // The fail-open line promises a future notification, so it is not a
+        // false claim -- it stays a success.
+        expect(detailsRequestFeedbackTone('request_details_sent')).toBe('success');
+    });
+
+    it('warns when no message went out at all', () => {
+        // A green banner saying "no message was sent" is the exact confusion
+        // B7 exists to remove. `warning` also gives InlineFeedback an `alert`
+        // role, so a screen reader hears it -- this needs the employer to act.
+        expect(detailsRequestFeedbackTone('request_details_no_whatsapp')).toBe('warning');
+    });
+
+    it('states a no-op neutrally', () => {
+        expect(detailsRequestFeedbackTone('request_details_unchanged')).toBe('info');
     });
 });
 
