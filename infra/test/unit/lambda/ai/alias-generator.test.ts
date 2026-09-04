@@ -239,6 +239,56 @@ describe('generateAndCacheAliases', () => {
 
     expect(result?.trade_category).toBeNull();
   });
+
+  it('parses an alias object that arrives behind explanatory prose', async () => {
+    // Haiku 4.5 sometimes prefixes the JSON with a sentence. Stripping fences
+    // alone left that as a hard parse failure; the shared lenient parser must
+    // find the object inside the prose.
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
+    mockBedrockSend.mockResolvedValueOnce({
+      output: {
+        message: {
+          content: [{
+            text: 'Here is the mapping for that trade:\n\n' + JSON.stringify({
+              canonical_en: 'Roofer',
+              canonical_es: 'Techador',
+              aliases: ['roofer', 'roofing', 'techador'],
+              trade_category: 'general_labor',
+            }) + '\n\nLet me know if you need another trade.',
+          }],
+        },
+      },
+    });
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
+
+    const result = await generateAndCacheAliases('techador', 'techador');
+
+    expect(result?.canonical_en).toBe('Roofer');
+    expect(result?.trade_category).toBe('general_labor');
+  });
+
+  it('parses a fenced alias object wrapped in prose', async () => {
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
+    mockBedrockSend.mockResolvedValueOnce({
+      output: {
+        message: {
+          content: [{
+            text: 'Sure.\n```json\n' + JSON.stringify({
+              canonical_en: 'Painter',
+              canonical_es: 'Pintor',
+              aliases: ['painter', 'painting', 'pintor'],
+              trade_category: null,
+            }) + '\n```\nAnything else?',
+          }],
+        },
+      },
+    });
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
+
+    const result = await generateAndCacheAliases('pintor', 'pintor');
+
+    expect(result?.canonical_en).toBe('Painter');
+  });
 });
 
 export {};

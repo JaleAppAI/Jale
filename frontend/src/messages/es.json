@@ -392,7 +392,8 @@
       "panel_bullet_2": "Perfiles de trabajadores verificados",
       "panel_bullet_3": "Fotos de trabajos anteriores",
       "panel_bullet_4": "Mensajee a los candidatos directamente",
-      "panel_bullet_5": "Gratis para empezar"
+      "panel_bullet_5": "Gratis para empezar",
+      "forgot_not_confirmed": "Su cuenta aún no está confirmada. Enviamos un código de confirmación nuevo a {email}. Ingréselo abajo para terminar su registro."
     },
     "shell": {
       "language_toggle": "English",
@@ -487,7 +488,9 @@
     "empty_body": "Los postulantes de todos tus trabajos aparecerán aquí.",
     "applied_on": "Aplicó {date}",
     "unknown_worker": "Trabajador desconocido",
-    "not_scored": "Sin puntaje aún"
+    "not_scored": "Sin puntaje aún",
+    "skills_show_all": "Ver las {count} habilidades",
+    "skills_show_fewer": "Ver menos habilidades"
   },
   "employer_messages": {
     "title": "Mensajes",
@@ -610,10 +613,10 @@
       "applicant_stub_1": "Candidatos nuevos",
       "applicant_stub_2": "Listos para contactar",
       "applicant_stub_3": "Documentos pendientes",
-      "job_progress_title": "Job Progress",
+      "job_progress_title": "Avance del trabajo",
       "positions_filled": "Puestos llenos",
       "positions_open_hint": "{count, plural, one {# puesto abierto} other {# puestos abiertos}}",
-      "time_to_fill_title": "Time to Fill",
+      "time_to_fill_title": "Tiempo para cubrir",
       "days_posted": "Días publicado",
       "time_to_fill_hint": "{title}",
       "no_open_jobs": "No hay empleos abiertos ahora",
@@ -625,8 +628,8 @@
       "hiring_status_title": "Estado de contratación"
     },
     "disabled": {
-      "label": "Preview",
-      "preview": "Preview",
+      "label": "Vista previa",
+      "preview": "Vista previa",
       "coming_soon": "Pronto"
     },
     "jobs": {
@@ -683,6 +686,17 @@
         "cancel": "Cancelar",
         "error_hired": "Este empleo tiene trabajadores contratados y no se puede eliminar. Ciérrelo en su lugar.",
         "error_generic": "No se pudo eliminar el empleo. Inténtelo de nuevo."
+      },
+      "status_change": {
+        "pause": "Pausar",
+        "pause_aria": "Pausar {title}",
+        "pause_pending": "Pausando…",
+        "resume": "Reanudar",
+        "resume_aria": "Reanudar {title}",
+        "resume_pending": "Reanudando…",
+        "pause_success": "Empleo pausado",
+        "resume_success": "Empleo reanudado",
+        "error_generic": "No se pudo actualizar el empleo. Inténtelo de nuevo."
       }
     },
     "filter": {
@@ -837,7 +851,8 @@
       "template_check_city": "Revise la ciudad antes de publicar",
       "template_name_taken": "Ya tiene una plantilla con ese nombre",
       "template_not_saved": "Su plantilla no se guardará — su plan permite {limit} plantilla(s).",
-      "post_without_template": "Publicar sin guardar plantilla"
+      "post_without_template": "Publicar sin guardar plantilla",
+      "location_pick_helper": "Seleccione la ciudad de la lista para continuar."
     },
     "worker_profile": {
       "years_experience": "{years, plural, one {# año de experiencia} other {# años de experiencia}}"
@@ -1120,7 +1135,8 @@
       "too_large": "Es demasiado texto para guardar. Acorta tus respuestas más largas e inténtalo de nuevo.",
       "certification_document_limit": "Llegaste al límite de archivos para esta certificación. Quita uno en tu perfil primero.",
       "not_found": "Ya no encontramos esta postulación."
-    }
+    },
+    "cert_have_question": "¿Tienes esta certificación?"
   },
   "worker_home": {
     "title": "Buscar trabajos",
@@ -1362,7 +1378,11 @@
       "own_words": {
         "title": "Con sus propias palabras",
         "question_removed": "Pregunta eliminada"
-      }
+      },
+      "request_details_resend": "Reenviar solicitud",
+      "request_details_notified": "Datos solicitados. Avisamos a {name} por WhatsApp.",
+      "request_details_no_whatsapp": "Datos solicitados, pero {name} no tiene WhatsApp registrado, así que no se envió ningún mensaje.",
+      "request_details_unchanged": "Ya está solicitado."
     },
     "ranking": {
       "loading": "Calculando qué tan bien coincide cada postulante con este empleo...",
@@ -1745,7 +1765,8 @@
       "cta_upgrade": "Mejorar plan",
       "cta_pause_job": "Pausar otro empleo",
       "cta_manage_templates": "Administrar plantillas",
-      "dismiss": "Ahora no"
+      "dismiss": "Ahora no",
+      "body_jobs_preflight": "No puede publicar un trabajo ahora. Su plan permite {limit} trabajo(s) abierto(s) y ya tiene {used}. Pause, cierre o elimine uno para publicar otro, o mejore su plan."
     },
     "limit_reached": {
       "modal_message": "Ha alcanzado el límite de su plan de {limit} publicación(es) de empleo activa(s). Mejore su plan para publicar más.",

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Fail-closed runner for the focused WhatsApp v2 PostgreSQL enforcement and
-# concurrency suites (migrations 042/049/080/086/087/091/092 + onboarding
+# concurrency suites (migrations 042/049/080/086/087/091/092/093/094 + onboarding
 # concurrency, least-privilege flow coverage, and the 080 application-fill DB
 # contract: worker_documents grants/RLS, the 075/078 cert caps, and -- since
 # migration 091 retired the 022 INSERT guard the 080 suite used to exercise --
@@ -14,6 +14,18 @@
 # CHECK, the hire-requirements trigger (which runs with INVOKER rights, so
 # only a real database with real policies can prove it fails closed), the
 # jale_whatsapp column grants, and the prompts CHECK function.
+#
+# Sprint 24 L3 adds the field-reuse boundary suite. It belongs here for the
+# reason the rest of this list exists: worker_application_defaults is RLS
+# ENABLE + FORCE (079) and 091's write policy keys on
+# app.current_internal_user_id, so a write-back with the wrong GUC is a
+# ZERO-ROW no-op a mocked pool reports as success -- and the point of the
+# reuse filter is exactly WHICH keys reach that table. It also settles two
+# PostgreSQL facts nothing else does: that the jsonb `-` operator REMOVES an
+# answer key (so the question is asked again, rather than reading as a stored
+# null), and that `ON CONFLICT DO NOTHING` suppresses the new
+# `RETURNING doc_type` on the idempotent snapshot re-copy, which is what keeps
+# "documents attached from your vault" from being announced on every turn.
 #
 # The 092 cleanup entry is the last one before the notify suite. It is here
 # rather than in a mocked suite because everything it asserts is a privilege
@@ -30,8 +42,33 @@
 # and no policies, so a column this role cannot select is a 42501 (or a 42702)
 # that only a real database ever raises.
 #
+# The 093 entry is LAST on purpose. It drives migration 093's
+# defer_worker_intent_outbox -- the outcome that reschedules a worker_intent
+# row WITHOUT spending an attempt, added after two employer notifications
+# died to Twilio 63016 while the application_* templates were still pending
+# Meta approval. It needs a real database for 043's lease-consistency CHECK
+# (which rejects a defer that releases only one of the two lease columns), for
+# the two-condition lease fence, and for attempt_count itself; and it must run
+# last because 043's lease RPC is global by design, so leasing advances the
+# attempt_count of any fixture row another suite has left behind.
+#
+# The 094 entry is now the last one, after the 093 defer suite. It is the only
+# suite that APPLIES A MIGRATION FILE as the real `jale_admin` role rather than
+# reading the end state a bootstrap left behind, and it has to: both tables 094
+# writes are RLS ENABLE + FORCE with GUC-keyed policies, so jale_admin -- the
+# OWNER, and the role the migration runs as -- sees zero rows unless the file
+# un-forces first. Applied as the superuser (who bypasses RLS entirely) a 094
+# that FORGOT the un-force would pass, which is exactly the silent zero-row
+# no-op the migration exists to prevent. It also settles the SQL/TypeScript
+# parity nothing else can: 094 re-implements normalizeProfession,
+# resolveTradeAlias and standardTradeKeyForCategory in SQL, and this suite
+# drives canonicalizeWorkerTrade over every trade_aliases alias, trade_key and
+# canonical_es and compares the pair each side produces. It runs LAST because
+# re-applying 094 takes ACCESS EXCLUSIVE on `users`, so it must not interleave
+# with a suite holding fixture rows open.
+#
 # WHAT THE DATABASE MUST BE. `JALE_TEST_DATABASE_URL` must point at a
-# disposable local Postgres 16 database with migrations 001 THROUGH 092
+# disposable local Postgres 16 database with migrations 001 THROUGH 094
 # applied, and the connecting role must be a SUPERUSER. 092 is not optional
 # here: several suites now assert the post-cleanup end state (the 080 entry
 # expects the retired guard FUNCTION to be gone, and the crossover entry no
@@ -60,7 +97,7 @@ if [ -z "${JALE_TEST_DATABASE_URL:-}" ]; then
   echo "run-whatsapp-v2-db-tests: JALE_TEST_DATABASE_URL is not set (or empty)." >&2
   echo "  Refusing to run: the migration-042/049 and concurrency suites SKIP without a" >&2
   echo "  database URL and jest would otherwise exit 0 without verifying anything." >&2
-  echo "  Set it to a local Postgres 16 SUPERUSER url (migrations 001-092 applied)," >&2
+  echo "  Set it to a local Postgres 16 SUPERUSER url (migrations 001-094 applied)," >&2
   echo "  then re-run. The value is never printed." >&2
   exit 1
 fi
@@ -89,7 +126,7 @@ if ! node -e '
     .catch((e) => { console.error("  " + e.message); process.exit(3); });
 ' 2>&1; then
   echo "run-whatsapp-v2-db-tests: JALE_TEST_DATABASE_URL is unusable." >&2
-  echo "  These suites need a disposable local database with migrations 001-092" >&2
+  echo "  These suites need a disposable local database with migrations 001-094" >&2
   echo "  applied, reached as a SUPERUSER: they ALTER ROLE jale_whatsapp/jale_ai to" >&2
   echo "  set test passwords, insert fixtures past RLS, and read columns those roles" >&2
   echo "  are not granted. Refusing to run. The value is never printed." >&2
@@ -114,4 +151,7 @@ exec npx jest --runInBand \
   test/unit/db/worker-application-details.integration.test.ts \
   test/unit/db/whatsapp-applications-command.integration.test.ts \
   test/unit/db/onboarding-cleanup-092.integration.test.ts \
-  test/unit/db/application-stage-notify.integration.test.ts
+  test/unit/db/application-field-reuse.integration.test.ts \
+  test/unit/db/application-stage-notify.integration.test.ts \
+  test/unit/db/worker-intent-defer-093.integration.test.ts \
+  test/unit/db/sprint24-data-backfills-094.integration.test.ts

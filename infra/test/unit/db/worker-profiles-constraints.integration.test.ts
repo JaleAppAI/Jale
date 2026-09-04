@@ -147,7 +147,10 @@ maybeDescribe('worker_profiles / users CHECK constraints vs the real adapters', 
       `SELECT main_trade, main_trade_other FROM users WHERE id = $1`,
       [workerId],
     );
-    expect(row.rows[0]).toEqual({ main_trade: 'other', main_trade_other: 'soldador' });
+    // Sprint 24 (D4): 'soldador' resolves the seeded welder alias row and is
+    // stored as the Spanish canonical label; the CHECK still sees both columns
+    // written atomically.
+    expect(row.rows[0]).toEqual({ main_trade: 'other', main_trade_other: 'Soldador' });
   });
 
   test('the database still rejects main_trade=other without main_trade_other (suite honesty check)', async () => {

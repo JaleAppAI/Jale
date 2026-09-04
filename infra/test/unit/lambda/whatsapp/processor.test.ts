@@ -169,6 +169,8 @@ const mockFetch = jest.fn();
 
 import { handler } from '../../../../lambda/whatsapp/processor';
 import { t } from '../../../../lambda/whatsapp/lib/templates';
+import { parseApplyToken } from '../../../../lambda/lib/referral-codes';
+import { parseTypedApplyToken } from '../../../../lambda/whatsapp/lib/flows';
 import { fillMessage, fieldQuestion, docPrompt } from '../../../../lambda/whatsapp/lib/application-fill-prompts';
 import { _clearCategoryRenderersForTests } from '../../../../lambda/whatsapp/lib/worker-delivery-gateway';
 import {
@@ -2286,6 +2288,7 @@ describe('Processor Lambda', () => {
       it('the Start button arms stage 2: seeds defaults, scrubs both lanes, sends the intro then the first question', async () => {
         mockConvTurn('SM-app-start');
         mockFillSnapshotRow({ required_fields: ['work_authorization'] }); // handleApplicationStart's own load
+        mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox intro_profile_check (L3)
         mockSeedNoDefaults();
         mockStateContextUpdate(); // arm write
         mockFillSnapshotRow({ required_fields: ['work_authorization'] }); // armFill's post-seed counts
@@ -2585,6 +2588,7 @@ describe('Processor Lambda', () => {
           applications_menu: { ids: ['aaaaaaaa-0000-4000-8000-00000000000a'], at: Date.now() },
         });
         mockFillSnapshotRow({ required_fields: ['work_authorization'] });
+        mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox intro_profile_check (L3)
         mockSeedNoDefaults();
         mockStateContextUpdate(); // arm write
         mockFillSnapshotRow({ required_fields: ['work_authorization'] });
@@ -2606,6 +2610,374 @@ describe('Processor Lambda', () => {
         );
 
         expect(outboxBodies()).toContain(fieldQuestion('work_authorization', 'en'));
+      });
+
+      // -- Sprint 24 C4: the same two codes, TYPED --------------------------
+      //
+      // A worker holding a `JALE-XXXXXXXX` job code or an `app-<uuid>`
+      // application reference used to get the unknown-message reply once
+      // onboarded: the job code was only ever parsed PRE-auth (start.ts) and
+      // the application reference only as a button payload. Users reported
+      // exactly this.
+      describe('typed codes in the authenticated router', () => {
+        const APP_ID = 'aaaaaaaa-0000-4000-8000-00000000000a';
+
+        function referredJobRow(overrides: Record<string, unknown> = {}) {
+          return {
+            id: 'job-referred',
+            title: 'Roofer',
+            company: 'RM Construction',
+            location: 'El Paso, TX',
+            pay_min: null,
+            pay_max: null,
+            pay_interval: null,
+            pay_raw: '$25/hr',
+            pre_application_prompts: null,
+            ...overrides,
+          };
+        }
+
+        it('a typed JALE- code answers with that job, exactly like the info action, and arms the number the reply names', async () => {
+          mockConvTurn('SM-code-info');
+          mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [{ job_id: 'job-referred' }] }); // apply-token -> job
+          mockStateContextUpdate(); // recent_jobs arm
+          mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [referredJobRow()] }); // handleJobAction's job load
+          mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox job details
+          mockBoundWorkerTail();
+
+          await handler(
+            makeSqsEvent({
+              MessageSid: 'SM-code-info',
+              From: 'whatsapp:+15125551234',
+              Body: 'JALE-ABCD1234',
+            }),
+            {} as any,
+            {} as any,
+          );
+
+          const bodies = outboxBodies();
+          expect(bodies).toHaveLength(1);
+          expect(bodies[0]).toContain('Job details');
+          expect(bodies[0]).toContain('Roofer');
+          expect(bodies[0]).toContain('RM Construction');
+          // Owner ruling: this surface never says accept/decline.
+          expect(bodies[0]).toContain('Reply "1 interested" to apply.');
+          expect(bodies[0]).not.toContain('accept');
+          expect(bodies[0]).not.toBe(t('idle_help', 'en'));
+
+          // The info reply tells the worker to answer with a NUMBER, which is
+          // resolved against `recent_jobs` -- so the referred job MUST be in
+          // that list at the index the reply prints, or the instruction
+          // applies them to a different job (or to nothing).
+          // The forced-idle writeback earlier in the turn also writes
+          // state_context, so the ARM is the last write carrying the list.
+          const armed = stateContextUpdates().filter((sc) => Array.isArray(sc.recent_jobs)).pop();
+          expect(armed?.recent_jobs).toEqual(['job-referred']);
+          expect(bodies[0]).toContain('"1 ');
+
+          // Typing a code is an INQUIRY: the token is read, never consumed,
+          // and no referral claim is parked or credited.
+          expect(countQueryByPattern(/UPDATE referral_apply_tokens/i)).toBe(0);
+          expect(countQueryByPattern(/referral_pending_claims/i)).toBe(0);
+        });
+
+        it('appends the referred job to an existing numbered list instead of renumbering it', async () => {
+          // A worker who just listed jobs has 1..N in their head. Prepending
+          // or replacing would silently change what "2 me interesa" means.
+          mockConvTurn('SM-code-append', { recent_jobs: ['job-a', 'job-b'] });
+          mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [{ job_id: 'job-referred' }] });
+          mockStateContextUpdate();
+          mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [referredJobRow()] });
+          mockQuery.mockResolvedValueOnce(ok());
+          mockBoundWorkerTail();
+
+          await handler(
+            makeSqsEvent({
+              MessageSid: 'SM-code-append',
+              From: 'whatsapp:+15125551234',
+              Body: 'hola, mi codigo es JALE-ABCD1234',
+            }),
+            {} as any,
+            {} as any,
+          );
+
+          const armed = stateContextUpdates().filter((sc) => Array.isArray(sc.recent_jobs)).pop();
+          expect(armed?.recent_jobs).toEqual(['job-a', 'job-b', 'job-referred']);
+          expect(outboxBodies()[0]).toContain('"3 ');
+        });
+
+        it('a JALE- code that resolves to nothing says so and names the JOBS keyword', async () => {
+          mockConvTurn('SM-code-unknown');
+          mockQuery.mockResolvedValueOnce({ rowCount: 0, rows: [] }); // token -> nothing
+          mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox
+          mockBoundWorkerTail();
+
+          await handler(
+            makeSqsEvent({
+              MessageSid: 'SM-code-unknown',
+              From: 'whatsapp:+15125551234',
+              Body: 'JALE-ABCD1234',
+            }),
+            {} as any,
+            {} as any,
+          );
+
+          expect(outboxBodies()).toEqual([t('job_code_not_found', 'en')]);
+          // No job was looked up and nothing was armed.
+          expect(countQueryByPattern(/FROM jobs\s+WHERE id = \$1/i)).toBe(0);
+          expect(stateContextUpdates().some((sc) => Array.isArray(sc.recent_jobs))).toBe(false);
+        });
+
+        it('prose that trips the LOOSE token parser still reaches the employer', async () => {
+          // The pre-auth parser requires the JALE prefix but no trailing
+          // boundary, so any eight Crockford-mappable characters after the
+          // brand name parse as a token -- "Jale trabajos" -> TRABAJ0S among
+          // them. The router uses `parseTypedApplyToken` instead, which needs
+          // a punctuation separator; without that, a worker writing this to
+          // an employer would get "job code not found" and THE EMPLOYER WOULD
+          // NEVER SEE THE MESSAGE.
+          const activeConversationId = '22222222-3333-4444-5555-666666666666';
+          // Not vacuous: the loose parser really does match this body, and
+          // the strict one really does not.
+          expect(parseApplyToken('Jale trabajos')).toBe('TRABAJ0S');
+          expect(parseTypedApplyToken('Jale trabajos')).toBeNull();
+
+          mockQuery
+            .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+            .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-code-relay' }] }) // claim
+            .mockResolvedValueOnce({
+              rowCount: 1,
+              rows: [convRow({
+                conversation_state: 'idle',
+                user_id: 'user-1',
+                language: 'es',
+                focused_job_conversation_id: activeConversationId,
+                state_context: {},
+              })],
+            })
+            .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
+            .mockResolvedValueOnce({ rowCount: 1, rows: [{ tos_version: '1.0' }] }) // relay: tos gate
+            .mockResolvedValueOnce(ok()) // relay: setInternalUserRlsContext
+            .mockResolvedValueOnce({
+              rowCount: 1,
+              rows: [{ id: activeConversationId, application_id: 'app-1' }],
+            }) // relay: focused thread lookup
+            .mockResolvedValueOnce(ok()) // relay: INSERT worker message
+            .mockResolvedValueOnce(ok()) // relay: UPDATE thread timestamps
+            .mockResolvedValueOnce(ok()) // relay: UPDATE application status
+            .mockResolvedValueOnce({ rowCount: 0, rows: [] }); // relay: no waiting employer messages
+          mockBoundWorkerTail();
+
+          await handler(
+            makeSqsEvent({
+              MessageSid: 'SM-code-relay',
+              From: 'whatsapp:+15125551234',
+              Body: 'Jale trabajos',
+            }),
+            {} as any,
+            {} as any,
+          );
+
+          expect(findQueryByPattern(/INSERT INTO job_conversation_messages/i)).toEqual([
+            activeConversationId,
+            'Jale trabajos',
+            'SM-code-relay',
+            'whatsapp:+15125551234',
+          ]);
+          expect(outboxBodies()).not.toContain(t('job_code_not_found', 'es'));
+          expect(countQueryByPattern(/FROM referral_apply_tokens/i)).toBe(0);
+        });
+
+        it('a real code typed while an employer thread is open is ANSWERED, not relayed', async () => {
+          // The prefilled wa.me text from `public-job-apply-intent.ts`,
+          // verbatim -- leading prose and all. A worker can tap a referral
+          // link mid-conversation with an employer, and the code has to be
+          // answered then too, which is why the branch sits above
+          // `tryConversationRelay`.
+          const activeConversationId = '22222222-3333-4444-5555-666666666666';
+          const body = 'Quiero postularme a este trabajo: JALE-ABCD1234';
+          expect(parseTypedApplyToken(body)).toBe('ABCD1234');
+
+          mockQuery
+            .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+            .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-code-focused' }] }) // claim
+            .mockResolvedValueOnce({
+              rowCount: 1,
+              rows: [convRow({
+                conversation_state: 'idle',
+                user_id: 'user-1',
+                language: 'es',
+                focused_job_conversation_id: activeConversationId,
+                state_context: {},
+              })],
+            })
+            .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
+            .mockResolvedValueOnce({ rowCount: 1, rows: [{ job_id: 'job-referred' }] }) // apply-token -> job
+            .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // recent_jobs arm
+            .mockResolvedValueOnce({ rowCount: 1, rows: [referredJobRow()] }) // handleJobAction's job load
+            .mockResolvedValueOnce(ok()); // INSERT outbox job details
+          mockBoundWorkerTail();
+
+          await handler(
+            makeSqsEvent({ MessageSid: 'SM-code-focused', From: 'whatsapp:+15125551234', Body: body }),
+            {} as any,
+            {} as any,
+          );
+
+          expect(outboxBodies()[0]).toContain('Detalles del trabajo');
+          expect(outboxBodies()[0]).toContain('Roofer');
+          expect(outboxBodies()[0]).toContain('Responde "1 me interesa" para aplicar.');
+          expect(outboxBodies()[0]).not.toContain('aceptar');
+          // The employer thread never saw it: a machine code is not a message
+          // to a person.
+          expect(countQueryByPattern(/INSERT INTO job_conversation_messages/i)).toBe(0);
+        });
+
+        it('a typed app- reference for a details-requested application dispatches the SAME path as the Start button', async () => {
+          mockConvTurn('SM-ref-start');
+          mockQuery.mockResolvedValueOnce(ok()); // setInternalUserRlsContext (070's policy)
+          mockQuery.mockResolvedValueOnce({
+            rowCount: 1,
+            rows: [{
+              id: APP_ID, title: 'Painter', status: 'details_requested',
+              needs_details: true, company_name: 'RM Construction',
+            }],
+          }); // the by-id lookup for this worker
+          mockFillSnapshotRow({ application_status: 'details_requested', required_fields: ['work_authorization'] });
+          mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox intro_profile_check (L3)
+          mockSeedNoDefaults();
+          mockStateContextUpdate(); // arm write
+          mockFillSnapshotRow({ application_status: 'details_requested', required_fields: ['work_authorization'] });
+          mockCompanyLookup('RM Construction');
+          mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox intro
+          mockFillSnapshotRow({ application_status: 'details_requested', required_fields: ['work_authorization'] });
+          mockStateContextUpdate(); // fill_last_prompt_at stamp
+          mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox field question
+          mockBoundWorkerTail();
+
+          await handler(
+            makeSqsEvent({
+              MessageSid: 'SM-ref-start',
+              From: 'whatsapp:+15125551234',
+              Body: `Referencia: app-${APP_ID}`,
+            }),
+            {} as any,
+            {} as any,
+          );
+
+          expect(outboxBodies()).toContain(fieldQuestion('work_authorization', 'en'));
+          // The dispatch carried the TYPED id: handleApplicationStart's own
+          // snapshot load ran for exactly that application. (The armed value
+          // itself comes from the mocked snapshot row, so asserting on it
+          // would only re-check the fixture.)
+          const snapshotLoads = mockQuery.mock.calls.filter(
+            ([sql, params]) => /FROM job_applications ja/i.test(sql as string)
+              && Array.isArray(params) && params[0] === APP_ID,
+          );
+          expect(snapshotLoads.length).toBeGreaterThan(0);
+          expect(stateContextUpdates().some((sc) => 'fill_application_id' in sc)).toBe(true);
+        });
+
+        it("a typed app- reference in another status answers with that application's status line and arms its number", async () => {
+          mockConvTurn('SM-ref-status');
+          mockQuery.mockResolvedValueOnce(ok()); // setInternalUserRlsContext
+          mockQuery.mockResolvedValueOnce({
+            rowCount: 1,
+            rows: [{
+              id: APP_ID, title: 'Painter', status: 'hired',
+              needs_details: false, company_name: 'RM Construction',
+            }],
+          });
+          mockStateContextUpdate(); // applications_menu armed
+          mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox status line
+          mockBoundWorkerTail();
+
+          await handler(
+            makeSqsEvent({
+              MessageSid: 'SM-ref-status',
+              From: 'whatsapp:+15125551234',
+              Body: `app-${APP_ID}`,
+            }),
+            {} as any,
+            {} as any,
+          );
+
+          const body = outboxBodies()[0];
+          expect(body).toContain('1) Painter - RM Construction - Hired');
+          // Nothing is being asked of this worker, so no footer invitation.
+          expect(body).not.toContain(t('applications_footer', 'en'));
+          // The number the line prints resolves: the one-shot menu carries
+          // exactly this application.
+          const menuWrite = stateContextUpdates().find((sc) => sc.applications_menu);
+          expect((menuWrite?.applications_menu as { ids: string[] }).ids).toEqual([APP_ID]);
+          // Not the stage-2 arm.
+          expect(stateContextUpdates().some((sc) => 'fill_application_id' in sc)).toBe(false);
+        });
+
+        it("a typed app- reference that is not this worker's application says so and names the APPLICATIONS keyword", async () => {
+          mockConvTurn('SM-ref-foreign');
+          mockQuery.mockResolvedValueOnce(ok()); // setInternalUserRlsContext
+          mockQuery.mockResolvedValueOnce({ rowCount: 0, rows: [] }); // no row for (this id, this worker)
+          mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox
+          mockBoundWorkerTail();
+
+          await handler(
+            makeSqsEvent({
+              MessageSid: 'SM-ref-foreign',
+              From: 'whatsapp:+15125551234',
+              Body: `app-${APP_ID}`,
+            }),
+            {} as any,
+            {} as any,
+          );
+
+          expect(outboxBodies()).toEqual([t('application_ref_not_found', 'en')]);
+          // Ownership is the query's own `AND ja.worker_id = $2` (one
+          // SELECT); a foreign row is never loaded, so this reply cannot
+          // become an existence oracle for other workers' applications.
+          expect(countQueryByPattern(/FROM job_applications ja JOIN jobs j/i)).toBe(1);
+          expect(stateContextUpdates().some((sc) => 'fill_application_id' in sc)).toBe(false);
+        });
+
+        it("a typed app- reference resolves the worker's ELEVENTH application, which the ten-row list can never reach", async () => {
+          // `loadWorkerApplications` (the `aplicaciones` list loader) caps at
+          // APPLICATIONS_LIST_LIMIT = 10 rows, needs-details first. A
+          // reference is a lookup, not a page of that list, so it goes
+          // straight at the id -- otherwise a worker's older applications
+          // would be told they do not exist.
+          mockConvTurn('SM-ref-eleventh');
+          mockQuery.mockResolvedValueOnce(ok()); // setInternalUserRlsContext
+          mockQuery.mockResolvedValueOnce({
+            rowCount: 1,
+            rows: [{
+              id: APP_ID, title: 'Painter', status: 'hired',
+              needs_details: false, company_name: 'RM Construction',
+            }],
+          }); // the by-id lookup -- an application no ten-row page would carry
+          mockStateContextUpdate(); // applications_menu armed
+          mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox status line
+          mockBoundWorkerTail();
+
+          await handler(
+            makeSqsEvent({
+              MessageSid: 'SM-ref-eleventh',
+              From: 'whatsapp:+15125551234',
+              Body: `app-${APP_ID}`,
+            }),
+            {} as any,
+            {} as any,
+          );
+
+          expect(outboxBodies()[0]).toContain('1) Painter - RM Construction - Hired');
+          // Scoped by BOTH id and worker, in the query itself.
+          expect(findQueryByPattern(/WHERE ja\.id = \$1 AND ja\.worker_id = \$2/i)).toEqual([APP_ID, 'user-1']);
+          // ...and never through the capped list loader, whose
+          // needs-details-first ORDER BY is what pages the ten rows.
+          // (A bare /LIMIT 10/ would false-positive on the job-outbox drain
+          // in the commit tail -- lambda/lib/job-messaging.ts.)
+          expect(countQueryByPattern(/ORDER BY \(ja\.details_requested_at IS NOT NULL/i)).toBe(0);
+        });
+
       });
     });
 
@@ -3012,6 +3384,278 @@ describe('Processor Lambda', () => {
         );
         expect(computeNextStepCalls).toHaveLength(1);
         expect(computeNextStepCalls[0][1]).toEqual(['app-2']);
+      });
+
+      // ── F1 (sprint 24, BLOCKER): the LISTO gate holds at the tail ──────
+      //
+      // `armFill` (f) arms `fill_confirm` so an all-pre-filled application
+      // reaches the employer only after the worker types LISTO. That flag
+      // was honoured ONLY by step (10b), the last branch of
+      // `handleFillMessage` -- so every earlier `{handled:false}` return
+      // (the escapes, a media turn on a `complete` step, a typed job action,
+      // a picker digit, and the SECOND unrecognised text, after
+      // `resolveFillConfirm` stops re-prompting) reached
+      // `maybeRepromptFill` -> `promptNextStep` -> `sendCompletionPrompt`
+      // and submitted the application. Typing "no entiendo" twice was
+      // enough: the 2026-09-04 incident, restored.
+      //
+      // These are PROCESSOR-level on purpose: the leak was never in the fill
+      // lane's own return value (which was correct), it was in what the
+      // dispatch tail did with it.
+      describe('F1: the fill_confirm gate survives every escape into the dispatch tail', () => {
+        const GATE_SID = 'SM-fill-gate';
+
+        /** The all-pre-filled application `fill_confirm` is armed over:
+         * every required field already answered (from the worker's profile
+         * defaults), no documents, nothing stamped. `fillStepFor` reads this
+         * as `complete`, which is exactly what makes the tail dangerous. */
+        const PREFILLED_SNAPSHOT = {
+          id: 'app-1', worker_id: 'user-1', job_id: 'job-1',
+          application_status: 'pending',
+          application_answers: { work_authorization: true, date_of_birth: '1990-04-03' },
+          prompt_answers: {},
+          details_requested_at: '2026-09-01T00:00:00.000Z', details_completed_at: null,
+          applied_at: '2026-09-01T00:00:00.000Z', updated_at: '2026-09-01T00:00:00.000Z',
+          job_status: 'active', job_title: 'Electrician',
+          required_fields: ['work_authorization', 'date_of_birth'], optional_fields: [],
+          required_docs: [], optional_docs: [],
+          certification_requirements: null, pre_application_prompts: null,
+          have_docs: [],
+        };
+
+        /**
+         * SQL-shape-routed, not a `mockResolvedValueOnce` queue -- the same
+         * pattern `mockConvRowRouting` (Task 15 describe) already uses in
+         * this file, and for the same reason: each body below escapes into a
+         * DIFFERENT router (the help menu, the CHATS/idle handling, the
+         * media lane, the typed-job-action lookup), so the incidental query
+         * count differs per case while the statements under test -- the
+         * requirement snapshot, the `details_completed_at` stamp and the
+         * outbox writes -- are identical. A positional queue would encode
+         * each router's cost into a test about none of them, and would go
+         * `undefined` mid-turn on the buggy code (which issues MORE queries
+         * than the fix) instead of failing on the assertion that matters.
+         */
+        function mockGateRouting(conv: unknown): void {
+          mockQuery.mockImplementation((sql: string) => {
+            const text = String(sql);
+            if (/INSERT INTO whatsapp_processed_messages/i.test(text)) {
+              return Promise.resolve({ rowCount: 1, rows: [{ message_sid: GATE_SID }] });
+            }
+            if (/SELECT/i.test(text) && /FROM whatsapp_conversations/i.test(text)) {
+              return Promise.resolve({ rowCount: 1, rows: [conv] });
+            }
+            // application-requirements.ts SNAPSHOT_SQL -- the one read every
+            // assertion below depends on.
+            if (/SELECT ja\.id, ja\.worker_id, ja\.job_id/.test(text)) {
+              return Promise.resolve({ rowCount: 1, rows: [PREFILLED_SNAPSHOT] });
+            }
+            // The seam's per-turn jobId refresh (text turns and media turns).
+            if (/SELECT job_applications\.job_id, jobs\.required_fields/.test(text)) {
+              return Promise.resolve({
+                rowCount: 1,
+                rows: [{ job_id: 'job-1', required_fields: ['work_authorization', 'date_of_birth'] }],
+              });
+            }
+            if (/SELECT job_id FROM job_applications WHERE id = \$1/.test(text)) {
+              return Promise.resolve({ rowCount: 1, rows: [{ job_id: 'job-1' }] });
+            }
+            // An accepted worker, so the legal wall never diverts routing.
+            if (/tos_version/i.test(text)) {
+              return Promise.resolve({ rowCount: 1, rows: [{ tos_version: '1.0' }] });
+            }
+            // Writes report one affected row (so a real write is never read
+            // back as a no-op -- notably `markDetailsCompleteIfDone`, whose
+            // rowCount is what the buggy path turns into "details sent");
+            // every other read reports none.
+            if (/^\s*(UPDATE|INSERT|DELETE)/i.test(text)) {
+              return Promise.resolve({ rowCount: 1, rows: [] });
+            }
+            return Promise.resolve({ rowCount: 0, rows: [] });
+          });
+        }
+
+        function gateConv(stateContext: Record<string, unknown> = {}): unknown {
+          return convRow({
+            conversation_state: 'idle',
+            user_id: 'user-1',
+            language: 'en',
+            state_context: {
+              fill_application_id: 'app-1',
+              // Outside REPROMPT_COOLDOWN_MS (30s), so the tail is NOT
+              // suppressed -- this is the window the incident happened in.
+              fill_last_prompt_at: Date.now() - 60_000,
+              fill_confirm: { at: Date.now() - 60_000 },
+              ...stateContext,
+            },
+          });
+        }
+
+        async function sendGateTurn(params: Record<string, string>): Promise<void> {
+          await handler(
+            makeSqsEvent({ MessageSid: GATE_SID, From: 'whatsapp:+15125551234', ...params }),
+            {} as any,
+            {} as any,
+          );
+        }
+
+        /** A phrase unique to the `completion` copy in each language, so
+         * "the application was submitted" is asserted on the WORKER-VISIBLE
+         * message and not only on the stamp. */
+        const COMPLETION_MARKER: Record<'en' | 'es', string> = {
+          en: 'we sent your details',
+          es: 'enviamos tus datos',
+        };
+
+        /** The gate held: nothing was submitted, the tail really did run,
+         * and it re-sent the consent prompt at most once.
+         *
+         * `lang` is a parameter because a Spanish command word switches the
+         * conversation's language mid-turn (`detectCommandLanguage`,
+         * flows.ts) -- 'ayuda' is answered, and the gate re-prompted, in
+         * Spanish. */
+        function expectGateHeld(lang: 'en' | 'es' = 'en'): void {
+          // THE blocker assertion.
+          expect(countQueryByPattern(/UPDATE job_applications\s+SET details_completed_at/i)).toBe(0);
+          expect(outboxBodies().some((b) => b.includes(COMPLETION_MARKER[lang]))).toBe(false);
+          // The turn really reached the dispatch tail's `promptNextStep` --
+          // without this the assertion above could pass because the escape
+          // never got that far.
+          expect(countQueryByPattern(/SELECT ja\.id, ja\.worker_id, ja\.job_id/)).toBeGreaterThanOrEqual(1);
+          // ...and what the tail sent was the gate, exactly once.
+          expect(outboxBodies().filter((b) => b === fillMessage('confirm_all_prefilled', lang)))
+            .toHaveLength(1);
+        }
+
+        it('(a) CHATS escapes and the tail re-sends the consent prompt, never the completion', async () => {
+          mockGateRouting(gateConv());
+
+          await sendGateTurn({ Body: 'CHATS' });
+
+          // The real CHATS listing ran (empty under this fake), so this is
+          // genuinely the chats escape and not some other fallback.
+          expect(outboxBodies()).toContain('You have no open conversations.');
+          expectGateHeld();
+        });
+
+        it('(b) ayuda escapes and the tail re-sends the consent prompt, never the completion', async () => {
+          mockGateRouting(gateConv());
+
+          await sendGateTurn({ Body: 'ayuda' });
+
+          // The escape's own reply really happened, so this is the genuine
+          // help path and not an unrelated fallback. 'ayuda' is an
+          // ES_LANG_WORDS entry, so the whole turn -- help menu AND the
+          // re-sent gate -- answers in Spanish.
+          expect(outboxTemplates()).toContain('help_menu_list_es');
+          expectGateHeld('es');
+        });
+
+        it('(c) a media message at the gate does not complete the application', async () => {
+          mockGateRouting(gateConv());
+
+          await sendGateTurn({
+            Body: '',
+            NumMedia: '1',
+            MediaUrl0: 'https://api.twilio.com/media/MEgate1',
+            MediaSid0: 'MEgate1',
+            MediaContentType0: 'image/jpeg',
+          });
+
+          // `handleFillMediaTurn` sees a `complete` step and returns
+          // handled:false (it has no completion arm of its own), so the file
+          // falls through to the ordinary ready-worker media handling...
+          expect(outboxBodies()).toContain(t('voice_note_not_supported', 'en'));
+          // ...and the tail must not finish the application behind it.
+          expect(mockDownloadTwilioMediaBounded).not.toHaveBeenCalled();
+          expectGateHeld();
+        });
+
+        it('(d) the SECOND unrecognised text does not complete the application (the 2026-09-04 incident)', async () => {
+          // `repeated: true` is the state `resolveFillConfirm` leaves after
+          // it has already re-sent the prompt once -- from here it returns
+          // {handled:false} and the tail owns the turn. THIS is the two
+          // "no entiendo" replies that submitted a real worker's details.
+          mockGateRouting(gateConv({ fill_confirm: { at: Date.now() - 60_000, repeated: true } }));
+
+          await sendGateTurn({ Body: 'no entiendo' });
+
+          expectGateHeld();
+        });
+
+        it('(e) a typed job action while a picker is armed does not complete the application', async () => {
+          mockGateRouting(gateConv({ pending_picker: { kind: 'chats', threads: [] } }));
+
+          await sendGateTurn({ Body: '1 me interesa' });
+
+          // The typed job action really ran its own job lookup (no row under
+          // this fake), so the escape at step (9) is what fired.
+          expect(outboxBodies()).toContain(t('job_not_found', 'en'));
+          expectGateHeld();
+        });
+
+        it('(e2) a bare digit with a picker armed does not complete the application', async () => {
+          mockGateRouting(gateConv({ pending_picker: { kind: 'chats', threads: [] } }));
+
+          await sendGateTurn({ Body: '1' });
+
+          // The digit really went to the picker (an empty thread list, so
+          // the picker's own out-of-range copy) -- not to the fill lane.
+          expect(outboxBodies()).toContain('Please send a number between 1 and 0.');
+          expectGateHeld();
+        });
+
+        it('(f) an owed document replacement is re-asked by the tail, never completed', async () => {
+          // The CAMBIAR doc branch deletes the JOB-scoped row but not the
+          // vault row (decision D3), so the next synced load copies it back
+          // and the step reads `complete` while the replacement file is
+          // still owed. Completing here sent the OLD document.
+          mockGateRouting(gateConv({ fill_confirm: undefined, fill_doc_replace: 'work_auth_doc' }));
+
+          await sendGateTurn({ Body: 'help' });
+
+          expect(outboxTemplates()).toContain('help_menu_list_en');
+          expect(countQueryByPattern(/UPDATE job_applications\s+SET details_completed_at/i)).toBe(0);
+          expect(outboxBodies().some((b) => b.includes(COMPLETION_MARKER.en))).toBe(false);
+          expect(outboxBodies()).toContain(docPrompt('work_auth_doc', 'en'));
+        });
+
+        it('(g) inside the 30s cooldown the tail never runs at all -- quiet, and still not completed', async () => {
+          // The other half of "at most one confirm per 30s": the tail's own
+          // early return. `maybeRepromptFill` bails before `promptNextStep`,
+          // so this turn says nothing from the fill lane -- which is safe
+          // precisely because the only thing the tail could have said
+          // otherwise was the completion.
+          mockGateRouting(gateConv({
+            fill_last_prompt_at: Date.now() - 5_000,
+            fill_confirm: { at: Date.now() - 5_000, repeated: true },
+          }));
+
+          await sendGateTurn({ Body: 'no entiendo' });
+
+          expect(countQueryByPattern(/UPDATE job_applications\s+SET details_completed_at/i)).toBe(0);
+          expect(outboxBodies().some((b) => b.includes(COMPLETION_MARKER.en))).toBe(false);
+          expect(outboxBodies()).not.toContain(fillMessage('confirm_all_prefilled', 'en'));
+          // The ONLY snapshot read is step (10b)'s own re-derive -- the tail
+          // never got as far as its own.
+          expect(countQueryByPattern(/SELECT ja\.id, ja\.worker_id, ja\.job_id/)).toBe(1);
+        });
+
+        // POSITIVE CONTROL. The gate must still be openable -- if this ever
+        // fails, the fix above has locked workers out of submitting at all.
+        it('LISTO completes: the stamp lands and the completion copy goes out', async () => {
+          mockGateRouting(gateConv());
+
+          await sendGateTurn({ Body: 'LISTO' });
+
+          expect(countQueryByPattern(/UPDATE job_applications\s+SET details_completed_at/i)).toBe(1);
+          expect(outboxBodies().some((b) => b.includes(COMPLETION_MARKER.en))).toBe(true);
+          expect(outboxBodies()).not.toContain(fillMessage('confirm_all_prefilled', 'en'));
+          // handled:true returns from the seam, so the tail never runs and
+          // never double-prompts.
+          const confirmClears = stateContextUpdates().filter((sc) => sc.fill_confirm === null);
+          expect(confirmClears.length).toBeGreaterThanOrEqual(1);
+        });
       });
     });
   });

@@ -385,6 +385,13 @@ describe('employer-application-status-update', () => {
   function makeStageQueryMock(opts: {
     appStatusBefore: string;
     appStatusRequested: string;
+    /**
+     * The PRE-update row's `details_completed_at` -- what the worker-side door
+     * stamped, independent of the employer-owned status. Defaults to null
+     * ("stage 2 not finished"), which is what every test written before the
+     * F3 resend guard assumed.
+     */
+    appDetailsCompletedAt?: string | null;
     updateError?: unknown;
   }) {
     return (q: string) => {
@@ -413,7 +420,14 @@ describe('employer-application-status-update', () => {
         });
       }
       if (q.includes('FROM job_applications')) {
-        return Promise.resolve({ rowCount: 1, rows: [{ id: APPLICATION_ID, status: opts.appStatusBefore }] });
+        return Promise.resolve({
+          rowCount: 1,
+          rows: [{
+            id: APPLICATION_ID,
+            status: opts.appStatusBefore,
+            details_completed_at: opts.appDetailsCompletedAt ?? null,
+          }],
+        });
       }
       return Promise.resolve({ rowCount: 0, rows: [] });
     };
@@ -608,5 +622,253 @@ describe('employer-application-status-update', () => {
     expect(JSON.parse(res.body)).toEqual({ error: 'internal_error' });
     expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
     expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
+  });
+  // ---------------------------------------------------------------------------
+  // B7 (sprint 24) -- honest notification outcome + resend
+  //
+  // The employer could not previously tell whether the worker actually heard
+  // about a details request: a `renderer_unavailable` worker got a plain 200
+  // with the row. The response now says so, and `resend: true` re-sends the
+  // same stage notification for a status that is already committed.
+  // ---------------------------------------------------------------------------
+
+  it('reports notified true when the status changed and the notification was enqueued', async () => {
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'talking', appStatusRequested: 'details_requested',
+    }));
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'details_requested' }) }));
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.notified).toBe(true);
+    // Only present when the answer is "no" -- there is nothing to explain
+    // about a notification that went out.
+    expect(body).not.toHaveProperty('notify_reason');
+  });
+
+  it("reports notified false with reason 'unchanged' when the same status is re-asserted without resend", async () => {
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'details_requested', appStatusRequested: 'details_requested',
+    }));
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'details_requested' }) }));
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ notified: false, notify_reason: 'unchanged' });
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+
+  it("reports notified false with reason 'not_notifiable_status' for a status the worker is never pinged about", async () => {
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'pending', appStatusRequested: 'contacted',
+    }));
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'contacted' }) }));
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ notified: false, notify_reason: 'not_notifiable_status' });
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+
+  it("reports notified false with reason 'renderer_unavailable' and STILL commits the status", async () => {
+    mockNotify.mockResolvedValue({ outcome: 'renderer_unavailable', reason: 'renderer_unavailable' });
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'talking', appStatusRequested: 'details_requested',
+    }));
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'details_requested' }) }));
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.status).toBe('details_requested');
+    expect(body.notified).toBe(false);
+    expect(body.notify_reason).toBe('renderer_unavailable');
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('re-enqueues the stage notification when resend is requested on an already details_requested application', async () => {
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'details_requested', appStatusRequested: 'details_requested',
+    }));
+
+    const res = await handler(makeEvent({
+      body: JSON.stringify({ status: 'details_requested', resend: true }),
+    }));
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).notified).toBe(true);
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+    expect(mockNotify.mock.calls[0][1]).toMatchObject({
+      kind: 'details_requested',
+      applicationId: APPLICATION_ID,
+      updatedAt: UPDATED_AT,
+    });
+  });
+
+  it('re-enqueues the hired notification when resend is requested on an already hired application', async () => {
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'hired', appStatusRequested: 'hired',
+    }));
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'hired', resend: true }) }));
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).notified).toBe(true);
+    expect(mockNotify.mock.calls[0][1]).toMatchObject({ kind: 'hired' });
+  });
+
+  // ---------------------------------------------------------------------------
+  // F3 (sprint 24) -- server-side completeness guard for `resend`
+  //
+  // `details_requested` legitimately OUTLIVES the worker's stage-2 fill: the
+  // status is the employer's to move, the timestamps are not. So a stale
+  // employer tab (or any API client) could re-send "we need more details" to
+  // a worker who had already answered, whose Empezar tap then died on
+  // `application_already_complete`. `canResendDetails` in
+  // frontend/src/lib/hire-gate.ts already refuses on
+  // `detailsStatus === 'complete'`; these lock the same rule server-side.
+  // ---------------------------------------------------------------------------
+
+  it('returns 400 resend_not_applicable when a details resend is asked for on an application whose details are already complete', async () => {
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'details_requested',
+      appStatusRequested: 'details_requested',
+      appDetailsCompletedAt: '2026-09-03T10:00:00.000Z',
+    }));
+
+    const res = await handler(makeEvent({
+      body: JSON.stringify({ status: 'details_requested', resend: true }),
+    }));
+
+    expect(res.statusCode).toBe(400);
+    // Same error CODE as the not-notifiable-status refusal, so an existing
+    // employer-side handler keeps working; `details_status` is the added key
+    // that says WHY this particular one was refused.
+    expect(JSON.parse(res.body)).toEqual({
+      error: 'resend_not_applicable',
+      status: 'details_requested',
+      details_status: 'complete',
+    });
+    expect(mockNotify).not.toHaveBeenCalled();
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
+    // Nothing may be written on the refused path.
+    expect(mockQuery).not.toHaveBeenCalledWith(expect.stringContaining('UPDATE job_applications'), expect.anything());
+  });
+
+  it('reads details_completed_at in the same pre-update SELECT that reads status', async () => {
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'details_requested',
+      appStatusRequested: 'details_requested',
+      appDetailsCompletedAt: null,
+    }));
+
+    await handler(makeEvent({ body: JSON.stringify({ status: 'details_requested', resend: true }) }));
+
+    // One SELECT, not two: no extra round trip and no window between the
+    // status read and the completeness read (the row is already FOR UPDATE).
+    const selectSql = mockQuery.mock.calls
+      .map(([sql]: [string]) => sql)
+      .find((sql: unknown) => typeof sql === 'string'
+        && sql.includes('FROM job_applications')
+        && !sql.includes('UPDATE job_applications')) as string;
+    expect(selectSql).toContain('details_completed_at');
+    expect(selectSql).toContain('FOR UPDATE');
+  });
+
+  it('still allows a details resend while the worker has NOT finished stage 2 (details_completed_at null)', async () => {
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'details_requested',
+      appStatusRequested: 'details_requested',
+      appDetailsCompletedAt: null,
+    }));
+
+    const res = await handler(makeEvent({
+      body: JSON.stringify({ status: 'details_requested', resend: true }),
+    }));
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).notified).toBe(true);
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+    expect(mockNotify.mock.calls[0][1]).toMatchObject({ kind: 'details_requested' });
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('leaves a HIRED resend alone even when the details are complete', async () => {
+    // The completeness argument is specific to the details_requested ping:
+    // "send us your details" is false to a worker who already sent them. The
+    // hire notification makes no claim about outstanding paperwork -- and 091
+    // requires the details to BE complete before a hire is even permitted --
+    // so a completed fill is a precondition here, never a reason to refuse.
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'hired',
+      appStatusRequested: 'hired',
+      appDetailsCompletedAt: '2026-09-03T10:00:00.000Z',
+    }));
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'hired', resend: true }) }));
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).notified).toBe(true);
+    expect(mockNotify.mock.calls[0][1]).toMatchObject({ kind: 'hired' });
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('lets a stale tab HIRE a worker whose details are complete, resend and all', async () => {
+    // The guard keys off the REQUESTED status, not the current one. This
+    // shape -- row still reads details_requested, worker has since finished,
+    // employer moves them to hired with a resend riding along -- is the happy
+    // path, and a guard on `currentStatus` would have 400'd it.
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'details_requested',
+      appStatusRequested: 'hired',
+      appDetailsCompletedAt: '2026-09-03T10:00:00.000Z',
+    }));
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'hired', resend: true }) }));
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).notified).toBe(true);
+    expect(mockNotify.mock.calls[0][1]).toMatchObject({ kind: 'hired' });
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('returns 400 resend_not_applicable (and rolls back) when resend is asked for on a pending application', async () => {
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'pending', appStatusRequested: 'pending',
+    }));
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'pending', resend: true }) }));
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'resend_not_applicable', status: 'pending' });
+    expect(mockNotify).not.toHaveBeenCalled();
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
+    // Nothing may be written on the refused path.
+    expect(mockQuery).not.toHaveBeenCalledWith(expect.stringContaining('UPDATE job_applications'), expect.anything());
+  });
+
+  it('rejects a non-boolean resend before opening a DB transaction (400)', async () => {
+    const res = await handler(makeEvent({
+      body: JSON.stringify({ status: 'details_requested', resend: 'yes' }),
+    }));
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'invalid_resend' });
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('treats resend: false as no resend at all (no 400, no notification)', async () => {
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'pending', appStatusRequested: 'pending',
+    }));
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'pending', resend: false }) }));
+
+    expect(res.statusCode).toBe(200);
+    expect(mockNotify).not.toHaveBeenCalled();
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
   });
 });

@@ -10,6 +10,19 @@ export interface TemplateVerification {
   sid: string;
   exists: boolean;
   whatsappStatus: string | null;
+  /**
+   * The WhatsApp CATEGORY Meta currently has the template filed under
+   * (UTILITY / MARKETING / AUTHENTICATION), or null when the approval read
+   * failed or the template was never submitted.
+   *
+   * Status alone is not enough. On 2026-09-04 three of the four pending
+   * `application_*` templates had been silently recategorised by Meta to
+   * MARKETING, and a MARKETING template cannot carry a transactional
+   * notification outside the 24-hour session window -- the only window an
+   * employer-triggered stage notification lands in. Every one of them still
+   * reported `pending`, so this command showed nothing wrong.
+   */
+  whatsappCategory: string | null;
 }
 
 export interface VerifyTemplatesResult {
@@ -59,7 +72,7 @@ export async function verifyTwilioTemplates(deps: {
   for (const [key, sid] of Object.entries(templates)) {
     const contentRes = await fetchImpl(`https://content.twilio.com/v1/Content/${sid}`, { headers });
     if (!contentRes.ok) {
-      rows.push({ key, sid, exists: false, whatsappStatus: null });
+      rows.push({ key, sid, exists: false, whatsappStatus: null, whatsappCategory: null });
       if (key.startsWith(EMPLOYER_PREFIX)) {
         failures.push(`${key}: Content SID not found (HTTP ${contentRes.status})`);
       }
@@ -67,11 +80,15 @@ export async function verifyTwilioTemplates(deps: {
     }
     const approvalRes = await fetchImpl(`https://content.twilio.com/v1/Content/${sid}/ApprovalRequests`, { headers });
     let whatsappStatus: string | null = null;
+    let whatsappCategory: string | null = null;
     if (approvalRes.ok) {
-      const body = await approvalRes.json() as { whatsapp?: { status?: string } };
+      const body = await approvalRes.json() as {
+        whatsapp?: { status?: string; category?: string };
+      };
       whatsappStatus = body?.whatsapp?.status ?? null;
+      whatsappCategory = body?.whatsapp?.category ?? null;
     }
-    rows.push({ key, sid, exists: true, whatsappStatus });
+    rows.push({ key, sid, exists: true, whatsappStatus, whatsappCategory });
     if (key.startsWith(EMPLOYER_PREFIX) && whatsappStatus !== 'approved') {
       failures.push(`${key}: WhatsApp approval status is '${whatsappStatus ?? 'unknown'}' (must be 'approved')`);
     }

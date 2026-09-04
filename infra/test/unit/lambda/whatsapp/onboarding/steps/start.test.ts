@@ -11,6 +11,7 @@
 
 import { handleStartStep } from '../../../../../../lambda/whatsapp/onboarding/steps/start';
 import { formatApplyToken, parseApplyToken } from '../../../../../../lambda/lib/referral-codes';
+import { t } from '../../../../../../lambda/whatsapp/lib/templates';
 import type { PreAuthState } from '../../../../../../lambda/whatsapp/lib/onboarding-repository';
 import type { OnboardingV2Deps, OnboardingV2Session, OnboardingV2InboundMessage } from '../../../../../../lambda/whatsapp/onboarding/types';
 
@@ -354,5 +355,72 @@ describe('handleStartStep — job referral code recognition', () => {
     // But the claim was still parked: SAVEPOINT, consume token, upsert,
     // RELEASE SAVEPOINT (no share_code lookup since shareCode is null here).
     expect(client.query).toHaveBeenCalledTimes(4);
+  });
+});
+
+/**
+ * Sprint 24 A3: `CreateAuthChallenge` sends the SMS OTP through Twilio and
+ * rethrows on failure, which Cognito surfaces as
+ * UserLambdaValidationException. The adapter now reports that as
+ * `send_failed` instead of throwing, and this step has to TELL the worker
+ * and let them try again -- before this, the throw escaped `routeMessage`
+ * and the inbound SQS record ended up in `whatsapp-inbound-v2-dlq.fifo`.
+ */
+describe('handleStartStep — the OTP SMS could not be sent', () => {
+  it('tells the worker in the language they just chose, re-arms the start step, and acks the record (ES)', async () => {
+    const { deps, prompts, texts, savedPatches, issueChallenge } = makeDeps();
+    issueChallenge.mockResolvedValueOnce({ status: 'send_failed' } as never);
+
+    const result = await handleStartStep(client, makeSession(), makeMsg('EMPEZAR'), deps, null, PHONE_HASH, NOW);
+
+    // Handled => the SQS record is acked. Nothing thrown, nothing DLQ'd.
+    expect(result).toEqual({ handled: true, workerId: null, stepKey: 'start.choose_language' });
+    expect(texts).toEqual([t('v2_otp_send_failed', 'es')]);
+    // No OTP prompt: there is no code to enter.
+    expect(prompts).toHaveLength(0);
+
+    // Re-armed on the SAME step, so the worker's next message retries the
+    // send -- and the challenge id / expiry are NOT written (no challenge
+    // exists).
+    expect(savedPatches).toHaveLength(1);
+    const patch = savedPatches[0] as Record<string, unknown>;
+    expect(patch.currentStepKey).toBe('start.choose_language');
+    expect(patch.preferredLanguage).toBe('es');
+    expect(patch).not.toHaveProperty('providerChallengeId');
+    expect(patch).not.toHaveProperty('expiresAt');
+  });
+
+  it('answers in English when the worker chose English', async () => {
+    const { deps, texts, issueChallenge } = makeDeps();
+    issueChallenge.mockResolvedValueOnce({ status: 'send_failed' } as never);
+
+    await handleStartStep(client, makeSession(), makeMsg('START'), deps, null, PHONE_HASH, NOW);
+
+    expect(texts).toEqual([t('v2_otp_send_failed', 'en')]);
+  });
+
+  it('does NOT charge the failed send against the hourly OTP send budget', async () => {
+    // Three OTP sends per hour is a cap on SENT codes. Recording a send that
+    // never happened would lock a worker out of retrying after a provider
+    // outage they had nothing to do with.
+    const { deps, savedPatches, issueChallenge } = makeDeps();
+    issueChallenge.mockResolvedValueOnce({ status: 'send_failed' } as never);
+
+    await handleStartStep(client, makeSession(), makeMsg('EMPEZAR'), deps, null, PHONE_HASH, NOW);
+
+    const patch = savedPatches[0] as { context?: Record<string, unknown> };
+    expect(patch.context?.otpSendHistory).toBeUndefined();
+  });
+
+  it('still throws for an unclassified issueChallenge failure, so the record retries', async () => {
+    const { deps, texts, prompts, issueChallenge } = makeDeps();
+    issueChallenge.mockRejectedValueOnce(new Error('cognito exploded'));
+
+    await expect(
+      handleStartStep(client, makeSession(), makeMsg('EMPEZAR'), deps, null, PHONE_HASH, NOW),
+    ).rejects.toThrow('cognito exploded');
+
+    expect(texts).toHaveLength(0);
+    expect(prompts).toHaveLength(0);
   });
 });

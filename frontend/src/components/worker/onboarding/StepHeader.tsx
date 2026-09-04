@@ -24,6 +24,12 @@ import {
  * user would be left tabbing from wherever the old Continue button was.
  * `tabIndex={-1}` makes the h1 focusable programmatically without adding it to
  * the tab order.
+ *
+ * ...UNLESS THE STEP'S OWN FIRST FIELD TAKES IT (`fieldTakesFocus`). A step
+ * that autofocuses its first input would otherwise have the focus pulled back
+ * to this heading a moment later -- two owners racing for one focus, decided by
+ * effect flush order. The step DECLARES which it wants instead. Only the steps
+ * whose first control is typed into pass it; everything else keeps the heading.
  */
 export function StepHeader({
     screen,
@@ -33,6 +39,7 @@ export function StepHeader({
     counterLabel,
     onBack,
     backDisabled = false,
+    fieldTakesFocus = false,
 }: {
     screen: ScreenKey;
     title: string;
@@ -43,14 +50,17 @@ export function StepHeader({
     /** `null` on the first screen and on the summary: there is nowhere to go back to. */
     onBack: (() => void) | null;
     backDisabled?: boolean;
+    /** The step autofocuses its own first field, so the heading stays out of it. */
+    fieldTakesFocus?: boolean;
 }) {
     const t = useTranslations('worker_onboarding');
     const headingRef = useRef<HTMLHeadingElement>(null);
     const index = (PROGRESS_SEGMENTS as readonly ScreenKey[]).indexOf(screen);
 
     useEffect(() => {
+        if (fieldTakesFocus) return;
         headingRef.current?.focus();
-    }, [screen]);
+    }, [screen, fieldTakesFocus]);
     const counter = counterLabel
         ?? (index >= 0 ? t('progress.counter', { current: index + 1, total: PROGRESS_SEGMENTS.length }) : '');
 

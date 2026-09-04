@@ -38,6 +38,10 @@ export type PlanLimitModel = {
   kind: PlanLimitKind;
   bodyKey:
     | 'limit_dialog.body_jobs'
+    // The PRE-flight sentence: said before the employer has typed anything,
+    // so unlike `body_jobs` it is phrased as a refusal to start rather than as
+    // a report of a failed publish. See `activeJobsPreflightModel`.
+    | 'limit_dialog.body_jobs_preflight'
     | 'limit_dialog.body_jobs_zero'
     | 'limit_dialog.body_templates'
     | 'limit_dialog.body_templates_zero';
@@ -192,6 +196,63 @@ export function planLimitModel(
     // The jobs list can be absent (never fetched, or the fetch failed), in
     // which case every used slot lands in the overflow count.
     overflowCount: Math.max(0, used - blockingJobs.length),
+    hintKey: 'limit_dialog.hint_jobs',
+    ctas: JOBS_CTAS,
+  };
+}
+
+/**
+ * The same dialog model, decided BEFORE anything is submitted.
+ *
+ * `planLimitModel` above reads a 403 the server already sent. This one answers
+ * "would a post be refused?" from what the page is holding, so the employer
+ * can be told there is no slot while their draft is still unwritten. That is
+ * the whole point: the old flow let them fill in all three wizard steps and
+ * only then showed the limit -- and the notice's one self-service way out
+ * ("Pause a job") navigates to the dashboard, which resets the wizard and
+ * throws the draft away.
+ *
+ * Returns null -- meaning "do not gate" -- whenever the answer is not a
+ * confident yes:
+ *  - no `billing` (the dashboard fetches it best-effort against a 2.5s
+ *    deadline, so "we don't know" is a normal state, and locking someone out
+ *    of posting on a slow request would be a far worse bug than the one this
+ *    fixes);
+ *  - a non-integer limit from a malformed catalog row;
+ *  - a count under the cap.
+ * In every one of those cases the publish-time 403 remains the backstop, which
+ * is why this gate is allowed to be optimistic.
+ *
+ * `activeCount` is passed in rather than read off `billing.activeJobUsage` on
+ * purpose. `activeJobUsage` is a snapshot from page load; the dashboard now
+ * pauses and resumes jobs in place, so the usage figure goes stale the moment
+ * it does -- and a gate that still blocked after the employer freed a slot
+ * would be indistinguishable from the bug. The caller passes the count it
+ * derives from the live jobs list, which is also the number `PlanUsageMeter`
+ * shows the employer in the same panel.
+ */
+export function activeJobsPreflightModel(
+  billing: Pick<EmployerBilling, 'planCode' | 'activeJobLimit'> | null | undefined,
+  activeCount: number,
+  jobs?: ReadonlyArray<Pick<Job, 'id' | 'title' | 'status' | 'created_at'>> | null,
+): PlanLimitModel | null {
+  if (!billing) return null;
+  const limit = billing.activeJobLimit;
+  if (!Number.isInteger(limit) || limit < 0) return null;
+  if (activeCount < limit) return null;
+
+  const blockingJobs = blockingJobsFrom(jobs);
+
+  return {
+    kind: 'active_jobs',
+    // A plan with no postings at all is not "you have used them up" -- it is
+    // "this plan does not include the thing", which is `body_jobs_zero`'s job
+    // and reads the same whether the server or this function decided it.
+    bodyKey: limit === 0 ? 'limit_dialog.body_jobs_zero' : 'limit_dialog.body_jobs_preflight',
+    bodyParams: { limit, used: activeCount },
+    planNameKey: planNameKeyFor(billing.planCode),
+    blockingJobs,
+    overflowCount: Math.max(0, activeCount - blockingJobs.length),
     hintKey: 'limit_dialog.hint_jobs',
     ctas: JOBS_CTAS,
   };

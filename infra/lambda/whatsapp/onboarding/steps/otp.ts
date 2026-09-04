@@ -49,6 +49,17 @@ export async function handleOtpStep(
     if (issued.status === 'throttled') {
       return { handled: true, workerId: null, stepKey: 'identity.verify_otp' };
     }
+    // Sprint 24 A3: the resent OTP's SMS could not be sent (see
+    // `IssueChallengeResult`'s 'send_failed'). Touched here ONLY because
+    // extending that union makes this branch a compile-time requirement --
+    // the reply and the "stay on this step" contract mirror the start step's
+    // own send_failed branch (steps/start.ts). Nothing is persisted: the
+    // previously issued challenge is still the live one, and a send that
+    // never happened must not be charged to the 3-per-hour resend budget.
+    if (issued.status === 'send_failed') {
+      await sendPreAuthText(client, deps, msg, responseLang, 'v2_otp_send_failed');
+      return { handled: true, workerId: null, stepKey: 'identity.verify_otp' };
+    }
     const newHistory = appendSendTimestamp(history, now);
     await deps.repo.savePreAuthState(client, phoneHash, {
       providerChallengeId: issued.challengeId,

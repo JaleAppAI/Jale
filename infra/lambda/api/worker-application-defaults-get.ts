@@ -2,6 +2,7 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
+import { filterReusableDefaults } from '../lib/worker-application-defaults';
 
 // GET /worker/application-defaults -- prefill data for a new application
 // (worker_application_defaults, 079_worker_application_defaults.sql).
@@ -67,11 +68,19 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     await client.query('COMMIT');
 
     const row = result.rows[0];
+    // REUSE FILTER (sprint 24 L3, decision D2). The web application form
+    // prefills its editable draft from this body, so only keys
+    // `FIELD_REUSE_POLICY` marks 'stable' may be handed out: a
+    // per_application answer (`date_available`, `desired_pay`,
+    // `worked_here_before`, `emergency_contact`) was given about ANOTHER
+    // job and another employer. The stored row may still hold such keys
+    // from before the policy existed -- this door refuses to serve them
+    // rather than waiting for a backfill.
     return {
       statusCode: 200,
       headers: CORS_HEADERS,
       body: JSON.stringify({
-        answers: row?.answers ?? {},
+        answers: filterReusableDefaults(row?.answers),
         updated_at: row?.updated_at ?? null,
       }),
     };

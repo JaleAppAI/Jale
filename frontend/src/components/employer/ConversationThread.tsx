@@ -186,16 +186,24 @@ export function ConversationThread({
 
             <span className="avatar-initials h-10 w-10 shrink-0 text-xs">{initials}</span>
 
+            {/* The JOB is the heading, not the worker.
+                Owner report after the 2026-09-03 release: an employer reading
+                their inbox triages by posting -- and the header put the
+                worker's name in the h2 at `text-sm` with the job title two
+                sizes smaller underneath, so a thread gave no glanceable answer
+                to "which job is this about?". The identity block is unchanged
+                in ORDER (who -> which job -> where, which is also the reading
+                order for a screen reader); only the weight moved. */}
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-x-2">
-                <h2 className="truncate text-sm font-bold text-[var(--jale-ink)]">{workerName}</h2>
+                <p className="truncate text-xs font-semibold text-[var(--jale-ink)]">{workerName}</p>
                 <StatusDot open={isOpen} label={isOpen ? t('status_open') : t('status_closed')} />
               </div>
-              <p className="truncate text-xs font-semibold text-[var(--jale-ink)]">
+              <h2 className="truncate text-lg font-semibold leading-snug text-[var(--jale-ink)]">
                 {conversation.job_title}
-              </p>
+              </h2>
               {jobLocation ? (
-                <p className="truncate text-[11px] font-medium text-[var(--jale-ink-2)]">{jobLocation}</p>
+                <p className="truncate text-xs font-medium text-[var(--jale-ink-2)]">{jobLocation}</p>
               ) : null}
               {!compact && lastMessage ? (
                 <p className="mt-0.5 text-[10px] tabular-nums text-[var(--jale-ink-2)]">
@@ -261,7 +269,7 @@ export function ConversationThread({
         {conversation.status === 'closed' ? (
           <p className="text-sm text-[var(--jale-ink-2)]">{t('closed_hint')}</p>
         ) : (
-          <div className="flex gap-2">
+          <div className="flex items-end gap-2">
             <textarea
               ref={textareaRef}
               value={body}
@@ -280,7 +288,12 @@ export function ConversationThread({
                  indicator. The ring carries it in both themes. */
               className="min-h-[42px] flex-1 resize-none rounded-[var(--radius-input)] border border-[var(--jale-divider)] bg-[var(--jale-paper-2)] px-3 py-2 text-sm text-[var(--jale-ink)] outline-none placeholder:text-[var(--jale-ink-2)] focus:border-[var(--primary)] focus:bg-[var(--jale-card)] focus:shadow-[var(--shadow-focus)]"
             />
-            <Button type="submit" loading={sending} loadingLabel={tCommon('loading')}>
+            {/* Primary at `lg`: sending is the one thing this pane exists for,
+                and at the default size beside a full-width textarea it read as
+                a secondary affordance. The row is `items-end` so the taller
+                control sits on the composer's baseline rather than floating at
+                the top of a two-row textarea. */}
+            <Button type="submit" variant="primary" size="lg" loading={sending} loadingLabel={tCommon('loading')}>
               {t('send')}
             </Button>
           </div>

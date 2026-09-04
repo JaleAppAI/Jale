@@ -37,6 +37,12 @@ import {
 import { upsertWorkerProfileFromUsers } from './profile-flow';
 import { slugCityKey } from '../../lib/city-fields';
 import { UNAMBIGUOUS_CITY_TO_STATE } from './city-state-data';
+// L6 (saveCustomTrade only): the canonicalising trade write plus the
+// fire-and-forget alias-cache growth the repository deliberately leaves to its
+// caller. `trade-alias-request` was already in this module's import graph via
+// `../handlers/custom-trust` above.
+import { saveCanonicalCustomTrade } from './onboarding-repository';
+import { requestTradeAliasGeneration } from '../../lib/trade-alias-request';
 
 // ── Local constants ────────────────────────────────────────────────────
 //
@@ -61,7 +67,21 @@ export interface OnboardingV2Adapters {
 
 export type IssueChallengeResult =
   | { status: 'sent'; challengeId: string; expiresAt: Date }
-  | { status: 'throttled'; retryAfterSeconds: number };
+  | { status: 'throttled'; retryAfterSeconds: number }
+  /**
+   * Sprint 24 A3: Cognito started the challenge but the OTP SMS never left
+   * the building -- `CreateAuthChallenge` (lambda/auth/create-auth-challenge.ts)
+   * sends it through Twilio and RETHROWS on failure, which Cognito surfaces
+   * to `InitiateAuth` as `UserLambdaValidationException` (seen in production
+   * as Twilio 21408, an SMS-disabled destination region).
+   *
+   * A RESULT rather than a throw, because a retry cannot help: the same
+   * number fails the same way on the next delivery attempt, so letting it
+   * throw only cost us the inbound WhatsApp message (three died in
+   * `whatsapp-inbound-v2-dlq.fifo`) and told the worker nothing. The caller
+   * answers the worker and re-arms the step instead.
+   */
+  | { status: 'send_failed' };
 
 export type VerifyChallengeResult =
   | { status: 'verified'; workerId: string }
@@ -148,6 +168,23 @@ function isThrottleError(err: unknown): boolean {
   return name === 'TooManyRequestsException' || name === 'LimitExceededException';
 }
 
+/**
+ * Cognito wraps ANY error thrown by a CUSTOM_AUTH trigger in
+ * `UserLambdaValidationException` -- for this lane that is
+ * `CreateAuthChallenge`'s rethrow after a failed Twilio SMS send.
+ *
+ * Classified by error IDENTITY (`name`, or `code` for the SDK shapes that
+ * carry it there) and NEVER by the message text: that text is provider prose
+ * ("Permission to send an SMS has not been enabled for the region indicated
+ * by the 'To' number"), reworded by Twilio and AWS at will, so matching on
+ * it would let this fix rot silently.
+ */
+function isLambdaValidationError(err: unknown): boolean {
+  const e = err as { name?: string; code?: string } | undefined;
+  return e?.name === 'UserLambdaValidationException'
+    || e?.code === 'UserLambdaValidationException';
+}
+
 export function createIdentityAdapter(deps: IdentityAdapterDeps): IdentityAdapter {
   // Lazy construction: the client is only created when this factory runs,
   // never at module load (Rule 4).
@@ -184,6 +221,15 @@ export function createIdentityAdapter(deps: IdentityAdapterDeps): IdentityAdapte
         if (isThrottleError(err)) {
           return { status: 'throttled', retryAfterSeconds: THROTTLE_RETRY_SECONDS };
         }
+        if (isLambdaValidationError(err)) {
+          // Metric name only. The provider message carries the destination
+          // number and its own prose; neither belongs in a log line.
+          console.log(JSON.stringify({ metric: 'WorkerOtpChallengeSendFailed' }));
+          return { status: 'send_failed' };
+        }
+        // Unclassified failures still throw, so the record retries and
+        // (eventually) shows up in the DLQ where it can be seen, rather than
+        // being silently reported to the worker as a send failure.
         throw err;
       }
     },
@@ -587,10 +633,27 @@ export function createProfilePersistenceAdapter(
     },
 
     async saveCustomTrade(client, workerId, rawProfession) {
-      await client.query(
-        `UPDATE users SET main_trade = 'other', main_trade_other = $2 WHERE id = $1 AND user_type = 'worker'`,
-        [workerId, rawProfession],
-      );
+      // Sprint 24 L6: the typed profession is canonicalised through the
+      // bilingual `trade_aliases` cache before it is stored, so "soldador",
+      // "Soldadura" and "welder" all become one trade (decision D4) instead of
+      // three. `saveCanonicalCustomTrade` owns the SQL and reads the run's
+      // preferred language itself — this adapter has no gate to pass through.
+      // It writes nothing for blank input, and never a pair `chk_trade_other`
+      // would reject.
+      const written = await saveCanonicalCustomTrade(client, workerId, rawProfession);
+
+      // The repository is DB-only by contract, so growing the cache is this
+      // caller's job: ask the generator to learn any trade the cache did not
+      // know, so the NEXT write canonicalises. `requestTradeAliasGeneration`
+      // is fire-and-forget and never throws by contract; the try/catch is
+      // defence in depth so learning a trade can never fail the worker's turn.
+      if (written && !written.resolved && written.main_trade_other) {
+        try {
+          await requestTradeAliasGeneration(written.main_trade_other);
+        } catch {
+          // Swallowed intentionally -- see comment above.
+        }
+      }
     },
 
     async syncProfileForTrustHandoff(client, workerId) {

@@ -1,5 +1,11 @@
-import { beforeEach, describe, expect, it } from 'vitest';
-import { ApiError, clearIdempotencyKey, getIdempotencyKey, isDefinitiveError } from '../employer';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  ApiError,
+  clearIdempotencyKey,
+  getIdempotencyKey,
+  isDefinitiveError,
+  updateApplicantStatus,
+} from '../employer';
 import { ApiError as SharedApiError } from '../errors';
 
 // vitest.config.ts runs this suite in the 'node' environment, which has no
@@ -149,5 +155,85 @@ describe('isDefinitiveError', () => {
   it('treats terminal 4xx validation errors as definitive', () => {
     expect(isDefinitiveError(new ApiError(400, 'invalid_plan'))).toBe(true);
     expect(isDefinitiveError(new ApiError(404, 'user_not_provisioned'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// updateApplicantStatus -- the wire contract the "Request details" button and
+// the status dropdown share (sprint 24, B7).
+// ---------------------------------------------------------------------------
+
+describe('updateApplicantStatus', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  function jsonResponse(body: unknown, status = 200): Response {
+    return { ok: status >= 200 && status < 300, status, json: async () => body } as Response;
+  }
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    process.env.NEXT_PUBLIC_API_BASE_URL = 'https://api.example.test';
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('PATCHes the status with no resend flag by default', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ status: 'contacted', notified: false, notify_reason: 'not_notifiable_status' }));
+
+    await updateApplicantStatus('id-token-abc', 'job-1', 'worker-1', 'contacted');
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('https://api.example.test/employer/jobs/job-1/applicants/worker-1');
+    expect(init.method).toBe('PATCH');
+    expect(init.headers.Authorization).toBe('id-token-abc');
+    // Absent, not `false`: the backend rejects a non-boolean and treats an
+    // absent key as "no resend", so there is nothing to send.
+    expect(JSON.parse(init.body)).toEqual({ status: 'contacted' });
+  });
+
+  it('sends resend: true when the caller asks for a resend', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ status: 'details_requested', notified: true }));
+
+    await updateApplicantStatus('id-token-abc', 'job-1', 'worker-1', 'details_requested', { resend: true });
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      status: 'details_requested',
+      resend: true,
+    });
+  });
+
+  it('omits the flag again when resend is explicitly false', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ status: 'details_requested', notified: true }));
+
+    await updateApplicantStatus('id-token-abc', 'job-1', 'worker-1', 'details_requested', { resend: false });
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ status: 'details_requested' });
+  });
+
+  it('returns the notification outcome the handler reported', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({
+      status: 'details_requested', notified: false, notify_reason: 'renderer_unavailable',
+    }));
+
+    const result = await updateApplicantStatus('id-token-abc', 'job-1', 'worker-1', 'details_requested');
+
+    expect(result).toMatchObject({
+      status: 'details_requested',
+      notified: false,
+      notify_reason: 'renderer_unavailable',
+    });
+  });
+
+  it('surfaces a refused resend as a typed ApiError', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ error: 'resend_not_applicable', status: 'pending' }, 400));
+
+    const err = await updateApplicantStatus('id-token-abc', 'job-1', 'worker-1', 'pending', { resend: true })
+      .catch((e) => e);
+
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err).toMatchObject({ code: 'resend_not_applicable', status: 400 });
   });
 });

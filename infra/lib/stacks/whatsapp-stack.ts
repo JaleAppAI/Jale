@@ -17,6 +17,7 @@ import * as snsSubscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import { Construct } from 'constructs';
 import { BEDROCK_MODEL_ID, bedrockArns } from '../bedrock-arns';
+import { jaleAlarm } from '../constructs/jale-alarm';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
 import { JaleCognitoPool } from '../constructs/cognito-pool';
 import { VoiceTranscriptionPipeline } from '../constructs/voice-transcription-pipeline';
@@ -855,6 +856,53 @@ export class WhatsAppStack extends cdk.Stack {
         alarmName,
         metric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
       ).addAlarmAction(alarmAction);
+    }
+
+    // F4: the two template-approval outcomes, added SEPARATELY from the loop
+    // above rather than as two more tuples in it. The loop's alarms are the
+    // four that are already live in production on a 5-minute period, and the
+    // one thing this change must not do is renumber or re-shape them --
+    // CloudFormation REPLACES an alarm whose logical id changes, and a
+    // replaced alarm is briefly not watching anything.
+    //
+    // WHY THEY WERE MISSING. `outbox.ts` has logged
+    // `WorkerIntentOutboxTemplatePending` per deferred row since the
+    // 2026-09-04 fix, under a comment asserting that "the CloudWatch metric
+    // filter counts occurrences". No such filter existed, in this stack or
+    // anywhere: a deferred employer notification was invisible, and the
+    // 48-hour terminal branch inside migration 093 -- which flips the row to
+    // 'failed' without ever reaching `fail_worker_intent_outbox` -- was
+    // invisible AND silent. `drainWorkerIntentOutbox` now reports that branch
+    // as `expired` and logs `WorkerIntentOutboxTemplateExpired`.
+    //
+    // A ONE-HOUR period, not the loop's five minutes, because the underlying
+    // cadence is a Meta template review: the deferral reschedules the row an
+    // hour out (TEMPLATE_PENDING_DEFER_SECONDS), so a 5-minute window would
+    // report the same stuck row as an on/off flicker. Threshold 1 on a
+    // 1-hour Sum: a single occurrence is already a worker who has not heard
+    // that an employer wants to hire them.
+    //
+    // `jaleAlarm`, not the local `alarm()` helper, for `treatMissingData`:
+    // both spell NOT_BREACHING, but the helper is where that decision is
+    // documented and enforced repo-wide, and these two metrics are idle by
+    // definition -- they publish only when a template is unapproved. The
+    // alarm action is the same SNS topic the four above use.
+    for (const [filterId, eventName, metricName, alarmId, alarmName] of [
+      ['WorkerIntentTemplatePendingMetric', 'WorkerIntentOutboxTemplatePending',
+        'WorkerIntentTemplatePending', 'WorkerIntentTemplatePendingAlarm',
+        'WhatsAppWorkerIntentTemplatePending'],
+      ['WorkerIntentTemplateExpiredMetric', 'WorkerIntentOutboxTemplateExpired',
+        'WorkerIntentTemplateExpired', 'WorkerIntentTemplateExpiredAlarm',
+        'WhatsAppWorkerIntentTemplateExpired'],
+    ] as const) {
+      const metric = workerIntentMetricFilter(filterId, eventName, metricName);
+      jaleAlarm(this, alarmId, {
+        alarmName,
+        metric: metric.metric({ period: cdk.Duration.hours(1), statistic: 'Sum' }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        actions: [alarmAction],
+      });
     }
 
     // Twilio-reported terminal delivery failures (failed/undelivered).

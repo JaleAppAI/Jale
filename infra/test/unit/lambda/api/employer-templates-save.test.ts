@@ -329,4 +329,169 @@ describe('employer-templates-save', () => {
     expect(res.statusCode).toBe(400);
     expect(JSON.parse(res.body).error).toBe('invalid_certification_requirements_doc_conflict');
   });
+  // ---------------------------------------------------------------------------
+  // B4 -- pre_application_prompts (091). The frontend has always SENT the key
+  // (job-form.ts:478) and read it back (`jobToForm`), but the whitelist in
+  // validateTemplatePayload never carried it, so a template saved with custom
+  // questions silently lost them.
+  // ---------------------------------------------------------------------------
+
+  it('round-trips pre_application_prompts into the stored payload, preserving supplied ids verbatim', async () => {
+    const res = await handler(makeEvent({
+      payload: {
+        ...BASE_PAYLOAD,
+        pre_application_prompts: [
+          { id: 'q-1', text: '  How many years pouring slabs?  ' },
+          { id: 'q-2', text: 'Do you own your own tools?' },
+        ],
+      },
+    }));
+
+    expect(res.statusCode).toBe(201);
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO employer_job_templates'));
+    expect(insertCall).toBeDefined();
+    const parsed = JSON.parse(insertCall[1][2]);
+    // Ids are NEVER re-minted -- job_applications.prompt_answers is keyed on
+    // them, so a template that seeds a job must carry the same ids through.
+    expect(parsed.pre_application_prompts).toEqual([
+      { id: 'q-1', text: 'How many years pouring slabs?' },
+      { id: 'q-2', text: 'Do you own your own tools?' },
+    ]);
+  });
+
+  it('mints an id for a prompt supplied as text only', async () => {
+    const res = await handler(makeEvent({
+      payload: { ...BASE_PAYLOAD, pre_application_prompts: [{ text: 'Own transportation?' }] },
+    }));
+
+    expect(res.statusCode).toBe(201);
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO employer_job_templates'));
+    const parsed = JSON.parse(insertCall[1][2]);
+    expect(parsed.pre_application_prompts).toHaveLength(1);
+    expect(parsed.pre_application_prompts[0].text).toBe('Own transportation?');
+    expect(parsed.pre_application_prompts[0].id).toMatch(/^[A-Za-z0-9_-]{1,40}$/);
+  });
+
+  it('keeps pre_application_prompts ABSENT when the payload omits it (no [] injection into a legacy template)', async () => {
+    const res = await handler(makeEvent({ payload: BASE_PAYLOAD }));
+
+    expect(res.statusCode).toBe(201);
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO employer_job_templates'));
+    const parsed = JSON.parse(insertCall[1][2]);
+    expect(parsed).not.toHaveProperty('pre_application_prompts');
+  });
+
+  it('stores an explicitly empty prompt list as [] (the key was sent, so it is not absent)', async () => {
+    const res = await handler(makeEvent({ payload: { ...BASE_PAYLOAD, pre_application_prompts: [] } }));
+
+    expect(res.statusCode).toBe(201);
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO employer_job_templates'));
+    const parsed = JSON.parse(insertCall[1][2]);
+    expect(parsed.pre_application_prompts).toEqual([]);
+  });
+
+  it.each([
+    ['not an array', 'nope'],
+    ['too many prompts', Array.from({ length: 11 }, (_, i) => ({ text: `q${i}` }))],
+    ['a blank text', [{ text: '   ' }]],
+    ['an over-long text', [{ text: 'a'.repeat(501) }]],
+    ['a malformed id', [{ id: 'not a valid id!', text: 'q' }]],
+    ['a duplicate id', [{ id: 'q-1', text: 'a' }, { id: 'q-1', text: 'b' }]],
+    ['an extra key', [{ id: 'q-1', text: 'a', required: true }]],
+  ])('rejects %s with 400 invalid_pre_application_prompts, exactly as employer-jobs-create does', async (_label, prompts) => {
+    const res = await handler(makeEvent({ payload: { ...BASE_PAYLOAD, pre_application_prompts: prompts } }));
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_pre_application_prompts');
+    expect(mockQuery).not.toHaveBeenCalledWith(expect.stringContaining('INSERT INTO employer_job_templates'), expect.anything());
+  });
+  // ---------------------------------------------------------------------------
+  // Sprint 24 follow-up -- "template -> job location not selected".
+  //
+  // employer-jobs-update.ts:302 recovers the city identity from the location
+  // TEXT when no triple is sent (`cityFields.value ?? parseCityFromLocation`).
+  // This handler did not, so a template saved from a degraded picker (or any
+  // legacy template) stored location-only forever and every job created from
+  // it landed with city_key = null -- invisible to every city filter and feed.
+  // ---------------------------------------------------------------------------
+
+  function storedPayload() {
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO employer_job_templates'));
+    expect(insertCall).toBeDefined();
+    return JSON.parse(insertCall[1][2]);
+  }
+
+  it('derives the city triple from a parseable location when the payload carries no triple', async () => {
+    const res = await handler(makeEvent({
+      payload: { ...BASE_PAYLOAD, location: 'Austin, TX' },
+    }));
+
+    expect(res.statusCode).toBe(201);
+    // Same slug rule as slugCityKey / migration 061, so a job seeded from this
+    // template keys identically to one posted directly.
+    expect(storedPayload()).toMatchObject({
+      city_key: 'austin-tx',
+      city: 'Austin',
+      state: 'TX',
+    });
+  });
+
+  it('accepts the ZIP-suffixed form the SQL backfill also matches', async () => {
+    const res = await handler(makeEvent({
+      payload: { ...BASE_PAYLOAD, location: 'El Paso, TX 79901' },
+    }));
+
+    expect(res.statusCode).toBe(201);
+    expect(storedPayload()).toMatchObject({ city_key: 'el-paso-tx', city: 'El Paso', state: 'TX' });
+  });
+
+  it('stores NO triple at all when the location text cannot be parsed', async () => {
+    // Never guess: a wrong city surfaces the job in the wrong feed. This is
+    // the pre-fix behaviour, preserved exactly for free-text locations.
+    const res = await handler(makeEvent({
+      payload: { ...BASE_PAYLOAD, location: 'Remote / travel' },
+    }));
+
+    expect(res.statusCode).toBe(201);
+    const parsed = storedPayload();
+    expect(parsed).not.toHaveProperty('city_key');
+    expect(parsed).not.toHaveProperty('city');
+    expect(parsed).not.toHaveProperty('state');
+    expect(parsed.location).toBe('Remote / travel');
+  });
+
+  it('lets an EXPLICIT triple win over the location text', async () => {
+    // The picker is the authority when it worked: an employer who selected
+    // Dallas for a job whose location line reads "Austin, TX" gets Dallas.
+    const res = await handler(makeEvent({
+      payload: {
+        ...BASE_PAYLOAD,
+        location: 'Austin, TX',
+        city_key: 'dallas-tx',
+        city: 'Dallas',
+        state: 'TX',
+      },
+    }));
+
+    expect(res.statusCode).toBe(201);
+    expect(storedPayload()).toMatchObject({ city_key: 'dallas-tx', city: 'Dallas', state: 'TX' });
+  });
+
+  it('derives the triple on the UPDATE path too, not just create', async () => {
+    mockQuery.mockImplementation((sql: string) => {
+      if (sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'emp-1' }] });
+      if (sql.includes('SELECT id FROM employer_job_templates')) return Promise.resolve({ rowCount: 0, rows: [] });
+      if (sql.includes('UPDATE employer_job_templates')) return Promise.resolve({ rowCount: 1, rows: [TEMPLATE_ROW] });
+      return Promise.resolve({});
+    });
+
+    const res = await handler(makeEvent({
+      id: '3f6d3a2e-8c4b-4a1e-9d2f-1b5e6c7a8d90',
+      payload: { ...BASE_PAYLOAD, location: 'Austin, TX' },
+    }));
+
+    expect(res.statusCode).toBe(200);
+    const updateCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('UPDATE employer_job_templates'));
+    expect(JSON.parse(updateCall[1][1])).toMatchObject({ city_key: 'austin-tx', city: 'Austin', state: 'TX' });
+  });
 });

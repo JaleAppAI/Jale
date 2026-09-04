@@ -409,10 +409,10 @@ maybeDescribe('L2.4: the web stage-2 details door, end to end', () => {
       [ids.owner],
     );
     expect(defaults.rowCount).toBe(1);
-    expect(defaults.rows[0].answers).toMatchObject({
-      home_address: HOME_ADDRESS,
-      date_available: '2026-10-01',
-    });
+    // Sprint 24 D2: only identity-stable answers are written back.
+    // date_available is per-application and must never reach the defaults.
+    expect(defaults.rows[0].answers).toEqual({ home_address: HOME_ADDRESS });
+    expect(defaults.rows[0].answers).not.toHaveProperty('date_available');
   });
 
   // =====================================================================

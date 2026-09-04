@@ -91,7 +91,7 @@ export function ApplyFlow({
 
         {prompts.length > 0 ? (
           <div className="grid gap-5">
-            {prompts.map((prompt) => {
+            {prompts.map((prompt, index) => {
               const value = state.answers[prompt.id] ?? '';
               return (
                 <PromptAnswerField
@@ -100,6 +100,11 @@ export function ApplyFlow({
                   value={value}
                   touched={state.touched.has(prompt.id)}
                   disabled={submitting}
+                  // Only the first: the worker arrives here from the Apply
+                  // button and the first question is what they came to answer.
+                  // A job with no prompts renders no field, so there is
+                  // nothing to focus on the one-tap path.
+                  autoFocus={index === 0}
                   onChange={(text) => dispatch({ type: 'set_prompt_answer', promptId: prompt.id, text })}
                   labels={{
                     placeholder: t('placeholder'),

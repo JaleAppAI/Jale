@@ -34,7 +34,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_worker_id' }) };
     }
 
-    let body: { status?: string };
+    let body: { status?: string; resend?: unknown };
     try {
       body = JSON.parse(event.body ?? '{}');
     } catch {
@@ -45,6 +45,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (!status || !APPLICATION_STATUSES.includes(status as any)) {
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_status', valid: APPLICATION_STATUSES }) };
     }
+
+    // Sprint 24 (B7): `resend` asks for the SAME stage notification to go out
+    // again on an application whose status is already committed -- the
+    // employer's only way to nudge a worker who never answered. Strictly
+    // boolean, so a truthy string can never silently buy a re-send.
+    if (body.resend !== undefined && typeof body.resend !== 'boolean') {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_resend' }) };
+    }
+    const resend = body.resend === true;
 
     const pool = await getDbPool();
     client = await pool.connect();
@@ -105,8 +114,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     //     jale_admin regardless, so nothing else in the enqueue needs a switch.
     await setInternalUserRlsContext(client, job.employer_user_id);
 
+    // `details_completed_at` rides along in the SAME row read as `status`:
+    // the F3 resend guard below needs both, the row is already FOR UPDATE, and
+    // a second SELECT would only add a round trip. No grant is widened by
+    // this -- jale_admin already reads the column here (the UPDATE below
+    // RETURNs it) and in employer-job-applicants.ts:148; 091's column-level
+    // grants restrict jale_whatsapp's UPDATE, not jale_admin's SELECT.
     const application = await client.query(
-      `SELECT id, status
+      `SELECT id, status, details_completed_at
        FROM job_applications
        WHERE job_id = $1 AND worker_id = $2
        FOR UPDATE`,
@@ -120,6 +135,62 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const currentStatus = application.rows[0].status;
     // Transitions stay any->any; `changed` only gates the worker notification.
     const changed = currentStatus !== status;
+
+    // A resend only means something for a stage the worker was actually
+    // pinged about. Gated on the CURRENT status, not the requested one: the
+    // question "is there a notification here to send again?" is about what is
+    // already on the row. Deliberately NOT also requiring
+    // `status === currentStatus` -- a stale page that asks to resend while
+    // moving the application on is served by the ordinary `changed` enqueue
+    // below, and a 400 there would be a manufactured failure.
+    if (resend && currentStatus !== 'details_requested' && currentStatus !== 'hired') {
+      await client.query('ROLLBACK');
+      return {
+        statusCode: 400,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({ error: 'resend_not_applicable', status: currentStatus }),
+      };
+    }
+
+    // Sprint 24 (F3): a details resend to a worker who ALREADY answered is a
+    // lie, so refuse it -- the same rule `canResendDetails`
+    // (frontend/src/lib/hire-gate.ts:185) enforces client-side, now enforced
+    // where a stale tab or any other API client cannot get around it. Before
+    // this, the worker got "we need more details", tapped Empezar, and hit
+    // `application_already_complete` on the stage-2 door.
+    //
+    // Keyed on the REQUESTED status, not `currentStatus`, and deliberately
+    // NOT extended to `hired`:
+    //   * `details_requested` legitimately OUTLIVES the fill -- the status is
+    //     the employer's to move, the 091 stage timestamps are not -- so
+    //     `currentStatus` alone says nothing about completeness, and
+    //     `details_completed_at` is the only honest signal. The notification
+    //     this re-sends is keyed on `status` (see `kind:` below), so `status`
+    //     is what the guard must judge.
+    //   * a resend on `status === 'hired'` re-sends the HIRE ping, which makes
+    //     no claim about outstanding paperwork. 091's hire trigger in fact
+    //     REQUIRES the details to be complete first, so completeness is a
+    //     precondition there rather than a contradiction. Gating on
+    //     `currentStatus` would also have broken the ordinary
+    //     details_requested -> hired move that a stale tab makes with
+    //     `resend` riding along -- exactly the shape the comment above
+    //     describes as served by the normal `changed` enqueue.
+    //
+    // Nullish (not `!== null`) on purpose: absent and SQL NULL both mean
+    // "stage 2 unfinished".
+    if (resend && status === 'details_requested' && application.rows[0].details_completed_at != null) {
+      await client.query('ROLLBACK');
+      return {
+        statusCode: 400,
+        headers: CORS_HEADERS,
+        // Same error CODE as the refusal above so existing employer-side
+        // handling keeps working; `details_status` mirrors the
+        // `ApplicationDetailsStatus` vocabulary the frontend already reads
+        // and is the added key that distinguishes this reason.
+        body: JSON.stringify({ error: 'resend_not_applicable', status: currentStatus, details_status: 'complete' }),
+      };
+    }
+
     if (status === 'hired' && currentStatus !== 'hired' && job.workers_hired >= job.number_of_workers_needed) {
       await client.query('ROLLBACK');
       return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'headcount_full' }) };
@@ -181,14 +252,27 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     // Sprint 23: the two stage changes the worker must hear about off-app.
     // Only on an actual transition -- a PATCH that re-asserts the current
-    // status is a no-op and must not re-ping.
+    // status is a no-op and must not re-ping -- UNLESS the employer explicitly
+    // asked to resend (sprint 24, B7).
     //
+    // Sprint 24 (B7): the answer is reported back. `notified` is what the
+    // employer's toast reads, and `notify_reason` explains a `false`. Reason
+    // precedence is notifiability FIRST, then `changed`: a status the worker
+    // is never pinged about is 'not_notifiable_status' whether or not it moved,
+    // and only a re-asserted notifiable status reads 'unchanged'. That is the
+    // one the details button surfaces ("Already requested.").
+    let notified = false;
+    let notifyReason: 'unchanged' | 'renderer_unavailable' | 'not_notifiable_status' | null = null;
+    const notifiable = status === 'details_requested' || status === 'hired';
+    if (!notifiable) notifyReason = 'not_notifiable_status';
+    else if (!changed && !resend) notifyReason = 'unchanged';
+
     // This block is deliberately LAST before COMMIT. employer_display_name()
     // flips a transaction-local GUC that widens employer_profiles reads until
     // COMMIT (031:56; see the same warning at worker-jobs-detail.ts:44-46), so
     // nothing employer-adjacent may run after it -- including the visibility
     // re-read above, which is why that block stays ahead of this one.
-    if (changed && (status === 'details_requested' || status === 'hired')) {
+    if (notifiable && (changed || resend)) {
       const companyRes = await client.query(
         `SELECT employer_display_name($1) AS company_name`,
         [job.employer_id],
@@ -196,7 +280,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       const companyName: string = companyRes.rows?.[0]?.company_name ?? EMPLOYER_NAME_FALLBACK;
       const applicationId: string = result.rows[0].application_id;
 
-      const notified = await enqueueApplicationStageNotification(client, {
+      // A RESEND needs no bypass option here. `enqueueApplicationStageNotification`
+      // dedupes on `application-stage:<applicationId>:<kind>:<updatedAt ms>`
+      // (application-stage-notify.ts:347) and the UPDATE above sets
+      // `updated_at = now()` unconditionally, which in Postgres is the
+      // TRANSACTION timestamp -- so this request, being its own transaction,
+      // carries a stamp no earlier notification used. The dedupe constraint
+      // therefore admits a fresh intent and a fresh outbox row, and the resend
+      // needs nothing changed in the WhatsApp lane's module.
+      const outcome = await enqueueApplicationStageNotification(client, {
         applicationId,
         workerId,
         kind: status,
@@ -211,12 +303,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       // not a reason to refuse the employer's status change -- record it and
       // commit. Every other enqueue failure propagates to the 500 path, which
       // rolls the status change back.
-      if (notified.outcome === 'renderer_unavailable') {
+      if (outcome.outcome === 'renderer_unavailable') {
+        notifyReason = 'renderer_unavailable';
         console.log(JSON.stringify({
           metric: 'ApplicationStageNotifySkipped',
-          reason: notified.reason,
+          reason: outcome.reason,
           applicationId,
         }));
+      } else {
+        notified = true;
       }
     }
 
@@ -225,7 +320,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     return {
       statusCode: 200,
       headers: CORS_HEADERS,
-      body: JSON.stringify(result.rows[0]),
+      // `notify_reason` only when the answer is "not notified" -- there is
+      // nothing to explain about a notification that went out, and an absent
+      // key keeps the success shape unchanged for existing readers.
+      body: JSON.stringify({
+        ...result.rows[0],
+        notified,
+        ...(notified ? {} : { notify_reason: notifyReason }),
+      }),
     };
   } catch (err) {
     if (client) { try { await client.query('ROLLBACK'); } catch (_) {} }

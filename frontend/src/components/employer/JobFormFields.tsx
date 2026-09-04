@@ -1,6 +1,6 @@
 'use client';
 import type React from 'react';
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import {
   LANGUAGE_OPTIONS,
@@ -42,13 +42,26 @@ interface JobFormFieldsProps {
   minWorkers?: number;
   /** Lets the caller's Modal land initial focus on the title input. */
   titleRef?: React.RefObject<HTMLInputElement>;
+  /**
+   * Rings the location field and explains that a city has to be PICKED, not
+   * typed.
+   *
+   * The caller owns the flag because only it knows how the form was seeded: a
+   * template payload with no `city_key` prefills the location text and leaves
+   * the picker looking settled, and a `location_pick_required` verdict on save
+   * is the other way in. This component cannot derive it -- deriving it from
+   * `form.city_key` alone would light the ring up on every empty new form.
+   */
+  locationInvalid?: boolean;
 }
 
 export function JobFormFields({
   form, onUpdate, onLocationChange,
   showStartDate = true, locked = false, minWorkers = 1, titleRef,
+  locationInvalid = false,
 }: JobFormFieldsProps) {
   const t = useTranslations('employer_dashboard');
+  const locationHelperId = useId();
 
   // Freezes the description Textarea while `DescriptionHelper`'s Generate
   // call is in flight -- otherwise a manual edit made mid-flight would be
@@ -109,10 +122,22 @@ export function JobFormFields({
       </Field>
       <div className="grid gap-3 md:grid-cols-2">
         <Field label={t('modal.location')} required>
-          <LocationPicker
-            value={form.location}
-            onChange={onLocationChange}
-          />
+          {/* Same warning ring PostJobModal's step 1 draws, for the same
+              reason and from the same copy key: the field can hold a perfectly
+              plausible location string with no city behind it. */}
+          <div className={locationInvalid ? 'rounded-[10px] ring-2 ring-[var(--jale-warning)]' : undefined}>
+            <LocationPicker
+              value={form.location}
+              onChange={onLocationChange}
+              invalid={locationInvalid}
+              describedBy={locationInvalid ? locationHelperId : undefined}
+            />
+          </div>
+          {locationInvalid && (
+            <p id={locationHelperId} className="mt-1 rounded-md bg-[var(--jale-warning-bg)] px-2 py-1 text-xs font-semibold text-[var(--jale-warning)]">
+              {t('modal.location_pick_helper')}
+            </p>
+          )}
         </Field>
         <Field label={t('modal.job_type')}>
           <Select value={form.job_type} onChange={(e) => onUpdate('job_type', e.target.value as JobForm['job_type'])} disabled={locked}>

@@ -338,6 +338,13 @@ export default function EmployerBillingPage() {
                                             </InlineFeedback>
                                         )}
 
+                                        {/* Manage only. The ghost "Upgrade plan" that used to
+                                            sit beside it started the SAME checkout as the
+                                            Upgrade panel below, off the same `checkoutBusy`
+                                            flag -- so pressing either spun both, which reads
+                                            as a fault rather than as one action in flight.
+                                            The panel below keeps the CTA: it is where the
+                                            offer is actually explained. */}
                                         <div className="flex flex-wrap gap-3">
                                             {canManage && (
                                                 <Button
@@ -346,16 +353,6 @@ export default function EmployerBillingPage() {
                                                     loadingLabel={t('actions.manage_loading')}
                                                 >
                                                     {t('actions.manage')}
-                                                </Button>
-                                            )}
-                                            {canUpgrade && (
-                                                <Button
-                                                    onClick={handleUpgrade}
-                                                    loading={checkoutBusy}
-                                                    loadingLabel={t('actions.upgrade_loading')}
-                                                    variant="ghost"
-                                                >
-                                                    {t('actions.upgrade')}
                                                 </Button>
                                             )}
                                         </div>

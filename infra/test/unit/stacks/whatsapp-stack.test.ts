@@ -580,6 +580,110 @@ describe('event-driven outbox wake queues', () => {
     });
   });
 
+  // ── F4: the template-pending / template-expired worker-intent signals ──
+  //
+  // `outbox.ts` had been logging `WorkerIntentOutboxTemplatePending` since the
+  // 2026-09-04 deferral fix, with a comment asserting that "the CloudWatch
+  // metric filter counts occurrences" -- and no such filter existed. A
+  // deferred application notification was therefore invisible, and the 48-hour
+  // terminal branch inside migration 093 was invisible AND silent. These are
+  // the two filters and alarms that make both states reach an operator.
+  describe('worker-intent template-approval signals', () => {
+    const workerIntentDrainLogGroupId = (): string => {
+      const fns = template.findResources('AWS::Lambda::Function');
+      const [logicalId] = Object.entries(fns).find(([, r]: [string, any]) =>
+        /Worker intent outbox drain/i.test(r.Properties?.Description ?? ''))!;
+      const ref = (fns as Record<string, any>)[logicalId]
+        .Properties.LoggingConfig?.LogGroup?.Ref;
+      expect(ref).toBeDefined();
+      return ref;
+    };
+
+    const alarmByName = (alarmName: string): [string, any] => {
+      const found = template.findResources('AWS::CloudWatch::Alarm', {
+        Properties: { AlarmName: alarmName },
+      });
+      const entries = Object.entries(found);
+      expect(entries).toHaveLength(1);
+      return entries[0] as [string, any];
+    };
+
+    // Both lines are emitted by `outbox.ts` running inside the DRAIN Lambda,
+    // never the status-callback Lambda the file's other `metricFilter()`
+    // helper targets. A filter on the wrong log group publishes nothing and
+    // its alarm never leaves OK -- the same failure mode as the JSON-selector
+    // pattern that metric-filter-patterns.test.ts guards against.
+    test.each([
+      ['WorkerIntentOutboxTemplatePending', 'WorkerIntentTemplatePending'],
+      ['WorkerIntentOutboxTemplateExpired', 'WorkerIntentTemplateExpired'],
+    ])('%s is filtered off the drain log group as %s', (eventName, metricName) => {
+      const logGroupRef = workerIntentDrainLogGroupId();
+      const filters = template.findResources('AWS::Logs::MetricFilter');
+      const match = Object.values(filters).find((f: any) =>
+        f.Properties?.MetricTransformations?.some(
+          (t: any) => t.MetricName === metricName,
+        )) as any;
+      expect(match).toBeDefined();
+      expect(match.Properties.LogGroupName.Ref).toBe(logGroupRef);
+      // A quoted term, not a `{ $.metric = ... }` selector: the Node 20 TEXT
+      // log format prefixes every console line, so a selector matches nothing.
+      expect(match.Properties.FilterPattern).toBe(`"${eventName}"`);
+      expect(match.Properties.MetricTransformations[0]).toEqual(
+        expect.objectContaining({
+          MetricName: metricName,
+          MetricNamespace: 'Jale/WhatsApp',
+          MetricValue: '1',
+        }),
+      );
+    });
+
+    test.each([
+      ['WorkerIntentTemplatePendingAlarm', 'WhatsAppWorkerIntentTemplatePending',
+        'WorkerIntentTemplatePending'],
+      ['WorkerIntentTemplateExpiredAlarm', 'WhatsAppWorkerIntentTemplateExpired',
+        'WorkerIntentTemplateExpired'],
+    ])('%s fires on >= 1 in one hour and treats missing data as not breaching',
+      (constructId, alarmName, metricName) => {
+        const [logicalId, alarm] = alarmByName(alarmName);
+        expect(alarm.Properties.MetricName).toBe(metricName);
+        expect(alarm.Properties.Namespace).toBe('Jale/WhatsApp');
+        expect(alarm.Properties.Threshold).toBe(1);
+        expect(alarm.Properties.EvaluationPeriods).toBe(1);
+        expect(alarm.Properties.ComparisonOperator)
+          .toBe('GreaterThanOrEqualToThreshold');
+        expect(alarm.Properties.Statistic).toBe('Sum');
+        // One hour. A single occurrence has to page: one deferred employer
+        // notification is already a worker who has not heard about a job.
+        expect(alarm.Properties.Period).toBe(3600);
+        // THE POINT OF `jaleAlarm`. CloudWatch's own default is `missing`,
+        // which parks a normally-idle metric in INSUFFICIENT_DATA and teaches
+        // the operator to ignore the channel.
+        expect(alarm.Properties.TreatMissingData).toBe('notBreaching');
+        // Same SNS topic the other worker-intent alarms use.
+        expect(alarm.Properties.AlarmActions).toBeDefined();
+        expect(logicalId).toMatch(new RegExp(`^${constructId}[0-9A-F]{8}$`));
+      });
+
+    // The four alarms that were already live. `jaleAlarm()` inserts no path
+    // segment, but adding constructs beside them still must not renumber or
+    // re-parent them: CloudFormation REPLACES an alarm whose logical id
+    // changes, and a replaced alarm is an alarm that is briefly not watching.
+    test.each([
+      ['WorkerIntentSendUnknownAlarm', 'WhatsAppWorkerIntentSendUnknown'],
+      ['WorkerIntentFailureAlarm', 'WhatsAppWorkerIntentFailures'],
+      ['WorkerIntentLeaseLostAlarm', 'WhatsAppWorkerIntentLeaseLost'],
+      ['WorkerIntentBacklogAgedAlarm', 'WhatsAppWorkerIntentBacklogAged'],
+    ])('%s keeps its pre-existing logical id', (constructId, alarmName) => {
+      const [logicalId, alarm] = alarmByName(alarmName);
+      expect(logicalId).toMatch(new RegExp(`^${constructId}[0-9A-F]{8}$`));
+      // And its pre-existing shape: 5-minute period, threshold 1, actionable.
+      expect(alarm.Properties.Period).toBe(300);
+      expect(alarm.Properties.Threshold).toBe(1);
+      expect(alarm.Properties.TreatMissingData).toBe('notBreaching');
+      expect(alarm.Properties.AlarmActions).toBeDefined();
+    });
+  });
+
   // I2 (final-review): lib/moderation.ts's moderateImage() fails OPEN and
   // logs a plain-text `console.error` (not the `{ metric: ... }` JSON
   // convention the other filters use) on a Rekognition service fault —

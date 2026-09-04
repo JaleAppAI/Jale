@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
+import { Icon } from '@/components/ui/icon';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { Textarea } from '@/components/ui/textarea';
 import {
@@ -248,6 +249,11 @@ export function TrustQuestionStep({
                 subtitle={t('intro')}
                 onBack={onBack}
                 backDisabled={saving || voiceActive}
+                // The answer box below takes the focus this heading normally
+                // takes. Nothing is lost to a screen reader: the textarea's
+                // `aria-label` IS this `title`, so arriving on the step still
+                // announces the question -- and now says it can be typed into.
+                fieldTakesFocus
             />
             <StepBody>
                 <div className="flex items-stretch gap-2.5">
@@ -256,6 +262,12 @@ export function TrustQuestionStep({
                         aria-label={question}
                         className="min-h-[150px] font-normal"
                         placeholder={t('placeholder')}
+                        // The box IS the screen: one question, one answer, and
+                        // nothing above it to read past. Focused on arrival so
+                        // a worker on a phone gets the keyboard without a tap.
+                        // `OnboardingFlow` keys this step by screen, so each of
+                        // the three questions is a fresh mount and gets it.
+                        autoFocus
                         value={answer}
                         // NOT disabled while a transcription runs: typing is
                         // the primary path and must never be taken away by the
@@ -342,6 +354,28 @@ export function TrustQuestionStep({
             </StepBody>
             <StepFooter>
                 {error ? <InlineFeedback tone="danger">{error}</InlineFeedback> : null}
+                {/* THE ONE IRREVERSIBLE PRESS IN THIS FLOW, said before it is
+                    pressed. The last question completes the run, and the
+                    engine's `back` only walks an ACTIVE one — so this is the
+                    last moment a worker can change any of the three answers.
+                    It used to be a grey 13px line UNDER the button: the same
+                    weight as every hint on the flow, and read after the press
+                    it was meant to inform. A bordered warning callout above
+                    the CTA instead, as a `note` landmark rather than an
+                    `alert` — it is a standing condition of this screen, not an
+                    event, and announcing it assertively on arrival would talk
+                    over the question. Copy unchanged. */}
+                {index === 3 ? (
+                    <div
+                        role="note"
+                        className="flex items-start gap-2 rounded-[var(--radius-input)] border-[1.5px] border-[var(--jale-warning)] bg-[var(--jale-warning-bg)] px-3.5 py-3 text-[var(--jale-warning-text)]"
+                    >
+                        <span className="mt-px flex-none">
+                            <Icon name="alert" />
+                        </span>
+                        <span className="text-[13px] font-bold leading-snug">{tTrust('complete_note')}</span>
+                    </div>
+                ) : null}
                 <Button
                     className="w-full"
                     size="lg"
@@ -358,13 +392,6 @@ export function TrustQuestionStep({
                 >
                     {index === 3 ? tTrust('complete_cta') : t('cta')}
                 </Button>
-                {/* The last question is the point of no return: it completes
-                    the run, and the engine's `back` only walks an ACTIVE one.
-                    Say so under the button rather than after it, while the
-                    worker can still walk back and change an answer. */}
-                {index === 3 ? (
-                    <p className="text-center text-[13px] text-[var(--jale-ink-2)]">{tTrust('complete_note')}</p>
-                ) : null}
                 {exitLink}
             </StepFooter>
         </StepLayout>

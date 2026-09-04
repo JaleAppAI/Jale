@@ -450,3 +450,50 @@ describe('apiFetch 401 refresh-and-retry', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 });
+
+describe('apiFetch Accept-Language', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  function acceptLanguageOfCall(index: number): string | undefined {
+    return (fetchMock.mock.calls[index][1] as RequestInit & { headers: Record<string, string> })
+      .headers['Accept-Language'];
+  }
+
+  beforeEach(() => {
+    fetchMock = vi.fn(async () => mockResponse(200, { ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('sends the app locale from the URL prefix so the API can localise stored text', async () => {
+    // The worker profile editor stores a canonical trade label in the
+    // worker's language; the API reads Accept-Language when the body carries
+    // no explicit lang. The browser's own header follows the OS language,
+    // not the app locale the worker chose, so the app must say it.
+    vi.stubGlobal('window', { location: { pathname: '/es/worker/profile' } });
+    await apiFetch('/worker/profile', { method: 'PATCH', body: '{}' }, 'tok');
+    expect(acceptLanguageOfCall(0)).toBe('es');
+  });
+
+  it('recognises the locale only as the first path segment', async () => {
+    vi.stubGlobal('window', { location: { pathname: '/en' } });
+    await apiFetch('/worker/profile', undefined, 'tok');
+    expect(acceptLanguageOfCall(0)).toBe('en');
+
+    vi.stubGlobal('window', { location: { pathname: '/legal/es/terms' } });
+    await apiFetch('/worker/profile', undefined, 'tok');
+    expect(acceptLanguageOfCall(1)).toBeUndefined();
+  });
+
+  it('sends nothing when there is no window (server-side) and never overrides a caller header', async () => {
+    await apiFetch('/worker/profile', undefined, 'tok');
+    expect(acceptLanguageOfCall(0)).toBeUndefined();
+
+    vi.stubGlobal('window', { location: { pathname: '/es/worker/profile' } });
+    await apiFetch('/worker/profile', { headers: { 'Accept-Language': 'en' } }, 'tok');
+    expect(acceptLanguageOfCall(1)).toBe('en');
+  });
+});

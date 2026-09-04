@@ -12,6 +12,7 @@
 // it (a stale page load, or the fail-open branch below, both reach it).
 // ---------------------------------------------------------------------------
 
+import type { FeedbackTone } from '@/components/ui/inline-feedback';
 import type { RequirementsRemaining } from '@/lib/api/worker';
 import {
     TERMINAL_APPLICATION_STATUSES,
@@ -74,17 +75,56 @@ export function hireBlocked(profile: {
 }
 
 /**
+ * The statuses the employer's status DROPDOWN offers.
+ *
+ * `details_requested` is deliberately absent (sprint 24, B7). It is the one
+ * status that also has to send the worker a WhatsApp message, and the backend
+ * only sends on an actual transition -- so picking it in the dropdown on a row
+ * that already sat there committed nothing and notified nobody, while the
+ * "Request details" button beside it did both. Two controls that looked the
+ * same and behaved differently. The button is now the only way in, and
+ * `canResendDetails` is the only way to repeat it.
+ *
+ * NOT a narrowing of `ApplicationStatus`: `details_requested` remains a legal
+ * API status (the button sends it) and the badge/label mapping must still
+ * render it whenever it is an application's CURRENT status. This list only
+ * says what an employer may pick.
+ *
+ * Mirrors `APPLICATION_STATUSES` in `infra/lambda/lib/job-fields.ts` minus
+ * that one member, in the same order.
+ */
+export const SELECTABLE_APPLICATION_STATUSES: readonly ApplicationStatus[] = [
+    'pending',
+    'contacted',
+    'talking',
+    'hired',
+    'not_interested',
+];
+
+/**
  * Whether to offer "Request details" for this application.
  *
  * Shared by the applicant CARD (job page) and the applicant PAGE (worker
  * detail), so the two can never disagree about when the button exists.
  *
- * FAIL-OPEN, same reasoning as `hireBlockReason`: an absent `details_status`
- * means the API has not shipped the vocabulary, not that details are already
- * requested. Hiding the one control that moves an application forward on the
- * strength of a field the backend simply does not send yet would break the
- * page against the old API rather than degrade against it -- and the PATCH is
- * the authority either way.
+ * Sprint 24 (B7): the button now STAYS while a request is OUTSTANDING --
+ * relabelled as a resend. The sprint-23 rule hid it the moment the request
+ * landed, which combined with the select's "Save is disabled for the current
+ * value" left an employer with no control at all for a worker who never
+ * answered.
+ *
+ * Two things still withdraw it:
+ *   - a TERMINAL status: a hire is done, and a rejection is not reopened by
+ *     asking for paperwork.
+ *   - `details_status === 'complete'`: the worker HAS answered. The row can
+ *     legitimately still read `details_requested` at that point (the status is
+ *     the employer's to move, the stage timestamps are not), so without this
+ *     guard both surfaces would offer to chase details the employer already
+ *     holds.
+ *
+ * Still fail-open on an absent `status`/`details_status`, same reasoning as
+ * `hireBlockReason`: not knowing is not evidence that the action is
+ * unavailable, and the PATCH is the authority either way.
  */
 export function canRequestDetails(application: {
     status?: ApplicationStatus;
@@ -93,5 +133,116 @@ export function canRequestDetails(application: {
     if (!application) return false;
     const { status, details_status: detailsStatus } = application;
     if (status && TERMINAL_APPLICATION_STATUSES.includes(status)) return false;
-    return detailsStatus !== 'requested' && detailsStatus !== 'complete';
+    return detailsStatus !== 'complete';
+}
+
+/**
+ * The options the status dropdown renders for an application currently at
+ * `current`.
+ *
+ * `SELECTABLE_APPLICATION_STATUSES`, plus `current` prepended when it is not
+ * itself selectable -- which today means exactly `details_requested`. A
+ * `<select>` whose `value` matches no `<option>` shows the FIRST option's
+ * label instead, so omitting the current status outright would put "Pending"
+ * over a row that is actually waiting on the worker.
+ *
+ * The extra option is deliberately NOT disabled: a disabled option that is
+ * also the current value renders blank in several browsers (the same trap the
+ * `hired` option's `hireOptionDisabled` suppression documents on the worker
+ * page). It is harmless enabled, because Save is disabled while the draft
+ * still equals the saved status -- so the select can never MOVE an
+ * application into `details_requested`, which is the whole point of the
+ * ruling, and once the employer moves it elsewhere the option is gone.
+ */
+export function statusSelectOptions(
+    current: ApplicationStatus | undefined | null,
+): readonly ApplicationStatus[] {
+    if (!current || SELECTABLE_APPLICATION_STATUSES.includes(current)) {
+        return SELECTABLE_APPLICATION_STATUSES;
+    }
+    return [current, ...SELECTABLE_APPLICATION_STATUSES];
+}
+
+/**
+ * Whether pressing the button would be a RESEND rather than a first request.
+ *
+ * Needs BOTH halves of the stage vocabulary, and they mean different things:
+ *   - `status === 'details_requested'` is what makes a resend legal at all.
+ *     The backend refuses `resend` with a 400 for any other status, and
+ *     re-sending a stage-2 ping to someone whose row says `talking` would
+ *     describe a stage they are no longer in.
+ *   - `details_status !== 'complete'` is what makes it MEANINGFUL. A worker
+ *     who has already answered needs no nudge, and `canRequestDetails` hides
+ *     the button entirely in that case -- these two must agree, or the label
+ *     would describe a control that is not there.
+ *
+ * Fails open on an absent `details_status`: an API that publishes no stage-2
+ * vocabulary has not told us the worker answered.
+ *
+ * Drives both the button's label and the `resend: true` flag on the PATCH, so
+ * the two can never disagree.
+ */
+export function canResendDetails(
+    status: ApplicationStatus | undefined | null,
+    detailsStatus?: ApplicationDetailsStatus | null,
+): boolean {
+    return status === 'details_requested' && detailsStatus !== 'complete';
+}
+
+/**
+ * What the PATCH says about whether the worker actually heard about it
+ * (sprint 24, B7). `notify_reason` is only sent when `notified` is false.
+ */
+export type DetailsRequestOutcome = {
+    notified?: boolean;
+    notify_reason?: 'unchanged' | 'renderer_unavailable' | 'not_notifiable_status';
+};
+
+/** The `employer_job_listing.applicants.*` keys this module chooses between. */
+export type DetailsRequestFeedbackKey =
+    | 'request_details_sent'
+    | 'request_details_notified'
+    | 'request_details_no_whatsapp'
+    | 'request_details_unchanged';
+
+/**
+ * Which sentence to show after a details request, from the outcome the backend
+ * reported. A pure function on purpose: it is the whole of the "did the worker
+ * hear about it?" decision, it is shared by the card and the page, and it is
+ * the part worth testing.
+ *
+ * FAIL-OPEN to the neutral line: an API that publishes no `notified` is not
+ * evidence that nothing was sent, so the pre-B7 copy is used -- it promises a
+ * future notification rather than asserting a past one, which is honest under
+ * either backend. A `notified: false` carrying a reason this build has no
+ * sentence for degrades the same way, for the same reason.
+ */
+export function detailsRequestFeedbackKey(
+    outcome: DetailsRequestOutcome | null | undefined,
+): DetailsRequestFeedbackKey {
+    if (outcome?.notified === true) return 'request_details_notified';
+    if (outcome?.notified === false) {
+        if (outcome.notify_reason === 'renderer_unavailable') return 'request_details_no_whatsapp';
+        if (outcome.notify_reason === 'unchanged') return 'request_details_unchanged';
+    }
+    return 'request_details_sent';
+}
+
+/**
+ * The banner tone that goes with each outcome sentence.
+ *
+ * Split from the key on purpose: the copy and the colour are chosen by the
+ * same fact, and letting each call site pick its own tone is how a green
+ * "no message was sent" banner shipped in the first place. `warning` also
+ * gives `InlineFeedback` an `alert` role (inline-feedback.tsx:35-37), so the
+ * one outcome that needs the employer to DO something is the one a screen
+ * reader is interrupted for.
+ */
+export function detailsRequestFeedbackTone(key: DetailsRequestFeedbackKey): FeedbackTone {
+    if (key === 'request_details_no_whatsapp') return 'warning';
+    if (key === 'request_details_unchanged') return 'info';
+    // `request_details_sent` is the fail-open line: it promises a future
+    // notification rather than asserting a past one, so it is not a false
+    // claim and stays a success.
+    return 'success';
 }

@@ -1,12 +1,14 @@
 import {
   APPLICATION_STATUSES,
   DOC_TYPES,
+  FIELD_REUSE_POLICY,
   EXPECTED_DURATION_BUCKETS,
   MAX_CERTIFICATION_FILES,
   MAX_CERTIFICATION_FILES_PER_NAME,
   REQUIRED_FIELD_TYPES,
   WORK_DAYS,
   formatPayRangeLocalized,
+  isReusableField,
   normalizeApplicationStatus,
   parseJobFields,
   parseOptionalCoordinates,
@@ -734,5 +736,49 @@ describe('parseRequiredFields', () => {
       error: 'invalid_required_fields',
       valid: REQUIRED_FIELD_TYPES,
     });
+  });
+});
+
+// ── L3: cross-job reuse policy (decision D2) ─────────────────────────────
+//
+// The 2026-09-04 incident: the single per-worker
+// `worker_application_defaults.answers` blob was seeded into, and written
+// back from, EVERY answered field of EVERY application -- so an employer saw
+// answers ("worked here before", "date available") the worker had given for
+// a DIFFERENT job. This policy is the one place that decides which keys may
+// legitimately cross a job/employer boundary.
+describe('FIELD_REUSE_POLICY / isReusableField', () => {
+  it('classifies every one of the 11 catalog keys, and nothing else', () => {
+    expect(Object.keys(FIELD_REUSE_POLICY).sort()).toEqual([...REQUIRED_FIELD_TYPES].sort());
+  });
+
+  it('marks exactly the seven job-independent keys stable (decision D2)', () => {
+    const stable = REQUIRED_FIELD_TYPES.filter((key) => FIELD_REUSE_POLICY[key] === 'stable');
+    expect([...stable].sort()).toEqual([
+      'date_of_birth', 'education', 'home_address', 'military_service',
+      'references', 'work_authorization', 'work_history',
+    ]);
+  });
+
+  it('marks exactly the four job/employer-specific keys per_application (decision D2)', () => {
+    const perApplication = REQUIRED_FIELD_TYPES.filter((key) => FIELD_REUSE_POLICY[key] === 'per_application');
+    expect([...perApplication].sort()).toEqual([
+      'date_available', 'desired_pay', 'emergency_contact', 'worked_here_before',
+    ]);
+  });
+
+  it('isReusableField agrees with the policy for every catalog key', () => {
+    for (const key of REQUIRED_FIELD_TYPES) {
+      expect(isReusableField(key)).toBe(FIELD_REUSE_POLICY[key] === 'stable');
+    }
+  });
+
+  it('isReusableField refuses anything outside the catalog -- including the reserved certifications key and prototype keys', () => {
+    expect(isReusableField('certifications')).toBe(false);
+    expect(isReusableField('ssn')).toBe(false);
+    expect(isReusableField('__proto__')).toBe(false);
+    expect(isReusableField('constructor')).toBe(false);
+    expect(isReusableField('toString')).toBe(false);
+    expect(isReusableField('')).toBe(false);
   });
 });

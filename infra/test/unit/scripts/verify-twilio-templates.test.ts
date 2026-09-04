@@ -43,6 +43,41 @@ describe('verifyTwilioTemplates', () => {
     expect(result.rows).toHaveLength(5);
   });
 
+  // 2026-09-04: Meta recategorised three pending application_* templates to
+  // MARKETING, which cannot carry a transactional notification outside the
+  // 24h window. Status alone said "pending" on all of them, so the defect was
+  // invisible to this command. The category now travels with the row.
+  it('reports the WhatsApp category alongside the status', async () => {
+    const result = await verifyTwilioTemplates({
+      client: secretsClientReturning(SECRET),
+      fetchImpl: fetchImplFor({
+        'HXaaa/ApprovalRequests': {
+          ok: true, body: { whatsapp: { status: 'approved', category: 'UTILITY' } },
+        },
+        'ApprovalRequests': {
+          ok: true, body: { whatsapp: { status: 'approved', category: 'MARKETING' } },
+        },
+      }),
+    });
+    const invite = result.rows.find((row) => row.key === 'employer_message_invite_es');
+    expect(invite?.whatsappCategory).toBe('UTILITY');
+    expect(result.rows.find((row) => row.key === 'job_alert_es')?.whatsappCategory)
+      .toBe('MARKETING');
+  });
+
+  it('leaves the category null when the approval read fails or omits it', async () => {
+    const result = await verifyTwilioTemplates({
+      client: secretsClientReturning(SECRET),
+      fetchImpl: fetchImplFor({
+        'HXaaa/ApprovalRequests': { ok: false, status: 500 },
+        'ApprovalRequests': { ok: true, body: { whatsapp: { status: 'approved' } } },
+      }),
+    });
+    expect(result.rows.find((row) => row.key === 'employer_message_invite_es')?.whatsappCategory)
+      .toBeNull();
+    expect(result.rows.find((row) => row.key === 'job_alert_es')?.whatsappCategory).toBeNull();
+  });
+
   it('fails on an unapproved employer template but tolerates non-employer ones', async () => {
     const result = await verifyTwilioTemplates({
       client: secretsClientReturning(SECRET),

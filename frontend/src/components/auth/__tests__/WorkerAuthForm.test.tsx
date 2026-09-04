@@ -204,3 +204,89 @@ describe('WorkerAuthForm — where a verified worker lands', () => {
         expect(push).not.toHaveBeenCalled();
     });
 });
+
+/**
+ * This form had no `<form>` element either, so Enter did nothing on any of its
+ * three steps — including the six-box OTP screen, where a worker types the last
+ * digit and the obvious next move is Enter, not "find the button".
+ *
+ * The guards matter as much as the submit does: `workerSignIn` texts a code, so
+ * an Enter that skipped the `phoneReady` check would spend an SMS on a
+ * half-typed number, and one that skipped the completeness check would burn an
+ * OTP attempt on an incomplete code.
+ */
+describe('WorkerAuthForm — Enter submits the step it is pressed in', () => {
+    it('sends the code from the phone field, exactly once', async () => {
+        const user = userEvent.setup();
+        render(<WorkerAuthForm />);
+
+        await user.type(screen.getByRole('textbox'), '2105550134{Enter}');
+
+        await waitFor(() => expect(cognito.workerSignIn).toHaveBeenCalledTimes(1));
+        expect(await screen.findByText(message('auth.worker.otp_title'))).toBeInTheDocument();
+    });
+
+    it('creates the account from the signup step', async () => {
+        const user = userEvent.setup();
+        render(<WorkerAuthForm />);
+        await goToSignup(user);
+
+        await user.type(screen.getByRole('textbox'), '2105550134{Enter}');
+
+        await waitFor(() => expect(cognito.workerSignUp).toHaveBeenCalledTimes(1));
+    });
+
+    it('is blocked while the number is too short to text', async () => {
+        const user = userEvent.setup();
+        render(<WorkerAuthForm />);
+
+        await user.type(screen.getByRole('textbox'), '21055{Enter}');
+
+        expect(cognito.workerSignIn).not.toHaveBeenCalled();
+    });
+
+    it('verifies from any OTP box once all six are filled', async () => {
+        const user = userEvent.setup();
+        render(<WorkerAuthForm />);
+        await user.type(screen.getByRole('textbox'), '2105550134');
+        await user.click(screen.getByRole('button', { name: message('auth.worker.send_otp') }));
+
+        const boxes = await screen.findAllByRole('textbox');
+        for (let i = 0; i < boxes.length; i += 1) {
+            await user.type(boxes[i], String(i + 1));
+        }
+        // Back into the middle of the code: the keystroke has to work wherever
+        // the cursor happens to be, not only in the last box.
+        await user.click(boxes[2]);
+        await user.keyboard('{Enter}');
+
+        await waitFor(() => expect(cognito.workerVerifyOtp).toHaveBeenCalledTimes(1));
+        expect(cognito.workerVerifyOtp.mock.calls[0][1]).toBe('123456');
+    });
+
+    it('is blocked on an incomplete OTP', async () => {
+        const user = userEvent.setup();
+        render(<WorkerAuthForm />);
+        await user.type(screen.getByRole('textbox'), '2105550134');
+        await user.click(screen.getByRole('button', { name: message('auth.worker.send_otp') }));
+
+        const boxes = await screen.findAllByRole('textbox');
+        await user.type(boxes[0], '123');
+        await user.keyboard('{Enter}');
+
+        expect(cognito.workerVerifyOtp).not.toHaveBeenCalled();
+    });
+
+    it('opens each step with its first field focused', async () => {
+        const user = userEvent.setup();
+        render(<WorkerAuthForm />);
+
+        expect(screen.getByRole('textbox')).toHaveFocus();
+
+        await user.type(screen.getByRole('textbox'), '2105550134');
+        await user.click(screen.getByRole('button', { name: message('auth.worker.send_otp') }));
+
+        const boxes = await screen.findAllByRole('textbox');
+        await waitFor(() => expect(boxes[0]).toHaveFocus());
+    });
+});

@@ -21,21 +21,16 @@ import {
 } from '@/lib/job-requirements';
 
 describe('initialRequirements', () => {
-  it('defaults work_authorization, date_available, emergency_contact, worked_here_before to required', () => {
+  // Owner decision 2026-09-04: a new job asks for NOTHING until the employer
+  // opts in. `work_authorization`, `date_available`, `emergency_contact` and
+  // `worked_here_before` used to default to Required.
+  it('defaults every key to off, docs and fields alike', () => {
     const map = initialRequirements();
-    expect(map.work_authorization).toBe('required');
-    expect(map.date_available).toBe('required');
-    expect(map.emergency_contact).toBe('required');
-    expect(map.worked_here_before).toBe('required');
+    for (const key of REQUIREMENT_KEYS) expect(map[key]).toBe('off');
   });
 
-  it('defaults every other key to off, including all four doc types', () => {
-    const map = initialRequirements();
-    const defaultRequired = new Set(['work_authorization', 'date_available', 'emergency_contact', 'worked_here_before']);
-    for (const key of REQUIREMENT_KEYS) {
-      if (defaultRequired.has(key)) continue;
-      expect(map[key]).toBe('off');
-    }
+  it('leaves work_authorization off, so a new job does not demand it by default', () => {
+    expect(initialRequirements().work_authorization).toBe('off');
   });
 
   it('covers every doc and field key exactly once', () => {
@@ -52,9 +47,7 @@ describe('requirementsToArrays', () => {
     const arrays = requirementsToArrays(withOptional);
     expect(arrays.required_docs).toEqual(['resume']);
     expect(arrays.optional_fields).toEqual(['education']);
-    expect(arrays.required_fields).toEqual(
-      expect.arrayContaining(['work_authorization', 'date_available', 'emergency_contact', 'worked_here_before']),
-    );
+    expect(arrays.required_fields).toEqual([]);
     expect(arrays.optional_docs).toEqual([]);
   });
 
@@ -147,11 +140,11 @@ describe('setRequirementState', () => {
 
 describe('countRequirements', () => {
   it('counts required and optional independently, ignoring off', () => {
-    let map = initialRequirements(); // 4 required, 0 optional out of the box
-    expect(countRequirements(map)).toEqual({ required: 4, optional: 0 });
+    let map = initialRequirements(); // 0 required, 0 optional out of the box
+    expect(countRequirements(map)).toEqual({ required: 0, optional: 0 });
     map = setRequirementState(map, 'resume', 'optional');
     map = setRequirementState(map, 'references', 'required');
-    expect(countRequirements(map)).toEqual({ required: 5, optional: 1 });
+    expect(countRequirements(map)).toEqual({ required: 1, optional: 1 });
   });
 
   it('counts zero/zero for an all-off map', () => {
@@ -161,28 +154,28 @@ describe('countRequirements', () => {
   });
 
   it('1-arg mode is unchanged when certification_doc carries a state (byte-identical to today)', () => {
-    let map = initialRequirements(); // 4 required, 0 optional out of the box
+    let map = initialRequirements(); // 0 required, 0 optional out of the box
     map = setRequirementState(map, 'certification_doc', 'required');
-    expect(countRequirements(map)).toEqual({ required: 5, optional: 0 });
+    expect(countRequirements(map)).toEqual({ required: 1, optional: 0 });
   });
 
   it('2-arg mode: excludes certification_doc from the map tally and adds each cert by its own tier', () => {
-    let map = initialRequirements(); // 4 required, 0 optional
+    let map = initialRequirements(); // 0 required, 0 optional
     map = setRequirementState(map, 'certification_doc', 'required'); // must NOT be tallied in 2-arg mode
     const certs: CertificationRequirement[] = [
       { name: 'OSHA 10', tier: 'required', proof_required: true },
       { name: 'CPR', tier: 'optional', proof_required: false },
       { name: 'Forklift', tier: 'optional', proof_required: true },
     ];
-    // 4 required fields + 1 required cert = 5; 2 optional certs = 2. The
+    // 0 required fields + 1 required cert = 1; 2 optional certs = 2. The
     // certification_doc map key's own 'required' state is excluded, not added.
-    expect(countRequirements(map, certs)).toEqual({ required: 5, optional: 2 });
+    expect(countRequirements(map, certs)).toEqual({ required: 1, optional: 2 });
   });
 
   it('2-arg mode with an empty certs array still excludes certification_doc from the tally', () => {
     let map = initialRequirements();
     map = setRequirementState(map, 'certification_doc', 'optional');
-    expect(countRequirements(map, [])).toEqual({ required: 4, optional: 0 });
+    expect(countRequirements(map, [])).toEqual({ required: 0, optional: 0 });
   });
 });
 

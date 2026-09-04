@@ -20,6 +20,7 @@ import {
   type ExperienceKey,
   type AvailabilityKey,
 } from '../../lib/worker-vocab';
+import { parseApplyToken } from '../../lib/referral-codes';
 
 // ── Conversation state types ────────────────────────────────────
 
@@ -159,19 +160,74 @@ export interface TypedJobAction {
   action: 'accept' | 'decline' | 'info';
 }
 
+/**
+ * Sprint 24 C1: the job-alert buttons are labelled "interested / not
+ * interested" now, so those are the words a worker types back. The button
+ * PAYLOAD grammar (`parseButtonPayload`, `accept|decline|info:job-...`) is
+ * deliberately untouched -- the labels changed, the payload ids did not.
+ *
+ * NEGATIVES ARE LISTED FIRST and tested first, because "no me interesa"
+ * CONTAINS "me interesa" (and "not interested" contains "interested"): with
+ * the positives first, a worker declining a job would be applied to it. The
+ * `$` anchor already forces the regex to prefer the longer alternative, so
+ * this ordering is belt AND braces -- the classification below re-checks the
+ * decline list before the accept list.
+ *
+ * The historical verbs stay: the help menu advertised "aceptar/accept" for
+ * months, and a relabelled button must not break a worker who learned the
+ * old word.
+ */
+const TYPED_DECLINE_VERBS = [
+  'no me interesa',
+  'not interested',
+  'no',
+  'decline',
+  'rechazar',
+] as const;
+
+const TYPED_ACCEPT_VERBS = [
+  // `normalizeCommandText` lowercases but does NOT strip diacritics -- which
+  // is why the pre-existing list already carried both 'si' and 'sí' -- so
+  // both spellings of the accented phrase are listed too.
+  'sí me interesa',
+  'si me interesa',
+  'me interesa',
+  'interesa',
+  "i'm interested",
+  'im interested',
+  'interested',
+  'aceptar',
+  'accept',
+  'si',
+  'sí',
+  'yes',
+] as const;
+
+const TYPED_JOB_ACTION_PATTERN = new RegExp(
+  `^(\\d+)\\s+(${[...TYPED_DECLINE_VERBS, ...TYPED_ACCEPT_VERBS, 'info'].join('|')})$`,
+);
+
+/**
+ * Phone keyboards autocorrect a typed `'` to U+2019 (and iOS sometimes to
+ * U+02BC), and `normalizeCommandText` only trims punctuation at the EDGES --
+ * an apostrophe inside "i'm interested" survives it. Folding the curly forms
+ * to the plain one keeps the verb list a single spelling.
+ */
+function normalizeTypedVerb(text: string): string {
+  return normalizeCommandText(text).replace(/[\u2018\u2019\u02bc]/g, "'");
+}
+
 export function parseTypedJobAction(text: string): TypedJobAction | null {
-  const m = normalizeCommandText(text).match(
-    /^(\d+)\s+(aceptar|accept|si|sí|yes|no|decline|rechazar|info)$/,
-  );
+  const m = normalizeTypedVerb(text).match(TYPED_JOB_ACTION_PATTERN);
   if (!m) return null;
   const index = parseInt(m[1], 10) - 1;
   if (index < 0) return null;
   const verb = m[2];
-  if (['aceptar', 'accept', 'si', 'sí', 'yes'].includes(verb)) {
-    return { index, action: 'accept' };
-  }
-  if (['no', 'decline', 'rechazar'].includes(verb)) {
+  if ((TYPED_DECLINE_VERBS as readonly string[]).includes(verb)) {
     return { index, action: 'decline' };
+  }
+  if ((TYPED_ACCEPT_VERBS as readonly string[]).includes(verb)) {
+    return { index, action: 'accept' };
   }
   return { index, action: 'info' };
 }
@@ -419,6 +475,85 @@ export function parseApplicationButtonPayload(
   );
   if (!m) return null;
   return { action: m[1] as ApplicationButtonPayload['action'], applicationId: m[2] };
+}
+
+/**
+ * Sprint 24 C4: the SAME `app-<uuid>` reference, TYPED rather than tapped.
+ *
+ * `application-stage-notify.ts` prints "Referencia: app-<uuid>" in the hired
+ * notification, and workers reply with it -- which matched nothing before
+ * this (only the button-payload grammar above knew the shape), so they got
+ * the unknown-message reply while an employer waited.
+ *
+ * Grammar notes, all load-bearing:
+ *   - The reference may sit anywhere in ordinary prose, so the id is
+ *     bounded rather than anchored: no alphanumeric immediately before
+ *     `app-` (so "myapp-<uuid>" is not a reference) and no hex/hyphen
+ *     immediately after (so a truncated or extended id is not one either).
+ *   - `:`, `_` and `-` are excluded from the leading boundary as well, which
+ *     is what keeps `application:start:app-<uuid>` OUT of this parser. That
+ *     payload is owned by `parseApplicationButtonPayload` and routed before
+ *     this one -- and its `later` variant must NOT dispatch like `start`, so
+ *     the two grammars must not overlap even by accident.
+ *   - Case-insensitive (WhatsApp capitalizes the first letter of a message),
+ *     normalized to the lowercase form ids are stored in.
+ *
+ * Pure and total: never throws, never logs. Inbound bodies are untrusted.
+ */
+const APPLICATION_REFERENCE_PATTERN =
+  /(?:^|[^0-9a-z:_-])app-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?![0-9a-z-])/i;
+
+export function parseApplicationReference(body: string | null | undefined): string | null {
+  if (!body) return null;
+  const m = body.match(APPLICATION_REFERENCE_PATTERN);
+  return m ? m[1].toLowerCase() : null;
+}
+
+/**
+ * Sprint 24 C4 (review 1): the apply-token parser for the AUTHENTICATED
+ * router. Strict where `parseApplyToken` (lambda/lib/referral-codes.ts) is
+ * deliberately loose.
+ *
+ * That looseness is correct pre-auth: `JALE` + any separator (or none) + any
+ * eight Crockford-mappable characters, no trailing boundary, so a person
+ * retyping a code from memory is still matched, and a false positive on a
+ * first message merely parks nothing.
+ *
+ * Post-auth the same looseness is a bug: an onboarded worker may be mid
+ * conversation with an employer, and "Jale trabajos" parses as the token
+ * TRABAJ0S (Crockford maps O to 0). Answering that with "job code not found"
+ * would swallow a message the employer was waiting for. So here a
+ * PUNCTUATION separator is required -- `-`, `_` or `:`, optionally spaced --
+ * which is exactly what every real arrival carries:
+ *   - the prefilled wa.me text (`public-job-apply-intent.ts`) is
+ *     "Quiero postularme a este trabajo: JALE-XXXXXXXX" / "I want to apply
+ *     for this job: JALE-XXXXXXXX", so LEADING PROSE MUST STILL PARSE -- a
+ *     whole-message-only grammar would miss every real referral;
+ *   - anything a worker copies is `formatApplyToken`'s own `JALE-` form.
+ * The cost is that a hand-typed "JALE ABCD1234" (space, no punctuation) is
+ * not recognised once onboarded; pre-auth still catches it.
+ *
+ * Boundaries on both ends: no alphanumeric immediately before `JALE` (so
+ * "MIJALE-..." is not a code) and none immediately after the eight
+ * characters (so "JALE-ABCD1234EXTRA" is not one either).
+ *
+ * DECODING IS NOT REIMPLEMENTED HERE. The captured characters are handed
+ * back to the lib with a canonical prefix, so Crockford's rules (I/L to 1,
+ * O to 0, U rejected as a genuine typo) and the length/alphabet validation
+ * stay in one place and cannot drift from the pre-auth path. The lib's own
+ * `normalizeCode` is NOT used for this: it strips a leading `JALE` again,
+ * which would silently disagree with `parseApplyToken` on the (nonsense but
+ * reachable) body "JALE-JALEXXXX".
+ *
+ * Pure and total: never throws, never logs. Inbound bodies are untrusted.
+ */
+const TYPED_APPLY_TOKEN_PATTERN = /(?:^|[^0-9a-z])jale[ \t]*[-_:][ \t]*([0-9a-z]{8})(?![0-9a-z])/i;
+
+export function parseTypedApplyToken(body: string | null | undefined): string | null {
+  if (!body) return null;
+  const m = body.match(TYPED_APPLY_TOKEN_PATTERN);
+  if (!m) return null;
+  return parseApplyToken(`JALE-${m[1]}`);
 }
 
 export function parseEmployerConversationButtonPayload(

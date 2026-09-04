@@ -100,7 +100,7 @@ import { setInternalUserRlsContext } from '../../../../../lambda/lib/db';
 import { validateApplicationAnswers } from '../../../../../lambda/lib/application-answers';
 import type { IncomingMessage } from '../../../../../lambda/whatsapp/lib/conversation-router';
 import type { ExtractionClient } from '../../../../../lambda/whatsapp/lib/application-fill-extraction';
-import { fieldQuestion, fieldRetryHint, fillMessage, docPrompt } from '../../../../../lambda/whatsapp/lib/application-fill-prompts';
+import { fieldQuestion, fieldRetryHint, fieldLabel, fillMessage, docPrompt } from '../../../../../lambda/whatsapp/lib/application-fill-prompts';
 import { uploadDocumentToS3, MediaTooLargeError } from '../../../../../lambda/whatsapp/lib/media';
 import { t } from '../../../../../lambda/whatsapp/lib/templates';
 
@@ -156,6 +156,15 @@ const SQL = {
   docDelete: /DELETE FROM worker_documents WHERE worker_id = \$1 AND job_id = \$2 AND doc_type = \$3/,
   /** application-requirements.ts:594 persistMergedAnswers -- THE merge. */
   mergeUpdate: /UPDATE job_applications\s+SET application_answers = application_answers \|\| \$1::jsonb/,
+  /** application-requirements.ts clearFieldAnswer -- the CAMBIAR undo. Told
+   * apart from `mergeUpdate` by the jsonb `-` operator; no assertion may
+   * match on the `UPDATE job_applications` prefix alone. */
+  clearAnswer: /UPDATE job_applications\s+SET application_answers = application_answers - \$1::text/,
+  /** application-fill.ts `applicationIsLocked` -- the DOC branch's read of
+   * the same `details_completed_at` lock `clearFieldAnswer` enforces in its
+   * own WHERE. A projected single column, so it can never be confused with
+   * the snapshot load or with `detailsComplete`'s UPDATE. */
+  lockRead: /SELECT details_completed_at FROM job_applications WHERE id = \$1 AND worker_id = \$2/,
   /** application-requirements.ts:924 markDetailsCompleteIfDone. NOTE: this
    * and `mergeUpdate` are BOTH `UPDATE job_applications`, so no assertion may
    * match on that prefix alone any more. */
@@ -358,6 +367,14 @@ function installDbFake(): void {
     if (SQL.defaultsSelect.test(text)) {
       return fake.defaults === null ? ok() : ok([{ answers: fake.defaults }]);
     }
+    if (SQL.lockRead.test(text)) {
+      const fixture = fake.apps.get(String(args[0]));
+      // Mirrors the real statement's own WHERE: a row belonging to another
+      // worker (or gone) is simply not visible, which the lane must read as
+      // "do not touch this application" rather than "unlocked".
+      if (!fixture?.row || fixture.row.worker_id !== String(args[1])) return ok();
+      return ok([{ details_completed_at: fixture.row.details_completed_at }]);
+    }
     if (SQL.seedAnswersSelect.test(text)) {
       const fixture = fake.apps.get(String(args[0]));
       return fixture?.row ? ok([{ application_answers: fixture.row.application_answers }]) : ok();
@@ -369,14 +386,21 @@ function installDbFake(): void {
       if (fake.copyError) throw fake.copyError;
       const fixture = appByJob(String(args[0]));
       const wanted: string[] = SQL.copyCert.test(text) ? ['certification_doc'] : (args[2] as string[]);
+      // L3: both INSERTs now carry `RETURNING doc_type`, and the engine
+      // surfaces those rows as `snapshot.copiedDocuments` so the lane can
+      // NAME the vault documents it attached. Only a row that was really
+      // inserted comes back -- an already-copied doc returns nothing, which
+      // is what makes a re-arm report nothing.
+      const copied: { doc_type: string }[] = [];
       if (fixture) {
         for (const docType of wanted) {
           if (fixture.vaultDocs.includes(docType) && !fixture.haveDocs.includes(docType)) {
             fixture.haveDocs.push(docType);
+            copied.push({ doc_type: docType });
           }
         }
       }
-      return ok();
+      return ok(copied);
     }
     if (SQL.docDelete.test(text)) {
       const fixture = appByJob(String(args[1]));
@@ -405,6 +429,14 @@ function installDbFake(): void {
       Object.assign(fixture.row.application_answers, JSON.parse(String(args[0])));
       const total = fake.answersTotal ?? JSON.stringify(fixture.row.application_answers).length;
       return { rows: [{ total }], rowCount: 1 };
+    }
+    if (SQL.clearAnswer.test(text)) {
+      const fixture = fake.apps.get(String(args[1]));
+      // Mirrors the real statement's `AND details_completed_at IS NULL`
+      // guard, so a test cannot pass against a correction the DB refuses.
+      if (!fixture?.row || fixture.row.details_completed_at) return { rows: [], rowCount: 0 };
+      delete fixture.row.application_answers[String(args[0])];
+      return { rows: [], rowCount: 1 };
     }
     if (SQL.detailsComplete.test(text)) {
       const fixture = fake.apps.get(String(args[0]));
@@ -904,9 +936,14 @@ describe('armFill', () => {
 
   /** Loads the production-shaped snapshot, then CLEARS the call log (keeping
    * the router installed) so every assertion below sees only armFill's own
-   * traffic. */
+   * traffic.
+   *
+   * UNSYNCED, exactly like the one real caller (processor.ts:2120): the
+   * ownership check has to run before any write, so the vault-document copy
+   * happens inside armFill's own synced load. A synced load here would do
+   * the copying first and armFill would report nothing reused. */
   async function loadSnapshotAndClear(): Promise<RequirementSnapshot> {
-    const snapshot = await loadRequirementSnapshot(client, APPLICATION_ID, { syncDocumentSnapshots: true });
+    const snapshot = await loadRequirementSnapshot(client, APPLICATION_ID);
     mockQuery.mockClear();
     (setInternalUserRlsContext as jest.Mock).mockClear();
     return snapshot!;
@@ -931,7 +968,7 @@ describe('armFill', () => {
     expect(deps.queueReplyText).not.toHaveBeenCalled();
   });
 
-  it('arms: seeds from defaults, writes the arm patch, sends the company-named intro, then the first question', async () => {
+  it('arms: announces the profile check, seeds, names what it reused, then the counted intro and the first question', async () => {
     setApp({ required_fields: ['work_authorization', 'date_available'] });
     fake.defaults = { work_authorization: true };
     const snapshot = await loadSnapshotAndClear();
@@ -944,10 +981,136 @@ describe('armFill', () => {
     // The seed merged work_authorization, so the intro advertises the ONE
     // question actually left -- armFill re-derives the counts post-seed.
     expect(allReplies(deps)).toEqual([
+      fillMessage('intro_profile_check', 'en'),
+      `${fillMessage('reuse_fields_line', 'en', { labels: fieldLabel('work_authorization', 'en') })}\n`
+        + `\n${fillMessage('reuse_change_footer', 'en')}`,
       fillMessage('intro', 'en', { company: COMPANY, n_fields: '1', n_docs: '0' }),
       fieldQuestion('date_available', 'en'),
     ]);
     expect(ctx.jobId).toBe(JOB_ID);
+  });
+
+  it('announces the profile check BEFORE reading the defaults row, not after (transparency decision)', async () => {
+    setApp({ required_fields: ['work_authorization', 'date_available'] });
+    fake.defaults = { work_authorization: true };
+    const snapshot = await loadSnapshotAndClear();
+    const ctx = makeCtx({ stateContext: {} });
+    const deps = makeDeps(ctx);
+
+    await armFill(client, ctx, snapshot, 'SMarm', FROM, deps);
+
+    expect(replyOrder(deps, 0)).toBeLessThan(queryOrder(SQL.defaultsSelect));
+  });
+
+  it('names the documents it attached from the vault, alongside the reused fields', async () => {
+    setApp(
+      { required_fields: ['date_available'], required_docs: ['work_auth_doc'] },
+      { vaultDocs: ['work_auth_doc'] },
+    );
+    fake.defaults = { date_of_birth: '1990-04-03' };
+    // date_of_birth is not asked by this job, so nothing is SEEDED -- the
+    // summary is carried by the copied document alone.
+    const snapshot = await loadSnapshotAndClear();
+    const ctx = makeCtx({ stateContext: {} });
+    const deps = makeDeps(ctx);
+
+    await armFill(client, ctx, snapshot, 'SMarm', FROM, deps);
+
+    expect(allReplies(deps)[1]).toBe(
+      `${fillMessage('reuse_docs_line', 'en', { docLabels: localizeDocList(['work_auth_doc'], 'en') })}\n`
+      + `\n${fillMessage('reuse_change_footer', 'en')}`,
+    );
+    // ... and the requirement really was satisfied by the copy, which is the
+    // silent behaviour this message exists to expose (incident mechanism 3).
+    expect(allReplies(deps)[2]).toBe(fillMessage('intro', 'en', { company: COMPANY, n_fields: '1', n_docs: '0' }));
+  });
+
+  it('sends NO reuse summary when nothing was seeded and nothing was copied', async () => {
+    setApp({ required_fields: ['work_authorization'] });
+    fake.defaults = null;
+    const snapshot = await loadSnapshotAndClear();
+    const ctx = makeCtx({ stateContext: {} });
+    const deps = makeDeps(ctx);
+
+    await armFill(client, ctx, snapshot, 'SMarm', FROM, deps);
+
+    expect(allReplies(deps)).toEqual([
+      fillMessage('intro_profile_check', 'en'),
+      fillMessage('intro', 'en', { company: COMPANY, n_fields: '1', n_docs: '0' }),
+      fieldQuestion('work_authorization', 'en'),
+    ]);
+    // The arm write's scrub cleared it; nothing re-set it.
+    expect(ctx.stateContext.fill_reused).toBeNull();
+  });
+
+  // ── THE INCIDENT ITSELF ───────────────────────────────────────────────
+  // 2026-09-04T04:41:58Z: a worker tapped Start and got "Faltan 0 preguntas
+  // y 0 documentos. Empezamos:" followed immediately by the completion
+  // message -- their details went to the employer in the same turn, built
+  // entirely out of answers given for a DIFFERENT job.
+  it('with everything pre-filled it does NOT complete: it asks for an explicit LISTO and arms fill_confirm', async () => {
+    setApp({ required_fields: ['work_authorization', 'date_of_birth'] });
+    fake.defaults = { work_authorization: true, date_of_birth: '1990-04-03' };
+    const snapshot = await loadSnapshotAndClear();
+    const ctx = makeCtx({ stateContext: {} });
+    const deps = makeDeps(ctx);
+
+    const outcome = await armFill(client, ctx, snapshot, 'SMarm', FROM, deps);
+
+    expect(outcome).toEqual({ armed: true });
+    expect(allReplies(deps)).toEqual([
+      fillMessage('intro_profile_check', 'en'),
+      `${fillMessage('reuse_fields_line', 'en', {
+        labels: `${fieldLabel('work_authorization', 'en')}, ${fieldLabel('date_of_birth', 'en')}`,
+      })}\n\n${fillMessage('reuse_change_footer', 'en')}`,
+      fillMessage('confirm_all_prefilled', 'en'),
+    ]);
+    // The two messages the incident sent are BOTH absent.
+    expect(allReplies(deps)).not.toContain(fillMessage('intro', 'en', { company: COMPANY, n_fields: '0', n_docs: '0' }));
+    expect(allReplies(deps).some((r) => r.includes('we sent your details'))).toBe(false);
+    // And nothing was recorded as complete.
+    expect(hasCall(SQL.detailsComplete)).toBe(false);
+    expect(ctx.stateContext.fill_confirm).toEqual({ at: NOW_MS });
+    expect(ctx.stateContext.fill_reused).toEqual({
+      fields: ['work_authorization', 'date_of_birth'],
+      docs: [],
+    });
+  });
+
+  it('keeps the web_handoff note on the confirm message when an uncollectable doc remains', async () => {
+    setApp({ required_fields: ['work_authorization'], required_docs: ['ssn'] });
+    fake.defaults = { work_authorization: true };
+    const snapshot = await loadSnapshotAndClear();
+    const ctx = makeCtx({ stateContext: {} });
+    const deps = makeDeps(ctx);
+
+    await armFill(client, ctx, snapshot, 'SMarm', FROM, deps);
+
+    expect(lastReply(deps)).toBe(
+      `${fillMessage('confirm_all_prefilled', 'en')}\n\n`
+      + `${fillMessage('web_handoff', 'en', {
+        doc: localizeDocList(['ssn'], 'en'),
+        url: workerApplicationUrl('en', APPLICATION_ID),
+      })}`,
+    );
+  });
+
+  it('refuses to reuse a per_application default even when the job asks for it (decision D2)', async () => {
+    setApp({ required_fields: ['date_available', 'worked_here_before'] });
+    // Exactly the incident's two leaked answers, sitting in a legacy blob.
+    fake.defaults = { date_available: '2026-09-10', worked_here_before: { answer: true } };
+    const snapshot = await loadSnapshotAndClear();
+    const ctx = makeCtx({ stateContext: {} });
+    const deps = makeDeps(ctx);
+
+    await armFill(client, ctx, snapshot, 'SMarm', FROM, deps);
+
+    expect(hasCall(SQL.mergeUpdate)).toBe(false);
+    expect(allReplies(deps)).toEqual([
+      fillMessage('intro_profile_check', 'en'),
+      fillMessage('intro', 'en', { company: COMPANY, n_fields: '2', n_docs: '0' }),
+      fieldQuestion('date_available', 'en'),
+    ]);
   });
 
   it('seeds BEFORE the intro (order): the intro can never advertise a question the seed just answered', async () => {
@@ -959,8 +1122,15 @@ describe('armFill', () => {
 
     await armFill(client, ctx, snapshot, 'SMarm', FROM, deps);
 
-    expect(queryOrder(SQL.defaultsSelect)).toBeLessThan(replyOrder(deps, 0));
-    expect(queryOrder(SQL.mergeUpdate)).toBeLessThan(replyOrder(deps, 0));
+    // Index 2, not 0: L3 puts `intro_profile_check` and the reuse summary
+    // ahead of the counted intro. The seed must still precede the COUNTS --
+    // and `intro_profile_check` must precede the seed (asserted above).
+    const introIndex = allReplies(deps).indexOf(
+      fillMessage('intro', 'en', { company: COMPANY, n_fields: '1', n_docs: '0' }),
+    );
+    expect(introIndex).toBe(2);
+    expect(queryOrder(SQL.defaultsSelect)).toBeLessThan(replyOrder(deps, introIndex));
+    expect(queryOrder(SQL.mergeUpdate)).toBeLessThan(replyOrder(deps, introIndex));
     const [, seedParams] = findCall(SQL.mergeUpdate);
     expect(JSON.parse(seedParams[0])).toEqual({ work_authorization: true });
     expect(seedParams[1]).toBe(APPLICATION_ID);
@@ -980,7 +1150,7 @@ describe('armFill', () => {
     expect(lastReply(deps)).toBe(fieldQuestion('work_authorization', 'en'));
   });
 
-  it('the arm write clears BOTH lanes\' keys and the one-shot applications menu', async () => {
+  it('the arm write clears BOTH lanes\' keys, the one-shot applications menu, and every L3 sub-state', async () => {
     // FILL_SCRUB (application-fill.ts:934): the fill lane and the sprint-23
     // prompt lane are mutually exclusive, and a stale numbered menu must
     // never stay addressable across an arm.
@@ -996,6 +1166,14 @@ describe('armFill', () => {
         prompt_last_prompt_at: 123,
         applications_menu: { ids: ['x'], at: 1 },
         pending_picker: { kind: 'chats' as const, threads: [] },
+        // L3 sub-states from a PREVIOUS fill: a stale change menu would let
+        // a bare digit correct an answer on an application the worker has
+        // moved on from, and a stale fill_confirm would let a later LISTO
+        // send the wrong one.
+        fill_reused: { fields: ['home_address'], docs: ['resume'] },
+        fill_confirm: { at: 1 },
+        fill_change_menu: { items: [{ kind: 'field' as const, key: 'home_address' as const }], at: 1 },
+        fill_doc_replace: 'resume',
       },
     });
     const deps = makeDeps(ctx);
@@ -1012,6 +1190,10 @@ describe('armFill', () => {
       prompt_last_prompt_at: null,
       applications_menu: null,
       pending_picker: null,
+      fill_reused: null,
+      fill_confirm: null,
+      fill_change_menu: null,
+      fill_doc_replace: null,
     });
   });
 
@@ -1050,13 +1232,817 @@ describe('armFill', () => {
 
     await armFill(client, ctx, snapshot, 'SMarm', FROM, deps);
 
-    expect(allReplies(deps)[0]).toBe(
+    expect(allReplies(deps)[1]).toBe(
       `${fillMessage('intro', 'en', { company: COMPANY, n_fields: '1', n_docs: '0' })}\n\n`
       + `${fillMessage('web_handoff', 'en', {
         doc: localizeDocList(['ssn'], 'en'),
         url: workerApplicationUrl('en', APPLICATION_ID),
       })}`,
     );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// L3: the all-pre-filled confirmation gate (decision: "the worker must
+// explicitly confirm before the application is marked complete") and the
+// CAMBIAR/CHANGE correction menu (decision D3: "let them replace one").
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('handleFillMessage — fill_confirm (all pre-filled)', () => {
+  beforeEach(resetFake);
+
+  /** Arms an application whose every requirement is already answered, in the
+   * confirm sub-state armFill leaves behind. */
+  function confirmCtx(overrides: Record<string, unknown> = {}): FillContext {
+    setApp({
+      required_fields: ['work_authorization', 'date_of_birth'],
+      application_answers: { work_authorization: true, date_of_birth: '1990-04-03' },
+    });
+    return makeCtx({
+      stateContext: {
+        fill_application_id: APPLICATION_ID,
+        fill_confirm: { at: NOW_MS - 60_000 },
+        fill_reused: { fields: ['work_authorization', 'date_of_birth'], docs: [] },
+        ...overrides,
+      },
+    });
+  }
+
+  it.each([['LISTO'], ['listo'], ['DONE'], ['done'], [' Listo ']])(
+    '%s completes through the ordinary completion path (stamp, then the completion reply)',
+    async (body) => {
+      const ctx = confirmCtx();
+      const deps = makeDeps(ctx);
+
+      const res = await handleFillMessage(client, ctx, incomingMsg(body), deps);
+
+      expect(res).toEqual({ handled: true });
+      expect(hasCall(SQL.detailsComplete)).toBe(true);
+      expect(lastReply(deps)).toBe(fillMessage('completion', 'en', { company: COMPANY }));
+      // The stamp lands BEFORE the worker is told their details went out.
+      expect(queryOrder(SQL.detailsComplete)).toBeLessThan(replyOrder(deps, 0));
+      expect(ctx.stateContext.fill_confirm).toBeNull();
+    },
+  );
+
+  it('an unrecognized reply repeats the confirm prompt exactly ONCE', async () => {
+    const ctx = confirmCtx();
+    const deps = makeDeps(ctx);
+
+    const first = await handleFillMessage(client, ctx, incomingMsg('what?'), deps);
+    expect(first).toEqual({ handled: true });
+    expect(lastReply(deps)).toBe(fillMessage('confirm_all_prefilled', 'en'));
+    expect(ctx.stateContext.fill_confirm).toEqual({ at: NOW_MS - 60_000, repeated: true });
+    expect(hasCall(SQL.detailsComplete)).toBe(false);
+
+    const second = await handleFillMessage(client, ctx, incomingMsg('still what?'), deps);
+    // Falls back to the lane's ordinary unknown handling -- no nagging.
+    expect(second).toEqual({ handled: false });
+    expect(allReplies(deps)).toHaveLength(1);
+    // The state is KEPT, not cleared: a LISTO three turns later must still
+    // work, and clearing it would leave the only way to send this
+    // application a silent completion through some other route.
+    expect(ctx.stateContext.fill_confirm).toEqual({ at: NOW_MS - 60_000, repeated: true });
+    expect(hasCall(SQL.detailsComplete)).toBe(false);
+
+    const later = await handleFillMessage(client, ctx, incomingMsg('LISTO'), deps);
+    expect(later).toEqual({ handled: true });
+    expect(hasCall(SQL.detailsComplete)).toBe(true);
+  });
+
+  it('never completes on its own: no reply at all can slip past the gate except LISTO/DONE/CAMBIAR', async () => {
+    for (const body of ['1', 'si', 'yes', '2', 'ok', 'gracias']) {
+      resetFake();
+      const ctx = confirmCtx();
+      const deps = makeDeps(ctx);
+      await handleFillMessage(client, ctx, incomingMsg(body), deps);
+      expect(hasCall(SQL.detailsComplete)).toBe(false);
+    }
+  });
+
+  it('CHATS still escapes a confirm state (command escapes outrank the gate)', async () => {
+    const ctx = confirmCtx();
+    const deps = makeDeps(ctx);
+    expect(await handleFillMessage(client, ctx, incomingMsg('CHATS'), deps)).toEqual({ handled: false });
+    expect(deps.queueReplyText).not.toHaveBeenCalled();
+  });
+
+  it('CANCELAR still cancels a confirm state and scrubs it', async () => {
+    const ctx = confirmCtx();
+    const deps = makeDeps(ctx);
+    expect(await handleFillMessage(client, ctx, incomingMsg('cancelar'), deps)).toEqual({ handled: true });
+    expect(lastReply(deps)).toBe(fillMessage('canceled', 'en'));
+    expect(ctx.stateContext.fill_confirm).toBeNull();
+    expect(hasCall(SQL.detailsComplete)).toBe(false);
+  });
+});
+
+describe('handleFillMessage — CAMBIAR/CHANGE correction menu', () => {
+  beforeEach(resetFake);
+
+  function reusedCtx(
+    reused: { fields: string[]; docs: string[] },
+    appOverrides: Record<string, unknown> = {},
+    fixture: Partial<{ haveDocs: string[]; vaultDocs: string[] }> = {},
+  ): FillContext {
+    setApp(appOverrides, fixture);
+    return makeCtx({
+      stateContext: { fill_application_id: APPLICATION_ID, fill_reused: reused },
+    });
+  }
+
+  it.each([['CAMBIAR'], ['cambiar'], ['CHANGE'], [' Change ']])(
+    '%s lists the reused fields and copied docs as a numbered menu, and arms it',
+    async (body) => {
+      const ctx = reusedCtx(
+        { fields: ['work_authorization', 'date_of_birth'], docs: ['resume'] },
+        {
+          required_fields: ['work_authorization', 'date_of_birth'],
+          required_docs: ['resume'],
+          application_answers: { work_authorization: true, date_of_birth: '1990-04-03' },
+        },
+        { haveDocs: ['resume'] },
+      );
+      const deps = makeDeps(ctx);
+
+      const res = await handleFillMessage(client, ctx, incomingMsg(body), deps);
+
+      expect(res).toEqual({ handled: true });
+      expect(lastReply(deps)).toBe(
+        `${fillMessage('change_menu_header', 'en')}\n\n`
+        + `1. ${fieldLabel('work_authorization', 'en')}\n`
+        + `2. ${fieldLabel('date_of_birth', 'en')}\n`
+        + `3. ${localizeDocList(['resume'], 'en')}`,
+      );
+      expect(ctx.stateContext.fill_change_menu).toEqual({
+        items: [
+          { kind: 'field', key: 'work_authorization' },
+          { kind: 'field', key: 'date_of_birth' },
+          { kind: 'doc', docType: 'resume' },
+        ],
+        at: NOW_MS,
+      });
+    },
+  );
+
+  it('says so plainly when nothing was reused, instead of an empty menu', async () => {
+    const ctx = reusedCtx({ fields: [], docs: [] }, { required_fields: ['work_authorization'] });
+    const deps = makeDeps(ctx);
+
+    expect(await handleFillMessage(client, ctx, incomingMsg('CAMBIAR'), deps)).toEqual({ handled: true });
+    expect(lastReply(deps)).toBe(fillMessage('change_nothing', 'en'));
+    expect(ctx.stateContext.fill_change_menu).toBeUndefined();
+  });
+
+  it('works with no fill_reused key at all (a fill armed before this feature shipped)', async () => {
+    const ctx = makeCtx({ stateContext: { fill_application_id: APPLICATION_ID } });
+    setApp({ required_fields: ['work_authorization'] });
+    const deps = makeDeps(ctx);
+
+    expect(await handleFillMessage(client, ctx, incomingMsg('CAMBIAR'), deps)).toEqual({ handled: true });
+    expect(lastReply(deps)).toBe(fillMessage('change_nothing', 'en'));
+  });
+
+  it('picking a FIELD clears that key on THIS application only, then re-asks it', async () => {
+    const ctx = reusedCtx(
+      { fields: ['date_of_birth'], docs: [] },
+      {
+        required_fields: ['date_of_birth'],
+        application_answers: { date_of_birth: '1990-04-03' },
+      },
+    );
+    const deps = makeDeps(ctx);
+    await handleFillMessage(client, ctx, incomingMsg('CAMBIAR'), deps);
+
+    const res = await handleFillMessage(client, ctx, incomingMsg('1'), deps);
+
+    expect(res).toEqual({ handled: true });
+    const [, params] = findCall(SQL.clearAnswer);
+    expect(params).toEqual(['date_of_birth', APPLICATION_ID]);
+    // The key is really gone, so the engine re-derives it as the next step.
+    expect(fake.apps.get(APPLICATION_ID)!.row!.application_answers).toEqual({});
+    expect(lastReply(deps)).toBe(fieldQuestion('date_of_birth', 'en'));
+    // The correction is NOT a profile edit: the saved default stands.
+    expect(fake.defaultsWritten).toEqual([]);
+    // One-shot menu, and the corrected item is off the reuse list.
+    expect(ctx.stateContext.fill_change_menu).toBeNull();
+    expect(ctx.stateContext.fill_reused).toEqual({ fields: [], docs: [] });
+  });
+
+  it('sets the RLS GUC before clearing (a missing GUC is a silent zero-row UPDATE)', async () => {
+    const ctx = reusedCtx(
+      { fields: ['date_of_birth'], docs: [] },
+      { required_fields: ['date_of_birth'], application_answers: { date_of_birth: '1990-04-03' } },
+    );
+    const deps = makeDeps(ctx);
+    await handleFillMessage(client, ctx, incomingMsg('CAMBIAR'), deps);
+    await handleFillMessage(client, ctx, incomingMsg('1'), deps);
+
+    const setRlsOrder = (deps.setRls as jest.Mock).mock.invocationCallOrder[0];
+    expect(setRlsOrder).toBeLessThan(queryOrder(SQL.clearAnswer));
+  });
+
+  it('picking a DOC deletes the job-scoped copy only -- never the vault row -- and re-asks for the file', async () => {
+    const ctx = reusedCtx(
+      { fields: [], docs: ['work_auth_doc'] },
+      { required_docs: ['work_auth_doc'] },
+      { haveDocs: ['work_auth_doc'], vaultDocs: ['work_auth_doc'] },
+    );
+    const deps = makeDeps(ctx);
+    await handleFillMessage(client, ctx, incomingMsg('CAMBIAR'), deps);
+
+    const res = await handleFillMessage(client, ctx, incomingMsg('1'), deps);
+
+    expect(res).toEqual({ handled: true });
+    const [sql, params] = findCall(SQL.docDelete);
+    // job_id is bound, so the vault row (job_id IS NULL) can never match.
+    expect(sql).toContain('job_id = $2');
+    expect(params).toEqual([WORKER_ID, JOB_ID, 'work_auth_doc']);
+    expect(fake.apps.get(APPLICATION_ID)!.vaultDocs).toEqual(['work_auth_doc']);
+    expect(lastReply(deps)).toBe(docPrompt('work_auth_doc', 'en'));
+    // The replacement slot is armed. Without it the next synced load would
+    // re-copy the vault row and route the worker's replacement elsewhere.
+    expect(ctx.stateContext.fill_doc_replace).toBe('work_auth_doc');
+    expect((deps.setRls as jest.Mock).mock.invocationCallOrder[0]).toBeLessThan(queryOrder(SQL.docDelete));
+  });
+
+  it('the replacement upload lands on the replaced slot, then disarms it', async () => {
+    const ctx = reusedCtx(
+      { fields: [], docs: ['work_auth_doc'] },
+      { required_docs: ['work_auth_doc', 'resume'] },
+      { haveDocs: ['work_auth_doc'], vaultDocs: ['work_auth_doc'] },
+    );
+    const deps = makeDeps(ctx, { downloadMedia: jest.fn(async () => PDF_BYTES) });
+    (uploadDocumentToS3 as jest.Mock).mockResolvedValue({ versionId: 'v1' });
+    await handleFillMessage(client, ctx, incomingMsg('CAMBIAR'), deps);
+    await handleFillMessage(client, ctx, incomingMsg('1'), deps);
+
+    await handleFillMessage(client, ctx, incomingMsg('', {
+      numMedia: 1, mediaUrl: 'https://api.twilio.test/m1', mediaContentType: 'application/pdf',
+    }), deps);
+
+    // Stored against work_auth_doc, NOT against `resume` (which is what the
+    // engine's next-step walk would otherwise have said, since the vault
+    // copy makes work_auth_doc read as satisfied again).
+    const [, insertParams] = findCall(SQL.docInsert);
+    expect(insertParams[2]).toBe('work_auth_doc');
+    expect(ctx.stateContext.fill_doc_replace).toBeNull();
+  });
+
+  it('free text while a replacement is armed re-sends that doc prompt, not the next step', async () => {
+    const ctx = reusedCtx(
+      { fields: [], docs: ['work_auth_doc'] },
+      { required_docs: ['work_auth_doc'] },
+      { haveDocs: ['work_auth_doc'], vaultDocs: ['work_auth_doc'] },
+    );
+    const deps = makeDeps(ctx, { nowMs: () => NOW_MS + 10 * 60_000 });
+    await handleFillMessage(client, ctx, incomingMsg('CAMBIAR'), deps);
+    await handleFillMessage(client, ctx, incomingMsg('1'), deps);
+
+    await handleFillMessage(client, ctx, incomingMsg('un momento'), deps);
+
+    expect(lastReply(deps)).toBe(docPrompt('work_auth_doc', 'en'));
+  });
+
+  it('an out-of-range number repeats the list once, then falls through', async () => {
+    const ctx = reusedCtx(
+      { fields: ['date_of_birth'], docs: [] },
+      { required_fields: ['date_of_birth'], application_answers: { date_of_birth: '1990-04-03' } },
+    );
+    const deps = makeDeps(ctx);
+    await handleFillMessage(client, ctx, incomingMsg('CAMBIAR'), deps);
+    const menuBody = lastReply(deps);
+
+    expect(await handleFillMessage(client, ctx, incomingMsg('7'), deps)).toEqual({ handled: true });
+    expect(allReplies(deps).slice(-2)).toEqual([
+      fillMessage('change_menu_invalid', 'en'),
+      menuBody,
+    ]);
+    expect(hasCall(SQL.clearAnswer)).toBe(false);
+
+    expect(await handleFillMessage(client, ctx, incomingMsg('7'), deps)).toEqual({ handled: false });
+    expect(ctx.stateContext.fill_change_menu).toBeNull();
+  });
+
+  it('is a ONE-SHOT menu: a non-digit reply clears it and is handled normally', async () => {
+    const ctx = reusedCtx(
+      { fields: ['work_authorization'], docs: [] },
+      {
+        required_fields: ['work_authorization', 'education'],
+        application_answers: { work_authorization: true },
+      },
+    );
+    const deps = makeDeps(ctx);
+    await handleFillMessage(client, ctx, incomingMsg('CAMBIAR'), deps);
+
+    // A real answer to the current step (education) -- must NOT be eaten by
+    // the menu, and must leave no stale menu behind to hijack a later digit.
+    await handleFillMessage(client, ctx, incomingMsg('high school'), deps);
+
+    expect(ctx.stateContext.fill_change_menu).toBeNull();
+    expect(hasCall(SQL.clearAnswer)).toBe(false);
+  });
+
+  it('a CAMBIAR mid-fill (no confirm state) works the same way', async () => {
+    const ctx = reusedCtx(
+      { fields: ['date_of_birth'], docs: [] },
+      {
+        required_fields: ['date_of_birth', 'work_authorization'],
+        application_answers: { date_of_birth: '1990-04-03' },
+      },
+    );
+    const deps = makeDeps(ctx);
+
+    await handleFillMessage(client, ctx, incomingMsg('CAMBIAR'), deps);
+    await handleFillMessage(client, ctx, incomingMsg('1'), deps);
+
+    expect(findCall(SQL.clearAnswer)[1]).toEqual(['date_of_birth', APPLICATION_ID]);
+    // date_of_birth is first in required_fields, so it is what gets re-asked.
+    expect(lastReply(deps)).toBe(fieldQuestion('date_of_birth', 'en'));
+  });
+
+  // F7 (sprint 24). The only way `clearFieldAnswer` refuses is its
+  // `details_completed_at IS NULL` guard -- i.e. the application was
+  // completed somewhere else (the web stage-2 door) while this lane was
+  // still armed. The worker must then be told the truth, never re-asked a
+  // question about an application that is already sent, and never shown the
+  // step that merely FOLLOWS the field they asked to fix.
+  //
+  // BEFORE F7 the refusal fell straight into `promptNextStep`, whose
+  // `complete` arm answered a worker who had just asked to FIX something
+  // with "we sent your details to <company>" -- a raced no-op reported as a
+  // success, and the second time that copy was sent for the same
+  // application.
+  it('a refused clear (completed on the web meanwhile) says the application is locked, not the completion copy', async () => {
+    const ctx = reusedCtx(
+      { fields: ['date_of_birth'], docs: [] },
+      {
+        required_fields: ['date_of_birth', 'work_authorization'],
+        application_answers: { date_of_birth: '1990-04-03', work_authorization: true },
+        details_completed_at: '2026-09-03T00:00:00.000Z',
+      },
+    );
+    const deps = makeDeps(ctx);
+    await handleFillMessage(client, ctx, incomingMsg('CAMBIAR'), deps);
+
+    const res = await handleFillMessage(client, ctx, incomingMsg('1'), deps);
+
+    expect(res).toEqual({ handled: true });
+    // The UPDATE ran and matched nothing, so the answer still stands.
+    expect(findCall(SQL.clearAnswer)[1]).toEqual(['date_of_birth', APPLICATION_ID]);
+    expect(fake.apps.get(APPLICATION_ID)!.row!.application_answers).toEqual({
+      date_of_birth: '1990-04-03', work_authorization: true,
+    });
+    // The truth, with the one place the sent application can still be read.
+    expect(lastReply(deps)).toBe(fillMessage('change_locked', 'en', {
+      url: workerApplicationUrl('en', APPLICATION_ID),
+    }));
+    expect(allReplies(deps)).not.toContain(fillMessage('completion', 'en', { company: COMPANY }));
+    expect(allReplies(deps)).not.toContain(fieldQuestion('work_authorization', 'en'));
+    expect(allReplies(deps)).not.toContain(fieldQuestion('date_of_birth', 'en'));
+    // No completion arm ran at all: no stamp attempt, no company lookup, no
+    // continue-other scan.
+    expect(hasCall(SQL.detailsComplete)).toBe(false);
+    expect(hasCall(SQL.offerScan)).toBe(false);
+    // The one-shot menu and both gates are gone, so no later digit or LISTO
+    // can act on this application again...
+    expect(ctx.stateContext.fill_change_menu).toBeNull();
+    expect(ctx.stateContext.fill_confirm).toBeNull();
+    expect(ctx.stateContext.fill_pending).toBeNull();
+    // ...but the lane itself stays armed (F7 deliberately does not scrub):
+    // the very next turn re-derives `complete` and the ordinary completion
+    // arm disarms it then.
+    expect(ctx.stateContext.fill_application_id).toBe(APPLICATION_ID);
+  });
+
+  // The DOC branch's half of the SAME race. `clearFieldAnswer` carries its
+  // own `details_completed_at IS NULL` guard, so the field branch could only
+  // ever no-op; the doc branch's `DELETE FROM worker_documents` has no such
+  // guard, so before this fix picking a document on an application that was
+  // completed on the web MUTATED a submitted application -- it removed the
+  // job-scoped copy of a document the employer had already been sent -- and
+  // then asked for a replacement file that could never be attached.
+  it('a DOC pick on an application completed meanwhile deletes nothing and says change_locked', async () => {
+    const ctx = reusedCtx(
+      { fields: [], docs: ['work_auth_doc'] },
+      {
+        required_docs: ['work_auth_doc'],
+        details_completed_at: '2026-09-03T00:00:00.000Z',
+      },
+      { haveDocs: ['work_auth_doc'], vaultDocs: ['work_auth_doc'] },
+    );
+    const deps = makeDeps(ctx);
+    await handleFillMessage(client, ctx, incomingMsg('CAMBIAR'), deps);
+
+    const res = await handleFillMessage(client, ctx, incomingMsg('1'), deps);
+
+    expect(res).toEqual({ handled: true });
+    // THE defect: not one row of a submitted application was touched.
+    expect(hasCall(SQL.docDelete)).toBe(false);
+    expect(fake.apps.get(APPLICATION_ID)!.haveDocs).toEqual(['work_auth_doc']);
+    expect(fake.apps.get(APPLICATION_ID)!.vaultDocs).toEqual(['work_auth_doc']);
+    // The same answer the field branch gives, and never a doc prompt for a
+    // file that can no longer be attached.
+    expect(lastReply(deps)).toBe(fillMessage('change_locked', 'en', {
+      url: workerApplicationUrl('en', APPLICATION_ID),
+    }));
+    expect(allReplies(deps)).not.toContain(docPrompt('work_auth_doc', 'en'));
+    expect(allReplies(deps)).not.toContain(fillMessage('completion', 'en', { company: COMPANY }));
+    expect(hasCall(SQL.detailsComplete)).toBe(false);
+    // No replacement slot is armed, so the worker's next photo is not filed
+    // against a sent application either.
+    expect(
+      (deps.updateStateContext as jest.Mock).mock.calls
+        .every(([, , patch]: any[]) => !('fill_doc_replace' in patch)),
+    ).toBe(true);
+    expect(ctx.stateContext.fill_doc_replace).toBeUndefined();
+    // The one-shot menu and both gates are gone, exactly as on the field
+    // branch, so no later digit or LISTO can act on this application.
+    expect(ctx.stateContext.fill_change_menu).toBeNull();
+    expect(ctx.stateContext.fill_confirm).toBeNull();
+    expect(ctx.stateContext.fill_pending).toBeNull();
+    // The lock read runs under the GUC, like every other statement here:
+    // without it the row is invisible and an OPEN application would read as
+    // locked (fail-closed, but wrong).
+    expect((deps.setRls as jest.Mock).mock.invocationCallOrder[0])
+      .toBeLessThan(queryOrder(SQL.lockRead));
+  });
+
+  it('a DOC pick whose application row is not visible deletes nothing either (fail closed)', async () => {
+    const ctx = reusedCtx({ fields: [], docs: ['work_auth_doc'] }, { required_docs: ['work_auth_doc'] });
+    setAppMissing();
+    const deps = makeDeps(ctx);
+    await handleFillMessage(client, ctx, incomingMsg('CAMBIAR'), deps);
+
+    expect(await handleFillMessage(client, ctx, incomingMsg('1'), deps)).toEqual({ handled: true });
+    expect(hasCall(SQL.docDelete)).toBe(false);
+    expect(lastReply(deps)).toBe(fillMessage('change_locked', 'en', {
+      url: workerApplicationUrl('en', APPLICATION_ID),
+    }));
+  });
+
+  it('picking from a confirm state leaves the gate and lets the re-answer complete normally', async () => {
+    setApp({
+      required_fields: ['work_authorization'],
+      application_answers: { work_authorization: true },
+    });
+    const ctx = makeCtx({
+      stateContext: {
+        fill_application_id: APPLICATION_ID,
+        fill_confirm: { at: NOW_MS },
+        fill_reused: { fields: ['work_authorization'], docs: [] },
+      },
+    });
+    const deps = makeDeps(ctx);
+
+    await handleFillMessage(client, ctx, incomingMsg('CAMBIAR'), deps);
+    await handleFillMessage(client, ctx, incomingMsg('1'), deps);
+    expect(ctx.stateContext.fill_confirm).toBeNull();
+    expect(lastReply(deps)).toBe(fieldQuestion('work_authorization', 'en'));
+
+    // Answering it themselves is an explicit act, so the ordinary
+    // completion path applies -- no second confirmation.
+    await handleFillMessage(client, ctx, incomingMsg('1'), deps);
+    expect(hasCall(SQL.detailsComplete)).toBe(true);
+    expect(lastReply(deps)).toBe(fillMessage('completion', 'en', { company: COMPANY }));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// F1 (sprint 24, BLOCKER): the LISTO consent gate lives at the CHOKE POINT,
+// not only at step (10b).
+//
+// `armFill` (f) arms `fill_confirm` so nothing reaches the employer until
+// the worker types LISTO -- but that flag was only honoured by step (10b),
+// the LAST branch of `handleFillMessage`. Every earlier `{handled:false}`
+// return (a media turn on a `complete` step, an unknown button payload, the
+// command escapes, a typed job action, a picker digit, and the SECOND
+// unrecognised text -- `resolveFillConfirm` gives up after one re-prompt)
+// hands the turn to the processor's dispatch tail, which calls
+// `promptNextStep` -> `sendNextStepPrompt` -> `sendCompletionPrompt` and
+// sends the application. "no entiendo" twice was enough: the 2026-09-04
+// incident, restored.
+//
+// So the guard is in `sendNextStepPrompt` itself -- the one function every
+// completion goes through, the tail included.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('sendNextStepPrompt — the consent gate at the choke point (F1)', () => {
+  beforeEach(resetFake);
+
+  /** Exactly what the tail does: `promptNextStep` on a still-armed lane. */
+  function gatedCtx(overrides: Record<string, unknown> = {}): FillContext {
+    return makeCtx({
+      stateContext: {
+        fill_application_id: APPLICATION_ID,
+        fill_last_prompt_at: NOW_MS - 60_000,
+        ...overrides,
+      },
+    });
+  }
+
+  it('re-sends the confirm prompt instead of completing while fill_confirm is armed', async () => {
+    setApp({
+      required_fields: ['work_authorization', 'date_of_birth'],
+      application_answers: { work_authorization: true, date_of_birth: '1990-04-03' },
+    });
+    const ctx = gatedCtx({ fill_confirm: { at: NOW_MS - 60_000 } });
+    const deps = makeDeps(ctx);
+
+    await promptNextStep(client, ctx, 'SMtail', FROM, deps);
+
+    expect(lastReply(deps)).toBe(fillMessage('confirm_all_prefilled', 'en'));
+    // NOTHING was sent to the employer, and no offer scan ran either.
+    expect(hasCall(SQL.detailsComplete)).toBe(false);
+    expect(hasCall(SQL.offerScan)).toBe(false);
+    expect(allReplies(deps)).not.toContain(fillMessage('completion', 'en', { company: COMPANY }));
+    // The gate is KEPT (a LISTO several turns later must still work) and the
+    // lane stays armed -- the re-prompt is not an exit.
+    expect(ctx.stateContext.fill_confirm).toEqual({ at: NOW_MS - 60_000 });
+    expect(ctx.stateContext.fill_application_id).toBe(APPLICATION_ID);
+    // Stamped, so `maybeRepromptFill`'s 30s cooldown limits this to once per
+    // window no matter how many escapes the worker types.
+    expect(ctx.stateContext.fill_last_prompt_at).toBe(NOW_MS);
+  });
+
+  it('keeps the web_handoff note on the re-sent confirm, matching armFill (f)', async () => {
+    setApp({
+      required_fields: ['work_authorization'],
+      required_docs: ['ssn'],
+      application_answers: { work_authorization: true },
+    });
+    const ctx = gatedCtx({ fill_confirm: { at: NOW_MS - 60_000 } });
+    const deps = makeDeps(ctx);
+
+    await promptNextStep(client, ctx, 'SMtail', FROM, deps);
+
+    expect(lastReply(deps)).toBe(
+      `${fillMessage('confirm_all_prefilled', 'en')}\n\n`
+      + `${fillMessage('web_handoff', 'en', {
+        doc: localizeDocList(['ssn'], 'en'),
+        url: workerApplicationUrl('en', APPLICATION_ID),
+      })}`,
+    );
+    expect(hasCall(SQL.detailsComplete)).toBe(false);
+  });
+
+  it('re-sends the replacement doc prompt instead of completing while fill_doc_replace is armed', async () => {
+    // The vault copy is re-attached by every synced load (decision D3), so
+    // the step reads `complete` even though the worker still owes the
+    // replacement file. Completing here would send the OLD document.
+    setApp(
+      { required_docs: ['work_auth_doc'] },
+      { haveDocs: ['work_auth_doc'], vaultDocs: ['work_auth_doc'] },
+    );
+    const ctx = gatedCtx({ fill_doc_replace: 'work_auth_doc' });
+    const deps = makeDeps(ctx);
+
+    await promptNextStep(client, ctx, 'SMtail', FROM, deps);
+
+    expect(lastReply(deps)).toBe(docPrompt('work_auth_doc', 'en'));
+    expect(hasCall(SQL.detailsComplete)).toBe(false);
+    expect(ctx.stateContext.fill_doc_replace).toBe('work_auth_doc');
+    expect(ctx.stateContext.fill_last_prompt_at).toBe(NOW_MS);
+  });
+
+  it('completes normally when neither gate is armed (the guard is not a blanket refusal)', async () => {
+    setApp({
+      required_fields: ['work_authorization'],
+      application_answers: { work_authorization: true },
+    });
+    const ctx = gatedCtx();
+    const deps = makeDeps(ctx);
+
+    await promptNextStep(client, ctx, 'SMtail', FROM, deps);
+
+    expect(hasCall(SQL.detailsComplete)).toBe(true);
+    expect(lastReply(deps)).toBe(fillMessage('completion', 'en', { company: COMPANY }));
+  });
+
+  // THE ordering the whole design rests on: `resolveFillConfirm` clears
+  // `fill_confirm` BEFORE calling `promptNextStep`, so the guard above sees
+  // an empty gate and the legitimate LISTO completes. Reverse the two and
+  // LISTO would re-prompt the confirm forever.
+  it('LISTO still completes: resolveFillConfirm clears the gate BEFORE promptNextStep runs', async () => {
+    setApp({
+      required_fields: ['work_authorization'],
+      application_answers: { work_authorization: true },
+    });
+    const ctx = makeCtx({
+      stateContext: {
+        fill_application_id: APPLICATION_ID,
+        fill_confirm: { at: NOW_MS - 60_000 },
+      },
+    });
+    const deps = makeDeps(ctx);
+
+    const res = await handleFillMessage(client, ctx, incomingMsg('LISTO'), deps);
+
+    expect(res).toEqual({ handled: true });
+    expect(hasCall(SQL.detailsComplete)).toBe(true);
+    expect(lastReply(deps)).toBe(fillMessage('completion', 'en', { company: COMPANY }));
+    const clearOrder = (deps.updateStateContext as jest.Mock).mock.invocationCallOrder[0];
+    const clearPatch = (deps.updateStateContext as jest.Mock).mock.calls[0][2];
+    expect(clearPatch).toEqual({ fill_confirm: null });
+    expect(clearOrder).toBeLessThan(queryOrder(SQL.detailsComplete));
+  });
+
+  // The other half of F1: the flag was never RE-DERIVED either. An employer
+  // who widens `required_fields` while the gate is armed made step (10b)
+  // swallow the worker's answer to the NEW question with "type LISTO".
+  it('a widened requirement clears the gate and the answer path runs', async () => {
+    setApp({ required_fields: ['work_authorization'], application_answers: {} });
+    const ctx = makeCtx({
+      stateContext: {
+        fill_application_id: APPLICATION_ID,
+        fill_confirm: { at: NOW_MS - 60_000 },
+      },
+    });
+    const deps = makeDeps(ctx);
+
+    const res = await handleFillMessage(client, ctx, incomingMsg('1'), deps);
+
+    expect(res).toEqual({ handled: true });
+    // The digit answered work_authorization -- it was NOT eaten by the gate.
+    expect(JSON.parse(findCall(SQL.mergeUpdate)[1][0])).toEqual({ work_authorization: true });
+    expect(allReplies(deps)).not.toContain(fillMessage('confirm_all_prefilled', 'en'));
+    expect(ctx.stateContext.fill_confirm).toBeNull();
+    // They answered it themselves, so the ordinary completion path applies.
+    expect(lastReply(deps)).toBe(fillMessage('completion', 'en', { company: COMPANY }));
+  });
+
+  it('a widened DOC requirement clears the gate and asks for the document', async () => {
+    setApp({ required_docs: ['resume'] }, { haveDocs: [], vaultDocs: [] });
+    const ctx = makeCtx({
+      stateContext: {
+        fill_application_id: APPLICATION_ID,
+        fill_confirm: { at: NOW_MS - 60_000 },
+        fill_last_prompt_at: NOW_MS - 60_000,
+      },
+    });
+    const deps = makeDeps(ctx);
+
+    const res = await handleFillMessage(client, ctx, incomingMsg('ya mande todo'), deps);
+
+    expect(res).toEqual({ handled: true });
+    expect(lastReply(deps)).toBe(docPrompt('resume', 'en'));
+    expect(allReplies(deps)).not.toContain(fillMessage('confirm_all_prefilled', 'en'));
+    expect(ctx.stateContext.fill_confirm).toBeNull();
+    expect(hasCall(SQL.detailsComplete)).toBe(false);
+  });
+
+  // Positive control for the fill_doc_replace guard: the guard must not
+  // wedge the application. `handleFillMediaTurn` writes `fill_doc_replace:
+  // null` BEFORE its `promptNextStep` call and `updateStateContext` mutates
+  // `ctx.stateContext` in place, so the replacement upload still completes.
+  it('the replacement upload disarms the slot BEFORE prompting, so it still completes', async () => {
+    setApp(
+      { required_docs: ['work_auth_doc'] },
+      { haveDocs: ['work_auth_doc'], vaultDocs: ['work_auth_doc'] },
+    );
+    const ctx = makeCtx({
+      stateContext: {
+        fill_application_id: APPLICATION_ID,
+        fill_doc_replace: 'work_auth_doc',
+      },
+    });
+    const deps = makeDeps(ctx, { downloadMedia: jest.fn(async () => PDF_BYTES) });
+    (uploadDocumentToS3 as jest.Mock).mockResolvedValue({ versionId: 'v1' });
+
+    await handleFillMessage(client, ctx, incomingMsg('', {
+      numMedia: 1, mediaUrl: 'https://api.twilio.test/m1', mediaContentType: 'application/pdf',
+    }), deps);
+
+    expect(findCall(SQL.docInsert)[1][2]).toBe('work_auth_doc');
+    expect(ctx.stateContext.fill_doc_replace).toBeNull();
+    expect(hasCall(SQL.detailsComplete)).toBe(true);
+    expect(lastReply(deps)).toBe(fillMessage('completion', 'en', { company: COMPANY }));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// F2 (sprint 24): the CAMBIAR menu is a ONE-SHOT and must not outlive the
+// turn after it was sent.
+//
+// `resolveChangeMenu` (step 5b) is what makes it one-shot -- but three
+// branches of `handleFillMessage` return BEFORE 5b ever runs: the
+// button/interactive payload escape (1), the media turn (2) and the
+// picker-digit escape (4). A menu left standing through any of them hijacks
+// the NEXT bare digit the worker types: several fields (work_authorization,
+// education, military_service, worked_here_before, the entry loops) are
+// answered with exactly '1'/'2', so the digit clears a stored answer instead
+// of answering the question that was just asked.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('handleFillMessage — the CAMBIAR menu is a one-shot (F2)', () => {
+  beforeEach(resetFake);
+
+  /** Arms a menu over one reused field, on an application that still has
+   * `work_authorization` outstanding -- so the question the worker is being
+   * asked is answered with a bare '1', the exact digit a stale menu eats. */
+  async function armedMenu(deps?: FillDeps): Promise<{ ctx: FillContext; deps: FillDeps }> {
+    setApp({
+      required_fields: ['education', 'work_authorization'],
+      application_answers: { education: { level: 'high_school' } },
+    });
+    const ctx = makeCtx({
+      stateContext: {
+        fill_application_id: APPLICATION_ID,
+        fill_reused: { fields: ['education'], docs: [] },
+      },
+    });
+    const useDeps = deps ?? makeDeps(ctx);
+    await handleFillMessage(client, ctx, incomingMsg('CAMBIAR'), useDeps);
+    expect(ctx.stateContext.fill_change_menu).toEqual({
+      items: [{ kind: 'field', key: 'education' }],
+      at: NOW_MS,
+    });
+    return { ctx, deps: useDeps };
+  }
+
+  it('a media turn drops the menu, so the next digit answers the question instead of clearing an answer', async () => {
+    const { ctx, deps } = await armedMenu();
+
+    // The worker sends a photo rather than a number. The current step is a
+    // FIELD step, so the media branch answers `field_step_media` and the
+    // outstanding question (work_authorization) still stands.
+    const media = await handleFillMessage(client, ctx, incomingMsg('', {
+      numMedia: 1, mediaUrl: 'https://api.twilio.test/m1', mediaContentType: 'image/jpeg',
+    }), deps);
+
+    expect(media).toEqual({ handled: true });
+    expect(lastReply(deps)).toBe(fillMessage('field_step_media', 'en'));
+    expect(ctx.stateContext.fill_change_menu).toBeNull();
+
+    // ...so THIS '1' answers work_authorization and never touches education.
+    await handleFillMessage(client, ctx, incomingMsg('1'), deps);
+    expect(hasCall(SQL.clearAnswer)).toBe(false);
+    expect(fake.apps.get(APPLICATION_ID)!.row!.application_answers).toEqual({
+      education: { level: 'high_school' },
+      work_authorization: true,
+    });
+  });
+
+  it('a media turn that STORES a document also drops the menu', async () => {
+    // TWO required docs on purpose: with only one, storing it completes the
+    // application and `FILL_SCRUB` clears the menu for an unrelated reason,
+    // so the test would pass against the bug.
+    setApp(
+      { required_docs: ['resume', 'driver_license'], application_answers: {} },
+      { haveDocs: [], vaultDocs: [] },
+    );
+    const ctx = makeCtx({
+      stateContext: {
+        fill_application_id: APPLICATION_ID,
+        fill_reused: { fields: [], docs: ['resume'] },
+      },
+    });
+    const deps = makeDeps(ctx, { downloadMedia: jest.fn(async () => PDF_BYTES) });
+    (uploadDocumentToS3 as jest.Mock).mockResolvedValue({ versionId: 'v1' });
+    await handleFillMessage(client, ctx, incomingMsg('CAMBIAR'), deps);
+    expect(ctx.stateContext.fill_change_menu).not.toBeNull();
+
+    await handleFillMessage(client, ctx, incomingMsg('', {
+      numMedia: 1, mediaUrl: 'https://api.twilio.test/m1', mediaContentType: 'application/pdf',
+    }), deps);
+
+    expect(findCall(SQL.docInsert)[1][2]).toBe('resume');
+    // The fill advanced to the NEXT doc (no completion, so no FILL_SCRUB)...
+    expect(lastReply(deps)).toBe(docPrompt('driver_license', 'en'));
+    expect(hasCall(SQL.detailsComplete)).toBe(false);
+    // ...and the menu is gone anyway.
+    expect(ctx.stateContext.fill_change_menu).toBeNull();
+  });
+
+  it('a picker digit drops the menu and STILL escapes to the picker', async () => {
+    const { ctx, deps } = await armedMenu();
+    // A CHATS/list picker armed after the menu was sent: spec 6.4 gives the
+    // picker every bare digit, so this '1' is NOT a menu pick.
+    await deps.updateStateContext(client, CONVERSATION_ID, {
+      pending_picker: { kind: 'chats' as const, threads: [] },
+    });
+
+    const res = await handleFillMessage(client, ctx, incomingMsg('1'), deps);
+
+    expect(res).toEqual({ handled: false });
+    expect(ctx.stateContext.fill_change_menu).toBeNull();
+    // The digit went to the picker, so nothing of the fill's own was touched.
+    expect(hasCall(SQL.clearAnswer)).toBe(false);
+    expect(hasCall(SQL.mergeUpdate)).toBe(false);
+  });
+
+  it('a button payload drops the menu and STILL escapes', async () => {
+    const { ctx, deps } = await armedMenu();
+
+    const res = await handleFillMessage(client, ctx, incomingMsg('', {
+      buttonPayload: 'accept:job-xyz',
+    }), deps);
+
+    expect(res).toEqual({ handled: false });
+    expect(ctx.stateContext.fill_change_menu).toBeNull();
+    expect(hasCall(SQL.clearAnswer)).toBe(false);
+    // The escape itself is unchanged: fill state is KEPT, no reply queued.
+    expect(ctx.stateContext.fill_application_id).toBe(APPLICATION_ID);
   });
 });
 
@@ -1346,6 +2332,10 @@ describe('handleFillMessage', () => {
         prompt_application_id: 'stale-prompt-app',
         prompt_last_prompt_at: 123,
         applications_menu: { ids: ['x'], at: 1 },
+        fill_reused: { fields: ['home_address'], docs: [] },
+        fill_confirm: { at: 1 },
+        fill_change_menu: { items: [{ kind: 'field' as const, key: 'home_address' as const }], at: 1 },
+        fill_doc_replace: 'resume',
       },
     });
     const deps = makeDeps(ctx);
@@ -1360,6 +2350,10 @@ describe('handleFillMessage', () => {
       fill_cert_more_pending: null,
       fill_relay_override: null,
       fill_offer_application_id: null,
+      fill_reused: null,
+      fill_confirm: null,
+      fill_change_menu: null,
+      fill_doc_replace: null,
       prompt_application_id: null,
       prompt_last_prompt_at: null,
       applications_menu: null,

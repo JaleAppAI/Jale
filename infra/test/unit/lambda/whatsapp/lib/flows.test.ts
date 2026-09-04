@@ -19,6 +19,8 @@ import {
   parseProfileAnswer,
   parseProfilePayloadAnswer,
   parseTypedJobAction,
+  parseApplicationReference,
+  parseTypedApplyToken,
   computeNextField,
   PROFILE_FIELDS,
   isSkipKeyword,
@@ -28,6 +30,7 @@ import {
   type ConversationState,
   type ProfileStateContext,
 } from '../../../../../lambda/whatsapp/lib/flows';
+import { parseApplyToken } from '../../../../../lambda/lib/referral-codes';
 
 describe('flows.ts — keyword detection', () => {
   describe('isGreetingKeyword', () => {
@@ -552,6 +555,190 @@ describe('flows.ts — parseTypedJobAction', () => {
 
   test.each(['Trabajos', '1', 'apply 1', ''])('rejects "%s"', (input) => {
     expect(parseTypedJobAction(input)).toBeNull();
+  });
+
+  // Sprint 24 C1: the buttons say "interested / not interested" now, and
+  // workers type back what the button says. The old verbs keep working --
+  // the help copy advertised them for months and a worker who learned
+  // "1 aceptar" must not be broken by a relabel.
+  describe('interested / not interested verbs', () => {
+    test.each([
+      ['1 me interesa', { index: 0, action: 'accept' }],
+      ['2 interesa', { index: 1, action: 'accept' }],
+      // normalizeCommandText lowercases but does NOT strip diacritics, so
+      // the accented and unaccented spellings are two distinct inputs.
+      ['3 si me interesa', { index: 2, action: 'accept' }],
+      ['3 s\u00ed me interesa', { index: 2, action: 'accept' }],
+      ['1 interested', { index: 0, action: 'accept' }],
+      ["2 i'm interested", { index: 1, action: 'accept' }],
+      // Phone keyboards autocorrect the apostrophe to U+2019.
+      ['2 i\u2019m interested', { index: 1, action: 'accept' }],
+      ['2 im interested', { index: 1, action: 'accept' }],
+      ['1 no me interesa', { index: 0, action: 'decline' }],
+      ['2 not interested', { index: 1, action: 'decline' }],
+      // Trailing punctuation is stripped by normalizeCommandText, as for
+      // every other verb.
+      ['1 me interesa!', { index: 0, action: 'accept' }],
+    ])('parses "%s"', (input, expected) => {
+      expect(parseTypedJobAction(input)).toEqual(expected);
+    });
+
+    // The whole point of ordering the negatives first: "no me interesa"
+    // CONTAINS "me interesa", so a positive-first alternation would apply
+    // the worker to a job they just declined.
+    it('reads "no me interesa" as a decline, never as an accept', () => {
+      expect(parseTypedJobAction('1 no me interesa')).toEqual({ index: 0, action: 'decline' });
+      expect(parseTypedJobAction('1 not interested')).toEqual({ index: 0, action: 'decline' });
+    });
+
+    test.each(['me interesa', 'interested', '1 interesado', '1 interesting'])(
+      'rejects "%s"',
+      (input) => expect(parseTypedJobAction(input)).toBeNull(),
+    );
+  });
+});
+
+// ── Sprint 24 C4: the application reference workers can type ────────────
+//
+// `application-stage-notify.ts` puts "Referencia: app-<uuid>" in the hired
+// notification, and workers type it back. Before this it matched nothing
+// but the button payload grammar, so a typed reference got the
+// unknown-message reply.
+describe('flows.ts — parseApplicationReference', () => {
+  const UUID = 'aaaaaaaa-0000-4000-8000-00000000000a';
+
+  test.each([
+    [`app-${UUID}`, UUID],
+    // The exact shape the hired notification prints.
+    [`Buenas noticias: ... Referencia: app-${UUID}. Consulta ...`, UUID],
+    [`hola quiero saber de app-${UUID} gracias`, UUID],
+    [`(app-${UUID})`, UUID],
+    // WhatsApp capitalizes the first letter of a message; ids are stored
+    // lowercase, so the parse normalizes.
+    [`APP-${UUID.toUpperCase()}`, UUID],
+  ])('parses %s', (input, expected) => {
+    expect(parseApplicationReference(input)).toBe(expected);
+  });
+
+  test.each([
+    '',
+    'app-',
+    'app-1234',
+    'applications',
+    // Not a reference: the id is glued to a preceding word.
+    `myapp-${UUID}`,
+    // A truncated/extended id is not a reference either.
+    `app-${UUID.slice(0, -1)}`,
+    `app-${UUID}-1234`,
+    // The BUTTON PAYLOAD form is owned by parseApplicationButtonPayload and
+    // routed before this parser ever runs; it must not double-match here,
+    // because 'later' and 'start' dispatch differently.
+    `application:later:app-${UUID}`,
+    `application:start:app-${UUID}`,
+  ])('rejects "%s"', (input) => {
+    expect(parseApplicationReference(input)).toBeNull();
+  });
+
+  it('never throws on hostile input', () => {
+    const hostile: Array<string | null | undefined> = [
+      null,
+      undefined,
+      'app-'.repeat(20000),
+      `app-${'a'.repeat(100000)}`,
+      '🔥 app- 💥',
+      `\u0000app-${UUID}`,
+    ];
+    for (const input of hostile) {
+      expect(() => parseApplicationReference(input)).not.toThrow();
+    }
+  });
+});
+
+// Sprint 24 C4 review 1: the AUTHENTICATED router's own apply-token parser.
+//
+// `parseApplyToken` (lambda/lib/referral-codes.ts) is deliberately loose --
+// it scans for `JALE` + optional separators + any eight Crockford-mappable
+// characters, with no trailing boundary, so a person retyping a code from
+// memory still gets matched. Pre-auth that is right: the first message from
+// an unknown phone is either a code or a greeting, and a false positive
+// merely parks nothing.
+//
+// Post-auth it is NOT right, because a worker with an open employer thread is
+// mid-conversation: "Jale trabajos" parses as the token TRABAJ0S (O maps to
+// 0), which would answer "job code not found" and the employer would never
+// see the message. This parser is the strict variant used there.
+describe('flows.ts — parseTypedApplyToken', () => {
+  const TOKEN = 'ABCD1234';
+
+  test.each([
+    // THE shape that matters: the prefilled message
+    // `public-job-apply-intent.ts` builds for the wa.me link, in both
+    // locales. It carries leading prose, so a whole-message-only parser
+    // would miss every real referral arrival.
+    [`Quiero postularme a este trabajo: JALE-${TOKEN}`, TOKEN],
+    [`I want to apply for this job: JALE-${TOKEN}`, TOKEN],
+    [`JALE-${TOKEN}`, TOKEN],
+    [`jale-abcd1234`, TOKEN],
+    [`JALE - ${TOKEN}`, TOKEN],
+    [`JALE:${TOKEN}`, TOKEN],
+    [`JALE_${TOKEN}`, TOKEN],
+    [`hola, mi codigo es JALE-${TOKEN}`, TOKEN],
+    [`JALE-${TOKEN}!`, TOKEN],
+    // Crockford decoding still applies to the captured characters, exactly
+    // as the lib does it: I/L -> 1, O -> 0.
+    ['JALE-LOOP1234', '100P1234'],
+  ])('parses %s', (input, expected) => {
+    expect(parseTypedApplyToken(input)).toBe(expected);
+  });
+
+  test.each([
+    '',
+    'JALE',
+    'JALE-',
+    // The false positive this parser exists to kill. The loose lib parser
+    // DOES match these (asserted below), which is why the authenticated
+    // router must not use it.
+    'Jale trabajos',
+    'jale necesito trabajo',
+    'Hola Jale, quiero trabajar',
+    // A separator is required, so a hand-typed space-only form is not
+    // recognised post-auth. Pre-auth still catches it via the lib parser,
+    // and the prefilled link never produces it.
+    `JALE ${TOKEN}`,
+    // Boundaries on both ends.
+    `MIJALE-${TOKEN}`,
+    `JALE-${TOKEN}EXTRA`,
+    'JALE-ABCD12',
+    // U is excluded from the alphabet on purpose (profanity, not
+    // ambiguity), so it is a genuine typo and must not be rewritten.
+    'JALE-ABCDU234',
+  ])('rejects "%s"', (input) => {
+    expect(parseTypedApplyToken(input)).toBeNull();
+  });
+
+  it('is strictly narrower than the pre-auth parser on exactly the prose that broke', () => {
+    // Guards the reason this function exists: if someone later points the
+    // authenticated router back at `parseApplyToken`, this documents what
+    // that costs.
+    expect(parseApplyToken('Jale trabajos')).toBe('TRABAJ0S');
+    expect(parseTypedApplyToken('Jale trabajos')).toBeNull();
+    // ...while both agree on a real code.
+    expect(parseApplyToken(`JALE-${TOKEN}`)).toBe(TOKEN);
+    expect(parseTypedApplyToken(`JALE-${TOKEN}`)).toBe(TOKEN);
+  });
+
+  it('never throws on hostile input', () => {
+    const hostile: Array<string | null | undefined> = [
+      null,
+      undefined,
+      'JALE-'.repeat(20000),
+      `JALE-${'a'.repeat(100000)}`,
+      '🔥 JALE- 💥',
+      ` JALE-${TOKEN}`,
+    ];
+    for (const input of hostile) {
+      expect(() => parseTypedApplyToken(input)).not.toThrow();
+    }
   });
 });
 

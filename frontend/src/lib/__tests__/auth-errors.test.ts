@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { authErrorKey, confirmErrorKey, resendErrorKey } from '@/lib/auth-errors';
+import { authErrorKey, confirmErrorKey, forgotErrorKey, resendErrorKey } from '@/lib/auth-errors';
 
 /**
  * `authErrorKey` is the single place where a Cognito failure becomes a
@@ -190,5 +190,78 @@ describe('confirmErrorKey', () => {
         // directly and has no already-confirmed copy at all, so widening it
         // would leave a worker with a bad password staring at a raw key path.
         expect(authErrorKey(withCode('NotAuthorizedException'))).toBe('errors.invalid_credentials');
+    });
+});
+
+/**
+ * `ForgotPassword` needs its own mapper for a reason that has nothing to do
+ * with a code collision: on this call site the MESSAGE text is a trap.
+ *
+ * Cognito refuses a reset for an account with no verified contact with
+ * `InvalidParameterException` and the message "Cannot reset password for the
+ * user as there is no registered/verified email or phone_number". That string
+ * contains "phone", so `authErrorKey`'s message sniffing turned it into "Enter
+ * a valid phone number" — on a step whose only field is an email address,
+ * about a password the employer was trying to reset.
+ *
+ * There are no parameters left to be invalid here: the address is the only
+ * thing sent, and a bad one comes back as `UserNotFoundException` (or is
+ * masked by `preventUserExistenceErrors`). So the code alone decides, and what
+ * it means is that the account was never confirmed — a state the form can
+ * actually recover from, unlike a sentence about a field that is not on screen.
+ */
+describe('forgotErrorKey', () => {
+    /** Cognito's real rejection, verbatim, for an unconfirmed employer. */
+    const noVerifiedContact = withCode(
+        'InvalidParameterException',
+        'Cannot reset password for the user as there is no registered/verified email or phone_number',
+    );
+
+    it('maps the no-verified-contact refusal to the unconfirmed-account key', () => {
+        expect(forgotErrorKey(noVerifiedContact)).toBe('errors.account_not_confirmed');
+    });
+
+    it('does not blame the phone field for it', () => {
+        // The exact bug, pinned from both sides: the message mentions
+        // `phone_number`, and the shared mapper reads any "phone" in a message
+        // as a bad phone field.
+        expect(authErrorKey(noVerifiedContact)).toBe('errors.invalid_phone');
+        expect(forgotErrorKey(noVerifiedContact)).not.toBe('errors.invalid_phone');
+    });
+
+    it('does not sniff the message text when deciding unconfirmed', () => {
+        // Nothing about that sentence is contractual or localised, so only the
+        // code may decide — including when there is no message at all.
+        expect(forgotErrorKey(withCode('InvalidParameterException'))).toBe('errors.account_not_confirmed');
+        expect(forgotErrorKey(withCode('InvalidParameterException', 'Invalid email address format.')))
+            .toBe('errors.account_not_confirmed');
+    });
+
+    it('maps an unconfirmed refusal carrying only `name`', () => {
+        expect(forgotErrorKey(withNameOnly('InvalidParameterException'))).toBe('errors.account_not_confirmed');
+    });
+
+    it.each([
+        ['UserNotFoundException'],
+        ['LimitExceededException'],
+        ['TooManyRequestsException'],
+        ['NotAuthorizedException'],
+        ['SomeBrandNewException'],
+    ])('defers to authErrorKey for %s', (code) => {
+        const err = withCode(code);
+        expect(forgotErrorKey(err)).toBe(authErrorKey(err));
+    });
+
+    it('defers to authErrorKey for a non-Cognito input', () => {
+        expect(forgotErrorKey(null)).toBe(authErrorKey(null));
+    });
+
+    it('leaves the shared signup mapping alone', () => {
+        // A signup really does have parameters that can be invalid, and its
+        // form has the fields those sentences name, so `authErrorKey` keeps
+        // reading the message there. Widening it to answer "unconfirmed" would
+        // break the signup step and the worker form with it.
+        expect(authErrorKey(withCode('InvalidParameterException', 'Invalid email address format.')))
+            .toBe('errors.invalid_email');
     });
 });

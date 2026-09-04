@@ -41,6 +41,22 @@ export type ApiFetchOptions = {
     retryOn401?: boolean;
 };
 
+
+/**
+ * The app locale, read from the URL's first path segment (`/en/...`, `/es/...`)
+ * -- every app route is locale-prefixed by the middleware. Sent as
+ * `Accept-Language` on every API call so a handler that stores
+ * language-specific text (the worker profile editor's canonical trade label)
+ * follows the locale the worker chose, not the browser's OS language, which
+ * is what the browser's own Accept-Language header carries. Undefined on the
+ * server and on non-locale paths; a caller-supplied header always wins.
+ */
+function appLocaleHeader(): Record<string, string> {
+    if (typeof window === 'undefined') return {};
+    const match = /^\/(en|es)(?=\/|$)/.exec(window.location?.pathname ?? '');
+    return match ? { 'Accept-Language': match[1] } : {};
+}
+
 export async function apiFetch(
     path: string,
     options?: RequestInit,
@@ -73,6 +89,7 @@ export async function apiFetch(
                 signal: controller.signal,
                 headers: {
                     'Content-Type': 'application/json',
+                    ...appLocaleHeader(),
                     ...(authToken ? { Authorization: authToken } : {}),
                     ...options?.headers,
                 },
