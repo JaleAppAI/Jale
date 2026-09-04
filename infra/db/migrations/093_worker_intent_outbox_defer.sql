@@ -44,24 +44,33 @@
 --     is therefore UNKNOWN, which is exactly why 043 never requeues an
 --     expired lease -- push the row back to 'pending' and resend it.
 --
--- attempt_count is not in the SET list at all. That is the entire point of
--- the function, and it is asserted in test/unit/db/migrations.test.ts.
+-- ── WHY THE PENDING BRANCH REFUNDS attempt_count ──
+-- Leaving attempt_count alone is NOT budget-neutral, and getting this wrong
+-- is the whole bug in miniature. 043 charges the attempt at LEASE time --
+-- `attempt_count = o.attempt_count + 1` inside its claimed CTE -- not at
+-- failure time. So a defer that merely declines to increment still leaves the
+-- lease's +1 on the row, and 043's own sweep
+-- (`status = 'pending' AND attempt_count >= 5` -> 'failed', re-evaluated on
+-- every lease call) would end the row after the FIFTH hourly retry, roughly
+-- five hours in. The 48-hour ceiling below would never be reached and the
+-- function would be a slower spelling of fail_worker_intent_outbox.
+--
+-- Hence `GREATEST(attempt_count - 1, 0)` on the pending branch: it refunds
+-- the increment this lease just charged, so the row returns to the counter it
+-- carried before the deferred send and the budget really is untouched.
+-- GREATEST clamps at zero so a hand-edited or legacy row can never go
+-- negative (attempt_count has no CHECK of its own). The counter therefore
+-- means "attempts that COUNTED", which is what the five-attempt cap is about.
+--
+-- The 48h-expired branch does NOT refund: that row is terminal, the counter
+-- is evidence for whoever asks why the notification never arrived, and
+-- rewinding it would erase the last attempt from the record.
 --
 -- BOTH lease columns are nulled on BOTH branches. 043's
 -- whatsapp_outbox_worker_intent_lease_consistency CHECK admits a set token
 -- only alongside a set deadline AND status = 'send_unknown', so clearing one
 -- of the pair (or leaving the pair set while moving to 'pending') is a 23514
 -- rather than a defer.
---
--- KNOWN BOUNDARY (not fixed here): lease_worker_intent_outbox sweeps
--- `status = 'pending' AND attempt_count >= 5` to 'failed' on every call, and
--- its candidate CTE requires `attempt_count < 5`. A row deferred while
--- already at attempt 5 is therefore killed by the next lease despite this
--- function's intent. It is not reachable in the situation this file exists
--- for -- an unapproved template rejects the very first send, so such rows
--- defer at attempt_count = 1 and are ended by the 48h ceiling -- and closing
--- it would mean rewriting 043's lease function, which is deliberately out of
--- scope for this migration.
 BEGIN;
 
 CREATE OR REPLACE FUNCTION public.defer_worker_intent_outbox(
@@ -86,6 +95,13 @@ BEGIN
            WHEN created_at < pg_catalog.now() - interval '48 hours' THEN NULL
            ELSE pg_catalog.now()
                 + pg_catalog.make_interval(secs => p_delay_seconds) END,
+         -- Refund the +1 that lease_worker_intent_outbox charged when it
+         -- claimed this row. Without it the five-attempt cap ends the row
+         -- after ~5 hourly retries and the 48h ceiling never applies. The
+         -- terminal branch keeps the attempt as evidence.
+         attempt_count = CASE
+           WHEN created_at < pg_catalog.now() - interval '48 hours' THEN attempt_count
+           ELSE GREATEST(attempt_count - 1, 0) END,
          last_error = LEFT(COALESCE(p_error, 'worker intent send deferred'), 1000),
          worker_intent_lease_token = NULL,
          worker_intent_leased_until = NULL

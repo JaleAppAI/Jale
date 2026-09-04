@@ -17,8 +17,10 @@ import { Client } from 'pg';
  *     clause; dropping either one is a zero-row-vs-one-row difference that
  *     only real MVCC and a real clock decide.
  *  3. attempt_count. The reason this function exists is that it does NOT
- *     advance the retry budget. Proving that means leasing a row (which
- *     increments it), deferring, and reading the counter back.
+ *     advance the retry budget -- and 043 charges the attempt at LEASE time,
+ *     so "not advancing" means REFUNDING the increment the lease just made.
+ *     Proving that means leasing a row, deferring, reading the counter back,
+ *     and then doing it enough times to outlast the five-attempt cap.
  *
  * Every case runs the lease and the defer as `jale_whatsapp`, the role the
  * drain Lambda actually connects as. That role holds no UPDATE on a
@@ -212,10 +214,12 @@ describeWithDatabase('migration 093 defer_worker_intent_outbox', () => {
 
       const state = await readOutbox(fixture.outboxId);
       expect(state.status).toBe('pending');
-      // THE contract: the lease spent attempt 1 and the defer spent nothing.
-      // fail_worker_intent_outbox in the same position would leave 1 here too
-      // but would have consumed one of the five, and would come back at 5.
-      expect(state.attemptCount).toBe(1);
+      // THE contract, and the reason `toBe(0)` rather than `toBe(1)`: 043
+      // charges the attempt when it LEASES, so budget-neutral means the defer
+      // hands that increment back. The row is left on the counter it carried
+      // before the deferred send -- its pre-lease value, 0.
+      // fail_worker_intent_outbox in the same position leaves 1.
+      expect(state.attemptCount).toBe(0);
       expect(state.lastError).toBe(DEFER_REASON);
 
       // ~1 hour out, not "now" and not never. Asserted as a window because
@@ -255,8 +259,9 @@ describeWithDatabase('migration 093 defer_worker_intent_outbox', () => {
       expect(early.rows.some((row) => row.id === fixture.outboxId)).toBe(false);
 
       // Pull the deadline into the past (a column jale_whatsapp is not
-      // granted) and it comes back, on attempt 2 -- so the row really is
-      // alive, not merely 'pending' on paper.
+      // granted) and it comes back -- so the row really is alive, not merely
+      // 'pending' on paper. The refund means this second lease charges
+      // attempt 1 again, not attempt 2.
       await su.query(
         `UPDATE whatsapp_outbox SET next_attempt_at = now() - interval '1 minute'
           WHERE id = $1`,
@@ -264,7 +269,55 @@ describeWithDatabase('migration 093 defer_worker_intent_outbox', () => {
       );
       const releasedToken = await leaseOwnRow(client, fixture.outboxId);
       expect(releasedToken).not.toBe(leaseToken);
-      expect((await readOutbox(fixture.outboxId)).attemptCount).toBe(2);
+      expect((await readOutbox(fixture.outboxId)).attemptCount).toBe(1);
+    } finally {
+      await client.end();
+      await removeDeferFixture(fixture);
+    }
+  });
+
+  it('survives more deferrals than the five-attempt cap allows', async () => {
+    // THE regression gate for review-1 finding 1. A defer that leaves
+    // attempt_count alone looks budget-neutral in a single-cycle test and
+    // still dies here: 043 charges +1 per lease and its own sweep
+    // (`pending AND attempt_count >= 5` -> 'failed', re-evaluated on every
+    // lease call) would end this row on the sixth cycle, about five hours in,
+    // with the 48-hour ceiling never reached. Six cycles is one more than the
+    // cap, all well inside 48h.
+    const fixture = await createDeferFixture();
+    const client = new Client({ connectionString: whatsappUrl(databaseUrl!) });
+    await client.connect();
+    try {
+      for (let cycle = 1; cycle <= 6; cycle += 1) {
+        const leaseToken = await leaseOwnRow(client, fixture.outboxId);
+        // Every lease charges exactly one attempt, every defer refunds it.
+        expect((await readOutbox(fixture.outboxId)).attemptCount).toBe(1);
+
+        const deferred = await client.query<{ deferred: boolean }>(
+          'SELECT defer_worker_intent_outbox($1, $2, $3, $4) AS deferred',
+          [fixture.outboxId, leaseToken, DEFER_REASON, ONE_HOUR_SECONDS],
+        );
+        expect(deferred.rows[0].deferred).toBe(true);
+
+        const state = await readOutbox(fixture.outboxId);
+        expect(state.status).toBe('pending');
+        expect(state.attemptCount).toBe(0);
+
+        // Simulate the hour passing. Only next_attempt_at moves; created_at
+        // stays put, so the 48h ceiling is not what is being tested here.
+        await su.query(
+          `UPDATE whatsapp_outbox SET next_attempt_at = now() - interval '1 minute'
+            WHERE id = $1`,
+          [fixture.outboxId],
+        );
+      }
+
+      // Still alive after six cycles, and still leasable -- which is the
+      // assertion the pre-refund version fails.
+      const final = await readOutbox(fixture.outboxId);
+      expect(final.status).toBe('pending');
+      expect(final.attemptCount).toBe(0);
+      await expect(leaseOwnRow(client, fixture.outboxId)).resolves.toEqual(expect.any(String));
     } finally {
       await client.end();
       await removeDeferFixture(fixture);
@@ -293,6 +346,10 @@ describeWithDatabase('migration 093 defer_worker_intent_outbox', () => {
       // operator who has to explain the missing notification.
       expect(state.nextAttemptAt).toBeNull();
       expect(state.lastError).toBe(DEFER_REASON);
+      // NOT refunded, unlike the pending branch: the row is terminal and the
+      // counter is evidence for whoever asks why the notification never
+      // arrived, so the last attempt stays on the record. 1 = the lease's
+      // charge, kept.
       expect(state.attemptCount).toBe(1);
       expect(state.leaseToken).toBeNull();
       expect(state.leasedUntil).toBeNull();
@@ -318,6 +375,9 @@ describeWithDatabase('migration 093 defer_worker_intent_outbox', () => {
       const state = await readOutbox(fixture.outboxId);
       expect(state.status).toBe('pending');
       expect(state.nextAttemptAt).not.toBeNull();
+      // Inside the window, so the refund applies on this side of the boundary
+      // too -- the two branches differ in more than just status.
+      expect(state.attemptCount).toBe(0);
     } finally {
       await client.end();
       await removeDeferFixture(fixture);

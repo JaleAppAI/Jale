@@ -1193,7 +1193,12 @@ describe('database migrations', () => {
   // (a WhatsApp template Meta has not approved yet) is not the row's fault
   // and no number of attempts fixes it. Two facts in it are load-bearing and
   // invisible to a typecheck, so they are pinned here:
-  //   * attempt_count is never assigned -- the entire point;
+  //   * attempt_count is REFUNDED on the pending branch. 043 charges the
+  //     attempt at LEASE time, so a defer that merely declines to increment
+  //     still leaves the +1 on the row and 043's own
+  //     `pending AND attempt_count >= 5` sweep ends it after ~5 hourly
+  //     retries -- the 48h ceiling would never be reached and the function
+  //     would be a slow spelling of fail_worker_intent_outbox;
   //   * BOTH lease columns are nulled on BOTH branches, or 043's
   //     whatsapp_outbox_worker_intent_lease_consistency CHECK fires (it
   //     permits a set token only together with a set deadline AND
@@ -1235,9 +1240,18 @@ describe('database migrations', () => {
     );
     expect(body.length).toBeGreaterThan(0);
 
-    // attempt_count must appear in NO assignment inside the function body. A
-    // defer that increments it is fail_worker_intent_outbox with extra steps.
-    expect(body).not.toMatch(/attempt_count\s*=/);
+    // The refund, and its clamp. `GREATEST(attempt_count - 1, 0)` undoes the
+    // increment 043's lease just charged; the clamp keeps a hand-edited or
+    // legacy row off a negative counter (attempt_count carries no CHECK).
+    expect(body).toContain('GREATEST(attempt_count - 1, 0)');
+    // It must never go UP. An increment here is fail_worker_intent_outbox
+    // with extra steps, and `+ 1` is the one-character version of that bug.
+    expect(body).not.toMatch(/attempt_count\s*\+\s*1/);
+    // ...and the terminal branch keeps the attempt as evidence, so the
+    // assignment is a CASE on the same 48h predicate as status/next_attempt_at
+    // rather than an unconditional rewind.
+    expect(body).toMatch(/attempt_count\s*=\s*CASE/);
+    expect(body.match(/interval '48 hours'/g) ?? []).toHaveLength(3);
 
     // Both lease columns nulled on both branches (043's CHECK).
     expect(body).toContain('worker_intent_lease_token = NULL');
