@@ -14,9 +14,18 @@
  * `normalizeProfession` (via `normalizeTrade`) maps it to exactly the
  * `trade_questions.profession_key` migration 012 seeds. For a custom trade the
  * caller passes the RAW typed profession, exactly as before.
+ *
+ * Sprint 24 L6: the key is now derived through `professionKeyForTrade`, so
+ * every spelling and language of one trade shares ONE question set —
+ * "soldador", "Soldadura" and "welder" all land on 'welder' instead of
+ * generating three separate sets. Standard trade keys still pass through
+ * untouched (that function short-circuits them without a DB round trip), which
+ * is what keeps the five seeded 012 rows — `'painting'`, not the 060 alias
+ * row's `'painter'` — reachable.
  */
 
 import type { PoolClient } from 'pg';
+import { professionKeyForTrade } from '../../lib/trade-canonical';
 import { V2_FALLBACK_TRUST_QUESTIONS } from '../lib/interactive-templates';
 import type { OnboardingV2Deps, OnboardingV2Session } from './types';
 import {
@@ -50,7 +59,11 @@ export async function seedTrustQuestions(
   // unexpected way must still fall back rather than fail the run.
   let generated: BilingualQuestion[] | null = null;
   try {
-    const result = await deps.adapters.trustQuestions.generate(client, professionRaw);
+    // L6: canonical key, so spellings/languages of one trade share a question
+    // set. `professionKeyForTrade` never throws — a `trade_aliases` miss or
+    // outage degrades to `normalizeProfession(professionRaw)`, the pre-L6 key.
+    const professionKey = await professionKeyForTrade(client, professionRaw);
+    const result = await deps.adapters.trustQuestions.generate(client, professionKey);
     if (Array.isArray(result) && result.length === 3) {
       generated = result.map((q) => ({ en: q.q_en, es: q.q_es }));
     }
