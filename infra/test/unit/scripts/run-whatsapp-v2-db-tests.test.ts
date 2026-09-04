@@ -147,6 +147,21 @@ const SUITE_DEFER_093 = 'test/unit/db/worker-intent-defer-093.integration.test.t
 // a suite holding fixture rows open.
 const SUITE_BACKFILLS_094 = 'test/unit/db/sprint24-data-backfills-094.integration.test.ts';
 
+// Sprint 24 hotfix: migration 095's hire-acknowledgement columns. Here, and
+// LAST, for three facts a mocked pool cannot hold: that a backfill on
+// job_applications (RLS ENABLE + FORCE, every policy GUC-keyed) rewrites ZERO
+// rows unless the file un-forces first -- and would report success; that the
+// 095 column grant lets jale_whatsapp write hired_seen_at/hired_ack_at while
+// hired_at is a 42501 rather than a silently dropped column; and that one
+// worker acknowledging another's hire is a zero-row policy result, not an
+// error. Both shipped statements (the employer's status UPDATE and the two
+// hire-ack variants) are extracted from their own .ts sources and executed
+// verbatim against the real policies, so a re-typed copy that drifts fails.
+// LAST because re-applying 095 takes ACCESS EXCLUSIVE on job_applications and
+// stamps every hired row present, so it must not interleave with a suite
+// holding application fixtures open.
+const SUITE_HIRE_ACK_095 = 'test/unit/db/application-hire-ack-095.integration.test.ts';
+
 // The guard must fail closed regardless of the ambient environment. The final
 // verification battery exports JALE_TEST_DATABASE_URL to run the guarded
 // command against the real testbed, and jest inherits process.env — so the
@@ -178,6 +193,7 @@ describe('test:whatsapp-v2-db fail-closed URL guard', () => {
       SUITE_STAGE_NOTIFY,
       SUITE_DEFER_093,
       SUITE_BACKFILLS_094,
+      SUITE_HIRE_ACK_095,
     ]);
     // The deregistered migration-052 suite must be gone from the script
     // entirely -- including from any tombstone comment, which this file's own
