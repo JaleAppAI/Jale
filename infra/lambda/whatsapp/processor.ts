@@ -1320,36 +1320,27 @@ async function routeReadyWorkerCommands(
     return null;
   }
 
-  // Sprint 24 C4: the two machine-generated codes a worker can be holding --
-  // a `JALE-XXXXXXXX` job code from a referral link, and the `app-<uuid>`
-  // reference the application-stage notifications print
-  // (lib/application-stage-notify.ts). Each was recognised ONLY somewhere
-  // else -- the job code pre-auth (`onboarding/steps/start.ts`), the
-  // application reference only as a button payload -- so an onboarded worker
-  // who TYPED either one fell all the way through to `idle_help`. Users
-  // reported exactly that.
+  // Sprint 24 C4: a typed `app-<uuid>` reference -- the one the
+  // application-stage notifications print (lib/application-stage-notify.ts).
+  // It used to be recognised only as a BUTTON payload, so a worker who typed
+  // or quoted it fell all the way through to `idle_help`.
   //
   // Placed here deliberately:
-  //   - AFTER the exact-match help/support/profile commands, which no code
-  //     can collide with;
+  //   - AFTER the exact-match help/support/profile commands, which the
+  //     reference cannot collide with;
   //   - BEFORE `parseEmployerConversationTextAction` / `tryConversationRelay`,
-  //     so a worker with a focused employer thread never RELAYS a machine
-  //     code into an employer's chat;
-  //   - both parsers are pure and reject ordinary prose, so a message
-  //     carrying no code issues no extra query and every route below behaves
-  //     exactly as it did before.
+  //     so this never RELAYS a machine reference into an employer's chat. Safe
+  //     to put ahead of the relay precisely because the grammar is a full
+  //     `app-` + UUID: ordinary prose cannot false-positive into it (unlike
+  //     the job code below -- see the note there);
+  //   - the parser is pure, so a message carrying no reference issues no
+  //     extra query and every route below behaves exactly as it did before.
   //
   // The `application:(start|later):app-<uuid>` BUTTON payload never arrives
   // here: `routeMessage` consumes it (including the Body-recovered form)
   // before this function is called, and `parseApplicationReference` excludes
   // the payload shape anyway -- `later` must not dispatch like `start`.
   if (conv.user_id) {
-    const typedJobCode = parseApplyToken(msg.body);
-    if (typedJobCode) {
-      await handleTypedJobCode(client, conv, msg, typedJobCode);
-      return conv.user_id;
-    }
-
     const typedApplicationRef = parseApplicationReference(msg.body);
     if (typedApplicationRef) {
       await handleTypedApplicationReference(client, conv, msg, typedApplicationRef);
@@ -1365,6 +1356,29 @@ async function routeReadyWorkerCommands(
   const relayedWorkerId = await tryConversationRelay(client, conv, msg, routerDeps);
   if (relayedWorkerId) {
     return relayedWorkerId;
+  }
+
+  // Sprint 24 C4: a typed `JALE-XXXXXXXX` job code from a referral link.
+  // Recognised before only in pre-auth (`onboarding/steps/start.ts`), so an
+  // already-onboarded worker who typed one got `idle_help`.
+  //
+  // Deliberately placed BELOW the employer relay, unlike the application
+  // reference above. `parseApplyToken` (lib/referral-codes.ts, owned
+  // elsewhere) scans for `JALE` + optional separators + any 8 Crockford
+  // characters with no trailing boundary, so ordinary prose CAN trip it --
+  // "Jale trabajos", "Jale necesito ..." all parse. Intercepting here for a
+  // worker who has an open employer thread would swallow that message and
+  // the employer would never see it; a real job code, by contrast, arrives
+  // from a referral link and is almost never typed mid-employer-chat. So the
+  // relay keeps priority and the code is answered only once no thread wants
+  // the message. It still runs before `handleIdle`, which is the fallthrough
+  // this exists to replace.
+  if (conv.user_id) {
+    const typedJobCode = parseApplyToken(msg.body);
+    if (typedJobCode) {
+      await handleTypedJobCode(client, conv, msg, typedJobCode);
+      return conv.user_id;
+    }
   }
 
   // The v2 branch above always forces the conversation into 'idle' before

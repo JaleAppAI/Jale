@@ -169,6 +169,7 @@ const mockFetch = jest.fn();
 
 import { handler } from '../../../../lambda/whatsapp/processor';
 import { t } from '../../../../lambda/whatsapp/lib/templates';
+import { parseApplyToken } from '../../../../lambda/lib/referral-codes';
 import { fillMessage, fieldQuestion, docPrompt } from '../../../../lambda/whatsapp/lib/application-fill-prompts';
 import { _clearCategoryRenderersForTests } from '../../../../lambda/whatsapp/lib/worker-delivery-gateway';
 import {
@@ -2618,6 +2619,17 @@ describe('Processor Lambda', () => {
       describe('typed codes in the authenticated router', () => {
         const APP_ID = 'aaaaaaaa-0000-4000-8000-00000000000a';
 
+        // The JALE- branch sits BELOW `tryConversationRelay` (see the note in
+        // processor.ts), so a typed job code first walks the relay's own
+        // "does any employer thread want this?" probe.
+        function mockRelayNoOpenThreads(): void {
+          mockQuery
+            .mockResolvedValueOnce({ rowCount: 1, rows: [{ tos_version: '1.0' }] }) // relay: workerHasAcceptedTos
+            .mockResolvedValueOnce(ok()) // relay: setInternalUserRlsContext
+            .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // relay: accepted open threads -- none
+            .mockResolvedValueOnce({ rowCount: 0, rows: [] }); // relay: unaccepted open threads -- none
+        }
+
         function referredJobRow(overrides: Record<string, unknown> = {}) {
           return {
             id: 'job-referred',
@@ -2635,6 +2647,7 @@ describe('Processor Lambda', () => {
 
         it('a typed JALE- code answers with that job, exactly like the info action, and arms the number the reply names', async () => {
           mockConvTurn('SM-code-info');
+          mockRelayNoOpenThreads();
           mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [{ job_id: 'job-referred' }] }); // apply-token -> job
           mockStateContextUpdate(); // recent_jobs arm
           mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [referredJobRow()] }); // handleJobAction's job load
@@ -2678,6 +2691,7 @@ describe('Processor Lambda', () => {
           // A worker who just listed jobs has 1..N in their head. Prepending
           // or replacing would silently change what "2 me interesa" means.
           mockConvTurn('SM-code-append', { recent_jobs: ['job-a', 'job-b'] });
+          mockRelayNoOpenThreads();
           mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [{ job_id: 'job-referred' }] });
           mockStateContextUpdate();
           mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [referredJobRow()] });
@@ -2701,6 +2715,7 @@ describe('Processor Lambda', () => {
 
         it('a JALE- code that resolves to nothing says so and names the JOBS keyword', async () => {
           mockConvTurn('SM-code-unknown');
+          mockRelayNoOpenThreads();
           mockQuery.mockResolvedValueOnce({ rowCount: 0, rows: [] }); // token -> nothing
           mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox
           mockBoundWorkerTail();
@@ -2719,6 +2734,64 @@ describe('Processor Lambda', () => {
           // No job was looked up and nothing was armed.
           expect(countQueryByPattern(/FROM jobs\s+WHERE id = \$1/i)).toBe(0);
           expect(stateContextUpdates().some((sc) => Array.isArray(sc.recent_jobs))).toBe(false);
+        });
+
+        it('a focused employer thread still wins over prose that trips the loose token parser', async () => {
+          // `parseApplyToken` requires the JALE prefix but no trailing
+          // boundary, so any eight Crockford-mappable characters after the
+          // brand name parse as a token -- "Jale trabajos" among them. If the
+          // job-code branch ran before `tryConversationRelay`, a worker
+          // writing that to an employer would get "job code not found" and
+          // the EMPLOYER WOULD NEVER SEE THE MESSAGE. It runs after the relay
+          // for exactly this reason.
+          const activeConversationId = '22222222-3333-4444-5555-666666666666';
+          // Guard against a vacuous pass: this body really does parse.
+          expect(parseApplyToken('Jale trabajos')).not.toBeNull();
+
+          mockQuery
+            .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+            .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-code-relay' }] }) // claim
+            .mockResolvedValueOnce({
+              rowCount: 1,
+              rows: [convRow({
+                conversation_state: 'idle',
+                user_id: 'user-1',
+                language: 'es',
+                focused_job_conversation_id: activeConversationId,
+                state_context: {},
+              })],
+            })
+            .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
+            .mockResolvedValueOnce({ rowCount: 1, rows: [{ tos_version: '1.0' }] }) // relay: tos gate
+            .mockResolvedValueOnce(ok()) // relay: setInternalUserRlsContext
+            .mockResolvedValueOnce({
+              rowCount: 1,
+              rows: [{ id: activeConversationId, application_id: 'app-1' }],
+            }) // relay: focused thread lookup
+            .mockResolvedValueOnce(ok()) // relay: INSERT worker message
+            .mockResolvedValueOnce(ok()) // relay: UPDATE thread timestamps
+            .mockResolvedValueOnce(ok()) // relay: UPDATE application status
+            .mockResolvedValueOnce({ rowCount: 0, rows: [] }); // relay: no waiting employer messages
+          mockBoundWorkerTail();
+
+          await handler(
+            makeSqsEvent({
+              MessageSid: 'SM-code-relay',
+              From: 'whatsapp:+15125551234',
+              Body: 'Jale trabajos',
+            }),
+            {} as any,
+            {} as any,
+          );
+
+          expect(findQueryByPattern(/INSERT INTO job_conversation_messages/i)).toEqual([
+            activeConversationId,
+            'Jale trabajos',
+            'SM-code-relay',
+            'whatsapp:+15125551234',
+          ]);
+          expect(outboxBodies()).not.toContain(t('job_code_not_found', 'es'));
+          expect(countQueryByPattern(/FROM referral_apply_tokens/i)).toBe(0);
         });
 
         it('a typed app- reference for a details-requested application dispatches the SAME path as the Start button', async () => {
