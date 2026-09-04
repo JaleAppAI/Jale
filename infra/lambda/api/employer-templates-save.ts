@@ -3,7 +3,7 @@ import { getDbPool, setRlsContext } from '../lib/db';
 import { resolveEntitlements } from '../lib/entitlements';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs, parseRequiredFields } from '../lib/job-fields';
-import { parseCityFields } from '../lib/city-fields';
+import { parseCityFields, parseCityFromLocation } from '../lib/city-fields';
 import { parsePreApplicationPrompts } from '../lib/pre-application-prompts';
 import { checkCompliance } from '../legal/check-compliance';
 
@@ -47,6 +47,24 @@ function validateTemplatePayload(raw: Record<string, unknown>):
   const cityFields = parseCityFields(raw);
   if (!cityFields.ok) return { ok: false, status: 400, error: cityFields.error };
 
+  // Mirrors employer-jobs-update.ts:302. A template saved WITHOUT the triple
+  // -- the location picker degraded to free text, or the row predates the
+  // triple entirely -- used to store location-only forever, so every job
+  // created from it landed with `city_key = null` and was invisible to every
+  // city filter and feed. Recovering the identity from the location TEXT is
+  // the same repair the update handler already does for jobs.
+  //
+  // All-or-none by construction: `parseCityFromLocation` returns a complete,
+  // internally consistent triple (its key comes from `slugCityKey`, the same
+  // rule 061 backfilled with) or null -- it never guesses a partial one,
+  // because a wrong city surfaces the job in the wrong feed. So the `?? {}`
+  // spreads three keys or none.
+  //
+  // No `cityCleared` branch to mirror: that guard exists for the jobs PATCH's
+  // SEO clear channel (`city: null` must not resurrect as a matching key), and
+  // a template payload has no such channel.
+  const cityTriple = cityFields.value ?? parseCityFromLocation(location.trim());
+
   // Sprint 23 (091) stage-1 questions, whitelisted here so a template that
   // carries custom questions still carries them after a round trip. Same
   // strict parser and same single error code employer-jobs-create.ts:137
@@ -88,7 +106,7 @@ function validateTemplatePayload(raw: Record<string, unknown>):
       : {}),
     ...jobFields.value,
     ...(coordinates.value ?? {}),
-    ...(cityFields.value ?? {}),
+    ...(cityTriple ?? {}),
   };
   delete value.start_date; // templates never carry a date
   return { ok: true, value };

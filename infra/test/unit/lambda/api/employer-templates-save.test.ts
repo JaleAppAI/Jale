@@ -405,4 +405,93 @@ describe('employer-templates-save', () => {
     expect(JSON.parse(res.body).error).toBe('invalid_pre_application_prompts');
     expect(mockQuery).not.toHaveBeenCalledWith(expect.stringContaining('INSERT INTO employer_job_templates'), expect.anything());
   });
+  // ---------------------------------------------------------------------------
+  // Sprint 24 follow-up -- "template -> job location not selected".
+  //
+  // employer-jobs-update.ts:302 recovers the city identity from the location
+  // TEXT when no triple is sent (`cityFields.value ?? parseCityFromLocation`).
+  // This handler did not, so a template saved from a degraded picker (or any
+  // legacy template) stored location-only forever and every job created from
+  // it landed with city_key = null -- invisible to every city filter and feed.
+  // ---------------------------------------------------------------------------
+
+  function storedPayload() {
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO employer_job_templates'));
+    expect(insertCall).toBeDefined();
+    return JSON.parse(insertCall[1][2]);
+  }
+
+  it('derives the city triple from a parseable location when the payload carries no triple', async () => {
+    const res = await handler(makeEvent({
+      payload: { ...BASE_PAYLOAD, location: 'Austin, TX' },
+    }));
+
+    expect(res.statusCode).toBe(201);
+    // Same slug rule as slugCityKey / migration 061, so a job seeded from this
+    // template keys identically to one posted directly.
+    expect(storedPayload()).toMatchObject({
+      city_key: 'austin-tx',
+      city: 'Austin',
+      state: 'TX',
+    });
+  });
+
+  it('accepts the ZIP-suffixed form the SQL backfill also matches', async () => {
+    const res = await handler(makeEvent({
+      payload: { ...BASE_PAYLOAD, location: 'El Paso, TX 79901' },
+    }));
+
+    expect(res.statusCode).toBe(201);
+    expect(storedPayload()).toMatchObject({ city_key: 'el-paso-tx', city: 'El Paso', state: 'TX' });
+  });
+
+  it('stores NO triple at all when the location text cannot be parsed', async () => {
+    // Never guess: a wrong city surfaces the job in the wrong feed. This is
+    // the pre-fix behaviour, preserved exactly for free-text locations.
+    const res = await handler(makeEvent({
+      payload: { ...BASE_PAYLOAD, location: 'Remote / travel' },
+    }));
+
+    expect(res.statusCode).toBe(201);
+    const parsed = storedPayload();
+    expect(parsed).not.toHaveProperty('city_key');
+    expect(parsed).not.toHaveProperty('city');
+    expect(parsed).not.toHaveProperty('state');
+    expect(parsed.location).toBe('Remote / travel');
+  });
+
+  it('lets an EXPLICIT triple win over the location text', async () => {
+    // The picker is the authority when it worked: an employer who selected
+    // Dallas for a job whose location line reads "Austin, TX" gets Dallas.
+    const res = await handler(makeEvent({
+      payload: {
+        ...BASE_PAYLOAD,
+        location: 'Austin, TX',
+        city_key: 'dallas-tx',
+        city: 'Dallas',
+        state: 'TX',
+      },
+    }));
+
+    expect(res.statusCode).toBe(201);
+    expect(storedPayload()).toMatchObject({ city_key: 'dallas-tx', city: 'Dallas', state: 'TX' });
+  });
+
+  it('derives the triple on the UPDATE path too, not just create', async () => {
+    mockQuery.mockImplementation((sql: string) => {
+      if (sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'emp-1' }] });
+      if (sql.includes('SELECT id FROM employer_job_templates')) return Promise.resolve({ rowCount: 0, rows: [] });
+      if (sql.includes('UPDATE employer_job_templates')) return Promise.resolve({ rowCount: 1, rows: [TEMPLATE_ROW] });
+      return Promise.resolve({});
+    });
+
+    const res = await handler(makeEvent({
+      id: '3f6d3a2e-8c4b-4a1e-9d2f-1b5e6c7a8d90',
+      payload: { ...BASE_PAYLOAD, location: 'Austin, TX' },
+    }));
+
+    expect(res.statusCode).toBe(200);
+    const updateCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('UPDATE employer_job_templates'));
+    expect(JSON.parse(updateCall[1][1])).toMatchObject({ city_key: 'austin-tx', city: 'Austin', state: 'TX' });
+  });
 });
