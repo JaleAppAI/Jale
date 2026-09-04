@@ -1572,6 +1572,65 @@ async function openChangeMenu(
 }
 
 /**
+ * F7: the `details_completed_at` lock, READ the same way `clearFieldAnswer`
+ * (application-requirements.ts) ENFORCES it in its own WHERE -- projected to
+ * the one column, under the GUC `deps.setRls` has already set.
+ *
+ * Needed only by the DOC branch of the CAMBIAR menu. The field branch gets
+ * this for free: its UPDATE carries `AND details_completed_at IS NULL`, so a
+ * completed application makes it a zero-row no-op it can detect. The doc
+ * branch's `DELETE FROM worker_documents` has no such guard and no such
+ * signal -- it would happily remove the job-scoped copy of a document the
+ * employer has already been sent, and report it as a correction.
+ *
+ * A row that is NOT VISIBLE reads as locked. Fail closed on purpose: not
+ * visible means deleted, or belonging to another worker under this GUC, and
+ * neither is something to delete documents for.
+ */
+async function applicationIsLocked(
+  client: PoolClient,
+  applicationId: string,
+  workerId: string,
+): Promise<boolean> {
+  const res = await client.query<{ details_completed_at: string | null }>(
+    `SELECT details_completed_at FROM job_applications WHERE id = $1 AND worker_id = $2`,
+    [applicationId, workerId],
+  );
+  const row = res.rows[0];
+  if (!row) return true;
+  return Boolean(row.details_completed_at);
+}
+
+/**
+ * F7: the ONE answer both CAMBIAR branches give when the application turned
+ * out to be already sent -- the worker asked to FIX something, so telling
+ * them their details went out (`promptNextStep`'s completion copy) reported
+ * a raced no-op as a success and re-sent that copy for an application it had
+ * already been sent for. Says what actually happened and points at the one
+ * place a sent application can still be read.
+ *
+ * Callers apply `resolveChangeMenu`'s `patch` first: that takes away
+ * everything which could still act on this application (the menu, the LISTO
+ * gate, a pending candidate). The lane itself is deliberately NOT scrubbed
+ * -- the next turn re-derives `complete` and the ordinary completion arm
+ * disarms it with its own scrub, so this does not fork that one exit.
+ */
+async function sendChangeLocked(
+  client: PoolClient,
+  ctx: FillContext,
+  msg: IncomingMessage,
+  deps: FillDeps,
+  applicationId: string,
+  logKey: string,
+): Promise<FillResult> {
+  await deps.queueReplyText(client, msg.messageSid, msg.from, fillMessage('change_locked', ctx.lang, {
+    url: workerApplicationUrl(ctx.lang, applicationId),
+  }));
+  logStep(logKey, 'change_locked');
+  return { handled: true };
+}
+
+/**
  * Resolves a turn while the numbered menu is armed.
  *
  * ONE-SHOT, on purpose. Only a bare 1-2 digit body is treated as a pick;
@@ -1580,6 +1639,13 @@ async function openChangeMenu(
  * hijack a later digit (several fields -- work_authorization, education,
  * the entry loops -- legitimately answer with a digit). An out-of-range
  * digit re-sends the list once, then gives up the same way.
+ *
+ * EITHER branch can lose the race with the web stage-2 door: the worker may
+ * have completed this same application there while the menu was armed. The
+ * field branch detects it from `clearFieldAnswer`'s own zero-row refusal;
+ * the doc branch has to READ the lock first (`applicationIsLocked`) because
+ * its DELETE has no such guard. Both then answer `change_locked` and change
+ * nothing -- see `sendChangeLocked`.
  *
  * On a real pick both `fill_change_menu` and `fill_confirm` are cleared:
  * the worker is leaving the gate to fix something, and whatever they answer
@@ -1647,23 +1713,8 @@ async function resolveChangeMenu(
     if (!cleared) {
       // F7: the ONLY way the engine refuses is its `details_completed_at IS
       // NULL` guard -- the same application was completed elsewhere (the web
-      // stage-2 door) while this menu was armed. Falling through to
-      // `promptNextStep` here answered a worker who had just asked to FIX
-      // something with the completion copy ("we sent your details"), i.e.
-      // reported a raced no-op as a success and sent that copy a second time
-      // for the same application. Say what actually happened instead, and
-      // point at the one place a sent application can still be read.
-      //
-      // The lane is deliberately NOT scrubbed: `patch` above already took
-      // away everything that could act on this application again (the menu,
-      // the LISTO gate, a pending candidate), and the next turn re-derives
-      // `complete` so the ordinary completion arm disarms the lane with its
-      // own scrub. Doing it here would fork that one exit.
-      await deps.queueReplyText(client, msg.messageSid, msg.from, fillMessage('change_locked', ctx.lang, {
-        url: workerApplicationUrl(ctx.lang, applicationId),
-      }));
-      logStep(item.key, 'change_locked');
-      return { handled: true };
+      // stage-2 door) while this menu was armed. See `sendChangeLocked`.
+      return sendChangeLocked(client, ctx, msg, deps, applicationId, item.key);
     }
     // Re-derived, not asked directly: with the key gone the engine's own
     // walk names it as the next step (or names an earlier gap first, which
@@ -1672,7 +1723,21 @@ async function resolveChangeMenu(
     return { handled: true };
   }
 
-  // A doc: drop THIS JOB's copy only. The vault row (job_id IS NULL) is the
+  // F7, the doc branch's half of the same race. Unlike `clearFieldAnswer`,
+  // the DELETE below carries NO `details_completed_at IS NULL` guard of its
+  // own -- so without this read a pick made after the application was
+  // completed on the web MUTATED a submitted application (it removed the
+  // job-scoped copy of a document the employer had already been sent) and
+  // then asked for a replacement file that could never be attached. The
+  // DELETE, the `fill_doc_replace` arm and the doc prompt below are reached
+  // only for an OPEN application; a locked one gets the SAME answer the
+  // field branch gives.
+  if (await applicationIsLocked(client, applicationId, ctx.workerId)) {
+    await deps.updateStateContext(client, ctx.conversationId, patch);
+    return sendChangeLocked(client, ctx, msg, deps, applicationId, item.docType);
+  }
+
+  // Drop THIS JOB's copy only. The vault row (job_id IS NULL) is the
   // worker's own file and is never touched -- decision D3 is "let them
   // replace one", not "delete their document". Bound job_id is what
   // guarantees that.

@@ -160,6 +160,11 @@ const SQL = {
    * apart from `mergeUpdate` by the jsonb `-` operator; no assertion may
    * match on the `UPDATE job_applications` prefix alone. */
   clearAnswer: /UPDATE job_applications\s+SET application_answers = application_answers - \$1::text/,
+  /** application-fill.ts `applicationIsLocked` -- the DOC branch's read of
+   * the same `details_completed_at` lock `clearFieldAnswer` enforces in its
+   * own WHERE. A projected single column, so it can never be confused with
+   * the snapshot load or with `detailsComplete`'s UPDATE. */
+  lockRead: /SELECT details_completed_at FROM job_applications WHERE id = \$1 AND worker_id = \$2/,
   /** application-requirements.ts:924 markDetailsCompleteIfDone. NOTE: this
    * and `mergeUpdate` are BOTH `UPDATE job_applications`, so no assertion may
    * match on that prefix alone any more. */
@@ -361,6 +366,14 @@ function installDbFake(): void {
     }
     if (SQL.defaultsSelect.test(text)) {
       return fake.defaults === null ? ok() : ok([{ answers: fake.defaults }]);
+    }
+    if (SQL.lockRead.test(text)) {
+      const fixture = fake.apps.get(String(args[0]));
+      // Mirrors the real statement's own WHERE: a row belonging to another
+      // worker (or gone) is simply not visible, which the lane must read as
+      // "do not touch this application" rather than "unlocked".
+      if (!fixture?.row || fixture.row.worker_id !== String(args[1])) return ok();
+      return ok([{ details_completed_at: fixture.row.details_completed_at }]);
     }
     if (SQL.seedAnswersSelect.test(text)) {
       const fixture = fake.apps.get(String(args[0]));
@@ -1600,6 +1613,72 @@ describe('handleFillMessage — CAMBIAR/CHANGE correction menu', () => {
     // the very next turn re-derives `complete` and the ordinary completion
     // arm disarms it then.
     expect(ctx.stateContext.fill_application_id).toBe(APPLICATION_ID);
+  });
+
+  // The DOC branch's half of the SAME race. `clearFieldAnswer` carries its
+  // own `details_completed_at IS NULL` guard, so the field branch could only
+  // ever no-op; the doc branch's `DELETE FROM worker_documents` has no such
+  // guard, so before this fix picking a document on an application that was
+  // completed on the web MUTATED a submitted application -- it removed the
+  // job-scoped copy of a document the employer had already been sent -- and
+  // then asked for a replacement file that could never be attached.
+  it('a DOC pick on an application completed meanwhile deletes nothing and says change_locked', async () => {
+    const ctx = reusedCtx(
+      { fields: [], docs: ['work_auth_doc'] },
+      {
+        required_docs: ['work_auth_doc'],
+        details_completed_at: '2026-09-03T00:00:00.000Z',
+      },
+      { haveDocs: ['work_auth_doc'], vaultDocs: ['work_auth_doc'] },
+    );
+    const deps = makeDeps(ctx);
+    await handleFillMessage(client, ctx, incomingMsg('CAMBIAR'), deps);
+
+    const res = await handleFillMessage(client, ctx, incomingMsg('1'), deps);
+
+    expect(res).toEqual({ handled: true });
+    // THE defect: not one row of a submitted application was touched.
+    expect(hasCall(SQL.docDelete)).toBe(false);
+    expect(fake.apps.get(APPLICATION_ID)!.haveDocs).toEqual(['work_auth_doc']);
+    expect(fake.apps.get(APPLICATION_ID)!.vaultDocs).toEqual(['work_auth_doc']);
+    // The same answer the field branch gives, and never a doc prompt for a
+    // file that can no longer be attached.
+    expect(lastReply(deps)).toBe(fillMessage('change_locked', 'en', {
+      url: workerApplicationUrl('en', APPLICATION_ID),
+    }));
+    expect(allReplies(deps)).not.toContain(docPrompt('work_auth_doc', 'en'));
+    expect(allReplies(deps)).not.toContain(fillMessage('completion', 'en', { company: COMPANY }));
+    expect(hasCall(SQL.detailsComplete)).toBe(false);
+    // No replacement slot is armed, so the worker's next photo is not filed
+    // against a sent application either.
+    expect(
+      (deps.updateStateContext as jest.Mock).mock.calls
+        .every(([, , patch]: any[]) => !('fill_doc_replace' in patch)),
+    ).toBe(true);
+    expect(ctx.stateContext.fill_doc_replace).toBeUndefined();
+    // The one-shot menu and both gates are gone, exactly as on the field
+    // branch, so no later digit or LISTO can act on this application.
+    expect(ctx.stateContext.fill_change_menu).toBeNull();
+    expect(ctx.stateContext.fill_confirm).toBeNull();
+    expect(ctx.stateContext.fill_pending).toBeNull();
+    // The lock read runs under the GUC, like every other statement here:
+    // without it the row is invisible and an OPEN application would read as
+    // locked (fail-closed, but wrong).
+    expect((deps.setRls as jest.Mock).mock.invocationCallOrder[0])
+      .toBeLessThan(queryOrder(SQL.lockRead));
+  });
+
+  it('a DOC pick whose application row is not visible deletes nothing either (fail closed)', async () => {
+    const ctx = reusedCtx({ fields: [], docs: ['work_auth_doc'] }, { required_docs: ['work_auth_doc'] });
+    setAppMissing();
+    const deps = makeDeps(ctx);
+    await handleFillMessage(client, ctx, incomingMsg('CAMBIAR'), deps);
+
+    expect(await handleFillMessage(client, ctx, incomingMsg('1'), deps)).toEqual({ handled: true });
+    expect(hasCall(SQL.docDelete)).toBe(false);
+    expect(lastReply(deps)).toBe(fillMessage('change_locked', 'en', {
+      url: workerApplicationUrl('en', APPLICATION_ID),
+    }));
   });
 
   it('picking from a confirm state leaves the gate and lets the re-answer complete normally', async () => {
