@@ -67,7 +67,14 @@ export type FillMessageKey =
   | 'confirm_all_prefilled'
   | 'change_menu_header'
   | 'change_menu_invalid'
-  | 'change_nothing';
+  | 'change_nothing'
+  // F7 (sprint 24): the menu's raced-clear answer. `clearFieldAnswer`
+  // (application-requirements.ts) refuses once `details_completed_at` is
+  // set, which happens when the worker finished the SAME application on the
+  // web while this lane still had a CAMBIAR menu armed. Without its own key
+  // that refusal fell into the completion copy -- telling a worker who just
+  // asked to FIX something that their details went out.
+  | 'change_locked';
 
 interface Bilingual {
   en: string;
@@ -405,6 +412,13 @@ const FILL_MESSAGES: Record<FillMessageKey, Bilingual> = {
   change_nothing: {
     en: 'We did not use anything from your profile on this application, so there is nothing to fix here.',
     es: 'No usamos ningun dato de tu perfil en esta solicitud, asi que no hay nada que corregir aqui.',
+  },
+  // `{{url}}` is the worker's OWN stage-2 page for this application
+  // (`workerApplicationUrl`), the same link the `web_handoff` note uses --
+  // the only place a sent application can still be reviewed.
+  change_locked: {
+    en: 'This application was already sent and can no longer be edited here. You can review it at {{url}}.',
+    es: 'Esta solicitud ya se envio y no se puede editar aqui. Puedes revisarla en {{url}}.',
   },
 };
 

@@ -377,7 +377,13 @@ export interface FillReusedState {
 
 /** The all-pre-filled gate. `repeated` records that the prompt has already
  * been re-sent once; the state is then KEPT but silent, so a LISTO arriving
- * several turns later still sends the application. */
+ * several turns later still sends the application.
+ *
+ * F1: "silent" is bounded by the 30s prompt cooldown, not absolute -- while
+ * this key is set, `sendConsentGatePrompt` refuses every completion in the
+ * module (the processor's dispatch tail included) and re-sends the confirm
+ * instead. It is also re-derived at step (10b): a gate that no longer
+ * matches the job's requirements is dropped rather than honoured. */
 export interface FillConfirmState {
   at: number;
   repeated?: boolean;
@@ -1126,6 +1132,93 @@ async function sendExitPrompt(
   logStep(reason, 'prompted');
 }
 
+/**
+ * F1 (sprint 24, BLOCKER) -- THE CONSENT CHOKE POINT.
+ *
+ * `sendNextStepPrompt` is the ONE function every completion goes through:
+ * the fill lane's own turns, `armFill`, `resolveChangeMenu`, AND the
+ * processor's dispatch tail (`maybeRepromptFill` -> `promptNextStep`). Until
+ * this guard existed, `fill_confirm` was honoured only by step (10b) -- the
+ * LAST branch of `handleFillMessage` -- so every earlier `{handled:false}`
+ * return leaked the turn to that tail and completed the application:
+ *
+ *   - a media turn while the step reads `complete` (`handleFillMediaTurn`),
+ *   - an unknown button/interactive payload (step 1),
+ *   - the command escapes: ayuda / perfil / chats / cerrar / trabajos (7-8),
+ *   - a typed job action, e.g. "1 me interesa" (9),
+ *   - a picker digit while `pending_picker` is set (4),
+ *   - the SECOND unrecognised text -- `resolveFillConfirm` deliberately
+ *     stops re-prompting after one try and returns `{handled:false}`.
+ *
+ * That last one is the 2026-09-04 incident restored verbatim: typing "no
+ * entiendo" twice submitted an application the worker never agreed to send.
+ *
+ * WHAT THE WORKER SEES (binding):
+ *   - LISTO/DONE still completes. `resolveFillConfirm` clears `fill_confirm`
+ *     BEFORE it calls `promptNextStep`, so this guard sees an empty gate --
+ *     that ordering is load-bearing and is pinned by a test.
+ *   - Anything else, from any branch: at most ONE `confirm_all_prefilled`
+ *     per `REPROMPT_COOLDOWN_MS` (30s) window, because this re-prompt stamps
+ *     the same `fill_last_prompt_at` the tail's cooldown reads. "Quiet"
+ *     therefore means "no more messages for 30s" -- it NEVER means
+ *     "complete".
+ *   - The `web_handoff` note rides along exactly as it does on `armFill`
+ *     (f)'s first copy, so the worker keeps the link to the one thing this
+ *     lane cannot collect.
+ *
+ * The same shape covers `fill_doc_replace`: the worker asked to swap a
+ * document, so the job-scoped row was deleted -- but the VAULT row was not
+ * (decision D3), and the very next synced load copies it back, making the
+ * step read `complete` while the replacement file is still owed. Completing
+ * there would send the OLD document. `handleFillMediaTurn` clears the slot
+ * BEFORE its own `promptNextStep` call, which is what keeps the replacement
+ * upload able to complete rather than wedging the application.
+ *
+ * Returns true when it consumed the completion. `fill_confirm` is checked
+ * FIRST -- consent outranks a document correction. (`resolveChangeMenu`
+ * clears `fill_confirm` whenever it arms `fill_doc_replace`, so the two
+ * cannot actually be armed together today; the precedence is stated rather
+ * than left to whichever branch happens to come first.)
+ */
+async function sendConsentGatePrompt(
+  client: PoolClient,
+  ctx: FillContext,
+  applicationId: string,
+  inboundSid: string,
+  from: string,
+  deps: FillDeps,
+  uncollectable: string[],
+  leadIn?: string,
+): Promise<boolean> {
+  const gate = ctx.stateContext.fill_confirm as FillConfirmState | undefined;
+  if (gate) {
+    const webHandoffNote = uncollectable.length > 0
+      ? `\n\n${fillMessage('web_handoff', ctx.lang, {
+        doc: localizeDocList(uncollectable, ctx.lang),
+        url: workerApplicationUrl(ctx.lang, applicationId),
+      })}`
+      : '';
+    let body = `${fillMessage('confirm_all_prefilled', ctx.lang)}${webHandoffNote}`;
+    if (leadIn) body = `${leadIn}\n\n${body}`;
+    await deps.updateStateContext(client, ctx.conversationId, { fill_last_prompt_at: deps.nowMs() });
+    await deps.queueReplyText(client, inboundSid, from, body);
+    logStep('confirm', 'reprompt_tail');
+    return true;
+  }
+
+  const replaceDoc = asCollectableDocType(ctx.stateContext.fill_doc_replace);
+  if (replaceDoc) {
+    let body = docPrompt(replaceDoc, ctx.lang);
+    if (leadIn) body = `${leadIn}\n\n${body}`;
+    await deps.updateStateContext(client, ctx.conversationId, { fill_last_prompt_at: deps.nowMs() });
+    await deps.queueReplyText(client, inboundSid, from, body);
+    logStep(replaceDoc, 'doc_replace_reprompt_tail');
+    return true;
+  }
+
+  return false;
+}
+
 async function sendNextStepPrompt(
   client: PoolClient,
   ctx: FillContext,
@@ -1138,6 +1231,13 @@ async function sendNextStepPrompt(
   const { step, snapshot } = await computeFillStep(client, applicationId);
 
   if (step.kind === 'complete') {
+    // F1: an armed consent gate (or an owed document replacement) refuses
+    // the completion here, at the choke point -- see `sendConsentGatePrompt`.
+    if (await sendConsentGatePrompt(
+      client, ctx, applicationId, inboundSid, from, deps, step.uncollectable, leadIn,
+    )) {
+      return;
+    }
     return sendCompletionPrompt(
       client, ctx, applicationId, inboundSid, from, deps, step.uncollectable, snapshot, leadIn,
     );
@@ -1368,6 +1468,13 @@ export async function armFill(
  * to type LISTO three turns later, and clearing the gate would leave a
  * silent completion as the only remaining way out. CAMBIAR never reaches
  * here -- `handleFillMessage` consumes it earlier, before the escapes.
+ *
+ * F1: "quiet" means `{handled:false}`, which hands the turn to the
+ * processor's dispatch tail. That tail used to COMPLETE the application from
+ * there (the 2026-09-04 incident: two unrecognised replies were enough);
+ * `sendConsentGatePrompt` now makes it re-send THIS prompt instead,
+ * cooldown-limited to once per 30s by the `fill_last_prompt_at` stamp below.
+ * So the worst case is a repeated confirm, never a submission.
  */
 async function resolveFillConfirm(
   client: PoolClient,
@@ -1465,6 +1572,65 @@ async function openChangeMenu(
 }
 
 /**
+ * F7: the `details_completed_at` lock, READ the same way `clearFieldAnswer`
+ * (application-requirements.ts) ENFORCES it in its own WHERE -- projected to
+ * the one column, under the GUC `deps.setRls` has already set.
+ *
+ * Needed only by the DOC branch of the CAMBIAR menu. The field branch gets
+ * this for free: its UPDATE carries `AND details_completed_at IS NULL`, so a
+ * completed application makes it a zero-row no-op it can detect. The doc
+ * branch's `DELETE FROM worker_documents` has no such guard and no such
+ * signal -- it would happily remove the job-scoped copy of a document the
+ * employer has already been sent, and report it as a correction.
+ *
+ * A row that is NOT VISIBLE reads as locked. Fail closed on purpose: not
+ * visible means deleted, or belonging to another worker under this GUC, and
+ * neither is something to delete documents for.
+ */
+async function applicationIsLocked(
+  client: PoolClient,
+  applicationId: string,
+  workerId: string,
+): Promise<boolean> {
+  const res = await client.query<{ details_completed_at: string | null }>(
+    `SELECT details_completed_at FROM job_applications WHERE id = $1 AND worker_id = $2`,
+    [applicationId, workerId],
+  );
+  const row = res.rows[0];
+  if (!row) return true;
+  return Boolean(row.details_completed_at);
+}
+
+/**
+ * F7: the ONE answer both CAMBIAR branches give when the application turned
+ * out to be already sent -- the worker asked to FIX something, so telling
+ * them their details went out (`promptNextStep`'s completion copy) reported
+ * a raced no-op as a success and re-sent that copy for an application it had
+ * already been sent for. Says what actually happened and points at the one
+ * place a sent application can still be read.
+ *
+ * Callers apply `resolveChangeMenu`'s `patch` first: that takes away
+ * everything which could still act on this application (the menu, the LISTO
+ * gate, a pending candidate). The lane itself is deliberately NOT scrubbed
+ * -- the next turn re-derives `complete` and the ordinary completion arm
+ * disarms it with its own scrub, so this does not fork that one exit.
+ */
+async function sendChangeLocked(
+  client: PoolClient,
+  ctx: FillContext,
+  msg: IncomingMessage,
+  deps: FillDeps,
+  applicationId: string,
+  logKey: string,
+): Promise<FillResult> {
+  await deps.queueReplyText(client, msg.messageSid, msg.from, fillMessage('change_locked', ctx.lang, {
+    url: workerApplicationUrl(ctx.lang, applicationId),
+  }));
+  logStep(logKey, 'change_locked');
+  return { handled: true };
+}
+
+/**
  * Resolves a turn while the numbered menu is armed.
  *
  * ONE-SHOT, on purpose. Only a bare 1-2 digit body is treated as a pick;
@@ -1473,6 +1639,13 @@ async function openChangeMenu(
  * hijack a later digit (several fields -- work_authorization, education,
  * the entry loops -- legitimately answer with a digit). An out-of-range
  * digit re-sends the list once, then gives up the same way.
+ *
+ * EITHER branch can lose the race with the web stage-2 door: the worker may
+ * have completed this same application there while the menu was armed. The
+ * field branch detects it from `clearFieldAnswer`'s own zero-row refusal;
+ * the doc branch has to READ the lock first (`applicationIsLocked`) because
+ * its DELETE has no such guard. Both then answer `change_locked` and change
+ * nothing -- see `sendChangeLocked`.
  *
  * On a real pick both `fill_change_menu` and `fill_confirm` are cleared:
  * the worker is leaving the gate to fix something, and whatever they answer
@@ -1537,6 +1710,12 @@ async function resolveChangeMenu(
     await deps.updateStateContext(client, ctx.conversationId, patch);
     const cleared = await clearFieldAnswer(client, { applicationId, key: item.key });
     logStep(item.key, cleared ? 'change_cleared' : 'change_clear_noop');
+    if (!cleared) {
+      // F7: the ONLY way the engine refuses is its `details_completed_at IS
+      // NULL` guard -- the same application was completed elsewhere (the web
+      // stage-2 door) while this menu was armed. See `sendChangeLocked`.
+      return sendChangeLocked(client, ctx, msg, deps, applicationId, item.key);
+    }
     // Re-derived, not asked directly: with the key gone the engine's own
     // walk names it as the next step (or names an earlier gap first, which
     // is the right order anyway).
@@ -1544,7 +1723,21 @@ async function resolveChangeMenu(
     return { handled: true };
   }
 
-  // A doc: drop THIS JOB's copy only. The vault row (job_id IS NULL) is the
+  // F7, the doc branch's half of the same race. Unlike `clearFieldAnswer`,
+  // the DELETE below carries NO `details_completed_at IS NULL` guard of its
+  // own -- so without this read a pick made after the application was
+  // completed on the web MUTATED a submitted application (it removed the
+  // job-scoped copy of a document the employer had already been sent) and
+  // then asked for a replacement file that could never be attached. The
+  // DELETE, the `fill_doc_replace` arm and the doc prompt below are reached
+  // only for an OPEN application; a locked one gets the SAME answer the
+  // field branch gives.
+  if (await applicationIsLocked(client, applicationId, ctx.workerId)) {
+    await deps.updateStateContext(client, ctx.conversationId, patch);
+    return sendChangeLocked(client, ctx, msg, deps, applicationId, item.docType);
+  }
+
+  // Drop THIS JOB's copy only. The vault row (job_id IS NULL) is the
   // worker's own file and is never touched -- decision D3 is "let them
   // replace one", not "delete their document". Bound job_id is what
   // guarantees that.
@@ -1567,6 +1760,35 @@ async function resolveChangeMenu(
   await deps.queueReplyText(client, msg.messageSid, msg.from, docPrompt(item.docType, ctx.lang));
   logStep(item.docType, 'change_doc_reprompt');
   return { handled: true };
+}
+
+/**
+ * F2 (sprint 24): drop a menu that this turn is NOT going to resolve.
+ *
+ * `resolveChangeMenu` is what makes the menu one-shot, but it lives at step
+ * (5b) of `handleFillMessage` and three earlier branches return before it
+ * ever runs -- the button/interactive payload escape (1), the media turn (2)
+ * and the picker-digit escape (4). A menu left standing through any of them
+ * hijacks the worker's NEXT bare digit: work_authorization, education,
+ * military_service, worked_here_before and both entry loops are all answered
+ * with exactly '1'/'2', so the digit would clear a stored answer instead of
+ * answering the question that was just asked (the F2 scenario: CAMBIAR ->
+ * menu -> the requested photo -> next numbered question -> '1' silently
+ * un-answers something).
+ *
+ * Conditional on the key being present so a turn with no menu armed issues
+ * no write at all -- the three call sites are on the hot path for every
+ * button tap, photo and picker reply, and two of them are documented (and
+ * tested) as costing zero queries.
+ */
+async function dropStaleChangeMenu(
+  client: PoolClient,
+  ctx: FillContext,
+  deps: FillDeps,
+): Promise<void> {
+  if (!ctx.stateContext.fill_change_menu) return;
+  await deps.updateStateContext(client, ctx.conversationId, { fill_change_menu: null });
+  logStep('change', 'menu_dropped_unresolved');
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -2249,6 +2471,9 @@ async function resolveOfferOnlyTurn(
  *      mutation contract), so a SECOND free-text message goes back to
  *      feeding the fill -- without this clear every later message would
  *      relay forever and the fill would deadlock.
+ *  10b. The all-pre-filled consent gate, RE-DERIVED first (F1): see that
+ *      branch's own comment, and `sendConsentGatePrompt` for why no
+ *      `{handled:false}` return above can complete the application any more.
  *  11. `fill_pending`/cert-loop resolution (confirm/discard/entry-loop) for
  *      any body that reached this point WITHOUT parsing as a confirmation
  *      at step 6 (e.g. unrecognized text) -- re-echoes the confirmation,
@@ -2268,6 +2493,10 @@ export async function handleFillMessage(
 
   // (1) Button/interactive-payload escape -- see this function's jsdoc.
   if (msg.buttonPayload || msg.interactivePayload) {
+    // F2: everything else about this escape is unchanged (fill state KEPT),
+    // but a one-shot CAMBIAR menu is not fill state -- leaving it armed
+    // would let the worker's next bare digit clear an answer.
+    await dropStaleChangeMenu(client, ctx, deps);
     return { handled: false };
   }
 
@@ -2278,6 +2507,8 @@ export async function handleFillMessage(
   // below consume ctx.jobId, and this branch never reaches the text path's
   // own refresh further down.
   if (msg.numMedia > 0) {
+    // F2: a photo is not a menu pick, and this branch never reaches (5b).
+    await dropStaleChangeMenu(client, ctx, deps);
     ctx.jobId = (await fetchApplicationJobId(client, applicationId)) ?? ctx.jobId;
     return handleFillMediaTurn(client, ctx, msg, deps, applicationId);
   }
@@ -2311,6 +2542,9 @@ export async function handleFillMessage(
 
   // (4) Picker-digit escape -- see this function's jsdoc.
   if (ctx.stateContext.pending_picker && /^\d{1,2}$/.test(body.trim())) {
+    // F2: the picker owns this digit (spec §6.4), so the menu does NOT get
+    // to resolve against it -- and must not survive to eat the next one.
+    await dropStaleChangeMenu(client, ctx, deps);
     return { handled: false };
   }
 
@@ -2366,10 +2600,26 @@ export async function handleFillMessage(
   // (10b) The all-pre-filled gate (sprint 24 L3). AFTER the escapes, so
   // CHATS/CERRAR/help still work from it, and after CANCELAR/CAMBIAR, which
   // are its two other legitimate answers. LISTO/DONE completes; anything
-  // else re-prompts once and then goes quiet without dropping the gate.
+  // else re-prompts once and then goes quiet without dropping the gate --
+  // and F1's choke-point guard (`sendConsentGatePrompt`) makes "quiet" mean
+  // "at most one confirm per 30s", never "complete".
+  //
+  // F1, second half: the flag is RE-DERIVED before it is honoured. It was
+  // armed because nothing was outstanding AT ARM TIME; an employer who
+  // widens `required_fields`/`required_docs` since then leaves the tail
+  // asking the new question while this branch answered the worker's answer
+  // to it with "type LISTO" -- an unanswerable loop. So a gate that no
+  // longer describes reality is dropped and the turn continues down the
+  // ordinary path (which re-derives the step once more -- one extra SELECT,
+  // only in this genuinely rare race, and only on the turn that heals it).
   const confirm = ctx.stateContext.fill_confirm as FillConfirmState | undefined;
   if (confirm) {
-    return resolveFillConfirm(client, ctx, msg, deps, confirm, body);
+    const { step: gateStep } = await computeFillStep(client, applicationId);
+    if (gateStep.kind === 'complete') {
+      return resolveFillConfirm(client, ctx, msg, deps, confirm, body);
+    }
+    await deps.updateStateContext(client, ctx.conversationId, { fill_confirm: null });
+    logStep('confirm', 'gate_stale', gateStep.kind);
   }
 
   // (11) Task 8's cert loop / fill_pending resolution (see
