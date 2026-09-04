@@ -26,12 +26,23 @@ function resolve(tree: MessageNode, path: string): string | undefined {
     return typeof node === 'string' ? node : undefined;
 }
 
-/** Paths whose Spanish value must not be the English one. */
+/**
+ * Paths whose Spanish value must not be the English one.
+ *
+ * Two groups. The first four are the reported leaks. The rest are strings this
+ * change ADDED whose only other coverage is a mock assertion or an error path
+ * a component test never reaches -- `messages-parity.test.ts` would notice a
+ * key missing from one catalogue, but a copy-pasted English value passes it,
+ * and nothing else renders these.
+ */
 const MUST_BE_TRANSLATED = [
     'employer_dashboard.panels.job_progress_title',
     'employer_dashboard.panels.time_to_fill_title',
     'employer_dashboard.disabled.label',
     'employer_dashboard.disabled.preview',
+    'employer_dashboard.jobs.status_change.resume_success',
+    'employer_dashboard.jobs.status_change.error_generic',
+    'billing.limit_dialog.body_jobs_preflight',
 ] as const;
 
 describe('employer dashboard Spanish copy', () => {

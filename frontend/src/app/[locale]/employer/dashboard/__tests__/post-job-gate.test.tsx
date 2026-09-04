@@ -173,6 +173,24 @@ describe('post-a-job plan gate', () => {
         // Scoped to the dialog: the standing free-plan banner on the page
         // behind it offers its own upgrade link with the same words.
         const dialog = within(screen.getByRole('dialog'));
+        /*
+         * The owner-supplied sentence, rendered, params and all. `renderIntl`
+         * passes `onError={() => {}}` like the app does, so a `bodyKey` that
+         * disagrees with the catalogue would print the raw key path into the
+         * dialog and every OTHER assertion here would still pass -- this is
+         * the only thing standing between that and the release.
+         */
+        const sentence = [
+            // The plan name is a bold noun in front of the sentence, not spliced
+            // into it, so the paragraph's own text is the two joined.
+            message('billing.plan_name.employer_free'),
+            interpolate(message('billing.limit_dialog.body_jobs_preflight'), { limit: 1, used: 1 }),
+        ].join(' · ');
+        // A function matcher, because the plan name sits in a nested `<strong>`
+        // and the default text matcher only sees a node's OWN text children.
+        expect(
+            dialog.getByText((_text, el) => el?.tagName === 'P' && el.textContent === sentence),
+        ).toBeInTheDocument();
         expect(dialog.getByText(message('billing.limit_dialog.blocking_heading'))).toBeInTheDocument();
         expect(dialog.getByRole('link', { name: activeJob.title })).toBeInTheDocument();
         expect(dialog.getByRole('link', { name: message('billing.limit_dialog.cta_pause_job') })).toBeInTheDocument();
