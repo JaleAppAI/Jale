@@ -56,7 +56,8 @@ describe('worker-intent outbox drain', () => {
     const pool = { connect: jest.fn(async () => ({ query, release })) };
 
     await expect(drainWorkerIntentOutbox(pool as any, 25)).resolves.toEqual({
-      sent: 1, ambiguous: 0, failed: 0, leaseLost: 0, deferred: 0,
+      sent: 1, ambiguous: 0, failed: 0,
+      leaseLost: 0, deferred: 0, expired: 0,
     });
     expect(mockFetch).toHaveBeenCalledTimes(1);
     expect(query.mock.calls[0]).toEqual([
@@ -83,7 +84,8 @@ describe('worker-intent outbox drain', () => {
     const pool = { connect: jest.fn(async () => ({ query, release: jest.fn() })) };
 
     await expect(drainWorkerIntentOutbox(pool as any)).resolves.toEqual({
-      sent: 0, ambiguous: 1, failed: 0, leaseLost: 0, deferred: 0,
+      sent: 0, ambiguous: 1, failed: 0,
+      leaseLost: 0, deferred: 0, expired: 0,
     });
     expect(query.mock.calls[1][0]).toBe(
       'SELECT fail_worker_intent_outbox($1, $2, $3, $4) AS failed',
@@ -107,7 +109,8 @@ describe('worker-intent outbox drain', () => {
     const pool = { connect: jest.fn(async () => ({ query, release: jest.fn() })) };
 
     await expect(drainWorkerIntentOutbox(pool as any)).resolves.toEqual({
-      sent: 0, ambiguous: 1, failed: 0, leaseLost: 0, deferred: 0,
+      sent: 0, ambiguous: 1, failed: 0,
+      leaseLost: 0, deferred: 0, expired: 0,
     });
     expect(mockFetch).toHaveBeenCalledTimes(1);
     expect(query.mock.calls[2]).toEqual([
@@ -151,12 +154,17 @@ describe('worker-intent outbox drain', () => {
     });
     const query = jest.fn()
       .mockResolvedValueOnce({ rows: [applicationIntentRow()] })
-      .mockResolvedValueOnce({ rows: [{ deferred: true }] });
+      .mockResolvedValueOnce({ rows: [{ deferred: true }] })
+      // 093 decides the outcome INSIDE the RPC and returns only a boolean, so
+      // the drain reads the row's status back to learn which branch ran. This
+      // row is younger than 48h, so it went back to 'pending'.
+      .mockResolvedValueOnce({ rows: [{ status: 'pending' }] });
     const pool = { connect: jest.fn(async () => ({ query, release: jest.fn() })) };
     const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
 
     await expect(drainWorkerIntentOutbox(pool as any)).resolves.toEqual({
-      sent: 0, ambiguous: 0, failed: 0, leaseLost: 0, deferred: 1,
+      sent: 0, ambiguous: 0, failed: 0,
+      leaseLost: 0, deferred: 1, expired: 0,
     });
     // The row goes to the defer RPC, NOT to fail_worker_intent_outbox.
     expect(query.mock.calls[1]).toEqual([
@@ -168,9 +176,85 @@ describe('worker-intent outbox drain', () => {
     )).toBe(false);
     // The operator signal: this is the one failure class a code change cannot
     // clear, so it gets its own metric rather than hiding inside Failure.
-    expect(log).toHaveBeenCalledWith(JSON.stringify({
+    // WorkerIntentTemplatePendingMetric (whatsapp-stack.ts) is the filter that
+    // counts this line; it is emitted exactly once per deferred row.
+    const pendingLines = log.mock.calls.filter(
+      ([line]) => String(line).includes('WorkerIntentOutboxTemplatePending'),
+    );
+    expect(pendingLines).toEqual([[JSON.stringify({
       metric: 'WorkerIntentOutboxTemplatePending',
-    }));
+    })]]);
+    // Mutually exclusive with the terminal line: a row that is merely parked
+    // must never look like one that died.
+    expect(log.mock.calls.some(
+      ([line]) => String(line).includes('WorkerIntentOutboxTemplateExpired'),
+    )).toBe(false);
+    log.mockRestore();
+  });
+
+  // F4. The 48-hour ceiling lives inside 093's UPDATE (`created_at <
+  // now() - interval '48 hours'` -> status = 'failed'), and the RPC returns a
+  // bare BOOLEAN either way. So a terminal death and an ordinary parking are
+  // the SAME `true` to the caller: before this, an application notification
+  // that aged out was counted `deferred`, `result.failed` stayed 0, the
+  // drain's WorkerIntentOutboxFailure line never fired, and the row died with
+  // nothing at all in CloudWatch. Reading `status` back is what tells them
+  // apart without editing the frozen migration.
+  it('reports the 48h terminal branch as expired, not as another deferral', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false, status: 400, json: async () => ({ code: 63016 }),
+    });
+    const query = jest.fn()
+      .mockResolvedValueOnce({ rows: [applicationIntentRow()] })
+      .mockResolvedValueOnce({ rows: [{ deferred: true }] })
+      .mockResolvedValueOnce({ rows: [{ status: 'failed' }] });
+    const pool = { connect: jest.fn(async () => ({ query, release: jest.fn() })) };
+    const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await expect(drainWorkerIntentOutbox(pool as any)).resolves.toEqual({
+      sent: 0, ambiguous: 0, failed: 0,
+      leaseLost: 0, deferred: 0, expired: 1,
+    });
+    // Read back on the SAME client as the defer call, and projected: `status`
+    // only, never `SELECT *` on a row carrying a phone number and a body.
+    expect(query.mock.calls[2]).toEqual([
+      "SELECT status FROM whatsapp_outbox WHERE id = $1 AND source_type = 'worker_intent'",
+      ['outbox-63016'],
+    ]);
+    const expiredLines = log.mock.calls.filter(
+      ([line]) => String(line).includes('WorkerIntentOutboxTemplateExpired'),
+    );
+    expect(expiredLines).toEqual([[JSON.stringify({
+      metric: 'WorkerIntentOutboxTemplateExpired',
+    })]]);
+    expect(log.mock.calls.some(
+      ([line]) => String(line).includes('WorkerIntentOutboxTemplatePending'),
+    )).toBe(false);
+    log.mockRestore();
+  });
+
+  it('counts a status read that returns no row as a deferral, not a death', async () => {
+    // A missing row is not evidence of the terminal branch. 043's own sweep or
+    // an operator could have moved it between the defer and this read, and
+    // calling that `expired` would page someone about a template approval that
+    // has nothing to do with it. `deferred` is the conservative reading.
+    mockFetch.mockResolvedValueOnce({
+      ok: false, status: 400, json: async () => ({ code: 63016 }),
+    });
+    const query = jest.fn()
+      .mockResolvedValueOnce({ rows: [applicationIntentRow()] })
+      .mockResolvedValueOnce({ rows: [{ deferred: true }] })
+      .mockResolvedValueOnce({ rows: [] });
+    const pool = { connect: jest.fn(async () => ({ query, release: jest.fn() })) };
+    const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await expect(drainWorkerIntentOutbox(pool as any)).resolves.toEqual({
+      sent: 0, ambiguous: 0, failed: 0,
+      leaseLost: 0, deferred: 1, expired: 0,
+    });
+    expect(log.mock.calls.some(
+      ([line]) => String(line).includes('WorkerIntentOutboxTemplateExpired'),
+    )).toBe(false);
     log.mockRestore();
   });
 
@@ -198,7 +282,8 @@ describe('worker-intent outbox drain', () => {
     const pool = { connect: jest.fn(async () => ({ query, release: jest.fn() })) };
 
     await expect(drainWorkerIntentOutbox(pool as any)).resolves.toEqual({
-      sent: 0, ambiguous: 0, failed: 1, leaseLost: 0, deferred: 0,
+      sent: 0, ambiguous: 0, failed: 1,
+      leaseLost: 0, deferred: 0, expired: 0,
     });
     expect(query.mock.calls[1][0]).toBe(
       'SELECT fail_worker_intent_outbox($1, $2, $3, $4) AS failed',
@@ -218,7 +303,8 @@ describe('worker-intent outbox drain', () => {
     const pool = { connect: jest.fn(async () => ({ query, release: jest.fn() })) };
 
     await expect(drainWorkerIntentOutbox(pool as any)).resolves.toEqual({
-      sent: 0, ambiguous: 0, failed: 1, leaseLost: 0, deferred: 0,
+      sent: 0, ambiguous: 0, failed: 1,
+      leaseLost: 0, deferred: 0, expired: 0,
     });
     expect(query.mock.calls[1][0]).toBe(
       'SELECT fail_worker_intent_outbox($1, $2, $3, $4) AS failed',
@@ -238,7 +324,8 @@ describe('worker-intent outbox drain', () => {
     const pool = { connect: jest.fn(async () => ({ query, release: jest.fn() })) };
 
     await expect(drainWorkerIntentOutbox(pool as any)).resolves.toEqual({
-      sent: 0, ambiguous: 1, failed: 0, leaseLost: 0, deferred: 0,
+      sent: 0, ambiguous: 1, failed: 0,
+      leaseLost: 0, deferred: 0, expired: 0,
     });
     expect(query.mock.calls[1][1][3]).toBe(true);
   });
