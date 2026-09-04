@@ -127,6 +127,33 @@ export function canRequestDetails(application: {
 }
 
 /**
+ * The options the status dropdown renders for an application currently at
+ * `current`.
+ *
+ * `SELECTABLE_APPLICATION_STATUSES`, plus `current` prepended when it is not
+ * itself selectable -- which today means exactly `details_requested`. A
+ * `<select>` whose `value` matches no `<option>` shows the FIRST option's
+ * label instead, so omitting the current status outright would put "Pending"
+ * over a row that is actually waiting on the worker.
+ *
+ * The extra option is deliberately NOT disabled: a disabled option that is
+ * also the current value renders blank in several browsers (the same trap the
+ * `hired` option's `hireOptionDisabled` suppression documents on the worker
+ * page). It is harmless enabled, because Save is disabled while the draft
+ * still equals the saved status -- so the select can never MOVE an
+ * application into `details_requested`, which is the whole point of the
+ * ruling, and once the employer moves it elsewhere the option is gone.
+ */
+export function statusSelectOptions(
+    current: ApplicationStatus | undefined | null,
+): readonly ApplicationStatus[] {
+    if (!current || SELECTABLE_APPLICATION_STATUSES.includes(current)) {
+        return SELECTABLE_APPLICATION_STATUSES;
+    }
+    return [current, ...SELECTABLE_APPLICATION_STATUSES];
+}
+
+/**
  * Whether pressing the button would be a RESEND rather than a first request.
  *
  * Read off the committed application status alone -- not `details_status`,

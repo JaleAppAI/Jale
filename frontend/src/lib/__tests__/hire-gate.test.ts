@@ -4,6 +4,7 @@ import {
     canRequestDetails,
     canResendDetails,
     detailsRequestFeedbackKey,
+    statusSelectOptions,
     hireBlockReason,
     hireBlocked,
     remainingCount,
@@ -169,5 +170,39 @@ describe('detailsRequestFeedbackKey', () => {
         expect(detailsRequestFeedbackKey({ notified: false, notify_reason: 'not_notifiable_status' }))
             .toBe('request_details_sent');
         expect(detailsRequestFeedbackKey({ notified: false })).toBe('request_details_sent');
+    });
+});
+
+describe('statusSelectOptions', () => {
+    it('is exactly the selectable list for an application nobody has asked yet', () => {
+        expect(statusSelectOptions('pending')).toEqual([
+            'pending', 'contacted', 'talking', 'hired', 'not_interested',
+        ]);
+        expect(statusSelectOptions('hired')).not.toContain('details_requested');
+    });
+
+    it('shows details_requested ONLY as the already-set current value, first in the list', () => {
+        // A <select> whose value matches no option renders the wrong label --
+        // it would say "Pending" over a row that is actually waiting on the
+        // worker. So the current status is always present. It is NOT disabled:
+        // the page comment at :208-218 records that a disabled current option
+        // renders blank in several browsers. Being present is harmless because
+        // Save is disabled while the draft equals the saved status, so the
+        // select can never MOVE an application into details_requested -- and
+        // once the employer moves it elsewhere the option disappears for good.
+        expect(statusSelectOptions('details_requested')).toEqual([
+            'details_requested', 'pending', 'contacted', 'talking', 'hired', 'not_interested',
+        ]);
+    });
+
+    it('never duplicates a status that is already selectable', () => {
+        const options = statusSelectOptions('talking');
+        expect(options.filter((s) => s === 'talking')).toHaveLength(1);
+    });
+
+    it('falls back to the plain selectable list when there is no current status', () => {
+        expect(statusSelectOptions(undefined)).toEqual([
+            'pending', 'contacted', 'talking', 'hired', 'not_interested',
+        ]);
     });
 });

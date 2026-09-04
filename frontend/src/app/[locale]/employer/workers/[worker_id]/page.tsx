@@ -36,22 +36,20 @@ import {
 } from '@/lib/api/employer';
 import type { WorkerPost } from '@/lib/api/worker';
 import { normalizeApplicationStatus } from '@/lib/status';
-import { canRequestDetails, hireBlockReason, remainingCount } from '@/lib/hire-gate';
+import {
+    canRequestDetails,
+    canResendDetails,
+    detailsRequestFeedbackKey,
+    hireBlockReason,
+    remainingCount,
+    statusSelectOptions,
+} from '@/lib/hire-gate';
 import { tradeLabel } from '@/lib/trades';
 import { displayAnswer, displayQuestion, normalizeAnswers } from '@/lib/trust-assessment';
 import { AnswerHighlights } from './AnswerHighlights';
 import { DocumentSlots } from './DocumentSlots';
 
 export const dynamic = 'force-dynamic';
-
-const APPLICATION_STATUSES: ApplicationStatus[] = [
-    'pending',
-    'contacted',
-    'talking',
-    'details_requested',
-    'hired',
-    'not_interested',
-];
 
 /** Both ids are `UUID` columns (`jobs.id`, `users.id`). */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -242,33 +240,42 @@ export default function WorkerProfilePage() {
      * the three-bucket object degrades to the bare headline.
      */
     /*
-     * The same action as the applicant card's, on the page an employer lands on
-     * when they open a candidate: the select can technically reach
-     * `details_requested`, but that makes the primary next step a two-control
-     * chore behind a dropdown. `canRequestDetails` is the shared predicate, so
-     * the two surfaces show and hide the button on identical rules.
+     * The one control that sends the worker a details request, on the page an
+     * employer lands on when they open a candidate.
+     *
+     * Sprint 24 (B7): `details_requested` is no longer reachable through the
+     * select at all -- the button owns the move AND the notification, so the
+     * two can never disagree about whether a message went out. It therefore
+     * has to survive the request it makes: `canRequestDetails` now withdraws
+     * it only on a terminal application, and `canResendDetails` turns it into
+     * a resend. No optimistic latch any more; the label is derived from the
+     * status the PATCH just committed.
      */
     const [requestingDetails, setRequestingDetails] = useState(false);
-    const [detailsJustRequested, setDetailsJustRequested] = useState(false);
-    const showRequestDetails = !detailsJustRequested
-        && canRequestDetails({ status: savedStatus, details_status: profile?.details_status });
+    const showRequestDetails = canRequestDetails({
+        status: savedStatus, details_status: profile?.details_status,
+    });
+    const resendingDetails = canResendDetails(savedStatus);
 
     const handleRequestDetails = useCallback(async () => {
         if (!idToken || !linkValid || !profile || requestingDetails) return;
+        const resend = canResendDetails(normalizeApplicationStatus(profile.application_status));
         setRequestingDetails(true);
         setSaveFeedback(null);
         try {
             const updated = await updateApplicantStatus(
                 idToken, jobId, workerId, 'details_requested',
+                // Only when the row already SITS at details_requested: the
+                // backend refuses `resend` with a 400 for any other status.
+                resend ? { resend: true } : undefined,
             );
-            setDetailsJustRequested(true);
             /*
              * Optimistic for the same reason the card is: the PATCH answers
-             * with `{ status }` only, and the stage-2 fields it moved are
-             * republished by the next profile READ. Both are written here so
-             * the hire hint and the disabled option agree with the button that
-             * just disappeared. `remaining` is untouched -- requesting details
-             * answers none of it.
+             * with the row plus the notify outcome, and the stage-2 fields it
+             * moved are republished by the next profile READ. Both are written
+             * here so the hire hint and the button label agree with what just
+             * happened. `remaining` is untouched -- requesting details answers
+             * none of it.
              */
             setData((prev) => ({
                 ...prev,
@@ -279,7 +286,20 @@ export default function WorkerProfilePage() {
                 },
             }));
             setStatusDraft(null);
-            setSaveFeedback({ tone: 'success', message: tListing('applicants.request_details_sent') });
+            /*
+             * The employer must be able to tell whether the WORKER heard about
+             * this -- a worker with no WhatsApp on file used to produce the
+             * same cheerful line as a delivered message. `detailsRequestFeedbackKey`
+             * picks the sentence and fails open to the old neutral copy on an
+             * API that publishes no outcome.
+             */
+            setSaveFeedback({
+                tone: 'success',
+                message: tListing(
+                    `applicants.${detailsRequestFeedbackKey(updated)}`,
+                    { name: profile.full_name?.trim() || t('fallback_name') },
+                ),
+            });
         } catch (err) {
             try {
                 handleLegalWall(err, returnUrl);
@@ -291,7 +311,7 @@ export default function WorkerProfilePage() {
         }
     }, [
         errorMessage, handleLegalWall, idToken, jobId, linkValid, profile,
-        requestingDetails, returnUrl, setData, tListing, workerId,
+        requestingDetails, returnUrl, setData, t, tListing, workerId,
     ]);
 
     const hireGateMessage = useCallback((err: ApiError): string => {
@@ -847,7 +867,7 @@ export default function WorkerProfilePage() {
                                                 setStatusDraft(event.target.value as ApplicationStatus)
                                             }
                                         >
-                                            {APPLICATION_STATUSES.map((status) => {
+                                            {statusSelectOptions(savedStatus).map((status) => {
                                                 // `hired` is the one option the
                                                 // database can refuse. When it
                                                 // would, it is offered disabled
@@ -877,11 +897,13 @@ export default function WorkerProfilePage() {
                                     </Button>
                                     {/* Beside Save, not instead of it: Save
                                         commits whatever the select holds, this
-                                        is the one-press version of the move an
-                                        employer makes next in almost every
-                                        case. Disappears once details are
-                                        requested -- there is nothing to ask
-                                        twice. */}
+                                        is the one control that also NOTIFIES
+                                        the worker. It STAYS once details are
+                                        requested (sprint 24, B7) -- relabelled
+                                        as a resend, because a worker who never
+                                        answered is exactly the case an
+                                        employer needs to act on and the select
+                                        can no longer reach this status. */}
                                     {showRequestDetails ? (
                                         <Button
                                             variant="outline"
@@ -890,7 +912,9 @@ export default function WorkerProfilePage() {
                                             loading={requestingDetails}
                                             loadingLabel={tCommon('loading')}
                                         >
-                                            {tListing('applicants.request_details')}
+                                            {resendingDetails
+                                                ? tListing('applicants.request_details_resend')
+                                                : tListing('applicants.request_details')}
                                         </Button>
                                     ) : null}
                                 </div>
