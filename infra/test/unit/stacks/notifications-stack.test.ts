@@ -214,14 +214,19 @@ describe('NotificationsStack', () => {
 
   // ── Alarms ────────────────────────────────────────────────────────────────
 
-  it('creates exactly four alarms, all NOT_BREACHING on missing data', () => {
-    template.resourceCountIs('AWS::CloudWatch::Alarm', 4);
+  it('creates exactly six alarms, all NOT_BREACHING on missing data', () => {
+    // Four digest alarms plus the two account-level SES send-health alarms.
+    template.resourceCountIs('AWS::CloudWatch::Alarm', 6);
     const alarms = template.findResources('AWS::CloudWatch::Alarm');
     for (const alarm of Object.values(alarms) as any[]) {
       expect(alarm.Properties.TreatMissingData).toBe('notBreaching');
       expect(alarm.Properties.ComparisonOperator).toBe('GreaterThanOrEqualToThreshold');
-      expect(alarm.Properties.Threshold).toBe(1);
       expect(alarm.Properties.EvaluationPeriods).toBe(1);
+      // Every alarm here counts events — one is too many — except the SES
+      // bounce RATE, which is a ratio and carries AWS's own 5% review line.
+      const expectedThreshold =
+        alarm.Properties.AlarmName === 'SesReputationBounceRate' ? 0.05 : 1;
+      expect(alarm.Properties.Threshold).toBe(expectedThreshold);
     }
   });
 
@@ -283,6 +288,68 @@ describe('NotificationsStack', () => {
     });
   });
 
+  // ── SES send health (sprint 24 A5) ────────────────────────────────────────
+  //
+  // On 2026-08-28, six of six sends bounced and no alarm existed to say so:
+  // there was no `AWS/SES` alarm anywhere in the app. The outbox recorded a
+  // SUCCESSFUL SendEmail (SES did accept the messages), the producer returned
+  // normally, and the bounces went to a feedback lane that did not exist yet.
+
+  it('alarms on any SES bounce in the last hour', () => {
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'SesBounceCount',
+      Namespace: 'AWS/SES',
+      MetricName: 'Bounce',
+      Statistic: 'Sum',
+      Period: 3600,
+      Threshold: 1,
+      TreatMissingData: 'notBreaching',
+    });
+  });
+
+  it('alarms on an SES bounce RATE at or above 5%', () => {
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'SesReputationBounceRate',
+      Namespace: 'AWS/SES',
+      MetricName: 'Reputation.BounceRate',
+      // Maximum, not Average: SES already averages this over a rolling window.
+      Statistic: 'Maximum',
+      Period: 3600,
+      Threshold: 0.05,
+      TreatMissingData: 'notBreaching',
+    });
+  });
+
+  it('watches SES account-wide, with no dimensions on either metric', () => {
+    // `AWS/SES` publishes Bounce and Reputation.* at the ACCOUNT level. A
+    // dimension — any dimension — produces a metric that never reports a
+    // datapoint, i.e. an alarm that cannot fire. Same silent-disarming shape as
+    // the `$.metric` filter patterns the test below guards against.
+    for (const alarmName of ['SesBounceCount', 'SesReputationBounceRate']) {
+      const alarms = template.findResources('AWS::CloudWatch::Alarm', {
+        Properties: { AlarmName: alarmName },
+      });
+      expect(Object.keys(alarms)).toHaveLength(1);
+      expect((Object.values(alarms)[0] as any).Properties.Dimensions).toBeUndefined();
+    }
+  });
+
+  it('creates the SES alarms even with no email configuration set', () => {
+    // They must NOT hang off `emailConfigurationSetName`. The bounce-feedback
+    // lane below does, and gating the account-level backstop on the same
+    // operator-supplied value would rebuild the exact hole this closes: an
+    // unset (or fat-fingered) context value and the bounces are invisible
+    // again.
+    const bare = Template.fromStack(buildStack().stack);
+    expect(
+      Object.keys(bare.findResources('AWS::SES::ConfigurationSet')),
+    ).toHaveLength(0);
+    bare.hasResourceProperties('AWS::CloudWatch::Alarm', { AlarmName: 'SesBounceCount' });
+    bare.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'SesReputationBounceRate',
+    });
+  });
+
   it('uses LITERAL term patterns, never $.metric JSON patterns', () => {
     // A JSON filter pattern requires the whole log EVENT to parse as JSON.
     // Node 20 Lambda's default TEXT log format prefixes every console line with
@@ -314,7 +381,10 @@ describe('NotificationsStack', () => {
 
     it('attaches both alarm and OK actions to the shared topic', () => {
       const alarms = alarmed.findResources('AWS::CloudWatch::Alarm');
-      expect(Object.keys(alarms)).toHaveLength(4);
+      // Six, including the two SES send-health alarms: they go through the same
+      // `notificationsAlarm` helper precisely so they cannot end up actionless
+      // while their siblings page someone.
+      expect(Object.keys(alarms)).toHaveLength(6);
       for (const alarm of Object.values(alarms) as any[]) {
         expect(alarm.Properties.AlarmActions).toEqual([TOPIC_ARN]);
         expect(alarm.Properties.OKActions).toEqual([TOPIC_ARN]);

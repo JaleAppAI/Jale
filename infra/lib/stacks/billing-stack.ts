@@ -14,6 +14,7 @@ import * as sns from 'aws-cdk-lib/aws-sns';
 import * as subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
+import { jaleAlarm } from '../constructs/jale-alarm';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
 import { lambdaIntegration, addPathOnlyResource } from '../api-integration';
 
@@ -338,26 +339,45 @@ export class BillingStack extends cdk.Stack {
     const alarmAction = new cloudwatchActions.SnsAction(alarmTopic);
 
     // ── CloudWatch Alarms ──
-    const dlqDepthAlarm = new cloudwatch.Alarm(this, 'BillingWebhookDlqAlarm', {
+    // Both of these go through `jaleAlarm` for the one property they were
+    // missing: `treatMissingData`. An idle webhook DLQ and an unthrottled
+    // processor publish NO datapoints, so on CloudWatch's `missing` default
+    // each alarm dropped to INSUFFICIENT_DATA the moment things were healthy
+    // and climbed back to OK on the next datapoint. These two carry an OK
+    // action, so every one of those flaps NOTIFIED THE OPERATOR that nothing
+    // had happened — 64 of 87 alarm state transitions in one week, across this
+    // stack and AiStack/MatchingStack.
+    //
+    // Thresholds, operators, periods and alarmNames are unchanged: an
+    // alarmName change would make CloudFormation replace a live alarm.
+    //
+    // OK actions stay `addOkAction` calls on the returned alarm rather than a
+    // second helper prop — recovery notification is this stack's policy, not
+    // something every Jale alarm wants (AiStack's siblings deliberately have
+    // none).
+    const dlqDepthAlarm = jaleAlarm(this, 'BillingWebhookDlqAlarm', {
       metric: webhookDlq.metricApproximateNumberOfMessagesVisible(),
       threshold: 1,
       evaluationPeriods: 1,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
       alarmName: 'BillingWebhookDlqDepth',
+      actions: [alarmAction],
     });
-    dlqDepthAlarm.addAlarmAction(alarmAction);
     dlqDepthAlarm.addOkAction(alarmAction);
 
-    const processorThrottleAlarm = new cloudwatch.Alarm(this, 'BillingProcessorThrottleAlarm', {
+    const processorThrottleAlarm = jaleAlarm(this, 'BillingProcessorThrottleAlarm', {
       metric: processorLambda.function.metricThrottles({
         period: cdk.Duration.minutes(5),
       }),
       threshold: 5,
       evaluationPeriods: 1,
+      // `>` 5, not `>=`: five throttles in a five-minute window is tolerated,
+      // six is the signal. Passed explicitly rather than left to the helper's
+      // `>=` default, because the semantics belong to this alarm.
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
       alarmName: 'BillingProcessorThrottles',
+      actions: [alarmAction],
     });
-    processorThrottleAlarm.addAlarmAction(alarmAction);
     processorThrottleAlarm.addOkAction(alarmAction);
 
     // ── Checkout error taxonomy metrics ──

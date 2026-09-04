@@ -251,12 +251,16 @@ export class NotificationsStack extends cdk.Stack {
       alarmName: string,
       alarmDescription: string,
       metric: cloudwatch.IMetric,
+      // Every caller that predates the SES alarms below counts events, where
+      // "one is too many" — hence the default. `Reputation.BounceRate` is a
+      // RATIO, so it is the one signal here that needs a real number.
+      threshold: number = 1,
     ): cloudwatch.Alarm => {
       const alarm = new cloudwatch.Alarm(this, constructId, {
         alarmName,
         alarmDescription,
         metric,
-        threshold: 1,
+        threshold,
         evaluationPeriods: 1,
         comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
         treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
@@ -333,6 +337,58 @@ export class NotificationsStack extends cdk.Stack {
         metricFilter.metric({ period: cdk.Duration.minutes(15), statistic: 'Sum' }),
       );
     }
+
+    // ── SES send health ───────────────────────────────────────────
+    // On 2026-08-28 six of six sends bounced and NOTHING said so. There was no
+    // `AWS/SES` alarm anywhere in the app: the outbox recorded a successful
+    // SendEmail call (which it was — SES accepted the message), the digest
+    // producer returned normally, and the bounces landed in a feedback lane
+    // that did not exist yet. The first person to notice was a human who
+    // wondered why nobody had replied.
+    //
+    // These two alarms are the account-level backstop, deliberately independent
+    // of the configuration-set lane below: they fire even when
+    // `emailConfigurationSetName` is unset, when the event destination is
+    // misconfigured, or when the feedback handler itself is broken. Gating them
+    // on the same operator-supplied context that the feedback lane needs would
+    // rebuild the exact hole this closes.
+    //
+    // NO DIMENSIONS on either metric, on purpose. `AWS/SES` publishes Bounce
+    // and Reputation.* at the ACCOUNT level; adding a dimension produces a
+    // metric that never reports a datapoint, and an alarm on a metric with no
+    // datapoints is an alarm that cannot fire — the same silent disarming the
+    // `$.metric` filter patterns caused above.
+    notificationsAlarm(
+      'SesBounceCountAlarm',
+      'SesBounceCount',
+      'SES reported a bounce in the last hour. Sum, not rate: a handful of sends can bounce 100% '
+        + 'without moving the reputation gauge at all, which is exactly how 6 of 6 bounced sends on '
+        + '2026-08-28 went unnoticed.',
+      new cloudwatch.Metric({
+        namespace: 'AWS/SES',
+        metricName: 'Bounce',
+        period: cdk.Duration.hours(1),
+        statistic: 'Sum',
+      }),
+    );
+
+    notificationsAlarm(
+      'SesReputationBounceRateAlarm',
+      'SesReputationBounceRate',
+      'SES account bounce RATE is at or above 5%. AWS starts reviewing sending at 5% and can suspend '
+        + 'it at 10%, so this is the alarm that stands between a bad recipient list and losing email '
+        + 'delivery for the whole product.',
+      new cloudwatch.Metric({
+        namespace: 'AWS/SES',
+        metricName: 'Reputation.BounceRate',
+        period: cdk.Duration.hours(1),
+        // Maximum, not Average: the rate is already an aggregate SES computes
+        // over a rolling window, so averaging it a second time smooths away the
+        // peak that matters.
+        statistic: 'Maximum',
+      }),
+      0.05,
+    );
 
     // ── SES delivery feedback ─────────────────────────────────────
     // Configuration set -> SNS event destination -> topic -> Lambda ->

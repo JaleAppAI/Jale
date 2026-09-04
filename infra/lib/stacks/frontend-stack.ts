@@ -1,5 +1,6 @@
 import * as path from 'node:path';
 import * as cdk from 'aws-cdk-lib';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
@@ -10,6 +11,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import { Platform } from 'aws-cdk-lib/aws-ecr-assets';
 import { Construct } from 'constructs';
+import { jaleAlarm } from '../constructs/jale-alarm';
 
 export interface FrontendStackProps extends cdk.StackProps {
   /** API Gateway origin domain, without protocol or stage path. */
@@ -468,6 +470,61 @@ function handler(event) {
       target: route53.RecordTarget.fromAlias(
         new route53targets.CloudFrontTarget(this.distribution),
       ),
+    });
+
+    // ── SES send health, us-east-1 ──────────────────────────────────
+    // NOT about the frontend. This stack is here only because it is the one
+    // stack Jale deploys to us-east-1, and `AWS/SES` metrics are REGIONAL.
+    //
+    // NotificationsStack carries the same two alarms for us-east-2, where the
+    // employer digest and the billing outbox send from. Cognito's verification
+    // and forgot-password emails go out through SES in us-east-1
+    // (`sesEmailRegion`, auth-stack.ts), and an alarm in us-east-2 cannot see a
+    // single one of them — so a us-east-1 reputation problem would take out
+    // every signup confirmation and password reset in the product while every
+    // dashboard stayed green. That is the 2026-08-28 failure (6 of 6 sends
+    // bounced, nothing reported it) with the blast radius pointed at the login
+    // door instead of the digest.
+    //
+    // NO ALARM ACTION: this stack takes no alarm-topic prop and the shared ops
+    // topic lives in us-east-2, where a CloudWatch alarm in us-east-1 cannot
+    // publish. Console-visible and dashboard-able is strictly better than
+    // absent, and it is the same trade auth-stack.ts's CustomMessage error
+    // alarms already make. Wiring a us-east-1 SNS topic (or a cross-region
+    // forwarder) is the follow-up, not this change.
+    //
+    // No dimensions on either metric — `AWS/SES` publishes Bounce and
+    // Reputation.* at the account level, and any dimension yields a metric that
+    // never reports, i.e. an alarm that cannot fire.
+    jaleAlarm(this, 'SesBounceCountUsEast1Alarm', {
+      alarmName: 'SesBounceCountUsEast1',
+      alarmDescription:
+        'SES in us-east-1 reported a bounce in the last hour. This is the region Cognito sends '
+        + 'verification and forgot-password emails from, so bounces here are signups and password '
+        + 'resets that silently failed.',
+      metric: new cloudwatch.Metric({
+        namespace: 'AWS/SES',
+        metricName: 'Bounce',
+        period: cdk.Duration.hours(1),
+        statistic: 'Sum',
+      }),
+      threshold: 1,
+    });
+
+    jaleAlarm(this, 'SesReputationBounceRateUsEast1Alarm', {
+      alarmName: 'SesReputationBounceRateUsEast1',
+      alarmDescription:
+        'SES bounce RATE in us-east-1 is at or above 5%. AWS reviews sending at 5% and can suspend '
+        + 'it at 10% — which would stop every Cognito verification and password-reset email.',
+      metric: new cloudwatch.Metric({
+        namespace: 'AWS/SES',
+        metricName: 'Reputation.BounceRate',
+        period: cdk.Duration.hours(1),
+        // Maximum, not Average: SES already averages this over a rolling
+        // window, and averaging it again hides the peak.
+        statistic: 'Maximum',
+      }),
+      threshold: 0.05,
     });
 
     // ── Outputs ─────────────────────────────────────────────────────

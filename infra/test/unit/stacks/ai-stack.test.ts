@@ -93,6 +93,80 @@ describe('AiStack', () => {
     });
   });
 
+  // ── Alarm hygiene (sprint 24 A4) ──────────────────────────────────────────
+  //
+  // Three of this stack's alarms were declared inline with no
+  // `treatMissingData` while the two written later (TrustScorerFailures,
+  // TrustExtractorErrors) already set NOT_BREACHING — the inconsistency is
+  // what made the flapping look like a per-alarm quirk instead of a missing
+  // default. On an idle trust queue the three inherited `missing`, went to
+  // INSUFFICIENT_DATA, and paged on the way back out.
+  const AI_ALARMS = [
+    {
+      constructId: 'TrustAssessmentDlqAlarm',
+      alarmName: 'TrustAssessmentDlqDepth',
+      threshold: 1,
+      comparisonOperator: 'GreaterThanOrEqualToThreshold',
+      metricName: 'ApproximateNumberOfMessagesVisible',
+      period: 300,
+    },
+    {
+      constructId: 'TrustScorerThrottleAlarm',
+      alarmName: 'TrustScorerThrottles',
+      threshold: 5,
+      // `>`, not `>=`: preserved exactly as declared. Five throttles in a
+      // five-minute window is tolerated; six is the signal.
+      comparisonOperator: 'GreaterThanThreshold',
+      metricName: 'Throttles',
+      period: 300,
+    },
+    {
+      constructId: 'TrustExtractionDlqAlarm',
+      alarmName: 'TrustExtractionDlqDepth',
+      threshold: 1,
+      comparisonOperator: 'GreaterThanOrEqualToThreshold',
+      metricName: 'ApproximateNumberOfMessagesVisible',
+      period: 300,
+    },
+  ] as const;
+
+  it.each(AI_ALARMS)(
+    '$alarmName treats missing data as notBreaching with its threshold, operator and period unchanged',
+    ({ constructId, alarmName, threshold, comparisonOperator, metricName, period }) => {
+      const alarms = template.findResources('AWS::CloudWatch::Alarm', {
+        Properties: { AlarmName: alarmName },
+      });
+      expect(Object.keys(alarms)).toHaveLength(1);
+      const alarm = Object.values(alarms)[0] as any;
+
+      expect(alarm.Properties.TreatMissingData).toBe('notBreaching');
+      expect(alarm.Properties.Threshold).toBe(threshold);
+      expect(alarm.Properties.ComparisonOperator).toBe(comparisonOperator);
+      expect(alarm.Properties.EvaluationPeriods).toBe(1);
+      expect(alarm.Properties.MetricName).toBe(metricName);
+      expect(alarm.Properties.Period).toBe(period);
+      expect(alarm.Properties.DatapointsToAlarm).toBeUndefined();
+      // The 2026-07-27 rule ("no silent alarms") still holds after migration:
+      // an ALARM action, and — unlike BillingStack — deliberately no OK action.
+      expect(alarm.Properties.AlarmActions).toBeDefined();
+      expect(alarm.Properties.OKActions).toBeUndefined();
+
+      const [logicalId] = Object.keys(alarms);
+      expect(logicalId).toMatch(new RegExp(`^${constructId}[0-9A-F]{8}$`));
+    },
+  );
+
+  it('every alarm in the stack sets treatMissingData (none left on CloudWatch\'s flapping default)', () => {
+    // The gate that stops the next inline `new cloudwatch.Alarm` from
+    // reintroducing the flap. Same shape as the "no silent alarms" test below.
+    const alarms = template.findResources('AWS::CloudWatch::Alarm');
+    expect(Object.keys(alarms).length).toBeGreaterThanOrEqual(5);
+    for (const [logicalId, alarm] of Object.entries(alarms)) {
+      expect((alarm as any).Properties.TreatMissingData).toBe('notBreaching');
+      expect(logicalId).toBeTruthy();
+    }
+  });
+
   // 2026-07-27 observability pass: these alarms existed without any action
   // — red in the console, paging nobody. Every AiStack alarm must carry an
   // SNS action from now on.

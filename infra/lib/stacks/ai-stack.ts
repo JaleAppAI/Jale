@@ -14,6 +14,7 @@ import * as snsSubscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
+import { jaleAlarm } from '../constructs/jale-alarm';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
 import { BEDROCK_MODEL_ID, bedrockArns } from '../bedrock-arns';
 
@@ -284,23 +285,40 @@ export class AiStack extends cdk.Stack implements AiStackOutputs {
     }
     const aiAlarmAction = new cloudwatchActions.SnsAction(aiAlarmTopic);
 
-    new cloudwatch.Alarm(this, 'TrustAssessmentDlqAlarm', {
+    // `jaleAlarm` here and for TrustExtractionDlqAlarm below, for the one
+    // property all three were missing: `treatMissingData`. An idle trust queue
+    // and an unthrottled scorer publish NO datapoints, so each of these sat
+    // flapping OK <-> INSUFFICIENT_DATA on CloudWatch's `missing` default —
+    // while TrustScorerFailuresAlarm and TrustExtractorErrorsAlarm, written
+    // later in this same file, already set NOT_BREACHING. The inconsistency is
+    // what made the flapping read as a quirk of particular alarms rather than
+    // as a missing default; across this stack and BillingStack/MatchingStack it
+    // was 64 of 87 alarm state transitions in one week.
+    //
+    // Thresholds, operators, periods and alarmNames are preserved exactly.
+    jaleAlarm(this, 'TrustAssessmentDlqAlarm', {
       metric: trustAssessmentDlq.metricApproximateNumberOfMessagesVisible(),
       threshold: 1,
       evaluationPeriods: 1,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
       alarmName: 'TrustAssessmentDlqDepth',
-    }).addAlarmAction(aiAlarmAction);
+      actions: [aiAlarmAction],
+    });
 
-    new cloudwatch.Alarm(this, 'TrustScorerThrottleAlarm', {
+    jaleAlarm(this, 'TrustScorerThrottleAlarm', {
       metric: trustScorerLambda.function.metricThrottles({
         period: cdk.Duration.minutes(5),
       }),
       threshold: 5,
       evaluationPeriods: 1,
+      // `>` 5, not `>=`: five throttles in a five-minute window is the
+      // tolerated level here, six is the signal. Passed explicitly rather than
+      // left to the helper's `>=` default — the semantics are the alarm's, not
+      // the helper's.
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
       alarmName: 'TrustScorerThrottles',
-    }).addAlarmAction(aiAlarmAction);
+      actions: [aiAlarmAction],
+    });
 
     // Bedrock parse/validation failures previously retried into the DLQ with
     // zero log signal about WHY. The scorer now emits structured
@@ -353,12 +371,13 @@ export class AiStack extends cdk.Stack implements AiStackOutputs {
       alarmName: 'TrustExtractorErrors',
     }).addAlarmAction(aiAlarmAction);
 
-    new cloudwatch.Alarm(this, 'TrustExtractionDlqAlarm', {
+    jaleAlarm(this, 'TrustExtractionDlqAlarm', {
       metric: trustExtractionDlq.metricApproximateNumberOfMessagesVisible(),
       threshold: 1,
       evaluationPeriods: 1,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
       alarmName: 'TrustExtractionDlqDepth',
-    }).addAlarmAction(aiAlarmAction);
+      actions: [aiAlarmAction],
+    });
   }
 }

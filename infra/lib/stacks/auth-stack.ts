@@ -414,6 +414,34 @@ export class AuthStack extends cdk.Stack {
       email: employerPoolEmail,
     });
 
+    // ── Employer account recovery: email only ──
+    // Live `describe-user-pool` showed this pool sitting on CDK's default
+    // `AccountRecoverySetting` — `verified_phone_number` at priority 1,
+    // `verified_email` at 2 (aws-cdk-lib's `PHONE_WITHOUT_MFA_AND_EMAIL`).
+    // Employers sign up with an email and never register a phone, so Cognito
+    // evaluates a channel they cannot possibly have BEFORE the one they do,
+    // and an unconfirmed employer's forgot-password call comes back "user has
+    // no registered or verified email or phone_number" instead of sending a
+    // code. Email-only is what this pool has always actually supported; the
+    // default was advertising a recovery route that does not exist.
+    //
+    // Written on the L1 instead of passed as a construct prop because
+    // `JaleCognitoPool` (lib/constructs/cognito-pool.ts) does not surface
+    // `accountRecovery`. Assigning `accountRecoverySetting` REPLACES the
+    // rendered default rather than merging with it, and produces exactly what
+    // `cognito.AccountRecovery.EMAIL_ONLY` renders —
+    // `[{ Name: 'verified_email', Priority: 1 }]` — while leaving the pool's
+    // construct path, and therefore its CloudFormation logical id and the live
+    // pool behind it, untouched.
+    //
+    // EMPLOYER POOL ONLY. The worker pool authenticates by SMS OTP and has no
+    // verified email at all, so email-only recovery there would remove every
+    // recovery route a worker has. Do not copy this to WorkerPool.
+    (this.employerPool.userPool.node.defaultChild as cognito.CfnUserPool)
+      .accountRecoverySetting = {
+        recoveryMechanisms: [{ name: 'verified_email', priority: 1 }],
+      };
+
     // ── Cognito User Groups ──
     new cognito.CfnUserPoolGroup(this, 'WorkerGroup', {
       userPoolId: this.workerPool.userPool.userPoolId,

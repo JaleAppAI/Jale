@@ -408,6 +408,64 @@ describe('BillingStack', () => {
     });
   });
 
+  // ── Alarm hygiene (sprint 24 A4) ──────────────────────────────────────────
+  //
+  // Both of these were declared inline with no `treatMissingData` and so
+  // inherited CloudWatch's `missing` default. An idle webhook DLQ and an
+  // unthrottled processor emit no datapoints, so each alarm sat flapping
+  // OK <-> INSUFFICIENT_DATA — and both carry an OK action, so every flap sent
+  // the operator a notification saying nothing had happened.
+  //
+  // Everything except TreatMissingData is pinned here BECAUSE the migration to
+  // `jaleAlarm()` touches these lines: an accidental change to a threshold, a
+  // period, an operator or (worst) the AlarmName lands on a live alarm, and an
+  // AlarmName change replaces it.
+  const BILLING_ALARMS = [
+    {
+      constructId: 'BillingWebhookDlqAlarm',
+      alarmName: 'BillingWebhookDlqDepth',
+      threshold: 1,
+      comparisonOperator: 'GreaterThanOrEqualToThreshold',
+      metricName: 'ApproximateNumberOfMessagesVisible',
+      period: 300,
+    },
+    {
+      constructId: 'BillingProcessorThrottleAlarm',
+      alarmName: 'BillingProcessorThrottles',
+      threshold: 5,
+      // Deliberately `>` and not `>=`: five throttles in five minutes is the
+      // tolerated level, six is the problem. Preserved exactly.
+      comparisonOperator: 'GreaterThanThreshold',
+      metricName: 'Throttles',
+      period: 300,
+    },
+  ] as const;
+
+  test.each(BILLING_ALARMS)(
+    '$alarmName treats missing data as notBreaching with its threshold, operator and period unchanged',
+    ({ constructId, alarmName, threshold, comparisonOperator, metricName, period }) => {
+      const alarms = template.findResources('AWS::CloudWatch::Alarm', {
+        Properties: { AlarmName: alarmName },
+      });
+      expect(Object.keys(alarms)).toHaveLength(1);
+      const alarm = Object.values(alarms)[0] as any;
+
+      expect(alarm.Properties.TreatMissingData).toBe('notBreaching');
+      expect(alarm.Properties.Threshold).toBe(threshold);
+      expect(alarm.Properties.ComparisonOperator).toBe(comparisonOperator);
+      expect(alarm.Properties.EvaluationPeriods).toBe(1);
+      expect(alarm.Properties.MetricName).toBe(metricName);
+      expect(alarm.Properties.Period).toBe(period);
+      expect(alarm.Properties.DatapointsToAlarm).toBeUndefined();
+      // Both actions survive the migration: ALARM pages, OK closes the page.
+      expect(alarm.Properties.AlarmActions).toBeDefined();
+      expect(alarm.Properties.OKActions).toBeDefined();
+
+      const [logicalId] = Object.keys(alarms);
+      expect(logicalId).toMatch(new RegExp(`^${constructId}[0-9A-F]{8}$`));
+    },
+  );
+
   // ── Unknown-customer terminal skip (compensating observability) ──────────
   //
   // processor.ts terminally skips events whose Stripe customer has no
