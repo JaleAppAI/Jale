@@ -24,10 +24,22 @@ const VALID_LOCATION_SOURCES = ['geocoded_zip', 'geocoded_address'] as const sat
 const VALID_LANGS = ['en', 'es'] as const satisfies readonly TradeLang[];
 
 /**
- * The worker's language for the stored trade text: the explicit body field
- * first (the web client sends its active locale), then the `Accept-Language`
- * primary tag when it is one we support, then 'es' — matching
- * `whatsapp_conversations.language`'s DEFAULT and `loadWorkerGate`'s COALESCE.
+ * The worker's language for the stored trade text, in this order:
+ *
+ *   1. the explicit `lang` body field. `updateWorkerProfile`
+ *      (frontend/src/lib/api/worker.ts) sends the app's active locale here,
+ *      read from the URL's `/en|/es` prefix — sprint 24 (F7); before that the
+ *      web client sent no `lang` at all and this branch was dead for it.
+ *      Validated against VALID_LANGS at the top of the handler, so anything
+ *      outside en|es is a 400 `invalid_lang` and never reaches this function.
+ *   2. the `Accept-Language` primary tag when it is one we support. This is
+ *      the fallback for every client that sends no body field. `apiFetch`
+ *      sets the header from the same path prefix, so a web save now says the
+ *      locale twice and the two cannot disagree — but a caller-supplied
+ *      `Accept-Language` overrides the header, which is exactly why the body
+ *      field wins.
+ *   3. 'es' — matching `whatsapp_conversations.language`'s DEFAULT and
+ *      `loadWorkerGate`'s COALESCE.
  *
  * `users` carries no language column, which is why this is derived per request
  * rather than read from the worker's row.
