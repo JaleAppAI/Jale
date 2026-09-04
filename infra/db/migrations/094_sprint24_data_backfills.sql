@@ -16,9 +16,18 @@
 --     key simply means the question is asked again for this job -- which is
 --     the intended behaviour on BOTH the old and the new code.
 --   * step B rewrites a trade into the pair lambda/lib/trade-canonical.ts now
---     produces at every write site. The old code stored raw text and reads it
---     back unchanged, so a canonical value is just another string to it.
--- Apply it in a low-traffic window all the same -- see the lock note below.
+--     produces at every write site. On the CUSTOM branch this is invisible to
+--     the old code, which stored raw text and reads it back unchanged, so a
+--     canonical name is just another string to it.
+--     The STANDARD branch is a real change of meaning, not just of spelling:
+--     main_trade moves off 'other' onto the enum key and main_trade_other is
+--     cleared, so job matching starts treating that worker as a standard
+--     trade. That is the intended D4 end state and is an improvement on both
+--     the old and the new code -- a worker who typed 'electricista' SHOULD
+--     match electrician jobs -- which is why the ordering is still free. It is
+--     not, however, a no-op for readers of main_trade, so if the release is
+--     being staged, prefer applying this AFTER the code deploy.
+-- Apply it in a low-traffic window either way -- see the lock note below.
 --
 -- ── WHY THIS IS A MIGRATION AND NOT A SCRIPT ──
 -- Both backfills were originally sprint-24 operator scripts. They cannot
@@ -85,8 +94,14 @@
 -- Re-applying this file is a no-op that reports 0 rows on both steps: step A
 -- is gated on `answers ?| array[...]` and step B on two explicit
 -- IS DISTINCT FROM clauses, which is also what gives it exact parity with
--- classifyBackfillRow's `changed` flag in the script. The migration LEDGER is
--- what refuses a replay in the deploy path; the SQL itself is safe to re-run.
+-- classifyBackfillRow's `changed` flag in the script.
+--
+-- The deploy path does not depend on that: run-migrations.sh keeps a ledger
+-- (public.schema_migrations) and skips a file it already records, so a normal
+-- run never re-applies this one -- only `--force-replay` does. The idempotence
+-- above is therefore a safety property, not the mechanism, and it is what
+-- makes a --force-replay and a hand re-apply through the bastion both safe.
+-- Verified on the sprint-24 testbed: applied 1/4/4 rows, replayed 0/0/0.
 --
 -- ── WHERE THE SELF-CHECKS LIVE, AND WHY ──
 -- The DATA assertions run while RLS is still un-forced. They have to: once
