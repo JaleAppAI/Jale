@@ -232,6 +232,109 @@ describe('EmployerAuthForm — confirm step', () => {
     });
 });
 
+/**
+ * The second half of the same incident. An employer whose account was never
+ * confirmed cannot reset their password AT ALL: the employer pool recovers
+ * phone-first, they have no verified email, and Cognito refuses with
+ * `InvalidParameterException` + "there is no registered/verified email or
+ * phone_number". That message mentions `phone_number`, so the shared mapper
+ * answered "Enter a valid phone number" — on a step whose only field is an
+ * email address.
+ *
+ * The reset is unreachable for them by design, so the fix is not better
+ * wording: it is to put them on the flow that does work, which is the same
+ * confirmation-code recovery the login step already runs.
+ */
+describe('EmployerAuthForm — forgot password for an unconfirmed account', () => {
+    /** Cognito's real refusal for an account with no verified contact. */
+    const noVerifiedContactError = {
+        code: 'InvalidParameterException',
+        name: 'InvalidParameterException',
+        message: 'Cannot reset password for the user as there is no registered/verified email or phone_number',
+    };
+
+    async function requestResetFor(user: ReturnType<typeof userEvent.setup>, address: string) {
+        await user.click(screen.getByRole('button', { name: message('auth.employer.forgot_link') }));
+        expect(await screen.findByText(FORGOT_MARKER)).toBeInTheDocument();
+        await user.type(screen.getByRole('textbox'), address);
+        await user.click(screen.getByRole('button', { name: new RegExp(`^${message('auth.employer.send_code')}`) }));
+    }
+
+    it('sends a new confirmation code and moves to the confirm step', async () => {
+        const user = userEvent.setup();
+        cognito.employerForgotPassword.mockRejectedValueOnce(noVerifiedContactError);
+        cognito.employerResendConfirmationCode.mockResolvedValueOnce(undefined);
+        render(<EmployerAuthForm />);
+
+        await requestResetFor(user, 'unconfirmed@example.com');
+
+        // The confirm step, in recovery mode — not the reset-code step, which
+        // is a dead end for this account.
+        expect(await screen.findByText(RECOVERY_MARKER)).toBeInTheDocument();
+        expect(
+            screen.getByText(translate('auth.employer', 'forgot_not_confirmed', { email: 'unconfirmed@example.com' })),
+        ).toBeInTheDocument();
+        // The address typed on the forgot step has to be promoted: `handleConfirm`
+        // reads `email`, and the resend has to go to the same place.
+        expect(cognito.employerResendConfirmationCode).toHaveBeenCalledTimes(1);
+        expect(cognito.employerResendConfirmationCode).toHaveBeenCalledWith('unconfirmed@example.com');
+        expect(
+            screen.getByText(translate('auth.employer', 'confirm_subtitle', { email: 'unconfirmed@example.com' })),
+        ).toBeInTheDocument();
+    });
+
+    it('never blames the phone field for it', async () => {
+        const user = userEvent.setup();
+        cognito.employerForgotPassword.mockRejectedValueOnce(noVerifiedContactError);
+        cognito.employerResendConfirmationCode.mockResolvedValueOnce(undefined);
+        render(<EmployerAuthForm />);
+
+        await requestResetFor(user, 'unconfirmed@example.com');
+
+        await screen.findByText(RECOVERY_MARKER);
+        // The sentence that made this incident unreadable. There is no phone
+        // field anywhere in this flow.
+        expect(screen.queryByText(message('auth.employer.errors.invalid_phone'))).not.toBeInTheDocument();
+        // One banner, not two: the recovery notice replaces the generic
+        // "we sent a new code" line rather than stacking with it.
+        expect(
+            screen.queryByText(translate('auth.employer', 'code_sent', { email: 'unconfirmed@example.com' })),
+        ).not.toBeInTheDocument();
+        // The send that just went out is accounted for against Cognito's
+        // 5-per-hour cap, so the Resend affordance is held rather than offered.
+        expect(screen.getByText(translate('auth.employer', 'resend_cooldown', { seconds: 60 }))).toBeInTheDocument();
+    });
+
+    it('leaves an ordinary reset failure on the forgot step with its own message', async () => {
+        const user = userEvent.setup();
+        cognito.employerForgotPassword.mockRejectedValueOnce({
+            code: 'LimitExceededException',
+            name: 'LimitExceededException',
+        });
+        render(<EmployerAuthForm />);
+
+        await requestResetFor(user, 'employer@example.com');
+
+        // Only the unconfirmed refusal reroutes. A rate limit is about this
+        // request, not about the account, so the step and its copy stay put —
+        // and nothing may spend a resend attempt on it.
+        expect(await screen.findByText(message('auth.employer.errors.too_many_attempts'))).toBeInTheDocument();
+        expect(screen.getByText(FORGOT_MARKER)).toBeInTheDocument();
+        expect(cognito.employerResendConfirmationCode).not.toHaveBeenCalled();
+    });
+
+    it('keeps the reset flow when Cognito accepts the request', async () => {
+        const user = userEvent.setup();
+        cognito.employerForgotPassword.mockResolvedValueOnce(undefined);
+        render(<EmployerAuthForm />);
+
+        await requestResetFor(user, 'employer@example.com');
+
+        expect(await screen.findByText(message('auth.employer.forgot_confirm_title'))).toBeInTheDocument();
+        expect(cognito.employerResendConfirmationCode).not.toHaveBeenCalled();
+    });
+});
+
 describe('EmployerAuthForm — sign-in call', () => {
     /**
      * The form forwards what the user typed, verbatim: normalisation belongs to

@@ -392,7 +392,8 @@
       "panel_bullet_2": "Perfiles de trabajadores verificados",
       "panel_bullet_3": "Fotos de trabajos anteriores",
       "panel_bullet_4": "Mensajee a los candidatos directamente",
-      "panel_bullet_5": "Gratis para empezar"
+      "panel_bullet_5": "Gratis para empezar",
+      "forgot_not_confirmed": "Su cuenta aún no está confirmada. Enviamos un código de confirmación nuevo a {email}. Ingréselo abajo para terminar su registro."
     },
     "shell": {
       "language_toggle": "English",

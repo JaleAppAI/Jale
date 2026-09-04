@@ -392,7 +392,8 @@
       "panel_bullet_2": "Verified worker profiles",
       "panel_bullet_3": "Photos of previous work",
       "panel_bullet_4": "Message candidates directly",
-      "panel_bullet_5": "Free to get started"
+      "panel_bullet_5": "Free to get started",
+      "forgot_not_confirmed": "Your account isn't confirmed yet. We sent a new confirmation code to {email}. Enter it below to finish signing up."
     },
     "shell": {
       "language_toggle": "Español",

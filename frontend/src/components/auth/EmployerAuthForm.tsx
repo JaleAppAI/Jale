@@ -4,7 +4,7 @@ import { useTranslations } from 'next-intl';
 import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { employerConfirmSignUp, employerSignIn, employerSignUp, employerForgotPassword, employerConfirmNewPassword, employerResendConfirmationCode } from '@/lib/cognito';
-import { authErrorKey, confirmErrorKey, resendErrorKey } from '@/lib/auth-errors';
+import { authErrorKey, confirmErrorKey, forgotErrorKey, resendErrorKey } from '@/lib/auth-errors';
 import { formatPhoneNumber, type PhoneCountryCode } from '@/lib/phone';
 import type { CompanySize, EmployerJobType, EmployerProfilePatch, EmployerTrade } from '@/lib/api/employer';
 import { validateEmployerSignupFields, type EmployerSignupField } from '@/lib/employer-profile-form';
@@ -103,6 +103,11 @@ export default function EmployerAuthForm() {
     const [resendCooldown, setResendCooldown] = useState(0);
     const [resendSuccess, setResendSuccess] = useState(false);
     const [confirmedSuccess, setConfirmedSuccess] = useState(false);
+    // Set only by the forgot-password recovery below. It replaces the generic
+    // "we sent a new code" line rather than adding to it: this user did not ask
+    // for a confirmation code, so the banner has to say why they are looking at
+    // one and what finishing it gets them.
+    const [notConfirmedNotice, setNotConfirmedNotice] = useState(false);
     const phone = formatPhoneNumber(phoneCountryCode, phoneLocalNumber);
 
     // Counts the cooldown down to zero. Depending on `resendCooldown` rather
@@ -168,8 +173,17 @@ export default function EmployerAuthForm() {
      * confirm step at all: there is no code coming, so the user is left on
      * login where the sentence ("already confirmed — sign in") matches the
      * screen they are looking at.
+     *
+     * `notice` picks which success line the step opens with. Both mean "the
+     * newest code is on its way", but a user who came from the forgot-password
+     * step asked for a password reset and is being handed a confirmation code
+     * instead, so that arrival needs the sentence that explains the swap.
      */
-    const enterRecoveryConfirm = (targetEmail: string, outcome: ResendOutcome) => {
+    const enterRecoveryConfirm = (
+        targetEmail: string,
+        outcome: ResendOutcome,
+        notice: 'code_sent' | 'not_confirmed' = 'code_sent',
+    ) => {
         setEmail(targetEmail);
         setResetSuccess(false);
         if (outcome.status === 'failed' && outcome.key === 'errors.already_confirmed') {
@@ -190,7 +204,8 @@ export default function EmployerAuthForm() {
         // 'sent' and 'skipped' both mean the newest code is already on its way,
         // so the same confirmation is true for both — but only a call that
         // actually went out restarts the cooldown.
-        setResendSuccess(true);
+        if (notice === 'not_confirmed') setNotConfirmedNotice(true);
+        else setResendSuccess(true);
         if (outcome.status === 'sent') setResendCooldown(RESEND_COOLDOWN_SECONDS);
     };
 
@@ -257,6 +272,10 @@ export default function EmployerAuthForm() {
     const handleResendCode = async () => {
         setError(null);
         setResendSuccess(false);
+        // The forgot-password notice describes the send that BROUGHT the user
+        // here. Once they ask for another code it is stale, and leaving it up
+        // would stack two success banners about two different sends.
+        setNotConfirmedNotice(false);
         const outcome = await requestNewCode(email);
         // The cooldown label is already on screen explaining the wait, so a
         // skipped call needs no second message.
@@ -409,7 +428,26 @@ export default function EmployerAuthForm() {
             await employerForgotPassword(forgotEmail);
             setStep('forgot_confirm');
         } catch (err) {
-            setError(t(authErrorKey(err)));
+            // `forgotErrorKey`, not `authErrorKey`: Cognito refuses a reset for
+            // an account with no verified contact with
+            // `InvalidParameterException` and a message that mentions
+            // `phone_number`, which the shared mapper reads as a bad phone
+            // field — "Enter a valid phone number", on a step whose only field
+            // is an email address.
+            const key = forgotErrorKey(err);
+            if (key === 'errors.account_not_confirmed') {
+                // A reset is not merely failing here, it is UNREACHABLE: the
+                // pool recovers phone-first and an unconfirmed employer has no
+                // verified email, so asking again can never work. The recovery
+                // that does work is the confirmation code — the same flow
+                // `handleSignIn` runs for `UserNotConfirmedException` — so the
+                // address is promoted onto the confirm step (`handleConfirm`
+                // reads `email`, not `forgotEmail`) and the code is on its way
+                // before the user sees the step.
+                enterRecoveryConfirm(forgotEmail, await requestNewCode(forgotEmail), 'not_confirmed');
+                return;
+            }
+            setError(t(key));
         } finally {
             setIsLoading(false);
         }
@@ -454,6 +492,7 @@ export default function EmployerAuthForm() {
         // action. Callers that want them set them again after this returns.
         setResendSuccess(false);
         setConfirmedSuccess(false);
+        setNotConfirmedNotice(false);
         setStep(next);
     };
 
@@ -654,6 +693,13 @@ export default function EmployerAuthForm() {
                             // banner shows the address the code actually went to
                             // rather than the casing the user happened to type.
                             <InlineFeedback tone="success">{t('code_sent', { email: email.trim().toLowerCase() })}</InlineFeedback>
+                        )}
+                        {notConfirmedNotice && (
+                            // `info`, not `success`: nothing the user asked for
+                            // succeeded. They asked to reset a password and are
+                            // being told why they are looking at a confirmation
+                            // code instead.
+                            <InlineFeedback tone="info">{t('forgot_not_confirmed', { email: email.trim().toLowerCase() })}</InlineFeedback>
                         )}
                         {error && <FormError>{error}</FormError>}
                         {/* A resend in flight may be about to invalidate the code in the
