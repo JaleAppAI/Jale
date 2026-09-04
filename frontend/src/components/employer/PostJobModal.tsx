@@ -1,6 +1,6 @@
 'use client';
 import type React from 'react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
@@ -127,6 +127,19 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
   // creation: a failure to load or save one must never block posting a job.
   const [templates, setTemplates] = useState<JobTemplate[]>([]);
   const [checkCity, setCheckCity] = useState(false);
+  /*
+   * "This location is text, not a city."
+   *
+   * `checkCity`'s quieter sibling, and the one that was missing. `checkCity`
+   * fires when a template DID carry a city and only asks the employer to
+   * confirm it. This fires when the applied template carried none: the picker
+   * prefills the location TEXT either way, so without it the field looked
+   * settled while `form.city_key` was null underneath, and the employer found
+   * out only when Next refused at the bottom of step 1. Set from a template
+   * apply and from any `location_pick_required` verdict; cleared by an actual
+   * pick.
+   */
+  const [cityMissing, setCityMissing] = useState(false);
   const [saveAsTemplate, setSaveAsTemplate] = useState(false);
   const [templateName, setTemplateName] = useState('');
   const [templateNotice, setTemplateNotice] = useState<'' | 'limit' | 'name_taken'>('');
@@ -134,6 +147,20 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
 
   const headingRef = useRef<HTMLHeadingElement>(null);
   const feedbackRef = useRef<HTMLDivElement>(null);
+  /*
+   * One `<form>` for whichever step is mounted, and the footer's primary
+   * button reaches it by `form={formId}` rather than by containment.
+   *
+   * That indirection is not a style choice: `ui/modal.tsx` renders `footer` as
+   * a SIBLING of `children`, so Next/Publish cannot sit inside the form
+   * element the fields live in. The `form` attribute is the standard way to
+   * associate a submit button with a form it is not descended from, and it is
+   * what makes Enter-in-a-field do the step's primary action -- which the
+   * wizard simply did not have before (Enter did nothing at all, three steps
+   * deep).
+   */
+  const formId = useId();
+  const cityHelperId = useId();
   // Once the template save succeeds, later submits of the SAME wizard run
   // (e.g. after a failed job post) carry this id so the backend overwrites
   // that template instead of 409ing against our own first save.
@@ -213,6 +240,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     setError('');
     setJobLimit(null);
     setCheckCity(false);
+    setCityMissing(false);
     setSaveAsTemplate(false);
     setTemplateName('');
     setTemplateNotice('');
@@ -226,6 +254,14 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     const { form: prefilled, cityPrefilled } = jobFormFromTemplatePayload(template.payload);
     setForm(prefilled);
     setCheckCity(cityPrefilled);
+    // Asked of the VALIDATOR rather than of `!cityPrefilled`, so the two can
+    // never disagree about what step 1 will accept: it also answers "no" when
+    // the location dataset failed to load (free text is then allowed) and when
+    // the template has no location at all (a different error owns that).
+    setCityMissing(validateStepBasics(prefilled) === 'location_pick_required');
+    // A template apply replaces the whole form; a stale verdict about the
+    // previous one must not survive it.
+    setError('');
   };
 
   const toggleLanguage = (value: 'any' | 'en' | 'es') => {
@@ -303,11 +339,16 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     }
   };
 
-  /** Step 1 -> `validateStepBasics`, step 2 -> `validateStepDetails`, step 3 -> the prompts editor. */
-  const validateStepAt = (n: Step): string | null => {
-    if (n === 1) return validationMessage(validateStepBasics(form));
-    if (n === 2) return validationMessage(validateStepDetails(form));
-    return validationMessage(validateStepRequirements(form));
+  /**
+   * Step 1 -> `validateStepBasics`, step 2 -> `validateStepDetails`, step 3 ->
+   * the prompts editor. Returns the CODE, not the sentence: `goToStep` needs to
+   * know specifically about `location_pick_required` to light up the picker,
+   * and a flattened string cannot say which field failed.
+   */
+  const validateStepAt = (n: Step): ReturnType<typeof validateFullJobForm> => {
+    if (n === 1) return validateStepBasics(form);
+    if (n === 2) return validateStepDetails(form);
+    return validateStepRequirements(form);
   };
 
   /**
@@ -332,9 +373,14 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       return;
     }
     for (let n: number = step; n < target; n++) {
-      const message = validateStepAt(n as Step);
+      const code = validateStepAt(n as Step);
+      const message = validationMessage(code);
       if (message) {
         setError(message);
+        // The sentence names the problem; the ring says WHERE. Without this the
+        // employer reads "select a city from the suggestions" under the footer
+        // with nothing on the field it is talking about.
+        if (code === 'location_pick_required') setCityMissing(true);
         setStep(n as Step);
         return;
       }
@@ -361,6 +407,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     const validationError = validationMessage(validationCode);
     if (validationError) {
       setError(validationError);
+      if (validationCode === 'location_pick_required') setCityMissing(true);
       // Land on whichever step actually owns the failing field, same as a
       // blocked forward jump, so the employer isn't left on step 3 staring
       // at a message about step 1 -- or, now, on step 1 staring at one about
@@ -481,6 +528,26 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     }
   };
 
+  /**
+   * The current step's primary action, reached by Enter or by the footer's
+   * submit button -- the two are the same event now.
+   *
+   * One form dispatching on `step` rather than three identical forms: only one
+   * step is ever mounted, so three would be three copies of this switch with
+   * three chances to drift. Textareas keep native Enter=newline (a textarea
+   * never implicitly submits), which is what the description field and every
+   * pre-application question need.
+   */
+  const handleStepSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (loading) return;
+    if (step < 3) {
+      goToStep((step + 1) as Step);
+      return;
+    }
+    void handleSubmit();
+  };
+
   const stepHint =
     step === 1
       ? t('modal.steps.basics_hint')
@@ -495,14 +562,24 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       onClose={handleClose}
       title={t('modal.title')}
       size="md"
+      // A half-filled three-step wizard must not evaporate on a stray backdrop
+      // click -- the same guard TemplateEditModal and EditJobModal already
+      // carry, and the one this modal most needed: Escape and the header X are
+      // deliberate, a mis-aimed click is not.
+      closeOnOverlay={false}
       footer={
         <div className="flex w-full items-center gap-2">
+          {/* Every non-submit button here is EXPLICITLY type="button". They sit
+              outside the step form, so the native submit default cannot reach
+              them today -- but the primary ones below are wired into it by
+              `form={formId}`, and one of these losing its type later would
+              silently join them. */}
           {step === 1 ? (
-            <Button variant="ghost" onClick={handleClose} className="flex-1">
+            <Button type="button" variant="ghost" onClick={handleClose} className="flex-1">
               {t('modal.cancel')}
             </Button>
           ) : (
-            <Button variant="ghost" onClick={() => goToStep((step - 1) as Step)} disabled={loading} className="flex-1">
+            <Button type="button" variant="ghost" onClick={() => goToStep((step - 1) as Step)} disabled={loading} className="flex-1">
               {t('post_job_docs.back')}
             </Button>
           )}
@@ -510,16 +587,18 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
               which rendered navy on the dark card and all but disappeared. That
               variant has since been retired outright (see `ui/button`), so
               `primary` is now simply the only CTA fill there is. */}
+          {/* `type="submit" form={formId}`, not `onClick`: that is what makes
+              the button the step form's DEFAULT submitter, so Enter in any
+              field does what pressing it does -- one code path, not two. */}
           {step < 3 ? (
-            <Button variant="primary" onClick={() => goToStep((step + 1) as Step)} className="flex-1">
+            <Button type="submit" form={formId} variant="primary" className="flex-1">
               {t('modal.next')}
             </Button>
           ) : (
             <Button
+              type="submit"
+              form={formId}
               variant="primary"
-              // Wrapped, not passed directly: `handleSubmit` now takes an
-              // options object, and a bare handler would hand it a MouseEvent.
-              onClick={() => void handleSubmit()}
               loading={loading}
               loadingLabel={tCommon('loading')}
               className="flex-1"
@@ -588,6 +667,25 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
         <p className="mt-1 text-sm text-[var(--jale-ink-2)]">{stepHint}</p>
       </div>
 
+      <form id={formId} onSubmit={handleStepSubmit}>
+      {/*
+        The form's DEFAULT BUTTON, and the reason Enter works at all.
+
+        The footer's Next/Publish is associated by `form={formId}` and submits
+        on click, but it is not a DESCENDANT of the form -- `ui/modal.tsx`
+        renders `footer` as a sibling of `children`. Implicit submission
+        (Enter in a field) is specified against the form's default button,
+        which is form-OWNERSHIP based, so per spec the footer button would
+        qualify; in practice the DOM implementations that matter here look for
+        a descendant submit button and find none. This hidden one is that
+        descendant, which makes Enter behave the same everywhere instead of
+        depending on which reading of the spec the host implements.
+
+        `hidden` (not `sr-only`) so it is invisible to sight and to screen
+        readers alike, and `tabIndex={-1}` so it never becomes a tab stop: the
+        visible footer button is the only control a user should ever reach.
+      */}
+      <button type="submit" hidden aria-hidden tabIndex={-1} />
       {step === 1 && (
         <div className="grid gap-4">
           {templates.length > 0 ? (
@@ -622,10 +720,12 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
           </Field>
           <div className="grid gap-3 md:grid-cols-2">
             <Field label={t('modal.location')} required>
-              <div className={checkCity ? 'rounded-[10px] ring-2 ring-[var(--jale-warning)]' : undefined}>
+              <div className={checkCity || cityMissing ? 'rounded-[10px] ring-2 ring-[var(--jale-warning)]' : undefined}>
                 <LocationPicker
                   value={form.location}
                   placeholder={t('modal.location_placeholder')}
+                  invalid={cityMissing}
+                  describedBy={cityMissing ? cityHelperId : undefined}
                   onChange={(v) => {
                     setForm((c) => applyLocationToJobForm(c, v));
                     // Any location edit resolves the "verify the
@@ -633,12 +733,20 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
                     setCheckCity(false);
                     // A real pick resolves the "pick a city" error; drop it
                     // immediately instead of waiting for the next step.
-                    if (v.cityKey) setError('');
+                    // Typing does NOT: free text still leaves `city_key` null,
+                    // which is the whole thing the ring is reporting.
+                    if (v.cityKey) {
+                      setCityMissing(false);
+                      setError('');
+                    }
                   }}
                 />
               </div>
               {checkCity && (
                 <p className="mt-1 rounded-md bg-[var(--jale-warning-bg)] px-2 py-1 text-xs font-semibold text-[var(--jale-warning)]">{t('modal.template_check_city')}</p>
+              )}
+              {cityMissing && (
+                <p id={cityHelperId} className="mt-1 rounded-md bg-[var(--jale-warning-bg)] px-2 py-1 text-xs font-semibold text-[var(--jale-warning)]">{t('modal.location_pick_helper')}</p>
               )}
             </Field>
             <Field label={t('modal.job_type')}>
@@ -828,6 +936,10 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
             onNavigate={handleClose}
             actions={
               <Button
+                // Explicitly not a submitter: this one DOES sit inside the
+                // step-3 form, where the native default would make it publish
+                // the job rather than post it without the template.
+                type="button"
                 variant="outline"
                 size="sm"
                 onClick={() => {
@@ -843,6 +955,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
         </div>
         </div>
       )}
+      </form>
 
       {error || jobLimit ? (
         <div ref={feedbackRef} className="mt-5 flex flex-col gap-2">

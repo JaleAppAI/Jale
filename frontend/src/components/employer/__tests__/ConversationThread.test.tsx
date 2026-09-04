@@ -42,6 +42,42 @@ describe('ConversationThread header', () => {
     expect(screen.getByText('Line Cook')).toBeInTheDocument();
     expect(screen.getByText('Austin, TX')).toBeInTheDocument();
   });
+
+  /*
+   * Owner report after the 2026-09-03 release: the thread read as a chat with
+   * a person and gave no clue WHICH job it was about -- the worker's name was
+   * the h2 at `text-sm`, and the job title sat under it two sizes smaller.
+   * The job is what an employer is triaging by, so it is the heading now.
+   */
+  it('makes the job title the thread heading', () => {
+    renderIntl(<ConversationThread conversation={conversation} messages={[]} onSend={vi.fn()} />);
+    expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('Line Cook');
+  });
+
+  it('renders the job title larger than the worker name', () => {
+    renderIntl(<ConversationThread conversation={conversation} messages={[]} onSend={vi.fn()} />);
+    // jsdom has no stylesheet, so the utility class IS the observable here.
+    expect(screen.getByRole('heading', { level: 2 }).className).toContain('text-lg');
+    expect(screen.getByText('Maria Garcia').className).not.toContain('text-lg');
+  });
+
+  it('keeps the location as a subdued line under the title', () => {
+    renderIntl(<ConversationThread conversation={conversation} messages={[]} onSend={vi.fn()} />);
+    expect(screen.getByText('Austin, TX').className).toContain('--jale-ink-2');
+  });
+});
+
+describe('ConversationThread send button', () => {
+  // The send action was a default-size button that read as secondary next to
+  // the textarea. `lg` is `h-12` (ui/button.tsx sizeClasses), and `primary` is
+  // the filled CTA fill -- both asserted by class because that is what a
+  // stylesheet-less DOM can see.
+  it('is the primary CTA at the large size', () => {
+    renderIntl(<ConversationThread conversation={conversation} messages={[]} onSend={vi.fn()} />);
+    const send = screen.getByRole('button', { name: message('employer_messages.send') });
+    expect(send.className).toContain('h-12');
+    expect(send.className).toContain('--jale-blue-500');
+  });
 });
 
 describe('ConversationThread composer', () => {

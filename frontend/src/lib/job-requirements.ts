@@ -77,13 +77,21 @@ export type RequirementState = 'off' | 'optional' | 'required';
 
 export type RequirementsMap = Record<RequirementKey, RequirementState>;
 
-/** New-job defaults (locked design): these four Required, everything else Off. */
-const DEFAULT_REQUIRED_KEYS: readonly RequirementFieldKey[] = [
-  'work_authorization',
-  'date_available',
-  'emergency_contact',
-  'worked_here_before',
-];
+/**
+ * New-job defaults: NOTHING required.
+ *
+ * Owner decision 2026-09-04 -- the employer opts in. This list used to hold
+ * `work_authorization`, `date_available`, `emergency_contact` and
+ * `worked_here_before` (the original locked design), which meant every job
+ * posted through the wizard demanded four answers the employer had never
+ * asked for. It stays a list rather than being inlined as `{}` so a future
+ * decision to seed a default is one line here and nowhere else.
+ *
+ * Knock-on, deliberate: `jobFormToBasePayload` derives the legacy
+ * `work_authorization_required` column from `requirements.work_authorization`,
+ * so a new job now sends `false` there instead of `true`.
+ */
+const DEFAULT_REQUIRED_KEYS: readonly RequirementFieldKey[] = [];
 
 export function initialRequirements(): RequirementsMap {
   const map = {} as RequirementsMap;

@@ -150,7 +150,10 @@ export function EmptyThreadComposer({
           </p>
         ) : null}
 
-        <div className="flex gap-2">
+        {/* `items-end` and the `lg` primary send button below mirror
+            ConversationThread's composer -- the same action must not look
+            different in the two panes. */}
+        <div className="flex items-end gap-2">
           <textarea
             ref={textareaRef}
             value={body}
@@ -165,7 +168,7 @@ export function EmptyThreadComposer({
                `ConversationThread.tsx`. Border-only was 2.20:1 in dark. */
             className="min-h-[42px] flex-1 resize-none rounded-[var(--radius-input)] border border-[var(--jale-divider)] bg-[var(--jale-paper-2)] px-3 py-2 text-sm text-[var(--jale-ink)] outline-none placeholder:text-[var(--jale-ink-2)] focus:border-[var(--primary)] focus:bg-[var(--jale-card)] focus:shadow-[var(--shadow-focus)]"
           />
-          <Button type="submit" loading={sending} loadingLabel={tCommon('loading')}>
+          <Button type="submit" variant="primary" size="lg" loading={sending} loadingLabel={tCommon('loading')}>
             {t('send')}
           </Button>
         </div>

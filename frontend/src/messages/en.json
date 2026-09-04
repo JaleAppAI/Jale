@@ -686,6 +686,17 @@
         "cancel": "Cancel",
         "error_hired": "This job has hired workers and can’t be deleted. Close it instead.",
         "error_generic": "Couldn’t delete this job. Please try again."
+      },
+      "status_change": {
+        "pause": "Pause",
+        "pause_aria": "Pause {title}",
+        "pause_pending": "Pausing…",
+        "resume": "Resume",
+        "resume_aria": "Resume {title}",
+        "resume_pending": "Resuming…",
+        "pause_success": "Job paused",
+        "resume_success": "Job resumed",
+        "error_generic": "Couldn’t update this job. Please try again."
       }
     },
     "filter": {
@@ -840,7 +851,8 @@
       "template_check_city": "Check the city before posting",
       "template_name_taken": "You already have a template with that name",
       "template_not_saved": "Your template won't be saved — your plan allows {limit} template(s).",
-      "post_without_template": "Post without saving template"
+      "post_without_template": "Post without saving template",
+      "location_pick_helper": "Select the city from the list to continue."
     },
     "worker_profile": {
       "years_experience": "{years, plural, one {# yr exp} other {# yrs exp}}"
@@ -1753,7 +1765,8 @@
       "cta_upgrade": "Upgrade plan",
       "cta_pause_job": "Pause another job",
       "cta_manage_templates": "Manage templates",
-      "dismiss": "Not now"
+      "dismiss": "Not now",
+      "body_jobs_preflight": "You can’t post a job right now. Your plan allows {limit} open job(s) and you already have {used}. Pause, close or delete one to post another, or upgrade your plan."
     },
     "limit_reached": {
       "modal_message": "You've reached your plan's limit of {limit} active job posting(s). Upgrade to post more.",
