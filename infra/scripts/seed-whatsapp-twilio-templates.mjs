@@ -20,6 +20,13 @@ const TWILIO_API_ORIGIN = 'https://content.twilio.com';
  *       Lists the account's Content with approval status and removes the
  *       rejected / never-submitted duplicates of the templates THIS file
  *       manages. Dry run unless --apply is passed.
+ *
+ *   --set-template <name>=<HX sid> [...] [--allow-pending]
+ *       Points existing template keys at existing, console-created Content
+ *       resources. Creates nothing. Refuses unless every SID exists and is
+ *       WhatsApp-approved; --allow-pending downgrades that to a warning.
+ *       The only way to install a SID this repo does not know, which is what
+ *       the D8 job-card relabel needs.
  */
 const ARGS = process.argv.slice(2);
 const hasFlag = (flag) => ARGS.includes(flag);
@@ -198,6 +205,133 @@ const isPurgeCandidate = (resource, managedNames, referencedSids) => (
   && !referencedSids.has(resource.sid)
   && (resource.status === 'rejected' || resource.status === 'unsubmitted')
 );
+
+/**
+ * The template keys `--set-template` is allowed to write.
+ *
+ * Copied from `TwilioSecret['templates']` in lambda/whatsapp/lib/twilio.ts --
+ * the interface the RUNTIME looks templates up in. A key absent from it is a
+ * key no sender ever reads, so a SID stored under one would sit in the secret
+ * doing nothing while the operator believed the relabel had shipped.
+ *
+ * Deliberately a STATIC copy rather than "the keys already in the secret plus
+ * a known list": unioning with live state lets a typo that is ALREADY stored
+ * authorize itself forever, and makes a refusal depend on which environment
+ * the command happened to run against. The cost of a hand copy is silent
+ * drift, so the test suite parses that interface out of twilio.ts and asserts
+ * set-equality with this list.
+ *
+ * `help_menu_list_*` is absent on purpose: this script CREATES those two, and
+ * they are not part of the runtime secret interface.
+ */
+const SETTABLE_TEMPLATE_KEYS = new Set([
+  'job_alert_es',
+  'job_alert_en',
+  'profile_reminder_es',
+  'profile_reminder_en',
+  'welcome_es',
+  'welcome_en',
+  'onboarding_legal_es',
+  'onboarding_legal_en',
+  'onboarding_trade_es',
+  'onboarding_trade_en',
+  'onboarding_experience_es',
+  'onboarding_experience_en',
+  'onboarding_transportation_es',
+  'onboarding_transportation_en',
+  'onboarding_availability_es',
+  'onboarding_availability_en',
+  'onboarding_photo_skip_es',
+  'onboarding_photo_skip_en',
+  'onboarding_photo_type_es',
+  'onboarding_photo_type_en',
+  'onboarding_voice_choice_es',
+  'onboarding_voice_choice_en',
+  'trust_choice_es',
+  'trust_choice_en',
+  'v2_onboarding_start_es',
+  'v2_onboarding_start_en',
+  'v2_onboarding_otp_es',
+  'v2_onboarding_otp_en',
+  'employer_message_invite_es',
+  'employer_message_invite_en',
+  'employer_message_resume_es',
+  'employer_message_resume_en',
+  'admin_support_reply_es',
+  'admin_support_reply_en',
+  'application_update_es',
+  'application_update_en',
+  'application_hired_es',
+  'application_hired_en',
+]);
+
+const TEMPLATE_NAME_PATTERN = /^[a-z][a-z0-9_]*$/;
+const CONTENT_SID_PATTERN = /^HX[0-9a-f]{32}$/;
+
+/**
+ * Pulls every `--set-template name=sid` pair out of `args`, validates it, and
+ * returns the parsed pairs alongside the args that are NOT part of one -- so
+ * the caller can still reject unknown flags rather than swallowing them.
+ *
+ * Both spellings are accepted: `--set-template name=sid` and
+ * `--set-template=name=sid`.
+ */
+const parseSetTemplateArgs = (args, settableKeys) => {
+  const raw = [];
+  const rest = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '--set-template') {
+      const value = args[index + 1];
+      // A FOLLOWING FLAG is a missing value, not a malformed name. Reporting
+      // it as the latter sends an operator hunting a typo that isn't there.
+      if (value === undefined || value.startsWith('--')) {
+        throw new Error('--set-template needs a <name>=<HX sid> value');
+      }
+      raw.push(value);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--set-template=')) {
+      raw.push(arg.slice('--set-template='.length));
+      continue;
+    }
+    rest.push(arg);
+  }
+
+  const pairs = [];
+  for (const value of raw) {
+    const separator = value.indexOf('=');
+    if (separator <= 0) {
+      throw new Error(`--set-template expects <name>=<HX sid>, got '${value}'`);
+    }
+    const name = value.slice(0, separator);
+    const sid = value.slice(separator + 1);
+    if (!TEMPLATE_NAME_PATTERN.test(name)) {
+      throw new Error(
+        `--set-template name '${name}' must match ${TEMPLATE_NAME_PATTERN.source} `
+        + '(lowercase letters, digits and underscores, starting with a letter)',
+      );
+    }
+    if (!settableKeys.has(name)) {
+      throw new Error(
+        `--set-template name '${name}' is not a template key the runtime reads `
+        + '(see TwilioSecret.templates in lambda/whatsapp/lib/twilio.ts)',
+      );
+    }
+    if (!CONTENT_SID_PATTERN.test(sid)) {
+      throw new Error(
+        `--set-template ${name}: '${sid}' is not a ContentSid `
+        + `(expected ${CONTENT_SID_PATTERN.source})`,
+      );
+    }
+    if (pairs.some((pair) => pair.name === name)) {
+      throw new Error(`--set-template ${name} was given more than once`);
+    }
+    pairs.push({ name, sid });
+  }
+  return { pairs, rest };
+};
 
 function parseSecret(secretString) {
   try {
@@ -462,15 +596,19 @@ async function createMissingQuickReplyTemplates(existingTemplates, accountSid, a
 }
 
 /**
- * Writes `additional` into the secret's `templates` map and proves it landed
- * by reading the secret back. Shared by the default run and
- * `--recreate-application-templates` so there is exactly one place that
- * writes the secret -- and it never prints any part of it.
+ * THE one place that writes the secret, and it never prints any part of it:
+ * UpdateSecret only when the JSON actually changes, then a read-back that
+ * proves every key in `expectedTemplates` landed.
+ *
+ * `templates` is the COMPLETE next map (callers decide how it was composed)
+ * and `expectedTemplates` is the subset this run is responsible for. Split
+ * out of `persistTemplates` so `--set-template` can write exactly the keys an
+ * operator named: `persistTemplates` runs the map through `mergeTemplates`,
+ * which re-imposes all of `NEW_TEMPLATES`, and a manual SID correction must
+ * not silently revert 24 other hardcoded SIDs it was never asked about.
  */
-async function persistTemplates(client, current, additional) {
+async function writeAndVerifyTemplates(client, current, templates, expectedTemplates) {
   const secret = parseSecret(current.SecretString);
-  const expectedTemplates = { ...NEW_TEMPLATES, ...additional };
-  const templates = mergeTemplates(secret.templates, additional);
   const nextSecret = { ...secret, templates };
 
   const notMerged = Object.entries(expectedTemplates)
@@ -497,6 +635,122 @@ async function persistTemplates(client, current, additional) {
     throw new Error(`Secret update did not persist these template keys: ${missing.join(', ')}`);
   }
   return { verifiedSecret, expectedTemplates };
+}
+
+/**
+ * Writes `additional` into the secret's `templates` map alongside the
+ * hardcoded `NEW_TEMPLATES` SIDs. Shared by the default run and
+ * `--recreate-application-templates`.
+ */
+async function persistTemplates(client, current, additional) {
+  const secret = parseSecret(current.SecretString);
+  return writeAndVerifyTemplates(
+    client,
+    current,
+    mergeTemplates(secret.templates, additional),
+    { ...NEW_TEMPLATES, ...additional },
+  );
+}
+
+/**
+ * Everything `--set-template` must know about one ContentSid before it is let
+ * into the secret: that the resource EXISTS in this account, the friendly name
+ * it carries -- so an operator can see that `templates.job_alert_es` really is
+ * being pointed at `job_alert_es_v2` -- and its WhatsApp status and category.
+ *
+ * Returns null on a 404. A mistyped or foreign SID is the likeliest operator
+ * error here and deserves a refusal it can read, not a stack trace; any OTHER
+ * HTTP failure is a real fault and throws.
+ *
+ * A failed APPROVAL read leaves the status unapproved rather than unknown.
+ * That is the safe direction: writing a SID whose approval could not be
+ * confirmed is exactly what this mode exists to prevent.
+ */
+async function inspectContentForSet(sid, accountSid, authToken) {
+  const headers = { Authorization: twilioAuthHeader(accountSid, authToken) };
+  const res = await fetch(`${CONTENT_API_URL}/${sid}`, { headers });
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Twilio Content read failed for ${sid}: HTTP ${res.status} ${text}`);
+  }
+  const content = await res.json();
+
+  const approvalRes = await fetch(`${CONTENT_API_URL}/${sid}/ApprovalRequests`, { headers });
+  let whatsappStatus = 'unsubmitted';
+  let category = '-';
+  if (approvalRes.ok) {
+    const approval = await approvalRes.json();
+    whatsappStatus = approval?.whatsapp?.status ?? 'unsubmitted';
+    category = approval?.whatsapp?.category ?? '-';
+  }
+  return { friendlyName: content?.friendly_name ?? '-', whatsappStatus, category };
+}
+
+/**
+ * `--set-template <name>=<HX sid>` (repeatable).
+ *
+ * Points EXISTING template keys at EXISTING Content resources, and does
+ * nothing else -- it creates no Content and deletes none.
+ *
+ * It exists because D8 (the job-card relabel) created `job_alert_es_v2` and
+ * `job_alert_en_v2` by hand in the Twilio Console, so their SIDs appear
+ * nowhere in this repo and no code path could install them: the default seed
+ * only writes SIDs it created itself or has hardcoded in `NEW_TEMPLATES`.
+ *
+ * Refuses AS A WHOLE. Every pair is inspected and every refusal collected
+ * before anything is written, so a two-key relabel can never land half
+ * applied -- and an operator setting both job-card keys sees both statuses
+ * from one run instead of fixing them one re-run at a time.
+ *
+ * Writes through `writeAndVerifyTemplates`, not `persistTemplates`: the latter
+ * re-imposes all of `NEW_TEMPLATES`, and a manual SID correction must change
+ * exactly the keys it was asked about. Prints names, SIDs and statuses only.
+ */
+async function setTemplateSids(client, current, pairs, allowPending) {
+  const secret = parseSecret(current.SecretString);
+  const additional = {};
+  const refusals = [];
+
+  for (const { name, sid } of pairs) {
+    const info = await inspectContentForSet(sid, secret.accountSid, secret.authToken);
+    if (!info) {
+      console.log(`${name}\t${sid}\t-\tnot_found\t-`);
+      refusals.push(`${name}: no Content resource ${sid} exists in this Twilio account`);
+      continue;
+    }
+    console.log(`${name}\t${sid}\t${info.friendlyName}\t${info.whatsappStatus}\t${info.category}`);
+
+    if (info.whatsappStatus !== 'approved') {
+      if (!allowPending) {
+        refusals.push(
+          `${name}: WhatsApp approval status is '${info.whatsappStatus}', not 'approved' `
+          + '(pass --allow-pending to write it anyway)',
+        );
+        continue;
+      }
+      console.log(
+        `WARNING ${name}: ${sid} is '${info.whatsappStatus}', not approved -- until Meta `
+        + 'approves it EVERY send of this template fails with Twilio error 63016 and the '
+        + 'worker receives nothing.',
+      );
+    }
+    additional[name] = sid;
+  }
+
+  if (refusals.length > 0) {
+    throw new Error(`refusing to write the secret -- ${refusals.join('; ')}`);
+  }
+
+  await writeAndVerifyTemplates(
+    client,
+    current,
+    { ...(secret.templates ?? {}), ...additional },
+    additional,
+  );
+  for (const name of Object.keys(additional)) {
+    console.log(`updated templates.${name}`);
+  }
 }
 
 /**
@@ -618,11 +872,28 @@ async function seedDefault(client, current) {
 }
 
 async function main() {
-  const unknown = ARGS.filter((arg) => ![
-    '--recreate-application-templates', '--purge-stale', '--apply',
+  // Pull the --set-template pairs out FIRST: their `name=sid` values are not
+  // flags, so the unknown-flag check below would otherwise reject them.
+  const { pairs, rest } = parseSetTemplateArgs(ARGS, SETTABLE_TEMPLATE_KEYS);
+  const unknown = rest.filter((arg) => ![
+    '--recreate-application-templates', '--purge-stale', '--apply', '--allow-pending',
   ].includes(arg));
   if (unknown.length > 0) {
     throw new Error(`unrecognized flag(s): ${unknown.join(', ')}`);
+  }
+
+  const setMode = pairs.length > 0;
+  // --set-template REPLACES the run. Each of these would write SIDs of its
+  // own -- by creating resources, deleting them, or falling through to the
+  // default seed -- on top of the keys the operator named.
+  if (setMode) {
+    for (const flag of ['--purge-stale', '--recreate-application-templates']) {
+      if (rest.includes(flag)) {
+        throw new Error(`--set-template cannot be combined with ${flag}`);
+      }
+    }
+  } else if (rest.includes('--allow-pending')) {
+    throw new Error('--allow-pending is only meaningful with --set-template');
   }
   if (hasFlag('--apply') && !hasFlag('--purge-stale')) {
     throw new Error('--apply is only meaningful with --purge-stale');
@@ -634,6 +905,10 @@ async function main() {
     throw new Error(`Secret ${SECRET_ID} is empty`);
   }
 
+  if (setMode) {
+    await setTemplateSids(client, current, pairs, rest.includes('--allow-pending'));
+    return;
+  }
   if (hasFlag('--purge-stale')) {
     await purgeStaleTemplates(client, current, hasFlag('--apply'));
     return;
@@ -645,7 +920,29 @@ async function main() {
   await seedDefault(client, current);
 }
 
-main().catch((err) => {
-  console.error(err instanceof Error ? err.message : String(err));
-  process.exitCode = 1;
-});
+/**
+ * The CLI entrypoint, extracted into a NAMED function so the unit suite can
+ * drive this file's real behaviour.
+ *
+ * The module cannot be imported by the test: jest runs as CommonJS here
+ * (ts-jest, `module: commonjs`) and a native dynamic import of an `.mjs`
+ * throws "A dynamic import callback was invoked without
+ * --experimental-vm-modules". So the suite evaluates this file's own source
+ * text as a function body with `fetch`, `console` and the Secrets Manager
+ * import supplied as parameters that shadow the globals, and then drives it
+ * through `process.argv`. The ONLY line it strips is the `runCli();` call
+ * below -- every branch, guard and string tested is this file's own.
+ *
+ * Errors become a message and exit code 1, never a stack trace: the failures
+ * an operator hits here are Twilio/Meta states, not crashes.
+ */
+async function runCli() {
+  try {
+    await main();
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exitCode = 1;
+  }
+}
+
+runCli();

@@ -486,3 +486,476 @@ describe('seed-whatsapp-twilio-templates.mjs — --purge-stale', () => {
     expect(SOURCE).toMatch(/next_page_url/);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F6 (2026-09-04): `--set-template <name>=<HX sid>`
+//
+// Luis created two new UTILITY quick-reply Content templates by hand in the
+// Twilio Console for the job-card relabel (D8), so their SIDs exist nowhere in
+// this repo. The runtime reads the job-card SID from `templates.job_alert_es` /
+// `templates.job_alert_en`, and this script owns the only sanctioned write to
+// that secret -- but it had no way to point an EXISTING key at an EXISTING SID.
+//
+// These tests drive the script's REAL source through `process.argv`. See
+// `loadScript`: the module cannot be imported (jest is CommonJS here and a
+// native dynamic import of an .mjs needs --experimental-vm-modules, which this
+// repo's jest.config.js does not enable), so the file's own text is evaluated
+// with `fetch`, `console` and the Secrets Manager import injected as
+// parameters that shadow the globals. No network, no AWS, no real credentials.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The only two lines `loadScript` rewrites; both are asserted to match. */
+const SDK_IMPORT_LINE = /^import \{[^}]*\} from '@aws-sdk\/client-secrets-manager';$/m;
+const RUN_CLI_CALL = /^runCli\(\);$/m;
+
+interface FetchSpec { ok: boolean; status?: number; body?: unknown; text?: string }
+
+// Obviously-fake credentials. Nothing here is a real account SID or token, and
+// no test ever lets either reach a log line (asserted at the end of the block).
+const FAKE_ACCOUNT_SID = 'ACtest0000000000000000000000000001';
+const FAKE_AUTH_TOKEN = 'test-token';
+
+// The two REAL ContentSids from the Twilio Console. ContentSids are not
+// secrets; these are the values an operator will actually pass.
+const JOB_ALERT_ES_V2 = 'HX9d11a813387caa21682983c546dc77c6';
+const JOB_ALERT_EN_V2 = 'HX58e1aec8a1efc930a70ac3927a20b2d5';
+
+const STORED_TEMPLATES = {
+  job_alert_es: 'HX1111111111111111111111111111aaaa',
+  job_alert_en: 'HX1111111111111111111111111111bbbb',
+  employer_message_invite_en: 'HX1111111111111111111111111111cccc',
+  // A NEW_TEMPLATES key whose STORED SID differs from the hardcoded one.
+  // `--set-template` must leave it exactly as found: it goes through
+  // writeAndVerifyTemplates, not mergeTemplates, precisely so a manual SID
+  // correction cannot silently revert 24 SIDs it was never asked about.
+  onboarding_trade_en: 'HX1111111111111111111111111111dddd',
+};
+
+const FAKE_SECRET = {
+  accountSid: FAKE_ACCOUNT_SID,
+  authToken: FAKE_AUTH_TOKEN,
+  messagingServiceSid: 'MGtest0000000000000000000000000001',
+  templates: STORED_TEMPLATES,
+};
+
+interface Harness {
+  runCli: () => Promise<void>;
+  send: jest.Mock;
+  fetchMock: jest.Mock;
+  logs: string[];
+  errors: string[];
+  storedSecret: () => any;
+  updateCalls: () => any[];
+  sendKinds: () => string[];
+  fetchMethods: () => string[];
+}
+
+function loadScript(opts: {
+  argv?: string[];
+  secret?: object;
+  fetchHandler?: (url: string) => FetchSpec;
+}): Harness {
+  // A silent no-match here would evaluate code that never runs and let every
+  // assertion below pass against nothing.
+  if (!SDK_IMPORT_LINE.test(SOURCE)) {
+    throw new Error('loader out of date: @aws-sdk/client-secrets-manager import line not found');
+  }
+  if (!RUN_CLI_CALL.test(SOURCE)) {
+    throw new Error('loader out of date: the `runCli();` entrypoint call was not found');
+  }
+
+  const body = SOURCE
+    .replace(
+      SDK_IMPORT_LINE,
+      'const { SecretsManagerClient, GetSecretValueCommand, UpdateSecretCommand } = __sdk;',
+    )
+    .replace(RUN_CLI_CALL, '')
+    + '\nreturn { runCli };';
+
+  // A real read-after-write: the verify GetSecretValue reads back exactly what
+  // UpdateSecret stored, so the persistence check is genuinely exercised.
+  let stored = JSON.stringify(opts.secret ?? FAKE_SECRET);
+  const updateCalls: any[] = [];
+  const send = jest.fn(async (command: any) => {
+    if (command.__kind === 'UpdateSecret') {
+      updateCalls.push(command.input);
+      stored = command.input.SecretString;
+      return {};
+    }
+    return { SecretString: stored };
+  });
+
+  const sdk = {
+    SecretsManagerClient: jest.fn(() => ({ send })),
+    GetSecretValueCommand: jest.fn((input: any) => ({ __kind: 'GetSecretValue', input })),
+    UpdateSecretCommand: jest.fn((input: any) => ({ __kind: 'UpdateSecret', input })),
+  };
+
+  const fetchMock = jest.fn(async (url: string) => {
+    const spec = opts.fetchHandler?.(String(url)) ?? { ok: true, body: {} };
+    return {
+      ok: spec.ok,
+      status: spec.status ?? (spec.ok ? 200 : 404),
+      json: async () => spec.body ?? {},
+      // Every non-ok branch in the script calls `res.text().catch(() => '')`.
+      text: async () => spec.text ?? '',
+    } as unknown as Response;
+  });
+
+  const logs: string[] = [];
+  const errors: string[] = [];
+  const consoleStub = {
+    log: (...args: unknown[]) => { logs.push(args.map(String).join(' ')); },
+    error: (...args: unknown[]) => { errors.push(args.map(String).join(' ')); },
+  };
+
+  // ARGS is computed at module top level, so argv must be in place while the
+  // body evaluates -- which happens inside this try.
+  const originalArgv = process.argv;
+  process.argv = ['node', SCRIPT_PATH, ...(opts.argv ?? [])];
+  try {
+    // eslint-disable-next-line no-new-func
+    const factory = new Function('__sdk', 'fetch', 'console', body);
+    const { runCli } = factory(sdk, fetchMock, consoleStub) as { runCli: () => Promise<void> };
+    return {
+      runCli,
+      send,
+      fetchMock,
+      logs,
+      errors,
+      storedSecret: () => JSON.parse(stored),
+      updateCalls: () => updateCalls,
+      sendKinds: () => send.mock.calls.map(([command]: any[]) => command.__kind),
+      fetchMethods: () => fetchMock.mock.calls.map(([, init]: any[]) => init?.method ?? 'GET'),
+    };
+  } finally {
+    process.argv = originalArgv;
+  }
+}
+
+/** Twilio Content + ApprovalRequests responses, keyed by ContentSid. */
+function contentFetch(specs: Record<string, {
+  exists?: boolean; friendlyName?: string; status?: string; category?: string;
+}>) {
+  return (url: string): FetchSpec => {
+    const sid = /\/Content\/(HX[0-9a-f]+)/.exec(url)?.[1] ?? '';
+    const spec = specs[sid];
+    if (!spec || spec.exists === false) return { ok: false, status: 404 };
+    if (url.endsWith('/ApprovalRequests')) {
+      return {
+        ok: true,
+        body: { whatsapp: { status: spec.status ?? 'approved', category: spec.category ?? 'UTILITY' } },
+      };
+    }
+    return { ok: true, body: { sid, friendly_name: spec.friendlyName ?? `${sid}_name` } };
+  };
+}
+
+const BOTH_APPROVED = contentFetch({
+  [JOB_ALERT_ES_V2]: { friendlyName: 'job_alert_es_v2' },
+  [JOB_ALERT_EN_V2]: { friendlyName: 'job_alert_en_v2' },
+});
+
+describe('seed-whatsapp-twilio-templates.mjs — --set-template', () => {
+  // A test that leaves process.exitCode at 1 makes the whole jest run exit
+  // non-zero with every test green -- a phantom failure that is very hard to
+  // trace back to here.
+  const originalExitCode = process.exitCode;
+  afterEach(() => { process.exitCode = originalExitCode; });
+
+  it('points both job-card keys at the new SIDs, preserving every other key', async () => {
+    const harness = loadScript({
+      argv: [
+        '--set-template', `job_alert_es=${JOB_ALERT_ES_V2}`,
+        '--set-template', `job_alert_en=${JOB_ALERT_EN_V2}`,
+      ],
+      fetchHandler: BOTH_APPROVED,
+    });
+    await harness.runCli();
+
+    expect(harness.errors).toEqual([]);
+    expect(process.exitCode).toBeFalsy();
+
+    // Exactly the specified lines, in order, and NOTHING else: a stray line is
+    // the leak surface this mode has to be trusted not to have.
+    expect(harness.logs).toEqual([
+      `job_alert_es\t${JOB_ALERT_ES_V2}\tjob_alert_es_v2\tapproved\tUTILITY`,
+      `job_alert_en\t${JOB_ALERT_EN_V2}\tjob_alert_en_v2\tapproved\tUTILITY`,
+      'updated templates.job_alert_es',
+      'updated templates.job_alert_en',
+    ]);
+
+    // One write, and the merged map keeps every key it did not name --
+    // including onboarding_trade_en, whose stored SID differs from the
+    // hardcoded NEW_TEMPLATES value.
+    expect(harness.updateCalls()).toHaveLength(1);
+    expect(harness.storedSecret().templates).toEqual({
+      ...STORED_TEMPLATES,
+      job_alert_es: JOB_ALERT_ES_V2,
+      job_alert_en: JOB_ALERT_EN_V2,
+    });
+    expect(harness.storedSecret().templates.onboarding_trade_en)
+      .toBe(STORED_TEMPLATES.onboarding_trade_en);
+    // The non-template halves of the secret survive untouched.
+    expect(harness.storedSecret().authToken).toBe(FAKE_AUTH_TOKEN);
+    expect(harness.storedSecret().messagingServiceSid).toBe(FAKE_SECRET.messagingServiceSid);
+
+    // Read, write, then a read-BACK that proves it landed.
+    expect(harness.sendKinds()).toEqual(['GetSecretValue', 'UpdateSecret', 'GetSecretValue']);
+
+    // Never creates or deletes a Content resource, and never runs the default
+    // seed: four reads (Content + ApprovalRequests per template) and no more.
+    expect(harness.fetchMethods()).toEqual(['GET', 'GET', 'GET', 'GET']);
+  });
+
+  it('accepts the --set-template=name=sid spelling for a single pair', async () => {
+    const harness = loadScript({
+      argv: [`--set-template=job_alert_es=${JOB_ALERT_ES_V2}`],
+      fetchHandler: BOTH_APPROVED,
+    });
+    await harness.runCli();
+
+    expect(harness.errors).toEqual([]);
+    expect(harness.logs).toEqual([
+      `job_alert_es\t${JOB_ALERT_ES_V2}\tjob_alert_es_v2\tapproved\tUTILITY`,
+      'updated templates.job_alert_es',
+    ]);
+    expect(harness.storedSecret().templates.job_alert_es).toBe(JOB_ALERT_ES_V2);
+    // The key it was not asked about keeps its stored SID.
+    expect(harness.storedSecret().templates.job_alert_en).toBe(STORED_TEMPLATES.job_alert_en);
+  });
+
+  // ── Refusals. Every one of these must leave the secret untouched. ──
+
+  async function expectRefusal(opts: Parameters<typeof loadScript>[0], match: RegExp) {
+    const harness = loadScript(opts);
+    await harness.runCli();
+    expect(harness.errors).toHaveLength(1);
+    expect(harness.errors[0]).toMatch(match);
+    expect(process.exitCode).toBe(1);
+    // The whole point: no UpdateSecret, ever, on a refusal path.
+    expect(harness.updateCalls()).toEqual([]);
+    expect(harness.sendKinds()).not.toContain('UpdateSecret');
+    return harness;
+  }
+
+  it('rejects a name that is not a lowercase template identifier', async () => {
+    await expectRefusal(
+      { argv: ['--set-template', `Job_Alert_ES=${JOB_ALERT_ES_V2}`] },
+      /Job_Alert_ES/,
+    );
+    await expectRefusal(
+      { argv: ['--set-template', `1job_alert=${JOB_ALERT_ES_V2}`] },
+      /1job_alert/,
+    );
+  });
+
+  it('rejects a name that is not a key the runtime ever reads', async () => {
+    // `job_alert_fr` looks plausible and is a key no sender will ever look up,
+    // so the SID would sit in the secret doing nothing.
+    await expectRefusal(
+      { argv: ['--set-template', `job_alert_fr=${JOB_ALERT_ES_V2}`] },
+      /job_alert_fr/,
+    );
+    // help_menu_list_* is created BY this script and is not in the runtime
+    // interface, so it is not settable by hand either.
+    await expectRefusal(
+      { argv: ['--set-template', `help_menu_list_es=${JOB_ALERT_ES_V2}`] },
+      /help_menu_list_es/,
+    );
+  });
+
+  it.each([
+    ['not an HX sid', 'MG9d11a813387caa21682983c546dc77c6'],
+    ['too short', 'HX9d11a813'],
+    ['non-hex characters', 'HX9d11a813387caa21682983c546dczzz'],
+    ['uppercase hex', 'HX9D11A813387CAA21682983C546DC77C6'],
+    ['empty', ''],
+  ])('rejects a ContentSid that is %s', async (_label, sid) => {
+    await expectRefusal({ argv: ['--set-template', `job_alert_es=${sid}`] }, /job_alert_es/);
+  });
+
+  it('rejects --set-template with no name=sid value', async () => {
+    await expectRefusal({ argv: ['--set-template'] }, /--set-template/);
+    // A following flag is a MISSING value, not a malformed name.
+    await expectRefusal(
+      { argv: ['--set-template', '--purge-stale'] },
+      /--set-template/,
+    );
+  });
+
+  it.each(['--purge-stale', '--recreate-application-templates'])(
+    'refuses to combine --set-template with %s',
+    async (flag) => {
+      await expectRefusal(
+        { argv: ['--set-template', `job_alert_es=${JOB_ALERT_ES_V2}`, flag] },
+        /--set-template/,
+      );
+    },
+  );
+
+  it('still rejects an unknown flag alongside --set-template', async () => {
+    await expectRefusal(
+      { argv: ['--set-template', `job_alert_es=${JOB_ALERT_ES_V2}`, '--bogus'] },
+      /unrecognized flag\(s\): --bogus/,
+    );
+  });
+
+  it('rejects --allow-pending on its own', async () => {
+    await expectRefusal({ argv: ['--allow-pending'] }, /--allow-pending/);
+  });
+
+  it('refuses a SID whose Content resource does not exist', async () => {
+    const harness = await expectRefusal(
+      {
+        argv: ['--set-template', `job_alert_es=${JOB_ALERT_ES_V2}`],
+        fetchHandler: contentFetch({ [JOB_ALERT_ES_V2]: { exists: false } }),
+      },
+      new RegExp(JOB_ALERT_ES_V2),
+    );
+    // Still one tabular line, so an operator can see WHICH pair was bad.
+    expect(harness.logs).toEqual([
+      `job_alert_es\t${JOB_ALERT_ES_V2}\t-\tnot_found\t-`,
+    ]);
+  });
+
+  it('refuses a pending SID unless --allow-pending is passed', async () => {
+    const harness = await expectRefusal(
+      {
+        argv: [
+          '--set-template', `job_alert_es=${JOB_ALERT_ES_V2}`,
+          '--set-template', `job_alert_en=${JOB_ALERT_EN_V2}`,
+        ],
+        fetchHandler: contentFetch({
+          [JOB_ALERT_ES_V2]: { friendlyName: 'job_alert_es_v2', status: 'pending' },
+          [JOB_ALERT_EN_V2]: { friendlyName: 'job_alert_en_v2', status: 'approved' },
+        }),
+      },
+      /pending/,
+    );
+    // Both statuses are reported in ONE run: refusals are collected, not
+    // fail-fast, so an operator does not have to re-run to see the second.
+    expect(harness.logs).toEqual([
+      `job_alert_es\t${JOB_ALERT_ES_V2}\tjob_alert_es_v2\tpending\tUTILITY`,
+      `job_alert_en\t${JOB_ALERT_EN_V2}\tjob_alert_en_v2\tapproved\tUTILITY`,
+    ]);
+    // ...and the approved one is NOT written either. A partial write would
+    // leave the secret half-relabelled with no record of which half.
+    expect(harness.storedSecret().templates).toEqual(STORED_TEMPLATES);
+  });
+
+  it('writes a pending SID under --allow-pending, with a 63016 warning', async () => {
+    const harness = loadScript({
+      argv: ['--set-template', `job_alert_es=${JOB_ALERT_ES_V2}`, '--allow-pending'],
+      fetchHandler: contentFetch({
+        [JOB_ALERT_ES_V2]: { friendlyName: 'job_alert_es_v2', status: 'pending' },
+      }),
+    });
+    await harness.runCli();
+
+    expect(harness.errors).toEqual([]);
+    expect(process.exitCode).toBeFalsy();
+    expect(harness.logs).toHaveLength(3);
+    expect(harness.logs[0])
+      .toBe(`job_alert_es\t${JOB_ALERT_ES_V2}\tjob_alert_es_v2\tpending\tUTILITY`);
+    // The warning has to say what will actually happen, not just "careful".
+    expect(harness.logs[1]).toMatch(/^WARNING\b/);
+    expect(harness.logs[1]).toContain('63016');
+    expect(harness.logs[1]).toContain('job_alert_es');
+    expect(harness.logs[2]).toBe('updated templates.job_alert_es');
+    expect(harness.storedSecret().templates.job_alert_es).toBe(JOB_ALERT_ES_V2);
+  });
+
+  it('treats an unreadable approval status as not approved', async () => {
+    // If the status cannot be read, the safe reading is "not approved":
+    // writing an unapproved SID silently breaks every send.
+    await expectRefusal(
+      {
+        argv: ['--set-template', `job_alert_es=${JOB_ALERT_ES_V2}`],
+        fetchHandler: (url) => (url.endsWith('/ApprovalRequests')
+          ? { ok: false, status: 500 }
+          : { ok: true, body: { friendly_name: 'job_alert_es_v2' } }),
+      },
+      /job_alert_es/,
+    );
+  });
+
+  // ── The credential guard, across every path above ──
+
+  it('never writes the account SID or auth token to stdout or stderr', async () => {
+    const scenarios: Array<Parameters<typeof loadScript>[0]> = [
+      // happy path
+      {
+        argv: ['--set-template', `job_alert_es=${JOB_ALERT_ES_V2}`],
+        fetchHandler: BOTH_APPROVED,
+      },
+      // pending, refused
+      {
+        argv: ['--set-template', `job_alert_es=${JOB_ALERT_ES_V2}`],
+        fetchHandler: contentFetch({ [JOB_ALERT_ES_V2]: { status: 'pending' } }),
+      },
+      // pending, allowed
+      {
+        argv: ['--set-template', `job_alert_es=${JOB_ALERT_ES_V2}`, '--allow-pending'],
+        fetchHandler: contentFetch({ [JOB_ALERT_ES_V2]: { status: 'pending' } }),
+      },
+      // 404
+      {
+        argv: ['--set-template', `job_alert_es=${JOB_ALERT_ES_V2}`],
+        fetchHandler: contentFetch({ [JOB_ALERT_ES_V2]: { exists: false } }),
+      },
+      // Twilio 5xx, whose error message interpolates the response body
+      {
+        argv: ['--set-template', `job_alert_es=${JOB_ALERT_ES_V2}`],
+        fetchHandler: () => ({ ok: false, status: 500, text: 'upstream failure' }),
+      },
+      // bad input
+      { argv: ['--set-template', 'job_alert_es=nope'] },
+      { argv: ['--set-template', `job_alert_fr=${JOB_ALERT_ES_V2}`] },
+      { argv: ['--set-template', `job_alert_es=${JOB_ALERT_ES_V2}`, '--purge-stale'] },
+    ];
+
+    for (const scenario of scenarios) {
+      const harness = loadScript(scenario);
+      await harness.runCli();
+      process.exitCode = originalExitCode;
+      const printed = [...harness.logs, ...harness.errors].join('\n');
+      // The literal fixture values, not the word "authToken": a careless
+      // message interpolates the VALUE.
+      expect(printed).not.toContain(FAKE_AUTH_TOKEN);
+      expect(printed).not.toContain(FAKE_ACCOUNT_SID);
+      // The base64 Basic header is the other way a token escapes.
+      expect(printed).not.toContain(
+        Buffer.from(`${FAKE_ACCOUNT_SID}:${FAKE_AUTH_TOKEN}`).toString('base64'),
+      );
+      // Something was always reported -- silence would pass the checks above
+      // while telling the operator nothing.
+      expect(printed.length).toBeGreaterThan(0);
+    }
+  });
+
+  // ── The allowlist and the runtime interface must not drift ──
+
+  it('allows exactly the template keys the runtime declares in twilio.ts', () => {
+    // The script copies this list because reading it from a .ts interface at
+    // runtime is impossible, and unioning it with "keys already in the secret"
+    // would let a typo that is already stored authorize itself. A hand-copied
+    // list drifts silently, so the copy is pinned to its source here.
+    const twilioSource = readFileSync(
+      join(__dirname, '../../../lambda/whatsapp/lib/twilio.ts'), 'utf8',
+    );
+    const block = /templates\?:\s*\{([\s\S]*?)\n {2}\};/.exec(twilioSource)?.[1];
+    expect(block).toBeDefined();
+    const runtimeKeys = [...block!.matchAll(/^\s*([a-z][a-z0-9_]*)\?:\s*string;/gm)]
+      .map((match) => match[1]);
+    expect(runtimeKeys.length).toBeGreaterThan(30);
+
+    const settable = literal<Set<string>>('SETTABLE_TEMPLATE_KEYS');
+    expect([...settable].sort()).toEqual([...runtimeKeys].sort());
+    // The job-card keys D8 exists to relabel, named explicitly.
+    expect(settable.has('job_alert_es')).toBe(true);
+    expect(settable.has('job_alert_en')).toBe(true);
+    // Created by this script, absent from the runtime interface, not settable.
+    expect(settable.has('help_menu_list_es')).toBe(false);
+  });
+});
