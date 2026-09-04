@@ -62,13 +62,20 @@ export function AboutYouStep({
 
     return (
         <StepLayout>
-            <StepHeader screen="about" title={t('title')} subtitle={t('subtitle')} onBack={onBack} backDisabled={saving} />
+            {/* The first-name box below takes the focus this heading normally
+                takes -- it is the first typed field of the whole flow, and a
+                worker on a phone should get the keyboard without hunting for
+                the box. Unlike the trust questions, this field's accessible
+                name ("First name") does not repeat the screen title, so a
+                screen reader hears the field rather than "Tell us about you". */}
+            <StepHeader screen="about" title={t('title')} subtitle={t('subtitle')} onBack={onBack} backDisabled={saving} fieldTakesFocus />
             <StepBody>
                 <div className="grid grid-cols-1 gap-2.5 min-[400px]:grid-cols-2">
                     <StepField label={t('first_name')} htmlFor={`${fieldId}-first`} error={nameError} errorId={nameErrorId}>
                         <Input
                             id={`${fieldId}-first`}
                             value={draft.firstName}
+                            autoFocus
                             autoComplete="given-name"
                             disabled={saving}
                             aria-invalid={nameError ? true : undefined}

@@ -132,4 +132,11 @@ describe('AboutYouStep', () => {
         expect(alerts.length).toBeGreaterThan(0);
         expect(alerts[0]).toHaveTextContent(message('worker_onboarding.rejection.generic'));
     });
+
+    // The first typed field of the whole flow. A worker landing here with the
+    // keyboard closed has to find and tap the box before they can start.
+    it('focuses the first name box on arrival so the worker can type straight away', () => {
+        renderIntl(<AboutYouStep {...props()} />);
+        expect(screen.getByLabelText(message('worker_onboarding.about.first_name'))).toHaveFocus();
+    });
 });

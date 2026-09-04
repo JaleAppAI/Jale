@@ -126,10 +126,27 @@ export function ApplicationRequirementsFlow({
   // Defaults
   // ---------------------------------------------------------------------
   // Merged at most ONCE, and only when the server had no answers of its own.
-  // The backend now seeds `worker_application_defaults` into the application
-  // when the employer arms the stage (B4.0 #9), so on nearly every real load
-  // `serverAnswered` is already true and this never fires -- it is the
-  // fallback for an application armed before that seeding existed.
+  //
+  // THIS IS THE WEB PATH'S PREFILL, and it is entirely CLIENT-SIDE. Nothing
+  // has been seeded into the application when this page opens: the values land
+  // in the draft as an editable, hint-marked prefill ("From your last
+  // application") and reach the application only when the worker saves. So
+  // this effect is the NORMAL path here, not a fallback for old rows.
+  //
+  // `GET /worker/application-defaults` hands back the worker's saved
+  // `worker_application_defaults.answers` -- only the questionnaire fields
+  // that are reusable from one job to the next. Certification claims are
+  // stripped before they are ever stored (infra/lambda/lib/applications.ts),
+  // and an employer's job-specific prompt answers never go in at all.
+  //
+  // WHATSAPP DOES THE SAME THING SERVER-SIDE, from the same row, under the
+  // same policy: `seedAnswersFromDefaults`
+  // (infra/lambda/whatsapp/lib/application-fill.ts) runs once at fill-arm
+  // time and writes only keys this job asks for, only where the application
+  // has no answer yet, each one re-validated. Which is why `serverAnswered`
+  // is the guard: a worker who came through the bot first arrives here with
+  // answers already stored, and re-merging stale defaults over them would
+  // undo what they told it.
   const defaultsTriedRef = useRef(false);
   useEffect(() => {
     if (defaultsTriedRef.current) return;
