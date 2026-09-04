@@ -114,8 +114,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     //     jale_admin regardless, so nothing else in the enqueue needs a switch.
     await setInternalUserRlsContext(client, job.employer_user_id);
 
+    // `details_completed_at` rides along in the SAME row read as `status`:
+    // the F3 resend guard below needs both, the row is already FOR UPDATE, and
+    // a second SELECT would only add a round trip. No grant is widened by
+    // this -- jale_admin already reads the column here (the UPDATE below
+    // RETURNs it) and in employer-job-applicants.ts:148; 091's column-level
+    // grants restrict jale_whatsapp's UPDATE, not jale_admin's SELECT.
     const application = await client.query(
-      `SELECT id, status
+      `SELECT id, status, details_completed_at
        FROM job_applications
        WHERE job_id = $1 AND worker_id = $2
        FOR UPDATE`,
@@ -143,6 +149,45 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         statusCode: 400,
         headers: CORS_HEADERS,
         body: JSON.stringify({ error: 'resend_not_applicable', status: currentStatus }),
+      };
+    }
+
+    // Sprint 24 (F3): a details resend to a worker who ALREADY answered is a
+    // lie, so refuse it -- the same rule `canResendDetails`
+    // (frontend/src/lib/hire-gate.ts:185) enforces client-side, now enforced
+    // where a stale tab or any other API client cannot get around it. Before
+    // this, the worker got "we need more details", tapped Empezar, and hit
+    // `application_already_complete` on the stage-2 door.
+    //
+    // Keyed on the REQUESTED status, not `currentStatus`, and deliberately
+    // NOT extended to `hired`:
+    //   * `details_requested` legitimately OUTLIVES the fill -- the status is
+    //     the employer's to move, the 091 stage timestamps are not -- so
+    //     `currentStatus` alone says nothing about completeness, and
+    //     `details_completed_at` is the only honest signal. The notification
+    //     this re-sends is keyed on `status` (see `kind:` below), so `status`
+    //     is what the guard must judge.
+    //   * a resend on `status === 'hired'` re-sends the HIRE ping, which makes
+    //     no claim about outstanding paperwork. 091's hire trigger in fact
+    //     REQUIRES the details to be complete first, so completeness is a
+    //     precondition there rather than a contradiction. Gating on
+    //     `currentStatus` would also have broken the ordinary
+    //     details_requested -> hired move that a stale tab makes with
+    //     `resend` riding along -- exactly the shape the comment above
+    //     describes as served by the normal `changed` enqueue.
+    //
+    // Nullish (not `!== null`) on purpose: absent and SQL NULL both mean
+    // "stage 2 unfinished".
+    if (resend && status === 'details_requested' && application.rows[0].details_completed_at != null) {
+      await client.query('ROLLBACK');
+      return {
+        statusCode: 400,
+        headers: CORS_HEADERS,
+        // Same error CODE as the refusal above so existing employer-side
+        // handling keeps working; `details_status` mirrors the
+        // `ApplicationDetailsStatus` vocabulary the frontend already reads
+        // and is the added key that distinguishes this reason.
+        body: JSON.stringify({ error: 'resend_not_applicable', status: currentStatus, details_status: 'complete' }),
       };
     }
 
