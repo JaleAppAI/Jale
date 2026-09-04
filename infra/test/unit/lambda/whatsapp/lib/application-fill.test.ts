@@ -1548,6 +1548,40 @@ describe('handleFillMessage — CAMBIAR/CHANGE correction menu', () => {
     expect(lastReply(deps)).toBe(fieldQuestion('date_of_birth', 'en'));
   });
 
+  // The only way `clearFieldAnswer` refuses is its
+  // `details_completed_at IS NULL` guard -- i.e. the application was
+  // completed somewhere else (the web stage-2 door) while this lane was
+  // still armed. The worker must then be told the truth, never re-asked a
+  // question about an application that is already sent, and never shown the
+  // step that merely FOLLOWS the field they asked to fix.
+  it('a refused clear (completed on the web meanwhile) says so instead of asking the wrong question', async () => {
+    const ctx = reusedCtx(
+      { fields: ['date_of_birth'], docs: [] },
+      {
+        required_fields: ['date_of_birth', 'work_authorization'],
+        application_answers: { date_of_birth: '1990-04-03', work_authorization: true },
+        details_completed_at: '2026-09-03T00:00:00.000Z',
+      },
+    );
+    const deps = makeDeps(ctx);
+    await handleFillMessage(client, ctx, incomingMsg('CAMBIAR'), deps);
+
+    await handleFillMessage(client, ctx, incomingMsg('1'), deps);
+
+    // The UPDATE ran and matched nothing, so the answer still stands.
+    expect(findCall(SQL.clearAnswer)[1]).toEqual(['date_of_birth', APPLICATION_ID]);
+    expect(fake.apps.get(APPLICATION_ID)!.row!.application_answers).toEqual({
+      date_of_birth: '1990-04-03', work_authorization: true,
+    });
+    // ...and the re-derive lands on the lane's `complete` arm, not on a
+    // question. `fillStepFor` reads `details_completed_at` before the field
+    // walk, which is what makes this safe rather than confusing.
+    expect(lastReply(deps)).toBe(fillMessage('completion', 'en', { company: COMPANY }));
+    expect(allReplies(deps)).not.toContain(fieldQuestion('work_authorization', 'en'));
+    expect(allReplies(deps)).not.toContain(fieldQuestion('date_of_birth', 'en'));
+    expect(ctx.stateContext.fill_application_id).toBeNull();
+  });
+
   it('picking from a confirm state leaves the gate and lets the re-answer complete normally', async () => {
     setApp({
       required_fields: ['work_authorization'],
