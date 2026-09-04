@@ -1120,7 +1120,8 @@
       "too_large": "Es demasiado texto para guardar. Acorta tus respuestas más largas e inténtalo de nuevo.",
       "certification_document_limit": "Llegaste al límite de archivos para esta certificación. Quita uno en tu perfil primero.",
       "not_found": "Ya no encontramos esta postulación."
-    }
+    },
+    "cert_have_question": "¿Tienes esta certificación?"
   },
   "worker_home": {
     "title": "Buscar trabajos",

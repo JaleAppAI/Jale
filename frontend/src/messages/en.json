@@ -1120,7 +1120,8 @@
       "too_large": "That’s too much text to store. Shorten your longest answers and try again.",
       "certification_document_limit": "You’ve reached the file limit for this certification. Remove one in your profile first.",
       "not_found": "We can’t find this application any more."
-    }
+    },
+    "cert_have_question": "Do you have this certification?"
   },
   "worker_home": {
     "title": "Find jobs",
