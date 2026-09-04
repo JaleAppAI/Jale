@@ -377,7 +377,13 @@ export interface FillReusedState {
 
 /** The all-pre-filled gate. `repeated` records that the prompt has already
  * been re-sent once; the state is then KEPT but silent, so a LISTO arriving
- * several turns later still sends the application. */
+ * several turns later still sends the application.
+ *
+ * F1: "silent" is bounded by the 30s prompt cooldown, not absolute -- while
+ * this key is set, `sendConsentGatePrompt` refuses every completion in the
+ * module (the processor's dispatch tail included) and re-sends the confirm
+ * instead. It is also re-derived at step (10b): a gate that no longer
+ * matches the job's requirements is dropped rather than honoured. */
 export interface FillConfirmState {
   at: number;
   repeated?: boolean;
@@ -1126,6 +1132,93 @@ async function sendExitPrompt(
   logStep(reason, 'prompted');
 }
 
+/**
+ * F1 (sprint 24, BLOCKER) -- THE CONSENT CHOKE POINT.
+ *
+ * `sendNextStepPrompt` is the ONE function every completion goes through:
+ * the fill lane's own turns, `armFill`, `resolveChangeMenu`, AND the
+ * processor's dispatch tail (`maybeRepromptFill` -> `promptNextStep`). Until
+ * this guard existed, `fill_confirm` was honoured only by step (10b) -- the
+ * LAST branch of `handleFillMessage` -- so every earlier `{handled:false}`
+ * return leaked the turn to that tail and completed the application:
+ *
+ *   - a media turn while the step reads `complete` (`handleFillMediaTurn`),
+ *   - an unknown button/interactive payload (step 1),
+ *   - the command escapes: ayuda / perfil / chats / cerrar / trabajos (7-8),
+ *   - a typed job action, e.g. "1 me interesa" (9),
+ *   - a picker digit while `pending_picker` is set (4),
+ *   - the SECOND unrecognised text -- `resolveFillConfirm` deliberately
+ *     stops re-prompting after one try and returns `{handled:false}`.
+ *
+ * That last one is the 2026-09-04 incident restored verbatim: typing "no
+ * entiendo" twice submitted an application the worker never agreed to send.
+ *
+ * WHAT THE WORKER SEES (binding):
+ *   - LISTO/DONE still completes. `resolveFillConfirm` clears `fill_confirm`
+ *     BEFORE it calls `promptNextStep`, so this guard sees an empty gate --
+ *     that ordering is load-bearing and is pinned by a test.
+ *   - Anything else, from any branch: at most ONE `confirm_all_prefilled`
+ *     per `REPROMPT_COOLDOWN_MS` (30s) window, because this re-prompt stamps
+ *     the same `fill_last_prompt_at` the tail's cooldown reads. "Quiet"
+ *     therefore means "no more messages for 30s" -- it NEVER means
+ *     "complete".
+ *   - The `web_handoff` note rides along exactly as it does on `armFill`
+ *     (f)'s first copy, so the worker keeps the link to the one thing this
+ *     lane cannot collect.
+ *
+ * The same shape covers `fill_doc_replace`: the worker asked to swap a
+ * document, so the job-scoped row was deleted -- but the VAULT row was not
+ * (decision D3), and the very next synced load copies it back, making the
+ * step read `complete` while the replacement file is still owed. Completing
+ * there would send the OLD document. `handleFillMediaTurn` clears the slot
+ * BEFORE its own `promptNextStep` call, which is what keeps the replacement
+ * upload able to complete rather than wedging the application.
+ *
+ * Returns true when it consumed the completion. `fill_confirm` is checked
+ * FIRST -- consent outranks a document correction. (`resolveChangeMenu`
+ * clears `fill_confirm` whenever it arms `fill_doc_replace`, so the two
+ * cannot actually be armed together today; the precedence is stated rather
+ * than left to whichever branch happens to come first.)
+ */
+async function sendConsentGatePrompt(
+  client: PoolClient,
+  ctx: FillContext,
+  applicationId: string,
+  inboundSid: string,
+  from: string,
+  deps: FillDeps,
+  uncollectable: string[],
+  leadIn?: string,
+): Promise<boolean> {
+  const gate = ctx.stateContext.fill_confirm as FillConfirmState | undefined;
+  if (gate) {
+    const webHandoffNote = uncollectable.length > 0
+      ? `\n\n${fillMessage('web_handoff', ctx.lang, {
+        doc: localizeDocList(uncollectable, ctx.lang),
+        url: workerApplicationUrl(ctx.lang, applicationId),
+      })}`
+      : '';
+    let body = `${fillMessage('confirm_all_prefilled', ctx.lang)}${webHandoffNote}`;
+    if (leadIn) body = `${leadIn}\n\n${body}`;
+    await deps.updateStateContext(client, ctx.conversationId, { fill_last_prompt_at: deps.nowMs() });
+    await deps.queueReplyText(client, inboundSid, from, body);
+    logStep('confirm', 'reprompt_tail');
+    return true;
+  }
+
+  const replaceDoc = asCollectableDocType(ctx.stateContext.fill_doc_replace);
+  if (replaceDoc) {
+    let body = docPrompt(replaceDoc, ctx.lang);
+    if (leadIn) body = `${leadIn}\n\n${body}`;
+    await deps.updateStateContext(client, ctx.conversationId, { fill_last_prompt_at: deps.nowMs() });
+    await deps.queueReplyText(client, inboundSid, from, body);
+    logStep(replaceDoc, 'doc_replace_reprompt_tail');
+    return true;
+  }
+
+  return false;
+}
+
 async function sendNextStepPrompt(
   client: PoolClient,
   ctx: FillContext,
@@ -1138,6 +1231,13 @@ async function sendNextStepPrompt(
   const { step, snapshot } = await computeFillStep(client, applicationId);
 
   if (step.kind === 'complete') {
+    // F1: an armed consent gate (or an owed document replacement) refuses
+    // the completion here, at the choke point -- see `sendConsentGatePrompt`.
+    if (await sendConsentGatePrompt(
+      client, ctx, applicationId, inboundSid, from, deps, step.uncollectable, leadIn,
+    )) {
+      return;
+    }
     return sendCompletionPrompt(
       client, ctx, applicationId, inboundSid, from, deps, step.uncollectable, snapshot, leadIn,
     );
@@ -1368,6 +1468,13 @@ export async function armFill(
  * to type LISTO three turns later, and clearing the gate would leave a
  * silent completion as the only remaining way out. CAMBIAR never reaches
  * here -- `handleFillMessage` consumes it earlier, before the escapes.
+ *
+ * F1: "quiet" means `{handled:false}`, which hands the turn to the
+ * processor's dispatch tail. That tail used to COMPLETE the application from
+ * there (the 2026-09-04 incident: two unrecognised replies were enough);
+ * `sendConsentGatePrompt` now makes it re-send THIS prompt instead,
+ * cooldown-limited to once per 30s by the `fill_last_prompt_at` stamp below.
+ * So the worst case is a repeated confirm, never a submission.
  */
 async function resolveFillConfirm(
   client: PoolClient,
@@ -2299,6 +2406,9 @@ async function resolveOfferOnlyTurn(
  *      mutation contract), so a SECOND free-text message goes back to
  *      feeding the fill -- without this clear every later message would
  *      relay forever and the fill would deadlock.
+ *  10b. The all-pre-filled consent gate, RE-DERIVED first (F1): see that
+ *      branch's own comment, and `sendConsentGatePrompt` for why no
+ *      `{handled:false}` return above can complete the application any more.
  *  11. `fill_pending`/cert-loop resolution (confirm/discard/entry-loop) for
  *      any body that reached this point WITHOUT parsing as a confirmation
  *      at step 6 (e.g. unrecognized text) -- re-echoes the confirmation,
@@ -2425,10 +2535,26 @@ export async function handleFillMessage(
   // (10b) The all-pre-filled gate (sprint 24 L3). AFTER the escapes, so
   // CHATS/CERRAR/help still work from it, and after CANCELAR/CAMBIAR, which
   // are its two other legitimate answers. LISTO/DONE completes; anything
-  // else re-prompts once and then goes quiet without dropping the gate.
+  // else re-prompts once and then goes quiet without dropping the gate --
+  // and F1's choke-point guard (`sendConsentGatePrompt`) makes "quiet" mean
+  // "at most one confirm per 30s", never "complete".
+  //
+  // F1, second half: the flag is RE-DERIVED before it is honoured. It was
+  // armed because nothing was outstanding AT ARM TIME; an employer who
+  // widens `required_fields`/`required_docs` since then leaves the tail
+  // asking the new question while this branch answered the worker's answer
+  // to it with "type LISTO" -- an unanswerable loop. So a gate that no
+  // longer describes reality is dropped and the turn continues down the
+  // ordinary path (which re-derives the step once more -- one extra SELECT,
+  // only in this genuinely rare race, and only on the turn that heals it).
   const confirm = ctx.stateContext.fill_confirm as FillConfirmState | undefined;
   if (confirm) {
-    return resolveFillConfirm(client, ctx, msg, deps, confirm, body);
+    const { step: gateStep } = await computeFillStep(client, applicationId);
+    if (gateStep.kind === 'complete') {
+      return resolveFillConfirm(client, ctx, msg, deps, confirm, body);
+    }
+    await deps.updateStateContext(client, ctx.conversationId, { fill_confirm: null });
+    logStep('confirm', 'gate_stale', gateStep.kind);
   }
 
   // (11) Task 8's cert loop / fill_pending resolution (see

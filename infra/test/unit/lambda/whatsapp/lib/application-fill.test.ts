@@ -1630,6 +1630,218 @@ describe('handleFillMessage — CAMBIAR/CHANGE correction menu', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────
+// F1 (sprint 24, BLOCKER): the LISTO consent gate lives at the CHOKE POINT,
+// not only at step (10b).
+//
+// `armFill` (f) arms `fill_confirm` so nothing reaches the employer until
+// the worker types LISTO -- but that flag was only honoured by step (10b),
+// the LAST branch of `handleFillMessage`. Every earlier `{handled:false}`
+// return (a media turn on a `complete` step, an unknown button payload, the
+// command escapes, a typed job action, a picker digit, and the SECOND
+// unrecognised text -- `resolveFillConfirm` gives up after one re-prompt)
+// hands the turn to the processor's dispatch tail, which calls
+// `promptNextStep` -> `sendNextStepPrompt` -> `sendCompletionPrompt` and
+// sends the application. "no entiendo" twice was enough: the 2026-09-04
+// incident, restored.
+//
+// So the guard is in `sendNextStepPrompt` itself -- the one function every
+// completion goes through, the tail included.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('sendNextStepPrompt — the consent gate at the choke point (F1)', () => {
+  beforeEach(resetFake);
+
+  /** Exactly what the tail does: `promptNextStep` on a still-armed lane. */
+  function gatedCtx(overrides: Record<string, unknown> = {}): FillContext {
+    return makeCtx({
+      stateContext: {
+        fill_application_id: APPLICATION_ID,
+        fill_last_prompt_at: NOW_MS - 60_000,
+        ...overrides,
+      },
+    });
+  }
+
+  it('re-sends the confirm prompt instead of completing while fill_confirm is armed', async () => {
+    setApp({
+      required_fields: ['work_authorization', 'date_of_birth'],
+      application_answers: { work_authorization: true, date_of_birth: '1990-04-03' },
+    });
+    const ctx = gatedCtx({ fill_confirm: { at: NOW_MS - 60_000 } });
+    const deps = makeDeps(ctx);
+
+    await promptNextStep(client, ctx, 'SMtail', FROM, deps);
+
+    expect(lastReply(deps)).toBe(fillMessage('confirm_all_prefilled', 'en'));
+    // NOTHING was sent to the employer, and no offer scan ran either.
+    expect(hasCall(SQL.detailsComplete)).toBe(false);
+    expect(hasCall(SQL.offerScan)).toBe(false);
+    expect(allReplies(deps)).not.toContain(fillMessage('completion', 'en', { company: COMPANY }));
+    // The gate is KEPT (a LISTO several turns later must still work) and the
+    // lane stays armed -- the re-prompt is not an exit.
+    expect(ctx.stateContext.fill_confirm).toEqual({ at: NOW_MS - 60_000 });
+    expect(ctx.stateContext.fill_application_id).toBe(APPLICATION_ID);
+    // Stamped, so `maybeRepromptFill`'s 30s cooldown limits this to once per
+    // window no matter how many escapes the worker types.
+    expect(ctx.stateContext.fill_last_prompt_at).toBe(NOW_MS);
+  });
+
+  it('keeps the web_handoff note on the re-sent confirm, matching armFill (f)', async () => {
+    setApp({
+      required_fields: ['work_authorization'],
+      required_docs: ['ssn'],
+      application_answers: { work_authorization: true },
+    });
+    const ctx = gatedCtx({ fill_confirm: { at: NOW_MS - 60_000 } });
+    const deps = makeDeps(ctx);
+
+    await promptNextStep(client, ctx, 'SMtail', FROM, deps);
+
+    expect(lastReply(deps)).toBe(
+      `${fillMessage('confirm_all_prefilled', 'en')}\n\n`
+      + `${fillMessage('web_handoff', 'en', {
+        doc: localizeDocList(['ssn'], 'en'),
+        url: workerApplicationUrl('en', APPLICATION_ID),
+      })}`,
+    );
+    expect(hasCall(SQL.detailsComplete)).toBe(false);
+  });
+
+  it('re-sends the replacement doc prompt instead of completing while fill_doc_replace is armed', async () => {
+    // The vault copy is re-attached by every synced load (decision D3), so
+    // the step reads `complete` even though the worker still owes the
+    // replacement file. Completing here would send the OLD document.
+    setApp(
+      { required_docs: ['work_auth_doc'] },
+      { haveDocs: ['work_auth_doc'], vaultDocs: ['work_auth_doc'] },
+    );
+    const ctx = gatedCtx({ fill_doc_replace: 'work_auth_doc' });
+    const deps = makeDeps(ctx);
+
+    await promptNextStep(client, ctx, 'SMtail', FROM, deps);
+
+    expect(lastReply(deps)).toBe(docPrompt('work_auth_doc', 'en'));
+    expect(hasCall(SQL.detailsComplete)).toBe(false);
+    expect(ctx.stateContext.fill_doc_replace).toBe('work_auth_doc');
+    expect(ctx.stateContext.fill_last_prompt_at).toBe(NOW_MS);
+  });
+
+  it('completes normally when neither gate is armed (the guard is not a blanket refusal)', async () => {
+    setApp({
+      required_fields: ['work_authorization'],
+      application_answers: { work_authorization: true },
+    });
+    const ctx = gatedCtx();
+    const deps = makeDeps(ctx);
+
+    await promptNextStep(client, ctx, 'SMtail', FROM, deps);
+
+    expect(hasCall(SQL.detailsComplete)).toBe(true);
+    expect(lastReply(deps)).toBe(fillMessage('completion', 'en', { company: COMPANY }));
+  });
+
+  // THE ordering the whole design rests on: `resolveFillConfirm` clears
+  // `fill_confirm` BEFORE calling `promptNextStep`, so the guard above sees
+  // an empty gate and the legitimate LISTO completes. Reverse the two and
+  // LISTO would re-prompt the confirm forever.
+  it('LISTO still completes: resolveFillConfirm clears the gate BEFORE promptNextStep runs', async () => {
+    setApp({
+      required_fields: ['work_authorization'],
+      application_answers: { work_authorization: true },
+    });
+    const ctx = makeCtx({
+      stateContext: {
+        fill_application_id: APPLICATION_ID,
+        fill_confirm: { at: NOW_MS - 60_000 },
+      },
+    });
+    const deps = makeDeps(ctx);
+
+    const res = await handleFillMessage(client, ctx, incomingMsg('LISTO'), deps);
+
+    expect(res).toEqual({ handled: true });
+    expect(hasCall(SQL.detailsComplete)).toBe(true);
+    expect(lastReply(deps)).toBe(fillMessage('completion', 'en', { company: COMPANY }));
+    const clearOrder = (deps.updateStateContext as jest.Mock).mock.invocationCallOrder[0];
+    const clearPatch = (deps.updateStateContext as jest.Mock).mock.calls[0][2];
+    expect(clearPatch).toEqual({ fill_confirm: null });
+    expect(clearOrder).toBeLessThan(queryOrder(SQL.detailsComplete));
+  });
+
+  // The other half of F1: the flag was never RE-DERIVED either. An employer
+  // who widens `required_fields` while the gate is armed made step (10b)
+  // swallow the worker's answer to the NEW question with "type LISTO".
+  it('a widened requirement clears the gate and the answer path runs', async () => {
+    setApp({ required_fields: ['work_authorization'], application_answers: {} });
+    const ctx = makeCtx({
+      stateContext: {
+        fill_application_id: APPLICATION_ID,
+        fill_confirm: { at: NOW_MS - 60_000 },
+      },
+    });
+    const deps = makeDeps(ctx);
+
+    const res = await handleFillMessage(client, ctx, incomingMsg('1'), deps);
+
+    expect(res).toEqual({ handled: true });
+    // The digit answered work_authorization -- it was NOT eaten by the gate.
+    expect(JSON.parse(findCall(SQL.mergeUpdate)[1][0])).toEqual({ work_authorization: true });
+    expect(allReplies(deps)).not.toContain(fillMessage('confirm_all_prefilled', 'en'));
+    expect(ctx.stateContext.fill_confirm).toBeNull();
+    // They answered it themselves, so the ordinary completion path applies.
+    expect(lastReply(deps)).toBe(fillMessage('completion', 'en', { company: COMPANY }));
+  });
+
+  it('a widened DOC requirement clears the gate and asks for the document', async () => {
+    setApp({ required_docs: ['resume'] }, { haveDocs: [], vaultDocs: [] });
+    const ctx = makeCtx({
+      stateContext: {
+        fill_application_id: APPLICATION_ID,
+        fill_confirm: { at: NOW_MS - 60_000 },
+        fill_last_prompt_at: NOW_MS - 60_000,
+      },
+    });
+    const deps = makeDeps(ctx);
+
+    const res = await handleFillMessage(client, ctx, incomingMsg('ya mande todo'), deps);
+
+    expect(res).toEqual({ handled: true });
+    expect(lastReply(deps)).toBe(docPrompt('resume', 'en'));
+    expect(allReplies(deps)).not.toContain(fillMessage('confirm_all_prefilled', 'en'));
+    expect(ctx.stateContext.fill_confirm).toBeNull();
+    expect(hasCall(SQL.detailsComplete)).toBe(false);
+  });
+
+  // Positive control for the fill_doc_replace guard: the guard must not
+  // wedge the application. `handleFillMediaTurn` writes `fill_doc_replace:
+  // null` BEFORE its `promptNextStep` call and `updateStateContext` mutates
+  // `ctx.stateContext` in place, so the replacement upload still completes.
+  it('the replacement upload disarms the slot BEFORE prompting, so it still completes', async () => {
+    setApp(
+      { required_docs: ['work_auth_doc'] },
+      { haveDocs: ['work_auth_doc'], vaultDocs: ['work_auth_doc'] },
+    );
+    const ctx = makeCtx({
+      stateContext: {
+        fill_application_id: APPLICATION_ID,
+        fill_doc_replace: 'work_auth_doc',
+      },
+    });
+    const deps = makeDeps(ctx, { downloadMedia: jest.fn(async () => PDF_BYTES) });
+    (uploadDocumentToS3 as jest.Mock).mockResolvedValue({ versionId: 'v1' });
+
+    await handleFillMessage(client, ctx, incomingMsg('', {
+      numMedia: 1, mediaUrl: 'https://api.twilio.test/m1', mediaContentType: 'application/pdf',
+    }), deps);
+
+    expect(findCall(SQL.docInsert)[1][2]).toBe('work_auth_doc');
+    expect(ctx.stateContext.fill_doc_replace).toBeNull();
+    expect(hasCall(SQL.detailsComplete)).toBe(true);
+    expect(lastReply(deps)).toBe(fillMessage('completion', 'en', { company: COMPANY }));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
 // F2 (sprint 24): the CAMBIAR menu is a ONE-SHOT and must not outlive the
 // turn after it was sent.
 //
