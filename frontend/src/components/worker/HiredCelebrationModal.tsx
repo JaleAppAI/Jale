@@ -8,6 +8,7 @@ import { Icon } from '@/components/ui/icon';
 import { Modal } from '@/components/ui/modal';
 import { ConfettiBurst } from '@/components/worker/ConfettiBurst';
 import { formatStartDateWeekday } from '@/lib/date';
+import { formatPay } from '@/lib/pay';
 import type { ApplicationHire } from '@/lib/api/worker';
 
 /**
@@ -79,12 +80,17 @@ export function HiredCelebrationModal({
 }) {
   const t = useTranslations('worker_applications.hired_celebration');
   const tCommon = useTranslations('common');
+  const tPay = useTranslations('pay');
   const locale = useLocale();
   const titleId = useId();
 
   // Date-only value (`YYYY-MM-DD`), so the UTC-pinned formatter -- an instant
   // formatter would tell a worker in Mexico their first day is the day before.
   const startDate = formatStartDateWeekday(hire.start_date, locale);
+  // Localized from the structured columns, NOT `hire.pay` verbatim: that one
+  // is English free text and may be the "Pay not specified" sentinel. Null
+  // means there is genuinely no rate to state, and the fact is dropped.
+  const pay = formatPay(hire, tPay);
 
   return (
     <Modal
@@ -150,7 +156,7 @@ export function HiredCelebrationModal({
             {startDate ?? t('modal.start_date_tbc')}
           </Fact>
           {hire.location ? <Fact label={t('modal.location')}>{hire.location}</Fact> : null}
-          {hire.pay ? <Fact label={t('modal.pay')}>{hire.pay}</Fact> : null}
+          {pay ? <Fact label={t('modal.pay')}>{pay}</Fact> : null}
           {hire.shift_schedule ? (
             <Fact label={t('modal.schedule')}>{hire.shift_schedule}</Fact>
           ) : null}

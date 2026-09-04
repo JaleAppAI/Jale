@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen } from '@testing-library/react';
 import { interpolate, message, renderIntl } from '@/components/worker/onboarding/__tests__/render-intl';
+import { formatPay, type PayTranslator } from '@/lib/pay';
 import type { ApplicationHire } from '@/lib/api/worker';
 
 // Same stub the other banner suite uses: the real `Link` reaches
@@ -28,11 +29,33 @@ function hire(overrides: Partial<ApplicationHire> = {}): ApplicationHire {
     acknowledged_at: null,
     start_date: '2026-09-15',
     location: 'Austin, TX',
-    pay: '$24-$28/hour',
     shift_schedule: 'Mon-Fri, 7:00-15:30',
+    // The LEGACY pay column with no structured columns behind it -- the
+    // fallback branch of `formatPay`, and a real shape for a job created
+    // before 023/033.
+    pay: '$24-$28/hour',
+    pay_min: null,
+    pay_max: null,
+    pay_interval: null,
     ...overrides,
   };
 }
+
+/**
+ * A `pay` translator over the REAL catalogue, so the expected string below is
+ * whatever `formatPay` actually produces for this locale rather than a literal
+ * typed out here. Hard-coding "$22-$26/hr" would pass while silently
+ * disagreeing with `pay.range`'s en dash or `pay.interval_hourly`'s wording.
+ */
+const payTranslator: PayTranslator = (key, values) => {
+  const raw = message(`pay.${key}`);
+  if (!values) return raw;
+  const flat: Record<string, string | number> = {};
+  for (const [name, value] of Object.entries(values)) {
+    flat[name] = value instanceof Date ? value.toISOString() : value;
+  }
+  return interpolate(raw, flat);
+};
 
 /** Every field the two surfaces need, in one place. */
 const SUBJECT = {
@@ -138,6 +161,37 @@ describe('HiredCelebrationModal', () => {
       .toBeInTheDocument();
     expect(screen.getByText(message('worker_applications.hired_celebration.modal.start_date_tbc')))
       .toBeInTheDocument();
+  });
+
+  it('localizes a structured pay range rather than echoing the English column', () => {
+    // The shape the backend now sends: no legacy `pay` text, the figures in
+    // their own columns. Showing `hire.pay` verbatim was the bug `lib/pay.ts`
+    // exists to fix -- a Spanish-locale worker was reading English free text.
+    const structured = hire({ pay: null, pay_min: 22, pay_max: 26, pay_interval: 'hourly' });
+    const expected = formatPay(structured, payTranslator);
+
+    renderIntl(<HiredCelebrationModal open {...SUBJECT} hire={structured} onClose={vi.fn()} />);
+
+    expect(expected).not.toBeNull();
+    expect(screen.getByText(message('worker_applications.hired_celebration.modal.pay')))
+      .toBeInTheDocument();
+    expect(screen.getByText(expected as string)).toBeInTheDocument();
+  });
+
+  it('drops the pay fact when the sentinel is all the employer gave', () => {
+    // `PAY_UNSPECIFIED` is not a figure, and `formatPay` answers null for it.
+    // Printing "Pay: Pay not specified" would be worse than saying nothing.
+    renderIntl(
+      <HiredCelebrationModal
+        open
+        {...SUBJECT}
+        hire={hire({ pay: 'Pay not specified' })}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText(message('worker_applications.hired_celebration.modal.pay')))
+      .not.toBeInTheDocument();
   });
 
   it('says what happens next, and what to do if it does not', () => {

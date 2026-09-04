@@ -89,8 +89,14 @@ function hire(overrides: Partial<ApplicationHire> = {}): ApplicationHire {
     acknowledged_at: null,
     start_date: '2026-09-15',
     location: 'Austin, TX',
-    pay: '$24-$28/hour',
     shift_schedule: 'Mon-Fri, 7:00-15:30',
+    // The LEGACY pay column with no structured columns behind it -- the
+    // fallback branch of `formatPay`, and a real shape for a job created
+    // before 023/033.
+    pay: '$24-$28/hour',
+    pay_min: null,
+    pay_max: null,
+    pay_interval: null,
     ...overrides,
   };
 }

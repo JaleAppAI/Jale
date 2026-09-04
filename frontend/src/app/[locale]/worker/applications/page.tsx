@@ -23,6 +23,7 @@ import { HiredBanner } from '@/components/worker/HiredBanner';
 import { JobStatusBadge } from '@/components/ui/badge';
 import { acknowledgeHire, getApplications } from '@/lib/api/worker';
 import { formatLongDate, formatStartDateWeekdayShort } from '@/lib/date';
+import { formatPay } from '@/lib/pay';
 import type { Application } from '@/lib/api/worker';
 import { normalizeApplicationStatus, TERMINAL_APPLICATION_STATUSES } from '@/lib/status';
 import { visibleJobStatusBadge } from '@/lib/jobStatusDisplay';
@@ -56,6 +57,7 @@ function MetricRowSkeleton() {
 
 export default function WorkerApplicationsPage() {
   const t = useTranslations('worker_applications');
+  const tPay = useTranslations('pay');
   const locale = useLocale();
   const { idToken } = useAuth();
 
@@ -187,7 +189,10 @@ export default function WorkerApplicationsPage() {
                           ? [
                               hireStartDate ? `${t('hired_celebration.modal.start_date')}: ${hireStartDate}` : null,
                               hire.location,
-                              hire.pay,
+                              // Localized from the structured columns, never
+                              // `hire.pay` verbatim -- that column is English
+                              // free text and may be the sentinel.
+                              formatPay(hire, tPay),
                             ].filter((fact): fact is string => Boolean(fact))
                           : [];
                         return (
