@@ -263,4 +263,13 @@ describe('TradeStep — the typed-in trade has bounds of its own', () => {
             interpolate(message('worker_onboarding.rejection.reason.too_short'), { min: MIN_ANSWER_CHARS, max: MAX_ANSWER_CHARS }),
         );
     });
+
+    // The OTHER side of `StepHeader`'s `fieldTakesFocus`. This screen's first
+    // control is a trade button, not a box to type in: focusing it would give
+    // a screen reader "Carpenter, button" instead of the question, and put an
+    // invisible focus ring on one of six equal options. The heading keeps it.
+    it('leaves the focus on the heading — there is no first field to type in', () => {
+        renderIntl(<TradeStep {...props()} />);
+        expect(screen.getByRole('heading', { name: message('worker_onboarding.trade.title') })).toHaveFocus();
+    });
 });

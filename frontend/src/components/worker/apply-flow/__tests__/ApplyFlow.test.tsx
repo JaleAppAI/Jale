@@ -202,4 +202,17 @@ describe('ApplyFlow — feedback', () => {
     expect(screen.getByText(message('worker_job_detail.apply_flow.intro_one_tap', 'es')))
       .toBeInTheDocument();
   });
+
+  it('focuses the FIRST prompt box on arrival, and only that one', () => {
+    renderFlow();
+    expect(screen.getByLabelText(PROMPTS[0].text)).toHaveFocus();
+    expect(screen.getByLabelText(PROMPTS[1].text)).not.toHaveFocus();
+  });
+
+  it('focuses nothing when the job asks no questions', () => {
+    // The one-tap job renders no field at all: there is nothing to focus and
+    // nothing to crash on.
+    renderFlow({ job: { pre_application_prompts: [] } });
+    expect(document.activeElement).toBe(document.body);
+  });
 });

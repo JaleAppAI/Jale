@@ -35,6 +35,7 @@ export function PromptAnswerField({
   value,
   touched,
   disabled,
+  autoFocus = false,
   onChange,
   labels,
 }: {
@@ -42,6 +43,12 @@ export function PromptAnswerField({
   value: string;
   touched: boolean;
   disabled: boolean;
+  /**
+   * The FIRST field on the screen sets this, so a worker who tapped Apply can
+   * start writing without hunting for the box. Explicit rather than spread:
+   * this component takes a named prop for everything it puts on the textarea.
+   */
+  autoFocus?: boolean;
   onChange: (text: string) => void;
   /** Resolved by the parent so this stays a pure, namespace-agnostic field. */
   labels: {
@@ -73,6 +80,7 @@ export function PromptAnswerField({
         placeholder={labels.placeholder}
         value={value}
         disabled={disabled}
+        autoFocus={autoFocus}
         aria-invalid={tooLong || blank ? true : undefined}
         aria-describedby={hintId}
         onChange={(e) => onChange(e.target.value)}
