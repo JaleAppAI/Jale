@@ -101,13 +101,18 @@ describe('readSession — one role stored', () => {
         expect(readSession(null)).toBeNull();
     });
 
-    it('returns the only session there is, whatever the route asked for', () => {
-        // An employer who opens a /worker/... URL still has exactly one
-        // session, and it is the one this provider must restore — the auth
-        // pages already route a mismatched role to its own home.
+    it('never hands a role route the other role\'s session', () => {
+        // Only an employer is signed in. An /employer/... route (including
+        // /auth/employer) restores that session; a /worker/... route must get
+        // NOTHING, not "the only session there is": substituting it is what
+        // turned a click on the employer login into a worker sign-in (and the
+        // reverse) on 2026-09-04 — the auth page saw an authenticated worker
+        // and sent them to the worker home. A route that names no role (the
+        // landing page, legal pages) still restores the one session.
         localStorage.setItem(EMPLOYER_SLOT, 'rt-employer');
 
-        expect(readSession('worker')).toEqual({ refreshToken: 'rt-employer', userType: 'employer' });
+        expect(readSession('employer')).toEqual({ refreshToken: 'rt-employer', userType: 'employer' });
+        expect(readSession('worker')).toBeNull();
         expect(readSession(null)).toEqual({ refreshToken: 'rt-employer', userType: 'employer' });
     });
 

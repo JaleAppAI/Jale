@@ -17,17 +17,17 @@ export default function WorkerAuthPage() {
     const router = useRouter();
     const searchParams = useSearchParams();
 
+    // Only a WORKER session counts as signed in on this door. With an employer
+    // signed in, this page offers the worker sign-in instead of bouncing to the
+    // employer dashboard -- both roles are meant to coexist in one browser.
+    const workerSignedIn = isAuthenticated && userType === 'worker';
+
     useEffect(() => {
-        if (!isLoading && isAuthenticated) {
+        if (!isLoading && workerSignedIn) {
             // WorkerAuthForm just finished its own OTP-success transition (it
             // owns the claim + redirect for that case) -- stand down so we
             // don't double-claim the referral and race it on the redirect.
             if (isAuthFlowCompleting()) return;
-
-            if (userType === 'employer') {
-                router.replace('/employer/dashboard');
-                return;
-            }
 
             // An already-authenticated worker never mounts WorkerAuthForm, so
             // this is the only place that can claim the referral for them.
@@ -53,14 +53,14 @@ export default function WorkerAuthPage() {
             }
             router.replace('/worker/home');
         }
-    }, [isLoading, isAuthenticated, userType, router, searchParams, idToken]);
+    }, [isLoading, workerSignedIn, router, searchParams, idToken]);
 
     // Not `return null`: that blanked the whole viewport between the route's
     // loading.tsx unmounting and the form mounting -- a navy-to-white-to-navy
     // flash on every visit, and a dead screen for as long as the redirect above
     // takes for an already-signed-in user. This markup is byte-identical to
     // ./loading.tsx, so the shell simply stays put and only the card fills in.
-    if (isLoading || isAuthenticated) {
+    if (isLoading || workerSignedIn) {
         return (
             <AuthShell variant="worker">
                 <CenteredCardSkeleton title card={false} />

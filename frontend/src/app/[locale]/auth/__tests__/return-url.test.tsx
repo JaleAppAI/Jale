@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 
 /**
  * The other end of the `?returnUrl=` round trip that `useRequireAuth` now
@@ -56,6 +56,15 @@ vi.mock('@/lib/login-url', async (importOriginal) => ({
     ...(await importOriginal<typeof import('@/lib/login-url')>()),
     assignReturnPath,
 }));
+// The forms themselves are out of scope here; a stub per door lets the tests
+// below assert WHICH door rendered its form (or none at all).
+vi.mock('@/components/auth/WorkerAuthForm', () => ({
+    default: () => <div data-testid="worker-form" />,
+}));
+vi.mock('@/components/auth/EmployerAuthForm', () => ({
+    default: () => <div data-testid="employer-form" />,
+    EmployerBrandPanel: () => null,
+}));
 
 import WorkerAuthPage from '@/app/[locale]/auth/worker/page';
 import EmployerAuthPage from '@/app/[locale]/auth/employer/page';
@@ -108,6 +117,19 @@ describe('worker auth page', () => {
         expect(assignReturnPath).not.toHaveBeenCalled();
         expect(replace).not.toHaveBeenCalled();
     });
+
+    it('shows the worker form when the only session is an employer one', () => {
+        // Clicking "worker login" with an employer signed in must offer the
+        // worker sign-in, not bounce to the employer dashboard: both roles are
+        // meant to coexist in one browser.
+        state.userType = 'employer';
+
+        render(<WorkerAuthPage />);
+
+        expect(screen.getByTestId('worker-form')).toBeInTheDocument();
+        expect(replace).not.toHaveBeenCalled();
+        expect(assignReturnPath).not.toHaveBeenCalled();
+    });
 });
 
 describe('employer auth page', () => {
@@ -138,5 +160,18 @@ describe('employer auth page', () => {
 
         expect(assignReturnPath).not.toHaveBeenCalled();
         expect(replace).toHaveBeenCalledWith('/employer/dashboard');
+    });
+
+    it('shows the employer form when the only session is a worker one', () => {
+        // The reported bug: a worker signed in, "employer login" clicked, and
+        // the page bounced to /worker/home instead of offering the employer
+        // sign-in.
+        state.userType = 'worker';
+
+        render(<EmployerAuthPage />);
+
+        expect(screen.getByTestId('employer-form')).toBeInTheDocument();
+        expect(replace).not.toHaveBeenCalled();
+        expect(assignReturnPath).not.toHaveBeenCalled();
     });
 });
