@@ -610,10 +610,10 @@
       "applicant_stub_1": "Candidatos nuevos",
       "applicant_stub_2": "Listos para contactar",
       "applicant_stub_3": "Documentos pendientes",
-      "job_progress_title": "Job Progress",
+      "job_progress_title": "Avance del trabajo",
       "positions_filled": "Puestos llenos",
       "positions_open_hint": "{count, plural, one {# puesto abierto} other {# puestos abiertos}}",
-      "time_to_fill_title": "Time to Fill",
+      "time_to_fill_title": "Tiempo para cubrir",
       "days_posted": "Días publicado",
       "time_to_fill_hint": "{title}",
       "no_open_jobs": "No hay empleos abiertos ahora",
@@ -625,8 +625,8 @@
       "hiring_status_title": "Estado de contratación"
     },
     "disabled": {
-      "label": "Preview",
-      "preview": "Preview",
+      "label": "Vista previa",
+      "preview": "Vista previa",
       "coming_soon": "Pronto"
     },
     "jobs": {
