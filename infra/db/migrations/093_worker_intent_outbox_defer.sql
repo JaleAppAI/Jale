@@ -126,13 +126,15 @@ DECLARE
   v_oid OID;
   v_rpc TEXT;
 BEGIN
-  SELECT p.oid INTO v_oid
-    FROM pg_catalog.pg_proc p
-    JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
-   WHERE n.nspname = 'public'
-     AND p.proname = 'defer_worker_intent_outbox'
-     AND pg_catalog.pg_get_function_identity_arguments(p.oid)
-         = 'uuid, uuid, text, integer';
+  -- to_regprocedure, not a pg_get_function_identity_arguments() string compare:
+  -- that function renders the NAMED signature ("p_id uuid, p_lease_token uuid,
+  -- ..."), so comparing it to the bare type list can never match and the
+  -- self-check raised "is missing" on a database where the function had just
+  -- been created (caught on the sprint-24 testbed, 2026-09-04). Same idiom as
+  -- the 043 RPC check below.
+  v_oid := pg_catalog.to_regprocedure(
+    'public.defer_worker_intent_outbox(uuid, uuid, text, integer)'
+  )::oid;
   IF v_oid IS NULL THEN
     RAISE EXCEPTION 'migration 093: defer_worker_intent_outbox is missing';
   END IF;
