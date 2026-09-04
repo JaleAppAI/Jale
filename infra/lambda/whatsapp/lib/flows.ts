@@ -476,6 +476,38 @@ export function parseApplicationButtonPayload(
   return { action: m[1] as ApplicationButtonPayload['action'], applicationId: m[2] };
 }
 
+/**
+ * Sprint 24 C4: the SAME `app-<uuid>` reference, TYPED rather than tapped.
+ *
+ * `application-stage-notify.ts` prints "Referencia: app-<uuid>" in the hired
+ * notification, and workers reply with it -- which matched nothing before
+ * this (only the button-payload grammar above knew the shape), so they got
+ * the unknown-message reply while an employer waited.
+ *
+ * Grammar notes, all load-bearing:
+ *   - The reference may sit anywhere in ordinary prose, so the id is
+ *     bounded rather than anchored: no alphanumeric immediately before
+ *     `app-` (so "myapp-<uuid>" is not a reference) and no hex/hyphen
+ *     immediately after (so a truncated or extended id is not one either).
+ *   - `:`, `_` and `-` are excluded from the leading boundary as well, which
+ *     is what keeps `application:start:app-<uuid>` OUT of this parser. That
+ *     payload is owned by `parseApplicationButtonPayload` and routed before
+ *     this one -- and its `later` variant must NOT dispatch like `start`, so
+ *     the two grammars must not overlap even by accident.
+ *   - Case-insensitive (WhatsApp capitalizes the first letter of a message),
+ *     normalized to the lowercase form ids are stored in.
+ *
+ * Pure and total: never throws, never logs. Inbound bodies are untrusted.
+ */
+const APPLICATION_REFERENCE_PATTERN =
+  /(?:^|[^0-9a-z:_-])app-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?![0-9a-z-])/i;
+
+export function parseApplicationReference(body: string | null | undefined): string | null {
+  if (!body) return null;
+  const m = body.match(APPLICATION_REFERENCE_PATTERN);
+  return m ? m[1].toLowerCase() : null;
+}
+
 export function parseEmployerConversationButtonPayload(
   payload: string,
 ): EmployerConversationButtonPayload | null {

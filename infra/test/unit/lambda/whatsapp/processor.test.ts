@@ -2607,6 +2607,231 @@ describe('Processor Lambda', () => {
 
         expect(outboxBodies()).toContain(fieldQuestion('work_authorization', 'en'));
       });
+
+      // -- Sprint 24 C4: the same two codes, TYPED --------------------------
+      //
+      // A worker holding a `JALE-XXXXXXXX` job code or an `app-<uuid>`
+      // application reference used to get the unknown-message reply once
+      // onboarded: the job code was only ever parsed PRE-auth (start.ts) and
+      // the application reference only as a button payload. Users reported
+      // exactly this.
+      describe('typed codes in the authenticated router', () => {
+        const APP_ID = 'aaaaaaaa-0000-4000-8000-00000000000a';
+
+        function referredJobRow(overrides: Record<string, unknown> = {}) {
+          return {
+            id: 'job-referred',
+            title: 'Roofer',
+            company: 'RM Construction',
+            location: 'El Paso, TX',
+            pay_min: null,
+            pay_max: null,
+            pay_interval: null,
+            pay_raw: '$25/hr',
+            pre_application_prompts: null,
+            ...overrides,
+          };
+        }
+
+        it('a typed JALE- code answers with that job, exactly like the info action, and arms the number the reply names', async () => {
+          mockConvTurn('SM-code-info');
+          mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [{ job_id: 'job-referred' }] }); // apply-token -> job
+          mockStateContextUpdate(); // recent_jobs arm
+          mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [referredJobRow()] }); // handleJobAction's job load
+          mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox job details
+          mockBoundWorkerTail();
+
+          await handler(
+            makeSqsEvent({
+              MessageSid: 'SM-code-info',
+              From: 'whatsapp:+15125551234',
+              Body: 'JALE-ABCD1234',
+            }),
+            {} as any,
+            {} as any,
+          );
+
+          const bodies = outboxBodies();
+          expect(bodies).toHaveLength(1);
+          expect(bodies[0]).toContain('Job details');
+          expect(bodies[0]).toContain('Roofer');
+          expect(bodies[0]).toContain('RM Construction');
+          expect(bodies[0]).not.toBe(t('idle_help', 'en'));
+
+          // The info reply tells the worker to answer with a NUMBER, which is
+          // resolved against `recent_jobs` -- so the referred job MUST be in
+          // that list at the index the reply prints, or the instruction
+          // applies them to a different job (or to nothing).
+          // The forced-idle writeback earlier in the turn also writes
+          // state_context, so the ARM is the last write carrying the list.
+          const armed = stateContextUpdates().filter((sc) => Array.isArray(sc.recent_jobs)).pop();
+          expect(armed?.recent_jobs).toEqual(['job-referred']);
+          expect(bodies[0]).toContain('"1 ');
+
+          // Typing a code is an INQUIRY: the token is read, never consumed,
+          // and no referral claim is parked or credited.
+          expect(countQueryByPattern(/UPDATE referral_apply_tokens/i)).toBe(0);
+          expect(countQueryByPattern(/referral_pending_claims/i)).toBe(0);
+        });
+
+        it('appends the referred job to an existing numbered list instead of renumbering it', async () => {
+          // A worker who just listed jobs has 1..N in their head. Prepending
+          // or replacing would silently change what "2 me interesa" means.
+          mockConvTurn('SM-code-append', { recent_jobs: ['job-a', 'job-b'] });
+          mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [{ job_id: 'job-referred' }] });
+          mockStateContextUpdate();
+          mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [referredJobRow()] });
+          mockQuery.mockResolvedValueOnce(ok());
+          mockBoundWorkerTail();
+
+          await handler(
+            makeSqsEvent({
+              MessageSid: 'SM-code-append',
+              From: 'whatsapp:+15125551234',
+              Body: 'hola, mi codigo es JALE-ABCD1234',
+            }),
+            {} as any,
+            {} as any,
+          );
+
+          const armed = stateContextUpdates().filter((sc) => Array.isArray(sc.recent_jobs)).pop();
+          expect(armed?.recent_jobs).toEqual(['job-a', 'job-b', 'job-referred']);
+          expect(outboxBodies()[0]).toContain('"3 ');
+        });
+
+        it('a JALE- code that resolves to nothing says so and names the JOBS keyword', async () => {
+          mockConvTurn('SM-code-unknown');
+          mockQuery.mockResolvedValueOnce({ rowCount: 0, rows: [] }); // token -> nothing
+          mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox
+          mockBoundWorkerTail();
+
+          await handler(
+            makeSqsEvent({
+              MessageSid: 'SM-code-unknown',
+              From: 'whatsapp:+15125551234',
+              Body: 'JALE-ABCD1234',
+            }),
+            {} as any,
+            {} as any,
+          );
+
+          expect(outboxBodies()).toEqual([t('job_code_not_found', 'en')]);
+          // No job was looked up and nothing was armed.
+          expect(countQueryByPattern(/FROM jobs\s+WHERE id = \$1/i)).toBe(0);
+          expect(stateContextUpdates().some((sc) => Array.isArray(sc.recent_jobs))).toBe(false);
+        });
+
+        it('a typed app- reference for a details-requested application dispatches the SAME path as the Start button', async () => {
+          mockConvTurn('SM-ref-start');
+          mockQuery.mockResolvedValueOnce(ok()); // setInternalUserRlsContext (070's policy)
+          mockQuery.mockResolvedValueOnce({
+            rowCount: 1,
+            rows: [{
+              id: APP_ID, title: 'Painter', status: 'details_requested',
+              needs_details: true, company_name: 'RM Construction',
+            }],
+          }); // the worker's own applications
+          mockFillSnapshotRow({ application_status: 'details_requested', required_fields: ['work_authorization'] });
+          mockSeedNoDefaults();
+          mockStateContextUpdate(); // arm write
+          mockFillSnapshotRow({ application_status: 'details_requested', required_fields: ['work_authorization'] });
+          mockCompanyLookup('RM Construction');
+          mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox intro
+          mockFillSnapshotRow({ application_status: 'details_requested', required_fields: ['work_authorization'] });
+          mockStateContextUpdate(); // fill_last_prompt_at stamp
+          mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox field question
+          mockBoundWorkerTail();
+
+          await handler(
+            makeSqsEvent({
+              MessageSid: 'SM-ref-start',
+              From: 'whatsapp:+15125551234',
+              Body: `Referencia: app-${APP_ID}`,
+            }),
+            {} as any,
+            {} as any,
+          );
+
+          expect(outboxBodies()).toContain(fieldQuestion('work_authorization', 'en'));
+          // The dispatch carried the TYPED id: handleApplicationStart's own
+          // snapshot load ran for exactly that application. (The armed value
+          // itself comes from the mocked snapshot row, so asserting on it
+          // would only re-check the fixture.)
+          const snapshotLoads = mockQuery.mock.calls.filter(
+            ([sql, params]) => /FROM job_applications ja/i.test(sql as string)
+              && Array.isArray(params) && params[0] === APP_ID,
+          );
+          expect(snapshotLoads.length).toBeGreaterThan(0);
+          expect(stateContextUpdates().some((sc) => 'fill_application_id' in sc)).toBe(true);
+        });
+
+        it("a typed app- reference in another status answers with that application's status line and arms its number", async () => {
+          mockConvTurn('SM-ref-status');
+          mockQuery.mockResolvedValueOnce(ok()); // setInternalUserRlsContext
+          mockQuery.mockResolvedValueOnce({
+            rowCount: 1,
+            rows: [{
+              id: APP_ID, title: 'Painter', status: 'hired',
+              needs_details: false, company_name: 'RM Construction',
+            }],
+          });
+          mockStateContextUpdate(); // applications_menu armed
+          mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox status line
+          mockBoundWorkerTail();
+
+          await handler(
+            makeSqsEvent({
+              MessageSid: 'SM-ref-status',
+              From: 'whatsapp:+15125551234',
+              Body: `app-${APP_ID}`,
+            }),
+            {} as any,
+            {} as any,
+          );
+
+          const body = outboxBodies()[0];
+          expect(body).toContain('1) Painter - RM Construction - Hired');
+          // Nothing is being asked of this worker, so no footer invitation.
+          expect(body).not.toContain(t('applications_footer', 'en'));
+          // The number the line prints resolves: the one-shot menu carries
+          // exactly this application.
+          const menuWrite = stateContextUpdates().find((sc) => sc.applications_menu);
+          expect((menuWrite?.applications_menu as { ids: string[] }).ids).toEqual([APP_ID]);
+          // Not the stage-2 arm.
+          expect(stateContextUpdates().some((sc) => 'fill_application_id' in sc)).toBe(false);
+        });
+
+        it("a typed app- reference that is not this worker's application says so and names the APPLICATIONS keyword", async () => {
+          mockConvTurn('SM-ref-foreign');
+          mockQuery.mockResolvedValueOnce(ok()); // setInternalUserRlsContext
+          mockQuery.mockResolvedValueOnce({
+            rowCount: 1,
+            rows: [{
+              id: 'bbbbbbbb-0000-4000-8000-00000000000b', title: 'Painter', status: 'pending',
+              needs_details: false, company_name: 'RM Construction',
+            }],
+          }); // the worker's applications -- the typed id is not among them
+          mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox
+          mockBoundWorkerTail();
+
+          await handler(
+            makeSqsEvent({
+              MessageSid: 'SM-ref-foreign',
+              From: 'whatsapp:+15125551234',
+              Body: `app-${APP_ID}`,
+            }),
+            {} as any,
+            {} as any,
+          );
+
+          expect(outboxBodies()).toEqual([t('application_ref_not_found', 'en')]);
+          // The ownership answer comes from the worker's OWN list (one
+          // SELECT); a foreign id is never loaded, so this reply cannot
+          // become an existence oracle for other workers' applications.
+          expect(countQueryByPattern(/FROM job_applications ja JOIN jobs j/i)).toBe(1);
+          expect(stateContextUpdates().some((sc) => 'fill_application_id' in sc)).toBe(false);
+        });
+      });
     });
 
     describe('Task 10: fill-lane dispatch precedence', () => {

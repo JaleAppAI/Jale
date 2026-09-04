@@ -60,6 +60,7 @@ import {
   isProfileCommand,
   isApplicationsCommand,
   parseApplicationButtonPayload,
+  parseApplicationReference,
   parseButtonPayload,
   parseCommandPayload,
   parseEmployerConversationButtonPayload,
@@ -103,6 +104,7 @@ import {
 } from './lib/applications-command';
 import { loadRequirementSnapshot } from '../lib/application-requirements';
 import { parsePreApplicationPromptList } from '../lib/pre-application-prompts';
+import { hashToken, parseApplyToken } from '../lib/referral-codes';
 import {
   handlePostLaneMessage,
   discardActiveDraft,
@@ -1318,6 +1320,43 @@ async function routeReadyWorkerCommands(
     return null;
   }
 
+  // Sprint 24 C4: the two machine-generated codes a worker can be holding --
+  // a `JALE-XXXXXXXX` job code from a referral link, and the `app-<uuid>`
+  // reference the application-stage notifications print
+  // (lib/application-stage-notify.ts). Each was recognised ONLY somewhere
+  // else -- the job code pre-auth (`onboarding/steps/start.ts`), the
+  // application reference only as a button payload -- so an onboarded worker
+  // who TYPED either one fell all the way through to `idle_help`. Users
+  // reported exactly that.
+  //
+  // Placed here deliberately:
+  //   - AFTER the exact-match help/support/profile commands, which no code
+  //     can collide with;
+  //   - BEFORE `parseEmployerConversationTextAction` / `tryConversationRelay`,
+  //     so a worker with a focused employer thread never RELAYS a machine
+  //     code into an employer's chat;
+  //   - both parsers are pure and reject ordinary prose, so a message
+  //     carrying no code issues no extra query and every route below behaves
+  //     exactly as it did before.
+  //
+  // The `application:(start|later):app-<uuid>` BUTTON payload never arrives
+  // here: `routeMessage` consumes it (including the Body-recovered form)
+  // before this function is called, and `parseApplicationReference` excludes
+  // the payload shape anyway -- `later` must not dispatch like `start`.
+  if (conv.user_id) {
+    const typedJobCode = parseApplyToken(msg.body);
+    if (typedJobCode) {
+      await handleTypedJobCode(client, conv, msg, typedJobCode);
+      return conv.user_id;
+    }
+
+    const typedApplicationRef = parseApplicationReference(msg.body);
+    if (typedApplicationRef) {
+      await handleTypedApplicationReference(client, conv, msg, typedApplicationRef);
+      return conv.user_id;
+    }
+  }
+
   const textConversationAction = parseEmployerConversationTextAction(msg.body);
   if (textConversationAction) {
     return await handleEmployerConversationTextAction(client, conv, msg, textConversationAction, routerDeps);
@@ -2157,6 +2196,151 @@ async function handleApplicationStart(
     inboundMessageSid,
     from,
     buildFillDeps(conv),
+  );
+}
+
+/**
+ * Sprint 24 C4: resolves a TYPED `JALE-XXXXXXXX` apply token to the job it
+ * points at. READ ONLY, and deliberately so.
+ *
+ * The pre-auth resolver for the same code is `parkPendingClaim`
+ * (whatsapp/lib/referral-claims.ts), which CONSUMES the token
+ * (`consumed_at` + `consumed_phone_hash`) as part of parking a claim for a
+ * phone that has no `users` row yet. An onboarded worker typing the code is
+ * asking "what is this job?", not spending it, so:
+ *   - nothing is consumed: the code still answers when typed twice, and
+ *     still answers if this worker's own first message already consumed it;
+ *   - `expires_at` is not checked either -- expiry bounds the
+ *     browser-to-WhatsApp handoff, it does not make the job secret. The
+ *     freshness gate that matters is the job's own `status = 'active'`,
+ *     enforced by `handleJobAction` (a filled/closed job answers
+ *     `job_not_found`).
+ * Referral ATTRIBUTION is NOT credited on this path: crediting means writing
+ * `referral_pending_claims` / `worker_attribution`, which this lane does not
+ * own. Recorded as a follow-up rather than guessed at here.
+ *
+ * `jale_whatsapp` already holds SELECT on `referral_apply_tokens` (the same
+ * table `parkPendingClaim` UPDATEs from this lane). The raw token is hashed
+ * before it touches SQL and is never logged.
+ */
+async function resolveApplyTokenJobId(
+  client: PoolClient,
+  rawToken: string,
+): Promise<string | null> {
+  const res = await client.query<{ job_id: string }>(
+    `SELECT job_id FROM referral_apply_tokens WHERE token_hash = $1`,
+    [hashToken(rawToken)],
+  );
+  return res.rows[0]?.job_id ?? null;
+}
+
+/**
+ * A typed job code is answered with EXACTLY the existing "info" action for
+ * that job (`handleJobAction`), so the two surfaces can never diverge.
+ *
+ * The one thing that has to happen first: that reply ends with
+ * `Reply "<n> accept" to apply` (`Responde "<n> aceptar"`), where `<n>` is
+ * the job's 1-based position in `state_context.recent_jobs` -- and it falls
+ * back to 1 when the
+ * job is absent, which would point the worker at a DIFFERENT job (or at
+ * nothing, since `handleIdle`'s typed-action path reads `recent_jobs[n-1]`).
+ * So the referred job is APPENDED to that list, never prepended and never
+ * replacing it: every number the worker already has in their head from the
+ * last listing keeps pointing where it did. The list itself stays bounded
+ * because the next TRABAJOS/JOBS listing replaces it wholesale with five
+ * ids.
+ */
+async function handleTypedJobCode(
+  client: PoolClient,
+  conv: ConversationRow,
+  msg: IncomingMessage,
+  rawToken: string,
+): Promise<void> {
+  const jobId = await resolveApplyTokenJobId(client, rawToken);
+  if (!jobId) {
+    // Unknown, mistyped, or a code for a deleted job. Never says which --
+    // and always names a keyword that works.
+    await queueReply(client, msg.messageSid, msg.from, 'job_code_not_found', conv.language);
+    return;
+  }
+
+  if (!conv.state_context) {
+    conv.state_context = {} as ProfileStateContext;
+  }
+  const recentJobs = conv.state_context.recent_jobs ?? [];
+  if (!recentJobs.includes(jobId)) {
+    // Mutated IN PLACE, never reassigned: objects built earlier in this turn
+    // (FillContext/PostCtx) captured this exact reference -- see
+    // `makeStateContextUpdater`'s note on why identity matters here.
+    conv.state_context.recent_jobs = [...recentJobs, jobId];
+    await updateConversation(client, conv.id, { state_context: conv.state_context });
+  }
+
+  await handleJobAction(client, conv, jobId, 'info', msg.from, msg.messageSid);
+}
+
+/**
+ * A typed `app-<uuid>` reference, answered from the worker's OWN
+ * applications (`loadWorkerApplications`, `WHERE ja.worker_id = $1` under
+ * `app.current_internal_user_id`) -- so ownership is established by the
+ * query itself and a stranger's id can never be loaded, let alone
+ * described. That is also why the not-found reply is safe: it cannot become
+ * an existence oracle for other workers' applications.
+ *
+ * Three answers, in the order a worker would expect:
+ *   - `details_requested`: dispatch `handleApplicationStart`, the SAME entry
+ *     point the notification's Start button and the `aplicaciones` menu digit
+ *     use (it re-checks ownership and every terminal-state gate itself);
+ *   - any other status: the application's own status line, rendered by the
+ *     `aplicaciones` command's renderer (`sendApplicationsListRows` with just
+ *     this row), which also arms the one-shot menu so the "1)" it prints
+ *     actually resolves on the next message;
+ *   - not in the worker's list: the bilingual not-found reply.
+ *
+ * Known edge: `loadWorkerApplications` returns at most
+ * `APPLICATIONS_LIST_LIMIT` (10) rows, needs-details first, so a worker with
+ * more than ten applications typing a reference for an OLD, non-actionable
+ * one gets the not-found reply. The `details_requested` branch -- the one
+ * that matters, and the reason this exists -- sorts first and is always in
+ * range.
+ */
+async function handleTypedApplicationReference(
+  client: PoolClient,
+  conv: ConversationRow,
+  msg: IncomingMessage,
+  applicationId: string,
+): Promise<void> {
+  const workerId = conv.user_id;
+  if (!workerId) return;
+
+  // 070's `jobs_worker_read_applied` policy is keyed on this GUC; without it
+  // the join drops every non-active job the worker applied to and an owned
+  // application would read as "not found" -- silently the wrong answer.
+  await setInternalUserRlsContext(client, workerId);
+  const applications = await loadWorkerApplications(client, workerId);
+  const match = applications.find((row) => row.applicationId === applicationId);
+
+  if (!match) {
+    await queueReply(client, msg.messageSid, msg.from, 'application_ref_not_found', conv.language);
+    return;
+  }
+
+  if (match.status === 'details_requested') {
+    await handleApplicationStart(client, conv, applicationId, msg.from, msg.messageSid);
+    return;
+  }
+
+  // Same contract as the `aplicaciones` command (routeMessage): this reply
+  // arms the one-shot numbered menu, and a dormant post-board draft must not
+  // be left holding the worker's next message.
+  await discardStalePostDraft(client, conv, msg);
+  await sendApplicationsListRows(
+    client,
+    buildApplicationsCtx(conv),
+    [match],
+    msg.messageSid,
+    msg.from,
+    buildApplicationsDeps(conv),
   );
 }
 

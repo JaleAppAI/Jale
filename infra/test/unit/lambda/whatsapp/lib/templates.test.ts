@@ -434,3 +434,36 @@ describe('sprint 24: help_menu advertises the interested verbs', () => {
     expect(en).not.toContain('[number] accept');
   });
 });
+
+// ── Sprint 24 C4: the two typed-code failures ──────────────────────────
+//
+// A worker can type a job code (JALE-XXXXXXXX) or an application reference
+// (app-<uuid>) that resolves to nothing. Both replies must name the command
+// that DOES work, or the worker is left holding a dead code.
+describe('sprint 24: typed-code not-found copy', () => {
+  const KEYS: TemplateKey[] = ['job_code_not_found', 'application_ref_not_found'];
+
+  it.each(KEYS)('%s has distinct, non-empty, plain-ASCII EN and ES copy', (key) => {
+    const en = t(key, 'en');
+    const es = t(key, 'es');
+    expect(en.trim().length).toBeGreaterThan(0);
+    expect(es.trim().length).toBeGreaterThan(0);
+    expect(en).not.toBe(es);
+    expect(en).toMatch(/^[\x00-\x7F]*$/);
+    expect(es).toMatch(/^[\x00-\x7F]*$/);
+  });
+
+  it.each(KEYS)('%s: the ES slot reads as Spanish and the EN slot as English', (key) => {
+    expectDistinctLanguages(t(key, 'en'), t(key, 'es'));
+  });
+
+  // The keyword each reply points at has to be one the command parsers
+  // actually accept (isJobsKeyword / isApplicationsCommand), or the escape
+  // hatch is dead text -- the same guard sprint 23 put on applications_none.
+  it('points the worker at a keyword that works', () => {
+    expect(t('job_code_not_found', 'es').toLowerCase()).toContain('trabajos');
+    expect(t('job_code_not_found', 'en').toLowerCase()).toContain('jobs');
+    expect(t('application_ref_not_found', 'es').toLowerCase()).toContain('aplicaciones');
+    expect(t('application_ref_not_found', 'en').toLowerCase()).toContain('applications');
+  });
+});

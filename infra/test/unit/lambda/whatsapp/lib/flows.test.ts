@@ -19,6 +19,7 @@ import {
   parseProfileAnswer,
   parseProfilePayloadAnswer,
   parseTypedJobAction,
+  parseApplicationReference,
   computeNextField,
   PROFILE_FIELDS,
   isSkipKeyword,
@@ -592,6 +593,62 @@ describe('flows.ts — parseTypedJobAction', () => {
       'rejects "%s"',
       (input) => expect(parseTypedJobAction(input)).toBeNull(),
     );
+  });
+});
+
+// ── Sprint 24 C4: the application reference workers can type ────────────
+//
+// `application-stage-notify.ts` puts "Referencia: app-<uuid>" in the hired
+// notification, and workers type it back. Before this it matched nothing
+// but the button payload grammar, so a typed reference got the
+// unknown-message reply.
+describe('flows.ts — parseApplicationReference', () => {
+  const UUID = 'aaaaaaaa-0000-4000-8000-00000000000a';
+
+  test.each([
+    [`app-${UUID}`, UUID],
+    // The exact shape the hired notification prints.
+    [`Buenas noticias: ... Referencia: app-${UUID}. Consulta ...`, UUID],
+    [`hola quiero saber de app-${UUID} gracias`, UUID],
+    [`(app-${UUID})`, UUID],
+    // WhatsApp capitalizes the first letter of a message; ids are stored
+    // lowercase, so the parse normalizes.
+    [`APP-${UUID.toUpperCase()}`, UUID],
+  ])('parses %s', (input, expected) => {
+    expect(parseApplicationReference(input)).toBe(expected);
+  });
+
+  test.each([
+    '',
+    'app-',
+    'app-1234',
+    'applications',
+    // Not a reference: the id is glued to a preceding word.
+    `myapp-${UUID}`,
+    // A truncated/extended id is not a reference either.
+    `app-${UUID.slice(0, -1)}`,
+    `app-${UUID}-1234`,
+    // The BUTTON PAYLOAD form is owned by parseApplicationButtonPayload and
+    // routed before this parser ever runs; it must not double-match here,
+    // because 'later' and 'start' dispatch differently.
+    `application:later:app-${UUID}`,
+    `application:start:app-${UUID}`,
+  ])('rejects "%s"', (input) => {
+    expect(parseApplicationReference(input)).toBeNull();
+  });
+
+  it('never throws on hostile input', () => {
+    const hostile: Array<string | null | undefined> = [
+      null,
+      undefined,
+      'app-'.repeat(20000),
+      `app-${'a'.repeat(100000)}`,
+      '🔥 app- 💥',
+      `\u0000app-${UUID}`,
+    ];
+    for (const input of hostile) {
+      expect(() => parseApplicationReference(input)).not.toThrow();
+    }
   });
 });
 

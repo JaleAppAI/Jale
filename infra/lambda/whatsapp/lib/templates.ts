@@ -50,6 +50,9 @@ export type TemplateKey =
   | 'application_already_complete'
   | 'application_hired_info'
   | 'application_later_ack'
+  // ── Sprint 24: typed codes (a job code / an application reference) ──
+  | 'job_code_not_found'
+  | 'application_ref_not_found'
   // Errors
   | 'unknown_message'
   | 'processing_error'
@@ -262,6 +265,20 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
     en: 'No problem. Reply "applications" when you want to continue.',
   },
 
+  // ── Sprint 24 C4: a typed code that resolved to nothing ──
+  //
+  // Each reply names the command that DOES work (TRABAJOS/JOBS,
+  // APLICACIONES/APPLICATIONS -- both accepted by their parsers in flows.ts)
+  // so a dead code is never a dead end. Unaccented ASCII, like every other
+  // string in this module.
+  job_code_not_found: {
+    es: 'No encontramos ese codigo de trabajo. Revisa que este completo o escribe TRABAJOS para ver ofertas.',
+    en: 'We could not find that job code. Check that it is complete, or reply JOBS to see openings.',
+  },
+  application_ref_not_found: {
+    es: 'No encontramos esa solicitud en tu cuenta. Escribe APLICACIONES para ver tus solicitudes.',
+    en: 'We could not find that application in your account. Reply APPLICATIONS to see your applications.',
+  },
   unknown_message: {
     es: 'No entendi ese mensaje.\n\nEnvia "Ayuda" para ver comandos.',
     en: 'I did not understand that message.\n\nSend "Help" to see commands.',
