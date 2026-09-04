@@ -8,6 +8,13 @@ const FILL_MESSAGE_KEYS = [
   'answer_too_long', 'doc_download_failed', 'web_handoff', 'switched_job', 'continue_other',
   'exit_job_inactive', 'exit_application_gone', 'exit_application_closed',
   'guard_error', 'reconfirm',
+  // Sprint 24 L3: transparency + the explicit confirm + the CAMBIAR menu.
+  'intro_profile_check', 'reuse_fields_line', 'reuse_docs_line',
+  'reuse_change_footer', 'confirm_all_prefilled', 'change_menu_header',
+  'change_menu_invalid', 'change_nothing',
+  // F7: the raced-clear answer -- the application was completed elsewhere
+  // (the web stage-2 door) while this lane still had a CAMBIAR menu armed.
+  'change_locked',
 ] as const;
 
 describe('application-fill-prompts.ts', () => {
@@ -120,5 +127,89 @@ describe('application-fill-prompts.ts', () => {
   test('unknown placeholders in fillMessage are left intact when no vars given', () => {
     const s = prompts.fillMessage('web_handoff', 'es');
     expect(s).toContain('{{doc}}');
+  });
+
+  // ── Sprint 24 L3 ──────────────────────────────────────────────────────
+  //
+  // The reuse copy exists because the 2026-09-04 incident was invisible to
+  // the worker: profile answers were reused and a vault document was
+  // attached with nothing said, and the whole fill then completed in the
+  // same turn ("Faltan 0 preguntas y 0 documentos" -> sent).
+
+  test.each(REQUIRED_FIELD_TYPES)('field %s has a SHORT bilingual label, distinct from its question', (key) => {
+    const en = prompts.fieldLabel(key, 'en');
+    const es = prompts.fieldLabel(key, 'es');
+    expect(en.length).toBeGreaterThan(2);
+    expect(es.length).toBeGreaterThan(2);
+    expect(en).not.toBe(es);
+    // A label names the field for a list; it never asks a question.
+    expect(en).not.toContain('?');
+    expect(es).not.toContain('?');
+    expect(en).not.toBe(prompts.fieldQuestion(key, 'en'));
+    // Short enough to sit in a comma-joined summary line or a numbered menu.
+    expect(en.length).toBeLessThan(40);
+    expect(es.length).toBeLessThan(40);
+  });
+
+  test('field labels carry no accents either (same keyboard rationale as the questions)', () => {
+    const all = REQUIRED_FIELD_TYPES.map((k) => prompts.fieldLabel(k, 'es')).join(' ');
+    expect(all).not.toMatch(/[áéíóúñÁÉÍÓÚÑ¿¡]/);
+  });
+
+  test('intro_profile_check announces the profile check BEFORE anything is reused', () => {
+    expect(prompts.fillMessage('intro_profile_check', 'es'))
+      .toBe('Primero reviso tu perfil para usar los datos que ya tenemos y solo te pregunto lo que falta.');
+    expect(prompts.fillMessage('intro_profile_check', 'en'))
+      .toBe("First I'll check your profile for details we already have, then ask only what's missing.");
+  });
+
+  test('the reuse summary names the fields, the vault documents, and the CAMBIAR/CHANGE way out', () => {
+    const fields = prompts.fillMessage('reuse_fields_line', 'es', { labels: 'Fecha de nacimiento, Educacion' });
+    expect(fields).toContain('Fecha de nacimiento, Educacion');
+    expect(fields).not.toContain('{{labels}}');
+
+    const docs = prompts.fillMessage('reuse_docs_line', 'en', { docLabels: 'Resume' });
+    expect(docs).toContain('Resume');
+    expect(docs).not.toContain('{{docLabels}}');
+    expect(docs.toLowerCase()).toContain('vault');
+
+    expect(prompts.fillMessage('reuse_change_footer', 'es')).toContain('CAMBIAR');
+    expect(prompts.fillMessage('reuse_change_footer', 'en')).toContain('CHANGE');
+  });
+
+  test('confirm_all_prefilled asks for an explicit LISTO/DONE instead of completing silently', () => {
+    const es = prompts.fillMessage('confirm_all_prefilled', 'es');
+    expect(es).toContain('LISTO');
+    expect(es).toContain('CAMBIAR');
+    const en = prompts.fillMessage('confirm_all_prefilled', 'en');
+    expect(en).toContain('DONE');
+    expect(en).toContain('CHANGE');
+  });
+
+  // F7: `clearFieldAnswer` refuses once `details_completed_at` is set, so a
+  // pick made after the application was completed on the web must say THAT,
+  // not re-ask a question and not send the completion copy a second time.
+  test('change_locked says the application is already sent and links the worker at it', () => {
+    const url = 'https://jaleapp.ai/es/worker/applications/app-1';
+    const es = prompts.fillMessage('change_locked', 'es', { url });
+    expect(es).toBe(
+      'Esta solicitud ya se envio y no se puede editar aqui. Puedes revisarla en'
+      + ` ${url}.`,
+    );
+    const en = prompts.fillMessage('change_locked', 'en', { url });
+    expect(en).toBe(
+      'This application was already sent and can no longer be edited here. You can review it at'
+      + ` ${url}.`,
+    );
+    expect(es).not.toContain('{{url}}');
+    expect(en).not.toContain('{{url}}');
+  });
+
+  test('the change menu has a header, an out-of-range retry, and a nothing-to-fix answer', () => {
+    for (const lang of ['en', 'es'] as const) {
+      expect(prompts.fillMessage('change_menu_header', lang).length).toBeGreaterThan(10);
+      expect(prompts.fillMessage('change_menu_invalid', lang).length).toBeGreaterThan(10);
+      expect(prompts.fillMessage('change_nothing', lang).length).toBeGreaterThan(10);
+    }
   });
 });

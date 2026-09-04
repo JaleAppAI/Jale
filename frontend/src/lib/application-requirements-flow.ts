@@ -471,10 +471,24 @@ export type RequirementsFlowState = {
   certClaims: CertClaimDraft;
   /**
    * Did the server already have field answers when this door opened? Guards
-   * the once-only defaults merge: the backend now seeds
-   * `worker_application_defaults` into the application at ARM time (B4.0 #9),
-   * so on nearly every real load this is true and the client-side merge is a
-   * no-op it must not perform.
+   * the once-only defaults merge.
+   *
+   * NOTHING IS SEEDED INTO THE APPLICATION FOR THE WEB PATH. This door's
+   * prefill is client-side: the page fetches `GET /worker/application-defaults`
+   * and `apply_defaults` merges the reusable questionnaire answers into the
+   * DRAFT, as editable, `prefilledKeys`-marked values that reach the
+   * application only when the worker saves. So the merge is the normal path
+   * here, not a fallback.
+   *
+   * WHATSAPP is the surface that seeds server-side: `seedAnswersFromDefaults`
+   * (infra/lambda/whatsapp/lib/application-fill.ts) runs once at fill-arm time
+   * from the same `worker_application_defaults` row under the same reuse
+   * policy -- only keys this job asks for, only where the application has no
+   * answer yet, each re-validated.
+   *
+   * Which is what this flag is for: a worker who came through the bot first
+   * arrives here with answers ALREADY STORED, and re-merging stale defaults
+   * over them would undo what they told it. True means leave them alone.
    */
   serverAnswered: boolean;
   stepIndex: number;

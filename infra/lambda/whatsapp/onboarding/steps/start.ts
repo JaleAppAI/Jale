@@ -15,7 +15,7 @@ import {
 import { parseApplyToken } from '../../../lib/referral-codes';
 import { parkPendingClaim } from '../../lib/referral-claims';
 import type { OnboardingV2Deps, OnboardingV2InboundMessage, OnboardingV2Session, RouteResult } from '../types';
-import { sendPreAuthPrompt, readHistory } from '../delivery';
+import { sendPreAuthPrompt, sendPreAuthText, readHistory } from '../delivery';
 
 export async function handleStartStep(
   client: PoolClient,
@@ -72,6 +72,31 @@ export async function handleStartStep(
   if (choice) {
     const issued = await deps.adapters.identity.issueChallenge({ whatsappNumber: msg.from, lang: choice });
     if (issued.status === 'throttled') {
+      return { handled: true, workerId: null, stepKey: 'start.choose_language' };
+    }
+
+    // Sprint 24 A3: Cognito started the challenge but the OTP SMS could not
+    // be sent (see IssueChallengeResult's 'send_failed'). Tell the worker --
+    // in the language they just picked, which is the only language signal
+    // this phone has given us -- and leave the run on this same step so
+    // their next message retries the send. `handled: true` is the point of
+    // the branch: the inbound SQS record gets acked instead of dying in
+    // whatsapp-inbound-v2-dlq.fifo.
+    //
+    // Deliberately NOT appended to `otpSendHistory`: that history caps SENT
+    // codes at three per hour, and charging a worker for a code that never
+    // left our side would lock them out of retrying over a provider fault.
+    // Nothing about the challenge is persisted either (no
+    // providerChallengeId/expiresAt) -- there is no code to enter, and a
+    // stale id would send the next turn to the OTP step with nothing behind
+    // it.
+    if (issued.status === 'send_failed') {
+      await deps.repo.savePreAuthState(client, phoneHash, {
+        preferredLanguage: choice,
+        currentStepKey: 'start.choose_language',
+        candidateUserId,
+      });
+      await sendPreAuthText(client, deps, msg, choice, 'v2_otp_send_failed');
       return { handled: true, workerId: null, stepKey: 'start.choose_language' };
     }
 

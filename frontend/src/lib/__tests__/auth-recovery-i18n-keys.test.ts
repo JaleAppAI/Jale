@@ -52,6 +52,10 @@ const ADDED_KEY_PATHS = [
     // auth.employer — acknowledgement after a recovery confirm with no password
     'auth.employer.confirmed_sign_in',
 
+    // auth.employer — the forgot-password step's own recovery banner, shown
+    // when Cognito refuses the reset because the account was never confirmed
+    'auth.employer.forgot_not_confirmed',
+
     // auth.employer.errors — resend call-site mapping
     'auth.employer.errors.account_not_confirmed',
     'auth.employer.errors.already_confirmed',
@@ -75,6 +79,7 @@ const ADDED_KEY_PATHS = [
 const REQUIRED_PLACEHOLDERS: Record<string, readonly string[]> = {
     'auth.employer.resend_cooldown': ['{seconds}'],
     'auth.employer.code_sent': ['{email}'],
+    'auth.employer.forgot_not_confirmed': ['{email}'],
 };
 
 describe('auth-recovery i18n keys', () => {

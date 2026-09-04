@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
+import type { FormEvent } from 'react';
 import { useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
@@ -67,6 +68,13 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
      * existed because the primitive did not forward refs.
      */
     const initialFocusRef = useRef<HTMLInputElement>(null);
+    /*
+     * Save is associated with the fields' form by id, not by containment:
+     * `ui/modal.tsx` renders `footer` as a SIBLING of `children`. The hidden
+     * descendant submit button inside the form below is what gives it a
+     * default button, which is what makes Enter save. See PostJobModal.
+     */
+    const formId = useId();
 
     /*
      * Re-prefill on OPEN, not on every `job` change.
@@ -168,6 +176,12 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
         onClose();
     };
 
+    const handleFormSubmit = (event: FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+        if (loading) return;
+        void handleSubmit();
+    };
+
     return (
         <Modal
             open={open}
@@ -188,12 +202,13 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
                         </InlineFeedback>
                     ) : null}
                     <div className="flex gap-2">
-                        <Button variant="ghost" onClick={handleClose} disabled={loading} className="flex-1">
+                        <Button type="button" variant="ghost" onClick={handleClose} disabled={loading} className="flex-1">
                             {t('modal.cancel')}
                         </Button>
                         <Button
+                            type="submit"
+                            form={formId}
                             variant="primary"
-                            onClick={handleSubmit}
                             loading={loading}
                             loadingLabel={tCommon('loading')}
                             className="flex-1"
@@ -204,7 +219,11 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
                 </div>
             }
         >
-            <div className="grid gap-4">
+            <form id={formId} onSubmit={handleFormSubmit} className="grid gap-4">
+                {/* The form's default button, so Enter in any field saves --
+                    the footer's Save is not a descendant and cannot serve as
+                    one everywhere. See PostJobModal for the full note. */}
+                <button type="submit" hidden aria-hidden tabIndex={-1} />
                 <JobFormFields
                     form={form}
                     onUpdate={update}
@@ -218,7 +237,7 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
                     minWorkers={job.hired_count || 1}
                     titleRef={initialFocusRef}
                 />
-            </div>
+            </form>
         </Modal>
     );
 }

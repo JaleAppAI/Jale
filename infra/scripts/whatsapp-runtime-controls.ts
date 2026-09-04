@@ -341,12 +341,41 @@ export async function runControlsAction(
   }
 }
 
+/**
+ * One `--verify-templates` line: key, SID, existence, approval status, and --
+ * since 2026-09-04 -- the WhatsApp CATEGORY.
+ *
+ * Category is on the line because status alone hid the defect that stopped
+ * two employer notifications: Meta had recategorised three of the four
+ * pending `application_*` templates to MARKETING, and a MARKETING template
+ * cannot carry a transactional message outside the 24-hour session window.
+ * All four still reported `pending`, so the command showed nothing wrong.
+ *
+ * Exported (and pure) so the formatting is testable without a Twilio account:
+ * `main()` is not reachable from a test.
+ */
+export function formatTemplateVerificationRow(row: {
+  key: string;
+  sid: string;
+  exists: boolean;
+  whatsappStatus: string | null;
+  whatsappCategory: string | null;
+}): string {
+  return [
+    row.key,
+    row.sid,
+    row.exists ? 'exists' : 'MISSING',
+    row.whatsappStatus ?? '-',
+    row.whatsappCategory ?? '-',
+  ].join('\t');
+}
+
 async function main(): Promise<void> {
   if (process.argv[2] === '--verify-templates') {
     const { verifyTwilioTemplates } = await import('./lib/verify-twilio-templates');
     const result = await verifyTwilioTemplates();
     for (const row of result.rows) {
-      console.log(`${row.key}\t${row.sid}\t${row.exists ? 'exists' : 'MISSING'}\t${row.whatsappStatus ?? '-'}`);
+      console.log(formatTemplateVerificationRow(row));
     }
     if (result.failures.length > 0) {
       for (const failure of result.failures) console.error(`FAIL: ${failure}`);

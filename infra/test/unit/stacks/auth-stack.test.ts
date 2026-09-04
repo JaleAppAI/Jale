@@ -416,6 +416,59 @@ describe('AuthStack', () => {
     expect(templateJson).not.toContain('TWILIO_AUTH_TOKEN');
   });
 
+  // ── Employer forgot-password recovery (sprint 24 D-forgot) ───────────────
+  //
+  // Live `describe-user-pool` had this pool on CDK's default recovery setting:
+  // verified_phone_number priority 1, verified_email priority 2. Employers
+  // register an email and NEVER a phone, so Cognito reached for a channel that
+  // cannot exist first and an unconfirmed employer's forgot-password call
+  // failed with "no registered or verified email or phone_number" instead of
+  // mailing a code.
+  //
+  // Exact-array equality, not `arrayContaining`: leaving
+  // verified_phone_number in the list at ANY priority is the bug.
+
+  test('employer pool recovers by verified email only', () => {
+    const pools = template.findResources('AWS::Cognito::UserPool', {
+      Properties: { UserPoolName: 'jale-employer-pool' },
+    });
+    expect(Object.keys(pools)).toHaveLength(1);
+    const employerPool = Object.values(pools)[0] as any;
+
+    expect(employerPool.Properties.AccountRecoverySetting.RecoveryMechanisms).toEqual([
+      { Name: 'verified_email', Priority: 1 },
+    ]);
+  });
+
+  test('worker pool recovery is left exactly as it was', () => {
+    // Workers authenticate by SMS OTP and have no verified email, so
+    // email-only recovery here would remove the only route they have. The
+    // worker pool must still carry CDK's default pair, phone first.
+    const pools = template.findResources('AWS::Cognito::UserPool', {
+      Properties: { UserPoolName: 'jale-worker-pool' },
+    });
+    expect(Object.keys(pools)).toHaveLength(1);
+    const workerPool = Object.values(pools)[0] as any;
+
+    expect(workerPool.Properties.AccountRecoverySetting.RecoveryMechanisms).toEqual([
+      { Name: 'verified_phone_number', Priority: 1 },
+      { Name: 'verified_email', Priority: 2 },
+    ]);
+  });
+
+  test('the recovery change does not rename the employer pool', () => {
+    // The setting is written onto the pool's L1 rather than passed as a
+    // construct prop, so the thing to prove is that the construct path — and
+    // therefore the logical id CloudFormation matches against the LIVE pool —
+    // is untouched. A rename here deletes every registered employer.
+    const [employerLogicalId] = Object.keys(
+      template.findResources('AWS::Cognito::UserPool', {
+        Properties: { UserPoolName: 'jale-employer-pool' },
+      }),
+    );
+    expect(employerLogicalId).toMatch(/^EmployerPoolUserPool[0-9A-F]{8}$/);
+  });
+
   test('Employer pool uses Cognito default email (no SES config) when sesEmailFromAddress is absent', () => {
     // Without sesEmailFromAddress context the EmailConfiguration block should
     // be absent (CDK omits it, Cognito defaults to COGNITO_DEFAULT).

@@ -49,7 +49,9 @@ function leafPaths(tree: MessageNode, prefix: string): string[] {
  * in this file still passes.
  */
 const WALKED_NAMESPACE_SIZES: Record<string, number> = {
-    worker_application_details: 72,
+    // 73 since S24 L10: `cert_have_question`, the neutral yes/no label that
+    // replaced the name-interpolated `cert_question` heading.
+    worker_application_details: 73,
     'worker_applications.details_banner': 9,
     'worker_job_detail.apply_flow': 14,
     'worker_job_detail.what_you_need': 19,

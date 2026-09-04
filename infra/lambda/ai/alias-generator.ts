@@ -3,6 +3,7 @@ import {
   BedrockRuntimeClient,
   ConverseCommand,
 } from '@aws-sdk/client-bedrock-runtime';
+import { parseBedrockJson, stripCodeFences } from '../lib/bedrock-json';
 import { getDbPool } from '../lib/db';
 import { normalizeProfession } from '../lib/profession';
 import { TRADE_CATEGORIES } from '../lib/job-fields';
@@ -148,12 +149,13 @@ async function callBedrock(tradeRaw: string): Promise<ValidatedAliasResponse> {
   );
 
   const text = response.output?.message?.content?.[0]?.text ?? '';
-  const trimmed = text.trim()
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/\s*```$/, '');
-  const parsed: unknown = JSON.parse(trimmed);
+  // `cleaned` exists only to quote the response in the validator's errors. The
+  // parse itself goes through the shared lenient parser, which also tolerates
+  // the prose a model wraps around the JSON when it ignores "no markdown".
+  const cleaned = stripCodeFences(text);
+  const parsed: unknown = parseBedrockJson(text);
 
-  return validateAliasResponse(parsed, trimmed);
+  return validateAliasResponse(parsed, cleaned);
 }
 
 function validateAliasResponse(parsed: unknown, rawText: string): ValidatedAliasResponse {

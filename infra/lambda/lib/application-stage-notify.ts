@@ -10,10 +10,11 @@
  * Ownership: everything under `lambda/whatsapp/**` belongs to the WhatsApp
  * lane. This module IMPORTS from it (`enqueueWorkerMessage`,
  * `registerCategoryRenderer`, the shared types) and never edits it. Two
- * things the lane keeps module-private are mirrored here with a comment and
- * a follow-up note: the `__fallback_body` content-variable key
- * (`whatsapp/lib/outbox.ts:10`) and the verified-recipient lookup
- * (`whatsapp/lib/onboarding-renderers.ts`'s `loadVerifiedRecipient`).
+ * things it duplicates rather than imports are flagged here with a comment
+ * and a follow-up note: the `__fallback_body` content-variable key
+ * (`whatsapp/lib/outbox.ts:20`) and the verified-recipient lookup
+ * (`whatsapp/lib/onboarding-renderers.ts`'s `loadVerifiedRecipient`). Both
+ * are exported now, so both duplicates are deletable.
  *
  * Delivery: no wake-queue wiring. The outbox row this produces is drained by
  * the existing minute drain -- the locked sprint decision.
@@ -59,16 +60,21 @@ import type {
 export type ApplicationStageKind = 'details_requested' | 'hired';
 
 /**
- * Mirrors the un-exported `FALLBACK_BODY_KEY` in
- * `whatsapp/lib/outbox.ts:10`. `sendTwilioWhatsAppMessage` strips this key
- * before sending ContentVariables, and falls back to its value as a plain
- * `Body` when the content template has no ContentSid seeded in the Twilio
- * secret yet (outbox.ts:57-71) -- which is the case for every template name
- * below, since `application_update_*` / `application_hired_*` are not in
- * `TwilioSecret['templates']` (twilio.ts:106-150).
+ * Duplicates `FALLBACK_BODY_KEY` from `whatsapp/lib/outbox.ts:20`.
+ * `sendTwilioWhatsAppMessage` strips this key before sending ContentVariables
+ * and falls back to its value as a plain `Body` when the content template has
+ * no ContentSid (outbox.ts:131-145).
  *
- * FOLLOW-UP (Ivan / WhatsApp lane): export this constant so consumers stop
- * duplicating the literal.
+ * That fallback is a SECRET-CONTENTS condition, not a type-level one: all four
+ * names below ARE declared in `TwilioSecret['templates']`
+ * (twilio.ts:160-163, added with the renderers in c1cb451a), and the plain
+ * `Body` is used only for as long as no ContentSid is actually seeded under
+ * those keys -- which is what made the 2026-09-04 63016s a template-approval
+ * wait rather than a code bug (see the defer branch in
+ * `whatsapp/lib/outbox.ts` and migration 093).
+ *
+ * FOLLOW-UP (Ivan / WhatsApp lane): the constant is already exported; import
+ * it here instead of restating the literal.
  */
 const FALLBACK_BODY_KEY = '__fallback_body';
 
@@ -103,6 +109,27 @@ export interface ApplicationStageMessage {
  *
  * ASCII-only, unaccented, informal-"tu" Spanish, matching the convention in
  * `whatsapp/lib/templates.ts` and the renderers in `onboarding-renderers.ts`.
+ *
+ * ── BYTE-IDENTICAL TO THE SEEDED TEMPLATES. Edit both, or neither. ──
+ *
+ * Each body below is the corresponding `QUICK_REPLY_DEFINITIONS` body in
+ * `scripts/seed-whatsapp-twilio-templates.mjs` with {{1}} {{2}} {{3}} {{4}}
+ * substituted. The template is what a worker sees OUTSIDE WhatsApp's 24-hour
+ * session window; this string travels as `__fallback_body` and is what they
+ * see INSIDE it. If the two drift, one notification reads two different ways
+ * depending on when the employer happened to trigger it.
+ * `test/unit/scripts/seed-whatsapp-twilio-templates.test.ts` asserts the
+ * equality by deriving the expected string from THIS function, so a change on
+ * either side fails there.
+ *
+ * The wording is deliberately, flatly transactional (2026-09-04, D6): Meta
+ * recategorised the first submission to MARKETING off the back of the old
+ * "Good news:" / "Buenas noticias:" openings, and a MARKETING template cannot
+ * be sent outside the session window at all -- which is the only window this
+ * lane ever sends in. So: a fixed opening that names the job, a statement of
+ * fact, and the two ways to respond. No promotional register, no exclamation
+ * marks, and no variable at the very start or end of the string (Meta rejects
+ * that outright). Those rules are enforced by the same test file.
  */
 export function buildApplicationStageMessage(
   lang: PreferredLanguage,
@@ -116,15 +143,19 @@ export function buildApplicationStageMessage(
   const body =
     input.kind === 'details_requested'
       ? lang === 'es'
-        ? `Actualizacion de aplicacion: ${companyName} quiere avanzar con tu aplicacion para ${jobTitle} y necesita algunos datos mas. `
-          + `Escribe "aplicaciones" para responder aqui, o usa ${url} para responder cuando quieras.`
-        : `Application update: ${companyName} wants to move forward with your application for ${jobTitle} and needs a few more details. `
-          + `Reply "applications" to answer here, or use ${url} to respond when ready.`
+        ? `Actualizacion de tu aplicacion para ${jobTitle}: ${companyName} solicito algunos datos adicionales `
+          + `para continuar con la revision. Escribe "aplicaciones" para responder aqui, `
+          + `o abre ${url} para completarlos en linea.`
+        : `Application update for ${jobTitle}: ${companyName} requested additional details `
+          + `before continuing the review. Reply "applications" to answer here, `
+          + `or open ${url} to submit them online.`
       : lang === 'es'
-        ? `Buenas noticias: ${companyName} te selecciono para ${jobTitle}. `
-          + `Referencia: app-${input.applicationId}. Consulta ${url} para ver los detalles y proximos pasos.`
-        : `Good news: ${companyName} selected you for ${jobTitle}. `
-          + `Reference: app-${input.applicationId}. Use ${url} to view details and next steps.`;
+        ? `Actualizacion del estado de tu aplicacion para ${jobTitle}: ${companyName} te selecciono `
+          + `para este puesto. Tu referencia de aplicacion es app-${input.applicationId}. `
+          + `Abre ${url} para ver los detalles y los siguientes pasos.`
+        : `Application status update for ${jobTitle}: ${companyName} selected you for this position. `
+          + `Your application reference is app-${input.applicationId}. `
+          + `Open ${url} to review the details and the next steps.`;
 
   const contentTemplate =
     input.kind === 'details_requested' ? `application_update_${lang}` : `application_hired_${lang}`;
@@ -165,12 +196,14 @@ export function buildApplicationStageUrl(
 
 // ── Recipient resolution ──
 //
-// Copied verbatim from the module-private `loadVerifiedRecipient` in
-// `whatsapp/lib/onboarding-renderers.ts` (~:100). Kept identical so a worker
-// with no verified number is resolved the same way on every category.
+// Copied verbatim from `loadVerifiedRecipient` in
+// `whatsapp/lib/onboarding-renderers.ts:108`. Kept identical so a worker with
+// no verified number is resolved the same way on every category.
 //
-// FOLLOW-UP (Ivan / WhatsApp lane): export `loadVerifiedRecipient` (and
-// `toLang`) from onboarding-renderers.ts so this duplicate can be deleted.
+// FOLLOW-UP (Ivan / WhatsApp lane): onboarding-renderers.ts already exports
+// both `loadVerifiedRecipient` (:108) and `toLang` (:377), so this duplicate
+// can be deleted -- it is a copy of live code, not a stand-in for a private
+// one, and the two will drift.
 
 interface VerifiedRecipient {
   whatsappNumber: string;

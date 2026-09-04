@@ -82,6 +82,22 @@ const ADDED_KEY_PATHS = [
     'employer_worker_profile.details_incomplete_fields',
     'employer_worker_profile.details_incomplete_docs',
     'employer_worker_profile.details_incomplete_certifications',
+
+    // ── Sprint 24 ────────────────────────────────────────────────
+    // B7: the details button is now the ONLY control that sends the stage
+    // notification, so it also has to say what happened. Added to THIS file
+    // rather than a new per-batch one -- these paths sit inside the same two
+    // namespaces this suite already owns, and the copy they replace
+    // (`request_details_sent`, still listed above as the fail-open fallback)
+    // is pinned here too.
+    'employer_job_listing.applicants.request_details_resend',
+    'employer_job_listing.applicants.request_details_notified',
+    'employer_job_listing.applicants.request_details_no_whatsapp',
+    'employer_job_listing.applicants.request_details_unchanged',
+
+    // B8: the cross-job applicants overview row's skill-overflow toggle.
+    'employer_applicants.skills_show_all',
+    'employer_applicants.skills_show_fewer',
 ] as const;
 
 describe('employer application-stage i18n keys', () => {
@@ -110,6 +126,20 @@ describe('employer application-stage i18n keys', () => {
     ])('re-voices %s to the request-details moment in both locales', (path) => {
         expect(resolve(en as MessageNode, path)).toContain('when you request details');
         expect(resolve(es as MessageNode, path)).toContain('cuando usted solicite los datos');
+    });
+
+    /**
+     * The two outcome sentences name the worker, and the no-WhatsApp one must
+     * say that nothing was sent -- that is the entire point of B7. A
+     * placeholder dropped in translation would turn an honest report into a
+     * sentence about nobody.
+     */
+    it.each([
+        'employer_job_listing.applicants.request_details_notified',
+        'employer_job_listing.applicants.request_details_no_whatsapp',
+    ])('interpolates the worker name into %s in both locales', (path) => {
+        expect(resolve(en as MessageNode, path)).toContain('{name}');
+        expect(resolve(es as MessageNode, path)).toContain('{name}');
     });
 
     it('keeps the picker hint paths the sprint-20 hints test pins', () => {

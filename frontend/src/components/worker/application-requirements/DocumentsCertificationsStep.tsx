@@ -545,16 +545,26 @@ export function CertClaimRow({
 
   return (
     <div className="rounded-[var(--radius-input)] border border-[var(--jale-divider)] p-4">
+      {/* THE EMPLOYER'S TEXT, VERBATIM, AS THE HEADING. It used to be
+          interpolated into "Do you have {name}?", which reads as broken
+          English for the long official names employers type ("Do you have
+          OSHA 30-Hour Construction Safety and Health?"). A certification name
+          is a proper noun: it gets its own line, unaltered, and the question
+          becomes a neutral label under it. */}
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="min-w-0 text-sm font-semibold text-[var(--jale-ink)]">
-          {tFlow('cert_question', { name: cert.name })}
-        </p>
+        <p className="min-w-0 text-sm font-semibold text-[var(--jale-ink)]">{cert.name}</p>
         <Badge tone={cert.tier === 'required' ? 'info' : 'neutral'}>
           {t(cert.tier === 'required' ? 'states.required' : 'states.optional')}
         </Badge>
       </div>
 
+      <p className="mt-1 text-xs text-[var(--jale-ink-2)]">{tFlow('cert_have_question')}</p>
+
       <div className="mt-2">
+        {/* The radiogroup keeps the NAME-INTERPOLATED question as its
+            accessible name -- never rendered, so the clunky sentence is not
+            read by eye, and a page carrying several certifications still tells
+            a screen reader which one this yes/no belongs to. */}
         <YesNo value={claim.has} onChange={onSetHas} ariaLabel={tFlow('cert_question', { name: cert.name })} />
       </div>
 

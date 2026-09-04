@@ -1,6 +1,5 @@
 import * as path from 'node:path';
 import * as cdk from 'aws-cdk-lib';
-import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
@@ -18,44 +17,48 @@ export interface LegalStackProps extends cdk.StackProps {
 }
 
 export class LegalStack extends cdk.Stack {
-  public readonly legalBucket: s3.Bucket;
-
   constructor(scope: Construct, id: string, props: LegalStackProps) {
     super(scope, id, props);
 
     // ── Context values ──
     const tosVersion = this.node.tryGetContext('requiredTosVersion') ?? '1.0';
     const allowedOrigin = this.node.tryGetContext('allowedOrigin') ?? 'https://jaleapp.ai';
-    const envName = this.node.tryGetContext('environment') ?? 'dev';
-    const isDev = envName === 'dev';
-
-    // ── S3 Bucket for legal documents (ToS, privacy policy) ──
-    // Dev: DESTROY + autoDelete so `cdk destroy` is ergonomic. Non-dev: RETAIN
-    // + disable autoDelete so a mistaken `cdk destroy` cannot wipe the legal
-    // audit trail (versioned ToS + privacy docs are the source of truth for
-    // user consent).
-    this.legalBucket = new s3.Bucket(this, 'LegalDocsBucket', {
-      bucketName: `jale-legal-docs-${cdk.Stack.of(this).account}`,
-      versioned: true,
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      encryption: s3.BucketEncryption.S3_MANAGED,
-      removalPolicy: isDev ? cdk.RemovalPolicy.DESTROY : cdk.RemovalPolicy.RETAIN,
-      autoDeleteObjects: isDev,
-    });
 
     // ── get-tos Lambda ──
+    // ONE legal-document mechanism, deliberately.
+    //
+    // This stack used to own a `jale-legal-docs-<account>` bucket that get-tos
+    // presigned `tos.md` and `privacy-policy.md` out of. Nothing ever uploaded
+    // them: the bucket was EMPTY in production, so a signup that reached
+    // `LegalWall` was handed a valid presigned URL to a missing key and shown
+    // S3's `NoSuchKey` XML in place of the terms of service.
+    //
+    // The maintained documents are the versioned PDFs the Next.js routes
+    // `/legal/terms` and `/legal/privacy` serve
+    // (`frontend/src/lib/legal-documents.ts`), which the branded emails and the
+    // WhatsApp flow already link to. So the Lambda now returns those URLs and
+    // the bucket, the grant and LEGAL_BUCKET_NAME are gone.
+    //
+    // OPERATOR NOTE: the deleted bucket carried `RemovalPolicy.RETAIN` outside
+    // dev, so this deploy ORPHANS `jale-legal-docs-<account>` rather than
+    // deleting it — CloudFormation drops it from the stack and leaves it in the
+    // account. It is empty; delete it by hand.
+    //
+    // FRONTEND_BASE_URL is `allowedOrigin`, the value this stack already reads
+    // for CORS and already defaults to the production domain. Same origin the
+    // browser is talking to, so a link built from it is a link back to the app
+    // the user is standing in.
     const getTosFn = new JaleLambdaFunction(this, 'GetTosLambda', {
       entry: path.join(__dirname, '../../lambda/legal/get-tos.ts'),
-      description: 'Returns presigned URLs for ToS and privacy policy documents',
+      description: 'Returns the ToS and privacy policy document URLs',
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        LEGAL_BUCKET_NAME: this.legalBucket.bucketName,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
+        FRONTEND_BASE_URL: allowedOrigin,
       },
     });
-    this.legalBucket.grantRead(getTosFn.function);
 
     // ── accept-tos Lambda ──
     const acceptTosFn = new JaleLambdaFunction(this, 'AcceptTosLambda', {

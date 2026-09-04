@@ -50,6 +50,9 @@ export type TemplateKey =
   | 'application_already_complete'
   | 'application_hired_info'
   | 'application_later_ack'
+  // ── Sprint 24: typed codes (a job code / an application reference) ──
+  | 'job_code_not_found'
+  | 'application_ref_not_found'
   // Errors
   | 'unknown_message'
   | 'processing_error'
@@ -76,6 +79,7 @@ export type TemplateKey =
   | 'v2_otp_locked'
   | 'v2_otp_resend_cooldown'
   | 'v2_otp_send_cap'
+  | 'v2_otp_send_failed'
   | 'v2_legal_prompt'
   | 'v2_legal_declined'
   | 'v2_ask_name'
@@ -196,8 +200,8 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
     en: 'I did not understand that message.\n\nSend "Help" to see commands.',
   },
   help_menu: {
-    es: 'Comandos\n\nTrabajos - Ver oportunidades\nAplicaciones - Ver tus solicitudes\nPerfil - Ver tu perfil\nChats - Abrir tus chats con empleadores\nCerrar - Cerrar el chat actual\nAyuda - Ver estos comandos\n\nEn una alerta de trabajo, usa los botones.\n\nSi ves una lista numerada, responde con el numero del trabajo:\n[numero] aceptar - Aplicar\n[numero] info - Ver detalles\n[numero] no - Omitir',
-    en: 'Commands\n\nJobs - See opportunities\nApplications - See your applications\nProfile - See your profile\nChats - Open your employer chats\nClose - Close the current chat\nHelp - Show these commands\n\nOn a job alert, use the buttons.\n\nIf you see a numbered list, reply with the job number:\n[number] accept - Apply\n[number] info - See details\n[number] no - Skip',
+    es: 'Comandos\n\nTrabajos - Ver oportunidades\nAplicaciones - Ver tus solicitudes\nPerfil - Ver tu perfil\nChats - Abrir tus chats con empleadores\nCerrar - Cerrar el chat actual\nAyuda - Ver estos comandos\n\nEn una alerta de trabajo, usa los botones.\n\nSi ves una lista numerada, responde con el numero del trabajo:\n[numero] me interesa - Aplicar\n[numero] info - Ver detalles\n[numero] no - Omitir',
+    en: 'Commands\n\nJobs - See opportunities\nApplications - See your applications\nProfile - See your profile\nChats - Open your employer chats\nClose - Close the current chat\nHelp - Show these commands\n\nOn a job alert, use the buttons.\n\nIf you see a numbered list, reply with the job number:\n[number] interested - Apply\n[number] info - See details\n[number] no - Skip',
   },
   profile_not_ready: {
     es: 'Tu perfil aun no esta listo.\n\nTermina las preguntas primero. Envia "Ayuda" para ver comandos.',
@@ -261,6 +265,20 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
     en: 'No problem. Reply "applications" when you want to continue.',
   },
 
+  // ── Sprint 24 C4: a typed code that resolved to nothing ──
+  //
+  // Each reply names the command that DOES work (TRABAJOS/JOBS,
+  // APLICACIONES/APPLICATIONS -- both accepted by their parsers in flows.ts)
+  // so a dead code is never a dead end. Unaccented ASCII, like every other
+  // string in this module.
+  job_code_not_found: {
+    es: 'No encontramos ese codigo de trabajo. Revisa que este completo o escribe TRABAJOS para ver ofertas.',
+    en: 'We could not find that job code. Check that it is complete, or reply JOBS to see openings.',
+  },
+  application_ref_not_found: {
+    es: 'No encontramos esa solicitud en tu cuenta. Escribe APLICACIONES para ver tus solicitudes.',
+    en: 'We could not find that application in your account. Reply APPLICATIONS to see your applications.',
+  },
   unknown_message: {
     es: 'No entendi ese mensaje.\n\nEnvia "Ayuda" para ver comandos.',
     en: 'I did not understand that message.\n\nSend "Help" to see commands.',
@@ -355,6 +373,16 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
   v2_otp_send_cap: {
     es: 'Pediste demasiados codigos. Intenta de nuevo mas tarde.',
     en: 'You requested too many codes. Please try again later.',
+  },
+  // Sprint 24 A3: the SMS itself could not be sent (Twilio rejected the
+  // destination, e.g. error 21408 for an unenabled region). Names the
+  // channel that failed, offers both recoveries the worker actually has,
+  // and blames nothing on them. Unaccented ASCII like every other string in
+  // this module -- a non-ASCII byte reaches Twilio as a GSM-7 escape and
+  // silently re-segments the message.
+  v2_otp_send_failed: {
+    es: 'No pudimos enviarte el codigo por SMS a este numero. Intenta de nuevo en unos minutos o escribenos desde otro numero.',
+    en: "We couldn't send your code by SMS to this number. Try again in a few minutes or message us from another number.",
   },
   v2_legal_prompt: {
     es: 'Antes de continuar, revisa nuestros Terminos ({{tos_url}}) y nuestro Aviso de Privacidad ({{privacy_url}}). Responde ACEPTAR para continuar, RECHAZAR para detenerte, o REVISAR TERMINOS para verlos otra vez.',

@@ -151,6 +151,36 @@ describe('TrustQuestionStep', () => {
         expect(screen.getByText(message('worker_onboarding.trust.complete_note', 'es'))).toBeInTheDocument();
     });
 
+    // Luis, S24: "you won't be able to change your answers" was a grey 13px
+    // line UNDER the button — the same weight as every hint on the flow, and
+    // read after the press it was meant to inform. It is the one irreversible
+    // moment in onboarding, so it is a bordered callout with an icon, above
+    // the CTA, exposed as a `note` landmark. The COPY is unchanged.
+    it('raises the final warning as a callout above the CTA, not a hint under it', () => {
+        renderIntl(<TrustQuestionStep {...props({ index: 3, answer: LONG_ENOUGH })} />);
+        const callout = screen.getByRole('note');
+        expect(callout).toHaveTextContent(message('worker_onboarding.trust.complete_note'));
+        // The icon is decorative and must not be announced as content.
+        expect(callout.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
+        const cta = screen.getByRole('button', { name: message('worker_onboarding.trust.complete_cta') });
+        // Exactly FOLLOWING: the CTA comes after the callout and neither
+        // contains the other (containment would add its own flags), so the
+        // warning cannot slide back under the button unnoticed.
+        expect(callout.compareDocumentPosition(cta)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    });
+
+    it('raises no such callout while the answers are still changeable', () => {
+        const { rerender } = renderIntl(<TrustQuestionStep {...props({ index: 1, answer: LONG_ENOUGH })} />);
+        expect(screen.queryByRole('note')).not.toBeInTheDocument();
+        rerender(<TrustQuestionStep {...props({ index: 2, answer: LONG_ENOUGH })} />);
+        expect(screen.queryByRole('note')).not.toBeInTheDocument();
+    });
+
+    it('focuses the answer box on arrival so the worker can type straight away', () => {
+        renderIntl(<TrustQuestionStep {...props()} />);
+        expect(screen.getByPlaceholderText(message('worker_onboarding.question.placeholder'))).toHaveFocus();
+    });
+
     it('types through the answer callback', async () => {
         const onAnswerChange = vi.fn();
         renderIntl(<TrustQuestionStep {...props({ onAnswerChange })} />);

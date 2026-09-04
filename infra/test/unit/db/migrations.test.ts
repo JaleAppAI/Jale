@@ -124,6 +124,8 @@ describe('database migrations', () => {
       '090',
       '091',
       '092',
+      '093',
+      '094',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -1184,5 +1186,307 @@ describe('database migrations', () => {
     expect(sql).toContain("FOREACH col IN ARRAY ARRAY['id', 'user_type', 'main_trade']");
     expect(sql).toContain("'tos_accepted_at',\n                             'privacy_accepted_at']");
     expect(sql).toContain("'public.enforce_job_application_hire_requirements()',");
+  });
+
+  // 093 adds ONE function to 043's fenced worker-intent transport. Its whole
+  // reason to exist is a distinction 043 cannot express: a retry that must
+  // NOT consume the five-attempt budget, because the reason for the failure
+  // (a WhatsApp template Meta has not approved yet) is not the row's fault
+  // and no number of attempts fixes it. Two facts in it are load-bearing and
+  // invisible to a typecheck, so they are pinned here:
+  //   * attempt_count is REFUNDED on the pending branch. 043 charges the
+  //     attempt at LEASE time, so a defer that merely declines to increment
+  //     still leaves the +1 on the row and 043's own
+  //     `pending AND attempt_count >= 5` sweep ends it after ~5 hourly
+  //     retries -- the 48h ceiling would never be reached and the function
+  //     would be a slow spelling of fail_worker_intent_outbox;
+  //   * BOTH lease columns are nulled on BOTH branches, or 043's
+  //     whatsapp_outbox_worker_intent_lease_consistency CHECK fires (it
+  //     permits a set token only together with a set deadline AND
+  //     status = 'send_unknown').
+  it('093 adds a defer-without-counting RPC to 043 transport, fenced and budget-neutral', () => {
+    const sql = fs.readFileSync(
+      path.join(migrationsDir, '093_worker_intent_outbox_defer.sql'), 'utf8',
+    );
+
+    expect(sql).toContain('Connect as jale_admin');
+    expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+    expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+
+    // The signature the drain calls by name and arity.
+    expect(sql).toContain('CREATE OR REPLACE FUNCTION public.defer_worker_intent_outbox(');
+    expect(sql).toContain('p_id UUID, p_lease_token UUID, p_error TEXT, p_delay_seconds INTEGER');
+    expect(sql).toContain('RETURNS BOOLEAN');
+    expect(sql).toContain('LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp');
+
+    // 043's fence, in FULL: the token equality AND the un-expired deadline.
+    // Token-only would let a row whose lease already lapsed (and whose
+    // delivery state is therefore unknown) be pushed back to 'pending'.
+    expect(sql).toContain('AND worker_intent_lease_token = p_lease_token');
+    expect(sql).toContain('AND worker_intent_leased_until > pg_catalog.now()');
+    expect(sql).toContain("AND status = 'send_unknown'");
+    expect(sql).toContain("AND source_type = 'worker_intent'");
+
+    // The 48h ceiling, and the delay the caller asks for.
+    expect(sql).toContain("interval '48 hours'");
+    expect(sql).toContain('make_interval(secs => p_delay_seconds)');
+
+    const statements = sql
+      .split('\n')
+      .filter((line) => !line.trimStart().startsWith('--'))
+      .join('\n');
+    const body = statements.slice(
+      statements.indexOf('CREATE OR REPLACE FUNCTION public.defer_worker_intent_outbox('),
+      statements.indexOf('ALTER FUNCTION public.defer_worker_intent_outbox'),
+    );
+    expect(body.length).toBeGreaterThan(0);
+
+    // The refund, and its clamp. `GREATEST(attempt_count - 1, 0)` undoes the
+    // increment 043's lease just charged; the clamp keeps a hand-edited or
+    // legacy row off a negative counter (attempt_count carries no CHECK).
+    expect(body).toContain('GREATEST(attempt_count - 1, 0)');
+    // It must never go UP. An increment here is fail_worker_intent_outbox
+    // with extra steps, and `+ 1` is the one-character version of that bug.
+    expect(body).not.toMatch(/attempt_count\s*\+\s*1/);
+    // ...and the terminal branch keeps the attempt as evidence, so the
+    // assignment is a CASE on the same 48h predicate as status/next_attempt_at
+    // rather than an unconditional rewind.
+    expect(body).toMatch(/attempt_count\s*=\s*CASE/);
+    expect(body.match(/interval '48 hours'/g) ?? []).toHaveLength(3);
+
+    // Both lease columns nulled on both branches (043's CHECK).
+    expect(body).toContain('worker_intent_lease_token = NULL');
+    expect(body).toContain('worker_intent_leased_until = NULL');
+
+    // Least privilege, mirroring every other 043 definer.
+    expect(sql).toContain(
+      'ALTER FUNCTION public.defer_worker_intent_outbox(UUID, UUID, TEXT, INTEGER) OWNER TO jale_admin',
+    );
+    expect(sql).toContain(
+      'REVOKE ALL ON FUNCTION public.defer_worker_intent_outbox(UUID, UUID, TEXT, INTEGER) FROM PUBLIC',
+    );
+    expect(sql).toContain(
+      'GRANT EXECUTE ON FUNCTION public.defer_worker_intent_outbox(UUID, UUID, TEXT, INTEGER) TO jale_whatsapp',
+    );
+    // No table grant is widened: the whole point of a definer is that
+    // jale_whatsapp still cannot UPDATE a worker_intent row directly.
+    expect(statements).not.toMatch(/GRANT[^;]*ON\s+(public\.)?whatsapp_outbox/i);
+
+    // Self-verifying, like 082/091/092: the file proves its own end state.
+    expect(sql).toContain('migration 093: defer_worker_intent_outbox is missing');
+    expect(sql).toContain('migration 093: defer_worker_intent_outbox must be SECURITY DEFINER');
+    expect(sql).toContain('migration 093: jale_whatsapp cannot execute defer_worker_intent_outbox');
+    // 043's three RPCs must all still be there -- this file adds, never replaces.
+    expect(sql).toContain('migration 093: 043 RPC % disappeared');
+  });
+  // 094 is the sprint-24 DATA migration, and the first file in the chain that
+  // both WRITES rows on a FORCE-RLS table and ASSERTS what it wrote. Several
+  // of its facts are invisible to a typecheck, to a mocked pool, and even to a
+  // superuser-applied integration test, so they are pinned here.
+  describe('094 backfills per-application answers and canonical trades under FORCE RLS', () => {
+    const sql = () => fs.readFileSync(
+      path.join(migrationsDir, '094_sprint24_data_backfills.sql'), 'utf8',
+    );
+
+    // The four `per_application` members of FIELD_REUSE_POLICY (job-fields.ts).
+    // These are the keys the 2026-09-04 incident leaked across employers.
+    const PER_APPLICATION = [
+      'date_available', 'desired_pay', 'worked_here_before', 'emergency_contact',
+    ];
+    // TRADE_KEYS minus 'other' (worker-vocab.ts), which is also exactly the
+    // 004_whatsapp.sql main_trade CHECK list minus 'other'. Kept as a literal
+    // here for the same reason the rest of this file is fs-only: a migration
+    // assertion must not depend on the Lambda code compiling.
+    const STANDARD_CATEGORIES = [
+      'electrician', 'plumber', 'carpenter', 'concrete', 'painting',
+    ];
+
+    it('runs as jale_admin in ONE transaction and creates no schema', () => {
+      const text = sql();
+      expect(text).toContain('Connect as jale_admin');
+      expect(text.match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(text.match(/^COMMIT;$/gm)).toHaveLength(1);
+      // A data migration must not smuggle schema in: no table is created,
+      // dropped or re-typed here, and no temp object is introduced (no
+      // migration in 001-093 uses one, and TEMP is a database privilege this
+      // chain has never depended on).
+      expect(text).not.toMatch(/^\s*(CREATE|DROP)\s+(TEMP\s+|TEMPORARY\s+)?TABLE/mi);
+      expect(text).not.toMatch(/^\s*CREATE\s+(OR REPLACE\s+)?FUNCTION/mi);
+    });
+
+    it('un-forces, backfills and re-forces exactly the two tables it writes (028 pattern)', () => {
+      const text = sql();
+      for (const table of ['users', 'worker_application_defaults']) {
+        expect(text).toContain(`ALTER TABLE ${table} NO FORCE ROW LEVEL SECURITY;`);
+        expect(text).toContain(`ALTER TABLE ${table} FORCE ROW LEVEL SECURITY;`);
+        // The un-force must come FIRST. Reversed, the backfill runs under the
+        // owner-obeys-policies rule and updates zero rows.
+        expect(text.indexOf(`ALTER TABLE ${table} NO FORCE`))
+          .toBeLessThan(text.indexOf(`ALTER TABLE ${table} FORCE`));
+      }
+      // No OTHER table's RLS posture is touched, and every un-force is
+      // reversed one for one: an un-force this file forgets to reverse is a
+      // silent, permanent hole in a tenant boundary.
+      const statements = text.match(/ALTER TABLE (\w+) (?:NO )?FORCE ROW LEVEL SECURITY/g) ?? [];
+      const tables = new Set(statements.map((s) => s.match(/ALTER TABLE (\w+)/)![1]));
+      expect([...tables].sort()).toEqual(['users', 'worker_application_defaults']);
+      expect(text.match(/ALTER TABLE \w+ NO FORCE ROW LEVEL SECURITY/g)).toHaveLength(2);
+      expect(text.match(/ALTER TABLE \w+ FORCE ROW LEVEL SECURITY/g)).toHaveLength(2);
+    });
+
+    // THE trap this file exists around. jale_admin OWNS both tables, so once
+    // FORCE is back on, its own SELECTs obey `users_isolation_select`
+    // (002_rls_policies.sql) and `worker_application_defaults_self` (079) --
+    // both keyed on an unset `app.current_user_id`, which is NULL, which
+    // matches nothing. A data assertion placed after the re-force therefore
+    // reads ZERO rows and can never fail, however broken the backfill was.
+    // (Measured on the sprint-24 testbed: 1 row visible un-forced, 0 forced.)
+    // So: data assertions while un-forced, catalog assertions after.
+    it('asserts its DATA while RLS is still un-forced, and only its CATALOG state after', () => {
+      const text = sql();
+      const lastNoForce = Math.max(
+        text.lastIndexOf('ALTER TABLE users NO FORCE'),
+        text.lastIndexOf('ALTER TABLE worker_application_defaults NO FORCE'),
+      );
+      const firstReForce = Math.min(
+        ...['ALTER TABLE users FORCE', 'ALTER TABLE worker_application_defaults FORCE']
+          .map((s) => text.indexOf(s)),
+      );
+      expect(lastNoForce).toBeGreaterThan(-1);
+      expect(firstReForce).toBeGreaterThan(lastNoForce);
+
+      const unforcedWindow = text.slice(lastNoForce, firstReForce);
+      const afterReForce = text.slice(firstReForce);
+
+      // Both data checks live inside the un-forced window...
+      expect(unforcedWindow).toContain('migration 094: worker_application_defaults still holds');
+      expect(unforcedWindow).toContain('migration 094: users rows still resolve');
+      // ...and nowhere after it.
+      expect(afterReForce).not.toContain('migration 094: worker_application_defaults still holds');
+      expect(afterReForce).not.toContain('migration 094: users rows still resolve');
+
+      // The catalog check is the reverse: relforcerowsecurity comes from
+      // pg_class, which RLS does not filter, so it belongs after the re-force
+      // (and asserting it before would assert the wrong value).
+      expect(afterReForce).toContain('relforcerowsecurity');
+      expect(afterReForce).toContain('migration 094: ');
+      expect(unforcedWindow).not.toContain('relforcerowsecurity');
+    });
+
+    it('strips exactly the four per_application answer keys, and only from an object', () => {
+      const text = sql();
+      for (const key of PER_APPLICATION) {
+        // The jsonb `-` operator REMOVES the key. Setting it to null would
+        // still read as answered through hasOwnProperty.
+        expect(text).toContain(`- '${key}'`);
+      }
+      // `?|` makes step A self-idempotent: a second apply matches no row.
+      expect(text).toContain(
+        "answers ?| array['date_available','desired_pay','worked_here_before','emergency_contact']",
+      );
+      expect(text).toContain("jsonb_typeof(answers) = 'object'");
+      expect(text).toContain('updated_at = now()');
+      // No `stable` key is ever removed -- those are the legitimately
+      // reusable half of the same blob.
+      for (const key of ['work_authorization', 'date_of_birth', 'home_address',
+        'education', 'military_service', 'work_history', 'references']) {
+        expect(text).not.toContain(`- '${key}'`);
+      }
+    });
+
+    // normalizeProfession() in SQL. The single most breakable line in the
+    // file: translate() pairs its two arguments POSITIONALLY and silently
+    // ignores the overflow, so an off-by-one in the FROM set shifts every
+    // later character onto the wrong target. The brief for this migration
+    // carried exactly that bug (21 sources, 22 targets, which mapped
+    // 'a-circumflex' to 'u'), and no alias in 060 contains a circumflex -- so
+    // parity over the seeded aliases alone would NOT have caught it.
+    it('mirrors normalizeProfession with a LENGTH-MATCHED translate() pair', () => {
+      const text = sql();
+      const calls = [...text.matchAll(/translate\(lower\([^)]*\),\s*'([^']*)',\s*'([^']*)'\)/g)];
+      expect(calls.length).toBeGreaterThan(0);
+      for (const [, from, to] of calls) {
+        expect([...from].length).toBe([...to].length);
+      }
+      // The rest of normalizeProfession's contract.
+      expect(text).toContain("'[-./]', ' ', 'g'");
+      expect(text).toContain("'\\s+', ' ', 'g'");
+      expect(text).toContain('btrim(');
+    });
+
+    // The normalizer + alias-resolution expression is written out twice on
+    // purpose (the UPDATE and the self-check), because a data assertion that
+    // re-derives the rule differently proves nothing. They must stay
+    // byte-identical, which is what this pins -- no edit may introduce a
+    // third, divergent spelling.
+    it('resolves against trade_aliases identically in the UPDATE and in the self-check', () => {
+      const text = sql();
+      const norms = text.match(/translate\(lower\([^)]*\),\s*'[^']*',\s*'[^']*'\)/g) ?? [];
+      expect(norms.length).toBe(2);
+      expect(norms[0]).toBe(norms[1]);
+
+      // resolveTradeAlias's two lookups: trade_key or a pre-normalized alias,
+      // then ONE retry with a trailing plural 's' stripped.
+      expect((text.match(/= ANY\(a\.aliases\)/g) ?? []).length).toBeGreaterThanOrEqual(2);
+      expect(text).toContain('length(c.norm) > 3');
+      expect(text).toContain("c.norm LIKE '%s'");
+      expect(text).toContain('left(c.norm, -1)');
+      // A direct hit must outrank the singular retry, as the two sequential
+      // TS lookups do -- and DISTINCT ON makes the choice deterministic when
+      // alias-generator.ts has inserted a row colliding with a 060 seed.
+      expect(text).toContain('DISTINCT ON (c.id)');
+    });
+
+    it('maps a standard trade_category to the enum key and everything else to canonical_es', () => {
+      const text = sql();
+      // Exactly TRADE_KEYS minus 'other'. 'drywall' and 'general_labor' are
+      // real jobs.trade_category values with NO main_trade counterpart, so
+      // writing either would trip the 004 CHECK.
+      expect(text).toMatch(/IN \('electrician','plumber','carpenter','concrete','painting'\)/);
+      for (const key of STANDARD_CATEGORIES) expect(text).toContain(`'${key}'`);
+      expect(text).not.toMatch(/'(drywall|general_labor)'/);
+
+      // chk_trade_other (004): main_trade='other' never gets a NULL or blank
+      // main_trade_other. canonical_es is NOT NULL but not non-blank, so the
+      // fallback is the row's current text, mirroring `canonical || tidied`.
+      expect(text).toContain("nullif(btrim(r.canonical_es), '')");
+      // A resolved standard trade clears the free-text column so no stale
+      // spelling survives beside the enum key.
+      expect(text).toMatch(/THEN\s+NULL/);
+    });
+
+    it('is re-appliable: the trade UPDATE touches no row whose pair is already correct', () => {
+      const text = sql();
+      // Two explicit IS DISTINCT FROM clauses, not a row-wise comparison.
+      // This is what makes a second apply report 0 rows AND what gives exact
+      // parity with classifyBackfillRow's `changed` flag in
+      // scripts/backfill-trade-canonical.ts.
+      expect(text).toContain('u.main_trade IS DISTINCT FROM t.new_main_trade');
+      expect(text).toContain('u.main_trade_other IS DISTINCT FROM t.new_main_trade_other');
+      // The same candidate filter the script's SELECT_DISTINCT_TRADES uses.
+      expect(text).toContain("u.main_trade = 'other'");
+      expect(text).toContain("btrim(coalesce(u.main_trade_other, '')) <> ''");
+    });
+
+    it('reports counts, and only counts', () => {
+      const text = sql();
+      const notices = text.match(/RAISE NOTICE[^;]*;/g) ?? [];
+      expect(notices.length).toBeGreaterThanOrEqual(2);
+      // No trade text, no worker id, no name, no phone reaches a log line --
+      // the same posture backfill-trade-canonical.ts's report holds.
+      for (const notice of notices) {
+        expect(notice).not.toMatch(/cognito_sub|\bphone\b|full_name|\bemail\b|main_trade_other/);
+      }
+      expect(text).toContain('GET DIAGNOSTICS');
+    });
+
+    it('documents its deploy order and its lock window', () => {
+      const text = sql();
+      expect(text).toMatch(/AFTER 093/);
+      // Independent of the code deploy, unlike 090/091 (before) and 092 (after).
+      expect(text).toMatch(/independent of the code deploy/i);
+      // ALTER TABLE ... FORCE takes ACCESS EXCLUSIVE on both tables until COMMIT.
+      expect(text).toMatch(/ACCESS EXCLUSIVE/);
+    });
   });
 });

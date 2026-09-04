@@ -111,8 +111,9 @@ describe('templates.ts — t()', () => {
     expect(help).toContain('Close');
     expect(help).toContain('Help');
     expect(help).toContain('use the buttons');
-    expect(help).toContain('[number] accept');
-    expect(help).not.toContain('1 accept');
+    // Sprint 24 C1: the advertised verb follows the relabelled buttons.
+    expect(help).toContain('[number] interested');
+    expect(help).not.toContain('1 interested');
   });
 
   it('help menu lists the main commands in Spanish', () => {
@@ -123,7 +124,7 @@ describe('templates.ts — t()', () => {
     expect(help).toContain('Cerrar');
     expect(help).toContain('Ayuda');
     expect(help).toContain('usa los botones');
-    expect(help).toContain('[numero] aceptar');
+    expect(help).toContain('[numero] me interesa');
   });
 
   it('inserts a substituted value containing $& and $1 literally, without treating it as a replacement pattern', () => {
@@ -194,7 +195,7 @@ describe('templates.ts — detectLanguage', () => {
 const V2_KEYS: TemplateKey[] = [
   'v2_start_invitation', 'v2_start_cooldown_note',
   'v2_otp_sent', 'v2_otp_invalid', 'v2_otp_expired', 'v2_otp_locked',
-  'v2_otp_resend_cooldown', 'v2_otp_send_cap',
+  'v2_otp_resend_cooldown', 'v2_otp_send_cap', 'v2_otp_send_failed',
   'v2_legal_prompt', 'v2_legal_declined',
   'v2_ask_name', 'v2_name_invalid',
   'v2_ask_location', 'v2_location_invalid',
@@ -270,6 +271,23 @@ describe('v2 templates', () => {
       expect(s).toContain('60');
       expect(s).not.toContain('{{');
     }
+  });
+
+  // Sprint 24 A3: the copy a worker sees when the OTP SMS could not be sent.
+  it('v2_otp_send_failed names SMS, invites a retry, and stays plain ASCII', () => {
+    const es = t('v2_otp_send_failed', 'es');
+    const en = t('v2_otp_send_failed', 'en');
+    expect(es).toContain('SMS');
+    expect(en).toContain('SMS');
+    expect(es.toLowerCase()).toContain('intenta de nuevo');
+    expect(en.toLowerCase()).toContain('try again');
+    // A non-ASCII byte reaches Twilio as a GSM-7 escape and re-segments the
+    // message -- every other string in this module is unaccented ASCII.
+    expect(es).toMatch(/^[\x00-\x7F]*$/);
+    expect(en).toMatch(/^[\x00-\x7F]*$/);
+    // No blame, no dead end: both recoveries the worker actually has.
+    expect(es.toLowerCase()).toContain('otro numero');
+    expect(en.toLowerCase()).toContain('another number');
   });
 
   it('the start invitation offers both languages and never reveals account existence', () => {
@@ -391,5 +409,61 @@ describe('sprint 23: help_menu advertises the aplicaciones command', () => {
     const en = t('help_menu', 'en');
     expect(en.indexOf('Jobs')).toBeLessThan(en.indexOf('Applications'));
     expect(en.indexOf('Applications')).toBeLessThan(en.indexOf('Profile'));
+  });
+});
+
+describe('sprint 24: help_menu advertises the interested verbs', () => {
+  // Luis relabelled the Twilio job-alert buttons to "interested / not
+  // interested"; the typed grammar in this copy has to say the same thing,
+  // or the help menu teaches a verb the buttons no longer show.
+  // parseTypedJobAction still accepts the old verbs -- only what we
+  // ADVERTISE changes here.
+  it('teaches "[numero] me interesa / info / no" in Spanish', () => {
+    const es = t('help_menu', 'es');
+    expect(es).toContain('[numero] me interesa - Aplicar');
+    expect(es).toContain('[numero] info - Ver detalles');
+    expect(es).toContain('[numero] no - Omitir');
+    expect(es).not.toContain('[numero] aceptar');
+  });
+
+  it('teaches "[number] interested / info / no" in English', () => {
+    const en = t('help_menu', 'en');
+    expect(en).toContain('[number] interested - Apply');
+    expect(en).toContain('[number] info - See details');
+    expect(en).toContain('[number] no - Skip');
+    expect(en).not.toContain('[number] accept');
+  });
+});
+
+// ── Sprint 24 C4: the two typed-code failures ──────────────────────────
+//
+// A worker can type a job code (JALE-XXXXXXXX) or an application reference
+// (app-<uuid>) that resolves to nothing. Both replies must name the command
+// that DOES work, or the worker is left holding a dead code.
+describe('sprint 24: typed-code not-found copy', () => {
+  const KEYS: TemplateKey[] = ['job_code_not_found', 'application_ref_not_found'];
+
+  it.each(KEYS)('%s has distinct, non-empty, plain-ASCII EN and ES copy', (key) => {
+    const en = t(key, 'en');
+    const es = t(key, 'es');
+    expect(en.trim().length).toBeGreaterThan(0);
+    expect(es.trim().length).toBeGreaterThan(0);
+    expect(en).not.toBe(es);
+    expect(en).toMatch(/^[\x00-\x7F]*$/);
+    expect(es).toMatch(/^[\x00-\x7F]*$/);
+  });
+
+  it.each(KEYS)('%s: the ES slot reads as Spanish and the EN slot as English', (key) => {
+    expectDistinctLanguages(t(key, 'en'), t(key, 'es'));
+  });
+
+  // The keyword each reply points at has to be one the command parsers
+  // actually accept (isJobsKeyword / isApplicationsCommand), or the escape
+  // hatch is dead text -- the same guard sprint 23 put on applications_none.
+  it('points the worker at a keyword that works', () => {
+    expect(t('job_code_not_found', 'es').toLowerCase()).toContain('trabajos');
+    expect(t('job_code_not_found', 'en').toLowerCase()).toContain('jobs');
+    expect(t('application_ref_not_found', 'es').toLowerCase()).toContain('aplicaciones');
+    expect(t('application_ref_not_found', 'en').toLowerCase()).toContain('applications');
   });
 });

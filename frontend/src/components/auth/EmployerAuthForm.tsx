@@ -1,10 +1,10 @@
 'use client';
-import { useEffect, useState, type InputHTMLAttributes, type ReactNode } from 'react';
+import { useEffect, useState, type FormEvent, type InputHTMLAttributes, type ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
 import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { employerConfirmSignUp, employerSignIn, employerSignUp, employerForgotPassword, employerConfirmNewPassword, employerResendConfirmationCode } from '@/lib/cognito';
-import { authErrorKey, confirmErrorKey, resendErrorKey } from '@/lib/auth-errors';
+import { authErrorKey, confirmErrorKey, forgotErrorKey, resendErrorKey } from '@/lib/auth-errors';
 import { formatPhoneNumber, type PhoneCountryCode } from '@/lib/phone';
 import type { CompanySize, EmployerJobType, EmployerProfilePatch, EmployerTrade } from '@/lib/api/employer';
 import { validateEmployerSignupFields, type EmployerSignupField } from '@/lib/employer-profile-form';
@@ -103,6 +103,11 @@ export default function EmployerAuthForm() {
     const [resendCooldown, setResendCooldown] = useState(0);
     const [resendSuccess, setResendSuccess] = useState(false);
     const [confirmedSuccess, setConfirmedSuccess] = useState(false);
+    // Set only by the forgot-password recovery below. It replaces the generic
+    // "we sent a new code" line rather than adding to it: this user did not ask
+    // for a confirmation code, so the banner has to say why they are looking at
+    // one and what finishing it gets them.
+    const [notConfirmedNotice, setNotConfirmedNotice] = useState(false);
     const phone = formatPhoneNumber(phoneCountryCode, phoneLocalNumber);
 
     // Counts the cooldown down to zero. Depending on `resendCooldown` rather
@@ -168,8 +173,17 @@ export default function EmployerAuthForm() {
      * confirm step at all: there is no code coming, so the user is left on
      * login where the sentence ("already confirmed — sign in") matches the
      * screen they are looking at.
+     *
+     * `notice` picks which success line the step opens with. Both mean "the
+     * newest code is on its way", but a user who came from the forgot-password
+     * step asked for a password reset and is being handed a confirmation code
+     * instead, so that arrival needs the sentence that explains the swap.
      */
-    const enterRecoveryConfirm = (targetEmail: string, outcome: ResendOutcome) => {
+    const enterRecoveryConfirm = (
+        targetEmail: string,
+        outcome: ResendOutcome,
+        notice: 'code_sent' | 'not_confirmed' = 'code_sent',
+    ) => {
         setEmail(targetEmail);
         setResetSuccess(false);
         if (outcome.status === 'failed' && outcome.key === 'errors.already_confirmed') {
@@ -190,7 +204,8 @@ export default function EmployerAuthForm() {
         // 'sent' and 'skipped' both mean the newest code is already on its way,
         // so the same confirmation is true for both — but only a call that
         // actually went out restarts the cooldown.
-        setResendSuccess(true);
+        if (notice === 'not_confirmed') setNotConfirmedNotice(true);
+        else setResendSuccess(true);
         if (outcome.status === 'sent') setResendCooldown(RESEND_COOLDOWN_SECONDS);
     };
 
@@ -257,6 +272,10 @@ export default function EmployerAuthForm() {
     const handleResendCode = async () => {
         setError(null);
         setResendSuccess(false);
+        // The forgot-password notice describes the send that BROUGHT the user
+        // here. Once they ask for another code it is stale, and leaving it up
+        // would stack two success banners about two different sends.
+        setNotConfirmedNotice(false);
         const outcome = await requestNewCode(email);
         // The cooldown label is already on screen explaining the wait, so a
         // skipped call needs no second message.
@@ -409,7 +428,26 @@ export default function EmployerAuthForm() {
             await employerForgotPassword(forgotEmail);
             setStep('forgot_confirm');
         } catch (err) {
-            setError(t(authErrorKey(err)));
+            // `forgotErrorKey`, not `authErrorKey`: Cognito refuses a reset for
+            // an account with no verified contact with
+            // `InvalidParameterException` and a message that mentions
+            // `phone_number`, which the shared mapper reads as a bad phone
+            // field — "Enter a valid phone number", on a step whose only field
+            // is an email address.
+            const key = forgotErrorKey(err);
+            if (key === 'errors.account_not_confirmed') {
+                // A reset is not merely failing here, it is UNREACHABLE: the
+                // pool recovers phone-first and an unconfirmed employer has no
+                // verified email, so asking again can never work. The recovery
+                // that does work is the confirmation code — the same flow
+                // `handleSignIn` runs for `UserNotConfirmedException` — so the
+                // address is promoted onto the confirm step (`handleConfirm`
+                // reads `email`, not `forgotEmail`) and the code is on its way
+                // before the user sees the step.
+                enterRecoveryConfirm(forgotEmail, await requestNewCode(forgotEmail), 'not_confirmed');
+                return;
+            }
+            setError(t(key));
         } finally {
             setIsLoading(false);
         }
@@ -433,6 +471,25 @@ export default function EmployerAuthForm() {
         }
     };
 
+    /**
+     * `onSubmit` for one step. Every step is a real `<form>` now, so Enter
+     * works on all five — before this, the whole file had no `<form>` element
+     * and the keystroke every user tries first on a login screen did nothing.
+     *
+     * The guard is the point. It repeats the primary button's own `disabled`
+     * expression rather than trusting the browser to refuse implicit
+     * submission behind a disabled default button: `isLoading` is folded in
+     * here too, so a second Enter during a slow Cognito call cannot fire a
+     * second request (the resend and confirm paths spend attempts against
+     * per-hour caps, so a double submit is not merely wasteful).
+     */
+    const submitStep = (handler: () => void, disabled = false) =>
+        (event: FormEvent<HTMLFormElement>) => {
+            event.preventDefault();
+            if (disabled || isLoading) return;
+            handler();
+        };
+
     const toggleTrade = (trade: EmployerTrade) => {
         setHiringTrades((current) => current.includes(trade) ? current.filter((item) => item !== trade) : [...current, trade]);
     };
@@ -454,6 +511,7 @@ export default function EmployerAuthForm() {
         // action. Callers that want them set them again after this returns.
         setResendSuccess(false);
         setConfirmedSuccess(false);
+        setNotConfirmedNotice(false);
         setStep(next);
     };
 
@@ -491,10 +549,18 @@ export default function EmployerAuthForm() {
                     ) : null}
                 </div>
 
+                {/* `noValidate` on every step, deliberately. These steps do their
+                    own validation and render it inline (per-field marks plus a
+                    summary banner), and until now no `<form>` existed at all, so
+                    no constraint validation ever ran. Leaving it on would add a
+                    SECOND, competing mechanism: a browser bubble on the first
+                    `type="email"` field, which also silently swallows the submit
+                    before the form's own guards and Cognito's own error copy get
+                    a turn. The change here is "Enter submits", nothing else. */}
                 {step === 'login' && (
-                    <div className="anim-fade-in flex flex-col gap-4">
+                    <form onSubmit={submitStep(handleSignIn)} noValidate className="anim-fade-in flex flex-col gap-4">
                         <Field label={t('fields.email')}>
-                            <Input type="email" placeholder={t('email_label')} value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" />
+                            <Input autoFocus type="email" placeholder={t('email_label')} value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" />
                         </Field>
                         <Field label={t('fields.password')}>
                             <PasswordInput
@@ -542,17 +608,17 @@ export default function EmployerAuthForm() {
                         {confirmedSuccess && (
                             <InlineFeedback tone="success">{t('confirmed_sign_in')}</InlineFeedback>
                         )}
-                        <Button className="w-full mt-1" size="lg" onClick={handleSignIn} loading={isLoading} loadingLabel={tCommon('loading')}>
+                        <Button type="submit" className="w-full mt-1" size="lg" loading={isLoading} loadingLabel={tCommon('loading')}>
                             {t('sign_in')}
                         </Button>
                         <SwitchPrompt text={t('signup_prompt')} action={t('signup_link')} onClick={() => { setResetSuccess(false); goToStep('signup'); }} />
-                    </div>
+                    </form>
                 )}
 
                 {step === 'signup' && (
-                    <div className="anim-fade-in flex flex-col gap-4">
+                    <form onSubmit={submitStep(handleCreateAccount)} noValidate className="anim-fade-in flex flex-col gap-4">
                         <Field label={t('fields.company_name')} error={missingFields.includes('company_name') ? t('errors.required') : undefined}>
-                            <Input value={companyName} onChange={(e) => setCompanyName(e.target.value)} />
+                            <Input autoFocus value={companyName} onChange={(e) => setCompanyName(e.target.value)} />
                         </Field>
                         <Field label={t('fields.contact_name')} error={missingFields.includes('contact_name') ? t('errors.required') : undefined}>
                             <Input value={contactName} onChange={(e) => setContactName(e.target.value)} autoComplete="name" />
@@ -592,7 +658,18 @@ export default function EmployerAuthForm() {
                             />
                         </Field>
                         <Field label={t('fields.city')} error={missingFields.includes('city') ? t('errors.required') : undefined}>
-                            <LocationPicker value={city} onChange={(v) => setCity(v.label)} />
+                            {/* Enter inside the city combobox picks a suggestion; it
+                                must never submit the account. `LocationPicker` only
+                                calls `preventDefault` when one of its options is
+                                actually highlighted, so a user who types a city and
+                                presses Enter to "accept" it would otherwise create
+                                the account from a half-typed address. The field lives
+                                in another lane's file, so the guard sits here — on
+                                the wrapper, after the picker's own handler has had
+                                its turn. */}
+                            <div onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault(); }}>
+                                <LocationPicker value={city} onChange={(v) => setCity(v.label)} />
+                            </div>
                         </Field>
                         <Field label={t('fields.service_area')} error={missingFields.includes('service_area') ? t('errors.required') : undefined}>
                             <Input value={serviceArea} onChange={(e) => setServiceArea(e.target.value)} />
@@ -612,15 +689,19 @@ export default function EmployerAuthForm() {
                             <Textarea rows={3} value={companyDescription} onChange={(e) => setCompanyDescription(e.target.value)} />
                         </Field>
                         {error && <FormError>{error}</FormError>}
-                        <Button className="w-full mt-1" size="lg" onClick={handleCreateAccount} loading={isLoading} loadingLabel={tCommon('loading')}>
+                        <Button type="submit" className="w-full mt-1" size="lg" loading={isLoading} loadingLabel={tCommon('loading')}>
                             {t('create_account')}
                         </Button>
                         <SwitchPrompt text={t('signin_prompt')} action={t('signin_link')} onClick={() => goToStep('login')} />
-                    </div>
+                    </form>
                 )}
 
                 {step === 'confirm' && (
-                    <div className="anim-fade-in flex flex-col gap-4">
+                    <form
+                        onSubmit={submitStep(handleConfirm, confirmationCode.length < 4 || isResending)}
+                        noValidate
+                        className="anim-fade-in flex flex-col gap-4"
+                    >
                         {/* Back has to follow the origin. Hardcoding 'signup' sent a
                             recovering employer into an empty signup form, which is
                             the one place they must not end up: submitting it hits
@@ -630,7 +711,7 @@ export default function EmployerAuthForm() {
                             typo'd address is visible here — before the user burns resend
                             attempts on an inbox that will never receive anything. */}
                         <p className="text-sm leading-relaxed text-[var(--jale-ink-2)]">{t('confirm_subtitle', { email: email.trim().toLowerCase() })}</p>
-                        <Field label={t('fields.confirmation_code')}><Input value={confirmationCode} onChange={(e) => setConfirmationCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" /></Field>
+                        <Field label={t('fields.confirmation_code')}><Input autoFocus value={confirmationCode} onChange={(e) => setConfirmationCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" /></Field>
                         <p className="text-xs leading-relaxed text-[var(--jale-ink-2)]">{t('check_spam')}</p>
                         <div className="flex justify-end">
                             {/* On cooldown this is plain text, not a disabled button:
@@ -655,21 +736,33 @@ export default function EmployerAuthForm() {
                             // rather than the casing the user happened to type.
                             <InlineFeedback tone="success">{t('code_sent', { email: email.trim().toLowerCase() })}</InlineFeedback>
                         )}
+                        {notConfirmedNotice && (
+                            // `info`, not `success`: nothing the user asked for
+                            // succeeded. They asked to reset a password and are
+                            // being told why they are looking at a confirmation
+                            // code instead.
+                            <InlineFeedback tone="info">{t('forgot_not_confirmed', { email: email.trim().toLowerCase() })}</InlineFeedback>
+                        )}
                         {error && <FormError>{error}</FormError>}
                         {/* A resend in flight may be about to invalidate the code in the
                             box — hold Confirm until we know which code is current. */}
-                        <Button className="w-full mt-1" size="lg" onClick={handleConfirm} disabled={confirmationCode.length < 4 || isResending} loading={isLoading} loadingLabel={tCommon('loading')}>
+                        <Button type="submit" className="w-full mt-1" size="lg" disabled={confirmationCode.length < 4 || isResending} loading={isLoading} loadingLabel={tCommon('loading')}>
                             {t('confirm_account')}
                         </Button>
-                    </div>
+                    </form>
                 )}
 
                 {step === 'forgot_request' && (
-                    <div className="anim-fade-in flex flex-col gap-4">
+                    <form
+                        onSubmit={submitStep(handleForgotRequest, !forgotEmail.trim())}
+                        noValidate
+                        className="anim-fade-in flex flex-col gap-4"
+                    >
                         <BackButton label={t('back')} onClick={() => goToStep('login')} />
                         <p className="text-sm leading-relaxed text-[var(--jale-ink-2)]">{t('forgot_subtitle')}</p>
                         <Field label={t('fields.email')}>
                             <Input
+                                autoFocus
                                 type="email"
                                 value={forgotEmail}
                                 onChange={(e) => setForgotEmail(e.target.value)}
@@ -692,14 +785,21 @@ export default function EmployerAuthForm() {
                             </button>
                         </div>
                         {error && <FormError>{error}</FormError>}
-                        <Button className="w-full mt-1" size="lg" onClick={handleForgotRequest} disabled={!forgotEmail.trim()} loading={isLoading} loadingLabel={tCommon('loading')}>
+                        <Button type="submit" className="w-full mt-1" size="lg" disabled={!forgotEmail.trim()} loading={isLoading} loadingLabel={tCommon('loading')}>
                             {t('send_code')}
                         </Button>
-                    </div>
+                    </form>
                 )}
 
                 {step === 'forgot_confirm' && (
-                    <div className="anim-fade-in flex flex-col gap-4">
+                    <form
+                        onSubmit={submitStep(
+                            handleForgotConfirm,
+                            !resetCode.trim() || !newPassword || !newPasswordConfirm,
+                        )}
+                        noValidate
+                        className="anim-fade-in flex flex-col gap-4"
+                    >
                         <BackButton
                             label={t('back')}
                             onClick={() => { setResetCode(''); setNewPassword(''); setNewPasswordConfirm(''); goToStep('forgot_request'); }}
@@ -709,6 +809,7 @@ export default function EmployerAuthForm() {
                         </p>
                         <Field label={t('fields.reset_code')}>
                             <Input
+                                autoFocus
                                 value={resetCode}
                                 onChange={(e) => setResetCode(e.target.value)}
                                 inputMode="numeric"
@@ -739,16 +840,16 @@ export default function EmployerAuthForm() {
                         </Field>
                         {error && <FormError>{error}</FormError>}
                         <Button
+                            type="submit"
                             className="w-full mt-1"
                             size="lg"
-                            onClick={handleForgotConfirm}
                             disabled={!resetCode.trim() || !newPassword || !newPasswordConfirm}
                             loading={isLoading}
                             loadingLabel={tCommon('loading')}
                         >
                             {t('set_password')}
                         </Button>
-                    </div>
+                    </form>
                 )}
         </div>
     );

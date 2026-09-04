@@ -131,6 +131,14 @@ export function DescriptionHelper({ form, onDescriptionChange, disabled = false,
           </button>
         )}
         <Button
+          // `ui/button` sets no default `type`, so without this the native
+          // submit default applies -- and every surface that mounts this
+          // helper (PostJobModal's step 1, JobFormFields inside EditJobModal
+          // and TemplateEditModal) now wraps its fields in a `<form>` so Enter
+          // works. "Generate with AI" would otherwise publish the job / save
+          // the template on click. The sibling "Use sample" button above has
+          // always carried its type; this one was the one gap.
+          type="button"
           variant="secondary"
           size="sm"
           onClick={handleGenerate}

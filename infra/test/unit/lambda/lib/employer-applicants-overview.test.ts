@@ -21,6 +21,7 @@ function baseRow(overrides: Record<string, unknown> = {}) {
     years_experience: 4,
     match_score: 72,
     score_band: 'strong',
+    trust_score: 78,
     ...overrides,
   };
 }
@@ -57,5 +58,38 @@ describe('listEmployerApplicantsOverview', () => {
     expect(sql).toMatch(/LEFT JOIN employer_candidate_rankings ecr/);
     expect(sql).toMatch(/j\.city AS job_city/);
     expect(sql).toMatch(/ORDER BY ja\.applied_at DESC/);
+  });
+  // ---------------------------------------------------------------------------
+  // B8 (sprint 24) -- the qualifications the row needs to show. availability /
+  // years_experience / match_score were already selected; trust_score was the
+  // one field the per-job surface had and this one did not.
+  // ---------------------------------------------------------------------------
+
+  it("selects the worker's trust score the same way the per-job ranking query does", async () => {
+    mockQuery.mockResolvedValueOnce(rowsResult([]));
+    await listEmployerApplicantsOverview(client, EMPLOYER);
+    const [sql] = mockQuery.mock.calls[0];
+    // users.trade_competency_score (012:122, INTEGER 0..100) aliased to
+    // trust_score -- the same expression employer-candidate-ranking.ts:338
+    // uses, so the two surfaces can never show different numbers.
+    expect(sql).toMatch(/u\.trade_competency_score AS trust_score/);
+  });
+
+  it('passes availability, years_experience and trust_score straight through to the row', async () => {
+    mockQuery.mockResolvedValueOnce(rowsResult([
+      baseRow({ availability: 'weekends', years_experience: 9, trust_score: 64 }),
+    ]));
+    const overview = await listEmployerApplicantsOverview(client, EMPLOYER);
+    expect(overview.applicants[0]).toMatchObject({
+      availability: 'weekends',
+      years_experience: 9,
+      trust_score: 64,
+    });
+  });
+
+  it('keeps a never-assessed worker\'s trust_score null rather than zero', async () => {
+    mockQuery.mockResolvedValueOnce(rowsResult([baseRow({ trust_score: null })]));
+    const overview = await listEmployerApplicantsOverview(client, EMPLOYER);
+    expect(overview.applicants[0].trust_score).toBeNull();
   });
 });

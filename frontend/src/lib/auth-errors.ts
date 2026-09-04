@@ -95,3 +95,37 @@ export function confirmErrorKey(err: unknown): string {
 
   return authErrorKey(err);
 }
+
+/**
+ * Forgot-password failures. Not a code collision this time — a MESSAGE trap.
+ *
+ * Cognito refuses a reset for an account with no verified contact with
+ * `InvalidParameterException` and the message "Cannot reset password for the
+ * user as there is no registered/verified email or phone_number". That string
+ * contains "phone", so `authErrorKey`'s message sniffing answered "Enter a
+ * valid phone number" — on a step whose only field is an email address, about
+ * a password the employer was trying to reset.
+ *
+ * The refusal is not an unlucky wording either: it is the whole story. The
+ * employer pool recovers phone-first, and an UNCONFIRMED employer has no
+ * verified email, so a reset can never succeed for them no matter how many
+ * times they ask. The recovery that DOES work is the confirmation-code flow
+ * `EmployerAuthForm` already runs for `UserNotConfirmedException`, which is
+ * why this maps to the same key: the form intercepts it and starts that flow.
+ *
+ * Only the code decides. Nothing sent to `ForgotPassword` but the address can
+ * be an invalid parameter (a malformed one comes back as
+ * `UserNotFoundException`, or is masked by `preventUserExistenceErrors`), and
+ * the message text is neither contractual nor localised. Everything else is an
+ * ordinary auth failure and defers to `authErrorKey`, so the shared mapper
+ * keeps reading messages on the call sites — signup, and the worker form —
+ * whose screens actually have the fields those sentences name.
+ */
+export function forgotErrorKey(err: unknown): string {
+  const authErr = err as CognitoLikeError;
+  const code = authErr?.code ?? authErr?.name ?? '';
+
+  if (code === 'InvalidParameterException') return 'errors.account_not_confirmed';
+
+  return authErrorKey(err);
+}

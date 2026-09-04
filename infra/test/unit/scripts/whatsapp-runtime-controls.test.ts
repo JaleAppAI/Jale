@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import {
+  formatTemplateVerificationRow,
   parseControlsArgs,
   runControlsAction,
   type Queryable,
@@ -58,6 +59,47 @@ function makeFakeClient(opts: { eligibleSweepWorkerIds?: string[] } = {}): {
   };
   return { client, calls };
 }
+
+describe('formatTemplateVerificationRow (--verify-templates)', () => {
+  // 2026-09-04: three of the four pending application_* templates had been
+  // recategorised by Meta to MARKETING, and a MARKETING template cannot carry
+  // a transactional notification outside the 24h window. `--verify-templates`
+  // printed only existence and approval status, so the account looked healthy
+  // ("pending" on all four) while the actual defect was invisible. Category is
+  // now on the line.
+  it('prints key, SID, existence, approval status and CATEGORY', () => {
+    expect(formatTemplateVerificationRow({
+      key: 'application_update_en',
+      sid: 'HXabc',
+      exists: true,
+      whatsappStatus: 'pending',
+      whatsappCategory: 'UTILITY',
+    })).toBe('application_update_en\tHXabc\texists\tpending\tUTILITY');
+  });
+
+  it('shows the reclassification that made the 2026-09-04 sends undeliverable', () => {
+    expect(formatTemplateVerificationRow({
+      key: 'application_hired_es',
+      sid: 'HXdef',
+      exists: true,
+      whatsappStatus: 'pending',
+      whatsappCategory: 'MARKETING',
+    })).toContain('MARKETING');
+  });
+
+  it('renders a missing SID and unknown status/category without printing "undefined"', () => {
+    const line = formatTemplateVerificationRow({
+      key: 'job_alert_es',
+      sid: 'HXghi',
+      exists: false,
+      whatsappStatus: null,
+      whatsappCategory: null,
+    });
+    expect(line).toBe('job_alert_es\tHXghi\tMISSING\t-\t-');
+    expect(line).not.toContain('undefined');
+    expect(line).not.toContain('null');
+  });
+});
 
 describe('parseControlsArgs', () => {
   it('accepts --show', () => {

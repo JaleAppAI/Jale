@@ -105,6 +105,47 @@ const SUITE_STAGE_NOTIFY = 'test/unit/db/application-stage-notify.integration.te
 // definer. It also carries the four surviving cases from the deleted 052
 // suite.
 const SUITE_CLEANUP_092 = 'test/unit/db/onboarding-cleanup-092.integration.test.ts';
+// Sprint 24 L3: the cross-job answer-reuse boundary, after the 2026-09-04
+// incident (an employer saw answers the worker gave to another company).
+// Here rather than in a mocked suite because worker_application_defaults is
+// RLS ENABLE + FORCE (079) and 091's write policy keys on
+// app.current_internal_user_id -- a write-back with no GUC is a zero-row
+// no-op that reads as success -- and because two of its assertions are
+// PostgreSQL facts, not app-level ones: that the jsonb `-` operator REMOVES
+// an answer key (a stored null would still read as answered), and that
+// `ON CONFLICT DO NOTHING` suppresses the snapshot copy's new
+// `RETURNING doc_type` on the idempotent re-call the engine makes every turn.
+const SUITE_FIELD_REUSE = 'test/unit/db/application-field-reuse.integration.test.ts';
+
+// Sprint 24 L4: migration 093's defer_worker_intent_outbox -- the third
+// outcome for a leased worker_intent row, which reschedules WITHOUT spending
+// an attempt. It is here for three facts a mocked pool cannot hold: 043's
+// whatsapp_outbox_worker_intent_lease_consistency CHECK (a defer that
+// releases one of the two lease columns, or moves to 'pending' with both
+// still set, is a 23514 that type-checks fine), the two-condition lease fence
+// (token equality AND an un-expired deadline -- dropping either is a
+// zero-row-vs-one-row difference), and attempt_count, whose non-advance is
+// the entire reason the function exists. It is LAST because 043's lease RPC
+// is global by design: leasing advances the attempt_count of any fixture row
+// an earlier suite left behind, so it must not run before one.
+const SUITE_DEFER_093 = 'test/unit/db/worker-intent-defer-093.integration.test.ts';
+
+// Sprint 24 P4: migration 094's two data backfills. It is here, and LAST,
+// for the fact the migration itself is built around: both tables it writes
+// are RLS ENABLE + FORCE with GUC-keyed policies, so jale_admin -- the OWNER,
+// and the role the migration runs as -- sees ZERO rows unless the file
+// un-forces first. Applying 094 as the superuser would pass even if the
+// un-force were missing, so this suite applies the migration FILE as the real
+// jale_admin role, which is the only way the zero-row no-op is falsifiable.
+// It also settles the SQL/TypeScript parity that nothing else can: the
+// migration re-implements normalizeProfession + resolveTradeAlias +
+// standardTradeKeyForCategory in SQL, and the suite drives
+// canonicalizeWorkerTrade over every trade_aliases alias, trade_key and
+// canonical_es and compares the pair each side produces.
+// LAST because it re-applies a migration: the two ALTER TABLE ... FORCE
+// statements take ACCESS EXCLUSIVE on `users`, so it must not interleave with
+// a suite holding fixture rows open.
+const SUITE_BACKFILLS_094 = 'test/unit/db/sprint24-data-backfills-094.integration.test.ts';
 
 // The guard must fail closed regardless of the ambient environment. The final
 // verification battery exports JALE_TEST_DATABASE_URL to run the guarded
@@ -133,7 +174,10 @@ describe('test:whatsapp-v2-db fail-closed URL guard', () => {
       SUITE_APPLICATION_DETAILS,
       SUITE_APPLICATIONS_COMMAND,
       SUITE_CLEANUP_092,
+      SUITE_FIELD_REUSE,
       SUITE_STAGE_NOTIFY,
+      SUITE_DEFER_093,
+      SUITE_BACKFILLS_094,
     ]);
     // The deregistered migration-052 suite must be gone from the script
     // entirely -- including from any tombstone comment, which this file's own

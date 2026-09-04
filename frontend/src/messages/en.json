@@ -392,7 +392,8 @@
       "panel_bullet_2": "Verified worker profiles",
       "panel_bullet_3": "Photos of previous work",
       "panel_bullet_4": "Message candidates directly",
-      "panel_bullet_5": "Free to get started"
+      "panel_bullet_5": "Free to get started",
+      "forgot_not_confirmed": "Your account isn't confirmed yet. We sent a new confirmation code to {email}. Enter it below to finish signing up."
     },
     "shell": {
       "language_toggle": "Español",
@@ -487,7 +488,9 @@
     "empty_body": "Applicants across all of your jobs will appear here.",
     "applied_on": "Applied {date}",
     "unknown_worker": "Unknown worker",
-    "not_scored": "Not scored yet"
+    "not_scored": "Not scored yet",
+    "skills_show_all": "Show all {count} skills",
+    "skills_show_fewer": "Show fewer skills"
   },
   "employer_messages": {
     "title": "Messages",
@@ -683,6 +686,17 @@
         "cancel": "Cancel",
         "error_hired": "This job has hired workers and can’t be deleted. Close it instead.",
         "error_generic": "Couldn’t delete this job. Please try again."
+      },
+      "status_change": {
+        "pause": "Pause",
+        "pause_aria": "Pause {title}",
+        "pause_pending": "Pausing…",
+        "resume": "Resume",
+        "resume_aria": "Resume {title}",
+        "resume_pending": "Resuming…",
+        "pause_success": "Job paused",
+        "resume_success": "Job resumed",
+        "error_generic": "Couldn’t update this job. Please try again."
       }
     },
     "filter": {
@@ -837,7 +851,8 @@
       "template_check_city": "Check the city before posting",
       "template_name_taken": "You already have a template with that name",
       "template_not_saved": "Your template won't be saved — your plan allows {limit} template(s).",
-      "post_without_template": "Post without saving template"
+      "post_without_template": "Post without saving template",
+      "location_pick_helper": "Select the city from the list to continue."
     },
     "worker_profile": {
       "years_experience": "{years, plural, one {# yr exp} other {# yrs exp}}"
@@ -1120,7 +1135,8 @@
       "too_large": "That’s too much text to store. Shorten your longest answers and try again.",
       "certification_document_limit": "You’ve reached the file limit for this certification. Remove one in your profile first.",
       "not_found": "We can’t find this application any more."
-    }
+    },
+    "cert_have_question": "Do you have this certification?"
   },
   "worker_home": {
     "title": "Find jobs",
@@ -1362,7 +1378,11 @@
       "own_words": {
         "title": "In their own words",
         "question_removed": "Question removed"
-      }
+      },
+      "request_details_resend": "Resend request",
+      "request_details_notified": "Details requested. We notified {name} on WhatsApp.",
+      "request_details_no_whatsapp": "Details requested, but {name} has no WhatsApp on file, so no message was sent.",
+      "request_details_unchanged": "Already requested."
     },
     "ranking": {
       "loading": "Scoring how well each applicant matches this job...",
@@ -1745,7 +1765,8 @@
       "cta_upgrade": "Upgrade plan",
       "cta_pause_job": "Pause another job",
       "cta_manage_templates": "Manage templates",
-      "dismiss": "Not now"
+      "dismiss": "Not now",
+      "body_jobs_preflight": "You can’t post a job right now. Your plan allows {limit} open job(s) and you already have {used}. Pause, close or delete one to post another, or upgrade your plan."
     },
     "limit_reached": {
       "modal_message": "You've reached your plan's limit of {limit} active job posting(s). Upgrade to post more.",

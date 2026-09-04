@@ -1,5 +1,4 @@
 import * as cdk from 'aws-cdk-lib';
-import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as iam from 'aws-cdk-lib/aws-iam';
@@ -9,6 +8,7 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as path from 'node:path';
 import { Construct } from 'constructs';
 import { BEDROCK_MODEL_ID, bedrockArns } from '../bedrock-arns';
+import { jaleAlarm } from '../constructs/jale-alarm';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
 
 export interface MatchingStackProps extends cdk.StackProps {
@@ -113,21 +113,37 @@ export class MatchingStack extends cdk.Stack implements MatchingStackOutputs {
       description: 'Periodic worker rerank refresh - target wired in V1',
     });
 
-    new cloudwatch.Alarm(this, 'CandidateMaterializationDlqAlarm', {
+    // ── DLQ depth alarms ──
+    // `jaleAlarm`, not `new cloudwatch.Alarm`, for one property: these three
+    // carried no `treatMissingData`, so an EMPTY dead-letter queue — which
+    // publishes no datapoints at all — put each of them into
+    // INSUFFICIENT_DATA and then back to OK on the next datapoint, forever.
+    // Together with the BillingStack/AiStack five that was 64 of 87 alarm
+    // state transitions in one week, i.e. the alarm channel training its
+    // operator to ignore it. `notBreaching` (the helper's default) says the
+    // true thing: an empty DLQ is healthy, not unknown.
+    //
+    // Everything else is byte-identical on purpose. In particular the operator
+    // stays `>= 1` — the helper's default is the same value CDK itself
+    // defaults `comparisonOperator` to, so these alarms have always been
+    // ">= 1 message", and `> 1` would quietly mean one dead-lettered message
+    // no longer alarms. And no `alarmName`: CloudFormation generates the
+    // physical name for these, and introducing one would REPLACE a live alarm.
+    jaleAlarm(this, 'CandidateMaterializationDlqAlarm', {
       metric: materializationDlq.metricApproximateNumberOfMessagesVisible(),
       threshold: 1,
       evaluationPeriods: 1,
       alarmDescription: 'Candidate materialization DLQ has messages',
     });
 
-    new cloudwatch.Alarm(this, 'WorkerRerankDlqAlarm', {
+    jaleAlarm(this, 'WorkerRerankDlqAlarm', {
       metric: rerankDlq.metricApproximateNumberOfMessagesVisible(),
       threshold: 1,
       evaluationPeriods: 1,
       alarmDescription: 'Worker rerank DLQ has messages',
     });
 
-    new cloudwatch.Alarm(this, 'EmployerCandidateRerankDlqAlarm', {
+    jaleAlarm(this, 'EmployerCandidateRerankDlqAlarm', {
       metric: employerCandidateRerankDlq.metricApproximateNumberOfMessagesVisible(),
       threshold: 1,
       evaluationPeriods: 1,

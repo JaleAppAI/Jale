@@ -1,11 +1,12 @@
 'use client';
-import { useRef, useState } from 'react';
+import { useId, useMemo, useRef, useState } from 'react';
+import type { FormEvent } from 'react';
 import { useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { ApiError, saveJobTemplate, type JobTemplate } from '@/lib/api/employer';
 import {
   type JobForm, initialForm, jobFormFromTemplatePayload, jobFormToCreatePayload,
-  validateFullJobForm, applyLocationToJobForm,
+  validateFullJobForm, validateStepBasics, applyLocationToJobForm,
 } from '@/lib/job-form';
 import { MAX_PROMPT_CHARS } from '@/lib/pre-application-prompts';
 import { planLimitModel, type PlanLimitModel } from '@/lib/plan-limit';
@@ -39,11 +40,29 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
   const { idToken } = useAuth();
 
   const [name, setName] = useState(template?.name ?? '');
-  const [form, setForm] = useState<JobForm>(() =>
-    template ? jobFormFromTemplatePayload(template.payload).form : initialForm);
+  // Seeded once (this modal is remounted per open -- see the note above), and
+  // read twice: by the form state and by the city verdict below it.
+  const seededForm = useMemo(
+    () => (template ? jobFormFromTemplatePayload(template.payload).form : initialForm),
+    [template],
+  );
+  const [form, setForm] = useState<JobForm>(seededForm);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [nameError, setNameError] = useState('');
+  /*
+   * "The stored template has no city."
+   *
+   * A template payload that lost its `city_key` still carries its location
+   * TEXT, so the picker opened looking settled and the save was then refused
+   * with a sentence under the footer that pointed at no field. Asked of the
+   * validator rather than of `city_key` directly, so it agrees with whatever
+   * the save will actually accept (a failed location dataset makes free text
+   * legal, and an empty location is a different error's business).
+   */
+  const [cityMissing, setCityMissing] = useState(
+    () => validateStepBasics(seededForm) === 'location_pick_required',
+  );
   // The template cap is not a "save failed" sentence -- it is a plan decision
   // with its own copy, its own way out, and no dismiss. `lib/plan-limit` owns
   // all three; this modal only decides where the notice sits.
@@ -52,6 +71,11 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
   // The name is this form's one field the job form does not have; it is also
   // where editing starts, so the Modal lands initial focus on it.
   const nameRef = useRef<HTMLInputElement>(null);
+  // See PostJobModal's identical pair: `ui/modal.tsx` renders `footer` as a
+  // sibling of `children`, so Save is associated with the fields' form by id
+  // rather than by containment, and a hidden descendant submit button is what
+  // gives the form a default button for Enter.
+  const formId = useId();
 
   const update = <K extends keyof JobForm>(key: K, value: JobForm[K]) =>
     setForm((current) => ({ ...current, [key]: value }));
@@ -84,6 +108,8 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
       case 'shift_incomplete':
         return setError(t('modal.validation_required'));
       case 'location_pick_required':
+        // The sentence says what is wrong; the ring says where.
+        setCityMissing(true);
         return setError(t('modal.location_pick_required'));
       case 'state_region':
         return setError(t('modal.validation_state_region'));
@@ -131,6 +157,12 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
     }
   };
 
+  const handleFormSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (loading) return;
+    void handleSubmit();
+  };
+
   return (
     <Modal
       open={open}
@@ -151,12 +183,13 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
               away, and this is the only thing explaining why nothing saved. */}
           <PlanLimitNotice model={limitModel} onNavigate={onClose} />
           <div className="flex gap-2">
-            <Button variant="ghost" onClick={handleClose} disabled={loading} className="flex-1">
+            <Button type="button" variant="ghost" onClick={handleClose} disabled={loading} className="flex-1">
               {t('modal.cancel')}
             </Button>
             <Button
+              type="submit"
+              form={formId}
               variant="primary"
-              onClick={handleSubmit}
               loading={loading}
               loadingLabel={tCommon('loading')}
               className="flex-1"
@@ -167,7 +200,11 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
         </div>
       }
     >
-      <div className="grid gap-4">
+      <form id={formId} onSubmit={handleFormSubmit} className="grid gap-4">
+        {/* The form's default button, so Enter in any field saves. See
+            PostJobModal's copy of this comment for why it cannot simply be
+            the footer's Save. */}
+        <button type="submit" hidden aria-hidden tabIndex={-1} />
         <div className="flex flex-col gap-1.5">
           <label className="text-xs font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">{t('templates.name_label')} *</label>
           <Input ref={nameRef} value={name} onChange={(e) => setName(e.target.value)} maxLength={80} />
@@ -177,10 +214,19 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
         <JobFormFields
           form={form}
           onUpdate={update}
-          onLocationChange={(v) => setForm((c) => applyLocationToJobForm(c, v))}
+          onLocationChange={(v) => {
+            setForm((c) => applyLocationToJobForm(c, v));
+            // A real pick resolves both the ring and the sentence; typing does
+            // not -- free text still leaves `city_key` null.
+            if (v.cityKey) {
+              setCityMissing(false);
+              setError('');
+            }
+          }}
           showStartDate={false}
+          locationInvalid={cityMissing}
         />
-      </div>
+      </form>
     </Modal>
   );
 }

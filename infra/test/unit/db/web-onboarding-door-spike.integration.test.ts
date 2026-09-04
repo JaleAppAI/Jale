@@ -1401,7 +1401,10 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
       const user = await su.query(
         `SELECT main_trade, main_trade_other FROM users WHERE id = $1`, [ids.custom],
       );
-      expect(user.rows[0]).toEqual({ main_trade: 'other', main_trade_other: 'welder' });
+      // Sprint 24 (D4): the typed 'welder' resolves the seeded trade_aliases row
+      // and is stored as the run language's canonical label ('en' -> 'Welder').
+      // Welder has no standard trade key, so main_trade stays 'other'.
+      expect(user.rows[0]).toEqual({ main_trade: 'other', main_trade_other: 'Welder' });
       record('profile.custom_trade', customMsg, custom.result, custom.sent, customRow.lock_version, session);
     });
   });

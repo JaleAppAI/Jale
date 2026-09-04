@@ -103,6 +103,42 @@ describe('worker-application-defaults-get', () => {
     expect(profileQuery).toContain('WHERE u.cognito_sub = $1');
   });
 
+  // L3 (decision D2): the web page prefills its editable draft from THIS
+  // body, so a per_application key reaching it would put a start date and a
+  // pay expectation quoted at ANOTHER employer into this application's form
+  // -- the web-door half of the 2026-09-04 incident. The row itself may
+  // still hold legacy per_application keys; the door is what refuses to
+  // hand them out.
+  it('returns only the stable keys, dropping per_application ones a legacy row still holds', async () => {
+    mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    mockQuery.mockImplementation((sql: string) => {
+      if (sql.includes('LEFT JOIN worker_application_defaults')) {
+        return Promise.resolve({
+          rows: [{
+            answers: {
+              work_authorization: true,
+              home_address: { street: '1 Main St' },
+              date_available: '2026-09-10',
+              desired_pay: { amount: 25, interval: 'hourly' },
+              worked_here_before: true,
+              emergency_contact: { name: 'Maria Lopez', phone: '5551234567' },
+            },
+            updated_at: '2026-08-01T00:00:00.000Z',
+          }],
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    const res = await handler(mockEvent);
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({
+      answers: { work_authorization: true, home_address: { street: '1 Main St' } },
+      updated_at: '2026-08-01T00:00:00.000Z',
+    });
+  });
+
   it('returns 500 and rolls back on internal errors', async () => {
     mockCheckCompliance.mockRejectedValue(new Error('DB failure'));
 
