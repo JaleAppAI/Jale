@@ -1106,7 +1106,9 @@ export async function updateApplicantStatus(
    * application whose status is already committed -- the employer's nudge for
    * a worker who never answered. The backend refuses it with a 400
    * `resend_not_applicable` unless the row already sits at `details_requested`
-   * or `hired`, so only pass it when `canResendDetails` says so.
+   * or `hired`, and also once a details request has been completed
+   * (`details_completed_at` set), so only pass it when `canResendDetails`
+   * says so.
    */
   options?: { resend?: boolean },
 ): Promise<ApplicantStatusUpdate> {
