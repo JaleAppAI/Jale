@@ -487,7 +487,9 @@
     "empty_body": "Los postulantes de todos tus trabajos aparecerán aquí.",
     "applied_on": "Aplicó {date}",
     "unknown_worker": "Trabajador desconocido",
-    "not_scored": "Sin puntaje aún"
+    "not_scored": "Sin puntaje aún",
+    "skills_show_all": "Ver las {count} habilidades",
+    "skills_show_fewer": "Ver menos habilidades"
   },
   "employer_messages": {
     "title": "Mensajes",
@@ -1362,7 +1364,11 @@
       "own_words": {
         "title": "Con sus propias palabras",
         "question_removed": "Pregunta eliminada"
-      }
+      },
+      "request_details_resend": "Reenviar solicitud",
+      "request_details_notified": "Datos solicitados. Avisamos a {name} por WhatsApp.",
+      "request_details_no_whatsapp": "Datos solicitados, pero {name} no tiene WhatsApp registrado, así que no se envió ningún mensaje.",
+      "request_details_unchanged": "Ya está solicitado."
     },
     "ranking": {
       "loading": "Calculando qué tan bien coincide cada postulante con este empleo...",
