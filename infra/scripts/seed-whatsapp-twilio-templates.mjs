@@ -3,6 +3,26 @@ import { SecretsManagerClient, GetSecretValueCommand, UpdateSecretCommand } from
 const SECRET_ID = 'jale/whatsapp/twilio';
 const REGION = process.env.AWS_REGION ?? 'us-east-2';
 const CONTENT_API_URL = 'https://content.twilio.com/v1/Content';
+const CONTENT_AND_APPROVALS_URL = 'https://content.twilio.com/v1/ContentAndApprovals';
+const TWILIO_API_ORIGIN = 'https://content.twilio.com';
+
+/**
+ * Subcommands. The default run (no flags) is the additive, idempotent seed
+ * this file has always been. The other two exist because a Twilio Content
+ * resource is IMMUTABLE and repeated seed runs leave dead ones behind:
+ *
+ *   --recreate-application-templates
+ *       Creates FOUR NEW resources for the application_* names, submits them
+ *       for WhatsApp approval, and writes the new SIDs into the secret. The
+ *       only way to ship a copy change to an already-submitted template.
+ *
+ *   --purge-stale [--apply]
+ *       Lists the account's Content with approval status and removes the
+ *       rejected / never-submitted duplicates of the templates THIS file
+ *       manages. Dry run unless --apply is passed.
+ */
+const ARGS = process.argv.slice(2);
+const hasFlag = (flag) => ARGS.includes(flag);
 
 const HELP_MENU_LIST_DEFINITIONS = {
   help_menu_list_en: {
@@ -32,25 +52,46 @@ const HELP_MENU_LIST_DEFINITIONS = {
 };
 
 /**
- * Sprint 23 application-stage templates. Bodies are BYTE-IDENTICAL to the
- * fallback bodies `buildApplicationStageMessage`
- * (lambda/lib/application-stage-notify.ts) produces, with its variables in
- * place: {{1}} job title, {{2}} company, {{3}} `app-<uuid>`, {{4}} the
- * worker's stage-2 URL. If either side is edited, edit both -- the template
- * is what a WhatsApp user sees outside the 24h session window and the
- * fallback body is what they see inside it.
+ * The four application-stage templates. Variables are the ones
+ * `buildApplicationStageMessage` (lambda/lib/application-stage-notify.ts)
+ * supplies, and the numbering and MEANING must not change:
+ *   {{1}} job title   {{2}} company   {{3}} `app-<uuid>`   {{4}} stage-2 URL
+ * Only `application_update_*` carries buttons; the button ids embed {{3}}, so
+ * a tap arrives as `application:start:app-<uuid>` and is parsed by
+ * `parseApplicationButtonPayload` (whatsapp/lib/flows.ts). `application_hired_*`
+ * is informational and has nothing to tap.
  *
- * Only the `application_update_*` pair carries buttons; `application_hired_*`
- * is informational and there is nothing to tap. The button ids embed {{3}},
- * so a tap arrives as `application:start:app-<uuid>` and is parsed by
- * `parseApplicationButtonPayload` (whatsapp/lib/flows.ts).
+ * ── D6 (2026-09-04): the copy is NO LONGER byte-identical to the renderer's
+ * fallback body, and that is deliberate. ──
+ *
+ * The first submission was recategorised by Meta from UTILITY to MARKETING on
+ * three of the four (only `application_update_en` stayed UTILITY), and a
+ * MARKETING template cannot carry a transactional notification outside the
+ * 24-hour session window -- the only window an employer-triggered stage
+ * notification ever lands in. The promotional register of the old openings
+ * ("Good news:", "Buenas noticias:") is what invited that reading.
+ *
+ * So these bodies are written for Meta's UTILITY test instead: each opens with
+ * FIXED text that names the thing the recipient already did (their application
+ * for a specific job), states a fact about it, and offers the two ways to
+ * respond. No promotional words, no exclamation marks, and -- per an earlier
+ * rejection, "Variables can't be at the start or end of the template" -- no
+ * body begins or ends with a placeholder.
+ *
+ * The consequence, accepted knowingly: a worker inside an open 24h session
+ * sees the renderer's `__fallback_body` wording, and a worker outside it sees
+ * this wording. The two now differ in tone. The FACTS, the variables and the
+ * link are the same, and `application-stage-notify.ts` is not this lane's file
+ * to edit. Both halves are pinned by
+ * test/unit/scripts/seed-whatsapp-twilio-templates.test.ts.
  */
 const QUICK_REPLY_DEFINITIONS = {
   application_update_es: {
     language: 'es',
     body:
-      'Actualizacion de aplicacion: {{2}} quiere avanzar con tu aplicacion para {{1}} y necesita algunos datos mas. '
-      + 'Escribe "aplicaciones" para responder aqui, o usa {{4}} para responder cuando quieras.',
+      'Actualizacion de tu aplicacion para {{1}}: {{2}} solicito algunos datos adicionales '
+      + 'para continuar con la revision. Escribe "aplicaciones" para responder aqui, '
+      + 'o abre {{4}} para completarlos en linea.',
     example: ['Acabador de concreto', 'Rucoba & Maya', 'app-123e4567-e89b-12d3-a456-426614174000', 'https://jaleapp.ai/es/worker/applications/123e4567-e89b-12d3-a456-426614174000'],
     actions: [
       { title: 'Empezar', id: 'application:start:{{3}}' },
@@ -60,8 +101,9 @@ const QUICK_REPLY_DEFINITIONS = {
   application_update_en: {
     language: 'en',
     body:
-      'Application update: {{2}} wants to move forward with your application for {{1}} and needs a few more details. '
-      + 'Reply "applications" to answer here, or use {{4}} to respond when ready.',
+      'Application update for {{1}}: {{2}} requested additional details '
+      + 'before continuing the review. Reply "applications" to answer here, '
+      + 'or open {{4}} to submit them online.',
     example: ['Concrete Finisher', 'Rucoba & Maya', 'app-123e4567-e89b-12d3-a456-426614174000', 'https://jaleapp.ai/en/worker/applications/123e4567-e89b-12d3-a456-426614174000'],
     actions: [
       { title: 'Start answering', id: 'application:start:{{3}}' },
@@ -71,16 +113,18 @@ const QUICK_REPLY_DEFINITIONS = {
   application_hired_es: {
     language: 'es',
     body:
-      'Buenas noticias: {{2}} te selecciono para {{1}}. '
-      + 'Referencia: {{3}}. Consulta {{4}} para ver los detalles y proximos pasos.',
+      'Actualizacion del estado de tu aplicacion para {{1}}: {{2}} te selecciono '
+      + 'para este puesto. Tu referencia de aplicacion es {{3}}. '
+      + 'Abre {{4}} para ver los detalles y los siguientes pasos.',
     example: ['Acabador de concreto', 'Rucoba & Maya', 'app-123e4567-e89b-12d3-a456-426614174000', 'https://jaleapp.ai/es/worker/applications/123e4567-e89b-12d3-a456-426614174000'],
     actions: [],
   },
   application_hired_en: {
     language: 'en',
     body:
-      'Good news: {{2}} selected you for {{1}}. '
-      + 'Reference: {{3}}. Use {{4}} to view details and next steps.',
+      'Application status update for {{1}}: {{2}} selected you for this position. '
+      + 'Your application reference is {{3}}. '
+      + 'Open {{4}} to review the details and the next steps.',
     example: ['Concrete Finisher', 'Rucoba & Maya', 'app-123e4567-e89b-12d3-a456-426614174000', 'https://jaleapp.ai/en/worker/applications/123e4567-e89b-12d3-a456-426614174000'],
     actions: [],
   },
@@ -121,6 +165,39 @@ const NEW_TEMPLATES = {
   employer_message_resume_en: 'HXf6f08652c231c555ed7e755b77740672',
   employer_message_resume_es: 'HX2966e5a109ca7035f78aef898eda7db3',
 };
+
+/**
+ * The friendly names THIS file creates, and therefore the only ones it is
+ * allowed to delete. Deliberately NOT including `NEW_TEMPLATES`: those are
+ * live SIDs for resources built by hand in the Twilio console, so this script
+ * has no business removing a copy of one -- and the account also holds
+ * Content that belongs to nobody in this repo.
+ */
+const MANAGED_TEMPLATE_NAMES = new Set([
+  ...Object.keys(QUICK_REPLY_DEFINITIONS),
+  ...Object.keys(HELP_MENU_LIST_DEFINITIONS),
+]);
+
+/**
+ * The purge predicate, as a self-contained expression so the test suite can
+ * lift and drive it against a fixture listing instead of matching source text.
+ *
+ * THREE conditions, all required:
+ *   * the friendly name is one this file manages (never someone else's);
+ *   * the SID is referenced by NOTHING in the secret. Unconditional, and
+ *     stronger than "unsubmitted and unreferenced": a SID in the secret is
+ *     what the sender hands Twilio on the next drain, so deleting it turns a
+ *     template problem into a 21655 on every send;
+ *   * the approval status is `rejected` (Meta said no; the resource is dead)
+ *     or `unsubmitted` (a duplicate a previous run created and abandoned).
+ * An `approved`, `pending`, `received`, `paused` or `disabled` resource is
+ * never a candidate.
+ */
+const isPurgeCandidate = (resource, managedNames, referencedSids) => (
+  managedNames.has(resource.friendlyName)
+  && !referencedSids.has(resource.sid)
+  && (resource.status === 'rejected' || resource.status === 'unsubmitted')
+);
 
 function parseSecret(secretString) {
   try {
@@ -227,7 +304,7 @@ async function createQuickReplyContent(name, definition, accountSid, authToken) 
 }
 
 /**
- * WhatsApp approval for the sprint-23 application templates.
+ * WhatsApp approval for the application-stage templates.
  *
  * Creating a Content resource is not enough: Meta must approve a template
  * before Twilio will send it OUTSIDE the 24-hour session window, which is
@@ -243,6 +320,16 @@ async function createQuickReplyContent(name, definition, accountSid, authToken) 
  * messages (always inside the window) and need no approval.
  */
 const WHATSAPP_APPROVAL_CATEGORY = 'UTILITY';
+
+/**
+ * D6 (2026-09-04). Meta RECATEGORISED three of the four first-submission
+ * templates to MARKETING while they were pending -- an "approval" that cannot
+ * send the message it exists for. `allow_category_change: false` withdraws
+ * Meta's permission to do that: it must approve the template as UTILITY or
+ * REJECT it. A rejection is visible in `--verify-templates` and actionable; a
+ * silent reclassification is neither.
+ */
+const ALLOW_CATEGORY_CHANGE = false;
 
 function twilioAuthHeader(accountSid, authToken) {
   return `Basic ${Buffer.from(`${accountSid}:${authToken}`).toString('base64')}`;
@@ -269,7 +356,11 @@ async function requestWhatsAppApproval(sid, name, accountSid, authToken) {
     },
     // `name` must be lowercase letters, digits and underscores -- every
     // application_* key already is.
-    body: JSON.stringify({ name, category: WHATSAPP_APPROVAL_CATEGORY }),
+    body: JSON.stringify({
+      name,
+      category: WHATSAPP_APPROVAL_CATEGORY,
+      allow_category_change: false,
+    }),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -295,6 +386,52 @@ async function ensureWhatsAppApprovals(templates, accountSid, authToken) {
     report[name] = status;
   }
   return report;
+}
+
+/**
+ * Every Content resource in the account with its WhatsApp approval status and
+ * CATEGORY, normalized and PAGED. Twilio pages this endpoint; a single-page
+ * read silently misses the tail of an account that -- after repeated seed
+ * runs -- holds far more than one page, which is precisely the situation
+ * `--purge-stale` exists to clean up.
+ */
+async function listContentAndApprovals(accountSid, authToken) {
+  const headers = { Authorization: twilioAuthHeader(accountSid, authToken) };
+  const resources = [];
+  let url = `${CONTENT_AND_APPROVALS_URL}?PageSize=100`;
+  while (url) {
+    const res = await fetch(url, { headers });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Twilio content listing failed: HTTP ${res.status} ${text}`);
+    }
+    const json = await res.json();
+    for (const item of json?.contents ?? []) {
+      resources.push({
+        sid: item.sid,
+        friendlyName: item.friendly_name,
+        status: item.approval_requests?.status ?? 'unsubmitted',
+        category: item.approval_requests?.category ?? '-',
+      });
+    }
+    const next = json?.meta?.next_page_url ?? null;
+    // Only follow a page link back to Twilio's own API host.
+    url = typeof next === 'string' && next.startsWith(TWILIO_API_ORIGIN) ? next : null;
+  }
+  return resources;
+}
+
+async function deleteContent(sid, accountSid, authToken) {
+  const res = await fetch(`${CONTENT_API_URL}/${sid}`, {
+    method: 'DELETE',
+    headers: { Authorization: twilioAuthHeader(accountSid, authToken) },
+  });
+  // 404 means somebody already removed it; treat that as done, not as a
+  // failure that aborts the rest of the purge.
+  if (!res.ok && res.status !== 404) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Twilio Content delete failed for ${sid}: HTTP ${res.status} ${text}`);
+  }
 }
 
 async function createMissingListPickerTemplates(existingTemplates, accountSid, authToken) {
@@ -324,14 +461,125 @@ async function createMissingQuickReplyTemplates(existingTemplates, accountSid, a
   return created;
 }
 
-async function main() {
-  const client = new SecretsManagerClient({ region: REGION });
+/**
+ * Writes `additional` into the secret's `templates` map and proves it landed
+ * by reading the secret back. Shared by the default run and
+ * `--recreate-application-templates` so there is exactly one place that
+ * writes the secret -- and it never prints any part of it.
+ */
+async function persistTemplates(client, current, additional) {
+  const secret = parseSecret(current.SecretString);
+  const expectedTemplates = { ...NEW_TEMPLATES, ...additional };
+  const templates = mergeTemplates(secret.templates, additional);
+  const nextSecret = { ...secret, templates };
 
-  const current = await client.send(new GetSecretValueCommand({ SecretId: SECRET_ID }));
-  if (!current.SecretString) {
-    throw new Error(`Secret ${SECRET_ID} is empty`);
+  const notMerged = Object.entries(expectedTemplates)
+    .filter(([key, value]) => templates[key] !== value)
+    .map(([key]) => key);
+  if (notMerged.length > 0) {
+    throw new Error(`Template merge failed before write: ${notMerged.join(', ')}`);
   }
 
+  const nextSecretString = JSON.stringify(nextSecret);
+  if (nextSecretString !== current.SecretString) {
+    await client.send(new UpdateSecretCommand({
+      SecretId: SECRET_ID,
+      SecretString: nextSecretString,
+    }));
+  }
+
+  const verified = await client.send(new GetSecretValueCommand({ SecretId: SECRET_ID }));
+  const verifiedSecret = parseSecret(verified.SecretString ?? '{}');
+  const missing = Object.entries(expectedTemplates)
+    .filter(([key, value]) => verifiedSecret.templates?.[key] !== value)
+    .map(([key]) => key);
+  if (missing.length > 0) {
+    throw new Error(`Secret update did not persist these template keys: ${missing.join(', ')}`);
+  }
+  return { verifiedSecret, expectedTemplates };
+}
+
+/**
+ * `--recreate-application-templates`.
+ *
+ * A Twilio Content resource is immutable, so the D6 copy rewrite cannot reach
+ * Meta by editing the four pending resources -- it needs four NEW ones. The
+ * default run will not do this on its own (it recreates a stored SID only when
+ * that SID is already `rejected`), because burning four Content resources and
+ * four fresh Meta reviews is not something a routine seed should decide.
+ *
+ * Prints names, SIDs and approval statuses. Nothing else: the secret it writes
+ * holds the account auth token and every other template SID.
+ */
+async function recreateApplicationTemplates(client, current) {
+  const secret = parseSecret(current.SecretString);
+  const created = {};
+  for (const [name, definition] of Object.entries(QUICK_REPLY_DEFINITIONS)) {
+    created[name] = await createQuickReplyContent(
+      name, definition, secret.accountSid, secret.authToken,
+    );
+  }
+
+  const { verifiedSecret } = await persistTemplates(client, current, created);
+  for (const [name, sid] of Object.entries(created)) {
+    console.log(`Recreated ${name}: ${sid}`);
+  }
+
+  // A new resource that is never submitted can never be sent outside the
+  // session window, which is the entire reason for recreating it.
+  const approvals = await ensureWhatsAppApprovals(
+    verifiedSecret.templates, secret.accountSid, secret.authToken,
+  );
+  for (const [name, status] of Object.entries(approvals)) {
+    console.log(`WhatsApp approval ${name}: ${status}`);
+  }
+  console.log(
+    `Recreated ${Object.keys(created).length} application templates `
+    + `and submitted them as ${WHATSAPP_APPROVAL_CATEGORY} `
+    + `(allow_category_change=${ALLOW_CATEGORY_CHANGE}).`,
+  );
+}
+
+/**
+ * `--purge-stale` (dry run) / `--purge-stale --apply` (destructive).
+ *
+ * Repeated seed runs left 16 REJECTED application_* copies and 12 UNSUBMITTED
+ * help_menu_list_* duplicates in the account (observed 2026-09-04). They are
+ * noise in every console listing and in every --verify-templates run, and one
+ * of them is one mistyped SID away from being served to a worker.
+ *
+ * Selection is `isPurgeCandidate` -- see its comment for why the
+ * referenced-SID guard is unconditional. Prints counts and names only.
+ */
+async function purgeStaleTemplates(client, current, apply) {
+  const secret = parseSecret(current.SecretString);
+  const referencedSids = new Set(Object.values(secret.templates ?? {}));
+  const resources = await listContentAndApprovals(secret.accountSid, secret.authToken);
+  const stale = resources.filter(
+    (resource) => isPurgeCandidate(resource, MANAGED_TEMPLATE_NAMES, referencedSids),
+  );
+
+  console.log(
+    `Scanned ${resources.length} Content resources; `
+    + `${stale.length} stale (rejected or never-submitted duplicates of the `
+    + `${MANAGED_TEMPLATE_NAMES.size} names this script manages, none referenced by the secret).`,
+  );
+  for (const resource of stale) {
+    console.log(`${apply ? 'delete' : 'would delete'} ${resource.friendlyName}\t${resource.sid}\t${resource.status}\t${resource.category}`);
+  }
+  if (!apply) {
+    console.log('Dry run: nothing was deleted. Re-run with --purge-stale --apply to remove them.');
+    return;
+  }
+  let deleted = 0;
+  for (const resource of stale) {
+    await deleteContent(resource.sid, secret.accountSid, secret.authToken);
+    deleted += 1;
+  }
+  console.log(`Deleted ${deleted} stale Content resources.`);
+}
+
+async function seedDefault(client, current) {
   const secret = parseSecret(current.SecretString);
 
   const createdListPickers = await createMissingListPickerTemplates(
@@ -345,37 +593,10 @@ async function main() {
     secret.authToken,
   );
   const createdContent = { ...createdListPickers, ...createdQuickReplies };
-  const expectedTemplates = { ...NEW_TEMPLATES, ...createdContent };
 
-  const templates = mergeTemplates(secret.templates, createdContent);
-  const nextSecret = { ...secret, templates };
-
-  const verifyBeforeWrite = Object.fromEntries(
-    Object.entries(expectedTemplates).filter(([key, value]) => templates[key] !== value),
+  const { verifiedSecret, expectedTemplates } = await persistTemplates(
+    client, current, createdContent,
   );
-  if (Object.keys(verifyBeforeWrite).length > 0) {
-    throw new Error(`Template merge failed before write: ${Object.keys(verifyBeforeWrite).join(', ')}`);
-  }
-
-  const nextSecretString = JSON.stringify(nextSecret);
-  if (nextSecretString !== current.SecretString) {
-    await client.send(
-      new UpdateSecretCommand({
-        SecretId: SECRET_ID,
-        SecretString: nextSecretString,
-      }),
-    );
-  }
-
-  const verified = await client.send(new GetSecretValueCommand({ SecretId: SECRET_ID }));
-  const verifiedSecret = parseSecret(verified.SecretString ?? '{}');
-  const missing = Object.entries(expectedTemplates)
-    .filter(([key, value]) => verifiedSecret.templates?.[key] !== value)
-    .map(([key]) => key);
-
-  if (missing.length > 0) {
-    throw new Error(`Secret update did not persist these template keys: ${missing.join(', ')}`);
-  }
 
   const templateCount = Object.keys(verifiedSecret.templates ?? {}).length;
   console.log(`Updated ${SECRET_ID} in ${REGION}; verified ${Object.keys(expectedTemplates).length} onboarding SIDs and ${templateCount} total template entries.`);
@@ -394,6 +615,34 @@ async function main() {
   for (const [name, status] of Object.entries(approvals)) {
     console.log(`WhatsApp approval ${name}: ${status}`);
   }
+}
+
+async function main() {
+  const unknown = ARGS.filter((arg) => ![
+    '--recreate-application-templates', '--purge-stale', '--apply',
+  ].includes(arg));
+  if (unknown.length > 0) {
+    throw new Error(`unrecognized flag(s): ${unknown.join(', ')}`);
+  }
+  if (hasFlag('--apply') && !hasFlag('--purge-stale')) {
+    throw new Error('--apply is only meaningful with --purge-stale');
+  }
+
+  const client = new SecretsManagerClient({ region: REGION });
+  const current = await client.send(new GetSecretValueCommand({ SecretId: SECRET_ID }));
+  if (!current.SecretString) {
+    throw new Error(`Secret ${SECRET_ID} is empty`);
+  }
+
+  if (hasFlag('--purge-stale')) {
+    await purgeStaleTemplates(client, current, hasFlag('--apply'));
+    return;
+  }
+  if (hasFlag('--recreate-application-templates')) {
+    await recreateApplicationTemplates(client, current);
+    return;
+  }
+  await seedDefault(client, current);
 }
 
 main().catch((err) => {

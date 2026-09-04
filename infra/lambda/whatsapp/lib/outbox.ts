@@ -51,6 +51,70 @@ export class TwilioTemplateInvalidError extends Error {
   }
 }
 
+/**
+ * Twilio answered a send with a 4xx/5xx that is not one of the classes above.
+ *
+ * Deliberately carries the SAME message the plain `Error` used to carry, so
+ * every existing caller that only stringifies `.message` (and the persisted
+ * `last_error` text an operator reads) is unchanged. The addition is
+ * `twilioCode`: the drain has to distinguish one specific rejection from the
+ * rest, and re-parsing it back out of the message text would be a regex over
+ * a human-readable string.
+ */
+export class TwilioSendRejectedError extends Error {
+  constructor(
+    public readonly httpStatus: number,
+    public readonly twilioCode: number | null,
+  ) {
+    super(
+      `Twilio send failed with HTTP ${httpStatus}`
+      + `${twilioCode !== null ? ` (code ${twilioCode})` : ''}`,
+    );
+    this.name = 'TwilioSendRejectedError';
+  }
+}
+
+/**
+ * "Message failed to send because the recipient has not initiated a
+ * conversation in the last 24 hours" -- Meta's rule that a freeform (non
+ * template) WhatsApp message may only be sent inside an open session window.
+ */
+export const TWILIO_OUTSIDE_SESSION_WINDOW_CODE = 63016;
+
+/**
+ * The employer-triggered application-stage lane (`application_update_*`,
+ * `application_hired_*`). A 63016 HERE means one specific thing: the Content
+ * template Meta has not approved yet, so the sender fell back to a freeform
+ * body that Meta will refuse for as long as the approval is pending.
+ */
+const APPLICATION_TEMPLATE_PREFIX = 'application_';
+
+/**
+ * How long to park such a row, and the reason written to `last_error`. One
+ * hour, because the thing being waited on is a human Meta review, not a
+ * transient network condition -- 043's 30s..30min backoff is the wrong shape
+ * and would burn the whole attempt budget inside an hour.
+ */
+const TEMPLATE_PENDING_DEFER_SECONDS = 3600;
+const TEMPLATE_PENDING_DEFER_REASON = 'twilio_63016_template_pending';
+
+/**
+ * True when a send failure is "the template is not approved yet" rather than
+ * "this send failed". The template-name test is not cosmetic: outside the
+ * application lane a 63016 means a session window that really did lapse for a
+ * lane whose template IS approved, and parking those for 48 hours would hide
+ * real failures.
+ */
+function isTemplatePendingRejection(
+  error: unknown,
+  contentTemplate: string | null,
+): boolean {
+  return error instanceof TwilioSendRejectedError
+    && error.twilioCode === TWILIO_OUTSIDE_SESSION_WINDOW_CODE
+    && typeof contentTemplate === 'string'
+    && contentTemplate.startsWith(APPLICATION_TEMPLATE_PREFIX);
+}
+
 export async function sendTwilioWhatsAppMessage(to: string, row: {
   body: string | null;
   content_template: string | null;
@@ -123,7 +187,7 @@ export async function sendTwilioWhatsAppMessage(to: string, row: {
     if (twilioCode === 21655 && row.content_template) {
       throw new TwilioTemplateInvalidError(row.content_template, twilioCode);
     }
-    throw new Error(`Twilio send failed with HTTP ${res.status}${twilioCode !== null ? ` (code ${twilioCode})` : ''}`);
+    throw new TwilioSendRejectedError(res.status, twilioCode);
   }
   let responseBody: { sid?: string } | null = null;
   try {
@@ -430,11 +494,21 @@ interface LeasedWorkerIntentOutboxRow {
  * Sends rows claimed by migration 043's SECURITY DEFINER RPC. The database
  * owns ordering, retry/backoff, and fencing; network I/O starts only after
  * the claim call has committed.
+ *
+ * A leased row has FOUR ends, not three. `deferred` is migration 093's
+ * addition: the row is rescheduled without spending an attempt, because the
+ * failure was "Meta has not approved this template yet" and no number of
+ * retries changes that. It is counted separately from `failed` on purpose --
+ * one needs an operator to chase a template approval, the other needs a code
+ * or provider fix, and rolling them together made the 2026-09-04 incident
+ * look like an ordinary send failure.
  */
 export async function drainWorkerIntentOutbox(
   pool: { connect(): Promise<PoolClient> },
   limit = 10,
-): Promise<{ sent: number; ambiguous: number; failed: number; leaseLost: number }> {
+): Promise<{
+  sent: number; ambiguous: number; failed: number; leaseLost: number; deferred: number;
+}> {
   const leaseClient = await pool.connect();
   let leased: LeasedWorkerIntentOutboxRow[];
   try {
@@ -450,6 +524,7 @@ export async function drainWorkerIntentOutbox(
   let ambiguous = 0;
   let failed = 0;
   let leaseLost = 0;
+  let deferred = 0;
 
   const recordFailure = async (
     row: LeasedWorkerIntentOutboxRow,
@@ -472,12 +547,47 @@ export async function drainWorkerIntentOutbox(
     }
   };
 
+  /**
+   * Migration 093's third outcome. A sibling of `recordFailure` rather than a
+   * flag on it: the RPCs differ in name, arity and meaning, and the one thing
+   * they must share -- treating a `false` return as a lost lease rather than
+   * as a quiet no-op -- is repeated here deliberately.
+   */
+  const recordDeferral = async (row: LeasedWorkerIntentOutboxRow): Promise<void> => {
+    const resultClient = await pool.connect();
+    try {
+      const deferral = await resultClient.query<{ deferred: boolean }>(
+        'SELECT defer_worker_intent_outbox($1, $2, $3, $4) AS deferred',
+        [row.id, row.lease_token, TEMPLATE_PENDING_DEFER_REASON,
+          TEMPLATE_PENDING_DEFER_SECONDS],
+      );
+      if (deferral.rows[0]?.deferred !== true) {
+        leaseLost += 1;
+        throw new Error(`worker_intent_lease_lost:${row.id}`);
+      }
+    } finally {
+      resultClient.release();
+    }
+  };
+
   for (const row of leased) {
     let sid: string;
     try {
       sid = await sendTwilioWhatsAppMessage(`whatsapp:${row.whatsapp_number}`, row);
     } catch (error) {
+      // Order matters. An ambiguous failure (a timeout, a torn connection)
+      // carries no Twilio code and leaves the delivery state UNKNOWN, so it
+      // is decided first and can never be rescheduled by the branch below --
+      // not even when the template name matches.
       const isAmbiguous = error instanceof AmbiguousTwilioSendError;
+      if (!isAmbiguous && isTemplatePendingRejection(error, row.content_template)) {
+        await recordDeferral(row);
+        // No count on the line: this is emitted once per deferred row, so the
+        // CloudWatch metric filter counts occurrences.
+        console.log(JSON.stringify({ metric: 'WorkerIntentOutboxTemplatePending' }));
+        deferred += 1;
+        continue;
+      }
       await recordFailure(row, error, isAmbiguous);
       if (isAmbiguous) ambiguous += 1;
       else failed += 1;
@@ -512,7 +622,7 @@ export async function drainWorkerIntentOutbox(
     sent += 1;
   }
 
-  return { sent, ambiguous, failed, leaseLost };
+  return { sent, ambiguous, failed, leaseLost, deferred };
 }
 
 export async function countAgedWorkerIntentOutbox(

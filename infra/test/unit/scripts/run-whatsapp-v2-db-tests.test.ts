@@ -105,6 +105,18 @@ const SUITE_STAGE_NOTIFY = 'test/unit/db/application-stage-notify.integration.te
 // definer. It also carries the four surviving cases from the deleted 052
 // suite.
 const SUITE_CLEANUP_092 = 'test/unit/db/onboarding-cleanup-092.integration.test.ts';
+// Sprint 24 L4: migration 093's defer_worker_intent_outbox -- the third
+// outcome for a leased worker_intent row, which reschedules WITHOUT spending
+// an attempt. It is here for three facts a mocked pool cannot hold: 043's
+// whatsapp_outbox_worker_intent_lease_consistency CHECK (a defer that
+// releases one of the two lease columns, or moves to 'pending' with both
+// still set, is a 23514 that type-checks fine), the two-condition lease fence
+// (token equality AND an un-expired deadline -- dropping either is a
+// zero-row-vs-one-row difference), and attempt_count, whose non-advance is
+// the entire reason the function exists. It is LAST because 043's lease RPC
+// is global by design: leasing advances the attempt_count of any fixture row
+// an earlier suite left behind, so it must not run before one.
+const SUITE_DEFER_093 = 'test/unit/db/worker-intent-defer-093.integration.test.ts';
 
 // The guard must fail closed regardless of the ambient environment. The final
 // verification battery exports JALE_TEST_DATABASE_URL to run the guarded
@@ -134,6 +146,7 @@ describe('test:whatsapp-v2-db fail-closed URL guard', () => {
       SUITE_APPLICATIONS_COMMAND,
       SUITE_CLEANUP_092,
       SUITE_STAGE_NOTIFY,
+      SUITE_DEFER_093,
     ]);
     // The deregistered migration-052 suite must be gone from the script
     // entirely -- including from any tombstone comment, which this file's own

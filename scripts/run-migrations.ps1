@@ -142,6 +142,7 @@ $MigrationFiles = @(
     '090_email_outbox_delivery_metadata.sql'
     '091_application_stages.sql'
     '092_onboarding_cleanup_drops.sql'
+    '093_worker_intent_outbox_defer.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path
