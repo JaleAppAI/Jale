@@ -60,6 +60,8 @@ import {
   isProfileCommand,
   isApplicationsCommand,
   parseApplicationButtonPayload,
+  parseApplicationReference,
+  parseTypedApplyToken,
   parseButtonPayload,
   parseCommandPayload,
   parseEmployerConversationButtonPayload,
@@ -98,11 +100,13 @@ import {
   parseApplicationsMenuPick,
   sendApplicationsList,
   sendApplicationsListRows,
+  type ApplicationSummary,
   type ApplicationsContext,
   type ApplicationsDeps,
 } from './lib/applications-command';
 import { loadRequirementSnapshot } from '../lib/application-requirements';
 import { parsePreApplicationPromptList } from '../lib/pre-application-prompts';
+import { hashToken } from '../lib/referral-codes';
 import {
   handlePostLaneMessage,
   discardActiveDraft,
@@ -1318,6 +1322,48 @@ async function routeReadyWorkerCommands(
     return null;
   }
 
+  // Sprint 24 C4: the two machine-generated codes a worker can be holding --
+  // a `JALE-XXXXXXXX` job code from a referral link, and the `app-<uuid>`
+  // reference the application-stage notifications print
+  // (lib/application-stage-notify.ts). Each was recognised ONLY somewhere
+  // else -- the job code pre-auth (`onboarding/steps/start.ts`), the
+  // application reference only as a button payload -- so an onboarded worker
+  // who TYPED either one fell all the way through to `idle_help`. Users
+  // reported exactly that.
+  //
+  // Placed here deliberately:
+  //   - AFTER the exact-match help/support/profile commands, which no code
+  //     can collide with;
+  //   - BEFORE `parseEmployerConversationTextAction` / `tryConversationRelay`,
+  //     so a code typed while an employer thread is open is ANSWERED rather
+  //     than relayed into that chat as text nobody acts on. This is only safe
+  //     because both parsers are strict about ordinary prose: the job code
+  //     needs a `JALE` + punctuation prefix (`parseTypedApplyToken`, NOT the
+  //     deliberately loose pre-auth `parseApplyToken`, which matches
+  //     "Jale trabajos") and the reference needs a full `app-` + UUID. Prose
+  //     that trips either grammar would cost the worker a message to their
+  //     employer, so the strictness and this placement are one decision;
+  //   - both parsers are pure, so a message carrying no code issues no extra
+  //     query and every route below behaves exactly as it did before.
+  //
+  // The `application:(start|later):app-<uuid>` BUTTON payload never arrives
+  // here: `routeMessage` consumes it (including the Body-recovered form)
+  // before this function is called, and `parseApplicationReference` excludes
+  // the payload shape anyway -- `later` must not dispatch like `start`.
+  if (conv.user_id) {
+    const typedJobCode = parseTypedApplyToken(msg.body);
+    if (typedJobCode) {
+      await handleTypedJobCode(client, conv, msg, typedJobCode);
+      return conv.user_id;
+    }
+
+    const typedApplicationRef = parseApplicationReference(msg.body);
+    if (typedApplicationRef) {
+      await handleTypedApplicationReference(client, conv, msg, typedApplicationRef);
+      return conv.user_id;
+    }
+  }
+
   const textConversationAction = parseEmployerConversationTextAction(msg.body);
   if (textConversationAction) {
     return await handleEmployerConversationTextAction(client, conv, msg, textConversationAction, routerDeps);
@@ -2160,6 +2206,204 @@ async function handleApplicationStart(
   );
 }
 
+/**
+ * Sprint 24 C4: resolves a TYPED `JALE-XXXXXXXX` apply token to the job it
+ * points at. READ ONLY, and deliberately so.
+ *
+ * The pre-auth resolver for the same code is `parkPendingClaim`
+ * (whatsapp/lib/referral-claims.ts), which CONSUMES the token
+ * (`consumed_at` + `consumed_phone_hash`) as part of parking a claim for a
+ * phone that has no `users` row yet. An onboarded worker typing the code is
+ * asking "what is this job?", not spending it, so:
+ *   - nothing is consumed: the code still answers when typed twice, and
+ *     still answers if this worker's own first message already consumed it;
+ *   - `expires_at` is not checked either -- expiry bounds the
+ *     browser-to-WhatsApp handoff, it does not make the job secret. The
+ *     freshness gate that matters is the job's own `status = 'active'`,
+ *     enforced by `handleJobAction` (a filled/closed job answers
+ *     `job_not_found`).
+ * Referral ATTRIBUTION is NOT credited on this path: crediting means writing
+ * `referral_pending_claims` / `worker_attribution`, which this lane does not
+ * own. Recorded as a follow-up rather than guessed at here.
+ *
+ * `jale_whatsapp` already holds SELECT on `referral_apply_tokens` (the same
+ * table `parkPendingClaim` UPDATEs from this lane). The raw token is hashed
+ * before it touches SQL and is never logged.
+ */
+async function resolveApplyTokenJobId(
+  client: PoolClient,
+  rawToken: string,
+): Promise<string | null> {
+  const res = await client.query<{ job_id: string }>(
+    `SELECT job_id FROM referral_apply_tokens WHERE token_hash = $1`,
+    [hashToken(rawToken)],
+  );
+  return res.rows[0]?.job_id ?? null;
+}
+
+/**
+ * A typed job code is answered with EXACTLY the existing "info" action for
+ * that job (`handleJobAction`), so the two surfaces can never diverge.
+ *
+ * The one thing that has to happen first: that reply ends with
+ * `Reply "<n> interested" to apply` (`Responde "<n> me interesa"`), where `<n>` is
+ * the job's 1-based position in `state_context.recent_jobs` -- and it falls
+ * back to 1 when the
+ * job is absent, which would point the worker at a DIFFERENT job (or at
+ * nothing, since `handleIdle`'s typed-action path reads `recent_jobs[n-1]`).
+ * So the referred job is APPENDED to that list, never prepended and never
+ * replacing it: every number the worker already has in their head from the
+ * last listing keeps pointing where it did. The list itself stays bounded
+ * because the next TRABAJOS/JOBS listing replaces it wholesale with five
+ * ids.
+ */
+async function handleTypedJobCode(
+  client: PoolClient,
+  conv: ConversationRow,
+  msg: IncomingMessage,
+  rawToken: string,
+): Promise<void> {
+  const jobId = await resolveApplyTokenJobId(client, rawToken);
+  if (!jobId) {
+    // Unknown, mistyped, or a code for a deleted job. Never says which --
+    // and always names a keyword that works.
+    await queueReply(client, msg.messageSid, msg.from, 'job_code_not_found', conv.language);
+    return;
+  }
+
+  if (!conv.state_context) {
+    conv.state_context = {} as ProfileStateContext;
+  }
+  const recentJobs = conv.state_context.recent_jobs ?? [];
+  if (!recentJobs.includes(jobId)) {
+    // Mutated IN PLACE, never reassigned: objects built earlier in this turn
+    // (FillContext/PostCtx) captured this exact reference -- see
+    // `makeStateContextUpdater`'s note on why identity matters here.
+    conv.state_context.recent_jobs = [...recentJobs, jobId];
+    await updateConversation(client, conv.id, { state_context: conv.state_context });
+  }
+
+  await handleJobAction(client, conv, jobId, 'info', msg.from, msg.messageSid);
+}
+
+/**
+ * Sprint 24 C4 (review 1): loads ONE application by id, scoped to the
+ * worker who asked for it.
+ *
+ * This deliberately does not go through `loadWorkerApplications`: that is
+ * the list loader and carries `APPLICATIONS_LIST_LIMIT` (10) plus a
+ * needs-details-first ORDER BY, so a worker with more than ten applications
+ * typing a reference to an older one would have been told it does not
+ * exist. A reference is a lookup, not a listing.
+ *
+ * Ownership is the `AND ja.worker_id = $2` predicate, not a post-filter, so
+ * a stranger's id can never be loaded, let alone described -- which is also
+ * what keeps the not-found reply from becoming an existence oracle.
+ *
+ * The projection is copied from `applications-command.ts`'s
+ * `APPLICATIONS_SQL` on purpose: the legacy `reviewed`/`rejected` status
+ * folding and the `needs_details` expression have to render EXACTLY like the
+ * list, since the row is handed to the list's own renderer. That makes this
+ * a second copy of that CASE -- if a future status is folded there and not
+ * here, the two surfaces will disagree, which is why the shapes are kept
+ * adjacent and this comment names the dependency.
+ */
+async function loadWorkerApplicationById(
+  client: PoolClient,
+  workerId: string,
+  applicationId: string,
+): Promise<ApplicationSummary | null> {
+  const res = await client.query<{
+    id: string;
+    title: string | null;
+    status: string;
+    needs_details: boolean;
+    company_name: string | null;
+  }>(
+    `SELECT ja.id,
+            j.title,
+            CASE ja.status
+              WHEN 'reviewed' THEN 'contacted'
+              WHEN 'rejected' THEN 'not_interested'
+              ELSE ja.status
+            END AS status,
+            (ja.details_requested_at IS NOT NULL AND ja.details_completed_at IS NULL) AS needs_details,
+            employer_display_name(j.employer_id) AS company_name
+       FROM job_applications ja JOIN jobs j ON j.id = ja.job_id
+      WHERE ja.id = $1 AND ja.worker_id = $2`,
+    [applicationId, workerId],
+  );
+  const row = res.rows[0];
+  if (!row) return null;
+  return {
+    applicationId: row.id,
+    jobTitle: row.title ?? '',
+    companyName: row.company_name ?? 'Jale',
+    status: row.status,
+    needsDetails: row.needs_details === true,
+  };
+}
+
+/**
+ * A typed `app-<uuid>` reference, answered from the worker's OWN
+ * application (`loadWorkerApplicationById`, `WHERE ja.id = $1 AND
+ * ja.worker_id = $2` under `app.current_internal_user_id`) -- ownership is
+ * the query's own predicate, so a stranger's id can never be loaded, let
+ * alone described. That is also why the not-found reply is safe: it cannot
+ * become an existence oracle for other workers' applications.
+ *
+ * Three answers, in the order a worker would expect:
+ *   - `details_requested`: dispatch `handleApplicationStart`, the SAME entry
+ *     point the notification's Start button and the `aplicaciones` menu digit
+ *     use (it re-checks ownership and every terminal-state gate itself);
+ *   - any other status: the application's own status line, rendered by the
+ *     `aplicaciones` command's renderer (`sendApplicationsListRows` with just
+ *     this row), which also arms the one-shot menu so the "1)" it prints
+ *     actually resolves on the next message;
+ *   - no such application for this worker: the bilingual not-found reply.
+ *
+ * Every application the worker has is reachable, including the eleventh and
+ * older: the lookup is by id, never a page of the list.
+ */
+async function handleTypedApplicationReference(
+  client: PoolClient,
+  conv: ConversationRow,
+  msg: IncomingMessage,
+  applicationId: string,
+): Promise<void> {
+  const workerId = conv.user_id;
+  if (!workerId) return;
+
+  // 070's `jobs_worker_read_applied` policy is keyed on this GUC; without it
+  // the join drops every non-active job the worker applied to and an owned
+  // application would read as "not found" -- silently the wrong answer.
+  await setInternalUserRlsContext(client, workerId);
+  const match = await loadWorkerApplicationById(client, workerId, applicationId);
+
+  if (!match) {
+    await queueReply(client, msg.messageSid, msg.from, 'application_ref_not_found', conv.language);
+    return;
+  }
+
+  if (match.status === 'details_requested') {
+    await handleApplicationStart(client, conv, applicationId, msg.from, msg.messageSid);
+    return;
+  }
+
+  // Same contract as the `aplicaciones` command (routeMessage): this reply
+  // arms the one-shot numbered menu, and a dormant post-board draft must not
+  // be left holding the worker's next message.
+  await discardStalePostDraft(client, conv, msg);
+  await sendApplicationsListRows(
+    client,
+    buildApplicationsCtx(conv),
+    [match],
+    msg.messageSid,
+    msg.from,
+    buildApplicationsDeps(conv),
+  );
+}
+
 function buildFillDeps(conv: ConversationRow): FillDeps {
   return {
     extraction: makeBedrockExtractionClient(),
@@ -2276,8 +2520,8 @@ async function handleJobAction(
       inboundMessageSid,
       from,
       conv.language === 'es'
-        ? `Detalles del trabajo\n\n${r.title}\n${r.company}\n${r.location}\n${pay}\n\nResponde "${commandIndex} aceptar" para aplicar.`
-        : `Job details\n\n${r.title}\n${r.company}\n${r.location}\n${pay}\n\nReply "${commandIndex} accept" to apply.`,
+        ? `Detalles del trabajo\n\n${r.title}\n${r.company}\n${r.location}\n${pay}\n\nResponde "${commandIndex} me interesa" para aplicar.`
+        : `Job details\n\n${r.title}\n${r.company}\n${r.location}\n${pay}\n\nReply "${commandIndex} interested" to apply.`,
     );
   }
 }
