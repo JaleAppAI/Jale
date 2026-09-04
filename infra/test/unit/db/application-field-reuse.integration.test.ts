@@ -225,17 +225,22 @@ maybeDescribe('L3: the cross-job answer-reuse boundary', () => {
   afterAll(async () => {
     // job_applications.worker_id is ON DELETE RESTRICT and worker_documents
     // has no cascade, so both go first; worker_application_defaults cascades.
-    if (workerId) {
-      await su.query(`DELETE FROM job_applications WHERE worker_id = $1`, [workerId]);
-      await su.query(`DELETE FROM worker_documents WHERE worker_id = $1`, [workerId]);
-      await su.query(`DELETE FROM users WHERE id = $1`, [workerId]);
+    // try/finally: a failed DELETE must still close both clients, or jest
+    // never exits on open pg handles -- which is how the first live run hung.
+    try {
+      if (workerId) {
+        await su.query(`DELETE FROM job_applications WHERE worker_id = $1`, [workerId]);
+        await su.query(`DELETE FROM worker_documents WHERE worker_id = $1`, [workerId]);
+        await su.query(`DELETE FROM users WHERE id = $1`, [workerId]);
+      }
+      if (employerId) {
+        await su.query(`DELETE FROM jobs WHERE employer_id = $1`, [employerId]);
+        await su.query(`DELETE FROM users WHERE id = $1`, [employerId]);
+      }
+    } finally {
+      await wa.end();
+      await su.end();
     }
-    if (employerId) {
-      await su.query(`DELETE FROM jobs WHERE employer_id = $1`, [employerId]);
-      await su.query(`DELETE FROM users WHERE id = $1`, [employerId]);
-    }
-    await wa.end();
-    await su.end();
   });
 
   it('0. the fixture really is a mixed legacy blob, and the policy really does split it', async () => {
