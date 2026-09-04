@@ -99,7 +99,7 @@ maybeDescribe('L3: the cross-job answer-reuse boundary', () => {
   // stable half is legitimately reusable; the per_application half was
   // answered FOR ANOTHER EMPLOYER and must never be offered again.
   const STABLE_DEFAULTS = {
-    work_authorization: { authorized: true },
+    work_authorization: true,
     date_of_birth: '1990-04-03',
     home_address: { street: '123 Main St', city: 'El Paso', state: 'TX', zip: '79901' },
   };
@@ -223,10 +223,17 @@ maybeDescribe('L3: the cross-job answer-reuse boundary', () => {
   });
 
   afterAll(async () => {
-    // FK cascades from users cover job_applications / worker_documents /
-    // worker_application_defaults; jobs hang off the employer.
-    if (workerId) await su.query(`DELETE FROM users WHERE id = $1`, [workerId]);
-    if (employerId) await su.query(`DELETE FROM users WHERE id = $1`, [employerId]);
+    // job_applications.worker_id is ON DELETE RESTRICT and worker_documents
+    // has no cascade, so both go first; worker_application_defaults cascades.
+    if (workerId) {
+      await su.query(`DELETE FROM job_applications WHERE worker_id = $1`, [workerId]);
+      await su.query(`DELETE FROM worker_documents WHERE worker_id = $1`, [workerId]);
+      await su.query(`DELETE FROM users WHERE id = $1`, [workerId]);
+    }
+    if (employerId) {
+      await su.query(`DELETE FROM jobs WHERE employer_id = $1`, [employerId]);
+      await su.query(`DELETE FROM users WHERE id = $1`, [employerId]);
+    }
     await wa.end();
     await su.end();
   });
@@ -244,8 +251,14 @@ maybeDescribe('L3: the cross-job answer-reuse boundary', () => {
   });
 
   it('1. the seed lands ONLY the stable keys in application_answers, over the real role and the real GUC', async () => {
-    const snapshot = await asWorker(() => loadRequirementSnapshot(wa as any, applicationId));
+    const snapshot = await asWorker(() => loadRequirementSnapshot(
+      wa as any, applicationId, { syncDocumentSnapshots: true },
+    ));
     expect(snapshot).not.toBeNull();
+    // This is the worker's FIRST synced load of the application, so it is the
+    // one that copies the vault document into the job scope -- and the only
+    // one that reports it. armFill's reuse summary depends on exactly this.
+    expect(snapshot!.copiedDocuments).toEqual(['work_auth_doc']);
 
     const seeded = await asWorker(() => seedAnswersFromDefaults(
       wa as any,
@@ -270,14 +283,40 @@ maybeDescribe('L3: the cross-job answer-reuse boundary', () => {
   });
 
   it('2. the questions the seed refused are still OUTSTANDING, so the worker is asked them', async () => {
-    const snapshot = await asWorker(() => loadRequirementSnapshot(wa as any, applicationId));
+    const snapshot = await asWorker(() => loadRequirementSnapshot(
+      wa as any, applicationId, { syncDocumentSnapshots: true },
+    ));
     const remaining = computeRemaining(snapshot!);
+    // Never again: the idempotent re-copy is suppressed by ON CONFLICT DO
+    // NOTHING, so a second load has nothing to announce.
+    expect(snapshot!.copiedDocuments).toEqual([]);
 
     expect(remaining.fields).toEqual(['date_available', 'worked_here_before']);
     expect(remaining.complete).toBe(false);
     // The counts the intro advertises can never be "0 y 0" here, which is
     // exactly what the incident reported before completing.
     expect(remaining.counts.fields).toBe(2);
+  });
+
+  it('2b. clearFieldAnswer REMOVES the key while the application is still open, so the question comes back (not a stored null)', async () => {
+    const cleared = await asWorker(() => clearFieldAnswer(wa as any, {
+      applicationId, key: 'date_of_birth',
+    }));
+    expect(cleared).toBe(true);
+    // Runs BEFORE 3/4 on purpose: those answer the last outstanding questions
+    // and complete the application, after which a clear is refused (case 7).
+
+    const answers = await answersOf(applicationId);
+    expect(Object.prototype.hasOwnProperty.call(answers, 'date_of_birth')).toBe(false);
+
+    // The engine's presence check is hasOwnProperty, so a stored null would
+    // still read as answered -- this is the assertion that proves the jsonb
+    // `-` operator, not a null merge, is what runs.
+    const snapshot = await asWorker(() => loadRequirementSnapshot(wa as any, applicationId));
+    expect(computeRemaining(snapshot!).fields).toContain('date_of_birth');
+
+    // A correction is not a profile edit: the saved default stands.
+    expect(await savedDefaults()).toHaveProperty('date_of_birth', '1990-04-03');
   });
 
   it('3. answering a per_application field writes the APPLICATION but never the defaults blob', async () => {
@@ -318,13 +357,14 @@ maybeDescribe('L3: the cross-job answer-reuse boundary', () => {
     expect(saved).toHaveProperty('date_available');
   });
 
-  it('5. the vault document copy REPORTS itself exactly once, and never again', async () => {
-    // First sync: the vault row is copied onto the job and reported, which is
-    // what lets the bot say "Documentos adjuntados de tu boveda: ...".
+  it('5. after the first synced load, direct re-copies report nothing and add no rows', async () => {
+    // Case 1's synced load already copied and reported the vault document
+    // (that report is what lets the bot say "Documentos adjuntados de tu
+    // boveda: ..."). A direct re-copy has nothing left to do.
     const first = await asWorker(() => copyRequiredDocumentSnapshots(
       wa as any, workerId, jobId, ['work_auth_doc'],
     ));
-    expect(first).toEqual(['work_auth_doc']);
+    expect(first).toEqual([]);
 
     // Idempotent re-call -- the engine does this on EVERY worker-side read
     // and write. `ON CONFLICT DO NOTHING` suppresses the insert, so
@@ -343,25 +383,6 @@ maybeDescribe('L3: the cross-job answer-reuse boundary', () => {
       [workerId],
     );
     expect(Number(rows.rows[0].n)).toBe(2);
-  });
-
-  it('6. clearFieldAnswer REMOVES the key, so the question comes back (not a stored null)', async () => {
-    const cleared = await asWorker(() => clearFieldAnswer(wa as any, {
-      applicationId, key: 'date_of_birth',
-    }));
-    expect(cleared).toBe(true);
-
-    const answers = await answersOf(applicationId);
-    expect(Object.prototype.hasOwnProperty.call(answers, 'date_of_birth')).toBe(false);
-
-    // The engine's presence check is hasOwnProperty, so a stored null would
-    // still read as answered -- this is the assertion that proves the jsonb
-    // `-` operator, not a null merge, is what runs.
-    const snapshot = await asWorker(() => loadRequirementSnapshot(wa as any, applicationId));
-    expect(computeRemaining(snapshot!).fields).toContain('date_of_birth');
-
-    // A correction is not a profile edit: the saved default stands.
-    expect(await savedDefaults()).toHaveProperty('date_of_birth', '1990-04-03');
   });
 
   it('7. clearFieldAnswer refuses an application the employer already sees as complete', async () => {
