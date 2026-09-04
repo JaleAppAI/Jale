@@ -163,8 +163,10 @@ describe('TrustQuestionStep', () => {
         // The icon is decorative and must not be announced as content.
         expect(callout.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
         const cta = screen.getByRole('button', { name: message('worker_onboarding.trust.complete_cta') });
-        // eslint-disable-next-line no-bitwise
-        expect(callout.compareDocumentPosition(cta) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        // Exactly FOLLOWING: the CTA comes after the callout and neither
+        // contains the other (containment would add its own flags), so the
+        // warning cannot slide back under the button unnoticed.
+        expect(callout.compareDocumentPosition(cta)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     });
 
     it('raises no such callout while the answers are still changeable', () => {
