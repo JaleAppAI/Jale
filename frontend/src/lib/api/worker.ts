@@ -276,6 +276,13 @@ export type JobDetail = Job & {
  * `start_date` is a DATE-ONLY value (`YYYY-MM-DD`), so it must be formatted
  * through `formatStartDate*` (UTC-pinned) and never through the instant
  * helpers -- see the two families in `lib/date.ts`.
+ *
+ * The PAY fields are raw, not a pre-formatted sentence, and this shape
+ * deliberately satisfies `PayFields` in `lib/pay.ts` so `formatPay(hire, tPay)`
+ * takes it directly. `jobs.pay` is server-persisted ENGLISH free text; showing
+ * it verbatim is the exact bug `lib/pay.ts` exists to fix, so a Spanish-locale
+ * worker gets a localized string built from `pay_min`/`pay_max`/
+ * `pay_interval` and the legacy column is only the fallback.
  */
 export type ApplicationHire = {
   hired_at: string;
@@ -284,8 +291,17 @@ export type ApplicationHire = {
   /** `YYYY-MM-DD`. Null is a real answer: the employer has not set one. */
   start_date: string | null;
   location: string | null;
-  pay: string | null;
   shift_schedule: string | null;
+  /**
+   * The legacy `jobs.pay` text, or null. May carry the API's
+   * `PAY_UNSPECIFIED` sentinel ("Pay not specified") rather than a figure --
+   * `formatPay` recognises it and answers null, so no call site should test
+   * this field itself.
+   */
+  pay: string | null;
+  pay_min: number | null;
+  pay_max: number | null;
+  pay_interval: string | null;
 };
 
 export type Application = {
