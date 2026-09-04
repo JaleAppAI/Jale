@@ -379,6 +379,76 @@ describeIfDocker('FrontendStack (Lambda + CloudFront)', () => {
       ValidationMethod: 'DNS',
     });
   });
+
+  // ── SES send health, us-east-1 (sprint 24 A5) ─────────────────────────────
+  //
+  // These alarms have nothing to do with the frontend. They live here because
+  // this is the only stack Jale deploys to us-east-1, `AWS/SES` metrics are
+  // REGIONAL, and Cognito's verification and forgot-password emails send from
+  // SES in us-east-1 (`sesEmailRegion`). NotificationsStack's identically
+  // shaped pair covers us-east-2 and is blind to every one of those messages —
+  // so without these, a us-east-1 reputation problem takes out every signup
+  // confirmation and password reset while every dashboard stays green. That is
+  // the 2026-08-28 silent-bounce failure aimed at the login door.
+
+  test('alarms on any SES bounce in us-east-1', () => {
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'SesBounceCountUsEast1',
+      Namespace: 'AWS/SES',
+      MetricName: 'Bounce',
+      Statistic: 'Sum',
+      Period: 3600,
+      Threshold: 1,
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      TreatMissingData: 'notBreaching',
+    });
+  });
+
+  test('alarms on the us-east-1 SES bounce RATE at or above 5%', () => {
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'SesReputationBounceRateUsEast1',
+      Namespace: 'AWS/SES',
+      MetricName: 'Reputation.BounceRate',
+      Statistic: 'Maximum',
+      Period: 3600,
+      Threshold: 0.05,
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      TreatMissingData: 'notBreaching',
+    });
+  });
+
+  test('the us-east-1 SES alarms are account-wide, with no dimensions', () => {
+    // Any dimension on an account-level `AWS/SES` metric yields a metric that
+    // never reports a datapoint — an alarm that cannot fire.
+    const alarms = template.findResources('AWS::CloudWatch::Alarm');
+    const sesAlarms = Object.values(alarms).filter(
+      (a: any) => a.Properties.Namespace === 'AWS/SES',
+    );
+    expect(sesAlarms).toHaveLength(2);
+    for (const alarm of sesAlarms as any[]) {
+      expect(alarm.Properties.Dimensions).toBeUndefined();
+    }
+  });
+
+  test('the us-east-1 SES alarms carry no action, and the names say which region they watch', () => {
+    // Deliberate, and the reason the names are suffixed: this stack takes no
+    // alarm-topic prop and the shared ops topic is in us-east-2, where a
+    // us-east-1 alarm cannot publish. Console-visible beats absent — the same
+    // trade auth-stack.ts's CustomMessage alarms make. A us-east-1 topic (or a
+    // cross-region forwarder) is the follow-up.
+    for (const alarmName of ['SesBounceCountUsEast1', 'SesReputationBounceRateUsEast1']) {
+      const alarms = template.findResources('AWS::CloudWatch::Alarm', {
+        Properties: { AlarmName: alarmName },
+      });
+      expect(Object.keys(alarms)).toHaveLength(1);
+      const alarm = Object.values(alarms)[0] as any;
+      expect(alarm.Properties.AlarmActions).toBeUndefined();
+      expect(alarm.Properties.OKActions).toBeUndefined();
+      // The suffix is what keeps these distinguishable from
+      // NotificationsStack's us-east-2 pair in a single alarm list.
+      expect(alarm.Properties.AlarmName).toMatch(/UsEast1$/);
+    }
+  });
 });
 
 describeIfDocker('FrontendStack without survey origin', () => {
