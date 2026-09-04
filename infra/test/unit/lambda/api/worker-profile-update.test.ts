@@ -423,4 +423,201 @@ describe('worker-profile-update', () => {
       expect(mockRequestTradeAliasGeneration).not.toHaveBeenCalled();
     });
   });
+
+  // ── L6: the stored custom trade is canonicalised ───────────────────
+  describe('custom trade canonicalisation', () => {
+    /** Answers the one `trade_aliases` SELECT the way migration 060's seeded
+     * rows would, and records the query order so the pre-BEGIN placement of
+     * that lookup is observable. */
+    const okQuery = (aliasRow?: Record<string, unknown>) => {
+      const order: string[] = [];
+      mockQuery.mockImplementation((q: string) => {
+        if (q.includes('FROM trade_aliases')) {
+          order.push('alias');
+          return Promise.resolve({ rows: aliasRow ? [aliasRow] : [] });
+        }
+        if (q.includes('BEGIN')) order.push('BEGIN');
+        if (q.includes('UPDATE users SET')) order.push('users');
+        if (q.includes('INSERT INTO worker_profiles')) {
+          return Promise.resolve({ rows: [{ user_id: 'u', skills: [], availability: null, years_experience: null, experience_months: null, location: null, bio: null, certifications: [] }] });
+        }
+        return Promise.resolve({});
+      });
+      return order;
+    };
+
+    const WELDER = { trade_key: 'welder', canonical_en: 'Welder', canonical_es: 'Soldador', trade_category: null };
+    const ELECTRICIAN = { trade_key: 'electrician', canonical_en: 'Electrician', canonical_es: 'Electricista', trade_category: 'electrician' };
+
+    const usersUpdateCall = () =>
+      mockQuery.mock.calls.find(([q]) => typeof q === 'string' && q.includes('UPDATE users SET'));
+
+    it('stores the canonical Spanish name for a resolved custom trade', async () => {
+      okQuery(WELDER);
+
+      const res = await handler(mkEv({ main_trade: 'other', main_trade_other: '  soldador ' }));
+
+      expect(res.statusCode).toBe(200);
+      const params = usersUpdateCall()![1];
+      expect(params[2]).toBe('other');
+      expect(params[3]).toBe('Soldador');
+      // Already in the cache — nothing to learn.
+      expect(mockRequestTradeAliasGeneration).not.toHaveBeenCalled();
+    });
+
+    it('promotes a resolved standard trade onto the main_trade enum and clears the free text', async () => {
+      okQuery(ELECTRICIAN);
+
+      const res = await handler(mkEv({ main_trade: 'other', main_trade_other: 'electricista' }));
+
+      expect(res.statusCode).toBe(200);
+      const params = usersUpdateCall()![1];
+      expect(params[2]).toBe('electrician');
+      // $3 IS NOT NULL and != 'other', so the UPDATE's CASE clears
+      // main_trade_other on its own; the param carries no stale spelling.
+      expect(params[3]).toBeNull();
+      expect(mockRequestTradeAliasGeneration).not.toHaveBeenCalled();
+    });
+
+    it('tidies an unresolved trade and asks the generator to learn it', async () => {
+      okQuery();
+
+      const res = await handler(mkEv({ main_trade: 'other', main_trade_other: '  soldador   de arco ' }));
+
+      expect(res.statusCode).toBe(200);
+      const params = usersUpdateCall()![1];
+      expect(params[2]).toBe('other');
+      expect(params[3]).toBe('Soldador de arco');
+      expect(mockRequestTradeAliasGeneration).toHaveBeenCalledWith('Soldador de arco');
+    });
+
+    it('resolves the alias BEFORE opening the transaction', async () => {
+      // A failed SELECT inside an open transaction aborts it, so every later
+      // statement in this handler would fail and a trade_aliases outage would
+      // turn a profile save into a 500.
+      const order = okQuery(WELDER);
+
+      await handler(mkEv({ main_trade: 'other', main_trade_other: 'soldador' }));
+
+      expect(order.indexOf('alias')).toBeGreaterThanOrEqual(0);
+      expect(order.indexOf('alias')).toBeLessThan(order.indexOf('BEGIN'));
+    });
+
+    it('still saves (200) with the raw text when the alias lookup fails', async () => {
+      mockQuery.mockImplementation((q: string) => {
+        if (q.includes('FROM trade_aliases')) return Promise.reject(new Error('relation missing'));
+        if (q.includes('INSERT INTO worker_profiles')) {
+          return Promise.resolve({ rows: [{ user_id: 'u', skills: [], availability: null, years_experience: null, experience_months: null, location: null, bio: null, certifications: [] }] });
+        }
+        return Promise.resolve({});
+      });
+
+      const res = await handler(mkEv({ main_trade: 'other', main_trade_other: 'soldador' }));
+
+      expect(res.statusCode).toBe(200);
+      expect(usersUpdateCall()![1][3]).toBe('Soldador');
+      // Unresolved, so the trade is still queued for the generator to learn.
+      expect(mockRequestTradeAliasGeneration).toHaveBeenCalledWith('Soldador');
+    });
+
+    it('never looks up an alias for a standard trade', async () => {
+      const order = okQuery(WELDER);
+
+      const res = await handler(mkEv({ main_trade: 'painting' }));
+
+      expect(res.statusCode).toBe(200);
+      expect(order).not.toContain('alias');
+    });
+
+    // ── which language the canonical name is stored in ──────────────
+    describe('language selection', () => {
+      const mkEvLang = (body: any, acceptLanguage?: string) => ({
+        requestContext: { authorizer: { claims: { sub: 'w' } } },
+        body: JSON.stringify(body),
+        httpMethod: 'PATCH',
+        headers: acceptLanguage ? { 'Accept-Language': acceptLanguage } : {},
+      } as unknown as APIGatewayProxyEvent);
+
+      it('body lang=en stores the English canonical name', async () => {
+        okQuery(WELDER);
+
+        const res = await handler(mkEvLang({ main_trade: 'other', main_trade_other: 'soldador', lang: 'en' }));
+
+        expect(res.statusCode).toBe(200);
+        expect(usersUpdateCall()![1][3]).toBe('Welder');
+      });
+
+      it('body lang=es stores the Spanish canonical name', async () => {
+        okQuery(WELDER);
+
+        await handler(mkEvLang({ main_trade: 'other', main_trade_other: 'welder', lang: 'es' }));
+
+        expect(usersUpdateCall()![1][3]).toBe('Soldador');
+      });
+
+      it('body lang wins over the Accept-Language header', async () => {
+        okQuery(WELDER);
+
+        await handler(mkEvLang({ main_trade: 'other', main_trade_other: 'soldador', lang: 'en' }, 'es-MX,es;q=0.9'));
+
+        expect(usersUpdateCall()![1][3]).toBe('Welder');
+      });
+
+      it('falls back to the Accept-Language primary tag', async () => {
+        okQuery(WELDER);
+
+        await handler(mkEvLang({ main_trade: 'other', main_trade_other: 'soldador' }, 'en-US,en;q=0.9'));
+
+        expect(usersUpdateCall()![1][3]).toBe('Welder');
+      });
+
+      it('reads a lowercase accept-language header too', async () => {
+        okQuery(WELDER);
+
+        const res = await handler({
+          requestContext: { authorizer: { claims: { sub: 'w' } } },
+          body: JSON.stringify({ main_trade: 'other', main_trade_other: 'soldador' }),
+          httpMethod: 'PATCH',
+          headers: { 'accept-language': 'en-GB' },
+        } as unknown as APIGatewayProxyEvent);
+
+        expect(res.statusCode).toBe(200);
+        expect(usersUpdateCall()![1][3]).toBe('Welder');
+      });
+
+      it('defaults to Spanish with no body lang and an unusable header', async () => {
+        okQuery(WELDER);
+
+        await handler(mkEvLang({ main_trade: 'other', main_trade_other: 'welder' }, 'fr-FR,de;q=0.8'));
+
+        expect(usersUpdateCall()![1][3]).toBe('Soldador');
+      });
+
+      it('defaults to Spanish with no header at all', async () => {
+        okQuery(WELDER);
+
+        await handler(mkEv({ main_trade: 'other', main_trade_other: 'welder' }));
+
+        expect(usersUpdateCall()![1][3]).toBe('Soldador');
+      });
+
+      it('rejects an invalid lang before touching the database', async () => {
+        for (const lang of ['fr', 'EN', '', 'en-US', 1, true, {}]) {
+          const res = await handler(mkEvLang({ main_trade: 'other', main_trade_other: 'soldador', lang }));
+          expect(res.statusCode).toBe(400);
+          expect(JSON.parse(res.body).error).toBe('invalid_lang');
+        }
+        expect(mockGetDbPool).not.toHaveBeenCalled();
+      });
+
+      it('accepts a null/absent lang as "not supplied"', async () => {
+        okQuery(WELDER);
+
+        const res = await handler(mkEvLang({ main_trade: 'other', main_trade_other: 'welder', lang: null }));
+
+        expect(res.statusCode).toBe(200);
+        expect(usersUpdateCall()![1][3]).toBe('Soldador');
+      });
+    });
+  });
 });

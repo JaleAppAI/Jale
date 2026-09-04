@@ -979,3 +979,181 @@ test('the extraction prompt lists the worker-vocab options, in vocabulary order'
   expect(userPrompt).toContain('"years_experience": one of ["0-1","2-4","5-9","10+"] or null');
   expect(userPrompt).toContain('"availability": one of ["full_time","part_time","weekends","flexible"] or null');
 });
+
+// ── L6: a voice-extracted custom trade is canonicalised ─────────────
+describe('custom trade canonicalisation (v1 voice path)', () => {
+  const WELDER = { trade_key: 'welder', canonical_en: 'Welder', canonical_es: 'Soldador', trade_category: null };
+  const ELECTRICIAN = { trade_key: 'electrician', canonical_en: 'Electrician', canonical_es: 'Electricista', trade_category: 'electrician' };
+
+  /** Answers the one `trade_aliases` SELECT and records query order so the
+   * pre-BEGIN placement of that lookup is observable. */
+  function seedQueries(aliasRow?: Record<string, unknown>) {
+    const order: string[] = [];
+    mockQuery.mockImplementation((sql: string) => {
+      if (/FROM trade_aliases/.test(sql)) {
+        order.push('alias');
+        return Promise.resolve({ rows: aliasRow ? [aliasRow] : [], rowCount: aliasRow ? 1 : 0 });
+      }
+      if (sql === 'BEGIN') order.push('BEGIN');
+      if (/UPDATE users/.test(sql)) order.push('users');
+      return Promise.resolve({ rows: [{ next_seq: 1, cognito_sub: 'worker-sub' }], rowCount: 1 });
+    });
+    return order;
+  }
+
+  function run(lang: 'en' | 'es') {
+    return handler({
+      userId: 'user-1',
+      conversationId: 'conv-1',
+      inboundMessageSid: 'MMvoice-trade',
+      whatsappNumber: '+15125551234',
+      language: lang,
+      mediaBucketName: 'jale-worker-media-test',
+      transcriptOutputKey: 'user-1/transcripts/job-trade.json',
+      status: 'transcription_complete',
+    } as any, {} as any, () => {});
+  }
+
+  function seedExtraction(fields: object, scores: object) {
+    mockS3Send.mockResolvedValue(makeTranscriptS3Response('soy soldador'));
+    mockBedrockSend.mockResolvedValue(makeBedrockResponse(fields, scores, 'Summary.', 'Resumen.'));
+  }
+
+  const usersUpdate = () =>
+    mockQuery.mock.calls.find(([sql]: [string]) => /UPDATE users/.test(sql));
+
+  beforeEach(() => {
+    process.env.ALIAS_GENERATOR_ARN = 'arn:aws:lambda:us-east-2:123:function:alias-generator';
+    mockLambdaSend.mockResolvedValue({});
+  });
+  afterAll(() => { delete process.env.ALIAS_GENERATOR_ARN; });
+
+  it('writes the canonical Spanish name for a resolved custom trade', async () => {
+    seedQueries(WELDER);
+    seedExtraction({ main_trade_other: 'soldador' }, { main_trade_other: 0.9 });
+
+    await run('es');
+
+    const [sql, params] = usersUpdate()!;
+    expect(sql).toContain('main_trade');
+    expect(sql).toContain('main_trade_other');
+    expect(params).toContain('other');
+    expect(params).toContain('Soldador');
+    expect(mockLambdaSend).not.toHaveBeenCalled();
+  });
+
+  it('writes the canonical English name when the worker speaks English', async () => {
+    seedQueries(WELDER);
+    seedExtraction({ main_trade_other: 'soldador' }, { main_trade_other: 0.9 });
+
+    await run('en');
+
+    expect(usersUpdate()![1]).toContain('Welder');
+  });
+
+  it('promotes a standard trade and CLEARS the stale free text', async () => {
+    seedQueries(ELECTRICIAN);
+    seedExtraction({ main_trade_other: 'electricista' }, { main_trade_other: 0.9 });
+
+    await run('es');
+
+    const [sql, params] = usersUpdate()!;
+    // Both columns are forced, so main_trade_other cannot keep a stale
+    // spelling next to the promoted enum key (maybeAdd would skip a null).
+    expect(sql).toMatch(/main_trade = \$\d+/);
+    expect(sql).toMatch(/main_trade_other = \$\d+/);
+    expect(params).toContain('electrician');
+    expect(params).toContain(null);
+    expect(params).not.toContain('electricista');
+  });
+
+  it('tidies an unresolved trade and asks the generator to learn it', async () => {
+    seedQueries();
+    seedExtraction({ main_trade_other: '  soldador   de arco ' }, { main_trade_other: 0.9 });
+
+    await run('es');
+
+    expect(usersUpdate()![1]).toContain('Soldador de arco');
+    expect(mockLambdaSend).toHaveBeenCalledTimes(1);
+    const payload = JSON.parse(Buffer.from(mockLambdaSend.mock.calls[0][0].input.Payload).toString());
+    expect(payload).toEqual({ tradeKey: 'soldador de arco', tradeRaw: 'Soldador de arco' });
+  });
+
+  it('a high-confidence STANDARD main_trade wins over free text — never discarded', async () => {
+    // The extractor answers `main_trade` with an enum key OR falls back to
+    // free text. When it gave a confident enum answer, canonicalising the
+    // free text over it would throw a valid standard trade away.
+    const order = seedQueries(WELDER);
+    seedExtraction(
+      { main_trade: 'plumber', main_trade_other: 'soldador' },
+      { main_trade: 0.95, main_trade_other: 0.9 },
+    );
+
+    await run('es');
+
+    expect(order).not.toContain('alias');
+    const params = usersUpdate()![1];
+    expect(params).toContain('plumber');
+    expect(params).not.toContain('Soldador');
+    expect(mockLambdaSend).not.toHaveBeenCalled();
+  });
+
+  it('canonicalises the free text when main_trade is itself "other"', async () => {
+    seedQueries(WELDER);
+    seedExtraction(
+      { main_trade: 'other', main_trade_other: 'soldador' },
+      { main_trade: 0.95, main_trade_other: 0.9 },
+    );
+
+    await run('es');
+
+    expect(usersUpdate()![1]).toContain('Soldador');
+  });
+
+  it('canonicalises the free text when a standard main_trade is low-confidence', async () => {
+    seedQueries(WELDER);
+    seedExtraction(
+      { main_trade: 'plumber', main_trade_other: 'soldador' },
+      { main_trade: 0.4, main_trade_other: 0.9 },
+    );
+
+    await run('es');
+
+    const params = usersUpdate()![1];
+    expect(params).toContain('Soldador');
+    expect(params).not.toContain('plumber');
+  });
+
+  it('ignores a low-confidence trade: no lookup, no trade write', async () => {
+    const order = seedQueries(WELDER);
+    seedExtraction({ main_trade_other: 'soldador' }, { main_trade_other: 0.3 });
+
+    await run('es');
+
+    expect(order).not.toContain('alias');
+    expect(usersUpdate()).toBeUndefined();
+    expect(mockLambdaSend).not.toHaveBeenCalled();
+  });
+
+  it('resolves the alias BEFORE opening the transaction', async () => {
+    const order = seedQueries(WELDER);
+    seedExtraction({ main_trade_other: 'soldador' }, { main_trade_other: 0.9 });
+
+    await run('es');
+
+    expect(order.indexOf('alias')).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf('alias')).toBeLessThan(order.indexOf('BEGIN'));
+  });
+
+  it('still writes the raw text when the alias lookup fails', async () => {
+    mockQuery.mockImplementation((sql: string) => {
+      if (/FROM trade_aliases/.test(sql)) return Promise.reject(new Error('relation missing'));
+      return Promise.resolve({ rows: [{ next_seq: 1, cognito_sub: 'worker-sub' }], rowCount: 1 });
+    });
+    seedExtraction({ main_trade_other: 'soldador' }, { main_trade_other: 0.9 });
+
+    await run('es');
+
+    expect(usersUpdate()![1]).toContain('Soldador');
+  });
+});

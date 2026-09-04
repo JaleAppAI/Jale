@@ -37,6 +37,12 @@ import {
 import { upsertWorkerProfileFromUsers } from './profile-flow';
 import { slugCityKey } from '../../lib/city-fields';
 import { UNAMBIGUOUS_CITY_TO_STATE } from './city-state-data';
+// L6 (saveCustomTrade only): the canonicalising trade write plus the
+// fire-and-forget alias-cache growth the repository deliberately leaves to its
+// caller. `trade-alias-request` was already in this module's import graph via
+// `../handlers/custom-trust` above.
+import { saveCanonicalCustomTrade } from './onboarding-repository';
+import { requestTradeAliasGeneration } from '../../lib/trade-alias-request';
 
 // ── Local constants ────────────────────────────────────────────────────
 //
@@ -587,10 +593,27 @@ export function createProfilePersistenceAdapter(
     },
 
     async saveCustomTrade(client, workerId, rawProfession) {
-      await client.query(
-        `UPDATE users SET main_trade = 'other', main_trade_other = $2 WHERE id = $1 AND user_type = 'worker'`,
-        [workerId, rawProfession],
-      );
+      // Sprint 24 L6: the typed profession is canonicalised through the
+      // bilingual `trade_aliases` cache before it is stored, so "soldador",
+      // "Soldadura" and "welder" all become one trade (decision D4) instead of
+      // three. `saveCanonicalCustomTrade` owns the SQL and reads the run's
+      // preferred language itself — this adapter has no gate to pass through.
+      // It writes nothing for blank input, and never a pair `chk_trade_other`
+      // would reject.
+      const written = await saveCanonicalCustomTrade(client, workerId, rawProfession);
+
+      // The repository is DB-only by contract, so growing the cache is this
+      // caller's job: ask the generator to learn any trade the cache did not
+      // know, so the NEXT write canonicalises. `requestTradeAliasGeneration`
+      // is fire-and-forget and never throws by contract; the try/catch is
+      // defence in depth so learning a trade can never fail the worker's turn.
+      if (written && !written.resolved && written.main_trade_other) {
+        try {
+          await requestTradeAliasGeneration(written.main_trade_other);
+        } catch {
+          // Swallowed intentionally -- see comment above.
+        }
+      }
     },
 
     async syncProfileForTrustHandoff(client, workerId) {
