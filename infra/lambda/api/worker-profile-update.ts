@@ -5,6 +5,7 @@ import { setWorkerCoordinates, type WorkerLocationSource } from '../lib/location
 import { parsePreferredCities, type CityFields } from '../lib/city-fields';
 import { checkCompliance } from '../legal/check-compliance';
 import { requestTradeAliasGeneration } from '../lib/trade-alias-request';
+import { canonicalizeWorkerTrade, type CanonicalTrade } from '../lib/trade-canonical';
 import { TRADE_KEYS, EXPERIENCE_KEYS, AVAILABILITY_KEYS } from '../lib/worker-vocab';
 
 const CORS_HEADERS = corsHeaders();
@@ -161,6 +162,29 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     const pool = await getDbPool();
     client = await pool.connect();
+
+    // L6: canonicalise a custom trade BEFORE the transaction opens.
+    //
+    // Placement is deliberate and load-bearing. In Postgres an errored
+    // statement aborts the whole transaction, so a `trade_aliases` read that
+    // failed after BEGIN would make every later statement in this handler
+    // fail too — turning a profile save into a 500 over a cache lookup.
+    // Resolving here keeps that impossible; `canonicalizeWorkerTrade` also
+    // fails open, degrading to the worker's own text.
+    //
+    // Language: the web profile editor has no per-worker language (`users`
+    // carries no language column — it lives on `whatsapp_conversations` and
+    // the onboarding runs), so this pins 'es', matching that column's
+    // DEFAULT. Pinning rather than sniffing a header keeps the stored text
+    // stable: the same worker saving from a different browser must not flip
+    // 'Soldador' to 'Welder'.
+    const rawTradeOther = typeof main_trade_other === 'string' && main_trade_other.trim().length > 0
+      ? main_trade_other.trim()
+      : null;
+    const canonicalTrade: CanonicalTrade | null = main_trade === 'other' && rawTradeOther
+      ? await canonicalizeWorkerTrade(client, { raw: rawTradeOther, lang: 'es' })
+      : null;
+
     await client.query('BEGIN');
     await setRlsContext(client, cognitoSub);
 
@@ -177,9 +201,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const normalizedFullName = typeof full_name === 'string' && full_name.trim().length > 0 ? full_name.trim() : null;
     const normalizedCity = typeof city === 'string' && city.trim().length > 0 ? city.trim() : null;
     const normalizedLocation = typeof location === 'string' && location.trim().length > 0 ? location.trim() : normalizedCity;
-    const normalizedTradeOther = typeof main_trade_other === 'string' && main_trade_other.trim().length > 0
-      ? main_trade_other.trim()
-      : null;
+    // For a custom trade these two come from `canonicalTrade` as a PAIR, so
+    // `chk_trade_other` can never see main_trade='other' with a null other:
+    // the canonical 'other' branch always carries text, and the promoted
+    // standard-key branch is exactly the case the UPDATE's CASE clears.
+    const effectiveMainTrade = canonicalTrade?.main_trade ?? main_trade ?? null;
+    const normalizedTradeOther = canonicalTrade ? canonicalTrade.main_trade_other : rawTradeOther;
     const userExperience = typeof years_experience === 'string' ? years_experience : null;
     const profileExperience = experienceSlugToYears(years_experience);
     const profileExperienceMonths = typeof experience_months === 'number' ? experience_months : experienceToMonths(years_experience);
@@ -202,7 +229,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       [
         normalizedFullName,
         normalizedCity,
-        main_trade ?? null,
+        effectiveMainTrade,
         normalizedTradeOther,
         userExperience,
         has_transportation ?? null,
@@ -308,7 +335,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // Fire-and-forget: grows the bilingual trade-alias cache for the matcher.
     // requestTradeAliasGeneration never throws by contract; the try/catch here
     // is defense in depth so this can never affect the response either way.
-    if (main_trade === 'other' && normalizedTradeOther) {
+    //
+    // L6: only when the trade did NOT resolve — a trade already in the cache
+    // has nothing to learn. What goes to the generator is the text this
+    // request just stored (the worker's own wording, tidied), never a
+    // canonical name: `requestTradeAliasGeneration` keys it through
+    // `normalizeProfession`, so the worker's spelling becomes one of the
+    // learned aliases and the NEXT write canonicalises.
+    if (canonicalTrade && !canonicalTrade.resolved && normalizedTradeOther) {
       try {
         await requestTradeAliasGeneration(normalizedTradeOther);
       } catch {
