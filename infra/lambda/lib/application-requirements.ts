@@ -66,12 +66,13 @@
  */
 import type { PoolClient } from 'pg';
 import { setInternalUserRlsContext } from './db';
-import { DOC_TYPES } from './job-fields';
+import { DOC_TYPES, isReusableField } from './job-fields';
 import { MAX_ANSWERS_JSON_LENGTH, validateApplicationAnswers } from './application-answers';
 import {
   copyRequiredDocumentSnapshots,
   resolveCertificationDocIds,
   CERTIFICATION_DOCUMENT_LIMIT_CONSTRAINTS,
+  type CopiedDocument,
 } from './applications';
 import {
   findMissingCertifications,
@@ -81,6 +82,7 @@ import {
   type CertificationRequirement,
 } from './certification-claims';
 import {
+  filterReusableDefaults,
   loadWorkerApplicationDefaults,
   upsertWorkerApplicationDefaults,
 } from './worker-application-defaults';
@@ -162,6 +164,26 @@ export interface RequirementSnapshot {
   updatedAt: unknown;
   /** Derived from `details_requested_at`, NEVER from the literal status. */
   stage: RequirementStage;
+  /**
+   * ADDITIVE (sprint 24 L3, decision D3): the documents THIS load's
+   * `syncDocumentSnapshots` copied onto the job -- always `[]` on an
+   * unsynced load and on the (normal) synced load that copied nothing.
+   *
+   * It exists so a surface can TELL the worker which documents were attached
+   * from their vault, instead of a required document silently vanishing off
+   * the ask list (incident mechanism 3). Read it in the SAME turn as the
+   * load: it reports what this call did, not what the job holds -- the
+   * second synced load of a turn legitimately reports nothing, because the
+   * first one already copied everything.
+   *
+   * OPTIONAL, so the OTHER snapshot builder -- `snapshotFromRow`
+   * (application-stage-view.ts), which re-shapes an already-selected
+   * employer-side row and performs no sync at all -- keeps compiling
+   * untouched. `toSnapshot` below always sets `[]`, so every snapshot that
+   * came through THIS module's loader has a real array; read it as
+   * `?? []` when the value may have come from either builder.
+   */
+  copiedDocuments?: CopiedDocument[];
 }
 
 export interface Remaining {
@@ -256,6 +278,8 @@ function toSnapshot(row: RequirementRow): RequirementSnapshot {
     // moving a `details_requested` applicant on to `contacted`/`talking`
     // keeps stage 2 alive.
     stage: row.details_requested_at ? 'details' : 'apply',
+    // Filled in by the sync path only (see the field's own jsdoc).
+    copiedDocuments: [],
   };
 }
 
@@ -290,13 +314,15 @@ export async function loadRequirementSnapshot(
   if (docTypes.length === 0) return snapshot;
 
   await setInternalUserRlsContext(client, snapshot.workerId);
-  await copyRequiredDocumentSnapshots(client, snapshot.workerId, snapshot.jobId, docTypes);
+  const copiedDocuments = await copyRequiredDocumentSnapshots(
+    client, snapshot.workerId, snapshot.jobId, docTypes,
+  );
 
   const docsRes = await client.query<{ doc_type: string }>(
     `SELECT DISTINCT doc_type FROM worker_documents WHERE worker_id = $1 AND job_id = $2`,
     [snapshot.workerId, snapshot.jobId],
   );
-  return { ...snapshot, haveDocs: docsRes.rows.map((r) => r.doc_type) };
+  return { ...snapshot, haveDocs: docsRes.rows.map((r) => r.doc_type), copiedDocuments };
 }
 
 // ── Pure derivation ──────────────────────────────────────────────────────
@@ -737,7 +763,16 @@ export async function mergeFieldAnswers(
   );
   if (!guarded.ok) return guarded;
 
-  await upsertWorkerApplicationDefaults(client, workerId, toMerge);
+  // THE REUSE FILTER (sprint 24 L3, decision D2). Every answered key lands on
+  // the APPLICATION above -- the employer asked for them -- but only the
+  // 'stable' ones may be remembered as a cross-application default. Filtered
+  // HERE as well as inside `upsertWorkerApplicationDefaults` on purpose: this
+  // is the call site the incident went through, and an all-per_application
+  // batch must issue no defaults statement at all.
+  const reusable = filterReusableDefaults(toMerge);
+  if (Object.keys(reusable).length > 0) {
+    await upsertWorkerApplicationDefaults(client, workerId, reusable);
+  }
 
   const detailsCompleted = await markDetailsCompleteIfDone(client, applicationId, {
     ...snapshot,
@@ -982,6 +1017,17 @@ export async function seedAnswersFromDefaults(
   for (const key of [...requiredFields, ...optionalFields]) {
     if (!Object.prototype.hasOwnProperty.call(defaults, key)) continue;
     if (Object.prototype.hasOwnProperty.call(currentAnswers, key)) continue;
+    // THE REUSE GATE (sprint 24 L3, decision D2). Checked AFTER the
+    // already-answered check so the log line means what it says -- "a
+    // default for this key existed and we would have used it, but this key
+    // is not reusable" -- and never fires for a key that was going to be
+    // skipped anyway. A legacy defaults row written before the policy
+    // existed still holds these keys, which is why the refusal is logged
+    // rather than silent: it is the signal that such a row is being read.
+    if (!isReusableField(key)) {
+      logStep(key, 'seed_skipped', 'per_application');
+      continue;
+    }
     const validated = validateApplicationAnswers([key], [], { [key]: defaults[key] });
     if (!validated.ok) {
       logStep(key, 'seed_skipped', 'invalid_default');
@@ -996,6 +1042,47 @@ export async function seedAnswersFromDefaults(
   await persistMergedAnswers(client, applicationId, JSON.stringify(toMerge));
   for (const key of seeded) logStep(key, 'seeded');
   return seeded;
+}
+
+/**
+ * Removes ONE answer key from ONE application (sprint 24 L3, decision D3's
+ * correction path -- the WhatsApp CAMBIAR / web "fix this" flow).
+ *
+ * The inverse of a single-key merge, and deliberately NOT a merge of `null`:
+ * `computeRemaining` treats presence by `hasOwnProperty`, so a stored `null`
+ * still reads as ANSWERED and the question would never be re-asked. The
+ * jsonb `-` operator actually deletes the key, which puts the field back in
+ * `remaining.fields` and therefore back in the next step.
+ *
+ * NEVER touches `worker_application_defaults`: correcting what one employer
+ * sees is not an edit to the worker's saved profile answers. (Re-answering
+ * the question writes the new value back through `mergeFieldAnswers`, which
+ * is where a stable key legitimately updates the default.)
+ *
+ * `details_completed_at IS NULL` is a fail-safe, not a nicety: punching a
+ * hole in an application the employer already sees as complete would leave a
+ * row that 091's BEFORE-UPDATE hire gate rejects at hire time. Returns
+ * whether a row was actually changed, so a caller that raced a completion
+ * can re-derive instead of claiming a correction that did not happen.
+ *
+ * RLS: `job_applications` is FORCE RLS and the only worker-side UPDATE
+ * policy is `jobapp_whatsapp_update`, keyed on
+ * `worker_id = app.current_internal_user_id` -- so the CALLER must have set
+ * that GUC (module header, contract 2). Without it this is a silent
+ * zero-row UPDATE, which is exactly what the returned boolean surfaces.
+ */
+export async function clearFieldAnswer(
+  client: PoolClient,
+  { applicationId, key }: { applicationId: string; key: string },
+): Promise<boolean> {
+  const res = await client.query(
+    `UPDATE job_applications
+        SET application_answers = application_answers - $1::text, updated_at = now()
+      WHERE id = $2
+        AND details_completed_at IS NULL`,
+    [key, applicationId],
+  );
+  return (res.rowCount ?? 0) > 0;
 }
 
 /**
