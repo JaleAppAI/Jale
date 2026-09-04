@@ -324,7 +324,7 @@ maybeDescribe('L3: the cross-job answer-reuse boundary', () => {
     const first = await asWorker(() => copyRequiredDocumentSnapshots(
       wa as any, workerId, jobId, ['work_auth_doc'],
     ));
-    expect(first).toEqual([{ docType: 'work_auth_doc', source: 'vault' }]);
+    expect(first).toEqual(['work_auth_doc']);
 
     // Idempotent re-call -- the engine does this on EVERY worker-side read
     // and write. `ON CONFLICT DO NOTHING` suppresses the insert, so

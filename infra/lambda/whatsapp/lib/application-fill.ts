@@ -1282,7 +1282,7 @@ export async function armFill(
     .map(asFillFieldKey)
     .filter((key): key is FillFieldKey => key !== null);
   const copiedDocs = (seeded?.copiedDocuments ?? [])
-    .map((entry) => asCollectableDocType(entry.docType))
+    .map(asCollectableDocType)
     .filter((docType): docType is CollectableDocType => docType !== null);
 
   // (d) The reuse summary, and ONLY when there is something to summarize:

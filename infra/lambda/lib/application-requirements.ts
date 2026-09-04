@@ -72,7 +72,6 @@ import {
   copyRequiredDocumentSnapshots,
   resolveCertificationDocIds,
   CERTIFICATION_DOCUMENT_LIMIT_CONSTRAINTS,
-  type CopiedDocument,
 } from './applications';
 import {
   findMissingCertifications,
@@ -183,7 +182,7 @@ export interface RequirementSnapshot {
    * came through THIS module's loader has a real array; read it as
    * `?? []` when the value may have come from either builder.
    */
-  copiedDocuments?: CopiedDocument[];
+  copiedDocuments?: string[];
 }
 
 export interface Remaining {

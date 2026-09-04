@@ -44,45 +44,6 @@ export const CERTIFICATION_DOCUMENT_LIMIT_CONSTRAINTS = new Set([
   'certification_document_name_limit',
 ]);
 
-/** Where a snapshot copy's SOURCE row lived. See `sourceOf`. */
-export type CopiedDocumentSource = 'vault' | 'other_job';
-
-/**
- * One document requirement this call satisfied by COPYING an existing row
- * onto the job (sprint 24 L3). Reported so the surfaces can tell the worker
- * which documents were attached on their behalf (decision D3) instead of a
- * required document silently disappearing off the ask list -- mechanism 3 of
- * the 2026-09-04 incident.
- */
-export interface CopiedDocument {
-  docType: string;
-  source: CopiedDocumentSource;
-}
-
-/**
- * BINDING derivation, hand-synced with the two WHERE clauses below.
- *
- * Both copy statements select `WHERE ... AND (job_id IS NULL OR job_id =
- * $1::uuid)` -- the vault slot, or THIS job. A same-job source row can never
- * produce a copied row:
- *   - non-cert: `DISTINCT ON (doc_type)` prefers it (`ORDER BY ...
- *     (job_id = $1) DESC`), and the insert of that identical (worker, job,
- *     doc_type) triple is then dropped by `ON CONFLICT DO NOTHING` against
- *     075's `worker_documents_per_job_unique`;
- *   - certification_doc: the `NOT EXISTS` on `s3_key` excludes it outright.
- * So every row a `RETURNING doc_type` hands back came from the VAULT.
- *
- * 'other_job' exists in the union because that is the shape the callers must
- * be able to render -- if either WHERE clause ever widens to another job's
- * rows, this function must widen with it (that requires knowing the SOURCE
- * row's job_id, which `RETURNING` cannot see: RETURNING on an INSERT ...
- * SELECT may only reference the inserted row, so widening means a CTE that
- * carries the source job_id out alongside the inserted key).
- */
-function sourceOf(_docType: string): CopiedDocumentSource {
-  return 'vault';
-}
-
 // Snapshots the vault/job-scoped worker_documents rows for every doc type in
 // `docTypes` (required + optional docs the worker actually has -- a missing
 // doc is fine and simply doesn't get a row; as of sprint 23 EVERY apply is
@@ -126,22 +87,38 @@ function sourceOf(_docType: string): CopiedDocumentSource {
 //   function only ever copies existing rows verbatim, never invents or
 //   edits a label.
 //
-// RETURNS (sprint 24 L3) the doc types it ACTUALLY copied -- see
-// `CopiedDocument`/`sourceOf` above. An idempotent re-call (the steady
-// state, since the stage-2 engine runs this on every worker-side read and
-// write) reports an EMPTY list: `ON CONFLICT DO NOTHING` and the cert
-// `NOT EXISTS` insert nothing, so there is nothing to return.
+// RETURNS (sprint 24 L3) the doc types it ACTUALLY copied, so the surfaces
+// can tell the worker which documents were attached on their behalf
+// (decision D3) instead of a required document silently disappearing off the
+// ask list -- mechanism 3 of the 2026-09-04 incident. An idempotent re-call
+// (the steady state, since the stage-2 engine runs this on every worker-side
+// read and write) reports an EMPTY list: `ON CONFLICT DO NOTHING` and the
+// cert `NOT EXISTS` insert nothing, so there is nothing to return.
+//
+// Every doc type returned came from the worker's VAULT, which is what lets
+// the callers word it that way. Both statements select `WHERE ... AND
+// (job_id IS NULL OR job_id = $1::uuid)` -- the vault slot, or THIS job --
+// and a same-job source row can never produce a copied row: for non-cert
+// types `DISTINCT ON (doc_type)` prefers it (`ORDER BY ... (job_id = $1)
+// DESC`) and the insert of that identical (worker, job, doc_type) triple is
+// then dropped by `ON CONFLICT DO NOTHING` against 075's
+// `worker_documents_per_job_unique`; for certification_doc the `NOT EXISTS`
+// on `s3_key` excludes it outright. If either WHERE clause ever widens to
+// another job's rows, that wording stops being true and the callers need the
+// source back -- which `RETURNING` cannot see (it may only reference the
+// INSERTed row), so it would take a CTE carrying the source job_id out
+// alongside the inserted key.
 export async function copyRequiredDocumentSnapshots(
   client: PoolClient,
   workerId: string,
   jobId: string,
   docTypes: string[],
-): Promise<CopiedDocument[]> {
+): Promise<string[]> {
   if (docTypes.length === 0) return [];
 
   const nonCertTypes = docTypes.filter((docType) => docType !== 'certification_doc');
   const hasCert = docTypes.includes('certification_doc');
-  const copied: CopiedDocument[] = [];
+  const copied: string[] = [];
 
   if (nonCertTypes.length > 0) {
     const res = await client.query<{ doc_type: string }>(
@@ -158,9 +135,7 @@ export async function copyRequiredDocumentSnapshots(
        RETURNING doc_type`,
       [jobId, workerId, nonCertTypes],
     );
-    for (const docType of dedupeDocTypes(res.rows)) {
-      copied.push({ docType, source: sourceOf(docType) });
-    }
+    copied.push(...dedupeDocTypes(res.rows));
   }
 
   if (hasCert) {
@@ -183,9 +158,7 @@ export async function copyRequiredDocumentSnapshots(
        RETURNING doc_type`,
       [jobId, workerId],
     );
-    for (const docType of dedupeDocTypes(res.rows)) {
-      copied.push({ docType, source: sourceOf(docType) });
-    }
+    copied.push(...dedupeDocTypes(res.rows));
   }
 
   return copied;

@@ -408,17 +408,14 @@ describe('resolveCertificationDocIds', () => {
 // that the worker be TOLD -- which needs the list of what was actually
 // copied.
 describe('copyRequiredDocumentSnapshots -- copied-document reporting', () => {
-  it('returns one entry per newly copied doc_type, sourced from the vault', async () => {
+  it('returns one doc_type per newly copied document', async () => {
     const { client, query } = makeRoutedClient([
       ['SELECT DISTINCT ON (doc_type)', { rows: [{ doc_type: 'resume' }, { doc_type: 'work_auth_doc' }] }],
     ]);
 
     const copied = await copyRequiredDocumentSnapshots(client, 'worker-1', 'job-1', ['resume', 'work_auth_doc']);
 
-    expect(copied).toEqual([
-      { docType: 'resume', source: 'vault' },
-      { docType: 'work_auth_doc', source: 'vault' },
-    ]);
+    expect(copied).toEqual(['resume', 'work_auth_doc']);
     // Still ONE statement for the non-cert branch -- the report rides on a
     // RETURNING, never a second read.
     expect(query).toHaveBeenCalledTimes(1);
@@ -435,10 +432,7 @@ describe('copyRequiredDocumentSnapshots -- copied-document reporting', () => {
 
     // Two cert FILES copied collapse to ONE reported doc_type: the report is
     // "which requirement got satisfied from the vault", not a file count.
-    expect(copied).toEqual([
-      { docType: 'resume', source: 'vault' },
-      { docType: 'certification_doc', source: 'vault' },
-    ]);
+    expect(copied).toEqual(['resume', 'certification_doc']);
   });
 
   it('returns an empty list when the copy was a no-op (nothing in the vault, or already copied)', async () => {

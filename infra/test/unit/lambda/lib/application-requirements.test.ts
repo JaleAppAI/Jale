@@ -189,10 +189,7 @@ describe('loadRequirementSnapshot', () => {
 
     const snap = await loadRequirementSnapshot(makeClient(query), APP_ID, { syncDocumentSnapshots: true });
 
-    expect(snap!.copiedDocuments).toEqual([
-      { docType: 'resume', source: 'vault' },
-      { docType: 'work_auth_doc', source: 'vault' },
-    ]);
+    expect(snap!.copiedDocuments).toEqual(['resume', 'work_auth_doc']);
   });
 
   it('reports an empty copied list on an UNSYNCED load and on a sync that copied nothing', async () => {
