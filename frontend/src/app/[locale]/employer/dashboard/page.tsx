@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
@@ -27,11 +27,13 @@ import { PlanUsageMeter } from '@/components/employer/PlanUsageMeter';
 import { PostJobModal } from '@/components/employer/PostJobModal';
 import { SubscriptionBanner } from '@/components/employer/SubscriptionBanner';
 import { DeleteJobDialog } from '@/components/employer/DeleteJobDialog';
-import { ApiError, deleteJob, getBilling, getJobs, listJobTemplates } from '@/lib/api/employer';
+import { PlanLimitDialog } from '@/components/employer/PlanLimitDialog';
+import { ApiError, deleteJob, getBilling, getJobs, listJobTemplates, updateJobStatus } from '@/lib/api/employer';
 import type { EmployerBilling, Job, JobCreatedOutcome } from '@/lib/api/employer';
 import { errorMessageKey } from '@/lib/api/errors';
-import { subscriptionSignage } from '@/lib/plan-limit';
-import type { JobStatus } from '@/lib/status';
+import { activeJobsPreflightModel, planLimitModel, subscriptionSignage } from '@/lib/plan-limit';
+import type { PlanLimitModel } from '@/lib/plan-limit';
+import type { JobStatus, WritableJobStatus } from '@/lib/status';
 
 const statusFilters = ['all', 'active', 'paused', 'filled', 'closed'] as const;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -133,6 +135,29 @@ export default function EmployerDashboardPage() {
      * but it closes on success -- so the fact would otherwise vanish with it.
      */
     const [templateNotice, setTemplateNotice] = useState<{ limit: number } | null>(null);
+    /**
+     * The one plan-limit dialog on this page, fed by two paths: the PRE-flight
+     * gate on "Post a job" (`activeJobsPreflightModel`) and a resume that the
+     * plan refuses with 403 `job_limit_reached` (`planLimitModel`). Both are
+     * the same fact about the same cap, so they get the same dialog rather than
+     * two that could drift apart.
+     */
+    const [planLimit, setPlanLimit] = useState<PlanLimitModel | null>(null);
+    /** The job whose status change is in flight; freezes only that row. */
+    const [pendingStatusJobId, setPendingStatusJobId] = useState<string | null>(null);
+    /*
+     * `Modal`'s own focus restore cannot work for the limit dialog, so the page
+     * does it -- the same fix, for the same reason, as the job detail page
+     * (`employer/jobs/[id]/page.tsx`): the row's Pause/Resume button disables
+     * itself the instant the request starts, disabling the focused element
+     * blurs it, and by the time the 403 mounts the dialog `document.activeElement`
+     * is <body>. `ui/modal.tsx` captures that as the opener and its restore is
+     * then a no-op, dropping a keyboard user at the top of the document.
+     *
+     * The gate path does not need this (its button stays enabled), but it costs
+     * nothing there and one code path is better than two.
+     */
+    const planLimitOpenerRef = useRef<HTMLElement | null>(null);
 
     /**
      * The last billing/template numbers that actually arrived. A refresh whose
@@ -273,6 +298,97 @@ export default function EmployerDashboardPage() {
         }));
     }
 
+    const handlePlanLimitClose = useCallback(() => {
+        setPlanLimit(null);
+        const opener = planLimitOpenerRef.current;
+        planLimitOpenerRef.current = null;
+        // Next frame: the button may still be `disabled` in the current commit
+        // (and so unfocusable), and the Modal's own restore-to-body has to land
+        // first. `requestAnimationFrame` is absent in some test DOMs.
+        if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(() => opener?.focus());
+        } else {
+            opener?.focus();
+        }
+    }, []);
+
+    /*
+     * The gate the whole task is about.
+     *
+     * EVERY control that opened the wizard now goes through here, which is the
+     * point: the old flow let a free-plan employer with their one slot taken
+     * fill in all three steps and only learn about the cap from the publish
+     * 403 -- whose one self-service way out ("Pause a job") navigates to this
+     * board, and `PostJobModal.handleClose` resets the form on the way, so the
+     * draft they just wrote is gone.
+     *
+     * The count comes from the LIVE jobs list (`activeCount`), not from
+     * `billing.activeJobUsage`: that field is a load-time snapshot, and this
+     * page now pauses and resumes jobs in place, so it goes stale the moment
+     * the employer frees a slot. It is also the number `PlanUsageMeter` shows
+     * them two lines below. `activeJobsPreflightModel` returns null -- meaning
+     * "don't gate" -- whenever billing is missing or malformed, so a slow
+     * best-effort billing read can never lock anyone out of posting; the 403
+     * handling inside the wizard stays as the backstop.
+     */
+    function handlePostJobClick() {
+        const gate = activeJobsPreflightModel(data?.billing ?? null, activeCount, jobs);
+        if (gate) {
+            planLimitOpenerRef.current =
+                document.activeElement instanceof HTMLElement ? document.activeElement : null;
+            setPlanLimit(gate);
+            return;
+        }
+        setModalOpen(true);
+    }
+
+    /**
+     * Pause an active job / resume a paused one, from the board.
+     *
+     * Optimistic in the same shape as `handleConfirmDelete`: the response row
+     * is merged into the list so the badge, the counters and the plan meter all
+     * move together, and a failure leaves the board exactly as it was.
+     *
+     * A refused RESUME is the interesting failure. The backend answers a full
+     * plan with 403 `job_limit_reached`, which `classifyError` calls
+     * `forbidden` -- so without the `planLimitModel` branch the employer would
+     * be told "you don't have access to this" about their own posting.
+     */
+    async function handleSetJobStatus(job: Job, status: WritableJobStatus) {
+        if (!idToken || pendingStatusJobId) return;
+        // Captured BEFORE the button disables itself -- see `planLimitOpenerRef`.
+        planLimitOpenerRef.current =
+            document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        setPendingStatusJobId(job.id);
+        try {
+            const updated = await updateJobStatus(idToken, job.id, status);
+            setData((cur) => ({
+                ...cur,
+                jobs: cur.jobs.map((row) => (row.id === updated.id ? { ...row, ...updated } : row)),
+            }));
+            toast.success(
+                updated.status === 'paused'
+                    ? t('jobs.status_change.pause_success')
+                    : t('jobs.status_change.resume_success'),
+            );
+        } catch (err) {
+            try {
+                handleLegalWall(err, '/employer/dashboard');
+                return;
+            } catch {
+                // Not a legal wall — fall through.
+            }
+            const model = planLimitModel(err, jobs);
+            if (model) {
+                setPlanLimit(model);
+                return;
+            }
+            toast.error(errorMessage(err, { unknown: t('jobs.status_change.error_generic') }));
+        } finally {
+            setPendingStatusJobId(null);
+        }
+    }
+
     function openDeleteDialog(job: Job) {
         setDeletingJobId(null);
         setDeleteError(null);
@@ -335,7 +451,7 @@ export default function EmployerDashboardPage() {
     const showSkeleton = phase === 'auth' || phase === 'loading';
 
     const postJobButton = (
-        <Button onClick={() => setModalOpen(true)} className="h-10">
+        <Button onClick={handlePostJobClick} className="h-10">
             <Icon name="plus" />
             {t('jobs.post_job')}
         </Button>
@@ -384,7 +500,7 @@ export default function EmployerDashboardPage() {
                                     {t('hero.body')}
                                 </p>
                                 <div className="mt-5 flex flex-wrap items-center gap-2">
-                                    <Button onClick={() => setModalOpen(true)}>
+                                    <Button onClick={handlePostJobClick}>
                                         <Icon name="plus" />
                                         {t('hero.primary_cta')}
                                     </Button>
@@ -442,7 +558,7 @@ export default function EmployerDashboardPage() {
                                         <PanelHeader
                                             title={t('jobs.title')}
                                             action={
-                                                <Button size="sm" onClick={() => setModalOpen(true)}>
+                                                <Button size="sm" onClick={handlePostJobClick}>
                                                     <Icon name="plus" />
                                                     {t('jobs.post_job')}
                                                 </Button>
@@ -576,7 +692,7 @@ export default function EmployerDashboardPage() {
                                                     <p className="mx-auto mt-1 max-w-sm text-sm text-[var(--jale-ink-2)]">
                                                         {t('jobs.empty_first_body')}
                                                     </p>
-                                                    <Button onClick={() => setModalOpen(true)} className="mt-5">
+                                                    <Button onClick={handlePostJobClick} className="mt-5">
                                                         <Icon name="plus" />
                                                         {t('jobs.post_job')}
                                                     </Button>
@@ -611,6 +727,9 @@ export default function EmployerDashboardPage() {
                                                         job={job}
                                                         href={`/employer/jobs/${job.id}`}
                                                         onDelete={openDeleteDialog}
+                                                        onPause={(row) => void handleSetJobStatus(row, 'paused')}
+                                                        onResume={(row) => void handleSetJobStatus(row, 'active')}
+                                                        statusPending={pendingStatusJobId === job.id}
                                                     />
                                                 ))}
                                             </ul>
@@ -624,7 +743,7 @@ export default function EmployerDashboardPage() {
                                                 <p className="text-sm font-semibold text-[var(--jale-ink)]">{t('quick_post.body')}</p>
                                                 <p className="mt-2 text-xs leading-5 text-[var(--jale-ink-2)]">{t('quick_post.hint')}</p>
                                             </div>
-                                            <Button onClick={() => setModalOpen(true)}>
+                                            <Button onClick={handlePostJobClick}>
                                                 <Icon name="plus" />
                                                 {t('quick_post.cta')}
                                             </Button>
@@ -760,6 +879,15 @@ export default function EmployerDashboardPage() {
                 failed state leaking into the next selected job, and
                 `openDeleteDialog` already clears both before switching jobs
                 (and `deleting` is matched by id), so nothing is lost. */}
+            {/* Mounted unconditionally and driven by `open`, never keyed --
+                see the DeleteJobDialog note below: a Modal that mounts already
+                open never receives focus. */}
+            <PlanLimitDialog
+                open={planLimit !== null}
+                model={planLimit}
+                onClose={handlePlanLimitClose}
+            />
+
             <DeleteJobDialog
                 open={jobToDelete !== null}
                 jobTitle={jobToDelete?.title ?? ''}

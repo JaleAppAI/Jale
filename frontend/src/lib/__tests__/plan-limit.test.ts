@@ -3,6 +3,7 @@ import {
   BLOCKING_JOBS_LIMIT,
   LAPSED_SUBSCRIPTION_STATUSES,
   SUBSCRIPTION_STATUS_KEYS,
+  activeJobsPreflightModel,
   blockingJobsFrom,
   planLimitModel,
   subscriptionSignage,
@@ -496,5 +497,66 @@ describe('SUBSCRIPTION_STATUS_KEYS', () => {
     for (const status of LAPSED_SUBSCRIPTION_STATUSES) {
       expect(SUBSCRIPTION_STATUS_KEYS[status]).toBeTruthy();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The PRE-flight gate
+//
+// The dashboard asks this BEFORE opening the post-job wizard, so an employer
+// on the free plan is told they have no slot while their draft is still
+// unwritten -- rather than filling in three steps and losing them to a 403 on
+// publish (the reported bug: `PlanLimitNotice`'s "Pause a job" CTA navigates
+// to the dashboard, and `handleClose` resets the form on the way out).
+// ---------------------------------------------------------------------------
+
+describe('activeJobsPreflightModel', () => {
+  it('returns null while the employer is under the cap', () => {
+    expect(activeJobsPreflightModel(billing({ activeJobLimit: 3 }), 2, [LANDSCAPE])).toBeNull();
+  });
+
+  it('blocks at the cap, not only past it', () => {
+    const model = activeJobsPreflightModel(billing({ activeJobLimit: 1 }), 1, [LANDSCAPE]);
+    expect(model?.kind).toBe('active_jobs');
+    expect(model?.bodyKey).toBe('limit_dialog.body_jobs_preflight');
+    expect(model?.bodyParams).toEqual({ limit: 1, used: 1 });
+  });
+
+  it('names the jobs holding the slots from the list the page already has', () => {
+    const model = activeJobsPreflightModel(billing({ activeJobLimit: 1 }), 1, [LANDSCAPE, CONCRETE]);
+    // CONCRETE is paused, so it holds nothing -- `blockingJobsFrom` drops it.
+    expect(model?.blockingJobs).toEqual([{ id: LANDSCAPE.id, title: LANDSCAPE.title }]);
+    expect(model?.overflowCount).toBe(0);
+  });
+
+  it('offers the same two ways out as the publish-time 403', () => {
+    const model = activeJobsPreflightModel(billing(), 1, [LANDSCAPE]);
+    expect(model?.ctas.map((cta) => cta.kind)).toEqual(['pause_job', 'upgrade']);
+    expect(model?.hintKey).toBe('limit_dialog.hint_jobs');
+    expect(model?.planNameKey).toBe('plan_name.employer_free');
+  });
+
+  it('uses the zero-limit sentence when the plan includes no postings at all', () => {
+    const model = activeJobsPreflightModel(billing({ activeJobLimit: 0 }), 0, []);
+    expect(model?.bodyKey).toBe('limit_dialog.body_jobs_zero');
+  });
+
+  it('does NOT gate when billing never arrived', () => {
+    // The dashboard loads billing best-effort (it races a 2.5s deadline), so a
+    // missing answer must not lock the employer out of posting. The publish
+    // 403 is still the backstop.
+    expect(activeJobsPreflightModel(null, 99, [LANDSCAPE])).toBeNull();
+    expect(activeJobsPreflightModel(undefined, 99, [LANDSCAPE])).toBeNull();
+  });
+
+  it('does not gate on a non-numeric limit', () => {
+    const broken = billing({ activeJobLimit: Number.NaN });
+    expect(activeJobsPreflightModel(broken, 5, [LANDSCAPE])).toBeNull();
+  });
+
+  it('counts every used slot as overflow when the jobs list is missing', () => {
+    const model = activeJobsPreflightModel(billing({ activeJobLimit: 1 }), 2, null);
+    expect(model?.blockingJobs).toEqual([]);
+    expect(model?.overflowCount).toBe(2);
   });
 });

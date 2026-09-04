@@ -683,6 +683,17 @@
         "cancel": "Cancelar",
         "error_hired": "Este empleo tiene trabajadores contratados y no se puede eliminar. Ciérrelo en su lugar.",
         "error_generic": "No se pudo eliminar el empleo. Inténtelo de nuevo."
+      },
+      "status_change": {
+        "pause": "Pausar",
+        "pause_aria": "Pausar {title}",
+        "pause_pending": "Pausando…",
+        "resume": "Reanudar",
+        "resume_aria": "Reanudar {title}",
+        "resume_pending": "Reanudando…",
+        "pause_success": "Empleo pausado",
+        "resume_success": "Empleo reanudado",
+        "error_generic": "No se pudo actualizar el empleo. Inténtelo de nuevo."
       }
     },
     "filter": {
@@ -1746,7 +1757,8 @@
       "cta_upgrade": "Mejorar plan",
       "cta_pause_job": "Pausar otro empleo",
       "cta_manage_templates": "Administrar plantillas",
-      "dismiss": "Ahora no"
+      "dismiss": "Ahora no",
+      "body_jobs_preflight": "No puedes publicar un trabajo ahora. Tu plan permite {limit} trabajo(s) abierto(s) y ya tienes {used}. Pausa, cierra o elimina uno para publicar otro, o mejora tu plan."
     },
     "limit_reached": {
       "modal_message": "Ha alcanzado el límite de su plan de {limit} publicación(es) de empleo activa(s). Mejore su plan para publicar más.",

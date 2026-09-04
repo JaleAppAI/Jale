@@ -11,6 +11,19 @@ interface Props {
   job: Job;
   href: string;
   onDelete?: (job: Job) => void;
+  /**
+   * Pause an ACTIVE job / resume a PAUSED one, in place on the board.
+   *
+   * Both are optional and independently so: a caller that wires neither gets
+   * exactly the row it got before. The dashboard wires both, because pausing
+   * is the self-service way out of the active-job limit and the limit dialog's
+   * own "Pause another job" CTA points at the board -- which, before this,
+   * offered no way to pause anything.
+   */
+  onPause?: (job: Job) => void;
+  onResume?: (job: Job) => void;
+  /** A status change for THIS row is in flight; freezes its control. */
+  statusPending?: boolean;
 }
 
 /**
@@ -39,9 +52,26 @@ interface Props {
  * which both fits the real width and gives the 390px stack four short lines
  * instead of eight.
  */
-export function JobPostingCard({ job, href, onDelete }: Props) {
+export function JobPostingCard({
+  job, href, onDelete, onPause, onResume, statusPending = false,
+}: Props) {
   const t = useTranslations('employer_dashboard');
   const locale = useLocale();
+
+  /*
+   * Which direction this row can move, if any.
+   *
+   * Only the two reversible states get a control: `filled` and `closed` are
+   * terminal as far as this board is concerned (reopening a closed job is a
+   * decision with consequences -- applicants, public listing -- and belongs on
+   * the job's own page, which has the room to say so).
+   */
+  const statusAction: { key: 'pause' | 'resume'; run: (job: Job) => void } | null =
+    job.status === 'active' && onPause
+      ? { key: 'pause', run: onPause }
+      : job.status === 'paused' && onResume
+        ? { key: 'resume', run: onResume }
+        : null;
 
   const openCount =
     job.open_count ?? Math.max(0, (job.number_of_workers_needed ?? 0) - (job.hired_count ?? 0));
@@ -88,6 +118,26 @@ export function JobPostingCard({ job, href, onDelete }: Props) {
           >
             {t('jobs.details')}
           </Link>
+
+          {statusAction ? (
+            <button
+              type="button"
+              // Named like Delete's: a column of identical "Pause" buttons is
+              // unusable to anyone tabbing through the board.
+              aria-label={t(`jobs.status_change.${statusAction.key}_aria`, { title: job.title })}
+              disabled={statusPending}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                statusAction.run(job);
+              }}
+              className="inline-flex h-9 shrink-0 items-center justify-center rounded-full border border-[var(--jale-divider)] bg-[var(--jale-card)] px-4 text-xs font-semibold text-[var(--jale-ink)] transition-colors hover:bg-[var(--jale-paper-2)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)] disabled:pointer-events-none disabled:opacity-50"
+            >
+              {statusPending
+                ? t(`jobs.status_change.${statusAction.key}_pending`)
+                : t(`jobs.status_change.${statusAction.key}`)}
+            </button>
+          ) : null}
 
           {onDelete ? (
             <button
