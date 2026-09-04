@@ -74,16 +74,47 @@ export function hireBlocked(profile: {
 }
 
 /**
+ * The statuses the employer's status DROPDOWN offers.
+ *
+ * `details_requested` is deliberately absent (sprint 24, B7). It is the one
+ * status that also has to send the worker a WhatsApp message, and the backend
+ * only sends on an actual transition -- so picking it in the dropdown on a row
+ * that already sat there committed nothing and notified nobody, while the
+ * "Request details" button beside it did both. Two controls that looked the
+ * same and behaved differently. The button is now the only way in, and
+ * `canResendDetails` is the only way to repeat it.
+ *
+ * NOT a narrowing of `ApplicationStatus`: `details_requested` remains a legal
+ * API status (the button sends it) and the badge/label mapping must still
+ * render it whenever it is an application's CURRENT status. This list only
+ * says what an employer may pick.
+ *
+ * Mirrors `APPLICATION_STATUSES` in `infra/lambda/lib/job-fields.ts` minus
+ * that one member, in the same order.
+ */
+export const SELECTABLE_APPLICATION_STATUSES: readonly ApplicationStatus[] = [
+    'pending',
+    'contacted',
+    'talking',
+    'hired',
+    'not_interested',
+];
+
+/**
  * Whether to offer "Request details" for this application.
  *
  * Shared by the applicant CARD (job page) and the applicant PAGE (worker
  * detail), so the two can never disagree about when the button exists.
  *
- * FAIL-OPEN, same reasoning as `hireBlockReason`: an absent `details_status`
- * means the API has not shipped the vocabulary, not that details are already
- * requested. Hiding the one control that moves an application forward on the
- * strength of a field the backend simply does not send yet would break the
- * page against the old API rather than degrade against it -- and the PATCH is
+ * Sprint 24 (B7): the button now STAYS once details have been requested --
+ * relabelled as a resend. `details_status` no longer participates. The old
+ * rule hid it the moment the request landed, which combined with the select's
+ * "Save is disabled for the current value" left an employer with no control at
+ * all for a worker who never answered. Only a TERMINAL status withdraws it: a
+ * hire is done, and a rejection is not reopened by asking for paperwork.
+ *
+ * Still fail-open on an absent `status`, same reasoning as `hireBlockReason`:
+ * not knowing is not evidence that the action is unavailable, and the PATCH is
  * the authority either way.
  */
 export function canRequestDetails(application: {
@@ -91,7 +122,61 @@ export function canRequestDetails(application: {
     details_status?: ApplicationDetailsStatus;
 } | null | undefined): boolean {
     if (!application) return false;
-    const { status, details_status: detailsStatus } = application;
-    if (status && TERMINAL_APPLICATION_STATUSES.includes(status)) return false;
-    return detailsStatus !== 'requested' && detailsStatus !== 'complete';
+    const { status } = application;
+    return !(status && TERMINAL_APPLICATION_STATUSES.includes(status));
+}
+
+/**
+ * Whether pressing the button would be a RESEND rather than a first request.
+ *
+ * Read off the committed application status alone -- not `details_status`,
+ * which stays `requested` even after the employer moves the applicant on to
+ * `talking`, and re-sending a stage-2 ping to someone whose row no longer says
+ * `details_requested` would describe a stage they are no longer in.
+ *
+ * Drives both the button's label and the `resend: true` flag on the PATCH, so
+ * the two can never disagree -- the backend refuses `resend` with a 400 for
+ * any other status.
+ */
+export function canResendDetails(status: ApplicationStatus | undefined | null): boolean {
+    return status === 'details_requested';
+}
+
+/**
+ * What the PATCH says about whether the worker actually heard about it
+ * (sprint 24, B7). `notify_reason` is only sent when `notified` is false.
+ */
+export type DetailsRequestOutcome = {
+    notified?: boolean;
+    notify_reason?: 'unchanged' | 'renderer_unavailable' | 'not_notifiable_status';
+};
+
+/** The `employer_job_listing.applicants.*` keys this module chooses between. */
+export type DetailsRequestFeedbackKey =
+    | 'request_details_sent'
+    | 'request_details_notified'
+    | 'request_details_no_whatsapp'
+    | 'request_details_unchanged';
+
+/**
+ * Which sentence to show after a details request, from the outcome the backend
+ * reported. A pure function on purpose: it is the whole of the "did the worker
+ * hear about it?" decision, it is shared by the card and the page, and it is
+ * the part worth testing.
+ *
+ * FAIL-OPEN to the neutral line: an API that publishes no `notified` is not
+ * evidence that nothing was sent, so the pre-B7 copy is used -- it promises a
+ * future notification rather than asserting a past one, which is honest under
+ * either backend. A `notified: false` carrying a reason this build has no
+ * sentence for degrades the same way, for the same reason.
+ */
+export function detailsRequestFeedbackKey(
+    outcome: DetailsRequestOutcome | null | undefined,
+): DetailsRequestFeedbackKey {
+    if (outcome?.notified === true) return 'request_details_notified';
+    if (outcome?.notified === false) {
+        if (outcome.notify_reason === 'renderer_unavailable') return 'request_details_no_whatsapp';
+        if (outcome.notify_reason === 'unchanged') return 'request_details_unchanged';
+    }
+    return 'request_details_sent';
 }

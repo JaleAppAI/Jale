@@ -360,6 +360,13 @@ export type ApplicantOverviewItem = {
   /** From the ranking cache; null means "not scored yet", never zero. */
   match_score: number | null;
   score_band: ScoreBand | null;
+  /**
+   * How the worker came across when asked about their trade -- NOT how well
+   * they fit this job (that is `match_score`). Optional, not just nullable:
+   * the currently-deployed overview handler may not select it yet, and an
+   * absent value must render nothing rather than a zero.
+   */
+  trust_score?: number | null;
 };
 
 export type ApplicantsOverviewResponse = {
@@ -1076,17 +1083,41 @@ export async function getWorkerProfile(
  * employer's move is to set `details_requested` first and let the worker fill
  * the gaps; retrying `hired` unchanged will keep failing.
  */
+/**
+ * Sprint 24 (B7): the PATCH now answers whether the WORKER heard about the
+ * change, so the employer's toast can stop guessing. `notify_reason` arrives
+ * only when `notified` is false, and BOTH are optional here on purpose -- the
+ * frontend may be deployed ahead of the backend, and `detailsRequestFeedbackKey`
+ * (lib/hire-gate) fails open to the old neutral copy when they are absent.
+ */
+export type ApplicantStatusUpdate = {
+  status: ApplicationStatus;
+  notified?: boolean;
+  notify_reason?: 'unchanged' | 'renderer_unavailable' | 'not_notifiable_status';
+};
+
 export async function updateApplicantStatus(
   token: string,
   jobId: string,
   workerId: string,
   status: ApplicationStatus,
-): Promise<{ status: ApplicationStatus }> {
+  /**
+   * `resend: true` asks for the stage notification to go out AGAIN on an
+   * application whose status is already committed -- the employer's nudge for
+   * a worker who never answered. The backend refuses it with a 400
+   * `resend_not_applicable` unless the row already sits at `details_requested`
+   * or `hired`, so only pass it when `canResendDetails` says so.
+   */
+  options?: { resend?: boolean },
+): Promise<ApplicantStatusUpdate> {
   const res = await apiFetch(
     `/employer/jobs/${jobId}/applicants/${workerId}`,
     {
       method: 'PATCH',
-      body: JSON.stringify({ status }),
+      // The key stays ABSENT unless a resend is actually wanted: the handler
+      // rejects a non-boolean and reads an absent key as "no resend", so
+      // sending `false` would only add noise to the wire.
+      body: JSON.stringify(options?.resend ? { status, resend: true } : { status }),
     },
     token,
   );
