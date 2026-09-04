@@ -3,6 +3,7 @@ import {
   BedrockRuntimeClient,
   ConverseCommand,
 } from '@aws-sdk/client-bedrock-runtime';
+import { parseBedrockJson, stripCodeFences } from '../lib/bedrock-json';
 import { getDbPool } from '../lib/db';
 import { normalizeProfession } from '../whatsapp/handlers/custom-trust';
 
@@ -84,13 +85,14 @@ async function callBedrock(profession: string): Promise<QuestionSet[]> {
   );
 
   const text = response.output?.message?.content?.[0]?.text ?? '';
-  const trimmed = text.trim()
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/\s*```$/, '');
-  const parsed: unknown = JSON.parse(trimmed);
+  // `cleaned` exists only to quote the response in the errors below. The parse
+  // itself goes through the shared lenient parser, which also tolerates the
+  // prose a model wraps around the JSON when it ignores "no markdown".
+  const cleaned = stripCodeFences(text);
+  const parsed: unknown = parseBedrockJson(text);
 
   if (!Array.isArray(parsed) || parsed.length !== 3) {
-    throw new Error(`Expected 3 questions from Bedrock, got: ${trimmed.slice(0, 100)}`);
+    throw new Error(`Expected 3 questions from Bedrock, got: ${cleaned.slice(0, 100)}`);
   }
 
   return parsed.map((question, index) => {
