@@ -1,5 +1,27 @@
 /**
- * Operator CLI: backfill canonical worker trades (sprint 24 L6).
+ * Operator CLI: INSPECTION / DRY-RUN TOOL for canonical worker trades
+ * (sprint 24 L6).
+ *
+ * ── THE PRODUCTION BACKFILL IS MIGRATION 094, NOT THIS SCRIPT ──
+ * `db/migrations/094_sprint24_data_backfills.sql` is what actually rewrites
+ * these rows. `users` is FORCE ROW LEVEL SECURITY (002_rls_policies.sql) and
+ * jale_admin's only UPDATE policy, users_isolation_update, is keyed on
+ * `cognito_sub = current_setting('app.current_user_id', true)`. FORCE makes
+ * the table OWNER obey that policy too, so this script -- which connects as
+ * jale_admin with no GUC set -- matches NULL, and therefore no row: its
+ * `--apply` UPDATE is a SILENT ZERO-ROW NO-OP against production that reports
+ * success. Measured on the sprint-24 testbed with seven candidate rows
+ * present: visible un-forced = 7, visible under FORCE = 0.
+ *
+ * 094 does the same work correctly by un-forcing, backfilling and re-forcing
+ * inside one transaction (the pattern 028_job_messaging_hardening.sql set),
+ * and `test/unit/db/sprint24-data-backfills-094.integration.test.ts` pins the
+ * two implementations to the same result over every trade_aliases entry.
+ *
+ * What is still worth running here is the DRY RUN: it prints the plan --
+ * counts by outcome, and the before -> after for every distinct trade string
+ * -- which is the readable preview 094's RAISE NOTICE counts do not give. Use
+ * it to review what 094 will do, or to check what it did.
  *
  * Every worker whose trade was typed as free text carries whatever they wrote
  * in `users.main_trade_other` — "soldador", "Soldadura" and "welder" are one
@@ -12,14 +34,15 @@
  * per distinct spelling, and no user id, name, or phone is ever read or
  * printed — only trade text and row counts.
  *
- * DRY RUN BY DEFAULT. Nothing is written without `--apply`.
+ * DRY RUN BY DEFAULT. Nothing is written without `--apply`, and `--apply`
+ * against production writes nothing anyway -- see the header above; apply
+ * migration 094 instead.
  *
  * Usage:
  *   cd infra
  *   DB_HOST=<host> DB_PORT=5432 DB_NAME=jale DB_USER=jale_admin DB_PASSWORD=<pw> \
  *   npx ts-node scripts/backfill-trade-canonical.ts
  *   npx ts-node scripts/backfill-trade-canonical.ts --lang en
- *   npx ts-node scripts/backfill-trade-canonical.ts --apply
  *
  * `--lang` (default `es`) picks which canonical name a resolved custom trade
  * is stored under. `users` carries no per-worker language column — it lives on
