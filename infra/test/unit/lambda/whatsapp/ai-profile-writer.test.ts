@@ -1079,6 +1079,51 @@ describe('custom trade canonicalisation (v1 voice path)', () => {
     expect(payload).toEqual({ tradeKey: 'soldador de arco', tradeRaw: 'Soldador de arco' });
   });
 
+  it('a high-confidence STANDARD main_trade wins over free text — never discarded', async () => {
+    // The extractor answers `main_trade` with an enum key OR falls back to
+    // free text. When it gave a confident enum answer, canonicalising the
+    // free text over it would throw a valid standard trade away.
+    const order = seedQueries(WELDER);
+    seedExtraction(
+      { main_trade: 'plumber', main_trade_other: 'soldador' },
+      { main_trade: 0.95, main_trade_other: 0.9 },
+    );
+
+    await run('es');
+
+    expect(order).not.toContain('alias');
+    const params = usersUpdate()![1];
+    expect(params).toContain('plumber');
+    expect(params).not.toContain('Soldador');
+    expect(mockLambdaSend).not.toHaveBeenCalled();
+  });
+
+  it('canonicalises the free text when main_trade is itself "other"', async () => {
+    seedQueries(WELDER);
+    seedExtraction(
+      { main_trade: 'other', main_trade_other: 'soldador' },
+      { main_trade: 0.95, main_trade_other: 0.9 },
+    );
+
+    await run('es');
+
+    expect(usersUpdate()![1]).toContain('Soldador');
+  });
+
+  it('canonicalises the free text when a standard main_trade is low-confidence', async () => {
+    seedQueries(WELDER);
+    seedExtraction(
+      { main_trade: 'plumber', main_trade_other: 'soldador' },
+      { main_trade: 0.4, main_trade_other: 0.9 },
+    );
+
+    await run('es');
+
+    const params = usersUpdate()![1];
+    expect(params).toContain('Soldador');
+    expect(params).not.toContain('plumber');
+  });
+
   it('ignores a low-confidence trade: no lookup, no trade write', async () => {
     const order = seedQueries(WELDER);
     seedExtraction({ main_trade_other: 'soldador' }, { main_trade_other: 0.3 });

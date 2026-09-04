@@ -258,6 +258,20 @@ async function resolveExtractedTradeOverride(
   if (typeof raw !== 'string' || raw.trim().length === 0) return null;
   if ((extraction!.confidence_scores?.main_trade_other ?? 0) < CONFIDENCE_THRESHOLD) return null;
 
+  // A confident STANDARD enum answer wins. The extractor is asked for
+  // `main_trade` as one of TRADE_KEYS or null, with the free-text field as its
+  // fallback; when it committed to a real enum key, canonicalising the free
+  // text over it would throw away the better answer this handler used to
+  // write. 'other' is not such an answer — that is precisely the case the
+  // free text describes.
+  const extractedTrade = extraction!.extracted_fields.main_trade;
+  const standardAnswer =
+    typeof extractedTrade === 'string' &&
+    extractedTrade !== 'other' &&
+    (TRADE_KEYS as readonly string[]).includes(extractedTrade) &&
+    (extraction!.confidence_scores?.main_trade ?? 0) >= CONFIDENCE_THRESHOLD;
+  if (standardAnswer) return null;
+
   const canonical = await canonicalizeWorkerTrade(client, { raw, lang: language });
 
   // Blank after tidying would mean main_trade='other' with a null other —

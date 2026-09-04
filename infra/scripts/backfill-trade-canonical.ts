@@ -207,7 +207,7 @@ export async function buildBackfillPlan(
     const before = String(row.before ?? '');
     const rows = Number(row.rows ?? 0);
     if (!before) continue;
-    const canonical = await canonicalizeWorkerTrade(client as never, { raw: before, lang });
+    const canonical = await canonicalizeWorkerTrade(client, { raw: before, lang });
     entries.push(classifyBackfillRow(before, rows, canonical));
   }
 
