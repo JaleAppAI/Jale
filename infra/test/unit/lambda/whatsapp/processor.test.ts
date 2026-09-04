@@ -3532,6 +3532,9 @@ describe('Processor Lambda', () => {
 
           await sendGateTurn({ Body: 'CHATS' });
 
+          // The real CHATS listing ran (empty under this fake), so this is
+          // genuinely the chats escape and not some other fallback.
+          expect(outboxBodies()).toContain('You have no open conversations.');
           expectGateHeld();
         });
 
@@ -3585,15 +3588,57 @@ describe('Processor Lambda', () => {
 
           await sendGateTurn({ Body: '1 me interesa' });
 
+          // The typed job action really ran its own job lookup (no row under
+          // this fake), so the escape at step (9) is what fired.
+          expect(outboxBodies()).toContain(t('job_not_found', 'en'));
           expectGateHeld();
         });
 
-        it('(e2) a bare picker digit does not complete the application', async () => {
+        it('(e2) a bare digit with a picker armed does not complete the application', async () => {
           mockGateRouting(gateConv({ pending_picker: { kind: 'chats', threads: [] } }));
 
           await sendGateTurn({ Body: '1' });
 
+          // The digit really went to the picker (an empty thread list, so
+          // the picker's own out-of-range copy) -- not to the fill lane.
+          expect(outboxBodies()).toContain('Please send a number between 1 and 0.');
           expectGateHeld();
+        });
+
+        it('(f) an owed document replacement is re-asked by the tail, never completed', async () => {
+          // The CAMBIAR doc branch deletes the JOB-scoped row but not the
+          // vault row (decision D3), so the next synced load copies it back
+          // and the step reads `complete` while the replacement file is
+          // still owed. Completing here sent the OLD document.
+          mockGateRouting(gateConv({ fill_confirm: undefined, fill_doc_replace: 'work_auth_doc' }));
+
+          await sendGateTurn({ Body: 'help' });
+
+          expect(outboxTemplates()).toContain('help_menu_list_en');
+          expect(countQueryByPattern(/UPDATE job_applications\s+SET details_completed_at/i)).toBe(0);
+          expect(outboxBodies().some((b) => b.includes(COMPLETION_MARKER.en))).toBe(false);
+          expect(outboxBodies()).toContain(docPrompt('work_auth_doc', 'en'));
+        });
+
+        it('(g) inside the 30s cooldown the tail never runs at all -- quiet, and still not completed', async () => {
+          // The other half of "at most one confirm per 30s": the tail's own
+          // early return. `maybeRepromptFill` bails before `promptNextStep`,
+          // so this turn says nothing from the fill lane -- which is safe
+          // precisely because the only thing the tail could have said
+          // otherwise was the completion.
+          mockGateRouting(gateConv({
+            fill_last_prompt_at: Date.now() - 5_000,
+            fill_confirm: { at: Date.now() - 5_000, repeated: true },
+          }));
+
+          await sendGateTurn({ Body: 'no entiendo' });
+
+          expect(countQueryByPattern(/UPDATE job_applications\s+SET details_completed_at/i)).toBe(0);
+          expect(outboxBodies().some((b) => b.includes(COMPLETION_MARKER.en))).toBe(false);
+          expect(outboxBodies()).not.toContain(fillMessage('confirm_all_prefilled', 'en'));
+          // The ONLY snapshot read is step (10b)'s own re-derive -- the tail
+          // never got as far as its own.
+          expect(countQueryByPattern(/SELECT ja\.id, ja\.worker_id, ja\.job_id/)).toBe(1);
         });
 
         // POSITIVE CONTROL. The gate must still be openable -- if this ever
