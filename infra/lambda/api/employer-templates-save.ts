@@ -3,7 +3,8 @@ import { getDbPool, setRlsContext } from '../lib/db';
 import { resolveEntitlements } from '../lib/entitlements';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs, parseRequiredFields } from '../lib/job-fields';
-import { parseCityFields } from '../lib/city-fields';
+import { parseCityFields, parseCityFromLocation } from '../lib/city-fields';
+import { parsePreApplicationPrompts } from '../lib/pre-application-prompts';
 import { checkCompliance } from '../legal/check-compliance';
 
 const CORS_HEADERS = corsHeaders();
@@ -46,6 +47,32 @@ function validateTemplatePayload(raw: Record<string, unknown>):
   const cityFields = parseCityFields(raw);
   if (!cityFields.ok) return { ok: false, status: 400, error: cityFields.error };
 
+  // Mirrors employer-jobs-update.ts:302. A template saved WITHOUT the triple
+  // -- the location picker degraded to free text, or the row predates the
+  // triple entirely -- used to store location-only forever, so every job
+  // created from it landed with `city_key = null` and was invisible to every
+  // city filter and feed. Recovering the identity from the location TEXT is
+  // the same repair the update handler already does for jobs.
+  //
+  // All-or-none by construction: `parseCityFromLocation` returns a complete,
+  // internally consistent triple (its key comes from `slugCityKey`, the same
+  // rule 061 backfilled with) or null -- it never guesses a partial one,
+  // because a wrong city surfaces the job in the wrong feed. So the `?? {}`
+  // spreads three keys or none.
+  //
+  // No `cityCleared` branch to mirror: that guard exists for the jobs PATCH's
+  // SEO clear channel (`city: null` must not resurrect as a matching key), and
+  // a template payload has no such channel.
+  const cityTriple = cityFields.value ?? parseCityFromLocation(location.trim());
+
+  // Sprint 23 (091) stage-1 questions, whitelisted here so a template that
+  // carries custom questions still carries them after a round trip. Same
+  // strict parser and same single error code employer-jobs-create.ts:137
+  // uses, so a template is still "always a storable create request":
+  // anything this accepts, create accepts.
+  const prompts = parsePreApplicationPrompts(raw.pre_application_prompts);
+  if (!prompts.ok) return { ok: false, status: 400, error: prompts.error };
+
   // Tier-overlap rejection BEFORE hitting the DB CHECK (mirrors
   // employer-jobs-create.ts/employer-jobs-update.ts).
   const requirementsOverlapKeys = [
@@ -69,9 +96,17 @@ function validateTemplatePayload(raw: Record<string, unknown>):
     ...(Object.prototype.hasOwnProperty.call(raw, 'optional_docs') ? { optional_docs: optionalDocs.value } : {}),
     ...(Object.prototype.hasOwnProperty.call(raw, 'required_fields') ? { required_fields: requiredFields.value } : {}),
     ...(Object.prototype.hasOwnProperty.call(raw, 'optional_fields') ? { optional_fields: optionalFields.value } : {}),
+    // hasOwnProperty-gated for the same reason as the three above:
+    // parsePreApplicationPrompts turns an ABSENT field into a legal `[]`, and
+    // injecting that into every legacy template's stored payload would
+    // rewrite its shape just by re-saving it. The frontend always sends the
+    // key (job-form.ts:478), so the gate costs the real client nothing.
+    ...(Object.prototype.hasOwnProperty.call(raw, 'pre_application_prompts')
+      ? { pre_application_prompts: prompts.value }
+      : {}),
     ...jobFields.value,
     ...(coordinates.value ?? {}),
-    ...(cityFields.value ?? {}),
+    ...(cityTriple ?? {}),
   };
   delete value.start_date; // templates never carry a date
   return { ok: true, value };

@@ -54,7 +54,12 @@ import { classifyError, type ErrorKind } from '@/lib/api/errors';
 import { planLimitModel, type PlanLimitModel } from '@/lib/plan-limit';
 import { answerEntries } from '@/lib/format-application-answers';
 import type { WritableJobStatus } from '@/lib/status';
-import { canRequestDetails } from '@/lib/hire-gate';
+import {
+    canRequestDetails,
+    canResendDetails,
+    detailsRequestFeedbackKey,
+    detailsRequestFeedbackTone,
+} from '@/lib/hire-gate';
 import { formatLongDate, formatStartDate } from '@/lib/date';
 import { buildCandidateMatchMap, type ApplicantMatch } from './candidate-matches';
 import { TrustScorePill } from './TrustScorePill';
@@ -1046,7 +1051,12 @@ function ApplicantRow({
     const [starting, setStarting] = useState(false);
     const [messageError, setMessageError] = useState<string | null>(null);
     const [requesting, setRequesting] = useState(false);
-    const [detailsRequested, setDetailsRequested] = useState(false);
+    // What the last request actually did. Holds a rendered message AND its
+    // tone rather than a boolean (sprint 24, B7): there are now four possible
+    // outcomes, which one applies is only known once the PATCH answers, and
+    // one of them ("no message was sent") must not be painted green.
+    const [detailsFeedback, setDetailsFeedback] =
+        useState<{ tone: FeedbackTone; message: string } | null>(null);
     const [requestError, setRequestError] = useState<string | null>(null);
 
     const displayName = applicant.full_name?.trim() || t('applicants.unknown_name');
@@ -1064,21 +1074,40 @@ function ApplicantRow({
     /*
      * `canRequestDetails` (lib/hire-gate) is shared with the applicant PAGE so
      * the card and the page can never disagree about when this action exists.
-     * It fails open on an absent `details_status` -- see that function.
-     * `detailsRequested` is this row's own optimistic latch on top of it.
+     *
+     * Sprint 24 (B7): it now survives the request it makes -- only a terminal
+     * status withdraws it -- and `canResendDetails` relabels it as a resend,
+     * because the status select can no longer reach `details_requested` on
+     * either surface. `detailsRequested` is kept as this row's optimistic
+     * latch for the FEEDBACK line only, never to hide the button.
      */
     const detailsStatus = applicant.details_status;
-    const showRequestDetails = !detailsRequested && canRequestDetails(applicant);
+    const showRequestDetails = canRequestDetails(applicant);
+    const resendingDetails = canResendDetails(applicant.status, detailsStatus);
 
     async function handleRequestDetails() {
         if (!idToken || requesting) return;
+        // Only when the row already SITS at details_requested and the worker
+        // has not answered -- the backend refuses `resend` with a 400 for any
+        // other status, and chasing completed details is a lie.
+        const resend = canResendDetails(applicant.status, detailsStatus);
         setRequesting(true);
         setRequestError(null);
         try {
             const updated = await updateApplicantStatus(
                 idToken, jobId, applicant.worker_id, 'details_requested',
+                resend ? { resend: true } : undefined,
             );
-            setDetailsRequested(true);
+            // The honest outcome, not a blanket "we'll let them know": a
+            // worker with no WhatsApp on file used to read identically to a
+            // delivered message. Tone follows the outcome too, so that case is
+            // not painted green. Fails open to the old neutral copy against an
+            // API that publishes no outcome.
+            const feedbackKey = detailsRequestFeedbackKey(updated);
+            setDetailsFeedback({
+                tone: detailsRequestFeedbackTone(feedbackKey),
+                message: t(`applicants.${feedbackKey}`, { name: displayName }),
+            });
             onDetailsRequested(applicant.application_id, updated.status ?? 'details_requested');
         } catch (err) {
             setRequestError(errorMessage(err));
@@ -1131,8 +1160,14 @@ function ApplicantRow({
                                 answer different questions and legitimately
                                 disagree (an applicant can be "In conversation"
                                 with their details still outstanding). */}
+                            {/* `detailsStatus` alone is enough now that the
+                                optimistic latch is gone: `onDetailsRequested`
+                                (markDetailsRequested, :186-198) writes
+                                `details_status: 'requested'` into the parent
+                                row on success, so this re-renders from the
+                                same source the next READ will republish. */}
                             <ApplicantDetailsIndicator
-                                status={detailsRequested ? 'requested' : detailsStatus}
+                                status={detailsStatus}
                                 remaining={applicant.remaining}
                             />
                         </span>
@@ -1250,8 +1285,10 @@ function ApplicantRow({
                 </InlineFeedback>
             ) : null}
 
-            {detailsRequested ? (
-                <InlineFeedback tone="success">{t('applicants.request_details_sent')}</InlineFeedback>
+            {detailsFeedback ? (
+                <InlineFeedback tone={detailsFeedback.tone} onDismiss={() => setDetailsFeedback(null)}>
+                    {detailsFeedback.message}
+                </InlineFeedback>
             ) : null}
 
             <div className="flex flex-wrap gap-2 sm:pl-[3rem]">
@@ -1267,7 +1304,9 @@ function ApplicantRow({
                         loading={requesting}
                         loadingLabel={tCommon('loading')}
                     >
-                        {t('applicants.request_details')}
+                        {resendingDetails
+                            ? t('applicants.request_details_resend')
+                            : t('applicants.request_details')}
                     </Button>
                 ) : null}
                 <Link

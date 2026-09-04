@@ -487,7 +487,9 @@
     "empty_body": "Applicants across all of your jobs will appear here.",
     "applied_on": "Applied {date}",
     "unknown_worker": "Unknown worker",
-    "not_scored": "Not scored yet"
+    "not_scored": "Not scored yet",
+    "skills_show_all": "Show all {count} skills",
+    "skills_show_fewer": "Show fewer skills"
   },
   "employer_messages": {
     "title": "Messages",
@@ -1362,7 +1364,11 @@
       "own_words": {
         "title": "In their own words",
         "question_removed": "Question removed"
-      }
+      },
+      "request_details_resend": "Resend request",
+      "request_details_notified": "Details requested. We notified {name} on WhatsApp.",
+      "request_details_no_whatsapp": "Details requested, but {name} has no WhatsApp on file, so no message was sent.",
+      "request_details_unchanged": "Already requested."
     },
     "ranking": {
       "loading": "Scoring how well each applicant matches this job...",
