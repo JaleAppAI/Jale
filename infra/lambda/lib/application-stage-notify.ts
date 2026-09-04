@@ -10,10 +10,11 @@
  * Ownership: everything under `lambda/whatsapp/**` belongs to the WhatsApp
  * lane. This module IMPORTS from it (`enqueueWorkerMessage`,
  * `registerCategoryRenderer`, the shared types) and never edits it. Two
- * things the lane keeps module-private are mirrored here with a comment and
- * a follow-up note: the `__fallback_body` content-variable key
- * (`whatsapp/lib/outbox.ts:10`) and the verified-recipient lookup
- * (`whatsapp/lib/onboarding-renderers.ts`'s `loadVerifiedRecipient`).
+ * things it duplicates rather than imports are flagged here with a comment
+ * and a follow-up note: the `__fallback_body` content-variable key
+ * (`whatsapp/lib/outbox.ts:20`) and the verified-recipient lookup
+ * (`whatsapp/lib/onboarding-renderers.ts`'s `loadVerifiedRecipient`). Both
+ * are exported now, so both duplicates are deletable.
  *
  * Delivery: no wake-queue wiring. The outbox row this produces is drained by
  * the existing minute drain -- the locked sprint decision.
@@ -59,16 +60,21 @@ import type {
 export type ApplicationStageKind = 'details_requested' | 'hired';
 
 /**
- * Mirrors the un-exported `FALLBACK_BODY_KEY` in
- * `whatsapp/lib/outbox.ts:10`. `sendTwilioWhatsAppMessage` strips this key
- * before sending ContentVariables, and falls back to its value as a plain
- * `Body` when the content template has no ContentSid seeded in the Twilio
- * secret yet (outbox.ts:57-71) -- which is the case for every template name
- * below, since `application_update_*` / `application_hired_*` are not in
- * `TwilioSecret['templates']` (twilio.ts:106-150).
+ * Duplicates `FALLBACK_BODY_KEY` from `whatsapp/lib/outbox.ts:20`.
+ * `sendTwilioWhatsAppMessage` strips this key before sending ContentVariables
+ * and falls back to its value as a plain `Body` when the content template has
+ * no ContentSid (outbox.ts:130-145).
  *
- * FOLLOW-UP (Ivan / WhatsApp lane): export this constant so consumers stop
- * duplicating the literal.
+ * That fallback is a SECRET-CONTENTS condition, not a type-level one: all four
+ * names below ARE declared in `TwilioSecret['templates']`
+ * (twilio.ts:159-162, added with the renderers in c1cb451a), and the plain
+ * `Body` is used only for as long as no ContentSid is actually seeded under
+ * those keys -- which is what made the 2026-09-04 63016s a template-approval
+ * wait rather than a code bug (see the defer branch in
+ * `whatsapp/lib/outbox.ts` and migration 093).
+ *
+ * FOLLOW-UP (Ivan / WhatsApp lane): the constant is already exported; import
+ * it here instead of restating the literal.
  */
 const FALLBACK_BODY_KEY = '__fallback_body';
 
@@ -190,12 +196,14 @@ export function buildApplicationStageUrl(
 
 // ── Recipient resolution ──
 //
-// Copied verbatim from the module-private `loadVerifiedRecipient` in
-// `whatsapp/lib/onboarding-renderers.ts` (~:100). Kept identical so a worker
-// with no verified number is resolved the same way on every category.
+// Copied verbatim from `loadVerifiedRecipient` in
+// `whatsapp/lib/onboarding-renderers.ts:108`. Kept identical so a worker with
+// no verified number is resolved the same way on every category.
 //
-// FOLLOW-UP (Ivan / WhatsApp lane): export `loadVerifiedRecipient` (and
-// `toLang`) from onboarding-renderers.ts so this duplicate can be deleted.
+// FOLLOW-UP (Ivan / WhatsApp lane): onboarding-renderers.ts already exports
+// both `loadVerifiedRecipient` (:108) and `toLang` (:377), so this duplicate
+// can be deleted -- it is a copy of live code, not a stand-in for a private
+// one, and the two will drift.
 
 interface VerifiedRecipient {
   whatsappNumber: string;
