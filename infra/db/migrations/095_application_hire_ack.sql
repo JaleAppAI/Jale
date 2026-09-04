@@ -114,6 +114,10 @@
 -- run-migrations.sh keeps a ledger (public.schema_migrations) and skips a file
 -- it already records -- so idempotence here is a safety property that makes a
 -- --force-replay and a hand re-apply through the bastion both safe.
+-- One caveat: run any replay BEFORE the code deploy. A replay AFTER it also
+-- matches a hire made in the migration->deploy window (hired_at still NULL,
+-- since only the new employer handler stamps it) and pre-acknowledges that
+-- worker's celebration. Data stays correct; that one celebration is lost.
 --
 -- ── WHERE THE SELF-CHECKS LIVE, AND WHY ───────────────────────────────────
 -- The DATA assertion runs while RLS is still un-forced. It has to: once FORCE
@@ -143,6 +147,15 @@ DECLARE
   v_stamped INTEGER;
   v_bad     INTEGER;
 BEGIN
+  -- PRECONDITION, not a post-condition: the statement above must actually
+  -- have un-forced the table. Under FORCE RLS jale_admin's UPDATE is a silent
+  -- zero-row no-op AND the count check further down sees zero rows too -- so
+  -- that check alone cannot catch a deleted/failed NO FORCE. This one can.
+  IF (SELECT relforcerowsecurity FROM pg_catalog.pg_class
+       WHERE oid = 'public.job_applications'::regclass) THEN
+    RAISE EXCEPTION 'migration 095: job_applications is still FORCE RLS -- the backfill would silently update zero rows';
+  END IF;
+
   -- Pre-existing hires: stamped, and PRE-ACKNOWLEDGED. All three columns from
   -- the row's own updated_at (the SET expressions read the OLD row, so the
   -- set_updated_at trigger firing on this same statement cannot contaminate
@@ -201,22 +214,13 @@ BEGIN
     RAISE EXCEPTION 'migration 095: job_applications lost RLS ENABLE + FORCE';
   END IF;
 
-  -- The two writable columns, checked BOTH ways: has_column_privilege is what
-  -- the planner actually consults, and information_schema.column_privileges is
-  -- what an operator reads -- a table-level grant shows up expanded per column
-  -- there, so a disagreement between the two would mean the grant landed
-  -- somewhere other than where it looks like it did.
+  -- The two writable columns. has_column_privilege is what the planner
+  -- consults; information_schema.column_privileges is NOT used here because
+  -- that view is filtered to grants whose grantor or grantee is an enabled
+  -- role, so it can hide a perfectly valid grant issued by another role.
   FOREACH v_col IN ARRAY ARRAY['hired_seen_at', 'hired_ack_at'] LOOP
     IF NOT has_column_privilege('jale_whatsapp', 'public.job_applications', v_col, 'UPDATE') THEN
       RAISE EXCEPTION 'migration 095: jale_whatsapp missing UPDATE grant on job_applications.%', v_col;
-    END IF;
-    IF NOT EXISTS (
-      SELECT 1 FROM information_schema.column_privileges
-       WHERE grantee = 'jale_whatsapp' AND table_schema = 'public'
-         AND table_name = 'job_applications' AND column_name = v_col
-         AND privilege_type = 'UPDATE'
-    ) THEN
-      RAISE EXCEPTION 'migration 095: jale_whatsapp missing UPDATE grant on job_applications.% (information_schema)', v_col;
     END IF;
   END LOOP;
 
@@ -224,6 +228,13 @@ BEGIN
   -- could rewrite this could forge their own hire date.
   IF has_column_privilege('jale_whatsapp', 'public.job_applications', 'hired_at', 'UPDATE') THEN
     RAISE EXCEPTION 'migration 095: jale_whatsapp can UPDATE job_applications.hired_at -- only the employer status update may set it';
+  END IF;
+
+  -- The employer status update (runs as jale_admin) is what stamps hired_at.
+  -- 003's table-level grant covers it today; proven here so a future
+  -- column-list grant cannot quietly break every hire.
+  IF NOT has_column_privilege('jale_admin', 'public.job_applications', 'hired_at', 'UPDATE') THEN
+    RAISE EXCEPTION 'migration 095: jale_admin cannot UPDATE job_applications.hired_at -- the employer hire path needs it';
   END IF;
 
   -- All three must be READABLE by that role (004's table-level privilege,

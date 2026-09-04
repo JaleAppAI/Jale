@@ -1559,12 +1559,20 @@ describe('database migrations', () => {
       // the un-forced window and nowhere after it.
       expect(unforcedWindow).toContain('migration 095: % hired application(s) still carry a NULL hired_at');
       expect(afterReForce).not.toContain('still carry a NULL hired_at');
-      // The catalog checks are the reverse: pg_class and the privilege
-      // catalogs are not filtered by RLS, and asserting FORCE before the
-      // re-force would assert the wrong value.
-      expect(afterReForce).toContain('relforcerowsecurity');
+      // The un-forced window opens by PROVING the un-force took effect. Under
+      // FORCE RLS jale_admin's UPDATE is a zero-row no-op and the count check
+      // above sees zero rows too, so without this precondition a deleted or
+      // failed NO FORCE would pass every data check while stamping nothing.
+      expect(unforcedWindow).toContain('migration 095: job_applications is still FORCE RLS');
+      expect(unforcedWindow.indexOf('is still FORCE RLS')).toBeLessThan(unforcedWindow.indexOf('UPDATE job_applications'));
+      // The "FORCE is back" assertion is the reverse: only after the re-force,
+      // where asserting it inside the window would assert the wrong value.
       expect(afterReForce).toContain('migration 095: job_applications lost RLS ENABLE + FORCE');
-      expect(unforcedWindow).not.toContain('relforcerowsecurity');
+      expect(unforcedWindow).not.toContain('lost RLS ENABLE + FORCE');
+      // The privilege checks read the planner's own function; the role-filtered
+      // information_schema view is deliberately not consulted.
+      expect(afterReForce).toContain("has_column_privilege('jale_admin', 'public.job_applications', 'hired_at', 'UPDATE')");
+      expect(afterReForce).not.toContain('FROM information_schema.column_privileges');
     });
 
     it('stamps every pre-existing hired row from updated_at, and only those', () => {

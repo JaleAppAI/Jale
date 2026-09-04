@@ -278,4 +278,59 @@ describe('worker home -- the hire celebration', () => {
     // The page itself still rendered.
     expect(screen.getByRole('searchbox')).toBeInTheDocument();
   });
+
+  it('chains two unseen hires: closing the first opens a fresh dialog for the second', async () => {
+    const SECOND_ID = '11111111-2222-4333-8444-555555555555';
+    seed([
+      application(),
+      application({ application_id: SECOND_ID, job_title: 'Plumber', company_name: 'Aguilar Plumbing' }),
+    ]);
+    renderIntl(<WorkerHomePage />);
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+    const first = screen.getByRole('dialog');
+    expect(first).toHaveTextContent('Construcciones Bravo LLC');
+
+    fireEvent.click(screen.getByRole('button', {
+      name: message('worker_applications.hired_celebration.modal.cta'),
+    }));
+
+    // A NEW dialog element (keyed by application), not the first one with its
+    // text swapped: that is what gives hire #2 its own confetti and focus.
+    await waitFor(() => expect(screen.getByRole('dialog')).toHaveTextContent('Aguilar Plumbing'));
+    expect(screen.getByRole('dialog')).not.toBe(first);
+    expect(acknowledgeHire).toHaveBeenCalledWith('test-token', APPLICATION_ID, 'seen');
+    expect(acknowledgeHire).not.toHaveBeenCalledWith('test-token', SECOND_ID, 'seen');
+
+    fireEvent.click(screen.getByRole('button', {
+      name: message('worker_applications.hired_celebration.modal.cta'),
+    }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(acknowledgeHire).toHaveBeenCalledWith('test-token', SECOND_ID, 'seen');
+    expect(screen.getByText(BANNER_TITLE)).toBeInTheDocument();
+    expect(screen.getByText(interpolate(
+      message('worker_applications.hired_celebration.banner.title'),
+      { title: 'Plumber', company: 'Aguilar Plumbing' },
+    ))).toBeInTheDocument();
+  });
+
+  it('does not open the modal over a worker who is already typing; the banner still shows', async () => {
+    let resolveApplications!: (value: { applications: Application[] }) => void;
+    getApplications.mockReturnValue(new Promise((resolve) => { resolveApplications = resolve; }));
+    renderIntl(<WorkerHomePage />);
+
+    // The worker reaches a text box before the applications call lands.
+    const box = document.createElement('input');
+    document.body.appendChild(box);
+    box.focus();
+    expect(document.activeElement).toBe(box);
+
+    resolveApplications({ applications: [application()] });
+
+    await waitFor(() => expect(screen.getByText(BANNER_TITLE)).toBeInTheDocument());
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(document.activeElement).toBe(box);
+    // Not "seen": the modal is owed on the next visit.
+    expect(acknowledgeHire).not.toHaveBeenCalled();
+    box.remove();
+  });
 });

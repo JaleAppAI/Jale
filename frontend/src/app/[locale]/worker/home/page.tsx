@@ -65,6 +65,14 @@ const FILTER_CHIPS: { value: TypeFilter; labelKey: 'all' | 'full_time' | 'part_t
  */
 type HireNotice = { application: Application; hire: ApplicationHire };
 
+/** True while the focused element takes text: an input, a textarea, or anything contenteditable. */
+function isTypingSomewhere(): boolean {
+  if (typeof document === 'undefined') return false;
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement)) return false;
+  return active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable;
+}
+
 /** Small caps rule between list sections. Doubles as the divider above the
  *  first row, which is why the rows below it use `divide-y` and no top border. */
 function SectionHeader({
@@ -177,6 +185,20 @@ export default function WorkerHomePage() {
    * applications on a borrowed phone is the normal case for this audience.
    */
   const [hires, setHires] = useState<HireNotice[]>([]);
+  /**
+   * The modal is an interruption, so it only opens on a frame the worker did
+   * not start typing on: the applications call lands AFTER first paint, and a
+   * worker already in the search box must not have their keystrokes yanked
+   * into a dialog. Decided once per fetch; the banner still shows, `seen_at`
+   * stays null, and the modal simply waits for the next visit.
+   */
+  const [modalSuppressed, setModalSuppressed] = useState(false);
+  /**
+   * Receipts written this visit. A refetch (an id-token rotation re-runs the
+   * effect below) must not resurrect a modal or banner the worker already
+   * closed while the fire-and-forget POST was still in flight or was lost.
+   */
+  const receiptsRef = useRef<Record<string, HireAckStep>>({});
   useEffect(() => {
     if (!idToken) return;
     const controller = new AbortController();
@@ -189,11 +211,17 @@ export default function WorkerHomePage() {
         // behind on a row an employer moved back out of `hired` must not
         // congratulate anyone. `flatMap` rather than `filter` so the block is
         // proven present here and non-optional everywhere after.
-        setHires(applications.flatMap((a) => (
-          a.status === 'hired' && a.hire && !a.hire.acknowledged_at
-            ? [{ application: a, hire: a.hire }]
-            : []
-        )));
+        const receipts = receiptsRef.current;
+        setHires(applications.flatMap((a) => {
+          if (a.status !== 'hired' || !a.hire || a.hire.acknowledged_at) return [];
+          const receipt = receipts[a.application_id];
+          if (receipt === 'dismissed') return [];
+          const hire = receipt === 'seen' && a.hire.seen_at === null
+            ? { ...a.hire, seen_at: new Date().toISOString() }
+            : a.hire;
+          return [{ application: a, hire }];
+        }));
+        setModalSuppressed(isTypingSomewhere());
       })
       .catch(() => {});
     return () => controller.abort();
@@ -213,6 +241,7 @@ export default function WorkerHomePage() {
    * unhandled rejection that can fail the whole test run.
    */
   const recordHireStep = useCallback((applicationId: string, step: HireAckStep) => {
+    receiptsRef.current[applicationId] = step;
     if (!idToken) return;
     void acknowledgeHire(idToken, applicationId, step).catch(() => {});
   }, [idToken]);
@@ -234,11 +263,15 @@ export default function WorkerHomePage() {
   }, [recordHireStep]);
 
   /**
-   * The one hire still owed a celebration. Several unacknowledged hires at
-   * once is possible and rare; they get a banner each, and the modal takes
-   * them one visit at a time rather than stacking dialogs.
+   * The hire currently owed a celebration. Several unacknowledged hires at
+   * once is possible and rare; they get a banner each, and the modals CHAIN:
+   * closing one reveals the next, each keyed by application so it mounts
+   * fresh (its own confetti burst, its own focus entry) instead of swapping
+   * content inside the open dialog.
    */
-  const celebrating = hires.find((notice) => notice.hire.seen_at === null);
+  const celebrating = modalSuppressed
+    ? undefined
+    : hires.find((notice) => notice.hire.seen_at === null);
 
   useEffect(() => {
     if (!idToken) return;
@@ -381,6 +414,7 @@ export default function WorkerHomePage() {
       <main className="mx-auto max-w-2xl px-4 py-6 md:px-6">
         {celebrating ? (
           <HiredCelebrationModal
+            key={celebrating.application.application_id}
             open
             applicationId={celebrating.application.application_id}
             jobTitle={celebrating.application.job_title}
