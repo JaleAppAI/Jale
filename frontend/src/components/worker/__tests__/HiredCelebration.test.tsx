@@ -140,6 +140,15 @@ describe('HiredCelebrationModal', () => {
       .toBeInTheDocument();
   });
 
+  it('says what happens next, and what to do if it does not', () => {
+    // The most common failure after a hire is silence, so the body has to
+    // cover both halves. Asserted through `message()` so this key cannot go
+    // missing from either catalogue unnoticed.
+    renderIntl(<HiredCelebrationModal open {...SUBJECT} hire={hire()} onClose={vi.fn()} />);
+    expect(screen.getByText(message('worker_applications.hired_celebration.modal.body')))
+      .toBeInTheDocument();
+  });
+
   it('quotes a short application reference, not the whole uuid', () => {
     renderIntl(<HiredCelebrationModal open {...SUBJECT} hire={hire()} onClose={vi.fn()} />);
 

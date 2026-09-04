@@ -122,10 +122,17 @@ export function ConfettiBurst({ className = '' }: { className?: string }) {
 
         // A single bright pulse at the origin, so the pieces read as thrown
         // from somewhere rather than as having faded in.
+        //
+        // The `translate(-50%,-50%)` is repeated in BOTH keyframes rather than
+        // left to the element's classes: an animated `transform` replaces the
+        // whole property, so a bare `scale()` would drop the centring for the
+        // duration and expand the pulse about a point 9px down-right of the
+        // header centre. Same rule the pieces' final keyframe follows by
+        // restating their resting `rotate()`.
         flashRef.current?.animate?.(
             [
-                { opacity: 0.9, transform: 'scale(.4)' },
-                { opacity: 0, transform: 'scale(7)' },
+                { opacity: 0.9, transform: 'translate(-50%,-50%) scale(.4)' },
+                { opacity: 0, transform: 'translate(-50%,-50%) scale(7)' },
             ],
             { duration: 520, easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'forwards' },
         );
