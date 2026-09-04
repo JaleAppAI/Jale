@@ -13,7 +13,27 @@ permissions:
   contents: read
 
 concurrency:
-  group: validate-${{ github.event.pull_request.number || github.ref }}
+  # Key on the branch, not the commit SHA or PR number.
+  #
+  # A main -> prod release PR has `pull_request.head.ref == 'main'`, and the
+  # push that lands the merge onto main has `ref_name == 'main'` -- same
+  # group, so the pull_request run and the push run for that release collapse
+  # into one instead of running in parallel (confirmed live: runs 33840997855
+  # (push) and 33841065482 (pull_request), both for the main -> prod release
+  # PR, ran their ~20+ minute infra jobs concurrently on 2026-09-04). A
+  # feature PR groups by its own head branch, so a new commit on that PR still
+  # supersedes the stale run for the previous commit -- unlike keying on the
+  # head SHA, which would give every commit its own group and lose that
+  # cross-commit cancellation (the more common source of wasted runs day to
+  # day). A push to `dev` or `main` groups by that branch and supersedes an
+  # earlier in-flight push to the same branch. The nightly `schedule` run gets
+  # its own fixed group so it can never cancel, or be cancelled by, a release
+  # validation that happens to be running at the same time.
+  #
+  # `github.sha` on a `pull_request` event is the ephemeral test-merge commit,
+  # not the PR's head commit -- one more reason to key on refs (which are
+  # stable identifiers for "this branch's latest work") rather than SHAs here.
+  group: validate-${{ github.event_name == 'schedule' && 'schedule' || github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
