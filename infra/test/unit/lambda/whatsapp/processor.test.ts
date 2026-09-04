@@ -3385,6 +3385,233 @@ describe('Processor Lambda', () => {
         expect(computeNextStepCalls).toHaveLength(1);
         expect(computeNextStepCalls[0][1]).toEqual(['app-2']);
       });
+
+      // ── F1 (sprint 24, BLOCKER): the LISTO gate holds at the tail ──────
+      //
+      // `armFill` (f) arms `fill_confirm` so an all-pre-filled application
+      // reaches the employer only after the worker types LISTO. That flag
+      // was honoured ONLY by step (10b), the last branch of
+      // `handleFillMessage` -- so every earlier `{handled:false}` return
+      // (the escapes, a media turn on a `complete` step, a typed job action,
+      // a picker digit, and the SECOND unrecognised text, after
+      // `resolveFillConfirm` stops re-prompting) reached
+      // `maybeRepromptFill` -> `promptNextStep` -> `sendCompletionPrompt`
+      // and submitted the application. Typing "no entiendo" twice was
+      // enough: the 2026-09-04 incident, restored.
+      //
+      // These are PROCESSOR-level on purpose: the leak was never in the fill
+      // lane's own return value (which was correct), it was in what the
+      // dispatch tail did with it.
+      describe('F1: the fill_confirm gate survives every escape into the dispatch tail', () => {
+        const GATE_SID = 'SM-fill-gate';
+
+        /** The all-pre-filled application `fill_confirm` is armed over:
+         * every required field already answered (from the worker's profile
+         * defaults), no documents, nothing stamped. `fillStepFor` reads this
+         * as `complete`, which is exactly what makes the tail dangerous. */
+        const PREFILLED_SNAPSHOT = {
+          id: 'app-1', worker_id: 'user-1', job_id: 'job-1',
+          application_status: 'pending',
+          application_answers: { work_authorization: true, date_of_birth: '1990-04-03' },
+          prompt_answers: {},
+          details_requested_at: '2026-09-01T00:00:00.000Z', details_completed_at: null,
+          applied_at: '2026-09-01T00:00:00.000Z', updated_at: '2026-09-01T00:00:00.000Z',
+          job_status: 'active', job_title: 'Electrician',
+          required_fields: ['work_authorization', 'date_of_birth'], optional_fields: [],
+          required_docs: [], optional_docs: [],
+          certification_requirements: null, pre_application_prompts: null,
+          have_docs: [],
+        };
+
+        /**
+         * SQL-shape-routed, not a `mockResolvedValueOnce` queue -- the same
+         * pattern `mockConvRowRouting` (Task 15 describe) already uses in
+         * this file, and for the same reason: each body below escapes into a
+         * DIFFERENT router (the help menu, the CHATS/idle handling, the
+         * media lane, the typed-job-action lookup), so the incidental query
+         * count differs per case while the statements under test -- the
+         * requirement snapshot, the `details_completed_at` stamp and the
+         * outbox writes -- are identical. A positional queue would encode
+         * each router's cost into a test about none of them, and would go
+         * `undefined` mid-turn on the buggy code (which issues MORE queries
+         * than the fix) instead of failing on the assertion that matters.
+         */
+        function mockGateRouting(conv: unknown): void {
+          mockQuery.mockImplementation((sql: string) => {
+            const text = String(sql);
+            if (/INSERT INTO whatsapp_processed_messages/i.test(text)) {
+              return Promise.resolve({ rowCount: 1, rows: [{ message_sid: GATE_SID }] });
+            }
+            if (/SELECT/i.test(text) && /FROM whatsapp_conversations/i.test(text)) {
+              return Promise.resolve({ rowCount: 1, rows: [conv] });
+            }
+            // application-requirements.ts SNAPSHOT_SQL -- the one read every
+            // assertion below depends on.
+            if (/SELECT ja\.id, ja\.worker_id, ja\.job_id/.test(text)) {
+              return Promise.resolve({ rowCount: 1, rows: [PREFILLED_SNAPSHOT] });
+            }
+            // The seam's per-turn jobId refresh (text turns and media turns).
+            if (/SELECT job_applications\.job_id, jobs\.required_fields/.test(text)) {
+              return Promise.resolve({
+                rowCount: 1,
+                rows: [{ job_id: 'job-1', required_fields: ['work_authorization', 'date_of_birth'] }],
+              });
+            }
+            if (/SELECT job_id FROM job_applications WHERE id = \$1/.test(text)) {
+              return Promise.resolve({ rowCount: 1, rows: [{ job_id: 'job-1' }] });
+            }
+            // An accepted worker, so the legal wall never diverts routing.
+            if (/tos_version/i.test(text)) {
+              return Promise.resolve({ rowCount: 1, rows: [{ tos_version: '1.0' }] });
+            }
+            // Writes report one affected row (so a real write is never read
+            // back as a no-op -- notably `markDetailsCompleteIfDone`, whose
+            // rowCount is what the buggy path turns into "details sent");
+            // every other read reports none.
+            if (/^\s*(UPDATE|INSERT|DELETE)/i.test(text)) {
+              return Promise.resolve({ rowCount: 1, rows: [] });
+            }
+            return Promise.resolve({ rowCount: 0, rows: [] });
+          });
+        }
+
+        function gateConv(stateContext: Record<string, unknown> = {}): unknown {
+          return convRow({
+            conversation_state: 'idle',
+            user_id: 'user-1',
+            language: 'en',
+            state_context: {
+              fill_application_id: 'app-1',
+              // Outside REPROMPT_COOLDOWN_MS (30s), so the tail is NOT
+              // suppressed -- this is the window the incident happened in.
+              fill_last_prompt_at: Date.now() - 60_000,
+              fill_confirm: { at: Date.now() - 60_000 },
+              ...stateContext,
+            },
+          });
+        }
+
+        async function sendGateTurn(params: Record<string, string>): Promise<void> {
+          await handler(
+            makeSqsEvent({ MessageSid: GATE_SID, From: 'whatsapp:+15125551234', ...params }),
+            {} as any,
+            {} as any,
+          );
+        }
+
+        /** A phrase unique to the `completion` copy in each language, so
+         * "the application was submitted" is asserted on the WORKER-VISIBLE
+         * message and not only on the stamp. */
+        const COMPLETION_MARKER: Record<'en' | 'es', string> = {
+          en: 'we sent your details',
+          es: 'enviamos tus datos',
+        };
+
+        /** The gate held: nothing was submitted, the tail really did run,
+         * and it re-sent the consent prompt at most once.
+         *
+         * `lang` is a parameter because a Spanish command word switches the
+         * conversation's language mid-turn (`detectCommandLanguage`,
+         * flows.ts) -- 'ayuda' is answered, and the gate re-prompted, in
+         * Spanish. */
+        function expectGateHeld(lang: 'en' | 'es' = 'en'): void {
+          // THE blocker assertion.
+          expect(countQueryByPattern(/UPDATE job_applications\s+SET details_completed_at/i)).toBe(0);
+          expect(outboxBodies().some((b) => b.includes(COMPLETION_MARKER[lang]))).toBe(false);
+          // The turn really reached the dispatch tail's `promptNextStep` --
+          // without this the assertion above could pass because the escape
+          // never got that far.
+          expect(countQueryByPattern(/SELECT ja\.id, ja\.worker_id, ja\.job_id/)).toBeGreaterThanOrEqual(1);
+          // ...and what the tail sent was the gate, exactly once.
+          expect(outboxBodies().filter((b) => b === fillMessage('confirm_all_prefilled', lang)))
+            .toHaveLength(1);
+        }
+
+        it('(a) CHATS escapes and the tail re-sends the consent prompt, never the completion', async () => {
+          mockGateRouting(gateConv());
+
+          await sendGateTurn({ Body: 'CHATS' });
+
+          expectGateHeld();
+        });
+
+        it('(b) ayuda escapes and the tail re-sends the consent prompt, never the completion', async () => {
+          mockGateRouting(gateConv());
+
+          await sendGateTurn({ Body: 'ayuda' });
+
+          // The escape's own reply really happened, so this is the genuine
+          // help path and not an unrelated fallback. 'ayuda' is an
+          // ES_LANG_WORDS entry, so the whole turn -- help menu AND the
+          // re-sent gate -- answers in Spanish.
+          expect(outboxTemplates()).toContain('help_menu_list_es');
+          expectGateHeld('es');
+        });
+
+        it('(c) a media message at the gate does not complete the application', async () => {
+          mockGateRouting(gateConv());
+
+          await sendGateTurn({
+            Body: '',
+            NumMedia: '1',
+            MediaUrl0: 'https://api.twilio.com/media/MEgate1',
+            MediaSid0: 'MEgate1',
+            MediaContentType0: 'image/jpeg',
+          });
+
+          // `handleFillMediaTurn` sees a `complete` step and returns
+          // handled:false (it has no completion arm of its own), so the file
+          // falls through to the ordinary ready-worker media handling...
+          expect(outboxBodies()).toContain(t('voice_note_not_supported', 'en'));
+          // ...and the tail must not finish the application behind it.
+          expect(mockDownloadTwilioMediaBounded).not.toHaveBeenCalled();
+          expectGateHeld();
+        });
+
+        it('(d) the SECOND unrecognised text does not complete the application (the 2026-09-04 incident)', async () => {
+          // `repeated: true` is the state `resolveFillConfirm` leaves after
+          // it has already re-sent the prompt once -- from here it returns
+          // {handled:false} and the tail owns the turn. THIS is the two
+          // "no entiendo" replies that submitted a real worker's details.
+          mockGateRouting(gateConv({ fill_confirm: { at: Date.now() - 60_000, repeated: true } }));
+
+          await sendGateTurn({ Body: 'no entiendo' });
+
+          expectGateHeld();
+        });
+
+        it('(e) a typed job action while a picker is armed does not complete the application', async () => {
+          mockGateRouting(gateConv({ pending_picker: { kind: 'chats', threads: [] } }));
+
+          await sendGateTurn({ Body: '1 me interesa' });
+
+          expectGateHeld();
+        });
+
+        it('(e2) a bare picker digit does not complete the application', async () => {
+          mockGateRouting(gateConv({ pending_picker: { kind: 'chats', threads: [] } }));
+
+          await sendGateTurn({ Body: '1' });
+
+          expectGateHeld();
+        });
+
+        // POSITIVE CONTROL. The gate must still be openable -- if this ever
+        // fails, the fix above has locked workers out of submitting at all.
+        it('LISTO completes: the stamp lands and the completion copy goes out', async () => {
+          mockGateRouting(gateConv());
+
+          await sendGateTurn({ Body: 'LISTO' });
+
+          expect(countQueryByPattern(/UPDATE job_applications\s+SET details_completed_at/i)).toBe(1);
+          expect(outboxBodies().some((b) => b.includes(COMPLETION_MARKER.en))).toBe(true);
+          expect(outboxBodies()).not.toContain(fillMessage('confirm_all_prefilled', 'en'));
+          // handled:true returns from the seam, so the tail never runs and
+          // never double-prompts.
+          const confirmClears = stateContextUpdates().filter((sc) => sc.fill_confirm === null);
+          expect(confirmClears.length).toBeGreaterThanOrEqual(1);
+        });
+      });
     });
   });
 
