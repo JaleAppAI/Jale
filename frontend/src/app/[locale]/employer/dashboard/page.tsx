@@ -867,6 +867,15 @@ export default function EmployerDashboardPage() {
                 onJobCreated={handleJobCreated}
             />
 
+            {/* Mounted unconditionally and driven by `open`, never keyed --
+                for the reason spelled out on DeleteJobDialog below: a Modal
+                that mounts already open never receives focus. */}
+            <PlanLimitDialog
+                open={planLimit !== null}
+                model={planLimit}
+                onClose={handlePlanLimitClose}
+            />
+
             {/* Deliberately NOT keyed by job id.
                 A `key` that changed on open meant the dialog MOUNTED already
                 open, and a modal that mounts open never gets focus: `Modal`
@@ -879,15 +888,6 @@ export default function EmployerDashboardPage() {
                 failed state leaking into the next selected job, and
                 `openDeleteDialog` already clears both before switching jobs
                 (and `deleting` is matched by id), so nothing is lost. */}
-            {/* Mounted unconditionally and driven by `open`, never keyed --
-                see the DeleteJobDialog note below: a Modal that mounts already
-                open never receives focus. */}
-            <PlanLimitDialog
-                open={planLimit !== null}
-                model={planLimit}
-                onClose={handlePlanLimitClose}
-            />
-
             <DeleteJobDialog
                 open={jobToDelete !== null}
                 jobTitle={jobToDelete?.title ?? ''}
