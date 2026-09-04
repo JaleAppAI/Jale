@@ -3,7 +3,12 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { apiFetch } from '@/lib/api';
 import { getAuthBridge, registerAuthBridge } from '@/lib/auth-bridge';
 import { buildLoginUrl } from '@/lib/login-url';
-import { clearSession as clearStoredSession, readSession, writeSession } from '@/lib/session-storage';
+import {
+    clearSession as clearStoredSession,
+    readRoleToken,
+    readSession,
+    writeSession,
+} from '@/lib/session-storage';
 import { locales } from '@/i18n/locales';
 
 interface AuthState {
@@ -50,20 +55,33 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
     const [userType, setUserType] = useState<'worker' | 'employer' | null>(null);
     const [isLoading, setIsLoading] = useState(true);
     const refreshInFlight = useRef<Promise<string | null> | null>(null);
+    /**
+     * The role this provider is signed in as, readable from callbacks that
+     * were registered once and would otherwise close over stale state (the
+     * auth bridge). It is what keeps a refresh on the right side of the
+     * worker/employer split.
+     */
+    const userTypeRef = useRef<UserType | null>(null);
 
-    // Picks the stored session up on every load, for BOTH user types — worker
-    // and employer share this provider, so `@/lib/session-storage` is the one
-    // place either session is read or written.
+    const rememberUserType = (next: UserType | null) => {
+        userTypeRef.current = next;
+        setUserType(next);
+    };
+
+    // Picks the stored session up on every load. Worker and employer share this
+    // provider, and the store keeps a slot per role, so every read says which
+    // role the current route is about — otherwise a browser with both sessions
+    // open would restore whichever was written last.
     useEffect(() => {
-        const stored = readSession();
+        const stored = readSession(inferUserTypeFromPath());
         const rt = stored?.refreshToken ?? null;
         const ut = stored?.userType ?? inferUserTypeFromPath();
         if (rt) {
-            // Pin the type we inferred so a later refresh does not have to
-            // guess it again from a path that may have changed.
+            // Pin the role we inferred, so a later refresh reads a slot rather
+            // than guessing again from a path that may have changed.
             if (ut) writeSession({ refreshToken: rt, userType: ut });
             setRefreshToken(rt);
-            setUserType(ut);
+            rememberUserType(ut);
             apiFetch('/auth/refresh', {
                 method: 'POST',
                 body: JSON.stringify({ refreshToken: rt, userType: ut }),
@@ -73,14 +91,16 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
                     setAccessToken(data.accessToken);
                     setIdToken(data.idToken);
                 } else {
-                    clearStoredSession();
+                    // Scoped to the role whose token was just refused: the
+                    // other role's session is still perfectly good.
+                    clearStoredSession(ut ?? undefined);
                     setRefreshToken(null);
-                    setUserType(null);
+                    rememberUserType(null);
                 }
             }).catch(() => {
-                clearStoredSession();
+                clearStoredSession(ut ?? undefined);
                 setRefreshToken(null);
-                setUserType(null);
+                rememberUserType(null);
             }).finally(() => setIsLoading(false));
         } else {
             setIsLoading(false);
@@ -91,19 +111,30 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
         setAccessToken(tokens.accessToken);
         setIdToken(tokens.idToken);
         setRefreshToken(tokens.refreshToken);
-        setUserType(ut);
+        rememberUserType(ut);
+        // Only this role's slot: signing in as an employer must not sign a
+        // worker in the next tab out.
         writeSession({ refreshToken: tokens.refreshToken, userType: ut });
     };
 
-    // Drops every trace of the session, locally — including the pre-migration
-    // per-tab copy, so a sign-out cannot be undone by the next load promoting
-    // a token it left behind. Stable identity (only setters and the storage
-    // module), so the bridge below registers exactly once.
-    const clearSession = useCallback(() => {
-        clearStoredSession();
+    /**
+     * Drops this provider's session, locally.
+     *
+     * `role` scopes the storage side of it, and callers pass the role they were
+     * actually signed in as: clearing both slots would sign the other role out
+     * of every tab in the browser. It also removes a pre-migration copy of that
+     * role's session, so a sign-out cannot be undone by the next load promoting
+     * a token it left behind.
+     *
+     * Stable identity (only setters and the storage module), so the bridge
+     * below registers exactly once.
+     */
+    const clearSession = useCallback((role?: UserType) => {
+        clearStoredSession(role);
         setAccessToken(null);
         setIdToken(null);
         setRefreshToken(null);
+        userTypeRef.current = null;
         setUserType(null);
     }, []);
 
@@ -112,7 +143,7 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
             method: 'POST',
             body: JSON.stringify({ accessToken, refreshToken, userType }),
         }).catch(() => {});
-        clearSession();
+        clearSession(userType ?? undefined);
         window.location.href = `/${locale}/`;
     };
 
@@ -123,15 +154,27 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
         if (refreshInFlight.current) return refreshInFlight.current;
 
         const run = (async (): Promise<string | null> => {
-            // Storage, not component state, is the source of truth here: the
-            // bridge is registered once and must never close over a stale
-            // token. Reading it also picks up a rotation done by another tab,
-            // which is only possible now the session is shared.
-            const stored = readSession();
+            // Storage, not component state, is the source of truth for the
+            // TOKEN: the bridge is registered once and must never close over a
+            // stale one, and re-reading also picks up a rotation done by
+            // another tab, which is only possible now the session is shared.
+            //
+            // The ROLE comes from this provider (via a ref, for the same
+            // stale-closure reason) and the token is read from that role's slot
+            // ONLY. Taking "whatever is stored" would, in a browser signed in
+            // as both, refresh the other role's token and hand this tab an id
+            // token for the wrong pool.
+            const role = userTypeRef.current;
+            const stored = role
+                ? { refreshToken: readRoleToken(role), userType: role as UserType | null }
+                // No role yet (a 401 before the session was restored): fall
+                // back to what the route implies, which is what the mount
+                // effect would have used.
+                : readSession(inferUserTypeFromPath());
             const rt = stored?.refreshToken ?? null;
             const ut = stored?.userType ?? null;
             if (!rt) {
-                clearSession();
+                clearSession(ut ?? undefined);
                 return null;
             }
             try {
@@ -142,7 +185,7 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
                     body: JSON.stringify({ refreshToken: rt, userType: ut }),
                 });
                 if (!res.ok) {
-                    clearSession();
+                    clearSession(ut ?? undefined);
                     return null;
                 }
                 const data = await res.json();
@@ -150,14 +193,14 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
                     ? data.idToken
                     : null;
                 if (!nextIdToken) {
-                    clearSession();
+                    clearSession(ut ?? undefined);
                     return null;
                 }
                 setAccessToken(typeof data.accessToken === 'string' ? data.accessToken : null);
                 setIdToken(nextIdToken);
                 return nextIdToken;
             } catch {
-                clearSession();
+                clearSession(ut ?? undefined);
                 return null;
             }
         })();
@@ -176,10 +219,13 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
         const bridge = {
             refreshIdToken,
             onSessionExpired: () => {
-                // Read the identity BEFORE clearing it -- the login URL needs it.
-                const ut = readSession()?.userType ?? inferUserTypeFromPath();
+                // Read the identity BEFORE clearing it -- the login URL needs
+                // it, and only this role is being signed out.
+                const ut = userTypeRef.current
+                    ?? readSession(inferUserTypeFromPath())?.userType
+                    ?? inferUserTypeFromPath();
                 const { pathname, search } = window.location;
-                clearSession();
+                clearSession(ut ?? undefined);
                 window.location.assign(
                     buildLoginUrl(localeFromPathname(pathname), ut, `${pathname}${search}`),
                 );
