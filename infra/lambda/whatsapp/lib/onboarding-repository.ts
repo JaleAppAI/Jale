@@ -6,8 +6,17 @@ import type {
   WorkflowStepKey,
 } from './onboarding-types';
 import { claimPendingReferral } from './referral-claims';
-import { canonicalizeWorkerTrade } from '../../lib/trade-canonical';
-import { requestTradeAliasGeneration } from '../../lib/trade-alias-request';
+// `trade-canonical` is deliberately pure-SQL + pure-logic (profession.ts and
+// worker-vocab.ts only). Nothing that reaches for an AWS SDK client may be
+// imported into this module: it sits in the import graph of processor.ts,
+// worker-ready-release.ts, web/worker-onboarding.ts and lib/job-messaging.ts
+// among others, and JaleLambdaFunction externalizes every '@aws-sdk/*'
+// package (lib/constructs/lambda-function.ts:97). A top-level SDK import here
+// would put an unresolvable require() into every one of those bundles unless
+// each opted the package into `nodeModules` — failing EVERY invocation, not
+// just trade-writing turns. That is why `saveCanonicalCustomTrade` REPORTS
+// that a trade needs learning instead of invoking the generator itself.
+import { canonicalizeWorkerTrade, type CanonicalTrade } from '../../lib/trade-canonical';
 
 // ── Contract shared by every exported function in this module ──
 //
@@ -702,12 +711,21 @@ export async function completeOnboarding(
  *     enum key -> that key, with `main_trade_other` cleared
  *   - resolves otherwise (welder, drywall, ...) -> stays custom, with the
  *     canonical name in the worker's own language
- *   - resolves to nothing -> the worker's words, tidied, and the alias
- *     generator is asked to learn the trade so the NEXT write canonicalises
+ *   - resolves to nothing -> the worker's words, tidied, and `resolved: false`
+ *     comes back so the CALLER can ask the alias generator to learn the trade
  *
- * Blank input writes NOTHING: `main_trade = 'other'` with a null
- * `main_trade_other` is exactly what `chk_trade_other` (004_whatsapp.sql:66-70)
- * rejects, and there is no trade to record anyway.
+ * Returns what was written, or null when nothing was: blank input would mean
+ * `main_trade = 'other'` with a null `main_trade_other`, exactly the pair
+ * `chk_trade_other` (004_whatsapp.sql:66-70) rejects, and there is no trade to
+ * record anyway.
+ *
+ * Growing the alias cache is the caller's job, by design — see the import
+ * comment at the top of this file for why no AWS SDK may be imported here:
+ *
+ *     const written = await saveCanonicalCustomTrade(client, workerId, raw, lang);
+ *     if (written && !written.resolved && written.main_trade_other) {
+ *       await requestTradeAliasGeneration(written.main_trade_other);
+ *     }
  *
  * `lang` is a parameter rather than a lookup on purpose — every caller already
  * holds the run's `preferredLanguage` (`WorkerGate.preferredLanguage`), and
@@ -725,9 +743,9 @@ export async function saveCanonicalCustomTrade(
   workerId: string,
   rawProfession: string,
   lang: PreferredLanguage = 'es',
-): Promise<void> {
+): Promise<CanonicalTrade | null> {
   const canonical = await canonicalizeWorkerTrade(client, { raw: rawProfession, lang });
-  if (canonical.main_trade === 'other' && !canonical.main_trade_other) return;
+  if (canonical.main_trade === 'other' && !canonical.main_trade_other) return null;
 
   await client.query(
     `UPDATE users
@@ -737,15 +755,5 @@ export async function saveCanonicalCustomTrade(
     [workerId, canonical.main_trade, canonical.main_trade_other],
   );
 
-  // Fire-and-forget cache growth, and only for a trade the cache did not
-  // know. `requestTradeAliasGeneration` never throws by contract; the
-  // try/catch is defence in depth so learning a trade can never fail the
-  // worker's onboarding turn.
-  if (!canonical.resolved && canonical.main_trade_other) {
-    try {
-      await requestTradeAliasGeneration(canonical.main_trade_other);
-    } catch {
-      // Swallowed intentionally -- see comment above.
-    }
-  }
+  return canonical;
 }

@@ -1,4 +1,5 @@
-import { requestTradeAliasGeneration } from '../../../../../lambda/lib/trade-alias-request';
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   saveCanonicalCustomTrade,
   loadWorkerGate,
@@ -14,10 +15,6 @@ import {
   resetPendingTrustAssessmentAndSkills,
   findPreviousStepKey,
 } from '../../../../../lambda/whatsapp/lib/onboarding-repository';
-
-// The alias generator is a fire-and-forget Lambda invoke; only WHETHER it was
-// asked to learn a trade is behaviour this module owns.
-jest.mock('../../../../../lambda/lib/trade-alias-request');
 
 const WORKER_ID = 'aaaaaaaa-0000-0000-0000-000000000001';
 const RUN_ID = 'bbbbbbbb-0000-0000-0000-000000000001';
@@ -663,18 +660,14 @@ describe('saveCanonicalCustomTrade', () => {
   const usersUpdate = (query: jest.Mock) =>
     query.mock.calls.find(([sql]) => /UPDATE users/.test(String(sql)));
 
-  beforeEach(() => {
-    (requestTradeAliasGeneration as jest.Mock).mockReset();
-    (requestTradeAliasGeneration as jest.Mock).mockResolvedValue(undefined);
-  });
-
   it('stores the canonical Spanish name for a resolved custom trade', async () => {
     const { query, client } = seed(WELDER);
 
-    await saveCanonicalCustomTrade(client, WORKER_ID, '  soldador ', 'es');
+    const written = await saveCanonicalCustomTrade(client, WORKER_ID, '  soldador ', 'es');
 
     expect(usersUpdate(query)![1]).toEqual([WORKER_ID, 'other', 'Soldador']);
-    expect(requestTradeAliasGeneration).not.toHaveBeenCalled();
+    // Already cached, so the caller has no alias generation to trigger.
+    expect(written).toMatchObject({ resolved: true, trade_key: 'welder' });
   });
 
   it('stores the canonical English name for an English worker', async () => {
@@ -709,22 +702,22 @@ describe('saveCanonicalCustomTrade', () => {
     expect(usersUpdate(query)![1]).toEqual([WORKER_ID, 'electrician', null]);
   });
 
-  it('tidies an unresolved trade and asks the generator to learn it', async () => {
+  it('tidies an unresolved trade and REPORTS that it needs learning', async () => {
     const { query, client } = seed();
 
-    await saveCanonicalCustomTrade(client, WORKER_ID, '  pipe   fitter ', 'es');
+    const written = await saveCanonicalCustomTrade(client, WORKER_ID, '  pipe   fitter ', 'es');
 
     expect(usersUpdate(query)![1]).toEqual([WORKER_ID, 'other', 'Pipe fitter']);
-    expect(requestTradeAliasGeneration).toHaveBeenCalledWith('Pipe fitter');
+    // The caller fires requestTradeAliasGeneration off this; the AWS SDK must
+    // not enter this module's import graph (see the module header).
+    expect(written).toEqual({ main_trade: 'other', main_trade_other: 'Pipe fitter', resolved: false });
   });
 
   it('writes nothing for blank input — chk_trade_other would reject the pair', async () => {
     const { query, client } = seed(WELDER);
 
-    await saveCanonicalCustomTrade(client, WORKER_ID, '   ', 'es');
-
+    expect(await saveCanonicalCustomTrade(client, WORKER_ID, '   ', 'es')).toBeNull();
     expect(query).not.toHaveBeenCalled();
-    expect(requestTradeAliasGeneration).not.toHaveBeenCalled();
   });
 
   it('never writes main_trade other with a null main_trade_other', async () => {
@@ -754,11 +747,22 @@ describe('saveCanonicalCustomTrade', () => {
     expect(String(usersUpdate(query)![0])).toMatch(/user_type = 'worker'/);
   });
 
-  it('a failing generator invoke never fails the write', async () => {
-    const { query, client } = seed();
-    (requestTradeAliasGeneration as jest.Mock).mockRejectedValueOnce(new Error('invoke failed'));
-
-    await expect(saveCanonicalCustomTrade(client, WORKER_ID, 'pipe fitter', 'es')).resolves.toBeUndefined();
-    expect(usersUpdate(query)).toBeDefined();
+  it('imports no AWS SDK — this module is bundled into a dozen lambdas', () => {
+    // JaleLambdaFunction externalizes every '@aws-sdk/*' package
+    // (lib/constructs/lambda-function.ts:97), and this module is in the
+    // import graph of processor.ts, worker-ready-release.ts,
+    // web/worker-onboarding.ts and lib/job-messaging.ts among others. A
+    // top-level SDK import here becomes an unresolvable require() in each of
+    // those bundles unless every one opts the package into `nodeModules` —
+    // failing EVERY invocation, not just trade-writing turns. Growing the
+    // alias cache is therefore the caller's job.
+    const src = fs.readFileSync(
+      path.join(__dirname, '../../../../../lambda/whatsapp/lib/onboarding-repository.ts'),
+      'utf-8',
+    );
+    const imports = Array.from(src.matchAll(/^import[^;]*?from\s+'([^']+)'/gm)).map((m) => m[1]);
+    expect(imports.length).toBeGreaterThan(0);
+    expect(imports.filter((mod) => mod.startsWith('@aws-sdk/'))).toEqual([]);
+    expect(imports).not.toContain('../../lib/trade-alias-request');
   });
 });
