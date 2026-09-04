@@ -1537,6 +1537,27 @@ async function resolveChangeMenu(
     await deps.updateStateContext(client, ctx.conversationId, patch);
     const cleared = await clearFieldAnswer(client, { applicationId, key: item.key });
     logStep(item.key, cleared ? 'change_cleared' : 'change_clear_noop');
+    if (!cleared) {
+      // F7: the ONLY way the engine refuses is its `details_completed_at IS
+      // NULL` guard -- the same application was completed elsewhere (the web
+      // stage-2 door) while this menu was armed. Falling through to
+      // `promptNextStep` here answered a worker who had just asked to FIX
+      // something with the completion copy ("we sent your details"), i.e.
+      // reported a raced no-op as a success and sent that copy a second time
+      // for the same application. Say what actually happened instead, and
+      // point at the one place a sent application can still be read.
+      //
+      // The lane is deliberately NOT scrubbed: `patch` above already took
+      // away everything that could act on this application again (the menu,
+      // the LISTO gate, a pending candidate), and the next turn re-derives
+      // `complete` so the ordinary completion arm disarms the lane with its
+      // own scrub. Doing it here would fork that one exit.
+      await deps.queueReplyText(client, msg.messageSid, msg.from, fillMessage('change_locked', ctx.lang, {
+        url: workerApplicationUrl(ctx.lang, applicationId),
+      }));
+      logStep(item.key, 'change_locked');
+      return { handled: true };
+    }
     // Re-derived, not asked directly: with the key gone the engine's own
     // walk names it as the next step (or names an earlier gap first, which
     // is the right order anyway).

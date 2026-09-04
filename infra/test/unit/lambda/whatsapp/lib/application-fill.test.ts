@@ -1548,13 +1548,19 @@ describe('handleFillMessage — CAMBIAR/CHANGE correction menu', () => {
     expect(lastReply(deps)).toBe(fieldQuestion('date_of_birth', 'en'));
   });
 
-  // The only way `clearFieldAnswer` refuses is its
+  // F7 (sprint 24). The only way `clearFieldAnswer` refuses is its
   // `details_completed_at IS NULL` guard -- i.e. the application was
   // completed somewhere else (the web stage-2 door) while this lane was
   // still armed. The worker must then be told the truth, never re-asked a
   // question about an application that is already sent, and never shown the
   // step that merely FOLLOWS the field they asked to fix.
-  it('a refused clear (completed on the web meanwhile) says so instead of asking the wrong question', async () => {
+  //
+  // BEFORE F7 the refusal fell straight into `promptNextStep`, whose
+  // `complete` arm answered a worker who had just asked to FIX something
+  // with "we sent your details to <company>" -- a raced no-op reported as a
+  // success, and the second time that copy was sent for the same
+  // application.
+  it('a refused clear (completed on the web meanwhile) says the application is locked, not the completion copy', async () => {
     const ctx = reusedCtx(
       { fields: ['date_of_birth'], docs: [] },
       {
@@ -1566,20 +1572,34 @@ describe('handleFillMessage — CAMBIAR/CHANGE correction menu', () => {
     const deps = makeDeps(ctx);
     await handleFillMessage(client, ctx, incomingMsg('CAMBIAR'), deps);
 
-    await handleFillMessage(client, ctx, incomingMsg('1'), deps);
+    const res = await handleFillMessage(client, ctx, incomingMsg('1'), deps);
 
+    expect(res).toEqual({ handled: true });
     // The UPDATE ran and matched nothing, so the answer still stands.
     expect(findCall(SQL.clearAnswer)[1]).toEqual(['date_of_birth', APPLICATION_ID]);
     expect(fake.apps.get(APPLICATION_ID)!.row!.application_answers).toEqual({
       date_of_birth: '1990-04-03', work_authorization: true,
     });
-    // ...and the re-derive lands on the lane's `complete` arm, not on a
-    // question. `fillStepFor` reads `details_completed_at` before the field
-    // walk, which is what makes this safe rather than confusing.
-    expect(lastReply(deps)).toBe(fillMessage('completion', 'en', { company: COMPANY }));
+    // The truth, with the one place the sent application can still be read.
+    expect(lastReply(deps)).toBe(fillMessage('change_locked', 'en', {
+      url: workerApplicationUrl('en', APPLICATION_ID),
+    }));
+    expect(allReplies(deps)).not.toContain(fillMessage('completion', 'en', { company: COMPANY }));
     expect(allReplies(deps)).not.toContain(fieldQuestion('work_authorization', 'en'));
     expect(allReplies(deps)).not.toContain(fieldQuestion('date_of_birth', 'en'));
-    expect(ctx.stateContext.fill_application_id).toBeNull();
+    // No completion arm ran at all: no stamp attempt, no company lookup, no
+    // continue-other scan.
+    expect(hasCall(SQL.detailsComplete)).toBe(false);
+    expect(hasCall(SQL.offerScan)).toBe(false);
+    // The one-shot menu and both gates are gone, so no later digit or LISTO
+    // can act on this application again...
+    expect(ctx.stateContext.fill_change_menu).toBeNull();
+    expect(ctx.stateContext.fill_confirm).toBeNull();
+    expect(ctx.stateContext.fill_pending).toBeNull();
+    // ...but the lane itself stays armed (F7 deliberately does not scrub):
+    // the very next turn re-derives `complete` and the ordinary completion
+    // arm disarms it then.
+    expect(ctx.stateContext.fill_application_id).toBe(APPLICATION_ID);
   });
 
   it('picking from a confirm state leaves the gate and lets the re-answer complete normally', async () => {
