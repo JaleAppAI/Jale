@@ -65,6 +65,7 @@ import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
 
 import { setInternalUserRlsContext } from '../../../lambda/lib/db';
+import { buildHireSummary } from '../../../lambda/lib/application-hire-view';
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
 
@@ -77,6 +78,9 @@ const EMPLOYER_HANDLER_PATH = path.join(
 );
 const WORKER_HANDLER_PATH = path.join(
   INFRA_ROOT, 'lambda', 'api', 'worker-application-details.ts',
+);
+const LIST_HANDLER_PATH = path.join(
+  INFRA_ROOT, 'lambda', 'api', 'worker-applications-list.ts',
 );
 
 function urlForRole(baseUrl: string, user: string, password: string): string {
@@ -115,6 +119,17 @@ function hireAckSql(): { dismissed: string; seen: string } {
   expect(dismissed).toBeDefined();
   expect(seen).toBeDefined();
   return { dismissed: dismissed!, seen: seen! };
+}
+
+/**
+ * `GET /worker/applications`' single SELECT, lifted out of its handler. It
+ * takes no bind parameters -- RLS is what scopes it to the caller.
+ */
+function listSql(): string {
+  const source = fs.readFileSync(LIST_HANDLER_PATH, 'utf8');
+  const match = source.match(/SELECT a\.id AS application_id[\s\S]*?LIMIT 200/);
+  expect(match).not.toBeNull();
+  return match![0];
 }
 
 if (!databaseUrl) {
@@ -631,5 +646,86 @@ maybeDescribe('sprint 24: migration 095 stamps and grants the hire acknowledgeme
       { column_name: 'hired_at', data_type: 'timestamp with time zone' },
       { column_name: 'hired_seen_at', data_type: 'timestamp with time zone' },
     ]);
+  });
+
+  // ── 8. the list endpoint's own SELECT, on real rows ────────────
+  // The one thing a mocked pool can never check about this feature: that the
+  // nine columns the celebration needs are SELECTable, correctly named, and
+  // reachable by `jale_admin` through the worker's two GUCs. A typo, a column
+  // that lives on the other table, or a privilege this role does not hold is a
+  // 42703/42501/42702 that only a real database raises -- and it would take out
+  // EVERY /worker/applications request, hired or not.
+  //
+  // The row that comes back is then fed to the REAL `buildHireSummary`, which
+  // is what proves the pure view against pg's own types (Date for timestamptz,
+  // a string for the to_char'd DATE, numbers for the INTEGER pay bounds)
+  // rather than against hand-written fixtures.
+  it("8. the list SELECT runs as the worker's own session and yields the celebration payload", async () => {
+    const sql = listSql();
+    const worker = new Client({
+      connectionString: urlForRole(databaseUrl as string, 'jale_admin', 'test-admin-pw'),
+    });
+    await worker.connect();
+    try {
+      await worker.query('BEGIN');
+      // Both GUCs, exactly as the handler sets them: the cognito sub for
+      // applications_worker_select (003) and the INTERNAL id for 070's
+      // jobs_worker_read_applied, without which the jobs join drops rows.
+      await worker.query(`SELECT set_config('app.current_user_id', $1, true)`, [`s24-095-owner-${tag}`]);
+      await setInternalUserRlsContext(worker, workerOwner);
+
+      const res = await worker.query<Record<string, any>>(sql);
+      const byId = new Map(res.rows.map((row) => [row.application_id, row]));
+      // RLS scoped it to this worker: the OTHER worker's application is absent.
+      expect(byId.has(appOther)).toBe(false);
+
+      const hired = byId.get(appHired);
+      expect(hired).toBeDefined();
+      expect(hired!.status).toBe('hired');
+      // 095 stamped it, and the projection carries all three columns.
+      expect(hired!.hired_at).toBeInstanceOf(Date);
+      expect((hired!.hired_at as Date).getTime()).toBe(seededUpdatedAt.get(appHired)!.getTime());
+      expect(hired!.hired_seen_at).not.toBeNull();
+      expect(hired!.hired_ack_at).not.toBeNull();
+      // to_char, not a Date: this is the assertion that would have caught the
+      // DATE round trip rendering the previous calendar day west of UTC.
+      expect(hired!.job_start_date).toBe('2026-09-15');
+      expect(typeof hired!.job_start_date).toBe('string');
+
+      // The whole contract, end to end, off a real row.
+      expect(buildHireSummary(hired!)).toEqual({
+        hired_at: (hired!.hired_at as Date).toISOString(),
+        seen_at: (hired!.hired_seen_at as Date).toISOString(),
+        acknowledged_at: (hired!.hired_ack_at as Date).toISOString(),
+        start_date: '2026-09-15',
+        location: 'El Paso, TX',
+        pay: '$22-$26/hour',
+        shift_schedule: 'L-V 7am-3pm',
+      });
+      // Pre-acknowledged, so the web shows NOTHING for this historical hire --
+      // the entire point of the backfill.
+      expect(buildHireSummary(hired!)!.acknowledged_at).not.toBeNull();
+
+      // The pending row: its PROJECTED hired_at is its own updated_at, because
+      // the COALESCE is unconditional. That is exactly why the handler gates
+      // the `hire` key on `status === 'hired'` and not on this value.
+      const pending = byId.get(appPending);
+      expect(pending).toBeDefined();
+      expect(pending!.status).toBe('pending');
+      expect((pending!.hired_at as Date).getTime())
+        .toBe(seededUpdatedAt.get(appPending)!.getTime());
+      expect(pending!.hired_seen_at).toBeNull();
+      expect(pending!.hired_ack_at).toBeNull();
+      // A job with none of the celebration facts set: every one comes back
+      // NULL rather than raising, which is what the view's null-tolerance is
+      // for.
+      expect(pending!.job_start_date).toBeNull();
+      expect(pending!.job_pay).toBeNull();
+      expect(pending!.job_city).toBeNull();
+
+      await worker.query('ROLLBACK');
+    } finally {
+      await worker.end();
+    }
   });
 });
