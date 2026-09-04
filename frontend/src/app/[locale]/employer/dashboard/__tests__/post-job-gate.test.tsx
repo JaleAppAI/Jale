@@ -2,7 +2,7 @@
 import * as React from 'react';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 
 import { ApiError } from '@/lib/api/errors';
 import type { EmployerBilling, Job } from '@/lib/api/employer';
@@ -245,12 +245,11 @@ describe('post-a-job plan gate', () => {
 });
 
 describe('pause and resume from the board', () => {
-    const pauseButton = () =>
+    const pauseButtonFor = (title: string) =>
         screen.getByRole('button', {
-            name: interpolate(message('employer_dashboard.jobs.status_change.pause_aria'), {
-                title: activeJob.title,
-            }),
+            name: interpolate(message('employer_dashboard.jobs.status_change.pause_aria'), { title }),
         });
+    const pauseButton = () => pauseButtonFor(activeJob.title);
     const resumeButton = () =>
         screen.getByRole('button', {
             name: interpolate(message('employer_dashboard.jobs.status_change.resume_aria'), {
@@ -292,6 +291,36 @@ describe('pause and resume from the board', () => {
         await waitFor(() => expect(screen.getByText(dialogTitle())).toBeInTheDocument());
         // NOT the generic "you do not have access" sentence a bare 403 gets.
         expect(toastError).not.toHaveBeenCalled();
+    });
+
+    it('sends one request when two rows are clicked in the same tick', async () => {
+        /*
+         * The guard cannot be the render closure. Two DIFFERENT rows means
+         * neither button is disabled at click time, and a closed-over
+         * `pendingStatusJobId` is still `null` in both handlers -- so both
+         * would PATCH, and whichever settled first would clear the other's
+         * pending marker, leaving a live request with no frozen row.
+         */
+        const second: Job = { ...activeJob, id: 'job-2', title: 'Framer' };
+        seed = { jobs: [activeJob, second], billing: { ...freePlan, activeJobLimit: 3 }, templateCount: 0 };
+        // Never settles: the second click lands while the first PATCH is open.
+        updateJobStatus.mockReturnValue(new Promise(() => {}));
+        renderIntl(<EmployerDashboardPage />);
+
+        const first = pauseButtonFor(activeJob.title);
+        const other = pauseButtonFor(second.title);
+
+        // One `act`, so both clicks are dispatched before React re-renders.
+        await act(async () => {
+            first.click();
+            other.click();
+        });
+
+        expect(updateJobStatus).toHaveBeenCalledTimes(1);
+        expect(updateJobStatus).toHaveBeenCalledWith('test-token', activeJob.id, 'paused');
+        // And every row is frozen for as long as the request is open.
+        expect(first).toBeDisabled();
+        expect(other).toBeDisabled();
     });
 
     it('reports any other failure without touching the board', async () => {

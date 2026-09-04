@@ -1758,7 +1758,7 @@
       "cta_pause_job": "Pause another job",
       "cta_manage_templates": "Manage templates",
       "dismiss": "Not now",
-      "body_jobs_preflight": "You can't post a job right now. Your plan allows {limit} open job(s) and you already have {used}. Pause, close or delete one to post another, or upgrade your plan."
+      "body_jobs_preflight": "You can’t post a job right now. Your plan allows {limit} open job(s) and you already have {used}. Pause, close or delete one to post another, or upgrade your plan."
     },
     "limit_reached": {
       "modal_message": "You've reached your plan's limit of {limit} active job posting(s). Upgrade to post more.",

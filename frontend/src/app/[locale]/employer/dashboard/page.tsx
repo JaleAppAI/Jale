@@ -143,8 +143,21 @@ export default function EmployerDashboardPage() {
      * two that could drift apart.
      */
     const [planLimit, setPlanLimit] = useState<PlanLimitModel | null>(null);
-    /** The job whose status change is in flight; freezes only that row. */
+    /** The job whose status change is in flight; relabels that row, freezes them all. */
     const [pendingStatusJobId, setPendingStatusJobId] = useState<string | null>(null);
+    /**
+     * The same fact as `pendingStatusJobId !== null`, readable synchronously.
+     *
+     * State is not enough on its own: `handleSetJobStatus` closes over the
+     * value from the render that produced the button, so two clicks dispatched
+     * in one tick -- two DIFFERENT rows, so neither is disabled yet at click
+     * time -- both read `null` and both fire a PATCH, and the first one's
+     * `finally` then clears the second one's pending marker. A ref is written
+     * before the first `await` and read on entry, so the second call is a
+     * no-op. Status changes on this board are deliberately serial, the way the
+     * job detail page's are.
+     */
+    const statusBusyRef = useRef(false);
     /*
      * `Modal`'s own focus restore cannot work for the limit dialog, so the page
      * does it -- the same fix, for the same reason, as the job detail page
@@ -355,7 +368,8 @@ export default function EmployerDashboardPage() {
      * be told "you don't have access to this" about their own posting.
      */
     async function handleSetJobStatus(job: Job, status: WritableJobStatus) {
-        if (!idToken || pendingStatusJobId) return;
+        if (!idToken || statusBusyRef.current) return;
+        statusBusyRef.current = true;
         // Captured BEFORE the button disables itself -- see `planLimitOpenerRef`.
         planLimitOpenerRef.current =
             document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -385,6 +399,7 @@ export default function EmployerDashboardPage() {
             }
             toast.error(errorMessage(err, { unknown: t('jobs.status_change.error_generic') }));
         } finally {
+            statusBusyRef.current = false;
             setPendingStatusJobId(null);
         }
     }
@@ -730,6 +745,7 @@ export default function EmployerDashboardPage() {
                                                         onPause={(row) => void handleSetJobStatus(row, 'paused')}
                                                         onResume={(row) => void handleSetJobStatus(row, 'active')}
                                                         statusPending={pendingStatusJobId === job.id}
+                                                        statusBusy={pendingStatusJobId !== null}
                                                     />
                                                 ))}
                                             </ul>

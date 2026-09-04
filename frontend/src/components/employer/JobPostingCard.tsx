@@ -22,8 +22,18 @@ interface Props {
    */
   onPause?: (job: Job) => void;
   onResume?: (job: Job) => void;
-  /** A status change for THIS row is in flight; freezes its control. */
+  /** A status change for THIS row is in flight; freezes its control and relabels it. */
   statusPending?: boolean;
+  /**
+   * A status change for SOME row is in flight; freezes this control too.
+   *
+   * Two props rather than one because they answer different questions: only
+   * the row being changed should say "Pausing…", but no row should be
+   * clickable while a PATCH is open. The caller serialises status changes (one
+   * at a time, mirroring `employer/jobs/[id]/page.tsx`), and a control that
+   * silently does nothing when clicked is worse than one that looks disabled.
+   */
+  statusBusy?: boolean;
 }
 
 /**
@@ -53,7 +63,7 @@ interface Props {
  * instead of eight.
  */
 export function JobPostingCard({
-  job, href, onDelete, onPause, onResume, statusPending = false,
+  job, href, onDelete, onPause, onResume, statusPending = false, statusBusy = false,
 }: Props) {
   const t = useTranslations('employer_dashboard');
   const locale = useLocale();
@@ -125,7 +135,7 @@ export function JobPostingCard({
               // Named like Delete's: a column of identical "Pause" buttons is
               // unusable to anyone tabbing through the board.
               aria-label={t(`jobs.status_change.${statusAction.key}_aria`, { title: job.title })}
-              disabled={statusPending}
+              disabled={statusPending || statusBusy}
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();

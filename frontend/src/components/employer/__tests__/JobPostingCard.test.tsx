@@ -109,6 +109,20 @@ describe('JobPostingCard pause and resume', () => {
     expect(onPause).not.toHaveBeenCalled();
   });
 
+  it('freezes the control without relabelling it while ANOTHER row is changing', () => {
+    // The board serialises status changes, so every row's control has to look
+    // unavailable -- but only the row actually changing may say "Pausing…".
+    const onPause = vi.fn();
+    renderIntl(
+      <JobPostingCard job={job()} href="/employer/jobs/job-1" onPause={onPause} statusBusy />,
+    );
+    const button = screen.getByRole('button', { name: pauseLabel() });
+    expect(button).toBeDisabled();
+    expect(button.textContent).toBe(message('employer_dashboard.jobs.status_change.pause'));
+    fireEvent.click(button);
+    expect(onPause).not.toHaveBeenCalled();
+  });
+
   it('keeps Delete alongside the new control', () => {
     const onDelete = vi.fn();
     renderIntl(
