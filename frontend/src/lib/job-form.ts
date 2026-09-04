@@ -1,6 +1,6 @@
 import { splitDedupe } from '@/lib/text';
 import type { EmployerJobDetail, JobWritePayload } from '@/lib/api/employer';
-import { locationDatasetFailed } from '@/lib/location-search';
+import { locationDatasetFailed, slugCityKey } from '@/lib/location-search';
 import {
   type PromptDraft,
   normalizePrompts,
@@ -428,6 +428,75 @@ export function deriveLegacyShiftSchedule(workDays: readonly string[], shiftStar
   return daysPart || hoursPart;
 }
 
+// ---------------------------------------------------------------------------
+// City identity
+// ---------------------------------------------------------------------------
+
+/**
+ * `"City, ST"` / `"City, ST 12345[-6789]"` -> the two parts.
+ *
+ * Mirrors `infra/lambda/lib/city-fields.ts`'s LOCATION_CITY_RE, ZIP suffix
+ * included: `searchLocations` labels a digits query as "El Paso, TX 79901",
+ * so half the picker's own labels carry one and a naive comma split would read
+ * the state as "TX 79901".
+ */
+function splitLocationLabel(location: string): { city: string; state: string } | null {
+  const match = /^\s*([A-Za-z][A-Za-z .'-]*?)\s*,\s*([A-Za-z]{2})(?:\s+\d{5}(?:-\d{4})?)?\s*$/
+    .exec(location.replace(/\s+/g, ' '));
+  if (!match) return null;
+  return { city: match[1].trim(), state: match[2] };
+}
+
+/**
+ * The `city_key`/`city`/`state` triple to send, or null when there is no
+ * consistent one to send.
+ *
+ * WHY this is not simply `city_key && city && state`, which is what it was:
+ * that dropped the WHOLE triple the moment one of the other two was missing,
+ * so a form seeded from a payload carrying only the key saved with no city
+ * identity at all. A job survives that -- `employer-jobs-update.ts:302` falls
+ * back to `parseCityFromLocation(location)` server-side -- but a TEMPLATE does
+ * not: `employer-templates-save.ts` has no such fallback, so the identity is
+ * lost permanently, and the next "apply template" hands the wizard a location
+ * that looks picked with `city_key: null` underneath (the bug B3 is about).
+ * This is that missing fallback, on the client, for both paths.
+ *
+ * Candidates are generated liberally and then GATED on reproducing the stored
+ * key. That gate is what keeps this from inventing a location: the backend's
+ * `parseCityFields` is all-or-none and re-slugs city+state to check the key
+ * (`invalid_city_key`), so a pair that does NOT reproduce `city_key` would be
+ * a hard 400 -- and a pair that does is the same city by definition. Nothing
+ * consistent -> null, which is exactly the old behaviour for that case.
+ */
+export function cityTripleFor(
+  form: Pick<JobForm, 'city_key' | 'city' | 'state' | 'location' | 'state_region'>,
+): { city_key: string; city: string; state: string } | null {
+  const cityKey = form.city_key;
+  if (!cityKey) return null;
+
+  const city = form.city?.trim() ?? '';
+  const state = form.state?.trim() ?? '';
+  // The fully picked case passes through untouched -- no re-derivation, so a
+  // form straight off the LocationPicker sends exactly the bytes it did before.
+  if (city && state) return { city_key: cityKey, city, state };
+
+  const parsed = splitLocationLabel(form.location);
+  // Only when there is no comma: "El Paso, TX" as a city name would slug to
+  // `el-paso-tx-tx` and fail the gate anyway, but skipping it keeps the intent
+  // legible -- this candidate exists for a bare "El Paso" beside a state_region.
+  const bareLocation = form.location.includes(',') ? '' : form.location.trim();
+
+  for (const cityCandidate of [city, parsed?.city ?? '', bareLocation]) {
+    if (!cityCandidate) continue;
+    for (const stateCandidate of [state, parsed?.state ?? '', form.state_region.trim()]) {
+      if (!STATE_REGION_PATTERN.test(stateCandidate)) continue;
+      if (slugCityKey(cityCandidate, stateCandidate) !== cityKey) continue;
+      return { city_key: cityKey, city: cityCandidate, state: stateCandidate };
+    }
+  }
+  return null;
+}
+
 type BasePayload = Omit<JobWritePayload, 'city' | 'state_region'>;
 
 function jobFormToBasePayload(form: JobForm): BasePayload {
@@ -503,9 +572,9 @@ function jobFormToBasePayload(form: JobForm): BasePayload {
     certifications: hasCertRequirements
       ? trimmedCerts.map((cert) => cert.name)
       : splitDedupe(form.certifications),
-    ...(form.city_key && form.city && form.state
-      ? { city_key: form.city_key, city: form.city, state: form.state }
-      : {}),
+    // Still all-or-none, but now recovered from `location`/`state_region` when
+    // a loaded payload carried the key without the rest -- see `cityTripleFor`.
+    ...(cityTripleFor(form) ?? {}),
     ...(form.latitude != null && form.longitude != null
       ? { latitude: form.latitude, longitude: form.longitude }
       : {}),

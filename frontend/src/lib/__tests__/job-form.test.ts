@@ -69,14 +69,74 @@ describe('jobFormToCreatePayload city + coordinates', () => {
     expect('longitude' in payload).toBe(false);
   });
 
-  it('omits the whole city triple when it is only partially picked', () => {
+  /*
+   * A city_key with no city/state used to drop the WHOLE triple silently, so a
+   * form seeded from a payload that carried only the key (a legacy template --
+   * see `employer-templates-save.ts`, which unlike `employer-jobs-update.ts`
+   * has no `parseCityFromLocation` fallback) saved with no city identity at
+   * all. The triple now rides along whenever `city_key` is present and the
+   * missing halves can be recovered CONSISTENTLY: the backend's
+   * `parseCityFields` is all-or-none and re-derives the key from city+state,
+   * so a guessed pair that does not reproduce `city_key` would be a 400.
+   */
+  it('recovers the missing state from the location text when city_key is present', () => {
     const payload = jobFormToCreatePayload({
       ...base,
       city_key: 'el-paso-tx', city: 'El Paso', state: null,
     });
+    expect(payload).toMatchObject({ city_key: 'el-paso-tx', city: 'El Paso', state: 'TX' });
+  });
+
+  it('recovers both city and state from the location text', () => {
+    const payload = jobFormToCreatePayload({
+      ...base,
+      city_key: 'el-paso-tx', city: null, state: null,
+    });
+    expect(payload).toMatchObject({ city_key: 'el-paso-tx', city: 'El Paso', state: 'TX' });
+  });
+
+  it('recovers from a ZIP-suffixed location label', () => {
+    // `searchLocations` emits this shape for a digits query
+    // ("El Paso, TX 79901"), so half the picker's own labels look like this.
+    const payload = jobFormToCreatePayload({
+      ...base,
+      location: 'El Paso, TX 79901',
+      city_key: 'el-paso-tx', city: null, state: null,
+    });
+    expect(payload).toMatchObject({ city_key: 'el-paso-tx', city: 'El Paso', state: 'TX' });
+  });
+
+  it('recovers the city from a comma-less location plus state_region', () => {
+    const payload = jobFormToCreatePayload({
+      ...base,
+      location: 'El Paso',
+      state_region: 'TX',
+      city_key: 'el-paso-tx', city: null, state: null,
+    });
+    expect(payload).toMatchObject({ city_key: 'el-paso-tx', city: 'El Paso', state: 'TX' });
+  });
+
+  it('omits the triple when nothing available reproduces the city_key', () => {
+    // The guard that keeps this from inventing a location: the derived pair
+    // must slug back to the stored key, or the whole triple is dropped as
+    // before -- an omitted key is a no-op, a wrong one is a wrong city.
+    const payload = jobFormToCreatePayload({
+      ...base,
+      location: 'Austin, TX',
+      city_key: 'el-paso-tx', city: null, state: null,
+    });
     expect('city_key' in payload).toBe(false);
     expect('city' in payload).toBe(false);
     expect('state' in payload).toBe(false);
+  });
+
+  it('leaves a fully picked triple byte-identical (no re-derivation)', () => {
+    const payload = jobFormToCreatePayload({
+      ...base,
+      location: 'somewhere unparseable',
+      city_key: 'el-paso-tx', city: 'El Paso', state: 'TX',
+    });
+    expect(payload).toMatchObject({ city_key: 'el-paso-tx', city: 'El Paso', state: 'TX' });
   });
 
   it('still sends coordinates when no city has been picked (gates are independent)', () => {

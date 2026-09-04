@@ -837,7 +837,8 @@
       "template_check_city": "Check the city before posting",
       "template_name_taken": "You already have a template with that name",
       "template_not_saved": "Your template won't be saved — your plan allows {limit} template(s).",
-      "post_without_template": "Post without saving template"
+      "post_without_template": "Post without saving template",
+      "location_pick_helper": "Select the city from the list to continue."
     },
     "worker_profile": {
       "years_experience": "{years, plural, one {# yr exp} other {# yrs exp}}"

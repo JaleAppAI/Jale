@@ -837,7 +837,8 @@
       "template_check_city": "Revise la ciudad antes de publicar",
       "template_name_taken": "Ya tiene una plantilla con ese nombre",
       "template_not_saved": "Su plantilla no se guardará — su plan permite {limit} plantilla(s).",
-      "post_without_template": "Publicar sin guardar plantilla"
+      "post_without_template": "Publicar sin guardar plantilla",
+      "location_pick_helper": "Selecciona la ciudad de la lista para continuar."
     },
     "worker_profile": {
       "years_experience": "{years, plural, one {# año de experiencia} other {# años de experiencia}}"
