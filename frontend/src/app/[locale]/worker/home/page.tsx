@@ -19,11 +19,19 @@ import { ListPageSkeleton } from '@/components/ui/page-skeletons';
 import { Spinner } from '@/components/ui/spinner';
 import { WorkerJobCard } from '@/components/worker/WorkerJobCard';
 import { apiFetch } from '@/lib/api';
-import { getApplications, type Application } from '@/lib/api/worker';
+import {
+  acknowledgeHire,
+  getApplications,
+  type Application,
+  type ApplicationHire,
+  type HireAckStep,
+} from '@/lib/api/worker';
 import {
   DetailsRequestedBanner,
   DetailsRequestedMultiBanner,
 } from '@/components/worker/DetailsRequestedBanner';
+import { HiredBanner } from '@/components/worker/HiredBanner';
+import { HiredCelebrationModal } from '@/components/worker/HiredCelebrationModal';
 import { getJobs, updateWorkerProfile } from '@/lib/api/worker';
 import type { Job, PreferredCity } from '@/lib/api/worker';
 
@@ -46,6 +54,16 @@ const FILTER_CHIPS: { value: TypeFilter; labelKey: 'all' | 'full_time' | 'part_t
   { value: 'part-time', labelKey: 'part_time' },
   { value: 'contract',  labelKey: 'contract' },
 ];
+
+/**
+ * One unacknowledged hire, with its `hire` block hoisted out of the optional
+ * field.
+ *
+ * The pairing exists so nothing downstream needs `a.hire!`: the filter that
+ * builds this list is the ONE place that proves the block is there, and every
+ * reader after it gets a non-optional `hire`.
+ */
+type HireNotice = { application: Application; hire: ApplicationHire };
 
 /** Small caps rule between list sections. Doubles as the divider above the
  *  first row, which is why the rows below it use `divide-y` and no top border. */
@@ -142,18 +160,85 @@ export default function WorkerHomePage() {
    * rather than a lost message.
    */
   const [needingDetails, setNeedingDetails] = useState<Application[]>([]);
+  /**
+   * Hires this worker has not finished acknowledging -- the celebration state,
+   * read off the SAME response as the details banner because it is the same
+   * question asked of the same list.
+   *
+   * Two nullable stamps decide which of three things the worker sees:
+   *   `seen_at` null            -> the modal is owed (and this banner sits
+   *                                behind it, so closing the modal reveals it
+   *                                rather than replacing it)
+   *   `seen_at` set, ack null   -> the banner alone
+   *   `acknowledged_at` set     -> nothing, and the row never reaches here
+   *
+   * Both stamps live on the SERVER. A celebration remembered in
+   * `localStorage` would fire again on the worker's next device, and reading
+   * applications on a borrowed phone is the normal case for this audience.
+   */
+  const [hires, setHires] = useState<HireNotice[]>([]);
   useEffect(() => {
     if (!idToken) return;
     const controller = new AbortController();
     getApplications(idToken, controller.signal)
-      // `details_status`, not `status`: the timestamp-derived field is the one
-      // that survives an employer moving the applicant on to `talking`.
-      .then(({ applications }) => setNeedingDetails(
-        applications.filter((a) => a.details_status === 'requested'),
-      ))
+      .then(({ applications }) => {
+        // `details_status`, not `status`: the timestamp-derived field is the one
+        // that survives an employer moving the applicant on to `talking`.
+        setNeedingDetails(applications.filter((a) => a.details_status === 'requested'));
+        // `status` IS the authority for a hire, though -- a `hire` block left
+        // behind on a row an employer moved back out of `hired` must not
+        // congratulate anyone. `flatMap` rather than `filter` so the block is
+        // proven present here and non-optional everywhere after.
+        setHires(applications.flatMap((a) => (
+          a.status === 'hired' && a.hire && !a.hire.acknowledged_at
+            ? [{ application: a, hire: a.hire }]
+            : []
+        )));
+      })
       .catch(() => {});
     return () => controller.abort();
   }, [idToken]);
+
+  /**
+   * Records a step of the hire receipt and forgets about it.
+   *
+   * Deliberately no `await`, no loading state and no error surface. The caller
+   * has already updated the screen optimistically, and the two failure modes
+   * are not symmetric: a lost receipt costs one repeated congratulations
+   * message, whereas making a worker wait on the network -- or rolling their ×
+   * back on a 500 -- argues with them about their own screen. Errors are
+   * swallowed exactly like the `getApplications` fetch above.
+   *
+   * The `.catch` is not decoration: without it a rejected promise is an
+   * unhandled rejection that can fail the whole test run.
+   */
+  const recordHireStep = useCallback((applicationId: string, step: HireAckStep) => {
+    if (!idToken) return;
+    void acknowledgeHire(idToken, applicationId, step).catch(() => {});
+  }, [idToken]);
+
+  const closeCelebration = useCallback((applicationId: string) => {
+    setHires((prev) => prev.map((notice) => (
+      notice.application.application_id === applicationId
+        ? { ...notice, hire: { ...notice.hire, seen_at: new Date().toISOString() } }
+        : notice
+    )));
+    recordHireStep(applicationId, 'seen');
+  }, [recordHireStep]);
+
+  const dismissHire = useCallback((applicationId: string) => {
+    setHires((prev) => prev.filter(
+      (notice) => notice.application.application_id !== applicationId,
+    ));
+    recordHireStep(applicationId, 'dismissed');
+  }, [recordHireStep]);
+
+  /**
+   * The one hire still owed a celebration. Several unacknowledged hires at
+   * once is possible and rare; they get a banner each, and the modal takes
+   * them one visit at a time rather than stacking dialogs.
+   */
+  const celebrating = hires.find((notice) => notice.hire.seen_at === null);
 
   useEffect(() => {
     if (!idToken) return;
@@ -294,6 +379,33 @@ export default function WorkerHomePage() {
   return (
     <AppShell role="worker" title={t('title')}>
       <main className="mx-auto max-w-2xl px-4 py-6 md:px-6">
+        {celebrating ? (
+          <HiredCelebrationModal
+            open
+            applicationId={celebrating.application.application_id}
+            jobTitle={celebrating.application.job_title}
+            companyName={celebrating.application.company_name}
+            hire={celebrating.hire}
+            onClose={() => closeCelebration(celebrating.application.application_id)}
+          />
+        ) : null}
+
+        {/* ABOVE the details request: a job already won outranks a form still
+            to fill in. Both are above the search box for the same reason -- an
+            answer about work the worker has already done beats browsing for
+            more of it. */}
+        {hires.map((notice) => (
+          <div key={notice.application.application_id} className="mb-4">
+            <HiredBanner
+              applicationId={notice.application.application_id}
+              jobTitle={notice.application.job_title}
+              companyName={notice.application.company_name}
+              hire={notice.hire}
+              onDismiss={() => dismissHire(notice.application.application_id)}
+            />
+          </div>
+        ))}
+
         {/* Above the search box, per the prototype's W3b: an employer waiting
             on this worker outranks browsing for another job. */}
         {needingDetails.length === 1 ? (

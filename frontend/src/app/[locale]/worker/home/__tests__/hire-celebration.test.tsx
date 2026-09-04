@@ -1,0 +1,275 @@
+// @vitest-environment jsdom
+import type { ReactNode } from 'react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
+
+import type { Application, ApplicationHire } from '@/lib/api/worker';
+
+/*
+ * The wiring, not the components: given a `hired` row with a `hire` block, does
+ * the worker home show the right ONE of the two states, and does closing or
+ * dismissing it write the matching receipt?
+ *
+ * The three states are decided by two nullable timestamps, which is exactly the
+ * shape that gets inverted by accident:
+ *   seen_at null, acknowledged_at null -> modal (and the banner behind it)
+ *   seen_at set,  acknowledged_at null -> banner only
+ *   acknowledged_at set                -> nothing, forever
+ *
+ * Getting that wrong is not a cosmetic bug: it is either a celebration that
+ * re-fires on every visit for the rest of the account's life, or a hire the
+ * worker is never told about.
+ */
+
+vi.mock('@/i18n/navigation', () => ({
+  Link: ({ href, children, ...rest }: { href: string; children: ReactNode }) => (
+    <a href={href} {...rest}>{children}</a>
+  ),
+}));
+
+vi.mock('@/contexts/AuthContext', () => ({
+  useAuth: () => ({ idToken: 'test-token' }),
+}));
+
+vi.mock('@/hooks/useRequireAuth', () => ({
+  useRequireAuth: () => ({
+    handleLegalWall: (err: unknown) => {
+      throw err;
+    },
+  }),
+}));
+
+vi.mock('@/components/layout/AppShell', () => ({
+  AppShell: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+}));
+
+// The page's own best-effort profile GET. Left unmocked it would reach a real
+// `fetch` and make the suite depend on network timing for a call whose result
+// this test does not care about.
+vi.mock('@/lib/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/api')>()),
+  apiFetch: vi.fn().mockResolvedValue({ ok: false, status: 500, json: async () => ({}) }),
+}));
+
+const getApplications = vi.fn();
+const acknowledgeHire = vi.fn();
+vi.mock('@/lib/api/worker', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/api/worker')>()),
+  getJobs: vi.fn().mockResolvedValue({ jobs: [], other_jobs: [] }),
+  updateWorkerProfile: vi.fn(),
+  getApplications: (...args: unknown[]) => getApplications(...args),
+  acknowledgeHire: (...args: unknown[]) => acknowledgeHire(...args),
+}));
+
+type JobFeed = { jobs: unknown[]; otherJobs: unknown[] };
+
+vi.mock('@/hooks/usePageData', () => ({
+  usePageData: () => ({
+    phase: 'ready' as const,
+    data: { jobs: [], otherJobs: [] } as JobFeed,
+    empty: true,
+    errorKind: null,
+    refreshing: false,
+    refreshError: null,
+    retry: vi.fn(),
+    refresh: vi.fn(),
+    setData: vi.fn(),
+  }),
+}));
+
+import { interpolate, message, renderIntl } from '@/components/worker/onboarding/__tests__/render-intl';
+import WorkerHomePage from '../page';
+
+const APPLICATION_ID = '8f3a2c1d-4b5e-4f60-9a71-2c3d4e5f6071';
+
+function hire(overrides: Partial<ApplicationHire> = {}): ApplicationHire {
+  return {
+    hired_at: '2026-09-03T18:00:00.000Z',
+    seen_at: null,
+    acknowledged_at: null,
+    start_date: '2026-09-15',
+    location: 'Austin, TX',
+    pay: '$24-$28/hour',
+    shift_schedule: 'Mon-Fri, 7:00-15:30',
+    ...overrides,
+  };
+}
+
+function application(overrides: Partial<Application> = {}): Application {
+  return {
+    application_id: APPLICATION_ID,
+    job_id: 'job-1',
+    job_title: 'Welder',
+    company_name: 'Construcciones Bravo LLC',
+    status: 'hired',
+    applied_at: '2026-08-28T00:00:00.000Z',
+    hire: hire(),
+    ...overrides,
+  };
+}
+
+const BANNER_TITLE = interpolate(
+  message('worker_applications.hired_celebration.banner.title'),
+  { title: 'Welder', company: 'Construcciones Bravo LLC' },
+);
+
+function seed(applications: Application[]) {
+  getApplications.mockResolvedValue({ applications });
+}
+
+beforeEach(() => {
+  getApplications.mockReset();
+  acknowledgeHire.mockReset();
+  acknowledgeHire.mockResolvedValue({ seen_at: null, acknowledged_at: null });
+});
+
+describe('worker home -- the hire celebration', () => {
+  it('opens the modal for a hire the worker has not been shown yet', async () => {
+    seed([application()]);
+    renderIntl(<WorkerHomePage />);
+
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+    expect(screen.getByRole('heading', {
+      name: interpolate(message('worker_applications.hired_celebration.modal.title'), {
+        company: 'Construcciones Bravo LLC',
+      }),
+    })).toBeInTheDocument();
+  });
+
+  it('closing it writes the `seen` receipt and leaves the banner standing', async () => {
+    seed([application()]);
+    renderIntl(<WorkerHomePage />);
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', {
+      name: message('worker_applications.hired_celebration.modal.cta'),
+    }));
+
+    expect(acknowledgeHire).toHaveBeenCalledWith('test-token', APPLICATION_ID, 'seen');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    // The state moves modal -> banner locally, without a refetch: the receipt
+    // is fire-and-forget, so nothing on screen may wait on it.
+    expect(screen.getByText(BANNER_TITLE)).toBeInTheDocument();
+  });
+
+  it('dismissing the banner writes the `dismissed` receipt and removes it', async () => {
+    seed([application({ hire: hire({ seen_at: '2026-09-03T18:05:00.000Z' }) })]);
+    renderIntl(<WorkerHomePage />);
+    await waitFor(() => expect(screen.getByText(BANNER_TITLE)).toBeInTheDocument());
+    // Already seen: no second interruption.
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', {
+      name: message('worker_applications.hired_celebration.banner.dismiss'),
+    }));
+
+    expect(acknowledgeHire).toHaveBeenCalledWith('test-token', APPLICATION_ID, 'dismissed');
+    expect(screen.queryByText(BANNER_TITLE)).not.toBeInTheDocument();
+  });
+
+  it('walks the whole arc in one visit: modal -> banner -> gone', async () => {
+    seed([application()]);
+    renderIntl(<WorkerHomePage />);
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', {
+      name: message('worker_applications.hired_celebration.modal.cta'),
+    }));
+    fireEvent.click(screen.getByRole('button', {
+      name: message('worker_applications.hired_celebration.banner.dismiss'),
+    }));
+
+    expect(acknowledgeHire.mock.calls.map((call) => call[2])).toEqual(['seen', 'dismissed']);
+    expect(screen.queryByText(BANNER_TITLE)).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('shows nothing at all once the hire has been acknowledged', async () => {
+    seed([application({
+      hire: hire({
+        seen_at: '2026-09-03T18:05:00.000Z',
+        acknowledged_at: '2026-09-03T18:06:00.000Z',
+      }),
+    })]);
+    renderIntl(<WorkerHomePage />);
+
+    await waitFor(() => expect(getApplications).toHaveBeenCalled());
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.queryByText(BANNER_TITLE)).not.toBeInTheDocument();
+  });
+
+  it('ignores a row that is not hired, even if a stale `hire` block rides along', async () => {
+    // Defence against an employer moving someone back out of `hired`: the
+    // status is the authority, not the presence of the block.
+    seed([application({ status: 'talking' })]);
+    renderIntl(<WorkerHomePage />);
+
+    await waitFor(() => expect(getApplications).toHaveBeenCalled());
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.queryByText(BANNER_TITLE)).not.toBeInTheDocument();
+  });
+
+  it('ignores a hired row the backend sent without a hire block', async () => {
+    // The field is optional on purpose -- this frontend may deploy first.
+    seed([application({ hire: undefined })]);
+    renderIntl(<WorkerHomePage />);
+
+    await waitFor(() => expect(getApplications).toHaveBeenCalled());
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.queryByText(BANNER_TITLE)).not.toBeInTheDocument();
+  });
+
+  it('dismisses even when the receipt call fails', async () => {
+    // A worker pressing × has made a decision. Blocking it on the network, or
+    // rolling it back on a 500, would argue with them about their own screen.
+    acknowledgeHire.mockRejectedValue(new Error('offline'));
+    seed([application({ hire: hire({ seen_at: '2026-09-03T18:05:00.000Z' }) })]);
+    renderIntl(<WorkerHomePage />);
+    await waitFor(() => expect(screen.getByText(BANNER_TITLE)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', {
+      name: message('worker_applications.hired_celebration.banner.dismiss'),
+    }));
+
+    expect(screen.queryByText(BANNER_TITLE)).not.toBeInTheDocument();
+    // And the rejection is swallowed rather than surfacing as an error state.
+    await waitFor(() => expect(acknowledgeHire).toHaveBeenCalled());
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('puts the hire above a details request -- a job won outranks a form to fill', async () => {
+    seed([
+      application({
+        application_id: 'app-details',
+        job_id: 'job-2',
+        job_title: 'Finish Carpenter',
+        company_name: 'Lone Star Interiors',
+        status: 'details_requested',
+        details_status: 'requested',
+        hire: undefined,
+      }),
+      application({ hire: hire({ seen_at: '2026-09-03T18:05:00.000Z' }) }),
+    ]);
+    renderIntl(<WorkerHomePage />);
+
+    const hireBanner = await screen.findByText(BANNER_TITLE);
+    const detailsBanner = screen.getByText(
+      interpolate(message('worker_applications.details_banner.row_body'), {
+        company: 'Lone Star Interiors',
+      }),
+    );
+
+    expect(hireBanner.compareDocumentPosition(detailsBanner))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  it('survives the applications call failing, the way the details banner already does', async () => {
+    getApplications.mockRejectedValue(new Error('offline'));
+    renderIntl(<WorkerHomePage />);
+
+    await waitFor(() => expect(getApplications).toHaveBeenCalled());
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    // The page itself still rendered.
+    expect(screen.getByRole('searchbox')).toBeInTheDocument();
+  });
+});
