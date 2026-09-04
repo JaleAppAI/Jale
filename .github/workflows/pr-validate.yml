@@ -13,7 +13,29 @@ permissions:
   contents: read
 
 concurrency:
-  group: validate-${{ github.event.pull_request.number || github.ref }}
+  # Key on the commit, not the branch/PR-number: pull_request and push both
+  # fire for the same commit whenever a PR's source branch is `main` (e.g. a
+  # main -> prod release PR) -- push fires for the merge to main, pull_request
+  # fires for the PR itself. `github.ref`/`github.event.pull_request.number`
+  # put those two runs in different concurrency groups, so they execute in
+  # parallel instead of one superseding the other (confirmed live: runs
+  # 33840997855 (push) and 33841065482 (pull_request) both at commit dd6016c
+  # ran concurrently on 2026-09-04). Keying on the head commit instead
+  # collapses them into one group.
+  #
+  # Note this trades away same-PR cross-commit cancellation: each new commit
+  # on a PR gets its own SHA and therefore its own group, so pushing several
+  # commits in quick succession no longer auto-cancels the stale run the way
+  # grouping by PR number did. Collapsing the duplicate same-commit run is the
+  # fix for the observed incident (two ~20+ minute infra jobs for one commit,
+  # doubled during today's npm-audit-endpoint degradation); losing
+  # cross-commit supersede is the accepted tradeoff.
+  #
+  # `github.sha` on a `pull_request` event is the ephemeral test-merge commit,
+  # not the PR's head commit, so the head SHA must be read explicitly via
+  # `github.event.pull_request.head.sha`; push events fall through to
+  # `github.sha` (the actual pushed commit).
+  group: validate-${{ github.event.pull_request.head.sha || github.sha }}
   cancel-in-progress: true
 
 jobs:
