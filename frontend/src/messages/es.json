@@ -1035,6 +1035,32 @@
       "row_left": "Faltan {count} cosas",
       "row_body": "{company} te pidió tus datos."
     },
+    "hired_celebration": {
+      "modal": {
+        "eyebrow": "¡Felicidades!",
+        "title": "{company} te contrató",
+        "position": "Puesto: {title}",
+        "start_date": "Fecha de inicio",
+        "start_date_tbc": "Por confirmar",
+        "location": "Lugar",
+        "pay": "Pago",
+        "schedule": "Horario",
+        "body": "El empleador te enviará más detalles pronto (dónde presentarte, documentos, contacto). Si no recibes nada en los próximos días, no dudes en comunicarte con él.",
+        "reference": "Referencia de solicitud: {ref}",
+        "cta": "¡Genial!",
+        "link": "Ver mi solicitud"
+      },
+      "banner": {
+        "title": "Te contrataron: {title} en {company}",
+        "body_dated": "Inicio {date} · El empleador te enviará más detalles; si no llegan, comunícate con él.",
+        "body_undated": "Fecha de inicio por confirmar · El empleador te enviará más detalles; si no llegan, comunícate con él.",
+        "cta": "Ver solicitud",
+        "dismiss": "Cerrar"
+      },
+      "row": {
+        "body": "¡Felicidades! El empleador te enviará más detalles. Si no llegan, comunícate con él."
+      }
+    },
     "stats": {
       "total": "Postulaciones totales",
       "active": "Activas",
