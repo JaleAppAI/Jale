@@ -1,5 +1,5 @@
 'use client';
-import { useState, useRef, useEffect, type MutableRefObject, type ReactNode } from 'react';
+import { useState, useRef, useEffect, type FormEvent, type MutableRefObject, type ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
 import { useSearchParams } from 'next/navigation';
 import { useRouter } from '@/i18n/navigation';
@@ -65,6 +65,8 @@ export default function WorkerAuthForm() {
     const [resendSuccess, setResendSuccess] = useState(false);
     const [resendCooldownSeconds, setResendCooldownSeconds] = useState(0);
     const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
+    // Whichever phone step is mounted — only ever one at a time.
+    const phoneFormRef = useRef<HTMLFormElement | null>(null);
 
     const resetDigits = () => setDigits(Array(OTP_LENGTH).fill(''));
     const code = digits.join('');
@@ -79,6 +81,24 @@ export default function WorkerAuthForm() {
         return () => window.clearTimeout(timeoutId);
     }, [resendCooldownSeconds]);
 
+    /**
+     * Opens each phone step with the number field focused, the way the OTP step
+     * does it with `autoFocus` on its first box.
+     *
+     * It is done from here rather than with an `autoFocus` prop because the
+     * input lives inside `PhoneNumberField`, which takes no such prop and
+     * belongs to another lane's file. An effect keyed on `step` — never a timer
+     * — so the focus is in place before the step is interactive and can never
+     * land in the middle of someone's typing. (A deferred
+     * `setTimeout(..., 50)` used to do the OTP focus, and it was exactly that
+     * bug: the timer could fire between two keystrokes and drag the cursor back
+     * to the first box, dropping a digit.)
+     */
+    useEffect(() => {
+        if (step !== 'login' && step !== 'signup') return;
+        phoneFormRef.current?.querySelector<HTMLInputElement>('input[type="tel"]')?.focus();
+    }, [step]);
+
     const handleSendOtp = async () => {
         setError(null);
         setResendSuccess(false);
@@ -89,7 +109,10 @@ export default function WorkerAuthForm() {
             setResendCooldownSeconds(RESEND_CODE_COOLDOWN_SECONDS);
             setIsSignup(false);
             setStep('otp');
-            setTimeout(() => inputRefs.current[0]?.focus(), 50);
+            // No deferred focus call: the OTP step mounts fresh and its first
+            // box carries `autoFocus`, which React applies on mount. The old
+            // `setTimeout(..., 50)` here could fire mid-keystroke and yank the
+            // cursor back to box one, losing a digit.
         } catch (err) {
             setError(t(authErrorKey(err)));
         } finally {
@@ -108,7 +131,7 @@ export default function WorkerAuthForm() {
             setResendCooldownSeconds(RESEND_CODE_COOLDOWN_SECONDS);
             setIsSignup(true);
             setStep('otp');
-            setTimeout(() => inputRefs.current[0]?.focus(), 50);
+            // Same as `handleSendOtp`: the step's own `autoFocus` does this.
         } catch (err) {
             setError(t(authErrorKey(err)));
         } finally {
@@ -126,7 +149,10 @@ export default function WorkerAuthForm() {
             resetDigits();
             setResendSuccess(true);
             setResendCooldownSeconds(RESEND_CODE_COOLDOWN_SECONDS);
-            setTimeout(() => inputRefs.current[0]?.focus(), 50);
+            // The step is already mounted, so `autoFocus` cannot help here and
+            // the boxes were just cleared — focus the first one directly. Still
+            // no timer: the boxes are the same DOM nodes across this re-render.
+            inputRefs.current[0]?.focus();
         } catch (err) {
             setError(t(authErrorKey(err)));
         } finally {
@@ -235,14 +261,43 @@ export default function WorkerAuthForm() {
 
     const otpComplete = digits.every(Boolean);
 
+    /**
+     * `onSubmit` for one step, so Enter works on all three — this form had no
+     * `<form>` element at all, so the keystroke did nothing, including on the
+     * OTP screen where typing the sixth digit and pressing Enter is the whole
+     * interaction.
+     *
+     * The guard repeats the primary button's `disabled` expression instead of
+     * relying on the browser refusing implicit submission behind a disabled
+     * default button. It is not belt-and-braces: `workerSignIn` sends an SMS
+     * and a verify spends an attempt, so a submit that skipped `phoneReady` or
+     * `otpComplete` would cost the worker a real message or a real attempt.
+     */
+    const submitStep = (handler: () => void, disabled = false) =>
+        (event: FormEvent<HTMLFormElement>) => {
+            event.preventDefault();
+            if (disabled || isLoading) return;
+            handler();
+        };
+
     return (
         <div className="flex w-full flex-col">
             {/* Each step is its own subtree, so switching steps mounts a fresh
                 node and `.anim-fade-in` replays for the ENTERING step only. The
                 keyframe moves opacity and a 4px transform — neither is a
                 layout property, so nothing reflows around it. */}
+            {/* `noValidate` on each step: the steps validate their own input
+                (`phoneReady`, `otpComplete`) and render Cognito's answer inline.
+                No `<form>` existed here before, so no constraint validation ever
+                ran — turning it on now would add a second, competing mechanism
+                that swallows the submit behind a browser bubble. */}
             {step === 'login' && (
-                <div className="anim-fade-in flex flex-col gap-5">
+                <form
+                    ref={phoneFormRef}
+                    onSubmit={submitStep(handleSendOtp, !phoneReady)}
+                    noValidate
+                    className="anim-fade-in flex flex-col gap-5"
+                >
                     <AuthHeading title={t('title')} subtitle={t('phone_label')} />
                     <Field label={t('fields.phone')}>
                         <PhoneNumberField
@@ -253,15 +308,20 @@ export default function WorkerAuthForm() {
                         />
                     </Field>
                     {error && <FormError>{error}</FormError>}
-                    <Button className="w-full" size="lg" onClick={handleSendOtp} disabled={!phoneReady} loading={isLoading} loadingLabel={tCommon('loading')}>
+                    <Button type="submit" className="w-full" size="lg" disabled={!phoneReady} loading={isLoading} loadingLabel={tCommon('loading')}>
                         {t('send_otp')}
                     </Button>
                     <SwitchPrompt text={t('signup_prompt')} action={t('signup_link')} onClick={() => { setError(null); setStep('signup'); }} />
-                </div>
+                </form>
             )}
 
             {step === 'signup' && (
-                <div className="anim-fade-in flex flex-col gap-4">
+                <form
+                    ref={phoneFormRef}
+                    onSubmit={submitStep(handleCreateAccount, !phoneReady)}
+                    noValidate
+                    className="anim-fade-in flex flex-col gap-4"
+                >
                     <BackButton onClick={() => { setError(null); setStep('login'); }} label={t('back')} />
                     <AuthHeading title={t('signup_title')} subtitle={t('signup_subtitle')} />
                     <p className="text-xs leading-relaxed text-[var(--jale-ink-2)]">{t('password_note')}</p>
@@ -274,10 +334,10 @@ export default function WorkerAuthForm() {
                         />
                     </Field>
                     {error && <FormError>{error}</FormError>}
-                    <Button className="w-full" size="lg" onClick={handleCreateAccount} disabled={!phoneReady} loading={isLoading} loadingLabel={tCommon('loading')}>
+                    <Button type="submit" className="w-full" size="lg" disabled={!phoneReady} loading={isLoading} loadingLabel={tCommon('loading')}>
                         {t('create_account')}
                     </Button>
-                </div>
+                </form>
             )}
 
             {step === 'otp' && (
@@ -310,7 +370,7 @@ export default function WorkerAuthForm() {
                     isLoading={isLoading}
                     loadingLabel={tCommon('loading')}
                     disabled={!otpComplete || isLoading || isResendingCode}
-                    onSubmit={handleVerifyOtp}
+                    onFormSubmit={submitStep(handleVerifyOtp, !otpComplete || isResendingCode)}
                 />
             )}
         </div>
@@ -400,10 +460,17 @@ function OtpStep(props: {
     isLoading: boolean;
     loadingLabel: string;
     disabled: boolean;
-    onSubmit: () => void;
+    /** The step's `<form onSubmit>`; it carries the same guard as `disabled`. */
+    onFormSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
     return (
-        <div className="anim-fade-in flex flex-col gap-5">
+        /* A real `<form>`, so Enter verifies from ANY box once all six digits
+           are in — the keystroke a worker reaches for the instant the last
+           digit lands. `noValidate` for the same reason as the phone steps, and
+           the guard is `props.disabled`: the same expression the button uses
+           (incomplete code, verify in flight, resend in flight), so Enter can
+           never spend an OTP attempt the button would have refused. */
+        <form onSubmit={props.onFormSubmit} noValidate className="anim-fade-in flex flex-col gap-5">
             <BackButton onClick={props.onBack} label={props.backLabel} />
             <AuthHeading title={props.title} subtitle={props.subtitle} />
             <div className="grid gap-1.5" style={{ gridTemplateColumns: `repeat(${OTP_LENGTH}, 1fr)` }}>
@@ -413,6 +480,10 @@ function OtpStep(props: {
                         ref={(el) => { props.inputRefs.current[i] = el; }}
                         type="text"
                         inputMode="numeric"
+                        // React applies this on mount, synchronously — which is
+                        // why the deferred focus timers this step used to rely
+                        // on are gone.
+                        autoFocus={i === 0}
                         autoComplete={i === 0 ? 'one-time-code' : 'off'}
                         maxLength={i === 0 ? OTP_LENGTH : 1}
                         value={d}
@@ -431,7 +502,7 @@ function OtpStep(props: {
             {props.resendSuccess && (
                 <InlineFeedback tone="success">{props.resendSuccessMessage}</InlineFeedback>
             )}
-            <Button className="w-full" size="lg" onClick={props.onSubmit} disabled={props.disabled} loading={props.isLoading} loadingLabel={props.loadingLabel}>
+            <Button type="submit" className="w-full" size="lg" disabled={props.disabled} loading={props.isLoading} loadingLabel={props.loadingLabel}>
                 {props.buttonLabel}
             </Button>
             <p className="text-center text-sm text-[var(--jale-ink-2)]">
@@ -449,6 +520,6 @@ function OtpStep(props: {
                             : props.resendWaitLabel}
                 </button>
             </p>
-        </div>
+        </form>
     );
 }

@@ -76,6 +76,10 @@ vi.mock('next-intl', () => ({
 vi.mock('@/i18n/navigation', () => ({ useRouter: () => ({ push }) }));
 vi.mock('@/contexts/AuthContext', () => ({ useAuth: () => ({ setTokens }) }));
 vi.mock('@/lib/cognito', () => cognito);
+// The signup step's city field is a `LocationPicker`, which debounces a real
+// dataset query. Stubbed so the Enter-key assertions below are about the form
+// and not about a fetch that jsdom cannot serve.
+vi.mock('@/lib/location-search', () => ({ queryLocations: vi.fn().mockResolvedValue([]) }));
 
 import EmployerAuthForm from '@/components/auth/EmployerAuthForm';
 
@@ -229,6 +233,213 @@ describe('EmployerAuthForm — confirm step', () => {
         expect(screen.queryByText(message('auth.employer.errors.confirmed_sign_in_failed'))).not.toBeInTheDocument();
         // The confirm still worked, so the banner still belongs on screen.
         expect(screen.getByText(message('auth.employer.confirmed_sign_in'))).toBeInTheDocument();
+    });
+});
+
+/**
+ * The second half of the same incident. An employer whose account was never
+ * confirmed cannot reset their password AT ALL: the employer pool recovers
+ * phone-first, they have no verified email, and Cognito refuses with
+ * `InvalidParameterException` + "there is no registered/verified email or
+ * phone_number". That message mentions `phone_number`, so the shared mapper
+ * answered "Enter a valid phone number" — on a step whose only field is an
+ * email address.
+ *
+ * The reset is unreachable for them by design, so the fix is not better
+ * wording: it is to put them on the flow that does work, which is the same
+ * confirmation-code recovery the login step already runs.
+ */
+/**
+ * Every step of this form used to be a `Button onClick` with no `<form>`
+ * anywhere in the file, so Enter did nothing at all — on a login screen, which
+ * is the one place every user expects it to work. Five steps, one keystroke,
+ * and the guards have to hold: a primary button that is disabled (or already
+ * mid-request) must block Enter exactly as it blocks a click, or the flow will
+ * fire twice against Cognito's per-hour caps.
+ */
+describe('EmployerAuthForm — Enter submits the step it is pressed in', () => {
+    it('signs in from the password field, exactly once', async () => {
+        const user = userEvent.setup();
+        cognito.employerSignIn.mockResolvedValueOnce({ accessToken: 'a', idToken: 'i', refreshToken: 'r' });
+        render(<EmployerAuthForm />);
+
+        await user.type(screen.getByPlaceholderText(message('auth.employer.email_label')), 'employer@example.com');
+        await user.type(screen.getByPlaceholderText(message('auth.employer.password_label')), 'S3cret!pass{Enter}');
+
+        // Once, not twice: the primary button is `type="submit"` and carries no
+        // `onClick` of its own. Keeping both would double every request.
+        expect(cognito.employerSignIn).toHaveBeenCalledTimes(1);
+        expect(cognito.employerSignIn).toHaveBeenCalledWith('employer@example.com', 'S3cret!pass');
+    });
+
+    it('still signs in exactly once when the button is clicked', async () => {
+        const user = userEvent.setup();
+        cognito.employerSignIn.mockResolvedValueOnce({ accessToken: 'a', idToken: 'i', refreshToken: 'r' });
+        render(<EmployerAuthForm />);
+
+        await user.type(screen.getByPlaceholderText(message('auth.employer.email_label')), 'employer@example.com');
+        await user.type(screen.getByPlaceholderText(message('auth.employer.password_label')), 'S3cret!pass');
+        await user.click(screen.getByRole('button', { name: new RegExp(`^${message('auth.employer.sign_in')}`) }));
+
+        expect(cognito.employerSignIn).toHaveBeenCalledTimes(1);
+    });
+
+    it('confirms the account from the code field', async () => {
+        const user = userEvent.setup();
+        render(<EmployerAuthForm />);
+        await reachConfirmStepViaSignIn(user);
+
+        cognito.employerConfirmSignUp.mockResolvedValueOnce(undefined);
+        cognito.employerSignIn.mockResolvedValueOnce({ accessToken: 'a', idToken: 'i', refreshToken: 'r' });
+        await user.type(screen.getByRole('textbox'), '123456{Enter}');
+
+        expect(cognito.employerConfirmSignUp).toHaveBeenCalledTimes(1);
+        expect(cognito.employerConfirmSignUp).toHaveBeenCalledWith('employer@example.com', '123456');
+    });
+
+    it('is blocked while the primary button is disabled', async () => {
+        const user = userEvent.setup();
+        render(<EmployerAuthForm />);
+
+        await user.click(screen.getByRole('button', { name: message('auth.employer.forgot_link') }));
+        expect(await screen.findByText(FORGOT_MARKER)).toBeInTheDocument();
+        // Send is disabled until an address is typed, so Enter must be too —
+        // otherwise the keyboard path skips a guard the mouse path honours.
+        await user.type(screen.getByRole('textbox'), '{Enter}');
+
+        expect(cognito.employerForgotPassword).not.toHaveBeenCalled();
+    });
+
+    it('is blocked on the confirm step until the code is long enough', async () => {
+        const user = userEvent.setup();
+        render(<EmployerAuthForm />);
+        await reachConfirmStepViaSignIn(user);
+
+        await user.type(screen.getByRole('textbox'), '12{Enter}');
+
+        expect(cognito.employerConfirmSignUp).not.toHaveBeenCalled();
+    });
+
+    it('is not fired by the controls inside the signup step', async () => {
+        const user = userEvent.setup();
+        render(<EmployerAuthForm />);
+        await user.click(screen.getByRole('button', { name: message('auth.employer.signup_link') }));
+
+        // A `<button>` with no `type` defaults to submit, so wrapping this step
+        // in a `<form>` puts every child component's buttons one click away
+        // from creating an account. `CheckboxCard` and `LocationPicker` belong
+        // to other lanes' files, so this pins their behaviour from outside.
+        await user.click(screen.getByText(message('auth.employer.trades.electrician')));
+        // `<select>` maps to `combobox` too (country code, company size), so the
+        // city field is the one that is an `<input>`.
+        const cityField = screen.getAllByRole('combobox').find((el) => el.tagName === 'INPUT');
+        expect(cityField).toBeDefined();
+        await user.type(cityField!, 'San Antonio{Enter}');
+
+        expect(cognito.employerSignUp).not.toHaveBeenCalled();
+    });
+
+    it('opens every step with its first field focused', async () => {
+        const user = userEvent.setup();
+        render(<EmployerAuthForm />);
+
+        // Nothing to click before typing: the field the step is about already
+        // has the cursor.
+        expect(screen.getByPlaceholderText(message('auth.employer.email_label'))).toHaveFocus();
+
+        await user.click(screen.getByRole('button', { name: message('auth.employer.forgot_link') }));
+        expect(await screen.findByText(FORGOT_MARKER)).toBeInTheDocument();
+        expect(screen.getByRole('textbox')).toHaveFocus();
+    });
+});
+
+describe('EmployerAuthForm — forgot password for an unconfirmed account', () => {
+    /** Cognito's real refusal for an account with no verified contact. */
+    const noVerifiedContactError = {
+        code: 'InvalidParameterException',
+        name: 'InvalidParameterException',
+        message: 'Cannot reset password for the user as there is no registered/verified email or phone_number',
+    };
+
+    async function requestResetFor(user: ReturnType<typeof userEvent.setup>, address: string) {
+        await user.click(screen.getByRole('button', { name: message('auth.employer.forgot_link') }));
+        expect(await screen.findByText(FORGOT_MARKER)).toBeInTheDocument();
+        await user.type(screen.getByRole('textbox'), address);
+        await user.click(screen.getByRole('button', { name: new RegExp(`^${message('auth.employer.send_code')}`) }));
+    }
+
+    it('sends a new confirmation code and moves to the confirm step', async () => {
+        const user = userEvent.setup();
+        cognito.employerForgotPassword.mockRejectedValueOnce(noVerifiedContactError);
+        cognito.employerResendConfirmationCode.mockResolvedValueOnce(undefined);
+        render(<EmployerAuthForm />);
+
+        await requestResetFor(user, 'unconfirmed@example.com');
+
+        // The confirm step, in recovery mode — not the reset-code step, which
+        // is a dead end for this account.
+        expect(await screen.findByText(RECOVERY_MARKER)).toBeInTheDocument();
+        expect(
+            screen.getByText(translate('auth.employer', 'forgot_not_confirmed', { email: 'unconfirmed@example.com' })),
+        ).toBeInTheDocument();
+        // The address typed on the forgot step has to be promoted: `handleConfirm`
+        // reads `email`, and the resend has to go to the same place.
+        expect(cognito.employerResendConfirmationCode).toHaveBeenCalledTimes(1);
+        expect(cognito.employerResendConfirmationCode).toHaveBeenCalledWith('unconfirmed@example.com');
+        expect(
+            screen.getByText(translate('auth.employer', 'confirm_subtitle', { email: 'unconfirmed@example.com' })),
+        ).toBeInTheDocument();
+    });
+
+    it('never blames the phone field for it', async () => {
+        const user = userEvent.setup();
+        cognito.employerForgotPassword.mockRejectedValueOnce(noVerifiedContactError);
+        cognito.employerResendConfirmationCode.mockResolvedValueOnce(undefined);
+        render(<EmployerAuthForm />);
+
+        await requestResetFor(user, 'unconfirmed@example.com');
+
+        await screen.findByText(RECOVERY_MARKER);
+        // The sentence that made this incident unreadable. There is no phone
+        // field anywhere in this flow.
+        expect(screen.queryByText(message('auth.employer.errors.invalid_phone'))).not.toBeInTheDocument();
+        // One banner, not two: the recovery notice replaces the generic
+        // "we sent a new code" line rather than stacking with it.
+        expect(
+            screen.queryByText(translate('auth.employer', 'code_sent', { email: 'unconfirmed@example.com' })),
+        ).not.toBeInTheDocument();
+        // The send that just went out is accounted for against Cognito's
+        // 5-per-hour cap, so the Resend affordance is held rather than offered.
+        expect(screen.getByText(translate('auth.employer', 'resend_cooldown', { seconds: 60 }))).toBeInTheDocument();
+    });
+
+    it('leaves an ordinary reset failure on the forgot step with its own message', async () => {
+        const user = userEvent.setup();
+        cognito.employerForgotPassword.mockRejectedValueOnce({
+            code: 'LimitExceededException',
+            name: 'LimitExceededException',
+        });
+        render(<EmployerAuthForm />);
+
+        await requestResetFor(user, 'employer@example.com');
+
+        // Only the unconfirmed refusal reroutes. A rate limit is about this
+        // request, not about the account, so the step and its copy stay put —
+        // and nothing may spend a resend attempt on it.
+        expect(await screen.findByText(message('auth.employer.errors.too_many_attempts'))).toBeInTheDocument();
+        expect(screen.getByText(FORGOT_MARKER)).toBeInTheDocument();
+        expect(cognito.employerResendConfirmationCode).not.toHaveBeenCalled();
+    });
+
+    it('keeps the reset flow when Cognito accepts the request', async () => {
+        const user = userEvent.setup();
+        cognito.employerForgotPassword.mockResolvedValueOnce(undefined);
+        render(<EmployerAuthForm />);
+
+        await requestResetFor(user, 'employer@example.com');
+
+        expect(await screen.findByText(message('auth.employer.forgot_confirm_title'))).toBeInTheDocument();
+        expect(cognito.employerResendConfirmationCode).not.toHaveBeenCalled();
     });
 });
 
