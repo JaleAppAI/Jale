@@ -14,6 +14,11 @@ export async function handler(_event: ScheduledEvent): Promise<void> {
     throw error;
   }
   const agedBacklog = await countAgedWorkerIntentOutbox(pool);
+  // `...result` carries migration 093's `deferred` count onto this line as
+  // well as sent/ambiguous/failed/leaseLost. It is load-bearing: a deferred
+  // row is neither sent nor failed, so without it a lane whose WhatsApp
+  // template is stuck pending Meta approval reads as a drain that quietly did
+  // nothing. `sent: 0, failed: 0, deferred: 4` says what is actually wrong.
   console.log(JSON.stringify({ metric: 'WorkerIntentOutboxDrain', ...result }));
   if (result.ambiguous > 0) {
     console.log(JSON.stringify({ metric: 'WorkerIntentOutboxSendUnknown', count: result.ambiguous }));
