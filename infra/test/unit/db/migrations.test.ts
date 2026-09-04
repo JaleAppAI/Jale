@@ -126,6 +126,7 @@ describe('database migrations', () => {
       '092',
       '093',
       '094',
+      '095',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -1487,6 +1488,143 @@ describe('database migrations', () => {
       expect(text).toMatch(/independent of the code deploy/i);
       // ALTER TABLE ... FORCE takes ACCESS EXCLUSIVE on both tables until COMMIT.
       expect(text).toMatch(/ACCESS EXCLUSIVE/);
+    });
+  });
+  // 095 is the sprint-24 hotfix migration behind the worker hire celebration.
+  // It is the first file that ADDS COLUMNS to job_applications and then
+  // BACKFILLS them, so it inherits 094's trap: jale_admin owns the table and
+  // 003 FORCEs RLS on it, so the backfill sees ZERO rows -- and reports
+  // success -- unless the file un-forces first. Everything pinned here is
+  // invisible to a typecheck and to a mocked pool.
+  describe('095 adds the hire acknowledgement columns and backfills them under FORCE RLS', () => {
+    const sql = () => fs.readFileSync(
+      path.join(migrationsDir, '095_application_hire_ack.sql'), 'utf8',
+    );
+    /** The three columns the celebration is built on. */
+    const COLUMNS = ['hired_at', 'hired_seen_at', 'hired_ack_at'];
+    /** The two the WORKER's own API may write. hired_at is NOT one of them. */
+    const WORKER_WRITABLE = ['hired_seen_at', 'hired_ack_at'];
+
+    it('runs as jale_admin in ONE transaction and adds the three columns replay-safely', () => {
+      const text = sql();
+      expect(text).toContain('Connect as jale_admin');
+      expect(text.match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(text.match(/^COMMIT;$/gm)).toHaveLength(1);
+      // IF NOT EXISTS on every ADD COLUMN (the convention 017/077/090/091
+      // follow) is what makes a hand re-apply through the bastion, and the
+      // suite's own re-application, safe.
+      for (const col of COLUMNS) {
+        expect(text).toMatch(new RegExp(`ADD COLUMN IF NOT EXISTS ${col}\\s+TIMESTAMPTZ`, 'i'));
+      }
+      // Nullable, with no default: a NULL hired_at is what distinguishes
+      // "never hired" from "hired", and a DEFAULT now() would have stamped
+      // every pending row.
+      expect(text).not.toMatch(/hired_(at|seen_at|ack_at)\s+TIMESTAMPTZ[^,;]*(NOT NULL|DEFAULT)/i);
+    });
+
+    it('un-forces, backfills and re-forces exactly job_applications (028/094 pattern)', () => {
+      const text = sql();
+      expect(text).toContain('ALTER TABLE job_applications NO FORCE ROW LEVEL SECURITY;');
+      expect(text).toContain('ALTER TABLE job_applications FORCE ROW LEVEL SECURITY;');
+      // Reversed, the UPDATE runs under the owner-obeys-policies rule and
+      // rewrites nothing at all.
+      expect(text.indexOf('ALTER TABLE job_applications NO FORCE'))
+        .toBeLessThan(text.indexOf('ALTER TABLE job_applications FORCE'));
+      // No OTHER table's RLS posture is touched, and the un-force is reversed
+      // one for one -- an un-force left in place is a permanent, silent hole
+      // in a tenant boundary.
+      const statements = text.match(/ALTER TABLE (\w+) (?:NO )?FORCE ROW LEVEL SECURITY/g) ?? [];
+      const tables = new Set(statements.map((s) => s.match(/ALTER TABLE (\w+)/)![1]));
+      expect([...tables]).toEqual(['job_applications']);
+      expect(text.match(/ALTER TABLE \w+ NO FORCE ROW LEVEL SECURITY/g)).toHaveLength(1);
+      expect(text.match(/ALTER TABLE \w+ FORCE ROW LEVEL SECURITY/g)).toHaveLength(1);
+    });
+
+    // 094's lesson, restated for this file: once FORCE is back on, jale_admin's
+    // own SELECTs obey applications_worker_select / applications_employer_select
+    // (003) -- both keyed on an unset app.current_user_id, which is NULL, which
+    // matches nothing. A data assertion after the re-force reads zero rows and
+    // can never fail, however broken the backfill was.
+    it('asserts its DATA while RLS is still un-forced, and only its CATALOG state after', () => {
+      const text = sql();
+      const noForce = text.indexOf('ALTER TABLE job_applications NO FORCE');
+      const reForce = text.indexOf('ALTER TABLE job_applications FORCE');
+      expect(noForce).toBeGreaterThan(-1);
+      expect(reForce).toBeGreaterThan(noForce);
+
+      const unforcedWindow = text.slice(noForce, reForce);
+      const afterReForce = text.slice(reForce);
+
+      // The data check -- no hired row left without a hired_at -- lives inside
+      // the un-forced window and nowhere after it.
+      expect(unforcedWindow).toContain('migration 095: % hired application(s) still carry a NULL hired_at');
+      expect(afterReForce).not.toContain('still carry a NULL hired_at');
+      // The catalog checks are the reverse: pg_class and the privilege
+      // catalogs are not filtered by RLS, and asserting FORCE before the
+      // re-force would assert the wrong value.
+      expect(afterReForce).toContain('relforcerowsecurity');
+      expect(afterReForce).toContain('migration 095: job_applications lost RLS ENABLE + FORCE');
+      expect(unforcedWindow).not.toContain('relforcerowsecurity');
+    });
+
+    it('stamps every pre-existing hired row from updated_at, and only those', () => {
+      const text = sql();
+      // All three columns, from the row's own updated_at -- the closest thing
+      // the schema has to "when this became hired". Stamping seen/ack too is
+      // what suppresses a retroactive celebration for a worker hired weeks ago.
+      expect(text).toMatch(/SET\s+hired_at\s*=\s*updated_at/);
+      expect(text).toMatch(/hired_seen_at\s*=\s*updated_at/);
+      expect(text).toMatch(/hired_ack_at\s*=\s*updated_at/);
+      // Only hired rows, and only ones not already stamped: this is what makes
+      // a replay a no-op and what keeps a pending application's columns NULL.
+      expect(text).toMatch(/WHERE\s+status\s*=\s*'hired'\s+AND\s+hired_at\s+IS\s+NULL/);
+      // `status` must NOT be in the UPDATE's SET list: 091's
+      // job_applications_hire_requirements_guard and 023's
+      // job_applications_hired_count_sync are both `UPDATE OF status`
+      // triggers, so naming it would re-run the hire gate and re-sync
+      // jobs.workers_hired for every historical hire.
+      const update = text.slice(text.indexOf('UPDATE job_applications'));
+      expect(update.slice(0, update.indexOf('WHERE'))).not.toMatch(/\bstatus\s*=/);
+      expect(text).toContain('GET DIAGNOSTICS');
+    });
+
+    it('grants jale_whatsapp UPDATE on exactly the two acknowledgement columns', () => {
+      const text = sql();
+      // The worker's own door runs as jale_whatsapp (028's
+      // jobapp_whatsapp_update is the only worker-scoped UPDATE policy on this
+      // table), and PostgreSQL column privileges are what stop that role
+      // rewriting the hire itself.
+      expect(text).toContain(
+        'GRANT UPDATE (hired_seen_at, hired_ack_at) ON job_applications TO jale_whatsapp;',
+      );
+      // hired_at is deliberately absent: only the EMPLOYER's status update may
+      // set it. A grant on it would let a worker forge their own hire date.
+      expect(text).not.toMatch(/GRANT UPDATE[^;]*hired_at[^;]*jale_whatsapp/);
+      // 004 grants jale_whatsapp table-wide SELECT on job_applications, which
+      // covers columns added later -- so no SELECT grant belongs here, and the
+      // file says so rather than leaving a reviewer to re-litigate it.
+      expect(text).toMatch(/table-wide SELECT/i);
+      expect(text).not.toMatch(/GRANT SELECT[^;]*ON job_applications/);
+      // ...and the grant proves itself, after the re-force.
+      const afterReForce = text.slice(text.indexOf('ALTER TABLE job_applications FORCE'));
+      for (const col of WORKER_WRITABLE) expect(afterReForce).toContain(col);
+      expect(afterReForce).toContain(
+        'migration 095: jale_whatsapp missing UPDATE grant on job_applications.%',
+      );
+      expect(afterReForce).toMatch(/has_column_privilege|column_privileges/);
+    });
+
+    it('documents its deploy order and its lock window', () => {
+      const text = sql();
+      expect(text).toMatch(/AFTER 094/);
+      // The list endpoint SELECTs all three columns, so the schema has to be
+      // there first: this one is BEFORE the code deploy, unlike 094.
+      expect(text).toMatch(/BEFORE the code deploy/i);
+      // ALTER TABLE ... [NO] FORCE takes ACCESS EXCLUSIVE until COMMIT.
+      expect(text).toMatch(/ACCESS EXCLUSIVE/);
+      // The 003 set_updated_at trigger fires on the backfill and moves
+      // updated_at -- a side effect the header must name, not hide.
+      expect(text).toMatch(/set_updated_at/);
     });
   });
 });

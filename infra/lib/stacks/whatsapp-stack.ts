@@ -1416,9 +1416,12 @@ export class WhatsAppStack extends cdk.Stack {
     const applicationResource = props.workerApplicationsResource.addResource('{applicationId}');
     applicationResource.addMethod('GET', applicationDetailsIntegration, workerAuth);
     // ONE `{action}` resource carrying answers / certifications /
-    // prompt-answers, for the resource-budget reason spelled out on the
-    // onboarding door above: three named siblings would cost 12 ApiStack
+    // prompt-answers / hire-ack, for the resource-budget reason spelled out on
+    // the onboarding door above: four named siblings would cost 16 ApiStack
     // resources, this shape costs 4 on top of the `{applicationId}` node.
+    // Sprint 24's `hire-ack` therefore needed NO stack change at all: this
+    // path parameter already routes it, and the ApiStack resource count (and
+    // its 407 ceiling pin) is unchanged.
     // ANY, because the resource has to answer POST and refuse everything
     // else IN THE HANDLER (405) — it is not a widening, the Cognito worker
     // authorizer is attached exactly as it is to the GET.

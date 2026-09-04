@@ -6,11 +6,21 @@
  *   POST /worker/applications/{applicationId}/answers           -> field answers
  *   POST /worker/applications/{applicationId}/certifications    -> cert claims
  *   POST /worker/applications/{applicationId}/prompt-answers    -> prompt answers
+ *   POST /worker/applications/{applicationId}/hire-ack          -> celebration state
  *
- * ONE Lambda, four routes, the `whatsapp/web/worker-onboarding.ts` shape:
+ * ONE Lambda, five routes, the `whatsapp/web/worker-onboarding.ts` shape:
  * they share a connection, a transaction, an entry sequence and an error
- * vocabulary, and four functions would have been four copies of the same
+ * vocabulary, and five functions would have been five copies of the same
  * forty lines.
+ *
+ * ── hire-ack IS NOT A MERGE ACTION ────────────────────────────────────
+ * `hire-ack` (sprint 24, migration 095) records that the worker has seen the
+ * "You've been hired" modal and dismissed its banner. It is deliberately NOT
+ * in `WRITE_ACTIONS` and is answered BEFORE `loadRequirementSnapshot`: that
+ * load is not a pure read -- it copies the worker's vault documents onto the
+ * job and can trip either of 078's caps -- and none of that may be a
+ * consequence of dismissing a banner. It also needs no state document, so it
+ * never touches `buildState` and never flips the 031 GUC below.
  *
  * ── WHY IT RUNS AS jale_whatsapp (binding) ────────────────────────────
  * `job_applications` is FORCE RLS and the only worker-scoped UPDATE policy
@@ -89,8 +99,24 @@ const MAX_BODY_BYTES = 16 * 1024;
  */
 const MAX_ANSWER_KEYS = 20;
 
-/** The three `{action}` write doors. Anything else is a 404. */
+/** The three `{action}` doors that go through the requirements engine. */
 const WRITE_ACTIONS = new Set(['answers', 'certifications', 'prompt-answers']);
+
+/**
+ * The fourth POST door, which does not (see the file header). Kept out of
+ * `WRITE_ACTIONS` on purpose: the final `else` of the merge dispatch below is
+ * a catch-all that calls `mergePromptAnswers`, so an action added to that set
+ * without its own branch would silently become a prompt-answer write.
+ */
+const HIRE_ACK_ACTION = 'hire-ack';
+
+/**
+ * The two steps of the celebration, and the exact strings the browser sends.
+ * Matched literally -- no trim, no case folding -- because a client that gets
+ * this wrong is a client whose next request is worth refusing loudly rather
+ * than guessing at.
+ */
+const HIRE_ACK_STEPS = new Set(['seen', 'dismissed']);
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -370,12 +396,67 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         await rollback();
         return fail(405, 'method_not_allowed');
       }
-    } else if (!WRITE_ACTIONS.has(action)) {
+    } else if (!WRITE_ACTIONS.has(action) && action !== HIRE_ACK_ACTION) {
       await rollback();
       return fail(404, 'not_found');
     } else if (method !== 'POST') {
       await rollback();
       return fail(405, 'method_not_allowed');
+    }
+
+    // ── POST hire-ack: the celebration state ───────────────────────
+    // Answered here, BEFORE the snapshot load, for the reason in the file
+    // header. Ownership has already been proven by the SELECT above; the
+    // UPDATE re-states `worker_id = $2` anyway because that predicate is what
+    // 028's jobapp_whatsapp_update policy is keyed on, and it adds
+    // `status = 'hired'` so a row that is not a hire cannot be marked as one.
+    //
+    // 095 grants jale_whatsapp UPDATE on these two columns and NOT on
+    // hired_at: the hire date is the employer's claim, written only by
+    // employer-application-status-update.ts.
+    if (action === HIRE_ACK_ACTION) {
+      const step = body.step;
+      if (typeof step !== 'string' || !HIRE_ACK_STEPS.has(step)) {
+        await rollback();
+        return fail(400, 'invalid_step');
+      }
+
+      // COALESCE on both columns makes every call idempotent: the stamps are
+      // evidence of when the worker FIRST saw the hire, so a re-shown modal
+      // or a double-tapped dismissal must not move them.
+      //
+      // 'dismissed' also fills hired_seen_at, because a worker who dismisses
+      // the banner has necessarily seen the hire -- and a client that only
+      // ever reaches this step (a reload mid-celebration, a lost 'seen'
+      // request) must not leave hired_seen_at NULL forever, or the modal
+      // would re-fire on the next device.
+      //
+      // 003's set_updated_at trigger fires on this UPDATE and advances
+      // updated_at, exactly as the three merge doors' writes do.
+      const ackRes = await client.query<{ hired_seen_at: string | null; hired_ack_at: string | null }>(
+        step === 'dismissed'
+          ? `UPDATE job_applications
+                SET hired_seen_at = COALESCE(hired_seen_at, now()),
+                    hired_ack_at = COALESCE(hired_ack_at, now())
+              WHERE id = $1 AND worker_id = $2 AND status = 'hired'
+              RETURNING hired_seen_at, hired_ack_at`
+          : `UPDATE job_applications
+                SET hired_seen_at = COALESCE(hired_seen_at, now())
+              WHERE id = $1 AND worker_id = $2 AND status = 'hired'
+              RETURNING hired_seen_at, hired_ack_at`,
+        [applicationId, workerId],
+      );
+      // Zero rows is the same answer for "not yours" and "not hired": the
+      // caller is entitled to neither distinction.
+      if (ackRes.rows.length === 0) {
+        await rollback();
+        return fail(404, 'not_found');
+      }
+      await commit();
+      return json(200, {
+        seen_at: ackRes.rows[0].hired_seen_at ?? null,
+        acknowledged_at: ackRes.rows[0].hired_ack_at ?? null,
+      });
     }
 
     let snapshot: RequirementSnapshot | null;
