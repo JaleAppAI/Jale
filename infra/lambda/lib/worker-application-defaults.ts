@@ -1,4 +1,32 @@
 import type { PoolClient } from 'pg';
+import { isReusableField } from './job-fields';
+
+/**
+ * The REUSE FILTER (sprint 24 L3, decision D2) -- keeps only the keys
+ * `FIELD_REUSE_POLICY` marks 'stable' (job-fields.ts).
+ *
+ * This table has ONE row per worker and no job or employer dimension
+ * (079_worker_application_defaults.sql), so anything stored here is offered
+ * to every future employer. A per_application answer (`date_available`,
+ * `desired_pay`, `worked_here_before`, `emergency_contact`) must therefore
+ * never land in it -- the 2026-09-04 incident is exactly what that looks
+ * like from the employer's side.
+ *
+ * Built on a null-prototype object and gated on `isReusableField`, so a
+ * hostile key off a JSONB blob (`__proto__`, `constructor`, `toString`)
+ * neither survives the filter nor reaches `Object.prototype`.
+ */
+export function filterReusableDefaults(
+  answers: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  if (answers === null || answers === undefined) return out;
+  for (const key of Object.keys(answers)) {
+    if (!isReusableField(key)) continue;
+    out[key] = answers[key];
+  }
+  return out;
+}
 
 // Merge-only upsert into worker_application_defaults
 // (079_worker_application_defaults.sql) -- the worker's most-recently-
@@ -22,14 +50,20 @@ import type { PoolClient } from 'pg';
 // FORCE RLS, so the CALLER must have set that GUC
 // (`setInternalUserRlsContext`) before calling either function here.
 //
-// The caller must still strip the reserved 'certifications' key from
-// `answers` -- this table holds only the free-form questionnaire answer
-// keys (REQUIRED_FIELD_TYPES / job-fields.ts), never certification claims,
-// which are per-job by nature and meaningless as a cross-job default. This
-// function does not strip it itself and trusts the caller. (In practice
-// `mergeFieldAnswers` cannot even receive that key: it rejects any key
-// outside the job's required/optional field lists, and the 073/074 CHECKs
-// keep 'certifications' out of both.)
+// REUSE FILTER (sprint 24 L3) -- this function no longer trusts the caller
+// with WHICH keys may be stored. Everything written goes through
+// `filterReusableDefaults` above, so:
+//   - a per_application answer can never accumulate here, whichever surface
+//     or future caller sends it (defence in depth; `mergeFieldAnswers`
+//     filters too, and the incident's single guard being caller-side is why
+//     it failed);
+//   - the reserved 'certifications' key is DROPPED here rather than left to
+//     the caller, since it is not a REQUIRED_FIELD_TYPES key at all. (In
+//     practice `mergeFieldAnswers` cannot even receive it: it rejects any
+//     key outside the job's required/optional field lists, and the 073/074
+//     CHECKs keep 'certifications' out of both.)
+//   - a write whose keys are ALL filtered out issues no statement at all,
+//     rather than merging an empty object and bumping updated_at.
 //
 // MERGE semantics via the jsonb `||` operator, NEVER a replace: an existing
 // key in the stored `answers` that the new write does not mention survives
@@ -50,13 +84,15 @@ export async function upsertWorkerApplicationDefaults(
   workerId: string,
   answers: Record<string, unknown>,
 ): Promise<void> {
+  const reusable = filterReusableDefaults(answers);
+  if (Object.keys(reusable).length === 0) return;
   await client.query(
     `INSERT INTO worker_application_defaults (worker_id, answers, updated_at)
      VALUES ($1, $2::jsonb, now())
      ON CONFLICT (worker_id) DO UPDATE
        SET answers = worker_application_defaults.answers || EXCLUDED.answers,
            updated_at = now()`,
-    [workerId, JSON.stringify(answers)],
+    [workerId, JSON.stringify(reusable)],
   );
 }
 
