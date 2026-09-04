@@ -63,11 +63,11 @@ export type ApplicationStageKind = 'details_requested' | 'hired';
  * Duplicates `FALLBACK_BODY_KEY` from `whatsapp/lib/outbox.ts:20`.
  * `sendTwilioWhatsAppMessage` strips this key before sending ContentVariables
  * and falls back to its value as a plain `Body` when the content template has
- * no ContentSid (outbox.ts:130-145).
+ * no ContentSid (outbox.ts:131-145).
  *
  * That fallback is a SECRET-CONTENTS condition, not a type-level one: all four
  * names below ARE declared in `TwilioSecret['templates']`
- * (twilio.ts:159-162, added with the renderers in c1cb451a), and the plain
+ * (twilio.ts:160-163, added with the renderers in c1cb451a), and the plain
  * `Body` is used only for as long as no ContentSid is actually seeded under
  * those keys -- which is what made the 2026-09-04 63016s a template-approval
  * wait rather than a code bug (see the defer branch in
