@@ -609,4 +609,136 @@ describe('employer-application-status-update', () => {
     expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
     expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
   });
+  // ---------------------------------------------------------------------------
+  // B7 (sprint 24) -- honest notification outcome + resend
+  //
+  // The employer could not previously tell whether the worker actually heard
+  // about a details request: a `renderer_unavailable` worker got a plain 200
+  // with the row. The response now says so, and `resend: true` re-sends the
+  // same stage notification for a status that is already committed.
+  // ---------------------------------------------------------------------------
+
+  it('reports notified true when the status changed and the notification was enqueued', async () => {
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'talking', appStatusRequested: 'details_requested',
+    }));
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'details_requested' }) }));
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.notified).toBe(true);
+    // Only present when the answer is "no" -- there is nothing to explain
+    // about a notification that went out.
+    expect(body).not.toHaveProperty('notify_reason');
+  });
+
+  it("reports notified false with reason 'unchanged' when the same status is re-asserted without resend", async () => {
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'details_requested', appStatusRequested: 'details_requested',
+    }));
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'details_requested' }) }));
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ notified: false, notify_reason: 'unchanged' });
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+
+  it("reports notified false with reason 'not_notifiable_status' for a status the worker is never pinged about", async () => {
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'pending', appStatusRequested: 'contacted',
+    }));
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'contacted' }) }));
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ notified: false, notify_reason: 'not_notifiable_status' });
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+
+  it("reports notified false with reason 'renderer_unavailable' and STILL commits the status", async () => {
+    mockNotify.mockResolvedValue({ outcome: 'renderer_unavailable', reason: 'renderer_unavailable' });
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'talking', appStatusRequested: 'details_requested',
+    }));
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'details_requested' }) }));
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.status).toBe('details_requested');
+    expect(body.notified).toBe(false);
+    expect(body.notify_reason).toBe('renderer_unavailable');
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('re-enqueues the stage notification when resend is requested on an already details_requested application', async () => {
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'details_requested', appStatusRequested: 'details_requested',
+    }));
+
+    const res = await handler(makeEvent({
+      body: JSON.stringify({ status: 'details_requested', resend: true }),
+    }));
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).notified).toBe(true);
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+    expect(mockNotify.mock.calls[0][1]).toMatchObject({
+      kind: 'details_requested',
+      applicationId: APPLICATION_ID,
+      updatedAt: UPDATED_AT,
+    });
+  });
+
+  it('re-enqueues the hired notification when resend is requested on an already hired application', async () => {
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'hired', appStatusRequested: 'hired',
+    }));
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'hired', resend: true }) }));
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).notified).toBe(true);
+    expect(mockNotify.mock.calls[0][1]).toMatchObject({ kind: 'hired' });
+  });
+
+  it('returns 400 resend_not_applicable (and rolls back) when resend is asked for on a pending application', async () => {
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'pending', appStatusRequested: 'pending',
+    }));
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'pending', resend: true }) }));
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'resend_not_applicable', status: 'pending' });
+    expect(mockNotify).not.toHaveBeenCalled();
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
+    // Nothing may be written on the refused path.
+    expect(mockQuery).not.toHaveBeenCalledWith(expect.stringContaining('UPDATE job_applications'), expect.anything());
+  });
+
+  it('rejects a non-boolean resend before opening a DB transaction (400)', async () => {
+    const res = await handler(makeEvent({
+      body: JSON.stringify({ status: 'details_requested', resend: 'yes' }),
+    }));
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'invalid_resend' });
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('treats resend: false as no resend at all (no 400, no notification)', async () => {
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'pending', appStatusRequested: 'pending',
+    }));
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'pending', resend: false }) }));
+
+    expect(res.statusCode).toBe(200);
+    expect(mockNotify).not.toHaveBeenCalled();
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+  });
 });
