@@ -358,9 +358,9 @@ describe('requirements mapper round-trip (three-state -> four arrays -> back)', 
     expect(payload.required_docs).toEqual(['resume']);
     expect(payload.optional_docs).toEqual([]);
     expect(payload.optional_fields).toEqual(['references']);
-    expect(payload.required_fields).toEqual(
-      expect.arrayContaining(['work_authorization', 'date_available', 'emergency_contact', 'worked_here_before']),
-    );
+    // Empty since the owner's 2026-09-04 decision emptied DEFAULT_REQUIRED_KEYS:
+    // nothing is required until the employer picks it.
+    expect(payload.required_fields).toEqual([]);
   });
 
   it('jobToForm reconstructs the exact three-state map a create payload produced', () => {
