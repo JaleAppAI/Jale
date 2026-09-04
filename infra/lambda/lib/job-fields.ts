@@ -80,6 +80,67 @@ export type PayInterval = typeof PAY_INTERVALS[number];
 export type ExpectedDurationBucket = typeof EXPECTED_DURATION_BUCKETS[number];
 export type WorkDay = typeof WORK_DAYS[number];
 export type CertificationTier = 'required' | 'optional';
+export type RequiredFieldType = typeof REQUIRED_FIELD_TYPES[number];
+
+/**
+ * Whether an answer to a `required_fields` key may be REUSED across
+ * applications (decision D2, sprint 24 L3).
+ *
+ *   'stable'          the answer is a fact about the WORKER. It is the same
+ *                     no matter which employer asks, so it may be saved as a
+ *                     cross-application default and pre-filled.
+ *   'per_application' the answer is about THIS job/employer. Reusing it
+ *                     silently puts words in the worker's mouth.
+ *
+ * This exists because of the 2026-09-04 incident: `worker_application_defaults`
+ * is ONE JSONB blob per worker with no job and no employer dimension
+ * (079_worker_application_defaults.sql), and both its write-back
+ * (`mergeFieldAnswers`) and its read-back (`seedAnswersFromDefaults`) covered
+ * EVERY key. An employer saw "has worked here before" and a start date the
+ * worker had given to a DIFFERENT company.
+ *
+ * `Record<RequiredFieldType, ...>` makes this EXHAUSTIVE at compile time:
+ * adding a key to REQUIRED_FIELD_TYPES (which must itself stay in sync with
+ * the jobs_required_fields_valid CHECK, 073) fails the build here until it is
+ * classified. There is deliberately no default -- "is this a new question for
+ * every employer?" is a product decision, not something to infer.
+ */
+export const FIELD_REUSE_POLICY: Record<RequiredFieldType, 'stable' | 'per_application'> = {
+  // Stable: facts about the worker.
+  work_authorization: 'stable',
+  date_of_birth: 'stable',
+  home_address: 'stable',
+  education: 'stable',
+  military_service: 'stable',
+  work_history: 'stable',
+  references: 'stable',
+  // Per-application: answers ABOUT this job or this employer.
+  // `date_available` and `desired_pay` are quoted against a specific posting;
+  // `worked_here_before` is meaningless outside one employer; and
+  // `emergency_contact` is the most sensitive of the four -- it is a THIRD
+  // party's name and phone number, and reusing it spreads someone else's
+  // contact details to employers they were never given to.
+  date_available: 'per_application',
+  desired_pay: 'per_application',
+  worked_here_before: 'per_application',
+  emergency_contact: 'per_application',
+};
+
+/**
+ * The single predicate every reuse site shares (the seed, the write-back, the
+ * defaults GET). Takes a plain `string` on purpose: callers hold keys off a
+ * JSONB blob or a request body, not a narrowed union.
+ *
+ * `hasOwnProperty`, never a bare lookup: a key like `__proto__`,
+ * `constructor` or `toString` off an untrusted object would otherwise reach
+ * `Object.prototype` and read as something other than undefined. Anything
+ * outside the catalog -- the reserved 'certifications' claims key, the legacy
+ * 'ssn' doc type, a future key nobody has classified -- is NOT reusable.
+ */
+export function isReusableField(key: string): boolean {
+  if (!Object.prototype.hasOwnProperty.call(FIELD_REUSE_POLICY, key)) return false;
+  return FIELD_REUSE_POLICY[key as RequiredFieldType] === 'stable';
+}
 
 // BE-T2 (077): shape validated app-side, matching the 073/074 precedent that
 // per-entry validation of a JSON-shaped column stays out of SQL -- the
