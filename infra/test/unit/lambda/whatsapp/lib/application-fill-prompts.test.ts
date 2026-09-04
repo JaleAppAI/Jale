@@ -12,6 +12,9 @@ const FILL_MESSAGE_KEYS = [
   'intro_profile_check', 'reuse_fields_line', 'reuse_docs_line',
   'reuse_change_footer', 'confirm_all_prefilled', 'change_menu_header',
   'change_menu_invalid', 'change_nothing',
+  // F7: the raced-clear answer -- the application was completed elsewhere
+  // (the web stage-2 door) while this lane still had a CAMBIAR menu armed.
+  'change_locked',
 ] as const;
 
 describe('application-fill-prompts.ts', () => {
@@ -181,6 +184,25 @@ describe('application-fill-prompts.ts', () => {
     const en = prompts.fillMessage('confirm_all_prefilled', 'en');
     expect(en).toContain('DONE');
     expect(en).toContain('CHANGE');
+  });
+
+  // F7: `clearFieldAnswer` refuses once `details_completed_at` is set, so a
+  // pick made after the application was completed on the web must say THAT,
+  // not re-ask a question and not send the completion copy a second time.
+  test('change_locked says the application is already sent and links the worker at it', () => {
+    const url = 'https://jaleapp.ai/es/worker/applications/app-1';
+    const es = prompts.fillMessage('change_locked', 'es', { url });
+    expect(es).toBe(
+      'Esta solicitud ya se envio y no se puede editar aqui. Puedes revisarla en'
+      + ` ${url}.`,
+    );
+    const en = prompts.fillMessage('change_locked', 'en', { url });
+    expect(en).toBe(
+      'This application was already sent and can no longer be edited here. You can review it at'
+      + ` ${url}.`,
+    );
+    expect(es).not.toContain('{{url}}');
+    expect(en).not.toContain('{{url}}');
   });
 
   test('the change menu has a header, an out-of-range retry, and a nothing-to-fix answer', () => {
