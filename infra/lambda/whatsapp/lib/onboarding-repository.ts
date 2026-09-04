@@ -6,6 +6,8 @@ import type {
   WorkflowStepKey,
 } from './onboarding-types';
 import { claimPendingReferral } from './referral-claims';
+import { canonicalizeWorkerTrade } from '../../lib/trade-canonical';
+import { requestTradeAliasGeneration } from '../../lib/trade-alias-request';
 
 // ── Contract shared by every exported function in this module ──
 //
@@ -685,4 +687,65 @@ export async function completeOnboarding(
   console.log(JSON.stringify({ metric: 'OnboardingCompleted', runId: input.runId }));
 
   return { assessmentEventId, workerReadyEventId };
+}
+
+/**
+ * Sprint 24 L6 — the canonicalising custom-trade write.
+ *
+ * `ProfilePersistenceAdapter.saveCustomTrade` (lib/onboarding-adapters.ts)
+ * stores the worker's raw typed profession verbatim, so "soldador",
+ * "Soldadura" and "welder" become three different stored trades for one job.
+ * This resolves the text through the bilingual `trade_aliases` cache first and
+ * writes the canonical pair instead (decision D4):
+ *
+ *   - resolves to a row whose `trade_category` is also a `users.main_trade`
+ *     enum key -> that key, with `main_trade_other` cleared
+ *   - resolves otherwise (welder, drywall, ...) -> stays custom, with the
+ *     canonical name in the worker's own language
+ *   - resolves to nothing -> the worker's words, tidied, and the alias
+ *     generator is asked to learn the trade so the NEXT write canonicalises
+ *
+ * Blank input writes NOTHING: `main_trade = 'other'` with a null
+ * `main_trade_other` is exactly what `chk_trade_other` (004_whatsapp.sql:66-70)
+ * rejects, and there is no trade to record anyway.
+ *
+ * `lang` is a parameter rather than a lookup on purpose — every caller already
+ * holds the run's `preferredLanguage` (`WorkerGate.preferredLanguage`), and
+ * re-reading it here would mean either duplicating `loadWorkerGate`'s
+ * run-selection SQL or taking its `FOR UPDATE` row lock a second time.
+ *
+ * Same module contract as everything else here: no BEGIN/COMMIT/ROLLBACK, no
+ * RLS context, one parameterized UPDATE on the caller's open transaction. The
+ * `trade_aliases` read therefore runs INSIDE that transaction; a genuine DB
+ * failure there aborts it and the UPDATE below fails loudly rather than
+ * silently storing something wrong.
+ */
+export async function saveCanonicalCustomTrade(
+  client: PoolClient,
+  workerId: string,
+  rawProfession: string,
+  lang: PreferredLanguage = 'es',
+): Promise<void> {
+  const canonical = await canonicalizeWorkerTrade(client, { raw: rawProfession, lang });
+  if (canonical.main_trade === 'other' && !canonical.main_trade_other) return;
+
+  await client.query(
+    `UPDATE users
+        SET main_trade = $2,
+            main_trade_other = $3
+      WHERE id = $1 AND user_type = 'worker'`,
+    [workerId, canonical.main_trade, canonical.main_trade_other],
+  );
+
+  // Fire-and-forget cache growth, and only for a trade the cache did not
+  // know. `requestTradeAliasGeneration` never throws by contract; the
+  // try/catch is defence in depth so learning a trade can never fail the
+  // worker's onboarding turn.
+  if (!canonical.resolved && canonical.main_trade_other) {
+    try {
+      await requestTradeAliasGeneration(canonical.main_trade_other);
+    } catch {
+      // Swallowed intentionally -- see comment above.
+    }
+  }
 }

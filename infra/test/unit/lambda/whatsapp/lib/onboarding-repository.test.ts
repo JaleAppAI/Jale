@@ -1,4 +1,6 @@
+import { requestTradeAliasGeneration } from '../../../../../lambda/lib/trade-alias-request';
 import {
+  saveCanonicalCustomTrade,
   loadWorkerGate,
   loadPreAuthStateForUpdate,
   savePreAuthState,
@@ -12,6 +14,10 @@ import {
   resetPendingTrustAssessmentAndSkills,
   findPreviousStepKey,
 } from '../../../../../lambda/whatsapp/lib/onboarding-repository';
+
+// The alias generator is a fire-and-forget Lambda invoke; only WHETHER it was
+// asked to learn a trade is behaviour this module owns.
+jest.mock('../../../../../lambda/lib/trade-alias-request');
 
 const WORKER_ID = 'aaaaaaaa-0000-0000-0000-000000000001';
 const RUN_ID = 'bbbbbbbb-0000-0000-0000-000000000001';
@@ -635,5 +641,124 @@ describe('completeOnboarding', () => {
 
     const statements = query.mock.calls.map(([sql]) => String(sql));
     expect(statements.some((sql) => /referral_pending_claims/.test(sql))).toBe(false);
+  });
+});
+
+// ── L6: the canonicalising custom-trade write ───────────────────────
+describe('saveCanonicalCustomTrade', () => {
+  const WELDER = { trade_key: 'welder', canonical_en: 'Welder', canonical_es: 'Soldador', trade_category: null };
+  const ELECTRICIAN = { trade_key: 'electrician', canonical_en: 'Electrician', canonical_es: 'Electricista', trade_category: 'electrician' };
+
+  /** Answers the one `trade_aliases` SELECT; everything else is a plain write. */
+  function seed(aliasRow?: Record<string, unknown>) {
+    const { query, client } = makeClient();
+    query.mockImplementation((sql: string) =>
+      /FROM trade_aliases/.test(sql)
+        ? Promise.resolve({ rows: aliasRow ? [aliasRow] : [], rowCount: aliasRow ? 1 : 0 })
+        : Promise.resolve({ rows: [], rowCount: 1 }),
+    );
+    return { query, client };
+  }
+
+  const usersUpdate = (query: jest.Mock) =>
+    query.mock.calls.find(([sql]) => /UPDATE users/.test(String(sql)));
+
+  beforeEach(() => {
+    (requestTradeAliasGeneration as jest.Mock).mockReset();
+    (requestTradeAliasGeneration as jest.Mock).mockResolvedValue(undefined);
+  });
+
+  it('stores the canonical Spanish name for a resolved custom trade', async () => {
+    const { query, client } = seed(WELDER);
+
+    await saveCanonicalCustomTrade(client, WORKER_ID, '  soldador ', 'es');
+
+    expect(usersUpdate(query)![1]).toEqual([WORKER_ID, 'other', 'Soldador']);
+    expect(requestTradeAliasGeneration).not.toHaveBeenCalled();
+  });
+
+  it('stores the canonical English name for an English worker', async () => {
+    const { query, client } = seed(WELDER);
+
+    await saveCanonicalCustomTrade(client, WORKER_ID, 'soldadura', 'en');
+
+    expect(usersUpdate(query)![1]).toEqual([WORKER_ID, 'other', 'Welder']);
+  });
+
+  it('defaults to Spanish when no language is supplied', async () => {
+    const { query, client } = seed(WELDER);
+
+    await saveCanonicalCustomTrade(client, WORKER_ID, 'Welder');
+
+    expect(usersUpdate(query)![1]).toEqual([WORKER_ID, 'other', 'Soldador']);
+  });
+
+  it('every spelling of one trade converges on the same stored text', async () => {
+    for (const raw of ['soldador', 'Soldadura', 'WELDING', 'welders']) {
+      const { query, client } = seed(WELDER);
+      await saveCanonicalCustomTrade(client, WORKER_ID, raw, 'es');
+      expect(usersUpdate(query)![1][2]).toBe('Soldador');
+    }
+  });
+
+  it('promotes a resolved standard trade onto the enum and clears the free text', async () => {
+    const { query, client } = seed(ELECTRICIAN);
+
+    await saveCanonicalCustomTrade(client, WORKER_ID, 'electricista', 'es');
+
+    expect(usersUpdate(query)![1]).toEqual([WORKER_ID, 'electrician', null]);
+  });
+
+  it('tidies an unresolved trade and asks the generator to learn it', async () => {
+    const { query, client } = seed();
+
+    await saveCanonicalCustomTrade(client, WORKER_ID, '  pipe   fitter ', 'es');
+
+    expect(usersUpdate(query)![1]).toEqual([WORKER_ID, 'other', 'Pipe fitter']);
+    expect(requestTradeAliasGeneration).toHaveBeenCalledWith('Pipe fitter');
+  });
+
+  it('writes nothing for blank input — chk_trade_other would reject the pair', async () => {
+    const { query, client } = seed(WELDER);
+
+    await saveCanonicalCustomTrade(client, WORKER_ID, '   ', 'es');
+
+    expect(query).not.toHaveBeenCalled();
+    expect(requestTradeAliasGeneration).not.toHaveBeenCalled();
+  });
+
+  it('never writes main_trade other with a null main_trade_other', async () => {
+    for (const row of [WELDER, ELECTRICIAN, undefined]) {
+      const { query, client } = seed(row);
+      await saveCanonicalCustomTrade(client, WORKER_ID, 'soldador', 'es');
+      const [, params] = usersUpdate(query)!;
+      if (params[1] === 'other') expect(params[2]).toBeTruthy();
+    }
+  });
+
+  it('owns no transaction: no BEGIN/COMMIT/ROLLBACK, and one UPDATE', async () => {
+    const { query, client } = seed(WELDER);
+
+    await saveCanonicalCustomTrade(client, WORKER_ID, 'soldador', 'es');
+
+    const statements = query.mock.calls.map(([sql]) => String(sql));
+    expect(statements.some((sql) => /\b(BEGIN|COMMIT|ROLLBACK)\b/.test(sql))).toBe(false);
+    expect(statements.filter((sql) => /UPDATE users/.test(sql))).toHaveLength(1);
+  });
+
+  it('scopes the write to workers, like every other profile write here', async () => {
+    const { query, client } = seed(WELDER);
+
+    await saveCanonicalCustomTrade(client, WORKER_ID, 'soldador', 'es');
+
+    expect(String(usersUpdate(query)![0])).toMatch(/user_type = 'worker'/);
+  });
+
+  it('a failing generator invoke never fails the write', async () => {
+    const { query, client } = seed();
+    (requestTradeAliasGeneration as jest.Mock).mockRejectedValueOnce(new Error('invoke failed'));
+
+    await expect(saveCanonicalCustomTrade(client, WORKER_ID, 'pipe fitter', 'es')).resolves.toBeUndefined();
+    expect(usersUpdate(query)).toBeDefined();
   });
 });
