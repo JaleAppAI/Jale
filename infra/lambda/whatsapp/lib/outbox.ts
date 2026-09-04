@@ -495,19 +495,30 @@ interface LeasedWorkerIntentOutboxRow {
  * owns ordering, retry/backoff, and fencing; network I/O starts only after
  * the claim call has committed.
  *
- * A leased row has FOUR ends, not three. `deferred` is migration 093's
+ * A leased row has FIVE ends, not three. `deferred` is migration 093's
  * addition: the row is rescheduled without spending an attempt, because the
  * failure was "Meta has not approved this template yet" and no number of
  * retries changes that. It is counted separately from `failed` on purpose --
  * one needs an operator to chase a template approval, the other needs a code
  * or provider fix, and rolling them together made the 2026-09-04 incident
  * look like an ordinary send failure.
+ *
+ * `expired` is the other half of that outcome, and it is a DEATH. 093's
+ * 48-hour ceiling lives inside the RPC's own UPDATE (`created_at < now() -
+ * interval '48 hours'` -> status = 'failed'), and the function returns a bare
+ * BOOLEAN either way -- so "parked for another hour" and "given up on
+ * forever" are the same `true` to this caller. Counting both as `deferred`
+ * meant an employer's "we want to hire you" could age out with `failed` still
+ * 0, no WorkerIntentOutboxFailure line, and nothing whatsoever in CloudWatch.
+ * `recordDeferral` therefore reads the row's status back and reports which
+ * branch the definer actually took.
  */
 export async function drainWorkerIntentOutbox(
   pool: { connect(): Promise<PoolClient> },
   limit = 10,
 ): Promise<{
-  sent: number; ambiguous: number; failed: number; leaseLost: number; deferred: number;
+  sent: number; ambiguous: number; failed: number; leaseLost: number;
+  deferred: number; expired: number;
 }> {
   const leaseClient = await pool.connect();
   let leased: LeasedWorkerIntentOutboxRow[];
@@ -525,6 +536,7 @@ export async function drainWorkerIntentOutbox(
   let failed = 0;
   let leaseLost = 0;
   let deferred = 0;
+  let expired = 0;
 
   const recordFailure = async (
     row: LeasedWorkerIntentOutboxRow,
@@ -552,8 +564,19 @@ export async function drainWorkerIntentOutbox(
    * flag on it: the RPCs differ in name, arity and meaning, and the one thing
    * they must share -- treating a `false` return as a lost lease rather than
    * as a quiet no-op -- is repeated here deliberately.
+   *
+   * Returns WHICH of 093's two branches ran, which the RPC itself will not
+   * say: `RETURNS BOOLEAN`, and it is `true` both for the row that went back
+   * to 'pending' and for the row the 48-hour ceiling just moved to 'failed'.
+   * So the status is read back -- on the SAME client, inside the same
+   * connect/release, and projected to `status` alone rather than `SELECT *`
+   * on a row that carries a phone number and a message body. 093 is applied
+   * and frozen; this is how its terminal branch becomes observable without
+   * touching it.
    */
-  const recordDeferral = async (row: LeasedWorkerIntentOutboxRow): Promise<void> => {
+  const recordDeferral = async (
+    row: LeasedWorkerIntentOutboxRow,
+  ): Promise<'deferred' | 'expired'> => {
     const resultClient = await pool.connect();
     try {
       const deferral = await resultClient.query<{ deferred: boolean }>(
@@ -565,6 +588,16 @@ export async function drainWorkerIntentOutbox(
         leaseLost += 1;
         throw new Error(`worker_intent_lease_lost:${row.id}`);
       }
+      const after = await resultClient.query<{ status: string }>(
+        "SELECT status FROM whatsapp_outbox WHERE id = $1 AND source_type = 'worker_intent'",
+        [row.id],
+      );
+      // No row (or any status other than 'failed') is NOT evidence of the
+      // terminal branch: 043's sweep or an operator could have moved the row
+      // between the two statements, and calling that an expiry would page
+      // someone about a Meta approval that had nothing to do with it. Only an
+      // explicit 'failed' is read as the ceiling having fired.
+      return after.rows[0]?.status === 'failed' ? 'expired' : 'deferred';
     } finally {
       resultClient.release();
     }
@@ -581,11 +614,22 @@ export async function drainWorkerIntentOutbox(
       // not even when the template name matches.
       const isAmbiguous = error instanceof AmbiguousTwilioSendError;
       if (!isAmbiguous && isTemplatePendingRejection(error, row.content_template)) {
-        await recordDeferral(row);
-        // No count on the line: this is emitted once per deferred row, so the
-        // CloudWatch metric filter counts occurrences.
-        console.log(JSON.stringify({ metric: 'WorkerIntentOutboxTemplatePending' }));
-        deferred += 1;
+        const outcome = await recordDeferral(row);
+        // No count on either line: one is emitted per row, and the metric
+        // filters that count them (WorkerIntentTemplatePendingMetric /
+        // WorkerIntentTemplateExpiredMetric in whatsapp-stack.ts, both on this
+        // Lambda's log group) publish a fixed value of 1 per occurrence.
+        //
+        // Mutually exclusive on purpose. A row that just died emitting the
+        // pending line too would inflate the "waiting on Meta" metric with
+        // deaths and leave the two alarms saying the same thing.
+        if (outcome === 'expired') {
+          console.log(JSON.stringify({ metric: 'WorkerIntentOutboxTemplateExpired' }));
+          expired += 1;
+        } else {
+          console.log(JSON.stringify({ metric: 'WorkerIntentOutboxTemplatePending' }));
+          deferred += 1;
+        }
         continue;
       }
       await recordFailure(row, error, isAmbiguous);
@@ -622,7 +666,7 @@ export async function drainWorkerIntentOutbox(
     sent += 1;
   }
 
-  return { sent, ambiguous, failed, leaseLost, deferred };
+  return { sent, ambiguous, failed, leaseLost, deferred, expired };
 }
 
 export async function countAgedWorkerIntentOutbox(
