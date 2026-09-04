@@ -2286,6 +2286,7 @@ describe('Processor Lambda', () => {
       it('the Start button arms stage 2: seeds defaults, scrubs both lanes, sends the intro then the first question', async () => {
         mockConvTurn('SM-app-start');
         mockFillSnapshotRow({ required_fields: ['work_authorization'] }); // handleApplicationStart's own load
+        mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox intro_profile_check (L3)
         mockSeedNoDefaults();
         mockStateContextUpdate(); // arm write
         mockFillSnapshotRow({ required_fields: ['work_authorization'] }); // armFill's post-seed counts
@@ -2585,6 +2586,7 @@ describe('Processor Lambda', () => {
           applications_menu: { ids: ['aaaaaaaa-0000-4000-8000-00000000000a'], at: Date.now() },
         });
         mockFillSnapshotRow({ required_fields: ['work_authorization'] });
+        mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox intro_profile_check (L3)
         mockSeedNoDefaults();
         mockStateContextUpdate(); // arm write
         mockFillSnapshotRow({ required_fields: ['work_authorization'] });
