@@ -62,8 +62,8 @@ describe('buildApplicationStageMessage', () => {
 
     expect(message.contentTemplate).toBe('application_update_es');
     expect(message.body).toBe(
-      'RM Construction quiere avanzar con tu aplicacion para Concrete Finisher y necesita algunos datos mas. '
-      + `Escribe "aplicaciones" para responder aqui, o entra en https://jaleapp.ai/es/worker/applications/${APPLICATION_ID}`,
+      'Actualizacion de aplicacion: RM Construction quiere avanzar con tu aplicacion para Concrete Finisher y necesita algunos datos mas. '
+      + `Escribe "aplicaciones" para responder aqui, o usa https://jaleapp.ai/es/worker/applications/${APPLICATION_ID} para responder cuando quieras.`,
     );
     expect(message.contentVariables).toEqual({
       '1': 'Concrete Finisher',
@@ -80,8 +80,8 @@ describe('buildApplicationStageMessage', () => {
 
     expect(message.contentTemplate).toBe('application_update_en');
     expect(message.body).toBe(
-      'RM Construction wants to move forward with your application for Concrete Finisher and needs a few more details. '
-      + `Reply "applications" to answer here, or go to ${url}`,
+      'Application update: RM Construction wants to move forward with your application for Concrete Finisher and needs a few more details. '
+      + `Reply "applications" to answer here, or use ${url} to respond when ready.`,
     );
     expect(message.contentVariables['4']).toBe(url);
     expect(message.contentVariables.__fallback_body).toBe(message.body);
@@ -93,7 +93,7 @@ describe('buildApplicationStageMessage', () => {
     expect(message.contentTemplate).toBe('application_hired_es');
     expect(message.body).toBe(
       'Buenas noticias: RM Construction te selecciono para Concrete Finisher. '
-      + `Te contactaran para los siguientes pasos. Detalles: ${base.url}`,
+      + `Referencia: app-${APPLICATION_ID}. Consulta ${base.url} para ver los detalles y proximos pasos.`,
     );
   });
 
@@ -104,7 +104,7 @@ describe('buildApplicationStageMessage', () => {
     expect(message.contentTemplate).toBe('application_hired_en');
     expect(message.body).toBe(
       'Good news: RM Construction selected you for Concrete Finisher. '
-      + `They will contact you about next steps. Details: ${url}`,
+      + `Reference: app-${APPLICATION_ID}. Use ${url} to view details and next steps.`,
     );
   });
 

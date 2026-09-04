@@ -116,15 +116,15 @@ export function buildApplicationStageMessage(
   const body =
     input.kind === 'details_requested'
       ? lang === 'es'
-        ? `${companyName} quiere avanzar con tu aplicacion para ${jobTitle} y necesita algunos datos mas. `
-          + `Escribe "aplicaciones" para responder aqui, o entra en ${url}`
-        : `${companyName} wants to move forward with your application for ${jobTitle} and needs a few more details. `
-          + `Reply "applications" to answer here, or go to ${url}`
+        ? `Actualizacion de aplicacion: ${companyName} quiere avanzar con tu aplicacion para ${jobTitle} y necesita algunos datos mas. `
+          + `Escribe "aplicaciones" para responder aqui, o usa ${url} para responder cuando quieras.`
+        : `Application update: ${companyName} wants to move forward with your application for ${jobTitle} and needs a few more details. `
+          + `Reply "applications" to answer here, or use ${url} to respond when ready.`
       : lang === 'es'
         ? `Buenas noticias: ${companyName} te selecciono para ${jobTitle}. `
-          + `Te contactaran para los siguientes pasos. Detalles: ${url}`
+          + `Referencia: app-${input.applicationId}. Consulta ${url} para ver los detalles y proximos pasos.`
         : `Good news: ${companyName} selected you for ${jobTitle}. `
-          + `They will contact you about next steps. Details: ${url}`;
+          + `Reference: app-${input.applicationId}. Use ${url} to view details and next steps.`;
 
   const contentTemplate =
     input.kind === 'details_requested' ? `application_update_${lang}` : `application_hired_${lang}`;

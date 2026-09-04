@@ -49,8 +49,9 @@ const QUICK_REPLY_DEFINITIONS = {
   application_update_es: {
     language: 'es',
     body:
-      '{{2}} quiere avanzar con tu aplicacion para {{1}} y necesita algunos datos mas. '
-      + 'Escribe "aplicaciones" para responder aqui, o entra en {{4}}',
+      'Actualizacion de aplicacion: {{2}} quiere avanzar con tu aplicacion para {{1}} y necesita algunos datos mas. '
+      + 'Escribe "aplicaciones" para responder aqui, o usa {{4}} para responder cuando quieras.',
+    example: ['Acabador de concreto', 'Rucoba & Maya', 'app-123e4567-e89b-12d3-a456-426614174000', 'https://jaleapp.ai/es/worker/applications/123e4567-e89b-12d3-a456-426614174000'],
     actions: [
       { title: 'Empezar', id: 'application:start:{{3}}' },
       { title: 'Despues', id: 'application:later:{{3}}' },
@@ -59,8 +60,9 @@ const QUICK_REPLY_DEFINITIONS = {
   application_update_en: {
     language: 'en',
     body:
-      '{{2}} wants to move forward with your application for {{1}} and needs a few more details. '
-      + 'Reply "applications" to answer here, or go to {{4}}',
+      'Application update: {{2}} wants to move forward with your application for {{1}} and needs a few more details. '
+      + 'Reply "applications" to answer here, or use {{4}} to respond when ready.',
+    example: ['Concrete Finisher', 'Rucoba & Maya', 'app-123e4567-e89b-12d3-a456-426614174000', 'https://jaleapp.ai/en/worker/applications/123e4567-e89b-12d3-a456-426614174000'],
     actions: [
       { title: 'Start answering', id: 'application:start:{{3}}' },
       { title: 'Later', id: 'application:later:{{3}}' },
@@ -70,14 +72,16 @@ const QUICK_REPLY_DEFINITIONS = {
     language: 'es',
     body:
       'Buenas noticias: {{2}} te selecciono para {{1}}. '
-      + 'Te contactaran para los siguientes pasos. Detalles: {{4}}',
+      + 'Referencia: {{3}}. Consulta {{4}} para ver los detalles y proximos pasos.',
+    example: ['Acabador de concreto', 'Rucoba & Maya', 'app-123e4567-e89b-12d3-a456-426614174000', 'https://jaleapp.ai/es/worker/applications/123e4567-e89b-12d3-a456-426614174000'],
     actions: [],
   },
   application_hired_en: {
     language: 'en',
     body:
       'Good news: {{2}} selected you for {{1}}. '
-      + 'They will contact you about next steps. Details: {{4}}',
+      + 'Reference: {{3}}. Use {{4}} to view details and next steps.',
+    example: ['Concrete Finisher', 'Rucoba & Maya', 'app-123e4567-e89b-12d3-a456-426614174000', 'https://jaleapp.ai/en/worker/applications/123e4567-e89b-12d3-a456-426614174000'],
     actions: [],
   },
 };
@@ -201,7 +205,15 @@ async function createQuickReplyContent(name, definition, accountSid, authToken) 
       Authorization: `Basic ${auth}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ friendly_name: name, language: definition.language, types }),
+    // Content API's top-level variable values are the WhatsApp approval
+    // samples. Type-level `examples` is not a Content API field and is
+    // discarded by Twilio before it reaches Meta.
+    body: JSON.stringify({
+      friendly_name: name,
+      language: definition.language,
+      variables: Object.fromEntries(definition.example.map((value, index) => [String(index + 1), value])),
+      types,
+    }),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -299,7 +311,14 @@ async function createMissingListPickerTemplates(existingTemplates, accountSid, a
 async function createMissingQuickReplyTemplates(existingTemplates, accountSid, authToken) {
   const created = {};
   for (const [name, definition] of Object.entries(QUICK_REPLY_DEFINITIONS)) {
-    if (existingTemplates?.[name] && !FORCE_RECREATE.has(name)) continue;
+    const existingSid = existingTemplates?.[name];
+    // Meta cannot approve a variable-bearing template without a sample body
+    // example. Recreate a previously rejected immutable Content resource so
+    // this corrected definition can be submitted under the same template name.
+    if (existingSid && !FORCE_RECREATE.has(name)) {
+      const status = await whatsappApprovalStatus(existingSid, accountSid, authToken);
+      if (status !== 'rejected') continue;
+    }
     created[name] = await createQuickReplyContent(name, definition, accountSid, authToken);
   }
   return created;
