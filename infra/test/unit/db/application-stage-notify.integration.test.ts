@@ -57,11 +57,12 @@ maybeDescribe('application stage notification against the real RLS policies', ()
   const appOnboarding = randomUUID();
   const appIdempotent = randomUUID();
   const appHired = randomUUID();
+  const appResend = randomUUID();
   const applicationIds: string[] = [
-    appEmployerGuc, appWorkerGuc, appNoPhone, appOnboarding, appIdempotent, appHired,
+    appEmployerGuc, appWorkerGuc, appNoPhone, appOnboarding, appIdempotent, appHired, appResend,
   ];
   const applicationWorkers: string[] = [
-    workerReady, workerReady, workerNoPhone, workerOnboarding, workerReady, workerReady,
+    workerReady, workerReady, workerNoPhone, workerOnboarding, workerReady, workerReady, workerReady,
   ];
   const jobIds: string[] = applicationIds.map(() => randomUUID() as string);
   const jobIdFor = (applicationId: string): string => jobIds[applicationIds.indexOf(applicationId)];
@@ -91,7 +92,7 @@ maybeDescribe('application stage notification against the real RLS policies', ()
 
   async function notify(
     client: Client,
-    input: { applicationId: string; workerId: string; kind?: ApplicationStageKind },
+    input: { applicationId: string; workerId: string; kind?: ApplicationStageKind; updatedAt?: Date },
   ) {
     return enqueueApplicationStageNotification(client as unknown as PoolClient, {
       applicationId: input.applicationId,
@@ -101,7 +102,7 @@ maybeDescribe('application stage notification against the real RLS policies', ()
       jobTitle: 'Concrete Finisher',
       companyName: 'RM Construction',
       frontendBaseUrl: FRONTEND_BASE_URL,
-      updatedAt: UPDATED_AT,
+      updatedAt: input.updatedAt ?? UPDATED_AT,
     });
   }
 
@@ -317,6 +318,42 @@ maybeDescribe('application stage notification against the real RLS policies', ()
     const { intents, outbox } = await readIntentAndOutbox(appIdempotent);
     expect(intents).toHaveLength(1);
     expect(outbox).toHaveLength(1);
+  });
+
+  it('(g) a RESEND -- same application, later updatedAt -- yields a second intent and outbox row', async () => {
+    // Sprint 24 (B7): the employer's "Resend request" re-PATCHes the same
+    // status; the handler's UPDATE stamps `updated_at = now()` (the
+    // transaction timestamp), so the dedupe key differs from the first send's
+    // and the constraint admits a fresh intent. This is the real-Postgres proof
+    // of that reasoning -- the handler unit test mocks this module.
+    const first = await connectAsEmployerApi(employerId);
+    let firstIntentId: string;
+    try {
+      const result = await notify(first, { applicationId: appResend, workerId: workerReady });
+      expect(result).toMatchObject({ outcome: 'enqueued', outboxMaterialized: true });
+      firstIntentId = (result as { intentId: string }).intentId;
+      await first.query('COMMIT');
+    } finally {
+      await first.end();
+    }
+
+    const resend = await connectAsEmployerApi(employerId);
+    try {
+      const result = await notify(resend, {
+        applicationId: appResend,
+        workerId: workerReady,
+        updatedAt: new Date(UPDATED_AT.getTime() + 60_000),
+      });
+      expect(result).toMatchObject({ outcome: 'enqueued', outboxMaterialized: true });
+      expect((result as { intentId: string }).intentId).not.toBe(firstIntentId);
+      await resend.query('COMMIT');
+    } finally {
+      await resend.end();
+    }
+
+    const { intents, outbox } = await readIntentAndOutbox(appResend);
+    expect(intents).toHaveLength(2);
+    expect(outbox).toHaveLength(2);
   });
 
   it('(f) queues the hired template for a hire', async () => {
