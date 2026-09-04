@@ -17,6 +17,8 @@ import {
   type VoiceExtractionFields,
 } from './lib/voice-events';
 import { hashNormalizedPhone } from './lib/runtime-controls';
+import { canonicalizeWorkerTrade } from '../lib/trade-canonical';
+import { requestTradeAliasGeneration } from '../lib/trade-alias-request';
 import { TRADE_KEYS, EXPERIENCE_KEYS, AVAILABILITY_KEYS } from '../lib/worker-vocab';
 
 // ── Module-level AWS clients ────────────────────────────────────
@@ -223,11 +225,58 @@ function buildAsrMetadata(
   };
 }
 
+/**
+ * L6 — the canonicalised trade pair to force into the users UPDATE, replacing
+ * whatever the extractor put in `main_trade`/`main_trade_other`.
+ *
+ * `requestAliasFor` is the text to hand the alias generator (non-null only
+ * when `trade_aliases` had no row for it), so the cache learns the trade and
+ * the NEXT write canonicalises.
+ */
+interface TradeOverride {
+  main_trade: string;
+  main_trade_other: string | null;
+  requestAliasFor: string | null;
+}
+
+/**
+ * Canonicalises the extracted free-text trade, or returns null when there is
+ * nothing to canonicalise: no extraction, no `main_trade_other`, or a
+ * confidence below the threshold this handler applies to every other field.
+ *
+ * MUST be called before the transaction opens — an errored statement aborts a
+ * Postgres transaction, so a failed `trade_aliases` read after BEGIN would
+ * take the extraction row down with it. `canonicalizeWorkerTrade` also fails
+ * open, so a cache outage degrades to the worker's own words.
+ */
+async function resolveExtractedTradeOverride(
+  client: PoolClient,
+  extraction: BedrockResult | undefined,
+  language: Lang,
+): Promise<TradeOverride | null> {
+  const raw = extraction?.extracted_fields?.main_trade_other;
+  if (typeof raw !== 'string' || raw.trim().length === 0) return null;
+  if ((extraction!.confidence_scores?.main_trade_other ?? 0) < CONFIDENCE_THRESHOLD) return null;
+
+  const canonical = await canonicalizeWorkerTrade(client, { raw, lang: language });
+
+  // Blank after tidying would mean main_trade='other' with a null other —
+  // `chk_trade_other` (004_whatsapp.sql:66-70) rejects that pair, so skip.
+  if (canonical.main_trade === 'other' && !canonical.main_trade_other) return null;
+
+  return {
+    main_trade: canonical.main_trade,
+    main_trade_other: canonical.main_trade_other,
+    requestAliasFor: canonical.resolved ? null : canonical.main_trade_other,
+  };
+}
+
 /** Build a parameterized UPDATE users SET ... for fields above confidence threshold. */
 function buildUserUpdateSql(
   userId: string,
   fields: ExtractedFields,
   scores: Record<string, number>,
+  tradeOverride?: TradeOverride | null,
 ): { sql: string; params: unknown[] } | null {
   // Widened to readonly string[] on purpose: the callers below hand these
   // `unknown` values cast to string, which a narrowed literal-union tuple
@@ -250,8 +299,19 @@ function buildUserUpdateSql(
 
   maybeAdd('full_name');
   maybeAdd('city');
-  maybeAdd('main_trade', (v) => VALID_TRADES.includes(v as string));
-  maybeAdd('main_trade_other');
+  if (tradeOverride) {
+    // Both columns are forced as a PAIR, `main_trade_other` included even when
+    // null: `maybeAdd` skips nulls, which would leave the old free text
+    // sitting beside a promoted standard enum key. The pair is already known
+    // to satisfy `chk_trade_other` (see resolveExtractedTradeOverride).
+    params.push(tradeOverride.main_trade);
+    setClauses.push(`main_trade = $${params.length}`);
+    params.push(tradeOverride.main_trade_other);
+    setClauses.push(`main_trade_other = $${params.length}`);
+  } else {
+    maybeAdd('main_trade', (v) => VALID_TRADES.includes(v as string));
+    maybeAdd('main_trade_other');
+  }
   maybeAdd('years_experience', (v) => VALID_EXPERIENCE.includes(v as string));
   maybeAdd('has_transportation', (v) => typeof v === 'boolean');
   maybeAdd('availability', (v) => VALID_AVAILABILITY.includes(v as string));
@@ -453,6 +513,15 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
 
   const pool = await getDbPool();
   const client = await pool.connect();
+
+  // L6: canonicalise the extracted trade BEFORE BEGIN — see
+  // `resolveExtractedTradeOverride` for why the placement is load-bearing.
+  // Only the v1 branch writes `users`; on v2 every profile write happens in
+  // the router's turn, so there is nothing here to canonicalise.
+  const tradeOverride = !v2 && effectiveStatus === 'COMPLETED'
+    ? await resolveExtractedTradeOverride(client, extraction, language)
+    : null;
+
   let committed = false;
   try {
     await client.query('BEGIN');
@@ -573,7 +642,7 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
 
     // ── v1 legacy path — UNCHANGED ────────────────────────────────
     // Write high-confidence fields to users
-    const update = buildUserUpdateSql(userId, result.extracted_fields, result.confidence_scores);
+    const update = buildUserUpdateSql(userId, result.extracted_fields, result.confidence_scores, tradeOverride);
     if (update) {
       await client.query(update.sql, update.params);
     }
@@ -592,6 +661,22 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
     // commit exactly as before.
     await client.query('COMMIT');
     committed = true;
+
+    // L6: fire-and-forget, post-commit, and only for a trade `trade_aliases`
+    // did not know — so the next write for this trade canonicalises. The text
+    // sent is what was just stored (the worker's own words, tidied);
+    // `requestTradeAliasGeneration` normalises it into the cache key itself,
+    // so that spelling becomes one of the learned aliases. It never throws by
+    // contract; the try/catch is defence in depth so a cache-growth attempt
+    // can never fail a voice extraction that already committed.
+    if (tradeOverride?.requestAliasFor) {
+      try {
+        await requestTradeAliasGeneration(tradeOverride.requestAliasFor);
+      } catch {
+        // Swallowed intentionally -- see comment above.
+      }
+    }
+
     await sendPendingOutbox(client, outboxMessageSid);
   } catch (err) {
     if (!committed) {
