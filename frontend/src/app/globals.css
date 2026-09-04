@@ -75,6 +75,15 @@
   --jale-warning-text: #8a4400;
   --jale-danger-text:  #a51e28;
 
+  /* The hire celebration's header ground, as an OPAQUE colour.
+     Its only job is the text halo that keeps the header words legible where
+     confetti passes behind them, and a halo has to occlude. In light this is
+     `--jale-success-bg` verbatim; it exists as its own token because the dark
+     value of that one is rgba(31,122,68,.28) -- translucent, so a halo drawn
+     in it would let the confetti straight through and blur the words instead
+     of protecting them. */
+  --jale-hero-halo: #d9f2e2;
+
   /* Motion */
   --motion-duration-fast: 150ms;
   --motion-duration-base: 90ms;
@@ -293,9 +302,61 @@ input[type="password"]::-webkit-credentials-auto-fill-button { display: none; }
 .anim-stagger > :nth-child(8) { animation-delay: 560ms; }
 .anim-stagger > :nth-child(n+9) { animation-delay: 640ms; }
 
+/* ===== HIRE CELEBRATION ============================================== */
+/* The one place in the app that celebrates. Three rules, all of them things
+   Tailwind cannot express: a keyframed rise, a keyframed hover, and a
+   multi-direction text halo.
+
+   The FLIGHT of the confetti is deliberately NOT here -- it is per-piece
+   geometry driven by the Web Animations API in `ConfettiBurst`, with
+   `fill: 'forwards'`, so nothing ever animates back to a start state. What
+   lives here is only what every piece shares. */
+
+/* Header lines arrive in sequence. Delay comes from the call site as
+   `--hire-rise-delay`, so the stagger is readable where the markup is. */
+@keyframes jale-hire-rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+.anim-hire-rise {
+  animation: jale-hire-rise 500ms cubic-bezier(.2,.8,.2,1) both;
+  animation-delay: var(--hire-rise-delay, 0ms);
+}
+
+/* Once a piece has landed it breathes, forever, each on its own clock
+   (`--hire-hover-duration` / `--hire-hover-delay`, both set per piece; the
+   delay is NEGATIVE so pieces start mid-cycle instead of in lockstep). This
+   rides the INNER element so it composes with the outer flight transform
+   instead of fighting it. */
+@keyframes jale-hire-hover {
+  from { transform: translateY(-4px) rotate(-6deg); }
+  to   { transform: translateY(4px) rotate(6deg); }
+}
+.anim-hire-hover {
+  animation: jale-hire-hover var(--hire-hover-duration, 2.4s) ease-in-out
+             var(--hire-hover-delay, 0s) infinite alternate;
+}
+
+/* A thin halo in the header's own colour, eight directions plus a soft blur.
+   Confetti passes BEHIND these words (z-index), and without the halo a piece
+   crossing a glyph makes it unreadable for the second it takes to land. */
+.hire-hero-text {
+  text-shadow:
+    0 1px 0 var(--jale-hero-halo), 0 -1px 0 var(--jale-hero-halo),
+    1px 0 0 var(--jale-hero-halo), -1px 0 0 var(--jale-hero-halo),
+    1px 1px 0 var(--jale-hero-halo), -1px -1px 0 var(--jale-hero-halo),
+    1px -1px 0 var(--jale-hero-halo), -1px 1px 0 var(--jale-hero-halo),
+    0 0 6px var(--jale-hero-halo);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .anim-fade-in,
   .anim-stagger > * { animation: none; }
+  /* The halo stays -- it is legibility, not decoration. Only motion goes.
+     `ConfettiBurst` reads the same query in JS and skips the flight, so the
+     pieces are already drawn at their resting spots when this lands. */
+  .anim-hire-rise,
+  .anim-hire-hover { animation: none; }
 }
 
 /* ===== COLOR SCHEME ================================================== */
@@ -325,6 +386,10 @@ input[type="password"]::-webkit-credentials-auto-fill-button { display: none; }
   --jale-ink:     #e9edfb;  --jale-ink-2:   #9aa4cb;  --jale-placeholder: #6d7699;
   --jale-blue-50: #24305c;  --jale-blue-700:#a8c5ff;
   --jale-success: #7fd6a4;  --jale-success-bg: rgba(31,122,68,.28);  --jale-success-text: #7fd6a4;
+  /* Not the light value, and not `--jale-success-bg` either: over the dark
+     card that tint composites to roughly this, and the halo has to be opaque
+     to occlude the confetti behind the header text. */
+  --jale-hero-halo: #193644;
   --jale-warning: #ffc07d;  --jale-warning-bg: rgba(182,90,0,.26);   --jale-warning-text: #ffc07d;
   --jale-danger:  #ff9aa4;  --jale-danger-bg:  rgba(212,49,60,.24);  --jale-danger-text:  #ff9aa4;
   --jale-teal-50: rgba(33,195,164,.18); --jale-teal-500: #4fd8bd;

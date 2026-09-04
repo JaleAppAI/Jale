@@ -17,6 +17,8 @@ import {
   formatShortDate,
   formatStartDate,
   formatStartDateShort,
+  formatStartDateWeekday,
+  formatStartDateWeekdayShort,
   formatTimeOfDay,
   formatWeekdayDate,
 } from '@/lib/date';
@@ -129,10 +131,66 @@ describe('the app locale decides the formatting, not the runtime', () => {
   });
 });
 
+/**
+ * The hire-celebration formats (sprint 24 hotfix). A worker being told when
+ * their first day is gets the WEEKDAY as well as the date -- "Tue, Sep 15" is
+ * a day you can plan around, "Sep 15" is a lookup -- and both variants stay
+ * UTC-pinned because `job_applications.hire.start_date` is a `YYYY-MM-DD`
+ * calendar day, i.e. exactly the input the off-by-one above bites.
+ */
+describe('start dates carrying their weekday', () => {
+  it('formatStartDateWeekday: weekday, date and year, on the stored day', () => {
+    expect(formatStartDateWeekday('2026-09-15', 'en')).toBe('Tue, Sep 15, 2026');
+  });
+
+  it('formatStartDateWeekdayShort: the same, minus the year', () => {
+    expect(formatStartDateWeekdayShort('2026-09-15', 'en')).toBe('Tue, Sep 15');
+  });
+
+  it('does not shift the day back at a negative offset, the way the naive call does', () => {
+    // The guard, not the format: the naive equivalent really does say Monday.
+    const naive = new Date('2026-09-15').toLocaleDateString('en-US', {
+      weekday: 'short', month: 'short', day: 'numeric',
+    });
+    expect(naive).toBe('Mon, Sep 14');
+    expect(formatStartDateWeekdayShort('2026-09-15', 'en')).toBe('Tue, Sep 15');
+  });
+
+  /*
+   * Spanish is asserted on BEHAVIOUR, never on a literal: ICU spells the
+   * abbreviated month ("sep" vs "sept") and the connectors differently across
+   * Node/ICU builds, and CI runs a different Node than a developer laptop. The
+   * invariants that actually matter -- it is Spanish, it names the weekday, it
+   * keeps the 15th, and it is not the English string -- hold on every build.
+   */
+  it('renders Spanish without pinning an ICU spelling', () => {
+    const full = formatStartDateWeekday('2026-09-15', 'es');
+    expect(full).toContain('mar');
+    expect(full).toContain('15');
+    expect(full).toContain('2026');
+    expect(full).not.toBe(formatStartDateWeekday('2026-09-15', 'en'));
+
+    const short = formatStartDateWeekdayShort('2026-09-15', 'es');
+    expect(short).toContain('mar');
+    expect(short).toContain('15');
+    expect(short).not.toContain('2026');
+  });
+
+  it('holds on a year boundary, where a shift would change the year too', () => {
+    expect(formatStartDateWeekday('2026-01-01', 'en')).toBe('Thu, Jan 1, 2026');
+  });
+
+  it('falls back to en-US for a locale the app does not ship', () => {
+    expect(formatStartDateWeekday('2026-09-15', 'fr')).toBe(formatStartDateWeekday('2026-09-15', 'en'));
+  });
+});
+
 describe('fallbacks', () => {
   it.each([
     ['formatStartDate', formatStartDate],
     ['formatStartDateShort', formatStartDateShort],
+    ['formatStartDateWeekday', formatStartDateWeekday],
+    ['formatStartDateWeekdayShort', formatStartDateWeekdayShort],
     ['formatShortDate', formatShortDate],
     ['formatLongDate', formatLongDate],
     ['formatDateTime', formatDateTime],
@@ -147,6 +205,8 @@ describe('fallbacks', () => {
   it.each([
     ['formatStartDate', formatStartDate],
     ['formatStartDateShort', formatStartDateShort],
+    ['formatStartDateWeekday', formatStartDateWeekday],
+    ['formatStartDateWeekdayShort', formatStartDateWeekdayShort],
     ['formatShortDate', formatShortDate],
     ['formatLongDate', formatLongDate],
     ['formatDateTime', formatDateTime],

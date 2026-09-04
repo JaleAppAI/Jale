@@ -39,11 +39,23 @@ export function feedbackRole(tone: FeedbackTone): 'alert' | 'status' {
 export function InlineFeedback({
     tone,
     onDismiss,
+    dismissLabel,
     className = '',
     children,
 }: {
     tone: FeedbackTone;
     onDismiss?: () => void;
+    /**
+     * Overrides the × button's accessible name. Almost nothing needs this --
+     * `common.feedback.dismiss` is the right label for a banner whose subject
+     * is obvious from the sentence next to it.
+     *
+     * It exists because a banner can outlive its context: the hire
+     * celebration's × is reachable from a list of several banners, so its own
+     * namespace owns the label rather than borrowing the generic one and
+     * leaving a screen-reader user with N identical "Dismiss" buttons.
+     */
+    dismissLabel?: string;
     className?: string;
     children: React.ReactNode;
 }) {
@@ -65,7 +77,7 @@ export function InlineFeedback({
                 <button
                     type="button"
                     onClick={onDismiss}
-                    aria-label={t('feedback.dismiss')}
+                    aria-label={dismissLabel ?? t('feedback.dismiss')}
                     className="-mr-1 -mt-0.5 shrink-0 cursor-pointer rounded p-1 leading-none opacity-70 transition-opacity hover:opacity-100 focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
                 >
                     <Icon name="x" />

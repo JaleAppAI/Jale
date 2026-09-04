@@ -96,6 +96,37 @@ export function formatStartDateShort(value: DateInput, locale: string): string |
   return format(value, locale, { month: 'short', day: 'numeric', timeZone: 'UTC' });
 }
 
+/**
+ * A start date WITH its weekday: "Tue, Sep 15, 2026" / "mar, 15 de sep de 2026".
+ *
+ * The hire celebration's own format. A worker being told which day they start
+ * is planning around it -- childcare, a ride, giving notice -- and the weekday
+ * is what makes that possible without a calendar lookup, so it is part of the
+ * value rather than a decoration.
+ *
+ * Still UTC-pinned, like every other member of this family: the value it
+ * formats is `hire.start_date`, a `YYYY-MM-DD` calendar day, and the whole
+ * point of the weekday is undone if the day itself is a day out.
+ */
+export function formatStartDateWeekday(value: DateInput, locale: string): string | null {
+  return format(value, locale, {
+    weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC',
+  });
+}
+
+/**
+ * The same, minus the year: "Tue, Sep 15" / "mar 15 de sep".
+ *
+ * For the standing hire banner, where the line has to survive next to a
+ * sentence and the year is either this one or obvious from the row's own
+ * "applied" date.
+ */
+export function formatStartDateWeekdayShort(value: DateInput, locale: string): string | null {
+  return format(value, locale, {
+    weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC',
+  });
+}
+
 /* ===== Instants (ISO timestamps) -- formatted in the reader's timezone ==== */
 
 /** "Jun 15" / "15 jun" -- for lists where the year is obvious from context. */

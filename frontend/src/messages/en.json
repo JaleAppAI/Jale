@@ -1035,6 +1035,32 @@
       "row_left": "{count} items left",
       "row_body": "{company} asked for your details."
     },
+    "hired_celebration": {
+      "modal": {
+        "eyebrow": "Congratulations!",
+        "title": "{company} hired you",
+        "position": "Position: {title}",
+        "start_date": "Start date",
+        "start_date_tbc": "To be confirmed",
+        "location": "Location",
+        "pay": "Pay",
+        "schedule": "Schedule",
+        "body": "The employer will send you more details soon (where to report, documents, contact). If nothing arrives in the next few days, don't hesitate to reach out to them.",
+        "reference": "Application reference: {ref}",
+        "cta": "Great!",
+        "link": "View my application"
+      },
+      "banner": {
+        "title": "You're hired: {title} at {company}",
+        "body_dated": "Starts {date} · The employer will send more details; if none arrive, reach out to them.",
+        "body_undated": "Start date to be confirmed · The employer will send more details; if none arrive, reach out to them.",
+        "cta": "View application",
+        "dismiss": "Dismiss"
+      },
+      "row": {
+        "body": "Congratulations! The employer will send more details. If none arrive, reach out to them."
+      }
+    },
     "stats": {
       "total": "Total applications",
       "active": "Active",
