@@ -105,6 +105,18 @@ const SUITE_STAGE_NOTIFY = 'test/unit/db/application-stage-notify.integration.te
 // definer. It also carries the four surviving cases from the deleted 052
 // suite.
 const SUITE_CLEANUP_092 = 'test/unit/db/onboarding-cleanup-092.integration.test.ts';
+// Sprint 24 L3: the cross-job answer-reuse boundary, after the 2026-09-04
+// incident (an employer saw answers the worker gave to another company).
+// Here rather than in a mocked suite because worker_application_defaults is
+// RLS ENABLE + FORCE (079) and 091's write policy keys on
+// app.current_internal_user_id -- a write-back with no GUC is a zero-row
+// no-op that reads as success -- and because two of its assertions are
+// PostgreSQL facts, not app-level ones: that the jsonb `-` operator REMOVES
+// an answer key (a stored null would still read as answered), and that
+// `ON CONFLICT DO NOTHING` suppresses the snapshot copy's new
+// `RETURNING doc_type` on the idempotent re-call the engine makes every turn.
+const SUITE_FIELD_REUSE = 'test/unit/db/application-field-reuse.integration.test.ts';
+
 // Sprint 24 L4: migration 093's defer_worker_intent_outbox -- the third
 // outcome for a leased worker_intent row, which reschedules WITHOUT spending
 // an attempt. It is here for three facts a mocked pool cannot hold: 043's
@@ -145,6 +157,7 @@ describe('test:whatsapp-v2-db fail-closed URL guard', () => {
       SUITE_APPLICATION_DETAILS,
       SUITE_APPLICATIONS_COMMAND,
       SUITE_CLEANUP_092,
+      SUITE_FIELD_REUSE,
       SUITE_STAGE_NOTIFY,
       SUITE_DEFER_093,
     ]);

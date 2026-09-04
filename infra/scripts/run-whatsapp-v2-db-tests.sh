@@ -15,6 +15,18 @@
 # only a real database with real policies can prove it fails closed), the
 # jale_whatsapp column grants, and the prompts CHECK function.
 #
+# Sprint 24 L3 adds the field-reuse boundary suite. It belongs here for the
+# reason the rest of this list exists: worker_application_defaults is RLS
+# ENABLE + FORCE (079) and 091's write policy keys on
+# app.current_internal_user_id, so a write-back with the wrong GUC is a
+# ZERO-ROW no-op a mocked pool reports as success -- and the point of the
+# reuse filter is exactly WHICH keys reach that table. It also settles two
+# PostgreSQL facts nothing else does: that the jsonb `-` operator REMOVES an
+# answer key (so the question is asked again, rather than reading as a stored
+# null), and that `ON CONFLICT DO NOTHING` suppresses the new
+# `RETURNING doc_type` on the idempotent snapshot re-copy, which is what keeps
+# "documents attached from your vault" from being announced on every turn.
+#
 # The 092 cleanup entry is the last one before the notify suite. It is here
 # rather than in a mocked suite because everything it asserts is a privilege
 # or a catalog fact: that five dead objects are ABSENT, that the revokes took
@@ -124,5 +136,6 @@ exec npx jest --runInBand \
   test/unit/db/worker-application-details.integration.test.ts \
   test/unit/db/whatsapp-applications-command.integration.test.ts \
   test/unit/db/onboarding-cleanup-092.integration.test.ts \
+  test/unit/db/application-field-reuse.integration.test.ts \
   test/unit/db/application-stage-notify.integration.test.ts \
   test/unit/db/worker-intent-defer-093.integration.test.ts

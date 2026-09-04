@@ -10,6 +10,7 @@ import {
   mergeCertificationClaims,
   mergePromptAnswers,
   seedAnswersFromDefaults,
+  clearFieldAnswer,
   markDetailsCompleteIfDone,
   HIRE_REQUIREMENTS_CONSTRAINT,
   PROMPT_ANSWERS_CONSTRAINT,
@@ -73,6 +74,7 @@ function snapshot(overrides: Partial<RequirementSnapshot> = {}): RequirementSnap
     appliedAt: 'applied-ts',
     updatedAt: 'updated-ts',
     stage: 'apply',
+    copiedDocuments: [],
     ...overrides,
   };
 }
@@ -173,6 +175,34 @@ describe('loadRequirementSnapshot', () => {
     const snap = await loadRequirementSnapshot(makeClient(query), APP_ID, { syncDocumentSnapshots: true });
     expect(query).toHaveBeenCalledTimes(1);
     expect(snap!.haveDocs).toEqual([]);
+  });
+
+  // L3 (decision D3): the surfaces have to be able to NAME the documents
+  // that were attached on the worker's behalf, so the sync's copy report is
+  // surfaced on the snapshot instead of being discarded.
+  it('surfaces the documents the sync copied, as an additive snapshot field', async () => {
+    const query = jest.fn()
+      .mockResolvedValueOnce({ rows: [dbRow({ required_docs: ['resume', 'work_auth_doc'], have_docs: [] })] })
+      .mockResolvedValueOnce({ rows: [] })  // set_config GUC
+      .mockResolvedValueOnce({ rows: [{ doc_type: 'resume' }, { doc_type: 'work_auth_doc' }] }) // the copy
+      .mockResolvedValueOnce({ rows: [{ doc_type: 'resume' }, { doc_type: 'work_auth_doc' }] }); // re-read
+
+    const snap = await loadRequirementSnapshot(makeClient(query), APP_ID, { syncDocumentSnapshots: true });
+
+    expect(snap!.copiedDocuments).toEqual(['resume', 'work_auth_doc']);
+  });
+
+  it('reports an empty copied list on an UNSYNCED load and on a sync that copied nothing', async () => {
+    const unsynced = jest.fn().mockResolvedValueOnce({ rows: [dbRow({ required_docs: ['resume'] })] });
+    expect((await loadRequirementSnapshot(makeClient(unsynced), APP_ID))!.copiedDocuments).toEqual([]);
+
+    const synced = jest.fn()
+      .mockResolvedValueOnce({ rows: [dbRow({ required_docs: ['resume'], have_docs: ['resume'] })] })
+      .mockResolvedValueOnce({ rows: [] })   // GUC
+      .mockResolvedValueOnce({ rows: [] })   // copy: nothing new
+      .mockResolvedValueOnce({ rows: [{ doc_type: 'resume' }] });
+    expect((await loadRequirementSnapshot(makeClient(synced), APP_ID, { syncDocumentSnapshots: true }))!.copiedDocuments)
+      .toEqual([]);
   });
 
   it('never sets a GUC when sync is off (employer sessions read through computeRemaining with their own GUC)', async () => {
@@ -540,6 +570,56 @@ describe('mergeFieldAnswers', () => {
     const completeSql = String(query.mock.calls[5][0]);
     expect(completeSql).toContain('details_completed_at = now()');
     expect(completeSql).toContain('details_completed_at IS NULL');
+  });
+
+  // ── L3 (decision D2) ──────────────────────────────────────────────────
+  // Mechanism 2 of the 2026-09-04 incident: this write-back saved EVERY
+  // answered field into the single per-worker defaults blob, so a start date
+  // and a "worked here before" quoted at one employer became the pre-fill
+  // for the next one.
+  it('writes back ONLY the stable keys of a mixed batch, merging the per_application ones nowhere', async () => {
+    const query = jest.fn()
+      .mockResolvedValueOnce({ rows: [detailsRow({
+        required_fields: ['work_authorization', 'date_available', 'worked_here_before'],
+      })] })
+      .mockResolvedValueOnce({ rows: [] })                       // SAVEPOINT
+      .mockResolvedValueOnce({ rows: [{ total: 120 }] })          // the merge UPDATE
+      .mockResolvedValueOnce({ rows: [] })                       // RELEASE SAVEPOINT
+      .mockResolvedValueOnce({ rowCount: 1 })                    // defaults upsert
+      .mockResolvedValueOnce({ rowCount: 1 });                   // details_completed_at
+
+    const res = await mergeFieldAnswers(makeClient(query), {
+      applicationId: APP_ID,
+      workerId: WORKER_ID,
+      answers: { work_authorization: true, date_available: '2026-09-10', worked_here_before: { answer: true } },
+    });
+
+    // All three still land on the APPLICATION -- the employer asked for them.
+    expect(res).toMatchObject({ ok: true });
+    expect(JSON.parse(String(query.mock.calls[2][1][0]))).toEqual({
+      work_authorization: true,
+      date_available: '2026-09-10',
+      worked_here_before: { answer: true },
+    });
+    // Only the stable one is remembered for the NEXT application.
+    expect(String(query.mock.calls[4][0])).toContain('INSERT INTO worker_application_defaults');
+    expect(JSON.parse(String(query.mock.calls[4][1][1]))).toEqual({ work_authorization: true });
+  });
+
+  it('issues NO defaults write at all when every answered key is per_application', async () => {
+    const query = jest.fn()
+      .mockResolvedValueOnce({ rows: [detailsRow({ required_fields: ['date_available'] })] })
+      .mockResolvedValueOnce({ rows: [] })                       // SAVEPOINT
+      .mockResolvedValueOnce({ rows: [{ total: 60 }] })           // the merge UPDATE
+      .mockResolvedValueOnce({ rows: [] })                       // RELEASE SAVEPOINT
+      .mockResolvedValueOnce({ rowCount: 1 });                   // details_completed_at
+
+    const res = await mergeFieldAnswers(makeClient(query), {
+      applicationId: APP_ID, workerId: WORKER_ID, answers: { date_available: '2026-09-10' },
+    });
+
+    expect(res).toMatchObject({ ok: true, keys: ['date_available'] });
+    expect(query.mock.calls.some((c) => String(c[0]).includes('worker_application_defaults'))).toBe(false);
   });
 
   it('accepts an optional field key and writes it back as a default too', async () => {
@@ -1281,20 +1361,24 @@ describe('seedAnswersFromDefaults', () => {
     try {
       const query = jest.fn()
         .mockResolvedValueOnce({ rows: [] })
-        .mockResolvedValueOnce({ rows: [{ answers: { date_of_birth: '1990-04-03', desired_pay: 'bad' } }] })
+        // `home_address`, not `desired_pay`, carries the bad value: L3's
+        // reuse gate now refuses a per_application key BEFORE it is ever
+        // re-validated, so a per_application key can no longer reach the
+        // 'invalid_default' branch this case is about.
+        .mockResolvedValueOnce({ rows: [{ answers: { date_of_birth: '1990-04-03', home_address: 'bad' } }] })
         .mockResolvedValueOnce({ rows: [{ application_answers: {} }] })
         .mockResolvedValueOnce({ rows: [{ total: 60 }] });
 
       await seedAnswersFromDefaults(
         makeClient(query),
         { applicationId: APP_ID, workerId: WORKER_ID },
-        ['date_of_birth', 'desired_pay'],
+        ['date_of_birth', 'home_address'],
         [],
       );
 
       const events = logSpy.mock.calls.map((c) => JSON.parse(String(c[0])));
       expect(events).toEqual([
-        { event: 'ApplicationFillStep', key: 'desired_pay', outcome: 'seed_skipped', reason: 'invalid_default' },
+        { event: 'ApplicationFillStep', key: 'home_address', outcome: 'seed_skipped', reason: 'invalid_default' },
         { event: 'ApplicationFillStep', key: 'date_of_birth', outcome: 'seeded' },
       ]);
       // No answer VALUE ever reaches a log line.
@@ -1312,6 +1396,106 @@ describe('seedAnswersFromDefaults', () => {
       .mockResolvedValueOnce({ rows: [{ total: 60 }] });
     await seedAnswersFromDefaults(makeClient(query), { applicationId: APP_ID, workerId: WORKER_ID }, ['date_of_birth'], []);
     expect(String(query.mock.calls[3][0])).toMatch(/UPDATE job_applications\s+SET application_answers = application_answers \|\| \$1::jsonb, updated_at = now\(\)\s+WHERE id = \$2/);
+  });
+
+  // ── L3 (decision D2) ──────────────────────────────────────────────────
+  // The seed is mechanism 1 of the 2026-09-04 incident: it pre-filled EVERY
+  // key the job asks for from the single per-worker defaults blob, so the
+  // employer received a start date and a "worked here before" the worker had
+  // answered for a DIFFERENT job -- and the counts then read "0 y 0".
+  it('seeds ONLY stable keys, refusing the per_application ones a legacy defaults row still holds', async () => {
+    const query = jest.fn()
+      .mockResolvedValueOnce({ rows: [] })  // set_config
+      .mockResolvedValueOnce({ rows: [{ answers: {
+        work_authorization: true,
+        home_address: { street: '1 Main St', city: 'Springfield', state: 'IL', zip: '62704' },
+        date_available: '2026-09-10',
+        worked_here_before: { answer: true },
+        emergency_contact: { name: 'Maria Lopez', phone: '5551234567' },
+        desired_pay: { amount: 25, interval: 'hourly' },
+      } }] })
+      .mockResolvedValueOnce({ rows: [{ application_answers: {} }] })
+      .mockResolvedValueOnce({ rows: [{ total: 300 }] });
+
+    const seeded = await seedAnswersFromDefaults(
+      makeClient(query),
+      { applicationId: APP_ID, workerId: WORKER_ID },
+      ['work_authorization', 'date_available', 'worked_here_before', 'emergency_contact', 'desired_pay'],
+      ['home_address'],
+    );
+
+    expect(seeded).toEqual(['work_authorization', 'home_address']);
+    expect(JSON.parse(String(query.mock.calls[3][1][0]))).toEqual({
+      work_authorization: true,
+      home_address: { street: '1 Main St', city: 'Springfield', state: 'IL', zip: '62704' },
+    });
+  });
+
+  it('logs seed_skipped/per_application for each refused key -- key NAMES only, never the value', async () => {
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const query = jest.fn()
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [{ answers: {
+          date_available: '2026-09-10',
+          worked_here_before: { answer: true },
+        } }] })
+        .mockResolvedValueOnce({ rows: [{ application_answers: {} }] });
+
+      const seeded = await seedAnswersFromDefaults(
+        makeClient(query),
+        { applicationId: APP_ID, workerId: WORKER_ID },
+        ['date_available', 'worked_here_before'],
+        [],
+      );
+
+      // Nothing seeded -> no merge UPDATE at all (3 statements, not 4).
+      expect(seeded).toEqual([]);
+      expect(query).toHaveBeenCalledTimes(3);
+
+      const events = logSpy.mock.calls.map((c) => JSON.parse(String(c[0])));
+      expect(events).toEqual([
+        { event: 'ApplicationFillStep', key: 'date_available', outcome: 'seed_skipped', reason: 'per_application' },
+        { event: 'ApplicationFillStep', key: 'worked_here_before', outcome: 'seed_skipped', reason: 'per_application' },
+      ]);
+      expect(logSpy.mock.calls.every((c) => !String(c[0]).includes('2026-09-10'))).toBe(true);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// L3: the CAMBIAR/CHANGE correction path needs to UNDO one reused answer on
+// THIS application without touching the worker's saved defaults.
+describe('clearFieldAnswer', () => {
+  it('removes exactly one key with the jsonb `-` operator, scoped to this application', async () => {
+    const query = jest.fn().mockResolvedValueOnce({ rowCount: 1 });
+
+    expect(await clearFieldAnswer(makeClient(query), { applicationId: APP_ID, key: 'date_of_birth' }))
+      .toBe(true);
+
+    const [sql, params] = query.mock.calls[0];
+    expect(String(sql)).toMatch(/UPDATE job_applications\s+SET application_answers = application_answers - \$1::text/);
+    expect(String(sql)).toContain('updated_at = now()');
+    expect(String(sql)).toContain('WHERE id = $2');
+    // Never punch a hole in an application the employer already sees as
+    // complete -- 091's hire gate would then reject the hire.
+    expect(String(sql)).toContain('details_completed_at IS NULL');
+    expect(params).toEqual(['date_of_birth', APP_ID]);
+  });
+
+  it('reports false when the guard matched no row (already complete, or gone)', async () => {
+    const query = jest.fn().mockResolvedValueOnce({ rowCount: 0 });
+    expect(await clearFieldAnswer(makeClient(query), { applicationId: APP_ID, key: 'date_of_birth' }))
+      .toBe(false);
+  });
+
+  it('never touches worker_application_defaults -- correcting one application is not a profile edit', async () => {
+    const query = jest.fn().mockResolvedValueOnce({ rowCount: 1 });
+    await clearFieldAnswer(makeClient(query), { applicationId: APP_ID, key: 'home_address' });
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(String(query.mock.calls[0][0])).not.toContain('worker_application_defaults');
   });
 });
 

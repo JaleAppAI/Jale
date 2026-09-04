@@ -25,7 +25,7 @@
  */
 import type { PoolClient } from 'pg';
 import { randomUUID } from 'crypto';
-import { type PayInterval } from '../../lib/job-fields';
+import { REQUIRED_FIELD_TYPES, DOC_TYPES, type PayInterval } from '../../lib/job-fields';
 import { EDUCATION_LEVELS } from '../../lib/application-answers';
 import {
   copyRequiredDocumentSnapshots,
@@ -40,12 +40,14 @@ import {
   mergeFieldAnswers,
   markDetailsCompleteIfDone,
   seedAnswersFromDefaults,
+  clearFieldAnswer,
   type RequirementSnapshot,
   type MergeFailureReason,
 } from '../../lib/application-requirements';
 import {
   fieldQuestion,
   fieldRetryHint,
+  fieldLabel,
   docPrompt,
   fillMessage,
   type FillFieldKey,
@@ -344,6 +346,52 @@ export interface FillPendingCollecting {
 }
 export type FillPendingState = FillPendingConfirm | FillPendingEntryAnother | FillPendingCollecting;
 
+// ── L3 reuse sub-states (sprint 24) ─────────────────────────────────────
+//
+// Three separate keys, deliberately NOT folded into `fill_pending`: that
+// type is field-key-shaped and its resolver assumes a confirm/entry loop
+// throughout (same reasoning as `fill_cert_more_pending`, see
+// `handleFillMediaTurn`).
+//
+// STATE_CONTEXT IDENTITY (binding, `FillDeps.updateStateContext`): every
+// write below goes through `deps.updateStateContext`, which BOTH persists
+// the spread-merged patch AND mutates the same `ctx.stateContext` object in
+// place. Nothing here mutates `ctx.stateContext` directly, and nothing reads
+// a value it wrote without going through that call first -- so a second read
+// in the same turn sees the patch with no extra round trip, and the DB and
+// the in-memory object can never disagree.
+
+/** One correctable item in the numbered CAMBIAR menu. */
+export type FillChangeItem =
+  | { kind: 'field'; key: FillFieldKey }
+  | { kind: 'doc'; docType: CollectableDocType };
+
+/** What `armFill` reused, remembered so a LATER turn's CAMBIAR can list it.
+ * Only what THIS arm actually reused: a re-arm seeds nothing and copies
+ * nothing, sends no reuse summary, and correspondingly offers nothing to
+ * correct -- the menu and the message the worker saw always agree. */
+export interface FillReusedState {
+  fields: string[];
+  docs: string[];
+}
+
+/** The all-pre-filled gate. `repeated` records that the prompt has already
+ * been re-sent once; the state is then KEPT but silent, so a LISTO arriving
+ * several turns later still sends the application. */
+export interface FillConfirmState {
+  at: number;
+  repeated?: boolean;
+}
+
+/** The armed numbered menu. One-shot: any reply that is not a bare digit
+ * clears it (see `resolveChangeMenu`), so a stale menu can never hijack a
+ * digit the worker meant as an answer. */
+export interface FillChangeMenuState {
+  items: FillChangeItem[];
+  at: number;
+  repeated?: boolean;
+}
+
 /**
  * Task 10 requirement 5: the ONE canonical home for the fill lane's
  * `state_context` keys, layered onto `ProfileStateContext` (flows.ts) via
@@ -370,6 +418,17 @@ export type FillStateContext = ProfileStateContext & {
   // `handleFillMessage` resolves it as a one-shot yes/no (see
   // `resolveOfferOnlyTurn`) whenever `fill_application_id` itself is unset.
   fill_offer_application_id?: string | null;
+  // Sprint 24 L3 -- see the three shapes above. All four are cleared by
+  // `FILL_SCRUB`, so they never outlive the fill that armed them.
+  fill_reused?: FillReusedState | null;
+  fill_confirm?: FillConfirmState | null;
+  fill_change_menu?: FillChangeMenuState | null;
+  /** A doc slot the worker asked to replace: the next media turn stores
+   * against THIS doc type instead of whatever the step walk says is next.
+   * Needed because the job-scoped row was deleted but the VAULT row is
+   * untouched (decision D3), so the very next synced load copies it back
+   * and the requirement reads satisfied again. */
+  fill_doc_replace?: string | null;
   // Sprint 23 prompt lane (application-prompts.ts). Declared here, not in a
   // second loose type, so the mutual-exclusion scrub (`FILL_SCRUB`) and the
   // processor's two lane gates read one shape.
@@ -417,6 +476,63 @@ function logStep(key: string, outcome: string, reason?: string): void {
  * tolerance for an unrelated command. */
 export function isFillCancel(body: string): boolean {
   return body.trim().toLowerCase() === 'cancelar';
+}
+
+/** Accent/case/whitespace-insensitive normalization for the fill lane's
+ * reserved words -- the same NFD strip `parseFillConfirmation` uses, since
+ * the WhatsApp keyboards this audience uses often drop or mangle accents. */
+function normalizeKeyword(body: string): string {
+  return body
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/\s+/g, ' ');
+}
+
+/**
+ * CAMBIAR / CHANGE (sprint 24 L3) -- "let me fix one of the things you
+ * reused". Both languages are accepted in either locale, like every other
+ * reserved word in this lane, because a bilingual worker's keyboard is not
+ * the same thing as their conversation language.
+ *
+ * EXACT match only, deliberately not fuzzy: it must never eat a legitimate
+ * free-text answer (a work_history entry mentioning a change of employer).
+ * Neither word is within 1 Damerau-Levenshtein edit of any COMMAND_KEYWORDS
+ * entry sharing its first letter (`commands`/`comandos`/`chats`/`cerrar`/
+ * `close`), so `matchCommandFuzzy` cannot swallow it either -- the same
+ * property `isFillCancel` relies on and a unit test locks.
+ */
+export function isFillChange(body: string): boolean {
+  const t = normalizeKeyword(body);
+  return t === 'cambiar' || t === 'change';
+}
+
+/** LISTO / DONE -- the explicit "send it" for the all-pre-filled gate. Same
+ * exact-match rules as `isFillChange`; no COMMAND_KEYWORDS entry starts with
+ * l or d, so there is nothing for the fuzzy matcher to collide with. */
+export function isFillDone(body: string): boolean {
+  const t = normalizeKeyword(body);
+  return t === 'listo' || t === 'done';
+}
+
+const FILL_FIELD_KEYS: ReadonlySet<string> = new Set(REQUIRED_FIELD_TYPES);
+const COLLECTABLE_DOC_TYPES: ReadonlySet<string> = new Set(DOC_TYPES);
+
+/** Narrows a key read off `state_context` (or off the engine's `string[]`
+ * seed report) to this lane's key union, dropping anything the catalog does
+ * not list -- a legacy state_context value, or a key a later migration
+ * retired. */
+function asFillFieldKey(value: unknown): FillFieldKey | null {
+  return typeof value === 'string' && FILL_FIELD_KEYS.has(value) ? (value as FillFieldKey) : null;
+}
+
+/** Same, for doc types. `ssn` is not in DOC_TYPES, so a legacy required
+ * `ssn` can never become a collectable menu item or a replacement slot. */
+function asCollectableDocType(value: unknown): CollectableDocType | null {
+  return typeof value === 'string' && COLLECTABLE_DOC_TYPES.has(value)
+    ? (value as CollectableDocType)
+    : null;
 }
 
 /** Confirmation reply for the `fill_pending` yes/no gates: '1'/'1 si'/bare
@@ -974,6 +1090,15 @@ const FILL_SCRUB = {
   prompt_application_id: null,
   prompt_last_prompt_at: null,
   applications_menu: null,
+  // Sprint 24 L3. Each is scoped to ONE armed application: a stale
+  // fill_confirm would let a later LISTO send an application the worker has
+  // moved on from, a stale fill_change_menu would let a bare digit clear an
+  // answer on it, a stale fill_reused would name the wrong job's data, and a
+  // stale fill_doc_replace would file the next photo under the wrong slot.
+  fill_reused: null,
+  fill_confirm: null,
+  fill_change_menu: null,
+  fill_doc_replace: null,
 } as const;
 
 /**
@@ -1080,6 +1205,31 @@ export type ArmFillOutcome =
  *   4. the arm write (full scrub + `fill_application_id`).
  *   5. `switched_job`, then the intro (counts re-derived from a FRESH
  *      snapshot, post-seed), then the first prompt.
+ *
+ * ── SPRINT 24 L3: WHAT THE WORKER SEES ───────────────────────────────────
+ * The 2026-09-04T04:41:58Z incident happened entirely inside this function.
+ * A worker tapped Start and received three messages at once -- "you switched
+ * to a different job application", "Faltan 0 preguntas y 0 documentos.
+ * Empezamos:", and the completion -- because the seed had answered every
+ * question from the single per-worker defaults blob and the synced load had
+ * attached a work-authorization document from the vault. Their details went
+ * to the employer without them answering anything, and included answers
+ * given to a DIFFERENT company.
+ *
+ * So the message order is now BINDING:
+ *   a. `switched_job` (unchanged, and correct: it explains the rest).
+ *   b. `intro_profile_check` -- sent BEFORE the defaults row is even read,
+ *      so the reuse is announced rather than discovered.
+ *   c. seed, arm write, then ONE synced load. That load is this turn's
+ *      first, so it is the one that copies vault documents and the only one
+ *      whose `copiedDocuments` is non-empty (see the field's jsdoc).
+ *   d. `reuse_summary` -- ONLY if something was actually seeded or copied,
+ *      naming both and offering CAMBIAR. What it names is remembered in
+ *      `fill_reused` so a later CAMBIAR lists exactly this.
+ *   e. remaining > 0: the counted intro and the first prompt, as before.
+ *   f. remaining == 0: NO completion. `confirm_all_prefilled` plus a
+ *      `fill_confirm` arm, so nothing reaches the employer until the worker
+ *      says LISTO.
  */
 export async function armFill(
   client: PoolClient,
@@ -1095,7 +1245,21 @@ export async function armFill(
   const applicationId = snapshot.applicationId;
   const previousApplicationId = ctx.stateContext.fill_application_id as string | undefined;
 
-  await seedAnswersFromDefaults(
+  // (a) Unchanged, and moved ahead of the seed only so it stays FIRST now
+  // that two more messages precede the intro. Read off `ctx.stateContext`
+  // before the arm write mutates it in place.
+  if (previousApplicationId !== undefined && previousApplicationId !== applicationId) {
+    await deps.queueReplyText(client, inboundSid, from, fillMessage('switched_job', ctx.lang));
+  }
+
+  // (b) Transparency: announced BEFORE the defaults row is read, so the
+  // worker is told the profile is about to be used, not shown the result.
+  await deps.queueReplyText(client, inboundSid, from, fillMessage('intro_profile_check', ctx.lang));
+
+  // (c) The seed now returns only 'stable' keys (decision D2 --
+  // FIELD_REUSE_POLICY, job-fields.ts); the four per-application keys are
+  // refused inside the engine with a `seed_skipped/per_application` line.
+  const seededKeys = await seedAnswersFromDefaults(
     client,
     { applicationId, workerId: ctx.workerId },
     snapshot.requiredFields,
@@ -1109,28 +1273,300 @@ export async function armFill(
   });
   ctx.jobId = snapshot.jobId;
 
-  if (previousApplicationId !== undefined && previousApplicationId !== applicationId) {
-    await deps.queueReplyText(client, inboundSid, from, fillMessage('switched_job', ctx.lang));
+  // THIS is the turn's first synced load (the caller's own snapshot is
+  // loaded unsynced -- processor.ts's ownership check must run before any
+  // write), so it is the load that copies vault documents and the only one
+  // that can report them. Read `copiedDocuments` here or never.
+  const { snapshot: seeded } = await computeFillStep(client, applicationId);
+  const reusedFields = seededKeys
+    .map(asFillFieldKey)
+    .filter((key): key is FillFieldKey => key !== null);
+  const copiedDocs = (seeded?.copiedDocuments ?? [])
+    .map(asCollectableDocType)
+    .filter((docType): docType is CollectableDocType => docType !== null);
+
+  // (d) The reuse summary, and ONLY when there is something to summarize:
+  // a worker on their first application must not be told about a profile
+  // check that found nothing.
+  if (reusedFields.length > 0 || copiedDocs.length > 0) {
+    const lines: string[] = [];
+    if (reusedFields.length > 0) {
+      lines.push(fillMessage('reuse_fields_line', ctx.lang, {
+        labels: reusedFields.map((key) => fieldLabel(key, ctx.lang)).join(', '),
+      }));
+    }
+    if (copiedDocs.length > 0) {
+      lines.push(fillMessage('reuse_docs_line', ctx.lang, {
+        docLabels: localizeDocList(copiedDocs, ctx.lang),
+      }));
+    }
+    await deps.updateStateContext(client, ctx.conversationId, {
+      fill_reused: { fields: reusedFields, docs: copiedDocs } satisfies FillReusedState,
+    });
+    await deps.queueReplyText(
+      client,
+      inboundSid,
+      from,
+      `${lines.join('\n')}\n\n${fillMessage('reuse_change_footer', ctx.lang)}`,
+    );
+    logStep('reuse', 'summarized');
   }
 
-  const { snapshot: seeded } = await computeFillStep(client, applicationId);
   const counts = fillCountsFor(seeded);
+  const webHandoffNote = counts.uncollectable.length > 0
+    ? `\n\n${fillMessage('web_handoff', ctx.lang, {
+      doc: localizeDocList(counts.uncollectable, ctx.lang),
+      url: workerApplicationUrl(ctx.lang, applicationId),
+    })}`
+    : '';
+
+  if (counts.nFields + counts.nDocs === 0) {
+    // (f) THE FIX. `promptNextStep` here would reach `sendCompletionPrompt`
+    // and send the whole application in this same turn -- the incident. The
+    // worker gets the gate instead, and `fill_confirm` keeps it addressable
+    // across turns (see `resolveFillConfirm`).
+    await deps.updateStateContext(client, ctx.conversationId, {
+      fill_confirm: { at: deps.nowMs() } satisfies FillConfirmState,
+      fill_last_prompt_at: deps.nowMs(),
+    });
+    await deps.queueReplyText(
+      client,
+      inboundSid,
+      from,
+      `${fillMessage('confirm_all_prefilled', ctx.lang)}${webHandoffNote}`,
+    );
+    logStep('confirm', 'prompted');
+    return { armed: true };
+  }
+
+  // (e) Unchanged: the counted intro, then the first real question.
   const company = await loadJobCompanyName(client, snapshot.jobId);
-  let introBody = fillMessage('intro', ctx.lang, {
+  const introBody = fillMessage('intro', ctx.lang, {
     company,
     n_fields: String(counts.nFields),
     n_docs: String(counts.nDocs),
-  });
-  if (counts.uncollectable.length > 0) {
-    introBody += `\n\n${fillMessage('web_handoff', ctx.lang, {
-      doc: localizeDocList(counts.uncollectable, ctx.lang),
-      url: workerApplicationUrl(ctx.lang, applicationId),
-    })}`;
-  }
+  }) + webHandoffNote;
   await deps.queueReplyText(client, inboundSid, from, introBody);
 
   await promptNextStep(client, ctx, inboundSid, from, deps);
   return { armed: true };
+}
+
+// ── L3: the all-pre-filled gate and the CAMBIAR menu ────────────────────
+
+/**
+ * Resolves a turn while `fill_confirm` is armed -- i.e. the application has
+ * nothing outstanding and is waiting on the worker's explicit go-ahead.
+ *
+ * LISTO/DONE goes through `promptNextStep`, NOT a direct completion call, so
+ * the verdict is re-derived: if the employer widened the requirements
+ * between the arm and this reply, the worker is asked the new question
+ * instead of sending an application that no longer qualifies.
+ *
+ * Anything else re-sends the prompt ONCE and then goes quiet, keeping the
+ * state armed: a worker who wandered off mid-conversation must still be able
+ * to type LISTO three turns later, and clearing the gate would leave a
+ * silent completion as the only remaining way out. CAMBIAR never reaches
+ * here -- `handleFillMessage` consumes it earlier, before the escapes.
+ */
+async function resolveFillConfirm(
+  client: PoolClient,
+  ctx: FillContext,
+  msg: IncomingMessage,
+  deps: FillDeps,
+  confirm: FillConfirmState,
+  body: string,
+): Promise<FillResult> {
+  if (isFillDone(body)) {
+    await deps.updateStateContext(client, ctx.conversationId, { fill_confirm: null });
+    logStep('confirm', 'confirmed');
+    await promptNextStep(client, ctx, msg.messageSid, msg.from, deps);
+    return { handled: true };
+  }
+
+  if (!confirm.repeated) {
+    await deps.updateStateContext(client, ctx.conversationId, {
+      fill_confirm: { ...confirm, repeated: true } satisfies FillConfirmState,
+      fill_last_prompt_at: deps.nowMs(),
+    });
+    await deps.queueReplyText(
+      client, msg.messageSid, msg.from, fillMessage('confirm_all_prefilled', ctx.lang),
+    );
+    logStep('confirm', 'reprompt');
+    return { handled: true };
+  }
+
+  logStep('confirm', 'unhandled');
+  return { handled: false };
+}
+
+/** The menu body: header, then one numbered line per item. Fields carry
+ * their short label, documents the same localized label the `web_handoff`
+ * note and the reuse summary use -- one vocabulary for one document. */
+function buildChangeMenuBody(items: FillChangeItem[], lang: Lang): string {
+  const lines = items.map((item, index) => {
+    const label = item.kind === 'field'
+      ? fieldLabel(item.key, lang)
+      : localizeDocList([item.docType], lang);
+    return `${index + 1}. ${label}`;
+  });
+  return `${fillMessage('change_menu_header', lang)}\n\n${lines.join('\n')}`;
+}
+
+/** Reads `fill_reused` defensively: the value comes back off a JSONB column
+ * and may predate this feature entirely (a fill armed by the previous
+ * release), so every member is re-narrowed rather than trusted. */
+function reusedItems(stateContext: Record<string, unknown>): FillChangeItem[] {
+  const reused = stateContext.fill_reused as Partial<FillReusedState> | null | undefined;
+  const fields = Array.isArray(reused?.fields) ? reused!.fields : [];
+  const docs = Array.isArray(reused?.docs) ? reused!.docs : [];
+  return [
+    ...fields
+      .map(asFillFieldKey)
+      .filter((key): key is FillFieldKey => key !== null)
+      .map((key): FillChangeItem => ({ kind: 'field', key })),
+    ...docs
+      .map(asCollectableDocType)
+      .filter((docType): docType is CollectableDocType => docType !== null)
+      .map((docType): FillChangeItem => ({ kind: 'doc', docType })),
+  ];
+}
+
+/**
+ * CAMBIAR/CHANGE, from ANY sub-state of an armed fill (decision D3's "let
+ * them replace one"). Lists what this arm reused and nothing else, so the
+ * menu and the `reuse_summary` the worker is answering always agree.
+ *
+ * `fill_pending` is deliberately KEPT here: opening a menu is not one of the
+ * six scrub events (spec §4.2), and a worker who glances at the list and
+ * then answers the pending question should not have lost it. It IS cleared
+ * once a menu item is actually chosen -- see `resolveChangeMenu`.
+ */
+async function openChangeMenu(
+  client: PoolClient,
+  ctx: FillContext,
+  msg: IncomingMessage,
+  deps: FillDeps,
+): Promise<FillResult> {
+  const items = reusedItems(ctx.stateContext);
+  if (items.length === 0) {
+    await deps.queueReplyText(client, msg.messageSid, msg.from, fillMessage('change_nothing', ctx.lang));
+    logStep('change', 'nothing_reused');
+    return { handled: true };
+  }
+
+  await deps.updateStateContext(client, ctx.conversationId, {
+    fill_change_menu: { items, at: deps.nowMs() } satisfies FillChangeMenuState,
+    fill_last_prompt_at: deps.nowMs(),
+  });
+  await deps.queueReplyText(client, msg.messageSid, msg.from, buildChangeMenuBody(items, ctx.lang));
+  logStep('change', 'menu_sent');
+  return { handled: true };
+}
+
+/**
+ * Resolves a turn while the numbered menu is armed.
+ *
+ * ONE-SHOT, on purpose. Only a bare 1-2 digit body is treated as a pick;
+ * anything else clears the menu and falls through to ordinary handling, so
+ * the worker's real answer is never eaten AND no stale menu survives to
+ * hijack a later digit (several fields -- work_authorization, education,
+ * the entry loops -- legitimately answer with a digit). An out-of-range
+ * digit re-sends the list once, then gives up the same way.
+ *
+ * On a real pick both `fill_change_menu` and `fill_confirm` are cleared:
+ * the worker is leaving the gate to fix something, and whatever they answer
+ * next completes the application through the ordinary path (they answered
+ * it themselves -- that is the explicit act decision D asks for).
+ * `fill_pending` is cleared too, as a 'discard': the candidate that was
+ * awaiting a yes/no belongs to a question the worker has just walked away
+ * from, and leaving it armed would resolve it against the wrong step.
+ */
+async function resolveChangeMenu(
+  client: PoolClient,
+  ctx: FillContext,
+  msg: IncomingMessage,
+  deps: FillDeps,
+  menu: FillChangeMenuState,
+  body: string,
+): Promise<FillResult | null> {
+  const digits = body.trim().match(/^(\d{1,2})$/);
+  if (!digits) {
+    await deps.updateStateContext(client, ctx.conversationId, { fill_change_menu: null });
+    logStep('change', 'menu_dropped');
+    return null;
+  }
+
+  const items = Array.isArray(menu.items) ? menu.items : [];
+  const item = items[Number(digits[1]) - 1];
+  if (!item) {
+    if (menu.repeated) {
+      await deps.updateStateContext(client, ctx.conversationId, { fill_change_menu: null });
+      logStep('change', 'menu_abandoned');
+      return null;
+    }
+    await deps.updateStateContext(client, ctx.conversationId, {
+      fill_change_menu: { ...menu, repeated: true } satisfies FillChangeMenuState,
+    });
+    await deps.queueReplyText(client, msg.messageSid, msg.from, fillMessage('change_menu_invalid', ctx.lang));
+    await deps.queueReplyText(client, msg.messageSid, msg.from, buildChangeMenuBody(items, ctx.lang));
+    logStep('change', 'menu_invalid');
+    return { handled: true };
+  }
+
+  const applicationId = ctx.stateContext.fill_application_id as string;
+  const remaining = items.filter((entry) => entry !== item);
+  const patch: Record<string, unknown> = {
+    fill_change_menu: null,
+    fill_confirm: null,
+    fill_pending: null,
+    fill_reused: {
+      fields: remaining.filter((e): e is { kind: 'field'; key: FillFieldKey } => e.kind === 'field').map((e) => e.key),
+      docs: remaining.filter((e): e is { kind: 'doc'; docType: CollectableDocType } => e.kind === 'doc').map((e) => e.docType),
+    } satisfies FillReusedState,
+  };
+
+  // Both branches WRITE under FORCE RLS (`job_applications` /
+  // `worker_documents`), and both policies key on
+  // app.current_internal_user_id -- so the GUC goes first or the statement
+  // is a silent zero-row no-op. Same contract `mergeAnswer` and
+  // `handleDocUpload` follow.
+  await deps.setRls(client, ctx.workerId);
+
+  if (item.kind === 'field') {
+    await deps.updateStateContext(client, ctx.conversationId, patch);
+    const cleared = await clearFieldAnswer(client, { applicationId, key: item.key });
+    logStep(item.key, cleared ? 'change_cleared' : 'change_clear_noop');
+    // Re-derived, not asked directly: with the key gone the engine's own
+    // walk names it as the next step (or names an earlier gap first, which
+    // is the right order anyway).
+    await promptNextStep(client, ctx, msg.messageSid, msg.from, deps);
+    return { handled: true };
+  }
+
+  // A doc: drop THIS JOB's copy only. The vault row (job_id IS NULL) is the
+  // worker's own file and is never touched -- decision D3 is "let them
+  // replace one", not "delete their document". Bound job_id is what
+  // guarantees that.
+  await client.query(
+    `DELETE FROM worker_documents WHERE worker_id = $1 AND job_id = $2 AND doc_type = $3`,
+    [ctx.workerId, ctx.jobId, item.docType],
+  );
+  // ...which means the very next synced load copies the vault row back and
+  // the requirement reads satisfied again. `fill_doc_replace` is what keeps
+  // the slot addressable anyway, so the replacement file lands here instead
+  // of on whatever the step walk says is next. `fill_cert_more_pending` is
+  // cleared with it: a cert loop from before this correction would otherwise
+  // out-rank the slot the worker just asked to replace.
+  await deps.updateStateContext(client, ctx.conversationId, {
+    ...patch,
+    fill_cert_more_pending: null,
+    fill_doc_replace: item.docType,
+    fill_last_prompt_at: deps.nowMs(),
+  });
+  await deps.queueReplyText(client, msg.messageSid, msg.from, docPrompt(item.docType, ctx.lang));
+  logStep(item.docType, 'change_doc_reprompt');
+  return { handled: true };
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -1333,8 +1769,18 @@ async function handleFillMediaTurn(
   applicationId: string,
 ): Promise<FillResult> {
   let docType: CollectableDocType;
+  // Sprint 24 L3: a slot the worker asked to replace out-ranks the step
+  // walk, for the same reason the cert loop does -- the walk cannot express
+  // it. The job-scoped row was deleted but the VAULT row was not (decision
+  // D3), so the synced load inside `computeFillStep` has already copied it
+  // back and would route this file to whatever is next instead. The cert
+  // loop still comes first: it is cleared when a replacement is armed, so
+  // the two can never both be set.
+  const replaceDoc = asCollectableDocType(ctx.stateContext.fill_doc_replace);
   if (ctx.stateContext.fill_cert_more_pending) {
     docType = 'certification_doc';
+  } else if (replaceDoc) {
+    docType = replaceDoc;
   } else {
     const { step: nextStep } = await computeFillStep(client, applicationId);
     if (nextStep.kind === 'field') {
@@ -1364,6 +1810,16 @@ async function handleFillMediaTurn(
   const effectiveDeps = takeFirstNote ? withLeadIn(deps, takeFirstNote) : deps;
 
   const outcome = await handleDocUpload(client, ctx, msg, docType, effectiveDeps);
+
+  // The replacement landed (or the slot is satisfied anyway) -- disarm.
+  // 'stay_pending' deliberately keeps it armed: the error reply told the
+  // worker to resend, and clearing here would file their next attempt under
+  // whatever the step walk says instead (the same reasoning as the cert
+  // loop's own flag, below).
+  if (replaceDoc && (outcome === 'stored' || outcome === 'satisfied')) {
+    await deps.updateStateContext(client, ctx.conversationId, { fill_doc_replace: null });
+    logStep(docType, 'doc_replaced');
+  }
 
   if (docType === 'certification_doc' && outcome === 'stored') {
     // Arm the loop and ask "tienes otro?" INSTEAD of promptNextStep -- see
@@ -1844,6 +2300,15 @@ export async function handleFillMessage(
     return { handled: true };
   }
 
+  // (3b) CAMBIAR/CHANGE guard (sprint 24 L3) -- a reserved word of the same
+  // class as CANCELAR, and checked in the same place: it must work from ANY
+  // sub-state (mid-question, mid-confirmation, or at the all-pre-filled
+  // gate), and it must win before a pending yes/no or a field parser can
+  // look at the body.
+  if (isFillChange(body)) {
+    return openChangeMenu(client, ctx, msg, deps);
+  }
+
   // (4) Picker-digit escape -- see this function's jsdoc.
   if (ctx.stateContext.pending_picker && /^\d{1,2}$/.test(body.trim())) {
     return { handled: false };
@@ -1855,6 +2320,17 @@ export async function handleFillMessage(
   const jobContext = await fetchApplicationJobContext(client, applicationId);
   ctx.jobId = jobContext.jobId ?? ctx.jobId;
   ctx.requiredFields = jobContext.requiredFields;
+
+  // (5b) Change-menu resolution (sprint 24 L3). BEFORE step 6 on purpose:
+  // the menu was the last thing this lane sent, so a bare '1' answers IT,
+  // not a yes/no confirmation that happens to accept the same digit. A
+  // non-digit body clears the menu and returns null, so the turn continues
+  // down the ordinary path below.
+  const changeMenu = ctx.stateContext.fill_change_menu as FillChangeMenuState | undefined;
+  if (changeMenu) {
+    const resolved = await resolveChangeMenu(client, ctx, msg, deps, changeMenu, body);
+    if (resolved) return resolved;
+  }
 
   const certLoopPending = Boolean(ctx.stateContext.fill_cert_more_pending);
   const pending = ctx.stateContext.fill_pending as FillPendingState | undefined;
@@ -1887,6 +2363,15 @@ export async function handleFillMessage(
     return { handled: false };
   }
 
+  // (10b) The all-pre-filled gate (sprint 24 L3). AFTER the escapes, so
+  // CHATS/CERRAR/help still work from it, and after CANCELAR/CAMBIAR, which
+  // are its two other legitimate answers. LISTO/DONE completes; anything
+  // else re-prompts once and then goes quiet without dropping the gate.
+  const confirm = ctx.stateContext.fill_confirm as FillConfirmState | undefined;
+  if (confirm) {
+    return resolveFillConfirm(client, ctx, msg, deps, confirm, body);
+  }
+
   // (11) Task 8's cert loop / fill_pending resolution (see
   // handleFillMediaTurn's jsdoc; review fix, bug A) -- reached only when the
   // body did NOT parse as a confirmation at step 6, so this is exactly the
@@ -1896,6 +2381,15 @@ export async function handleFillMessage(
   }
   if (pending) {
     return resolveFillPending(client, ctx, msg, deps, pending, applicationId, body);
+  }
+
+  // (11b) A replacement slot is armed (sprint 24 L3): the worker asked to
+  // change a document and has sent text instead of a file. The engine's own
+  // walk cannot name that slot -- the vault copy makes it read as satisfied
+  // -- so re-send ITS prompt, cooldown-guarded like any other doc-step text.
+  const replacePending = asCollectableDocType(ctx.stateContext.fill_doc_replace);
+  if (replacePending) {
+    return handleDocStepText(client, ctx, msg, deps, replacePending);
   }
 
   const { step: nextStep } = await computeFillStep(client, applicationId);

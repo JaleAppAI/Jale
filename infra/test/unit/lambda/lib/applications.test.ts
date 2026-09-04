@@ -1,4 +1,8 @@
-import { applyWorkerToJob, resolveCertificationDocIds } from '../../../../lambda/lib/applications';
+import {
+  applyWorkerToJob,
+  copyRequiredDocumentSnapshots,
+  resolveCertificationDocIds,
+} from '../../../../lambda/lib/applications';
 
 const makeClient = (query: jest.Mock) => ({ query }) as any;
 
@@ -392,5 +396,62 @@ describe('resolveCertificationDocIds', () => {
     const query = jest.fn().mockResolvedValueOnce({ rows: [] });
     await resolveCertificationDocIds(makeClient(query), 'worker-1', [DOC_A, DOC_A, DOC_B]);
     expect(query.mock.calls[0][1]).toEqual(['worker-1', [DOC_A, DOC_B]]);
+  });
+});
+
+// ── L3: copyRequiredDocumentSnapshots now REPORTS what it copied ─────────
+//
+// Mechanism 3 of the 2026-09-04 incident: this function silently satisfied a
+// required work-authorization DOCUMENT from the worker's vault, so the bot
+// never asked for it and the worker was never told it had been attached.
+// Decision D3 keeps the auto-attach (it is genuinely useful) and requires
+// that the worker be TOLD -- which needs the list of what was actually
+// copied.
+describe('copyRequiredDocumentSnapshots -- copied-document reporting', () => {
+  it('returns one doc_type per newly copied document', async () => {
+    const { client, query } = makeRoutedClient([
+      ['SELECT DISTINCT ON (doc_type)', { rows: [{ doc_type: 'resume' }, { doc_type: 'work_auth_doc' }] }],
+    ]);
+
+    const copied = await copyRequiredDocumentSnapshots(client, 'worker-1', 'job-1', ['resume', 'work_auth_doc']);
+
+    expect(copied).toEqual(['resume', 'work_auth_doc']);
+    // Still ONE statement for the non-cert branch -- the report rides on a
+    // RETURNING, never a second read.
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(String(query.mock.calls[0][0])).toContain('RETURNING doc_type');
+  });
+
+  it('reports the certification branch separately from the non-cert one', async () => {
+    const { client } = makeRoutedClient([
+      ['SELECT DISTINCT ON (doc_type)', { rows: [{ doc_type: 'resume' }] }],
+      ['FROM worker_documents src', { rows: [{ doc_type: 'certification_doc' }, { doc_type: 'certification_doc' }] }],
+    ]);
+
+    const copied = await copyRequiredDocumentSnapshots(client, 'worker-1', 'job-1', ['resume', 'certification_doc']);
+
+    // Two cert FILES copied collapse to ONE reported doc_type: the report is
+    // "which requirement got satisfied from the vault", not a file count.
+    expect(copied).toEqual(['resume', 'certification_doc']);
+  });
+
+  it('returns an empty list when the copy was a no-op (nothing in the vault, or already copied)', async () => {
+    const { client } = makeRoutedClient([
+      ['SELECT DISTINCT ON (doc_type)', { rows: [] }],
+    ]);
+    expect(await copyRequiredDocumentSnapshots(client, 'worker-1', 'job-1', ['resume'])).toEqual([]);
+  });
+
+  it('returns an empty list for an empty doc-type list, still issuing no query', async () => {
+    const query = jest.fn();
+    expect(await copyRequiredDocumentSnapshots(makeClient(query), 'worker-1', 'job-1', [])).toEqual([]);
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it('tolerates a driver/test double that returns rowCount without rows', async () => {
+    const { client } = makeRoutedClient([
+      ['SELECT DISTINCT ON (doc_type)', { rowCount: 1 }],
+    ]);
+    expect(await copyRequiredDocumentSnapshots(client, 'worker-1', 'job-1', ['resume'])).toEqual([]);
   });
 });
