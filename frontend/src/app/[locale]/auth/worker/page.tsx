@@ -7,7 +7,7 @@ import WorkerAuthForm from '@/components/auth/WorkerAuthForm';
 import { AuthShell } from '@/components/auth/AuthShell';
 import { CenteredCardSkeleton } from '@/components/ui/page-skeletons';
 import { validateJobId, isAuthFlowCompleting } from '@/lib/referral-return';
-import { sanitizeReturnPath } from '@/lib/login-url';
+import { assignReturnPath, sanitizeReturnPath } from '@/lib/login-url';
 import { claimReferral } from '@/lib/api/worker';
 
 export const dynamic = 'force-dynamic';
@@ -42,12 +42,13 @@ export default function WorkerAuthPage() {
                 router.replace(`/worker/jobs/${jobId}`);
                 return;
             }
-            // Where a session-expiry redirect wants us back. Already
-            // locale-prefixed, so assign it directly: router.replace() would
-            // add a second locale segment on top.
+            // Where the visit came from: a session-expiry redirect, or the
+            // sign-in gate on the page they actually wanted. Already
+            // locale-prefixed, so it is assigned rather than routed --
+            // router.replace() would add a second locale segment on top.
             const returnPath = sanitizeReturnPath(searchParams.get('returnUrl'));
             if (returnPath) {
-                window.location.assign(returnPath);
+                assignReturnPath(returnPath);
                 return;
             }
             router.replace('/worker/home');

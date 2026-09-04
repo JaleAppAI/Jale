@@ -59,3 +59,21 @@ export function buildLoginUrl(
   const safeReturnPath = sanitizeReturnPath(returnPath ?? null);
   return safeReturnPath ? `${base}?returnUrl=${encodeURIComponent(safeReturnPath)}` : base;
 }
+
+/**
+ * Completes the round trip: sends the browser to a `returnUrl` that has already
+ * been through `sanitizeReturnPath`.
+ *
+ * A plain `location.assign`, and deliberately not a router call -- a return
+ * path is already locale-prefixed (it came out of the address bar), so
+ * next-intl's router would prefix a second locale onto it.
+ *
+ * It exists as a named export rather than inline in the two auth pages because
+ * `location.assign` is non-configurable in jsdom: a test can observe this hop
+ * only by mocking a module boundary, and without one the pages' `returnUrl`
+ * handling is untestable.
+ */
+export function assignReturnPath(path: string): void {
+  if (typeof window === 'undefined') return;
+  window.location.assign(path);
+}

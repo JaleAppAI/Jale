@@ -3,7 +3,7 @@ import { useEffect } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
-import { sanitizeReturnPath } from '@/lib/login-url';
+import { assignReturnPath, sanitizeReturnPath } from '@/lib/login-url';
 import EmployerAuthForm, { EmployerBrandPanel } from '@/components/auth/EmployerAuthForm';
 import { AuthShell } from '@/components/auth/AuthShell';
 import { CenteredCardSkeleton } from '@/components/ui/page-skeletons';
@@ -17,12 +17,13 @@ export default function EmployerAuthPage() {
 
     useEffect(() => {
         if (!isLoading && isAuthenticated) {
-            // Where a session-expiry redirect wants us back. Already
-            // locale-prefixed, so assign it directly: router.replace() would
-            // add a second locale segment on top.
+            // Where the visit came from: a session-expiry redirect, or the
+            // sign-in gate on the page they actually wanted. Already
+            // locale-prefixed, so it is assigned rather than routed --
+            // router.replace() would add a second locale segment on top.
             const returnPath = sanitizeReturnPath(searchParams.get('returnUrl'));
             if (returnPath) {
-                window.location.assign(returnPath);
+                assignReturnPath(returnPath);
                 return;
             }
             router.replace(userType === 'worker' ? '/worker/home' : '/employer/dashboard');
