@@ -55,7 +55,19 @@ export type FillMessageKey =
   | 'prompt_ask'
   | 'prompt_text_only'
   | 'prompt_too_long'
-  | 'prompt_canceled';
+  | 'prompt_canceled'
+  // Sprint 24 L3 -- the reuse-transparency lane. The 2026-09-04 incident was
+  // invisible to the worker: profile answers were reused and a vault
+  // document was attached with nothing said, and the fill then completed in
+  // the same turn. These six keys are what the worker now sees instead.
+  | 'intro_profile_check'
+  | 'reuse_fields_line'
+  | 'reuse_docs_line'
+  | 'reuse_change_footer'
+  | 'confirm_all_prefilled'
+  | 'change_menu_header'
+  | 'change_menu_invalid'
+  | 'change_nothing';
 
 interface Bilingual {
   en: string;
@@ -115,6 +127,38 @@ const FIELD_QUESTIONS: Record<FillFieldKey, Bilingual> = {
     en: 'Have you served in the military?\n\n1. Yes\n2. No\n\nReply with 1 or 2.',
     es: 'Has servido en las fuerzas armadas?\n\n1. Si\n2. No\n\nResponde con 1 o 2.',
   },
+};
+
+// ── Field LABELS (sprint 24 L3) ─────────────────────────────────────────
+//
+// SHORT noun phrases, for naming a field in a list rather than asking it:
+// the `reuse_fields_line` summary ("De tu perfil usamos: ...") and the
+// numbered CAMBIAR menu. FIELD_QUESTIONS above cannot serve -- those are
+// full questions, several of them multi-line with a numbered footer.
+//
+// DEVIATION FROM THE L3 BRIEF, recorded deliberately: the brief said to
+// reuse an existing bilingual field-label map. There is none on the lambda
+// side (only these questions and their retry hints). The canonical short
+// labels live in the FRONTEND message catalogs
+// (frontend/src/messages/{en,es}.json -> job_requirements.fields), so these
+// are derived from those rather than invented -- re-worded only where this
+// module's own conventions require it: no accents, no question marks, and
+// tu rather than the web copy's impersonal/usted phrasing ("Si trabajaste
+// aqui antes", not "Ha trabajado aqui antes?"). Keep the two in sync by
+// hand; nothing enforces it, exactly like REQUIRED_FIELD_TYPES and its
+// 073 CHECK.
+const FIELD_LABELS: Record<FillFieldKey, Bilingual> = {
+  work_authorization: { en: 'Work authorization', es: 'Autorizacion de trabajo' },
+  date_available: { en: 'Date available', es: 'Fecha de disponibilidad' },
+  desired_pay: { en: 'Desired pay', es: 'Pago deseado' },
+  home_address: { en: 'Home address', es: 'Direccion de casa' },
+  date_of_birth: { en: 'Date of birth', es: 'Fecha de nacimiento' },
+  emergency_contact: { en: 'Emergency contact', es: 'Contacto de emergencia' },
+  worked_here_before: { en: 'Worked here before', es: 'Si trabajaste aqui antes' },
+  education: { en: 'Education', es: 'Educacion' },
+  references: { en: 'References', es: 'Referencias' },
+  work_history: { en: 'Work history', es: 'Historial de trabajo' },
+  military_service: { en: 'Military service', es: 'Servicio militar' },
 };
 
 // Each hint names the problem before repeating the accepted format, per the
@@ -311,6 +355,57 @@ const FILL_MESSAGES: Record<FillMessageKey, Bilingual> = {
     en: 'Done, we will leave the questions for now. Your application is still sent. Reply "applications" when you want to continue.',
     es: 'Listo, dejamos las preguntas por ahora. Tu aplicacion sigue enviada. Escribe "aplicaciones" cuando quieras continuar.',
   },
+  // Sprint 24 L3, transparency decision: sent BEFORE anything is reused, so
+  // the worker knows a profile lookup is about to happen rather than being
+  // handed a fait accompli.
+  intro_profile_check: {
+    en: "First I'll check your profile for details we already have, then ask only what's missing.",
+    es: 'Primero reviso tu perfil para usar los datos que ya tenemos y solo te pregunto lo que falta.',
+  },
+  // Three separate keys, not one paragraph: a job may reuse fields with no
+  // documents, or attach a document with no reused fields, and a summary
+  // that says "Documentos adjuntados de tu boveda: ." is worse than saying
+  // nothing. `armFill` composes whichever lines apply and always ends with
+  // the footer, so the way out is never missing.
+  reuse_fields_line: {
+    en: 'From your profile we used: {{labels}}.',
+    es: 'De tu perfil usamos: {{labels}}.',
+  },
+  // "boveda" without the accent, like every other es string in this module
+  // (see the style note in the header) -- the label list substituted into
+  // {{docLabels}} comes from `localizeDocList` and DOES carry accents, so
+  // this one line can read mixed. Deliberate: those labels are already sent
+  // accented by the `web_handoff` note this lane and processor.ts share, and
+  // re-spelling them here would fork copy other lanes send.
+  reuse_docs_line: {
+    en: 'Documents attached from your vault: {{docLabels}}.',
+    es: 'Documentos adjuntados de tu boveda: {{docLabels}}.',
+  },
+  reuse_change_footer: {
+    en: 'Reply CHANGE if you want to fix any of them.',
+    es: 'Responde CAMBIAR si quieres corregir alguno.',
+  },
+  // THE FIX for the incident's last step: with everything pre-filled the
+  // flow used to report "0 questions and 0 documents" and fire the
+  // completion message in the SAME turn, so the worker's details went to the
+  // employer without them ever answering, reviewing or agreeing to
+  // anything. Now nothing is sent until they say LISTO/DONE.
+  confirm_all_prefilled: {
+    en: 'We already have everything we need. Reply DONE to send your application, or CHANGE to fix something.',
+    es: 'Ya tenemos todo lo necesario. Responde LISTO para enviar tu solicitud o CAMBIAR para corregir algo.',
+  },
+  change_menu_header: {
+    en: 'Here is what we used from your profile. Reply with the number of what you want to fix:',
+    es: 'Esto es lo que usamos de tu perfil. Responde con el numero de lo que quieres corregir:',
+  },
+  change_menu_invalid: {
+    en: 'That number is not on the list. Reply with one of the numbers on the list.',
+    es: 'Ese numero no esta en la lista. Responde con uno de los numeros de la lista.',
+  },
+  change_nothing: {
+    en: 'We did not use anything from your profile on this application, so there is nothing to fix here.',
+    es: 'No usamos ningun dato de tu perfil en esta solicitud, asi que no hay nada que corregir aqui.',
+  },
 };
 
 /** Substitute `{{name}}` placeholders. Copies the `$`-safe approach in
@@ -332,6 +427,12 @@ export function fieldQuestion(key: FillFieldKey, lang: Lang): string {
 
 export function fieldRetryHint(key: FillFieldKey, lang: Lang): string {
   return FIELD_RETRY_HINTS[key][lang];
+}
+
+/** Short noun-phrase name for a field -- for the reuse summary and the
+ * numbered CAMBIAR menu, never for asking (see FIELD_LABELS). */
+export function fieldLabel(key: FillFieldKey, lang: Lang): string {
+  return FIELD_LABELS[key][lang];
 }
 
 export function docPrompt(docType: CollectableDocType, lang: Lang): string {
