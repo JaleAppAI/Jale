@@ -4,6 +4,7 @@ import { resolveEntitlements } from '../lib/entitlements';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs, parseRequiredFields } from '../lib/job-fields';
 import { parseCityFields } from '../lib/city-fields';
+import { parsePreApplicationPrompts } from '../lib/pre-application-prompts';
 import { checkCompliance } from '../legal/check-compliance';
 
 const CORS_HEADERS = corsHeaders();
@@ -46,6 +47,14 @@ function validateTemplatePayload(raw: Record<string, unknown>):
   const cityFields = parseCityFields(raw);
   if (!cityFields.ok) return { ok: false, status: 400, error: cityFields.error };
 
+  // Sprint 23 (091) stage-1 questions, whitelisted here so a template that
+  // carries custom questions still carries them after a round trip. Same
+  // strict parser and same single error code employer-jobs-create.ts:137
+  // uses, so a template is still "always a storable create request":
+  // anything this accepts, create accepts.
+  const prompts = parsePreApplicationPrompts(raw.pre_application_prompts);
+  if (!prompts.ok) return { ok: false, status: 400, error: prompts.error };
+
   // Tier-overlap rejection BEFORE hitting the DB CHECK (mirrors
   // employer-jobs-create.ts/employer-jobs-update.ts).
   const requirementsOverlapKeys = [
@@ -69,6 +78,14 @@ function validateTemplatePayload(raw: Record<string, unknown>):
     ...(Object.prototype.hasOwnProperty.call(raw, 'optional_docs') ? { optional_docs: optionalDocs.value } : {}),
     ...(Object.prototype.hasOwnProperty.call(raw, 'required_fields') ? { required_fields: requiredFields.value } : {}),
     ...(Object.prototype.hasOwnProperty.call(raw, 'optional_fields') ? { optional_fields: optionalFields.value } : {}),
+    // hasOwnProperty-gated for the same reason as the three above:
+    // parsePreApplicationPrompts turns an ABSENT field into a legal `[]`, and
+    // injecting that into every legacy template's stored payload would
+    // rewrite its shape just by re-saving it. The frontend always sends the
+    // key (job-form.ts:478), so the gate costs the real client nothing.
+    ...(Object.prototype.hasOwnProperty.call(raw, 'pre_application_prompts')
+      ? { pre_application_prompts: prompts.value }
+      : {}),
     ...jobFields.value,
     ...(coordinates.value ?? {}),
     ...(cityFields.value ?? {}),
