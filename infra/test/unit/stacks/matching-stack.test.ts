@@ -117,4 +117,53 @@ describe('MatchingStack', () => {
       MetricName: 'ApproximateNumberOfMessagesVisible',
     });
   });
+
+  // ── Alarm hygiene (sprint 24 A4) ──────────────────────────────────────────
+  //
+  // These three were declared inline with no `treatMissingData`, so they
+  // inherited CloudWatch's `missing` default: an empty DLQ produces NO
+  // datapoints, the alarm drops to INSUFFICIENT_DATA, and the next datapoint
+  // flips it back to OK. Across these plus the BillingStack/AiStack five, that
+  // flapping was 64 of 87 alarm state transitions in one week.
+  //
+  // `notBreaching` is the honest reading: no messages in a dead-letter queue
+  // is the healthy state, not an unknown one.
+  const MATCHING_DLQ_ALARMS = [
+    ['CandidateMaterializationDlqAlarm', 'Candidate materialization DLQ has messages'],
+    ['WorkerRerankDlqAlarm', 'Worker rerank DLQ has messages'],
+    ['EmployerCandidateRerankDlqAlarm', 'Employer candidate rerank DLQ has messages'],
+  ] as const;
+
+  it.each(MATCHING_DLQ_ALARMS)(
+    '%s treats missing data as notBreaching, keeping its threshold and operator',
+    (constructId, description) => {
+      const alarms = template.findResources('AWS::CloudWatch::Alarm', {
+        Properties: { AlarmDescription: description },
+      });
+      expect(Object.keys(alarms)).toHaveLength(1);
+      const alarm = Object.values(alarms)[0] as any;
+
+      expect(alarm.Properties.TreatMissingData).toBe('notBreaching');
+      expect(alarm.Properties.Threshold).toBe(1);
+      expect(alarm.Properties.EvaluationPeriods).toBe(1);
+      // NOT GreaterThanThreshold. `>= 1` is what these alarms have always
+      // emitted, because CDK's own default for `comparisonOperator` is
+      // GREATER_THAN_OR_EQUAL_TO_THRESHOLD (aws-cdk-lib/aws-cloudwatch/lib/
+      // alarm.js). `> 1` would mean a single dead-lettered message never
+      // alarms — a silent downgrade dressed up as "keeping the default".
+      expect(alarm.Properties.ComparisonOperator).toBe('GreaterThanOrEqualToThreshold');
+      // Absent, not generated: an AlarmName these alarms never had would be a
+      // new physical name, and CloudFormation REPLACES an alarm to set one.
+      expect(alarm.Properties.AlarmName).toBeUndefined();
+      expect(alarm.Properties.DatapointsToAlarm).toBeUndefined();
+      // No SNS action today, exactly as before. MatchingStack takes no alarm
+      // topic prop, and inventing one is not this change.
+      expect(alarm.Properties.AlarmActions).toBeUndefined();
+
+      // Logical id: pinned to `<constructId><8 hex>` so migrating these to
+      // `jaleAlarm()` cannot rename — or re-parent — a live alarm.
+      const [logicalId] = Object.keys(alarms);
+      expect(logicalId).toMatch(new RegExp(`^${constructId}[0-9A-F]{8}$`));
+    },
+  );
 });
