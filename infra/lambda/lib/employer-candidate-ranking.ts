@@ -71,6 +71,14 @@ interface CacheRow {
   score: number | string;
   score_band: ScoreBand;
   reasons: string[] | unknown;
+  /**
+   * Provenance of the cached row. The rerank worker writes 'sql-v1' with a
+   * NULL model_id when it falls back to the deterministic ranking, so this
+   * column is what separates a real LLM ranking from a served fallback.
+   * Rows written before the column was read back carry 'llm-v1'.
+   */
+  ranking_version?: RankingVersion | string | null;
+  model_id?: string | null;
   computed_at: string | Date;
 }
 
@@ -265,7 +273,7 @@ export async function readFreshEmployerCandidateCache(
   sourceHash: string,
 ): Promise<CacheRow[]> {
   const result = await client.query<CacheRow>(
-    `SELECT worker_id, score, score_band, reasons, computed_at
+    `SELECT worker_id, score, score_band, reasons, ranking_version, model_id, computed_at
        FROM employer_candidate_rankings
       WHERE job_id = $1
         AND source_hash = $2
@@ -379,11 +387,23 @@ export async function listEmployerCandidates(
     : [];
   const cachedCandidates = cacheRows.length > 0 ? applyCacheRows(deterministic, cacheRows).slice(0, limit) : [];
   const useCache = cachedCandidates.length > 0;
+  /**
+   * A rerank fallback persists the DETERMINISTIC ranking into this cache
+   * (tagged 'sql-v1', model_id NULL) so the SQS queue stops retrying. Serving
+   * that cached order is right -- it IS the deterministic order, and keeping
+   * `useCache` true is what stops the re-enqueue storm -- but reporting it as
+   * an LLM ranking would claim work that never happened. One deterministic row
+   * is enough to downgrade the label: a partly deterministic ranking is not an
+   * LLM ranking. Rows predating this read carry 'llm-v1', so only an explicit
+   * 'sql-v1' changes the answer.
+   */
+  const cacheIsDeterministic = cacheRows.some((row) => row.ranking_version === SQL_RANKING_VERSION);
+  const useLlmLabel = useCache && !cacheIsDeterministic;
 
   return {
     response: {
-      ranking_status: useCache ? 'llm_cached' : 'deterministic',
-      ranking_version: useCache ? LLM_RANKING_VERSION : SQL_RANKING_VERSION,
+      ranking_status: useLlmLabel ? 'llm_cached' : 'deterministic',
+      ranking_version: useLlmLabel ? LLM_RANKING_VERSION : SQL_RANKING_VERSION,
       candidates: useCache ? cachedCandidates : deterministic,
       total: totalApplicants,
       computed_at: useCache ? new Date(cacheRows[0].computed_at).toISOString() : new Date().toISOString(),

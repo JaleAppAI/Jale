@@ -150,6 +150,64 @@ describe('generateAndCacheQuestions', () => {
       /expected 3 questions/i,
     );
   });
+
+  it('parses a question array that arrives behind explanatory prose', async () => {
+    // Haiku 4.5 sometimes prefixes the JSON with a sentence. Stripping fences
+    // alone left that as a hard parse failure; the shared lenient parser must
+    // find the array inside the prose.
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
+    mockBedrockSend.mockResolvedValueOnce({
+      output: {
+        message: {
+          content: [{
+            text: 'Here are three open questions for a welder:\n\n' + JSON.stringify([
+              { q_en: 'What do you weld?', q_es: 'Que soldas?' },
+              { q_en: 'What metals?', q_es: 'Que metales?' },
+              { q_en: 'Safety?', q_es: 'Seguridad?' },
+            ]) + '\n\nLet me know if you want different ones.',
+          }],
+        },
+      },
+    });
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
+
+    const result = await generateAndCacheQuestions('soldador', 'soldador de arco');
+
+    expect(result).toHaveLength(3);
+    expect(result[0].q_en).toBe('What do you weld?');
+  });
+
+  it('parses a fenced question array wrapped in prose', async () => {
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
+    mockBedrockSend.mockResolvedValueOnce({
+      output: {
+        message: {
+          content: [{
+            text: 'Sure.\n```json\n' + JSON.stringify([
+              { q_en: 'A?', q_es: 'A?' },
+              { q_en: 'B?', q_es: 'B?' },
+              { q_en: 'C?', q_es: 'C?' },
+            ]) + '\n```\nAnything else?',
+          }],
+        },
+      },
+    });
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
+
+    const result = await generateAndCacheQuestions('soldador', 'soldador');
+
+    expect(result).toHaveLength(3);
+    expect(result[2].q_es).toBe('C?');
+  });
+
+  it('still rejects output with no JSON in it at all', async () => {
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
+    mockBedrockSend.mockResolvedValueOnce({
+      output: { message: { content: [{ text: 'I cannot generate questions for that trade.' }] } },
+    });
+
+    await expect(generateAndCacheQuestions('x', 'x')).rejects.toThrow();
+  });
 });
 
 export {};
