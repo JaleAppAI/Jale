@@ -655,11 +655,50 @@ export async function getApplications(
   return res.json();
 }
 
+/**
+ * The app locale, from the URL's first path segment (`/en/...`, `/es/...`) --
+ * every app route is locale-prefixed by the middleware.
+ *
+ * A HAND-KEPT TWIN of `appLocaleHeader` in `@/lib/api` (which builds the
+ * `Accept-Language` header from the same prefix): that one is module-private
+ * there, and the regex is the shared bound -- keep the two in sync by hand,
+ * the same standing instruction the duplicated bound sets in
+ * `lib/pre-application-prompts.ts` / migration 073 carry.
+ *
+ * Differs from its twin in ONE way, deliberately: where there is no locale to
+ * read (server-side, or a non-app path) the header helper sends nothing and
+ * lets the API decide, whereas this returns 'es' -- the body field's value has
+ * to be one the lambda accepts (`VALID_LANGS`), and 'es' is the same default
+ * `resolveTradeLang` and `whatsapp_conversations.language`'s DEFAULT land on.
+ */
+function appLocale(): 'en' | 'es' {
+  if (typeof window === 'undefined') return 'es';
+  const match = /^\/(en|es)(?=\/|$)/.exec(window.location?.pathname ?? '');
+  return match ? (match[1] as 'en' | 'es') : 'es';
+}
+
+/**
+ * F7 (sprint 24): the patch travels with an explicit `lang`.
+ *
+ * The backend's `resolveTradeLang` (infra/lambda/api/worker-profile-update.ts)
+ * chooses the language it stores a CANONICALISED custom trade label in, and
+ * prefers a body `lang` over `Accept-Language`. It documented the web client
+ * as the body-field sender, but this helper posted the patch verbatim -- so
+ * every save fell through to the header instead. That happened to agree
+ * (`apiFetch` derives the header from the same path prefix), but it left the
+ * documented contract unenforced and one caller-supplied `Accept-Language`
+ * away from storing a worker's trade in the wrong language.
+ *
+ * Typed locally rather than on `WorkerProfilePatch`: `lang` is not something
+ * a CALLER may set -- it is the active locale, and a caller who could pass it
+ * could contradict the UI the worker is looking at.
+ */
 export async function updateWorkerProfile(
   token: string,
   patch: WorkerProfilePatch,
 ): Promise<WorkerProfileData> {
-  const res = await apiFetch('/worker/profile', { method: 'PATCH', body: JSON.stringify(patch) }, token);
+  const body: WorkerProfilePatch & { lang: 'en' | 'es' } = { ...patch, lang: appLocale() };
+  const res = await apiFetch('/worker/profile', { method: 'PATCH', body: JSON.stringify(body) }, token);
   if (!res.ok) throw await parseApiError(res, 'update_failed');
   return res.json();
 }
