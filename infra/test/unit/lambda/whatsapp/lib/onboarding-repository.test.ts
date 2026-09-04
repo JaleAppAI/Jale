@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
   saveCanonicalCustomTrade,
+  loadPreferredLanguage,
   loadWorkerGate,
   loadPreAuthStateForUpdate,
   savePreAuthState,
@@ -678,12 +679,46 @@ describe('saveCanonicalCustomTrade', () => {
     expect(usersUpdate(query)![1]).toEqual([WORKER_ID, 'other', 'Welder']);
   });
 
-  it('defaults to Spanish when no language is supplied', async () => {
+  it('defaults to Spanish when no language is supplied and no run says otherwise', async () => {
     const { query, client } = seed(WELDER);
 
     await saveCanonicalCustomTrade(client, WORKER_ID, 'Welder');
 
     expect(usersUpdate(query)![1]).toEqual([WORKER_ID, 'other', 'Soldador']);
+  });
+
+  it('reads the run language when the caller does not hold the gate', async () => {
+    // ProfilePersistenceAdapter.saveCustomTrade has no gate to pass through.
+    const { query, client } = seed(WELDER);
+    query.mockImplementation((sql: string, params?: unknown[]) => {
+      if (/FROM worker_workflow_runs/.test(sql)) {
+        return Promise.resolve({ rows: [{ preferred_language: 'en' }], rowCount: 1 });
+      }
+      if (/FROM trade_aliases/.test(sql)) {
+        return Promise.resolve({ rows: [WELDER], rowCount: 1 });
+      }
+      return Promise.resolve({ rows: [], rowCount: 1 });
+    });
+
+    await saveCanonicalCustomTrade(client, WORKER_ID, 'soldador');
+
+    expect(usersUpdate(query)![1]).toEqual([WORKER_ID, 'other', 'Welder']);
+  });
+
+  it('an explicit lang wins over the stored run language', async () => {
+    const { query, client } = seed(WELDER);
+    query.mockImplementation((sql: string) => {
+      if (/FROM worker_workflow_runs/.test(sql)) {
+        return Promise.resolve({ rows: [{ preferred_language: 'en' }], rowCount: 1 });
+      }
+      if (/FROM trade_aliases/.test(sql)) return Promise.resolve({ rows: [WELDER], rowCount: 1 });
+      return Promise.resolve({ rows: [], rowCount: 1 });
+    });
+
+    await saveCanonicalCustomTrade(client, WORKER_ID, 'soldador', 'es');
+
+    expect(usersUpdate(query)![1]).toEqual([WORKER_ID, 'other', 'Soldador']);
+    expect(query.mock.calls.some(([sql]) => /FROM worker_workflow_runs/.test(String(sql)))).toBe(false);
   });
 
   it('every spelling of one trade converges on the same stored text', async () => {
@@ -747,15 +782,17 @@ describe('saveCanonicalCustomTrade', () => {
     expect(String(usersUpdate(query)![0])).toMatch(/user_type = 'worker'/);
   });
 
-  it('imports no AWS SDK — this module is bundled into a dozen lambdas', () => {
-    // JaleLambdaFunction externalizes every '@aws-sdk/*' package
-    // (lib/constructs/lambda-function.ts:97), and this module is in the
-    // import graph of processor.ts, worker-ready-release.ts,
-    // web/worker-onboarding.ts and lib/job-messaging.ts among others. A
-    // top-level SDK import here becomes an unresolvable require() in each of
-    // those bundles unless every one opts the package into `nodeModules` —
-    // failing EVERY invocation, not just trade-writing turns. Growing the
-    // alias cache is therefore the caller's job.
+  it('stays DB-only: no AWS SDK, so a call does nothing but SQL', () => {
+    // The module contract at the top of onboarding-repository.ts is that every
+    // function here is DB-only on the caller's transaction. Growing the alias
+    // cache is a fire-and-forget Lambda invoke — a side effect that belongs to
+    // whoever knows whether the transaction committed — so it stays with the
+    // caller and this module reports `resolved: false` instead.
+    //
+    // (This is a design contract, NOT a bundling constraint: the Node 20
+    // runtime provides '@aws-sdk/client-lambda', which is why
+    // api-stack.ts's WorkerProfileUpdateLambda imports trade-alias-request
+    // with no `nodeModules` opt-in at all.)
     const src = fs.readFileSync(
       path.join(__dirname, '../../../../../lambda/whatsapp/lib/onboarding-repository.ts'),
       'utf-8',
@@ -764,5 +801,26 @@ describe('saveCanonicalCustomTrade', () => {
     expect(imports.length).toBeGreaterThan(0);
     expect(imports.filter((mod) => mod.startsWith('@aws-sdk/'))).toEqual([]);
     expect(imports).not.toContain('../../lib/trade-alias-request');
+  });
+});
+
+describe('loadPreferredLanguage', () => {
+  it('returns the run language without taking a row lock', async () => {
+    const { query, client } = makeClient();
+    query.mockResolvedValueOnce({ rows: [{ preferred_language: 'en' }] });
+
+    expect(await loadPreferredLanguage(client, WORKER_ID)).toBe('en');
+    // loadWorkerGate's FOR UPDATE must not be duplicated here: the turn that
+    // calls this already holds that lock.
+    expect(query.mock.calls[0][0]).not.toMatch(/FOR UPDATE/);
+    expect(query.mock.calls[0][1]).toEqual([WORKER_ID]);
+  });
+
+  it('defaults to es for a worker with no run, or a junk value', async () => {
+    for (const rows of [[], [{ preferred_language: null }], [{ preferred_language: 'fr' }]]) {
+      const { query, client } = makeClient();
+      query.mockResolvedValueOnce({ rows });
+      expect(await loadPreferredLanguage(client, WORKER_ID)).toBe('es');
+    }
   });
 });

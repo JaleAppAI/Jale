@@ -6,16 +6,14 @@ import type {
   WorkflowStepKey,
 } from './onboarding-types';
 import { claimPendingReferral } from './referral-claims';
-// `trade-canonical` is deliberately pure-SQL + pure-logic (profession.ts and
-// worker-vocab.ts only). Nothing that reaches for an AWS SDK client may be
-// imported into this module: it sits in the import graph of processor.ts,
-// worker-ready-release.ts, web/worker-onboarding.ts and lib/job-messaging.ts
-// among others, and JaleLambdaFunction externalizes every '@aws-sdk/*'
-// package (lib/constructs/lambda-function.ts:97). A top-level SDK import here
-// would put an unresolvable require() into every one of those bundles unless
-// each opted the package into `nodeModules` — failing EVERY invocation, not
-// just trade-writing turns. That is why `saveCanonicalCustomTrade` REPORTS
-// that a trade needs learning instead of invoking the generator itself.
+// `trade-canonical` is pure SQL + pure logic (it imports profession.ts and
+// worker-vocab.ts and nothing else), which keeps this module's contract
+// intact: every function here is DB-only, so a caller can reason about what a
+// call does to its transaction and nothing else. That is why
+// `saveCanonicalCustomTrade` REPORTS that a trade needs learning rather than
+// invoking the alias generator itself — a fire-and-forget Lambda invoke is a
+// side effect on the caller's turn, and the caller is the one that knows
+// whether its transaction has committed.
 import { canonicalizeWorkerTrade, type CanonicalTrade } from '../../lib/trade-canonical';
 
 // ── Contract shared by every exported function in this module ──
@@ -699,6 +697,31 @@ export async function completeOnboarding(
 }
 
 /**
+ * The worker's onboarding language, for callers that do not hold the gate.
+ *
+ * Same run-selection order as `loadWorkerGate` (active run first, then newest)
+ * but WITHOUT its `FOR UPDATE OF s` — this is a read for formatting a stored
+ * string, and it must not take a second row lock on `worker_onboarding_state`
+ * inside a turn that already holds one. Defaults to 'es', matching both
+ * `loadWorkerGate`'s COALESCE and `whatsapp_conversations.language`'s DEFAULT.
+ */
+export async function loadPreferredLanguage(
+  client: PoolClient,
+  workerId: string,
+): Promise<PreferredLanguage> {
+  const result = await client.query<{ preferred_language: PreferredLanguage }>(
+    `SELECT COALESCE(r.preferred_language, 'es') AS preferred_language
+       FROM worker_workflow_runs r
+      WHERE r.user_id = $1
+      ORDER BY (r.status = 'active') DESC, r.created_at DESC, r.id DESC
+      LIMIT 1`,
+    [workerId],
+  );
+  const lang = result.rows[0]?.preferred_language;
+  return lang === 'en' || lang === 'es' ? lang : 'es';
+}
+
+/**
  * Sprint 24 L6 — the canonicalising custom-trade write.
  *
  * `ProfilePersistenceAdapter.saveCustomTrade` (lib/onboarding-adapters.ts)
@@ -719,18 +742,19 @@ export async function completeOnboarding(
  * `chk_trade_other` (004_whatsapp.sql:66-70) rejects, and there is no trade to
  * record anyway.
  *
- * Growing the alias cache is the caller's job, by design — see the import
- * comment at the top of this file for why no AWS SDK may be imported here:
+ * Growing the alias cache is the caller's job, by design — this module stays
+ * DB-only (see the import comment at the top of this file):
  *
  *     const written = await saveCanonicalCustomTrade(client, workerId, raw, lang);
  *     if (written && !written.resolved && written.main_trade_other) {
  *       await requestTradeAliasGeneration(written.main_trade_other);
  *     }
  *
- * `lang` is a parameter rather than a lookup on purpose — every caller already
- * holds the run's `preferredLanguage` (`WorkerGate.preferredLanguage`), and
- * re-reading it here would mean either duplicating `loadWorkerGate`'s
- * run-selection SQL or taking its `FOR UPDATE` row lock a second time.
+ * `lang` is optional: pass the run's `preferredLanguage` when you hold the
+ * gate (`WorkerGate.preferredLanguage`), and it is read via
+ * `loadPreferredLanguage` otherwise. Callers reached through
+ * `ProfilePersistenceAdapter` do not get the gate, which is why the lookup
+ * exists at all.
  *
  * Same module contract as everything else here: no BEGIN/COMMIT/ROLLBACK, no
  * RLS context, one parameterized UPDATE on the caller's open transaction. The
@@ -742,9 +766,10 @@ export async function saveCanonicalCustomTrade(
   client: PoolClient,
   workerId: string,
   rawProfession: string,
-  lang: PreferredLanguage = 'es',
+  lang?: PreferredLanguage,
 ): Promise<CanonicalTrade | null> {
-  const canonical = await canonicalizeWorkerTrade(client, { raw: rawProfession, lang });
+  const resolvedLang = lang ?? (await loadPreferredLanguage(client, workerId));
+  const canonical = await canonicalizeWorkerTrade(client, { raw: rawProfession, lang: resolvedLang });
   if (canonical.main_trade === 'other' && !canonical.main_trade_other) return null;
 
   await client.query(

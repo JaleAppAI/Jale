@@ -950,16 +950,20 @@ describe('ProfilePersistenceAdapter', () => {
     expect(merged[1]).toEqual(expect.objectContaining({ question_index: 1, answer_text: 'answer 1' }));
   });
 
-  it('saveCustomTrade sets main_trade to \'other\' AND persists the raw typed profession into main_trade_other', async () => {
+  it('saveCustomTrade sets main_trade to \'other\' AND persists the CANONICAL profession into main_trade_other', async () => {
+    // L6: the raw text is no longer stored verbatim — it is resolved through
+    // `trade_aliases` first (see the "saveCustomTrade canonicalisation" block
+    // at the end of this file). With no alias row, the tidied raw text is
+    // stored, which for 'Welder' is 'Welder' unchanged.
     const client = mockPoolClient();
     await profile.saveCustomTrade(client, 'worker-1', 'Welder');
 
-    expect(client.query).toHaveBeenCalledTimes(1);
-    const [sql, params] = (client.query as jest.Mock).mock.calls[0];
-    expect(String(sql)).toContain("main_trade = 'other'");
-    expect(String(sql)).toContain('main_trade_other');
-    expect(String(sql)).toContain("user_type = 'worker'");
-    expect(params).toEqual(['worker-1', 'Welder']);
+    const update = (client.query as jest.Mock).mock.calls
+      .find(([sql]) => /UPDATE users/.test(String(sql)))!;
+    expect(String(update[0])).toContain('main_trade');
+    expect(String(update[0])).toContain('main_trade_other');
+    expect(String(update[0])).toContain("user_type = 'worker'");
+    expect(update[1]).toEqual(['worker-1', 'other', 'Welder']);
   });
 
   describe('syncProfileForTrustHandoff', () => {
@@ -1042,5 +1046,138 @@ describe('createOnboardingV2Adapters', () => {
     expect(typeof adapters.location.resolve).toBe('function');
     expect(typeof adapters.trustQuestions.generate).toBe('function');
     expect(typeof adapters.profile.saveName).toBe('function');
+  });
+});
+
+// ── L6: saveCustomTrade canonicalisation ────────────────────────────────
+//
+// Appended as its own block so this lane and the issueChallenge lane merge
+// cleanly. `saveCustomTrade` now delegates the write to
+// `saveCanonicalCustomTrade` (onboarding-repository.ts) and fires the alias
+// generator itself when the trade was not in the cache — the repository stays
+// DB-only, so the side effect lives here.
+
+describe('ProfilePersistenceAdapter.saveCustomTrade canonicalisation', () => {
+  const WELDER = { trade_key: 'welder', canonical_en: 'Welder', canonical_es: 'Soldador', trade_category: null };
+  const ELECTRICIAN = { trade_key: 'electrician', canonical_en: 'Electrician', canonical_es: 'Electricista', trade_category: 'electrician' };
+
+  /**
+   * Answers the two reads `saveCanonicalCustomTrade` makes — the run's
+   * preferred language and the `trade_aliases` row — and records every
+   * statement.
+   */
+  function makeClient(opts: { alias?: Record<string, unknown>; lang?: string; aliasFails?: boolean } = {}) {
+    const statements: Array<{ sql: string; params?: unknown[] }> = [];
+    const query = jest.fn(async (sql: string, params?: unknown[]) => {
+      statements.push({ sql, params });
+      if (/FROM worker_workflow_runs/.test(sql)) {
+        return { rows: opts.lang ? [{ preferred_language: opts.lang }] : [], rowCount: 1 };
+      }
+      if (/FROM trade_aliases/.test(sql)) {
+        if (opts.aliasFails) throw new Error('relation "trade_aliases" does not exist');
+        return { rows: opts.alias ? [opts.alias] : [], rowCount: opts.alias ? 1 : 0 };
+      }
+      return { rows: [], rowCount: 1 };
+    });
+    return { statements, query, client: { query } as unknown as PoolClient };
+  }
+
+  const usersUpdate = (statements: Array<{ sql: string; params?: unknown[] }>) =>
+    statements.find((s) => /UPDATE users/.test(s.sql));
+
+  const profileAdapter = createProfilePersistenceAdapter();
+
+  beforeEach(() => {
+    process.env.ALIAS_GENERATOR_ARN = 'arn:aws:lambda:us-east-2:123:function:alias-generator';
+    mockLambdaSend.mockResolvedValue({});
+  });
+  afterAll(() => { delete process.env.ALIAS_GENERATOR_ARN; });
+
+  it('stores the canonical name for a known trade and asks for no generation', async () => {
+    const { statements, client } = makeClient({ alias: WELDER, lang: 'es' });
+
+    await profileAdapter.saveCustomTrade(client, 'worker-1', '  soldador ');
+
+    expect(usersUpdate(statements)!.params).toEqual(['worker-1', 'other', 'Soldador']);
+    expect(mockLambdaSend).not.toHaveBeenCalled();
+  });
+
+  it('uses the run language: an English worker gets the English canonical name', async () => {
+    const { statements, client } = makeClient({ alias: WELDER, lang: 'en' });
+
+    await profileAdapter.saveCustomTrade(client, 'worker-1', 'soldador');
+
+    expect(usersUpdate(statements)!.params).toEqual(['worker-1', 'other', 'Welder']);
+  });
+
+  it('falls back to Spanish when the run carries no language', async () => {
+    const { statements, client } = makeClient({ alias: WELDER });
+
+    await profileAdapter.saveCustomTrade(client, 'worker-1', 'soldador');
+
+    expect(usersUpdate(statements)!.params).toEqual(['worker-1', 'other', 'Soldador']);
+  });
+
+  it('every spelling of one trade converges on the same stored text', async () => {
+    for (const raw of ['soldador', 'Soldadura', 'WELDING', 'welders']) {
+      const { statements, client } = makeClient({ alias: WELDER, lang: 'es' });
+      await profileAdapter.saveCustomTrade(client, 'worker-1', raw);
+      expect(usersUpdate(statements)!.params).toEqual(['worker-1', 'other', 'Soldador']);
+    }
+  });
+
+  it('promotes a typed standard trade onto the main_trade enum', async () => {
+    const { statements, client } = makeClient({ alias: ELECTRICIAN, lang: 'es' });
+
+    await profileAdapter.saveCustomTrade(client, 'worker-1', 'electricista');
+
+    expect(usersUpdate(statements)!.params).toEqual(['worker-1', 'electrician', null]);
+  });
+
+  it('an unknown trade is tidied, stored, and queued for the generator to learn', async () => {
+    const { statements, client } = makeClient({ lang: 'es' });
+
+    await profileAdapter.saveCustomTrade(client, 'worker-1', '  pipe   fitter ');
+
+    expect(usersUpdate(statements)!.params).toEqual(['worker-1', 'other', 'Pipe fitter']);
+    expect(mockLambdaSend).toHaveBeenCalledTimes(1);
+    const payload = JSON.parse(Buffer.from(mockLambdaSend.mock.calls[0][0].input.Payload).toString());
+    expect(payload).toEqual({ tradeKey: 'pipe fitter', tradeRaw: 'Pipe fitter' });
+  });
+
+  it('a FAILING alias lookup still stores the tidied raw text', async () => {
+    const { statements, client } = makeClient({ aliasFails: true, lang: 'es' });
+
+    await profileAdapter.saveCustomTrade(client, 'worker-1', '  soldador ');
+
+    expect(usersUpdate(statements)!.params).toEqual(['worker-1', 'other', 'Soldador']);
+    // Unresolved, so the trade is still queued for learning.
+    expect(mockLambdaSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failing generator invoke never fails the onboarding turn', async () => {
+    const { statements, client } = makeClient({ lang: 'es' });
+    mockLambdaSend.mockRejectedValueOnce(new Error('invoke failed'));
+
+    await expect(profileAdapter.saveCustomTrade(client, 'worker-1', 'pipe fitter')).resolves.toBeUndefined();
+    expect(usersUpdate(statements)).toBeDefined();
+  });
+
+  it('writes nothing for blank input', async () => {
+    const { statements, client } = makeClient({ alias: WELDER, lang: 'es' });
+
+    await profileAdapter.saveCustomTrade(client, 'worker-1', '   ');
+
+    expect(usersUpdate(statements)).toBeUndefined();
+    expect(mockLambdaSend).not.toHaveBeenCalled();
+  });
+
+  it('never writes main_trade other with a null main_trade_other', async () => {
+    for (const alias of [WELDER, ELECTRICIAN, undefined]) {
+      const { statements, client } = makeClient({ alias, lang: 'es' });
+      await profileAdapter.saveCustomTrade(client, 'worker-1', 'soldador');
+      const params = usersUpdate(statements)!.params as unknown[];
+      if (params[1] === 'other') expect(params[2]).toBeTruthy();
+    }
   });
 });

@@ -5,7 +5,7 @@ import { setWorkerCoordinates, type WorkerLocationSource } from '../lib/location
 import { parsePreferredCities, type CityFields } from '../lib/city-fields';
 import { checkCompliance } from '../legal/check-compliance';
 import { requestTradeAliasGeneration } from '../lib/trade-alias-request';
-import { canonicalizeWorkerTrade, type CanonicalTrade } from '../lib/trade-canonical';
+import { canonicalizeWorkerTrade, type CanonicalTrade, type TradeLang } from '../lib/trade-canonical';
 import { TRADE_KEYS, EXPERIENCE_KEYS, AVAILABILITY_KEYS } from '../lib/worker-vocab';
 
 const CORS_HEADERS = corsHeaders();
@@ -18,6 +18,37 @@ const VALID_AVAIL = AVAILABILITY_KEYS;
 // 'map_pin' is deliberately absent: no client can drop a pin yet, and its
 // confidence (100) would outrank every later correction. See migration 065 section 4.
 const VALID_LOCATION_SOURCES = ['geocoded_zip', 'geocoded_address'] as const satisfies readonly WorkerLocationSource[];
+// Which language a canonicalised custom trade is stored in. Only these two
+// exist across the product (`trade_aliases` has exactly canonical_en /
+// canonical_es, and `whatsapp_conversations.language` is 'en' | 'es').
+const VALID_LANGS = ['en', 'es'] as const satisfies readonly TradeLang[];
+
+/**
+ * The worker's language for the stored trade text: the explicit body field
+ * first (the web client sends its active locale), then the `Accept-Language`
+ * primary tag when it is one we support, then 'es' — matching
+ * `whatsapp_conversations.language`'s DEFAULT and `loadWorkerGate`'s COALESCE.
+ *
+ * `users` carries no language column, which is why this is derived per request
+ * rather than read from the worker's row.
+ */
+function resolveTradeLang(
+  lang: unknown,
+  headers: Record<string, string | undefined> | null | undefined,
+): TradeLang {
+  if (lang === 'en' || lang === 'es') return lang;
+
+  // API Gateway does not normalise header case, so check both spellings.
+  const header = headers?.['Accept-Language'] ?? headers?.['accept-language'];
+  // 'en-US,en;q=0.9' -> 'en'. Quality ordering is ignored on purpose: the
+  // first tag is the client's preference and the only one worth honouring
+  // for a single stored string.
+  const primary = typeof header === 'string'
+    ? header.split(',')[0]?.trim().split('-')[0]?.toLowerCase()
+    : undefined;
+  return primary === 'en' || primary === 'es' ? primary : 'es';
+}
+
 const MAX_CERTIFICATIONS = 20;
 const MAX_CERTIFICATION_LENGTH = 200;
 const MAX_EXPERIENCE_YEARS = 80;
@@ -90,6 +121,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       main_trade_other,
       has_transportation,
       certifications,
+      lang,
     } = body;
     const skillsProvided = Object.prototype.hasOwnProperty.call(body, 'skills');
     const certificationsProvided = Object.prototype.hasOwnProperty.call(body, 'certifications');
@@ -101,6 +133,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
     if (main_trade === 'other' && (typeof main_trade_other !== 'string' || main_trade_other.trim().length === 0)) {
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'main_trade_other_required' }) };
+    }
+    if (lang !== undefined && lang !== null && !VALID_LANGS.includes(lang)) {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_lang', valid: VALID_LANGS }) };
     }
     if (experience_months !== undefined && experience_months !== null) {
       if (typeof experience_months !== 'number' || !Number.isInteger(experience_months) || experience_months < 0 || experience_months > MAX_EXPERIENCE_MONTHS) {
@@ -172,17 +207,17 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // Resolving here keeps that impossible; `canonicalizeWorkerTrade` also
     // fails open, degrading to the worker's own text.
     //
-    // Language: the web profile editor has no per-worker language (`users`
-    // carries no language column — it lives on `whatsapp_conversations` and
-    // the onboarding runs), so this pins 'es', matching that column's
-    // DEFAULT. Pinning rather than sniffing a header keeps the stored text
-    // stable: the same worker saving from a different browser must not flip
-    // 'Soldador' to 'Welder'.
+    // Language comes from the request (body `lang`, else Accept-Language,
+    // else 'es') — see `resolveTradeLang`. `users` has no language column, so
+    // there is nothing per-worker to read here.
     const rawTradeOther = typeof main_trade_other === 'string' && main_trade_other.trim().length > 0
       ? main_trade_other.trim()
       : null;
     const canonicalTrade: CanonicalTrade | null = main_trade === 'other' && rawTradeOther
-      ? await canonicalizeWorkerTrade(client, { raw: rawTradeOther, lang: 'es' })
+      ? await canonicalizeWorkerTrade(client, {
+          raw: rawTradeOther,
+          lang: resolveTradeLang(lang, event.headers),
+        })
       : null;
 
     await client.query('BEGIN');

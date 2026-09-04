@@ -528,5 +528,96 @@ describe('worker-profile-update', () => {
       expect(res.statusCode).toBe(200);
       expect(order).not.toContain('alias');
     });
+
+    // ── which language the canonical name is stored in ──────────────
+    describe('language selection', () => {
+      const mkEvLang = (body: any, acceptLanguage?: string) => ({
+        requestContext: { authorizer: { claims: { sub: 'w' } } },
+        body: JSON.stringify(body),
+        httpMethod: 'PATCH',
+        headers: acceptLanguage ? { 'Accept-Language': acceptLanguage } : {},
+      } as unknown as APIGatewayProxyEvent);
+
+      it('body lang=en stores the English canonical name', async () => {
+        okQuery(WELDER);
+
+        const res = await handler(mkEvLang({ main_trade: 'other', main_trade_other: 'soldador', lang: 'en' }));
+
+        expect(res.statusCode).toBe(200);
+        expect(usersUpdateCall()![1][3]).toBe('Welder');
+      });
+
+      it('body lang=es stores the Spanish canonical name', async () => {
+        okQuery(WELDER);
+
+        await handler(mkEvLang({ main_trade: 'other', main_trade_other: 'welder', lang: 'es' }));
+
+        expect(usersUpdateCall()![1][3]).toBe('Soldador');
+      });
+
+      it('body lang wins over the Accept-Language header', async () => {
+        okQuery(WELDER);
+
+        await handler(mkEvLang({ main_trade: 'other', main_trade_other: 'soldador', lang: 'en' }, 'es-MX,es;q=0.9'));
+
+        expect(usersUpdateCall()![1][3]).toBe('Welder');
+      });
+
+      it('falls back to the Accept-Language primary tag', async () => {
+        okQuery(WELDER);
+
+        await handler(mkEvLang({ main_trade: 'other', main_trade_other: 'soldador' }, 'en-US,en;q=0.9'));
+
+        expect(usersUpdateCall()![1][3]).toBe('Welder');
+      });
+
+      it('reads a lowercase accept-language header too', async () => {
+        okQuery(WELDER);
+
+        const res = await handler({
+          requestContext: { authorizer: { claims: { sub: 'w' } } },
+          body: JSON.stringify({ main_trade: 'other', main_trade_other: 'soldador' }),
+          httpMethod: 'PATCH',
+          headers: { 'accept-language': 'en-GB' },
+        } as unknown as APIGatewayProxyEvent);
+
+        expect(res.statusCode).toBe(200);
+        expect(usersUpdateCall()![1][3]).toBe('Welder');
+      });
+
+      it('defaults to Spanish with no body lang and an unusable header', async () => {
+        okQuery(WELDER);
+
+        await handler(mkEvLang({ main_trade: 'other', main_trade_other: 'welder' }, 'fr-FR,de;q=0.8'));
+
+        expect(usersUpdateCall()![1][3]).toBe('Soldador');
+      });
+
+      it('defaults to Spanish with no header at all', async () => {
+        okQuery(WELDER);
+
+        await handler(mkEv({ main_trade: 'other', main_trade_other: 'welder' }));
+
+        expect(usersUpdateCall()![1][3]).toBe('Soldador');
+      });
+
+      it('rejects an invalid lang before touching the database', async () => {
+        for (const lang of ['fr', 'EN', '', 'en-US', 1, true, {}]) {
+          const res = await handler(mkEvLang({ main_trade: 'other', main_trade_other: 'soldador', lang }));
+          expect(res.statusCode).toBe(400);
+          expect(JSON.parse(res.body).error).toBe('invalid_lang');
+        }
+        expect(mockGetDbPool).not.toHaveBeenCalled();
+      });
+
+      it('accepts a null/absent lang as "not supplied"', async () => {
+        okQuery(WELDER);
+
+        const res = await handler(mkEvLang({ main_trade: 'other', main_trade_other: 'welder', lang: null }));
+
+        expect(res.statusCode).toBe(200);
+        expect(usersUpdateCall()![1][3]).toBe('Soldador');
+      });
+    });
   });
 });
