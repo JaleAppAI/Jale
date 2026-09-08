@@ -221,7 +221,30 @@ describe('worker profile -- the facts card', () => {
     expect(within(factsCard()).getByText(/Nine years of residential rewires/)).toBeInTheDocument();
   });
 
-  it('mutes the unset tiles and drops the bio section on a sparse profile', () => {
+  it('keeps the bio section on an empty bio, showing the placeholder muted', () => {
+    // The section is NOT dropped: "About / No description added" is the prompt
+    // to write one, and this is the worker's own profile -- the one surface
+    // where that nudge is the point. Muted, so it does not read as a fact.
+    seedWith(SPARSE);
+    renderIntl(<WorkerProfilePage />);
+
+    expect(
+      within(factsCard()).getByRole('heading', { level: 3, name: K.bioSection }),
+    ).toBeInTheDocument();
+    const empty = within(factsCard()).getByText(message('worker_profile.empty_bio'));
+    expect(empty.className).toContain('text-[var(--jale-ink-2)]');
+  });
+
+  it('renders a real bio in full ink, not muted', () => {
+    seedWith(FULL);
+    renderIntl(<WorkerProfilePage />);
+
+    const body = within(factsCard()).getByText(/Nine years of residential rewires/);
+    expect(body.className).toContain('text-[var(--jale-ink)]');
+    expect(body.className).not.toContain('text-[var(--jale-ink-2)]');
+  });
+
+  it('mutes the unset tiles on a sparse profile', () => {
     seedWith(SPARSE);
     renderIntl(<WorkerProfilePage />);
 
@@ -240,11 +263,9 @@ describe('worker profile -- the facts card', () => {
       expect(value.className).toContain('text-[var(--jale-ink-2)]');
     }
 
-    // An empty bio gets no section, so no divider hangs under nothing.
-    expect(
-      within(factsCard()).queryByRole('heading', { level: 3, name: K.bioSection }),
-    ).not.toBeInTheDocument();
-    expect(factsCard().querySelectorAll('[data-divider="true"]')).toHaveLength(1);
+    // The three sections are unconditional now, so the divider count does not
+    // move between a full and a sparse profile.
+    expect(factsCard().querySelectorAll('[data-divider="true"]')).toHaveLength(2);
   });
 
   it('treats zero years of experience as an answer, not an absence', () => {
@@ -260,19 +281,25 @@ describe('worker profile -- the facts card', () => {
     expect(value.className).not.toContain('text-[var(--jale-ink-2)]');
   });
 
-  it('gives no section label the same words as a tile label inside it', () => {
-    // `FactsCard` styles an `h3` section label and a `dt` tile label with the
-    // same class list, so a repeated word renders as the same eyebrow twice in
-    // a row -- which reads as a bug. The bio section reuses `field_bio`, so
-    // this is the guard against a future tile claiming that label too.
-    seedWith(FULL);
-    renderIntl(<WorkerProfilePage />);
+  // BOTH locales: the clash is between two pieces of COPY, so it can exist in
+  // one language and not the other. An en-only check would pass a Spanish
+  // wording that happens to collide.
+  it.each(['en', 'es'] as const)(
+    'gives no section label the same words as a tile label inside it (%s)',
+    (locale) => {
+      // `FactsCard` styles an `h3` section label and a `dt` tile label with the
+      // same class list, so a repeated word renders as the same eyebrow twice
+      // in a row -- which reads as a bug. The bio section reuses `field_bio`,
+      // so this also guards against a future tile claiming that label too.
+      seedWith(FULL);
+      renderIntl(<WorkerProfilePage />, locale);
 
-    const card = factsCard();
-    const sectionLabels = Array.from(card.querySelectorAll('h3'), (h) => h.textContent?.trim());
-    const tileLabels = Array.from(card.querySelectorAll('dt'), (d) => d.textContent?.trim());
-    for (const label of sectionLabels) expect(tileLabels).not.toContain(label);
-  });
+      const card = factsCard();
+      const sectionLabels = Array.from(card.querySelectorAll('h3'), (h) => h.textContent?.trim());
+      const tileLabels = Array.from(card.querySelectorAll('dt'), (d) => d.textContent?.trim());
+      for (const label of sectionLabels) expect(tileLabels).not.toContain(label);
+    },
+  );
 
   it('leaves the heading and the Edit button exactly as they were', () => {
     seedWith(FULL);

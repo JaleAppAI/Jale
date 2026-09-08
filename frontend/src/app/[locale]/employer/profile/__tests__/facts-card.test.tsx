@@ -207,19 +207,47 @@ describe('employer profile -- the facts card', () => {
     expect(factsCard().querySelectorAll('[data-divider="true"]')).toHaveLength(3);
   });
 
-  it('gives no section label the same words as a tile label inside it', () => {
+  // BOTH locales: the clash is between two pieces of COPY, so it can exist in
+  // one language and not the other. An en-only check would pass a Spanish
+  // wording that happens to collide.
+  it.each(['en', 'es'] as const)(
+    'gives no section label the same words as a tile label inside it (%s)',
+    (locale) => {
+      seed = FULL;
+      renderIntl(<EmployerProfilePage />, locale);
+
+      const card = factsCard();
+      // `Array.from`, not a spread: this tsconfig targets below es2015, where a
+      // NodeList is not iterable.
+      const sectionLabels = Array.from(card.querySelectorAll('h3'), (h) => h.textContent?.trim());
+      const tileLabels = Array.from(card.querySelectorAll('dt'), (d) => d.textContent?.trim());
+      for (const label of sectionLabels) expect(tileLabels).not.toContain(label);
+    },
+  );
+
+  it('keeps the description section on an empty description, placeholder muted', () => {
+    // The section is NOT dropped: "Description / No description added" is the
+    // prompt to write one, and this is the employer's own profile.
+    seed = SPARSE;
+    renderIntl(<EmployerProfilePage />);
+
+    expect(
+      within(factsCard()).getByRole('heading', { level: 3, name: K.sectionDescription }),
+    ).toBeInTheDocument();
+    const empty = within(factsCard()).getByText(message('employer.profile.empty_description'));
+    expect(empty.className).toContain('text-[var(--jale-ink-2)]');
+  });
+
+  it('renders a real description in full ink, not muted', () => {
     seed = FULL;
     renderIntl(<EmployerProfilePage />);
 
-    const card = factsCard();
-    // `Array.from`, not a spread: this tsconfig targets below es2015, where a
-    // NodeList is not iterable.
-    const sectionLabels = Array.from(card.querySelectorAll('h3'), (h) => h.textContent?.trim());
-    const tileLabels = Array.from(card.querySelectorAll('dt'), (d) => d.textContent?.trim());
-    for (const label of sectionLabels) expect(tileLabels).not.toContain(label);
+    const body = within(factsCard()).getByText(/Commercial concrete and electrical/);
+    expect(body.className).toContain('text-[var(--jale-ink)]');
+    expect(body.className).not.toContain('text-[var(--jale-ink-2)]');
   });
 
-  it('mutes the unset tiles and drops the description on a sparse profile', () => {
+  it('mutes the unset tiles on a sparse profile', () => {
     seed = SPARSE;
     renderIntl(<EmployerProfilePage />);
 
@@ -242,10 +270,9 @@ describe('employer profile -- the facts card', () => {
     // Email always exists, so it is never muted.
     expect(tile(K.email).value.className).not.toContain('text-[var(--jale-ink-2)]');
 
-    expect(
-      within(factsCard()).queryByRole('heading', { level: 3, name: K.sectionDescription }),
-    ).not.toBeInTheDocument();
-    expect(factsCard().querySelectorAll('[data-divider="true"]')).toHaveLength(2);
+    // The four sections are unconditional now, so the divider count does not
+    // move between a full and a sparse profile.
+    expect(factsCard().querySelectorAll('[data-divider="true"]')).toHaveLength(3);
   });
 
   it('leaves the heading and the Edit button exactly as they were', () => {

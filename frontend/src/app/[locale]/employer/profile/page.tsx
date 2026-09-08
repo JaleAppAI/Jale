@@ -264,14 +264,16 @@ export default function EmployerProfilePage() {
                                             </FactsCard.Tiles>
                                         </FactsCard.Section>
 
-                                        {/* Omitted rather than shown empty: a "no description"
-                                            placeholder under its own heading and hairline
-                                            spends a whole section saying nothing. */}
-                                        {profile.company_description ? (
-                                            <FactsCard.Section label={t('field_description')}>
-                                                <FactsCard.Text>{profile.company_description}</FactsCard.Text>
-                                            </FactsCard.Section>
-                                        ) : null}
+                                        {/* Kept even when empty, unlike a job's description:
+                                            this is the employer's OWN profile, and
+                                            "Description / No description added" is the
+                                            prompt to write one. Muted so the placeholder
+                                            does not read as a fact. */}
+                                        <FactsCard.Section label={t('field_description')}>
+                                            <FactsCard.Text muted={!profile.company_description}>
+                                                {profile.company_description || t('empty_description')}
+                                            </FactsCard.Text>
+                                        </FactsCard.Section>
                                     </FactsCard>
                                 </div>
                             )}

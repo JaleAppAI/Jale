@@ -318,14 +318,16 @@ export default function WorkerProfilePage() {
                                             </FactsCard.Tiles>
                                         </FactsCard.Section>
 
-                                        {/* Omitted rather than shown empty: a "no description"
-                                            placeholder under its own heading and hairline
-                                            spends a whole section saying nothing. */}
-                                        {profile.bio ? (
-                                            <FactsCard.Section label={t('field_bio')}>
-                                                <FactsCard.Text>{profile.bio}</FactsCard.Text>
-                                            </FactsCard.Section>
-                                        ) : null}
+                                        {/* Kept even when empty, unlike a job's description:
+                                            this is the worker's OWN profile, and "About /
+                                            No description added" is the prompt to write
+                                            one. Muted so the placeholder does not read as
+                                            a fact. */}
+                                        <FactsCard.Section label={t('field_bio')}>
+                                            <FactsCard.Text muted={!profile.bio}>
+                                                {profile.bio || t('empty_bio')}
+                                            </FactsCard.Text>
+                                        </FactsCard.Section>
                                     </FactsCard>
                                 </div>
                             )}
