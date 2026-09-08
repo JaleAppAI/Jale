@@ -3,12 +3,16 @@ import { Children, type ReactNode } from 'react';
 /**
  * The ONE detail-card body.
  *
- * It replaces `KVList` on the six detail surfaces (the three job detail pages —
- * worker, employer, public — and the profile detail pages): instead of a long
- * dashed label/value list where "Pay" reads exactly as loud as "Shift", the
- * same data becomes a pay headline, label-over-value tiles two per row, yes/no
- * requirements as chips, and the description as a paragraph, with thin rules
- * between the groups.
+ * It replaces `KVList` on the six detail pages — the three job pages
+ * (`worker/jobs/[id]`, `employer/jobs/[id]`, the public `j/[code]`) and the
+ * three profile pages (`worker/profile`, `employer/profile`, the employer's
+ * `employer/workers/[worker_id]`). `upload/[token]` also renders a `KVList`,
+ * but it is a task surface rather than a detail card and is out of scope.
+ *
+ * Instead of a long dashed label/value list where "Pay" reads as loud as
+ * "Shift", the same data becomes a pay headline, label-over-value tiles two per
+ * row, yes/no requirements as chips, and the description as a paragraph, with
+ * thin rules between the groups.
  *
  * WHAT IT DOES NOT DO:
  *  - no data formatting. Callers pass finished strings ("$22 - $26 / hr",

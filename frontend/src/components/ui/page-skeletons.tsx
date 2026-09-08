@@ -178,7 +178,8 @@ export function FactsCardSkeleton({
                     {Array.from({ length: tiles }).map((_, i) => (
                         <div key={i} className="min-w-0">
                             <Skeleton className="h-2.5 w-16" />
-                            <SkeletonLine width="w-28" className="mt-1.5" />
+                            {/* `mt-0.5`, the gap `Tile`'s own `dd` uses. */}
+                            <SkeletonLine width="w-28" className="mt-0.5" />
                         </div>
                     ))}
                 </div>
