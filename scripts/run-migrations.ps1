@@ -144,6 +144,7 @@ $MigrationFiles = @(
     '092_onboarding_cleanup_drops.sql'
     '093_worker_intent_outbox_defer.sql'
     '094_sprint24_data_backfills.sql'
+    '095_application_hire_ack.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path

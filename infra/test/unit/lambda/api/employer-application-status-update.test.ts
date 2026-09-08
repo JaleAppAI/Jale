@@ -221,6 +221,56 @@ describe('employer-application-status-update', () => {
     expect(mockQuery).toHaveBeenCalledWith('COMMIT');
   });
 
+  // 095: this UPDATE is the ONLY writer of hired_at. The worker's own door is
+  // granted UPDATE on hired_seen_at/hired_ack_at and deliberately NOT on
+  // hired_at, so if this statement does not stamp it, nothing ever does and
+  // the celebration never fires for a real hire.
+  it('stamps hired_at on the move into hired, and keeps the FIRST one on a re-hire', async () => {
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('FROM jobs')) {
+        return Promise.resolve({ rowCount: 1, rows: [{ id: JOB_ID, number_of_workers_needed: 3, workers_hired: 0 }] });
+      }
+      if (q.includes('FROM job_applications') && !q.includes('UPDATE job_applications')) {
+        return Promise.resolve({ rowCount: 1, rows: [{ id: 'app-1', status: 'talking' }] });
+      }
+      if (q.includes('UPDATE job_applications')) {
+        return Promise.resolve({
+          rowCount: 1,
+          rows: [{ application_id: 'app-1', job_id: JOB_ID, worker_id: WORKER_ID, status: 'hired', applied_at: 'ts', updated_at: 'ts2' }],
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'hired' }) }));
+    expect(res.statusCode).toBe(200);
+
+    const updateSql = mockQuery.mock.calls.find(
+      ([sql]: [string]) => typeof sql === 'string' && sql.includes('UPDATE job_applications'),
+    )![0] as string;
+    // Keyed on the REQUESTED status ($1), the same shape 091's
+    // details_requested_at stamp uses, so every other transition rewrites the
+    // column with its own value and is a no-op.
+    expect(updateSql).toContain(
+      "hired_at = CASE WHEN $1 = 'hired' THEN COALESCE(hired_at, now()) ELSE hired_at END",
+    );
+    // COALESCE, not a bare now(): an employer who un-hires and re-hires must
+    // not re-trigger a celebration the worker already dismissed.
+    expect(updateSql).toContain('COALESCE(hired_at, now())');
+    // No new bind parameter -- $1 is the status this handler already binds.
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringContaining('UPDATE job_applications'),
+      ['hired', JOB_ID, WORKER_ID],
+    );
+    // The RESPONSE is unchanged. The hire timestamps are the worker-side
+    // list's business; no employer-facing shape moves for this feature, so
+    // hired_at stays out of the RETURNING clause.
+    expect(updateSql).not.toMatch(/RETURNING[\s\S]*hired_at/);
+    expect(Object.keys(JSON.parse(res.body)).sort()).toEqual(
+      ['application_id', 'applied_at', 'job_id', 'notified', 'status', 'updated_at', 'worker_id'],
+    );
+  });
+
   it('returns concurrent_modification if a locked application disappears before update', async () => {
     mockQuery.mockImplementation((q: string) => {
       if (q.includes('FROM jobs')) {

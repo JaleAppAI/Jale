@@ -10,20 +10,23 @@ import {
   parseAnalyticsRange,
 } from '@/lib/server/admin-analytics';
 import type { AnalyticsRange } from '@/lib/types';
+import { bucketLabel, formatCount, percentOf, perUnit, signedDelta, sum } from '@/lib/analytics-format';
+import { TrendChart } from '@/components/analytics/TrendChart';
+import { ColumnChart } from '@/components/analytics/ColumnChart';
+import { KpiTile } from '@/components/analytics/KpiTile';
+import { DeliveryHealth } from '@/components/analytics/DeliveryHealth';
+import { PayingEmployersList } from '@/components/analytics/PayingEmployersList';
 
 export const dynamic = 'force-dynamic';
 
-const RANGES: { value: AnalyticsRange; label: string }[] = [
-  { value: '7d', label: 'Last 7 days' },
-  { value: '30d', label: 'Last 30 days' },
-  { value: '90d', label: 'Last 90 days' },
+const RANGES: { value: AnalyticsRange; label: string; period: string }[] = [
+  { value: '7d', label: 'Last 7 days', period: 'the last 7 days' },
+  { value: '30d', label: 'Last 30 days', period: 'the last 30 days' },
+  { value: '90d', label: 'Last 90 days', period: 'the last 90 days' },
 ];
 
-function bucketLabel(iso: string, range: AnalyticsRange): string {
-  const date = new Date(iso);
-  const day = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
-  return range === '90d' ? `Week of ${day}` : day;
-}
+const WORKERS_BLUE = '#0179ff';
+const EMPLOYERS_ORANGE = '#eb6834';
 
 export default async function AnalyticsPage({
   searchParams,
@@ -32,6 +35,7 @@ export default async function AnalyticsPage({
 }) {
   await requireAdminSession();
   const range = parseAnalyticsRange(searchParams?.range ?? DEFAULT_ANALYTICS_RANGE);
+  const period = RANGES.find((r) => r.value === range)?.period ?? 'this period';
 
   // db.ts caps the shared pool at max: 5, so running all five analytics queries
   // concurrently in one Promise.all would occupy the entire pool and could make a
@@ -46,160 +50,101 @@ export default async function AnalyticsPage({
     getPayingEmployers(),
   ]);
 
-  // Newest first: most recent numbers visible without scrolling.
-  const signupRows = [...signups].reverse();
-  const jobsRows = [...jobsActivity].reverse();
-  const trafficRows = [...messageTraffic].reverse();
+  const labels = signups.map((row) => bucketLabel(row.bucketStart, range));
+  const workerSignups = signups.map((row) => row.workerSignups);
+  const employerSignups = signups.map((row) => row.employerSignups);
+  const jobsPosted = jobsActivity.map((row) => row.jobsPosted);
+  const applications = jobsActivity.map((row) => row.applicationsSubmitted);
+
+  const newWorkers = sum(workerSignups);
+  const newEmployers = sum(employerSignups);
+  const jobsPostedTotal = sum(jobsPosted);
+  const applicationsTotal = sum(applications);
+  const appsPerJob = perUnit(applicationsTotal, jobsPostedTotal);
+  const payingShare = percentOf(totals.payingEmployers, totals.totalEmployers);
+
+  const lastWorkers = workerSignups[workerSignups.length - 1] ?? 0;
+  const lastEmployers = employerSignups[employerSignups.length - 1] ?? 0;
 
   return (
     <main className="stack-gap">
-      <section className="hero">
-        <h1>Analytics</h1>
-        <p className="muted" style={{ marginTop: 6 }}>Platform health, computed live</p>
+      <section className="hero analytics-hero">
+        <div>
+          <h1>Analytics</h1>
+          <p className="muted">Growth over {period} · computed live</p>
+        </div>
+        <nav className="range-picker" aria-label="Time range">
+          {RANGES.map(({ value, label }) => (
+            <Link
+              key={value}
+              className="button"
+              href={`/analytics?range=${value}`}
+              aria-current={value === range ? 'page' : undefined}
+            >
+              {label}
+            </Link>
+          ))}
+        </nav>
       </section>
 
-      <nav className="range-picker" aria-label="Time range">
-        {RANGES.map(({ value, label }) => (
-          <Link
-            key={value}
-            className="button"
-            href={`/analytics?range=${value}`}
-            aria-current={value === range ? 'page' : undefined}
-          >
-            {label}
-          </Link>
-        ))}
-      </nav>
-
-      <section className="grid three">
-        <article className="card kpi">
-          <span className="muted">Workers</span>
-          <strong>{totals.totalWorkers}</strong>
-          <span>Total signed up</span>
-        </article>
-        <article className="card kpi">
-          <span className="muted">Employers</span>
-          <strong>{totals.totalEmployers}</strong>
-          <span>Total signed up</span>
-        </article>
-        <article className="card kpi">
-          <span className="muted">Paying employers</span>
-          <strong>{totals.payingEmployers}</strong>
-          <span>Active, trialing, or past due</span>
-        </article>
+      <section className="kpi-strip" aria-label="Key figures">
+        <KpiTile label="Workers" value={totals.totalWorkers} note={`${signedDelta(newWorkers)} this period`} tone={newWorkers > 0 ? 'positive' : 'muted'} />
+        <KpiTile label="Employers" value={totals.totalEmployers} note={`${signedDelta(newEmployers)} this period`} tone={newEmployers > 0 ? 'positive' : 'muted'} />
+        <KpiTile label="Paying employers" value={totals.payingEmployers} note={payingShare ? `${payingShare} of employers` : 'Active, trialing, or past due'} />
+        <KpiTile label="Active jobs" value={totals.jobsActive} note={`${formatCount(totals.jobsPaused)} paused`} />
+        <KpiTile label="Filled jobs" value={totals.jobsFilled} note="All time" />
+        <KpiTile label="Closed jobs" value={totals.jobsClosed} note="All time" />
       </section>
 
-      <section className="grid three">
-        <article className="card kpi">
-          <span className="muted">Active jobs</span>
-          <strong>{totals.jobsActive}</strong>
-          <span>{totals.jobsPaused} paused</span>
-        </article>
-        <article className="card kpi">
-          <span className="muted">Filled jobs</span>
-          <strong>{totals.jobsFilled}</strong>
-          <span>All time</span>
-        </article>
-        <article className="card kpi">
-          <span className="muted">Closed jobs</span>
-          <strong>{totals.jobsClosed}</strong>
-          <span>All time</span>
-        </article>
+      <TrendChart
+        title="Signups"
+        subtitle={range === '90d' ? 'New accounts per week' : 'New accounts per day'}
+        labels={labels}
+        tableCaption="Signups by period"
+        series={[
+          { key: 'workers', label: 'Workers', color: WORKERS_BLUE, values: workerSignups, area: true, endLabel: `${formatCount(lastWorkers)} workers` },
+          { key: 'employers', label: 'Employers', color: EMPLOYERS_ORANGE, values: employerSignups, endLabel: `${formatCount(lastEmployers)} employers` },
+        ]}
+      />
+
+      <section className="grid" style={{ gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' }}>
+        <ColumnChart
+          title="Jobs posted"
+          subtitle={`${formatCount(jobsPostedTotal)} this period`}
+          labels={labels}
+          values={jobsPosted}
+          tableCaption="Jobs posted by period"
+          valueHeader="Jobs posted"
+        />
+        <TrendChart
+          title="Applications"
+          subtitle={appsPerJob ? `${formatCount(applicationsTotal)} this period · ${appsPerJob} per job` : `${formatCount(applicationsTotal)} this period`}
+          labels={labels}
+          width={570}
+          height={200}
+          tableCaption="Applications by period"
+          series={[{ key: 'applications', label: 'Applications', color: WORKERS_BLUE, values: applications, area: true }]}
+        />
       </section>
 
-      <section className="grid two">
-        <article className="card">
-          <div className="section-title"><h2>Signups</h2></div>
-          <table className="data-table">
-            <thead>
-              <tr><th>Period</th><th>Workers</th><th>Employers</th></tr>
-            </thead>
-            <tbody>
-              {signupRows.map((row) => (
-                <tr key={row.bucketStart}>
-                  <td>{bucketLabel(row.bucketStart, range)}</td>
-                  <td>{row.workerSignups}</td>
-                  <td>{row.employerSignups}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </article>
-
-        <article className="card">
-          <div className="section-title"><h2>Jobs activity</h2></div>
-          <table className="data-table">
-            <thead>
-              <tr><th>Period</th><th>Jobs posted</th><th>Applications</th></tr>
-            </thead>
-            <tbody>
-              {jobsRows.map((row) => (
-                <tr key={row.bucketStart}>
-                  <td>{bucketLabel(row.bucketStart, range)}</td>
-                  <td>{row.jobsPosted}</td>
-                  <td>{row.applicationsSubmitted}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </article>
-      </section>
-
-      <section className="card">
-        <div className="section-title"><h2>Message traffic</h2></div>
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Period</th>
-              <th>In-app out</th>
-              <th>In-app in</th>
-              <th>In-app failed</th>
-              <th>WhatsApp in</th>
-              <th>WhatsApp out</th>
-              <th>WhatsApp failed</th>
-            </tr>
-          </thead>
-          <tbody>
-            {trafficRows.map((row) => (
-              <tr key={row.bucketStart}>
-                <td>{bucketLabel(row.bucketStart, range)}</td>
-                <td>{row.jobMessagesOut}</td>
-                <td>{row.jobMessagesIn}</td>
-                <td>{row.jobMessagesFailed}</td>
-                <td>{row.waInbound}</td>
-                <td>{row.waOutbound}</td>
-                <td>{row.waFailed}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </section>
-
-      <section className="card">
-        <div className="section-title"><h2>Paying employers</h2></div>
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Employer</th>
-              <th>Plan</th>
-              <th>Status</th>
-              <th>Period ends</th>
-              <th>Cancels?</th>
-            </tr>
-          </thead>
-          <tbody>
-            {payingEmployers.map((row) => (
-              <tr key={`${row.employerId}-${row.planCode}`}>
-                <td>{row.displayName}</td>
-                <td>{row.planCode}</td>
-                <td><span className={`badge ${row.status}`}>{row.status}</span></td>
-                <td>{row.currentPeriodEnd ? bucketLabel(row.currentPeriodEnd, '7d') : '—'}</td>
-                <td>{row.cancelAtPeriodEnd ? 'At period end' : 'No'}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {payingEmployers.length === 0 ? <p className="muted">No paying employers yet.</p> : null}
+      <section className="grid analytics-bottom">
+        <DeliveryHealth
+          channels={[
+            {
+              name: 'In-app',
+              out: sum(messageTraffic.map((row) => row.jobMessagesOut)),
+              in: sum(messageTraffic.map((row) => row.jobMessagesIn)),
+              failed: sum(messageTraffic.map((row) => row.jobMessagesFailed)),
+            },
+            {
+              name: 'WhatsApp',
+              out: sum(messageTraffic.map((row) => row.waOutbound)),
+              in: sum(messageTraffic.map((row) => row.waInbound)),
+              failed: sum(messageTraffic.map((row) => row.waFailed)),
+            },
+          ]}
+        />
+        <PayingEmployersList rows={payingEmployers} />
       </section>
     </main>
   );

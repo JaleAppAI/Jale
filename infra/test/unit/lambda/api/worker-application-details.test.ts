@@ -516,6 +516,168 @@ describe('worker-application-details', () => {
     expect((await handler(makeEvent())).statusCode).toBe(409);
   });
 
+  // ── POST hire-ack (sprint 24, 095) ──────────────────────────────────
+  // The worker's celebration state, written server-side so the modal cannot
+  // re-fire on their next device. It is NOT one of the three merge actions:
+  // it never touches the requirements engine, and it must not, because the
+  // snapshot load COPIES vault documents onto the job and can trip an 078 cap
+  // -- consequences no banner dismissal should be able to have.
+  describe('POST hire-ack', () => {
+    /** The UPDATE this action issues, as it reaches the mocked pool. */
+    const ackSql = () => sqlCalls().find((sql) => /hired_seen_at\s*=/.test(sql));
+
+    function withAck(row: { hired_seen_at: unknown; hired_ack_at: unknown } | null) {
+      mockQuery.mockImplementation((sql: string) => {
+        if (/UPDATE job_applications/.test(sql)) {
+          return Promise.resolve({ rowCount: row ? 1 : 0, rows: row ? [row] : [] });
+        }
+        return Promise.resolve(defaultQuery(sql));
+      });
+    }
+
+    it("stamps hired_seen_at for step 'seen' and answers the two timestamps", async () => {
+      withAck({ hired_seen_at: '2026-09-04T16:00:00.000Z', hired_ack_at: null });
+
+      const res = await handler(post('hire-ack', { step: 'seen' }));
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({
+        seen_at: '2026-09-04T16:00:00.000Z',
+        acknowledged_at: null,
+      });
+      // COALESCE, so a second showing of the modal keeps the FIRST stamp --
+      // the timestamp is evidence of when the worker saw it.
+      expect(ackSql()).toContain('hired_seen_at = COALESCE(hired_seen_at, now())');
+      // 'seen' must NOT dismiss the banner.
+      expect(ackSql()).not.toContain('hired_ack_at =');
+      expect(sqlCalls()).toContain('COMMIT');
+    });
+
+    it("stamps BOTH columns for step 'dismissed'", async () => {
+      withAck({
+        hired_seen_at: '2026-09-04T16:00:00.000Z',
+        hired_ack_at: '2026-09-05T09:00:00.000Z',
+      });
+
+      const res = await handler(post('hire-ack', { step: 'dismissed' }));
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({
+        seen_at: '2026-09-04T16:00:00.000Z',
+        acknowledged_at: '2026-09-05T09:00:00.000Z',
+      });
+      // A worker who dismisses the banner has necessarily seen the hire, and
+      // a client that only ever calls 'dismissed' (an offline modal, a page
+      // reload mid-celebration) must not leave hired_seen_at NULL forever.
+      expect(ackSql()).toContain('hired_ack_at = COALESCE(hired_ack_at, now())');
+      expect(ackSql()).toContain('hired_seen_at = COALESCE(hired_seen_at, now())');
+      expect(sqlCalls()).toContain('COMMIT');
+    });
+
+    it('scopes the UPDATE to the caller AND to a hired application', async () => {
+      withAck({ hired_seen_at: 'ts', hired_ack_at: null });
+
+      await handler(post('hire-ack', { step: 'seen' }));
+
+      const sql = ackSql()!;
+      // jobapp_whatsapp_select is USING (true) (028), so RLS proves nothing
+      // about ownership on a read -- and the UPDATE policy is the only thing
+      // that would refuse a write. Both predicates are explicit anyway.
+      expect(sql).toMatch(/WHERE\s+id = \$1\s+AND worker_id = \$2\s+AND status = 'hired'/);
+      expect(sql).toContain('RETURNING hired_seen_at, hired_ack_at');
+      expect(mockQuery).toHaveBeenCalledWith(
+        expect.stringContaining('UPDATE job_applications'),
+        [APP_ID, WORKER_ID],
+      );
+    });
+
+    it('404s (and rolls back) when the row is not hired or not the caller\'s', async () => {
+      // Zero rows is the same answer for "somebody else's application" and
+      // "not hired yet": the UPDATE carries both predicates, and neither is
+      // a distinction this caller is entitled to learn.
+      withAck(null);
+
+      const res = await handler(post('hire-ack', { step: 'seen' }));
+
+      expect(res.statusCode).toBe(404);
+      expect(JSON.parse(res.body)).toEqual({ error: 'not_found' });
+      expect(sqlCalls()).toContain('ROLLBACK');
+      expect(sqlCalls()).not.toContain('COMMIT');
+    });
+
+    it.each([
+      ['an unknown step', { step: 'acknowledged' }],
+      ['a missing step', {}],
+      ['a non-string step', { step: 1 }],
+      ['a null step', { step: null }],
+      ['a case variant', { step: 'Seen' }],
+      ['a padded step', { step: ' seen' }],
+    ])('400s invalid_step for %s, and writes nothing', async (_label, body) => {
+      const res = await handler(post('hire-ack', body));
+
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body)).toEqual({ error: 'invalid_step' });
+      expect(sqlCalls().some((sql) => /UPDATE job_applications/.test(sql))).toBe(false);
+      expect(sqlCalls()).toContain('ROLLBACK');
+    });
+
+    // The whole point of keeping this action off WRITE_ACTIONS: the engine
+    // never runs for it.
+    it('never loads the requirement snapshot, so no vault document is copied', async () => {
+      withAck({ hired_seen_at: 'ts', hired_ack_at: null });
+
+      await handler(post('hire-ack', { step: 'seen' }));
+
+      expect(mockLoad).not.toHaveBeenCalled();
+      expect(mockMergePromptAnswers).not.toHaveBeenCalled();
+      expect(mockMergeFieldAnswers).not.toHaveBeenCalled();
+      expect(mockMergeCertificationClaims).not.toHaveBeenCalled();
+      expect(mockMarkComplete).not.toHaveBeenCalled();
+      // ...and no state document is built, so the 031 employer_profiles GUC
+      // is never flipped by a banner dismissal.
+      expect(sqlCalls().some((sql) => /employer_display_name/.test(sql))).toBe(false);
+    });
+
+    it('still 404s an unowned application before the step is even validated', async () => {
+      // The ownership SELECT comes first: an invalid body on somebody else's
+      // application must not answer 400 (which would confirm the row exists).
+      mockQuery.mockImplementation((sql: string) => {
+        if (/FROM job_applications/.test(sql) && !/UPDATE/.test(sql)) {
+          return Promise.resolve({ rows: [], rowCount: 0 });
+        }
+        return Promise.resolve(defaultQuery(sql));
+      });
+
+      const res = await handler(post('hire-ack', { step: 'nonsense' }));
+
+      expect(res.statusCode).toBe(404);
+      expect(JSON.parse(res.body)).toEqual({ error: 'not_found' });
+    });
+
+    it.each(['GET', 'PATCH', 'DELETE'])('405s %s on hire-ack', async (httpMethod) => {
+      const res = await handler(makeEvent({
+        httpMethod,
+        pathParameters: { applicationId: APP_ID, action: 'hire-ack' },
+      }));
+
+      expect(res.statusCode).toBe(405);
+      expect(JSON.parse(res.body)).toEqual({ error: 'method_not_allowed' });
+      expect(sqlCalls()).toContain('ROLLBACK');
+    });
+
+    it('is reached through the legal wall like every other /worker/* route', async () => {
+      mockQuery.mockImplementation((sql: string) => {
+        if (/tos_version/.test(sql)) return Promise.resolve({ rows: [{ tos_version: 'v0.9' }] });
+        return Promise.resolve(defaultQuery(sql));
+      });
+
+      const res = await handler(post('hire-ack', { step: 'seen' }));
+
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body).error).toBe('legal_required');
+    });
+  });
+
   // ── Routing ─────────────────────────────────────────────────────────
 
   it('404s an unknown action and rolls back', async () => {

@@ -103,6 +103,7 @@ const expectedBaselineMigrations = [
   '092_onboarding_cleanup_drops.sql',
   '093_worker_intent_outbox_defer.sql',
   '094_sprint24_data_backfills.sql',
+  '095_application_hire_ack.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -748,6 +749,14 @@ describe('migration apply order baseline', () => {
     expect(columns.get('document_upload_tokens')?.get('used_at')).toBe('timestamp with time zone');
     expect(columns.get('document_upload_token_slots')?.get('issued_s3_key')).toBe('text');
     expect(columns.get('job_conversations')?.get('last_worker_message_at')).toBe('timestamp with time zone');
+    // 095's three hire-acknowledgement columns, read back off the WHOLE
+    // chain: the migration ADDs them and then backfills them under a
+    // NO FORCE / FORCE window, so a file that failed to apply at all
+    // (or applied and rolled back on its own self-checks) shows up here
+    // as three missing columns rather than as a green run.
+    for (const col of ['hired_at', 'hired_seen_at', 'hired_ack_at']) {
+      expect(columns.get('job_applications')?.get(col)).toBe('timestamp with time zone');
+    }
     expect(columns.get('job_message_outbox')?.get('send_kind')).toBe('text');
     // Billing tables (migration 034)
     expect(columns.get('billing_plans')?.get('code')).toBe('text');
