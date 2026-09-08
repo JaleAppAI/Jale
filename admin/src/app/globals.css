@@ -692,3 +692,260 @@ p {
   color: #ffffff;
   transform: none;
 }
+
+/* ── Analytics ─────────────────────────────────────────────── */
+.analytics-hero {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.kpi-strip {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.kpi-strip .card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px 18px;
+}
+
+.kpi-strip .kpi-label {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.kpi-strip .kpi-value {
+  color: var(--jale-blue-700);
+  font-size: 1.75rem;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.kpi-note {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+
+.kpi-note.positive {
+  color: #1f7a44;
+}
+
+.chart-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.chart-head p {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.chart-head p strong {
+  color: var(--jale-ink);
+  font-weight: 650;
+}
+
+.chart-tools {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.chart-legend {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.chart-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend-key {
+  display: inline-block;
+  width: 14px;
+  height: 2px;
+  border-radius: 1px;
+}
+
+.chart-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-top: 8px;
+}
+
+.chart-svg .tick,
+.chart-svg .axis-date {
+  fill: var(--jale-placeholder);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-svg .end-label {
+  fill: var(--jale-ink);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.chart-table summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #ffffff;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 650;
+  cursor: pointer;
+  list-style: none;
+}
+
+.chart-table summary::-webkit-details-marker {
+  display: none;
+}
+
+.chart-table[open] summary {
+  background: var(--jale-blue-50);
+  border-color: var(--jale-blue-100);
+  color: var(--jale-blue-700);
+}
+
+.chart-table .data-table {
+  margin-top: 12px;
+}
+
+.chart-table .data-table td.num,
+.chart-table .data-table th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.delivery-rows {
+  display: grid;
+  gap: 16px;
+}
+
+.delivery-row {
+  display: grid;
+  gap: 6px;
+}
+
+.delivery-row .delivery-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 0.82rem;
+}
+
+.delivery-bar {
+  display: flex;
+  gap: 2px;
+  height: 12px;
+}
+
+.delivery-bar .delivered {
+  background: var(--jale-blue-500);
+  border-radius: 6px 0 0 6px;
+}
+
+.delivery-bar .failed {
+  min-width: 8px;
+  background: var(--jale-danger);
+  border-radius: 0 6px 6px 0;
+}
+
+.delivery-bar .delivered:last-child {
+  border-radius: 6px;
+}
+
+.delivery-fail {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #a51e28;
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+
+.list-rows {
+  display: grid;
+}
+
+.list-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) 90px 100px 120px;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.list-row:last-child {
+  border-bottom: 0;
+}
+
+.list-row .name {
+  font-weight: 650;
+}
+
+.list-row .period {
+  text-align: right;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.list-row .period.cancels {
+  color: #8a4400;
+  font-weight: 650;
+}
+
+.grid.analytics-bottom {
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+}
+
+@media (max-width: 960px) {
+  .kpi-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .analytics-hero,
+  .chart-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .grid.analytics-bottom {
+    grid-template-columns: 1fr;
+  }
+
+  .list-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .list-row .plan,
+  .list-row .period {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .kpi-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

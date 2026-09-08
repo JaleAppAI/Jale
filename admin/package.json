@@ -13,6 +13,7 @@
     "test:session-store": "node scripts/check-admin-session-store.mjs",
     "test:read-models": "node scripts/check-read-models.mjs",
     "test:analytics": "node scripts/check-analytics-helpers.mjs",
+    "test:charts": "node scripts/check-chart-geometry.mjs",
     "test:dispatch": "node scripts/check-action-dispatch.mjs",
     "test:safe-redirect": "node scripts/check-safe-redirect.mjs",
     "test:ui": "node scripts/check-ui-contract.mjs",
