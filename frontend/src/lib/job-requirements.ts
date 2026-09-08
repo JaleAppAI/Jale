@@ -326,7 +326,13 @@ export function docHintKey(state: RequirementState): DocHintKey | undefined {
   return undefined;
 }
 
-/** Worker-facing note on a named-cert claim row (namespace: `worker_job_detail.apply_flow`). */
+/**
+ * Worker-facing note on a named-cert claim row. Namespace:
+ * `worker_application_details` -- where `DocumentsCertificationsStep` resolves
+ * it. (This comment said `worker_job_detail.apply_flow` until 2026-09-08; that
+ * namespace never held these keys, and the same confusion put the
+ * `prefilled_hint` lookup in the wrong namespace in `FieldControls`.)
+ */
 export type WorkerCertNoteKey = 'cert_attest_note' | 'cert_proof_note';
 
 /**

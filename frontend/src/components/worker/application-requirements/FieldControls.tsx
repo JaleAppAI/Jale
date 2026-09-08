@@ -331,7 +331,11 @@ export function QuestionFieldRow({
   prefilled: boolean;
 }) {
   const t = useTranslations('job_requirements');
-  const tFlow = useTranslations('worker_job_detail.apply_flow');
+  // `prefilled_hint` lives under `worker_application_details`, the namespace
+  // the sibling `DocumentsCertificationsStep` reads its own notes from. It was
+  // asked of `worker_job_detail.apply_flow` until 2026-09-08, and next-intl's
+  // fallback printed the joined key path under every prefilled field in prod.
+  const tDetails = useTranslations('worker_application_details');
   const complete = isFieldComplete(fieldKey, draft);
 
   return (
@@ -354,7 +358,7 @@ export function QuestionFieldRow({
       </div>
 
       {prefilled && !skipped && (
-        <p className="text-xs text-[var(--jale-ink-2)]">{tFlow('prefilled_hint')}</p>
+        <p className="text-xs text-[var(--jale-ink-2)]">{tDetails('prefilled_hint')}</p>
       )}
 
       {!skipped && <FieldInput fieldKey={fieldKey} draft={draft} update={update} fieldId={fieldId} />}
