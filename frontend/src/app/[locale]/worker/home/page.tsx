@@ -211,11 +211,6 @@ export default function WorkerHomePage() {
   useEffect(() => {
     if (!idToken) return;
     const controller = new AbortController();
-    // A new attempt earns a new chance to complain -- the same rule the
-    // refresh notice below follows. An id-token rotation re-runs this effect,
-    // and a worker who dismissed the notice an hour ago has not agreed to
-    // never hear about the next failure.
-    setApplicationsNoticeDismissed(false);
     getApplications(idToken, controller.signal)
       .then(({ applications }) => {
         setApplicationsFailed(false);
@@ -246,9 +241,23 @@ export default function WorkerHomePage() {
         // after the cleanup ran (the state setter would be pointless anyway),
         // and the name catches the AbortError `apiFetch` re-throws verbatim
         // for a caller-supplied signal.
+        //
+        // Checked by SHAPE, not `instanceof Error`: a fetch abort rejects with
+        // a `DOMException`, and whether that inherits from `Error` is up to
+        // the runtime (it does in modern browsers and in jsdom; it is not
+        // something this page should bet a false alarm on).
         if (controller.signal.aborted) return;
-        if (err instanceof Error && err.name === 'AbortError') return;
+        if (typeof err === 'object' && err !== null && (err as { name?: unknown }).name === 'AbortError') return;
         setApplicationsFailed(true);
+        // Re-arming the dismissal belongs HERE, with the confirmed failure it
+        // reacts to -- not on the attempt edge. `idToken` is this effect's
+        // only dep and `apiFetch`'s silent 401 refresh rotates it, so an
+        // attempt-edge reset put a notice the worker had already waved away
+        // back on screen the moment an unrelated token refresh fired, while
+        // the new request was still in flight and on no evidence at all, then
+        // flashed it off again if that request succeeded. Set together, the
+        // two states can only ever describe the same single failure.
+        setApplicationsNoticeDismissed(false);
       });
     return () => controller.abort();
   }, [idToken]);
