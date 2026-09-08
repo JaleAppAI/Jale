@@ -303,8 +303,10 @@ describe('FactsCard.Text', () => {
 });
 
 describe('FactsCardSkeleton', () => {
-    it('renders the requested tile sections, chips and text lines', () => {
-        const { container } = render(<FactsCardSkeleton sections={[4, 3]} requirements={3} text={2} />);
+    it('renders the requested tile sections, chip rows and text lines', () => {
+        const { container } = render(
+            <FactsCardSkeleton sections={[4, { tiles: 3, chips: [3] }]} text={2} />,
+        );
 
         const grids = container.querySelectorAll('[data-skeleton="tiles"]');
         expect(grids).toHaveLength(2);
@@ -315,23 +317,58 @@ describe('FactsCardSkeleton', () => {
         expect(container.querySelector('[data-skeleton="headline"]')).not.toBeNull();
     });
 
-    it('defaults to the shape of a job detail card: headline, two sections, chips, text', () => {
+    it('defaults to a headline, two four-tile sections and a paragraph -- no chip rows, no document rows', () => {
         const { container } = render(<FactsCardSkeleton />);
 
         expect(container.querySelector('[data-skeleton="headline"]')).not.toBeNull();
         const grids = container.querySelectorAll('[data-skeleton="tiles"]');
         expect(grids).toHaveLength(2);
         expect(grids[0].children).toHaveLength(4);
-        expect(container.querySelector('[data-skeleton="requirements"]')?.children).toHaveLength(3);
+        expect(grids[1].children).toHaveLength(4);
         expect(container.querySelector('[data-skeleton="text"]')?.children).toHaveLength(3);
+        // Neither is something a card gets by default: chip rows belong to the
+        // section that asks for them, and document rows exist on one page.
+        expect(container.querySelector('[data-skeleton="requirements"]')).toBeNull();
+        expect(container.querySelector('[data-skeleton="documents"]')).toBeNull();
+        expect(container.querySelectorAll('[data-skeleton-section]')).toHaveLength(4);
+    });
+
+    it('nests each chip row inside its tile section instead of drawing a block of its own', () => {
+        // The real card (`JobFactsCard`) puts the requirement rows UNDER the
+        // "where" tiles, inside that section; a skeleton that drew them as a
+        // fifth block moved the description down on the swap.
+        const { container } = render(
+            <FactsCardSkeleton sections={[4, { tiles: 4, chips: [2, 3] }]} text={0} />,
+        );
+
+        const blocks = container.querySelectorAll('[data-skeleton-section]');
+        expect(blocks).toHaveLength(3);
+        expect(blocks[1].querySelectorAll('[data-skeleton="requirements"]')).toHaveLength(0);
+        const rows = blocks[2].querySelectorAll('[data-skeleton="requirements"]');
+        expect(rows).toHaveLength(2);
+        expect(rows[0].children).toHaveLength(2);
+        expect(rows[1].children).toHaveLength(3);
+        // Under the tiles, with the gap the real rows use.
+        expect(blocks[2].querySelector('[data-skeleton="tiles"]')).not.toBeNull();
+        expect(rows[0].parentElement?.className).toContain('mt-4');
+    });
+
+    it('draws the document rows as their own block, after the tiles and before the text', () => {
+        const { container } = render(<FactsCardSkeleton sections={[4, 4]} documents={2} text={3} />);
+
+        const blocks = container.querySelectorAll('[data-skeleton-section]');
+        expect(blocks).toHaveLength(5);
+        const rows = container.querySelector('[data-skeleton="documents"]');
+        expect(rows?.children).toHaveLength(2);
+        expect(blocks[3].contains(rows)).toBe(true);
+        expect(blocks[4].querySelector('[data-skeleton="text"]')).not.toBeNull();
     });
 
     it('draws a rule above every block after the first, and none above the first', () => {
-        const { container } = render(<FactsCardSkeleton sections={[5, 3]} requirements={0} text={3} />);
+        const { container } = render(<FactsCardSkeleton sections={[5, 3]} text={3} />);
 
         const blocks = container.querySelectorAll('[data-skeleton-section]');
-        // Default headline + two tile sections + text = four blocks; the
-        // omitted chip row leaves no rule behind.
+        // Default headline + two tile sections + text = four blocks.
         expect(blocks).toHaveLength(4);
         expect(blocks[0].className).not.toContain('border-t');
         for (const block of Array.from(blocks).slice(1)) {
@@ -339,9 +376,9 @@ describe('FactsCardSkeleton', () => {
         }
     });
 
-    it('omits the headline, the chips and the text when the card has none', () => {
+    it('omits the headline, the text, and any section with nothing in it', () => {
         const { container } = render(
-            <FactsCardSkeleton headline="none" sections={[6]} requirements={0} text={0} />,
+            <FactsCardSkeleton headline="none" sections={[6, 0, { tiles: 0, chips: [0] }]} text={0} />,
         );
 
         expect(container.querySelector('[data-skeleton="headline"]')).toBeNull();

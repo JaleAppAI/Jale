@@ -3,7 +3,12 @@ import type { ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import type { EmployerJobDetail } from '@/lib/api/employer';
+import { JobDetailSkeleton } from '@/components/ui/page-skeletons';
 import { renderIntl, message, expectNoRawMessageKeys } from '@/components/worker/onboarding/__tests__/render-intl';
 
 /*
@@ -286,6 +291,61 @@ describe('employer job detail — the facts card', () => {
         setSeed(fullJob());
         renderIntl(<EmployerJobDetailPage />);
         expectNoRawMessageKeys();
+    });
+
+    it('renders the same card in Spanish without falling back to a key path', () => {
+        setSeed(fullJob());
+        renderIntl(<EmployerJobDetailPage />, 'es');
+        expect(
+            screen.getByRole('heading', { level: 3, name: message('employer_job_listing.job.facts.schedule', 'es') }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole('heading', { level: 3, name: message('employer_job_listing.job.facts.where', 'es') }),
+        ).toBeInTheDocument();
+        expectNoRawMessageKeys();
+    });
+
+    /*
+     * Same contract as the worker page's test: the skeleton is traced from THIS
+     * card, so it is compared with the loaded card block for block. The
+     * employer card has four blocks (there is no document block -- the
+     * documents are the third chip row inside "where"), and the skeleton drew
+     * five until the 2026-09-08 cross-lane review caught it.
+     */
+    describe('the loading skeleton', () => {
+        const realShape = (section: Element) => ({
+            tiles: section.querySelector('dl')?.children.length ?? 0,
+            chipRows: section.querySelectorAll('ul[role="list"]').length,
+        });
+        const skeletonShape = (block: Element) => ({
+            tiles: block.querySelector('[data-skeleton="tiles"]')?.children.length ?? 0,
+            chipRows: block.querySelectorAll('[data-skeleton="requirements"]').length,
+        });
+
+        it('has the same block structure as the loaded card', () => {
+            setSeed(fullJob());
+            const page = renderIntl(<EmployerJobDetailPage />);
+            const real = Array.from(page.container.querySelectorAll('[data-section]'));
+            page.unmount();
+
+            const skeleton = renderIntl(<JobDetailSkeleton variant="employer" />);
+            const blocks = Array.from(skeleton.container.querySelectorAll('[data-skeleton-section]'));
+
+            expect(real.length).toBeGreaterThan(0);
+            expect(blocks.map(skeletonShape)).toEqual(real.map(realShape));
+            expect(blocks[0].querySelector('[data-skeleton="headline"]')).not.toBeNull();
+            expect(skeleton.container.querySelector('[data-skeleton="documents"]')).toBeNull();
+            expect(blocks[3].querySelector('[data-skeleton="text"]')).not.toBeNull();
+        });
+
+        it('is the variant both the page and its route skeleton mount', () => {
+            const dir = path.dirname(fileURLToPath(import.meta.url));
+            for (const file of ['../page.tsx', '../loading.tsx']) {
+                const source = fs.readFileSync(path.resolve(dir, file), 'utf8');
+                expect(source, file).toMatch(/<JobDetailSkeleton\s[^>]*variant="employer"/);
+                expect(source, file).not.toContain('variant="worker"');
+            }
+        });
     });
 
     /*

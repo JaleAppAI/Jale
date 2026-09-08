@@ -3,7 +3,12 @@ import type { ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { screen, within } from '@testing-library/react';
 
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import type { JobDetail } from '@/lib/api/worker';
+import { JobDetailSkeleton } from '@/components/ui/page-skeletons';
 import { renderIntl, message, expectNoRawMessageKeys } from '@/components/worker/onboarding/__tests__/render-intl';
 
 /*
@@ -275,6 +280,57 @@ describe('worker job detail — the facts card', () => {
         expect(screen.getByRole('heading', { level: 3, name: message('worker_job_detail.facts.schedule', 'es') }))
             .toBeInTheDocument();
         expectNoRawMessageKeys();
+    });
+
+    /*
+     * The skeleton is a geometric copy of THIS card, so it is asserted against
+     * the loaded card rather than against a number: `JobDetailSkeleton`'s
+     * worker variant must draw exactly the blocks a fully populated posting
+     * renders, block for block -- the same tile count in each, the chip row
+     * INSIDE the "where" block and not as a block of its own. That standalone
+     * chip block was a real cross-lane miss (review 2026-09-08): the skeleton
+     * drew five blocks over a card that has four on the employer page, and a
+     * chip block where this page has its document rows.
+     */
+    describe('the loading skeleton', () => {
+        const realShape = (section: Element) => ({
+            tiles: section.querySelector('dl')?.children.length ?? 0,
+            chipRows: section.querySelectorAll('ul[role="list"]').length,
+        });
+        const skeletonShape = (block: Element) => ({
+            tiles: block.querySelector('[data-skeleton="tiles"]')?.children.length ?? 0,
+            chipRows: block.querySelectorAll('[data-skeleton="requirements"]').length,
+        });
+
+        it('has the same block structure as the loaded card', () => {
+            seed = fullJob();
+            const page = renderIntl(<WorkerJobDetailPage />);
+            const real = Array.from(page.container.querySelectorAll('[data-section]'));
+            page.unmount();
+
+            const skeleton = renderIntl(<JobDetailSkeleton variant="worker" withBackLink />);
+            const blocks = Array.from(skeleton.container.querySelectorAll('[data-skeleton-section]'));
+
+            expect(real.length).toBeGreaterThan(0);
+            expect(blocks.map(skeletonShape)).toEqual(real.map(realShape));
+            // The pay headline opens both, and the document rows sit where the
+            // card's vault list does: after the tiles, before the description.
+            expect(blocks[0].querySelector('[data-skeleton="headline"]')).not.toBeNull();
+            expect(blocks[3].querySelector('[data-skeleton="documents"]')).not.toBeNull();
+            expect(blocks[4].querySelector('[data-skeleton="text"]')).not.toBeNull();
+        });
+
+        it('is the variant both the page and its route skeleton mount', () => {
+            // `variant` is a required prop, so each call site names one; this
+            // pins that both name THIS page's, since the wrong variant would
+            // typecheck and still cost the layout shift.
+            const dir = path.dirname(fileURLToPath(import.meta.url));
+            for (const file of ['../page.tsx', '../loading.tsx']) {
+                const source = fs.readFileSync(path.resolve(dir, file), 'utf8');
+                expect(source, file).toMatch(/<JobDetailSkeleton\s[^>]*variant="worker"/);
+                expect(source, file).not.toContain('variant="employer"');
+            }
+        });
     });
 
     describe('a sparse job', () => {

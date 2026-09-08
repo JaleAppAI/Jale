@@ -638,7 +638,7 @@ export default function WorkerJobDetailPage() {
           /* Same archetype, same geometry, same back-link slot as `loading.tsx`,
              so the handover from the server-rendered route skeleton to this
              client one costs no visible swap. */
-          <JobDetailSkeleton withBackLink />
+          <JobDetailSkeleton variant="worker" withBackLink />
         ) : (
           <div className="anim-fade-in">
             {/* Chrome the worker keeps in every state, including the S5 ones:

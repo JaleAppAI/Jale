@@ -9,7 +9,7 @@ export default function Loading() {
                     Identical to the page's own `showSkeleton` branch, so the
                     handover from this route skeleton to the client one costs no
                     visible swap. */}
-                <JobDetailSkeleton withBackLink />
+                <JobDetailSkeleton variant="worker" withBackLink />
             </main>
         </AppShellSkeleton>
     );

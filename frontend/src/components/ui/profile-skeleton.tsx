@@ -112,16 +112,17 @@ export function ProfileSkeleton({
      */
     withBackLink?: boolean;
 }) {
-    // No pay headline (profiles have none) and no requirement-chip row (the
-    // chip-valued profile facts are TILES whose value is a BadgeList, so they
-    // are counted in `sections`). Same tracing as the job card otherwise.
+    // No pay headline (profiles have none), no chip rows (the chip-valued
+    // profile facts are TILES whose value is a BadgeList, so they are counted
+    // in `sections`) and no document rows. Same tracing as the job card
+    // otherwise.
     return (
         <SkeletonRegion>
             {withBackLink ? <Skeleton className="mb-4 h-3.5 w-24" /> : null}
 
             <DashboardPanel>
                 <SkeletonProfileHead shape={head} />
-                <FactsCardSkeleton headline="none" sections={sections} requirements={0} text={text} />
+                <FactsCardSkeleton headline="none" sections={sections} text={text} />
             </DashboardPanel>
         </SkeletonRegion>
     );

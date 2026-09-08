@@ -27,7 +27,7 @@ export default function Loading() {
                 <div className="mb-5">
                     <MetricRowSkeleton count={3} />
                 </div>
-                <JobDetailSkeleton />
+                <JobDetailSkeleton variant="employer" />
                 <div className="mt-5">
                     <ListPageSkeleton rows={4} />
                 </div>
