@@ -212,8 +212,10 @@ describe('employer profile -- the facts card', () => {
     renderIntl(<EmployerProfilePage />);
 
     const card = factsCard();
-    const sectionLabels = [...card.querySelectorAll('h3')].map((h) => h.textContent?.trim());
-    const tileLabels = [...card.querySelectorAll('dt')].map((d) => d.textContent?.trim());
+    // `Array.from`, not a spread: this tsconfig targets below es2015, where a
+    // NodeList is not iterable.
+    const sectionLabels = Array.from(card.querySelectorAll('h3'), (h) => h.textContent?.trim());
+    const tileLabels = Array.from(card.querySelectorAll('dt'), (d) => d.textContent?.trim());
     for (const label of sectionLabels) expect(tileLabels).not.toContain(label);
   });
 
