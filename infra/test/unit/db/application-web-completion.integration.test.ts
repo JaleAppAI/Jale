@@ -45,6 +45,15 @@ import { _clearCategoryRenderersForTests } from '../../../lambda/whatsapp/lib/wo
  *      `buildState`, then COMMIT -- failing 25P02. Only Postgres raises
  *      25P02, so only Postgres can falsify the savepoint.
  *
+ *      SCOPE NOTE: case (f) exercises the SCRUB savepoint only. The module
+ *      takes a second, later savepoint around the closing-line send so that a
+ *      failed send cannot roll the scrub back, and THAT half is covered in
+ *      the mocked suite (a rejected `enqueueWorkerMessage` plus assertions on
+ *      the SAVEPOINT/RELEASE ordering) rather than here: provoking a real
+ *      render failure would need a worker with no conversation row, which
+ *      contradicts the arm read that just found one. Do not read case (f) as
+ *      proof of both scopes.
+ *
  * WHAT IS REAL AND WHAT IS STUBBED
  *   Everything is real except Twilio, which is never reached: the release
  *   writes a `worker_message_intents` row and a `whatsapp_outbox` row and
