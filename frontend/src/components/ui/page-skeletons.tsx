@@ -135,33 +135,47 @@ export function DetailPageSkeleton({
 }
 
 /**
- * `FactsCard`'s body — a pay headline, a tile grid, requirement chips and a
- * paragraph, with the same hairline rules between them.
+ * `FactsCard`'s body — an optional pay headline, one or more labelled tile
+ * sections, optional requirement chips and an optional paragraph, with the same
+ * hairline rules the real card draws between consecutive sections.
  *
  * BODY ONLY, and deliberately not wrapped in `SkeletonRegion`: this traces what
  * goes INSIDE a `DashboardPanel`, and the page's frame skeleton already owns
  * the one `role="status"` live region for that panel. A second one nested in it
  * would announce "Loading..." twice for a single card.
  *
- * The counts are props because the six detail surfaces differ: a job shows all
- * ten fields, a profile fewer. Defaults are the job detail card.
+ * The shape is props because the six detail surfaces differ, and a skeleton
+ * that draws a block the loaded card never has (a pay headline on a profile, a
+ * chip row on an applicant card) costs a visible jump on the swap:
+ *  - `headline`: `'pay'` draws the figure block the job pages open with;
+ *    `'none'` omits it (profiles have no headline).
+ *  - `sections`: tiles per labelled section, in order — `[4, 4]` is the job
+ *    card's two sections, `[5, 3]` the worker profile's. Each section draws
+ *    its own label bar and, from the second block on, the rule above it.
+ *  - `requirements` / `text`: `0` omits the block entirely (label, rule and
+ *    all), exactly as the real card omits an empty section.
+ * Defaults are the job detail card.
  */
 export function FactsCardSkeleton({
-    tiles = 6,
-    requirements = 2,
+    headline = 'pay',
+    sections = [4, 4],
+    requirements = 3,
     text = 3,
 }: {
-    tiles?: number;
+    headline?: 'pay' | 'none';
+    sections?: readonly number[];
     requirements?: number;
     text?: number;
 }) {
-    // Same rule the real card draws between sections.
+    // Same rule the real card draws between sections: none above the first
+    // block, one above every block after it.
     const sectionRule = 'mt-5 border-t border-[var(--jale-divider)] pt-5';
+    const blocks: React.ReactNode[] = [];
 
-    return (
-        <div className="p-5 md:p-6">
-            {/* Headline: label, figure, hint. */}
-            <div data-skeleton="headline">
+    if (headline === 'pay') {
+        blocks.push(
+            /* Headline: label, figure, hint. */
+            <div key="headline" data-skeleton="headline">
                 <Skeleton className="h-2.5 w-20" />
                 <Skeleton className="mt-2 h-7 w-44 md:h-8" />
                 {/* The hint (`PayReferenceHint`) is `text-xs`, so this bar is
@@ -171,15 +185,22 @@ export function FactsCardSkeleton({
                     emitted after `.h-3`. Bare `Skeleton` + an explicit height
                     is the pattern the rest of this file already uses. */}
                 <Skeleton tone="divider" className="mt-2 h-3 w-52" />
-            </div>
+            </div>,
+        );
+    }
 
-            {/* Tiles: a label bar over a value bar, two per row, matching the
-                real grid so the swap costs no layout shift. A plain `div` and
-                not a `dl` — there is no dt/dd here to make it a list of. */}
-            <div className={sectionRule}>
+    sections.forEach((tiles, index) => {
+        if (tiles <= 0) return;
+        blocks.push(
+            /* One labelled tile section: the h3 label bar, then a label bar
+               over a value bar per tile, two per row, matching the real grid so
+               the swap costs no layout shift. A plain `div` and not a `dl` —
+               there is no dt/dd here to make it a list of. */
+            <div key={`tiles-${index}`}>
+                <Skeleton className="h-2.5 w-24" />
                 <div
                     data-skeleton="tiles"
-                    className="grid grid-cols-1 gap-x-5 gap-y-3 min-[360px]:grid-cols-2"
+                    className="mt-3 grid grid-cols-1 gap-x-5 gap-y-3 min-[360px]:grid-cols-2"
                 >
                     {Array.from({ length: tiles }).map((_, i) => (
                         <div key={i} className="min-w-0">
@@ -189,26 +210,45 @@ export function FactsCardSkeleton({
                         </div>
                     ))}
                 </div>
-            </div>
+            </div>,
+        );
+    });
 
-            {/* Requirement chips. */}
-            <div className={sectionRule}>
+    if (requirements > 0) {
+        blocks.push(
+            /* Requirement chips under their label. */
+            <div key="requirements">
                 <Skeleton className="h-2.5 w-24" />
                 <div data-skeleton="requirements" className="mt-3 flex flex-wrap gap-2">
                     {Array.from({ length: requirements }).map((_, i) => (
                         <Skeleton key={i} className="h-6 w-28 rounded-full" />
                     ))}
                 </div>
-            </div>
+            </div>,
+        );
+    }
 
-            {/* Description: full-width lines with a short last one. */}
-            <div className={sectionRule}>
-                <div data-skeleton="text" className="space-y-2">
+    if (text > 0) {
+        blocks.push(
+            /* Description: its label, then full-width lines with a short last one. */
+            <div key="text">
+                <Skeleton className="h-2.5 w-24" />
+                <div data-skeleton="text" className="mt-3 space-y-2">
                     {Array.from({ length: text }).map((_, i) => (
                         <SkeletonLine key={i} width={i === text - 1 ? 'w-2/3' : 'w-full'} />
                     ))}
                 </div>
-            </div>
+            </div>,
+        );
+    }
+
+    return (
+        <div className="p-5 md:p-6">
+            {blocks.map((block, index) => (
+                <div key={index} data-skeleton-section={index} className={index > 0 ? sectionRule : ''}>
+                    {block}
+                </div>
+            ))}
         </div>
     );
 }

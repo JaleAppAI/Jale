@@ -303,21 +303,54 @@ describe('FactsCard.Text', () => {
 });
 
 describe('FactsCardSkeleton', () => {
-    it('renders the requested number of tiles, chips and text lines', () => {
-        const { container } = render(<FactsCardSkeleton tiles={4} requirements={3} text={2} />);
+    it('renders the requested tile sections, chips and text lines', () => {
+        const { container } = render(<FactsCardSkeleton sections={[4, 3]} requirements={3} text={2} />);
 
-        expect(container.querySelector('[data-skeleton="tiles"]')?.children).toHaveLength(4);
+        const grids = container.querySelectorAll('[data-skeleton="tiles"]');
+        expect(grids).toHaveLength(2);
+        expect(grids[0].children).toHaveLength(4);
+        expect(grids[1].children).toHaveLength(3);
         expect(container.querySelector('[data-skeleton="requirements"]')?.children).toHaveLength(3);
         expect(container.querySelector('[data-skeleton="text"]')?.children).toHaveLength(2);
         expect(container.querySelector('[data-skeleton="headline"]')).not.toBeNull();
     });
 
-    it('defaults to the shape of a job detail card', () => {
+    it('defaults to the shape of a job detail card: headline, two sections, chips, text', () => {
         const { container } = render(<FactsCardSkeleton />);
 
-        expect(container.querySelector('[data-skeleton="tiles"]')?.children).toHaveLength(6);
-        expect(container.querySelector('[data-skeleton="requirements"]')?.children).toHaveLength(2);
+        expect(container.querySelector('[data-skeleton="headline"]')).not.toBeNull();
+        const grids = container.querySelectorAll('[data-skeleton="tiles"]');
+        expect(grids).toHaveLength(2);
+        expect(grids[0].children).toHaveLength(4);
+        expect(container.querySelector('[data-skeleton="requirements"]')?.children).toHaveLength(3);
         expect(container.querySelector('[data-skeleton="text"]')?.children).toHaveLength(3);
+    });
+
+    it('draws a rule above every block after the first, and none above the first', () => {
+        const { container } = render(<FactsCardSkeleton sections={[5, 3]} requirements={0} text={3} />);
+
+        const blocks = container.querySelectorAll('[data-skeleton-section]');
+        // Default headline + two tile sections + text = four blocks; the
+        // omitted chip row leaves no rule behind.
+        expect(blocks).toHaveLength(4);
+        expect(blocks[0].className).not.toContain('border-t');
+        for (const block of Array.from(blocks).slice(1)) {
+            expect(block.className).toContain('border-t');
+        }
+    });
+
+    it('omits the headline, the chips and the text when the card has none', () => {
+        const { container } = render(
+            <FactsCardSkeleton headline="none" sections={[6]} requirements={0} text={0} />,
+        );
+
+        expect(container.querySelector('[data-skeleton="headline"]')).toBeNull();
+        expect(container.querySelector('[data-skeleton="requirements"]')).toBeNull();
+        expect(container.querySelector('[data-skeleton="text"]')).toBeNull();
+        const blocks = container.querySelectorAll('[data-skeleton-section]');
+        expect(blocks).toHaveLength(1);
+        expect(blocks[0].className).not.toContain('border-t');
+        expect(container.querySelector('[data-skeleton="tiles"]')?.children).toHaveLength(6);
     });
 
     it('gives the hint bar one height, not a losing override', () => {
@@ -350,7 +383,7 @@ describe('facts-card.tsx source', () => {
         // The three job pages stay identical only because the order is written
         // down in one place.
         expect(source).toContain(
-            'pay, schedule, start, duration, location, openings, experience, language,',
+            'pay; schedule, duration, start, openings; location, trade, experience,',
         );
     });
 });

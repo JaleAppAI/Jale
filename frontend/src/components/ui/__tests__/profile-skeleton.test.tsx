@@ -25,12 +25,18 @@ describe('ProfileSkeleton', () => {
     });
 
     it('draws the edit-button head by default -- an avatar, a title and an action pill', () => {
-        const { container } = renderIntl(<ProfileSkeleton tiles={5} chips={3} />);
+        const { container } = renderIntl(<ProfileSkeleton sections={[5, 3]} />);
         // `h-9`, matching `Button size="sm"`, so the header does not resize on
         // the swap to the real Edit button.
         expect(container.querySelector('.h-9.w-20.rounded-full')).not.toBeNull();
-        expect(container.querySelectorAll('[data-skeleton="tiles"] > div')).toHaveLength(5);
-        expect(container.querySelectorAll('[data-skeleton="requirements"] > div')).toHaveLength(3);
+        // Two labelled tile sections (basics, then the chip-valued facts), no
+        // pay headline and no requirement-chip row: profiles have neither.
+        const grids = container.querySelectorAll('[data-skeleton="tiles"]');
+        expect(grids).toHaveLength(2);
+        expect(grids[0].children).toHaveLength(5);
+        expect(grids[1].children).toHaveLength(3);
+        expect(container.querySelector('[data-skeleton="headline"]')).toBeNull();
+        expect(container.querySelector('[data-skeleton="requirements"]')).toBeNull();
     });
 
     it('draws the status-badge head with no action pill and no back link by default', () => {
@@ -40,15 +46,15 @@ describe('ProfileSkeleton', () => {
 
     it('renders the applicant card shape -- six tiles, no chips, no paragraph', () => {
         const { container } = renderIntl(
-            <ProfileSkeleton tiles={6} chips={0} text={0} head="status-badge" withBackLink />,
+            <ProfileSkeleton sections={[6]} text={0} head="status-badge" withBackLink />,
         );
         expect(container.querySelectorAll('[data-skeleton="tiles"] > div')).toHaveLength(6);
-        expect(container.querySelectorAll('[data-skeleton="requirements"] > div')).toHaveLength(0);
-        expect(container.querySelectorAll('[data-skeleton="text"] > div')).toHaveLength(0);
-        // KNOWN DEVIATION (see the component): `FactsCardSkeleton` traces the
-        // JOB card, so the pay headline block is drawn even here. Asserted so
-        // the day it becomes suppressible, this test says so out loud.
-        expect(container.querySelector('[data-skeleton="headline"]')).not.toBeNull();
+        // Nothing the applicant card never renders: no headline, no chip row,
+        // no paragraph -- and therefore a single block with no rule above it.
+        expect(container.querySelector('[data-skeleton="headline"]')).toBeNull();
+        expect(container.querySelector('[data-skeleton="requirements"]')).toBeNull();
+        expect(container.querySelector('[data-skeleton="text"]')).toBeNull();
+        expect(container.querySelectorAll('[data-skeleton-section]')).toHaveLength(1);
     });
 
     it('reserves the back link only when asked', () => {

@@ -7,7 +7,7 @@ export default function Loading() {
             <div className="mx-auto max-w-4xl px-4 py-6 md:px-6">
                 {/* Same props as the page's own loading branch, so the server
                     render and the client fetch draw one picture. */}
-                <ProfileSkeleton tiles={6} chips={0} text={0} head="status-badge" withBackLink />
+                <ProfileSkeleton sections={[6]} text={0} head="status-badge" withBackLink />
             </div>
         </AppShellSkeleton>
     );

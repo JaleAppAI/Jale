@@ -87,23 +87,21 @@ function SkeletonProfileHead({ shape }: { shape: ProfileHeadShape }) {
 }
 
 export function ProfileSkeleton({
-    tiles = 5,
-    chips = 2,
+    sections = [5, 3],
     text = 3,
     head = 'edit-button',
     withBackLink = false,
 }: {
-    /** Label-over-value tiles. The three pages differ: 5, 7 and 6. */
-    tiles?: number;
     /**
-     * Chip-valued facts (skills, certifications, hiring trades). `0` for the
-     * applicant card, which has none -- see the KNOWN DEVIATION note below for
-     * what `0` can and cannot suppress.
+     * Label-over-value tiles per labelled section, in order. The three pages
+     * differ: the worker's own profile is `[5, 3]` (basics, then the chip-valued
+     * skills/certifications/cities), the employer's `[4, 3, 2]` (company,
+     * contact, hiring), the applicant card `[6]`.
      */
-    chips?: number;
+    sections?: readonly number[];
     /**
      * Lines of the free-text section (a bio, a company description). `0` for
-     * the applicant card, which has none.
+     * the applicant card, which has none -- the block is then omitted entirely.
      */
     text?: number;
     /** Which of the two real panel heads to draw. */
@@ -114,27 +112,16 @@ export function ProfileSkeleton({
      */
     withBackLink?: boolean;
 }) {
-    /*
-     * KNOWN DEVIATION, recorded rather than worked around:
-     * `FactsCardSkeleton` traces the JOB detail card, so it always draws a pay
-     * `Headline` block (label + figure + hint, ~75px) that no profile page has,
-     * and at a count of `0` it still draws the chip section's rule and label bar
-     * and the text section's rule. None of that can be suppressed from here --
-     * the fix is an optional-section prop on `FactsCardSkeleton` itself, which
-     * lives in the file this lane must not touch.
-     *
-     * Re-tracing the tile and chip geometry locally instead would remove the
-     * overshoot at the cost of a second copy of a grid its own docstring warns
-     * against duplicating, and it would drift the first time `Tile` moves. One
-     * shared tracing with a known constant offset is the better trade.
-     */
+    // No pay headline (profiles have none) and no requirement-chip row (the
+    // chip-valued profile facts are TILES whose value is a BadgeList, so they
+    // are counted in `sections`). Same tracing as the job card otherwise.
     return (
         <SkeletonRegion>
             {withBackLink ? <Skeleton className="mb-4 h-3.5 w-24" /> : null}
 
             <DashboardPanel>
                 <SkeletonProfileHead shape={head} />
-                <FactsCardSkeleton tiles={tiles} requirements={chips} text={text} />
+                <FactsCardSkeleton headline="none" sections={sections} requirements={0} text={text} />
             </DashboardPanel>
         </SkeletonRegion>
     );
