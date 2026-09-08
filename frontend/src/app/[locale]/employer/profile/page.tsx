@@ -429,4 +429,3 @@ function CheckboxGroup({ label, error, children }: { label: string; error?: stri
         </div>
     );
 }
-
