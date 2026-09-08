@@ -164,7 +164,13 @@ export function FactsCardSkeleton({
             <div data-skeleton="headline">
                 <Skeleton className="h-2.5 w-20" />
                 <Skeleton className="mt-2 h-7 w-44 md:h-8" />
-                <SkeletonLine width="w-52" className="mt-2 h-3" />
+                {/* The hint (`PayReferenceHint`) is `text-xs`, so this bar is
+                    `h-3` and NOT a `SkeletonLine`: that atom bakes in `h-3.5`,
+                    and a `className` height cannot beat it — same-property
+                    utilities resolve by stylesheet order, where `.h-3\.5` is
+                    emitted after `.h-3`. Bare `Skeleton` + an explicit height
+                    is the pattern the rest of this file already uses. */}
+                <Skeleton tone="divider" className="mt-2 h-3 w-52" />
             </div>
 
             {/* Tiles: a label bar over a value bar, two per row, matching the

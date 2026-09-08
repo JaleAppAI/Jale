@@ -211,6 +211,32 @@ describe('FactsCard.Requirements', () => {
         expect(within(items[1]).getByText('Own tools')).toBeInTheDocument();
     });
 
+    it('keeps list semantics that Tailwind preflight would otherwise strip', () => {
+        // `list-style: none` makes Safari/VoiceOver drop the list role, so the
+        // explicit `role="list"` is what keeps "list, 2 items" being announced.
+        //
+        // The attribute is asserted as well as the role: jsdom applies no CSS,
+        // so `getByRole('list')` resolves off the `ul` tag alone and would pass
+        // on a `ul` that Safari silently un-lists. The attribute is the fix.
+        render(
+            <FactsCard>
+                <FactsCard.Requirements label="What you need">
+                    <FactsCard.Requirement state="required" stateLabel="Required">
+                        Driver&apos;s license
+                    </FactsCard.Requirement>
+                    <FactsCard.Requirement state="optional" stateLabel="Optional">
+                        Own tools
+                    </FactsCard.Requirement>
+                </FactsCard.Requirements>
+            </FactsCard>,
+        );
+
+        const list = screen.getByRole('list');
+        expect(list.tagName).toBe('UL');
+        expect(list).toHaveAttribute('role', 'list');
+        expect(within(list).getAllByRole('listitem')).toHaveLength(2);
+    });
+
     it('exposes the state to assistive tech, not only as a dot colour', () => {
         render(
             <FactsCard>
@@ -227,14 +253,17 @@ describe('FactsCard.Requirements', () => {
 
         const items = screen.getAllByRole('listitem');
 
-        expect(items[0].textContent).toContain('Required');
-        expect(items[1].textContent).toContain('Optional');
+        // The WHOLE accessible text, not a substring: JSX drops the newline
+        // between the chip's two spans, so a state label without its own
+        // leading separator would be announced as "Driver's licenseRequired".
+        expect(items[0]).toHaveTextContent(/^Driver's license, Required$/);
+        expect(items[1]).toHaveTextContent(/^Own tools, Optional$/);
 
         // Visually hidden, but in the accessibility tree: the dot is the only
         // visual carrier and it is `aria-hidden`, so this span is what a screen
         // reader hears after the requirement's name.
-        expect(within(items[0]).getByText('Required')).toHaveClass('sr-only');
-        expect(within(items[1]).getByText('Optional')).toHaveClass('sr-only');
+        expect(within(items[0]).getByText(', Required')).toHaveClass('sr-only');
+        expect(within(items[1]).getByText(', Optional')).toHaveClass('sr-only');
     });
 
     it('colours the dot by state and hides it from the accessibility tree', () => {
@@ -289,6 +318,18 @@ describe('FactsCardSkeleton', () => {
         expect(container.querySelector('[data-skeleton="tiles"]')?.children).toHaveLength(6);
         expect(container.querySelector('[data-skeleton="requirements"]')?.children).toHaveLength(2);
         expect(container.querySelector('[data-skeleton="text"]')?.children).toHaveLength(3);
+    });
+
+    it('gives the hint bar one height, not a losing override', () => {
+        // `SkeletonLine` bakes in `h-3.5`; a `className="h-3"` on it cannot win
+        // (same-property utilities resolve by stylesheet order), so the hint bar
+        // must not be one. Token-exact checks: 'h-3.5' contains 'h-3'.
+        const { container } = render(<FactsCardSkeleton />);
+
+        const headline = container.querySelector('[data-skeleton="headline"]');
+        const hint = headline?.children[2];
+        expect(hint?.classList.contains('h-3')).toBe(true);
+        expect(hint?.classList.contains('h-3.5')).toBe(false);
     });
 });
 

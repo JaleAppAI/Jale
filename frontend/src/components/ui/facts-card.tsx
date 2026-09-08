@@ -35,7 +35,9 @@ import { Children, type ReactNode } from 'react';
  * DIRECT children — the container counts them to draw the dividers, so a group
  * wrapped in a fragment collapses into one section and loses its rule. A
  * conditional section (`{job.description ? <FactsCard.Text/> : null}`) is fine:
- * `Children.toArray` drops the `null` before anything is counted.
+ * `Children.toArray` drops the `null` before anything is counted. An ARRAY of
+ * sections is fine too (`items.map(...)` flattens into separate sections, each
+ * with its own rule) — only a Fragment wrapper collapses them into one.
  *
  * There are no boolean mode props. The one state flag is `Tile`'s `muted`, and
  * it is allowed because it changes colour ONLY (see its own note).
@@ -200,12 +202,23 @@ const requirementDotClasses: Record<RequirementState, string> = {
     optional: 'bg-[var(--jale-ink-2)]',
 };
 
-/** The chip row. Its own optional label makes it usable as a whole section. */
+/**
+ * The chip row. Its own optional label makes it usable as a whole section.
+ *
+ * `role="list"` is not redundant: Tailwind's preflight sets `list-style: none`,
+ * and Safari/VoiceOver then drops list semantics entirely — the chips stop
+ * being announced as "list, 3 items". The repo already applies this fix to the
+ * identical chip pattern in `employer/CertificationsPicker.tsx` and
+ * `ui/CityMultiSelect.tsx`.
+ */
 function Requirements({ label, children }: { label?: ReactNode; children: ReactNode }) {
     return (
         <>
             {label ? <SectionLabel>{label}</SectionLabel> : null}
-            <ul className={['flex flex-wrap gap-2', label ? 'mt-3' : ''].filter(Boolean).join(' ')}>
+            <ul
+                role="list"
+                className={['flex flex-wrap gap-2', label ? 'mt-3' : ''].filter(Boolean).join(' ')}
+            >
                 {children}
             </ul>
         </>
@@ -237,7 +250,11 @@ function Requirement({
                 className={`size-[7px] shrink-0 rounded-full ${requirementDotClasses[state]}`}
             />
             <span className="min-w-0 [overflow-wrap:anywhere]">{children}</span>
-            <span className="sr-only">{stateLabel}</span>
+            {/* The comma is INSIDE the hidden span and load-bearing: JSX drops
+                the newline between the two spans, so without it the accessible
+                text is "Driver's licenseRequired" — one run-together word to a
+                screen reader. With it: "Driver's license, Required". */}
+            <span className="sr-only">{`, ${stateLabel}`}</span>
         </li>
     );
 }
