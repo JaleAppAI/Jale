@@ -6,7 +6,8 @@ import { usePageData } from '@/hooks/usePageData';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { AppShell } from '@/components/layout/AppShell';
 import { DashboardPanel } from '@/components/ui/dashboard-panel';
-import { Badge } from '@/components/ui/badge';
+import { PanelHeader } from '@/components/ui/panel-header';
+import { BadgeList } from '@/components/ui/badge-list';
 import { Button } from '@/components/ui/button';
 import { ErrorState } from '@/components/ui/error-state';
 import { InitialsAvatar } from '@/components/ui/initials-avatar';
@@ -106,7 +107,7 @@ export default function EmployerProfilePage() {
 
     return (
         <AppShell role="employer" title={tNav('nav.settings')}>
-            <div className="mx-auto max-w-5xl px-4 py-6 md:px-6">
+            <main className="mx-auto max-w-5xl px-4 py-6 md:px-6">
                 {showSkeleton ? (
                     /* Same archetype and geometry as `loading.tsx`, so the route-level
                        skeleton and this one are the same picture — the handover from
@@ -127,20 +128,17 @@ export default function EmployerProfilePage() {
                         )}
 
                         <DashboardPanel>
-                            {/* PanelHeader's geometry, plus the avatar it has no slot for. */}
-                            <div className="flex items-center justify-between gap-3 border-b border-[var(--jale-divider)] px-5 py-4">
-                                <div className="flex min-w-0 items-center gap-3">
-                                    <InitialsAvatar name={companyLabel} fallback="E" size={36} square />
-                                    <h2 className="min-w-0 truncate text-base font-extrabold text-[var(--jale-ink)]">
-                                        {companyLabel}
-                                    </h2>
-                                </div>
-                                {!editing && (
-                                    <Button variant="outline" size="sm" onClick={startEditing}>
-                                        {t('edit_button')}
-                                    </Button>
-                                )}
-                            </div>
+                            <PanelHeader
+                                leading={<InitialsAvatar name={companyLabel} fallback="E" size={36} square />}
+                                title={companyLabel}
+                                action={
+                                    editing ? null : (
+                                        <Button variant="outline" size="sm" onClick={startEditing}>
+                                            {t('edit_button')}
+                                        </Button>
+                                    )
+                                }
+                            />
 
                             {editing ? (
                                 <div className="anim-fade-in px-5 py-5">
@@ -234,7 +232,7 @@ export default function EmployerProfilePage() {
                         <DigestSettingsPanel />
                     </div>
                 )}
-            </div>
+            </main>
         </AppShell>
     );
 }
@@ -432,37 +430,3 @@ function CheckboxGroup({ label, error, children }: { label: string; error?: stri
     );
 }
 
-/**
- * A KV row whose value is a set of chips. Right-aligned to sit under the
- * column the dashed rows establish, wrapping onto more lines at 390px rather
- * than squeezing the label.
- */
-/**
- * `emptyLabel` is required, not defaulted: an empty list is a real answer
- * ("no trades selected"), and every caller knows which field it is talking
- * about. A shared default would be a bare dash again, one indirection further
- * away.
- */
-function BadgeList({
-    items,
-    emptyLabel,
-    tone = 'neutral',
-}: {
-    items: string[];
-    emptyLabel: string;
-    tone?: 'neutral' | 'info';
-}) {
-    // Plain text, so an empty list reads in the same ink as every other "not
-    // set" value in the list rather than as a differently-styled special case.
-    if (items.length === 0) return <>{emptyLabel}</>;
-
-    return (
-        <span className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1.5">
-            {items.map((item) => (
-                <Badge key={item} tone={tone}>
-                    {item}
-                </Badge>
-            ))}
-        </span>
-    );
-}
