@@ -1397,6 +1397,7 @@
         "where": "Where and what's needed",
         "requirements": "Requirements",
         "about": "About the job · posted {date}",
+        "trade_with_other": "{other} (Other)",
         "transportation": "Transportation",
         "work_authorization": "Work authorization",
         "start_unknown": "To be confirmed"

@@ -18,10 +18,13 @@ import { EmptyState } from '@/components/ui/empty-state';
 import { ErrorState } from '@/components/ui/error-state';
 import { InitialsAvatar } from '@/components/ui/initials-avatar';
 import { InlineFeedback, type FeedbackTone } from '@/components/ui/inline-feedback';
-import { KVList, type KVItem } from '@/components/ui/kv-list';
+// `KVList` is still the right shape for ONE surface on this page -- an
+// applicant's answered pre-application fields, further down. The JOB's own
+// facts are no longer a KV list; they are the shared `JobFactsCard`.
+import { KVList } from '@/components/ui/kv-list';
 import { MatchReasonChips, MatchScoreBadge } from '@/components/ui/match-signals';
 import { MetricCard } from '@/components/ui/metric-card';
-import { DetailPageSkeleton, ListPageSkeleton, MetricRowSkeleton } from '@/components/ui/page-skeletons';
+import { JobDetailSkeleton, ListPageSkeleton, MetricRowSkeleton } from '@/components/ui/page-skeletons';
 import { PanelHeader } from '@/components/ui/panel-header';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
@@ -61,6 +64,13 @@ import {
     detailsRequestFeedbackTone,
 } from '@/lib/hire-gate';
 import { formatLongDate, formatStartDate } from '@/lib/date';
+import { durationLabel, scheduleSummary, tradeLabel, type Translator } from '@/lib/job-detail-display';
+import { PAY_UNSPECIFIED } from '@/lib/pay';
+import {
+    JobFactsCard,
+    type JobFactRequirement,
+    type JobFactTile,
+} from '@/components/jobs/JobFactsCard';
 import { buildCandidateMatchMap, type ApplicantMatch } from './candidate-matches';
 import { TrustScorePill } from './TrustScorePill';
 import { docTypeLabel } from '@/lib/doc-types';
@@ -127,6 +137,27 @@ export default function JobDetailPage() {
     const tMatch = useTranslations('match');
     const tCommon = useTranslations('common');
     const tDocTypes = useTranslations('doc_types');
+
+    /*
+     * `job-detail-display.ts`'s formatters take a deliberately structural
+     * `Translator` (`(key, values?) => string`) so they stay unit-testable
+     * without a next-intl runtime. next-intl's client translator is generic
+     * over ITS OWN namespace's keys, which is narrower than that for the
+     * `values` parameter, so passing one straight in fails `tsc` -- the same
+     * thin widening adapter the worker and public job pages apply at the same
+     * boundary. Not a behaviour change; the calls are identical.
+     *
+     * `tTradeDisplay` also re-roots the key: `tradeLabel` resolves the trade
+     * SLUG as a relative key, and `employer_dashboard.modal.trade.*` is the one
+     * catalogue carrying all eight of migration 023's tokens (`common.trades.*`
+     * is missing `drywall` and `general_labor`).
+     */
+    const widen = (translate: unknown): Translator =>
+        (key, values) => (translate as (k: string, v?: Record<string, unknown>) => string)(key, values);
+    const tCommonDisplay = widen(tCommon);
+    const tTradeDisplay: Translator = (key) => tShared(`modal.trade.${key}`);
+    const tDetailDisplay: Translator = (key, values) =>
+        (t as unknown as (k: string, v?: Record<string, unknown>) => string)(`job.facts.${key}`, values);
 
     const returnUrl = `/employer/jobs/${jobId}`;
 
@@ -555,7 +586,6 @@ export default function JobDetailPage() {
     if (!job) return null;
 
     const openCount = job.open_count ?? Math.max(0, job.number_of_workers_needed - job.hired_count);
-    const notSpecified = t('job.not_specified');
 
     const jobTypeLabels: Record<string, string> = {
         'full-time': tShared('modal.job_type_fulltime'),
@@ -564,60 +594,159 @@ export default function JobDetailPage() {
     };
     const num = (value: string) => <span className="tabular-nums">{value}</span>;
 
-    const fields: KVItem[] = [
-        { label: tShared('modal.location'), value: job.location },
-        {
-            label: tShared('modal.job_type'),
-            value: jobTypeLabels[job.job_type] ?? job.job_type,
-        },
-        {
-            label: tShared('modal.trade_category'),
-            value: job.trade_category ? tShared(`modal.trade.${job.trade_category}`) : notSpecified,
-        },
-        { label: t('job.pay_range'), value: job.pay ? num(job.pay) : notSpecified },
-        {
-            label: tShared('modal.start_date'),
-            value: (() => {
-                const formatted = formatStartDate(job.start_date, locale);
-                return formatted ? num(formatted) : notSpecified;
-            })(),
-        },
-        { label: tShared('modal.expected_duration'), value: job.expected_duration ?? notSpecified },
-        { label: tShared('modal.shift_schedule'), value: job.shift_schedule ?? notSpecified },
-        {
-            label: tShared('modal.transportation_required'),
-            value: job.transportation_required ? t('job.yes') : t('job.no'),
-        },
-        {
-            label: tShared('modal.work_authorization_required'),
-            value: job.work_authorization_required ? t('job.yes') : t('job.no'),
-        },
-        {
-            label: tShared('modal.language_preference'),
-            value: job.language_preference.map((lang) => tShared(`modal.language.${lang}`)).join(', '),
-        },
-        {
-            label: tShared('modal.number_of_workers_needed'),
-            value: num(String(job.number_of_workers_needed)),
-        },
-        {
-            label: t('job.hiring_progress'),
-            value: num(
-                t('job.hiring_progress_value', {
-                    hired: job.hired_count,
-                    total: job.number_of_workers_needed,
-                    open: openCount,
-                }),
-            ),
-        },
-        {
-            label: tShared('modal.required_experience_years'),
-            value:
-                job.required_experience_years === null
-                    ? notSpecified
-                    : num(String(job.required_experience_years)),
-        },
+    /*
+     * `job.pay` is the legacy English free-text column this page has always
+     * shown, and it stays that (swapping in `lib/pay.ts`'s `formatPay` would be
+     * a behaviour change this lane does not own). But it can carry the API's
+     * "Pay not specified" SENTINEL instead of a figure -- harmless as one row of
+     * a list that printed "Not specified" elsewhere too, and not harmless set as
+     * a 2xl extrabold headline. `PAY_UNSPECIFIED` is `lib/pay.ts`'s own exported
+     * constant, so this recognises the sentinel without re-declaring it.
+     */
+    const payFigure = job.pay && job.pay !== PAY_UNSPECIFIED ? job.pay : null;
+
+    /*
+     * The job's facts, as the ONE card body all three job pages render — same
+     * sections, same eight tiles, same order, so a posting cannot read as two
+     * different jobs depending on whether the employer or the worker opened it.
+     * `JobFactsCard` owns the order; every value below is still built here, out
+     * of this page's own formatters and its own next-intl namespaces.
+     *
+     * NOTE what this deliberately drops: the old list stated every fact either
+     * way, printing "Not specified" for a field the employer left blank and
+     * "No" for a requirement they did not set. The card omits an absent tile
+     * instead (`Inicio` excepted, shown muted), and a requirement only earns a
+     * chip when it actually applies. `t('job.not_specified')` and
+     * `t('job.yes')`/`t('job.no')` are therefore no longer read from here.
+     */
+    const schedule = scheduleSummary(job, locale, tCommonDisplay);
+    // ONE Horario tile: the days and the hours are one fact. `legacy` is already
+    // mutually exclusive with the structured pair (see `scheduleSummary`).
+    const scheduleText = schedule.legacy
+        ?? ([schedule.days.length > 0 ? schedule.days.join(', ') : null, schedule.hours]
+            .filter(Boolean)
+            .join(' · ') || null);
+    const durationText = durationLabel(job, tCommonDisplay);
+    const startText = job.start_date
+        ? (formatStartDate(job.start_date, locale) ?? job.start_date)
+        : null;
+    const tradeText = tradeLabel(job, tTradeDisplay, tDetailDisplay);
+    const languageText = job.language_preference.length > 0
+        ? job.language_preference.map((lang) => tShared(`modal.language.${lang}`)).join(', ')
+        : null;
+    // `created_at` is an INSTANT, not a calendar day, so it takes the
+    // reader's-timezone formatter rather than UTC-pinned `formatStartDate`.
+    const postedText = formatLongDate(job.created_at, locale) ?? job.created_at;
+
+    const scheduleTiles: JobFactTile[] = [];
+    if (scheduleText) {
+        scheduleTiles.push({ key: 'shift', label: tShared('modal.shift_schedule'), value: scheduleText });
+    }
+    if (durationText) {
+        scheduleTiles.push({
+            key: 'duration',
+            label: tShared('modal.expected_duration'),
+            value: durationText,
+        });
+    }
+    scheduleTiles.push({
+        key: 'start',
+        label: tShared('modal.start_date'),
+        value: startText ? num(startText) : t('job.facts.start_unknown'),
+        muted: !startText,
+    });
+    scheduleTiles.push({
+        key: 'openings',
+        // The employer's own hiring-progress numbers, not the worker page's
+        // open/total pair: this is the one tile where the two audiences
+        // genuinely know different things about the same job.
+        label: t('job.hiring_progress'),
+        value: num(
+            t('job.hiring_progress_value', {
+                hired: job.hired_count,
+                total: job.number_of_workers_needed,
+                open: openCount,
+            }),
+        ),
+    });
+
+    const whereTiles: JobFactTile[] = [
+        { key: 'location', label: tShared('modal.location'), value: job.location },
     ];
+    if (tradeText) {
+        whereTiles.push({ key: 'trade', label: tShared('modal.trade_category'), value: tradeText });
+    }
+    if (job.required_experience_years !== null) {
+        whereTiles.push({
+            key: 'experience',
+            label: tShared('modal.required_experience_years'),
+            value: num(String(job.required_experience_years)),
+        });
+    }
+    if (languageText) {
+        whereTiles.push({
+            key: 'language',
+            label: tShared('modal.language_preference'),
+            value: languageText,
+        });
+    }
+
+    const requiredWord = tCommon('requirement_state.required');
+    const requirementItems: JobFactRequirement[] = [];
+    if (job.transportation_required) {
+        requirementItems.push({
+            key: 'transportation',
+            label: t('job.facts.transportation'),
+            state: 'required',
+            stateLabel: requiredWord,
+        });
+    }
+    if (job.work_authorization_required) {
+        requirementItems.push({
+            key: 'work_authorization',
+            label: t('job.facts.work_authorization'),
+            state: 'required',
+            stateLabel: requiredWord,
+        });
+    }
+    // Structured per-cert tiers when the job has them, else the legacy
+    // `certifications` name list this page has always shown as info badges.
+    // Those names carry no tier of their own, so they are stated as `required`
+    // — which is what an employer who typed a certification into the old
+    // free-text field meant, and is the same fallback the public page makes.
+    // Keyed by index, not by name: `parseJobFields` dedupes on write, but this
+    // page renders whatever the row holds.
+    if (job.certification_requirements && job.certification_requirements.length > 0) {
+        job.certification_requirements.forEach((cert, index) => {
+            requirementItems.push({
+                key: `cert-${index}`,
+                label: cert.name,
+                state: cert.tier,
+                stateLabel: tCommon(`requirement_state.${cert.tier}`),
+            });
+        });
+    } else {
+        job.certifications.forEach((cert, index) => {
+            requirementItems.push({
+                key: `legacy-cert-${index}`,
+                label: cert,
+                state: 'required',
+                stateLabel: requiredWord,
+            });
+        });
+    }
+    // The job's required documents, which on the worker page are vault rows
+    // with Uploaded/Missing badges instead: the employer has no way to know
+    // whether a given applicant holds one, so here they are simply what the
+    // job asks for.
+    job.required_docs.forEach((doc, index) => {
+        requirementItems.push({
+            key: `doc-${index}`,
+            label: docTypeLabel(doc, tDocTypes) ?? doc,
+            state: 'required',
+            stateLabel: requiredWord,
+        });
+    });
 
     const filtersActive = hasActiveApplicantFilters(appliedFilters);
     const statusBusy = pendingStatus !== null;
@@ -666,51 +795,45 @@ export default function JobDetailPage() {
                                 <PanelHeader
                                     title={t('job.panel_title')}
                                     action={
-                                        <JobStatusBadge status={job.status}>
-                                            {tShared(`jobs.status.${job.status}`)}
-                                        </JobStatusBadge>
+                                        /* Job type joins the status badge here
+                                           rather than staying a fact row: it is
+                                           not one of the card's eight tiles, and
+                                           this is where the worker and public
+                                           pages already show it. */
+                                        <span className="flex items-center gap-2">
+                                            <JobStatusBadge status={job.status}>
+                                                {tShared(`jobs.status.${job.status}`)}
+                                            </JobStatusBadge>
+                                            <Badge tone="info">
+                                                {jobTypeLabels[job.job_type] ?? job.job_type}
+                                            </Badge>
+                                        </span>
                                     }
                                 />
 
-                                <div className="px-5 py-2">
-                                    <KVList items={fields} />
-                                </div>
-
-                                <div className="space-y-4 border-t border-[var(--jale-divider)] px-5 py-4">
-                                    <FactBlock title={t('job.description_title')}>
-                                        <p className="whitespace-pre-wrap text-sm text-[var(--jale-ink)]">
-                                            {job.description?.trim() || t('job.no_description')}
-                                        </p>
-                                    </FactBlock>
-
-                                    {job.certifications.length > 0 ? (
-                                        <FactBlock title={t('job.certifications_title')}>
-                                            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
-                                                {job.certifications.map((cert) => (
-                                                    <Badge key={cert} tone="info">
-                                                        {cert}
-                                                    </Badge>
-                                                ))}
-                                            </div>
-                                        </FactBlock>
-                                    ) : null}
-
-                                    <FactBlock title={t('job.required_documents_title')}>
-                                        {job.required_docs.length > 0 ? (
-                                            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
-                                                {job.required_docs.map((doc) => (
-                                                    <Badge key={doc} tone="info">
-                                                        {docTypeLabel(doc, tDocTypes) ?? doc}
-                                                    </Badge>
-                                                ))}
-                                            </div>
-                                        ) : (
-                                            <p className="text-sm text-[var(--jale-ink-2)]">
-                                                {t('job.no_required_documents')}
-                                            </p>
-                                        )}
-                                    </FactBlock>
-                                </div>
+                                <JobFactsCard
+                                    pay={payFigure ? { label: t('job.pay_range'), figure: payFigure } : null}
+                                    schedule={{ label: t('job.facts.schedule'), tiles: scheduleTiles }}
+                                    where={{ label: t('job.facts.where'), tiles: whereTiles }}
+                                    requirements={
+                                        requirementItems.length > 0
+                                            ? { label: t('job.facts.requirements'), items: requirementItems }
+                                            : null
+                                    }
+                                    /* Employer-side: the job's documents are
+                                       Requirements chips, not vault rows. Only
+                                       the worker page can say whether a
+                                       document is already uploaded. */
+                                    documents={null}
+                                    about={
+                                        job.description?.trim()
+                                            ? {
+                                                label: t('job.facts.about', { date: postedText }),
+                                                text: job.description.trim(),
+                                            }
+                                            : null
+                                    }
+                                />
 
                                 <div className="flex flex-wrap gap-2 border-t border-[var(--jale-divider)] px-5 py-4">
                                     {/* Pausing is the self-service way out of the
@@ -926,22 +1049,11 @@ function JobPageSkeleton() {
             <div className="mb-5">
                 <MetricRowSkeleton count={3} />
             </div>
-            <DetailPageSkeleton fields={8} />
+            <JobDetailSkeleton />
             <div className="mt-5">
                 <ListPageSkeleton rows={4} />
             </div>
         </>
-    );
-}
-
-function FactBlock({ title, children }: { title: string; children: ReactNode }) {
-    return (
-        <div>
-            <p className="mb-2 text-xs font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">
-                {title}
-            </p>
-            {children}
-        </div>
     );
 }
 
