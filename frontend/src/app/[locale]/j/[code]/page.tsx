@@ -478,12 +478,12 @@ export default async function PublicJobPage({ params }: PageProps) {
           returned null (no description). Escaping the employer-authored
           description against script-breakout XSS happens inside
           serializeJsonLd, not here. */}
-      {jobPostingJsonLd && (
+      {jobPostingJsonLd ? (
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: serializeJsonLd(jobPostingJsonLd) }}
         />
-      )}
+      ) : null}
       <BrandBand
         path={localePath}
         otherLocale={otherLocale}
@@ -554,11 +554,11 @@ export default async function PublicJobPage({ params }: PageProps) {
               <ApplyButton code={active.code} />
             </Suspense>
             <p className="text-center text-xs text-[var(--jale-ink-2)] mt-3">{t('apply_hint')}</p>
-            {active.id && (
+            {active.id ? (
               <Suspense fallback={<WebApplyButtonSkeleton />}>
                 <WebApplyButton jobId={active.id} label={t('apply_web')} />
               </Suspense>
-            )}
+            ) : null}
           </div>
 
           <TrustFooter text={t('about_jale')} />
