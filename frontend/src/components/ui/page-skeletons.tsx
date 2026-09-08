@@ -135,6 +135,78 @@ export function DetailPageSkeleton({
 }
 
 /**
+ * `FactsCard`'s body — a pay headline, a tile grid, requirement chips and a
+ * paragraph, with the same hairline rules between them.
+ *
+ * BODY ONLY, and deliberately not wrapped in `SkeletonRegion`: this traces what
+ * goes INSIDE a `DashboardPanel`, and the page's frame skeleton already owns
+ * the one `role="status"` live region for that panel. A second one nested in it
+ * would announce "Loading..." twice for a single card.
+ *
+ * The counts are props because the six detail surfaces differ: a job shows all
+ * ten fields, a profile fewer. Defaults are the job detail card.
+ */
+export function FactsCardSkeleton({
+    tiles = 6,
+    requirements = 2,
+    text = 3,
+}: {
+    tiles?: number;
+    requirements?: number;
+    text?: number;
+}) {
+    // Same rule the real card draws between sections.
+    const sectionRule = 'mt-5 border-t border-[var(--jale-divider)] pt-5';
+
+    return (
+        <div className="p-5 md:p-6">
+            {/* Headline: label, figure, hint. */}
+            <div data-skeleton="headline">
+                <Skeleton className="h-2.5 w-20" />
+                <Skeleton className="mt-2 h-7 w-44 md:h-8" />
+                <SkeletonLine width="w-52" className="mt-2 h-3" />
+            </div>
+
+            {/* Tiles: a label bar over a value bar, two per row, matching the
+                real grid so the swap costs no layout shift. A plain `div` and
+                not a `dl` — there is no dt/dd here to make it a list of. */}
+            <div className={sectionRule}>
+                <div
+                    data-skeleton="tiles"
+                    className="grid grid-cols-1 gap-x-5 gap-y-3 min-[360px]:grid-cols-2"
+                >
+                    {Array.from({ length: tiles }).map((_, i) => (
+                        <div key={i} className="min-w-0">
+                            <Skeleton className="h-2.5 w-16" />
+                            <SkeletonLine width="w-28" className="mt-1.5" />
+                        </div>
+                    ))}
+                </div>
+            </div>
+
+            {/* Requirement chips. */}
+            <div className={sectionRule}>
+                <Skeleton className="h-2.5 w-24" />
+                <div data-skeleton="requirements" className="mt-3 flex flex-wrap gap-2">
+                    {Array.from({ length: requirements }).map((_, i) => (
+                        <Skeleton key={i} className="h-6 w-28 rounded-full" />
+                    ))}
+                </div>
+            </div>
+
+            {/* Description: full-width lines with a short last one. */}
+            <div className={sectionRule}>
+                <div data-skeleton="text" className="space-y-2">
+                    {Array.from({ length: text }).map((_, i) => (
+                        <SkeletonLine key={i} width={i === text - 1 ? 'w-2/3' : 'w-full'} />
+                    ))}
+                </div>
+            </div>
+        </div>
+    );
+}
+
+/**
  * A row of minimal KPI figures — the dashboard/applications metric band.
  *
  * Exported because a route `loading.tsx` cannot import from a `'use client'`
