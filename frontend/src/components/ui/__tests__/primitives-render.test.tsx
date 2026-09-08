@@ -67,6 +67,32 @@ describe('PanelHeader', () => {
         expect(container.firstElementChild!.className).toContain('border-b');
     });
 
+    it('lets an unbroken user-supplied name wrap rather than overflow the row', () => {
+        // Both callers feed raw user text (`company_name`, `full_name`). A long
+        // space-less name has no break opportunity, so without an explicit wrap
+        // rule it pushes the header wider than a 375px viewport -- the same
+        // horizontal-scroll failure `flex-wrap` was added to fix, arriving by a
+        // different route. Asserting the class is the honest test: the effect is
+        // CSS-only, and jsdom does no layout.
+        const unbrokenTitle = 'A'.repeat(60);
+        render(
+            <PanelHeader
+                leading={<span data-testid="avatar">AV</span>}
+                title={unbrokenTitle}
+                action={<button type="button">Edit</button>}
+            />,
+        );
+
+        const heading = screen.getByRole('heading', { level: 2, name: unbrokenTitle });
+        expect(heading.className).toContain('[overflow-wrap:anywhere]');
+        // `min-w-0` has to survive alongside it, or the flex child cannot
+        // shrink below its content width and the wrap rule never applies.
+        expect(heading.className).toContain('min-w-0');
+        // Clipping a person's or company's name is the one outcome worse than
+        // two lines, so `truncate` must NOT come back.
+        expect(heading.className).not.toContain('truncate');
+    });
+
     it('renders neither slot when they are omitted', () => {
         const { container } = render(<PanelHeader title="Documents" />);
 

@@ -25,12 +25,19 @@ export function PanelHeader({
     // beside a wide action slot could not shrink, so the header set a floor on
     // the page width and pushed the whole layout into horizontal scroll at
     // 390px — reproducibly, in Spanish, where the labels are longer.
+    //
+    // `[overflow-wrap:anywhere]` on the title because `title` is user-supplied
+    // on the profile pages (`company_name`, `full_name`): an unbroken 60-char
+    // name offers no break opportunity, and `min-w-0` alone cannot wrap what has
+    // nowhere to wrap, so it would overflow the row at 375px. Wrapping onto a
+    // second line is the deliberate trade-off over `truncate` — clipping
+    // somebody's name is worse than spending a line on it.
     return (
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--jale-divider)] px-5 py-4">
             <div className="flex min-w-0 items-center gap-3">
                 {leading}
                 <div className="min-w-0">
-                    <h2 className="min-w-0 text-base font-bold text-current">{title}</h2>
+                    <h2 className="min-w-0 text-base font-bold text-current [overflow-wrap:anywhere]">{title}</h2>
                     {subtitle ? (
                         <p className="text-sm text-[var(--jale-ink-2)]">{subtitle}</p>
                     ) : null}
