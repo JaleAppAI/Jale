@@ -76,6 +76,22 @@ const PROMPT_LANE_SCRUB = {
   applications_menu: null,
 } as const;
 
+/**
+ * `PROMPT_LANE_SCRUB`'s key set, derived rather than restated -- the same
+ * contract `FILL_SCRUB_KEYS` (application-fill.ts) documents, for the same
+ * consumer: `lib/application-web-completion.ts` releases the PROMPT lane
+ * alone when the web answers the last outstanding pre-application prompt,
+ * and it must clear exactly these three so `repromptPromptLane`'s
+ * `typeof ... === 'string'` guard on `prompt_application_id` stands down.
+ *
+ * Prompt-only, deliberately: a worker who finished the PROMPTS on the web has
+ * not necessarily finished the details-stage FILL, and clearing
+ * `fill_application_id` here would abandon a question the bot is still
+ * legitimately waiting on.
+ */
+export const PROMPT_LANE_SCRUB_KEYS: readonly string[] =
+  Object.freeze(Object.keys(PROMPT_LANE_SCRUB));
+
 /** Cleared when the prompt lane is ARMED -- the fill lane's whole key set,
  * mirroring `FILL_SCRUB`'s treatment of the prompt keys. */
 const PROMPT_ARM_SCRUB = {

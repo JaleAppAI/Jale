@@ -39,8 +39,10 @@ import { Children, type ReactNode } from 'react';
  * sections is fine too (`items.map(...)` flattens into separate sections, each
  * with its own rule) — only a Fragment wrapper collapses them into one.
  *
- * There are no boolean mode props. The one state flag is `Tile`'s `muted`, and
- * it is allowed because it changes colour ONLY (see its own note).
+ * There are no boolean MODE props. The only state flags are `Tile`'s `muted`
+ * and `Text`'s, and both are allowed on the same terms: they change colour ONLY
+ * (see their own notes), dropping a placeholder value to ink-2 so a card of
+ * real facts is not shouting the fields nobody has filled in.
  */
 
 /* ===== Shared label ===================================================== */
@@ -260,12 +262,37 @@ function Requirement({
 }
 
 /**
- * Free text (the job description). `whitespace-pre-wrap` is load-bearing:
- * employers write these with line breaks and a bullet per line.
+ * Free text (the job description, a worker's bio). `whitespace-pre-wrap` is
+ * load-bearing: employers write these with line breaks and a bullet per line.
  */
-function Text({ children }: { children: ReactNode }) {
+function Text({
+    children,
+    muted = false,
+}: {
+    children: ReactNode;
+    /**
+     * The SECOND state flag in this file, and allowed on the same terms as
+     * `Tile`'s: it changes colour and nothing else.
+     *
+     * The two own-profile pages keep this section even when the field is empty
+     * -- "About / No description added" is the prompt to write one, and on your
+     * own profile that nudge is the point -- so the placeholder needs to drop
+     * to ink-2 exactly as an unset tile does, or a card of real facts ends up
+     * shouting the one thing nobody has written yet.
+     *
+     * NOT colour-only state: the caller's own words ("No description added")
+     * are what say the field is unset. This only stops them competing with the
+     * facts around them.
+     */
+    muted?: boolean;
+}) {
     return (
-        <p className="whitespace-pre-wrap text-sm leading-relaxed text-[var(--jale-ink)]">
+        <p
+            className={[
+                'whitespace-pre-wrap text-sm leading-relaxed',
+                muted ? 'text-[var(--jale-ink-2)]' : 'text-[var(--jale-ink)]',
+            ].join(' ')}
+        >
             {children}
         </p>
     );

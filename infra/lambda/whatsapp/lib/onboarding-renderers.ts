@@ -31,6 +31,11 @@ import {
   buildApplicationStageMessage,
   buildApplicationStageUrl,
 } from '../../lib/application-stage-notify';
+// The COPY only, from a leaf module. `lib/application-web-completion.ts`
+// itself is unreachable from here: it imports `application-fill`, which
+// reaches `conversation-router` -> `job-messaging` -> this file. See that
+// module's header.
+import { buildWebCompletionPayloadMessage } from '../../lib/application-web-completion-copy';
 
 /** Mirrors the id shape `buildApplicationStageMessage` asserts. Validated
  * HERE first so that function's throw is unreachable from a renderer. */
@@ -539,8 +544,17 @@ export function createReleaseRenderer(): ReleaseRenderer {
         case 'onboarding_complete':
           return buildOnboardingCompleteMessage(request.language);
         case 'account_notice':
+          // Sprint 24 round 2: the web-completion arm sits beside the stage
+          // arm because `enqueueWorkerMessage` runs a CATEGORY renderer only
+          // on the `allow` branch. A worker who is not `ready` -- or any
+          // worker while `deferred_delivery_enabled` is off -- gets a
+          // DEFERRED intent that only this renderer ever materializes, and
+          // without this branch it shipped the generic notice with the raw
+          // source type: "Actualizacion de cuenta
+          // (application_web_completion)".
           return (
             buildApplicationStagePayloadMessage(request.language, request.payload)
+            ?? buildWebCompletionPayloadMessage(request.language, request.payload)
             ?? buildAccountNoticeMessage(request.language, request.sourceType)
           );
         case 'referred_job':
