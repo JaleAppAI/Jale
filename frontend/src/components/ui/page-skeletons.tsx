@@ -787,12 +787,9 @@ export function CenteredCardSkeleton({
  * `DetailPageSkeleton` is deliberately untouched: the profile surfaces still
  * render a `KVList` and still need it.
  *
- * KNOWN GEOMETRY GAP, stated rather than hidden: `FactsCardSkeleton` draws ONE
- * 8-tile grid, while the real job card splits those eight tiles across two
- * LABELLED sections ("Schedule and dates", "Where and what's needed") with a
- * rule between them. The swap therefore costs roughly one label row plus one
- * hairline of height. Closing it means teaching `FactsCardSkeleton` about
- * grouped tiles, which is a change to a primitive owned outside this lane.
+ * The tile geometry matches: `FactsCardSkeleton`'s `sections` prop draws the
+ * card's two LABELLED four-tile groups ("Schedule and dates", "Where and what's
+ * needed") with their rule between, rather than one flat grid of eight.
  */
 export function JobDetailSkeleton({ withBackLink = false }: { withBackLink?: boolean }) {
     return (
