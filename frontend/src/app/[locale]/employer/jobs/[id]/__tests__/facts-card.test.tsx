@@ -199,6 +199,12 @@ function tiles(container: HTMLElement): [string, string][] {
 const t = (key: string) => message(`employer_job_listing.${key}`);
 const shared = (key: string) => message(`employer_dashboard.${key}`);
 
+/** The chips in one labelled row, as their full accessible text. */
+function chipsUnder(label: string): string[] {
+    const row = screen.getByRole('heading', { level: 3, name: label }).parentElement!;
+    return Array.from(row.querySelectorAll('li')).map((chip) => chip.textContent ?? '');
+}
+
 describe('employer job detail — the facts card', () => {
     it('sets pay as the one headline figure, not a fact row', () => {
         setSeed(fullJob());
@@ -233,18 +239,25 @@ describe('employer job detail — the facts card', () => {
         expect(screen.getByRole('heading', { level: 3, name: t('job.facts.where') })).toBeInTheDocument();
     });
 
-    it('states requirements, certifications and required documents as chips with a readable state', () => {
+    /*
+     * Three LABELLED rows, not one flat strip (owner ruling, fix round 1): a
+     * policy, a credential and a file cost an applicant three different things,
+     * and an employer proofreading their own posting has to tell them apart.
+     */
+    it('splits the chips into policy, certification and document rows', () => {
         setSeed(fullJob());
         renderIntl(<EmployerJobDetailPage />);
 
-        const chips = screen.getByRole('heading', { level: 3, name: t('job.facts.requirements') })
-            .parentElement!.querySelectorAll('li');
-        const required = message('common.requirement_state.required');
-        expect(Array.from(chips).map((chip) => chip.textContent)).toEqual([
+        const required = message('job_requirements.states.required');
+        expect(chipsUnder(t('job.facts.requirements'))).toEqual([
             `${t('job.facts.transportation')}, ${required}`,
             `${t('job.facts.work_authorization')}, ${required}`,
+        ]);
+        expect(chipsUnder(t('job.certifications_title'))).toEqual([
             `OSHA 10, ${required}`,
-            `Scaffold, ${message('common.requirement_state.optional')}`,
+            `Scaffold, ${message('job_requirements.states.optional')}`,
+        ]);
+        expect(chipsUnder(t('job.required_documents_title'))).toEqual([
             `${message('doc_types.resume')}, ${required}`,
         ]);
     });
@@ -253,20 +266,19 @@ describe('employer job detail — the facts card', () => {
         setSeed(fullJob({ certification_requirements: null, certifications: ['Forklift'] }));
         renderIntl(<EmployerJobDetailPage />);
 
-        const chips = screen.getByRole('heading', { level: 3, name: t('job.facts.requirements') })
-            .parentElement!.querySelectorAll('li');
-        expect(Array.from(chips).map((chip) => chip.textContent)).toContain(
-            `Forklift, ${message('common.requirement_state.required')}`,
-        );
+        expect(chipsUnder(t('job.certifications_title'))).toEqual([
+            `Forklift, ${message('job_requirements.states.required')}`,
+        ]);
     });
 
-    it('renders the description under an About label carrying the posted date', () => {
+    it('renders the description under a plain About label, the date in the header', () => {
         setSeed(fullJob());
         renderIntl(<EmployerJobDetailPage />);
 
         expect(screen.getByText('Framing and drywall on a new build.')).toBeInTheDocument();
+        expect(screen.getByRole('heading', { level: 3, name: t('job.facts.about') })).toBeInTheDocument();
         expect(
-            screen.getByRole('heading', { level: 3, name: /About the job · posted Jun 1, 2026/ }),
+            screen.getByText(shared('panels.posted_on').replace('{date}', 'Jun 1, 2026')),
         ).toBeInTheDocument();
     });
 
@@ -304,7 +316,8 @@ describe('employer job detail — the facts card', () => {
 
             expect(screen.queryByText(t('job.pay_range'))).toBeNull();
             expect(screen.queryByRole('heading', { level: 3, name: t('job.facts.requirements') })).toBeNull();
-            expect(screen.queryByRole('heading', { level: 3, name: /About the job/ })).toBeNull();
+            expect(screen.queryByRole('heading', { level: 3, name: t('job.certifications_title') })).toBeNull();
+            expect(screen.queryByRole('heading', { level: 3, name: t('job.required_documents_title') })).toBeNull();
         });
 
         it('still shows the start tile, muted, saying the date is unconfirmed', () => {

@@ -137,6 +137,10 @@ export default function JobDetailPage() {
     const tMatch = useTranslations('match');
     const tCommon = useTranslations('common');
     const tDocTypes = useTranslations('doc_types');
+    /* The app's ONE required/optional vocabulary -- the same namespace the
+       employer's own requirement picker writes these tiers from, so the card
+       reads back exactly the words the control offered. */
+    const tRequirement = useTranslations('job_requirements');
 
     /*
      * `job-detail-display.ts`'s formatters take a deliberately structural
@@ -691,10 +695,17 @@ export default function JobDetailPage() {
         });
     }
 
-    const requiredWord = tCommon('requirement_state.required');
-    const requirementItems: JobFactRequirement[] = [];
+    /*
+     * Requirement chips, in THREE labelled rows rather than one flat strip
+     * (owner ruling, fix round 1): a policy the job sets, a credential the
+     * worker must already hold, and a file they must upload cost an applicant
+     * three different things, and an employer proofreading their own posting
+     * has to be able to tell them apart. Each row is dropped when empty.
+     */
+    const requiredWord = tRequirement('states.required');
+    const policyChips: JobFactRequirement[] = [];
     if (job.transportation_required) {
-        requirementItems.push({
+        policyChips.push({
             key: 'transportation',
             label: t('job.facts.transportation'),
             state: 'required',
@@ -702,13 +713,14 @@ export default function JobDetailPage() {
         });
     }
     if (job.work_authorization_required) {
-        requirementItems.push({
+        policyChips.push({
             key: 'work_authorization',
             label: t('job.facts.work_authorization'),
             state: 'required',
             stateLabel: requiredWord,
         });
     }
+
     // Structured per-cert tiers when the job has them, else the legacy
     // `certifications` name list this page has always shown as info badges.
     // Those names carry no tier of their own, so they are stated as `required`
@@ -716,18 +728,19 @@ export default function JobDetailPage() {
     // free-text field meant, and is the same fallback the public page makes.
     // Keyed by index, not by name: `parseJobFields` dedupes on write, but this
     // page renders whatever the row holds.
+    const certificationChips: JobFactRequirement[] = [];
     if (job.certification_requirements && job.certification_requirements.length > 0) {
         job.certification_requirements.forEach((cert, index) => {
-            requirementItems.push({
+            certificationChips.push({
                 key: `cert-${index}`,
                 label: cert.name,
                 state: cert.tier,
-                stateLabel: tCommon(`requirement_state.${cert.tier}`),
+                stateLabel: tRequirement(`states.${cert.tier}`),
             });
         });
     } else {
         job.certifications.forEach((cert, index) => {
-            requirementItems.push({
+            certificationChips.push({
                 key: `legacy-cert-${index}`,
                 label: cert,
                 state: 'required',
@@ -735,18 +748,17 @@ export default function JobDetailPage() {
             });
         });
     }
+
     // The job's required documents, which on the worker page are vault rows
     // with Uploaded/Missing badges instead: the employer has no way to know
     // whether a given applicant holds one, so here they are simply what the
     // job asks for.
-    job.required_docs.forEach((doc, index) => {
-        requirementItems.push({
-            key: `doc-${index}`,
-            label: docTypeLabel(doc, tDocTypes) ?? doc,
-            state: 'required',
-            stateLabel: requiredWord,
-        });
-    });
+    const documentChips: JobFactRequirement[] = job.required_docs.map((doc, index) => ({
+        key: `doc-${index}`,
+        label: docTypeLabel(doc, tDocTypes) ?? doc,
+        state: 'required' as const,
+        stateLabel: requiredWord,
+    }));
 
     const filtersActive = hasActiveApplicantFilters(appliedFilters);
     const statusBusy = pendingStatus !== null;
@@ -800,13 +812,20 @@ export default function JobDetailPage() {
                                            not one of the card's eight tiles, and
                                            this is where the worker and public
                                            pages already show it. */
-                                        <span className="flex items-center gap-2">
+                                        <span className="flex flex-wrap items-center justify-end gap-2">
                                             <JobStatusBadge status={job.status}>
                                                 {tShared(`jobs.status.${job.status}`)}
                                             </JobStatusBadge>
                                             <Badge tone="info">
                                                 {jobTypeLabels[job.job_type] ?? job.job_type}
                                             </Badge>
+                                            {/* The posted date lives HERE, not in
+                                                the About label, so an employer who
+                                                never wrote a description still sees
+                                                how old their own posting is -- the
+                                                number that explains a quiet
+                                                applicant list. */}
+                                            <Badge>{tShared('panels.posted_on', { date: postedText })}</Badge>
                                         </span>
                                     }
                                 />
@@ -814,24 +833,46 @@ export default function JobDetailPage() {
                                 <JobFactsCard
                                     pay={payFigure ? { label: t('job.pay_range'), figure: payFigure } : null}
                                     schedule={{ label: t('job.facts.schedule'), tiles: scheduleTiles }}
-                                    where={{ label: t('job.facts.where'), tiles: whereTiles }}
-                                    requirements={
-                                        requirementItems.length > 0
-                                            ? { label: t('job.facts.requirements'), items: requirementItems }
-                                            : null
-                                    }
+                                    where={{
+                                        label: t('job.facts.where'),
+                                        tiles: whereTiles,
+                                        chips: [
+                                            {
+                                                key: 'policy',
+                                                label: t('job.facts.requirements'),
+                                                items: policyChips,
+                                            },
+                                            {
+                                                key: 'certifications',
+                                                label: t('job.certifications_title'),
+                                                items: certificationChips,
+                                            },
+                                            {
+                                                key: 'documents',
+                                                label: t('job.required_documents_title'),
+                                                items: documentChips,
+                                            },
+                                        ],
+                                    }}
                                     /* Employer-side: the job's documents are
-                                       Requirements chips, not vault rows. Only
-                                       the worker page can say whether a
+                                       chips in the row above, not vault rows.
+                                       Only the worker page can say whether a
                                        document is already uploaded. */
                                     documents={null}
+                                    /* The employer's own page keeps this
+                                       section even with nothing written in it:
+                                       this is the one page where the gap is
+                                       fixable, so the placeholder is a prompt
+                                       (owner ruling, fix round 1). It goes
+                                       muted, exactly as an unset tile does. */
                                     about={
                                         job.description?.trim()
-                                            ? {
-                                                label: t('job.facts.about', { date: postedText }),
-                                                text: job.description.trim(),
+                                            ? { label: t('job.facts.about'), text: job.description.trim() }
+                                            : {
+                                                label: t('job.facts.about'),
+                                                text: t('job.no_description'),
+                                                muted: true,
                                             }
-                                            : null
                                     }
                                 />
 

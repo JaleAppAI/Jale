@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import type { ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { screen } from '@testing-library/react';
+import { screen, within } from '@testing-library/react';
 
 import type { JobDetail } from '@/lib/api/worker';
 import { renderIntl, message, expectNoRawMessageKeys } from '@/components/worker/onboarding/__tests__/render-intl';
@@ -200,7 +200,7 @@ describe('worker job detail — the facts card', () => {
         seed = fullJob();
         renderIntl(<WorkerJobDetailPage />);
 
-        expect(screen.getByRole('heading', { level: 2, name: t('facts.panel_title') })).toBeInTheDocument();
+        expect(screen.getByRole('heading', { level: 2, name: t('page_title') })).toBeInTheDocument();
         expect(screen.getByRole('heading', { level: 3, name: t('facts.schedule') })).toBeInTheDocument();
         expect(screen.getByRole('heading', { level: 3, name: t('facts.where') })).toBeInTheDocument();
     });
@@ -212,10 +212,8 @@ describe('worker job detail — the facts card', () => {
         const chips = screen.getByRole('heading', { level: 3, name: t('facts.requirements') })
             .parentElement!.querySelectorAll('li');
         expect(Array.from(chips).map((chip) => chip.textContent)).toEqual([
-            `${t('transportation')}, ${message('common.requirement_state.required')}`,
-            `${t('facts.work_authorization')}, ${message('common.requirement_state.required')}`,
-            `OSHA 10, ${message('common.requirement_state.required')}`,
-            `Scaffold, ${message('common.requirement_state.optional')}`,
+            `${t('transportation')}, ${message('job_requirements.states.required')}`,
+            `${t('facts.work_authorization')}, ${message('job_requirements.states.required')}`,
         ]);
     });
 
@@ -246,19 +244,23 @@ describe('worker job detail — the facts card', () => {
         seed = fullJob({ required_docs: ['resume'], missing_docs: ['resume'] });
         renderIntl(<WorkerJobDetailPage />);
 
-        expect(screen.getByRole('heading', { level: 3, name: t('facts.documents') })).toBeInTheDocument();
-        expect(screen.getByText(message('doc_types.resume'))).toBeInTheDocument();
-        expect(screen.getByText(t('doc_missing'))).toBeInTheDocument();
+        // Scoped to the Documents section on purpose: `WhatYouNeedPanel` runs
+        // live in this file and names the same document, which is a
+        // duplication that predates this lane (both surfaces existed before
+        // it) and is not this card's to resolve.
+        const documents = screen.getByRole('heading', { level: 3, name: t('facts.documents') })
+            .parentElement!;
+        expect(within(documents).getByText(message('doc_types.resume'))).toBeInTheDocument();
+        expect(within(documents).getByText(t('doc_missing'))).toBeInTheDocument();
     });
 
-    it('renders the description under an About label carrying the posted date', () => {
+    it('renders the description under a plain About label, the date in the header', () => {
         seed = fullJob();
         renderIntl(<WorkerJobDetailPage />);
 
         expect(screen.getByText('Framing and drywall on a new build.')).toBeInTheDocument();
-        expect(
-            screen.getByRole('heading', { level: 3, name: /About the job · posted Jun 1, 2026/ }),
-        ).toBeInTheDocument();
+        expect(screen.getByRole('heading', { level: 3, name: t('facts.about') })).toBeInTheDocument();
+        expect(screen.getByText(`${t('posted')} Jun 1, 2026`)).toBeInTheDocument();
     });
 
     it('renders no raw message key anywhere on the loaded page', () => {

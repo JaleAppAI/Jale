@@ -74,10 +74,6 @@
       "fri": "Fri",
       "sat": "Sat",
       "sun": "Sun"
-    },
-    "requirement_state": {
-      "required": "Required",
-      "optional": "Optional"
     }
   },
   "match": {
@@ -1219,8 +1215,6 @@
     "shift_schedule": "Shift",
     "openings": "Openings",
     "required_experience": "Experience",
-    "work_authorization_required": "Work authorization required",
-    "work_authorization_required_yes": "Required",
     "posted": "Posted",
     "upload_prompt": "Upload missing documents in your profile.",
     "upload_link": "Go to profile",
@@ -1258,18 +1252,15 @@
     "trade_with_other": "{other} (Other)",
     "language": "Language",
     "transportation": "Transportation",
-    "transportation_required_yes": "Required",
-    "transportation_required_no": "Not required",
     "work_days_label": "Work days",
     "shift_hours": "Shift hours",
     "duration": "Expected duration",
     "facts": {
-      "panel_title": "Job details",
       "schedule": "Schedule and dates",
       "where": "Where and what's needed",
       "requirements": "Requirements",
       "documents": "Documents",
-      "about": "About the job · posted {date}",
+      "about": "About the job",
       "location": "Location",
       "work_authorization": "Work authorization",
       "start_unknown": "To be confirmed"
@@ -1366,11 +1357,9 @@
     "experience_months_unit": "{n, plural, one {# month} other {# months}}",
     "about_jale": "Jale connects workers and employers over WhatsApp - no resume, no downloads. Always free for workers.",
     "facts": {
-      "panel_title": "Job details",
       "schedule": "Schedule and dates",
       "where": "Where and what's needed",
       "requirements": "Requirements",
-      "about": "About the job · posted {date}",
       "location": "Location",
       "start_unknown": "To be confirmed"
     }
@@ -1387,19 +1376,14 @@
       "pay_range": "Pay range",
       "hiring_progress": "Hiring progress",
       "hiring_progress_value": "{hired}/{total} hired, {open} open",
-      "not_specified": "Not specified",
-      "yes": "Yes",
-      "no": "No",
-      "description_title": "Description",
       "no_description": "No description was added.",
       "certifications_title": "Certifications",
       "required_documents_title": "Required documents",
-      "no_required_documents": "No documents are required for this job.",
       "facts": {
         "schedule": "Schedule and dates",
         "where": "Where and what's needed",
         "requirements": "Requirements",
-        "about": "About the job · posted {date}",
+        "about": "About the job",
         "trade_with_other": "{other} (Other)",
         "transportation": "Transportation",
         "work_authorization": "Work authorization",

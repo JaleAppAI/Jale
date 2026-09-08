@@ -98,6 +98,11 @@ export default function WorkerJobDetailPage() {
   // does exactly this, for exactly this reason, and `job-detail-display.ts`'s
   // own `hireTradeLabel` doc comment names this catalogue as the correct one.
   const tTradeCatalogue = useTranslations('employer_dashboard.modal.trade');
+  /* The app's ONE required/optional vocabulary. `job_requirements.states.*`
+     is where the employer's own requirement picker reads these two words
+     from, so the chip a worker sees and the control the employer set say
+     the same thing (owner ruling, fix round 1). */
+  const tRequirement = useTranslations('job_requirements');
   const locale = useLocale();
 
   // `job-detail-display.ts`'s formatters take a deliberately structural
@@ -596,8 +601,14 @@ export default function WorkerJobDetailPage() {
      * place the card states less than the old flat list did, which stated
      * `transportation_required: false` as "Not required". A chip row is a list
      * of what to bring; "you do not need a truck" does not belong on it.
+     *
+     * CERTIFICATIONS ARE DELIBERATELY ABSENT (owner ruling, fix round 1). This
+     * page renders `WhatYouNeedPanel` a few inches below, which lists every
+     * certification with its tier AND whether it is already in the worker's
+     * vault -- the half a chip cannot say. Two lists of the same names, one of
+     * them less informed, is worse than one.
      */
-    const requiredWord = tCommon('requirement_state.required');
+    const requiredWord = tRequirement('states.required');
     if (job.transportation_required) {
       requirementItems.push({
         key: 'transportation',
@@ -614,17 +625,6 @@ export default function WorkerJobDetailPage() {
         stateLabel: requiredWord,
       });
     }
-    // Keyed by index, not by `cert.name`: `parseJobFields` dedupes names
-    // case-insensitively on write, but this page renders whatever the row
-    // holds, and a positional key is safe for a list that is never reordered.
-    (job.certification_requirements ?? []).forEach((cert, index) => {
-      requirementItems.push({
-        key: `cert-${index}`,
-        label: cert.name,
-        state: cert.tier,
-        stateLabel: tCommon(`requirement_state.${cert.tier}`),
-      });
-    });
   }
 
   return (
@@ -688,16 +688,20 @@ export default function WorkerJobDetailPage() {
 
                 <DashboardPanel>
                   <PanelHeader
-                    title={t('facts.panel_title')}
+                    title={t('page_title')}
                     action={
-                      jobTypeLabel || jobStatusBadge ? (
-                        <span className="flex items-center gap-2">
+                      jobTypeLabel || jobStatusBadge || postedText ? (
+                        <span className="flex flex-wrap items-center justify-end gap-2">
                           {jobStatusBadge ? (
                             <JobStatusBadge status={jobStatusBadge}>
                               {tApps(`job_status.${jobStatusBadge}`)}
                             </JobStatusBadge>
                           ) : null}
                           {jobTypeLabel ? <Badge tone="info">{jobTypeLabel}</Badge> : null}
+                          {/* The posted date lives HERE, not in the About
+                              label, so a job with no description still says
+                              how old it is (owner ruling, fix round 1). */}
+                          {postedText ? <Badge>{`${t('posted')} ${postedText}`}</Badge> : null}
                         </span>
                       ) : undefined
                     }
@@ -722,12 +726,20 @@ export default function WorkerJobDetailPage() {
                       ),
                     } : null}
                     schedule={{ label: t('facts.schedule'), tiles: scheduleTiles }}
-                    where={{ label: t('facts.where'), tiles: whereTiles }}
-                    requirements={
-                      requirementItems.length > 0
-                        ? { label: t('facts.requirements'), items: requirementItems }
-                        : null
-                    }
+                    where={{
+                      label: t('facts.where'),
+                      tiles: whereTiles,
+                      /* One row here, not the employer's three: this page
+                         states the job's policy requirements and leaves
+                         certifications and documents to the two surfaces that
+                         know the worker's vault -- `WhatYouNeedPanel` and the
+                         Documents section below. */
+                      chips: [{
+                        key: 'policy',
+                        label: t('facts.requirements'),
+                        items: requirementItems,
+                      }],
+                    }}
                     /* The vault rows stay EXACTLY as they were, badges and
                        all: the worker page is the only one of the three that
                        knows whether a document is already uploaded, so this
@@ -772,7 +784,7 @@ export default function WorkerJobDetailPage() {
                     }
                     about={
                       job.description
-                        ? { label: t('facts.about', { date: postedText ?? '' }), text: job.description }
+                        ? { label: t('facts.about'), text: job.description }
                         : null
                     }
                   />

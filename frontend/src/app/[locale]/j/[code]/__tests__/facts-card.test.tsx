@@ -152,6 +152,12 @@ function tiles(container: HTMLElement): [string, string][] {
 
 const t = (key: string) => message(`public_job.${key}`);
 
+/** The chips in one labelled row, as their full accessible text. */
+function chipsUnder(label: string): string[] {
+    const row = screen.getByRole('heading', { level: 3, name: label }).parentElement!;
+    return Array.from(row.querySelectorAll('li')).map((chip) => chip.textContent ?? '');
+}
+
 describe('public job page — the facts card', () => {
     it('keeps the hero: status, title, company and location', async () => {
         await renderPage(fullJob());
@@ -191,35 +197,40 @@ describe('public job page — the facts card', () => {
     it('renders the section labels as h3s under one panel title', async () => {
         await renderPage(fullJob());
 
-        expect(screen.getByRole('heading', { level: 2, name: t('facts.panel_title') })).toBeInTheDocument();
+        // The panel keeps the "Details" card's own pre-existing title.
+        expect(screen.getByRole('heading', { level: 2, name: t('details') })).toBeInTheDocument();
         expect(screen.getByRole('heading', { level: 3, name: t('facts.schedule') })).toBeInTheDocument();
         expect(screen.getByRole('heading', { level: 3, name: t('facts.where') })).toBeInTheDocument();
     });
 
-    it('states requirements, certifications and documents as chips, each with a readable state', async () => {
+    /*
+     * Three LABELLED rows, not one flat strip (owner ruling, fix round 1): a
+     * policy, a credential and a file are three different asks, and a stranger
+     * working out whether they qualify has to tell which is which.
+     */
+    it('splits the chips into policy, certification and document rows', async () => {
         await renderPage(fullJob());
 
-        const chips = screen.getByRole('heading', { level: 3, name: t('facts.requirements') })
-            .parentElement!.querySelectorAll('li');
-        const required = message('common.requirement_state.required');
-        expect(Array.from(chips).map((chip) => chip.textContent)).toEqual([
+        const required = message('job_requirements.states.required');
+        expect(chipsUnder(t('facts.requirements'))).toEqual([
             `${t('transportation')}, ${required}`,
             `${t('work_authorization')}, ${required}`,
+        ]);
+        expect(chipsUnder(t('certifications'))).toEqual([
             // The proof demand survives the move to a chip: it is a second,
             // independent ask that "Required" does not say.
             `OSHA 10 · ${message('worker_job_detail.what_you_need.proof_needed')}, ${required}`,
-            `Scaffold, ${message('common.requirement_state.optional')}`,
-            `${t('doc_resume')}, ${required}`,
+            `Scaffold, ${message('job_requirements.states.optional')}`,
         ]);
+        expect(chipsUnder(t('required_docs'))).toEqual([`${t('doc_resume')}, ${required}`]);
     });
 
-    it('renders the description under an About label carrying the posted date', async () => {
+    it('renders the description under a plain About label, the date in the header', async () => {
         await renderPage(fullJob());
 
         expect(screen.getByText('Framing and drywall on a new build.')).toBeInTheDocument();
-        expect(
-            screen.getByRole('heading', { level: 3, name: /About the job · posted Jun 1, 2026/ }),
-        ).toBeInTheDocument();
+        expect(screen.getByRole('heading', { level: 3, name: t('about_job') })).toBeInTheDocument();
+        expect(screen.getByText(`${t('posted')} Jun 1, 2026`)).toBeInTheDocument();
     });
 
     it('keeps the apply CTAs and the trust footer', async () => {
@@ -261,7 +272,9 @@ describe('public job page — the facts card', () => {
 
             expect(screen.queryByText(t('pay_range'))).toBeNull();
             expect(screen.queryByRole('heading', { level: 3, name: t('facts.requirements') })).toBeNull();
-            expect(screen.queryByRole('heading', { level: 3, name: /About the job/ })).toBeNull();
+            expect(screen.queryByRole('heading', { level: 3, name: t('certifications') })).toBeNull();
+            expect(screen.queryByRole('heading', { level: 3, name: t('required_docs') })).toBeNull();
+            expect(screen.queryByRole('heading', { level: 3, name: t('about_job') })).toBeNull();
         });
 
         it('still shows the start tile, muted, saying the date is unconfirmed', async () => {

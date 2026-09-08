@@ -333,6 +333,10 @@ export default async function PublicJobPage({ params }: PageProps) {
   // justified cross-namespace borrow this page already makes for
   // `header.language_toggle`.
   const tWorkerJobDetail = await getTranslations({ locale: params.locale, namespace: 'worker_job_detail' });
+  /* The app's ONE required/optional vocabulary, restored here: this page read
+     `job_requirements.states.*` for its certification tiers before this lane,
+     and every job page reads it now (owner ruling, fix round 1). */
+  const tRequirement = await getTranslations({ locale: params.locale, namespace: 'job_requirements' });
   // `tradeLabel` resolves the trade SLUG as a relative key, and
   // `employer_dashboard.modal.trade.*` is the one catalogue carrying all eight
   // of migration 023's tokens -- `public_job` has no per-slug catalogue of its
@@ -387,7 +391,10 @@ export default async function PublicJobPage({ params }: PageProps) {
   scheduleTiles.push({
     key: 'start',
     label: t('start_date'),
-    value: startDate ?? t('facts.start_unknown'),
+    // `tabular-nums` on the two numeric tiles, matching the signed-in pages:
+    // a date and a headcount are figures, and they should not reflow as the
+    // digits change.
+    value: startDate ? <span className="tabular-nums">{startDate}</span> : t('facts.start_unknown'),
     muted: !startDate,
   });
   if (active.number_of_workers_needed != null) {
@@ -397,7 +404,7 @@ export default async function PublicJobPage({ params }: PageProps) {
     scheduleTiles.push({
       key: 'openings',
       label: t('openings'),
-      value: String(active.number_of_workers_needed),
+      value: <span className="tabular-nums">{String(active.number_of_workers_needed)}</span>,
     });
   }
 
@@ -414,10 +421,17 @@ export default async function PublicJobPage({ params }: PageProps) {
     whereTiles.push({ key: 'language', label: t('language_preference'), value: languageText });
   }
 
-  const requiredWord = tCommon('requirement_state.required');
-  const requirementItems: JobFactRequirement[] = [];
+  /*
+   * Requirement chips, in THREE labelled rows rather than one flat strip
+   * (owner ruling, fix round 1): a policy the job sets, a credential the
+   * worker must already hold and a file they must bring are three different
+   * asks, and a stranger deciding whether they qualify has to be able to tell
+   * which is which. Each row is dropped when empty.
+   */
+  const requiredWord = tRequirement('states.required');
+  const policyChips: JobFactRequirement[] = [];
   if (active.transportation_required) {
-    requirementItems.push({
+    policyChips.push({
       key: 'transportation',
       label: t('transportation'),
       state: 'required',
@@ -425,21 +439,23 @@ export default async function PublicJobPage({ params }: PageProps) {
     });
   }
   if (active.work_authorization_required) {
-    requirementItems.push({
+    policyChips.push({
       key: 'work_authorization',
       label: t('work_authorization'),
       state: 'required',
       stateLabel: requiredWord,
     });
   }
+
   // Structured per-cert tiers when the job has them, else the legacy
   // `certifications` name list, stated as `required` (a tier that data does not
   // carry -- see the employer page's identical fallback). Keyed by index, not
   // by name: `parseJobFields` dedupes names case-insensitively on write, but
   // this page renders whatever the row holds.
+  const certificationChips: JobFactRequirement[] = [];
   if (active.certification_requirements && active.certification_requirements.length > 0) {
     active.certification_requirements.forEach((cert, index) => {
-      requirementItems.push({
+      certificationChips.push({
         key: `cert-${index}`,
         // The proof note stays part of the chip's LABEL rather than being
         // dropped: it is a second, independent demand ("bring the card, not
@@ -449,12 +465,12 @@ export default async function PublicJobPage({ params }: PageProps) {
           ? `${cert.name} · ${tWorkerJobDetail('what_you_need.proof_needed')}`
           : cert.name,
         state: cert.tier,
-        stateLabel: tCommon(`requirement_state.${cert.tier}`),
+        stateLabel: tRequirement(`states.${cert.tier}`),
       });
     });
   } else if (active.certifications && active.certifications.length > 0) {
     active.certifications.forEach((cert, index) => {
-      requirementItems.push({
+      certificationChips.push({
         key: `legacy-cert-${index}`,
         label: cert,
         state: 'required',
@@ -462,14 +478,13 @@ export default async function PublicJobPage({ params }: PageProps) {
       });
     });
   }
-  active.required_docs.forEach((doc, index) => {
-    requirementItems.push({
-      key: `doc-${index}`,
-      label: docLabel(t, doc),
-      state: 'required',
-      stateLabel: requiredWord,
-    });
-  });
+
+  const documentChips: JobFactRequirement[] = active.required_docs.map((doc, index) => ({
+    key: `doc-${index}`,
+    label: docLabel(t, doc),
+    state: 'required' as const,
+    stateLabel: requiredWord,
+  }));
 
   return (
     <div className="min-h-screen bg-[var(--jale-paper)]">
@@ -517,33 +532,43 @@ export default async function PublicJobPage({ params }: PageProps) {
 
           {/* The three cards this page used to stack -- about / "What you
               need" / "Details" -- are ONE card now, the same one the worker
-              and the employer read. Pay moves into it as the headline (it was
-              the hero's own strip), and the job-type chip moves to the panel
-              header, where both signed-in pages already show it; language and
+              and the employer read, and it keeps the "Details" card's own
+              title. Pay moves into it as the headline (it was the hero's own
+              strip); the job-type chip and the posted date move to the panel
+              header, where both signed-in pages show them; language and
               openings were quiet hero badges and are now tiles, so they are
               not repeated up there. */}
           <DashboardPanel>
             <PanelHeader
-              title={t('facts.panel_title')}
+              title={t('details')}
               action={
-                jobTypeLabel ? <Badge className="capitalize">{jobTypeLabel}</Badge> : undefined
+                <span className="flex flex-wrap items-center justify-end gap-2">
+                  {jobTypeLabel ? <Badge className="capitalize">{jobTypeLabel}</Badge> : null}
+                  {/* Not in the About label: a forwarded link is often days
+                      old, and a job with no description must still say when it
+                      was posted (owner ruling, fix round 1). */}
+                  <Badge>{`${t('posted')} ${postedDate}`}</Badge>
+                </span>
               }
             />
             <JobFactsCard
               pay={pay ? { label: t('pay_range'), figure: pay } : null}
               schedule={{ label: t('facts.schedule'), tiles: scheduleTiles }}
-              where={{ label: t('facts.where'), tiles: whereTiles }}
-              requirements={
-                requirementItems.length > 0
-                  ? { label: t('facts.requirements'), items: requirementItems }
-                  : null
-              }
+              where={{
+                label: t('facts.where'),
+                tiles: whereTiles,
+                chips: [
+                  { key: 'policy', label: t('facts.requirements'), items: policyChips },
+                  { key: 'certifications', label: t('certifications'), items: certificationChips },
+                  { key: 'documents', label: t('required_docs'), items: documentChips },
+                ],
+              }}
               /* A stranger has no document vault, so the job's documents are
-                 Requirements chips here, exactly as on the employer page. */
+                 chips in the row above, exactly as on the employer page. */
               documents={null}
               about={
                 active.description
-                  ? { label: t('facts.about', { date: postedDate }), text: active.description }
+                  ? { label: t('about_job'), text: active.description }
                   : null
               }
             />

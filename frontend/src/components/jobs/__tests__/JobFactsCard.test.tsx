@@ -40,16 +40,26 @@ const base: JobFactsCardProps = {
             { key: 'experience', label: 'Experience', value: '3' },
             { key: 'language', label: 'Language', value: 'Spanish' },
         ],
-    },
-    requirements: {
-        label: 'Requirements',
-        items: [
-            { key: 'transportation', label: 'Transportation', state: 'required', stateLabel: 'Required' },
-            { key: 'osha', label: 'OSHA 10', state: 'optional', stateLabel: 'Optional' },
+        chips: [
+            {
+                key: 'policy',
+                label: 'Requirements',
+                items: [
+                    { key: 'transportation', label: 'Transportation', state: 'required', stateLabel: 'Required' },
+                ],
+            },
+            {
+                key: 'certifications',
+                label: 'Certifications',
+                items: [{ key: 'osha', label: 'OSHA 10', state: 'optional', stateLabel: 'Optional' }],
+            },
+            // Empty on this job, and therefore never drawn -- a labelled row
+            // with no chips under it is the failure this pins.
+            { key: 'documents', label: 'Required documents', items: [] },
         ],
     },
     documents: null,
-    about: { label: 'About the job · posted June 1, 2026', text: 'Framing and drywall on a new build.' },
+    about: { label: 'About the job', text: 'Framing and drywall on a new build.' },
 };
 
 /** Every tile in the card, in DOM order, as `[label, value]`. */
@@ -66,18 +76,33 @@ function sectionLabels(container: HTMLElement): (string | null)[] {
 }
 
 describe('JobFactsCard', () => {
-    it('renders the locked section order: pay, schedule, where, requirements, about', () => {
+    it('renders the locked section order, chip rows nested under the where section', () => {
         const { container } = render(<JobFactsCard {...base} />);
 
         // The `h3` outline IS the section order -- `FactsCard.Section` and
         // `.Requirements` both render their label as one, and the pay headline
         // deliberately does not (it labels a single figure, not a group).
+        // The chip rows sit INSIDE "Where and what's needed" rather than being
+        // sections of their own, so the card stays three groups deep instead
+        // of six (owner ruling, fix round 1); an empty row draws nothing.
         expect(sectionLabels(container)).toEqual([
             'Schedule and dates',
             "Where and what's needed",
             'Requirements',
-            'About the job · posted June 1, 2026',
+            'Certifications',
+            'About the job',
         ]);
+    });
+
+    it('keeps each chip row inside the where section, not as a section of its own', () => {
+        const { container } = render(<JobFactsCard {...base} />);
+
+        // Four top-level sections (the pay headline, schedule, where, about)
+        // and therefore three rules. The two chip rows are inside the `where`
+        // section and must not have claimed dividers of their own -- if they
+        // had, this would read 6 and 5.
+        expect(container.querySelectorAll('[data-section]')).toHaveLength(4);
+        expect(container.querySelectorAll('[data-divider]')).toHaveLength(3);
     });
 
     it('sets pay as the headline figure, not a tile', () => {
@@ -112,6 +137,11 @@ describe('JobFactsCard', () => {
         expect(chips[1].textContent).toBe('OSHA 10, Optional');
     });
 
+    it('drops a chip row with no chips rather than labelling an empty list', () => {
+        render(<JobFactsCard {...base} />);
+        expect(screen.queryByRole('heading', { level: 3, name: 'Required documents' })).toBeNull();
+    });
+
     it('renders the pay hint under the figure when the page supplies one', () => {
         render(<JobFactsCard {...base} pay={{ ...pay, hint: <p>For comparison: $20–$28/hr</p> }} />);
         expect(screen.getByText('For comparison: $20–$28/hr')).toBeInTheDocument();
@@ -136,8 +166,9 @@ describe('JobFactsCard', () => {
             'Schedule and dates',
             "Where and what's needed",
             'Requirements',
+            'Certifications',
             'Documents',
-            'About the job · posted June 1, 2026',
+            'About the job',
         ]);
     });
 
@@ -153,7 +184,6 @@ describe('JobFactsCard', () => {
                     label: "Where and what's needed",
                     tiles: [{ key: 'location', label: 'Location', value: 'Austin, TX' }],
                 }}
-                requirements={null}
                 documents={null}
                 about={null}
             />,
@@ -172,11 +202,20 @@ describe('JobFactsCard', () => {
         // happen from the three pages today -- but an empty `dl` carrying its
         // own divider is the failure it would produce, and it is free to forbid.
         const { container } = render(
-            <JobFactsCard {...base} where={{ label: "Where and what's needed", tiles: [] }} />,
+            <JobFactsCard {...base} where={{ label: "Where and what's needed", tiles: [], chips: [] }} />,
         );
 
         expect(sectionLabels(container)).not.toContain("Where and what's needed");
         expect(container.querySelectorAll('dl')).toHaveLength(1);
+    });
+
+    it('mutes the About text when the page passes a placeholder instead of a description', () => {
+        const { container } = render(
+            <JobFactsCard {...base} about={{ label: 'About the job', text: 'No description was added.', muted: true }} />,
+        );
+
+        const paragraph = within(container).getByText('No description was added.');
+        expect(paragraph.className).toContain('--jale-ink-2');
     });
 
     it('mutes a placeholder tile value without making colour the only signal', () => {
