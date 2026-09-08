@@ -99,8 +99,20 @@ const ADDED_KEY_PATHS = [
     'worker_job_detail.trade_with_other',
     'worker_job_detail.language',
     'worker_job_detail.transportation',
-    'worker_job_detail.transportation_required_yes',
-    'worker_job_detail.transportation_required_no',
+    /*
+     * `transportation_required_yes` / `_no` were pinned here by the job-flow
+     * wave and are GONE from both catalogues as of the facts-card lane
+     * (2026-09-08). Transport is a requirement CHIP now: it appears only when
+     * the job actually requires it, and the chip carries the shared
+     * `job_requirements.states.required` word, so neither a "Required" nor a
+     * "Not required" value string has a caller left.
+     *
+     * Dropping the two paths is the honest bookkeeping, not a loosening: this
+     * list exists to catch a key that was planned but never written, and a key
+     * deliberately deleted alongside its last reader has to leave it or the
+     * suite pins vocabulary nothing renders. `worker_job_detail.transportation`
+     * above stays -- it is the chip's label.
+     */
     'worker_job_detail.work_days_label',
     'worker_job_detail.shift_hours',
     'worker_job_detail.duration',

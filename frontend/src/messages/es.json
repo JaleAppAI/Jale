@@ -1215,8 +1215,6 @@
     "shift_schedule": "Horario",
     "openings": "Vacantes",
     "required_experience": "Experiencia",
-    "work_authorization_required": "Requiere autorización de trabajo",
-    "work_authorization_required_yes": "Requerida",
     "posted": "Publicado",
     "upload_prompt": "Sube los documentos que faltan en tu perfil.",
     "upload_link": "Ir al perfil",
@@ -1254,11 +1252,19 @@
     "trade_with_other": "{other} (Otro)",
     "language": "Idioma",
     "transportation": "Transporte",
-    "transportation_required_yes": "Requerido",
-    "transportation_required_no": "No requerido",
     "work_days_label": "Días de trabajo",
     "shift_hours": "Horario del turno",
     "duration": "Duración esperada",
+    "facts": {
+      "schedule": "Horario y fechas",
+      "where": "Dónde y qué se pide",
+      "requirements": "Requisitos",
+      "documents": "Documentos",
+      "about": "Sobre el trabajo",
+      "location": "Ubicación",
+      "work_authorization": "Autorización de trabajo",
+      "start_unknown": "Por confirmar"
+    },
     "what_you_need": {
       "title": "Qué necesitas",
       "to_apply_prompts": "Para postularte: {count} preguntas cortas · unos {minutes} min",
@@ -1349,7 +1355,14 @@
     "duration": "Duración",
     "experience_years_unit": "{n, plural, one {# año} other {# años}}",
     "experience_months_unit": "{n, plural, one {# mes} other {# meses}}",
-    "about_jale": "Jale conecta a trabajadores y empleadores por WhatsApp: sin currículum, sin descargas. Siempre gratis para trabajadores."
+    "about_jale": "Jale conecta a trabajadores y empleadores por WhatsApp: sin currículum, sin descargas. Siempre gratis para trabajadores.",
+    "facts": {
+      "schedule": "Horario y fechas",
+      "where": "Dónde y qué se pide",
+      "requirements": "Requisitos",
+      "location": "Ubicación",
+      "start_unknown": "Por confirmar"
+    }
   },
   "employer_job_listing": {
     "page_title": "Detalles de la oferta",
@@ -1363,14 +1376,19 @@
       "pay_range": "Rango de pago",
       "hiring_progress": "Avance de contratación",
       "hiring_progress_value": "{hired}/{total} contratados, {open} disponibles",
-      "not_specified": "No especificado",
-      "yes": "Sí",
-      "no": "No",
-      "description_title": "Descripción",
       "no_description": "No se agregó ninguna descripción.",
       "certifications_title": "Certificaciones",
       "required_documents_title": "Documentos requeridos",
-      "no_required_documents": "Este empleo no requiere documentos."
+      "facts": {
+        "schedule": "Horario y fechas",
+        "where": "Dónde y qué se pide",
+        "requirements": "Requisitos",
+        "about": "Sobre el trabajo",
+        "trade_with_other": "{other} (Otro)",
+        "transportation": "Transporte",
+        "work_authorization": "Autorización de trabajo",
+        "start_unknown": "Por confirmar"
+      }
     },
     "actions": {
       "activate": "Reanudar empleo",

@@ -773,3 +773,45 @@ export function CenteredCardSkeleton({
         </SkeletonRegion>
     );
 }
+
+/**
+ * Job-detail archetype: the panel frame plus `FactsCard`'s body.
+ *
+ * The three job pages no longer render a `KVList`, so `DetailPageSkeleton`
+ * (which traces one) describes a layout they do not have and costs a visible
+ * jump at handover. This is the same frame — the header bar with its title and
+ * badge slot, then the card body — and it is what both job routes' `loading.tsx`
+ * AND both pages' own in-page skeleton branches render, so the server-rendered
+ * skeleton and the client one are the same picture.
+ *
+ * `DetailPageSkeleton` is deliberately untouched: the profile surfaces still
+ * render a `KVList` and still need it.
+ *
+ * The tile geometry matches: `FactsCardSkeleton`'s `sections` prop draws the
+ * card's two LABELLED four-tile groups ("Schedule and dates", "Where and what's
+ * needed") with their rule between, rather than one flat grid of eight.
+ */
+export function JobDetailSkeleton({ withBackLink = false }: { withBackLink?: boolean }) {
+    return (
+        <SkeletonRegion>
+            {withBackLink ? <Skeleton className="mb-4 h-3.5 w-24" /> : null}
+
+            <DashboardPanel>
+                {/* `PanelHeader`'s row: title left, the status/type badges right. */}
+                <div className="flex items-center justify-between gap-3 border-b border-[var(--jale-divider)] px-5 py-4">
+                    <Skeleton className="h-4 w-40" />
+                    <Skeleton className="h-8 w-20 rounded-full" />
+                </div>
+
+                {/* The job card's own shape: a pay headline, two labelled
+                    four-tile sections, three requirement chips and a
+                    three-line description, so a fully populated posting swaps
+                    in without moving. These are `FactsCardSkeleton`'s defaults
+                    and are passed anyway -- the job card is what they were
+                    chosen for, and a later default change should not silently
+                    re-shape this one. */}
+                <FactsCardSkeleton headline="pay" sections={[4, 4]} requirements={3} text={3} />
+            </DashboardPanel>
+        </SkeletonRegion>
+    );
+}

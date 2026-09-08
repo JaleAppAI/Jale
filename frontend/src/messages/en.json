@@ -1215,8 +1215,6 @@
     "shift_schedule": "Shift",
     "openings": "Openings",
     "required_experience": "Experience",
-    "work_authorization_required": "Work authorization required",
-    "work_authorization_required_yes": "Required",
     "posted": "Posted",
     "upload_prompt": "Upload missing documents in your profile.",
     "upload_link": "Go to profile",
@@ -1254,11 +1252,19 @@
     "trade_with_other": "{other} (Other)",
     "language": "Language",
     "transportation": "Transportation",
-    "transportation_required_yes": "Required",
-    "transportation_required_no": "Not required",
     "work_days_label": "Work days",
     "shift_hours": "Shift hours",
     "duration": "Expected duration",
+    "facts": {
+      "schedule": "Schedule and dates",
+      "where": "Where and what's needed",
+      "requirements": "Requirements",
+      "documents": "Documents",
+      "about": "About the job",
+      "location": "Location",
+      "work_authorization": "Work authorization",
+      "start_unknown": "To be confirmed"
+    },
     "what_you_need": {
       "title": "What you’ll need",
       "to_apply_prompts": "To apply: {count} short questions · about {minutes} min",
@@ -1349,7 +1355,14 @@
     "duration": "Duration",
     "experience_years_unit": "{n, plural, one {# year} other {# years}}",
     "experience_months_unit": "{n, plural, one {# month} other {# months}}",
-    "about_jale": "Jale connects workers and employers over WhatsApp - no resume, no downloads. Always free for workers."
+    "about_jale": "Jale connects workers and employers over WhatsApp - no resume, no downloads. Always free for workers.",
+    "facts": {
+      "schedule": "Schedule and dates",
+      "where": "Where and what's needed",
+      "requirements": "Requirements",
+      "location": "Location",
+      "start_unknown": "To be confirmed"
+    }
   },
   "employer_job_listing": {
     "page_title": "Posting details",
@@ -1363,14 +1376,19 @@
       "pay_range": "Pay range",
       "hiring_progress": "Hiring progress",
       "hiring_progress_value": "{hired}/{total} hired, {open} open",
-      "not_specified": "Not specified",
-      "yes": "Yes",
-      "no": "No",
-      "description_title": "Description",
       "no_description": "No description was added.",
       "certifications_title": "Certifications",
       "required_documents_title": "Required documents",
-      "no_required_documents": "No documents are required for this job."
+      "facts": {
+        "schedule": "Schedule and dates",
+        "where": "Where and what's needed",
+        "requirements": "Requirements",
+        "about": "About the job",
+        "trade_with_other": "{other} (Other)",
+        "transportation": "Transportation",
+        "work_authorization": "Work authorization",
+        "start_unknown": "To be confirmed"
+      }
     },
     "actions": {
       "activate": "Resume job",
