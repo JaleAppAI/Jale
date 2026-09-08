@@ -285,17 +285,24 @@ export type RequirementStepId = typeof REQUIREMENT_STEP_IDS[number];
 const LAST_STEP_INDEX = REQUIREMENT_STEP_IDS.length - 1;
 
 /**
- * The three screens that are NOT a form. `null` means "render the flow".
+ * The screens that are NOT a form. `null` means "render the flow".
  *
  * PRECEDENCE, decided once and pinned by tests, because more than one of these
  * is routinely true at the same moment (a hired worker's application is both
- * closed AND complete):
+ * over AND complete):
  *
- *   closed > already_complete > prompts-outstanding > not_requested
+ *   hired > closed > not_interested > already_complete > prompts-outstanding > not_requested
  *
- * `closed` wins because nothing a worker types can reach an employer who is no
- * longer listening. `already_complete` beats `not_requested` so a finished
- * application never reads as "we haven't asked you for anything".
+ * TWO DIFFERENT "OVER"s. `closed` is about the JOB (`job.status` filled or
+ * closed): the employer is no longer listening, so nothing a worker types can
+ * reach them. `hired` and `not_interested` are about THIS APPLICATION: the job
+ * may well still be open. They used to collapse into `closed`, which sent a
+ * worker who had just been hired -- arriving from the WhatsApp
+ * `application_hired` link or the in-app celebration -- to "This job is closed,
+ * the employer took it down" (prod report 2026-09-08). `hired` outranks
+ * `closed` because a job that filled AFTER the hire is still good news for
+ * the person it filled with. `already_complete` beats `not_requested` so a
+ * finished application never reads as "we haven't asked you for anything".
  *
  * PROMPTS BEAT `not_requested`, which is the subtle one. A worker who applied
  * over WhatsApp and bailed halfway through the employer's questions sits at
@@ -310,16 +317,32 @@ const LAST_STEP_INDEX = REQUIREMENT_STEP_IDS.length - 1;
  * a `details_requested` applicant along to `contacted`/`talking` must not kill
  * a fill that is already open.
  */
-export type TerminalScreen = 'closed' | 'already_complete' | 'not_requested';
+export type TerminalScreen =
+  | 'hired'
+  | 'closed'
+  | 'not_interested'
+  | 'already_complete'
+  | 'not_requested';
+
+/**
+ * The screens where the application itself is over (hired / not_interested),
+ * as opposed to the job being gone. Callers that treat "the job closed under
+ * them" as final -- ahead of even a just-finished form -- want these too.
+ */
+export function isApplicationOverScreen(screen: TerminalScreen | null): boolean {
+  return screen === 'hired' || screen === 'closed' || screen === 'not_interested';
+}
 
 export function terminalScreen(state: ApplicationRequirementsState): TerminalScreen | null {
   const { application, job, remaining } = state;
 
+  const status = normalizeApplicationStatus(application.status);
+  if (status === 'hired') return 'hired';
+
   const jobOver = job.status === 'filled' || job.status === 'closed';
-  const applicationOver = TERMINAL_APPLICATION_STATUSES.includes(
-    normalizeApplicationStatus(application.status),
-  );
-  if (jobOver || applicationOver) return 'closed';
+  if (jobOver) return 'closed';
+
+  if (TERMINAL_APPLICATION_STATUSES.includes(status)) return 'not_interested';
 
   if (application.details_completed_at !== null) return 'already_complete';
 
