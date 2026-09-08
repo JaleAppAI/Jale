@@ -8,7 +8,7 @@ import { parseApiError } from '@/lib/api/errors';
 import { usePageData } from '@/hooks/usePageData';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
+import { DashboardPanel } from '@/components/ui/dashboard-panel';
 import { ErrorState } from '@/components/ui/error-state';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { CenteredCardSkeleton } from '@/components/ui/page-skeletons';
@@ -136,9 +136,9 @@ export default function LegalWall() {
     if (phase === 'error' && errorKind) {
         return (
             <main className={FRAME}>
-                <Card className={`${CARD_WIDTH} anim-fade-in p-2`}>
+                <DashboardPanel as="div" className={`${CARD_WIDTH} anim-fade-in p-2`}>
                     <ErrorState kind={errorKind} onRetry={retry} />
-                </Card>
+                </DashboardPanel>
             </main>
         );
     }
@@ -157,7 +157,7 @@ export default function LegalWall() {
 
     return (
         <main className={FRAME}>
-            <Card className={`${CARD_WIDTH} anim-fade-in space-y-6 p-8 md:p-10`}>
+            <DashboardPanel as="div" className={`${CARD_WIDTH} anim-fade-in space-y-6 p-8 md:p-10`}>
                 <div>
                     <h1 className="mb-2 text-xl font-extrabold leading-[1.3] tracking-[-0.02em] text-[var(--jale-ink)]">
                         {t('title')}
@@ -196,7 +196,7 @@ export default function LegalWall() {
                 <Button className="w-full" onClick={handleAccept} disabled={!checked} loading={isSubmitting} loadingLabel={tCommon('loading')}>
                     {t('accept_cta')}
                 </Button>
-            </Card>
+            </DashboardPanel>
         </main>
     );
 }
