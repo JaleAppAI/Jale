@@ -88,11 +88,9 @@ vi.mock('@/lib/api/employer', async (importOriginal) => ({
  * object ONCE per test rather than per render, for the same stability reason
  * as the hooks above.
  */
-let seed: EmployerJobDetail;
 let pageData: { job: EmployerJobDetail; applicants: never[]; appliedFilters: object };
 
 function setSeed(job: EmployerJobDetail) {
-    seed = job;
     pageData = { job, applicants: [], appliedFilters: {} };
 }
 

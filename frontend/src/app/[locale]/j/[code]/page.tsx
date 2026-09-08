@@ -4,11 +4,16 @@ import { notFound } from 'next/navigation';
 import { getTranslations } from 'next-intl/server';
 import { Badge, JobStatusBadge } from '@/components/ui/badge';
 import { DashboardPanel } from '@/components/ui/dashboard-panel';
-import { KVList, type KVItem } from '@/components/ui/kv-list';
+import { PanelHeader } from '@/components/ui/panel-header';
+import {
+  JobFactsCard,
+  type JobFactRequirement,
+  type JobFactTile,
+} from '@/components/jobs/JobFactsCard';
 import { Link } from '@/i18n/navigation';
 import { formatLongDate, formatStartDate } from '@/lib/date';
 import { formatPay } from '@/lib/pay';
-import { durationLabel, scheduleSummary, type Translator } from '@/lib/job-detail-display';
+import { durationLabel, scheduleSummary, tradeLabel, type Translator } from '@/lib/job-detail-display';
 import { getPublicJob, isClosedJob, PublicJobNotFoundError } from '@/lib/api/publicJob';
 import type { PublicJobActive, PublicJobDocType } from '@/lib/api/publicJob';
 import { buildJobPostingJsonLd, serializeJsonLd } from '@/lib/seo/jobPostingJsonLd';
@@ -33,20 +38,20 @@ interface PageProps {
 // them, so this component must never grow a second call that tries.
 //
 // Design notes (first-contact page): the reader is a referred stranger on a
-// phone, arriving from a chat app, deciding in seconds. Facts are ranked the
-// way a trade worker decides -- title, then PAY (promoted out of the fact list
-// into its own strip), then everything else as stacked label/value rows in
-// dedicated cards below. The navy band up top echoes the chat header they just
-// left; the teal referral ribbon (rendered by `ReferralContext`, a client
-// component) shows ONLY when a share tag is present, because structure should
-// encode what is true. Teal is reserved for the referral thread and used
-// nowhere else on the page.
+// phone, arriving from a chat app, deciding in seconds. So the page is a hero
+// -- status, title, company and location -- and then ONE facts card. The navy
+// band up top echoes the chat header they just left; the teal referral ribbon
+// (rendered by `ReferralContext`, a client component) shows ONLY when a share
+// tag is present, because structure should encode what is true. Teal is
+// reserved for the referral thread and used nowhere else on the page.
 //
-// Every label/value pair on this page goes through the shared `KVList` and
-// every status/type chip through the shared dot+text `Badge`, so the page
-// speaks the same visual language as the signed-in app even though it has none
-// of its chrome. Pay is the single exception, promoted to a headline figure
-// because it is the fact this reader decides on.
+// That facts card is `JobFactsCard`, the SAME component and the same locked
+// section order the worker and employer job pages render -- pay as a headline
+// figure, eight label-over-value tiles, requirement chips, the description.
+// Before it, this page stacked three cards of `KVList` rows (about / "What you
+// need" / "Details") that had drifted into a different fact list from the two
+// signed-in pages, which is the drift the shared component exists to end: a
+// stranger reads the job the app shows, not a variant of it.
 //
 // Nothing in this file (or generateMetadata below) may read `searchParams`
 // -- doing so forces this route into dynamic (force-dynamic-equivalent)
@@ -71,10 +76,6 @@ interface PageProps {
 // static-render case and for a visitor whose JavaScript never runs.
 
 const OG_IMAGE_PATH = '/brand/wordmark-navy.png';
-
-/** Small uppercase label that titles each card. */
-const CARD_LABEL =
-  'text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--jale-ink-2)]';
 
 /**
  * `Button`'s primary recipe applied to an anchor, for the closed branch's CTA.
@@ -326,8 +327,21 @@ export default async function PublicJobPage({ params }: PageProps) {
   const tCommonRaw = await getTranslations({ locale: params.locale, namespace: 'common' });
   const tCommon: Translator = (key, values) =>
     (tCommonRaw as unknown as (k: string, v?: Record<string, unknown>) => string)(key, values);
-  const tJobRequirements = await getTranslations({ locale: params.locale, namespace: 'job_requirements' });
+  // `worker_job_detail.what_you_need.proof_needed` is reused rather than
+  // duplicated into `public_job`: its text ("Proof needed") carries no
+  // worker-app-specific framing, so it reads correctly here too -- the same
+  // justified cross-namespace borrow this page already makes for
+  // `header.language_toggle`.
   const tWorkerJobDetail = await getTranslations({ locale: params.locale, namespace: 'worker_job_detail' });
+  // `tradeLabel` resolves the trade SLUG as a relative key, and
+  // `employer_dashboard.modal.trade.*` is the one catalogue carrying all eight
+  // of migration 023's tokens -- `public_job` has no per-slug catalogue of its
+  // own, which is exactly why this page used to render the raw slug title-cased
+  // by CSS. Same widening cast as `tCommon` above, same reason.
+  const tTradeRaw = await getTranslations({ locale: params.locale, namespace: 'employer_dashboard.modal.trade' });
+  const tTrade: Translator = (key) => (tTradeRaw as unknown as (k: string) => string)(key);
+  const tDetail: Translator = (key, values) =>
+    (t as unknown as (k: string, v?: Record<string, unknown>) => string)(key, values);
 
   const durationText = durationLabel(active, tCommon);
   const schedule = scheduleSummary(active, params.locale, tCommon);
@@ -338,140 +352,124 @@ export default async function PublicJobPage({ params }: PageProps) {
     active.city && active.state_region ? `${active.city}, ${active.state_region}` : null;
   const headerLine = [active.company, cityState, active.location].filter(Boolean).join(' · ');
 
-  // Minor facts become quiet badges: scannable on a phone, no label-grid.
-  // The language badge carries an `aria-label` prefixed with the
-  // `language_preference` label ("Language: English") since the visible
-  // badge text is bare, for screen-reader clarity.
-  const badges: { text: string; ariaLabel?: string; capitalize?: boolean }[] = [];
-  if (jobTypeLabel) badges.push({ text: jobTypeLabel, capitalize: true });
-  if (active.language_preference && active.language_preference.length > 0) {
-    const languageText = active.language_preference.map(languageLabel).join(' / ');
-    badges.push({ text: languageText, ariaLabel: `${t('language_preference')}: ${languageText}` });
-  }
-  if (active.number_of_workers_needed != null && active.number_of_workers_needed > 1) {
-    badges.push({ text: t('openings_chip', { count: active.number_of_workers_needed }) });
-  }
-
-  // "What you need": only what the applicant must bring or accept. Docs and
-  // certifications group into a single row each (rather than one row per item)
-  // so the card stays compact, and the boolean requirements read as
-  // label/"Required" pairs like every other fact on the page.
-  const needRows: KVItem[] = [];
-  if (active.required_docs.length > 0) {
-    needRows.push({
-      label: t('required_docs'),
-      value: active.required_docs.map((d) => docLabel(t, d)).join(', '),
-    });
-  }
-  if (active.certification_requirements && active.certification_requirements.length > 0) {
-    // Structured per-cert list: name + Required/Optional (job_requirements's
-    // shared tier labels) + a proof-needed note when the job asks for it.
-    // `worker_job_detail.what_you_need.proof_needed` is reused rather than
-    // adding a public_job-scoped copy -- its text ("proof needed") carries no
-    // worker-app-specific framing, so it reads correctly here too, and this
-    // task does not own messages/*.json. Keyed by index, not `cert.name`:
-    // parseJobFields (job-fields.ts) dedupes names case-insensitively on
-    // write, but this page renders whatever the row holds -- data written by
-    // any other path is not guaranteed unique, and a positional key is safe
-    // for this static, never-reordered list either way (same reasoning
-    // KVList itself documents for its own positional rows).
-    needRows.push({
-      label: t('certifications'),
-      value: (
-        <ul className="space-y-1">
-          {active.certification_requirements.map((cert, index) => (
-            <li key={index} className="flex flex-wrap items-baseline justify-end gap-x-1.5">
-              <span>{cert.name}</span>
-              <span className="text-[var(--jale-ink-2)]">
-                ({tJobRequirements(`states.${cert.tier}`)})
-              </span>
-              {cert.proof_required && (
-                <span className="text-xs text-[var(--jale-ink-2)]">
-                  · {tWorkerJobDetail('what_you_need.proof_needed')}
-                </span>
-              )}
-            </li>
-          ))}
-        </ul>
-      ),
-    });
-  } else if (active.certifications && active.certifications.length > 0) {
-    needRows.push({ label: t('certifications'), value: active.certifications.join(', ') });
-  }
+  /*
+   * The job's facts, as the ONE card body all three job pages render.
+   *
+   * This replaces three cards -- the description panel, "What you need" and
+   * "Details" -- with one, in the order locked for the worker and employer
+   * pages too, so a stranger sent this link reads the same posting the signed-in
+   * app shows. Every value is still built here, by this page's own formatters.
+   */
+  // ONE Horario tile: the days and the hours are one fact to a reader planning
+  // a ride. `scheduleSummary` already suppresses `legacy` whenever any
+  // structured schedule data exists, so this cannot show both.
+  const scheduleText = schedule.legacy
+    ?? ([schedule.days.length > 0 ? schedule.days.join(', ') : null, schedule.hours]
+      .filter(Boolean)
+      .join(' · ') || null);
+  const tradeText = tradeLabel(active, tTrade, tDetail);
   const experienceText = formatExperience(
     t,
     active.required_experience_years,
     active.required_experience_months,
   );
-  if (experienceText) needRows.push({ label: t('required_experience'), value: experienceText });
-  if (active.transportation_required) {
-    needRows.push({ label: t('transportation'), value: t('yes') });
-  }
-  if (active.work_authorization_required) {
-    needRows.push({ label: t('work_authorization'), value: t('yes') });
-  }
+  const languageText = active.language_preference && active.language_preference.length > 0
+    ? active.language_preference.map(languageLabel).join(' / ')
+    : null;
 
-  // "Details": every remaining fact, in the order a decided applicant checks
-  // them -- when it starts, what the days look like, how long it runs, then the
-  // taxonomy/provenance rows.
-  const detailRows: KVItem[] = [];
-  if (startDate) detailRows.push({ label: t('start_date'), value: startDate });
-  // Structured work_days/shift_start/shift_end (via the merged
-  // `scheduleSummary` formatter) win over the legacy free-text
-  // `shift_schedule` string whenever ANY structured schedule data exists.
-  // `scheduleSummary` suppresses `legacy` in that case even for a one-sided
-  // shift with no matching start/end to pair it with -- so a job with only
-  // `shift_start` set (no `work_days`) renders no shift row at all, rather
-  // than mixing an old free-text description with a partial structured
-  // render. This is the merged lib's documented intent (see its doc
-  // comment), not an oversight.
-  if (schedule.legacy) {
-    detailRows.push({ label: t('shift_schedule'), value: schedule.legacy });
-  } else {
-    if (schedule.days.length > 0) {
-      detailRows.push({ label: t('work_days_label'), value: schedule.days.join(', ') });
-    }
-    if (schedule.hours) {
-      detailRows.push({ label: t('shift_hours'), value: schedule.hours });
-    }
+  const scheduleTiles: JobFactTile[] = [];
+  if (scheduleText) {
+    scheduleTiles.push({ key: 'shift', label: t('shift_schedule'), value: scheduleText });
   }
   if (durationText) {
-    detailRows.push({ label: t('duration'), value: durationText });
+    scheduleTiles.push({ key: 'duration', label: t('duration'), value: durationText });
   }
-  if (active.trade_category) {
-    // Custom-trade branch: an employer-typed "other" trade shows verbatim,
-    // with NO title-casing -- it's free text the employer wrote, not a
-    // taxonomy slug, so forcing `capitalize` on it would mangle it the same
-    // way that CSS class already must not touch dates (see below). Every
-    // other trade_category value -- a known slug, or "other" with no free
-    // text attached -- renders exactly as before this task: the raw slug,
-    // title-cased by CSS.
-    //
-    // This deliberately does NOT go through `job-detail-display`'s
-    // `tradeLabel`: that helper's `tTrade` translator is meant to resolve the
-    // slug through a real per-slug catalog (see its doc comment), and
-    // `public_job` has no such catalog -- only the `trade_category` row
-    // label and `trade_with_other`. Passing an identity function would
-    // type-check but would misrepresent the contract for no real reuse.
-    const customTrade =
-      active.trade_category === 'other' ? active.trade_category_other?.trim() : null;
-    detailRows.push({
-      label: t('trade_category'),
-      value: customTrade ? (
-        t('trade_with_other', { other: customTrade })
-      ) : (
-        // Only the raw `trade_category` value benefits from title-casing
-        // (it's an unlabeled taxonomy string, e.g. "electrician"). Dates and
-        // numbers must NOT get this -- `capitalize` mangles Spanish month
-        // names and prepositions (e.g. "1 de enero" -> "1 De Enero").
-        <span className="capitalize">{active.trade_category}</span>
-      ),
+  scheduleTiles.push({
+    key: 'start',
+    label: t('start_date'),
+    value: startDate ?? t('facts.start_unknown'),
+    muted: !startDate,
+  });
+  if (active.number_of_workers_needed != null) {
+    // The public projection carries no `hired_count`/`open_count` -- and must
+    // not: how far along an employer's hiring is is not a stranger's business.
+    // So this tile is the total, which is what this page has always shown.
+    scheduleTiles.push({
+      key: 'openings',
+      label: t('openings'),
+      value: String(active.number_of_workers_needed),
     });
   }
-  if (active.number_of_workers_needed != null) {
-    detailRows.push({ label: t('openings'), value: String(active.number_of_workers_needed) });
+
+  const whereTiles: JobFactTile[] = [
+    { key: 'location', label: t('facts.location'), value: cityState ?? active.location },
+  ];
+  if (tradeText) {
+    whereTiles.push({ key: 'trade', label: t('trade_category'), value: tradeText });
   }
-  detailRows.push({ label: t('posted'), value: postedDate });
+  if (experienceText) {
+    whereTiles.push({ key: 'experience', label: t('required_experience'), value: experienceText });
+  }
+  if (languageText) {
+    whereTiles.push({ key: 'language', label: t('language_preference'), value: languageText });
+  }
+
+  const requiredWord = tCommon('requirement_state.required');
+  const requirementItems: JobFactRequirement[] = [];
+  if (active.transportation_required) {
+    requirementItems.push({
+      key: 'transportation',
+      label: t('transportation'),
+      state: 'required',
+      stateLabel: requiredWord,
+    });
+  }
+  if (active.work_authorization_required) {
+    requirementItems.push({
+      key: 'work_authorization',
+      label: t('work_authorization'),
+      state: 'required',
+      stateLabel: requiredWord,
+    });
+  }
+  // Structured per-cert tiers when the job has them, else the legacy
+  // `certifications` name list, stated as `required` (a tier that data does not
+  // carry -- see the employer page's identical fallback). Keyed by index, not
+  // by name: `parseJobFields` dedupes names case-insensitively on write, but
+  // this page renders whatever the row holds.
+  if (active.certification_requirements && active.certification_requirements.length > 0) {
+    active.certification_requirements.forEach((cert, index) => {
+      requirementItems.push({
+        key: `cert-${index}`,
+        // The proof note stays part of the chip's LABEL rather than being
+        // dropped: it is a second, independent demand ("bring the card, not
+        // just the claim") that the required/optional state does not say, and
+        // this page is the only one of the three that shows it.
+        label: cert.proof_required
+          ? `${cert.name} · ${tWorkerJobDetail('what_you_need.proof_needed')}`
+          : cert.name,
+        state: cert.tier,
+        stateLabel: tCommon(`requirement_state.${cert.tier}`),
+      });
+    });
+  } else if (active.certifications && active.certifications.length > 0) {
+    active.certifications.forEach((cert, index) => {
+      requirementItems.push({
+        key: `legacy-cert-${index}`,
+        label: cert,
+        state: 'required',
+        stateLabel: requiredWord,
+      });
+    });
+  }
+  active.required_docs.forEach((doc, index) => {
+    requirementItems.push({
+      key: `doc-${index}`,
+      label: docLabel(t, doc),
+      state: 'required',
+      stateLabel: requiredWord,
+    });
+  });
 
   return (
     <div className="min-h-screen bg-[var(--jale-paper)]">
@@ -511,55 +509,45 @@ export default async function PublicJobPage({ params }: PageProps) {
               <h1 className="mt-2 text-2xl font-extrabold leading-tight text-[var(--jale-ink)]">
                 {active.title}
               </h1>
-              {headerLine && <p className="text-sm text-[var(--jale-ink-2)] mt-1.5">{headerLine}</p>}
-
-              {/* Pay is THE deciding fact for this reader; it gets a headline,
-                  not a row. Everything else is a KVList row further down. */}
-              {pay && (
-                <div className="mt-4 rounded-xl bg-[var(--jale-paper-2)] px-4 py-3.5">
-                  <p className="text-[11px] uppercase tracking-wide text-[var(--jale-ink-2)]">
-                    {t('pay_range')}
-                  </p>
-                  <p className="text-lg font-bold text-[var(--jale-success)]">{pay}</p>
-                </div>
-              )}
-
-              {badges.length > 0 && (
-                <ul className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2">
-                  {badges.map((badge) => (
-                    <li key={badge.text} aria-label={badge.ariaLabel} className="min-w-0">
-                      <Badge className={badge.capitalize ? 'capitalize' : undefined}>
-                        {badge.text}
-                      </Badge>
-                    </li>
-                  ))}
-                </ul>
-              )}
+              {headerLine ? (
+                <p className="text-sm text-[var(--jale-ink-2)] mt-1.5">{headerLine}</p>
+              ) : null}
             </div>
           </DashboardPanel>
 
-          {active.description && (
-            <DashboardPanel className="p-5">
-              <p className={`${CARD_LABEL} mb-2`}>{t('about_job')}</p>
-              <p className="text-sm leading-relaxed whitespace-pre-wrap text-[var(--jale-ink)]">
-                {active.description}
-              </p>
-            </DashboardPanel>
-          )}
-
-          {needRows.length > 0 && (
-            <DashboardPanel className="p-5">
-              <p className={`${CARD_LABEL} mb-1`}>{t('what_you_need')}</p>
-              <KVList items={needRows} />
-            </DashboardPanel>
-          )}
-
-          {detailRows.length > 0 && (
-            <DashboardPanel className="p-5">
-              <p className={`${CARD_LABEL} mb-1`}>{t('details')}</p>
-              <KVList items={detailRows} />
-            </DashboardPanel>
-          )}
+          {/* The three cards this page used to stack -- about / "What you
+              need" / "Details" -- are ONE card now, the same one the worker
+              and the employer read. Pay moves into it as the headline (it was
+              the hero's own strip), and the job-type chip moves to the panel
+              header, where both signed-in pages already show it; language and
+              openings were quiet hero badges and are now tiles, so they are
+              not repeated up there. */}
+          <DashboardPanel>
+            <PanelHeader
+              title={t('facts.panel_title')}
+              action={
+                jobTypeLabel ? <Badge className="capitalize">{jobTypeLabel}</Badge> : undefined
+              }
+            />
+            <JobFactsCard
+              pay={pay ? { label: t('pay_range'), figure: pay } : null}
+              schedule={{ label: t('facts.schedule'), tiles: scheduleTiles }}
+              where={{ label: t('facts.where'), tiles: whereTiles }}
+              requirements={
+                requirementItems.length > 0
+                  ? { label: t('facts.requirements'), items: requirementItems }
+                  : null
+              }
+              /* A stranger has no document vault, so the job's documents are
+                 Requirements chips here, exactly as on the employer page. */
+              documents={null}
+              about={
+                active.description
+                  ? { label: t('facts.about', { date: postedDate }), text: active.description }
+                  : null
+              }
+            />
+          </DashboardPanel>
 
           <div>
             <Suspense fallback={<ApplyButtonSkeleton />}>
