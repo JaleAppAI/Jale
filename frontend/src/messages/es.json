@@ -420,6 +420,9 @@
   "employer": {
     "profile": {
       "title": "Perfil del empleador",
+      "section_company": "Datos de la empresa",
+      "section_contact": "Datos de contacto",
+      "section_hiring": "Contratación",
       "field_email": "Correo electrónico",
       "field_company": "Empresa",
       "field_contact": "Contacto",
@@ -1642,6 +1645,8 @@
     "title": "Mi perfil",
     "info_title": "Perfil",
     "edit_button": "Editar",
+    "section_basics": "Datos",
+    "section_skills": "Habilidades y certificaciones",
     "field_phone": "Teléfono",
     "field_name": "Nombre completo",
     "field_skills": "Habilidades",

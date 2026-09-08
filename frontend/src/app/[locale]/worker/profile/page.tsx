@@ -11,10 +11,10 @@ import { PanelHeader } from '@/components/ui/panel-header';
 import { BadgeList } from '@/components/ui/badge-list';
 import { Button } from '@/components/ui/button';
 import { ErrorState } from '@/components/ui/error-state';
+import { FactsCard } from '@/components/ui/facts-card';
 import { InitialsAvatar } from '@/components/ui/initials-avatar';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
-import { KVList } from '@/components/ui/kv-list';
-import { DetailPageSkeleton } from '@/components/ui/page-skeletons';
+import { ProfileSkeleton } from '@/components/ui/profile-skeleton';
 import { ProfileEditForm } from '@/components/worker/ProfileEditForm';
 import { DocumentSlot } from '@/components/worker/DocumentSlot';
 import { PayReferenceHint } from '@/components/PayReferenceHint';
@@ -158,14 +158,33 @@ export default function WorkerProfilePage() {
     const profile = data?.profile ?? null;
     const docs = data?.docs ?? [];
 
+    /*
+     * The facts card's chip-valued and numeric facts, derived once.
+     *
+     * `BadgeList` renders NO element for an empty list -- just the bare
+     * `emptyLabel` text -- so it cannot carry the tile's muted styling itself.
+     * Each tile therefore reads the length here to decide whether its value is
+     * a real answer or a placeholder.
+     */
+    const skills = profile?.skills ?? [];
+    const certifications = profile?.certifications ?? [];
+    const preferredCities = (profile?.preferred_cities ?? []).map((c) => `${c.city}, ${c.state}`);
+    const availabilitySet = Boolean(
+        profile?.availability && AVAILABILITY_KEYS.includes(profile.availability),
+    );
+    // Not `!profile?.years_experience`: a worker with 0 years has answered.
+    const experienceSet =
+        profile?.years_experience !== null && profile?.years_experience !== undefined;
+
     return (
         <AppShell role="worker" title={t('title')}>
             <main className="mx-auto max-w-5xl px-4 py-6 md:px-6">
                 {showSkeleton ? (
-                    /* Same archetype and geometry as `loading.tsx`, so the route-level
-                       skeleton and this one are the same picture — the handover from
-                       server render to client fetch costs no visible swap. */
-                    <DetailPageSkeleton />
+                    /* Same archetype, geometry AND props as `loading.tsx`, so the
+                       route-level skeleton and this one are the same picture — the
+                       handover from server render to client fetch costs no visible
+                       swap. Five tiles, three chip facts, the bio paragraph. */
+                    <ProfileSkeleton tiles={5} chips={3} />
                 ) : phase === 'error' && errorKind ? (
                     <DashboardPanel>
                         <ErrorState kind={errorKind} onRetry={retry} />
@@ -204,61 +223,87 @@ export default function WorkerProfilePage() {
                                     />
                                 </div>
                             ) : (
-                                <div className="anim-fade-in px-5 py-3">
-                                    {saved && (
-                                        <InlineFeedback
-                                            tone="success"
-                                            onDismiss={() => setSaved(false)}
-                                            className="mb-3 mt-2"
-                                        >
-                                            {tCommon('feedback.saved')}
-                                        </InlineFeedback>
-                                    )}
-                                    <KVList
-                                        items={[
-                                            { label: t('field_phone'), value: <span className="tabular-nums">{profile.phone}</span> },
-                                            { label: t('field_name'), value: profile.full_name || t('empty_name') },
-                                            {
-                                                label: t('field_skills'),
-                                                value: <BadgeList items={profile.skills} emptyLabel={t('empty_skills')} />,
-                                            },
-                                            {
-                                                label: t('field_certifications'),
-                                                value: (
+                                <div className="anim-fade-in">
+                                    {/* Its own padded block: `FactsCard` owns the card
+                                        body's `p-5 md:p-6`, so a padded wrapper around
+                                        both would double the card's inset. */}
+                                    {saved ? (
+                                        <div className="px-5 pt-4">
+                                            <InlineFeedback tone="success" onDismiss={() => setSaved(false)}>
+                                                {tCommon('feedback.saved')}
+                                            </InlineFeedback>
+                                        </div>
+                                    ) : null}
+                                    <FactsCard>
+                                        <FactsCard.Section label={t('section_basics')}>
+                                            <FactsCard.Tiles>
+                                                <FactsCard.Tile label={t('field_name')} muted={!profile.full_name}>
+                                                    {profile.full_name || t('empty_name')}
+                                                </FactsCard.Tile>
+                                                <FactsCard.Tile label={t('field_phone')}>
+                                                    <span className="tabular-nums">{profile.phone}</span>
+                                                </FactsCard.Tile>
+                                                <FactsCard.Tile label={t('field_location')} muted={!profile.location}>
+                                                    {profile.location || t('empty_location')}
+                                                </FactsCard.Tile>
+                                                <FactsCard.Tile
+                                                    label={t('field_years_experience')}
+                                                    muted={!experienceSet}
+                                                >
+                                                    {/* `tabular-nums` only wraps an actual number; a
+                                                        sentence has no columns to align. */}
+                                                    {experienceSet ? (
+                                                        <span className="tabular-nums">{profile.years_experience}</span>
+                                                    ) : (
+                                                        t('empty_experience')
+                                                    )}
+                                                </FactsCard.Tile>
+                                                <FactsCard.Tile
+                                                    label={t('field_availability')}
+                                                    muted={!availabilitySet}
+                                                >
+                                                    {availabilitySet
+                                                        ? t(`availability.${profile.availability}`)
+                                                        : t('empty_availability')}
+                                                </FactsCard.Tile>
+                                            </FactsCard.Tiles>
+                                        </FactsCard.Section>
+
+                                        {/* The chip-valued facts. `align="start"` because a
+                                            tile's label sits ABOVE its value: right-aligned
+                                            chips would drift off the label naming them. */}
+                                        <FactsCard.Section label={t('section_skills')}>
+                                            <FactsCard.Tiles>
+                                                <FactsCard.Tile
+                                                    label={t('field_skills')}
+                                                    muted={skills.length === 0}
+                                                >
                                                     <BadgeList
-                                                        items={profile.certifications ?? []}
+                                                        items={skills}
+                                                        emptyLabel={t('empty_skills')}
+                                                        align="start"
+                                                    />
+                                                </FactsCard.Tile>
+                                                <FactsCard.Tile
+                                                    label={t('field_certifications')}
+                                                    muted={certifications.length === 0}
+                                                >
+                                                    <BadgeList
+                                                        items={certifications}
                                                         emptyLabel={t('empty_certifications')}
                                                         tone="info"
+                                                        align="start"
                                                     />
-                                                ),
-                                            },
-                                            {
-                                                label: t('field_availability'),
-                                                value:
-                                                    profile.availability && AVAILABILITY_KEYS.includes(profile.availability)
-                                                        ? t(`availability.${profile.availability}`)
-                                                        : t('empty_availability'),
-                                            },
-                                            {
-                                                label: t('field_years_experience'),
-                                                // `tabular-nums` only wraps an actual number; a
-                                                // sentence has no columns to align.
-                                                value:
-                                                    profile.years_experience === null ||
-                                                    profile.years_experience === undefined ? (
-                                                        t('empty_experience')
-                                                    ) : (
-                                                        <span className="tabular-nums">{profile.years_experience}</span>
-                                                    ),
-                                            },
-                                            { label: t('field_location'), value: profile.location || t('empty_location') },
-                                            {
-                                                label: t('edit.preferred_cities_label'),
-                                                value: (
-                                                    <div className="flex flex-col items-end gap-1.5">
+                                                </FactsCard.Tile>
+                                                <FactsCard.Tile
+                                                    label={t('edit.preferred_cities_label')}
+                                                    muted={preferredCities.length === 0}
+                                                >
+                                                    <div className="flex min-w-0 flex-col items-start gap-1.5">
                                                         <BadgeList
-                                                            items={(profile.preferred_cities ?? []).map((c) => `${c.city}, ${c.state}`)}
+                                                            items={preferredCities}
                                                             emptyLabel={t('empty_preferred_cities')}
+                                                            align="start"
                                                         />
                                                         {/* Nullable-safe: no main_trade, or no preferred city yet,
                                                             and PayReferenceHint's own guard (blank/'other' trade,
@@ -269,11 +314,21 @@ export default function WorkerProfilePage() {
                                                             variant="worker-profile"
                                                         />
                                                     </div>
-                                                ),
-                                            },
-                                            { label: t('field_bio'), value: profile.bio || t('empty_bio') },
-                                        ]}
-                                    />
+                                                </FactsCard.Tile>
+                                            </FactsCard.Tiles>
+                                        </FactsCard.Section>
+
+                                        {/* Kept even when empty, unlike a job's description:
+                                            this is the worker's OWN profile, and "About /
+                                            No description added" is the prompt to write
+                                            one. Muted so the placeholder does not read as
+                                            a fact. */}
+                                        <FactsCard.Section label={t('field_bio')}>
+                                            <FactsCard.Text muted={!profile.bio}>
+                                                {profile.bio || t('empty_bio')}
+                                            </FactsCard.Text>
+                                        </FactsCard.Section>
+                                    </FactsCard>
                                 </div>
                             )}
                         </DashboardPanel>
