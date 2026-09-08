@@ -38,7 +38,10 @@ export type HireTradeFields = {
   trade?: {
     /** Raw `jobs.trade_category` (migration 023), or null. */
     category: string | null;
-    /** The employer's own words for `category === 'other'`, or null. */
+    /**
+     * The employer's own words for `category === 'other'` (migration 077,
+     * a different column from the 023 enum above), or null.
+     */
     other: string | null;
     /** `trade_aliases.canonical_en` (migration 060), or null on a miss. */
     canonical_en: string | null;

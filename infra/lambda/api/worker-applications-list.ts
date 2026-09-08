@@ -161,7 +161,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
               j.shift_schedule AS job_shift_schedule,
               -- The trade the new copy names ("... te contrató como {trade}").
               -- Raw on both counts: the 023 enum token is translated by the
-              -- client from its own catalogue, and 'other' free text is
+              -- client from its own catalogue, and the 077 free-text column is
               -- canonicalised after the COMMIT below, not in SQL.
               j.trade_category AS job_trade_category,
               j.trade_category_other AS job_trade_category_other,
@@ -250,7 +250,18 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // (migration 060), so it needs neither of the worker GUCs the SELECT
     // above depended on -- and this fails open, so a query outside the
     // transaction can never leave the response half-built.
-    await fillCanonicalTrades(client, freeTextTrades);
+    // Wrapped as well as internally guarded. `fillCanonicalTrades` already
+    // swallows every resolver failure, so reaching this catch means a fault
+    // in the loop AROUND the lookup -- a normalization change, or any future
+    // edit inside it. By this point `applications` is fully built and the
+    // transaction is committed, so publishing it without the trade labels is
+    // strictly better than turning a hire celebration into a 500 over a
+    // missing translation. Nothing about the response depends on this pass.
+    try {
+      await fillCanonicalTrades(client, freeTextTrades);
+    } catch (err) {
+      console.warn('worker-applications-list trade canonicalisation pass failed:', errorMessage(err));
+    }
 
     return { statusCode: 200, headers: CORS_HEADERS, body: JSON.stringify({ applications }) };
   } catch (err) {

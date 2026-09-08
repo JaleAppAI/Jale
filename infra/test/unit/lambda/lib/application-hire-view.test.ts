@@ -229,11 +229,13 @@ describe('buildHireSummary', () => {
       }
     });
 
-    it("keeps the enum's own token even when the job also carries stale free text", () => {
-      // 023 only CHECKs the enum; nothing stops trade_category_other from
-      // outliving an edit that moved the job onto a real category. The client
-      // reads `other` only when `category === 'other'`, so this travels as-is
-      // rather than being second-guessed here.
+    it('passes free text through on a non-"other" category rather than re-deriving it', () => {
+      // DEFENSIVE, not a live case: 077's jobs_trade_category_other_valid
+      // CHECK (`trade_category = 'other' OR trade_category_other IS NULL`) is
+      // validated, so this row cannot exist in the database today. The view
+      // still reports both columns as it found them -- reading `other` only
+      // for 'other' is the client's rule, so a future relaxation of that
+      // CHECK cannot silently drop data through this layer.
       expect(buildHireSummary({
         ...HIRED, job_trade_category: 'plumber', job_trade_category_other: 'Welder',
       })!.trade).toEqual({
@@ -241,6 +243,7 @@ describe('buildHireSummary', () => {
       });
     });
 
+    // 077 added trade_category_other (023 added only the trade_category enum).
     it("carries `other` trimmed when the category is the 'other' escape hatch", () => {
       expect(buildHireSummary({
         ...HIRED, job_trade_category: 'other', job_trade_category_other: '  Welder  ',
@@ -249,6 +252,9 @@ describe('buildHireSummary', () => {
       });
     });
 
+    // A LIVE shape, not a defensive one: 077's CHECK is one-way, so it kept
+    // legacy trade_category='other' rows with a NULL trade_category_other
+    // valid and writable.
     it("nulls a blank `other`, leaving 'other' with nothing to canonicalise", () => {
       for (const blank of [null, undefined, '', '   ']) {
         expect(buildHireSummary({

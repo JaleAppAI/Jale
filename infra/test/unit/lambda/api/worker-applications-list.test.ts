@@ -3,6 +3,7 @@ import { handler } from '../../../../lambda/api/worker-applications-list';
 import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
 import { resolveTradeAlias } from '../../../../lambda/lib/trade-canonical';
+import { normalizeProfession } from '../../../../lambda/lib/profession';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
@@ -11,11 +12,19 @@ jest.mock('../../../../lambda/legal/check-compliance');
 // matters is that it fires ONCE per distinct free-text trade and that a
 // failure is swallowed.
 jest.mock('../../../../lambda/lib/trade-canonical');
+// Mocked ONLY so one test can make the canonicalisation loop fail OUTSIDE the
+// resolver. Every other test gets the real implementation back in beforeEach
+// (auto-mocked it would return undefined, which the memo keys off -- and the
+// memo tests below would silently stop exercising anything).
+jest.mock('../../../../lambda/lib/profession');
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
 const mockSetInternalUserRlsContext = setInternalUserRlsContext as jest.Mock;
 const mockCheckCompliance = checkCompliance as jest.Mock;
 const mockResolveTradeAlias = resolveTradeAlias as jest.Mock;
+const mockNormalizeProfession = normalizeProfession as jest.Mock;
+const realNormalizeProfession: (raw: string) => string =
+  jest.requireActual('../../../../lambda/lib/profession').normalizeProfession;
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
 
@@ -28,6 +37,9 @@ describe('worker-applications-list', () => {
     process.env = { ...env, REQUIRED_TOS_VERSION: 'v1.0' };
     mockGetDbPool.mockResolvedValue({ connect: jest.fn().mockResolvedValue({ query: mockQuery, release: mockRelease }) });
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    // resetAllMocks() above wiped the implementation; give the real one back
+    // so normalization is genuine everywhere except where a test overrides it.
+    mockNormalizeProfession.mockImplementation(realNormalizeProfession);
   });
   afterAll(() => { process.env = env; });
 
@@ -449,6 +461,36 @@ describe('worker-applications-list', () => {
           // Logged ONCE, not once per row: a role that lost the grant would
           // otherwise flood CloudWatch on every list load.
           expect(warn).toHaveBeenCalledTimes(1);
+        } finally {
+          warn.mockRestore();
+        }
+      });
+
+      // The resolver's own try/catch cannot cover the loop AROUND it, so the
+      // pass is wrapped too. Without that outer guard this is a 500 -- raised
+      // AFTER the COMMIT, on a fully built response, for a missing label.
+      it('FAILS OPEN when the loop itself throws, outside the resolver', async () => {
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        // Thrown where no resolver-level catch can see it.
+        mockNormalizeProfession.mockImplementation(() => {
+          throw new TypeError('normalizeProfession exploded');
+        });
+        try {
+          const list = await rows(OTHER, { ...OTHER, job_trade_category_other: 'Roofer' });
+          // A 200 with the celebration intact -- `rows` asserts the status.
+          for (const r of list) {
+            expect(r.hire.trade.canonical_en).toBeNull();
+            expect(r.hire.trade.canonical_es).toBeNull();
+            expect(r.hire.trade.other).not.toBeNull();
+            // Everything that does NOT depend on this pass is untouched.
+            expect(r.hire.hired_at).toBe('2026-09-04T15:30:00.000Z');
+            expect(r.hire.company).toBe('Acme');
+          }
+          // The whole pass aborts on the first throw, so it is one line for
+          // the request, not one per row.
+          expect(warn).toHaveBeenCalledTimes(1);
+          // It never got as far as a query.
+          expect(mockResolveTradeAlias).not.toHaveBeenCalled();
         } finally {
           warn.mockRestore();
         }

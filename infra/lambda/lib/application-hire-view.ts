@@ -74,7 +74,7 @@ export interface HireRow {
   job_shift_schedule?: unknown;
   /** 023 `jobs.trade_category`: one of the eight enum tokens, or NULL. */
   job_trade_category?: unknown;
-  /** 023 `jobs.trade_category_other`: the employer's own words, or NULL. */
+  /** 077 `jobs.trade_category_other`: the employer's own words, or NULL. */
   job_trade_category_other?: unknown;
   /**
    * `employer_display_name(j.employer_id) AS company_name` -- the ONE column
@@ -115,10 +115,18 @@ export interface HireTrade {
    */
   category: string | null;
   /**
-   * 023 `jobs.trade_category_other`, trimmed, or null. Meaningful only when
-   * `category === 'other'` -- nothing stops the column from outliving an edit
-   * that moved the job onto a real category, and this view does not
-   * second-guess that.
+   * 077 `jobs.trade_category_other`, trimmed, or null. Meaningful only when
+   * `category === 'other'`, and the database enforces that direction:
+   * 077's `jobs_trade_category_other_valid` CHECK
+   * (`trade_category = 'other' OR trade_category_other IS NULL`) is validated,
+   * not NOT VALID, so a 'plumber' row carrying free text cannot exist.
+   *
+   * Passed through on any category regardless, because the constraint is
+   * ONE-WAY: 'other' with a NULL `trade_category_other` is legal (077 kept
+   * legacy 'other' rows writable), so `other` being null here says nothing
+   * about `category`. Reading it only for 'other' is the client's rule, and
+   * not re-deriving it means a future relaxation of that CHECK cannot
+   * silently drop data this view already had.
    */
   other: string | null;
   /** 060 `trade_aliases.canonical_en` for `other`; null unless the handler filled it. */
