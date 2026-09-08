@@ -77,6 +77,10 @@ import {
   type MergePromptAnswersResult,
   type RequirementSnapshot,
 } from '../lib/application-requirements';
+import {
+  releasePromptLaneForApplication,
+  releaseWhatsAppLanesForApplication,
+} from '../lib/application-web-completion';
 
 const CORS_HEADERS = corsHeaders();
 
@@ -556,6 +560,48 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         await rollback();
         return fail(404, 'not_found');
       }
+
+      // ── RELEASE THE WHATSAPP BOT'S ARM ───────────────────────────
+      // The bot re-sends its pending question after ANY inbound message
+      // while `state_context.fill_application_id` (or its offer/prompt
+      // siblings) names this application, and until now only the bot ever
+      // cleared it -- so a worker who finished HERE got "Paso 3 de 4" on
+      // their next unrelated "hola". `lib/application-web-completion.ts`
+      // owns the whole release: it runs in its OWN savepoint, never throws,
+      // and never leaves this transaction unusable, so nothing below needs
+      // to guard against it. Its result is deliberately unused -- the web
+      // response must not depend on WhatsApp bookkeeping.
+      //
+      // BEFORE `buildState`, which must stay the last query of the
+      // transaction (the 031 GUC trap in the file header).
+      if (action === 'prompt-answers') {
+        // `mergePromptAnswers` reports no `detailsCompleted` -- prompts are
+        // an APPLY-stage requirement, and answering the last one is not the
+        // end of anything. So there is no closing line here, only a stale
+        // prompt turn to stand down, and only once none is left.
+        //
+        // `computeRemaining` is pure, and `buildState` calls it again a few
+        // lines down; two calls on this one path is cheaper than reshaping
+        // `buildState` to hand its `remaining` back.
+        if (computeRemaining(fresh).prompts.length === 0) {
+          await releasePromptLaneForApplication(client, { workerId, applicationId });
+        }
+      } else if ('detailsCompleted' in result && result.detailsCompleted) {
+        await releaseWhatsAppLanesForApplication(client, {
+          workerId,
+          applicationId,
+          jobTitle: fresh.jobTitle,
+          // Only available after `employer_display_name()`, which is
+          // `buildState`'s last query and must not be pulled forward. The
+          // closing line names the JOB, not the company, so nothing is lost.
+          companyName: null,
+          // A FALLBACK only. The conversation row's own `language` wins, and
+          // it is `NOT NULL DEFAULT 'es'` (004:83) -- this is what gets used
+          // for a row carrying something neither renderer knows.
+          lang: 'es',
+        });
+      }
+
       const state = await buildState(client, fresh);
       await commit();
       return json(200, state);
