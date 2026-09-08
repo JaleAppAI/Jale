@@ -650,7 +650,7 @@ maybeDescribe('sprint 24: migration 095 stamps and grants the hire acknowledgeme
 
   // ── 8. the list endpoint's own SELECT, on real rows ────────────
   // The one thing a mocked pool can never check about this feature: that the
-  // nine columns the celebration needs are SELECTable, correctly named, and
+  // columns the celebration needs are SELECTable, correctly named, and
   // reachable by `jale_admin` through the worker's two GUCs. A typo, a column
   // that lives on the other table, or a privilege this role does not hold is a
   // 42703/42501/42702 that only a real database raises -- and it would take out
@@ -706,6 +706,14 @@ maybeDescribe('sprint 24: migration 095 stamps and grants the hire acknowledgeme
         pay_max: 26,
         pay_interval: 'hourly',
         shift_schedule: 'L-V 7am-3pm',
+        // These fixtures set no jobs.trade_category, so the object exists
+        // with a null category -- the shape a pre-023 job takes. The handler,
+        // not this pure view, is what fills canonical_en/canonical_es.
+        trade: { category: null, other: null, canonical_en: null, canonical_es: null },
+        // No employer_profiles row is seeded, so employer_display_name()
+        // returned its 031 sentinel -- which the hire object reports as null
+        // rather than as a company literally named "Empleador".
+        company: null,
       });
       // Pre-acknowledged, so the web shows NOTHING for this historical hire --
       // the entire point of the backfill.
