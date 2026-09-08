@@ -806,10 +806,14 @@ export function JobDetailSkeleton({ withBackLink = false }: { withBackLink?: boo
                     <Skeleton className="h-8 w-20 rounded-full" />
                 </div>
 
-                {/* Eight tiles, three requirement chips, a three-line
-                    description -- the job card's own counts, so a fully
-                    populated posting swaps in without moving. */}
-                <FactsCardSkeleton tiles={8} requirements={3} text={3} />
+                {/* The job card's own shape: a pay headline, two labelled
+                    four-tile sections, three requirement chips and a
+                    three-line description, so a fully populated posting swaps
+                    in without moving. These are `FactsCardSkeleton`'s defaults
+                    and are passed anyway -- the job card is what they were
+                    chosen for, and a later default change should not silently
+                    re-shape this one. */}
+                <FactsCardSkeleton headline="pay" sections={[4, 4]} requirements={3} text={3} />
             </DashboardPanel>
         </SkeletonRegion>
     );
