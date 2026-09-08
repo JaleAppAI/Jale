@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import type { ApplicationHire } from '@/lib/api/worker';
 import {
   durationLabel,
+  hireTradeLabel,
   scheduleSummary,
   shiftHoursLabel,
   tradeLabel,
   workDayChips,
+  type HireTradeFields,
   type ScheduleFields,
   type Translator,
 } from '../job-detail-display';
@@ -39,6 +42,102 @@ describe('tradeLabel', () => {
     expect(tradeLabel({ trade_category: 'other', trade_category_other: '' }, fakeT, fakeT)).toBe('other');
     expect(tradeLabel({ trade_category: 'other', trade_category_other: '   ' }, fakeT, fakeT)).toBe('other');
     expect(tradeLabel({ trade_category: 'other' }, fakeT, fakeT)).toBe('other');
+  });
+});
+
+describe('hireTradeLabel', () => {
+  /**
+   * The API contract, pinned by `tsc` rather than by a comment: the endpoint
+   * hands the frontend an `ApplicationHire`, and this formatter's structural
+   * param type must accept its `trade` field. `job-detail-display.ts`
+   * deliberately imports nothing (see its header), so this is the assertion
+   * that keeps the local type and the wire type from drifting apart.
+   */
+  it('accepts the API `ApplicationHire.trade` shape', () => {
+    const fromApi: HireTradeFields = {} as Pick<ApplicationHire, 'trade'>;
+    expect(hireTradeLabel(fromApi, 'es', fakeT)).toBeNull();
+  });
+
+  /** A `trade` object as the endpoint builds it. */
+  function trade(over: Partial<NonNullable<HireTradeFields['trade']>> = {}): HireTradeFields {
+    return {
+      trade: {
+        category: 'electrician', other: null, canonical_en: null, canonical_es: null, ...over,
+      },
+    };
+  }
+
+  it('resolves a standard 023 category through the translator, by slug, in both locales', () => {
+    for (const locale of ['es', 'en']) {
+      for (const category of [
+        'electrician', 'plumber', 'carpenter', 'concrete',
+        'painting', 'drywall', 'general_labor',
+      ]) {
+        expect(hireTradeLabel(trade({ category }), locale, fakeT)).toBe(category);
+      }
+    }
+  });
+
+  it('ignores the canonicals for a standard category -- the catalogue is the source', () => {
+    // A stale canonical pair on an enum row must never beat the translated
+    // label: the catalogue is the only thing that follows the reader's locale.
+    expect(hireTradeLabel(
+      trade({ category: 'drywall', canonical_en: 'Drywaller', canonical_es: 'Tablaroquero' }),
+      'es', fakeT,
+    )).toBe('drywall');
+  });
+
+  it("'other' prefers canonical_es in Spanish and canonical_en otherwise", () => {
+    const other = trade({
+      category: 'other', other: 'Welder', canonical_en: 'Welder', canonical_es: 'Soldador',
+    });
+    expect(hireTradeLabel(other, 'es', fakeT)).toBe('Soldador');
+    expect(hireTradeLabel(other, 'en', fakeT)).toBe('Welder');
+    // Anything the module's own LOCALE_TAGS does not know falls back to
+    // English -- the same answer `shiftHoursLabel` gives for the same input,
+    // which is the point of routing this through `tagFor` instead of a bare
+    // `locale === 'es'`. Unreachable in the app either way: `i18n/locales.ts`
+    // declares exactly ['en','es'] and `i18n/request.ts` coerces anything
+    // else to 'en', so a bare tag is all a formatter ever sees.
+    expect(hireTradeLabel(other, 'pt', fakeT)).toBe('Welder');
+    expect(hireTradeLabel(other, 'es-MX', fakeT)).toBe('Welder');
+    expect(hireTradeLabel(other, '', fakeT)).toBe('Welder');
+  });
+
+  it("'other' falls back to the employer's own words when the cache said nothing", () => {
+    // The canonicalisation pass fails OPEN, so this is the shape a cache
+    // miss, a lookup error, or a frontend running ahead of the backend all
+    // produce.
+    const raw = trade({ category: 'other', other: '  Rope access tech  ' });
+    expect(hireTradeLabel(raw, 'es', fakeT)).toBe('Rope access tech');
+    expect(hireTradeLabel(raw, 'en', fakeT)).toBe('Rope access tech');
+  });
+
+  it("'other' with nothing at all is null, NOT the translated 'other' label", () => {
+    // Unlike `tradeLabel`, which prints tTrade('other') for a job row. Here
+    // the label lands inside a sentence -- "...te contrato como Otro" says
+    // nothing, so the caller is told to drop the clause instead.
+    for (const blank of [null, '', '   ']) {
+      expect(hireTradeLabel(trade({ category: 'other', other: blank }), 'es', fakeT)).toBeNull();
+      expect(hireTradeLabel(trade({ category: 'other', other: blank }), 'en', fakeT)).toBeNull();
+    }
+  });
+
+  it('is null when the trade object is absent, null, or states no category', () => {
+    for (const locale of ['es', 'en']) {
+      expect(hireTradeLabel({}, locale, fakeT)).toBeNull();
+      expect(hireTradeLabel({ trade: null }, locale, fakeT)).toBeNull();
+      expect(hireTradeLabel({ trade: undefined }, locale, fakeT)).toBeNull();
+      for (const blank of [null, '', '   ']) {
+        expect(hireTradeLabel(trade({ category: blank }), locale, fakeT)).toBeNull();
+      }
+    }
+  });
+
+  it('echoes an unrecognized category through the translator, without an enum check', () => {
+    // Same doctrine as `tradeLabel`: enum membership is the calling page's
+    // catalogue's concern, not this pure formatter's.
+    expect(hireTradeLabel(trade({ category: 'roofing' }), 'es', fakeT)).toBe('roofing');
   });
 });
 
