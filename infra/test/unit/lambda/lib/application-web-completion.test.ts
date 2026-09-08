@@ -15,6 +15,7 @@ import type { PoolClient } from 'pg';
 
 import {
   LANE_RELEASE_SAVEPOINT,
+  LANE_SEND_SAVEPOINT,
   buildWebCompletionBody,
   releasePromptLaneForApplication,
   releaseWhatsAppLanesForApplication,
@@ -341,23 +342,65 @@ describe('application-web-completion', () => {
     expect(mockEnqueue).not.toHaveBeenCalled();
   });
 
-  it('swallows a failing enqueue and rolls back to its savepoint', async () => {
+  it('KEEPS the scrub when only the closing line fails', async () => {
+    // The scrub is the FIX; the line is a courtesy. Sharing one savepoint
+    // would let a failed send roll the scrub back -- the bot would go on
+    // re-prompting a form the worker already finished, because a WhatsApp
+    // message failed. A silent scrub is the acceptable degraded outcome;
+    // silently doing nothing is not.
     stubQueries([armed()]);
     mockEnqueue.mockRejectedValue(new Error('renderer_unavailable:account'));
 
     const result = await releaseWhatsAppLanesForApplication(client, INPUT);
 
-    expect(result).toEqual({ armed: false, scrubbed: 0, closingLineQueued: false });
-    expect(sqlCalls()).toContain(`ROLLBACK TO SAVEPOINT ${LANE_RELEASE_SAVEPOINT}`);
+    expect(result).toEqual({ armed: true, scrubbed: 1, closingLineQueued: false });
+    // Only the SEND scope rolled back.
+    expect(sqlCalls()).toContain(`ROLLBACK TO SAVEPOINT ${LANE_SEND_SAVEPOINT}`);
+    expect(sqlCalls()).not.toContain(`ROLLBACK TO SAVEPOINT ${LANE_RELEASE_SAVEPOINT}`);
   });
 
-  it('releases its savepoint on the success path', async () => {
+  it('takes the send savepoint only AFTER the scrub is released', async () => {
+    // Ordering is the whole mechanism: a savepoint taken before the UPDATE
+    // would undo it on rollback, however the results are labelled.
+    stubQueries([armed()]);
+
+    await releaseWhatsAppLanesForApplication(client, INPUT);
+
+    const calls = sqlCalls();
+    const scrubReleased = calls.indexOf(`RELEASE SAVEPOINT ${LANE_RELEASE_SAVEPOINT}`);
+    const updateAt = calls.findIndex((sql) => /UPDATE whatsapp_conversations/.test(sql));
+    const sendTaken = calls.indexOf(`SAVEPOINT ${LANE_SEND_SAVEPOINT}`);
+    expect(updateAt).toBeGreaterThan(-1);
+    expect(scrubReleased).toBeGreaterThan(updateAt);
+    expect(sendTaken).toBeGreaterThan(scrubReleased);
+  });
+
+  it('releases both savepoints on the success path', async () => {
     stubQueries([armed()]);
 
     await releaseWhatsAppLanesForApplication(client, INPUT);
 
     expect(sqlCalls()).toContain(`RELEASE SAVEPOINT ${LANE_RELEASE_SAVEPOINT}`);
+    expect(sqlCalls()).toContain(`RELEASE SAVEPOINT ${LANE_SEND_SAVEPOINT}`);
     expect(sqlCalls()).not.toContain(`ROLLBACK TO SAVEPOINT ${LANE_RELEASE_SAVEPOINT}`);
+    expect(sqlCalls()).not.toContain(`ROLLBACK TO SAVEPOINT ${LANE_SEND_SAVEPOINT}`);
+  });
+
+  it('expires the intent when the INBOUND window closes, not 24h from now', async () => {
+    // `evaluateDelivery` defers a mid-onboarding worker's intent, and the
+    // worker-ready release materializes it later. A 24h-from-now expiry on a
+    // window that opened 20h ago would let that path send a free-form body
+    // ~44h after the last inbound: a 63016 which, with no content template,
+    // is an ordinary `recordFailure` burning five attempts.
+    const lastInbound = new Date(Date.now() - 20 * 60 * 60 * 1000);
+    stubQueries([armed({ last_inbound_at: lastInbound.toISOString() })]);
+
+    await releaseWhatsAppLanesForApplication(client, INPUT);
+
+    const expiresAt: Date = mockEnqueue.mock.calls[0][1].expiresAt;
+    const hoursOut = (expiresAt.getTime() - Date.now()) / (60 * 60 * 1000);
+    expect(hoursOut).toBeGreaterThan(3.5);
+    expect(hoursOut).toBeLessThan(4.5);
   });
 
   // ── the prompt-lane-only release ──

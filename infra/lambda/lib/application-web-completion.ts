@@ -36,15 +36,25 @@
  * `app.current_internal_user_id`, which the handler has already set to this
  * worker, so the intent INSERT is admitted for this worker and no other.
  *
- * ── WHY EVERY STATEMENT IS INSIDE A SAVEPOINT ────────────────────────
+ * ── WHY THERE ARE TWO SAVEPOINTS ─────────────────────────────────────
  * "Never fail the web response because WhatsApp bookkeeping failed" is NOT
  * achieved by a try/catch. A SQL error (a grant that moved, a constraint, a
  * definer's RAISE) aborts the enclosing transaction, and every later
  * statement -- `buildState`, then COMMIT -- fails 25P02. A successful answer
- * merge would answer 500, which is precisely what the ruling forbids. So the
- * whole body runs inside a SAVEPOINT and rolls back to it on any throw, the
- * same device and for the same reason as `withSizeGuard` in
- * `application-requirements.ts`.
+ * merge would answer 500, which is precisely what the ruling forbids. So
+ * every statement here sits inside a savepoint, the same device and for the
+ * same reason as `withSizeGuard` in `application-requirements.ts`.
+ *
+ * There are TWO of them, in sequence, because the two halves are not equally
+ * important. The SCRUB is the fix; the closing line is a courtesy. One shared
+ * savepoint would let a failed render or a rejected intent roll the scrub
+ * back with it -- and the bot would go on re-prompting a form the worker
+ * already finished, because a WhatsApp message failed. So the scrub's
+ * savepoint is released BEFORE the send's is taken:
+ *
+ *   scrub fails           -> nothing released, transaction still usable
+ *   scrub ok, send fails  -> ARM CLEARED, no line (the degraded outcome)
+ *   both ok               -> arm cleared, exactly one line queued
  *
  * ── THE 24-HOUR WINDOW ───────────────────────────────────────────────
  * A free-form WhatsApp body is only deliverable inside Meta's 24-hour
@@ -86,22 +96,49 @@ import type {
 } from '../whatsapp/lib/onboarding-types';
 
 /**
- * Fixed name, following `application_requirements_merge` in
- * `application-requirements.ts`. Exported so the tests assert the rollback
- * itself rather than merely that the promise resolved -- the un-poisoning is
- * the whole point of the savepoint, and a `try/catch` alone would pass a
- * "does not throw" assertion while still killing the caller's COMMIT.
+ * TWO savepoint scopes, in sequence, and the split is load-bearing.
+ *
+ * The SCRUB is the fix; the closing line is a courtesy. Sharing one savepoint
+ * would let a failed render or a rejected intent roll the scrub back with it
+ * -- the bot would keep re-prompting a form the worker already finished,
+ * because a WhatsApp send failed. That inverts the lane's whole priority: a
+ * silent scrub is the acceptable degraded outcome, silently doing nothing is
+ * not. So the scrub's savepoint is RELEASED before the send's is taken, and a
+ * send failure can only ever roll back the send.
+ *
+ * Fixed names, following `application_requirements_merge` in
+ * `application-requirements.ts`. Exported so the tests assert the rollbacks
+ * themselves rather than merely that the promise resolved -- the un-poisoning
+ * is the whole point, and a `try/catch` alone would pass a "does not throw"
+ * assertion while still killing the caller's COMMIT.
  */
 export const LANE_RELEASE_SAVEPOINT = 'whatsapp_lane_release';
+export const LANE_SEND_SAVEPOINT = 'whatsapp_lane_release_send';
 
 /** `whatsapp_conversations.id` and `job_applications.id` are v4 UUIDs. */
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /**
- * A courtesy line is worthless a day later, and the 24-hour window it was
- * cleared against will have closed by then anyway.
+ * Meta's window, and therefore this intent's whole lifetime. Measured from
+ * `last_inbound_at`, NOT from now: `evaluateDelivery` DEFERS an intent whose
+ * worker is mid-onboarding or whose `deferred_delivery_enabled` control is
+ * off, and a deferred intent is not materialized until the worker-ready
+ * release picks it up (`outbox_id IS NULL`, whatsapp/worker-ready-release.ts).
+ * A 24-hours-from-now expiry on a window that opened 23 hours ago would let
+ * that path send a free-form body ~47 hours after the last inbound -- a
+ * Twilio 63016 which, because `content_template` is null, is NOT the 093
+ * defer branch but an ordinary `recordFailure` burning five attempts and
+ * emitting WorkerIntentOutboxFailure. Anchoring the expiry to the inbound
+ * instant makes the window guard itself, by construction.
  */
 const CLOSING_LINE_EXPIRY_MS = 24 * 60 * 60 * 1000;
+
+/** `timestamptz` arrives as a Date from `pg`, but tolerate a string. */
+function toMillis(value: Date | string | null): number | null {
+  if (value === null) return null;
+  const ms = value instanceof Date ? value.getTime() : new Date(value).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
 
 /**
  * Below `application-stage-notify.ts`'s 30 (a real stage change) and well
@@ -319,8 +356,99 @@ function logRelease(fields: Record<string, unknown>): void {
 }
 
 /**
+ * The send half, in its OWN savepoint so a failure here can never roll the
+ * scrub back. Returns whether the line was queued; NEVER throws.
+ *
+ * The gateway signals "no message could be built" by throwing
+ * `renderer_unavailable:<category>` after ordinary queries, so that one does
+ * NOT poison the transaction -- but a rejected intent INSERT, a constraint on
+ * `whatsapp_outbox`, or `unauthorized_worker_outbox_row` all do, which is why
+ * this needs a savepoint of its own rather than just a catch.
+ */
+async function sendClosingLine(
+  client: PoolClient,
+  opts: {
+    workerId: string;
+    applicationId: string;
+    lane: 'all' | 'prompt';
+    conversationId: string;
+    lang: PreferredLanguage;
+    jobTitle: string | null;
+    lastInboundMs: number | null;
+  },
+): Promise<boolean> {
+  await client.query(`SAVEPOINT ${LANE_SEND_SAVEPOINT}`);
+  try {
+    registerCategoryRenderer('account', renderWebCompletion);
+    await enqueueWorkerMessage(client, {
+      workerId: opts.workerId,
+      category: 'account',
+      ownerService: 'account',
+      sourceType: WEB_COMPLETION_SOURCE_TYPE,
+      sourceId: opts.applicationId,
+      // ONE line per application, forever. `markDetailsCompleteIfDone` only
+      // ever flips `details_completed_at` while it `IS NULL`
+      // (application-requirements.ts), so the caller fires this once by
+      // construction; this key is what makes a retried request idempotent.
+      dedupeKey: `application-web-completion:${opts.applicationId}`,
+      priority: CLOSING_LINE_PRIORITY,
+      // Anchored to the INBOUND instant, not to now. See
+      // CLOSING_LINE_EXPIRY_MS: a deferred intent released later must not
+      // outlive the window it was cleared against.
+      expiresAt: new Date((opts.lastInboundMs ?? Date.now()) + CLOSING_LINE_EXPIRY_MS),
+      payload: {
+        kind: WEB_COMPLETION_SOURCE_TYPE,
+        applicationId: opts.applicationId,
+        conversationId: opts.conversationId,
+        jobTitle: opts.jobTitle,
+        lang: opts.lang,
+      },
+    });
+    await client.query(`RELEASE SAVEPOINT ${LANE_SEND_SAVEPOINT}`);
+    return true;
+  } catch (err) {
+    await rollbackTo(client, LANE_SEND_SAVEPOINT, opts);
+    // Deliberately NOT rethrown and deliberately NOT fatal to the scrub. The
+    // scrub is the fix; this line is a courtesy, and a courtesy must never
+    // take the fix down with it.
+    console.error(JSON.stringify({
+      metric: 'WhatsAppLaneClosingLineFailed',
+      lane: opts.lane,
+      applicationId: opts.applicationId,
+      error: err instanceof Error ? err.message : String(err),
+    }));
+    return false;
+  }
+}
+
+/** Rolls back to `savepoint`, logging rather than throwing if even that fails. */
+async function rollbackTo(
+  client: PoolClient,
+  savepoint: string,
+  opts: { lane: 'all' | 'prompt'; applicationId: string },
+): Promise<void> {
+  try {
+    await client.query(`ROLLBACK TO SAVEPOINT ${savepoint}`);
+  } catch (rollbackErr) {
+    console.error(JSON.stringify({
+      metric: 'WhatsAppLaneReleaseRollbackFailed',
+      lane: opts.lane,
+      savepoint,
+      applicationId: opts.applicationId,
+      error: rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr),
+    }));
+  }
+}
+
+/**
  * The shared core. `closing` is absent for the prompt-lane release, which
  * never sends anything.
+ *
+ * TWO savepoint scopes, in sequence. The scrub's is released BEFORE the
+ * send's is taken, so the outcomes are independent:
+ *   scrub fails            -> nothing released, transaction still usable
+ *   scrub ok, send fails   -> ARM CLEARED, no line (the degraded outcome)
+ *   both ok                -> arm cleared, exactly one line queued
  */
 async function releaseLanes(
   client: PoolClient,
@@ -333,6 +461,9 @@ async function releaseLanes(
     closing?: { jobTitle: string | null; lang: PreferredLanguage };
   },
 ): Promise<LaneReleaseResult> {
+  // ── Scope A: the fix ──
+  let primary: ArmedConversationRow;
+  let scrubbed: number;
   await client.query(`SAVEPOINT ${LANE_RELEASE_SAVEPOINT}`);
   try {
     const armed = await client.query<ArmedConversationRow>(
@@ -347,65 +478,22 @@ async function releaseLanes(
 
     // `ORDER BY c.updated_at DESC` makes this the most recently touched
     // armed row: the one the worker is actually talking on.
-    const primary = rows[0];
+    primary = rows[0];
 
     const scrub = await client.query(
       SCRUB_SQL,
       [rows.map((row) => row.id), opts.workerId, opts.scrubKeys],
     );
-    const scrubbed = scrub.rowCount ?? 0;
+    scrubbed = scrub.rowCount ?? 0;
 
-    let closingLineQueued = false;
-    if (opts.closing && primary.within_session_window === true) {
-      const lang = normalizeLang(primary.language, opts.closing.lang);
-      registerCategoryRenderer('account', renderWebCompletion);
-      await enqueueWorkerMessage(client, {
-        workerId: opts.workerId,
-        category: 'account',
-        ownerService: 'account',
-        sourceType: WEB_COMPLETION_SOURCE_TYPE,
-        sourceId: opts.applicationId,
-        // ONE line per application, forever. `markDetailsCompleteIfDone`
-        // only ever flips `details_completed_at` while it `IS NULL`
-        // (application-requirements.ts), so the caller fires this once by
-        // construction; this key is what makes a retried request idempotent.
-        dedupeKey: `application-web-completion:${opts.applicationId}`,
-        priority: CLOSING_LINE_PRIORITY,
-        expiresAt: new Date(Date.now() + CLOSING_LINE_EXPIRY_MS),
-        payload: {
-          kind: WEB_COMPLETION_SOURCE_TYPE,
-          applicationId: opts.applicationId,
-          conversationId: primary.id,
-          jobTitle: opts.closing.jobTitle,
-          lang,
-        },
-      });
-      closingLineQueued = true;
-    }
-
+    // Released HERE, before the send is attempted, so the scrub is committed
+    // work as far as the rest of this transaction is concerned.
     await client.query(`RELEASE SAVEPOINT ${LANE_RELEASE_SAVEPOINT}`);
-    logRelease({
-      lane: opts.lane,
-      applicationId: opts.applicationId,
-      scrubbed,
-      closingLineQueued,
-      withinSessionWindow: primary.within_session_window === true,
-    });
-    return { armed: true, scrubbed, closingLineQueued };
   } catch (err) {
     // The savepoint rollback, not the catch, is what saves the caller: a SQL
     // error has already aborted the transaction and every later statement --
-    // including COMMIT -- would fail 25P02 without this.
-    try {
-      await client.query(`ROLLBACK TO SAVEPOINT ${LANE_RELEASE_SAVEPOINT}`);
-    } catch (rollbackErr) {
-      console.error(JSON.stringify({
-        metric: 'WhatsAppLaneReleaseRollbackFailed',
-        lane: opts.lane,
-        applicationId: opts.applicationId,
-        error: rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr),
-      }));
-    }
+    // including `buildState` and COMMIT -- would fail 25P02 without this.
+    await rollbackTo(client, LANE_RELEASE_SAVEPOINT, opts);
     console.error(JSON.stringify({
       metric: 'WhatsAppLaneReleaseFailed',
       lane: opts.lane,
@@ -414,6 +502,29 @@ async function releaseLanes(
     }));
     return NOTHING_RELEASED;
   }
+
+  // ── Scope B: the courtesy ──
+  let closingLineQueued = false;
+  if (opts.closing && primary.within_session_window === true) {
+    closingLineQueued = await sendClosingLine(client, {
+      workerId: opts.workerId,
+      applicationId: opts.applicationId,
+      lane: opts.lane,
+      conversationId: primary.id,
+      lang: normalizeLang(primary.language, opts.closing.lang),
+      jobTitle: opts.closing.jobTitle,
+      lastInboundMs: toMillis(primary.last_inbound_at),
+    });
+  }
+
+  logRelease({
+    lane: opts.lane,
+    applicationId: opts.applicationId,
+    scrubbed,
+    closingLineQueued,
+    withinSessionWindow: primary.within_session_window === true,
+  });
+  return { armed: true, scrubbed, closingLineQueued };
 }
 
 /**

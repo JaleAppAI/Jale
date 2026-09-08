@@ -461,11 +461,11 @@ maybeDescribe('web completion releases the WhatsApp lanes', () => {
     expect(await readOutbox(denied.applicationId)).toHaveLength(0);
   });
 
-  it('(g) is idempotent: a repeated release produces no second outbox row', async () => {
-    // The keys are already gone from case (a), so this is the retry shape the
-    // browser can produce. `markDetailsCompleteIfDone` only flips
-    // `details_completed_at` while it IS NULL, so the caller fires once by
-    // construction; `dedupe_key` is the belt on that brace.
+  it('(g) a release on an already-cleared row is a no-op', async () => {
+    // Case (a) already cleared the keys, so the arm read finds nothing and
+    // the function returns before it can enqueue. This is the ordinary retry
+    // shape (`markDetailsCompleteIfDone` only flips `details_completed_at`
+    // while it IS NULL, so the caller fires once by construction).
     const client = await openWorkerDoor(fresh.workerId);
     let result;
     try {
@@ -483,6 +483,43 @@ maybeDescribe('web completion releases the WhatsApp lanes', () => {
 
     expect(result).toEqual({ armed: false, scrubbed: 0, closingLineQueued: false });
     expect(await readOutbox(fresh.applicationId)).toHaveLength(1);
+  });
+
+  it('(h) the dedupe key holds even when the row is RE-armed', async () => {
+    // The case (g) no-op is the scrub's doing, not the dedupe key's -- so the
+    // key gets its own test. Re-arm the row (the bot legitimately does this
+    // if the worker starts the flow again) and release a second time: the
+    // scrub runs, the enqueue is reached, and `worker_message_intent_dedupe`
+    // plus the gateway's `RETURNING outbox_id` must still produce exactly ONE
+    // outbox row. A second one is a duplicate WhatsApp message.
+    await setup.query(
+      `UPDATE whatsapp_conversations SET state_context = $2::jsonb WHERE id = $1`,
+      [fresh.conversationId, JSON.stringify(armedContext(fresh.applicationId))],
+    );
+
+    const client = await openWorkerDoor(fresh.workerId);
+    let result;
+    try {
+      result = await releaseWhatsAppLanesForApplication(client as unknown as PoolClient, {
+        workerId: fresh.workerId,
+        applicationId: fresh.applicationId,
+        jobTitle: 'Concrete Finisher',
+        companyName: null,
+        lang: 'es',
+      });
+      await client.query('COMMIT');
+    } finally {
+      await client.end();
+    }
+
+    // The arm really was found and cleared again...
+    expect(result.armed).toBe(true);
+    expect(result.scrubbed).toBe(1);
+    expect((await readArmKeys(fresh.conversationId)).has_fill).toBe(false);
+    // ...and still exactly one intent and one outbox row for this application.
+    const rows = await readOutbox(fresh.applicationId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].dedupe_key).toBe(`application-web-completion:${fresh.applicationId}`);
   });
 
   it('exports key sets that actually cover the guards the bot reads', () => {
