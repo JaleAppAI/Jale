@@ -74,6 +74,10 @@
       "fri": "Vie",
       "sat": "Sáb",
       "sun": "Dom"
+    },
+    "requirement_state": {
+      "required": "Requerido",
+      "optional": "Opcional"
     }
   },
   "match": {
@@ -1256,6 +1260,17 @@
     "work_days_label": "Días de trabajo",
     "shift_hours": "Horario del turno",
     "duration": "Duración esperada",
+    "facts": {
+      "panel_title": "Detalles del empleo",
+      "schedule": "Horario y fechas",
+      "where": "Dónde y qué se pide",
+      "requirements": "Requisitos",
+      "documents": "Documentos",
+      "about": "Sobre el trabajo · publicado {date}",
+      "location": "Ubicación",
+      "work_authorization": "Autorización de trabajo",
+      "start_unknown": "Por confirmar"
+    },
     "what_you_need": {
       "title": "Qué necesitas",
       "to_apply_prompts": "Para postularte: {count} preguntas cortas · unos {minutes} min",
@@ -1346,7 +1361,16 @@
     "duration": "Duración",
     "experience_years_unit": "{n, plural, one {# año} other {# años}}",
     "experience_months_unit": "{n, plural, one {# mes} other {# meses}}",
-    "about_jale": "Jale conecta a trabajadores y empleadores por WhatsApp: sin currículum, sin descargas. Siempre gratis para trabajadores."
+    "about_jale": "Jale conecta a trabajadores y empleadores por WhatsApp: sin currículum, sin descargas. Siempre gratis para trabajadores.",
+    "facts": {
+      "panel_title": "Detalles del empleo",
+      "schedule": "Horario y fechas",
+      "where": "Dónde y qué se pide",
+      "requirements": "Requisitos",
+      "about": "Sobre el trabajo · publicado {date}",
+      "location": "Ubicación",
+      "start_unknown": "Por confirmar"
+    }
   },
   "employer_job_listing": {
     "page_title": "Detalles de la oferta",
@@ -1367,7 +1391,16 @@
       "no_description": "No se agregó ninguna descripción.",
       "certifications_title": "Certificaciones",
       "required_documents_title": "Documentos requeridos",
-      "no_required_documents": "Este empleo no requiere documentos."
+      "no_required_documents": "Este empleo no requiere documentos.",
+      "facts": {
+        "schedule": "Horario y fechas",
+        "where": "Dónde y qué se pide",
+        "requirements": "Requisitos",
+        "about": "Sobre el trabajo · publicado {date}",
+        "transportation": "Transporte",
+        "work_authorization": "Autorización de trabajo",
+        "start_unknown": "Por confirmar"
+      }
     },
     "actions": {
       "activate": "Reanudar empleo",

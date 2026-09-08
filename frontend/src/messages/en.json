@@ -74,6 +74,10 @@
       "fri": "Fri",
       "sat": "Sat",
       "sun": "Sun"
+    },
+    "requirement_state": {
+      "required": "Required",
+      "optional": "Optional"
     }
   },
   "match": {
@@ -1256,6 +1260,17 @@
     "work_days_label": "Work days",
     "shift_hours": "Shift hours",
     "duration": "Expected duration",
+    "facts": {
+      "panel_title": "Job details",
+      "schedule": "Schedule and dates",
+      "where": "Where and what's needed",
+      "requirements": "Requirements",
+      "documents": "Documents",
+      "about": "About the job · posted {date}",
+      "location": "Location",
+      "work_authorization": "Work authorization",
+      "start_unknown": "To be confirmed"
+    },
     "what_you_need": {
       "title": "What you’ll need",
       "to_apply_prompts": "To apply: {count} short questions · about {minutes} min",
@@ -1346,7 +1361,16 @@
     "duration": "Duration",
     "experience_years_unit": "{n, plural, one {# year} other {# years}}",
     "experience_months_unit": "{n, plural, one {# month} other {# months}}",
-    "about_jale": "Jale connects workers and employers over WhatsApp - no resume, no downloads. Always free for workers."
+    "about_jale": "Jale connects workers and employers over WhatsApp - no resume, no downloads. Always free for workers.",
+    "facts": {
+      "panel_title": "Job details",
+      "schedule": "Schedule and dates",
+      "where": "Where and what's needed",
+      "requirements": "Requirements",
+      "about": "About the job · posted {date}",
+      "location": "Location",
+      "start_unknown": "To be confirmed"
+    }
   },
   "employer_job_listing": {
     "page_title": "Posting details",
@@ -1367,7 +1391,16 @@
       "no_description": "No description was added.",
       "certifications_title": "Certifications",
       "required_documents_title": "Required documents",
-      "no_required_documents": "No documents are required for this job."
+      "no_required_documents": "No documents are required for this job.",
+      "facts": {
+        "schedule": "Schedule and dates",
+        "where": "Where and what's needed",
+        "requirements": "Requirements",
+        "about": "About the job · posted {date}",
+        "transportation": "Transportation",
+        "work_authorization": "Work authorization",
+        "start_unknown": "To be confirmed"
+      }
     },
     "actions": {
       "activate": "Resume job",
