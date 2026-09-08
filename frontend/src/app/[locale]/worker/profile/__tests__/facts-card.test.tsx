@@ -247,6 +247,33 @@ describe('worker profile -- the facts card', () => {
     expect(factsCard().querySelectorAll('[data-divider="true"]')).toHaveLength(1);
   });
 
+  it('treats zero years of experience as an answer, not an absence', () => {
+    // The muted flag tests `=== null`, never falsiness: a worker who answered
+    // "0 years" has answered, and greying that out with the "not added" copy
+    // would lose a real fact.
+    seedWith({ ...FULL, years_experience: 0 });
+    renderIntl(<WorkerProfilePage />);
+
+    const { value } = tile(K.years);
+    expect(value).toHaveTextContent('0');
+    expect(value).not.toHaveTextContent(message('worker_profile.empty_experience'));
+    expect(value.className).not.toContain('text-[var(--jale-ink-2)]');
+  });
+
+  it('gives no section label the same words as a tile label inside it', () => {
+    // `FactsCard` styles an `h3` section label and a `dt` tile label with the
+    // same class list, so a repeated word renders as the same eyebrow twice in
+    // a row -- which reads as a bug. The bio section reuses `field_bio`, so
+    // this is the guard against a future tile claiming that label too.
+    seedWith(FULL);
+    renderIntl(<WorkerProfilePage />);
+
+    const card = factsCard();
+    const sectionLabels = Array.from(card.querySelectorAll('h3'), (h) => h.textContent?.trim());
+    const tileLabels = Array.from(card.querySelectorAll('dt'), (d) => d.textContent?.trim());
+    for (const label of sectionLabels) expect(tileLabels).not.toContain(label);
+  });
+
   it('leaves the heading and the Edit button exactly as they were', () => {
     seedWith(FULL);
     renderIntl(<WorkerProfilePage />);

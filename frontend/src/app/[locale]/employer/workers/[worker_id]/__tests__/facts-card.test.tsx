@@ -212,6 +212,21 @@ describe('employer applicant detail -- the facts card', () => {
     }
   });
 
+  it('treats a zero experience figure as an answer, not an absence', () => {
+    // `experienceKnown` tests `=== null`, never falsiness. The years go through
+    // an ICU plural (`one {# yr exp} other {# yrs exp}`), where 0 takes the
+    // `other` branch -- so this also pins that 0 does not fall through to a raw
+    // key path.
+    seedWith(profile({ years_experience: 0, experience_months: 0 }));
+    renderIntl(<EmployerWorkerPage />);
+
+    const { value } = tile(K.experience);
+    expect(value).toHaveTextContent('0');
+    expect(value).not.toHaveTextContent(message('employer_worker_profile.fallback_experience'));
+    expect(value.className).not.toContain('text-[var(--jale-ink-2)]');
+    expectNoRawMessageKeys();
+  });
+
   it('keeps the worker name as the panel heading', () => {
     seedWith(profile());
     renderIntl(<EmployerWorkerPage />);
