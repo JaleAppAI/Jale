@@ -126,7 +126,7 @@ export default function EmployerProfilePage() {
                        handover from server render to client fetch costs no visible
                        swap. Seven tiles (four company, three contact), two chip
                        facts, the description paragraph. */
-                    <ProfileSkeleton tiles={7} chips={2} />
+                    <ProfileSkeleton sections={[4, 3, 2]} />
                 ) : phase === 'error' && errorKind ? (
                     <DashboardPanel>
                         <ErrorState kind={errorKind} onRetry={retry} />

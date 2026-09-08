@@ -184,7 +184,7 @@ export default function WorkerProfilePage() {
                        route-level skeleton and this one are the same picture — the
                        handover from server render to client fetch costs no visible
                        swap. Five tiles, three chip facts, the bio paragraph. */
-                    <ProfileSkeleton tiles={5} chips={3} />
+                    <ProfileSkeleton sections={[5, 3]} />
                 ) : phase === 'error' && errorKind ? (
                     <DashboardPanel>
                         <ErrorState kind={errorKind} onRetry={retry} />

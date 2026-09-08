@@ -25,11 +25,13 @@ import { Children, type ReactNode } from 'react';
  *    slot); this is only what goes inside it.
  *
  * FIELD ORDER — the three job pages stay identical only because it is written
- * down once, here:
- *   pay, schedule, start, duration, location, openings, experience, language,
- *   requirements, description.
- * Pay is the `Headline`; schedule through language are `Tiles` in that order;
- * requirements are chips; description is `Text`.
+ * down once, here (and realised by `components/jobs/JobFactsCard.tsx`):
+ *   pay; schedule, duration, start, openings; location, trade, experience,
+ *   language, requirements; documents; description.
+ * Pay is the `Headline`; the next four are `Tiles` in the "schedule and dates"
+ * section; the following four are `Tiles` in the "where and what's needed"
+ * section, which also carries the requirement chips; documents is a
+ * worker-only section of vault rows; description is `Text`.
  *
  * COMPOSITION: children of `FactsCard` are the sections, and they must be
  * DIRECT children — the container counts them to draw the dividers, so a group

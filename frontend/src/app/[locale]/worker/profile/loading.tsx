@@ -7,7 +7,7 @@ export default function Loading() {
             <main className="mx-auto max-w-5xl px-4 py-6 md:px-6">
                 {/* Same props as the page's own `showSkeleton` branch, so the
                     server render and the client fetch draw one picture. */}
-                <ProfileSkeleton tiles={5} chips={3} />
+                <ProfileSkeleton sections={[5, 3]} />
             </main>
         </AppShellSkeleton>
     );
