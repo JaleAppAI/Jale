@@ -638,9 +638,16 @@ export function CenteredCardSkeleton({
     return (
         <SkeletonRegion className="mx-auto w-full max-w-md">
             {card ? (
-                <div className="rounded-[var(--radius-card)] bg-[var(--jale-card)] p-6 shadow-[var(--shadow-card)]">
+                /* `DashboardPanel`, not a hand-rolled card: `card={true}` is used
+                   only by the legal wall and the upload link, and both of those
+                   now draw their real card with `DashboardPanel` too -- so the
+                   1px divider border has to be on both sides of the swap or the
+                   card moves, which is the one thing these skeletons exist to
+                   prevent. (`card={false}`, which the auth pages use, is
+                   untouched: `AuthShell` draws their card.) */
+                <DashboardPanel as="div" className="p-6">
                     {body}
-                </div>
+                </DashboardPanel>
             ) : (
                 body
             )}

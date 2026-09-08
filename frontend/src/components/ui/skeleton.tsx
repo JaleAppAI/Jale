@@ -1,8 +1,7 @@
 /**
  * Skeleton atoms. The visual recipe (rounded paper-2 block, `animate-pulse`
- * with a `motion-reduce` opt-out) is factored out of the original
- * `PageSkeleton`, which is the pattern already proven in production on the
- * worker/employer profile pages.
+ * with a `motion-reduce` opt-out) is the pattern already proven in production
+ * on the worker/employer profile pages.
  *
  * Two light-surface tones exist because a skeleton needs internal contrast to
  * read as structure rather than a grey slab: `paper` for labels/chrome and

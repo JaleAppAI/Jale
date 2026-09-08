@@ -72,12 +72,6 @@ interface PageProps {
 
 const OG_IMAGE_PATH = '/brand/wordmark-navy.png';
 
-/** The foundation card recipe, with `overflow-hidden` so the referral ribbon's
- * top corners follow the card's radius. `DashboardPanel` is the same recipe but
- * renders a `<section>`; the job itself is an `<article>`. */
-const ARTICLE_CARD =
-  'overflow-hidden rounded-2xl border border-[var(--jale-divider)] bg-[var(--jale-card)] shadow-[var(--shadow-card)]';
-
 /** Small uppercase label that titles each card. */
 const CARD_LABEL =
   'text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--jale-ink-2)]';
@@ -249,7 +243,11 @@ export default async function PublicJobPage({ params }: PageProps) {
         />
         <main className="px-4 -mt-10">
           <div className="anim-fade-in max-w-md md:max-w-2xl mx-auto">
-            <article className={ARTICLE_CARD}>
+            {/* The job is an `<article>`, not a `<section>`: a self-contained
+                syndicatable item, on a page that exists to be shared.
+                `overflow-hidden` keeps the referral ribbon's top corners on the
+                card's radius. */}
+            <DashboardPanel as="article" className="overflow-hidden">
               {/* A closed job still had a real visit -- record the open
                   beacon (and the referral banner, if any) same as the
                   active branch below, so opens aren't undercounted just
@@ -283,7 +281,7 @@ export default async function PublicJobPage({ params }: PageProps) {
                   </Link>
                 </div>
               </div>
-            </article>
+            </DashboardPanel>
 
             <TrustFooter text={t('about_jale')} />
           </div>
@@ -496,7 +494,11 @@ export default async function PublicJobPage({ params }: PageProps) {
 
       <main className="px-4 -mt-10">
         <div className="anim-fade-in max-w-md md:max-w-2xl mx-auto space-y-4">
-          <article className={ARTICLE_CARD}>
+          {/* The job is an `<article>`, not a `<section>`: a self-contained
+              syndicatable item, on a page that exists to be shared.
+              `overflow-hidden` keeps the referral ribbon's top corners on the
+              card's radius. */}
+          <DashboardPanel as="article" className="overflow-hidden">
             {/* The signature: rendered ONLY when this visit carries a share
                 tag. Teal marks the referral thread and nothing else. */}
             <Suspense fallback={<ReferralRibbonSkeleton />}>
@@ -534,7 +536,7 @@ export default async function PublicJobPage({ params }: PageProps) {
                 </ul>
               )}
             </div>
-          </article>
+          </DashboardPanel>
 
           {active.description && (
             <DashboardPanel className="p-5">
