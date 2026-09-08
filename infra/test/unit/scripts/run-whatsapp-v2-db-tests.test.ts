@@ -162,6 +162,24 @@ const SUITE_BACKFILLS_094 = 'test/unit/db/sprint24-data-backfills-094.integratio
 // holding application fixtures open.
 const SUITE_HIRE_ACK_095 = 'test/unit/db/application-hire-ack-095.integration.test.ts';
 
+// Sprint 24 round 2 lane 1.5: the web door's release of the WhatsApp fill /
+// prompt arm. Registered after 095 and last. It applies NO migration -- it
+// does not compete for the ACCESS EXCLUSIVE locks that pin 094/095 to the end
+// -- but every one of its claims is a database fact a mocked pool reports as
+// success. That `state_context - text[]` REMOVES the keys the processor's
+// dispatch tail gates on (a null merge and a removal are both "disarmed" to a
+// `typeof === 'string'` reader, and only real jsonb tells them apart); that
+// the `user_id` predicate rather than RLS is what keeps one worker's web
+// submission out of another's conversation row, since `wa_conv_full` is
+// USING (true); that the 24-hour window comes from the INBOUND log
+// (`whatsapp_processed_messages.first_seen_at`) and NOT from
+// `whatsapp_conversations.updated_at`, whose trigger fires on outbound writes
+// too; and -- provable nowhere else -- that a 42501 inside the release leaves
+// the caller's transaction COMMITtable, because the module wraps itself in a
+// SAVEPOINT. Removing that savepoint fails five of the suite's eight cases
+// with 25P02, which in production is a successful answer merge answering 500.
+const SUITE_WEB_COMPLETION = 'test/unit/db/application-web-completion.integration.test.ts';
+
 // The guard must fail closed regardless of the ambient environment. The final
 // verification battery exports JALE_TEST_DATABASE_URL to run the guarded
 // command against the real testbed, and jest inherits process.env — so the
@@ -194,6 +212,7 @@ describe('test:whatsapp-v2-db fail-closed URL guard', () => {
       SUITE_DEFER_093,
       SUITE_BACKFILLS_094,
       SUITE_HIRE_ACK_095,
+      SUITE_WEB_COMPLETION,
     ]);
     // The deregistered migration-052 suite must be gone from the script
     // entirely -- including from any tombstone comment, which this file's own
