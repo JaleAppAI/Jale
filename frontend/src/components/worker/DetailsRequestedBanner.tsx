@@ -14,10 +14,15 @@ import { InlineFeedback } from '@/components/ui/inline-feedback';
  *
  * BUILT ON `InlineFeedback tone="warning"`, not a bespoke amber card. That
  * component already owns the warning palette (`--jale-warning*`, matching the
- * `details_requested` badge tone in `lib/status.ts`) and its `role="status"`
- * politeness, which is right here: this is standing page state a worker
- * arrives to, not an event that just fired at them. The prototype draws a
- * heavier custom banner; the existing component wins.
+ * `details_requested` badge tone in `lib/status.ts`), and its `feedbackRole`
+ * maps that tone to `role="alert"` (see `ui/inline-feedback.tsx`) -- which is
+ * right here. An employer waiting on this worker is not decoration they can
+ * find later: it is the one thing the app interrupts for, so a screen-reader
+ * user should hear it on arrival rather than only on reaching it in reading
+ * order. `alert` announces the region once, assertively, and the banner is
+ * rendered as part of the page rather than injected repeatedly, so it says its
+ * sentence a single time. The prototype draws a heavier custom banner; the
+ * existing component wins.
  *
  * `remainingCount` is optional because only some callers know it -- the list
  * rows carry `remaining_count`, the home banner does not. When it is absent

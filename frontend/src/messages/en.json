@@ -1194,6 +1194,7 @@
       "body": "Try a shorter search term or a different job type."
     },
     "no_city_jobs": "Nothing in your cities right now.",
+    "applications_error": "We couldn't load your applications. Reload the page to see notices from your employers.",
     "required_docs_label": "Documents needed",
     "results_count": "{count, plural, one {# job found} other {# jobs found}}",
     "job_type": {

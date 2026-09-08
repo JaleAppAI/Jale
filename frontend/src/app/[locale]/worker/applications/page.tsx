@@ -22,6 +22,7 @@ import {
 import { HiredBanner } from '@/components/worker/HiredBanner';
 import { JobStatusBadge } from '@/components/ui/badge';
 import { acknowledgeHire, getApplications } from '@/lib/api/worker';
+import { orderApplicationsForList } from '@/lib/application-list-order';
 import { formatLongDate, formatStartDateWeekdayShort } from '@/lib/date';
 import { formatPay } from '@/lib/pay';
 import type { Application } from '@/lib/api/worker';
@@ -102,6 +103,13 @@ export default function WorkerApplicationsPage() {
   // asking for the details it is still waiting on (B4.0 #7).
   const needingDetails = list.filter((a) => a.details_status === 'requested');
 
+  // ...and the same rows are lifted to the top of the list itself, so the one
+  // application that needs the worker's hands is never buried under newer ones
+  // they have nothing to do about. Counts above read `list`: the arithmetic is
+  // order-independent, and re-deriving them from a sorted copy would only add
+  // a way for the two to disagree.
+  const ordered = orderApplicationsForList(list);
+
   /**
    * Dismisses the hire banner on ONE row.
    *
@@ -151,7 +159,21 @@ export default function WorkerApplicationsPage() {
                   <MetricCard label={t('stats.hired')} value={hiredCount} tone="green" />
                 </div>
 
-                {needingDetails.length > 1 ? (
+                {/* ONE waiting application gets a top notice too, exactly as
+                    the home page gives it -- the row's own compact banner is
+                    below the metrics and, for an older application, below the
+                    fold. The page used to speak up only from two upwards,
+                    which made the single case (much the commoner one) the
+                    quietest thing on the screen. */}
+                {needingDetails.length === 1 ? (
+                  <div className="mb-5">
+                    <DetailsRequestedBanner
+                      applicationId={needingDetails[0].application_id}
+                      companyName={needingDetails[0].company_name}
+                      remainingCount={needingDetails[0].remaining_count}
+                    />
+                  </div>
+                ) : needingDetails.length > 1 ? (
                   <div className="mb-5">
                     <DetailsRequestedMultiBanner count={needingDetails.length} onList />
                   </div>
@@ -172,7 +194,7 @@ export default function WorkerApplicationsPage() {
                         .join(' ')}
                       onAnimationEnd={onCascadeEnd}
                     >
-                      {list.map((a) => {
+                      {ordered.map((a) => {
                         const jobStatusBadge = visibleJobStatusBadge(a.job_status);
                         const needsDetails = a.details_status === 'requested';
                         // `status` is the authority for a hire: a `hire` block
