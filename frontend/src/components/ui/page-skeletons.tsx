@@ -733,3 +733,44 @@ export function CenteredCardSkeleton({
         </SkeletonRegion>
     );
 }
+
+/**
+ * Job-detail archetype: the panel frame plus `FactsCard`'s body.
+ *
+ * The three job pages no longer render a `KVList`, so `DetailPageSkeleton`
+ * (which traces one) describes a layout they do not have and costs a visible
+ * jump at handover. This is the same frame — the header bar with its title and
+ * badge slot, then the card body — and it is what both job routes' `loading.tsx`
+ * AND both pages' own in-page skeleton branches render, so the server-rendered
+ * skeleton and the client one are the same picture.
+ *
+ * `DetailPageSkeleton` is deliberately untouched: the profile surfaces still
+ * render a `KVList` and still need it.
+ *
+ * KNOWN GEOMETRY GAP, stated rather than hidden: `FactsCardSkeleton` draws ONE
+ * 8-tile grid, while the real job card splits those eight tiles across two
+ * LABELLED sections ("Schedule and dates", "Where and what's needed") with a
+ * rule between them. The swap therefore costs roughly one label row plus one
+ * hairline of height. Closing it means teaching `FactsCardSkeleton` about
+ * grouped tiles, which is a change to a primitive owned outside this lane.
+ */
+export function JobDetailSkeleton({ withBackLink = false }: { withBackLink?: boolean }) {
+    return (
+        <SkeletonRegion>
+            {withBackLink ? <Skeleton className="mb-4 h-3.5 w-24" /> : null}
+
+            <DashboardPanel>
+                {/* `PanelHeader`'s row: title left, the status/type badges right. */}
+                <div className="flex items-center justify-between gap-3 border-b border-[var(--jale-divider)] px-5 py-4">
+                    <Skeleton className="h-4 w-40" />
+                    <Skeleton className="h-8 w-20 rounded-full" />
+                </div>
+
+                {/* Eight tiles, three requirement chips, a three-line
+                    description -- the job card's own counts, so a fully
+                    populated posting swaps in without moving. */}
+                <FactsCardSkeleton tiles={8} requirements={3} text={3} />
+            </DashboardPanel>
+        </SkeletonRegion>
+    );
+}

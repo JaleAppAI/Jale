@@ -235,7 +235,7 @@ describe('worker job detail — the facts card', () => {
 
         expect(screen.getByText('Framing and drywall on a new build.')).toBeInTheDocument();
         expect(
-            screen.getByRole('heading', { level: 3, name: /About the job · posted June 1, 2026/ }),
+            screen.getByRole('heading', { level: 3, name: /About the job · posted Jun 1, 2026/ }),
         ).toBeInTheDocument();
     });
 

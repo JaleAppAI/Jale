@@ -13,9 +13,13 @@ import { Button } from '@/components/ui/button';
 import { DashboardPanel } from '@/components/ui/dashboard-panel';
 import { ErrorState } from '@/components/ui/error-state';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
-import { KVList, type KVItem } from '@/components/ui/kv-list';
-import { DetailPageSkeleton } from '@/components/ui/page-skeletons';
+import { JobDetailSkeleton } from '@/components/ui/page-skeletons';
 import { PanelHeader } from '@/components/ui/panel-header';
+import {
+  JobFactsCard,
+  type JobFactRequirement,
+  type JobFactTile,
+} from '@/components/jobs/JobFactsCard';
 import { ApplicationStatusChip } from '@/components/worker/ApplicationStatusChip';
 import { PayReferenceHint } from '@/components/PayReferenceHint';
 import { ShareJobPanel } from '@/components/worker/ShareJobPanel';
@@ -29,7 +33,7 @@ import { applyFlowReducer, initialApplyFlowState, flowHasProgress, promptAnswers
 import { missingPromptAnswers } from '@/lib/application-requirements-flow';
 import { formatLongDate, formatStartDate } from '@/lib/date';
 import { docTypeLabel } from '@/lib/doc-types';
-import { durationLabel, scheduleSummary, type Translator } from '@/lib/job-detail-display';
+import { durationLabel, scheduleSummary, tradeLabel, type Translator } from '@/lib/job-detail-display';
 import { formatPay } from '@/lib/pay';
 import {
   getJob, applyToJob, updateWorkerProfile, getVaultDocuments,
@@ -48,6 +52,21 @@ const JOBS_HREF = '/worker/home';
 // out of the in-page apply flow with unsubmitted progress -- not an error and
 // not a completed action, so neither 'danger' nor 'success' fits.
 type ApplyFeedback = { tone: 'danger' | 'success' | 'info'; message: string };
+
+/**
+ * Widens a next-intl translator to `job-detail-display`'s structural
+ * `Translator`.
+ *
+ * next-intl's client translator is generic over ITS OWN namespace's message
+ * keys, which is narrower than `(key: string, values?) => string` for the
+ * `values` parameter, so passing one straight in fails `tsc` (verified). Not a
+ * behaviour change -- the call is identical -- just the same thin adapter the
+ * public `/j/[code]` page applies at the same boundary, hoisted so the three
+ * call sites below share one.
+ */
+function widen(t: unknown): Translator {
+  return (key, values) => (t as (k: string, v?: Record<string, unknown>) => string)(key, values);
+}
 
 export default function WorkerJobDetailPage() {
   const { id } = useParams<{ id: string; locale: string }>();
@@ -69,6 +88,16 @@ export default function WorkerJobDetailPage() {
   // way) -- reuse over a duplicate `worker_job_detail`-scoped copy.
   const tPublicJob = useTranslations('public_job');
   const tDocTypes = useTranslations('doc_types');
+  // The job trade-category catalogue, for the facts card's Oficio tile.
+  //
+  // `employer_dashboard.modal.trade.*` is the one catalogue covering all eight
+  // of migration 023's tokens; `common.trades.*` (and `lib/trades.ts` with it)
+  // carries only the worker-vocabulary five and would print a raw key path for
+  // a `drywall` or `general_labor` job. Reading it from a worker surface is the
+  // established precedent, not a new liberty -- `components/PayReferenceHint.tsx`
+  // does exactly this, for exactly this reason, and `job-detail-display.ts`'s
+  // own `hireTradeLabel` doc comment names this catalogue as the correct one.
+  const tTradeCatalogue = useTranslations('employer_dashboard.modal.trade');
   const locale = useLocale();
 
   // `job-detail-display.ts`'s formatters take a deliberately structural
@@ -80,8 +109,13 @@ export default function WorkerJobDetailPage() {
   // thin widening adapter the merged public `/j/[code]` page already uses at
   // the same boundary (its server-translator equivalent) -- not a behavior
   // change, just satisfying the wider structural type.
-  const tCommonDisplay: Translator = (key, values) =>
-    (tCommon as unknown as (k: string, v?: Record<string, unknown>) => string)(key, values);
+  //
+  // Three boundaries need it now (`tCommon` for schedule/duration, and the
+  // trade catalogue + this page's own namespace for `tradeLabel`), so the cast
+  // lives in one place rather than being retyped per call site.
+  const tCommonDisplay = widen(tCommon);
+  const tTradeDisplay = widen(tTradeCatalogue);
+  const tDetailDisplay = widen(t);
 
   const [applying, setApplying] = useState(false);
   const [applyFeedback, setApplyFeedback] = useState<ApplyFeedback | null>(null);
@@ -474,113 +508,122 @@ export default function WorkerJobDetailPage() {
   const canApply = job ? !job.already_applied && (job.status ?? 'active') === 'active' : false;
   const jobStatusBadge = job ? visibleJobStatusBadge(job.status) : null;
 
-  const facts: KVItem[] = [];
+  /*
+   * The job's facts, as the ONE card body all three job pages render.
+   *
+   * Every value below is a FINISHED string built by this page's own existing
+   * formatters (`lib/pay.ts`, `lib/date.ts`, `lib/job-detail-display.ts`) and
+   * this page's own next-intl namespace -- `JobFactsCard` owns the section
+   * order and nothing else. A tile whose value the job genuinely does not
+   * carry is omitted rather than filled with a dash; `Inicio` is the one
+   * exception, always shown, muted, because "we do not know yet" is itself
+   * the answer a worker is deciding on.
+   */
+  const schedule = job ? scheduleSummary(job, locale, tCommonDisplay) : null;
+  // ONE Horario tile, not the two rows this page used to render: the days and
+  // the hours are one fact to a reader planning a ride. `legacy` is already
+  // mutually exclusive with the structured pair (see `scheduleSummary`), so
+  // this cannot show both.
+  const scheduleText = schedule
+    ? (schedule.legacy
+      ?? ([schedule.days.length > 0 ? schedule.days.join(', ') : null, schedule.hours]
+        .filter(Boolean)
+        .join(' · ') || null))
+    : null;
+  const durationText = job ? durationLabel(job, tCommonDisplay) : null;
+  const startText = job?.start_date
+    ? (formatStartDate(job.start_date, locale) ?? job.start_date)
+    : null;
+  const tradeText = job ? tradeLabel(job, tTradeDisplay, tDetailDisplay) : null;
+  const languageText = job?.language_preference && job.language_preference.length > 0
+    ? job.language_preference.map((code) => tPublicJob(`language_${code}`)).join(' / ')
+    : null;
+  const postedText = job
+    // `created_at` is an INSTANT, not a calendar day, so it goes through the
+    // reader's-timezone formatter -- `formatStartDate` pins to UTC, which is
+    // correct for `start_date` above and a day late for anything posted after
+    // 18:00 in Mexico.
+    ? (formatLongDate(job.created_at, locale) ?? job.created_at)
+    : null;
+
+  const scheduleTiles: JobFactTile[] = [];
+  const whereTiles: JobFactTile[] = [];
+  const requirementItems: JobFactRequirement[] = [];
+
   if (job) {
-    if (job.start_date) {
-      facts.push({
-        label: t('start_date'),
-        value: <span className="tabular-nums">{formatStartDate(job.start_date, locale) ?? job.start_date}</span>,
-      });
+    if (scheduleText) {
+      scheduleTiles.push({ key: 'shift', label: t('shift_schedule'), value: scheduleText });
     }
-
-    // Trade: deliberately NOT `job-detail-display.ts`'s `tradeLabel` -- that
-    // helper's `tTrade` translator is meant to resolve the slug through a
-    // real per-slug catalogue (see its doc comment), and `worker_job_detail`
-    // has none (only the flat `trade` row label), exactly the same gap the
-    // merged public `/j/[code]` page's own comment documents for itself. This
-    // mirrors that page's inline idiom instead: an employer-typed "other"
-    // trade renders verbatim via `trade_with_other` (never capitalized -- it
-    // is free text, not a taxonomy slug); every other value is the raw
-    // `trade_category` slug, title-cased by CSS only (dates/numbers elsewhere
-    // on this page must never get that treatment).
-    if (job.trade_category) {
-      const customTrade = job.trade_category === 'other' ? job.trade_category_other?.trim() : null;
-      facts.push({
-        label: t('trade'),
-        value: customTrade
-          ? t('trade_with_other', { other: customTrade })
-          : <span className="capitalize">{job.trade_category}</span>,
-      });
-    }
-
-    // Schedule: structured `work_days`/`shift_start`/`shift_end` (via the
-    // shared `scheduleSummary` formatter) win over the legacy free-text
-    // `shift_schedule` string whenever ANY structured schedule data exists --
-    // same fallback matrix the public page uses, including its documented
-    // edge case: a job with only a one-sided `shift_start` (no `work_days`)
-    // renders no shift row at all rather than mixing legacy text with a
-    // partial structured render (`scheduleSummary`'s own documented intent,
-    // not a regression).
-    const schedule = scheduleSummary(job, locale, tCommonDisplay);
-    if (schedule.legacy) {
-      facts.push({ label: t('shift_schedule'), value: schedule.legacy });
-    } else {
-      if (schedule.days.length > 0) {
-        facts.push({
-          label: t('work_days_label'),
-          value: (
-            <span className="flex flex-wrap justify-end gap-1.5">
-              {schedule.days.map((day) => (
-                <Badge key={day} tone="neutral">{day}</Badge>
-              ))}
-            </span>
-          ),
-        });
-      }
-      if (schedule.hours) {
-        facts.push({ label: t('shift_hours'), value: schedule.hours });
-      }
-    }
-
-    const durationText = durationLabel(job, tCommonDisplay);
     if (durationText) {
-      facts.push({ label: t('duration'), value: durationText });
+      scheduleTiles.push({ key: 'duration', label: t('expected_duration'), value: durationText });
+    }
+    scheduleTiles.push({
+      key: 'start',
+      label: t('start_date'),
+      value: startText ? <span className="tabular-nums">{startText}</span> : t('facts.start_unknown'),
+      muted: !startText,
+    });
+    if (job.number_of_workers_needed !== undefined && job.number_of_workers_needed !== null) {
+      scheduleTiles.push({
+        key: 'openings',
+        label: t('openings'),
+        value: (
+          <span className="tabular-nums">{`${job.open_count ?? 0}/${job.number_of_workers_needed}`}</span>
+        ),
+      });
     }
 
-    if (job.number_of_workers_needed !== undefined && job.number_of_workers_needed !== null) {
-      facts.push({
-        label: t('openings'),
-        value: <span className="tabular-nums">{`${job.open_count ?? 0}/${job.number_of_workers_needed}`}</span>,
-      });
+    whereTiles.push({ key: 'location', label: t('facts.location'), value: job.location });
+    if (tradeText) {
+      whereTiles.push({ key: 'trade', label: t('trade'), value: tradeText });
     }
     if (job.required_experience_years !== undefined && job.required_experience_years !== null) {
-      facts.push({
+      whereTiles.push({
+        key: 'experience',
         label: t('required_experience'),
         value: <span className="tabular-nums">{String(job.required_experience_years)}</span>,
       });
     }
-    if (job.work_authorization_required) {
-      facts.push({
-        label: t('work_authorization_required'),
-        value: t('work_authorization_required_yes'),
-      });
+    if (languageText) {
+      whereTiles.push({ key: 'language', label: t('language'), value: languageText });
     }
-    // Transportation, unlike work-authorization above, shows in BOTH states
-    // (dedicated yes/no keys) rather than only when required -- the public
-    // page's "what you need" card omits it when false since that card only
-    // ever lists applicable requirements, but this page's flat facts list
-    // states every known fact plainly either way.
-    if (job.transportation_required !== undefined && job.transportation_required !== null) {
-      facts.push({
+
+    /*
+     * Requirements are chips, and each one carries its state as WORDS
+     * (`stateLabel`) rather than only as the dot's colour.
+     *
+     * Only a requirement that actually applies gets a chip -- this is the one
+     * place the card states less than the old flat list did, which stated
+     * `transportation_required: false` as "Not required". A chip row is a list
+     * of what to bring; "you do not need a truck" does not belong on it.
+     */
+    const requiredWord = tCommon('requirement_state.required');
+    if (job.transportation_required) {
+      requirementItems.push({
+        key: 'transportation',
         label: t('transportation'),
-        value: job.transportation_required
-          ? t('transportation_required_yes')
-          : t('transportation_required_no'),
+        state: 'required',
+        stateLabel: requiredWord,
       });
     }
-    if (job.language_preference && job.language_preference.length > 0) {
-      facts.push({
-        label: t('language'),
-        value: job.language_preference.map((code) => tPublicJob(`language_${code}`)).join(' / '),
+    if (job.work_authorization_required) {
+      requirementItems.push({
+        key: 'work_authorization',
+        label: t('facts.work_authorization'),
+        state: 'required',
+        stateLabel: requiredWord,
       });
     }
-    facts.push({
-      label: t('posted'),
-      // `created_at` is an INSTANT, not a calendar day, so it goes through the
-      // reader's-timezone formatter. It used to reuse `formatStartDate`, which
-      // pins to UTC -- correct for `start_date` above, a day late here for
-      // anything posted after 18:00 in Mexico.
-      value: <span className="tabular-nums">{formatLongDate(job.created_at, locale) ?? job.created_at}</span>,
+    // Keyed by index, not by `cert.name`: `parseJobFields` dedupes names
+    // case-insensitively on write, but this page renders whatever the row
+    // holds, and a positional key is safe for a list that is never reordered.
+    (job.certification_requirements ?? []).forEach((cert, index) => {
+      requirementItems.push({
+        key: `cert-${index}`,
+        label: cert.name,
+        state: cert.tier,
+        stateLabel: tCommon(`requirement_state.${cert.tier}`),
+      });
     });
   }
 
@@ -595,7 +638,7 @@ export default function WorkerJobDetailPage() {
           /* Same archetype, same geometry, same back-link slot as `loading.tsx`,
              so the handover from the server-rendered route skeleton to this
              client one costs no visible swap. */
-          <DetailPageSkeleton withBackLink />
+          <JobDetailSkeleton withBackLink />
         ) : (
           <div className="anim-fade-in">
             {/* Chrome the worker keeps in every state, including the S5 ones:
@@ -645,7 +688,7 @@ export default function WorkerJobDetailPage() {
 
                 <DashboardPanel>
                   <PanelHeader
-                    title={t('page_title')}
+                    title={t('facts.panel_title')}
                     action={
                       jobTypeLabel || jobStatusBadge ? (
                         <span className="flex items-center gap-2">
@@ -660,76 +703,79 @@ export default function WorkerJobDetailPage() {
                     }
                   />
 
-                  <div className="space-y-5 p-5 md:p-6">
-                    {/* Pay is promoted out of the field list and set as a
-                        headline figure: it is the one fact a worker decides on,
-                        and as a KV row it read exactly as loud as "Shift". */}
-                    {pay ? (
-                      <div>
-                        <p className="text-xs font-semibold uppercase tracking-wider text-[var(--jale-ink-2)]">
-                          {t('pay_range')}
-                        </p>
-                        <p className="mt-1 text-2xl font-extrabold tabular-nums tracking-tight text-[var(--jale-ink)] md:text-3xl">
-                          {pay}
-                        </p>
-                        {/* Comparison against the job's own trade + city
-                            (migration 065's city_key, now in
-                            worker-jobs-detail's SELECT). Nullable-safe: an
-                            older job / free-typed location with no city_key,
-                            or no reference for the trade, and
-                            PayReferenceHint's own guard renders nothing. */}
-                        <div className="mt-2">
-                          <PayReferenceHint
-                            trade={job.trade_category ?? ''}
-                            cityKey={job.city_key}
-                            variant="worker-job"
-                          />
-                        </div>
-                      </div>
-                    ) : null}
-
-                    {job.description ? (
-                      <p className="whitespace-pre-wrap text-sm leading-relaxed text-[var(--jale-ink)]">
-                        {job.description}
-                      </p>
-                    ) : null}
-
-                    {facts.length > 0 ? <KVList items={facts} /> : null}
-
-                    {job.required_docs.length > 0 ? (
-                      <div>
-                        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--jale-ink-2)]">
-                          {t('required_docs')}
-                        </p>
-                        <ul className="divide-y divide-[var(--jale-divider)] overflow-hidden rounded-[var(--radius-input)] border border-[var(--jale-divider)]">
-                          {job.required_docs.map((doc) => {
-                            const missing = job.missing_docs.includes(doc);
-                            return (
-                              <li key={doc} className="flex items-center justify-between gap-3 px-3.5 py-2.5">
-                                <span className="min-w-0 text-sm font-medium text-[var(--jale-ink)]">
-                                  {docLabel(doc)}
-                                </span>
-                                <Badge tone={missing ? 'danger' : 'success'}>
-                                  {missing ? t('doc_missing') : t('doc_ok')}
-                                </Badge>
-                              </li>
-                            );
-                          })}
-                        </ul>
-                        {job.missing_docs.length > 0 ? (
-                          <p className="mt-2 text-xs text-[var(--jale-ink-2)]">
-                            {t('upload_prompt')}{' '}
-                            <Link
-                              href="/worker/profile"
-                              className="font-semibold text-[var(--jale-blue-700)] underline underline-offset-2"
-                            >
-                              {t('upload_link')}
-                            </Link>
-                          </p>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </div>
+                  <JobFactsCard
+                    pay={pay ? {
+                      label: t('pay_range'),
+                      figure: pay,
+                      /* Comparison against the job's own trade + city
+                         (migration 065's city_key, now in
+                         worker-jobs-detail's SELECT). Nullable-safe: an older
+                         job / free-typed location with no city_key, or no
+                         reference for the trade, and PayReferenceHint's own
+                         guard renders nothing. */
+                      hint: (
+                        <PayReferenceHint
+                          trade={job.trade_category ?? ''}
+                          cityKey={job.city_key}
+                          variant="worker-job"
+                        />
+                      ),
+                    } : null}
+                    schedule={{ label: t('facts.schedule'), tiles: scheduleTiles }}
+                    where={{ label: t('facts.where'), tiles: whereTiles }}
+                    requirements={
+                      requirementItems.length > 0
+                        ? { label: t('facts.requirements'), items: requirementItems }
+                        : null
+                    }
+                    /* The vault rows stay EXACTLY as they were, badges and
+                       all: the worker page is the only one of the three that
+                       knows whether a document is already uploaded, so this
+                       section has no employer/public counterpart -- there the
+                       job's documents are Requirements chips instead. */
+                    documents={
+                      job.required_docs.length > 0
+                        ? {
+                          label: t('facts.documents'),
+                          children: (
+                            <>
+                              <ul className="divide-y divide-[var(--jale-divider)] overflow-hidden rounded-[var(--radius-input)] border border-[var(--jale-divider)]">
+                                {job.required_docs.map((doc) => {
+                                  const missing = job.missing_docs.includes(doc);
+                                  return (
+                                    <li key={doc} className="flex items-center justify-between gap-3 px-3.5 py-2.5">
+                                      <span className="min-w-0 text-sm font-medium text-[var(--jale-ink)]">
+                                        {docLabel(doc)}
+                                      </span>
+                                      <Badge tone={missing ? 'danger' : 'success'}>
+                                        {missing ? t('doc_missing') : t('doc_ok')}
+                                      </Badge>
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                              {job.missing_docs.length > 0 ? (
+                                <p className="mt-2 text-xs text-[var(--jale-ink-2)]">
+                                  {t('upload_prompt')}{' '}
+                                  <Link
+                                    href="/worker/profile"
+                                    className="font-semibold text-[var(--jale-blue-700)] underline underline-offset-2"
+                                  >
+                                    {t('upload_link')}
+                                  </Link>
+                                </p>
+                              ) : null}
+                            </>
+                          ),
+                        }
+                        : null
+                    }
+                    about={
+                      job.description
+                        ? { label: t('facts.about', { date: postedText ?? '' }), text: job.description }
+                        : null
+                    }
+                  />
                 </DashboardPanel>
 
                 {/* Pre-apply readiness preview -- questions/docs/certs and
