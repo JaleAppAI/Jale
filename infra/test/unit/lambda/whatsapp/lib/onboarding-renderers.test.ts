@@ -972,4 +972,81 @@ describe('createReleaseRenderer — account_notice carries the intent payload', 
     expect(result.contentTemplate).toBeNull();
     expect(result.body).toContain('Actualizacion de cuenta (application_stage)');
   });
+
+  // ── Sprint 24 round 2 lane 1.5: the web-completion closing line ──
+  //
+  // `enqueueWorkerMessage` runs a CATEGORY renderer only on the `allow`
+  // branch. A worker who is not `ready` (or any worker while
+  // deferred_delivery_enabled is off) gets a DEFERRED intent, and the only
+  // path that ever materializes it is this release renderer -- which, without
+  // a branch of its own, fell through to the generic notice and shipped the
+  // raw source type: "Actualizacion de cuenta (application_web_completion)".
+  const webCompletionPayload = {
+    kind: 'application_web_completion',
+    applicationId: APPLICATION_ID,
+    conversationId: '99999999-8888-4777-8666-555555555555',
+    jobTitle: 'Concrete Finisher',
+    lang: 'es',
+  };
+
+  function webCompletionRequest(
+    payload: Record<string, unknown> | null,
+    language: PreferredLanguage = 'es',
+  ): ReleaseRenderRequest {
+    return {
+      kind: 'account_notice',
+      workerId: WORKER_ID,
+      language,
+      sourceType: 'application_web_completion',
+      sourceId: APPLICATION_ID,
+      payload,
+    };
+  }
+
+  it('renders the real closing line for a DEFERRED web-completion intent', async () => {
+    const result = await createReleaseRenderer().render(
+      webCompletionRequest(webCompletionPayload),
+    );
+    expect(result.contentTemplate).toBeNull();
+    expect(result.contentVariables).toBeNull();
+    expect(result.body).toBe(
+      'Completaste tu solicitud para Concrete Finisher en la web. Te avisamos por aqui cuando el empleador responda.',
+    );
+    // The bug this closes: never the generic fallback with the raw sourceType.
+    expect(result.body).not.toContain('application_web_completion');
+  });
+
+  it('renders the English closing line on release', async () => {
+    const result = await createReleaseRenderer().render(
+      webCompletionRequest({ ...webCompletionPayload, lang: 'en' }, 'en'),
+    );
+    expect(result.body).toBe(
+      "You completed your application for Concrete Finisher on the web. We'll let you know here when the employer responds.",
+    );
+  });
+
+  it('falls back to a generic job name when the deferred payload has no title', async () => {
+    const result = await createReleaseRenderer().render(
+      webCompletionRequest({ ...webCompletionPayload, jobTitle: null }),
+    );
+    expect(result.body).toContain('para este empleo en la web');
+  });
+
+  it("prefers the payload's own lang over the release language", async () => {
+    // The payload's lang came from the conversation row -- the language the
+    // bot has actually been speaking. The release language comes from the
+    // workflow run and can disagree.
+    const result = await createReleaseRenderer().render(
+      webCompletionRequest({ ...webCompletionPayload, lang: 'en' }, 'es'),
+    );
+    expect(result.body).toContain('You completed your application');
+  });
+
+  it('keeps the generic notice for a malformed web-completion payload', async () => {
+    const result = await createReleaseRenderer().render(
+      webCompletionRequest({ ...webCompletionPayload, applicationId: 'not-a-uuid' }),
+    );
+    expect(result.contentTemplate).toBeNull();
+    expect(result.body).toContain('Actualizacion de cuenta (application_web_completion)');
+  });
 });

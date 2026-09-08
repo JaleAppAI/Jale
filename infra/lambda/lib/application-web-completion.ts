@@ -56,6 +56,21 @@
  *   scrub ok, send fails  -> ARM CLEARED, no line (the degraded outcome)
  *   both ok               -> arm cleared, exactly one line queued
  *
+ * ── ACCEPTED RESIDUAL: THE DOUBLE FAULT ──────────────────────────────
+ * `rollbackTo` logs instead of throwing when the ROLLBACK TO SAVEPOINT
+ * itself fails. If BOTH the original statement and its rollback fail, this
+ * module still returns a result and the caller still tries to COMMIT -- and
+ * that COMMIT will fail 25P02, so the web request 500s after all.
+ *
+ * Accepted, not fixed. `ROLLBACK TO SAVEPOINT` on an aborted transaction is
+ * the one statement Postgres is contractually required to accept, so the
+ * only ways it fails are a dropped connection or a savepoint that was never
+ * established -- and in both of those the transaction is already
+ * unrecoverable, with or without this module. Escalating here would trade a
+ * 500 for a 500 and lose the log line that says which statement started it.
+ * The `WhatsAppLaneReleaseRollbackFailed` metric is the signal to look for
+ * if a 500 ever appears on this door.
+ *
  * ── THE 24-HOUR WINDOW ───────────────────────────────────────────────
  * A free-form WhatsApp body is only deliverable inside Meta's 24-hour
  * customer-service window, which is opened by an INBOUND message. Outside
@@ -94,6 +109,19 @@ import type {
   CategoryRenderer,
   PreferredLanguage,
 } from '../whatsapp/lib/onboarding-types';
+import {
+  WEB_COMPLETION_SOURCE_TYPE,
+  buildWebCompletionBody,
+  buildWebCompletionPayloadMessage,
+} from './application-web-completion-copy';
+
+/**
+ * Re-exported so callers and tests have one import site for this lane. The
+ * definition lives in the leaf copy module because
+ * `whatsapp/lib/onboarding-renderers.ts` needs it too and cannot import this
+ * file -- see that module's header for the cycle.
+ */
+export { buildWebCompletionBody };
 
 /**
  * TWO savepoint scopes, in sequence, and the split is load-bearing.
@@ -141,21 +169,37 @@ function toMillis(value: Date | string | null): number | null {
 }
 
 /**
- * Below `application-stage-notify.ts`'s 30 (a real stage change) and well
- * below job-messaging's 40 (an employer typing right now). This line tells
- * the worker nothing they do not already know -- they just finished the form
- * themselves -- so it must never be delivered ahead of news.
+ * ASCENDING = SENT FIRST. `withinGroupOrder` in
+ * `whatsapp/worker-ready-release.ts` sorts `a.priority - b.priority` and
+ * allocates `release_sequence` in that order, and
+ * `lease_worker_intent_outbox` (043) drains strictly by
+ * `COALESCE(release_sequence, 2147483647)`. So a LOWER number goes out
+ * EARLIER -- the opposite of what an earlier comment here claimed, which had
+ * this line jumping the queue ahead of everything that matters.
+ *
+ * 45 puts it last among the numbers in use: security/OTP (1), onboarding
+ * steps (5), job alerts and stage changes (30,
+ * `application-stage-notify.ts`), employer chat (40,
+ * `lib/job-messaging.ts`). This line tells the worker nothing they do not
+ * already know -- they just finished the form themselves -- so it must be
+ * last.
+ *
+ * WHAT THIS ACTUALLY BUYS, precisely: priority orders intents only WITHIN a
+ * render group. Cross-category order on the release path is fixed by
+ * `renderPlan.push` (onboarding_complete, referred_job, account_notice,
+ * job_alert_digest, employer_chat), so an `account` intent precedes employer
+ * chat at any priority. The comparison this number decides is therefore
+ * against the OTHER 'account' intents -- above all a stage change at 30,
+ * which must reach the worker before a line about a form they just filled in
+ * themselves. On the non-deferred path there is no `release_sequence` at all
+ * and the lease falls back to `created_at`, so priority is inert there.
  */
-const CLOSING_LINE_PRIORITY = 20;
-
-/** `worker_message_intents.source_type`, and this renderer's payload tag. */
-const WEB_COMPLETION_SOURCE_TYPE = 'application_web_completion';
+const CLOSING_LINE_PRIORITY = 45;
 
 export interface ReleaseWhatsAppLanesInput {
   workerId: string;
   applicationId: string;
   jobTitle: string | null;
-  companyName: string | null;
   /**
    * The caller's best guess. The conversation row's own `language` WINS when
    * it is one we render (it is `NOT NULL DEFAULT 'es'`, and it is the
@@ -184,40 +228,6 @@ const NOTHING_RELEASED: LaneReleaseResult = {
   armed: false, scrubbed: 0, closingLineQueued: false,
 };
 
-// ── Copy ──
-//
-// ASCII-only, unaccented, informal-"tu" Spanish: the binding convention
-// across `whatsapp/lib/templates.ts` and `application-fill-prompts.ts`,
-// neither of which contains a single accented character. "Te avisamos por
-// aqui cuando..." deliberately echoes templates.ts's existing
-// "Te avisaremos aqui cuando el empleador los pida."
-
-const GENERIC_JOB: Record<PreferredLanguage, string> = {
-  es: 'este empleo',
-  en: 'this job',
-};
-
-/**
- * The closing line. Pure: no clock, no client, no network.
- *
- * FREE-FORM, not a template. No Content template exists for this line and
- * none is being seeded: `sendTwilioWhatsAppMessage` (whatsapp/lib/outbox.ts)
- * sends `Body` whenever `content_template` is null, and
- * `lease_worker_intent_outbox` (043) already projects `body` for the drain
- * to hand it. The 24-hour check above is what makes a body-only send legal.
- */
-export function buildWebCompletionBody(
-  lang: PreferredLanguage,
-  jobTitle: string | null,
-): string {
-  const title = jobTitle && jobTitle.trim().length > 0
-    ? jobTitle.trim()
-    : GENERIC_JOB[lang];
-  return lang === 'en'
-    ? `You completed your application for ${title} on the web. We'll let you know here when the employer responds.`
-    : `Completaste tu solicitud para ${title} en la web. Te avisamos por aqui cuando el empleador responda.`;
-}
-
 // ── Category renderer ──
 
 /**
@@ -227,29 +237,35 @@ export function buildWebCompletionBody(
  * `_clearCategoryRenderersForTests`).
  *
  * `renderers` holds ONE renderer per category, and
- * `lib/application-stage-notify.ts` claims 'account' too. Both lanes
- * register immediately before their own `enqueueWorkerMessage` call, and
- * both refuse a payload that is not theirs -- so last-register-wins is
- * correct, and either mismatch degrades to a null render (an intent rejected
+ * `lib/application-stage-notify.ts` claims 'account' too. Both lanes register
+ * immediately before their own `enqueueWorkerMessage` call, and both refuse a
+ * payload that is not theirs -- so last-register-wins is correct, and either
+ * mismatch degrades to a null render (an intent rejected
  * `renderer_unavailable`) rather than to the WRONG copy on a real send.
  *
- * The gateway's "unavailable" convention is returning null; never throw
- * from in here.
+ * This renderer only ever runs on the `allow` branch. The DEFERRED branch is
+ * materialized later by `whatsapp/worker-ready-release.ts` through the
+ * release renderer in `whatsapp/lib/onboarding-renderers.ts`, which has its
+ * own `application_web_completion` arm over the SAME
+ * `buildWebCompletionPayloadMessage`. Both paths must keep producing the same
+ * line, which is why the copy lives in the shared leaf module.
+ *
+ * The gateway's "unavailable" convention is returning null; never throw.
  */
 const renderWebCompletion: CategoryRenderer = async (client, input) => {
   const payload = input.payload as Record<string, unknown>;
-  if (payload.kind !== WEB_COMPLETION_SOURCE_TYPE) return null;
+  // 'es' is only reached if the payload's own `lang` is unreadable; the
+  // payload always carries the conversation row's language.
+  const message = buildWebCompletionPayloadMessage('es', payload);
+  if (!message) return null;
 
   const conversationId = payload.conversationId;
-  const lang = payload.lang;
-  const jobTitle = payload.jobTitle;
   if (typeof conversationId !== 'string' || !UUID_REGEX.test(conversationId)) return null;
-  if (lang !== 'es' && lang !== 'en') return null;
 
   // The recipient is re-read here rather than carried in the payload:
   // `worker_message_intents.payload` is a durable jsonb column, and a phone
-  // number does not belong in one. Scoped to the worker for the reason in
-  // the header -- `wa_conv_full` is USING (true).
+  // number does not belong in one. Scoped to the worker for the reason in the
+  // header -- `wa_conv_full` is USING (true).
   const recipient = await client.query<{ whatsapp_number: string | null }>(
     `SELECT whatsapp_number
        FROM whatsapp_conversations
@@ -259,12 +275,7 @@ const renderWebCompletion: CategoryRenderer = async (client, input) => {
   const whatsappNumber = recipient.rows[0]?.whatsapp_number;
   if (typeof whatsappNumber !== 'string' || whatsappNumber.length === 0) return null;
 
-  return {
-    whatsappNumber,
-    body: buildWebCompletionBody(lang, typeof jobTitle === 'string' ? jobTitle : null),
-    contentTemplate: null,
-    contentVariables: null,
-  };
+  return { whatsappNumber, ...message };
 };
 
 // ── The arm read ──

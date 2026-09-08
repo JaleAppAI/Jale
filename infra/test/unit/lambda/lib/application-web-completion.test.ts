@@ -86,7 +86,6 @@ const INPUT = {
   workerId: WORKER_ID,
   applicationId: APP_ID,
   jobTitle: 'Concrete Finisher',
-  companyName: null,
   lang: 'es' as const,
 };
 
@@ -193,6 +192,13 @@ describe('application-web-completion', () => {
     expect(input.sourceType).toBe('application_web_completion');
     expect(input.sourceId).toBe(APP_ID);
     expect(input.dedupeKey).toBe(`application-web-completion:${APP_ID}`);
+    // ASCENDING = sent FIRST (`withinGroupOrder` in worker-ready-release.ts
+    // sorts `a.priority - b.priority`, and 043's lease drains by the
+    // `release_sequence` it allocates in that order). So this must be a
+    // HIGHER number than every lane carrying real news: job alerts and stage
+    // changes at 30, employer chat at 40.
+    expect(input.priority).toBe(45);
+    expect(input.priority).toBeGreaterThan(40);
     // The phone number must never land in worker_message_intents.payload.
     expect(JSON.stringify(input.payload)).not.toContain(NUMBER);
     expect(input.payload.conversationId).toBe(CONV_ID);

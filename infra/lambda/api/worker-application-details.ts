@@ -491,6 +491,23 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           await rollback();
           return fail(404, 'not_found');
         }
+        // The GET completes the stage for a DOCUMENT-last worker: a file
+        // uploaded through `/worker/vault/*` never touches this engine, so
+        // this read is what closes the last requirement. Releasing the bot's
+        // arm here is not belt-and-braces -- `markDetailsCompleteIfDone`
+        // flips `details_completed_at` only `WHERE details_completed_at IS
+        // NULL`, so no later POST can ever report `detailsCompleted: true`
+        // for this application. Without this call those workers keep getting
+        // "Paso X" forever.
+        //
+        // BEFORE `buildState`, same as the POST paths: the 031 GUC trap in
+        // the file header.
+        await releaseWhatsAppLanesForApplication(client, {
+          workerId,
+          applicationId,
+          jobTitle: snapshot.jobTitle,
+          lang: 'es',
+        });
       }
       const state = await buildState(client, snapshot);
       await commit();
@@ -591,10 +608,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           workerId,
           applicationId,
           jobTitle: fresh.jobTitle,
-          // Only available after `employer_display_name()`, which is
-          // `buildState`'s last query and must not be pulled forward. The
-          // closing line names the JOB, not the company, so nothing is lost.
-          companyName: null,
           // A FALLBACK only. The conversation row's own `language` wins, and
           // it is `NOT NULL DEFAULT 'es'` (004:83) -- this is what gets used
           // for a row carrying something neither renderer knows.

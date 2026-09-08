@@ -305,7 +305,6 @@ maybeDescribe('web completion releases the WhatsApp lanes', () => {
         workerId: fresh.workerId,
         applicationId: fresh.applicationId,
         jobTitle: 'Concrete Finisher',
-        companyName: null,
         lang: 'es',
       });
       await client.query('COMMIT');
@@ -334,7 +333,10 @@ maybeDescribe('web completion releases the WhatsApp lanes', () => {
       category: 'account',
       owner_service: 'account',
       intent_source_type: 'application_web_completion',
-      priority: 20,
+      // ASCENDING = sent FIRST, so this must be HIGHER than stage news (30).
+      // See CLOSING_LINE_PRIORITY; the release-order proof is in
+      // worker-ready-release.test.ts.
+      priority: 45,
       dedupe_key: `application-web-completion:${fresh.applicationId}`,
       source_type: 'worker_intent',
       status: 'pending',
@@ -368,7 +370,6 @@ maybeDescribe('web completion releases the WhatsApp lanes', () => {
         workerId: stale.workerId,
         applicationId: stale.applicationId,
         jobTitle: 'Concrete Finisher',
-        companyName: null,
         lang: 'es',
       });
       await client.query('COMMIT');
@@ -404,7 +405,6 @@ maybeDescribe('web completion releases the WhatsApp lanes', () => {
         workerId: bumped.workerId,
         applicationId: bumped.applicationId,
         jobTitle: null,
-        companyName: null,
         lang: 'es',
       });
       await client.query('COMMIT');
@@ -452,7 +452,6 @@ maybeDescribe('web completion releases the WhatsApp lanes', () => {
         workerId: denied.workerId,
         applicationId: denied.applicationId,
         jobTitle: 'Concrete Finisher',
-        companyName: null,
         lang: 'es',
       });
       expect(result).toEqual({ armed: false, scrubbed: 0, closingLineQueued: false });
@@ -482,7 +481,6 @@ maybeDescribe('web completion releases the WhatsApp lanes', () => {
         workerId: fresh.workerId,
         applicationId: fresh.applicationId,
         jobTitle: 'Concrete Finisher',
-        companyName: null,
         lang: 'es',
       });
       await client.query('COMMIT');
@@ -513,7 +511,6 @@ maybeDescribe('web completion releases the WhatsApp lanes', () => {
         workerId: fresh.workerId,
         applicationId: fresh.applicationId,
         jobTitle: 'Concrete Finisher',
-        companyName: null,
         lang: 'es',
       });
       await client.query('COMMIT');

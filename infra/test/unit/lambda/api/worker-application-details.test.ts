@@ -765,7 +765,6 @@ describe('worker-application-details', () => {
         workerId: WORKER_ID,
         applicationId: APP_ID,
         jobTitle: 'Concrete Finisher',
-        companyName: null,
         lang: 'es',
       });
       expect(mockReleasePromptLane).not.toHaveBeenCalled();
@@ -836,17 +835,52 @@ describe('worker-application-details', () => {
       expect(mockReleasePromptLane).not.toHaveBeenCalled();
     });
 
-    it('does NOT release on the GET path even when it flips details_completed_at', async () => {
-      // KNOWN GAP, deliberately pinned: `markDetailsCompleteIfDone` also
-      // runs on the GET (a vault upload can close the last requirement), and
-      // that path releases nothing. Flagged for the owner rather than fixed
-      // here -- the wiring points for this lane are the two write doors.
+    it('DOES release on the GET path when it flips details_completed_at', async () => {
+      // The document-last worker. A file uploaded through `/worker/vault/*`
+      // never touches the requirements engine, so the GET's
+      // `markDetailsCompleteIfDone` is what closes their stage -- and because
+      // it flips only `WHERE details_completed_at IS NULL`, no later POST can
+      // ever report `detailsCompleted: true` for that application. Missing
+      // this call left those workers re-prompted forever.
       mockMarkComplete.mockResolvedValue(true);
 
       const res = await handler(makeEvent());
 
       expect(res.statusCode).toBe(200);
+      expect(mockReleaseLanes).toHaveBeenCalledTimes(1);
+      expect(mockReleaseLanes).toHaveBeenCalledWith(expect.anything(), {
+        workerId: WORKER_ID,
+        applicationId: APP_ID,
+        jobTitle: 'Concrete Finisher',
+        lang: 'es',
+      });
+    });
+
+    it('does NOT release on a GET that changes nothing', async () => {
+      mockMarkComplete.mockResolvedValue(false);
+
+      const res = await handler(makeEvent());
+
+      expect(res.statusCode).toBe(200);
       expect(mockReleaseLanes).not.toHaveBeenCalled();
+    });
+
+    it('releases on the GET BEFORE buildState flips the 031 GUC', async () => {
+      mockMarkComplete.mockResolvedValue(true);
+      const order: string[] = [];
+      mockReleaseLanes.mockImplementation(async () => {
+        order.push('release');
+        return { armed: true, scrubbed: 1, closingLineQueued: true };
+      });
+      mockQuery.mockImplementation((sql: string) => {
+        if (/employer_display_name/.test(sql)) order.push('employer_display_name');
+        if (/^COMMIT$/.test(sql)) order.push('COMMIT');
+        return Promise.resolve(defaultQuery(sql));
+      });
+
+      await handler(makeEvent());
+
+      expect(order).toEqual(['release', 'employer_display_name', 'COMMIT']);
     });
 
     it('releases the PROMPT lane only, with no closing line, once no prompt is outstanding', async () => {
