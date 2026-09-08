@@ -16,10 +16,13 @@ import { renderIntl, message, expectNoRawMessageKeys } from '@/components/worker
  * asked of the wrong namespace prints its own key path, and
  * `expectNoRawMessageKeys` is what catches that.
  *
- * The panels that are NOT the facts card are stubbed out -- `WhatYouNeedPanel`
- * renders certifications with their own required/optional wording, so leaving
- * it in would make every chip assertion below ambiguous about which surface it
- * matched.
+ * The panels that are NOT the facts card are stubbed out, with ONE deliberate
+ * exception: `WhatYouNeedPanel` renders live. It lists every certification with
+ * its tier AND the worker's vault status, so it is the only thing that can
+ * prove the card does not say the same certification a second time three inches
+ * higher (owner ruling, fix round 1). It is safe to leave in -- it renders no
+ * `dl` and no `h3`, so neither the tile helper below nor the scoped chip
+ * queries can see into it.
  */
 
 vi.mock('next/navigation', () => ({
@@ -50,10 +53,6 @@ vi.mock('@/components/layout/AppShell', () => ({
 
 vi.mock('@/components/PayReferenceHint', () => ({
     PayReferenceHint: () => <p>pay reference hint</p>,
-}));
-
-vi.mock('@/components/worker/WhatYouNeedPanel', () => ({
-    WhatYouNeedPanel: () => <div data-testid="what-you-need" />,
 }));
 
 vi.mock('@/components/worker/ShareJobPanel', () => ({
@@ -220,6 +219,29 @@ describe('worker job detail — the facts card', () => {
         ]);
     });
 
+    /*
+     * Owner ruling, fix round 1: the card states the job's POLICY requirements
+     * (transport, work authorization) and stops there. Certifications are
+     * `WhatYouNeedPanel`'s job on this page, because it can say the one thing
+     * the chip cannot -- whether the worker already has the thing in their
+     * vault. A chip row that repeats the panel's list is noise, and on a phone
+     * the two sit within a screen of each other.
+     */
+    it('names each certification exactly once on the page, leaving them to the panel', () => {
+        seed = fullJob();
+        renderIntl(<WorkerJobDetailPage />);
+
+        expect(screen.getAllByText('OSHA 10')).toHaveLength(1);
+        expect(screen.getAllByText('Scaffold')).toHaveLength(1);
+        // ...and the one that renders is the panel's row, not a facts chip.
+        const chips = screen.getByRole('heading', { level: 3, name: t('facts.requirements') })
+            .parentElement!.querySelectorAll('li');
+        expect(Array.from(chips).map((chip) => chip.textContent)).toEqual([
+            `${t('transportation')}, ${message('job_requirements.states.required')}`,
+            `${t('facts.work_authorization')}, ${message('job_requirements.states.required')}`,
+        ]);
+    });
+
     it('keeps the vault document rows as their own section', () => {
         seed = fullJob({ required_docs: ['resume'], missing_docs: ['resume'] });
         renderIntl(<WorkerJobDetailPage />);
@@ -262,6 +284,21 @@ describe('worker job detail — the facts card', () => {
             expect(screen.queryByRole('heading', { level: 3, name: t('facts.requirements') })).toBeNull();
             expect(screen.queryByRole('heading', { level: 3, name: /About the job/ })).toBeNull();
             expect(screen.queryByRole('heading', { level: 3, name: t('facts.documents') })).toBeNull();
+        });
+
+        /*
+         * Owner ruling, fix round 1: when the posted date lived in the About
+         * label, a job with no description lost the date with it -- and how
+         * stale a posting is decides whether a worker bothers walking to it.
+         * It is a header badge now, so it cannot be taken down by an empty
+         * field somewhere else on the card.
+         */
+        it('still states when the job was posted, with no description to hang it on', () => {
+            seed = sparseJob();
+            renderIntl(<WorkerJobDetailPage />);
+
+            expect(screen.queryByRole('heading', { level: 3, name: /About the job/ })).toBeNull();
+            expect(screen.getByText(`${t('posted')} Jun 1, 2026`)).toBeInTheDocument();
         });
 
         it('still shows the start tile, muted, saying the date is unconfirmed', () => {

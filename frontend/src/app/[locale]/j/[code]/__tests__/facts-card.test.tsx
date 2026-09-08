@@ -242,6 +242,19 @@ describe('public job page — the facts card', () => {
         expectNoRawMessageKeys();
     });
 
+    /*
+     * Owner ruling, fix round 1: the posted date is a header badge, not part of
+     * the About label. On the one page a stranger reaches from a forwarded
+     * WhatsApp link, how old the posting is decides whether they bother -- and
+     * it must not vanish because the employer left the description empty.
+     */
+    it('states when the job was posted even with no description', async () => {
+        await renderPage(sparseJob());
+
+        expect(screen.queryByRole('heading', { level: 3, name: t('about_job') })).toBeNull();
+        expect(screen.getByText(`${t('posted')} Jun 1, 2026`)).toBeInTheDocument();
+    });
+
     describe('a sparse job', () => {
         it('omits the pay headline, the requirement chips and the About section', async () => {
             await renderPage(sparseJob());

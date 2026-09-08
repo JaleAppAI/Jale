@@ -276,8 +276,29 @@ describe('employer job detail — the facts card', () => {
         expectNoRawMessageKeys();
     });
 
+    /*
+     * Owner ruling, fix round 1: the posted date is a header badge, not part of
+     * the About label, so an employer who never wrote a description still sees
+     * how old their own posting is -- the number that explains a quiet
+     * applicant list.
+     */
+    it('states when the job was posted even with no description written', () => {
+        setSeed(sparseJob());
+        renderIntl(<EmployerJobDetailPage />);
+
+        // `message` returns the raw ICU template, so the date is substituted
+        // here rather than hardcoding the English sentence around it.
+        expect(
+            screen.getByText(shared('panels.posted_on').replace('{date}', 'Jun 1, 2026')),
+        ).toBeInTheDocument();
+        // The employer's own card keeps the About section either way: an empty
+        // description is a prompt to write one, not a section to hide.
+        expect(screen.getByRole('heading', { level: 3, name: t('job.facts.about') })).toBeInTheDocument();
+        expect(screen.getByText(t('job.no_description'))).toBeInTheDocument();
+    });
+
     describe('a sparse job', () => {
-        it('omits the pay headline, the requirement chips and the About section', () => {
+        it('omits the pay headline and the requirement chips', () => {
             setSeed(sparseJob());
             renderIntl(<EmployerJobDetailPage />);
 
