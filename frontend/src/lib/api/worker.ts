@@ -258,6 +258,52 @@ export type JobDetail = Job & {
   remaining?: RequirementsRemaining;
 };
 
+/**
+ * The hire, and the worker's receipt of it.
+ *
+ * Sent ONLY on a `status === 'hired'` row -- the presence of the key is the
+ * signal, which is why every reader below tests `a.hire` rather than
+ * re-deriving the condition from `status` alone.
+ *
+ * The two acknowledgement stamps are SERVER state, not browser state, and
+ * deliberately so: a celebration that lived in `localStorage` would fire again
+ * on the worker's next device, and a worker who reads their applications on a
+ * borrowed phone is the normal case here, not the edge one.
+ *  - `seen_at`   -- the modal has been shown and closed. Null means show it.
+ *  - `acknowledged_at` -- the banner's × has been pressed. Null means the
+ *    banner still belongs on the home and applications pages.
+ *
+ * `start_date` is a DATE-ONLY value (`YYYY-MM-DD`), so it must be formatted
+ * through `formatStartDate*` (UTC-pinned) and never through the instant
+ * helpers -- see the two families in `lib/date.ts`.
+ *
+ * The PAY fields are raw, not a pre-formatted sentence, and this shape
+ * deliberately satisfies `PayFields` in `lib/pay.ts` so `formatPay(hire, tPay)`
+ * takes it directly. `jobs.pay` is server-persisted ENGLISH free text; showing
+ * it verbatim is the exact bug `lib/pay.ts` exists to fix, so a Spanish-locale
+ * worker gets a localized string built from `pay_min`/`pay_max`/
+ * `pay_interval` and the legacy column is only the fallback.
+ */
+export type ApplicationHire = {
+  hired_at: string;
+  seen_at: string | null;
+  acknowledged_at: string | null;
+  /** `YYYY-MM-DD`. Null is a real answer: the employer has not set one. */
+  start_date: string | null;
+  location: string | null;
+  shift_schedule: string | null;
+  /**
+   * The legacy `jobs.pay` text, or null. May carry the API's
+   * `PAY_UNSPECIFIED` sentinel ("Pay not specified") rather than a figure --
+   * `formatPay` recognises it and answers null, so no call site should test
+   * this field itself.
+   */
+  pay: string | null;
+  pay_min: number | null;
+  pay_max: number | null;
+  pay_interval: string | null;
+};
+
 export type Application = {
   application_id: string;
   job_id: string;
@@ -265,6 +311,12 @@ export type Application = {
   company_name: string;
   status: ApplicationStatus;
   applied_at: string;
+  /**
+   * Present only when `status === 'hired'`. Optional for the same reason
+   * `job_status` and the stage-2 columns are: the frontend may deploy before
+   * the backend adds the field.
+   */
+  hire?: ApplicationHire;
   /** Job (not application) status. Optional: the frontend may deploy before
    * the backend adds the field. Never 'paused' — the API coalesces it to
    * 'closed' (billing privacy). */
@@ -652,6 +704,46 @@ export async function getApplications(
 ): Promise<{ applications: Application[] }> {
   const res = await apiFetch('/worker/applications', { signal }, token);
   if (!res.ok) throw await parseApiError(res, 'fetch_failed');
+  return res.json();
+}
+
+/** Which half of the hire receipt this call is writing. */
+export type HireAckStep = 'seen' | 'dismissed';
+
+/** The stamps as the server now holds them, echoed back so a caller can
+ *  replace its optimistic guess with the authoritative pair. */
+export type HireAckResult = {
+  seen_at: string | null;
+  acknowledged_at: string | null;
+};
+
+/**
+ * Records that the worker has SEEN the hire celebration (`seen`) or DISMISSED
+ * its banner (`dismissed`).
+ *
+ * A MUTATION, so no `AbortSignal` -- see the note above `getJobs`. That
+ * matters more here than usual: the call fires as the modal closes and as the
+ * banner disappears, i.e. at exactly the moments a worker is most likely to
+ * navigate away, and a receipt aborted on unmount would resurrect the
+ * celebration on their next visit.
+ *
+ * Idempotent at the door (`seen` twice is one stamp), which is what lets every
+ * call site fire it FIRE-AND-FORGET with an optimistic local update rather
+ * than blocking the dismissal on a round trip. Callers swallow the rejection:
+ * the worst case of a lost receipt is one repeat of a congratulations message,
+ * and that is a better failure than a × that does nothing.
+ */
+export async function acknowledgeHire(
+  token: string,
+  applicationId: string,
+  step: HireAckStep,
+): Promise<HireAckResult> {
+  const res = await apiFetch(
+    `/worker/applications/${applicationId}/hire-ack`,
+    { method: 'POST', body: JSON.stringify({ step }) },
+    token,
+  );
+  if (!res.ok) throw await parseApiError(res, 'hire_ack_failed');
   return res.json();
 }
 

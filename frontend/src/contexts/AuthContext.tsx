@@ -174,7 +174,11 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
             const rt = stored?.refreshToken ?? null;
             const ut = stored?.userType ?? null;
             if (!rt) {
-                clearSession(ut ?? undefined);
+                // Never unscoped: `clearSession(undefined)` wipes BOTH role
+                // slots, and since a role route with only the OTHER role
+                // signed in now resolves to no session at all, an unscoped
+                // clear here would sign that other role out too.
+                clearSession(ut ?? inferUserTypeFromPath() ?? undefined);
                 return null;
             }
             try {

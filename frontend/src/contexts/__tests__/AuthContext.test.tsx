@@ -133,12 +133,29 @@ describe('AuthProvider — signing out', () => {
         const user = userEvent.setup();
 
         renderProvider();
-        await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('ready:worker'));
+        // The employer login page with only a worker signed in: NOT a worker
+        // session in disguise. Restoring the worker here is what sent a click
+        // on "employer login" straight to the worker home (2026-09-04).
+        await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('ready:none'));
+        expect(refreshCalls()).toEqual([]);
         await user.click(screen.getByRole('button', { name: 'sign in as employer' }));
 
         await waitFor(() => expect(localStorage.getItem(EMPLOYER_SLOT)).toBe('rt-new-employer'));
         expect(localStorage.getItem(WORKER_SLOT)).toBe('rt-worker');
         expect(localStorage.getItem(LAST_ROLE_KEY)).toBe('employer');
+    });
+
+    it('leaves an employer route signed out when only a worker is stored', async () => {
+        // The mirror image for a role PAGE (not just the login door): the
+        // employer dashboard must not run on worker tokens. `useRequireAuth`
+        // then sends the visitor to the employer login with a return URL.
+        localStorage.setItem(WORKER_SLOT, 'rt-worker');
+        window.history.replaceState(null, '', '/es/employer/dashboard');
+
+        renderProvider();
+        await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('ready:none'));
+        expect(refreshCalls()).toEqual([]);
+        expect(localStorage.getItem(WORKER_SLOT)).toBe('rt-worker');
     });
 
     it('drops only the refused role when a stored token no longer works', async () => {

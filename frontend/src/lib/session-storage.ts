@@ -195,11 +195,12 @@ export function readRoleToken(userType: StoredUserType): string | null {
  * `/auth/*`, the legal pages. Resolution order:
  *
  *   1. `preferred`'s own slot, so a worker route restores the worker session
- *      even when an employer session is also stored;
- *   2. the only populated slot, if there is exactly one — an employer opening a
- *      `/worker/...` URL still has one session, and the auth pages already
- *      route a mismatched role to its own home;
- *   3. with both populated and no preference, whichever signed in last;
+ *      even when an employer session is also stored — and if that slot is
+ *      empty, a route that names a role gets NOTHING (an `/employer/...` URL,
+ *      the employer login included, never runs on the worker's session);
+ *   2. with no preference (landing page, legal pages): the only populated
+ *      slot, if there is exactly one;
+ *   3. with no preference and both populated, whichever signed in last;
  *   4. a legacy session that could not be promoted (see `promoteLegacySession`),
  *      because logging that user out would be strictly worse than restoring it
  *      with an unknown role.
@@ -211,6 +212,15 @@ export function readSession(preferred: StoredUserType | null): StoredSession | n
   if (preferred) {
     const token = read(local, slotKey(preferred));
     if (token) return { refreshToken: token, userType: preferred };
+    // A route that names a role gets that role's session or NOTHING. The
+    // other role's slot is never a substitute: handing /auth/employer the
+    // worker session made the employer login page see an authenticated
+    // worker and send them to the worker home (2026-09-04), and it would run
+    // an employer page on worker tokens. Only an un-promotable legacy copy
+    // (see `promoteLegacySession`) is still returned, so nobody is logged
+    // out by the migration.
+    if (leftover) return { refreshToken: leftover.token, userType: leftover.role };
+    return null;
   }
 
   const populated = ROLES

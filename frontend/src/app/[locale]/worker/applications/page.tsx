@@ -1,5 +1,7 @@
 'use client';
+import { useCallback } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
+import { useAuth } from '@/contexts/AuthContext';
 import { usePageData } from '@/hooks/usePageData';
 import { useStaggerOnce } from '@/hooks/useStaggerOnce';
 import { Link } from '@/i18n/navigation';
@@ -17,9 +19,11 @@ import {
   DetailsRequestedBanner,
   DetailsRequestedMultiBanner,
 } from '@/components/worker/DetailsRequestedBanner';
+import { HiredBanner } from '@/components/worker/HiredBanner';
 import { JobStatusBadge } from '@/components/ui/badge';
-import { getApplications } from '@/lib/api/worker';
-import { formatLongDate } from '@/lib/date';
+import { acknowledgeHire, getApplications } from '@/lib/api/worker';
+import { formatLongDate, formatStartDateWeekdayShort } from '@/lib/date';
+import { formatPay } from '@/lib/pay';
 import type { Application } from '@/lib/api/worker';
 import { normalizeApplicationStatus, TERMINAL_APPLICATION_STATUSES } from '@/lib/status';
 import { visibleJobStatusBadge } from '@/lib/jobStatusDisplay';
@@ -53,7 +57,9 @@ function MetricRowSkeleton() {
 
 export default function WorkerApplicationsPage() {
   const t = useTranslations('worker_applications');
+  const tPay = useTranslations('pay');
   const locale = useLocale();
+  const { idToken } = useAuth();
 
   const {
     phase,
@@ -61,6 +67,7 @@ export default function WorkerApplicationsPage() {
     empty,
     errorKind,
     retry,
+    setData,
   } = usePageData<Application[]>({
     legalReturnUrl: '/worker/applications',
     isEmpty: (data) => data.length === 0,
@@ -94,6 +101,30 @@ export default function WorkerApplicationsPage() {
   // details_requested applicant along to `talking` does not make the row stop
   // asking for the details it is still waiting on (B4.0 #7).
   const needingDetails = list.filter((a) => a.details_status === 'requested');
+
+  /**
+   * Dismisses the hire banner on ONE row.
+   *
+   * The optimistic edit goes through `usePageData`'s `setData` rather than a
+   * second piece of page state, so the list stays single-sourced: a later
+   * `retry()` refetch replaces the row wholesale and the server's
+   * `acknowledged_at` is what keeps the banner gone. A parallel "dismissed
+   * ids" set would disagree with that response the moment the two diverged.
+   *
+   * Fire-and-forget with an explicit `.catch`, the same contract the home page
+   * uses -- a worker who pressed × has decided, and the worst case of a lost
+   * receipt is one repeated line of congratulations. No `await`: nothing on
+   * screen may wait on the network here.
+   */
+  const dismissHire = useCallback((applicationId: string) => {
+    setData((prev) => prev.map((a) => (
+      a.application_id === applicationId && a.hire
+        ? { ...a, hire: { ...a.hire, acknowledged_at: new Date().toISOString() } }
+        : a
+    )));
+    if (!idToken) return;
+    void acknowledgeHire(idToken, applicationId, 'dismissed').catch(() => {});
+  }, [idToken, setData]);
 
   return (
     <AppShell role="worker" title={t('title')}>
@@ -144,6 +175,26 @@ export default function WorkerApplicationsPage() {
                       {list.map((a) => {
                         const jobStatusBadge = visibleJobStatusBadge(a.job_status);
                         const needsDetails = a.details_status === 'requested';
+                        // `status` is the authority for a hire: a `hire` block
+                        // left on a row an employer moved back out of `hired`
+                        // must not congratulate anyone.
+                        const hire = a.status === 'hired' ? a.hire : undefined;
+                        // Date-only value, so the UTC-pinned formatter -- the
+                        // instant helper two lines below is for `applied_at`.
+                        const hireStartDate = formatStartDateWeekdayShort(hire?.start_date, locale);
+                        // The facts survive the banner's dismissal: they are
+                        // still true, and the start date is the single thing a
+                        // worker comes back to this row to re-read.
+                        const hireFacts = hire
+                          ? [
+                              hireStartDate ? `${t('hired_celebration.modal.start_date')}: ${hireStartDate}` : null,
+                              hire.location,
+                              // Localized from the structured columns, never
+                              // `hire.pay` verbatim -- that column is English
+                              // free text and may be the sentinel.
+                              formatPay(hire, tPay),
+                            ].filter((fact): fact is string => Boolean(fact))
+                          : [];
                         return (
                           <li key={a.application_id}>
                             {/* The row keeps pointing at the JOB. The banner
@@ -184,12 +235,35 @@ export default function WorkerApplicationsPage() {
                                 <p className="mt-1 text-xs font-medium tabular-nums text-[var(--jale-ink-2)]">
                                   {t('applied')}: {formatLongDate(a.applied_at, locale) ?? a.applied_at}
                                 </p>
+                                {/* What the hire actually is. Inside the link
+                                    because it carries no link of its own; the
+                                    banner below has one and must stay a
+                                    sibling. */}
+                                {hireFacts.length > 0 ? (
+                                  <p className="mt-1 flex flex-wrap gap-x-3.5 gap-y-1 text-xs font-medium text-[var(--jale-ink-2)]">
+                                    {hireFacts.map((fact) => (
+                                      <span key={fact}>{fact}</span>
+                                    ))}
+                                  </p>
+                                ) : null}
                               </div>
                             </Link>
                             {/* A SIBLING of the row link, never nested inside
                                 it: the banner carries its own link, and an
                                 anchor inside an anchor is invalid HTML that
                                 browsers resolve by silently dropping one. */}
+                            {hire && !hire.acknowledged_at ? (
+                              <div className="px-4 pb-4 md:px-5">
+                                <HiredBanner
+                                  applicationId={a.application_id}
+                                  jobTitle={a.job_title}
+                                  companyName={a.company_name}
+                                  hire={hire}
+                                  compact
+                                  onDismiss={() => dismissHire(a.application_id)}
+                                />
+                              </div>
+                            ) : null}
                             {needsDetails ? (
                               <div className="px-4 pb-4 md:px-5">
                                 <DetailsRequestedBanner

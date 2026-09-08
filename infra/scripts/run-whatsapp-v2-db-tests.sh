@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Fail-closed runner for the focused WhatsApp v2 PostgreSQL enforcement and
-# concurrency suites (migrations 042/049/080/086/087/091/092/093/094 + onboarding
+# concurrency suites (migrations 042/049/080/086/087/091/092/093/094/095 + onboarding
 # concurrency, least-privilege flow coverage, and the 080 application-fill DB
 # contract: worker_documents grants/RLS, the 075/078 cert caps, and -- since
 # migration 091 retired the 022 INSERT guard the 080 suite used to exercise --
@@ -52,8 +52,8 @@
 # last because 043's lease RPC is global by design, so leasing advances the
 # attempt_count of any fixture row another suite has left behind.
 #
-# The 094 entry is now the last one, after the 093 defer suite. It is the only
-# suite that APPLIES A MIGRATION FILE as the real `jale_admin` role rather than
+# The 094 entry sits after the 093 defer suite. It was the first suite that
+# APPLIES A MIGRATION FILE as the real `jale_admin` role rather than
 # reading the end state a bootstrap left behind, and it has to: both tables 094
 # writes are RLS ENABLE + FORCE with GUC-keyed policies, so jale_admin -- the
 # OWNER, and the role the migration runs as -- sees zero rows unless the file
@@ -67,8 +67,22 @@
 # re-applying 094 takes ACCESS EXCLUSIVE on `users`, so it must not interleave
 # with a suite holding fixture rows open.
 #
+# The 095 entry is now the LAST one, and it applies a migration file for the
+# same reason 094 does: job_applications is RLS ENABLE + FORCE and every policy
+# on it is GUC-keyed, so the hire backfill would rewrite zero rows -- and
+# report success -- if the file forgot its un-force, and applying it as the
+# superuser would hide exactly that. It is also the only place the 095 GRANT is
+# falsifiable: that the worker's role may write hired_seen_at/hired_ack_at and
+# gets a 42501 (not a silently dropped column) on hired_at is a privilege fact,
+# and that one worker cannot acknowledge another's hire is a zero-row policy
+# fact. Both handler statements are extracted from their own .ts sources and
+# executed verbatim, so a copy that drifts from the shipped SQL fails here. It
+# runs LAST because re-applying 095 takes ACCESS EXCLUSIVE on job_applications
+# and stamps every hired row on the database, so it must not interleave with a
+# suite holding application fixtures open.
+#
 # WHAT THE DATABASE MUST BE. `JALE_TEST_DATABASE_URL` must point at a
-# disposable local Postgres 16 database with migrations 001 THROUGH 094
+# disposable local Postgres 16 database with migrations 001 THROUGH 095
 # applied, and the connecting role must be a SUPERUSER. 092 is not optional
 # here: several suites now assert the post-cleanup end state (the 080 entry
 # expects the retired guard FUNCTION to be gone, and the crossover entry no
@@ -97,7 +111,7 @@ if [ -z "${JALE_TEST_DATABASE_URL:-}" ]; then
   echo "run-whatsapp-v2-db-tests: JALE_TEST_DATABASE_URL is not set (or empty)." >&2
   echo "  Refusing to run: the migration-042/049 and concurrency suites SKIP without a" >&2
   echo "  database URL and jest would otherwise exit 0 without verifying anything." >&2
-  echo "  Set it to a local Postgres 16 SUPERUSER url (migrations 001-094 applied)," >&2
+  echo "  Set it to a local Postgres 16 SUPERUSER url (migrations 001-095 applied)," >&2
   echo "  then re-run. The value is never printed." >&2
   exit 1
 fi
@@ -126,7 +140,7 @@ if ! node -e '
     .catch((e) => { console.error("  " + e.message); process.exit(3); });
 ' 2>&1; then
   echo "run-whatsapp-v2-db-tests: JALE_TEST_DATABASE_URL is unusable." >&2
-  echo "  These suites need a disposable local database with migrations 001-094" >&2
+  echo "  These suites need a disposable local database with migrations 001-095" >&2
   echo "  applied, reached as a SUPERUSER: they ALTER ROLE jale_whatsapp/jale_ai to" >&2
   echo "  set test passwords, insert fixtures past RLS, and read columns those roles" >&2
   echo "  are not granted. Refusing to run. The value is never printed." >&2
@@ -154,4 +168,5 @@ exec npx jest --runInBand \
   test/unit/db/application-field-reuse.integration.test.ts \
   test/unit/db/application-stage-notify.integration.test.ts \
   test/unit/db/worker-intent-defer-093.integration.test.ts \
-  test/unit/db/sprint24-data-backfills-094.integration.test.ts
+  test/unit/db/sprint24-data-backfills-094.integration.test.ts \
+  test/unit/db/application-hire-ack-095.integration.test.ts

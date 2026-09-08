@@ -208,13 +208,23 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // moves the row to 'hired' while requirements are still missing. That is a
     // client error, not a server fault: parseHireGateError turns it into a
     // 409 with the missing buckets.
+    //
+    // Sprint 24 (095): hired_at is stamped here and NOWHERE else. It is the
+    // employer's claim about when the hire happened, so the worker's own door
+    // (which runs as jale_whatsapp) is granted UPDATE on hired_seen_at and
+    // hired_ack_at only -- a worker who could write hired_at could forge their
+    // own hire date. Same COALESCE + ELSE shape as details_requested_at above,
+    // and for the same reason: an employer who bounces a hire back to
+    // 'talking' and re-hires must keep the FIRST hire date, or the
+    // celebration the worker already dismissed would fire again.
     let result;
     try {
       result = await client.query(
         `UPDATE job_applications
          SET status = $1,
              updated_at = now(),
-             details_requested_at = CASE WHEN $1 = 'details_requested' THEN COALESCE(details_requested_at, now()) ELSE details_requested_at END
+             details_requested_at = CASE WHEN $1 = 'details_requested' THEN COALESCE(details_requested_at, now()) ELSE details_requested_at END,
+             hired_at = CASE WHEN $1 = 'hired' THEN COALESCE(hired_at, now()) ELSE hired_at END
          WHERE job_id = $2 AND worker_id = $3
          RETURNING id AS application_id, job_id, worker_id, status, applied_at, updated_at,
                    details_requested_at, details_completed_at`,

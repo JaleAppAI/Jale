@@ -169,4 +169,157 @@ describe('worker-applications-list', () => {
       expect(r.remaining.complete).toBe(true);
     });
   });
+
+  // Sprint 24 (095): the worker's "You've been hired" celebration. The modal
+  // fires once and the banner is dismissible, and BOTH pieces of state live on
+  // the row (hired_seen_at / hired_ack_at) so they hold across devices -- which
+  // is why this list, not localStorage, is what the browser reads them from.
+  describe('hire celebration (095)', () => {
+    /** The 095 columns and the job facts the celebration repeats. */
+    const HIRE_COLUMNS = {
+      hired_at: new Date('2026-09-04T15:30:00.000Z'),
+      hired_seen_at: null,
+      hired_ack_at: null,
+      job_start_date: '2026-09-15',
+      job_location: 'El Paso, TX 79901',
+      job_city: 'El Paso',
+      job_state: 'TX',
+      job_pay: '$22-$26/hour',
+      job_pay_min: 22,
+      job_pay_max: 26,
+      job_pay_interval: 'hourly',
+      job_shift_schedule: 'Lunes a viernes, 7am-3pm',
+    };
+    const BASE = {
+      application_id: 'a1', job_id: 'j1', job_title: 'T', company_name: 'Acme',
+      status: 'pending', applied_at: 'ts', job_status: 'active',
+      application_answers: {}, prompt_answers: {},
+      details_requested_at: null, details_completed_at: null,
+      required_fields: [], optional_fields: [], required_docs: [], optional_docs: [],
+      certification_requirements: null, pre_application_prompts: [], have_docs: [],
+      ...HIRE_COLUMNS,
+    };
+
+    async function row(over: Record<string, unknown> = {}) {
+      mockQuery.mockImplementation((q: string) => {
+        if (q.trim().startsWith('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-internal-id' }] });
+        if (q.includes('FROM job_applications')) return Promise.resolve({ rows: [{ ...BASE, ...over }] });
+        return Promise.resolve({ rows: [] });
+      });
+      const res = await handler(ev);
+      expect(res.statusCode).toBe(200);
+      return JSON.parse(res.body).applications[0];
+    }
+
+    const listSql = () =>
+      mockQuery.mock.calls.find(([q]) => String(q).includes('FROM job_applications'))?.[0] as string;
+
+    it('selects the three 095 columns and the job facts, and keeps employer_display_name last', async () => {
+      await row();
+      const sql = listSql();
+      // COALESCE, not a bare a.hired_at: a worker hired in the window between
+      // migration 095 and this code deploy has a NULL hired_at (nothing wrote
+      // it yet) and must still get their celebration. updated_at is NOT NULL
+      // (003), so the projected value is never null.
+      expect(sql).toContain('COALESCE(a.hired_at, a.updated_at) AS hired_at');
+      expect(sql).toContain('a.hired_seen_at');
+      expect(sql).toContain('a.hired_ack_at');
+      // jobs.start_date is a DATE. `pg` parses a DATE into a JS Date at LOCAL
+      // midnight, which JSON.stringify then emits as a full ISO timestamp --
+      // and, west of UTC, as the PREVIOUS day. to_char keeps it the calendar
+      // day the employer picked, in every timezone.
+      expect(sql).toContain("to_char(j.start_date, 'YYYY-MM-DD') AS job_start_date");
+      for (const alias of [
+        'j.location AS job_location', 'j.city AS job_city', 'j.state AS job_state',
+        'j.pay AS job_pay', 'j.pay_min AS job_pay_min', 'j.pay_max AS job_pay_max',
+        'j.pay_interval AS job_pay_interval', 'j.shift_schedule AS job_shift_schedule',
+      ]) {
+        expect(sql).toContain(alias);
+      }
+      // The 031 trap: employer_display_name flips a transaction-local GUC that
+      // widens employer_profiles reads until COMMIT, so nothing may follow it.
+      const after = mockQuery.mock.calls.slice(
+        mockQuery.mock.calls.findIndex(([q]) => String(q).includes('employer_display_name')) + 1,
+      );
+      expect(after.every(([q]) => !String(q).includes('employer_profiles'))).toBe(true);
+    });
+
+    it('attaches hire to a hired row, with the job facts the celebration shows', async () => {
+      const r = await row({ status: 'hired' });
+      expect(r.hire).toEqual({
+        hired_at: '2026-09-04T15:30:00.000Z',
+        seen_at: null,
+        acknowledged_at: null,
+        start_date: '2026-09-15',
+        location: 'El Paso, TX',
+        // Raw pay fields: the browser's formatPay(job, t) renders the line.
+        pay: '$22-$26/hour',
+        pay_min: 22,
+        pay_max: 26,
+        pay_interval: 'hourly',
+        shift_schedule: 'Lunes a viernes, 7am-3pm',
+      });
+    });
+
+    it('reports seen and acknowledged from the row, so the modal cannot re-fire on another device', async () => {
+      const r = await row({
+        status: 'hired',
+        hired_seen_at: new Date('2026-09-04T16:00:00.000Z'),
+        hired_ack_at: new Date('2026-09-05T09:00:00.000Z'),
+      });
+      expect(r.hire.seen_at).toBe('2026-09-04T16:00:00.000Z');
+      expect(r.hire.acknowledged_at).toBe('2026-09-05T09:00:00.000Z');
+    });
+
+    // THE regression this feature could most easily cause: nine new columns in
+    // the SELECT, leaking into every row of a list every worker loads.
+    it('adds NOTHING to a non-hired row: no hire key, and every 095/job column stripped', async () => {
+      for (const status of ['pending', 'contacted', 'talking', 'details_requested', 'not_interested']) {
+        const r = await row({ status });
+        expect(r.hire).toBeUndefined();
+        expect(Object.prototype.hasOwnProperty.call(r, 'hire')).toBe(false);
+        for (const key of Object.keys(HIRE_COLUMNS)) {
+          expect(Object.prototype.hasOwnProperty.call(r, key)).toBe(false);
+        }
+      }
+    });
+
+    it('strips the raw 095 and job columns from a HIRED row too -- only `hire` publishes them', async () => {
+      const r = await row({ status: 'hired' });
+      for (const key of Object.keys(HIRE_COLUMNS)) {
+        expect(Object.prototype.hasOwnProperty.call(r, key)).toBe(false);
+      }
+      // ...and the rest of the row is exactly what it was before this feature.
+      expect(Object.keys(r).sort()).toEqual([
+        'application_id', 'applied_at', 'company_name', 'details_completed_at',
+        'details_requested_at', 'details_status', 'hire', 'job_id', 'job_status',
+        'job_title', 'remaining', 'remaining_count', 'stage', 'status',
+      ]);
+    });
+
+    it('publishes the structured pay columns raw and never a synthesised string', async () => {
+      const r = await row({ status: 'hired', job_pay: null });
+      // No server-side fallback: an empty jobs.pay is null on the wire, and
+      // the bounds go out for the client's own i18n formatter to render.
+      expect(r.hire.pay).toBeNull();
+      expect(r.hire.pay_min).toBe(22);
+      expect(r.hire.pay_max).toBe(26);
+      expect(r.hire.pay_interval).toBe('hourly');
+    });
+
+    it('nulls every job fact the job does not carry, and still celebrates', async () => {
+      const r = await row({
+        status: 'hired',
+        job_start_date: null, job_location: '   ', job_city: null, job_state: null,
+        job_pay: null, job_pay_min: null, job_pay_max: null, job_pay_interval: null,
+        job_shift_schedule: null,
+      });
+      expect(r.hire).toEqual({
+        hired_at: '2026-09-04T15:30:00.000Z',
+        seen_at: null, acknowledged_at: null,
+        start_date: null, location: null, shift_schedule: null,
+        pay: null, pay_min: null, pay_max: null, pay_interval: null,
+      });
+    });
+  });
 });

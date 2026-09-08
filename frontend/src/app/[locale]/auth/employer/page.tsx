@@ -15,8 +15,15 @@ export default function EmployerAuthPage() {
     const router = useRouter();
     const searchParams = useSearchParams();
 
+    // Only an EMPLOYER session counts as signed in on this door. The provider
+    // restores the employer slot alone on this route, but the guard is kept
+    // explicit: with a worker signed in, this page shows the employer form
+    // rather than sending them to the worker home -- both roles are meant to
+    // coexist in one browser.
+    const employerSignedIn = isAuthenticated && userType === 'employer';
+
     useEffect(() => {
-        if (!isLoading && isAuthenticated) {
+        if (!isLoading && employerSignedIn) {
             // Where the visit came from: a session-expiry redirect, or the
             // sign-in gate on the page they actually wanted. Already
             // locale-prefixed, so it is assigned rather than routed --
@@ -26,16 +33,16 @@ export default function EmployerAuthPage() {
                 assignReturnPath(returnPath);
                 return;
             }
-            router.replace(userType === 'worker' ? '/worker/home' : '/employer/dashboard');
+            router.replace('/employer/dashboard');
         }
-    }, [isLoading, isAuthenticated, userType, router, searchParams]);
+    }, [isLoading, employerSignedIn, router, searchParams]);
 
     // Not `return null`: that blanked the whole viewport between the route's
     // loading.tsx unmounting and the form mounting, and left an
     // already-signed-in user staring at nothing until the redirect above
     // landed. This markup is byte-identical to ./loading.tsx, so the shell
     // simply stays put and only the form column fills in.
-    if (isLoading || isAuthenticated) {
+    if (isLoading || employerSignedIn) {
         return (
             <AuthShell variant="employer" brand={<EmployerBrandPanel />}>
                 <CenteredCardSkeleton title card={false} />
