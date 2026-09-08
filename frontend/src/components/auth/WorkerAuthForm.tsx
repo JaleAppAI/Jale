@@ -206,16 +206,29 @@ export default function WorkerAuthForm() {
             // here. After a SIGNUP there is no profile worth showing and the
             // run is certainly unfinished, so send them to the flow and let it
             // do the error handling it already has (retry, and a way out).
-            // After a LOGIN the old destination is still the better guess:
-            // most workers signing in are done onboarding, and dropping them
-            // into a flow they finished months ago would be worse than the
-            // profile page they asked for.
+            // After a LOGIN the finished-worker destination is still the better
+            // guess: most workers signing in are done onboarding, and dropping
+            // them into a flow they completed months ago would be worse than
+            // the app they came back to use.
+            //
+            // That destination is /worker/home, NOT the profile page. A
+            // returning worker signs in to find out whether anything happened
+            // -- and the home feed is the only screen that answers: it carries
+            // the hire celebration and the details-requested notice, either of
+            // which may be the whole reason they opened the app. A profile
+            // page answers a question nobody asks at login, and it left a
+            // worker whose employer was waiting on them with no sign of it.
+            // The already-authenticated effect in auth/worker/page.tsx has
+            // always landed on /worker/home; this makes the two doors agree.
+            //
+            // The referral branch still outranks it: a worker who arrived from
+            // a link about one specific job goes to that job.
             const unread = lifecycle === null;
             if ((lifecycle && lifecycle !== 'ready') || (unread && isSignup)) {
                 router.replace('/worker/onboarding');
             } else {
                 const jobId = validateJobId(stash?.jobId);
-                router.push(jobId ? `/worker/jobs/${jobId}` : '/worker/profile');
+                router.push(jobId ? `/worker/jobs/${jobId}` : '/worker/home');
                 clearPendingReferral();
             }
             clearAuthFlowCompleting();
