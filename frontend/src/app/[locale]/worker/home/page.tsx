@@ -163,11 +163,20 @@ export default function WorkerHomePage() {
    *
    * Deliberately not part of `usePageData`: this page's data is the job feed,
    * and a failed applications call must never take the feed's phase with it.
-   * A worker who cannot see the banner still gets it on WhatsApp and on the
-   * applications list, so an empty array on failure is an honest degradation
-   * rather than a lost message.
+   *
+   * "Best-effort" is not the same as silent, though, and it used to be: the
+   * call ended in `.catch(() => {})`, so a failure left a home page that
+   * looked entirely normal while omitting the one thing a worker may have
+   * opened the app for -- an employer asking for their details, or a hire.
+   * There is nothing on such a page to suggest looking further. So the
+   * failure gets a sentence (below), in the same footnote shape the filter
+   * refetch already uses: the job feed underneath is real, and this is a
+   * footnote rather than a page state.
    */
   const [needingDetails, setNeedingDetails] = useState<Application[]>([]);
+  /** The applications call failed, and the worker has not waved it away. */
+  const [applicationsFailed, setApplicationsFailed] = useState(false);
+  const [applicationsNoticeDismissed, setApplicationsNoticeDismissed] = useState(false);
   /**
    * Hires this worker has not finished acknowledging -- the celebration state,
    * read off the SAME response as the details banner because it is the same
@@ -202,8 +211,14 @@ export default function WorkerHomePage() {
   useEffect(() => {
     if (!idToken) return;
     const controller = new AbortController();
+    // A new attempt earns a new chance to complain -- the same rule the
+    // refresh notice below follows. An id-token rotation re-runs this effect,
+    // and a worker who dismissed the notice an hour ago has not agreed to
+    // never hear about the next failure.
+    setApplicationsNoticeDismissed(false);
     getApplications(idToken, controller.signal)
       .then(({ applications }) => {
+        setApplicationsFailed(false);
         // `details_status`, not `status`: the timestamp-derived field is the one
         // that survives an employer moving the applicant on to `talking`.
         setNeedingDetails(applications.filter((a) => a.details_status === 'requested'));
@@ -223,7 +238,18 @@ export default function WorkerHomePage() {
         }));
         setModalSuppressed(isTypingSomewhere());
       })
-      .catch(() => {});
+      .catch((err: unknown) => {
+        // An abort is this page cancelling its OWN work -- the cleanup below
+        // fires on unmount and on every id-token rotation -- so it is not a
+        // failure and must not put a notice on screen. Both halves of the
+        // guard are load-bearing: the flag catches a rejection that arrives
+        // after the cleanup ran (the state setter would be pointless anyway),
+        // and the name catches the AbortError `apiFetch` re-throws verbatim
+        // for a caller-supplied signal.
+        if (controller.signal.aborted) return;
+        if (err instanceof Error && err.name === 'AbortError') return;
+        setApplicationsFailed(true);
+      });
     return () => controller.abort();
   }, [idToken]);
 
@@ -408,6 +434,7 @@ export default function WorkerHomePage() {
   const jobs = feed?.jobs ?? [];
   const otherJobs = feed?.otherJobs ?? [];
   const showRefreshNotice = refreshError !== null && !refreshNoticeDismissed;
+  const showApplicationsNotice = applicationsFailed && !applicationsNoticeDismissed;
 
   return (
     <AppShell role="worker" title={t('title')}>
@@ -453,6 +480,23 @@ export default function WorkerHomePage() {
         ) : needingDetails.length > 1 ? (
           <div className="mb-4">
             <DetailsRequestedMultiBanner count={needingDetails.length} />
+          </div>
+        ) : null}
+
+        {/* Stands in for the banners directly above, so it sits in the same
+            place and OUTSIDE the skeleton gate below: a notice about the
+            applications call has no business waiting on the job feed, which
+            is a different request with a different failure. No retry link --
+            the fetch is tied to the id-token effect rather than to a callback
+            this button could call, so the honest instruction is to reload. */}
+        {showApplicationsNotice ? (
+          <div className="mb-4">
+            <InlineFeedback
+              tone="warning"
+              onDismiss={() => setApplicationsNoticeDismissed(true)}
+            >
+              {t('applications_error')}
+            </InlineFeedback>
           </div>
         ) : null}
 

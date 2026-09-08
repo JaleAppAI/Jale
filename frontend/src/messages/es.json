@@ -1187,6 +1187,7 @@
       "body": "Pruebe con una palabra más corta o con otro tipo de trabajo."
     },
     "no_city_jobs": "Nada en sus ciudades en este momento.",
+    "applications_error": "No pudimos cargar tus solicitudes. Recarga la página para ver avisos de tus empleadores.",
     "required_docs_label": "Documentos necesarios",
     "results_count": "{count, plural, one {# empleo encontrado} other {# empleos encontrados}}",
     "job_type": {

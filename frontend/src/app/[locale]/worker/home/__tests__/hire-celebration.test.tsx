@@ -269,7 +269,7 @@ describe('worker home -- the hire celebration', () => {
       .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 
-  it('survives the applications call failing, the way the details banner already does', async () => {
+  it('survives the applications call failing -- the job feed is not taken with it', async () => {
     getApplications.mockRejectedValue(new Error('offline'));
     renderIntl(<WorkerHomePage />);
 
@@ -278,7 +278,6 @@ describe('worker home -- the hire celebration', () => {
     // The page itself still rendered.
     expect(screen.getByRole('searchbox')).toBeInTheDocument();
   });
-
   it('chains two unseen hires: closing the first opens a fresh dialog for the second', async () => {
     const SECOND_ID = '11111111-2222-4333-8444-555555555555';
     seed([
@@ -332,5 +331,67 @@ describe('worker home -- the hire celebration', () => {
     // Not "seen": the modal is owed on the next visit.
     expect(acknowledgeHire).not.toHaveBeenCalled();
     box.remove();
+  });
+});
+
+/**
+ * The same failure, from the WORKER's side.
+ *
+ * This call is best-effort by design -- it must never take the job feed's
+ * phase with it -- but "best-effort" was implemented as `.catch(() => {})`,
+ * and a swallowed failure here is not a degraded page: it is a page that
+ * silently omits the one notice a worker may have opened the app for. An
+ * employer asking for details, and a hire, both arrive through this response.
+ * A worker who sees a normal-looking home page has no reason to look further.
+ *
+ * So the failure gets a sentence. Not an error state, not a retry -- the feed
+ * below is real and the notice is a footnote, the same shape the filter-refetch
+ * failure already uses on this page.
+ */
+describe('worker home -- a failed applications fetch is visible', () => {
+  it('says so when the call fails', async () => {
+    getApplications.mockRejectedValue(new Error('offline'));
+    renderIntl(<WorkerHomePage />);
+
+    expect(await screen.findByText(message('worker_home.applications_error'))).toBeInTheDocument();
+  });
+
+  it('says it in Spanish too', async () => {
+    getApplications.mockRejectedValue(new Error('offline'));
+    renderIntl(<WorkerHomePage />, 'es');
+
+    expect(await screen.findByText(message('worker_home.applications_error', 'es')))
+      .toBeInTheDocument();
+  });
+
+  it('can be dismissed', async () => {
+    getApplications.mockRejectedValue(new Error('offline'));
+    renderIntl(<WorkerHomePage />);
+    await screen.findByText(message('worker_home.applications_error'));
+
+    fireEvent.click(screen.getByRole('button', { name: message('common.feedback.dismiss') }));
+
+    expect(screen.queryByText(message('worker_home.applications_error'))).not.toBeInTheDocument();
+  });
+
+  it('stays quiet about a request the page itself aborted', async () => {
+    // The effect aborts on unmount and on an id-token rotation. That is this
+    // page cancelling its own work, not a failure, and a notice about it would
+    // be a lie told to a worker whose applications loaded fine.
+    const aborted = new Error('The operation was aborted.');
+    aborted.name = 'AbortError';
+    getApplications.mockRejectedValue(aborted);
+    renderIntl(<WorkerHomePage />);
+
+    await waitFor(() => expect(getApplications).toHaveBeenCalled());
+    expect(screen.queryByText(message('worker_home.applications_error'))).not.toBeInTheDocument();
+  });
+
+  it('says nothing when the call succeeds', async () => {
+    seed([]);
+    renderIntl(<WorkerHomePage />);
+
+    await waitFor(() => expect(getApplications).toHaveBeenCalled());
+    expect(screen.queryByText(message('worker_home.applications_error'))).not.toBeInTheDocument();
   });
 });
