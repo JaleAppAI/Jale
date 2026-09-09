@@ -1042,7 +1042,9 @@
       "modal": {
         "eyebrow": "Congratulations!",
         "title": "{company} hired you",
-        "position": "Position: {title}",
+        "title_trade": "{company} hired you for the {trade} position",
+        "title_no_company_trade": "You're hired for the {trade} position",
+        "title_no_company": "You're hired!",
         "start_date": "Start date",
         "start_date_tbc": "To be confirmed",
         "location": "Location",
@@ -1055,6 +1057,9 @@
       },
       "banner": {
         "title": "You're hired: {title} at {company}",
+        "title_trade": "You're hired for the {trade} position · {company}",
+        "title_no_company_trade": "You're hired for the {trade} position",
+        "title_no_company": "You're hired: {title}",
         "body_dated": "Starts {date} · The employer will send more details; if none arrive, reach out to them.",
         "body_undated": "Start date to be confirmed · The employer will send more details; if none arrive, reach out to them.",
         "cta": "View application",
