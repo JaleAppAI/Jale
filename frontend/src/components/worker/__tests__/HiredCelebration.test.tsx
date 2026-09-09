@@ -2,7 +2,13 @@
 import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen } from '@testing-library/react';
-import { interpolate, message, renderIntl } from '@/components/worker/onboarding/__tests__/render-intl';
+import {
+  expectNoRawMessageKeys,
+  interpolate,
+  message,
+  renderIntl,
+  type TestLocale,
+} from '@/components/worker/onboarding/__tests__/render-intl';
 import { formatPay, type PayTranslator } from '@/lib/pay';
 import type { ApplicationHire } from '@/lib/api/worker';
 
@@ -40,6 +46,49 @@ function hire(overrides: Partial<ApplicationHire> = {}): ApplicationHire {
     ...overrides,
   };
 }
+
+/** The `trade` block as the endpoint builds it, defaulting to a 023 enum row. */
+function trade(
+  over: Partial<NonNullable<ApplicationHire['trade']>> = {},
+): ApplicationHire['trade'] {
+  return { category: 'electrician', other: null, canonical_en: null, canonical_es: null, ...over };
+}
+
+/**
+ * The shape the backend sends TODAY: a structured `trade`, and a `company`
+ * resolved on its own rather than reused from the list row's legacy
+ * `company_name` (which falls back to the "Empleador" placeholder).
+ *
+ * `hire()` above has NEITHER field, which is not a hypothetical: `hire`
+ * shipped in migration 095 before the two existed, so a frontend running
+ * ahead of the backend gets exactly that -- and still has to say something.
+ * The company name here differs from `SUBJECT.companyName` on purpose, so
+ * every assertion below says WHICH of the two sources the copy used.
+ */
+function hired(overrides: Partial<ApplicationHire> = {}): ApplicationHire {
+  return hire({ trade: trade(), company: 'RM Construction', ...overrides });
+}
+
+/**
+ * A trade word as the finished copy reads it: the REAL catalogue label with
+ * its leading capital folded, the same fold `hireTradePhrase` applies.
+ *
+ * Typing "electrician" out by hand would pass while quietly disagreeing with
+ * `employer_dashboard.modal.trade.*` -- which is the catalogue the components
+ * read, and the only one carrying all eight of migration 023's tokens.
+ */
+function tradeWord(slug: string, locale: TestLocale = 'en'): string {
+  const label = message(`employer_dashboard.modal.trade.${slug}`, locale);
+  return label.slice(0, 1).toLocaleLowerCase(locale === 'es' ? 'es-MX' : 'en-US') + label.slice(1);
+}
+
+/** The sentence a `hired_celebration` key renders in the real catalogue. */
+function copy(key: string, values: Record<string, string> = {}, locale: TestLocale = 'en'): string {
+  return interpolate(message(`worker_applications.hired_celebration.${key}`, locale), values);
+}
+
+/** A locale pair, so each case below is asserted in both languages. */
+const LOCALES = ['en', 'es'] as const;
 
 /**
  * A `pay` translator over the REAL catalogue, so the expected string below is
@@ -102,21 +151,167 @@ function stubAnimate() {
 }
 
 describe('HiredCelebrationModal', () => {
-  it('names the employer and the job in the header', () => {
-    renderIntl(<HiredCelebrationModal open {...SUBJECT} hire={hire()} onClose={vi.fn()} />);
+  /*
+   * THE HEADLINE MATRIX (option A1).
+   *
+   * Production rendered "Empleador te contrató para welder needed in metta
+   * dara enter": the company was the DB placeholder, and the headline was
+   * carrying free text the employer typed into the job-title box. So the
+   * headline now names the TRADE, and each of the four (company? trade?)
+   * combinations gets its own key -- which means each of the four needs a
+   * test, because the fallback is exactly where the sentinel got in.
+   */
+
+  it('names the company and the TRADE, with the job title bare beneath', () => {
+    renderIntl(<HiredCelebrationModal open {...SUBJECT} hire={hired()} onClose={vi.fn()} />);
 
     expect(screen.getByText(message('worker_applications.hired_celebration.modal.eyebrow')))
       .toBeInTheDocument();
+    // Both halves of one claim: the key the component picked, AND the sentence
+    // a worker actually reads. A key-only assertion passes just as happily on
+    // the production bug this replaces.
+    const expected = copy('modal.title_trade', { company: 'RM Construction', trade: tradeWord('electrician') });
+    expect(expected).toBe('RM Construction hired you for the electrician position');
+    expect(screen.getByRole('heading', { name: expected })).toBeInTheDocument();
+    // `hire.company`, not the list row's `company_name`.
+    expect(screen.queryByText(new RegExp(SUBJECT.companyName))).not.toBeInTheDocument();
+    // The job title is its OWN quiet line now -- no "Position:" label in
+    // front of it, which is what the picked artifact shows.
+    expect(screen.getByText(SUBJECT.jobTitle)).toBeInTheDocument();
+    expect(screen.queryByText(/Position:/)).not.toBeInTheDocument();
+    expectNoRawMessageKeys();
+  });
+
+  it.each(LOCALES)('reads the trade from the real catalogue (%s)', (locale) => {
+    renderIntl(
+      <HiredCelebrationModal open {...SUBJECT} hire={hired()} onClose={vi.fn()} />,
+      locale,
+    );
+
     expect(screen.getByRole('heading', {
-      name: interpolate(message('worker_applications.hired_celebration.modal.title'), {
-        company: SUBJECT.companyName,
+      name: copy('modal.title_trade', {
+        company: 'RM Construction', trade: tradeWord('electrician', locale),
+      }, locale),
+    })).toBeInTheDocument();
+    expect(screen.getByText(SUBJECT.jobTitle)).toBeInTheDocument();
+    expect(screen.queryByText(/Position:|Puesto:/)).not.toBeInTheDocument();
+    expectNoRawMessageKeys();
+  });
+
+  it.each(LOCALES)("uses the alias cache's canonical for an 'other' trade (%s)", (locale) => {
+    // The employer typed "welder" into the free-text box and migration 060's
+    // cache resolved it, so the reader's own language wins over their words.
+    const subject = hired({
+      trade: trade({
+        category: 'other', other: 'welder', canonical_en: 'Welder', canonical_es: 'Soldador',
+      }),
+    });
+    renderIntl(
+      <HiredCelebrationModal open {...SUBJECT} hire={subject} onClose={vi.fn()} />,
+      locale,
+    );
+
+    const word = locale === 'es' ? 'soldador' : 'welder';
+    expect(screen.getByRole('heading', {
+      name: copy('modal.title_trade', { company: 'RM Construction', trade: word }, locale),
+    })).toBeInTheDocument();
+    expectNoRawMessageKeys();
+  });
+
+  it.each(LOCALES)("keeps the employer's own words when the cache missed (%s)", (locale) => {
+    // A cache miss fails OPEN, so this is a real shape. The capitals stay:
+    // lower-casing someone's "HVAC tech" reads as a typo.
+    const subject = hired({
+      trade: trade({ category: 'other', other: 'Tile setter helper' }),
+    });
+    renderIntl(
+      <HiredCelebrationModal open {...SUBJECT} hire={subject} onClose={vi.fn()} />,
+      locale,
+    );
+
+    expect(screen.getByRole('heading', {
+      name: copy('modal.title_trade', {
+        company: 'RM Construction', trade: 'Tile setter helper',
+      }, locale),
+    })).toBeInTheDocument();
+    expectNoRawMessageKeys();
+  });
+
+  it.each(LOCALES)('falls back to the plain headline when there is no trade (%s)', (locale) => {
+    // "...te contrató como Otro" says nothing, so the clause is dropped
+    // rather than filled with the catalogue's "Other" label.
+    const subject = hired({ trade: trade({ category: null }) });
+    renderIntl(
+      <HiredCelebrationModal open {...SUBJECT} hire={subject} onClose={vi.fn()} />,
+      locale,
+    );
+
+    expect(screen.getByRole('heading', {
+      name: copy('modal.title', { company: 'RM Construction' }, locale),
+    })).toBeInTheDocument();
+    expect(screen.getByText(SUBJECT.jobTitle)).toBeInTheDocument();
+    expectNoRawMessageKeys();
+  });
+
+  it('falls back the same way for a backend that sends no trade field at all', () => {
+    renderIntl(
+      <HiredCelebrationModal open {...SUBJECT} hire={hired({ trade: undefined })} onClose={vi.fn()} />,
+    );
+
+    expect(screen.getByRole('heading', {
+      name: copy('modal.title', { company: 'RM Construction' }),
+    })).toBeInTheDocument();
+    expectNoRawMessageKeys();
+  });
+
+  it.each(LOCALES)('never names the sentinel: no company, but a trade (%s)', (locale) => {
+    // `company: null` means the employer HAS no company name -- the endpoint
+    // reports the "Empleador" placeholder that way on purpose. The legacy
+    // `companyName` prop still carries it, and must not reach the sentence.
+    const subject = hired({ company: null });
+    renderIntl(
+      <HiredCelebrationModal open {...SUBJECT} hire={subject} onClose={vi.fn()} />,
+      locale,
+    );
+
+    expect(screen.getByRole('heading', {
+      name: copy('modal.title_no_company_trade', { trade: tradeWord('electrician', locale) }, locale),
+    })).toBeInTheDocument();
+    expect(screen.queryByText(new RegExp(SUBJECT.companyName))).not.toBeInTheDocument();
+    expectNoRawMessageKeys();
+  });
+
+  it.each(LOCALES)('celebrates plainly when it knows neither company nor trade (%s)', (locale) => {
+    // `ApplicationHire.trade` is optional, never nullable, so the two
+    // no-trade shapes are a `category: null` block (here) and an absent field
+    // (the banner's twin of this test) -- both must reach the same key.
+    const subject = hired({ company: null, trade: trade({ category: null }) });
+    renderIntl(
+      <HiredCelebrationModal open {...SUBJECT} hire={subject} onClose={vi.fn()} />,
+      locale,
+    );
+
+    expect(screen.getByRole('heading', { name: copy('modal.title_no_company', {}, locale) }))
+      .toBeInTheDocument();
+    expect(screen.queryByText(new RegExp(SUBJECT.companyName))).not.toBeInTheDocument();
+    // The job title still shows: it is the one thing that is always known.
+    expect(screen.getByText(SUBJECT.jobTitle)).toBeInTheDocument();
+    expectNoRawMessageKeys();
+  });
+
+  it("uses the list row's company_name when the backend sends no company field", () => {
+    // `undefined` is not `null`: an old backend said nothing about the
+    // company, so the legacy prop is still the best answer available.
+    renderIntl(
+      <HiredCelebrationModal open {...SUBJECT} hire={hired({ company: undefined })} onClose={vi.fn()} />,
+    );
+
+    expect(screen.getByRole('heading', {
+      name: copy('modal.title_trade', {
+        company: SUBJECT.companyName, trade: tradeWord('electrician'),
       }),
     })).toBeInTheDocument();
-    expect(screen.getByText(
-      interpolate(message('worker_applications.hired_celebration.modal.position'), {
-        title: SUBJECT.jobTitle,
-      }),
-    )).toBeInTheDocument();
+    expectNoRawMessageKeys();
   });
 
   it('shows every fact the hire carries, with the start date in the reader-independent day', () => {
@@ -257,35 +452,140 @@ describe('HiredCelebrationModal', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
-  it('renders in Spanish from the real catalogue', () => {
+  it('renders the LEGACY hire shape in Spanish from the real catalogue', () => {
+    // No `trade`, no `company`: the pre-095 wire shape, in the locale most of
+    // these workers read. It has to produce a sentence, not a key path.
     renderIntl(
       <HiredCelebrationModal open {...SUBJECT} hire={hire()} onClose={vi.fn()} />,
       'es',
     );
     expect(screen.getByRole('heading', {
-      name: interpolate(message('worker_applications.hired_celebration.modal.title', 'es'), {
-        company: SUBJECT.companyName,
-      }),
+      name: copy('modal.title', { company: SUBJECT.companyName }, 'es'),
     })).toBeInTheDocument();
+    expect(screen.getByText(SUBJECT.jobTitle)).toBeInTheDocument();
+    expect(screen.queryByText(/Puesto:/)).not.toBeInTheDocument();
     expect(screen.getByRole('button', {
       name: message('worker_applications.hired_celebration.modal.cta', 'es'),
     })).toBeInTheDocument();
+    expectNoRawMessageKeys();
   });
 });
 
 describe('HiredBanner', () => {
-  it('names the job and the employer, and links to the application', () => {
-    renderIntl(<HiredBanner {...SUBJECT} hire={hire()} onDismiss={vi.fn()} />);
+  /* The same four-case matrix as the modal, with the banner's own wording --
+     and one extra rule: when the heading carries the TRADE it no longer names
+     the job, so the job title gets a line of its own. When the heading already
+     names the job, repeating it below would read as two different hires. */
 
-    expect(screen.getByText(
-      interpolate(message('worker_applications.hired_celebration.banner.title'), {
-        title: SUBJECT.jobTitle,
-        company: SUBJECT.companyName,
-      }),
-    )).toBeInTheDocument();
+  it('leads with the trade and the company, and puts the job title on its own line', () => {
+    renderIntl(<HiredBanner {...SUBJECT} hire={hired()} onDismiss={vi.fn()} />);
+
+    const expected = copy('banner.title_trade', {
+      trade: tradeWord('electrician'), company: 'RM Construction',
+    });
+    expect(expected).toBe("You're hired for the electrician position · RM Construction");
+    expect(screen.getByText(expected)).toBeInTheDocument();
+    expect(screen.getByText(SUBJECT.jobTitle)).toBeInTheDocument();
     expect(screen.getByRole('link', {
       name: message('worker_applications.hired_celebration.banner.cta'),
     })).toHaveAttribute('href', `/worker/applications/${APPLICATION_ID}`);
+    expectNoRawMessageKeys();
+  });
+
+  it.each(LOCALES)('reads the trade from the real catalogue (%s)', (locale) => {
+    renderIntl(<HiredBanner {...SUBJECT} hire={hired()} onDismiss={vi.fn()} />, locale);
+
+    expect(screen.getByText(copy('banner.title_trade', {
+      trade: tradeWord('electrician', locale), company: 'RM Construction',
+    }, locale))).toBeInTheDocument();
+    expect(screen.getByText(SUBJECT.jobTitle)).toBeInTheDocument();
+    expectNoRawMessageKeys();
+  });
+
+  it.each(LOCALES)("uses the alias cache's canonical for an 'other' trade (%s)", (locale) => {
+    const subject = hired({
+      trade: trade({
+        category: 'other', other: 'welder', canonical_en: 'Welder', canonical_es: 'Soldador',
+      }),
+    });
+    renderIntl(<HiredBanner {...SUBJECT} hire={subject} onDismiss={vi.fn()} />, locale);
+
+    const word = locale === 'es' ? 'soldador' : 'welder';
+    expect(screen.getByText(copy('banner.title_trade', {
+      trade: word, company: 'RM Construction',
+    }, locale))).toBeInTheDocument();
+    expectNoRawMessageKeys();
+  });
+
+  it.each(LOCALES)("keeps the employer's own words when the cache missed (%s)", (locale) => {
+    const subject = hired({ trade: trade({ category: 'other', other: 'Tile setter helper' }) });
+    renderIntl(<HiredBanner {...SUBJECT} hire={subject} onDismiss={vi.fn()} />, locale);
+
+    expect(screen.getByText(copy('banner.title_trade', {
+      trade: 'Tile setter helper', company: 'RM Construction',
+    }, locale))).toBeInTheDocument();
+    expectNoRawMessageKeys();
+  });
+
+  it.each(LOCALES)('never names the sentinel: no company, but a trade (%s)', (locale) => {
+    renderIntl(
+      <HiredBanner {...SUBJECT} hire={hired({ company: null })} onDismiss={vi.fn()} />,
+      locale,
+    );
+
+    expect(screen.getByText(
+      copy('banner.title_no_company_trade', { trade: tradeWord('electrician', locale) }, locale),
+    )).toBeInTheDocument();
+    expect(screen.getByText(SUBJECT.jobTitle)).toBeInTheDocument();
+    expect(screen.queryByText(new RegExp(SUBJECT.companyName))).not.toBeInTheDocument();
+    expectNoRawMessageKeys();
+  });
+
+  it.each(LOCALES)('keeps the legacy heading when there is no trade (%s)', (locale) => {
+    const subject = hired({ trade: trade({ category: null }) });
+    renderIntl(<HiredBanner {...SUBJECT} hire={subject} onDismiss={vi.fn()} />, locale);
+
+    expect(screen.getByText(copy('banner.title', {
+      title: SUBJECT.jobTitle, company: 'RM Construction',
+    }, locale))).toBeInTheDocument();
+    // The heading already names the job, so there is NO separate title line --
+    // no element whose whole text is the job title.
+    expect(screen.queryByText(SUBJECT.jobTitle)).not.toBeInTheDocument();
+    expectNoRawMessageKeys();
+  });
+
+  it('keeps the legacy heading for a backend that sends no trade field at all', () => {
+    renderIntl(
+      <HiredBanner {...SUBJECT} hire={hired({ trade: undefined })} onDismiss={vi.fn()} />,
+    );
+
+    expect(screen.getByText(copy('banner.title', {
+      title: SUBJECT.jobTitle, company: 'RM Construction',
+    }))).toBeInTheDocument();
+    expectNoRawMessageKeys();
+  });
+
+  it.each(LOCALES)('states the job alone when it knows neither company nor trade (%s)', (locale) => {
+    // The absent-field shape of "no trade", against the modal twin's
+    // `category: null` one.
+    const subject = hired({ company: null, trade: undefined });
+    renderIntl(<HiredBanner {...SUBJECT} hire={subject} onDismiss={vi.fn()} />, locale);
+
+    expect(screen.getByText(copy('banner.title_no_company', { title: SUBJECT.jobTitle }, locale)))
+      .toBeInTheDocument();
+    expect(screen.queryByText(new RegExp(SUBJECT.companyName))).not.toBeInTheDocument();
+    expectNoRawMessageKeys();
+  });
+
+  it("uses the list row's company_name when the backend sends no company field", () => {
+    renderIntl(
+      <HiredBanner {...SUBJECT} hire={hired({ company: undefined })} onDismiss={vi.fn()} />,
+    );
+
+    expect(screen.getByText(copy('banner.title_trade', {
+      trade: tradeWord('electrician'), company: SUBJECT.companyName,
+    }))).toBeInTheDocument();
+    expectNoRawMessageKeys();
   });
 
   it('carries the start date in the dated sentence', () => {
@@ -320,14 +620,14 @@ describe('HiredBanner', () => {
 
   it('drops the heading and the link in the compact row variant, keeping the ×', () => {
     const onDismiss = vi.fn();
-    renderIntl(<HiredBanner {...SUBJECT} hire={hire()} compact onDismiss={onDismiss} />);
+    renderIntl(<HiredBanner {...SUBJECT} hire={hired()} compact onDismiss={onDismiss} />);
 
-    expect(screen.queryByText(
-      interpolate(message('worker_applications.hired_celebration.banner.title'), {
-        title: SUBJECT.jobTitle,
-        company: SUBJECT.companyName,
-      }),
-    )).not.toBeInTheDocument();
+    // Unchanged by A1: no heading of any variant, and no job-title line
+    // either -- the row above states the job, the company and the Hired chip.
+    expect(screen.queryByText(copy('banner.title_trade', {
+      trade: tradeWord('electrician'), company: 'RM Construction',
+    }))).not.toBeInTheDocument();
+    expect(screen.queryByText(SUBJECT.jobTitle)).not.toBeInTheDocument();
     // The row already shows the job, the company and the Hired chip; the
     // banner under it only has to say what happens next.
     expect(screen.getByText(message('worker_applications.hired_celebration.row.body')))
@@ -345,11 +645,18 @@ describe('HiredBanner', () => {
     expect(screen.getByRole('status')).toBeInTheDocument();
   });
 
-  it('renders in Spanish from the real catalogue', () => {
+  it('renders the LEGACY hire shape in Spanish from the real catalogue', () => {
+    // No `trade`, no `company`: the pre-095 wire shape still has to read as a
+    // sentence in the locale most of these workers use.
     renderIntl(<HiredBanner {...SUBJECT} hire={hire()} onDismiss={vi.fn()} />, 'es');
+
+    expect(screen.getByText(copy('banner.title', {
+      title: SUBJECT.jobTitle, company: SUBJECT.companyName,
+    }, 'es'))).toBeInTheDocument();
     expect(screen.getByRole('link', {
       name: message('worker_applications.hired_celebration.banner.cta', 'es'),
     })).toBeInTheDocument();
+    expectNoRawMessageKeys();
   });
 });
 
