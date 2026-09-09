@@ -236,21 +236,28 @@ describe('hireTradePhrase', () => {
   });
 
   it('a canonical BEATS the free text, and is lower-cased like any label of ours', () => {
-    // Documents the rule as MECHANICAL: the first character folds whatever
-    // follows it. An all-caps canonical is the known wart -- "HVAC technician"
-    // becomes "hVAC technician" -- pinned here so a later acronym guard has to
-    // change this line deliberately rather than by accident. Every
-    // `trade_aliases` canonical this repo has a fixture for is Title Case, but
-    // that is NOT verified against the live cache; if real canonicals carry
-    // acronyms the rule needs an owner ruling, not a quiet fix here. An
-    // employer's own acronym is unaffected: it takes the verbatim path above.
     expect(hireTradePhrase(
       trade({ category: 'other', other: 'tile guy', canonical_en: 'Tile setter' }), 'en', fakeT,
     )).toBe('tile setter');
+  });
+
+  it('leaves an acronym-led canonical alone rather than producing "hVAC"', () => {
+    // The fold undoes a sentence-style capital, and a label whose second
+    // character is ALSO upper-case has none to undo. The seeded
+    // `trade_aliases` canonicals are Title Case, but the cache also grows at
+    // runtime and the live rows are not verified from here, so the guard is
+    // cheap insurance rather than a fix for a known row.
     expect(hireTradePhrase(
       trade({ category: 'other', other: 'HVAC tech', canonical_en: 'HVAC technician' }),
       'en', fakeT,
-    )).toBe('hVAC technician');
+    )).toBe('HVAC technician');
+    expect(hireTradePhrase(
+      trade({ category: 'other', other: 'aire', canonical_es: 'HVAC' }), 'es', fakeT,
+    )).toBe('HVAC');
+    // A one-character label has no second character to consult and still folds.
+    expect(hireTradePhrase(
+      trade({ category: 'other', other: 'x', canonical_en: 'X' }), 'en', fakeT,
+    )).toBe('x');
   });
 
   it('is null in every case `hireTradeLabel` is null', () => {

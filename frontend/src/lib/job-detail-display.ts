@@ -227,6 +227,16 @@ function lowerFirstChar(value: string, tag: string): string {
   const code = value.codePointAt(0);
   if (code === undefined) return value;
   const first = String.fromCodePoint(code);
+  // An acronym-led label ("HVAC technician") keeps its capital: when the
+  // SECOND character is upper-case too, the first one is not a sentence-style
+  // capital to undo, and "hVAC technician" would read as a typo. Ordinary
+  // labels ("Electricista", "Tile setter") have a lower-case second character
+  // and fold as before.
+  const secondCode = value.codePointAt(first.length);
+  if (secondCode !== undefined) {
+    const second = String.fromCodePoint(secondCode);
+    if (second !== second.toLocaleLowerCase(tag)) return value;
+  }
   return first.toLocaleLowerCase(tag) + value.slice(first.length);
 }
 
