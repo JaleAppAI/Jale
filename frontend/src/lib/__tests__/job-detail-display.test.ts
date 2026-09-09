@@ -237,9 +237,13 @@ describe('hireTradePhrase', () => {
 
   it('a canonical BEATS the free text, and is lower-cased like any label of ours', () => {
     // Documents the rule as MECHANICAL: the first character folds whatever
-    // follows it. An all-caps canonical is the known wart ("HVAC technician"
-    // -> "hVAC technician"); migration 060's cache stores Title Case, and an
-    // employer's own acronym takes the verbatim path in the test above.
+    // follows it. An all-caps canonical is the known wart -- "HVAC technician"
+    // becomes "hVAC technician" -- pinned here so a later acronym guard has to
+    // change this line deliberately rather than by accident. Every
+    // `trade_aliases` canonical this repo has a fixture for is Title Case, but
+    // that is NOT verified against the live cache; if real canonicals carry
+    // acronyms the rule needs an owner ruling, not a quiet fix here. An
+    // employer's own acronym is unaffected: it takes the verbatim path above.
     expect(hireTradePhrase(
       trade({ category: 'other', other: 'tile guy', canonical_en: 'Tile setter' }), 'en', fakeT,
     )).toBe('tile setter');
