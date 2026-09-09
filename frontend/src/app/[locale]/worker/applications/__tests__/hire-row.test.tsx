@@ -89,6 +89,12 @@ function hire(overrides: Partial<ApplicationHire> = {}): ApplicationHire {
     pay_min: null,
     pay_max: null,
     pay_interval: null,
+    // The A1 fields, so this suite runs the copy path production takes. The
+    // compact banner states neither of them -- that is the point of the
+    // assertions below -- but a component that started rendering a heading or
+    // a job-title line here would now be caught.
+    trade: { category: 'electrician', other: null, canonical_en: null, canonical_es: null },
+    company: 'Construcciones Bravo LLC',
     ...overrides,
   };
 }
@@ -119,8 +125,24 @@ describe('worker applications -- the hired row', () => {
     renderIntl(<WorkerApplicationsPage />);
 
     expect(screen.getByText(ROW_BODY)).toBeInTheDocument();
-    // Compact: the row above already names the job and the company.
-    expect(screen.queryByText(/You're hired/)).not.toBeInTheDocument();
+    // Compact: the row above already names the job and the company, so the
+    // banner states NO heading of any A1 variant...
+    expect(screen.queryByText(/You're hired|Te contrataron/)).not.toBeInTheDocument();
+    // ...and no bare job-title line either. `Welder` appears exactly once on
+    // this screen: the row's own title.
+    expect(screen.getAllByText('Welder')).toHaveLength(1);
+  });
+
+  it('leaves the compact banner alone for a pre-095 hire with no trade or company', () => {
+    // The A1 fields are optional (`hire` shipped in migration 095 before they
+    // existed). The row copy never used either, so this shape must render the
+    // same banner -- and still no heading.
+    seed = [application({ hire: hire({ trade: undefined, company: undefined }) })];
+    renderIntl(<WorkerApplicationsPage />);
+
+    expect(screen.getByText(ROW_BODY)).toBeInTheDocument();
+    expect(screen.queryByText(/You're hired|Te contrataron/)).not.toBeInTheDocument();
+    expect(screen.getAllByText('Welder')).toHaveLength(1);
   });
 
   it('shows the hire facts the employer filled in', () => {

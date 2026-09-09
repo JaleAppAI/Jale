@@ -89,6 +89,7 @@ import { interpolate, message, renderIntl } from '@/components/worker/onboarding
 import WorkerHomePage from '../page';
 
 const APPLICATION_ID = '8f3a2c1d-4b5e-4f60-9a71-2c3d4e5f6071';
+const DEFAULT_COMPANY = 'Construcciones Bravo LLC';
 
 function hire(overrides: Partial<ApplicationHire> = {}): ApplicationHire {
   return {
@@ -105,26 +106,53 @@ function hire(overrides: Partial<ApplicationHire> = {}): ApplicationHire {
     pay_min: null,
     pay_max: null,
     pay_interval: null,
+    // The A1 fields, so this suite exercises the copy path production
+    // actually takes. `company` is the employer's real name (the endpoint
+    // reports the "Empleador" placeholder as null instead), which is a
+    // different field from the row's `company_name` below -- `application()`
+    // keeps the two agreeing so a heading assertion reads the same either
+    // way, and one test at the bottom drops both fields for the pre-095 wire
+    // shape.
+    trade: { category: 'electrician', other: null, canonical_en: null, canonical_es: null },
+    company: DEFAULT_COMPANY,
     ...overrides,
   };
 }
 
 function application(overrides: Partial<Application> = {}): Application {
+  const companyName = overrides.company_name ?? DEFAULT_COMPANY;
   return {
     application_id: APPLICATION_ID,
     job_id: 'job-1',
     job_title: 'Welder',
-    company_name: 'Construcciones Bravo LLC',
+    company_name: companyName,
     status: 'hired',
     applied_at: '2026-08-28T00:00:00.000Z',
-    hire: hire(),
+    // Derived, not a constant: the "chains two unseen hires" test below names
+    // a second employer through `company_name` alone, and the celebration
+    // reads `hire.company`.
+    hire: hire({ company: companyName }),
     ...overrides,
   };
 }
 
+/**
+ * The trade word as the copy reads it: the real catalogue label with its
+ * leading capital folded, the way `hireTradePhrase` folds it.
+ */
+const TRADE = (() => {
+  const label = message('employer_dashboard.modal.trade.electrician');
+  return label.slice(0, 1).toLocaleLowerCase('en-US') + label.slice(1);
+})();
+
+/**
+ * The A1 heading: a trade and a real company name, which is what a hire on
+ * this page now looks like. The pre-A1 `banner.title` (job title + company)
+ * still exists and is asserted once, at the bottom of the first describe.
+ */
 const BANNER_TITLE = interpolate(
-  message('worker_applications.hired_celebration.banner.title'),
-  { title: 'Welder', company: 'Construcciones Bravo LLC' },
+  message('worker_applications.hired_celebration.banner.title_trade'),
+  { trade: TRADE, company: DEFAULT_COMPANY },
 );
 
 function seed(applications: Application[]) {
@@ -145,8 +173,8 @@ describe('worker home -- the hire celebration', () => {
 
     await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
     expect(screen.getByRole('heading', {
-      name: interpolate(message('worker_applications.hired_celebration.modal.title'), {
-        company: 'Construcciones Bravo LLC',
+      name: interpolate(message('worker_applications.hired_celebration.modal.title_trade'), {
+        company: DEFAULT_COMPANY, trade: TRADE,
       }),
     })).toBeInTheDocument();
   });
@@ -316,8 +344,33 @@ describe('worker home -- the hire celebration', () => {
     expect(acknowledgeHire).toHaveBeenCalledWith('test-token', SECOND_ID, 'seen');
     expect(screen.getByText(BANNER_TITLE)).toBeInTheDocument();
     expect(screen.getByText(interpolate(
+      message('worker_applications.hired_celebration.banner.title_trade'),
+      { trade: TRADE, company: 'Aguilar Plumbing' },
+    ))).toBeInTheDocument();
+  });
+
+  it('still celebrates a pre-095 hire that carries no trade and no company', async () => {
+    // The two A1 fields are optional because `hire` shipped (migration 095)
+    // before they existed. A frontend deployed ahead of the backend gets this
+    // shape, and it has to produce a sentence rather than a raw key path --
+    // the legacy heading, off the list row's own `company_name`.
+    seed([application({ hire: hire({ trade: undefined, company: undefined }) })]);
+    renderIntl(<WorkerHomePage />);
+
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+    expect(screen.getByRole('heading', {
+      name: interpolate(message('worker_applications.hired_celebration.modal.title'), {
+        company: DEFAULT_COMPANY,
+      }),
+    })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', {
+      name: message('worker_applications.hired_celebration.modal.cta'),
+    }));
+
+    expect(screen.getByText(interpolate(
       message('worker_applications.hired_celebration.banner.title'),
-      { title: 'Plumber', company: 'Aguilar Plumbing' },
+      { title: 'Welder', company: DEFAULT_COMPANY },
     ))).toBeInTheDocument();
   });
 
