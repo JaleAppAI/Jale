@@ -1042,7 +1042,9 @@
       "modal": {
         "eyebrow": "¡Felicidades!",
         "title": "{company} te contrató",
-        "position": "Puesto: {title}",
+        "title_trade": "{company} te contrató como {trade}",
+        "title_no_company_trade": "Te contrataron como {trade}",
+        "title_no_company": "¡Te contrataron!",
         "start_date": "Fecha de inicio",
         "start_date_tbc": "Por confirmar",
         "location": "Lugar",
@@ -1055,6 +1057,9 @@
       },
       "banner": {
         "title": "Te contrataron: {title} en {company}",
+        "title_trade": "Te contrataron como {trade} · {company}",
+        "title_no_company_trade": "Te contrataron como {trade}",
+        "title_no_company": "Te contrataron: {title}",
         "body_dated": "Inicio {date} · El empleador te enviará más detalles; si no llegan, comunícate con él.",
         "body_undated": "Fecha de inicio por confirmar · El empleador te enviará más detalles; si no llegan, comunícate con él.",
         "cta": "Ver solicitud",
