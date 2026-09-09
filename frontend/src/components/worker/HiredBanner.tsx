@@ -7,6 +7,17 @@ import { hireTradePhrase, type Translator } from '@/lib/job-detail-display';
 import type { ApplicationHire } from '@/lib/api/worker';
 
 /**
+ * Widens a next-intl translator to `job-detail-display`'s structural
+ * `Translator` -- next-intl's client translator is generic over ITS OWN
+ * namespace's keys, which is narrower for the `values` parameter, so passing
+ * one straight in fails `tsc`. The same thin adapter the job-detail pages and
+ * `HiredCelebrationModal` apply at this boundary; not a behaviour change.
+ */
+function widen(t: unknown): Translator {
+  return (key, values) => (t as (k: string, v?: Record<string, unknown>) => string)(key, values);
+}
+
+/**
  * "You got the job" — what stays on screen after the celebration modal has
  * been closed.
  *
@@ -28,17 +39,6 @@ import type { ApplicationHire } from '@/lib/api/worker';
  * removal); the banner has no idea a server is involved, which is what lets
  * the same one sit in a list row and on a page header.
  */
-/**
- * Widens a next-intl translator to `job-detail-display`'s structural
- * `Translator` -- next-intl's client translator is generic over ITS OWN
- * namespace's keys, which is narrower for the `values` parameter, so passing
- * one straight in fails `tsc`. The same thin adapter the job-detail pages and
- * `HiredCelebrationModal` apply at this boundary; not a behaviour change.
- */
-function widen(t: unknown): Translator {
-  return (key, values) => (t as (k: string, v?: Record<string, unknown>) => string)(key, values);
-}
-
 export function HiredBanner({
   applicationId,
   jobTitle,
