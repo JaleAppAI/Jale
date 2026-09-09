@@ -8,6 +8,7 @@ import { Icon } from '@/components/ui/icon';
 import { Modal } from '@/components/ui/modal';
 import { ConfettiBurst } from '@/components/worker/ConfettiBurst';
 import { formatStartDateWeekday } from '@/lib/date';
+import { hireTradePhrase, type Translator } from '@/lib/job-detail-display';
 import { formatPay } from '@/lib/pay';
 import type { ApplicationHire } from '@/lib/api/worker';
 
@@ -33,6 +34,20 @@ import type { ApplicationHire } from '@/lib/api/worker';
  * bleeds to the panel edge; the panel's own `overflow-hidden` rounds the top
  * corners, and the hero's clips the confetti to the header.
  */
+
+/**
+ * Widens a next-intl translator to `job-detail-display`'s structural
+ * `Translator`.
+ *
+ * next-intl's client translator is generic over ITS OWN namespace's message
+ * keys, which is narrower than `(key: string, values?) => string` for the
+ * `values` parameter, so passing one straight in fails `tsc` (verified). Not a
+ * behaviour change -- the call is identical -- just the same thin adapter the
+ * worker and employer job-detail pages apply at the same boundary.
+ */
+function widen(t: unknown): Translator {
+  return (key, values) => (t as (k: string, v?: Record<string, unknown>) => string)(key, values);
+}
 
 /** One labelled fact. Rendered only when there is something to say. */
 function Fact({
@@ -81,6 +96,15 @@ export function HiredCelebrationModal({
   const t = useTranslations('worker_applications.hired_celebration');
   const tCommon = useTranslations('common');
   const tPay = useTranslations('pay');
+  /*
+   * The job trade-category catalogue. `employer_dashboard.modal.trade.*` is
+   * the one carrying all eight of migration 023's tokens (`common.trades.*`
+   * is missing `drywall` and `general_labor` and would print a raw key path
+   * for those two hires), and reading it from a worker surface is established
+   * precedent -- `worker/jobs/[id]` and `PayReferenceHint` both do, for
+   * exactly this reason, and `hireTradePhrase`'s own doc comment names it.
+   */
+  const tTrade = useTranslations('employer_dashboard.modal.trade');
   const locale = useLocale();
   const titleId = useId();
 
@@ -91,6 +115,40 @@ export function HiredCelebrationModal({
   // is English free text and may be the "Pay not specified" sentinel. Null
   // means there is genuinely no rate to state, and the fact is dropped.
   const pay = formatPay(hire, tPay);
+
+  /*
+   * THE HEADLINE (option A1, owner ruling 2026-09-08).
+   *
+   * This used to be `t('modal.title', { company: companyName })` over
+   * `jobTitle`, and production rendered "Empleador te contrató para welder
+   * needed in metta dara enter" -- two separate faults in one sentence:
+   *
+   *  - `companyName` is the list row's `company_name`, which is
+   *    `employer_display_name()` and falls back to the "Empleador"
+   *    placeholder (migration 031). Inside a sentence that reads as a company
+   *    literally named that. `hire.company` reports the case as `null`
+   *    instead, so the copy can choose a company-less wording.
+   *  - the job title is FREE TEXT the employer typed. It is still worth
+   *    showing (it is the only thing that is always known), but as its own
+   *    quiet line -- not as the subject of the celebration.
+   *
+   * `undefined` and `null` are different answers on `hire.company`: an old
+   * backend that never sent the field says nothing about the company, so the
+   * legacy prop is still the best available -- sentinel and all. Only an
+   * explicit `null` means "there ISN'T one".
+   */
+  const company = (hire.company === undefined ? companyName : hire.company)?.trim() || null;
+  // The trade, folded for the middle of a sentence ("...te contrató como
+  // electricista"). Null when the hire names no trade, or names only the
+  // empty 'other' escape hatch -- "como Otro" says nothing.
+  const trade = hireTradePhrase(hire, locale, widen(tTrade));
+  const headline = company
+    ? (trade
+      ? t('modal.title_trade', { company, trade })
+      : t('modal.title', { company }))
+    : (trade
+      ? t('modal.title_no_company_trade', { trade })
+      : t('modal.title_no_company'));
 
   return (
     <Modal
@@ -137,13 +195,16 @@ export function HiredCelebrationModal({
             className="anim-hire-rise hire-hero-text text-[22px] font-extrabold leading-tight tracking-tight text-[var(--jale-ink)]"
             style={{ '--hire-rise-delay': '80ms' } as CSSProperties}
           >
-            {t('modal.title', { company: companyName })}
+            {headline}
           </h2>
           <span
             className="anim-hire-rise hire-hero-text text-sm font-medium text-[var(--jale-ink)]"
             style={{ '--hire-rise-delay': '160ms' } as CSSProperties}
           >
-            {t('modal.position', { title: jobTitle })}
+            {/* BARE, with no "Puesto:" label: the headline above already
+                says what happened, and this line is the employer's own words
+                for the job -- a label in front of them adds nothing. */}
+            {jobTitle}
           </span>
         </div>
       </div>
