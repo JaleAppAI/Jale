@@ -115,10 +115,18 @@ requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-
 // referrals alarms; without this context key the stack falls back to creating
 // a bare jale-billing-alarms topic that has no subscribers.
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c billingAlarmTopicArn=');
-requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npm audit --omit=dev --audit-level=high');
-// The frontend/admin audit runs through the dated-exception gate; a plain
-// `npm audit` there would either fail on Next 14's unfixable criticals or be
-// lowered past them, and the self-tests are what keep the gate honest.
+requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npm audit --audit-level=high');
+// Lane D removes the xlsx devDependency that forced --omit=dev (GHSA-4r6h-8v6p-xvw6,
+// no npm fix published); once that lands, the infra audit step must cover the
+// FULL dependency tree, not skip devDependencies.
+if (reusableValidate.includes('npm audit --omit=dev')) {
+  fail('.github/workflows/_reusable-validate.yml must not run npm audit --omit=dev (Lane D removed the devDependency that required it)');
+}
+// The frontend/admin audit runs through the dated-exception gate (currently
+// with an empty exception list -- see .github/audit-exceptions.json) rather
+// than a plain `npm audit`, so a future unfixable advisory can be excused on
+// the record instead of the job silently going red or being hand-waved past;
+// the self-tests are what keep the gate honest.
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'node ../scripts/npm-audit-gate.mjs --level critical');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'node --test "${tests[@]}"');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'node scripts/validate-github-workflows.mjs');

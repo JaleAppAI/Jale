@@ -247,10 +247,10 @@ jobs:
 
       - name: Audit infra dependencies
         working-directory: infra
-        # --omit=dev: dev-only tooling (e.g. the offline OEWS seed generator's
-        # xlsx devDependency, GHSA-4r6h-8v6p-xvw6 with no npm fix published)
-        # must not block CI; shipped dependencies stay audited at high.
-        run: npm audit --omit=dev --audit-level=high
+        # Full dependency tree (dev + prod) at high: the xlsx devDependency
+        # that previously forced --omit=dev (the offline OEWS seed
+        # generator's GHSA-4r6h-8v6p-xvw6, no npm fix published) is gone.
+        run: npm audit --audit-level=high
 
       - name: Setup frontend dependencies
         uses: ./.github/actions/setup-node-cache
@@ -260,12 +260,11 @@ jobs:
       - name: Audit frontend dependencies
         working-directory: frontend
         # Critical-level gate through scripts/npm-audit-gate.mjs, which honours
-        # the DATED exception list in .github/audit-exceptions.json: Next.js 14
-        # has no fix for its two critical advisories (15.5.24 is a major
-        # upgrade), and neither is reachable in this deployment -- the reasons
-        # are in that file, and each exception expires. The gate stays at
-        # critical for everything else. TODO: upgrade Next.js to 15.x (follow-up
-        # F33), then delete the exceptions.
+        # the DATED exception list in .github/audit-exceptions.json. Both apps
+        # are on Next 16.3.4 (follow-up F33 done); the exceptions list is
+        # currently empty, so this is a plain critical-level gate with the
+        # dated-exception mechanism kept in reserve for the next unfixable
+        # advisory.
         run: node ../scripts/npm-audit-gate.mjs --level critical
 
       - name: Setup admin dependencies
@@ -275,5 +274,5 @@ jobs:
 
       - name: Audit admin dependencies
         working-directory: admin
-        # Same gate and the same two dated Next.js exceptions as the frontend.
+        # Same gate as the frontend; see the comment there.
         run: node ../scripts/npm-audit-gate.mjs --level critical
