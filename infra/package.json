@@ -27,15 +27,15 @@
     "export:csv": "tsx scripts/export-db-to-csv.ts"
   },
   "devDependencies": {
-    "@types/aws-lambda": "^8.10.161",
-    "@types/jest": "^30",
-    "@types/node": "^24.10.1",
-    "@types/pg": "^8.20.0",
-    "aws-cdk": "^2.1133.0",
+    "@types/aws-lambda": "^8.10.163",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^24.13.4",
+    "@types/pg": "^8.23.1",
+    "aws-cdk": "^2.1141.0",
     "dotenv": "^17.4.2",
-    "esbuild": "^0.28.1",
+    "esbuild": "^0.28.2",
     "exceljs": "^4.4.0",
-    "jest": "^30",
+    "jest": "^30.5.1",
     "ts-jest": "^29.4.12",
     "tsx": "^4.23.13",
     "typescript": "~6.0.3"
@@ -53,9 +53,9 @@
     "@aws-sdk/client-sqs": "^3.1129.0",
     "@aws-sdk/client-ssm": "^3.1129.0",
     "@aws-sdk/s3-request-presigner": "^3.1129.0",
-    "aws-cdk-lib": "^2.267.0",
-    "constructs": "^10.5.0",
-    "pg": "^8.20.0",
+    "aws-cdk-lib": "^2.268.0",
+    "constructs": "^10.8.1",
+    "pg": "^8.23.0",
     "stripe": "22.3.0"
   },
   "overrides": {
