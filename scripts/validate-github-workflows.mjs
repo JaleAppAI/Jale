@@ -229,6 +229,40 @@ requireIncludes('.github/actions/setup-node-cache/action.yml', setupNode, 'actio
 requireIncludes('.github/actions/setup-node-cache/action.yml', setupNode, 'npm ci');
 requireIncludes('.github/actions/aws-oidc-login/action.yml', awsLogin, 'aws-actions/configure-aws-credentials');
 
+// Sprint 25 lane E: Node 24 + GitHub Actions majors. Pin checks below so a
+// future downgrade of any of these three actions, or the composite action's
+// Node default, is caught here instead of surfacing as a runner deprecation.
+requireIncludes('.github/actions/setup-node-cache/action.yml', setupNode, 'actions/setup-node@v7');
+requireIncludes('.github/actions/setup-node-cache/action.yml', setupNode, "default: '24'");
+requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'actions/setup-node@v7');
+requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, "node-version: '24'");
+requireIncludes('.github/actions/aws-oidc-login/action.yml', awsLogin, 'aws-actions/configure-aws-credentials@v6');
+
+const workflowAndActionFiles = {
+  '.github/workflows/pr-validate.yml': prValidate,
+  '.github/workflows/deploy-production.yml': deployProduction,
+  '.github/workflows/_reusable-validate.yml': reusableValidate,
+  '.github/workflows/_reusable-deploy.yml': reusableDeploy,
+  '.github/actions/setup-node-cache/action.yml': setupNode,
+  '.github/actions/aws-oidc-login/action.yml': awsLogin,
+};
+for (const [file, content] of Object.entries(workflowAndActionFiles)) {
+  for (const staleActionPin of ['actions/checkout@v4', 'actions/upload-artifact@v4', 'actions/setup-node@v4', 'configure-aws-credentials@v4']) {
+    if (content.includes(staleActionPin)) {
+      fail(`${file} must not pin the superseded ${staleActionPin}`);
+    }
+  }
+}
+const allWorkflowAndActionContent = Object.values(workflowAndActionFiles).join('\n');
+const checkoutV7Count = (allWorkflowAndActionContent.match(/actions\/checkout@v7/g) ?? []).length;
+if (checkoutV7Count < 9) {
+  fail(`expected at least 9 actions/checkout@v7 sites across workflows, found ${checkoutV7Count}`);
+}
+const uploadArtifactV7Count = (allWorkflowAndActionContent.match(/actions\/upload-artifact@v7/g) ?? []).length;
+if (uploadArtifactV7Count < 4) {
+  fail(`expected at least 4 actions/upload-artifact@v7 sites across workflows, found ${uploadArtifactV7Count}`);
+}
+
 for (const ownerPath of ['.github/', 'infra/', 'infra/db/migrations/', 'scripts/run-migrations*']) {
   requireIncludes('.github/CODEOWNERS', codeowners, ownerPath);
 }
