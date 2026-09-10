@@ -2,14 +2,15 @@ import { legalDocumentHeaders, readLegalDocument } from '@/lib/legal-documents';
 
 export const runtime = 'nodejs';
 
-export async function GET(_request: Request, { params }: { params: { version: string } }) {
-  const document = await readLegalDocument('privacy', params.version);
+export async function GET(_request: Request, { params }: { params: Promise<{ version: string }> }) {
+  const { version } = await params;
+  const document = await readLegalDocument('privacy', version);
 
   if (!document) {
     return new Response('Privacy policy document version not found', { status: 404 });
   }
 
   return new Response(document, {
-    headers: legalDocumentHeaders('privacy', params.version),
+    headers: legalDocumentHeaders('privacy', version),
   });
 }
