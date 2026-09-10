@@ -2,7 +2,20 @@
   "compilerOptions": {
     "target": "ES2022",
     "module": "commonjs",
-    "moduleResolution": "node",
+    // TypeScript 6 removed the "node"/"node10" alias, and "node16"/"nodenext"
+    // may only pair with a matching `module`, so "bundler" is the only
+    // resolution mode left that keeps this app's CommonJS emit.
+    "moduleResolution": "bundler",
+    // Load-bearing -- do not drop. "bundler" honours package `exports` maps,
+    // and stripe's routes the `import` condition at ESM typings with no
+    // PACKAGE_VERSION/API_VERSION/Stripe.Event; tsc and ts-jest also disagreed
+    // on the condition used for `import Stripe = require('stripe')`. Turning
+    // exports resolution off restores the node10 behaviour every module here
+    // was written and tested against.
+    "resolvePackageJsonExports": false,
+    // TypeScript 6 defaults this to true and makes `false` a deprecation
+    // error, so it is stated rather than inherited silently.
+    "esModuleInterop": true,
     "lib": [
       "es2022"
     ],
@@ -25,6 +38,12 @@
     "outDir": "dist",
     "typeRoots": [
       "./node_modules/@types"
+    ],
+    // TypeScript 6 no longer auto-includes every @types/* package; without
+    // this list the build reports ~25.7k "Cannot find name 'describe'" errors.
+    "types": [
+      "node",
+      "jest"
     ]
   },
   "exclude": [

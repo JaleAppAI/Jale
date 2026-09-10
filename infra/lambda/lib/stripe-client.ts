@@ -1,7 +1,11 @@
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
-// tsconfig has no esModuleInterop, so `stripe`'s `export =` typing requires the
-// TS import-equals form rather than `import Stripe from 'stripe'` (brief's
-// literal import fails TS1259 under this repo's compiler options).
+// `stripe` types its SDK with `export =`. This repo used to compile without
+// esModuleInterop, which made the TS import-equals form the only way to import
+// it (`import Stripe from 'stripe'` failed TS1259). TypeScript 6 turns
+// esModuleInterop on by default and rejects turning it back off, so a default
+// import would type-check now too -- import-equals is kept deliberately because
+// it emits a bare `require('stripe')` with no `__importStar`/`__importDefault`
+// interop wrapper, which is what these bundled Lambdas want.
 import Stripe = require('stripe');
 
 // Same 5-minute cache pattern as lib/db.ts getDbSecret.
