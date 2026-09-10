@@ -31,7 +31,7 @@ import { NotificationsStack } from '../../../lib/stacks/notifications-stack';
  *
  * CloudWatch Logs only evaluates a JSON selector pattern against log events
  * that are *themselves* a valid JSON object. Every one of our functions runs
- * on the Node 20 managed runtime with the DEFAULT (TEXT) log format — nothing
+ * on the Node 24 managed runtime with the DEFAULT (TEXT) log format — nothing
  * in `infra/lib` sets `loggingFormat`/`LoggingFormat` — so the runtime writes
  *
  *     <ISO timestamp>\t<requestId>\tINFO\t{"metric":"X",...}\n
@@ -385,7 +385,7 @@ describe('CloudWatch MetricFilter patterns', () => {
     }
   });
 
-  // The regression guard. A `$.` selector pattern cannot match a Node 20
+  // The regression guard. A `$.` selector pattern cannot match a Node 24
   // TEXT-format Lambda log event (timestamp/requestId/level prefix), so the
   // filter publishes nothing and its alarm never fires.
   test('no metric filter uses a JSON selector pattern', () => {
