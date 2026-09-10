@@ -102,8 +102,11 @@ export function AdminActionsPanel({ actions, target }: AdminActionsPanelProps) {
     }
     setPendingActionId(actionId);
     try {
-      // Server action invoked as an RPC from a client event handler — works on
-      // React 18.3 / Next 14 without the React 19-only useActionState hook.
+      // Server action invoked as an RPC from a client event handler. React 19
+      // is in use now, so useActionState is available, but this stays a manual
+      // RPC on purpose: it is what carries the per-action pendingActionId and
+      // the x-amz-content-sha256 payload hash. Rewiring it to useActionState is
+      // follow-up F34, deliberately out of scope for the Next 16 upgrade.
       const body = JSON.stringify(Object.fromEntries(formData.entries()));
       const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(body));
       const payloadHash = Array.from(new Uint8Array(digest))
