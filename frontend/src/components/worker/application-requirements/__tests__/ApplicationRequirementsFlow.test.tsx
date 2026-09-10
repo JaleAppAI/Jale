@@ -117,6 +117,37 @@ describe('ApplicationRequirementsFlow — terminal panels', () => {
     })).toBeInTheDocument();
   });
 
+  // The WhatsApp `application_hired` link and the in-app celebration both land
+  // on this page. A hired worker must read "you got the job", never "this job
+  // is closed / the employer took it down" (prod report 2026-09-08).
+  it('shows the hired panel, not the closed one, for a hired worker on an open job', () => {
+    renderFlow(serverState({
+      application: { status: 'hired', details_completed_at: '2026-09-02T10:00:00Z' },
+      job: { status: 'active' },
+    }));
+    expect(screen.getByText(message('worker_application_details.terminal.hired'))).toBeInTheDocument();
+    expect(screen.queryByText(message('worker_application_details.terminal.closed'))).not.toBeInTheDocument();
+    expect(screen.queryByText(message('worker_application_details.terminal.closed_body'))).not.toBeInTheDocument();
+    expect(screen.getByRole('button', {
+      name: message('worker_application_details.terminal.view_applications'),
+    })).toBeInTheDocument();
+  });
+
+  it('keeps the hired panel when the job filled after the hire', () => {
+    renderFlow(serverState({ application: { status: 'hired' }, job: { status: 'filled' } }));
+    expect(screen.getByText(message('worker_application_details.terminal.hired'))).toBeInTheDocument();
+    expect(screen.queryByText(message('worker_application_details.terminal.closed'))).not.toBeInTheDocument();
+  });
+
+  it('shows the not-interested panel, not the closed-job one, for a not_interested application', () => {
+    renderFlow(serverState({ application: { status: 'not_interested' } }));
+    expect(screen.getByText(message('worker_application_details.terminal.not_interested'))).toBeInTheDocument();
+    expect(screen.queryByText(message('worker_application_details.terminal.closed_body'))).not.toBeInTheDocument();
+    expect(screen.getByRole('button', {
+      name: message('worker_application_details.terminal.find_jobs'),
+    })).toBeInTheDocument();
+  });
+
   it('shows the already-complete panel once details_completed_at is set', () => {
     renderFlow(serverState({ application: { details_completed_at: '2026-09-02T00:00:00Z' } }));
     expect(screen.getByText(message('worker_application_details.terminal.already_complete')))

@@ -6,13 +6,14 @@ import { usePageData } from '@/hooks/usePageData';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { AppShell } from '@/components/layout/AppShell';
 import { DashboardPanel } from '@/components/ui/dashboard-panel';
-import { Badge } from '@/components/ui/badge';
+import { PanelHeader } from '@/components/ui/panel-header';
+import { BadgeList } from '@/components/ui/badge-list';
 import { Button } from '@/components/ui/button';
 import { ErrorState } from '@/components/ui/error-state';
+import { FactsCard } from '@/components/ui/facts-card';
 import { InitialsAvatar } from '@/components/ui/initials-avatar';
 import { InlineFeedback, type FeedbackTone } from '@/components/ui/inline-feedback';
-import { KVList } from '@/components/ui/kv-list';
-import { DetailPageSkeleton } from '@/components/ui/page-skeletons';
+import { ProfileSkeleton } from '@/components/ui/profile-skeleton';
 import { Input } from '@/components/ui/input';
 import { LocationPicker } from '@/components/ui/LocationPicker';
 import { Select } from '@/components/ui/select';
@@ -104,14 +105,28 @@ export default function EmployerProfilePage() {
         ? profile.company_name ?? profile.full_name ?? t('fallback_company')
         : t('fallback_company');
 
+    /*
+     * The facts card's chip-valued facts, already translated.
+     *
+     * `BadgeList` renders NO element for an empty list -- just the bare
+     * `emptyLabel` text -- so it cannot carry the tile's muted styling itself;
+     * each tile reads the length here instead.
+     */
+    const hiringTradeLabels = (profile?.hiring_trades ?? []).map((trade) => tAuth(`trades.${trade}`));
+    const jobTypeLabels = (profile?.typical_job_types ?? []).map((jobType) =>
+        tAuth(`job_types.${jobType.replace('-', '_')}`),
+    );
+
     return (
         <AppShell role="employer" title={tNav('nav.settings')}>
-            <div className="mx-auto max-w-5xl px-4 py-6 md:px-6">
+            <main className="mx-auto max-w-5xl px-4 py-6 md:px-6">
                 {showSkeleton ? (
-                    /* Same archetype and geometry as `loading.tsx`, so the route-level
-                       skeleton and this one are the same picture — the handover from
-                       server render to client fetch costs no visible swap. */
-                    <DetailPageSkeleton />
+                    /* Same archetype, geometry AND props as `loading.tsx`, so the
+                       route-level skeleton and this one are the same picture — the
+                       handover from server render to client fetch costs no visible
+                       swap. Seven tiles (four company, three contact), two chip
+                       facts, the description paragraph. */
+                    <ProfileSkeleton sections={[4, 3, 2]} />
                 ) : phase === 'error' && errorKind ? (
                     <DashboardPanel>
                         <ErrorState kind={errorKind} onRetry={retry} />
@@ -127,20 +142,17 @@ export default function EmployerProfilePage() {
                         )}
 
                         <DashboardPanel>
-                            {/* PanelHeader's geometry, plus the avatar it has no slot for. */}
-                            <div className="flex items-center justify-between gap-3 border-b border-[var(--jale-divider)] px-5 py-4">
-                                <div className="flex min-w-0 items-center gap-3">
-                                    <InitialsAvatar name={companyLabel} fallback="E" size={36} square />
-                                    <h2 className="min-w-0 truncate text-base font-extrabold text-[var(--jale-ink)]">
-                                        {companyLabel}
-                                    </h2>
-                                </div>
-                                {!editing && (
-                                    <Button variant="outline" size="sm" onClick={startEditing}>
-                                        {t('edit_button')}
-                                    </Button>
-                                )}
-                            </div>
+                            <PanelHeader
+                                leading={<InitialsAvatar name={companyLabel} fallback="E" size={36} square />}
+                                title={companyLabel}
+                                action={
+                                    editing ? null : (
+                                        <Button variant="outline" size="sm" onClick={startEditing}>
+                                            {t('edit_button')}
+                                        </Button>
+                                    )
+                                }
+                            />
 
                             {editing ? (
                                 <div className="anim-fade-in px-5 py-5">
@@ -151,75 +163,118 @@ export default function EmployerProfilePage() {
                                     />
                                 </div>
                             ) : (
-                                <div className="anim-fade-in px-5 py-3">
-                                    {saved && (
-                                        <InlineFeedback
-                                            tone="success"
-                                            onDismiss={() => setSaved(false)}
-                                            className="mb-3 mt-2"
-                                        >
-                                            {tCommon('feedback.saved')}
-                                        </InlineFeedback>
-                                    )}
-                                    <KVList
-                                        items={[
-                                            { label: t('field_email'), value: profile.email },
-                                            {
-                                                label: t('field_company'),
-                                                value: profile.company_name || profile.full_name || t('empty_company'),
-                                            },
-                                            { label: t('field_contact'), value: profile.contact_name || t('empty_contact') },
-                                            {
-                                                label: t('field_phone'),
-                                                // `tabular-nums` only wraps an actual number.
-                                                value: profile.phone ? (
-                                                    <span className="tabular-nums">{profile.phone}</span>
-                                                ) : (
-                                                    t('empty_phone')
-                                                ),
-                                            },
-                                            { label: t('field_city'), value: profile.city || t('empty_city') },
-                                            {
-                                                label: t('field_service_area'),
-                                                value: profile.service_area || t('empty_service_area'),
-                                            },
-                                            {
-                                                label: t('field_hiring_trades'),
-                                                value: (
+                                <div className="anim-fade-in">
+                                    {/* Its own padded block: `FactsCard` owns the card
+                                        body's `p-5 md:p-6`, so a padded wrapper around
+                                        both would double the card's inset. */}
+                                    {saved ? (
+                                        <div className="px-5 pt-4">
+                                            <InlineFeedback tone="success" onDismiss={() => setSaved(false)}>
+                                                {tCommon('feedback.saved')}
+                                            </InlineFeedback>
+                                        </div>
+                                    ) : null}
+                                    {/* The section labels are deliberately NOT the words of
+                                        any tile inside them ("Company details" over a
+                                        "Company" tile): `FactsCard` styles an `h3` section
+                                        label and a `dt` tile label identically, so a
+                                        repeated word renders as the same eyebrow twice. */}
+                                    <FactsCard>
+                                        <FactsCard.Section label={t('section_company')}>
+                                            <FactsCard.Tiles>
+                                                <FactsCard.Tile
+                                                    label={t('field_company')}
+                                                    muted={!profile.company_name && !profile.full_name}
+                                                >
+                                                    {profile.company_name || profile.full_name || t('empty_company')}
+                                                </FactsCard.Tile>
+                                                <FactsCard.Tile
+                                                    label={t('field_company_size')}
+                                                    muted={!profile.company_size}
+                                                >
+                                                    {/* The sizes are ranges ("11-50"), so the tabular
+                                                        figures earn their place -- but only on a range. */}
+                                                    {profile.company_size ? (
+                                                        <span className="tabular-nums">{profile.company_size}</span>
+                                                    ) : (
+                                                        t('empty_company_size')
+                                                    )}
+                                                </FactsCard.Tile>
+                                                <FactsCard.Tile label={t('field_city')} muted={!profile.city}>
+                                                    {profile.city || t('empty_city')}
+                                                </FactsCard.Tile>
+                                                <FactsCard.Tile
+                                                    label={t('field_service_area')}
+                                                    muted={!profile.service_area}
+                                                >
+                                                    {profile.service_area || t('empty_service_area')}
+                                                </FactsCard.Tile>
+                                            </FactsCard.Tiles>
+                                        </FactsCard.Section>
+
+                                        <FactsCard.Section label={t('section_contact')}>
+                                            <FactsCard.Tiles>
+                                                <FactsCard.Tile
+                                                    label={t('field_contact')}
+                                                    muted={!profile.contact_name}
+                                                >
+                                                    {profile.contact_name || t('empty_contact')}
+                                                </FactsCard.Tile>
+                                                {/* Never empty: the account IS an email address. */}
+                                                <FactsCard.Tile label={t('field_email')}>
+                                                    {profile.email}
+                                                </FactsCard.Tile>
+                                                <FactsCard.Tile label={t('field_phone')} muted={!profile.phone}>
+                                                    {/* `tabular-nums` only wraps an actual number. */}
+                                                    {profile.phone ? (
+                                                        <span className="tabular-nums">{profile.phone}</span>
+                                                    ) : (
+                                                        t('empty_phone')
+                                                    )}
+                                                </FactsCard.Tile>
+                                            </FactsCard.Tiles>
+                                        </FactsCard.Section>
+
+                                        {/* `align="start"` because a tile's label sits ABOVE
+                                            its value: right-aligned chips would drift off the
+                                            label naming them. */}
+                                        <FactsCard.Section label={t('section_hiring')}>
+                                            <FactsCard.Tiles>
+                                                <FactsCard.Tile
+                                                    label={t('field_hiring_trades')}
+                                                    muted={hiringTradeLabels.length === 0}
+                                                >
                                                     <BadgeList
-                                                        items={profile.hiring_trades.map((trade) => tAuth(`trades.${trade}`))}
+                                                        items={hiringTradeLabels}
                                                         emptyLabel={t('empty_hiring_trades')}
                                                         tone="info"
+                                                        align="start"
                                                     />
-                                                ),
-                                            },
-                                            {
-                                                label: t('field_job_types'),
-                                                value: (
+                                                </FactsCard.Tile>
+                                                <FactsCard.Tile
+                                                    label={t('field_job_types')}
+                                                    muted={jobTypeLabels.length === 0}
+                                                >
                                                     <BadgeList
-                                                        items={profile.typical_job_types.map((jobType) =>
-                                                            tAuth(`job_types.${jobType.replace('-', '_')}`),
-                                                        )}
+                                                        items={jobTypeLabels}
                                                         emptyLabel={t('empty_job_types')}
+                                                        align="start"
                                                     />
-                                                ),
-                                            },
-                                            {
-                                                label: t('field_company_size'),
-                                                // The sizes are ranges ("11-50"), so the tabular
-                                                // figures earn their place -- but only on a range.
-                                                value: profile.company_size ? (
-                                                    <span className="tabular-nums">{profile.company_size}</span>
-                                                ) : (
-                                                    t('empty_company_size')
-                                                ),
-                                            },
-                                            {
-                                                label: t('field_description'),
-                                                value: profile.company_description || t('empty_description'),
-                                            },
-                                        ]}
-                                    />
+                                                </FactsCard.Tile>
+                                            </FactsCard.Tiles>
+                                        </FactsCard.Section>
+
+                                        {/* Kept even when empty, unlike a job's description:
+                                            this is the employer's OWN profile, and
+                                            "Description / No description added" is the
+                                            prompt to write one. Muted so the placeholder
+                                            does not read as a fact. */}
+                                        <FactsCard.Section label={t('field_description')}>
+                                            <FactsCard.Text muted={!profile.company_description}>
+                                                {profile.company_description || t('empty_description')}
+                                            </FactsCard.Text>
+                                        </FactsCard.Section>
+                                    </FactsCard>
                                 </div>
                             )}
                         </DashboardPanel>
@@ -234,7 +289,7 @@ export default function EmployerProfilePage() {
                         <DigestSettingsPanel />
                     </div>
                 )}
-            </div>
+            </main>
         </AppShell>
     );
 }
@@ -429,40 +484,5 @@ function CheckboxGroup({ label, error, children }: { label: string; error?: stri
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">{children}</div>
             {error && <p className="text-xs font-semibold text-[var(--jale-danger)]">{error}</p>}
         </div>
-    );
-}
-
-/**
- * A KV row whose value is a set of chips. Right-aligned to sit under the
- * column the dashed rows establish, wrapping onto more lines at 390px rather
- * than squeezing the label.
- */
-/**
- * `emptyLabel` is required, not defaulted: an empty list is a real answer
- * ("no trades selected"), and every caller knows which field it is talking
- * about. A shared default would be a bare dash again, one indirection further
- * away.
- */
-function BadgeList({
-    items,
-    emptyLabel,
-    tone = 'neutral',
-}: {
-    items: string[];
-    emptyLabel: string;
-    tone?: 'neutral' | 'info';
-}) {
-    // Plain text, so an empty list reads in the same ink as every other "not
-    // set" value in the list rather than as a differently-styled special case.
-    if (items.length === 0) return <>{emptyLabel}</>;
-
-    return (
-        <span className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1.5">
-            {items.map((item) => (
-                <Badge key={item} tone={tone}>
-                    {item}
-                </Badge>
-            ))}
-        </span>
     );
 }

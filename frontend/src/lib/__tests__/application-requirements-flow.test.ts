@@ -150,20 +150,34 @@ describe('terminalScreen', () => {
     expect(terminalScreen(serverState({ job: { status: 'closed' } }))).toBe('closed');
   });
 
-  it('returns closed for a not_interested application', () => {
-    expect(terminalScreen(serverState({ application: { status: 'not_interested' } }))).toBe('closed');
+  it('returns not_interested for a not_interested application', () => {
+    expect(terminalScreen(serverState({ application: { status: 'not_interested' } }))).toBe('not_interested');
   });
 
-  it('normalizes the legacy `rejected` status onto closed', () => {
+  it('normalizes the legacy `rejected` status onto not_interested', () => {
     // @ts-expect-error -- deliberately feeding the legacy wire value.
-    expect(terminalScreen(serverState({ application: { status: 'rejected' } }))).toBe('closed');
+    expect(terminalScreen(serverState({ application: { status: 'rejected' } }))).toBe('not_interested');
   });
 
-  it('PRECEDENCE: a hired worker is closed, not already_complete', () => {
+  it('a hired worker on an OPEN job is hired, never closed (the WhatsApp hired link lands here)', () => {
+    const state = serverState({ application: { status: 'hired' }, job: { status: 'active' } });
+    expect(terminalScreen(state)).toBe('hired');
+  });
+
+  it('PRECEDENCE: a hired worker is hired, not already_complete', () => {
     const state = serverState({
       application: { status: 'hired', details_completed_at: '2026-09-02T10:00:00Z' },
     });
-    expect(terminalScreen(state)).toBe('closed');
+    expect(terminalScreen(state)).toBe('hired');
+  });
+
+  it('PRECEDENCE: hired beats a job that filled or closed after the hire', () => {
+    expect(terminalScreen(serverState({ application: { status: 'hired' }, job: { status: 'filled' } }))).toBe('hired');
+    expect(terminalScreen(serverState({ application: { status: 'hired' }, job: { status: 'closed' } }))).toBe('hired');
+  });
+
+  it('PRECEDENCE: a closed job beats not_interested', () => {
+    expect(terminalScreen(serverState({ application: { status: 'not_interested' }, job: { status: 'closed' } }))).toBe('closed');
   });
 
   it('returns already_complete once details_completed_at is set', () => {

@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
+import type { ApplicationHire } from '@/lib/api/worker';
 import {
   durationLabel,
+  hireTradeLabel,
+  hireTradePhrase,
   scheduleSummary,
   shiftHoursLabel,
   tradeLabel,
   workDayChips,
+  type HireTradeFields,
   type ScheduleFields,
   type Translator,
 } from '../job-detail-display';
@@ -39,6 +43,267 @@ describe('tradeLabel', () => {
     expect(tradeLabel({ trade_category: 'other', trade_category_other: '' }, fakeT, fakeT)).toBe('other');
     expect(tradeLabel({ trade_category: 'other', trade_category_other: '   ' }, fakeT, fakeT)).toBe('other');
     expect(tradeLabel({ trade_category: 'other' }, fakeT, fakeT)).toBe('other');
+  });
+});
+
+describe('hireTradeLabel', () => {
+  /**
+   * The API contract, pinned by `tsc` rather than by a comment: the endpoint
+   * hands the frontend an `ApplicationHire`, and this formatter's structural
+   * param type must accept its `trade` field. `job-detail-display.ts`
+   * deliberately imports nothing (see its header), so this is the assertion
+   * that keeps the local type and the wire type from drifting apart.
+   */
+  it('accepts the API `ApplicationHire.trade` shape', () => {
+    const fromApi: HireTradeFields = {} as Pick<ApplicationHire, 'trade'>;
+    expect(hireTradeLabel(fromApi, 'es', fakeT)).toBeNull();
+  });
+
+  /** A `trade` object as the endpoint builds it. */
+  function trade(over: Partial<NonNullable<HireTradeFields['trade']>> = {}): HireTradeFields {
+    return {
+      trade: {
+        category: 'electrician', other: null, canonical_en: null, canonical_es: null, ...over,
+      },
+    };
+  }
+
+  it('resolves a standard 023 category through the translator, by slug, in both locales', () => {
+    for (const locale of ['es', 'en']) {
+      for (const category of [
+        'electrician', 'plumber', 'carpenter', 'concrete',
+        'painting', 'drywall', 'general_labor',
+      ]) {
+        expect(hireTradeLabel(trade({ category }), locale, fakeT)).toBe(category);
+      }
+    }
+  });
+
+  it('ignores the canonicals for a standard category -- the catalogue is the source', () => {
+    // A stale canonical pair on an enum row must never beat the translated
+    // label: the catalogue is the only thing that follows the reader's locale.
+    expect(hireTradeLabel(
+      trade({ category: 'drywall', canonical_en: 'Drywaller', canonical_es: 'Tablaroquero' }),
+      'es', fakeT,
+    )).toBe('drywall');
+  });
+
+  it("'other' prefers canonical_es in Spanish and canonical_en otherwise", () => {
+    const other = trade({
+      category: 'other', other: 'Welder', canonical_en: 'Welder', canonical_es: 'Soldador',
+    });
+    expect(hireTradeLabel(other, 'es', fakeT)).toBe('Soldador');
+    expect(hireTradeLabel(other, 'en', fakeT)).toBe('Welder');
+    // Anything the module's own LOCALE_TAGS does not know falls back to
+    // English -- the same answer `shiftHoursLabel` gives for the same input,
+    // which is the point of routing this through `tagFor` instead of a bare
+    // `locale === 'es'`. Unreachable in the app either way: `i18n/locales.ts`
+    // declares exactly ['en','es'] and `i18n/request.ts` coerces anything
+    // else to 'en', so a bare tag is all a formatter ever sees.
+    expect(hireTradeLabel(other, 'pt', fakeT)).toBe('Welder');
+    expect(hireTradeLabel(other, 'es-MX', fakeT)).toBe('Welder');
+    expect(hireTradeLabel(other, '', fakeT)).toBe('Welder');
+  });
+
+  it("'other' falls back to the employer's own words when the cache said nothing", () => {
+    // The canonicalisation pass fails OPEN, so this is the shape a cache
+    // miss, a lookup error, or a frontend running ahead of the backend all
+    // produce.
+    const raw = trade({ category: 'other', other: '  Rope access tech  ' });
+    expect(hireTradeLabel(raw, 'es', fakeT)).toBe('Rope access tech');
+    expect(hireTradeLabel(raw, 'en', fakeT)).toBe('Rope access tech');
+  });
+
+  it("'other' with nothing at all is null, NOT the translated 'other' label", () => {
+    // Unlike `tradeLabel`, which prints tTrade('other') for a job row. Here
+    // the label lands inside a sentence -- "...te contrato como Otro" says
+    // nothing, so the caller is told to drop the clause instead.
+    for (const blank of [null, '', '   ']) {
+      expect(hireTradeLabel(trade({ category: 'other', other: blank }), 'es', fakeT)).toBeNull();
+      expect(hireTradeLabel(trade({ category: 'other', other: blank }), 'en', fakeT)).toBeNull();
+    }
+  });
+
+  it('is null when the trade object is absent, null, or states no category', () => {
+    for (const locale of ['es', 'en']) {
+      expect(hireTradeLabel({}, locale, fakeT)).toBeNull();
+      expect(hireTradeLabel({ trade: null }, locale, fakeT)).toBeNull();
+      expect(hireTradeLabel({ trade: undefined }, locale, fakeT)).toBeNull();
+      for (const blank of [null, '', '   ']) {
+        expect(hireTradeLabel(trade({ category: blank }), locale, fakeT)).toBeNull();
+      }
+    }
+  });
+
+  it('echoes an unrecognized category through the translator, without an enum check', () => {
+    // Same doctrine as `tradeLabel`: enum membership is the calling page's
+    // catalogue's concern, not this pure formatter's.
+    expect(hireTradeLabel(trade({ category: 'roofing' }), 'es', fakeT)).toBe('roofing');
+  });
+});
+
+describe('hireTradePhrase', () => {
+  /**
+   * A stand-in for `employer_dashboard.modal.trade.*`, which carries
+   * CAPITALISED labels ("Electrician", "Ayudante general") because a
+   * standalone tile is where they are normally read. That capital is the
+   * entire reason this function exists, so `fakeT` (which echoes an
+   * already-lowercase slug) cannot see the behaviour under test.
+   */
+  const CATALOGUE: Record<string, Record<string, string>> = {
+    en: { electrician: 'Electrician', general_labor: 'General labor', drywall: 'Drywall' },
+    es: { electrician: 'Electricista', general_labor: 'Ayudante general', drywall: 'Drywall' },
+  };
+  const catalogueT = (locale: string): Translator => (key) => CATALOGUE[locale]?.[key] ?? key;
+
+  /** A `trade` object as the endpoint builds it. */
+  function trade(over: Partial<NonNullable<HireTradeFields['trade']>> = {}): HireTradeFields {
+    return {
+      trade: {
+        category: 'electrician', other: null, canonical_en: null, canonical_es: null, ...over,
+      },
+    };
+  }
+
+  /** Same `tsc` pin as `hireTradeLabel`'s: the wire type must satisfy the param. */
+  it('accepts the API `ApplicationHire.trade` shape', () => {
+    const fromApi: HireTradeFields = {} as Pick<ApplicationHire, 'trade'>;
+    expect(hireTradePhrase(fromApi, 'es', fakeT)).toBeNull();
+  });
+
+  it('lower-cases the FIRST character of a catalogue label, in both locales', () => {
+    expect(hireTradePhrase(trade({ category: 'electrician' }), 'en', catalogueT('en')))
+      .toBe('electrician');
+    expect(hireTradePhrase(trade({ category: 'electrician' }), 'es', catalogueT('es')))
+      .toBe('electricista');
+  });
+
+  it('lower-cases ONLY the first character -- the rest of the label is left alone', () => {
+    // "Ayudante general" must not become "ayudante General", and a label whose
+    // remainder is already lowercase must survive intact.
+    expect(hireTradePhrase(trade({ category: 'general_labor' }), 'en', catalogueT('en')))
+      .toBe('general labor');
+    expect(hireTradePhrase(trade({ category: 'general_labor' }), 'es', catalogueT('es')))
+      .toBe('ayudante general');
+    expect(hireTradePhrase(trade({ category: 'drywall' }), 'es', catalogueT('es')))
+      .toBe('drywall');
+  });
+
+  it("'other' lower-cases the canonical for the reader's locale", () => {
+    const other = trade({
+      category: 'other', other: 'welder', canonical_en: 'Welder', canonical_es: 'Soldador',
+    });
+    expect(hireTradePhrase(other, 'es', fakeT)).toBe('soldador');
+    expect(hireTradePhrase(other, 'en', fakeT)).toBe('welder');
+  });
+
+  it('lower-cases a non-ASCII leading capital too', () => {
+    // `toLocaleLowerCase` rather than `toLowerCase`, so the fold follows the
+    // tag's language and an accented Spanish canonical is still readable
+    // mid-sentence.
+    expect(hireTradePhrase(
+      trade({ category: 'other', canonical_es: 'Óxido especialista' }), 'es', fakeT,
+    )).toBe('óxido especialista');
+  });
+
+  it('sends a regional tag down the same English path every other formatter here does', () => {
+    // `tagFor('es-MX')` is 'en-US' (LOCALE_TAGS knows only 'es'/'en'), which is
+    // exactly what `hireTradeLabel` already answers for the same input -- see
+    // its "'other' prefers canonical_es in Spanish" test. Making this one
+    // Spanish-aware would contradict that pin, in a module whose whole point
+    // is that the two agree.
+    const other = trade({
+      category: 'other', other: 'welder', canonical_en: 'Welder', canonical_es: 'Soldador',
+    });
+    expect(hireTradePhrase(other, 'es-MX', fakeT)).toBe('welder');
+    expect(hireTradePhrase(other, 'pt', fakeT)).toBe('welder');
+    expect(hireTradePhrase(other, '', fakeT)).toBe('welder');
+  });
+
+  it("returns the employer's OWN words verbatim, capitals intact", () => {
+    // The catalogue and the alias cache are OUR words, written the way a
+    // standalone label is written; free text is the employer's. "HVAC tech"
+    // lower-cased reads as a typo, and "Tile setter helper" is a proper name
+    // as far as this module is concerned.
+    for (const locale of ['en', 'es', 'es-MX']) {
+      expect(hireTradePhrase(
+        trade({ category: 'other', other: '  Tile setter helper  ' }), locale, fakeT,
+      )).toBe('Tile setter helper');
+      expect(hireTradePhrase(
+        trade({ category: 'other', other: 'HVAC tech' }), locale, fakeT,
+      )).toBe('HVAC tech');
+    }
+  });
+
+  it('a canonical BEATS the free text, and is lower-cased like any label of ours', () => {
+    expect(hireTradePhrase(
+      trade({ category: 'other', other: 'tile guy', canonical_en: 'Tile setter' }), 'en', fakeT,
+    )).toBe('tile setter');
+  });
+
+  it('leaves an acronym-led canonical alone rather than producing "hVAC"', () => {
+    // The fold undoes a sentence-style capital, and a label whose second
+    // character is ALSO upper-case has none to undo. The seeded
+    // `trade_aliases` canonicals are Title Case, but the cache also grows at
+    // runtime and the live rows are not verified from here, so the guard is
+    // cheap insurance rather than a fix for a known row.
+    expect(hireTradePhrase(
+      trade({ category: 'other', other: 'HVAC tech', canonical_en: 'HVAC technician' }),
+      'en', fakeT,
+    )).toBe('HVAC technician');
+    expect(hireTradePhrase(
+      trade({ category: 'other', other: 'aire', canonical_es: 'HVAC' }), 'es', fakeT,
+    )).toBe('HVAC');
+    // A one-character label has no second character to consult and still folds.
+    expect(hireTradePhrase(
+      trade({ category: 'other', other: 'x', canonical_en: 'X' }), 'en', fakeT,
+    )).toBe('x');
+  });
+
+  it('is null in every case `hireTradeLabel` is null', () => {
+    const nulls: HireTradeFields[] = [
+      {},
+      { trade: null },
+      { trade: undefined },
+      trade({ category: null }),
+      trade({ category: '' }),
+      trade({ category: '   ' }),
+      trade({ category: 'other', other: null }),
+      trade({ category: 'other', other: '' }),
+      trade({ category: 'other', other: '   ' }),
+    ];
+    for (const locale of ['en', 'es']) {
+      for (const hire of nulls) {
+        expect(hireTradeLabel(hire, locale, fakeT)).toBeNull();
+        expect(hireTradePhrase(hire, locale, fakeT)).toBeNull();
+      }
+    }
+  });
+
+  it('echoes an unrecognized category through the translator, same as `hireTradeLabel`', () => {
+    expect(hireTradePhrase(trade({ category: 'roofing' }), 'es', fakeT)).toBe('roofing');
+  });
+
+  it('differs from `hireTradeLabel` in the leading capital and NOTHING else', () => {
+    // The shared resolution step is what guarantees this: if the two ever pick
+    // different SOURCES for the same hire, this comparison is where it shows.
+    const cases: HireTradeFields[] = [
+      trade({ category: 'electrician' }),
+      trade({ category: 'general_labor' }),
+      trade({ category: 'other', canonical_en: 'Welder', canonical_es: 'Soldador', other: 'welder' }),
+      trade({ category: 'other', other: 'Tile setter helper' }),
+    ];
+    for (const locale of ['en', 'es']) {
+      const t = catalogueT(locale);
+      for (const hire of cases) {
+        const label = hireTradeLabel(hire, locale, t) as string;
+        const phrase = hireTradePhrase(hire, locale, t) as string;
+        expect(label).toBeTruthy();
+        expect(phrase).toBeTruthy();
+        expect(phrase.slice(1)).toBe(label.slice(1));
+        expect(phrase.toLocaleLowerCase()).toBe(label.toLocaleLowerCase());
+      }
+    }
   });
 });
 

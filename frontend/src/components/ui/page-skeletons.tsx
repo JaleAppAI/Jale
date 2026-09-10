@@ -13,7 +13,9 @@ import { Skeleton, SkeletonCircle, SkeletonLine } from './skeleton';
  * no layout shift. Each archetype's geometry is traced from a specific source:
  *
  *  - ListPageSkeleton      <- WorkerJobCard rows inside a DashboardPanel
- *  - DetailPageSkeleton    <- the `Field` grid on worker/employer profile pages
+ *  - DetailPageSkeleton    <- a `KVList`-shaped detail panel: employer/billing and
+ *                            worker/applications/[id] (the profile pages moved to
+ *                            `profile-skeleton.tsx`, the job pages to `JobDetailSkeleton`)
  *  - DashboardSkeleton     <- the employer dashboard, in source order: the navy
  *                            hero <section>, the 4-up KPI band, then the
  *                            `1.7fr/.8fr` board — jobs panel + quick-post on the
@@ -131,6 +133,171 @@ export function DetailPageSkeleton({
                 </div>
             </DashboardPanel>
         </SkeletonRegion>
+    );
+}
+
+/**
+ * `FactsCard`'s body — an optional pay headline, one or more labelled tile
+ * sections, optional requirement chips and an optional paragraph, with the same
+ * hairline rules the real card draws between consecutive sections.
+ *
+ * BODY ONLY, and deliberately not wrapped in `SkeletonRegion`: this traces what
+ * goes INSIDE a `DashboardPanel`, and the page's frame skeleton already owns
+ * the one `role="status"` live region for that panel. A second one nested in it
+ * would announce "Loading..." twice for a single card.
+ *
+ * The shape is props because the six detail surfaces differ, and a skeleton
+ * that draws a block the loaded card never has (a pay headline on a profile, a
+ * chip row on an applicant card) costs a visible jump on the swap:
+ *  - `headline`: `'pay'` draws the figure block the job pages open with;
+ *    `'none'` omits it (profiles have no headline).
+ *  - `sections`: tiles per labelled section, in order — `[4, 4]` is the job
+ *    card's two sections, `[5, 3]` the worker profile's. Each section draws
+ *    its own label bar and, from the second block on, the rule above it.
+ *  - `requirements` / `text`: `0` omits the block entirely (label, rule and
+ *    all), exactly as the real card omits an empty section.
+ * Defaults are the job detail card.
+ */
+/**
+ * One tile section of the skeleton. A bare number is a section of that many
+ * tiles. The object form adds labelled chip ROWS under the tiles, inside the
+ * same block, which is where `JobFactsCard` draws them: its "where and what's
+ * needed" section carries the requirement rows, so a skeleton that gave the
+ * chips a block of their own was one block longer than the card and moved the
+ * description on the swap. Each entry of `chips` is one row -- its label bar,
+ * then that many pills.
+ */
+export type FactsSkeletonSection = number | { tiles: number; chips?: readonly number[] };
+
+export function FactsCardSkeleton({
+    headline = 'pay',
+    sections = [4, 4],
+    documents = 0,
+    text = 3,
+}: {
+    headline?: 'pay' | 'none';
+    sections?: readonly FactsSkeletonSection[];
+    /**
+     * Rows of the worker job page's vault-document list (`FactsCard.Section`
+     * wrapping a bordered `ul`, a name and an Uploaded/Missing badge per row).
+     * `0` omits the block; only that page has one.
+     */
+    documents?: number;
+    text?: number;
+}) {
+    // Same rule the real card draws between sections: none above the first
+    // block, one above every block after it.
+    const sectionRule = 'mt-5 border-t border-[var(--jale-divider)] pt-5';
+    const blocks: React.ReactNode[] = [];
+
+    if (headline === 'pay') {
+        blocks.push(
+            /* Headline: label, figure, hint. */
+            <div key="headline" data-skeleton="headline">
+                <Skeleton className="h-2.5 w-20" />
+                <Skeleton className="mt-2 h-7 w-44 md:h-8" />
+                {/* The hint (`PayReferenceHint`) is `text-xs`, so this bar is
+                    `h-3` and NOT a `SkeletonLine`: that atom bakes in `h-3.5`,
+                    and a `className` height cannot beat it — same-property
+                    utilities resolve by stylesheet order, where `.h-3\.5` is
+                    emitted after `.h-3`. Bare `Skeleton` + an explicit height
+                    is the pattern the rest of this file already uses. */}
+                <Skeleton tone="divider" className="mt-2 h-3 w-52" />
+            </div>,
+        );
+    }
+
+    sections.forEach((entry, index) => {
+        const tiles = typeof entry === 'number' ? entry : entry.tiles;
+        const chipRows = (typeof entry === 'number' ? [] : entry.chips ?? []).filter((n) => n > 0);
+        // `JobFactsCard` drops a section with no tiles and no chips whole, so
+        // the skeleton does too -- a labelled block over nothing has no rule to
+        // claim.
+        if (tiles <= 0 && chipRows.length === 0) return;
+        blocks.push(
+            /* One labelled tile section: the h3 label bar, then a label bar
+               over a value bar per tile, two per row, matching the real grid so
+               the swap costs no layout shift. A plain `div` and not a `dl` —
+               there is no dt/dd here to make it a list of. */
+            <div key={`tiles-${index}`}>
+                <Skeleton className="h-2.5 w-24" />
+                {tiles > 0 ? (
+                    <div
+                        data-skeleton="tiles"
+                        className="mt-3 grid grid-cols-1 gap-x-5 gap-y-3 min-[360px]:grid-cols-2"
+                    >
+                        {Array.from({ length: tiles }).map((_, i) => (
+                            <div key={i} className="min-w-0">
+                                <Skeleton className="h-2.5 w-16" />
+                                {/* `mt-0.5`, the gap `Tile`'s own `dd` uses. */}
+                                <SkeletonLine width="w-28" className="mt-0.5" />
+                            </div>
+                        ))}
+                    </div>
+                ) : null}
+                {chipRows.map((count, row) => (
+                    /* A chip row under the tiles: its label bar, then the pills.
+                       `mt-4` is the gap `JobFactsCard` gives each row, from the
+                       tiles and from the row above it alike. */
+                    <div key={row} className="mt-4">
+                        <Skeleton className="h-2.5 w-24" />
+                        <div data-skeleton="requirements" className="mt-3 flex flex-wrap gap-2">
+                            {Array.from({ length: count }).map((_, i) => (
+                                <Skeleton key={i} className="h-6 w-28 rounded-full" />
+                            ))}
+                        </div>
+                    </div>
+                ))}
+            </div>,
+        );
+    });
+
+    if (documents > 0) {
+        blocks.push(
+            /* The vault document rows: a bordered, hairline-divided list, one
+               `h-10` row per document (a `text-sm` name beside an 11px badge,
+               `py-2.5`), under its label. The "upload the missing ones" line
+               under the real list depends on the worker's vault, not the
+               posting, so it is not traced. */
+            <div key="documents">
+                <Skeleton className="h-2.5 w-24" />
+                <div
+                    data-skeleton="documents"
+                    className="mt-3 divide-y divide-[var(--jale-divider)] overflow-hidden rounded-[var(--radius-input)] border border-[var(--jale-divider)]"
+                >
+                    {Array.from({ length: documents }).map((_, i) => (
+                        <div key={i} className="flex h-10 items-center justify-between gap-3 px-3.5">
+                            <Skeleton className="h-3.5 w-28" />
+                            <Skeleton tone="divider" className="h-3 w-16" />
+                        </div>
+                    ))}
+                </div>
+            </div>,
+        );
+    }
+
+    if (text > 0) {
+        blocks.push(
+            /* Description: its label, then full-width lines with a short last one. */
+            <div key="text">
+                <Skeleton className="h-2.5 w-24" />
+                <div data-skeleton="text" className="mt-3 space-y-2">
+                    {Array.from({ length: text }).map((_, i) => (
+                        <SkeletonLine key={i} width={i === text - 1 ? 'w-2/3' : 'w-full'} />
+                    ))}
+                </div>
+            </div>,
+        );
+    }
+
+    return (
+        <div className="p-5 md:p-6">
+            {blocks.map((block, index) => (
+                <div key={index} data-skeleton-section={index} className={index > 0 ? sectionRule : ''}>
+                    {block}
+                </div>
+            ))}
+        </div>
     );
 }
 
@@ -638,12 +805,85 @@ export function CenteredCardSkeleton({
     return (
         <SkeletonRegion className="mx-auto w-full max-w-md">
             {card ? (
-                <div className="rounded-[var(--radius-card)] bg-[var(--jale-card)] p-6 shadow-[var(--shadow-card)]">
+                /* `DashboardPanel`, not a hand-rolled card: `card={true}` is used
+                   only by the legal wall and the upload link, and both of those
+                   now draw their real card with `DashboardPanel` too -- so the
+                   1px divider border has to be on both sides of the swap or the
+                   card moves, which is the one thing these skeletons exist to
+                   prevent. (`card={false}`, which the auth pages use, is
+                   untouched: `AuthShell` draws their card.) */
+                <DashboardPanel as="div" className="p-6">
                     {body}
-                </div>
+                </DashboardPanel>
             ) : (
                 body
             )}
+        </SkeletonRegion>
+    );
+}
+
+/**
+ * The job detail card's skeleton -- the two job routes' `loading.tsx` AND both
+ * pages' own in-page skeleton branches render it, so the server-rendered
+ * skeleton and the client one are the same picture.
+ *
+ * `JobFactsCard` is ONE component, but the two pages hand it different
+ * sections, and the block count is what decides whether the swap moves
+ * anything -- so the shape is per page, and required rather than defaulted: a
+ * default would be right for one page and wrong for the other, and the wrong
+ * one costs exactly the layout shift this file exists to prevent. Each page's
+ * test compares its variant with its loaded card block for block.
+ *
+ *  - `'worker'`   pay; schedule; where + ONE chip row (transportation and work
+ *                 authorisation -- the certifications live in `WhatYouNeedPanel`
+ *                 under the card); the vault document rows; the description.
+ *                 Five blocks.
+ *  - `'employer'` pay; schedule; where + THREE chip rows (policy,
+ *                 certifications, documents); the description, which the
+ *                 employer's own page keeps even when empty. Four blocks -- no
+ *                 document block, because that page gets the documents as the
+ *                 third chip row.
+ *
+ * `DetailPageSkeleton` is deliberately untouched: `employer/billing` and
+ * `worker/applications/[id]` still render the stacked list it traces.
+ */
+export type JobDetailSkeletonVariant = 'worker' | 'employer';
+
+const JOB_CARD_SHAPES: Record<
+    JobDetailSkeletonVariant,
+    { sections: readonly FactsSkeletonSection[]; documents: number }
+> = {
+    worker: { sections: [4, { tiles: 4, chips: [2] }], documents: 2 },
+    employer: { sections: [4, { tiles: 4, chips: [2, 2, 2] }], documents: 0 },
+};
+
+export function JobDetailSkeleton({
+    variant,
+    withBackLink = false,
+}: {
+    variant: JobDetailSkeletonVariant;
+    withBackLink?: boolean;
+}) {
+    const shape = JOB_CARD_SHAPES[variant];
+
+    return (
+        <SkeletonRegion>
+            {withBackLink ? <Skeleton className="mb-4 h-3.5 w-24" /> : null}
+
+            <DashboardPanel>
+                {/* `PanelHeader`'s row: title left, the status/type badges right. */}
+                <div className="flex items-center justify-between gap-3 border-b border-[var(--jale-divider)] px-5 py-4">
+                    <Skeleton className="h-4 w-40" />
+                    <Skeleton className="h-8 w-20 rounded-full" />
+                </div>
+
+                <FactsCardSkeleton
+                    headline="pay"
+                    sections={shape.sections}
+                    documents={shape.documents}
+                    text={3}
+                />
+            </DashboardPanel>
         </SkeletonRegion>
     );
 }

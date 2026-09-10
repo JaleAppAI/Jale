@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
+import { DashboardPanel } from '@/components/ui/dashboard-panel';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 
 export const dynamic = 'force-dynamic';
@@ -103,7 +103,7 @@ export default function DigestUnsubscribePage() {
     return (
         <main className={FRAME}>
             <div className={COLUMN}>
-                <Card className="space-y-4 p-6">
+                <DashboardPanel as="div" className="space-y-4 p-6">
                     {phase === 'done' ? (
                         <>
                             <h1 className="text-lg font-extrabold text-[var(--jale-ink)]">
@@ -143,7 +143,7 @@ export default function DigestUnsubscribePage() {
                             </Button>
                         </>
                     )}
-                </Card>
+                </DashboardPanel>
             </div>
         </main>
     );

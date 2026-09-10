@@ -16,8 +16,8 @@ import { DashboardPanel } from '@/components/ui/dashboard-panel';
 import { ErrorState } from '@/components/ui/error-state';
 import { InitialsAvatar } from '@/components/ui/initials-avatar';
 import { InlineFeedback, type FeedbackTone } from '@/components/ui/inline-feedback';
-import { KVList, type KVItem } from '@/components/ui/kv-list';
-import { DetailPageSkeleton } from '@/components/ui/page-skeletons';
+import { FactsCard } from '@/components/ui/facts-card';
+import { ProfileSkeleton } from '@/components/ui/profile-skeleton';
 import { PanelHeader } from '@/components/ui/panel-header';
 import { ProgressRow } from '@/components/ui/progress-row';
 import { Select } from '@/components/ui/select';
@@ -453,49 +453,18 @@ export default function WorkerProfilePage() {
         ? tradeLabel(tCommon, profile.main_trade, profile.main_trade_other)
         : undefined;
 
-    const fields: KVItem[] = profile
-        ? [
-              { label: t('phone'), value: profile.phone || t('fallback_phone') },
-              {
-                  label: t('location'),
-                  value: profile.city || profile.location || t('fallback_location'),
-              },
-              {
-                  label: t('experience'),
-                  value:
-                      yearsExperience === null && experienceMonths === null ? (
-                          t('fallback_experience')
-                      ) : (
-                          <span className="tabular-nums">
-                              {yearsExperience !== null
-                                  ? tShared('worker_profile.years_experience', { years: yearsExperience })
-                                  : null}
-                              {yearsExperience !== null && experienceMonths !== null ? ' · ' : null}
-                              {experienceMonths !== null
-                                  ? t('experience_months', { months: experienceMonths })
-                                  : null}
-                          </span>
-                      ),
-              },
-              { label: t('availability_label'), value: availabilityLabel(profile.availability) },
-              {
-                  label: t('trade'),
-                  value: tradeLabel(tCommon, profile.main_trade, profile.main_trade_other),
-              },
-              // The row is omitted rather than blanked when the worker never
-              // answered: an empty value reads as "no transportation".
-              ...(profile.has_transportation === null || profile.has_transportation === undefined
-                  ? []
-                  : [
-                        {
-                            label: t('transportation'),
-                            value: profile.has_transportation
-                                ? t('transportation_yes')
-                                : t('transportation_no'),
-                        },
-                    ]),
-          ]
-        : [];
+    /*
+     * Which facts are a real answer and which are a placeholder. `FactsCard`'s
+     * `Tile` drops a placeholder to ink-2 so a card of real facts is not
+     * shouting the missing ones; the words themselves still say it is unset.
+     */
+    const experienceKnown = yearsExperience !== null || experienceMonths !== null;
+    // Both getters below already fall back to their own "unavailable" copy, so
+    // the flag tests the SOURCE value rather than the string they returned.
+    const availabilityKnown = Boolean(profile?.availability);
+    const tradeKnown = Boolean(profile?.main_trade);
+    const transportationKnown =
+        profile?.has_transportation !== null && profile?.has_transportation !== undefined;
 
     const shareDisabled = !idToken || !linkValid;
     const saveDisabled = saving || !idToken || !linkValid || !profile || statusDraft === null
@@ -533,7 +502,9 @@ export default function WorkerProfilePage() {
         return (
             <AppShellSkeleton role="employer">
                 <div className="mx-auto max-w-4xl px-4 py-6 md:px-6">
-                    <DetailPageSkeleton withBackLink />
+                    {/* Same props as this route's `loading.tsx`: six tiles, no chip
+                        section and no paragraph, under the status-badge head. */}
+                    <ProfileSkeleton sections={[6]} text={0} head="status-badge" withBackLink />
                 </div>
             </AppShellSkeleton>
         );
@@ -615,9 +586,72 @@ export default function WorkerProfilePage() {
                                         </div>
                                     </div>
 
-                                    <div className="px-5 py-2">
-                                        <KVList items={fields} />
-                                    </div>
+                                    {/* ONE unlabelled section: the worker's name in the
+                                        panel head above IS this card's heading, and a
+                                        single group has nothing to be told apart from,
+                                        so a section label would only repeat it. No
+                                        padded wrapper either — `FactsCard` owns the
+                                        card body's `p-5 md:p-6`. */}
+                                    <FactsCard>
+                                        <FactsCard.Section>
+                                            <FactsCard.Tiles>
+                                                <FactsCard.Tile label={t('phone')} muted={!profile.phone}>
+                                                    {profile.phone ? (
+                                                        <span className="tabular-nums">{profile.phone}</span>
+                                                    ) : (
+                                                        t('fallback_phone')
+                                                    )}
+                                                </FactsCard.Tile>
+                                                <FactsCard.Tile
+                                                    label={t('location')}
+                                                    muted={!profile.city && !profile.location}
+                                                >
+                                                    {profile.city || profile.location || t('fallback_location')}
+                                                </FactsCard.Tile>
+                                                <FactsCard.Tile
+                                                    label={t('experience')}
+                                                    muted={!experienceKnown}
+                                                >
+                                                    {experienceKnown ? (
+                                                        <span className="tabular-nums">
+                                                            {yearsExperience !== null
+                                                                ? tShared('worker_profile.years_experience', {
+                                                                      years: yearsExperience,
+                                                                  })
+                                                                : null}
+                                                            {yearsExperience !== null && experienceMonths !== null
+                                                                ? ' · '
+                                                                : null}
+                                                            {experienceMonths !== null
+                                                                ? t('experience_months', { months: experienceMonths })
+                                                                : null}
+                                                        </span>
+                                                    ) : (
+                                                        t('fallback_experience')
+                                                    )}
+                                                </FactsCard.Tile>
+                                                <FactsCard.Tile
+                                                    label={t('availability_label')}
+                                                    muted={!availabilityKnown}
+                                                >
+                                                    {availabilityLabel(profile.availability)}
+                                                </FactsCard.Tile>
+                                                <FactsCard.Tile label={t('trade')} muted={!tradeKnown}>
+                                                    {tradeLabel(tCommon, profile.main_trade, profile.main_trade_other)}
+                                                </FactsCard.Tile>
+                                                {/* The tile is omitted rather than blanked when the
+                                                    worker never answered: an empty value reads as
+                                                    "no transportation". */}
+                                                {transportationKnown ? (
+                                                    <FactsCard.Tile label={t('transportation')}>
+                                                        {profile.has_transportation
+                                                            ? t('transportation_yes')
+                                                            : t('transportation_no')}
+                                                    </FactsCard.Tile>
+                                                ) : null}
+                                            </FactsCard.Tiles>
+                                        </FactsCard.Section>
+                                    </FactsCard>
                                 </DashboardPanel>
 
                                 <DashboardPanel>

@@ -56,6 +56,18 @@ jobs:
             bash -n "${scripts[@]}"
           fi
 
+      - name: Run script self-tests
+        shell: bash
+        # `node --test` over scripts/*.test.mjs: the audit gate's decision logic
+        # (expiry re-arming, malformed exception files) is what these prove.
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          tests=(scripts/*.test.mjs)
+          if (( ${#tests[@]} > 0 )); then
+            node --test "${tests[@]}"
+          fi
+
       - name: Validate PowerShell scripts
         shell: pwsh
         run: |
@@ -234,9 +246,14 @@ jobs:
 
       - name: Audit frontend dependencies
         working-directory: frontend
-        # TODO: upgrade Next.js to 15.x to resolve high-severity CVEs (GHSA-9g9p, GHSA-h25m, et al.)
-        # Lowered to critical until that upgrade is scheduled.
-        run: npm audit --audit-level=critical
+        # Critical-level gate through scripts/npm-audit-gate.mjs, which honours
+        # the DATED exception list in .github/audit-exceptions.json: Next.js 14
+        # has no fix for its two critical advisories (15.5.24 is a major
+        # upgrade), and neither is reachable in this deployment -- the reasons
+        # are in that file, and each exception expires. The gate stays at
+        # critical for everything else. TODO: upgrade Next.js to 15.x (follow-up
+        # F33), then delete the exceptions.
+        run: node ../scripts/npm-audit-gate.mjs --level critical
 
       - name: Setup admin dependencies
         uses: ./.github/actions/setup-node-cache
@@ -245,4 +262,5 @@ jobs:
 
       - name: Audit admin dependencies
         working-directory: admin
-        run: npm audit --audit-level=critical
+        # Same gate and the same two dated Next.js exceptions as the frontend.
+        run: node ../scripts/npm-audit-gate.mjs --level critical

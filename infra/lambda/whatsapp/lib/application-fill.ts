@@ -1108,6 +1108,26 @@ const FILL_SCRUB = {
 } as const;
 
 /**
+ * `FILL_SCRUB`'s key set, and nothing else. Exported (sprint 24 round 2) for
+ * `lib/application-web-completion.ts`: when the WEB finishes the details
+ * stage, the bot's arm has to be released with the SAME keys the bot itself
+ * clears, or the dispatch tail (`processor.ts`'s
+ * `typeof tailState?.fill_application_id === 'string'` check) keeps re-sending
+ * a step the worker already answered in a browser.
+ *
+ * DERIVED, never restated. A key added to `FILL_SCRUB` above is picked up
+ * here with no second edit -- which is the whole point, since a key the web
+ * door forgot would leave the lane half-armed.
+ *
+ * The VALUES are deliberately not exported. This lane clears by MERGING
+ * `{key: null}` through `updateStateContext` (a jsonb `||`, which cannot
+ * express removal); the web door REMOVES the keys with jsonb `-`. Every
+ * reader gates on `typeof ... === 'string'`, so an absent key and a JSON
+ * null are the same disarmed state to all of them.
+ */
+export const FILL_SCRUB_KEYS: readonly string[] = Object.freeze(Object.keys(FILL_SCRUB));
+
+/**
  * Lifecycle-exit arm (`kind: 'exit'`). Sends the reason-mapped copy, then a
  * full scrub + disarm -- the SAME key set the completion arm clears, but
  * NEVER an offer (the worker didn't finish anything here).

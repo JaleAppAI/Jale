@@ -3066,6 +3066,56 @@ describe('Processor Lambda', () => {
         expect(outboxBodies()).toContain(fieldQuestion('work_authorization', 'en'));
       });
 
+      // Sprint 24 round 2, lane 1.5. The A/B against the test directly above:
+      // byte-identical inbound, byte-identical fixtures, and the ONLY
+      // difference is that `state_context` no longer carries
+      // `fill_application_id` -- the state `lib/application-web-completion.ts`
+      // leaves behind when the worker finished the details stage on the WEB.
+      //
+      // The re-prompt must disappear. This is the behavioural pin on the
+      // dispatch tail's guard (`typeof tailState?.fill_application_id ===
+      // 'string'`), driven through the real processor rather than asserted on
+      // a private helper -- and it fails on the old code, where nothing ever
+      // cleared that key from the web side.
+      it('a web-scrubbed state_context gets the help menu and NO fill re-prompt', async () => {
+        mockQuery
+          .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+          .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-fill-help-scrubbed' }] }) // claim
+          .mockResolvedValueOnce({
+            rowCount: 1,
+            rows: [convRow({
+              conversation_state: 'idle',
+              user_id: 'user-1',
+              language: 'en',
+              // Post-release: the lane keys are GONE. `fill_last_prompt_at`
+              // survives the scrub (FILL_SCRUB does not list it either) and
+              // must not matter -- the guard is on the id, not the cooldown.
+              state_context: { fill_last_prompt_at: 1 },
+            })],
+          })
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // INSERT outbox help_menu_list_en
+        mockRecordTail();
+
+        await handler(
+          makeSqsEvent({
+            MessageSid: 'SM-fill-help-scrubbed',
+            From: 'whatsapp:+15125551234',
+            Body: 'help',
+          }),
+          {} as any,
+          {} as any,
+        );
+
+        expect(outboxTemplates()).toContain('help_menu_list_en');
+        expect(outboxBodies()).not.toContain(fieldQuestion('work_authorization', 'en'));
+        // Nothing re-arms the lane either: the release is not undone by the
+        // very turn it was supposed to make quiet. (The v2 forced-idle
+        // writeback DOES rewrite the context it was handed, which is why this
+        // asserts on the arm key rather than on "no state_context write".)
+        expect(stateContextUpdates().some((sc) => 'fill_application_id' in sc)).toBe(false);
+      });
+
       it('dispatch-tail cooldown: an escape within 30s of the last fill prompt gets NO re-prompt', async () => {
         mockQuery
           .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
