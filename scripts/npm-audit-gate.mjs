@@ -8,12 +8,14 @@
  * exception no longer excuses anything: the gate re-arms on its own, so an
  * accepted risk cannot quietly become permanent.
  *
- * WHY THIS EXISTS (2026-09-09): Next.js 14.2.35 -- the latest 14.x -- carries
- * two CRITICAL advisories whose only fix is 15.5.24, a major upgrade. Neither is
- * reachable in Jale's deployment (see the reasons in the exceptions file), but
- * a plain `npm audit --audit-level=critical` cannot say so, and lowering the
- * level further would hide every future critical too. This keeps the gate at
- * critical and names the two accepted advisories, with a date.
+ * WHY THIS EXISTS (2026-09-09): built when Next.js 14.2.35 -- the latest
+ * 14.x at the time -- carried two CRITICAL advisories whose only fix was
+ * 15.5.24, a major upgrade, and a plain `npm audit --audit-level=critical`
+ * had no way to say those two were not reachable in Jale's deployment (nor
+ * would lowering the level, which would hide every future critical too).
+ * Both apps are now on Next.js 16.3.4 and .github/audit-exceptions.json is
+ * currently empty (2026-09-10) -- the mechanism stays in place at critical
+ * for whatever the next unfixable advisory turns out to be.
  *
  * Usage (from the app directory whose lockfile is being audited):
  *   node ../scripts/npm-audit-gate.mjs --level critical [--omit-dev] [--exceptions <file>]
