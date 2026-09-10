@@ -10,7 +10,7 @@
     "build": "next build",
     "start": "next start",
     "verify:legal-docs": "node scripts/verify-legal-doc-hosting.mjs",
-    "lint": "next lint",
+    "lint": "eslint .",
     "test": "vitest run"
   },
   "dependencies": {
