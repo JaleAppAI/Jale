@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '..');
@@ -128,6 +128,46 @@ assert.doesNotMatch(
   analyticsPage,
   /searchParams\?\.range/,
   'the analytics page must not read .range off the un-awaited searchParams Promise',
+);
+
+// --- Next 16 proxy file convention ----------------------------------------
+// Next 16 renamed the middleware convention to `proxy`; src/middleware.ts is
+// deprecated and stops being picked up in a later release. The rename also
+// moves the hook off the Edge runtime onto Node, which does NOT change the
+// security boundary: this layer still only checks cookie presence, and
+// requireAdminSession() remains the real authz gate.
+assert.equal(
+  existsSync(resolve(root, 'src/proxy.ts')),
+  true,
+  'the request hook must live in src/proxy.ts (Next 16 renamed the middleware convention)',
+);
+assert.equal(
+  existsSync(resolve(root, 'src/middleware.ts')),
+  false,
+  'src/middleware.ts must be gone -- two conventions would fight over the same matcher',
+);
+
+const proxyHook = read('src/proxy.ts');
+
+assert.match(
+  proxyHook,
+  /export function proxy\(/,
+  'the proxy file must export a function named `proxy`',
+);
+assert.doesNotMatch(
+  proxyHook,
+  /export function middleware\(/,
+  'the old `middleware` export must be gone',
+);
+assert.match(
+  proxyHook,
+  /matcher:\s*\['\/\(\(\?!\.\*\\\\\.\.\*\)\.\*\)'\]/,
+  'the proxy matcher must stay exactly as the middleware matcher was',
+);
+assert.match(
+  proxyHook,
+  /requireAdminSession\(\)/,
+  'the proxy must keep the note that requireAdminSession() is the real authz boundary',
 );
 
 console.log('admin UI contract checks passed');
