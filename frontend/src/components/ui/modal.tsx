@@ -72,7 +72,10 @@ export function Modal({
     size?: ModalSize;
     closeOnOverlay?: boolean;
     closeOnEscape?: boolean;
-    initialFocusRef?: React.RefObject<HTMLElement>;
+    // `RefObject<T | null>` is what React 19's `useRef<T>(null)` returns, and
+    // every caller passes exactly that. The body already treats a null current
+    // as "no preferred target" (`initialFocusRef?.current ?? ...`).
+    initialFocusRef?: React.RefObject<HTMLElement | null>;
     footer?: React.ReactNode;
     children: React.ReactNode;
 }) {

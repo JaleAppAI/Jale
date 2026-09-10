@@ -57,11 +57,12 @@ export const dynamicParams = false;
 
 export default async function RootLayout({
   children,
-  params: { locale },
+  params,
 }: Readonly<{
   children: React.ReactNode;
-  params: { locale: string };
+  params: Promise<{ locale: string }>;
 }>) {
+  const { locale } = await params;
   const messages = await getMessages();
   return (
     // The init script below mutates <html>'s class list before hydration, so

@@ -7,14 +7,14 @@
 # Outside Lambda, the adapter is dormant and the Node server runs directly.
 
 # ─── Stage 1: Dependencies ────────────────────────────────
-FROM node:20-alpine AS deps
+FROM node:24-alpine AS deps
 WORKDIR /app
 
 COPY package.json package-lock.json ./
 RUN npm ci
 
 # ─── Stage 2: Build ───────────────────────────────────────
-FROM node:20-alpine AS builder
+FROM node:24-alpine AS builder
 WORKDIR /app
 
 # Public Next.js env vars MUST be present at build time — they get inlined
@@ -39,12 +39,12 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
 # ─── Stage 3: Runtime ─────────────────────────────────────
-FROM node:20-alpine AS runtime
+FROM node:24-alpine AS runtime
 WORKDIR /app
 
 # AWS Lambda Web Adapter — listens on $PORT, translates Lambda → HTTP
 # https://github.com/awslabs/aws-lambda-web-adapter
-COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:0.8.4 /lambda-adapter /opt/extensions/lambda-adapter
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.1 /lambda-adapter /opt/extensions/lambda-adapter
 
 ENV NODE_ENV=production
 ENV PORT=3000

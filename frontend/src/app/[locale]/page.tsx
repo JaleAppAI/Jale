@@ -489,7 +489,14 @@ html { scroll-behavior: smooth; }
                             {t('footer.legal')}
                         </div>
                         <div className="flex flex-col gap-2.5 text-sm">
+                            {/* Not pages: /legal/terms and /legal/privacy are route handlers that
+                                stream a PDF, and `proxy.ts` passes them through UNLOCALIZED. The
+                                i18n `Link` would prefix a locale and break them, so a plain <a> is
+                                correct here. The rule only started flagging these in Next 16, which
+                                began treating app/ route handlers as pages. */}
+                            {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
                             <a href="/legal/terms" className="jale-link transition-colors">{t('footer.terms')}</a>
+                            {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
                             <a href="/legal/privacy" className="jale-link transition-colors">{t('footer.privacy')}</a>
                         </div>
                     </div>
