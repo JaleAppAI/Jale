@@ -81,30 +81,18 @@ export class MediaBoardStack extends cdk.Stack {
       entry: path.join(__dirname, '../../lambda/api/worker-posts-dispatch.ts'),
       description: 'worker-posts-dispatch',
       environment: commonEnv,
-      nodeModules: ['@aws-sdk/s3-request-presigner'],
       ...lambdaProps,
     });
     const createFn = new JaleLambdaFunction(this, 'WorkerPostCreate', {
       entry: path.join(__dirname, '../../lambda/api/worker-post-create.ts'),
       description: 'worker-post-create',
       environment: commonEnv,
-      // C1 (final-review, critical): worker-post-create.ts imports
-      // lib/moderation.ts, which imports '@aws-sdk/client-rekognition' at
-      // module top level. JaleLambdaFunction's default bundling externalizes
-      // ALL '@aws-sdk/*' packages (lambda-function.ts:74) on the assumption
-      // the Node 20.x Lambda runtime provides them -- untrue for
-      // client-rekognition (see the processor lambda's identical
-      // nodeModules override in whatsapp-stack.ts, ~line 264, for the same
-      // failure mode this fixes: an unresolvable require() at import time,
-      // failing EVERY invocation of this lambda, not just moderation calls).
-      nodeModules: ['@aws-sdk/client-rekognition'],
       ...lambdaProps,
     });
     const listFn = new JaleLambdaFunction(this, 'WorkerPostsList', {
       entry: path.join(__dirname, '../../lambda/api/worker-posts-list.ts'),
       description: 'worker-posts-list',
       environment: commonEnv,
-      nodeModules: ['@aws-sdk/s3-request-presigner'],
       ...lambdaProps,
     });
     const deleteFn = new JaleLambdaFunction(this, 'WorkerPostDelete', {
@@ -129,7 +117,6 @@ export class MediaBoardStack extends cdk.Stack {
         ...commonEnv,
         DOCUMENTS_BUCKET: props.documentsBucket.bucketName,
       },
-      nodeModules: ['@aws-sdk/s3-request-presigner'],
       ...lambdaProps,
     });
 

@@ -130,7 +130,6 @@ export class AiStack extends cdk.Stack implements AiStackOutputs {
         DB_SECRET_ARN: props.aiDbSecret.secretName,
         BEDROCK_MODEL_ID,
       },
-      nodeModules: ['@aws-sdk/client-bedrock-runtime'],
     });
     props.aiDbSecret.grantRead(this.questionGeneratorFn.function);
     this.questionGeneratorFn.function.addToRolePolicy(
@@ -150,7 +149,6 @@ export class AiStack extends cdk.Stack implements AiStackOutputs {
         DB_SECRET_ARN: props.aiDbSecret.secretName,
         BEDROCK_MODEL_ID,
       },
-      nodeModules: ['@aws-sdk/client-bedrock-runtime'],
     });
     props.aiDbSecret.grantRead(this.aliasGeneratorFn.function);
     this.aliasGeneratorFn.function.addToRolePolicy(
@@ -172,10 +170,6 @@ export class AiStack extends cdk.Stack implements AiStackOutputs {
         SSM_RUBRIC_PARAM: rubricParam.parameterName,
         TRUST_ASSESSMENT_QUEUE_URL: this.trustAssessmentQueue.queueUrl,
       },
-      nodeModules: [
-        '@aws-sdk/client-bedrock-runtime',
-        '@aws-sdk/client-ssm',
-      ],
     });
     props.aiDbSecret.grantRead(trustScorerLambda.function);
     trustScorerLambda.function.addToRolePolicy(
@@ -231,7 +225,6 @@ export class AiStack extends cdk.Stack implements AiStackOutputs {
         BEDROCK_MODEL_ID,
         TRUST_EXTRACTION_QUEUE_URL: this.trustExtractionQueue.queueUrl,
       },
-      nodeModules: ['@aws-sdk/client-bedrock-runtime'],
     });
     props.aiDbSecret.grantRead(trustExtractorLambda.function);
     trustExtractorLambda.function.addToRolePolicy(
