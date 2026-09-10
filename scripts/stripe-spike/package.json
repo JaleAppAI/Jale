@@ -5,7 +5,7 @@
   "type": "commonjs",
   "devDependencies": {
     "dotenv": "^17.4.2",
-    "stripe": "22.6.2",
+    "stripe": "22.3.0",
     "tsx": "^4.23.13",
     "typescript": "6.0.3",
     "@types/node": "^24"
