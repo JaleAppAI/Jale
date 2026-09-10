@@ -49,7 +49,8 @@ export async function verifyAdminIdToken(idToken: string): Promise<AdminSession>
 }
 
 export async function getCurrentAdminSession(): Promise<AdminSession | undefined> {
-  const rawToken = cookies().get(ADMIN_SESSION_COOKIE)?.value;
+  const cookieStore = await cookies();
+  const rawToken = cookieStore.get(ADMIN_SESSION_COOKIE)?.value;
 
   if (rawToken) {
     try {

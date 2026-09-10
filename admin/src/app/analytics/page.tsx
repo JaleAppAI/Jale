@@ -31,10 +31,11 @@ const EMPLOYERS_ORANGE = '#eb6834';
 export default async function AnalyticsPage({
   searchParams,
 }: {
-  searchParams?: { range?: string | string[] };
+  searchParams: Promise<{ range?: string | string[] }>;
 }) {
   await requireAdminSession();
-  const range = parseAnalyticsRange(searchParams?.range ?? DEFAULT_ANALYTICS_RANGE);
+  const { range: rangeParam } = await searchParams;
+  const range = parseAnalyticsRange(rangeParam ?? DEFAULT_ANALYTICS_RANGE);
   const period = RANGES.find((r) => r.value === range)?.period ?? 'this period';
 
   // db.ts caps the shared pool at max: 5, so running all five analytics queries

@@ -81,4 +81,53 @@ assert.match(analyticsPage, /requireAdminSession\(\)/, 'the page still gates on 
 assert.match(analyticsPage, /Promise\.all\(\[\s*getSignups/, 'the two-wave fetch (pool cap of 5) is preserved');
 assert.doesNotMatch(analyticsPage, /function bucketLabel/, 'bucketLabel moved to analytics-format');
 
+// --- Next 16 async request APIs -------------------------------------------
+// Next 16 removed the synchronous compatibility shim: cookies(), params and
+// searchParams are Promises now. Reading a property off the un-awaited value
+// does not throw -- it silently yields undefined -- and TypeScript cannot catch
+// it either, because Next's generated page validator widens page props with
+// `& any` (.next/types/validator.ts). So the contract is asserted here.
+const sessionLib = read('src/lib/server/session.ts');
+const sessionRoute = read('src/app/api/session/route.ts');
+
+for (const [label, source] of [
+  ['src/lib/server/session.ts', sessionLib],
+  ['src/app/api/session/route.ts', sessionRoute],
+]) {
+  assert.match(source, /await cookies\(\)/, `${label} must await cookies() -- Next 16 removed the sync shim`);
+  assert.doesNotMatch(
+    source,
+    /cookies\(\)\s*\.\s*get/,
+    `${label} must not read a cookie off an un-awaited cookies()`,
+  );
+}
+
+const caseDetail = read('src/app/cases/[id]/page.tsx');
+const verificationDetail = read('src/app/verifications/[id]/page.tsx');
+
+for (const [label, source] of [
+  ['src/app/cases/[id]/page.tsx', caseDetail],
+  ['src/app/verifications/[id]/page.tsx', verificationDetail],
+]) {
+  assert.match(
+    source,
+    /params:\s*Promise<\{\s*id:\s*string;?\s*\}>/,
+    `${label} must type params as a Promise (Next 16 dynamic route contract)`,
+  );
+  assert.match(source, /await params/, `${label} must await params before reading the route id`);
+  assert.doesNotMatch(source, /\bparams\.id\b/, `${label} must not read .id off the un-awaited params Promise`);
+}
+
+assert.match(
+  analyticsPage,
+  /searchParams\??:\s*Promise</,
+  'the analytics page must type searchParams as a Promise (Next 16 request API contract)',
+);
+assert.match(analyticsPage, /await searchParams/, 'the analytics page must await searchParams before reading the range');
+assert.doesNotMatch(
+  analyticsPage,
+  /searchParams\?\.range/,
+  'the analytics page must not read .range off the un-awaited searchParams Promise',
+);
+
 console.log('admin UI contract checks passed');
