@@ -97,6 +97,12 @@ requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'n
 // --maxWorkers with --runInBand in a single invocation.
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npm run test:ci -- --runInBand');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npx cdk synth');
+// `--all` is not a valid `cdk synth` option in the CDK 2.1133+ CLI this repo
+// pins (it prints "Unknown option(s): --all" and is ignored); `cdk synth`
+// with no stack argument already synthesizes every stack.
+if (reusableValidate.includes('cdk synth --all')) {
+  fail('.github/workflows/_reusable-validate.yml must not pass --all to cdk synth (not a valid option; omit the stack argument to synth everything)');
+}
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c emailFromAddress=');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c sesVerifiedIdentityArn=');
 // Cognito employer-pool SES sender: CI synth must exercise the auth-stack SES

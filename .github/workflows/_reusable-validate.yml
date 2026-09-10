@@ -87,22 +87,21 @@ jobs:
   infra:
     name: Infra build, test, synth
     runs-on: ubuntu-latest
-    # Observed runtime is ~16-24 min (npm run test:ci --runInBand shells out to
-    # `npm install` ~25 times for NodejsFunction bundling, then CDK synth); 45
-    # minutes gives ~2x headroom over the worst run seen while still failing
-    # well short of GitHub's 360-minute ceiling if npm's audit endpoint (or
-    # anything else) stalls those installs.
+    # Runtime under Node 24 has not been re-measured yet (CDK bundling no
+    # longer shells out to `npm install` at all -- zero `nodeModules`
+    # overrides remain, so the Lambda dependency sets ship as source and are
+    # bundled by esbuild). 45 minutes is carried over from the pre-Node-24
+    # budget; tighten after the first Node-24 run establishes a real number.
     timeout-minutes: 45
     env:
       CDK_DEFAULT_ACCOUNT: '111111111111'
       CDK_DEFAULT_REGION: ${{ inputs.aws-region }}
       # Scoped to this job only (not workflow-level): the security job below
-      # runs `npm audit --omit=dev --audit-level=high` as an explicit gate and
-      # must keep hitting the audit endpoint. Here we only want the *incidental*
-      # audit/funding calls that npm makes on every install skipped -- npm ci in
-      # the setup step, and more importantly the ~25 npm installs CDK's
-      # NodejsFunction bundling shells out to during jest and synth, which
-      # otherwise each stall 5-7 min when npm's audit endpoint is degraded.
+      # runs `npm audit --audit-level=high` as an explicit gate and must keep
+      # hitting the audit endpoint. Here we only want the *incidental*
+      # audit/funding calls npm ci makes in the setup step skipped -- CDK
+      # bundling no longer shells out to npm at all, so this only ever
+      # affected that one install.
       NPM_CONFIG_AUDIT: 'false'
       NPM_CONFIG_FUND: 'false'
     steps:
@@ -123,19 +122,14 @@ jobs:
         # test:ci is plain `jest` — the default `test` script carries
         # --maxWorkers=2 (a dev-host OOM cap), and jest rejects combining
         # --maxWorkers with --runInBand in one invocation.
-        # NPM_CONFIG_PREFER_OFFLINE: the NodejsFunction bundling this step
-        # triggers reinstalls the same Lambda dependency sets repeatedly;
-        # prefer the runner's npm cache over hitting the registry when a
-        # satisfying copy is already there.
-        env:
-          NPM_CONFIG_PREFER_OFFLINE: 'true'
         run: npm run test:ci -- --runInBand
 
       - name: CDK synth backend stacks
         working-directory: infra
-        env:
-          NPM_CONFIG_PREFER_OFFLINE: 'true'
-        run: npx cdk synth --all -c environment=${{ inputs.cdk-environment }} -c skipFrontend=true -c emailFromAddress=ci-synth@jaleapp.ai -c sesVerifiedIdentityArn=arn:aws:ses:${{ inputs.aws-region }}:111111111111:identity/jaleapp.ai -c sesEmailFromAddress=ci-synth@jaleapp.ai -c sesEmailRegion=us-east-1 -c whatsappStatusCallbackUrl=https://api.example.invalid/whatsapp/status-callback -c whatsappAlarmTopicArn=arn:aws:sns:${{ inputs.aws-region }}:111111111111:jale-ci-whatsapp-alarms -c billingAlarmTopicArn=arn:aws:sns:${{ inputs.aws-region }}:111111111111:jale-ci-whatsapp-alarms -c publicSiteBaseUrl=https://ci-synth.example.invalid -c sesConfigurationSetName=jale-ci-employer-email -c whatsappBusinessNumber=15550000000 --output "$RUNNER_TEMP/jale-cdk-synth-backend"
+        # No --all: it is not a valid `cdk synth` option (CDK 2.1133+ prints
+        # "Unknown option(s): --all" and ignores it) -- `cdk synth` with no
+        # stack argument already synthesizes every stack.
+        run: npx cdk synth -c environment=${{ inputs.cdk-environment }} -c skipFrontend=true -c emailFromAddress=ci-synth@jaleapp.ai -c sesVerifiedIdentityArn=arn:aws:ses:${{ inputs.aws-region }}:111111111111:identity/jaleapp.ai -c sesEmailFromAddress=ci-synth@jaleapp.ai -c sesEmailRegion=us-east-1 -c whatsappStatusCallbackUrl=https://api.example.invalid/whatsapp/status-callback -c whatsappAlarmTopicArn=arn:aws:sns:${{ inputs.aws-region }}:111111111111:jale-ci-whatsapp-alarms -c billingAlarmTopicArn=arn:aws:sns:${{ inputs.aws-region }}:111111111111:jale-ci-whatsapp-alarms -c publicSiteBaseUrl=https://ci-synth.example.invalid -c sesConfigurationSetName=jale-ci-employer-email -c whatsappBusinessNumber=15550000000 --output "$RUNNER_TEMP/jale-cdk-synth-backend"
 
       - name: Upload backend synth artifact
         uses: actions/upload-artifact@v7
