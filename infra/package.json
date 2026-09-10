@@ -35,9 +35,9 @@
     "dotenv": "^17.4.2",
     "esbuild": "^0.28.1",
     "jest": "^30",
-    "ts-jest": "^29",
+    "ts-jest": "^29.4.12",
     "ts-node": "^10.9.2",
-    "typescript": "~5.9.3",
+    "typescript": "~6.0.3",
     "xlsx": "^0.18.5"
   },
   "dependencies": {
