@@ -13,7 +13,7 @@
  *   cd infra
  *   DB_HOST=localhost DB_PORT=5434 DB_NAME=jale DB_USER=jale_admin DB_PASSWORD=<pw> DB_SSL=true \
  *   DB_TLS_SERVERNAME=<real-rds-endpoint> \
- *   npx ts-node scripts/export-db-to-csv.ts [--out <path.zip>] [--schema public] [--tables users,jobs]
+ *   npx tsx scripts/export-db-to-csv.ts [--out <path.zip>] [--schema public] [--tables users,jobs]
  *
  * --out      Output zip path. Defaults to db-export-<ISO timestamp>.zip in cwd.
  * --schema   Schema to export. Defaults to "public".

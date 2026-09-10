@@ -58,7 +58,7 @@
  * Usage:
  *   cd infra
  *   DB_HOST=<host> DB_PORT=5432 DB_NAME=jale DB_USER=jale_admin DB_PASSWORD=<pw> \
- *   npx ts-node scripts/bulk-reset-whatsapp-onboarding-v2.ts \
+ *   npx tsx scripts/bulk-reset-whatsapp-onboarding-v2.ts \
  *     --reason "<why>" --dry-run|--execute [--limit <n>]
  *
  * `--limit <n>` processes only the first n discovered workers (ordered by

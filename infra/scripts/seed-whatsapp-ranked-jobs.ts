@@ -3,7 +3,7 @@
  *
  * Usage:
  *   DB_HOST=<host> DB_PORT=5432 DB_NAME=jale DB_USER=jale_admin DB_PASSWORD=<pw> \
- *   WORKER_PHONE=9152272188 npx ts-node scripts/seed-whatsapp-ranked-jobs.ts
+ *   WORKER_PHONE=9152272188 npx tsx scripts/seed-whatsapp-ranked-jobs.ts
  *
  * Optional:
  *   WORKER_ID=<users.id>

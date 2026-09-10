@@ -6,7 +6,7 @@
  * wage_references / city_cbsa_crosswalk tables (migration 071).
  *
  * Usage:
- *   cd infra && npx ts-node scripts/generate-oews-seed.ts [--out <path>] [--cache-dir <dir>]
+ *   cd infra && npx tsx scripts/generate-oews-seed.ts [--out <path>] [--cache-dir <dir>]
  *
  * Data sources and how they were actually fetched
  * ------------------------------------------------

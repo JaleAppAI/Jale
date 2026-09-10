@@ -20,15 +20,15 @@
  * and raises on a bad state code, so a malformed parse result can never be
  * written even if this script's own validation were bypassed.
  *
- * Usage (from the infra/ directory, so `pg`/`ts-node` resolve; or set
- * NODE_PATH=<repo>/infra/node_modules and TS_NODE_PROJECT=<repo>/infra/tsconfig.json
- * to run from elsewhere):
+ * Usage (from the infra/ directory, so `pg`/`tsx` resolve; or set
+ * NODE_PATH=<repo>/infra/node_modules and pass
+ * --tsconfig <repo>/infra/tsconfig.json to run from elsewhere):
  *   cd infra
  *   DATABASE_URL=postgres://jale_admin:<pw>@<host>:5432/jale \
- *   npx ts-node ../scripts/backfill-job-geo.ts               # dry run (default)
+ *   npx tsx ../scripts/backfill-job-geo.ts               # dry run (default)
  *
- *   DATABASE_URL=... npx ts-node ../scripts/backfill-job-geo.ts --dry-run   # explicit, same as default
- *   DATABASE_URL=... npx ts-node ../scripts/backfill-job-geo.ts --apply     # writes
+ *   DATABASE_URL=... npx tsx ../scripts/backfill-job-geo.ts --dry-run   # explicit, same as default
+ *   DATABASE_URL=... npx tsx ../scripts/backfill-job-geo.ts --apply     # writes
  *
  * DATABASE_URL may also carry `?sslmode=require`; TLS is left to the
  * connection string / pg defaults here rather than bundling the RDS CA, since
