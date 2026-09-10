@@ -25,6 +25,20 @@ assert.doesNotMatch(
   /\{isPending\s*\?\s*'Processing/,
   'all action buttons must not display the same loading label',
 );
+// The panel calls the server action as a plain RPC from a click handler instead
+// of going through useActionState. That is deliberate and survives the React 19
+// upgrade (rewiring it is follow-up F34), but the comment explaining it must not
+// go on claiming the app runs React 18.
+assert.doesNotMatch(
+  actions,
+  /React 18/,
+  'the manual-RPC comment must not still claim React 18 -- the app is on React 19',
+);
+assert.match(
+  actions,
+  /F34/,
+  'the manual RPC must point at the follow-up that revisits it (F34)',
+);
 assert.match(
   login,
   /className="button secondary"/,
