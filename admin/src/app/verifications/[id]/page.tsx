@@ -6,8 +6,8 @@ import { getVerificationRecord } from '@/lib/server/admin-verifications';
 import { requireAdminSession } from '@/lib/server/session';
 
 export default async function VerificationDetailPage({ params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
   const session = await requireAdminSession();
+  const { id } = await params;
   const item = await getVerificationRecord(id);
   const role = session.role;
 

@@ -6,8 +6,8 @@ import { getAdminCase } from '@/lib/server/admin-cases';
 import { requireAdminSession } from '@/lib/server/session';
 
 export default async function CaseDetailPage({ params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
   const session = await requireAdminSession();
+  const { id } = await params;
   const item = await getAdminCase(id);
   const role = session.role;
 
