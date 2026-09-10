@@ -95,6 +95,11 @@ requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-
 // a bare jale-billing-alarms topic that has no subscribers.
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c billingAlarmTopicArn=');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npm audit --omit=dev --audit-level=high');
+// The frontend/admin audit runs through the dated-exception gate; a plain
+// `npm audit` there would either fail on Next 14's unfixable criticals or be
+// lowered past them, and the self-tests are what keep the gate honest.
+requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'node ../scripts/npm-audit-gate.mjs --level critical');
+requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'node --test "${tests[@]}"');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'node scripts/validate-github-workflows.mjs');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'working-directory: admin');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npm run test:session');

@@ -1,0 +1,17 @@
+{
+  "$comment": "Dated exceptions for scripts/npm-audit-gate.mjs. Each entry excuses ONE GHSA advisory until `expires` (inclusive, UTC); after that the CI gate fails again until the entry is renewed on purpose or the dependency is fixed. Add an entry only with a reason a reviewer can verify from the repository.",
+  "exceptions": [
+    {
+      "id": "GHSA-p293-qw3h-jr36",
+      "package": "next",
+      "reason": "Next.js 14.2.35 (latest 14.x) RCE on Windows-hosted servers; fixed only in 15.5.24. Both apps run as Linux amd64 Docker Lambdas (infra/lib/stacks/frontend-stack.ts, admin-stack.ts), so the Windows code path is never executed. Removed by the Next 15 upgrade (follow-up F33).",
+      "expires": "2026-10-15"
+    },
+    {
+      "id": "GHSA-2xp9-vwfh-vxw4",
+      "package": "next",
+      "reason": "Next.js 14.2.35 RCE in the Image Optimization API via AVIF; fixed only in 15.5.24. Both apps set images.unoptimized=true (frontend/next.config.mjs, admin/next.config.mjs), which makes the 14.2.35 server answer /_next/image with a 404 before the optimizer runs, and neither app imports next/image. Removed by the Next 15 upgrade (follow-up F33).",
+      "expires": "2026-10-15"
+    }
+  ]
+}
