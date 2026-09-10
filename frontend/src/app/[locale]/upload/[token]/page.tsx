@@ -14,7 +14,7 @@ import { classifyError } from '@/lib/api/errors';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
+import { DashboardPanel } from '@/components/ui/dashboard-panel';
 import { ErrorState } from '@/components/ui/error-state';
 import { Icon } from '@/components/ui/icon';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
@@ -182,7 +182,7 @@ export default function WorkerUploadPage() {
     return (
       <main className={FRAME}>
         <div className={COLUMN}>
-          <Card className="p-2">
+          <DashboardPanel as="div" className="p-2">
             {/*
               `unauthorized` is what `classifyError` actually returns for the
               401 that puts us here, and ErrorState offers neither a retry nor a
@@ -195,7 +195,7 @@ export default function WorkerUploadPage() {
               title={t('expired_title')}
               body={t('expired_body')}
             />
-          </Card>
+          </DashboardPanel>
         </div>
       </main>
     );
@@ -212,7 +212,7 @@ export default function WorkerUploadPage() {
     return (
       <main className={FRAME}>
         <div className={COLUMN}>
-          <Card className="p-6">
+          <DashboardPanel as="div" className="p-6">
             <div className="text-center">
               <span className="mb-3 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-[var(--jale-success-bg)] text-[var(--jale-success-text)]">
                 <Icon name="check" />
@@ -228,7 +228,7 @@ export default function WorkerUploadPage() {
                 <KVList items={receipt} />
               </div>
             ) : null}
-          </Card>
+          </DashboardPanel>
         </div>
       </main>
     );
@@ -239,7 +239,7 @@ export default function WorkerUploadPage() {
   return (
     <main className={FRAME}>
       <div className={COLUMN}>
-        <Card className="overflow-hidden">
+        <DashboardPanel as="div" className="overflow-hidden">
           <header className="border-b border-[var(--jale-divider)] px-6 pb-5 pt-6">
             <h1 className="text-xl font-extrabold tracking-[-0.02em] text-[var(--jale-ink)]">
               {t('title')}
@@ -335,7 +335,7 @@ export default function WorkerUploadPage() {
               );
             })}
           </ul>
-        </Card>
+        </DashboardPanel>
 
         <p className="mt-4 rounded-[var(--radius-input)] bg-[var(--jale-blue-50)] px-3.5 py-2.5 text-xs font-medium text-[var(--jale-blue-700)]">
           {t('security_notice')}

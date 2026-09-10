@@ -302,6 +302,40 @@ export type ApplicationHire = {
   pay_min: number | null;
   pay_max: number | null;
   pay_interval: string | null;
+  /**
+   * The job's trade, as DATA -- the endpoint never composes the sentence.
+   * `category` is the raw `jobs.trade_category` token (migration 023:
+   * electrician | plumber | carpenter | concrete | painting | drywall |
+   * general_labor | other) or null; `other` is the employer's own words for
+   * the 'other' escape hatch; `canonical_en`/`canonical_es` are that free
+   * text resolved through the `trade_aliases` cache (migration 060), and are
+   * null whenever it could not be (a miss, or a lookup that failed open).
+   *
+   * Render it with `hireTradeLabel` in `lib/job-detail-display.ts` rather
+   * than by hand -- it owns the locale and fallback order.
+   *
+   * Optional for the same reason `hire` itself is: `hire` shipped (migration
+   * 095) before these two fields existed, so a frontend deployed ahead of
+   * the backend receives a `hire` without them.
+   */
+  trade?: {
+    category: string | null;
+    other: string | null;
+    canonical_en: string | null;
+    canonical_es: string | null;
+  };
+  /**
+   * The employer's company name, or null when there ISN'T one.
+   *
+   * NOT the same value as the sibling `company_name` on `Application`: that
+   * one is `employer_display_name()` verbatim, which falls back to the
+   * placeholder "Empleador" (migration 031) and so reads as a company
+   * literally named that inside a sentence. This field reports that case as
+   * null, so hire copy can choose a company-less wording.
+   *
+   * Optional for the same reason `trade` is.
+   */
+  company?: string | null;
 };
 
 export type Application = {

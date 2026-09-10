@@ -420,6 +420,9 @@
   "employer": {
     "profile": {
       "title": "Employer Profile",
+      "section_company": "Company details",
+      "section_contact": "Contact details",
+      "section_hiring": "Hiring",
       "field_email": "Email",
       "field_company": "Company",
       "field_contact": "Contact",
@@ -1039,7 +1042,9 @@
       "modal": {
         "eyebrow": "Congratulations!",
         "title": "{company} hired you",
-        "position": "Position: {title}",
+        "title_trade": "{company} hired you for the {trade} position",
+        "title_no_company_trade": "You're hired for the {trade} position",
+        "title_no_company": "You're hired!",
         "start_date": "Start date",
         "start_date_tbc": "To be confirmed",
         "location": "Location",
@@ -1052,6 +1057,9 @@
       },
       "banner": {
         "title": "You're hired: {title} at {company}",
+        "title_trade": "You're hired for the {trade} position · {company}",
+        "title_no_company_trade": "You're hired for the {trade} position",
+        "title_no_company": "You're hired: {title}",
         "body_dated": "Starts {date} · The employer will send more details; if none arrive, reach out to them.",
         "body_undated": "Start date to be confirmed · The employer will send more details; if none arrive, reach out to them.",
         "cta": "View application",
@@ -1139,7 +1147,14 @@
       "already_complete_body_no_company": "Your employer has it all.",
       "closed": "This job is closed.",
       "closed_body": "The employer took it down, so there is nothing to send. Your profile keeps everything you already answered.",
+      "hired": "You got this job!",
+      "hired_body": "{company} chose you for this position. The employer will send more details (where to show up, documents, a contact); if nothing arrives in the next few days, don’t hesitate to reach out to them.",
+      "hired_body_no_company": "The employer chose you for this position and will send more details (where to show up, documents, a contact); if nothing arrives in the next few days, don’t hesitate to reach out to them.",
+      "not_interested": "This application is closed.",
+      "not_interested_body": "{company} went with other candidates. Your profile keeps everything you already answered for your next application.",
+      "not_interested_body_no_company": "The employer went with other candidates. Your profile keeps everything you already answered for your next application.",
       "view_job": "View job",
+      "view_applications": "View my applications",
       "find_jobs": "Find other jobs"
     },
     "cert_question": "Do you have {name}?",
@@ -1187,6 +1202,7 @@
       "body": "Try a shorter search term or a different job type."
     },
     "no_city_jobs": "Nothing in your cities right now.",
+    "applications_error": "We couldn't load your applications. Reload the page to see notices from your employers.",
     "required_docs_label": "Documents needed",
     "results_count": "{count, plural, one {# job found} other {# jobs found}}",
     "job_type": {
@@ -1204,8 +1220,6 @@
     "shift_schedule": "Shift",
     "openings": "Openings",
     "required_experience": "Experience",
-    "work_authorization_required": "Work authorization required",
-    "work_authorization_required_yes": "Required",
     "posted": "Posted",
     "upload_prompt": "Upload missing documents in your profile.",
     "upload_link": "Go to profile",
@@ -1243,11 +1257,19 @@
     "trade_with_other": "{other} (Other)",
     "language": "Language",
     "transportation": "Transportation",
-    "transportation_required_yes": "Required",
-    "transportation_required_no": "Not required",
     "work_days_label": "Work days",
     "shift_hours": "Shift hours",
     "duration": "Expected duration",
+    "facts": {
+      "schedule": "Schedule and dates",
+      "where": "Where and what's needed",
+      "requirements": "Requirements",
+      "documents": "Documents",
+      "about": "About the job",
+      "location": "Location",
+      "work_authorization": "Work authorization",
+      "start_unknown": "To be confirmed"
+    },
     "what_you_need": {
       "title": "What you’ll need",
       "to_apply_prompts": "To apply: {count} short questions · about {minutes} min",
@@ -1338,7 +1360,14 @@
     "duration": "Duration",
     "experience_years_unit": "{n, plural, one {# year} other {# years}}",
     "experience_months_unit": "{n, plural, one {# month} other {# months}}",
-    "about_jale": "Jale connects workers and employers over WhatsApp - no resume, no downloads. Always free for workers."
+    "about_jale": "Jale connects workers and employers over WhatsApp - no resume, no downloads. Always free for workers.",
+    "facts": {
+      "schedule": "Schedule and dates",
+      "where": "Where and what's needed",
+      "requirements": "Requirements",
+      "location": "Location",
+      "start_unknown": "To be confirmed"
+    }
   },
   "employer_job_listing": {
     "page_title": "Posting details",
@@ -1352,14 +1381,19 @@
       "pay_range": "Pay range",
       "hiring_progress": "Hiring progress",
       "hiring_progress_value": "{hired}/{total} hired, {open} open",
-      "not_specified": "Not specified",
-      "yes": "Yes",
-      "no": "No",
-      "description_title": "Description",
       "no_description": "No description was added.",
       "certifications_title": "Certifications",
       "required_documents_title": "Required documents",
-      "no_required_documents": "No documents are required for this job."
+      "facts": {
+        "schedule": "Schedule and dates",
+        "where": "Where and what's needed",
+        "requirements": "Requirements",
+        "about": "About the job",
+        "trade_with_other": "{other} (Other)",
+        "transportation": "Transportation",
+        "work_authorization": "Work authorization",
+        "start_unknown": "To be confirmed"
+      }
     },
     "actions": {
       "activate": "Resume job",
@@ -1634,6 +1668,8 @@
     "title": "My Profile",
     "info_title": "Profile",
     "edit_button": "Edit",
+    "section_basics": "Details",
+    "section_skills": "Skills and certifications",
     "field_phone": "Phone",
     "field_name": "Full name",
     "field_skills": "Skills",

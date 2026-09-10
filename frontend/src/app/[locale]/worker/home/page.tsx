@@ -163,11 +163,20 @@ export default function WorkerHomePage() {
    *
    * Deliberately not part of `usePageData`: this page's data is the job feed,
    * and a failed applications call must never take the feed's phase with it.
-   * A worker who cannot see the banner still gets it on WhatsApp and on the
-   * applications list, so an empty array on failure is an honest degradation
-   * rather than a lost message.
+   *
+   * "Best-effort" is not the same as silent, though, and it used to be: the
+   * call ended in `.catch(() => {})`, so a failure left a home page that
+   * looked entirely normal while omitting the one thing a worker may have
+   * opened the app for -- an employer asking for their details, or a hire.
+   * There is nothing on such a page to suggest looking further. So the
+   * failure gets a sentence (below), in the same footnote shape the filter
+   * refetch already uses: the job feed underneath is real, and this is a
+   * footnote rather than a page state.
    */
   const [needingDetails, setNeedingDetails] = useState<Application[]>([]);
+  /** The applications call failed, and the worker has not waved it away. */
+  const [applicationsFailed, setApplicationsFailed] = useState(false);
+  const [applicationsNoticeDismissed, setApplicationsNoticeDismissed] = useState(false);
   /**
    * Hires this worker has not finished acknowledging -- the celebration state,
    * read off the SAME response as the details banner because it is the same
@@ -204,6 +213,7 @@ export default function WorkerHomePage() {
     const controller = new AbortController();
     getApplications(idToken, controller.signal)
       .then(({ applications }) => {
+        setApplicationsFailed(false);
         // `details_status`, not `status`: the timestamp-derived field is the one
         // that survives an employer moving the applicant on to `talking`.
         setNeedingDetails(applications.filter((a) => a.details_status === 'requested'));
@@ -223,7 +233,32 @@ export default function WorkerHomePage() {
         }));
         setModalSuppressed(isTypingSomewhere());
       })
-      .catch(() => {});
+      .catch((err: unknown) => {
+        // An abort is this page cancelling its OWN work -- the cleanup below
+        // fires on unmount and on every id-token rotation -- so it is not a
+        // failure and must not put a notice on screen. Both halves of the
+        // guard are load-bearing: the flag catches a rejection that arrives
+        // after the cleanup ran (the state setter would be pointless anyway),
+        // and the name catches the AbortError `apiFetch` re-throws verbatim
+        // for a caller-supplied signal.
+        //
+        // Checked by SHAPE, not `instanceof Error`: a fetch abort rejects with
+        // a `DOMException`, and whether that inherits from `Error` is up to
+        // the runtime (it does in modern browsers and in jsdom; it is not
+        // something this page should bet a false alarm on).
+        if (controller.signal.aborted) return;
+        if (typeof err === 'object' && err !== null && (err as { name?: unknown }).name === 'AbortError') return;
+        setApplicationsFailed(true);
+        // Re-arming the dismissal belongs HERE, with the confirmed failure it
+        // reacts to -- not on the attempt edge. `idToken` is this effect's
+        // only dep and `apiFetch`'s silent 401 refresh rotates it, so an
+        // attempt-edge reset put a notice the worker had already waved away
+        // back on screen the moment an unrelated token refresh fired, while
+        // the new request was still in flight and on no evidence at all, then
+        // flashed it off again if that request succeeded. Set together, the
+        // two states can only ever describe the same single failure.
+        setApplicationsNoticeDismissed(false);
+      });
     return () => controller.abort();
   }, [idToken]);
 
@@ -408,6 +443,7 @@ export default function WorkerHomePage() {
   const jobs = feed?.jobs ?? [];
   const otherJobs = feed?.otherJobs ?? [];
   const showRefreshNotice = refreshError !== null && !refreshNoticeDismissed;
+  const showApplicationsNotice = applicationsFailed && !applicationsNoticeDismissed;
 
   return (
     <AppShell role="worker" title={t('title')}>
@@ -453,6 +489,23 @@ export default function WorkerHomePage() {
         ) : needingDetails.length > 1 ? (
           <div className="mb-4">
             <DetailsRequestedMultiBanner count={needingDetails.length} />
+          </div>
+        ) : null}
+
+        {/* Stands in for the banners directly above, so it sits in the same
+            place and OUTSIDE the skeleton gate below: a notice about the
+            applications call has no business waiting on the job feed, which
+            is a different request with a different failure. No retry link --
+            the fetch is tied to the id-token effect rather than to a callback
+            this button could call, so the honest instruction is to reload. */}
+        {showApplicationsNotice ? (
+          <div className="mb-4">
+            <InlineFeedback
+              tone="warning"
+              onDismiss={() => setApplicationsNoticeDismissed(true)}
+            >
+              {t('applications_error')}
+            </InlineFeedback>
           </div>
         ) : null}
 

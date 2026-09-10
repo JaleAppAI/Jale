@@ -81,6 +81,23 @@
 # and stamps every hired row on the database, so it must not interleave with a
 # suite holding application fixtures open.
 #
+# The web-completion lane-release entry (sprint 24 round 2) is registered
+# after the 095 entry. It applies NO migration, so it does not compete for the
+# ACCESS EXCLUSIVE locks that force the 094/095 entries to the end -- but it is
+# still last, because everything it proves is a fact only a real database
+# carries. That `state_context - text[]` REMOVES the keys the processor's
+# dispatch tail gates on; that the `user_id` predicate, and NOT RLS, is what
+# keeps one worker's web submission out of another worker's conversation row
+# (`wa_conv_full` is USING (true), so a mocked pool calls a cross-worker scrub
+# a success); that the 24-hour window really comes from the INBOUND log
+# (`whatsapp_processed_messages.first_seen_at`) and not from
+# `whatsapp_conversations.updated_at`, whose trigger fires on outbound writes
+# too; and -- the one only Postgres can falsify -- that a 42501 inside the
+# release leaves the caller's transaction COMMITtable, because the module
+# wraps itself in a SAVEPOINT. Without that savepoint the suite fails with
+# 25P02 on five of its eight cases, which is a successful answer merge
+# answering 500.
+#
 # WHAT THE DATABASE MUST BE. `JALE_TEST_DATABASE_URL` must point at a
 # disposable local Postgres 16 database with migrations 001 THROUGH 095
 # applied, and the connecting role must be a SUPERUSER. 092 is not optional
@@ -169,4 +186,5 @@ exec npx jest --runInBand \
   test/unit/db/application-stage-notify.integration.test.ts \
   test/unit/db/worker-intent-defer-093.integration.test.ts \
   test/unit/db/sprint24-data-backfills-094.integration.test.ts \
-  test/unit/db/application-hire-ack-095.integration.test.ts
+  test/unit/db/application-hire-ack-095.integration.test.ts \
+  test/unit/db/application-web-completion.integration.test.ts

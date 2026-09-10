@@ -11,9 +11,14 @@ import {
   mergePromptAnswers,
   nextStep,
 } from '../../../../lambda/lib/application-requirements';
+import {
+  releasePromptLaneForApplication,
+  releaseWhatsAppLanesForApplication,
+} from '../../../../lambda/lib/application-web-completion';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/lib/application-requirements');
+jest.mock('../../../../lambda/lib/application-web-completion');
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetInternalUserRlsContext = setInternalUserRlsContext as jest.Mock;
@@ -25,6 +30,8 @@ const mockDetailsStatusFor = detailsStatusFor as jest.Mock;
 const mockMergeFieldAnswers = mergeFieldAnswers as jest.Mock;
 const mockMergeCertificationClaims = mergeCertificationClaims as jest.Mock;
 const mockMergePromptAnswers = mergePromptAnswers as jest.Mock;
+const mockReleaseLanes = releaseWhatsAppLanesForApplication as jest.Mock;
+const mockReleasePromptLane = releasePromptLaneForApplication as jest.Mock;
 
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
@@ -120,6 +127,8 @@ describe('worker-application-details', () => {
     mockComputeRemaining.mockReturnValue(REMAINING);
     mockNextStep.mockReturnValue({ kind: 'complete', stage: 'details' });
     mockDetailsStatusFor.mockReturnValue('complete');
+    mockReleaseLanes.mockResolvedValue({ armed: true, scrubbed: 1, closingLineQueued: true });
+    mockReleasePromptLane.mockResolvedValue({ armed: true, scrubbed: 1, closingLineQueued: false });
   });
 
   afterAll(() => { process.env = env; });
@@ -733,5 +742,210 @@ describe('worker-application-details', () => {
     } as unknown as Partial<APIGatewayProxyEvent>));
     expect(unauth.headers?.['Access-Control-Allow-Origin'])
       .toBe(ok.headers?.['Access-Control-Allow-Origin']);
+  });
+
+  // ── Releasing the WhatsApp bot's arm (sprint 24 round 2, lane 1.5) ───
+  //
+  // The bot re-sends its pending fill/prompt step after ANY inbound message
+  // while `state_context.fill_application_id` (or `prompt_application_id`)
+  // is set, and only the bot ever cleared it. These tests pin WHEN this door
+  // clears it: on a details-stage COMPLETION, and never otherwise.
+
+  describe('WhatsApp lane release', () => {
+    it('releases the lanes when POST answers completes the details stage', async () => {
+      mockMergeFieldAnswers.mockResolvedValue({
+        ok: true, keys: ['years_experience'], detailsCompleted: true,
+      });
+
+      const res = await handler(post('answers', { answers: { years_experience: 5 } }));
+
+      expect(res.statusCode).toBe(200);
+      expect(mockReleaseLanes).toHaveBeenCalledTimes(1);
+      expect(mockReleaseLanes).toHaveBeenCalledWith(expect.anything(), {
+        workerId: WORKER_ID,
+        applicationId: APP_ID,
+        jobTitle: 'Concrete Finisher',
+        lang: 'es',
+      });
+      expect(mockReleasePromptLane).not.toHaveBeenCalled();
+    });
+
+    it('releases the lanes BEFORE buildState flips the 031 GUC, and before COMMIT', async () => {
+      mockMergeFieldAnswers.mockResolvedValue({
+        ok: true, keys: ['years_experience'], detailsCompleted: true,
+      });
+      const order: string[] = [];
+      mockReleaseLanes.mockImplementation(async () => {
+        order.push('release');
+        return { armed: true, scrubbed: 1, closingLineQueued: true };
+      });
+      mockQuery.mockImplementation((sql: string) => {
+        if (/employer_display_name/.test(sql)) order.push('employer_display_name');
+        if (/^COMMIT$/.test(sql)) order.push('COMMIT');
+        return Promise.resolve(defaultQuery(sql));
+      });
+
+      await handler(post('answers', { answers: { years_experience: 5 } }));
+
+      expect(order).toEqual(['release', 'employer_display_name', 'COMMIT']);
+    });
+
+    it('releases the lanes when POST certifications completes the details stage', async () => {
+      mockMergeCertificationClaims.mockResolvedValue({
+        ok: true, certifications: [], detailsCompleted: true,
+      });
+
+      const res = await handler(post('certifications', { claims: [{ name: 'OSHA 10' }] }));
+
+      expect(res.statusCode).toBe(200);
+      expect(mockReleaseLanes).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT release when the merge succeeded but the stage is not complete', async () => {
+      mockMergeFieldAnswers.mockResolvedValue({
+        ok: true, keys: ['years_experience'], detailsCompleted: false,
+      });
+
+      await handler(post('answers', { answers: { years_experience: 5 } }));
+
+      expect(mockReleaseLanes).not.toHaveBeenCalled();
+      expect(mockReleasePromptLane).not.toHaveBeenCalled();
+    });
+
+    it('does NOT release when the merge failed', async () => {
+      mockMergeFieldAnswers.mockResolvedValue({ ok: false, reason: 'closed' });
+
+      await handler(post('answers', { answers: { years_experience: 5 } }));
+
+      expect(mockReleaseLanes).not.toHaveBeenCalled();
+    });
+
+    it('does NOT release on hire-ack', async () => {
+      mockQuery.mockImplementation((sql: string) => {
+        if (/hired_seen_at/.test(sql)) {
+          return Promise.resolve({ rows: [{ hired_seen_at: 'now', hired_ack_at: null }] });
+        }
+        return Promise.resolve(defaultQuery(sql));
+      });
+
+      const res = await handler(post('hire-ack', { step: 'seen' }));
+
+      expect(res.statusCode).toBe(200);
+      expect(mockReleaseLanes).not.toHaveBeenCalled();
+      expect(mockReleasePromptLane).not.toHaveBeenCalled();
+    });
+
+    it('DOES release on the GET path when it flips details_completed_at', async () => {
+      // The document-last worker. A file uploaded through `/worker/vault/*`
+      // never touches the requirements engine, so the GET's
+      // `markDetailsCompleteIfDone` is what closes their stage -- and because
+      // it flips only `WHERE details_completed_at IS NULL`, no later POST can
+      // ever report `detailsCompleted: true` for that application. Missing
+      // this call left those workers re-prompted forever.
+      mockMarkComplete.mockResolvedValue(true);
+
+      const res = await handler(makeEvent());
+
+      expect(res.statusCode).toBe(200);
+      expect(mockReleaseLanes).toHaveBeenCalledTimes(1);
+      expect(mockReleaseLanes).toHaveBeenCalledWith(expect.anything(), {
+        workerId: WORKER_ID,
+        applicationId: APP_ID,
+        jobTitle: 'Concrete Finisher',
+        lang: 'es',
+      });
+    });
+
+    it('does NOT release on a GET that changes nothing', async () => {
+      mockMarkComplete.mockResolvedValue(false);
+
+      const res = await handler(makeEvent());
+
+      expect(res.statusCode).toBe(200);
+      expect(mockReleaseLanes).not.toHaveBeenCalled();
+    });
+
+    it('releases on the GET BEFORE buildState flips the 031 GUC', async () => {
+      mockMarkComplete.mockResolvedValue(true);
+      const order: string[] = [];
+      mockReleaseLanes.mockImplementation(async () => {
+        order.push('release');
+        return { armed: true, scrubbed: 1, closingLineQueued: true };
+      });
+      mockQuery.mockImplementation((sql: string) => {
+        if (/employer_display_name/.test(sql)) order.push('employer_display_name');
+        if (/^COMMIT$/.test(sql)) order.push('COMMIT');
+        return Promise.resolve(defaultQuery(sql));
+      });
+
+      await handler(makeEvent());
+
+      expect(order).toEqual(['release', 'employer_display_name', 'COMMIT']);
+    });
+
+    it('releases the PROMPT lane only, with no closing line, once no prompt is outstanding', async () => {
+      mockMergePromptAnswers.mockResolvedValue({ ok: true, keys: ['p1'] });
+      mockComputeRemaining.mockReturnValue({ ...REMAINING, prompts: [] });
+
+      const res = await handler(post('prompt-answers', { answers: { p1: 'yes' } }));
+
+      expect(res.statusCode).toBe(200);
+      expect(mockReleasePromptLane).toHaveBeenCalledTimes(1);
+      expect(mockReleasePromptLane).toHaveBeenCalledWith(expect.anything(), {
+        workerId: WORKER_ID,
+        applicationId: APP_ID,
+      });
+      expect(mockReleaseLanes).not.toHaveBeenCalled();
+    });
+
+    it('leaves the prompt lane armed while a prompt is still outstanding', async () => {
+      mockMergePromptAnswers.mockResolvedValue({ ok: true, keys: ['p1'] });
+      mockComputeRemaining.mockReturnValue({ ...REMAINING, prompts: ['p2'] });
+
+      await handler(post('prompt-answers', { answers: { p1: 'yes' } }));
+
+      expect(mockReleasePromptLane).not.toHaveBeenCalled();
+      expect(mockReleaseLanes).not.toHaveBeenCalled();
+    });
+
+    it('does not change the response shape when the release runs', async () => {
+      mockMergeFieldAnswers.mockResolvedValue({
+        ok: true, keys: ['years_experience'], detailsCompleted: true,
+      });
+
+      const withRelease = await handler(post('answers', { answers: { years_experience: 5 } }));
+
+      jest.clearAllMocks();
+      mockGetDbPool.mockResolvedValue({
+        connect: jest.fn().mockResolvedValue({ query: mockQuery, release: mockRelease }),
+      });
+      mockQuery.mockImplementation((sql: string) => Promise.resolve(defaultQuery(sql)));
+      mockSetInternalUserRlsContext.mockResolvedValue(undefined);
+      mockLoad.mockResolvedValue(snapshot());
+      mockComputeRemaining.mockReturnValue(REMAINING);
+      mockNextStep.mockReturnValue({ kind: 'complete', stage: 'details' });
+      mockDetailsStatusFor.mockReturnValue('complete');
+      mockMergeFieldAnswers.mockResolvedValue({
+        ok: true, keys: ['years_experience'], detailsCompleted: false,
+      });
+
+      const withoutRelease = await handler(post('answers', { answers: { years_experience: 5 } }));
+
+      expect(withRelease.statusCode).toBe(withoutRelease.statusCode);
+      expect(JSON.parse(withRelease.body)).toEqual(JSON.parse(withoutRelease.body));
+    });
+
+    it('never lets a release failure reach the response', async () => {
+      // The module swallows its own errors; this is the belt on that brace.
+      mockMergeFieldAnswers.mockResolvedValue({
+        ok: true, keys: ['years_experience'], detailsCompleted: true,
+      });
+      mockReleaseLanes.mockResolvedValue({ armed: false, scrubbed: 0, closingLineQueued: false });
+
+      const res = await handler(post('answers', { answers: { years_experience: 5 } }));
+
+      expect(res.statusCode).toBe(200);
+      expect(sqlCalls()).toContain('COMMIT');
+    });
   });
 });

@@ -27,6 +27,29 @@ export type TradeFields = {
   trade_category_other?: string | null;
 };
 
+/**
+ * The subset of a hire's fields `hireTradeLabel`/`hireTradePhrase` read --
+ * structurally satisfied by `Pick<ApplicationHire, 'trade'>` from `lib/api/worker.ts`,
+ * which is NOT imported here for the reason the header gives (this module
+ * imports nothing). `lib/__tests__/job-detail-display.test.ts` pins the
+ * assignability with `tsc` so the two cannot drift apart.
+ */
+export type HireTradeFields = {
+  trade?: {
+    /** Raw `jobs.trade_category` (migration 023), or null. */
+    category: string | null;
+    /**
+     * The employer's own words for `category === 'other'` (migration 077,
+     * a different column from the 023 enum above), or null.
+     */
+    other: string | null;
+    /** `trade_aliases.canonical_en` (migration 060), or null on a miss. */
+    canonical_en: string | null;
+    /** `trade_aliases.canonical_es` (migration 060), or null on a miss. */
+    canonical_es: string | null;
+  } | null;
+};
+
 /** The subset of a job's schedule/duration fields this module reads. */
 export type ScheduleFields = {
   expected_duration?: string | null;
@@ -105,6 +128,149 @@ export function tradeLabel(job: TradeFields, tTrade: Translator, tDetail: Transl
   }
 
   return tTrade(trade);
+}
+
+/**
+ * The trade a worker was hired FOR, as a bare label meant to drop into a
+ * sentence ("... te contrató como {trade}") -- not a standalone row.
+ *
+ * Translator contract: `tTrade` resolves the trade slug itself as a relative
+ * key, exactly as in `tradeLabel`, and the caller scopes it to a catalogue
+ * that has all eight of migration 023's tokens. Today that is
+ * `employer_dashboard.modal.trade` (verified in `messages/en.json` and
+ * `messages/es.json`); `common.trades` is NOT usable here -- it carries only
+ * six, missing `drywall` and `general_labor`, so a drywall hire would render
+ * a raw message key.
+ *
+ * Resolution order:
+ *  - no trade object, or no `category` (null/undefined/blank) -> `null`.
+ *  - any category but `'other'` -> `tTrade(category)`. The canonicals are
+ *    ignored: only the catalogue follows the reader's locale, so a stale
+ *    canonical pair must never beat it. No enum-membership check, same
+ *    doctrine as `tradeLabel` -- the catalogue is the caller's concern.
+ *  - `'other'` -> the canonical for the reader's locale (`es` -> `canonical_es`,
+ *    anything else -> `canonical_en`), else the employer's own `other` text
+ *    verbatim, else `null`.
+ *
+ * Unlike `tradeLabel`, `'other'` with nothing behind it is `null` rather than
+ * `tTrade('other')`: this label goes INSIDE a sentence, and "...te contrató
+ * como Otro" says nothing. The caller drops the clause instead.
+ *
+ * A half-populated canonical pair (one language set, the other null) is
+ * defensive only -- migration 060 declares both `canonical_en` and
+ * `canonical_es` NOT NULL -- so there is deliberately no cross-locale
+ * fallback: an English label in a Spanish sentence is what the raw text
+ * already gives, without pretending it was translated.
+ */
+export function hireTradeLabel(
+  hire: HireTradeFields,
+  locale: string,
+  tTrade: Translator,
+): string | null {
+  return resolveHireTrade(hire, locale, tTrade)?.label ?? null;
+}
+
+/**
+ * WHERE a resolved hire trade came from -- the one thing `hireTradePhrase`
+ * needs that the label string itself cannot tell it.
+ *
+ * `'catalogue'` (a translated label) and `'canonical'` (a `trade_aliases`
+ * hit) are OUR words for the trade, written the way a standalone label is
+ * written: capitalised. `'employer'` is the employer's own free text, which
+ * is theirs to capitalise however they typed it.
+ */
+type HireTradeSource = 'catalogue' | 'canonical' | 'employer';
+
+/**
+ * The resolution step behind BOTH `hireTradeLabel` and `hireTradePhrase`.
+ *
+ * The fallback ORDER (catalogue -> locale canonical -> employer text -> null)
+ * lives here exactly once, so the two exported functions can never disagree
+ * about which source won for a given hire -- only about how the winner is
+ * capitalised. See `hireTradeLabel` for the order's rationale.
+ */
+function resolveHireTrade(
+  hire: HireTradeFields,
+  locale: string,
+  tTrade: Translator,
+): { label: string; source: HireTradeSource } | null {
+  const trade = hire.trade;
+  const category = trade?.category?.trim();
+  if (!trade || !category) return null;
+
+  if (category !== 'other') return { label: tTrade(category), source: 'catalogue' };
+
+  // `tagFor` rather than `locale === 'es'`, so a regional tag ('es-MX') and
+  // an unknown locale both fall the same way the module's other formatters do.
+  const canonical = tagFor(locale).startsWith('es') ? trade.canonical_es : trade.canonical_en;
+  const resolved = canonical?.trim();
+  if (resolved) return { label: resolved, source: 'canonical' };
+
+  const own = trade.other?.trim();
+  return own ? { label: own, source: 'employer' } : null;
+}
+
+/**
+ * `value` with its first character lower-cased for `tag`'s language, and
+ * everything after it untouched.
+ *
+ * NOT `value.toLocaleLowerCase(tag)`: that would flatten the rest of a label
+ * too ("Ayudante general" is fine, but a two-capital label would not be), and
+ * this only ever needs to undo the leading capital a standalone label carries.
+ *
+ * Sliced by CODE POINT rather than `charAt(0)`, so a label opening on an
+ * astral character is not cut in half mid-surrogate-pair. `codePointAt`
+ * rather than string destructuring: this tsconfig sets no `target`/
+ * `downlevelIteration`, so iterating a string is a `tsc` error here.
+ */
+function lowerFirstChar(value: string, tag: string): string {
+  const code = value.codePointAt(0);
+  if (code === undefined) return value;
+  const first = String.fromCodePoint(code);
+  // An acronym-led label ("HVAC technician") keeps its capital: when the
+  // SECOND character is upper-case too, the first one is not a sentence-style
+  // capital to undo, and "hVAC technician" would read as a typo. Ordinary
+  // labels ("Electricista", "Tile setter") have a lower-case second character
+  // and fold as before.
+  const secondCode = value.codePointAt(first.length);
+  if (secondCode !== undefined) {
+    const second = String.fromCodePoint(secondCode);
+    if (second !== second.toLocaleLowerCase(tag)) return value;
+  }
+  return first.toLocaleLowerCase(tag) + value.slice(first.length);
+}
+
+/**
+ * `hireTradeLabel` for the middle of a sentence: catalogue and alias labels
+ * lose their leading capital; the employer's own free text is returned
+ * verbatim.
+ *
+ * The catalogue reads "Electricista" / "Welder" because a standalone tile is
+ * where those labels are normally shown. Dropped into the hire copy as-is they
+ * produce "te contrató como Electricista", which reads as a proper noun -- so
+ * the words that are OURS (a translated label, a `trade_aliases` canonical)
+ * are folded to "electricista".
+ *
+ * The employer's own words are NOT folded. "HVAC tech" lower-cased reads as a
+ * typo, and this module has no way to tell an acronym from a sentence opener,
+ * so free text is left exactly as it was typed.
+ *
+ * Same param contract, same locale handling and the same `null` cases as
+ * `hireTradeLabel` (both delegate to one shared resolution step, so they
+ * cannot pick different sources) -- see that function for the fallback order
+ * and the `tTrade` namespace requirement.
+ */
+export function hireTradePhrase(
+  hire: HireTradeFields,
+  locale: string,
+  tTrade: Translator,
+): string | null {
+  const resolved = resolveHireTrade(hire, locale, tTrade);
+  if (!resolved) return null;
+
+  return resolved.source === 'employer'
+    ? resolved.label
+    : lowerFirstChar(resolved.label, tagFor(locale));
 }
 
 /**

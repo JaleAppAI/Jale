@@ -22,6 +22,7 @@ import {
   initRequirementsFlowState,
   requirementsFlowReducer,
   requirementsTotals,
+  isApplicationOverScreen,
   terminalScreen,
   type RequirementsFlowState,
 } from '@/lib/application-requirements-flow';
@@ -324,9 +325,10 @@ export function ApplicationRequirementsFlow({
             terminal first would swap their completion screen for the flat
             "nothing left to do, you already sent everything" panel meant for
             someone ARRIVING at a finished application. So `finished` wins,
-            with one exception ahead of it: a job that closed under them is
-            worth saying whatever else happened. */}
-        {terminal === 'closed' ? (
+            with one family of exceptions ahead of it: the application being
+            OVER -- hired, the job closed under them, or the employer moved on
+            -- is worth saying whatever else happened. */}
+        {terminal !== null && isApplicationOverScreen(terminal) ? (
           <>
             <Link
               href="/worker/applications"
@@ -334,7 +336,7 @@ export function ApplicationRequirementsFlow({
             >
               {t('back')}
             </Link>
-            <RequirementsTerminalPanel screen="closed" companyName={companyName} jobId={job.id} />
+            <RequirementsTerminalPanel screen={terminal} companyName={companyName} jobId={job.id} />
           </>
         ) : flow.finished === 'complete' ? (
           <RequirementsCompleteStep companyName={companyName} jobId={job.id} />

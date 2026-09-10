@@ -42,7 +42,7 @@ function translate(namespace: string, key: string, values?: TranslationValues): 
     return raw.replace(/\{(\w+)\}/g, (whole, name: string) => (name in values ? String(values[name]) : whole));
 }
 
-const { push, replace, setTokens, cognito, api } = vi.hoisted(() => ({
+const { push, replace, setTokens, cognito, api, query } = vi.hoisted(() => ({
     push: vi.fn(),
     replace: vi.fn(),
     setTokens: vi.fn(),
@@ -55,12 +55,17 @@ const { push, replace, setTokens, cognito, api } = vi.hoisted(() => ({
         claimReferral: vi.fn(),
         getWorkerOnboarding: vi.fn(),
     },
+    // Mutable, because the referral carry-through is driven ENTIRELY by the
+    // URL: the form's mount effect copies `?job=`/`?share=` into the session
+    // stash and, on a param-free visit, clears it. A fixed empty
+    // `URLSearchParams` can only ever exercise the second branch.
+    query: { current: new URLSearchParams() },
 }));
 
 vi.mock('next-intl', () => ({
     useTranslations: (namespace: string) => (key: string, values?: TranslationValues) => translate(namespace, key, values),
 }));
-vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams() }));
+vi.mock('next/navigation', () => ({ useSearchParams: () => query.current }));
 vi.mock('@/i18n/navigation', () => ({ useRouter: () => ({ push, replace }) }));
 vi.mock('@/contexts/AuthContext', () => ({ useAuth: () => ({ setTokens }) }));
 vi.mock('@/lib/cognito', () => cognito);
@@ -96,6 +101,7 @@ async function completeOtp(user: ReturnType<typeof userEvent.setup>) {
 beforeEach(() => {
     vi.clearAllMocks();
     sessionStorage.clear();
+    query.current = new URLSearchParams();
     cognito.workerSignIn.mockResolvedValue({});
     cognito.workerSignUp.mockResolvedValue(undefined);
     cognito.workerVerifyOtp.mockResolvedValue(TOKENS);
@@ -161,7 +167,11 @@ describe('WorkerAuthForm — where a verified worker lands', () => {
         expect(push).not.toHaveBeenCalled();
     });
 
-    it('sends a worker who already finished to their profile', async () => {
+    it('sends a worker who already finished to their home feed', async () => {
+        // Not the profile page: a returning worker's first question is "did
+        // anything happen?", and /worker/home is the only screen that answers
+        // it -- it carries the hire celebration and the details-requested
+        // notice. A profile page answers a question nobody asked at login.
         api.getWorkerOnboarding.mockResolvedValue({ lifecycle: 'ready' });
         const user = userEvent.setup();
         render(<WorkerAuthForm />);
@@ -169,11 +179,27 @@ describe('WorkerAuthForm — where a verified worker lands', () => {
         await user.click(screen.getByRole('button', { name: message('auth.worker.send_otp') }));
         await completeOtp(user);
 
-        await waitFor(() => expect(push).toHaveBeenCalledWith('/worker/profile'));
+        await waitFor(() => expect(push).toHaveBeenCalledWith('/worker/home'));
         expect(replace).not.toHaveBeenCalled();
     });
 
-    it('falls back to the previous destination when a LOGIN cannot read the run', async () => {
+    it('sends a worker who came for a shared job straight to that job', async () => {
+        // The referral branch outranks the landing page: this worker arrived
+        // from a link about one specific job and signing in must not lose it.
+        const JOB_ID = '8f3a2c1d-4b5e-4f60-9a71-2c3d4e5f6071';
+        query.current = new URLSearchParams({ job: JOB_ID });
+        api.getWorkerOnboarding.mockResolvedValue({ lifecycle: 'ready' });
+        const user = userEvent.setup();
+        render(<WorkerAuthForm />);
+        await user.type(screen.getByRole('textbox'), '2105550134');
+        await user.click(screen.getByRole('button', { name: message('auth.worker.send_otp') }));
+        await completeOtp(user);
+
+        await waitFor(() => expect(push).toHaveBeenCalledWith(`/worker/jobs/${JOB_ID}`));
+        expect(push).not.toHaveBeenCalledWith('/worker/home');
+    });
+
+    it('falls back to the home feed when a LOGIN cannot read the run', async () => {
         // Most workers signing in have long finished onboarding; dropping them
         // into a flow they completed months ago would be worse than the page
         // they actually asked for.
@@ -184,7 +210,7 @@ describe('WorkerAuthForm — where a verified worker lands', () => {
         await user.click(screen.getByRole('button', { name: message('auth.worker.send_otp') }));
         await completeOtp(user);
 
-        await waitFor(() => expect(push).toHaveBeenCalledWith('/worker/profile'));
+        await waitFor(() => expect(push).toHaveBeenCalledWith('/worker/home'));
     });
 
     it('sends a SIGNUP to the flow even when the run cannot be read', async () => {

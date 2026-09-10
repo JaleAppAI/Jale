@@ -60,7 +60,7 @@
   --jale-backdrop: rgba(24,24,85,.45);
 
   /* Semantic */
-  /* AA-contrast on white at small sizes; matches the pill-success text green. */
+  /* AA-contrast on white at small sizes. */
   --jale-success:     #1f7a44;
   --jale-success-bg:  #d9f2e2;
   --jale-warning:     #b65a00;
@@ -228,23 +228,6 @@ input[type="password"]::-webkit-credentials-auto-fill-button { display: none; }
   color: var(--jale-blue-500);
   line-height: 1;
 }
-
-.pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 10px;
-  border-radius: 9999px;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1.4;
-}
-.pill-success { background: var(--jale-success-bg); color: var(--jale-success); }
-.pill-info    { background: var(--jale-blue-50);    color: var(--jale-blue-700); }
-/* The -text tokens hold exactly the hexes these two used to hardcode, so light
-   rendering is byte-identical; the indirection is what lets dark re-tint them. */
-.pill-warn    { background: var(--jale-warning-bg); color: var(--jale-warning-text); }
-.pill-danger  { background: var(--jale-danger-bg);  color: var(--jale-danger-text); }
 
 .stat-icon {
   width: 32px;

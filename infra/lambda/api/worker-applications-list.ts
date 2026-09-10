@@ -3,10 +3,73 @@ import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { remainingCount, remainingView, snapshotFromRow } from '../lib/application-stage-view';
 import { computeRemaining, detailsStatusFor } from '../lib/application-requirements';
-import { buildHireSummary } from '../lib/application-hire-view';
+import { buildHireSummary, type HireTrade } from '../lib/application-hire-view';
+import { resolveTradeAlias, type TradeAliasQueryable } from '../lib/trade-canonical';
+import { normalizeProfession } from '../lib/profession';
 import { checkCompliance } from '../legal/check-compliance';
 
 const CORS_HEADERS = corsHeaders();
+
+/**
+ * Fills `canonical_en`/`canonical_es` on the hired rows whose trade is the
+ * 023 'other' escape hatch, from the 060 `trade_aliases` cache.
+ *
+ * WHY IT LIVES HERE and not in `application-hire-view.ts`: that module is
+ * pure by construction and takes no client, and the copy needs a trade the
+ * worker can read -- an employer who typed "Welder" must not put an English
+ * word in a Spanish-first sentence. `resolveTradeAlias` matches `trade_key`
+ * or any pre-normalized member of `aliases` and retries once with a trailing
+ * plural stripped, so "Welders"/"soldadura" both land on the seeded row.
+ *
+ * ONE QUERY PER DISTINCT FREE TEXT. Hired rows are rare -- a worker has a
+ * couple of dozen applications and at most a handful of hires -- and only the
+ * 'other' ones reach here at all, so the round trips are bounded by how many
+ * DIFFERENT words those employers typed, not by the length of the list. The
+ * loop is sequential rather than `Promise.all` precisely so the memo below
+ * can be consulted: two rows saying "Welder" must cost one query, not two.
+ *
+ * FAILS OPEN, always. A cache miss, a `trade_aliases` outage, or a role that
+ * lost the SELECT grant leaves both canonicals null and the client falls back
+ * to the employer's raw text (`trade.other`, which is already on the wire).
+ * A celebration modal is the worst possible place for a 500, and a missing
+ * translation is not worth one. Logged once per request, not once per row, so
+ * a lost grant cannot flood CloudWatch on every list load.
+ */
+async function fillCanonicalTrades(
+  client: TradeAliasQueryable,
+  trades: readonly HireTrade[],
+): Promise<void> {
+  if (trades.length === 0) return;
+
+  const memo = new Map<string, { canonical_en: string | null; canonical_es: string | null }>();
+  let logged = false;
+
+  for (const trade of trades) {
+    // The same normalization `resolveTradeAlias` applies before it queries,
+    // so the memo keys and the cache keys agree exactly.
+    const key = normalizeProfession(String(trade.other ?? ''));
+    if (!key) continue;
+
+    let pair = memo.get(key);
+    if (!pair) {
+      pair = { canonical_en: null, canonical_es: null };
+      try {
+        const row = await resolveTradeAlias(client, trade.other);
+        if (row) pair = { canonical_en: row.canonical_en, canonical_es: row.canonical_es };
+      } catch (err) {
+        if (!logged) {
+          console.warn('worker-applications-list trade alias lookup failed:', errorMessage(err));
+          logged = true;
+        }
+      }
+      // Memoized either way: a key that missed (or threw) must not be retried
+      // for every other row that names the same trade.
+      memo.set(key, pair);
+    }
+    trade.canonical_en = pair.canonical_en;
+    trade.canonical_es = pair.canonical_es;
+  }
+}
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   let client;
@@ -96,6 +159,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
               j.pay_max AS job_pay_max,
               j.pay_interval AS job_pay_interval,
               j.shift_schedule AS job_shift_schedule,
+              -- The trade the new copy names ("... te contrató como {trade}").
+              -- Raw on both counts: the 023 enum token is translated by the
+              -- client from its own catalogue, and the 077 free-text column is
+              -- canonicalised after the COMMIT below, not in SQL.
+              j.trade_category AS job_trade_category,
+              j.trade_category_other AS job_trade_category_other,
               -- JOB-SCOPED, matching what 091's hire gate measures and what
               -- the employer's own list reports. No document sync here: the
               -- sync writes to FORCE-RLS worker_documents and this is a
@@ -112,6 +181,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
        LIMIT 200`,
     );
     await client.query('COMMIT');
+
+    // The 'other' trades to canonicalise, collected as the rows are shaped.
+    // These are the SAME objects the response carries, so the pass below
+    // mutates them in place -- before the JSON.stringify at the end.
+    const freeTextTrades: HireTrade[] = [];
 
     // One pure computeRemaining per row on columns already selected -- no
     // per-application engine round trip, and the same answer the worker's
@@ -142,6 +216,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         job_pay_max: _jobPayMax,
         job_pay_interval: _jobPayInterval,
         job_shift_schedule: _jobShiftSchedule,
+        job_trade_category: _jobTradeCategory,
+        job_trade_category_other: _jobTradeCategoryOther,
         ...application
       } = row;
       const remaining = computeRemaining(snapshotFromRow(row));
@@ -151,6 +227,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       // no `hire` key is the right answer, not a null timestamp the browser
       // would render as an empty hire date.
       const hire = row.status === 'hired' ? buildHireSummary(row) : null;
+      // Only 'other' costs a lookup: the seven standard categories are enum
+      // tokens the client already translates, and a blank free text has
+      // nothing to resolve.
+      if (hire && hire.trade.category === 'other' && hire.trade.other) {
+        freeTextTrades.push(hire.trade);
+      }
       return {
         ...application,
         details_status: detailsStatusFor(row, remaining),
@@ -160,6 +242,26 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         ...(hire ? { hire } : {}),
       };
     });
+
+    // AFTER the COMMIT, deliberately. employer_display_name() flipped a
+    // transaction-local GUC that widens employer_profiles reads until COMMIT
+    // (migration 031), and there is no reason to hold that window open for
+    // extra round trips. trade_aliases has no RLS and no policy of its own
+    // (migration 060), so it needs neither of the worker GUCs the SELECT
+    // above depended on -- and this fails open, so a query outside the
+    // transaction can never leave the response half-built.
+    // Wrapped as well as internally guarded. `fillCanonicalTrades` already
+    // swallows every resolver failure, so reaching this catch means a fault
+    // in the loop AROUND the lookup -- a normalization change, or any future
+    // edit inside it. By this point `applications` is fully built and the
+    // transaction is committed, so publishing it without the trade labels is
+    // strictly better than turning a hire celebration into a 500 over a
+    // missing translation. Nothing about the response depends on this pass.
+    try {
+      await fillCanonicalTrades(client, freeTextTrades);
+    } catch (err) {
+      console.warn('worker-applications-list trade canonicalisation pass failed:', errorMessage(err));
+    }
 
     return { statusCode: 200, headers: CORS_HEADERS, body: JSON.stringify({ applications }) };
   } catch (err) {

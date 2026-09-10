@@ -44,6 +44,29 @@ export function message(path: string, locale: TestLocale = 'en'): string {
     return node;
 }
 
+/**
+ * A message key rendered as text looks like `worker_job_detail.apply_flow.prefilled_hint`:
+ * lowercase snake_case segments joined by dots, at least one underscore. That
+ * is exactly what next-intl prints when a component asks the wrong namespace
+ * for a key (its default `getMessageFallback` joins namespace and key), and
+ * `onError={() => {}}` above keeps that silent -- so a render test has to look
+ * for it. Domains (`jaleapp.ai`) have no underscore and do not match.
+ */
+const RAW_MESSAGE_KEY = /^(?=.*_)[a-z0-9_]+(\.[a-z0-9_]+)+$/;
+
+/** Throws when any text node under `root` is an untranslated message key path. */
+export function expectNoRawMessageKeys(root: ParentNode & Node = document.body): void {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const leaks: string[] = [];
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const text = node.textContent?.trim() ?? '';
+        if (RAW_MESSAGE_KEY.test(text)) leaks.push(text);
+    }
+    if (leaks.length > 0) {
+        throw new Error(`Untranslated message key(s) rendered as visible text: ${leaks.join(', ')}`);
+    }
+}
+
 /** `{name}` substitution only — enough for the counters and confirm prompt. */
 export function interpolate(raw: string, values: Record<string, string | number>): string {
     return raw.replace(/\{(\w+)\}/g, (whole, name: string) => (name in values ? String(values[name]) : whole));

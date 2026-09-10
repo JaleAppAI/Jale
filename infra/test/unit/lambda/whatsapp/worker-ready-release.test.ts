@@ -1,5 +1,6 @@
 import { releaseWorkerReady } from '../../../../lambda/whatsapp/worker-ready-release';
 import type { ReleaseRenderRequest, ReleaseRenderedMessage } from '../../../../lambda/whatsapp/lib/onboarding-types';
+import { createReleaseRenderer } from '../../../../lambda/whatsapp/lib/onboarding-renderers';
 
 const WORKER_ID = 'aaaaaaaa-0000-0000-0000-000000000001';
 const EVENT_KEY = 'worker.ready:aaaaaaaa-0000-0000-0000-000000000001:1';
@@ -575,6 +576,112 @@ describe('releaseWorkerReady', () => {
     >;
     expect(notice).toBeDefined();
     expect(notice.payload).toEqual({});
+  });
+
+  // ── Sprint 24 round 2 lane 1.5: the closing line must go out LAST ──
+  //
+  // `withinGroupOrder` sorts `a.priority - b.priority`, release_sequence is
+  // allocated in that order, and 043's `lease_worker_intent_outbox` drains
+  // strictly by `COALESCE(release_sequence, 2147483647)`. So ASCENDING
+  // priority = SENT FIRST, and the closing line's 45 puts it behind stage
+  // news (30) instead of ahead of it, which its original 20 did.
+  //
+  // SCOPE, established by this test's own first run: priority orders intents
+  // only WITHIN a render group. Cross-category order is fixed by the
+  // `renderPlan.push` sequence (onboarding_complete, referred_job,
+  // account_notice, job_alert_digest, employer_chat), so every `account`
+  // intent precedes employer chat whatever its priority -- an employer_chat
+  // assertion here passes for reasons unrelated to this change and is
+  // deliberately omitted.
+  it('gives the web-completion closing line a HIGHER release_sequence than stage news', async () => {
+    const APP_ID = '11111111-2222-4333-8444-555555555555';
+    const intents = [
+      intentRow({
+        id: 'acct-webdone-1', category: 'account', owner_service: 'account',
+        source_type: 'application_web_completion', source_id: APP_ID,
+        priority: 45,
+        payload: {
+          kind: 'application_web_completion',
+          applicationId: APP_ID,
+          conversationId: '99999999-8888-4777-8666-555555555555',
+          jobTitle: 'Concrete Finisher',
+          lang: 'es',
+        },
+      }),
+      intentRow({
+        id: 'acct-stage-2', category: 'account', owner_service: 'account',
+        source_type: 'application_stage', source_id: '22222222-3333-4444-8555-666666666666',
+        priority: 30,
+        payload: {
+          kind: 'application_stage',
+          status: 'details_requested',
+          applicationId: '22222222-3333-4444-8555-666666666666',
+          jobTitle: 'Electricista',
+          companyName: 'ACME',
+          frontendBaseUrl: 'https://jaleapp.ai',
+        },
+      }),
+      intentRow({
+        id: 'ec-order-1', category: 'employer_chat', owner_service: 'job-messaging',
+        source_type: 'job_conversation_message', source_id: 'msg-order-1', priority: 40,
+      }),
+    ];
+    const chats = [{
+      message_id: 'msg-order-1', conversation_id: 'conv-1', conversation_status: 'open',
+      job_title: 'A', company_name: 'C',
+    }];
+    const { client, intents: finalIntents } = scriptedClient({
+      eventStatus: 'processing', intents, chats,
+    });
+    const { render } = recordingRenderer();
+
+    await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+
+    const seq = (id: string) => (finalIntents.get(id) as any).release_sequence as number;
+    // The priority-governed comparison: both are `account` intents, so this
+    // is `withinGroupOrder` and nothing else. Stage news goes out first.
+    expect(seq('acct-stage-2')).toBeLessThan(seq('acct-webdone-1'));
+  });
+
+  it('renders the deferred web-completion intent as its REAL copy, not the generic notice', async () => {
+    // The other half of the same bug: `enqueueWorkerMessage` runs a CATEGORY
+    // renderer only on the `allow` branch, so a deferred web-completion
+    // intent is materialized here and nowhere else. The request must carry
+    // the payload through for `createReleaseRenderer`'s new arm to use.
+    const APP_ID = '11111111-2222-4333-8444-555555555555';
+    const payload = {
+      kind: 'application_web_completion',
+      applicationId: APP_ID,
+      conversationId: '99999999-8888-4777-8666-555555555555',
+      jobTitle: 'Concrete Finisher',
+      lang: 'es',
+    };
+    const intents = [
+      intentRow({
+        id: 'acct-webdone-2', category: 'account', owner_service: 'account',
+        source_type: 'application_web_completion', source_id: APP_ID,
+        priority: 45, payload,
+      }),
+    ];
+    const { client } = scriptedClient({ eventStatus: 'processing', intents });
+    const { render, requests } = recordingRenderer();
+
+    await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+
+    const notice = requests.find(
+      (r) => r.kind === 'account_notice'
+        && (r as { sourceType?: string }).sourceType === 'application_web_completion',
+    ) as Extract<ReleaseRenderRequest, { kind: 'account_notice' }>;
+    expect(notice).toBeDefined();
+    expect(notice.payload).toEqual(payload);
+
+    // And the real renderer turns that request into the real line.
+    const rendered = await createReleaseRenderer().render(notice);
+    expect(rendered.contentTemplate).toBeNull();
+    expect(rendered.body).toBe(
+      'Completaste tu solicitud para Concrete Finisher en la web. Te avisamos por aqui cuando el empleador responda.',
+    );
+    expect(rendered.body).not.toContain('application_web_completion');
   });
 
   it('allocates contiguous, strictly increasing release_sequence values across the whole release', async () => {
