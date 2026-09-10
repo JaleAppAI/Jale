@@ -295,33 +295,21 @@ export class WhatsAppStack extends cdk.Stack {
         // takes the same `?? 'https://jaleapp.ai'` shape for `allowedOrigin`.
         PUBLIC_SITE_BASE_URL: publicSiteBaseUrl,
       },
-      // Task 15 (confirmed blocker, not just the IAM/env gap): processor.ts
-      // imports handleFillMessage from lib/application-fill.ts, which
-      // imports extractFieldAnswer from lib/application-fill-extraction.ts,
-      // which imports '@aws-sdk/client-bedrock-runtime' at module top level.
-      // JaleLambdaFunction's default bundling externalizes ALL '@aws-sdk/*'
-      // packages (lambda-function.ts:74) on the assumption the Node 20.x
-      // Lambda runtime provides them — untrue for client-bedrock-runtime
-      // (see ai-profile-writer's identical nodeModules override above,
-      // ~line 504). Without this opt-in, the processor bundle would contain
-      // an unresolvable require() for this package, throwing "Cannot find
-      // module" at import time — failing EVERY processor invocation, not
-      // just Bedrock-calling turns, since the import chain above is
-      // unconditional at the top of processor.ts.
-      // (@smithy/node-http-handler, also used by makeBedrockExtractionClient,
-      // does NOT need listing here — only 'pg-native' and '@aws-sdk/*' are
-      // externalModules, so esbuild bundles @smithy/* directly.)
-      //
-      // C1 (final-review, critical): the media-board post lane (below, ~line
-      // 656) makes this lambda call lib/moderation.ts's moderateImage(),
-      // which imports '@aws-sdk/client-rekognition' at module top level --
-      // the exact same "externalized but not runtime-provided" failure this
-      // comment already documents for client-bedrock-runtime. Without this
-      // addition the bundle would contain an unresolvable require() for
-      // client-rekognition, failing EVERY processor invocation (the import
-      // chain is unconditional at the top of processor.ts), not just
-      // moderation-calling turns.
-      nodeModules: ['@aws-sdk/client-bedrock-runtime', '@aws-sdk/client-rekognition'],
+      // This lambda declares no SDK bundling opt-in, and neither does any
+      // other: esbuild inlines every '@aws-sdk/*' import into the artifact
+      // (lambda-function.ts's `externalModules`). It is the site most likely
+      // to tempt someone into re-adding one — processor.ts pulls in
+      // client-bedrock-runtime (lib/application-fill.ts ->
+      // lib/application-fill-extraction.ts) and client-rekognition
+      // (lib/moderation.ts's moderateImage, for the media-board post lane
+      // below) at module top level, unconditionally, and under the old
+      // externalize-the-SDK policy each needed an explicit `nodeModules`
+      // entry or the bundle carried an unresolvable require() that killed
+      // EVERY processor invocation at cold start, not just the turns that
+      // called Bedrock or Rekognition. Both omissions were caught in review
+      // rather than in production. That failure mode no longer exists;
+      // adding a `nodeModules` entry back would only reintroduce a bundle-
+      // local npm install.
     });
     whatsappDbSecret.grantRead(this.processorLambda.function);
     twilioSecret.grantRead(this.processorLambda.function);
@@ -598,7 +586,6 @@ export class WhatsAppStack extends cdk.Stack {
         ALIAS_GENERATOR_ARN: props.aliasGeneratorFn.functionArn,
         TWILIO_STATUS_CALLBACK_URL: statusCallbackUrl,
       },
-      nodeModules: ['@aws-sdk/client-bedrock-runtime', '@aws-sdk/client-lambda'],
     });
     whatsappDbSecret.grantRead(aiProfileWriterLambda.function);
     twilioSecret.grantRead(aiProfileWriterLambda.function);
@@ -1244,10 +1231,6 @@ export class WhatsAppStack extends cdk.Stack {
         MEDIA_BUCKET_NAME: mediaBucket.bucketName,
         TRUST_PIPELINE_STATE_MACHINE_ARN: trustVoicePipeline.stateMachine.stateMachineArn,
       },
-      // Not in the Node 20 runtime, unlike the @aws-sdk/client-* packages:
-      // without this the presigner import resolves to nothing at runtime and
-      // every voice-upload-url call 500s.
-      nodeModules: ['@aws-sdk/s3-request-presigner'],
     });
     whatsappDbSecret.grantRead(webOnboardingLambda.function);
     // Sprint 23 L6. ONE prefix, `voice/*`, covers both the audio the browser

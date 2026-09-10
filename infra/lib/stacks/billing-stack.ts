@@ -196,7 +196,6 @@ export class BillingStack extends cdk.Stack {
         WEBHOOK_SECRET_ARN: webhookSecret.secretArn,
         QUEUE_URL: webhookQueue.queueUrl,
       },
-      nodeModules: ['@aws-sdk/client-sqs'],
     });
     webhookSecret.grantRead(webhookVerifierLambda.function);
     webhookQueue.grantSendMessages(webhookVerifierLambda.function);
@@ -214,12 +213,6 @@ export class BillingStack extends cdk.Stack {
         STRIPE_SECRET_ARN: stripeApiSecret.secretArn,
         ALLOWED_ORIGIN: allowedOrigin,
       },
-      // The processor queues billing-pause mail through lib/email-outbox.ts,
-      // which constructs its SESv2Client at module scope. `@aws-sdk/*` is
-      // externalized by the bundler, so without shipping the package here the
-      // cold start fails with "Cannot find module '@aws-sdk/client-sesv2'" and
-      // every Stripe webhook dead-letters. Same declaration as the sweeper.
-      nodeModules: ['@aws-sdk/client-sesv2'],
     });
     props.billingDbSecret.grantRead(processorLambda.function);
     stripeApiSecret.grantRead(processorLambda.function);
@@ -249,9 +242,6 @@ export class BillingStack extends cdk.Stack {
             ? { EMAIL_CONFIGURATION_SET: props.emailConfigurationSetName }
             : {}),
         },
-        // SESv2, not SESv1: the sweeper now hands SES a complete raw MIME
-        // message so it can carry the RFC 8058 List-Unsubscribe headers.
-        nodeModules: ['@aws-sdk/client-sesv2'],
     });
     props.appDbSecret.grantRead(emailSweeperLambda.function);
     // ses:SendEmail is what authorizes SESv2's SendEmail, INCLUDING the
