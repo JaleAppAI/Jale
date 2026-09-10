@@ -2,6 +2,9 @@
   "name": "frontend",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -11,35 +14,34 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@tailwindcss/postcss": "^4.2.2",
+    "@tailwindcss/postcss": "^4.3.3",
     "amazon-cognito-identity-js": "^6.3.16",
-    "lucide-react": "^1.23.0",
-    "next": "14.2.35",
-    "next-intl": "^4.9.2",
+    "lucide-react": "^1.44.0",
+    "next": "16.3.4",
+    "next-intl": "^4.14.3",
     "qrcode": "^1.5.4",
-    "react": "^18",
-    "react-dom": "^18"
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
   },
   "devDependencies": {
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^7.0.1",
-    "@testing-library/react": "^16.3.2",
+    "@testing-library/react": "^16.3.3",
     "@testing-library/user-event": "^14.6.6",
-    "@types/node": "^20",
+    "@types/node": "^24",
     "@types/qrcode": "^1.5.6",
-    "@types/react": "^18.3.28",
-    "@types/react-dom": "^18",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "autoprefixer": "^10.4.27",
-    "eslint": "^8",
-    "eslint-config-next": "14.2.35",
-    "jsdom": "^26.1.0",
+    "eslint": "^10",
+    "eslint-config-next": "16.3.4",
+    "jsdom": "^30",
     "postcss": "^8.5.10",
-    "tailwindcss": "^4.2.2",
-    "typescript": "^5",
-    "vitest": "^3.2.6"
+    "tailwindcss": "^4.3.3",
+    "typescript": "6.0.3",
+    "vitest": "^5"
   },
   "overrides": {
-    "js-cookie": "^3.0.7",
-    "glob": "^10.4.6"
+    "js-cookie": "^3.0.7"
   }
 }
