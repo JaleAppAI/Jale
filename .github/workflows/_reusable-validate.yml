@@ -147,8 +147,9 @@ jobs:
   frontend:
     name: Frontend build
     runs-on: ubuntu-latest
-    # Normal runtime is ~1 min; 20 minutes leaves headroom without letting a
-    # hang burn the shared 360-minute ceiling.
+    # Normal runtime is a few minutes (lint + typecheck + vitest run in ~15s,
+    # then the Next build); 20 minutes leaves headroom without letting a hang
+    # burn the shared 360-minute ceiling.
     timeout-minutes: 20
     env:
       NEXT_PUBLIC_API_BASE_URL: http://localhost:3000/api
@@ -164,6 +165,20 @@ jobs:
         uses: ./.github/actions/setup-node-cache
         with:
           working-directory: frontend
+
+      - name: Lint frontend
+        working-directory: frontend
+        # Next 16's `next build` no longer runs ESLint itself, so this must
+        # run as its own step.
+        run: npm run lint
+
+      - name: Typecheck frontend
+        working-directory: frontend
+        run: npx tsc --noEmit
+
+      - name: Test frontend
+        working-directory: frontend
+        run: npm test
 
       - name: Build frontend
         working-directory: frontend
@@ -184,6 +199,13 @@ jobs:
         with:
           working-directory: admin
 
+      - name: Build admin
+        # Runs before typecheck: Next generates `.next/types` during build,
+        # which the typecheck now references (tsc also passes without it,
+        # but this matches Next's own tsc pass ordering).
+        working-directory: admin
+        run: npm run build
+
       - name: Typecheck admin
         working-directory: admin
         run: npm run typecheck
@@ -197,14 +219,11 @@ jobs:
           npm run test:session-store
           npm run test:read-models
           npm run test:analytics
+          npm run test:charts
           npm run test:dispatch
           npm run test:safe-redirect
           npm run test:ui
           npm run test:mfa
-
-      - name: Build admin
-        working-directory: admin
-        run: npm run build
 
   security:
     name: Security checks

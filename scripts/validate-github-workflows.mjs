@@ -43,6 +43,21 @@ function requireMatches(file, content, pattern, description) {
   }
 }
 
+/**
+ * Slices out one top-level job block (from its `  <name>:` line up to but not
+ * including the next top-level job's `  <name>:` line) so assertions about a
+ * specific job cannot be satisfied by a string living in a different job.
+ */
+function sliceJobBlock(file, content, startLabel, endLabel) {
+  const start = content.indexOf(startLabel);
+  const end = start === -1 ? -1 : content.indexOf(endLabel, start + startLabel.length);
+  if (start === -1 || end === -1) {
+    fail(`${file}: could not locate job block between ${JSON.stringify(startLabel)} and ${JSON.stringify(endLabel)}`);
+    return '';
+  }
+  return content.slice(start, end);
+}
+
 for (const file of requiredFiles) {
   readRequired(file);
 }
@@ -104,6 +119,29 @@ requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'n
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'working-directory: admin');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npm run test:session');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npm run test:dispatch');
+
+// Job-scoped checks: Next 16's `next build` no longer runs ESLint, so the
+// frontend job must lint, typecheck, and test on its own before building.
+// Sliced to the frontend job block so a script living in a neighbouring job
+// (e.g. the infra job's `npm run test:ci`) cannot satisfy these by accident.
+const frontendJob = sliceJobBlock('.github/workflows/_reusable-validate.yml', reusableValidate, '  frontend:', '  admin:');
+requireIncludes('.github/workflows/_reusable-validate.yml (frontend job)', frontendJob, 'npm run lint');
+requireIncludes('.github/workflows/_reusable-validate.yml (frontend job)', frontendJob, 'npx tsc --noEmit');
+requireIncludes('.github/workflows/_reusable-validate.yml (frontend job)', frontendJob, 'npm test');
+
+// The admin job must build BEFORE typecheck (Next generates `.next/types`
+// during build, which the typecheck now references) and must run all 11
+// admin contract-check scripts, not 10.
+const adminJob = sliceJobBlock('.github/workflows/_reusable-validate.yml', reusableValidate, '  admin:', '  security:');
+requireIncludes('.github/workflows/_reusable-validate.yml (admin job)', adminJob, 'npm run test:charts');
+const adminBuildIndex = adminJob.indexOf('npm run build');
+const adminTypecheckIndex = adminJob.indexOf('npm run typecheck');
+if (adminBuildIndex === -1 || adminTypecheckIndex === -1 || adminBuildIndex >= adminTypecheckIndex) {
+  fail(
+    '.github/workflows/_reusable-validate.yml (admin job) must run `npm run build` before `npm run typecheck` '
+    + `(build at ${adminBuildIndex}, typecheck at ${adminTypecheckIndex})`,
+  );
+}
 
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'workflow_call:');
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'environment: ${{ inputs.github-environment }}');
