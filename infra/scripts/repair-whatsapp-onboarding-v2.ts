@@ -12,11 +12,11 @@
  * the reset CLI):
  *
  *   Inspect (default, read-only — no --set-step):
- *     npx ts-node scripts/repair-whatsapp-onboarding-v2.ts \
+ *     npx tsx scripts/repair-whatsapp-onboarding-v2.ts \
  *       --user-id <uuid> --phone <e164>
  *
  *   Repair (--set-step; exactly one of --dry-run|--execute):
- *     npx ts-node scripts/repair-whatsapp-onboarding-v2.ts \
+ *     npx tsx scripts/repair-whatsapp-onboarding-v2.ts \
  *       --user-id <uuid> --phone <e164> --set-step profile.location \
  *       --reason "<why>" --dry-run|--execute
  *

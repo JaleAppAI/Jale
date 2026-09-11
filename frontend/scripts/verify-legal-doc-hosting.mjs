@@ -11,6 +11,7 @@ const requiredFiles = [
   'src/app/legal/privacy/route.ts',
   'src/app/legal/terms/[version]/route.ts',
   'src/app/legal/privacy/[version]/route.ts',
+  'src/proxy.ts',
   'src/app/terms/route.ts',
   'src/app/privacypolicy/route.ts',
   'src/app/sms-opt-in/route.ts',
@@ -30,10 +31,25 @@ for (const pdfPath of requiredFiles.filter((file) => file.endsWith('.pdf'))) {
   }
 }
 
-const middleware = readFileSync(join(root, 'src/middleware.ts'), 'utf8');
+// Next 16 renamed the middleware entrypoint: the file is `src/proxy.ts` and
+// the function it exports is `proxy`. A leftover `src/middleware.ts` is the
+// dangerous case -- Next 16 does not read it, so it would sit there looking
+// like the live routing rules while the public legal paths silently started
+// going through next-intl's locale rewrite instead of being passed through.
+if (existsSync(join(root, 'src/middleware.ts'))) {
+  throw new Error(
+    'src/middleware.ts still exists: Next 16 reads src/proxy.ts and would ignore it, '
+    + 'so the public legal paths would lose their pass-through',
+  );
+}
+
+const proxy = readFileSync(join(root, 'src/proxy.ts'), 'utf8');
+if (!/export default function proxy\b/.test(proxy)) {
+  throw new Error('src/proxy.ts does not export a function named `proxy`');
+}
 for (const publicPath of ['/legal/terms', '/legal/privacy', '/terms', '/privacypolicy', '/sms-opt-in']) {
-  if (!middleware.includes(publicPath)) {
-    throw new Error(`middleware does not explicitly preserve ${publicPath}`);
+  if (!proxy.includes(publicPath)) {
+    throw new Error(`proxy does not explicitly preserve ${publicPath}`);
   }
 }
 

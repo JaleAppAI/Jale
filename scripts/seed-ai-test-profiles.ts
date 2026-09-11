@@ -3,7 +3,7 @@
  *
  * Usage (from repo root, with DB access via bastion or local tunnel):
  *   DB_HOST=<host> DB_PORT=5432 DB_NAME=jale DB_USER=jale_admin DB_PASSWORD=<pw> \
- *   npx ts-node scripts/seed-ai-test-profiles.ts
+ *   npx tsx scripts/seed-ai-test-profiles.ts
  *
  * Each profile has ai_test_profile=TRUE in worker_profile_ai_extractions.
  * Find them with the query in the Sprint 7 design doc.

@@ -43,6 +43,21 @@ function requireMatches(file, content, pattern, description) {
   }
 }
 
+/**
+ * Slices out one top-level job block (from its `  <name>:` line up to but not
+ * including the next top-level job's `  <name>:` line) so assertions about a
+ * specific job cannot be satisfied by a string living in a different job.
+ */
+function sliceJobBlock(file, content, startLabel, endLabel) {
+  const start = content.indexOf(startLabel);
+  const end = start === -1 ? -1 : content.indexOf(endLabel, start + startLabel.length);
+  if (start === -1 || end === -1) {
+    fail(`${file}: could not locate job block between ${JSON.stringify(startLabel)} and ${JSON.stringify(endLabel)}`);
+    return '';
+  }
+  return content.slice(start, end);
+}
+
 for (const file of requiredFiles) {
   readRequired(file);
 }
@@ -82,6 +97,12 @@ requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'n
 // --maxWorkers with --runInBand in a single invocation.
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npm run test:ci -- --runInBand');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npx cdk synth');
+// `--all` is not a valid `cdk synth` option in the CDK 2.1133+ CLI this repo
+// pins (it prints "Unknown option(s): --all" and is ignored); `cdk synth`
+// with no stack argument already synthesizes every stack.
+if (reusableValidate.includes('cdk synth --all')) {
+  fail('.github/workflows/_reusable-validate.yml must not pass --all to cdk synth (not a valid option; omit the stack argument to synth everything)');
+}
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c emailFromAddress=');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c sesVerifiedIdentityArn=');
 // Cognito employer-pool SES sender: CI synth must exercise the auth-stack SES
@@ -94,16 +115,47 @@ requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-
 // referrals alarms; without this context key the stack falls back to creating
 // a bare jale-billing-alarms topic that has no subscribers.
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c billingAlarmTopicArn=');
-requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npm audit --omit=dev --audit-level=high');
-// The frontend/admin audit runs through the dated-exception gate; a plain
-// `npm audit` there would either fail on Next 14's unfixable criticals or be
-// lowered past them, and the self-tests are what keep the gate honest.
+requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npm audit --audit-level=high');
+// Lane D removes the xlsx devDependency that forced --omit=dev (GHSA-4r6h-8v6p-xvw6,
+// no npm fix published); once that lands, the infra audit step must cover the
+// FULL dependency tree, not skip devDependencies.
+if (reusableValidate.includes('npm audit --omit=dev')) {
+  fail('.github/workflows/_reusable-validate.yml must not run npm audit --omit=dev (Lane D removed the devDependency that required it)');
+}
+// The frontend/admin audit runs through the dated-exception gate (currently
+// with an empty exception list -- see .github/audit-exceptions.json) rather
+// than a plain `npm audit`, so a future unfixable advisory can be excused on
+// the record instead of the job silently going red or being hand-waved past;
+// the self-tests are what keep the gate honest.
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'node ../scripts/npm-audit-gate.mjs --level critical');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'node --test "${tests[@]}"');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'node scripts/validate-github-workflows.mjs');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'working-directory: admin');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npm run test:session');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npm run test:dispatch');
+
+// Job-scoped checks: Next 16's `next build` no longer runs ESLint, so the
+// frontend job must lint, typecheck, and test on its own before building.
+// Sliced to the frontend job block so a script living in a neighbouring job
+// (e.g. the infra job's `npm run test:ci`) cannot satisfy these by accident.
+const frontendJob = sliceJobBlock('.github/workflows/_reusable-validate.yml', reusableValidate, '  frontend:', '  admin:');
+requireIncludes('.github/workflows/_reusable-validate.yml (frontend job)', frontendJob, 'npm run lint');
+requireIncludes('.github/workflows/_reusable-validate.yml (frontend job)', frontendJob, 'npx tsc --noEmit');
+requireIncludes('.github/workflows/_reusable-validate.yml (frontend job)', frontendJob, 'npm test');
+
+// The admin job must build BEFORE typecheck (Next generates `.next/types`
+// during build, which the typecheck now references) and must run all 11
+// admin contract-check scripts, not 10.
+const adminJob = sliceJobBlock('.github/workflows/_reusable-validate.yml', reusableValidate, '  admin:', '  security:');
+requireIncludes('.github/workflows/_reusable-validate.yml (admin job)', adminJob, 'npm run test:charts');
+const adminBuildIndex = adminJob.indexOf('npm run build');
+const adminTypecheckIndex = adminJob.indexOf('npm run typecheck');
+if (adminBuildIndex === -1 || adminTypecheckIndex === -1 || adminBuildIndex >= adminTypecheckIndex) {
+  fail(
+    '.github/workflows/_reusable-validate.yml (admin job) must run `npm run build` before `npm run typecheck` '
+    + `(build at ${adminBuildIndex}, typecheck at ${adminTypecheckIndex})`,
+  );
+}
 
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'workflow_call:');
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'environment: ${{ inputs.github-environment }}');
@@ -228,6 +280,40 @@ requireIncludes('scripts/bootstrap-admin-user.ps1', adminBootstrap, 'admin_users
 requireIncludes('.github/actions/setup-node-cache/action.yml', setupNode, 'actions/setup-node');
 requireIncludes('.github/actions/setup-node-cache/action.yml', setupNode, 'npm ci');
 requireIncludes('.github/actions/aws-oidc-login/action.yml', awsLogin, 'aws-actions/configure-aws-credentials');
+
+// Sprint 25 lane E: Node 24 + GitHub Actions majors. Pin checks below so a
+// future downgrade of any of these three actions, or the composite action's
+// Node default, is caught here instead of surfacing as a runner deprecation.
+requireIncludes('.github/actions/setup-node-cache/action.yml', setupNode, 'actions/setup-node@v7');
+requireIncludes('.github/actions/setup-node-cache/action.yml', setupNode, "default: '24'");
+requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'actions/setup-node@v7');
+requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, "node-version: '24'");
+requireIncludes('.github/actions/aws-oidc-login/action.yml', awsLogin, 'aws-actions/configure-aws-credentials@v6');
+
+const workflowAndActionFiles = {
+  '.github/workflows/pr-validate.yml': prValidate,
+  '.github/workflows/deploy-production.yml': deployProduction,
+  '.github/workflows/_reusable-validate.yml': reusableValidate,
+  '.github/workflows/_reusable-deploy.yml': reusableDeploy,
+  '.github/actions/setup-node-cache/action.yml': setupNode,
+  '.github/actions/aws-oidc-login/action.yml': awsLogin,
+};
+for (const [file, content] of Object.entries(workflowAndActionFiles)) {
+  for (const staleActionPin of ['actions/checkout@v4', 'actions/upload-artifact@v4', 'actions/setup-node@v4', 'configure-aws-credentials@v4']) {
+    if (content.includes(staleActionPin)) {
+      fail(`${file} must not pin the superseded ${staleActionPin}`);
+    }
+  }
+}
+const allWorkflowAndActionContent = Object.values(workflowAndActionFiles).join('\n');
+const checkoutV7Count = (allWorkflowAndActionContent.match(/actions\/checkout@v7/g) ?? []).length;
+if (checkoutV7Count < 9) {
+  fail(`expected at least 9 actions/checkout@v7 sites across workflows, found ${checkoutV7Count}`);
+}
+const uploadArtifactV7Count = (allWorkflowAndActionContent.match(/actions\/upload-artifact@v7/g) ?? []).length;
+if (uploadArtifactV7Count < 4) {
+  fail(`expected at least 4 actions/upload-artifact@v7 sites across workflows, found ${uploadArtifactV7Count}`);
+}
 
 for (const ownerPath of ['.github/', 'infra/', 'infra/db/migrations/', 'scripts/run-migrations*']) {
   requireIncludes('.github/CODEOWNERS', codeowners, ownerPath);

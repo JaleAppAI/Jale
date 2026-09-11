@@ -81,7 +81,7 @@ vi.mock('@/lib/api/publicJob', async (importOriginal) => ({
 }));
 
 // Below every `vi.mock` on purpose (they hoist).
-import PublicJobPage from '../page';
+import PublicJobPage, { generateMetadata } from '../page';
 
 function fullJob(over: Partial<PublicJobActive> = {}): PublicJobActive {
     return {
@@ -138,7 +138,13 @@ function sparseJob(over: Partial<PublicJobActive> = {}): PublicJobActive {
 async function renderPage(job: PublicJobActive, locale: 'en' | 'es' = 'en') {
     getPublicJob.mockResolvedValue(job);
     // An async server component: call it, then render what it returned.
-    const ui = await PublicJobPage({ params: { locale, code: 'ABC123' } });
+    //
+    // `params` is handed over as a PROMISE, which is how Next hands it to a
+    // page -- the synchronous shim that used to let a page read `params.code`
+    // straight off the object is gone. Calling it any other way here would let
+    // a page that never awaits its params pass this suite and then render
+    // `undefined` for every param in production.
+    const ui = await PublicJobPage({ params: Promise.resolve({ locale, code: 'ABC123' }) });
     return render(ui);
 }
 
@@ -287,5 +293,39 @@ describe('public job page — the facts card', () => {
             const dd = container.querySelector('dl > div dd');
             expect(dd?.className).toContain('--jale-ink-2');
         });
+    });
+});
+
+/*
+ * `generateMetadata` reads the same `params` promise the page body does, and
+ * nothing else in the suite calls it. Its two param reads -- the locale it
+ * translates in and the code it builds the canonical URL from -- are exactly
+ * what silently degrades to `undefined` if the promise is never awaited, and
+ * a wrong canonical is invisible in the rendered page.
+ */
+describe('public job page - generateMetadata', () => {
+    it('awaits params for the translated title and the canonical URL', async () => {
+        getPublicJob.mockResolvedValue(fullJob());
+
+        const meta = await generateMetadata({
+            params: Promise.resolve({ locale: 'en', code: 'ABC123' }),
+        });
+
+        expect(meta.title).toBe('Drywall Finisher at RM Construction - Jale');
+        expect(meta.alternates?.canonical).toBe('https://jaleapp.ai/en/j/ABC123');
+        expect(meta.alternates?.languages).toEqual({
+            en: 'https://jaleapp.ai/en/j/ABC123',
+            es: 'https://jaleapp.ai/es/j/ABC123',
+        });
+    });
+
+    it('keeps the /en/ canonical when the visitor is on the Spanish URL', async () => {
+        getPublicJob.mockResolvedValue(fullJob());
+
+        const meta = await generateMetadata({
+            params: Promise.resolve({ locale: 'es', code: 'ABC123' }),
+        });
+
+        expect(meta.alternates?.canonical).toBe('https://jaleapp.ai/en/j/ABC123');
     });
 });

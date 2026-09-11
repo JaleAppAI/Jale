@@ -40,7 +40,8 @@ export async function POST(request: Request) {
 }
 
 export async function DELETE() {
-  const rawToken = cookies().get(ADMIN_SESSION_COOKIE)?.value;
+  const cookieStore = await cookies();
+  const rawToken = cookieStore.get(ADMIN_SESSION_COOKIE)?.value;
   if (rawToken) {
     try {
       const pool = await getAdminDbPool();

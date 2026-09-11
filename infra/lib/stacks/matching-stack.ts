@@ -87,7 +87,6 @@ export class MatchingStack extends cdk.Stack implements MatchingStackOutputs {
         MATCHING_DB_SECRET_ARN: props.matchingDbSecret.secretArn,
         BEDROCK_MODEL_ID,
       },
-      nodeModules: ['@aws-sdk/client-bedrock-runtime'],
     });
     props.dbSecret.grantRead(employerCandidateRerankLambda.function);
     props.matchingDbSecret.grantRead(employerCandidateRerankLambda.function);

@@ -16,7 +16,7 @@
  * Usage:
  *   cd infra
  *   DB_HOST=<host> DB_PORT=5432 DB_NAME=jale DB_USER=jale_admin DB_PASSWORD=<pw> \
- *   npx ts-node scripts/reset-whatsapp-onboarding-v2.ts \
+ *   npx tsx scripts/reset-whatsapp-onboarding-v2.ts \
  *     --user-id <uuid> --phone <e164> --reason "<why>" --dry-run|--execute
  *
  * Never prints or logs a raw phone number anywhere (the `--phone` value is

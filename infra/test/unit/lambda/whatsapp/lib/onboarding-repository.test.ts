@@ -789,10 +789,12 @@ describe('saveCanonicalCustomTrade', () => {
     // whoever knows whether the transaction committed — so it stays with the
     // caller and this module reports `resolved: false` instead.
     //
-    // (This is a design contract, NOT a bundling constraint: the Node 20
-    // runtime provides '@aws-sdk/client-lambda', which is why
-    // api-stack.ts's WorkerProfileUpdateLambda imports trade-alias-request
-    // with no `nodeModules` opt-in at all.)
+    // (This is a design contract, NOT a bundling constraint. Since sprint 25
+    // esbuild inlines every '@aws-sdk/*' import into the artifact, so no call
+    // site declares SDK packages at all — api-stack.ts's
+    // WorkerProfileUpdateLambda imports trade-alias-request with no bundling
+    // opt-in of any kind, and would still work if this module did reach for
+    // the SDK. The reason it does not is the transaction contract above.)
     const src = fs.readFileSync(
       path.join(__dirname, '../../../../../lambda/whatsapp/lib/onboarding-repository.ts'),
       'utf-8',

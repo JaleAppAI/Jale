@@ -7,10 +7,10 @@
  * on 2026-08-13 and their real layout verified directly against the files).
  *
  * These functions take already-parsed 2D sheet arrays (the shape
- * `XLSX.utils.sheet_to_json(worksheet, { header: 1 })` returns) rather than
- * touching the filesystem or the `xlsx` package themselves, so they are
- * importable from jest with a small hand-built fixture and no dependency on
- * the real files being present.
+ * generate-oews-seed.ts's sheetRows returns: 0-indexed rows, header included)
+ * rather than touching the filesystem or a spreadsheet library themselves, so
+ * they are importable from jest with a small hand-built fixture and no
+ * dependency on the real files being present.
  *
  * Both files share the same layout: two title rows, one header row (at
  * sheet row 3 / array index 2), then data. Parsing here is column-POSITION

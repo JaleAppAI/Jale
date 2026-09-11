@@ -15,15 +15,15 @@ import { WhatsAppStack } from '../../../lib/stacks/whatsapp-stack';
 describe('WhatsAppStack', () => {
   let template: Template;
   let apiTemplate: Template;
-  // Task 15 (confirmed blocker): the processor Lambda's bundled asset
-  // directory on disk, used to verify the `nodeModules` esbuild-bundling
-  // override actually landed the real npm package next to the compiled
-  // handler — `nodeModules` has no representation in the CloudFormation
-  // template itself (Template.fromStack only sees the final Code.S3Key
-  // asset hash), so this is the only way to test it. jest-autoclean
-  // (jest.config.js's setupFilesAfterEnv) only wipes these temp directories
-  // in a file-level `afterAll`, so they're guaranteed to still be on disk
-  // for every test in this file.
+  // The processor Lambda's bundled asset directory on disk, used to verify
+  // what esbuild actually put in the artifact: since sprint 25 that the SDK
+  // clients are INLINED rather than externalized-and-npm-installed. Neither
+  // `externalModules` nor `nodeModules` has any representation in the
+  // CloudFormation template (Template.fromStack only sees the final
+  // Code.S3Key asset hash), so reading the bundle is the only way to test
+  // it. jest-autoclean (jest.config.js's setupFilesAfterEnv) only wipes
+  // these temp directories in a file-level `afterAll`, so they're
+  // guaranteed to still be on disk for every test in this file.
   let processorAssetDir: string;
 
   // Sprint 23: PUBLIC_SITE_BASE_URL resolves context -> JALE_PUBLIC_SITE_BASE_URL
@@ -625,7 +625,7 @@ describe('event-driven outbox wake queues', () => {
         )) as any;
       expect(match).toBeDefined();
       expect(match.Properties.LogGroupName.Ref).toBe(logGroupRef);
-      // A quoted term, not a `{ $.metric = ... }` selector: the Node 20 TEXT
+      // A quoted term, not a `{ $.metric = ... }` selector: the Node 24 TEXT
       // log format prefixes every console line, so a selector matches nothing.
       expect(match.Properties.FilterPattern).toBe(`"${eventName}"`);
       expect(match.Properties.MetricTransformations[0]).toEqual(
@@ -1174,48 +1174,53 @@ describe('event-driven outbox wake queues', () => {
       }
     });
 
-    // Task 15 (confirmed blocker, found after the IAM/env fix above):
-    // processor.ts -> lib/application-fill.ts -> lib/application-fill-
-    // extraction.ts imports '@aws-sdk/client-bedrock-runtime' at module top
-    // level, unconditionally. JaleLambdaFunction's default esbuild bundling
-    // externalizes ALL '@aws-sdk/*' packages (lambda-function.ts's
-    // `externalModules: ['pg-native', '@aws-sdk/*']`), assuming the Node
-    // 20.x Lambda runtime provides them -- untrue for client-bedrock-runtime
-    // (ai-profile-writer needs the identical `nodeModules` opt-in for the
-    // same package). Without it, the compiled bundle's bare
-    // `require('@aws-sdk/client-bedrock-runtime')` would throw "Cannot find
-    // module" at import time in production -- failing EVERY processor
-    // invocation, not just Bedrock-calling ones.
+    // Sprint 25 (Lane C): this used to assert the OPPOSITE, and the flip is
+    // the point. processor.ts -> lib/application-fill.ts ->
+    // lib/application-fill-extraction.ts imports
+    // '@aws-sdk/client-bedrock-runtime' at module top level,
+    // unconditionally. Under the old policy lambda-function.ts externalized
+    // ALL '@aws-sdk/*' packages on the bet that the managed runtime shipped
+    // every client -- untrue for client-bedrock-runtime on nodejs20.x -- so
+    // this stack had to re-add the package through `nodeModules`, which made
+    // CDK shell out to `npm install` inside the bundle directory just to make
+    // the compiled bundle's bare `require('@aws-sdk/client-bedrock-runtime')`
+    // resolve. Miss the opt-in and the cold start threw "Cannot find module",
+    // failing EVERY processor invocation, not just Bedrock-calling ones.
     //
-    // `nodeModules` has no CloudFormation footprint (Template.fromStack only
-    // sees the final Code.S3Key asset hash), so this can only be verified by
-    // inspecting the real bundled asset directory on disk -- which the
-    // beforeAll block above locates via that same asset hash into
-    // `processorAssetDir`.
-    test('Processor Lambda bundle installs the real @aws-sdk/client-bedrock-runtime package (nodeModules opt-in)', () => {
+    // Only 'pg-native' is external now, so esbuild INLINES the client into
+    // index.js: no bundle-local node_modules tree, no bare require, and the
+    // artifact stops caring which SDK version the runtime happens to ship.
+    // Both halves are asserted -- the escape hatch is gone AND the real
+    // client code is present -- so a bundler regression that quietly dropped
+    // the import could not pass this by being merely "absent".
+    //
+    // Neither `externalModules` nor `nodeModules` has a CloudFormation
+    // footprint (Template.fromStack only sees the final Code.S3Key asset
+    // hash), so this can only be verified by inspecting the real bundled
+    // asset directory on disk -- which the beforeAll block above locates via
+    // that same asset hash into `processorAssetDir`.
+    test('Processor Lambda bundle inlines @aws-sdk/client-bedrock-runtime (no npm install in the asset)', () => {
       const pkgJsonPath = path.join(
         processorAssetDir, 'node_modules', '@aws-sdk', 'client-bedrock-runtime', 'package.json',
       );
-      expect(fs.existsSync(pkgJsonPath)).toBe(true);
-      const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8'));
-      expect(pkg.name).toBe('@aws-sdk/client-bedrock-runtime');
+      expect(fs.existsSync(pkgJsonPath)).toBe(false);
 
-      // The compiled index.js still has a bare require() for it (esbuild
-      // externalized it per lambda-function.ts's externalModules) -- proof
-      // the installed package above is actually what makes that require()
-      // resolve at runtime, not dead weight.
       const indexJs = fs.readFileSync(path.join(processorAssetDir, 'index.js'), 'utf8');
-      expect(indexJs).toMatch(/require\(["']@aws-sdk\/client-bedrock-runtime["']\)/);
+      expect(indexJs).not.toMatch(/require\(["']@aws-sdk\/client-bedrock-runtime["']\)/);
+      // Two independent markers so the assertion survives a future
+      // `minify: true`: the command class identifier (intact today because
+      // NodejsFunction does not minify by default) and the service id, which
+      // is a string literal no minifier rewrites.
+      expect(indexJs).toContain('InvokeModelCommand');
+      expect(indexJs).toContain('bedrock-runtime');
     });
 
     // @smithy/node-http-handler (also imported by
-    // makeBedrockExtractionClient, application-fill-extraction.ts) does NOT
-    // need a nodeModules entry: only 'pg-native' and '@aws-sdk/*' are
-    // externalModules (lambda-function.ts), so esbuild inlines
-    // '@smithy/*' packages directly into the bundle. Confirmed by asserting
-    // there's no bare require() for it in the compiled output -- if it were
-    // ever added to externalModules without a matching nodeModules entry,
-    // this would catch the same "Cannot find module" class of bug as above.
+    // makeBedrockExtractionClient, application-fill-extraction.ts) was
+    // already inlined under the old policy -- '@smithy/*' was never in
+    // externalModules -- so this assertion is unchanged. It now reads as the
+    // control case for the one above: same shape, different package, and if
+    // anything ever re-populates externalModules the two fail together.
     test('Processor Lambda bundle inlines @smithy/node-http-handler (not externalized)', () => {
       const indexJs = fs.readFileSync(path.join(processorAssetDir, 'index.js'), 'utf8');
       expect(indexJs).not.toMatch(/require\(["']@smithy\/node-http-handler["']\)/);

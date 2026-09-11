@@ -16,11 +16,11 @@
  * AREA_TYPE: 2=state, 4=metropolitan statistical area, 6=nonmetropolitan
  * area (also verified against the real file's TX rows).
  *
- * Takes an already-parsed 2D sheet array (as `XLSX.utils.sheet_to_json(ws,
- * { header: 1 })` returns) rather than touching `xlsx` itself, so this is
- * importable from jest with a small hand-built fixture -- no dependency on
- * the real 80MB file being present, and no risk of the test suite trying to
- * load it.
+ * Takes an already-parsed 2D sheet array (the shape generate-oews-seed.ts's
+ * sheetRows returns: 0-indexed rows, header included) rather than reading the
+ * workbook itself, so this is importable from jest with a small hand-built
+ * fixture -- no dependency on the real 80MB file being present, and no risk
+ * of the test suite trying to load it.
  */
 
 import { WageCell, validateWageCell } from './wage-seed-lib';

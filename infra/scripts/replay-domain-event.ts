@@ -27,8 +27,8 @@
  * Usage:
  *   cd infra
  *   DB_HOST=<host> DB_PORT=5432 DB_NAME=jale DB_USER=jale_admin DB_PASSWORD=<pw> \
- *   npx ts-node scripts/replay-domain-event.ts <id>              # dry run
- *   npx ts-node scripts/replay-domain-event.ts <id> --execute     # replay
+ *   npx tsx scripts/replay-domain-event.ts <id>              # dry run
+ *   npx tsx scripts/replay-domain-event.ts <id> --execute     # replay
  */
 
 import { Client } from 'pg';

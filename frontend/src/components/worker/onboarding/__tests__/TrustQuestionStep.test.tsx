@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi, type Mock } from 'vitest';
 import '@testing-library/jest-dom/vitest';
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -231,12 +231,18 @@ function installMicrophone(result: 'granted' | 'denied' = 'granted') {
 
 const TRANSCRIPT = 'I frame houses and set trusses on residential remodels.';
 
+type RecordHandler = NonNullable<Parameters<typeof TrustQuestionStep>[0]['onRecord']>;
+
 describe('TrustQuestionStep — voice answers', () => {
     afterEach(() => {
         vi.unstubAllGlobals();
     });
 
-    async function record(onRecord: ReturnType<typeof vi.fn>, extra = {}) {
+    // Bare `ReturnType<typeof vi.fn>` is `Mock<Procedure | Constructable>` in
+    // Vitest 5 -- a union that is not callable, so it no longer satisfies the
+    // `onRecord` prop. Naming the handler type keeps `onRecord.mock.calls[0]`
+    // typed as `[Blob, string]` instead of `any[]`.
+    async function record(onRecord: Mock<RecordHandler>, extra = {}) {
         const view = renderIntl(<TrustQuestionStep {...props({ onRecord, ...extra })} />);
         const mic = screen.getByRole('button', { name: message('worker_onboarding.trust.voice.start') });
         await userEvent.click(mic);

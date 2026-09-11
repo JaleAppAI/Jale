@@ -35,7 +35,7 @@ function harness(cors: apigateway.CorsOptions | null = CORS): {
     ...(cors ? { defaultCorsPreflightOptions: cors } : {}),
   });
   const fn = new lambda.Function(stack, 'Fn', {
-    runtime: lambda.Runtime.NODEJS_20_X,
+    runtime: lambda.Runtime.NODEJS_24_X,
     handler: 'index.handler',
     code: lambda.Code.fromInline('exports.handler = async () => ({});'),
   });

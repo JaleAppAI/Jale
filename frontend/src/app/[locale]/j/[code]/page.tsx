@@ -31,7 +31,10 @@ interface PageParams {
 }
 
 interface PageProps {
-  params: PageParams;
+  // Next hands `params` over as a promise and no longer offers the synchronous
+  // shim that used to let this file read a param straight off the object, so
+  // both exported functions below await it once at the top.
+  params: Promise<PageParams>;
 }
 
 // Never render employer contact details here -- the public API cannot return
@@ -98,13 +101,14 @@ const CLOSED_CTA_CLASSES = [
 ].join(' ');
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
-  const t = await getTranslations({ locale: params.locale, namespace: 'public_job' });
+  const { locale, code } = await params;
+  const t = await getTranslations({ locale, namespace: 'public_job' });
 
   // Canonical decision (fixed): the `/en/` URL is canonical for BOTH
   // locales -- one job, one indexed URL, no en/es duplicate-content split.
   // This only depends on the code param, not on locale or fetch success, so
   // it applies identically to every branch below (active, closed, error).
-  const { en: canonicalUrl, es: esUrl } = buildJobPageUrls(params.code);
+  const { en: canonicalUrl, es: esUrl } = buildJobPageUrls(code);
   const alternates: Metadata['alternates'] = {
     canonical: canonicalUrl,
     languages: { en: canonicalUrl, es: esUrl },
@@ -114,7 +118,7 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
     // Same call (same URL + options) as the page component below -- Next's
     // fetch request memoization dedupes these into one network request per
     // revalidation window.
-    const job = await getPublicJob(params.code);
+    const job = await getPublicJob(code);
 
     if (isClosedJob(job)) {
       const title = t('meta_title', { title: job.title, company: job.company });
@@ -199,12 +203,13 @@ function TrustFooter({ text }: { text: string }) {
 }
 
 export default async function PublicJobPage({ params }: PageProps) {
-  const t = await getTranslations({ locale: params.locale, namespace: 'public_job' });
-  const tPay = await getTranslations({ locale: params.locale, namespace: 'pay' });
+  const { locale, code } = await params;
+  const t = await getTranslations({ locale, namespace: 'public_job' });
+  const tPay = await getTranslations({ locale, namespace: 'pay' });
 
   let job;
   try {
-    job = await getPublicJob(params.code);
+    job = await getPublicJob(code);
   } catch (err) {
     // This route deliberately has NO `loading.tsx`, and must not grow one. A
     // route-level skeleton opens a Suspense boundary at the segment, which
@@ -227,12 +232,12 @@ export default async function PublicJobPage({ params }: PageProps) {
   // what this pill needs, and it is the same string the global Header and
   // AuthShell show, so the app says one thing everywhere.
   //
-  // The path is built from `params.code`, not from the fetched job's `code`:
+  // The path is built from the `code` param, not from the fetched job's `code`:
   // the toggle's job is to re-open THIS url in the other locale, so it has to
   // preserve the code exactly as the visitor's link spelled it.
-  const tHeader = await getTranslations({ locale: params.locale, namespace: 'header' });
-  const otherLocale = params.locale === 'es' ? 'en' : 'es';
-  const localePath = `/j/${encodeURIComponent(params.code)}`;
+  const tHeader = await getTranslations({ locale, namespace: 'header' });
+  const otherLocale = locale === 'es' ? 'en' : 'es';
+  const localePath = `/j/${encodeURIComponent(code)}`;
 
   if (isClosedJob(job)) {
     return (
@@ -302,15 +307,15 @@ export default async function PublicJobPage({ params }: PageProps) {
   // data at all, so the <script> tag below is skipped entirely in that case.
   const jobPostingJsonLd = buildJobPostingJsonLd(active, canonicalUrl);
   const jobTypeLabel = active.job_type ? active.job_type.replace('-', ' ') : '';
-  const languageLabel = (code: 'any' | 'en' | 'es') => t(`language_${code}`);
+  const languageLabel = (lang: 'any' | 'en' | 'es') => t(`language_${lang}`);
   const startDate = active.start_date
-    ? (formatStartDate(active.start_date, params.locale) ?? active.start_date)
+    ? (formatStartDate(active.start_date, locale) ?? active.start_date)
     : null;
   // `created_at` is an INSTANT, not a calendar day. This page renders on the
   // server, so it resolves in the server's zone (UTC on Lambda) -- the same
   // string the UTC-pinned `formatStartDate` produced, but now for the right
   // reason and consistent with every other "posted" line in the app.
-  const postedDate = formatLongDate(active.created_at, params.locale) ?? active.created_at;
+  const postedDate = formatLongDate(active.created_at, locale) ?? active.created_at;
   const pay = formatPay(active, tPay);
 
   // Structured trade/duration/schedule/certification display, added by a
@@ -324,7 +329,7 @@ export default async function PublicJobPage({ params }: PageProps) {
   // which is narrower than that structural type for the `values` parameter,
   // so passing it directly fails `tsc` (verified). The next line is a thin
   // widening adapter at that boundary, not a behavior change.
-  const tCommonRaw = await getTranslations({ locale: params.locale, namespace: 'common' });
+  const tCommonRaw = await getTranslations({ locale, namespace: 'common' });
   const tCommon: Translator = (key, values) =>
     (tCommonRaw as unknown as (k: string, v?: Record<string, unknown>) => string)(key, values);
   // `worker_job_detail.what_you_need.proof_needed` is reused rather than
@@ -332,23 +337,23 @@ export default async function PublicJobPage({ params }: PageProps) {
   // worker-app-specific framing, so it reads correctly here too -- the same
   // justified cross-namespace borrow this page already makes for
   // `header.language_toggle`.
-  const tWorkerJobDetail = await getTranslations({ locale: params.locale, namespace: 'worker_job_detail' });
+  const tWorkerJobDetail = await getTranslations({ locale, namespace: 'worker_job_detail' });
   /* The app's ONE required/optional vocabulary, restored here: this page read
      `job_requirements.states.*` for its certification tiers before this lane,
      and every job page reads it now (owner ruling, fix round 1). */
-  const tRequirement = await getTranslations({ locale: params.locale, namespace: 'job_requirements' });
+  const tRequirement = await getTranslations({ locale, namespace: 'job_requirements' });
   // `tradeLabel` resolves the trade SLUG as a relative key, and
   // `employer_dashboard.modal.trade.*` is the one catalogue carrying all eight
   // of migration 023's tokens -- `public_job` has no per-slug catalogue of its
   // own, which is exactly why this page used to render the raw slug title-cased
   // by CSS. Same widening cast as `tCommon` above, same reason.
-  const tTradeRaw = await getTranslations({ locale: params.locale, namespace: 'employer_dashboard.modal.trade' });
+  const tTradeRaw = await getTranslations({ locale, namespace: 'employer_dashboard.modal.trade' });
   const tTrade: Translator = (key) => (tTradeRaw as unknown as (k: string) => string)(key);
   const tDetail: Translator = (key, values) =>
     (t as unknown as (k: string, v?: Record<string, unknown>) => string)(key, values);
 
   const durationText = durationLabel(active, tCommon);
-  const schedule = scheduleSummary(active, params.locale, tCommon);
+  const schedule = scheduleSummary(active, locale, tCommon);
 
   // The header location line: company, then whichever of the structured
   // city/state_region pair and the free-text location field actually exist.

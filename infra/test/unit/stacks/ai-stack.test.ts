@@ -254,10 +254,10 @@ describe('AiStack', () => {
     });
   });
 
-  it('creates the TrustExtractor Lambda on Node 20 with 512MB, a 60s timeout and its own queue URL', () => {
+  it('creates the TrustExtractor Lambda on Node 24 with 512MB, a 60s timeout and its own queue URL', () => {
     template.hasResourceProperties('AWS::Lambda::Function', {
       Description: EXTRACTOR_DESCRIPTION,
-      Runtime: 'nodejs20.x',
+      Runtime: 'nodejs24.x',
       MemorySize: 512,
       Timeout: 60,
       Environment: {

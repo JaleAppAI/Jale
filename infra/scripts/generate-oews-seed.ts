@@ -6,7 +6,7 @@
  * wage_references / city_cbsa_crosswalk tables (migration 071).
  *
  * Usage:
- *   cd infra && npx ts-node scripts/generate-oews-seed.ts [--out <path>] [--cache-dir <dir>]
+ *   cd infra && npx tsx scripts/generate-oews-seed.ts [--out <path>] [--cache-dir <dir>]
  *
  * Data sources and how they were actually fetched
  * ------------------------------------------------
@@ -72,17 +72,14 @@
  *
  * XLSX parsing: this host has no working `python3 -c "import openpyxl"`
  * (confirmed absent; this is dev-only tooling so a project-wide Python env
- * change felt like overreach for one generator script), so parsing uses
- * the `xlsx` (SheetJS) npm package as an infra devDependency instead.
- * NOTE: the `xlsx` npm registry package (0.18.5) carries two published
- * high-severity advisories (prototype pollution GHSA-4r6h-8v6p-xvw6, ReDoS
- * GHSA-5pgg-2g8v-p4x9) with "no fix available" on the registry -- SheetJS
- * only ships patched builds via its own CDN, not npm. Accepted here because
- * this is a dev-only devDependency, never bundled into any Lambda or
- * runtime path, and it only ever parses a small, fixed set of well-known
- * government files an operator explicitly downloaded -- not arbitrary or
- * attacker-controlled spreadsheets. Re-evaluate before using `xlsx` for
- * anything that parses untrusted, user-supplied files.
+ * change felt like overreach for one generator script), so parsing uses the
+ * `exceljs` npm package as an infra devDependency instead. It replaced
+ * `xlsx` (SheetJS), whose registry package carried two high-severity
+ * advisories (prototype pollution GHSA-4r6h-8v6p-xvw6, ReDoS
+ * GHSA-5pgg-2g8v-p4x9) marked "no fix available" -- SheetJS ships patched
+ * builds only from its own CDN, never to npm, so the advisories could not be
+ * resolved by upgrading. See sheetRows for the one behavioural difference
+ * that mattered.
  */
 
 /* eslint-disable no-console */
@@ -91,7 +88,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { execFileSync } from 'child_process';
-import * as XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
 
 import {
   TRADED_CATEGORIES_WITH_WAGES,
@@ -224,10 +221,80 @@ function sha256(buf: Buffer): string {
   return crypto.createHash('sha256').update(buf).digest('hex');
 }
 
-function sheetRows(buf: Buffer): unknown[][] {
-  const workbook = XLSX.read(buf, { type: 'buffer', dense: true });
-  const sheet = workbook.Sheets[workbook.SheetNames[0]];
-  return XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1 });
+/**
+ * ExcelJS hands back a rich object rather than a scalar for several cell
+ * kinds: a formula cell is `{ formula, result }`, a cell with styled runs is
+ * `{ richText: [...] }`, a hyperlink is `{ text, hyperlink }`, an error is
+ * `{ error }`, and a date-formatted cell is a real `Date`. The OEWS wage
+ * columns this generator reads are plain numbers, but the Census delineation
+ * files are hand-maintained spreadsheets, so every shape is flattened here --
+ * downstream (lib/oews-bulk-parser.ts, lib/census-crosswalk-parser.ts) only
+ * ever sees string | number | boolean | undefined.
+ *
+ * Dates become ISO strings rather than Excel serial numbers, which is where
+ * this differs from the `xlsx` implementation it replaced: SheetJS returned
+ * the raw serial (e.g. 46037.5) unless asked for `cellDates`.
+ */
+function normaliseCellValue(value: unknown): unknown {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  if (typeof value === 'object') {
+    const rich = value as {
+      result?: unknown;
+      richText?: { text?: string }[];
+      text?: unknown;
+      error?: unknown;
+    };
+    if (Array.isArray(rich.richText)) {
+      return rich.richText.map((run) => run?.text ?? '').join('');
+    }
+    if ('result' in rich) {
+      return normaliseCellValue(rich.result); // formula -> its cached result
+    }
+    if ('error' in rich) {
+      return undefined; // #N/A and friends are absent data, never a value
+    }
+    if ('text' in rich) {
+      return normaliseCellValue(rich.text); // hyperlink cell
+    }
+    return undefined;
+  }
+  return value; // string | number | boolean
+}
+
+/**
+ * Reads the first worksheet of an .xlsx buffer as 0-indexed rows, header row
+ * included -- the shape parseOewsBulkRows / parseList1CountyCbsa /
+ * parseList2PrincipalCities all expect. A workbook with no worksheet yields an
+ * empty result rather than throwing, so a malformed download degrades into the
+ * placeholder path instead of crashing the generator.
+ */
+export async function sheetRows(buf: Buffer): Promise<unknown[][]> {
+  const workbook = new ExcelJS.Workbook();
+  // exceljs 4.4.0's index.d.ts opens with `declare interface Buffer extends
+  // ArrayBuffer {}`, which merges with @types/node's generic Buffer and leaves
+  // load() demanding an ArrayBuffer-shaped argument. At runtime it forwards the
+  // value straight to JSZip, which takes a Node Buffer, so the mismatch is
+  // purely in the shipped typings; the cast is confined to this one call rather
+  // than weakening sheetRows' own Buffer parameter.
+  await workbook.xlsx.load(buf as unknown as Parameters<typeof workbook.xlsx.load>[0]);
+  const sheet = workbook.worksheets[0];
+  if (!sheet) {
+    return [];
+  }
+  const rows: unknown[][] = [];
+  sheet.eachRow({ includeEmpty: true }, (row) => {
+    // ExcelJS's row.values is 1-indexed with a leading hole at 0; slice(1)
+    // restores the column positions the position-based parsers rely on, and
+    // .map leaves holes as holes so an empty cell never shifts later columns.
+    const values = (row.values as unknown[]) ?? [];
+    rows.push(values.slice(1).map(normaliseCellValue));
+  });
+  return rows;
 }
 
 /** Extracts the single .xlsx inside an OEWS bulk .zip via the `unzip` CLI. Returns its path, or null on any failure. */
@@ -277,13 +344,13 @@ function extractOewsXlsx(zipPath: string, extractDir: string): string | null {
  * against the real list1 data) -- see migration 071's header for the full
  * rationale.
  */
-function buildCrosswalk(list1Buf: Buffer, list2Buf: Buffer): CrosswalkRow[] {
+async function buildCrosswalk(list1Buf: Buffer, list2Buf: Buffer): Promise<CrosswalkRow[]> {
   const targetCbsaCodes = new Set(TX_METRO_AREAS.map((a) => a.area_code));
 
-  const list1Rows = parseList1CountyCbsa(sheetRows(list1Buf));
+  const list1Rows = parseList1CountyCbsa(await sheetRows(list1Buf));
   const singleCounty = singleCountyCbsaCodes(list1Rows.filter((r) => targetCbsaCodes.has(r.cbsaCode)));
 
-  const list2Rows = parseList2PrincipalCities(sheetRows(list2Buf));
+  const list2Rows = parseList2PrincipalCities(await sheetRows(list2Buf));
   const out: CrosswalkRow[] = [];
   for (const row of list2Rows) {
     if (row.fipsState !== '48' || !targetCbsaCodes.has(row.cbsaCode)) {
@@ -433,7 +500,7 @@ async function main(): Promise<void> {
           `Census may have revised the files -- re-verify before trusting the crosswalk.`,
       );
     }
-    crosswalk = buildCrosswalk(list1Buf, list2Buf);
+    crosswalk = await buildCrosswalk(list1Buf, list2Buf);
     censusStatus = 'downloaded';
     censusNote =
       'Real data -- city_cbsa_crosswalk rows are derived from these files. Covers only the 5 metro ' +
@@ -467,7 +534,7 @@ async function main(): Promise<void> {
     const xlsxPath = extractOewsXlsx(path.join(cacheDir, 'oesm25all.zip'), extractDir);
     if (xlsxPath) {
       console.log(`  parsing ${xlsxPath} (this can take under a minute for a 400k+ row file)...`);
-      const rows = sheetRows(fs.readFileSync(xlsxPath));
+      const rows = await sheetRows(fs.readFileSync(xlsxPath));
       wageReferences = buildRealWageReferences(rows);
       realDataSucceeded = true;
       oewsStatus = 'downloaded';

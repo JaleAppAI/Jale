@@ -1,25 +1,54 @@
 import { defineConfig } from 'vitest/config';
 import path from 'node:path';
 
+// There is deliberately no `esbuild.jsx: 'automatic'` here any more.
+//
+// It existed because `tsconfig.json` set `jsx: "preserve"` (Next owned the real
+// JSX transform), which the transformer honoured by handing Vite untransformed
+// JSX. Two things changed with this upgrade: `next build` now rewrites that
+// tsconfig entry to `jsx: "react-jsx"` itself, and Vitest 5's transformer is
+// oxc, which reads that value and warns that any `esbuild` options are being
+// ignored. The automatic runtime is therefore already what the component
+// suites get -- from the tsconfig, not from an override that no longer does
+// anything. React 19 ships `react/jsx-runtime`, so nothing else is needed.
 export default defineConfig({
-  // `tsconfig.json` sets `jsx: "preserve"` because Next owns the real JSX
-  // transform. esbuild would honour that and hand Vite untransformed JSX, so
-  // the component suites are told here to use the automatic runtime — React 18
-  // ships `react/jsx-runtime`, and nothing about the app build changes.
-  esbuild: {
-    jsx: 'automatic',
-  },
   test: {
-    // Stays 'node': the vast majority of these suites are pure functions and a
-    // DOM per file is not free. Component suites opt in with a
-    // `// @vitest-environment jsdom` comment on their first line.
-    environment: 'node',
-    environmentMatchGlobs: [['**/*.test.tsx', 'jsdom']],
+    // Two projects rather than one environment plus `environmentMatchGlobs`:
+    // that option was removed in Vitest 4, and it failed OPEN -- the three
+    // component suites that had no `// @vitest-environment jsdom` docblock of
+    // their own quietly ran in `node` and failed on `document is not defined`.
+    //
+    // A per-file docblock still wins over its project's environment, which is
+    // what keeps `src/lib/__tests__/session-storage.test.ts` -- a `.test.ts`
+    // that needs a DOM -- working while it sits in the `unit` project.
+    //
+    // `extends: true` is what gives both projects the `setupFiles` and the
+    // `@` alias below; without it a project starts from an empty config.
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: 'unit',
+          // Stays 'node': the vast majority of these suites are pure functions
+          // and a DOM per file is not free.
+          environment: 'node',
+          include: ['**/*.test.ts'],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'components',
+          environment: 'jsdom',
+          include: ['**/*.test.tsx'],
+        },
+      },
+    ],
     setupFiles: ['./src/test/setup.ts'],
   },
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, './src'),
+      '@': path.resolve(import.meta.dirname, './src'),
     },
   },
 });
