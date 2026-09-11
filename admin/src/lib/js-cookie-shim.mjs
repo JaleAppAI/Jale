@@ -1,10 +1,11 @@
-// Webpack alias target for js-cookie.
+// Bundler alias target for js-cookie (see turbopack.resolveAlias in
+// next.config.mjs; it was a webpack alias before the Next 16 upgrade).
 //
 // amazon-cognito-identity-js@6.x imports { get, remove } from 'js-cookie' as
 // named ESM exports, but no version of js-cookie actually exports them that
 // way. The admin app never uses CookieStorage (only CognitoUser /
 // CognitoUserPool / AuthenticationDetails are imported), so these are no-ops
-// that exist solely to satisfy webpack's static named-export check.
+// that exist solely to satisfy a bundler's static named-export check.
 const api = {
   get: () => undefined,
   set: () => {},

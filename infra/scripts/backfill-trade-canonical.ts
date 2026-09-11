@@ -41,8 +41,8 @@
  * Usage:
  *   cd infra
  *   DB_HOST=<host> DB_PORT=5432 DB_NAME=jale DB_USER=jale_admin DB_PASSWORD=<pw> \
- *   npx ts-node scripts/backfill-trade-canonical.ts
- *   npx ts-node scripts/backfill-trade-canonical.ts --lang en
+ *   npx tsx scripts/backfill-trade-canonical.ts
+ *   npx tsx scripts/backfill-trade-canonical.ts --lang en
  *
  * `--lang` (default `es`) picks which canonical name a resolved custom trade
  * is stored under. `users` carries no per-worker language column — it lives on

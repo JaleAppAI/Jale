@@ -86,8 +86,6 @@ export class DocumentsStack extends cdk.Stack {
       entry: path.join(__dirname, '../../lambda/api/worker-documents-dispatch.ts'),
       description: 'worker-documents-dispatch',
       environment: commonEnv,
-      // From the upload-url delegate; the other two bundle no extra SDK.
-      nodeModules: ['@aws-sdk/s3-request-presigner'],
       ...lambdaProps,
     });
 
@@ -121,7 +119,6 @@ export class DocumentsStack extends cdk.Stack {
       entry: path.join(__dirname, '../../lambda/api/worker-vault-dispatch.ts'),
       description: 'worker-vault-dispatch',
       environment: commonEnv,
-      nodeModules: ['@aws-sdk/s3-request-presigner'],
       ...lambdaProps,
     });
 
@@ -130,7 +127,6 @@ export class DocumentsStack extends cdk.Stack {
       entry: path.join(__dirname, '../../lambda/api/worker-documents-list.ts'),
       description: 'worker-documents-list',
       environment: commonEnv,
-      nodeModules: ['@aws-sdk/s3-request-presigner'],
       ...lambdaProps,
     });
 

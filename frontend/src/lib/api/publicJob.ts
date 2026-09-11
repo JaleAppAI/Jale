@@ -301,7 +301,6 @@ export async function getPublicJobsList(
       }
 
       if (!res.ok) {
-        // eslint-disable-next-line no-console
         console.error(JSON.stringify({ metric: 'PublicJobsListTruncated', status: res.status }));
         break;
       }

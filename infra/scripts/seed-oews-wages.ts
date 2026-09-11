@@ -8,7 +8,7 @@
  *
  * Usage:
  *   DB_HOST=<host> DB_PORT=5432 DB_NAME=jale DB_USER=jale_admin DB_PASSWORD=<pw> \
- *   npx ts-node scripts/seed-oews-wages.ts [--file <path>] [--dry-run]
+ *   npx tsx scripts/seed-oews-wages.ts [--file <path>] [--dry-run]
  *
  * Both tables are ENABLE + FORCE RLS with only a SELECT policy for
  * jale_admin (migration 071) -- no INSERT/UPDATE/DELETE policy exists

@@ -18,7 +18,7 @@ function synthPipeline(esVocabularyName?: string): { template: Template; stateMa
   const lambdaSg = new ec2.SecurityGroup(stack, 'LambdaSg', { vpc });
   const mediaBucket = new s3.Bucket(stack, 'MediaBucket');
   const completionHandler = new lambda.Function(stack, 'CompletionHandler', {
-    runtime: lambda.Runtime.NODEJS_20_X,
+    runtime: lambda.Runtime.NODEJS_24_X,
     handler: 'index.handler',
     code: lambda.Code.fromInline('exports.handler = async () => {};'),
   });

@@ -41,7 +41,9 @@ interface JobFormFieldsProps {
   /** Floor for the headcount input (edit modal passes hired_count). */
   minWorkers?: number;
   /** Lets the caller's Modal land initial focus on the title input. */
-  titleRef?: React.RefObject<HTMLInputElement>;
+  // Same React 19 shape as `Modal`'s `initialFocusRef` -- EditJobModal hands
+  // this the very same ref.
+  titleRef?: React.RefObject<HTMLInputElement | null>;
   /**
    * Rings the location field and explains that a city has to be PICKED, not
    * typed.

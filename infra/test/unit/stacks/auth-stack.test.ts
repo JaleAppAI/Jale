@@ -55,7 +55,7 @@ describe('AuthStack', () => {
 
   test('Post-confirmation Lambda function exists', () => {
     template.hasResourceProperties('AWS::Lambda::Function', {
-      Runtime: 'nodejs20.x',
+      Runtime: 'nodejs24.x',
     });
   });
 
@@ -181,7 +181,7 @@ describe('AuthStack', () => {
     });
   });
 
-  test('Employer CustomMessage Lambda: 5 s timeout, Node 20, no environment', () => {
+  test('Employer CustomMessage Lambda: 5 s timeout, Node 24, no environment', () => {
     // 5 s, not the construct's 30 s default: Cognito abandons a CustomMessage
     // trigger at 5 seconds. A longer timeout cannot rescue a slow render — it
     // only hides the failure mode behind a Lambda still running after Cognito
@@ -192,7 +192,7 @@ describe('AuthStack', () => {
     // deploy; declaring it here would let CDK re-assert a stale value.
     template.hasResourceProperties('AWS::Lambda::Function', {
       Description: Match.stringLikeRegexp('CustomMessage'),
-      Runtime: 'nodejs20.x',
+      Runtime: 'nodejs24.x',
       Timeout: 5,
       Environment: Match.absent(),
     });

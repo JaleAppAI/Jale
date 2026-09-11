@@ -74,7 +74,7 @@ jobs:
       JALE_WORKER_JOBS_RENAME_PHASE1: ${{ vars.JALE_WORKER_JOBS_RENAME_PHASE1 }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup infra dependencies
         uses: ./.github/actions/setup-node-cache
@@ -188,7 +188,7 @@ jobs:
 
       - name: Upload production plan artifacts
         if: env.AWS_PLAN_ROLE_ARN != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-cdk-plan
           path: |
@@ -245,7 +245,7 @@ jobs:
           fi
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Configure AWS deploy credentials
         uses: ./.github/actions/aws-oidc-login
@@ -378,7 +378,7 @@ jobs:
 
       - name: Upload deployment artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-deploy-artifacts
           path: |

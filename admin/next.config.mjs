@@ -1,8 +1,3 @@
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
 const securityHeaders = [
   { key: 'X-Frame-Options', value: 'DENY' },
   { key: 'X-Content-Type-Options', value: 'nosniff' },
@@ -36,17 +31,22 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
-  webpack: (config) => {
-    // amazon-cognito-identity-js imports { get, remove } from 'js-cookie' as
-    // named ESM exports, which no version of js-cookie actually provides.
-    // The admin app only uses CognitoUser / CognitoUserPool — never
-    // CookieStorage — so aliasing to a no-op shim silences the static
-    // named-export error without any behavioral change.
-    config.resolve.alias['js-cookie'] = path.resolve(
-      __dirname,
-      'src/lib/js-cookie-shim.mjs'
-    );
-    return config;
+  // amazon-cognito-identity-js imports { get, remove } from 'js-cookie' as
+  // named ESM exports, which no version of js-cookie actually provides. Under
+  // Next 14/webpack that was a hard build error, silenced by aliasing js-cookie
+  // to a no-op shim; Next 16 builds with Turbopack, which rejects a `webpack`
+  // key outright, so the alias moved here.
+  //
+  // Turbopack tree-shakes the only importer (CookieStorage — the admin app uses
+  // AuthenticationDetails / CognitoUser / CognitoUserPool and never
+  // CookieStorage) before resolving the specifier, so as of Next 16.3.4 this
+  // alias is inert: a build with a deliberately missing target still succeeds.
+  // It is kept as a guard so that a future code path reaching CookieStorage
+  // fails over to the shim instead of re-introducing the named-export error.
+  turbopack: {
+    resolveAlias: {
+      'js-cookie': './src/lib/js-cookie-shim.mjs',
+    },
   },
 };
 

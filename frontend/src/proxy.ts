@@ -12,9 +12,11 @@ const PUBLIC_PATTERNS = [
   /^\/legal\/privacy(?:\/[^/]+)?\/?$/,
 ];
 
+// next-intl's own helper is still called `createMiddleware`; only Next's
+// entrypoint was renamed, so this stays as it is.
 const intlMiddleware = createMiddleware({ locales, defaultLocale: 'en' });
 
-export default function middleware(request: NextRequest): NextResponse {
+export default function proxy(request: NextRequest): NextResponse {
   const { pathname } = request.nextUrl;
   if (PUBLIC_PATTERNS.some((p) => p.test(pathname))) {
     if (

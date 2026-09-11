@@ -368,7 +368,6 @@ export class ApiStack extends cdk.Stack {
         BEDROCK_MODEL_ID,
         ALLOWED_ORIGIN: allowedOrigin,
       },
-      nodeModules: ['@aws-sdk/client-bedrock-runtime'],
     });
     generationCapTable.grantReadWriteData(employerGenerateDescriptionLambda.function);
     employerGenerateDescriptionLambda.function.addToRolePolicy(
@@ -643,7 +642,6 @@ export class ApiStack extends cdk.Stack {
           ? { EMPLOYER_CANDIDATE_RERANK_QUEUE_URL: props.employerCandidateRerankQueue.queueUrl }
           : {}),
       },
-      nodeModules: ['@aws-sdk/client-sqs'],
     });
     props.dbSecret.grantRead(employerJobCandidatesLambda.function);
     props.employerCandidateRerankQueue?.grantSendMessages(employerJobCandidatesLambda.function);

@@ -352,7 +352,7 @@ describe('NotificationsStack', () => {
 
   it('uses LITERAL term patterns, never $.metric JSON patterns', () => {
     // A JSON filter pattern requires the whole log EVENT to parse as JSON.
-    // Node 20 Lambda's default TEXT log format prefixes every console line with
+    // Node 24 Lambda's default TEXT log format prefixes every console line with
     // `timestamp<TAB>requestId<TAB>LEVEL<TAB>`, so `{ $.metric = "..." }` never
     // matches and the alarm is silently disarmed. A quoted term matches the
     // substring inside the JSON.stringify output under BOTH log formats.

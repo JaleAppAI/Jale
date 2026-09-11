@@ -18,6 +18,11 @@ const program = ts.createProgram([sourcePath], {
   strict: true,
   skipLibCheck: true,
   noEmitOnError: true,
+  // TypeScript 6 no longer pulls every node_modules/@types package into a
+  // config-less program the way 5.x did, and this source imports node:crypto.
+  // Naming the one @types package it needs keeps the diagnostics assertion
+  // exactly as strict as before instead of hiding the unresolved import.
+  types: ['node'],
   outDir,
 });
 

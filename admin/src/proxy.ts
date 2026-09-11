@@ -10,13 +10,17 @@ const PUBLIC_PREFIXES = [
   '/favicon.ico',
 ];
 
-// SECURITY BOUNDARY NOTE: this middleware is a UX redirect layer ONLY. It checks
-// cookie *presence*, not JWT validity (Edge runtime can't run the full verifier
-// cheaply). The real auth/authz boundary is server-side: every data-loading page
-// and every server action MUST call requireAdminSession() (which verifies the
-// Cognito JWT) before reading or mutating. Do NOT add a page that relies on this
-// middleware for protection.
-export function middleware(request: NextRequest) {
+// SECURITY BOUNDARY NOTE: this proxy (Next 16's rename of the middleware
+// convention) is a UX redirect layer ONLY. It checks cookie *presence*, not JWT
+// validity. Next 16 runs the proxy on Node rather than the Edge runtime, so the
+// original reason for the split -- Edge could not run the Cognito verifier
+// cheaply -- no longer applies, but the design decision stands on its own: the
+// real auth/authz boundary is server-side, and every data-loading page and every
+// server action MUST call requireAdminSession() (which verifies the Cognito JWT)
+// before reading or mutating. Keeping verification in one place, next to the
+// data access it guards, is what makes it auditable. Do NOT add a page that
+// relies on this proxy for protection.
+export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   if (PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix))) {

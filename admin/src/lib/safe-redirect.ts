@@ -2,7 +2,7 @@
  * Returns a safe SAME-ORIGIN relative path, or '/' if the candidate could be an
  * open redirect. Accepts only paths that start with a single '/' and are not
  * protocol-relative ('//evil.com') or scheme-bearing ('https:...'). Used both
- * where the `next` param is written (middleware) and where it is consumed
+ * where the `next` param is written (the proxy) and where it is consumed
  * (login redirect) so an attacker-controlled `?next=` can never send an
  * authenticated admin off-site.
  */
