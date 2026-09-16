@@ -126,6 +126,96 @@ async function fillCanonicalTrades(
   }
 }
 
+/**
+ * `GET /worker/applications`' single SELECT. Exported so the real-PostgreSQL
+ * suites run the statement the handler runs (not a regex-lifted copy that
+ * drifts): `keysetParams` is 0 for a first page and 2 (`applied_at`, `id`)
+ * for a cursor page; the LIMIT is always the next bind position after them.
+ * RLS is what scopes it to the caller -- the statement carries no worker id.
+ */
+export function listApplicationsSql(keysetParams: 0 | 2): string {
+  const keyset = keysetParams === 2
+    ? ' WHERE (a.applied_at, a.id) < ($1::timestamptz, $2::uuid)'
+    : '';
+  const limitParam = keysetParams + 1;
+  return `SELECT a.id AS application_id, a.job_id,
+        CASE a.status
+          WHEN 'reviewed' THEN 'contacted'
+          WHEN 'rejected' THEN 'not_interested'
+          ELSE a.status
+        END AS status,
+        a.applied_at,
+        -- applied_at cast to text at full Postgres precision, for the
+        -- cursor ONLY (stripped from every row below). The pg driver
+        -- parses timestamptz into a JS Date, whose millisecond
+        -- resolution would truncate the microseconds -- and a truncated
+        -- cursor no longer compares strictly-less than the row that
+        -- produced it, so that row comes back on the next page.
+        a.applied_at::text AS cursor_applied_at,
+        a.details_requested_at,
+        a.details_completed_at,
+        -- 095 hire celebration. COALESCE, not a bare a.hired_at: a
+        -- worker hired in the window between migration 095 and this
+        -- code deploy has a NULL hired_at (nothing wrote it yet) and
+        -- must still get their celebration. updated_at is NOT NULL
+        -- (003), so the projected value is never null -- which is what
+        -- lets the response contract promise a non-null hire.hired_at.
+        -- Every historical hire was stamped by 095 itself, so this
+        -- fallback can never resurrect an old one.
+        COALESCE(a.hired_at, a.updated_at) AS hired_at,
+        a.hired_seen_at,
+        a.hired_ack_at,
+        j.title AS job_title,
+        employer_display_name(j.employer_id) AS company_name,
+        CASE WHEN j.status = 'paused' THEN 'closed' ELSE j.status END AS job_status,
+        -- 091 engine inputs. All of these are STRIPPED below: this list
+        -- publishes only the derived stage vocabulary, never the raw
+        -- answers or the job's requirement arrays.
+        a.application_answers, a.prompt_answers,
+        j.required_fields, j.optional_fields,
+        j.required_docs, j.optional_docs,
+        j.certification_requirements, j.pre_application_prompts,
+        -- The job facts the celebration repeats under "You've been
+        -- hired". Also stripped below, and published ONLY through the
+        -- hire object on a hired row. job_-prefixed so a strip that
+        -- misses one is obvious in the response rather than silently
+        -- shadowing an application column.
+        --
+        -- to_char, because jobs.start_date is a DATE: node-postgres parses a DATE
+        -- into a JS Date at LOCAL midnight, which JSON.stringify then
+        -- emits as a full ISO timestamp -- and, west of UTC, as the
+        -- PREVIOUS calendar day.
+        to_char(j.start_date, 'YYYY-MM-DD') AS job_start_date,
+        j.location AS job_location,
+        j.city AS job_city,
+        j.state AS job_state,
+        j.pay AS job_pay,
+        j.pay_min AS job_pay_min,
+        j.pay_max AS job_pay_max,
+        j.pay_interval AS job_pay_interval,
+        j.shift_schedule AS job_shift_schedule,
+        -- The trade the new copy names ("... te contrató como {trade}").
+        -- Raw on both counts: the 023 enum token is translated by the
+        -- client from its own catalogue, and the 077 free-text column is
+        -- canonicalised after the COMMIT below, not in SQL.
+        j.trade_category AS job_trade_category,
+        j.trade_category_other AS job_trade_category_other,
+        -- JOB-SCOPED, matching what 091's hire gate measures and what
+        -- the employer's own list reports. No document sync here: the
+        -- sync writes to FORCE-RLS worker_documents and this is a
+        -- read-only list.
+        ARRAY(
+          SELECT DISTINCT wd.doc_type
+            FROM worker_documents wd
+           WHERE wd.worker_id = a.worker_id
+             AND wd.job_id = a.job_id
+        ) AS have_docs
+ FROM job_applications a
+ JOIN jobs j ON j.id = a.job_id${keyset}
+ ORDER BY a.applied_at DESC, a.id DESC
+ LIMIT $${limitParam}`;
+}
+
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   let client;
   try {
@@ -180,93 +270,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // Keyset pagination on (applied_at, id) DESC: strictly-less on the TUPLE
     // is exactly "everything after the last row of the previous page", and is
     // what makes two applications sharing a timestamp safe.
-    let keyset = '';
-    if (cursor) {
-      params.push(cursor.appliedAt, cursor.id);
-      keyset = ` WHERE (a.applied_at, a.id) < ($${params.length - 1}::timestamptz, $${params.length}::uuid)`;
-    }
+    if (cursor) params.push(cursor.appliedAt, cursor.id);
     // One extra row, to learn whether a next page exists without a COUNT.
     params.push(limit + 1);
 
-    const result = await client.query(
-      `SELECT a.id AS application_id, a.job_id,
-              CASE a.status
-                WHEN 'reviewed' THEN 'contacted'
-                WHEN 'rejected' THEN 'not_interested'
-                ELSE a.status
-              END AS status,
-              a.applied_at,
-              -- applied_at cast to text at full Postgres precision, for the
-              -- cursor ONLY (stripped from every row below). The pg driver
-              -- parses timestamptz into a JS Date, whose millisecond
-              -- resolution would truncate the microseconds -- and a truncated
-              -- cursor no longer compares strictly-less than the row that
-              -- produced it, so that row comes back on the next page.
-              a.applied_at::text AS cursor_applied_at,
-              a.details_requested_at,
-              a.details_completed_at,
-              -- 095 hire celebration. COALESCE, not a bare a.hired_at: a
-              -- worker hired in the window between migration 095 and this
-              -- code deploy has a NULL hired_at (nothing wrote it yet) and
-              -- must still get their celebration. updated_at is NOT NULL
-              -- (003), so the projected value is never null -- which is what
-              -- lets the response contract promise a non-null hire.hired_at.
-              -- Every historical hire was stamped by 095 itself, so this
-              -- fallback can never resurrect an old one.
-              COALESCE(a.hired_at, a.updated_at) AS hired_at,
-              a.hired_seen_at,
-              a.hired_ack_at,
-              j.title AS job_title,
-              employer_display_name(j.employer_id) AS company_name,
-              CASE WHEN j.status = 'paused' THEN 'closed' ELSE j.status END AS job_status,
-              -- 091 engine inputs. All of these are STRIPPED below: this list
-              -- publishes only the derived stage vocabulary, never the raw
-              -- answers or the job's requirement arrays.
-              a.application_answers, a.prompt_answers,
-              j.required_fields, j.optional_fields,
-              j.required_docs, j.optional_docs,
-              j.certification_requirements, j.pre_application_prompts,
-              -- The job facts the celebration repeats under "You've been
-              -- hired". Also stripped below, and published ONLY through the
-              -- hire object on a hired row. job_-prefixed so a strip that
-              -- misses one is obvious in the response rather than silently
-              -- shadowing an application column.
-              --
-              -- to_char, because jobs.start_date is a DATE: node-postgres parses a DATE
-              -- into a JS Date at LOCAL midnight, which JSON.stringify then
-              -- emits as a full ISO timestamp -- and, west of UTC, as the
-              -- PREVIOUS calendar day.
-              to_char(j.start_date, 'YYYY-MM-DD') AS job_start_date,
-              j.location AS job_location,
-              j.city AS job_city,
-              j.state AS job_state,
-              j.pay AS job_pay,
-              j.pay_min AS job_pay_min,
-              j.pay_max AS job_pay_max,
-              j.pay_interval AS job_pay_interval,
-              j.shift_schedule AS job_shift_schedule,
-              -- The trade the new copy names ("... te contrató como {trade}").
-              -- Raw on both counts: the 023 enum token is translated by the
-              -- client from its own catalogue, and the 077 free-text column is
-              -- canonicalised after the COMMIT below, not in SQL.
-              j.trade_category AS job_trade_category,
-              j.trade_category_other AS job_trade_category_other,
-              -- JOB-SCOPED, matching what 091's hire gate measures and what
-              -- the employer's own list reports. No document sync here: the
-              -- sync writes to FORCE-RLS worker_documents and this is a
-              -- read-only list.
-              ARRAY(
-                SELECT DISTINCT wd.doc_type
-                  FROM worker_documents wd
-                 WHERE wd.worker_id = a.worker_id
-                   AND wd.job_id = a.job_id
-              ) AS have_docs
-       FROM job_applications a
-       JOIN jobs j ON j.id = a.job_id${keyset}
-       ORDER BY a.applied_at DESC, a.id DESC
-       LIMIT $${params.length}`,
-      params,
-    );
+    const result = await client.query(listApplicationsSql(cursor ? 2 : 0), params);
     await client.query('COMMIT');
 
     // The 'other' trades to canonicalise, collected as the rows are shaped.

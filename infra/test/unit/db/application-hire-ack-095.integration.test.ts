@@ -66,6 +66,7 @@ import { Client } from 'pg';
 
 import { setInternalUserRlsContext } from '../../../lambda/lib/db';
 import { buildHireSummary } from '../../../lambda/lib/application-hire-view';
+import { listApplicationsSql } from '../../../lambda/api/worker-applications-list';
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
 
@@ -78,9 +79,6 @@ const EMPLOYER_HANDLER_PATH = path.join(
 );
 const WORKER_HANDLER_PATH = path.join(
   INFRA_ROOT, 'lambda', 'api', 'worker-application-details.ts',
-);
-const LIST_HANDLER_PATH = path.join(
-  INFRA_ROOT, 'lambda', 'api', 'worker-applications-list.ts',
 );
 
 function urlForRole(baseUrl: string, user: string, password: string): string {
@@ -122,14 +120,14 @@ function hireAckSql(): { dismissed: string; seen: string } {
 }
 
 /**
- * `GET /worker/applications`' single SELECT, lifted out of its handler. It
- * takes no bind parameters -- RLS is what scopes it to the caller.
+ * `GET /worker/applications`' single SELECT, the one the handler actually
+ * runs. Sprint 26 (F26) made it a keyset-paged statement, so it is imported
+ * from the handler rather than regex-lifted: a copy that drifted from the real
+ * SQL is exactly what this suite must not test. First page: no cursor binds,
+ * `$1` is the LIMIT. RLS is what scopes it to the caller.
  */
 function listSql(): string {
-  const source = fs.readFileSync(LIST_HANDLER_PATH, 'utf8');
-  const match = source.match(/SELECT a\.id AS application_id[\s\S]*?LIMIT 200/);
-  expect(match).not.toBeNull();
-  return match![0];
+  return listApplicationsSql(0);
 }
 
 if (!databaseUrl) {
@@ -674,7 +672,7 @@ maybeDescribe('sprint 24: migration 095 stamps and grants the hire acknowledgeme
       await worker.query(`SELECT set_config('app.current_user_id', $1, true)`, [`s24-095-owner-${tag}`]);
       await setInternalUserRlsContext(worker, workerOwner);
 
-      const res = await worker.query<Record<string, any>>(sql);
+      const res = await worker.query<Record<string, any>>(sql, [200]);
       const byId = new Map(res.rows.map((row) => [row.application_id, row]));
       // RLS scoped it to this worker: the OTHER worker's application is absent.
       expect(byId.has(appOther)).toBe(false);
