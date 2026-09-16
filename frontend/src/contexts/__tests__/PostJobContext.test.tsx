@@ -182,18 +182,29 @@ describe('post a job from any employer page', () => {
         expect(screen.getByRole('link', { name: activeJob.title })).toBeInTheDocument();
     });
 
-    it('reads the plan once and opens straight from the cache afterwards', async () => {
+    it('asks again on every open, so a slot freed elsewhere is seen', async () => {
+        // The employer's one slot is taken: the first open is blocked.
+        getBilling.mockResolvedValue(freePlan);
         renderPage();
         fireEvent.click(postJobButton());
-        await waitFor(() => expect(screen.getByTestId('post-job-wizard')).toBeInTheDocument());
+        await waitFor(() =>
+            expect(screen.getByText(message('billing.limit_dialog.title'))).toBeInTheDocument());
+        fireEvent.click(screen.getByRole('button', { name: message('billing.limit_dialog.dismiss') }));
 
-        fireEvent.click(screen.getByRole('button', { name: 'publish' }));
-        await waitFor(() => expect(onCreated).toHaveBeenCalled());
+        /*
+         * They pause that job on the dashboard, or upgrade, and come back. The
+         * two numbers this gate turns on are BOTH changed from other pages, and
+         * nothing tells this context when that happened -- so a snapshot kept
+         * between opens would go on refusing an employer who has just made
+         * room (and, the other way round, would wave through one who no longer
+         * has any, straight into the 403 the gate exists to pre-empt).
+         */
+        getJobs.mockResolvedValue([{ ...activeJob, status: 'paused' }]);
         fireEvent.click(postJobButton());
 
-        // The posted job changed the answer the gate gives, so the snapshot the
-        // context owns is dropped and re-read rather than reused.
-        await waitFor(() => expect(getBilling).toHaveBeenCalledTimes(2));
+        await waitFor(() => expect(screen.getByTestId('post-job-wizard')).toBeInTheDocument());
+        expect(getJobs).toHaveBeenCalledTimes(2);
+        expect(getBilling).toHaveBeenCalledTimes(2);
     });
 
     it('reports into the page as it is NOW, not as it was when it subscribed', async () => {

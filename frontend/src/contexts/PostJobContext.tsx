@@ -39,8 +39,12 @@ import { activeJobsPreflightModel, type PlanLimitModel } from '@/lib/plan-limit'
  *  - a page already holding them (the dashboard) publishes them with
  *    `usePostJobSnapshot`, and the gate is then decided synchronously, with no
  *    request at all;
- *  - any other page causes ONE lazy fetch on the first open, cached for the
- *    session and invalidated whenever a job is created.
+ *  - any other page reads them on EVERY open. Deliberately not cached: the two
+ *    numbers the gate turns on both change from elsewhere -- pausing, closing
+ *    or deleting a job on another page frees a slot, upgrading a plan raises
+ *    the cap -- so a snapshot kept between opens would block an employer who
+ *    had just made room, or wave through one who no longer has any. A gate is
+ *    only worth having if it is answering about now.
  *
  * `activeCount` is derived from the jobs list on both paths, never from
  * `billing.activeJobUsage`: that field is a load-time snapshot, and pausing a
@@ -90,8 +94,6 @@ export function PostJobProvider({ children }: { children: ReactNode }) {
 
     /** A snapshot published by the page on screen, when it has one. */
     const pageSnapshotRef = useRef<PostJobSnapshot | null>(null);
-    /** The snapshot this context fetched itself, kept for the session. */
-    const fetchedSnapshotRef = useRef<PostJobSnapshot | null>(null);
     const listenersRef = useRef(new Set<JobCreatedListener>());
     /*
      * `Modal`'s own focus restore cannot see the control that opened the LIMIT
@@ -149,20 +151,20 @@ export function PostJobProvider({ children }: { children: ReactNode }) {
             openerRef.current =
                 document.activeElement instanceof HTMLElement ? document.activeElement : null;
 
-            const known = snapshot ?? pageSnapshotRef.current ?? fetchedSnapshotRef.current;
+            const known = snapshot ?? pageSnapshotRef.current;
             if (known || !idToken) {
-                // Synchronous whenever the answer is already known, so the
-                // wizard opens in the same frame as the click.
+                // Synchronous whenever the page on screen is already holding
+                // the answer, so the wizard opens in the same frame as the
+                // click. That page keeps its own snapshot current; this
+                // context has no way to learn that a stored one went stale,
+                // which is exactly why it stores none.
                 applySnapshot(known ?? null);
                 return;
             }
 
             setOpening(true);
             fetchSnapshot(idToken)
-                .then((fetched) => {
-                    fetchedSnapshotRef.current = fetched;
-                    applySnapshot(fetched);
-                })
+                .then(applySnapshot)
                 .finally(() => setOpening(false));
         },
         [applySnapshot, fetchSnapshot, idToken],
@@ -172,10 +174,6 @@ export function PostJobProvider({ children }: { children: ReactNode }) {
         (job: Job, outcome?: JobCreatedOutcome) => {
             setOpen(false);
             toast.success(t('jobs.post_success'));
-            // The new job changes the answer the gate gives, and this context
-            // cannot know what the page's own snapshot will do about it — so
-            // the one it owns is dropped and re-read on the next open.
-            fetchedSnapshotRef.current = null;
             for (const listener of listenersRef.current) listener(job, outcome);
         },
         [t, toast],

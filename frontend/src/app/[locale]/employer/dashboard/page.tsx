@@ -274,7 +274,7 @@ export default function EmployerDashboardPage() {
     );
 
     // Posted from this page's buttons or from any other employer page.
-    useJobCreated((job, outcome) => handleJobCreated(job, outcome));
+    useJobCreated(handleJobCreated);
 
     const recentJob = jobs[0];
     const timeToFillJob = jobs.find((job) =>
