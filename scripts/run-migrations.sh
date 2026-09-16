@@ -237,6 +237,7 @@ MIGRATIONS=(
   "093_worker_intent_outbox_defer.sql"
   "094_sprint24_data_backfills.sql"
   "095_application_hire_ack.sql"
+  "096_job_conversations_employer_read_backfill.sql"
 )
 
 WORKDIR="$(mktemp -d)"
