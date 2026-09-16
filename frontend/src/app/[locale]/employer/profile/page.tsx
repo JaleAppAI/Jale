@@ -5,6 +5,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { usePageData } from '@/hooks/usePageData';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { AppShell } from '@/components/layout/AppShell';
+import { PostJobButton } from '@/components/employer/PostJobButton';
 import { DashboardPanel } from '@/components/ui/dashboard-panel';
 import { PanelHeader } from '@/components/ui/panel-header';
 import { BadgeList } from '@/components/ui/badge-list';
@@ -118,7 +119,7 @@ export default function EmployerProfilePage() {
     );
 
     return (
-        <AppShell role="employer" title={tNav('nav.settings')}>
+        <AppShell role="employer" title={tNav('nav.settings')} actions={<PostJobButton />}>
             <main className="mx-auto max-w-5xl px-4 py-6 md:px-6">
                 {showSkeleton ? (
                     /* Same archetype, geometry AND props as `loading.tsx`, so the

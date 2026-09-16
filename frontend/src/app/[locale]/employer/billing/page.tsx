@@ -9,6 +9,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { usePageData } from '@/hooks/usePageData';
 import { AppShell } from '@/components/layout/AppShell';
+import { PostJobButton } from '@/components/employer/PostJobButton';
 import { Button } from '@/components/ui/button';
 import { DashboardPanel } from '@/components/ui/dashboard-panel';
 import { EmptyState } from '@/components/ui/empty-state';
@@ -222,7 +223,7 @@ export default function EmployerBillingPage() {
     const endsAtPeriodEnd = Boolean(billing?.subscription?.cancel_at_period_end);
 
     return (
-        <AppShell role="employer" title={t('title')}>
+        <AppShell role="employer" title={t('title')} actions={<PostJobButton />}>
             <div className="mx-auto max-w-3xl px-4 py-6 md:px-6">
                 {showSkeleton ? (
                     /* Same archetype and geometry as `loading.tsx`, so the route-level

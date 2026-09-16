@@ -9,6 +9,7 @@ import { AuthProvider } from "@/contexts/AuthContext";
 import { SidebarProfileProvider } from "@/contexts/SidebarProfileContext";
 import { ConversationDrawer } from "@/components/employer/ConversationDrawer";
 import { ToastProvider } from "@/components/ui/toast";
+import { PostJobProvider } from "@/contexts/PostJobContext";
 
 const lexend = Lexend({
   subsets: ["latin"],
@@ -78,9 +79,14 @@ export default async function RootLayout({
                 every navigation -- see SidebarProfileContext. */}
             <SidebarProfileProvider>
               <ToastProvider>
-                <Header />
-                {children}
-                <ConversationDrawer />
+                {/* Inside ToastProvider (it toasts a posted job) and outside
+                    the pages, so "Post a job" is reachable from every employer
+                    surface rather than only from the dashboard. */}
+                <PostJobProvider>
+                  <Header />
+                  {children}
+                  <ConversationDrawer />
+                </PostJobProvider>
               </ToastProvider>
             </SidebarProfileProvider>
           </AuthProvider>
