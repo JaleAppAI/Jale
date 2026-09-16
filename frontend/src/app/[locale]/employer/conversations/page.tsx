@@ -8,6 +8,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from '@/i18n/navigation';
 import { usePageData } from '@/hooks/usePageData';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
+import { useThreadReadReceipt } from '@/hooks/useThreadReadReceipt';
 import { AppShell } from '@/components/layout/AppShell';
 import { PostJobButton } from '@/components/employer/PostJobButton';
 import { Button } from '@/components/ui/button';
@@ -145,6 +146,20 @@ export default function EmployerConversationsPage() {
   });
 
   const { setData: setThreadData, refresh: refreshThread, refreshError: threadRefreshError } = thread;
+
+  /*
+   * Reading a thread here clears its badge everywhere (sprint 26, B3). The
+   * stamp comes from this page's own inbox row rather than from the loaded
+   * transcript: it is the same value the server derives `unread` from, and it
+   * is there before the thread request lands, so opening a thread writes one
+   * receipt instead of two. `active` is unconditional -- unlike the drawer,
+   * this page IS the surface; if a thread is selected it is on screen.
+   */
+  useThreadReadReceipt({
+    conversationId: selectedConversationId,
+    lastWorkerMessageAt: selectedItem?.last_worker_message_at ?? null,
+    active: true,
+  });
 
   const conversation = thread.data?.conversation ?? null;
   const messages = useMemo(() => thread.data?.messages ?? [], [thread.data]);
