@@ -418,6 +418,10 @@ describe('worker-application-details', () => {
   it.each([
     ['stage_locked', 'stage_locked'],
     ['closed', 'application_closed'],
+    // F2: a completed application is locked on the web too, not only on
+    // WhatsApp. The state rides along so the flow can render its read-only
+    // panel from the same response.
+    ['locked', 'application_locked'],
   ])('POST answers maps %s to 409 %s WITH the state, built before the rollback', async (reason, error) => {
     mockMergeFieldAnswers.mockResolvedValue({ ok: false, reason });
 
@@ -433,6 +437,16 @@ describe('worker-application-details', () => {
     expect(rollbackIndex).toBeGreaterThan(0);
     expect(calls[rollbackIndex - 1]).toMatch(/employer_display_name/);
     expect(calls).not.toContain('COMMIT');
+  });
+
+  it('POST certifications maps locked to 409 application_locked too -- the lock is per application, not per door', async () => {
+    mockMergeCertificationClaims.mockResolvedValue({ ok: false, reason: 'locked' });
+
+    const res = await handler(post('certifications', { certifications: [{ name: 'OSHA 30', has: true }] }));
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).error).toBe('application_locked');
+    expect(sqlCalls()).not.toContain('COMMIT');
   });
 
   // ── POST certifications / prompt-answers ────────────────────────────

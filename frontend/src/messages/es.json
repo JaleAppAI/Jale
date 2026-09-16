@@ -1155,7 +1155,8 @@
       "not_interested_body_no_company": "El empleador siguió con otros candidatos. Tu perfil guarda todo lo que ya contestaste para tu próxima postulación.",
       "view_job": "Ver el empleo",
       "view_applications": "Ver mis solicitudes",
-      "find_jobs": "Buscar otros empleos"
+      "find_jobs": "Buscar otros empleos",
+      "already_complete_note": "Tu postulación ya se envió. Contacta al empleador por WhatsApp para cambiarla."
     },
     "cert_question": "¿Tienes {name}?",
     "cert_use_vault": "Usar {file} de tu bóveda",

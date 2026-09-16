@@ -54,8 +54,11 @@ const WALKED_NAMESPACE_SIZES: Record<string, number> = {
     // 2026-09-08: the terminal panel gained `hired`, `hired_body`,
     // `hired_body_no_company`, `not_interested`, `not_interested_body`,
     // `not_interested_body_no_company` and `view_applications`, so a hired
-    // worker no longer lands on the closed-job copy.
-    worker_application_details: 80,
+    // worker no longer lands on the closed-job copy. 81 since sprint 26 (F2):
+    // `terminal.already_complete_note`, the line that tells a worker whose
+    // edit was refused with 409 `application_locked` to reach the employer on
+    // WhatsApp instead.
+    worker_application_details: 81,
     'worker_applications.details_banner': 9,
     'worker_job_detail.apply_flow': 14,
     'worker_job_detail.what_you_need': 19,

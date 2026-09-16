@@ -37,6 +37,7 @@ import {
 import {
   loadRequirementSnapshot,
   computeRemaining,
+  detailsLocked,
   mergeFieldAnswers,
   markDetailsCompleteIfDone,
   seedAnswersFromDefaults,
@@ -132,7 +133,9 @@ export function fillStepFor(snapshot: RequirementSnapshot | null): NextStep {
   if (snapshot.stage === 'apply') {
     return { kind: 'exit', reason: 'details_not_requested', uncollectable };
   }
-  if (snapshot.detailsCompletedAt) return { kind: 'complete', uncollectable };
+  // F2: the shared predicate, so this gate and the web door's `writeGate`
+  // can never drift apart on what "already sent" means.
+  if (detailsLocked(snapshot)) return { kind: 'complete', uncollectable };
 
   const fieldKey = remaining.fields[0];
   if (fieldKey !== undefined) {
@@ -1620,7 +1623,7 @@ async function applicationIsLocked(
   );
   const row = res.rows[0];
   if (!row) return true;
-  return Boolean(row.details_completed_at);
+  return detailsLocked({ detailsCompletedAt: row.details_completed_at });
 }
 
 /**

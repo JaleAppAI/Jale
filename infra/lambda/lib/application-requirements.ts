@@ -569,6 +569,8 @@ export type MergeFailureReason =
   | 'not_found'
   | 'closed'
   | 'stage_locked'
+  /** F2: the details stage is finished -- the employer already has it. */
+  | 'locked'
   | 'too_large'
   | 'certification_document_limit';
 
@@ -658,14 +660,38 @@ async function withSizeGuard(
 }
 
 /**
- * The lifecycle gate every stage-2 write shares. `closed` outranks
- * `stage_locked`: a hired or rejected application is finished, not "come
- * back when the employer asks".
+ * THE completion lock, stated once (F2).
+ *
+ * `details_completed_at` is the moment the employer got the application, and
+ * from then on it is not the worker's to edit. Three enforcers already read
+ * it and each had spelled the rule out for itself: `fillStepFor` (the
+ * WhatsApp step gate), `applicationIsLocked` (whatsapp/lib/application-fill),
+ * and `clearFieldAnswer`'s own `AND details_completed_at IS NULL` in SQL.
+ * `writeGate` -- the web door -- did not, which is the asymmetry F2 closes.
+ *
+ * A predicate rather than a copied `Boolean(...)`: the timestamp is what
+ * decides, never the literal `application_status` (an employer who moves a
+ * completed applicant to contacted/talking has not reopened anything), and
+ * that is the part worth having in one place.
+ */
+export function detailsLocked(snapshot: { detailsCompletedAt: unknown }): boolean {
+  return Boolean(snapshot.detailsCompletedAt);
+}
+
+/**
+ * The lifecycle gate every stage-2 write shares. `closed` outranks both
+ * `locked` and `stage_locked`: a hired or rejected application is finished,
+ * not "already sent" and not "come back when the employer asks".
+ *
+ * `locked` is scoped to `requireDetailsStage` on purpose. The prompt door
+ * passes false because pre-application prompts live in the APPLY stage and
+ * are write-once in SQL -- locking them on a details-stage timestamp would
+ * refuse a write that was never part of the details stage at all.
  */
 function writeGate(
   snapshot: RequirementSnapshot,
   { requireDetailsStage }: { requireDetailsStage: boolean },
-): { ok: false; reason: 'closed' | 'stage_locked' } | null {
+): { ok: false; reason: 'closed' | 'stage_locked' | 'locked' } | null {
   if (snapshot.applicationStatus === 'hired' || snapshot.applicationStatus === 'not_interested') {
     return { ok: false, reason: 'closed' };
   }
@@ -674,6 +700,9 @@ function writeGate(
   }
   if (requireDetailsStage && snapshot.stage === 'apply') {
     return { ok: false, reason: 'stage_locked' };
+  }
+  if (requireDetailsStage && detailsLocked(snapshot)) {
+    return { ok: false, reason: 'locked' };
   }
   return null;
 }
@@ -891,6 +920,11 @@ export async function mergePromptAnswers(
 ): Promise<MergePromptAnswersResult> {
   const snapshot = await loadRequirementSnapshot(client, applicationId);
   if (!snapshot) return { ok: false, reason: 'not_found' };
+  // `requireDetailsStage: false` leaves 'closed' as the ONLY reason this gate
+  // can return, so the collapse is exact rather than lossy -- but it is only
+  // exact while that stays true. A new details-stage reason (F2's 'locked')
+  // must keep its `requireDetailsStage` guard in `writeGate`, or it would be
+  // silently reported here as a closed application.
   const gated = writeGate(snapshot, { requireDetailsStage: false });
   if (gated) return { ok: false, reason: 'closed' };
 

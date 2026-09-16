@@ -152,6 +152,9 @@ describe('ApplicationRequirementsFlow — terminal panels', () => {
     renderFlow(serverState({ application: { details_completed_at: '2026-09-02T00:00:00Z' } }));
     expect(screen.getByText(message('worker_application_details.terminal.already_complete')))
       .toBeInTheDocument();
+    // F2: and it says WHY there is no way to edit, and where to go instead.
+    expect(screen.getByText(message('worker_application_details.terminal.already_complete_note')))
+      .toBeInTheDocument();
   });
 
   it('shows the not-requested panel before the employer asks', () => {
@@ -299,6 +302,37 @@ describe('ApplicationRequirementsFlow — saving field answers', () => {
     await waitFor(() => expect(
       screen.getByText(message('worker_application_details.terminal.closed')),
     ).toBeInTheDocument());
+  });
+
+  /**
+   * F2 (Luis ruling, sprint 26). The web door used to accept edits to an
+   * application the employer already had, while WhatsApp refused them. It now
+   * answers 409 `application_locked` with the fresh state -- which must land
+   * as the read-only panel plus the WhatsApp instruction, not as a thrown
+   * error page and not as an inline "something went wrong".
+   */
+  it('a 409 application_locked write renders the read-only panel and says to use WhatsApp', async () => {
+    const user = userEvent.setup();
+    postApplicationAnswers.mockResolvedValue({
+      kind: 'blocked',
+      reason: 'application_locked',
+      state: serverState({ application: { details_completed_at: '2026-09-02T00:00:00Z' } }),
+    });
+    renderFlow(withField);
+
+    await user.click(screen.getByRole('radio', { name: message('job_requirements.apply.yes') }));
+    await user.click(screen.getByRole('button', {
+      name: message('worker_application_details.continue_button'),
+    }));
+
+    await waitFor(() => expect(
+      screen.getByText(message('worker_application_details.terminal.already_complete')),
+    ).toBeInTheDocument());
+    expect(screen.getByText(message('worker_application_details.terminal.already_complete_note')))
+      .toBeInTheDocument();
+    // The form is gone: read-only means there is nothing left to submit.
+    expect(screen.queryByRole('radio', { name: message('job_requirements.apply.yes') }))
+      .not.toBeInTheDocument();
   });
 
   it('renders too_large as an inline error, not a thrown page', async () => {

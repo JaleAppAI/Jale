@@ -25,6 +25,12 @@ import type { TerminalScreen } from '@/lib/application-requirements-flow';
  * warning (the job is gone). `not_interested` and `not_requested` are plain
  * information -- an employer moving on is not an error the worker made.
  *
+ * `already_complete` carries one extra line (F2, sprint 26). It is the only
+ * screen a worker can reach by TRYING to do something -- the door answers 409
+ * `application_locked` on an edit to an application the employer already has
+ * -- so "nothing left to do" on its own reads as the app losing their work.
+ * The note names the one route that still reaches the employer: WhatsApp.
+ *
  * `closed` is the only screen whose sentence never names the employer; every
  * other body has a `_no_company` twin, because an orphaned job resolves
  * `company_name` to null and interpolating an empty string there leaves a
@@ -54,6 +60,9 @@ export function RequirementsTerminalPanel({
     <div className="anim-fade-in grid gap-4">
       <InlineFeedback tone={tone}>{t(screen)}</InlineFeedback>
       <p className="text-sm text-[var(--jale-ink-2)]">{body}</p>
+      {screen === 'already_complete' ? (
+        <p className="text-sm text-[var(--jale-ink-2)]">{t('already_complete_note')}</p>
+      ) : null}
 
       {screen === 'hired' ? (
         <Link href="/worker/applications">

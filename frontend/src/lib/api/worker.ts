@@ -603,10 +603,16 @@ export type ApplicationSaveResult =
   | { kind: 'invalid'; errors: Record<string, string> }
   /**
    * 409. The stage is not open (`stage_locked`: the employer has not asked
-   * for details yet) or the application is over (`application_closed`). Both
-   * carry the fresh state, so the caller re-renders without a second GET.
+   * for details yet), the application is over (`application_closed`), or it
+   * is already sent (`application_locked`, F2 -- the same lock WhatsApp has
+   * always applied). All three carry the fresh state, so the caller
+   * re-renders the matching terminal panel without a second GET.
    */
-  | { kind: 'blocked'; reason: 'stage_locked' | 'application_closed'; state: ApplicationRequirementsState }
+  | {
+    kind: 'blocked';
+    reason: 'stage_locked' | 'application_closed' | 'application_locked';
+    state: ApplicationRequirementsState;
+  }
   /**
    * `payload_too_large`, from EITHER status: 413 is the pre-DB body cap
    * (16 KB, measured before parsing) and 400 is the post-merge column
@@ -668,7 +674,11 @@ async function parseApplicationSaveResult(res: Response): Promise<ApplicationSav
     if (res.status === 409 && code === 'certification_document_limit') {
       return { kind: 'certification_document_limit' };
     }
-    if (res.status === 409 && (code === 'stage_locked' || code === 'application_closed') && state !== undefined) {
+    if (
+      res.status === 409
+      && (code === 'stage_locked' || code === 'application_closed' || code === 'application_locked')
+      && state !== undefined
+    ) {
       return { kind: 'blocked', reason: code, state };
     }
     // ONLY the bare `not_found`. A 404 `worker_not_found` means the session's
