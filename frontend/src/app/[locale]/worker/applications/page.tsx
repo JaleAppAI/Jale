@@ -162,6 +162,9 @@ export default function WorkerApplicationsPage() {
   // asking for the details it is still waiting on (B4.0 #7).
   const needingDetails = list.filter((a) => a.details_status === 'requested');
 
+  /** A count over a list that is not all in yet: "50+", not "50". */
+  const partial = (count: number) => (cursor ? `${count}+` : count);
+
   // ...and the same rows are lifted to the top of the list itself, so the one
   // application that needs the worker's hands is never buried under newer ones
   // they have nothing to do about. Counts above read `list`: the arithmetic is
@@ -212,10 +215,16 @@ export default function WorkerApplicationsPage() {
               </DashboardPanel>
             ) : (
               <>
+                {/* Counted off the rows that are LOADED, so while there is
+                    another page they are a floor, not a total -- "50" for a
+                    worker with eighty-seven applications is a false claim
+                    about their account, the same reason the error path hides
+                    these cards rather than zeroing them. The '+' is the whole
+                    fix: it reads identically in both locales and needs no key. */}
                 <div className="mb-5 grid gap-4 sm:grid-cols-3">
-                  <MetricCard label={t('stats.total')} value={totalCount} />
-                  <MetricCard label={t('stats.active')} value={activeCount} tone="teal" />
-                  <MetricCard label={t('stats.hired')} value={hiredCount} tone="green" />
+                  <MetricCard label={t('stats.total')} value={partial(totalCount)} />
+                  <MetricCard label={t('stats.active')} value={partial(activeCount)} tone="teal" />
+                  <MetricCard label={t('stats.hired')} value={partial(hiredCount)} tone="green" />
                 </div>
 
                 {/* ONE waiting application gets a top notice too, exactly as

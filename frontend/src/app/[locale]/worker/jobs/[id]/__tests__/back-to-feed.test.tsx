@@ -111,7 +111,17 @@ import WorkerJobDetailPage from '../page';
 
 const backLink = () => screen.getByRole('link', { name: message('worker_job_detail.back') });
 
+/**
+ * How many entries this tab's history holds. Stubbed rather than pushed:
+ * jsdom's history is shared by every test in the file and only ever grows, so
+ * a `pushState` in one test would silently decide the next one's answer.
+ */
+function historyEntries(count: number) {
+    vi.spyOn(window.history, 'length', 'get').mockReturnValue(count);
+}
+
 beforeEach(() => {
+    vi.restoreAllMocks();
     vi.clearAllMocks();
     sessionStorage.clear();
 });
@@ -134,6 +144,9 @@ describe('worker job detail — back to the feed', () => {
     it('goes back through history when the job was opened from the feed', () => {
         sessionStorage.setItem('jale.worker.feed-url', '/worker/home?q=drywall');
         sessionStorage.setItem('jale.worker.feed-origin', '1');
+        // The arrival itself: a tab that navigated here has an entry to go
+        // back TO, which is the other half of the condition.
+        historyEntries(2);
 
         renderIntl(<WorkerJobDetailPage />);
         fireEvent.click(backLink());
@@ -155,8 +168,23 @@ describe('worker job detail — back to the feed', () => {
         expect(back).not.toHaveBeenCalled();
     });
 
+    it('follows the link in a tab with nothing to go back to', () => {
+        // A ctrl-clicked tab INHERITS this tab's sessionStorage, marker and
+        // all, while its history holds one entry: `back()` there does nothing
+        // at all, which would make "Back to jobs" a dead link.
+        sessionStorage.setItem('jale.worker.feed-url', '/worker/home?q=drywall');
+        sessionStorage.setItem('jale.worker.feed-origin', '1');
+        historyEntries(1);
+
+        renderIntl(<WorkerJobDetailPage />);
+        fireEvent.click(backLink());
+
+        expect(back).not.toHaveBeenCalled();
+    });
+
     it('leaves a ctrl-click alone', () => {
         sessionStorage.setItem('jale.worker.feed-origin', '1');
+        historyEntries(2);
 
         renderIntl(<WorkerJobDetailPage />);
         fireEvent.click(backLink(), { ctrlKey: true });

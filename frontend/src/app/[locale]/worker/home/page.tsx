@@ -161,10 +161,10 @@ function JobRows({ jobs }: { jobs: Job[] }) {
       onAnimationEnd={onCascadeEnd}
     >
       {jobs.map((job) => (
-        /* The click is recorded on the ROW, which covers the card's link
-           however it was activated (pointer, Enter, middle-click-then-open):
-           it is what lets the job page's back link use history -- and so
-           restore the scroll position -- instead of a plain link. */
+        /* The click is recorded on the ROW, so it covers the card's link
+           whether it was tapped or opened with Enter: it is what lets the job
+           page's back link use history -- and so restore the scroll position
+           -- instead of a plain link. */
         <li key={job.id} onClick={markFeedOrigin}>
           <WorkerJobCard job={job} href={`/worker/jobs/${job.id}`} />
         </li>

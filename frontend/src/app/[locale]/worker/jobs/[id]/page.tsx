@@ -100,6 +100,10 @@ export default function WorkerJobDetailPage() {
    */
   const handleBackToFeed = useCallback((event: MouseEvent<HTMLAnchorElement>) => {
     if (!feedReturn.canGoBack) return;
+    // A tab opened from a ctrl-click INHERITS this tab's sessionStorage, so it
+    // carries the marker while having a history of exactly one entry --
+    // `back()` there does nothing at all and the link would be a dead end.
+    if (window.history.length <= 1) return;
     if (event.defaultPrevented || event.button !== 0) return;
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
