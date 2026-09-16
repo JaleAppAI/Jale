@@ -869,7 +869,8 @@
     },
     "templates": {
       "title": "Plantillas de empleo",
-      "meter": "{count} de {limit} plantillas",
+      "meter": "{count} guardadas · {limit} permitidas en su plan",
+      "meter_empty": "Aún no hay plantillas · {limit} permitidas en su plan",
       "meter_count": "{count} plantillas",
       "new": "Nueva plantilla",
       "limit_note": "Límite de plantillas alcanzado — mejore su plan para más",
