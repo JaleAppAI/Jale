@@ -251,9 +251,16 @@ export function usePostJobSnapshot(snapshot: PostJobSnapshot | null): void {
 }
 
 /**
- * Runs `onCreated` whenever a job is posted from anywhere in the app. The
- * listener is read through a ref, so a page may pass an inline closure without
- * re-subscribing on every render.
+ * Runs `onCreated` whenever a job is posted from anywhere in the app.
+ *
+ * The listener is read through a ref, so a page may pass an inline closure --
+ * the dashboard does -- without re-subscribing on every render. The ref is
+ * refreshed after EVERY commit (an inline closure has a new identity each
+ * render, so the sync effect's dependency always changes), which is what keeps
+ * the provider from holding the closure from the render that subscribed: the
+ * dashboard's listener branches on whether its list has loaded, and reporting
+ * a posted job into the pre-load closure would refetch the board instead of
+ * merging the new row into it. Covered by a test.
  */
 export function useJobCreated(onCreated: JobCreatedListener): void {
     const { subscribeJobCreated } = usePostJob();

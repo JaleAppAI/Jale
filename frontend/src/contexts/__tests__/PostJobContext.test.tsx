@@ -110,6 +110,25 @@ function ApplicantsLikePage() {
     return <PostJobButton />;
 }
 
+/**
+ * A page whose listener reads state that changes while the page is open --
+ * which the dashboard's does (`handleJobCreated` branches on whether its list
+ * has loaded yet, and merges into it). The subscription is registered once, so
+ * this is the thing that would go wrong: the provider holding the closure from
+ * the render that subscribed and reporting the job into a list that no longer
+ * exists.
+ */
+function PageWithMovingState() {
+    const [loaded, setLoaded] = React.useState(false);
+    useJobCreated(() => onCreated(loaded));
+    return (
+        <>
+            <PostJobButton />
+            <button type="button" onClick={() => setLoaded(true)}>load the list</button>
+        </>
+    );
+}
+
 function renderPage() {
     return renderIntl(
         <PostJobProvider>
@@ -175,6 +194,22 @@ describe('post a job from any employer page', () => {
         // The posted job changed the answer the gate gives, so the snapshot the
         // context owns is dropped and re-read rather than reused.
         await waitFor(() => expect(getBilling).toHaveBeenCalledTimes(2));
+    });
+
+    it('reports into the page as it is NOW, not as it was when it subscribed', async () => {
+        renderIntl(
+            <PostJobProvider>
+                <PageWithMovingState />
+            </PostJobProvider>,
+        );
+
+        // The list arrives after the subscription was registered.
+        fireEvent.click(screen.getByRole('button', { name: 'load the list' }));
+        fireEvent.click(postJobButton());
+        await waitFor(() => expect(screen.getByTestId('post-job-wizard')).toBeInTheDocument());
+        fireEvent.click(screen.getByRole('button', { name: 'publish' }));
+
+        await waitFor(() => expect(onCreated).toHaveBeenCalledWith(true));
     });
 
     it('opens without a gate when billing cannot be read at all', async () => {
