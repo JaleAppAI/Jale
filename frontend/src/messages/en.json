@@ -653,7 +653,6 @@
       "applicants_count": "{count, plural, one {# applicant} other {# applicants}}",
       "openings_count": "{open}/{total} open",
       "pay_range": "Pay range",
-      "pay_range_value": "${min}-${max}",
       "hired_progress": "Hiring progress",
       "hired_progress_value": "{hired}/{total} hired, {open} open",
       "not_specified": "Not specified",

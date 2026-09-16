@@ -653,7 +653,6 @@
       "applicants_count": "{count, plural, one {# candidato} other {# candidatos}}",
       "openings_count": "{open}/{total} abiertos",
       "pay_range": "Rango de pago",
-      "pay_range_value": "${min}-${max}",
       "hired_progress": "Progreso de contratación",
       "hired_progress_value": "{hired}/{total} contratados, {open} abiertos",
       "not_specified": "No especificado",

@@ -136,3 +136,53 @@ describe('JobPostingCard pause and resume', () => {
     expect(onDelete).toHaveBeenCalledWith(baseJob);
   });
 });
+
+/*
+ * The row's pay figure.
+ *
+ * It used to build "${min}-${max}" from a private key, which dropped the
+ * INTERVAL -- "$15-$20" on an employer's own board while the worker feed and
+ * the public page, both on `lib/pay.ts`, said "$15–$20/hr" for the same job.
+ * A rate without its unit is not a rate: the same two numbers describe an
+ * hourly job and a weekly one.
+ */
+describe('JobPostingCard pay', () => {
+  const meta = () => screen.getByText(/El Paso, TX/).textContent ?? '';
+
+  it('carries the interval, like every other surface that shows this job', () => {
+    renderIntl(
+      <JobPostingCard
+        job={job({ pay_min: 15, pay_max: 20, pay_interval: 'hourly' })}
+        href="/employer/jobs/job-1"
+      />,
+    );
+
+    expect(meta()).toContain('$15–$20/hr');
+  });
+
+  it('prefers the structured columns over the legacy English pay string', () => {
+    renderIntl(
+      <JobPostingCard
+        job={job({ pay: 'From $15', pay_min: 15, pay_max: 20, pay_interval: 'hourly' })}
+        href="/employer/jobs/job-1"
+      />,
+    );
+
+    expect(meta()).toContain('$15–$20/hr');
+    expect(meta()).not.toContain('From $15');
+  });
+
+  it('still shows the legacy string when the job has no structured pay', () => {
+    renderIntl(
+      <JobPostingCard job={job({ pay: 'Depends on experience' })} href="/employer/jobs/job-1" />,
+    );
+
+    expect(meta()).toContain('Depends on experience');
+  });
+
+  it('omits pay entirely when the job states none', () => {
+    renderIntl(<JobPostingCard job={job()} href="/employer/jobs/job-1" />);
+
+    expect(meta()).not.toContain('$');
+  });
+});
