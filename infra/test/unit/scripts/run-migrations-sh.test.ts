@@ -1,5 +1,9 @@
+import { execFileSync } from 'node:child_process';
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
+import * as zlib from 'node:zlib';
 
 const repoRoot = path.join(__dirname, '..', '..', '..', '..');
 const scriptPath = path.join(repoRoot, 'scripts', 'run-migrations.sh');
@@ -268,6 +272,163 @@ describe('run-migrations.sh', () => {
     // --rotate-secrets remains opt-in on its own; --skip-secrets never
     // implies or triggers rotation.
     expect(script).toContain('ROTATE_SECRETS=false');
+  });
+
+  /**
+   * F16. A data migration reports what it actually touched with `RAISE
+   * NOTICE` ("backfilled N rows"). psql writes notices to STDERR, and
+   * `run_on_bastion` only ever prints SSM's `StandardOutputContent` on a
+   * successful command -- `StandardErrorContent` is fetched only when the
+   * command FAILS. So every row count a migration raised was thrown away on
+   * exactly the runs that succeeded, which are the runs an operator needs
+   * them on.
+   *
+   * This test does not pin text: it RENDERS the real APPLY_ONE heredoc with
+   * the same shell that renders it in production, then EXECUTES the result
+   * against a stub psql that raises a notice, and asserts the notice reaches
+   * stdout. The old shape (`"${PG[@]}" -f /tmp/jale-mig.sql` with no
+   * redirection) lets that notice escape to the process's own stderr, where
+   * SSM would drop it -- so this fails on the pre-fix script.
+   */
+  it('surfaces a migration\'s RAISE NOTICE output on stdout, where SSM can return it', () => {
+    const script = readScript();
+
+    // The per-file apply block, verbatim, INCLUDING its `cat >> ... <<APPLY_ONE`
+    // opener and terminator -- rendered by bash itself so no substitution rule
+    // has to be re-implemented (and mis-implemented) here.
+    const emit = script.match(/(^ *cat >> "\$script" <<APPLY_ONE\n[\s\S]*?^APPLY_ONE$)/m);
+    expect(emit).not.toBeNull();
+
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'jale-mig-notice-'));
+    try {
+      const sql = 'SELECT 1;\n';
+      const b64 = zlib.gzipSync(Buffer.from(sql)).toString('base64');
+      const sum = crypto.createHash('sha256').update(sql).digest('hex');
+
+      // Stub psql: `-f <file>` is the migration apply and raises a NOTICE on
+      // stderr exactly as psql does; everything else (the ledger INSERT) is a
+      // silent success.
+      const stub = path.join(tmp, 'psql');
+      fs.writeFileSync(stub, [
+        '#!/bin/bash',
+        'for a in "$@"; do',
+        '  if [[ "$a" == "-f" ]]; then',
+        '    echo "NOTICE:  backfilled 42 rows" >&2',
+        '    echo "UPDATE 42"',
+        '    exit 0',
+        '  fi',
+        'done',
+        'exit 0',
+      ].join('\n') + '\n', { mode: 0o755 });
+
+      const rendered = path.join(tmp, 'rendered.sh');
+      const renderer = path.join(tmp, 'render.sh');
+      fs.writeFileSync(renderer, [
+        '#!/bin/bash',
+        'set -euo pipefail',
+        `f='095_data_backfill.sql'`,
+        `sum='${sum}'`,
+        `b64='${b64}'`,
+        `LEDGER_TABLE='public.schema_migrations'`,
+        `script='${rendered}'`,
+        emit![1],
+      ].join('\n') + '\n', { mode: 0o755 });
+      execFileSync('bash', [renderer], { stdio: 'pipe' });
+
+      // Run the rendered block the way the bastion would: `set -euo pipefail`
+      // plus the PG array the preamble defines. STDERR is deliberately NOT
+      // merged into stdout here -- that is the whole point: SSM returns
+      // StandardOutputContent, so the notice has to already be on stdout.
+      const runner = path.join(tmp, 'run.sh');
+      fs.writeFileSync(runner, [
+        '#!/bin/bash',
+        'set -euo pipefail',
+        `PG=('${stub}')`,
+        `source '${rendered}'`,
+      ].join('\n') + '\n', { mode: 0o755 });
+
+      const stdout = execFileSync('bash', [runner], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+
+      expect(stdout).toContain('-> 095_data_backfill.sql');
+      expect(stdout).toContain('NOTICE:  backfilled 42 rows');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+      fs.rmSync('/tmp/jale-mig.sql', { force: true });
+      fs.rmSync('/tmp/jale-mig.err', { force: true });
+    }
+  });
+
+  /**
+   * F16's other half: making notices visible must not cost the failure
+   * diagnosis. On a psql failure the captured stderr has to go BACK to
+   * stderr, because that is the only stream `run_on_bastion` reads
+   * (`StandardErrorContent`) when a command ends Failed.
+   */
+  it('still reports a failed migration on stderr, where SSM reads it on failure', () => {
+    const script = readScript();
+
+    const emit = script.match(/(^ *cat >> "\$script" <<APPLY_ONE\n[\s\S]*?^APPLY_ONE$)/m);
+    expect(emit).not.toBeNull();
+
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'jale-mig-fail-'));
+    try {
+      const sql = 'SELECT 1;\n';
+      const b64 = zlib.gzipSync(Buffer.from(sql)).toString('base64');
+      const sum = crypto.createHash('sha256').update(sql).digest('hex');
+
+      const stub = path.join(tmp, 'psql');
+      fs.writeFileSync(stub, [
+        '#!/bin/bash',
+        'for a in "$@"; do',
+        '  if [[ "$a" == "-f" ]]; then',
+        '    echo "ERROR:  relation \\"nope\\" does not exist" >&2',
+        '    exit 3',
+        '  fi',
+        'done',
+        'exit 0',
+      ].join('\n') + '\n', { mode: 0o755 });
+
+      const rendered = path.join(tmp, 'rendered.sh');
+      const renderer = path.join(tmp, 'render.sh');
+      fs.writeFileSync(renderer, [
+        '#!/bin/bash',
+        'set -euo pipefail',
+        `f='095_data_backfill.sql'`,
+        `sum='${sum}'`,
+        `b64='${b64}'`,
+        `LEDGER_TABLE='public.schema_migrations'`,
+        `script='${rendered}'`,
+        emit![1],
+      ].join('\n') + '\n', { mode: 0o755 });
+      execFileSync('bash', [renderer], { stdio: 'pipe' });
+
+      const runner = path.join(tmp, 'run.sh');
+      fs.writeFileSync(runner, [
+        '#!/bin/bash',
+        'set -euo pipefail',
+        `PG=('${stub}')`,
+        `source '${rendered}'`,
+      ].join('\n') + '\n', { mode: 0o755 });
+
+      let failed = false;
+      let stderr = '';
+      try {
+        execFileSync('bash', [runner], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      } catch (err: any) {
+        failed = true;
+        stderr = String(err.stderr ?? '');
+      }
+
+      // A failing migration must still abort the remote script (non-zero) and
+      // the reason must be on stderr.
+      expect(failed).toBe(true);
+      expect(stderr).toContain('ERROR:');
+      expect(stderr).toContain('does not exist');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+      fs.rmSync('/tmp/jale-mig.sql', { force: true });
+      fs.rmSync('/tmp/jale-mig.err', { force: true });
+    }
   });
 
   it('lists every migration on disk, in sorted order', () => {
