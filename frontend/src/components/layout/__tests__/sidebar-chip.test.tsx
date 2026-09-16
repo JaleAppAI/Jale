@@ -24,7 +24,12 @@ vi.mock('@/i18n/navigation', () => ({
 }));
 
 /** Mutable so a test can rotate the token or sign the session out mid-render. */
-const authState = { idToken: 'token-1' as string | null, isAuthenticated: true, logout: vi.fn() };
+const authState = {
+    idToken: 'token-1' as string | null,
+    isAuthenticated: true,
+    isLoading: false,
+    logout: vi.fn(),
+};
 vi.mock('@/contexts/AuthContext', () => ({ useAuth: () => authState }));
 
 const apiFetch = vi.fn();
@@ -57,6 +62,7 @@ beforeEach(() => {
     sessionStorage.clear();
     authState.idToken = 'token-1';
     authState.isAuthenticated = true;
+    authState.isLoading = false;
     apiFetch.mockResolvedValue(workerProfileResponse());
 });
 
@@ -114,6 +120,28 @@ describe('sidebar profile chip', () => {
         await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(2));
         expect(screen.getByText('David Ramos')).toBeInTheDocument();
         expect(screen.queryByText(message('app_shell.worker_role'))).not.toBeInTheDocument();
+    });
+
+    it('keeps the cache through a role switch, which masks the session without ending it', async () => {
+        const { rerender } = renderIntl(shell());
+        await waitFor(() => expect(screen.getByText('David Ramos')).toBeInTheDocument());
+        expect(sessionStorage.getItem(CHIP_KEY)).not.toBeNull();
+
+        // AuthContext re-reading the other role's slot: tokens masked, still loading.
+        authState.idToken = null;
+        authState.isAuthenticated = false;
+        authState.isLoading = true;
+        rerender(shell('switching'));
+
+        // The seed survives; the next reload on a worker page paints the name, not "W".
+        expect(sessionStorage.getItem(CHIP_KEY)).not.toBeNull();
+
+        authState.idToken = 'token-1';
+        authState.isAuthenticated = true;
+        authState.isLoading = false;
+        rerender(shell('back'));
+        await waitFor(() => expect(screen.getByText('David Ramos')).toBeInTheDocument());
+        expect(apiFetch).toHaveBeenCalledTimes(1);
     });
 
     it('drops the cache when the session ends', async () => {

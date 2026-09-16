@@ -123,7 +123,7 @@ const ROLES: readonly ShellRole[] = ['worker', 'employer'];
 const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
 export function SidebarProfileProvider({ children }: { children: ReactNode }) {
-    const { idToken, isAuthenticated } = useAuth();
+    const { idToken, isAuthenticated, isLoading } = useAuth();
     const tCommon = useTranslations('common');
     const locale = useLocale();
 
@@ -182,8 +182,17 @@ export function SidebarProfileProvider({ children }: { children: ReactNode }) {
     // Signing out drops the cache with the session. The storage side is cleared
     // by `AuthContext.clearSession` (synchronously, so `logout`'s navigation
     // cannot race it); this is the in-memory half, for the same event.
+    //
+    // `!isLoading` is what tells a sign-out apart from a ROLE SWITCH. While the
+    // session is being re-read for the other role (worker page -> employer
+    // page in a browser signed in as both), AuthContext masks the tokens and
+    // reports `isAuthenticated: false` with `isLoading: true`. That is not the
+    // session ending -- both roles are still signed in -- and wiping the seed
+    // here would repaint the bare role letter on the next reload, the very bug
+    // this provider exists to prevent.
     const wasAuthenticatedRef = useRef(isAuthenticated);
     useEffect(() => {
+        if (isLoading) return;
         if (wasAuthenticatedRef.current && !isAuthenticated) {
             requestedRef.current = {};
             for (const role of ROLES) abortRef.current[role]?.abort();
@@ -192,7 +201,7 @@ export function SidebarProfileProvider({ children }: { children: ReactNode }) {
             clearSidebarChips();
         }
         wasAuthenticatedRef.current = isAuthenticated;
-    }, [isAuthenticated]);
+    }, [isAuthenticated, isLoading]);
 
     const chipFor = useCallback(
         (role: ShellRole): SidebarChip => {
