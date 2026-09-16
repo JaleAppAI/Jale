@@ -170,7 +170,18 @@ export function UnreadMessagesProvider({ children }: { children: ReactNode }) {
                 // The stamp did not land, so the thread IS still unread. Put
                 // it back rather than leaving a badge that lies in the
                 // reassuring direction; the next poll settles it either way.
-                if (wasUnread) setData((prev) => withUnread(prev, conversationId, true));
+                //
+                // Guarded on the flag still being CLEAR: a poll that landed
+                // between the optimistic write and this refusal has already
+                // re-counted the thread, and an unconditional +1 would then
+                // count it twice.
+                if (!wasUnread) return;
+                setData((prev) => {
+                    const stillCleared = prev?.items.some(
+                        (item) => item.conversation_id === conversationId && !item.unread,
+                    );
+                    return stillCleared ? withUnread(prev, conversationId, true) : prev;
+                });
             });
         },
         [setData],

@@ -51,12 +51,19 @@ import type { EmployerConversationResponse, InboxItem } from '@/lib/api/employer
  *  - one inbox read for the session, rather than a second list endpoint polled
  *    beside it.
  *
- * What the list CONTAINS is unchanged: open threads, newest first (the server
- * already orders the inbox that way). The selected item is looked up in the
- * FULL item set, not the filtered list, which is exactly how the conversations
- * page separates "what the list shows" from "what is open" -- and it is what
- * lets an applicant with no thread yet be opened without appearing in a list
- * of conversations that do not exist.
+ * The list still shows open threads, newest first (the server already orders
+ * the inbox that way), with ONE deliberate difference: the inbox excludes
+ * applications the employer has dismissed (`ja.status <> 'not_interested'`),
+ * so an open thread with a dismissed applicant no longer appears here. That is
+ * the wanted reading of "not interested" -- the conversations board has said
+ * the same thing since the inbox shipped -- rather than an accident of the new
+ * source. (The inbox is also capped at 200 rows; the drawer is a recent-threads
+ * panel, not an archive, and the board is the full surface.)
+ *
+ * The selected item is looked up in the FULL item set, not the filtered list,
+ * which is exactly how the conversations page separates "what the list shows"
+ * from "what is open" -- and it is what lets an applicant with no thread yet be
+ * opened without appearing in a list of conversations that do not exist.
  *
  * Send and close follow the same contract as the conversations page, because
  * both surfaces render the same `ConversationThread`: `onSend`/`onClose`

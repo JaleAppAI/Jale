@@ -5,6 +5,7 @@ import { useFormatter, useNow, useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import { useUnreadMessages } from '@/contexts/UnreadMessagesContext';
 import { DashboardPanel } from '@/components/ui/dashboard-panel';
+import { ErrorState } from '@/components/ui/error-state';
 import { PanelHeader } from '@/components/ui/panel-header';
 import { Skeleton, SkeletonLine } from '@/components/ui/skeleton';
 import { UnreadBadge } from '@/components/layout/UnreadBadge';
@@ -60,7 +61,7 @@ export function LatestMessagePanel({ fallbackJobTitle }: { fallbackJobTitle: str
      * produce two different phrases for the same message.
      */
     const now = useNow();
-    const { items, loading, unreadCount } = useUnreadMessages();
+    const { errorKind, items, loading, retry, unreadCount } = useUnreadMessages();
 
     const latest = useMemo(() => newestMessage(items), [items]);
 
@@ -87,6 +88,11 @@ export function LatestMessagePanel({ fallbackJobTitle }: { fallbackJobTitle: str
                         <SkeletonLine width="w-1/3" tone="paper" />
                         <Skeleton className="h-3 w-3/4" />
                     </div>
+                ) : errorKind ? (
+                    /* NOT the empty state. "We could not read your inbox" and
+                       "nothing is waiting for you" are opposite claims, and
+                       only one of them is safe to guess at. */
+                    <ErrorState kind={errorKind} onRetry={retry} compact />
                 ) : latest ? (
                     <>
                         <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">

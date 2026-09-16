@@ -210,13 +210,18 @@ export function ApplicantOverviewRow({ item }: { item: ApplicantOverviewItem }) 
         <div className="w-40">
           {/* The label is the accessible name, not a visible one: the row is a
               scan surface and a "Status" caption over every select would
-              triple the vertical space it costs. */}
+              triple the vertical space it costs.
+
+              No size override: the primitive's 44px minimum is the touch
+              target this control needs on the phone where this list is read,
+              and `Select` joins class strings rather than merging them -- a
+              competing `min-h` would be settled by stylesheet order, not by
+              this call site. */}
           <Select
             aria-label={t('status_label')}
             value={status}
             disabled={saving || !idToken}
             onChange={(event) => void handleStatusChange(event.target.value as ApplicationStatus)}
-            className="min-h-[36px] py-1.5 text-xs"
           >
             {statusSelectOptions(status).map((option) => (
               <option key={option} value={option}>

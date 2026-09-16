@@ -23,12 +23,13 @@ let unreadState: {
     items: import('@/lib/api/employer').InboxItem[];
     unreadCount: number;
     loading: boolean;
+    errorKind?: 'offline' | 'server' | null;
 };
 vi.mock('@/contexts/UnreadMessagesContext', () => ({
     useUnreadMessages: () => ({
-        ...unreadState,
         unreadByConversation: {},
         errorKind: null,
+        ...unreadState,
         retry: vi.fn(),
         refresh: vi.fn(),
         markRead: vi.fn(),
@@ -163,6 +164,17 @@ describe('LatestMessagePanel', () => {
         renderIntl(<LatestMessagePanel fallbackJobTitle={null} />);
 
         expect(screen.getByText(message('employer_dashboard.panels.no_recent_job'))).toBeInTheDocument();
+    });
+
+    it('says the inbox could not be read rather than that it is empty', () => {
+        unreadState = { items: [], unreadCount: 0, loading: false, errorKind: 'offline' };
+
+        renderIntl(<LatestMessagePanel fallbackJobTitle="Drywall Finisher" />);
+
+        // "We could not read your inbox" and "nothing is waiting for you" are
+        // opposite claims, and only one of them is safe to guess at.
+        expect(screen.queryByText(message('employer_dashboard.panels.whatsapp_body'))).not.toBeInTheDocument();
+        expect(screen.getByText(message('common.error_state.offline_title'))).toBeInTheDocument();
     });
 
     it('shows placeholders rather than an empty state while the inbox loads', () => {
