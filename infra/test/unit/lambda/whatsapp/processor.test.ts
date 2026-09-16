@@ -1552,6 +1552,7 @@ describe('Processor Lambda', () => {
     // exit test.
     function mockFillSnapshotRow(
       row: Partial<{
+        id: string;
         worker_id: string; job_id: string; application_status: string;
         application_answers: Record<string, unknown>; job_status: string;
         required_fields: string[]; required_docs: string[]; optional_docs: string[];
@@ -3373,6 +3374,12 @@ describe('Processor Lambda', () => {
       // application-fill.test.ts's own exhaustive coverage of
       // `resolveOfferOnlyTurn`) arms the offered application and prompts its
       // first gap on an affirmative reply.
+      //
+      // F1 (sprint 26): that arm now runs through `armFill` like every other
+      // entry point, so the query sequence below is `handleApplicationStart`'s
+      // -- an unsynced ownership load, the `intro_profile_check`
+      // announcement, the seed, the arm write, the post-seed counts, the
+      // counted intro -- and only then the first question.
       it('the seam fires when only fill_offer_application_id is set: "1" arms the offered application and prompts its first gap', async () => {
         mockQuery
           .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
@@ -3388,8 +3395,15 @@ describe('Processor Lambda', () => {
             })],
           })
           .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // v2 forced-idle writeback
-        mockStateContextUpdate(); // resolveOfferOnlyTurn's accept write (offer cleared, fill_application_id armed)
-        mockFillSnapshotRow({ required_fields: ['work_authorization'], application_answers: {} }); // promptNextStep's re-derive
+        mockStateContextUpdate(); // resolveOfferOnlyTurn clears the offer key on its own
+        mockFillSnapshotRow({ id: 'app-2', required_fields: ['work_authorization'], application_answers: {} }); // the UNSYNCED ownership load
+        mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox: intro_profile_check
+        mockSeedNoDefaults();
+        mockStateContextUpdate(); // armFill's arm write
+        mockFillSnapshotRow({ id: 'app-2', required_fields: ['work_authorization'], application_answers: {} }); // armFill's post-seed counts
+        mockCompanyLookup('ABC');
+        mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox: counted intro
+        mockFillSnapshotRow({ id: 'app-2', required_fields: ['work_authorization'], application_answers: {} }); // promptNextStep's re-derive
         mockStateContextUpdate(); // fill_last_prompt_at stamp
         mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox: first field question
         mockQuery
@@ -3411,12 +3425,17 @@ describe('Processor Lambda', () => {
           {} as any,
         );
 
-        // The offer was consumed and turned into an armed fill in ONE write.
+        // The offer was consumed and the lane armed on the offered id.
         const armWrite = stateContextUpdates().find((sc) => sc.fill_application_id === 'app-2');
         expect(armWrite).toBeDefined();
         expect(armWrite?.fill_offer_application_id).toBeNull();
 
-        expect(outboxBodies()).toContain(fieldQuestion('work_authorization', 'en'));
+        // F1: the announcement `armFill` enforces precedes the questions --
+        // the worker is TOLD their profile is about to be used.
+        const bodies = outboxBodies();
+        expect(bodies[0]).toBe(fillMessage('intro_profile_check', 'en'));
+        expect(bodies).toContain(fillMessage('intro', 'en', { company: 'ABC', n_fields: '1', n_docs: '0' }));
+        expect(bodies).toContain(fieldQuestion('work_authorization', 'en'));
 
         // Regression guard (Task 11 review, Critical): the outbox assertion
         // above alone does NOT catch a stale `ctx.stateContext` -- the mock
@@ -3432,8 +3451,13 @@ describe('Processor Lambda', () => {
         const computeNextStepCalls = mockQuery.mock.calls.filter(
           ([sql]) => /FROM job_applications ja JOIN jobs j/i.test(sql as string),
         );
-        expect(computeNextStepCalls).toHaveLength(1);
-        expect(computeNextStepCalls[0][1]).toEqual(['app-2']);
+        // Three snapshot loads now: the unsynced ownership load, armFill's
+        // post-seed synced load, and promptNextStep's re-derive. EVERY one of
+        // them must carry the offered id.
+        expect(computeNextStepCalls).toHaveLength(3);
+        for (const call of computeNextStepCalls) {
+          expect(call[1]).toEqual(['app-2']);
+        }
       });
 
       // ── F1 (sprint 24, BLOCKER): the LISTO gate holds at the tail ──────

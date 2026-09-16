@@ -1305,11 +1305,13 @@ export type ArmFillOutcome =
   | { armed: false; reason: FillExitReason };
 
 /**
- * THE one place stage 2 is armed (sprint 23). Three entry points share it --
+ * THE one place stage 2 is armed (sprint 23). Four entry points share it --
  * the `application:start:app-<uuid>` button on the details-requested
- * template, a pick from the `aplicaciones` list, and the idle fallback --
- * and nothing else may arm the lane. In particular the job-accept path no
- * longer does: at accept time the employer has not asked for anything.
+ * template, a pick from the `aplicaciones` list, the idle fallback, and
+ * (sprint 26, F1) an accepted continue-other offer via
+ * `resolveOfferOnlyTurn` -- and nothing else may arm the lane. In particular
+ * the job-accept path no longer does: at accept time the employer has not
+ * asked for anything.
  *
  * Order (each step depends on the previous):
  *   1. gate on the CALLER's already-loaded snapshot. An apply-stage or
@@ -2396,12 +2398,33 @@ async function handleFieldStep(
  * key being set (spec amendment), and this is what handles the "only the
  * offer key is set" half of that gate. Exactly two outcomes, per the brief:
  *   - '1' / '1 si' / bare 'si' / 'yes' (i.e. `parseFillConfirmation` ===
- *     'yes') arms `fill_application_id` with the offered id, clears the
- *     offer key in the SAME write, and prompts that application's first gap
- *     -- via `promptNextStep`, which re-derives through `computeNextStep`
- *     rather than trusting the offer's snapshot, since the offered
- *     application may have gone stale (lifecycle-exited, or completed via
- *     another channel) between the offer and this reply.
+ *     'yes') clears the offer key and hands the offered application to
+ *     `armFill`, which is the ONLY thing allowed to arm stage 2.
+ *
+ *     F1 (sprint 26). This branch used to arm `fill_application_id` by hand
+ *     and call `promptNextStep`, which skipped every guarantee `armFill`
+ *     makes: the `intro_profile_check` announcement, the seed, the
+ *     `reuse_summary`, and -- the reason this is a blocker -- branch (f)'s
+ *     consent gate. `promptNextStep`'s synced load copies the worker's vault
+ *     documents into the just-armed application, so an application that
+ *     those documents alone complete read `complete` on the very next step
+ *     and `sendCompletionPrompt` sent it to the employer in the same turn.
+ *     That is the 2026-09-04 incident, reached through the offer instead of
+ *     through Start: a worker with two open detail requests who accepted the
+ *     second had it filled from their profile and submitted without ever
+ *     being told, let alone agreeing.
+ *
+ *     The offer key is cleared FIRST, in its own write, precisely because
+ *     `armFill` returns BEFORE its arm write (the write whose `FILL_SCRUB`
+ *     would have cleared the key) whenever the lifecycle gate refuses --
+ *     leaving the offer armed would re-ask on every later turn. The snapshot
+ *     is loaded UNSYNCED and ownership-checked before any write, the same
+ *     contract `handleApplicationStart` documents; `armFill` does its own
+ *     synced load once the id is proven ours. A refusal is answered with the
+ *     reason-mapped exit copy, since `armFill` leaves that to its caller.
+ *     Re-deriving from a fresh snapshot rather than trusting the offer's own
+ *     is kept: the offered application may have gone stale (lifecycle-exited,
+ *     or completed via another channel) between the offer and this reply.
  *   - ANY other input (decline, stray text, a button/list payload, or a
  *     media turn -- `msg.body` is `undefined`/empty for all of the latter,
  *     which `parseFillConfirmation` already treats as non-'yes') clears the
@@ -2420,12 +2443,27 @@ async function resolveOfferOnlyTurn(
   if (typeof offerId !== 'string') return { handled: false };
 
   if (parseFillConfirmation(msg.body ?? '') === 'yes') {
-    await deps.updateStateContext(client, ctx.conversationId, {
-      fill_offer_application_id: null,
-      fill_application_id: offerId,
-    });
+    // Cleared on its own, and first -- see this function's jsdoc: `armFill`
+    // scrubs this key too, but only in a write it never reaches when the
+    // lifecycle gate refuses.
+    await deps.updateStateContext(client, ctx.conversationId, { fill_offer_application_id: null });
+
+    const snapshot = await loadRequirementSnapshot(client, offerId);
+    if (!snapshot || snapshot.workerId !== ctx.workerId) {
+      // The offer id is one WE minted from this worker's own rows
+      // (`findContinueOtherOffer`), so a mismatch means the row went away
+      // under us, not that anybody guessed an id. Answered like any other
+      // vanished application.
+      logStep('offer', 'gone');
+      await sendExitPrompt(client, ctx, msg.messageSid, msg.from, deps, 'application_gone');
+      return { handled: true };
+    }
+
     logStep('offer', 'accepted');
-    await promptNextStep(client, ctx, msg.messageSid, msg.from, deps);
+    const outcome = await armFill(client, ctx, snapshot, msg.messageSid, msg.from, deps);
+    if (!outcome.armed) {
+      await sendExitPrompt(client, ctx, msg.messageSid, msg.from, deps, outcome.reason);
+    }
     return { handled: true };
   }
 
