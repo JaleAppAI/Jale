@@ -179,6 +179,9 @@ const SUITE_HIRE_ACK_095 = 'test/unit/db/application-hire-ack-095.integration.te
 // SAVEPOINT. Removing that savepoint fails five of the suite's eight cases
 // with 25P02, which in production is a successful answer merge answering 500.
 const SUITE_WEB_COMPLETION = 'test/unit/db/application-web-completion.integration.test.ts';
+// Sprint 26 T3a — the employer unread badge's mark-read UPDATE and the inbox
+// unread derivation against the real job_conversations policies.
+const SUITE_EMPLOYER_CONVERSATION_READ = 'test/unit/db/employer-conversation-read.integration.test.ts';
 
 // The guard must fail closed regardless of the ambient environment. The final
 // verification battery exports JALE_TEST_DATABASE_URL to run the guarded
@@ -213,6 +216,7 @@ describe('test:whatsapp-v2-db fail-closed URL guard', () => {
       SUITE_BACKFILLS_094,
       SUITE_HIRE_ACK_095,
       SUITE_WEB_COMPLETION,
+      SUITE_EMPLOYER_CONVERSATION_READ,
     ]);
     // The deregistered migration-052 suite must be gone from the script
     // entirely -- including from any tombstone comment, which this file's own

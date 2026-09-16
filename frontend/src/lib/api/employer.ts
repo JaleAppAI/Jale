@@ -430,6 +430,15 @@ export type InboxItem = {
   last_worker_message_at: string | null;
   last_message_preview: string | null;
   tab: InboxTab;
+  /**
+   * The worker has written and the employer has not marked the thread read
+   * since. Computed server-side (`infra/lambda/lib/employer-inbox.ts`) from
+   * `last_worker_message_at` vs `job_conversations.employer_last_read_at`; the
+   * raw read stamp is deliberately not part of this payload.
+   *
+   * Cleared by `POST /employer/conversations/{conversationId}/read`.
+   */
+  unread: boolean;
 };
 
 export type InboxJob = {
@@ -442,6 +451,12 @@ export type InboxJob = {
 export type EmployerInboxResponse = {
   items: InboxItem[];
   jobs: InboxJob[];
+  /**
+   * How many of `items` carry `unread`, across BOTH tabs — a closed thread the
+   * worker answered last is still an unanswered message. Sent as one number so
+   * the nav badge does not have to re-derive it from the list.
+   */
+  unread_count: number;
 };
 
 export type EmployerTrade = 'electrician' | 'plumber' | 'carpenter' | 'concrete' | 'painting' | 'other';

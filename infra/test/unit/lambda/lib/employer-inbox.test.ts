@@ -22,6 +22,7 @@ function baseRow(overrides: Record<string, unknown> = {}) {
     last_message_at: null,
     last_worker_message_at: null,
     last_message_preview: null,
+    employer_last_read_at: null,
     ...overrides,
   };
 }
@@ -114,5 +115,161 @@ describe('listEmployerInbox', () => {
     const [sql] = mockQuery.mock.calls[0];
     expect(sql).toMatch(/j\.city AS job_city/);
     expect(sql).toMatch(/j\.state_region AS job_state_region/);
+  });
+
+  // ── T3a: the unread flag and its rollup ─────────────────────────────────
+  //
+  // `employer_last_read_at` has existed on job_conversations since migration
+  // 028 and nothing has ever written it, so EVERY pre-existing row arrives
+  // NULL. That is the case the first test pins: a thread the worker has
+  // written to and the employer has never marked read is unread.
+  //
+  // The comparison is deliberately strict (`>`), so a read stamped at the
+  // exact instant of the worker's last message counts as read -- the read
+  // endpoint writes `now()` after the message landed, and an off-by-one in
+  // the other direction would leave a badge nobody can clear.
+  describe('unread', () => {
+    it('marks a worker-messaged conversation the employer has never read as unread', async () => {
+      mockQuery.mockResolvedValueOnce(rowsResult([
+        baseRow({
+          conversation_id: 'c-1',
+          conversation_status: 'open',
+          last_worker_message_at: '2026-09-10T12:00:00Z',
+          employer_last_read_at: null,
+        }),
+      ]));
+      const inbox = await listEmployerInbox(client, EMPLOYER);
+      expect(inbox.items[0].unread).toBe(true);
+    });
+
+    it('is not unread once the employer read AFTER the last worker message', async () => {
+      mockQuery.mockResolvedValueOnce(rowsResult([
+        baseRow({
+          conversation_id: 'c-1',
+          conversation_status: 'open',
+          last_worker_message_at: '2026-09-10T12:00:00Z',
+          employer_last_read_at: '2026-09-10T12:00:01Z',
+        }),
+      ]));
+      const inbox = await listEmployerInbox(client, EMPLOYER);
+      expect(inbox.items[0].unread).toBe(false);
+    });
+
+    it('is unread again when the worker wrote AFTER the employer read', async () => {
+      mockQuery.mockResolvedValueOnce(rowsResult([
+        baseRow({
+          conversation_id: 'c-1',
+          conversation_status: 'open',
+          last_worker_message_at: '2026-09-10T12:00:02Z',
+          employer_last_read_at: '2026-09-10T12:00:01Z',
+        }),
+      ]));
+      const inbox = await listEmployerInbox(client, EMPLOYER);
+      expect(inbox.items[0].unread).toBe(true);
+    });
+
+    it('is not unread when the worker has never written, however long ago it was read', async () => {
+      mockQuery.mockResolvedValueOnce(rowsResult([
+        baseRow({
+          conversation_id: 'c-1',
+          conversation_status: 'open',
+          last_worker_message_at: null,
+          employer_last_read_at: null,
+        }),
+        baseRow({
+          application_id: 'app-2',
+          conversation_id: 'c-2',
+          conversation_status: 'open',
+          last_worker_message_at: null,
+          employer_last_read_at: '2020-01-01T00:00:00Z',
+        }),
+      ]));
+      const inbox = await listEmployerInbox(client, EMPLOYER);
+      expect(inbox.items.map((i) => i.unread)).toEqual([false, false]);
+    });
+
+    it('treats equal timestamps as READ (strict >, not >=)', async () => {
+      mockQuery.mockResolvedValueOnce(rowsResult([
+        baseRow({
+          conversation_id: 'c-1',
+          conversation_status: 'open',
+          last_worker_message_at: '2026-09-10T12:00:00Z',
+          employer_last_read_at: '2026-09-10T12:00:00Z',
+        }),
+      ]));
+      const inbox = await listEmployerInbox(client, EMPLOYER);
+      expect(inbox.items[0].unread).toBe(false);
+    });
+
+    // node-postgres hands back `timestamptz` as a Date, not the ISO string the
+    // other fixtures use. A comparison written for strings alone would order
+    // Date objects by their `toString()` -- "Thu Sep 10 ..." -- which is not
+    // chronological. Both shapes, and a mix of the two, must agree.
+    it('compares Date values, and a Date against a string, chronologically', async () => {
+      mockQuery.mockResolvedValueOnce(rowsResult([
+        baseRow({
+          conversation_id: 'c-1',
+          conversation_status: 'open',
+          last_worker_message_at: new Date('2026-09-10T12:00:02Z'),
+          employer_last_read_at: new Date('2026-09-10T12:00:01Z'),
+        }),
+        baseRow({
+          application_id: 'app-2',
+          conversation_id: 'c-2',
+          conversation_status: 'open',
+          last_worker_message_at: new Date('2026-09-10T12:00:01Z'),
+          employer_last_read_at: '2026-09-10T12:00:02Z',
+        }),
+      ]));
+      const inbox = await listEmployerInbox(client, EMPLOYER);
+      expect(inbox.items.map((i) => i.unread)).toEqual([true, false]);
+    });
+
+    // A never-messaged applicant has no conversation row at all, so both
+    // columns come back NULL from the LEFT JOIN LATERAL.
+    it('is not unread for a never-messaged applicant (no conversation row)', async () => {
+      mockQuery.mockResolvedValueOnce(rowsResult([baseRow()]));
+      const inbox = await listEmployerInbox(client, EMPLOYER);
+      expect(inbox.items[0].conversation_id).toBeNull();
+      expect(inbox.items[0].unread).toBe(false);
+    });
+
+    it('counts unread items across BOTH tabs into unread_count', async () => {
+      mockQuery.mockResolvedValueOnce(rowsResult([
+        baseRow({ application_id: 'a1', conversation_id: 'c-1', conversation_status: 'open', last_worker_message_at: '2026-09-10T12:00:00Z' }),
+        baseRow({ application_id: 'a2', conversation_id: 'c-2', conversation_status: 'closed', last_worker_message_at: '2026-09-10T12:00:00Z' }),
+        baseRow({ application_id: 'a3', conversation_id: 'c-3', conversation_status: 'open', last_worker_message_at: '2026-09-10T12:00:00Z', employer_last_read_at: '2026-09-11T00:00:00Z' }),
+        baseRow({ application_id: 'a4' }),
+      ]));
+      const inbox = await listEmployerInbox(client, EMPLOYER);
+      expect(inbox.items.map((i) => i.unread)).toEqual([true, true, false, false]);
+      expect(inbox.unread_count).toBe(2);
+    });
+
+    it('reports unread_count 0 for an empty inbox', async () => {
+      mockQuery.mockResolvedValueOnce(rowsResult([]));
+      const inbox = await listEmployerInbox(client, EMPLOYER);
+      expect(inbox.unread_count).toBe(0);
+    });
+
+    it('selects the employer read stamp from the representative conversation', async () => {
+      mockQuery.mockResolvedValueOnce(rowsResult([]));
+      await listEmployerInbox(client, EMPLOYER);
+      const [sql] = mockQuery.mock.calls[0];
+      expect(sql).toMatch(/c\.employer_last_read_at/);
+      // ...and the LATERAL must project it, or the outer reference is a 42703.
+      expect(sql).toMatch(/jc\.employer_last_read_at/);
+    });
+
+    // The read stamp is inbox INPUT, not inbox output: the employer UI has no
+    // use for it and every field in this response is a field the frontend type
+    // has to mirror.
+    it('does not leak employer_last_read_at into the response items', async () => {
+      mockQuery.mockResolvedValueOnce(rowsResult([
+        baseRow({ conversation_id: 'c-1', conversation_status: 'open', employer_last_read_at: '2026-09-11T00:00:00Z' }),
+      ]));
+      const inbox = await listEmployerInbox(client, EMPLOYER);
+      expect(Object.keys(inbox.items[0])).not.toContain('employer_last_read_at');
+    });
   });
 });

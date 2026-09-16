@@ -375,9 +375,46 @@ describe('ApiStack', () => {
       'Employer conversations create endpoint',
       'Employer conversations send endpoint',
       'Employer conversations update endpoint',
+      'Employer conversations read endpoint',
     ]) {
       template.hasResourceProperties('AWS::Lambda::Function', { Description: description });
     }
+  });
+
+  // T3a — the write half of the employer unread badge. Asserted by PATH, not
+  // just by "a POST with the employer authorizer exists somewhere": the whole
+  // point of this route is that it hangs off {conversationId}, as a sibling of
+  // `messages`, so the RLS-scoped UPDATE has a conversation to scope to.
+  test('POST /employer/conversations/{conversationId}/read exists with EmployerAuthorizer', () => {
+    const resources = template.findResources('AWS::ApiGateway::Resource') as Record<
+      string, { Properties: Record<string, any> }
+    >;
+    const pathOf = (id: string): string => {
+      const resource = resources[id];
+      if (!resource) return '';
+      const parentRef: string | undefined = resource.Properties?.ParentId?.Ref;
+      return `${parentRef ? pathOf(parentRef) : ''}/${resource.Properties.PathPart}`;
+    };
+
+    const readResourceId = Object.keys(resources).find(
+      (id) => pathOf(id) === '/employer/conversations/{conversationId}/read',
+    );
+    expect(readResourceId).toBeDefined();
+
+    const methods = Object.values(
+      template.findResources('AWS::ApiGateway::Method') as Record<string, { Properties: Record<string, any> }>,
+    ).filter((m) => m.Properties?.ResourceId?.Ref === readResourceId);
+
+    const post = methods.find((m) => m.Properties.HttpMethod === 'POST');
+    expect(post).toBeDefined();
+    expect(post!.Properties.AuthorizationType).toBe('COGNITO_USER_POOLS');
+    expect(post!.Properties.AuthorizerId.Ref).toMatch(/EmployerAuthorizer/);
+
+    // Every browser call carries Authorization + Content-Type, so the route is
+    // unusable without its preflight. `api-stack-resource-ceiling.test.ts`
+    // enforces this globally; pinned here too because a `addPathOnlyResource()`
+    // slip on this one route is the easy mistake.
+    expect(methods.some((m) => m.Properties.HttpMethod === 'OPTIONS')).toBe(true);
   });
 
   test('Employer inbox Lambda function exists', () => {
