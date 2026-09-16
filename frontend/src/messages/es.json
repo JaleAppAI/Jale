@@ -1062,7 +1062,7 @@
         "body_dated": "Inicio {date} · El empleador te enviará más detalles; si no llegan, comunícate con él.",
         "body_undated": "Fecha de inicio por confirmar · El empleador te enviará más detalles; si no llegan, comunícate con él.",
         "cta": "Ver solicitud",
-        "dismiss": "Cerrar"
+        "dismiss": "Cerrar el aviso de contratación de {title}"
       },
       "row": {
         "body": "¡Felicidades! El empleador te enviará más detalles. Si no llegan, comunícate con él."

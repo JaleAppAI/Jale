@@ -69,7 +69,7 @@ vi.mock('@/hooks/usePageData', async () => {
   };
 });
 
-import { message, renderIntl } from '@/components/worker/onboarding/__tests__/render-intl';
+import { interpolate, message, renderIntl } from '@/components/worker/onboarding/__tests__/render-intl';
 import WorkerApplicationsPage from '../page';
 
 const APPLICATION_ID = '8f3a2c1d-4b5e-4f60-9a71-2c3d4e5f6071';
@@ -181,7 +181,7 @@ describe('worker applications -- the hired row', () => {
     renderIntl(<WorkerApplicationsPage />);
 
     fireEvent.click(screen.getByRole('button', {
-      name: message('worker_applications.hired_celebration.banner.dismiss'),
+      name: interpolate(message('worker_applications.hired_celebration.banner.dismiss'), { title: 'Welder' }),
     }));
 
     expect(acknowledgeHire).toHaveBeenCalledWith('test-token', APPLICATION_ID, 'dismissed');
@@ -196,7 +196,7 @@ describe('worker applications -- the hired row', () => {
     renderIntl(<WorkerApplicationsPage />);
 
     fireEvent.click(screen.getByRole('button', {
-      name: message('worker_applications.hired_celebration.banner.dismiss'),
+      name: interpolate(message('worker_applications.hired_celebration.banner.dismiss'), { title: 'Welder' }),
     }));
 
     expect(screen.queryByText(ROW_BODY)).not.toBeInTheDocument();
@@ -242,9 +242,15 @@ describe('worker applications -- the hired row', () => {
     renderIntl(<WorkerApplicationsPage />);
     expect(screen.getAllByText(ROW_BODY)).toHaveLength(2);
 
-    fireEvent.click(screen.getAllByRole('button', {
-      name: message('worker_applications.hired_celebration.banner.dismiss'),
-    })[0]);
+    // One label per banner now, so the first hire is clicked BY NAME rather
+    // than by its position among identically-labelled buttons -- which is the
+    // whole point of the change.
+    fireEvent.click(screen.getByRole('button', {
+      name: interpolate(message('worker_applications.hired_celebration.banner.dismiss'), { title: 'Welder' }),
+    }));
+    expect(screen.getByRole('button', {
+      name: interpolate(message('worker_applications.hired_celebration.banner.dismiss'), { title: 'Concrete Finisher' }),
+    })).toBeInTheDocument();
 
     expect(acknowledgeHire).toHaveBeenCalledTimes(1);
     expect(acknowledgeHire).toHaveBeenCalledWith('test-token', APPLICATION_ID, 'dismissed');

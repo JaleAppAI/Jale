@@ -1062,7 +1062,7 @@
         "body_dated": "Starts {date} · The employer will send more details; if none arrive, reach out to them.",
         "body_undated": "Start date to be confirmed · The employer will send more details; if none arrive, reach out to them.",
         "cta": "View application",
-        "dismiss": "Dismiss"
+        "dismiss": "Dismiss the hire notice for {title}"
       },
       "row": {
         "body": "Congratulations! The employer will send more details. If none arrive, reach out to them."
