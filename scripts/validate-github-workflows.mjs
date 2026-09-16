@@ -143,6 +143,27 @@ requireIncludes('.github/workflows/_reusable-validate.yml (frontend job)', front
 requireIncludes('.github/workflows/_reusable-validate.yml (frontend job)', frontendJob, 'npx tsc --noEmit');
 requireIncludes('.github/workflows/_reusable-validate.yml (frontend job)', frontendJob, 'npm test');
 
+// F31: the job step above is only half the guarantee. `npm test` runs whatever
+// frontend/package.json says, and vitest's DEFAULT mode is watch -- a script
+// changed from `vitest run` to `vitest` would keep this job green in every
+// local check and then hang the runner until the 20-minute timeout killed it,
+// which reads as a flaky CI box rather than a broken test script.
+const frontendPackageJson = readRequired('frontend/package.json');
+if (frontendPackageJson) {
+  let frontendTestScript = '';
+  try {
+    frontendTestScript = JSON.parse(frontendPackageJson).scripts?.test ?? '';
+  } catch {
+    fail('frontend/package.json is not valid JSON');
+  }
+  if (!/(^|\s)vitest\s+run(\s|$)/.test(frontendTestScript)) {
+    fail(
+      "frontend/package.json's `test` script must run vitest in NON-watch mode "
+      + `(expected \`vitest run\`, found ${JSON.stringify(frontendTestScript)})`,
+    );
+  }
+}
+
 // The admin job must build BEFORE typecheck (Next generates `.next/types`
 // during build, which the typecheck now references) and must run all 11
 // admin contract-check scripts, not 10.
