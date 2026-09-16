@@ -127,6 +127,25 @@ describe('AuthProvider — signing out', () => {
         expect(localStorage.getItem(WORKER_SLOT)).toBe('rt-worker');
     });
 
+    it('drops the sidebar chip cache, so the next account cannot inherit a name', async () => {
+        localStorage.setItem(EMPLOYER_SLOT, 'rt-employer');
+        sessionStorage.setItem(
+            'jale.sidebar_chip.employer',
+            JSON.stringify({ name: 'RM Construction', meta: null, initials: 'RC', locale: 'es' }),
+        );
+        window.history.replaceState(null, '', '/es/employer/dashboard');
+        const user = userEvent.setup();
+
+        renderProvider();
+        await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('ready:employer'));
+        await user.click(screen.getByRole('button', { name: 'sign out' }));
+
+        // Cleared by `clearSession` itself: `logout` navigates immediately
+        // afterwards, so a React effect reacting to the state change is not a
+        // guarantee this ever runs.
+        await waitFor(() => expect(sessionStorage.getItem('jale.sidebar_chip.employer')).toBeNull());
+    });
+
     it('does not overwrite the other role when signing in', async () => {
         localStorage.setItem(WORKER_SLOT, 'rt-worker');
         window.history.replaceState(null, '', '/es/auth/employer');

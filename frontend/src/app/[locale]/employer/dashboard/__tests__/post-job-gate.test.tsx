@@ -19,6 +19,13 @@ import type { EmployerBilling, Job } from '@/lib/api/employer';
  * first-run empty card. Four render together on a board with jobs (hence the
  * `toBe(4)` below); the empty card replaces the list, so it gets its own test.
  * A gate on four of five is not a gate.
+ *
+ * The gate now lives in `PostJobContext` -- the wizard is mounted once above
+ * the router so every employer page can open it, not only this one -- which is
+ * why the page is rendered inside `PostJobProvider` here. The behaviour under
+ * test is unchanged and so are these assertions: the dashboard publishes its
+ * loaded plan and jobs to the preflight (`usePostJobSnapshot`), so the gate is
+ * still decided from the LIVE board without a request.
  */
 
 vi.mock('@/i18n/navigation', () => ({
@@ -28,7 +35,7 @@ vi.mock('@/i18n/navigation', () => ({
 }));
 
 vi.mock('@/contexts/AuthContext', () => ({
-    useAuth: () => ({ idToken: 'test-token' }),
+    useAuth: () => ({ idToken: 'test-token', userType: 'employer', isAuthenticated: true }),
 }));
 
 vi.mock('@/hooks/useRequireAuth', () => ({
@@ -98,7 +105,17 @@ vi.mock('@/hooks/usePageData', async () => {
 });
 
 import { interpolate, message, renderIntl } from '@/components/employer/__tests__/render-intl';
+import { PostJobProvider } from '@/contexts/PostJobContext';
 import EmployerDashboardPage from '../page';
+
+/** The board as it is really mounted: inside the app-wide post-a-job context. */
+function renderDashboard() {
+    return renderIntl(
+        <PostJobProvider>
+            <EmployerDashboardPage />
+        </PostJobProvider>,
+    );
+}
 
 const activeJob: Job = {
     id: 'job-1',
@@ -154,12 +171,18 @@ const wizardEntryPoints = () => [
 
 beforeEach(() => {
     vi.clearAllMocks();
+    // The hero collapses to a one-line bar once it has been seen, and it
+    // carries one of the four entry points counted below. Clearing the flag
+    // keeps every test in this file rendering the same board -- otherwise the
+    // first render's "seen" marker silently changes which buttons the later
+    // ones are asserting about.
+    localStorage.clear();
     seed = { jobs: [activeJob], billing: freePlan, templateCount: 0 };
 });
 
 describe('post-a-job plan gate', () => {
     it('opens the limit dialog instead of the wizard when the slot is taken', () => {
-        renderIntl(<EmployerDashboardPage />);
+        renderDashboard();
         fireEvent.click(postJobButtons()[0]);
 
         expect(screen.getByText(dialogTitle())).toBeInTheDocument();
@@ -167,7 +190,7 @@ describe('post-a-job plan gate', () => {
     });
 
     it('names the job holding the slot and offers both ways out', () => {
-        renderIntl(<EmployerDashboardPage />);
+        renderDashboard();
         fireEvent.click(postJobButtons()[0]);
 
         // Scoped to the dialog: the standing free-plan banner on the page
@@ -200,7 +223,7 @@ describe('post-a-job plan gate', () => {
     });
 
     it('gates every entry point to the wizard', () => {
-        renderIntl(<EmployerDashboardPage />);
+        renderDashboard();
         const entryPoints = wizardEntryPoints();
         // Shell action + panel header + hero + quick post on a board with jobs.
         expect(entryPoints.length).toBe(4);
@@ -217,7 +240,7 @@ describe('post-a-job plan gate', () => {
         // No jobs, and a plan that includes none: the only case where the empty
         // board and a reached limit coexist.
         seed = { jobs: [], billing: { ...freePlan, activeJobLimit: 0, activeJobUsage: 0 }, templateCount: 0 };
-        renderIntl(<EmployerDashboardPage />);
+        renderDashboard();
 
         for (const button of postJobButtons()) {
             fireEvent.click(button);
@@ -228,7 +251,7 @@ describe('post-a-job plan gate', () => {
 
     it('opens the wizard when a slot is free', () => {
         seed = { jobs: [activeJob], billing: { ...freePlan, activeJobLimit: 3 }, templateCount: 0 };
-        renderIntl(<EmployerDashboardPage />);
+        renderDashboard();
         fireEvent.click(postJobButtons()[0]);
 
         expect(screen.getByTestId('post-job-wizard')).toBeInTheDocument();
@@ -237,7 +260,7 @@ describe('post-a-job plan gate', () => {
 
     it('opens the wizard when billing never arrived, leaving the 403 as the backstop', () => {
         seed = { jobs: [activeJob], billing: null, templateCount: null };
-        renderIntl(<EmployerDashboardPage />);
+        renderDashboard();
         fireEvent.click(postJobButtons()[0]);
 
         expect(screen.getByTestId('post-job-wizard')).toBeInTheDocument();
@@ -259,7 +282,7 @@ describe('pause and resume from the board', () => {
 
     it('pauses in place and frees the slot for the next post', async () => {
         updateJobStatus.mockResolvedValue({ ...activeJob, status: 'paused' });
-        renderIntl(<EmployerDashboardPage />);
+        renderDashboard();
 
         fireEvent.click(pauseButton());
         await waitFor(() =>
@@ -284,7 +307,7 @@ describe('pause and resume from the board', () => {
         updateJobStatus.mockRejectedValue(
             new ApiError(403, 'job_limit_reached', { active_job_limit: 1, active_jobs: 1, plan_code: 'employer_free' }),
         );
-        renderIntl(<EmployerDashboardPage />);
+        renderDashboard();
 
         fireEvent.click(resumeButton());
 
@@ -305,7 +328,7 @@ describe('pause and resume from the board', () => {
         seed = { jobs: [activeJob, second], billing: { ...freePlan, activeJobLimit: 3 }, templateCount: 0 };
         // Never settles: the second click lands while the first PATCH is open.
         updateJobStatus.mockReturnValue(new Promise(() => {}));
-        renderIntl(<EmployerDashboardPage />);
+        renderDashboard();
 
         const first = pauseButtonFor(activeJob.title);
         const other = pauseButtonFor(second.title);
@@ -325,7 +348,7 @@ describe('pause and resume from the board', () => {
 
     it('reports any other failure without touching the board', async () => {
         updateJobStatus.mockRejectedValue(new ApiError(500, 'internal_error', {}));
-        renderIntl(<EmployerDashboardPage />);
+        renderDashboard();
 
         fireEvent.click(pauseButton());
 

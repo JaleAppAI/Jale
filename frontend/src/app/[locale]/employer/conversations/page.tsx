@@ -9,6 +9,7 @@ import { useRouter } from '@/i18n/navigation';
 import { usePageData } from '@/hooks/usePageData';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { AppShell } from '@/components/layout/AppShell';
+import { PostJobButton } from '@/components/employer/PostJobButton';
 import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/ui/empty-state';
 import { ErrorState } from '@/components/ui/error-state';
@@ -316,7 +317,7 @@ export default function EmployerConversationsPage() {
   ).length;
 
   const shell = (children: ReactNode) => (
-    <AppShell role="employer" title={t('title')} subtitle={t('subtitle')}>
+    <AppShell role="employer" title={t('title')} subtitle={t('subtitle')} actions={<PostJobButton />}>
       <div className="mx-auto max-w-7xl px-4 py-6">{children}</div>
     </AppShell>
   );

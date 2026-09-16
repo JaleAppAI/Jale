@@ -9,6 +9,7 @@ import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { usePageData } from '@/hooks/usePageData';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { AppShell } from '@/components/layout/AppShell';
+import { PostJobButton } from '@/components/employer/PostJobButton';
 import { AppShellSkeleton } from '@/components/layout/AppShellSkeleton';
 import { ApplicationStatusBadge, Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -563,7 +564,7 @@ export default function WorkerProfilePage() {
     /* ===== S2 loaded ======================================================= */
 
     return (
-        <AppShell role="employer" title={displayName} subtitle={shellSubtitle}>
+        <AppShell role="employer" title={displayName} subtitle={shellSubtitle} actions={<PostJobButton />}>
             <div className="mx-auto max-w-4xl px-4 py-6 md:px-6">
                 <div className="anim-fade-in">
                     {backLink}

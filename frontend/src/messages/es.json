@@ -602,7 +602,9 @@
       "title": "Mantenga cada empleo, candidato y conversación de WhatsApp en un solo lugar.",
       "body": "Este panel usa sus publicaciones reales hoy y reserva espacio para las herramientas futuras de matching, entrevistas y crecimiento del prototipo.",
       "primary_cta": "Publique un empleo",
-      "secondary_cta": "Abrir mensajes"
+      "secondary_cta": "Abrir mensajes",
+      "slim_title": "¿Listo para contratar de nuevo?",
+      "dismiss_aria": "Contraer el panel de bienvenida"
     },
     "quick_post": {
       "title": "Publicación rápida",

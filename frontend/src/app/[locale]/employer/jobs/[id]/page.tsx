@@ -10,6 +10,7 @@ import { useStaggerOnce } from '@/hooks/useStaggerOnce';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { Link, useRouter } from '@/i18n/navigation';
 import { AppShell } from '@/components/layout/AppShell';
+import { PostJobButton } from '@/components/employer/PostJobButton';
 import { AppShellSkeleton } from '@/components/layout/AppShellSkeleton';
 import { ApplicationStatusBadge, Badge, JobStatusBadge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -765,7 +766,7 @@ export default function JobDetailPage() {
 
     return (
         <>
-            <AppShell role="employer" title={job.title} subtitle={job.location}>
+            <AppShell role="employer" title={job.title} subtitle={job.location} actions={<PostJobButton />}>
                 <main className="mx-auto max-w-5xl px-4 py-6 md:px-6">
                     <div className="anim-fade-in">
                         {backLink}
