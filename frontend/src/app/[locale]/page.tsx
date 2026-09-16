@@ -130,10 +130,11 @@ function BenefitCard({
 
 export default function Home() {
     const t = useTranslations('landing');
+    const locale = useLocale();
     // WhatsApp deep link (from the design source). Only the #cta section
     // button opens it; nav/hero/audience CTAs scroll to #cta. Points at the
     // /whatsapp redirect route -- see frontend/src/lib/whatsapp-link.ts.
-    const whatsappCtaHref = whatsappHref(useLocale());
+    const whatsappCtaHref = whatsappHref(locale);
 
     const howSteps = [
         { n: '1', icon: <MessageCircle />, title: t('how.step1_title'), body: t.rich('how.step1_body', { b: semibold }) },
