@@ -29,6 +29,12 @@ import type { TerminalScreen } from '@/lib/application-requirements-flow';
  * other body has a `_no_company` twin, because an orphaned job resolves
  * `company_name` to null and interpolating an empty string there leaves a
  * sentence with no subject.
+ *
+ * `companyName` is expected to have been through `lib/employer-name.ts`'s
+ * `realCompanyName` already (the flow does it once, where the value enters the
+ * tree): the API's raw `company_name` is `employer_display_name()`, which falls
+ * back to the "Empleador" PLACEHOLDER, and "Empleador has it all." names a
+ * company that does not exist. The twin sentences cover that case too.
  */
 export function RequirementsTerminalPanel({
   screen, companyName, jobId,

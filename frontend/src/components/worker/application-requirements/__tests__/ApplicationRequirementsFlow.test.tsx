@@ -180,6 +180,36 @@ describe('ApplicationRequirementsFlow — terminal panels', () => {
     ).toBeInTheDocument();
   });
 
+  /*
+   * The API's `company_name` is `employer_display_name()`, which ends in
+   * COALESCE(..., 'Empleador') -- a Spanish placeholder, not a name. Dropped
+   * into "{company} has it all." it reads as a company literally called
+   * Empleador, and on the English page it is not even in the right language.
+   * It is the same sentinel the hire copy already refuses; this surface has
+   * `_no_company` twins for exactly this, and now uses them.
+   */
+  it('treats the "Empleador" placeholder as no company at all', () => {
+    renderFlow(serverState({
+      application: { details_completed_at: '2026-09-02T00:00:00Z' },
+      job: { company_name: 'Empleador' },
+    }));
+
+    expect(
+      screen.getByText(message('worker_application_details.terminal.already_complete_body_no_company')),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Empleador/)).not.toBeInTheDocument();
+  });
+
+  /* Equality, not a substring test: "Empleadora del Norte" is a real name. */
+  it('keeps a real company name that merely starts with the placeholder word', () => {
+    renderFlow(serverState({
+      application: { details_completed_at: '2026-09-02T00:00:00Z' },
+      job: { company_name: 'Empleadora del Norte' },
+    }));
+
+    expect(screen.getByText(/Empleadora del Norte/)).toBeInTheDocument();
+  });
+
   it('every terminal panel keeps a way out', () => {
     renderFlow(serverState({ application: { details_completed_at: '2026-09-02T00:00:00Z' } }));
     expect(screen.getByRole('button', {

@@ -30,6 +30,7 @@ import { buildCertClaimsPayload } from '@/lib/certification-claims';
 import { missingRequiredCertClaims, missingRequiredCertProofs } from '@/lib/certification-claims';
 import { missingRequiredFields } from '@/lib/application-answers-form';
 import { partitionRequiredDocs } from '@/lib/job-requirements';
+import { realCompanyName } from '@/lib/employer-name';
 import { QuestionsStep } from './QuestionsStep';
 import { DocumentsCertificationsStep, proofFilesFromVault } from './DocumentsCertificationsStep';
 import { PromptTopUpStep } from './PromptTopUpStep';
@@ -293,7 +294,15 @@ export function ApplicationRequirementsFlow({
   );
 
   const errorText = flow.errorKind ? tCommon(errorMessageKey(flow.errorKind)) : null;
-  const companyName = job.company_name;
+  /*
+   * NOT `job.company_name` raw. That field is `employer_display_name()`, which
+   * falls back to the "Empleador" placeholder (migration 031) -- a word, not a
+   * name, and a Spanish one at that. Every sentence below that takes a
+   * `{company}` already has a `_no_company` twin for the orphaned-job case;
+   * this is what makes the placeholder take the same path instead of being
+   * printed as if it were a business.
+   */
+  const companyName = realCompanyName(job.company_name);
 
   const header = (
     <>
