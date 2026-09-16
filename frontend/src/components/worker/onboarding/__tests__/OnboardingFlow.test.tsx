@@ -62,8 +62,29 @@ function advancesTo(nextStep: string, overrides: Partial<OnboardingState> = {}) 
     };
 }
 
+/**
+ * `mockReset`, NOT `vi.clearAllMocks()`, for the four api mocks.
+ *
+ * `clearAllMocks` calls `mockClear`, which empties `mock.calls` but leaves the
+ * `mockImplementationOnce` QUEUE in place. Half this file hands
+ * `postOnboardingAnswers` a queue of one-shot responses, and a one-shot takes
+ * priority over the next test's `mockResolvedValue`. So any test that ends
+ * without draining its queue -- an assertion that throws half way down, or the
+ * long walk below timing out on a loaded machine -- silently feeds ITS leftover
+ * responses to the tests after it: they see a `saved` where they set up a
+ * `lock_conflict`, land on a screen they never asked for, and fail somewhere
+ * far from the real cause. One broken test became seven.
+ *
+ * `mockReset` drains the queue and the base implementation both, which is why
+ * every test (and the line below) sets up its own.
+ */
+function resetApiMocks() {
+    for (const fn of Object.values(api)) fn.mockReset();
+}
+
 beforeEach(() => {
     vi.clearAllMocks();
+    resetApiMocks();
     window.sessionStorage.clear();
     lock = 1;
     api.getWorkerOnboarding.mockResolvedValue(at('legal.review'));
@@ -73,9 +94,25 @@ afterEach(() => {
     vi.useRealTimers();
 });
 
+describe('the per-test reset', () => {
+    // Written so it does not depend on running after anything: it queues the
+    // leftover itself. Point `resetApiMocks` at `vi.clearAllMocks()` and this
+    // fails with the stale `saved` -- which is exactly what the tests after a
+    // timed-out walk were being served.
+    it('drains a leftover one-shot instead of serving it to the next test', async () => {
+        api.postOnboardingAnswers.mockImplementationOnce(advancesTo('trust.question.2'));
+
+        resetApiMocks();
+        api.postOnboardingAnswers.mockResolvedValue({ kind: 'blocked', reason: 'not_onboardable' });
+
+        expect(await api.postOnboardingAnswers(TOKEN, { lockVersion: 1, answers: [] }))
+            .toEqual({ kind: 'blocked', reason: 'not_onboardable' });
+    });
+});
+
 describe('OnboardingFlow — a fresh worker walks the whole flow', () => {
     it('goes terms → about → trade → work → q1 → q2 → q3 → photo → done', async () => {
-        const user = userEvent.setup();
+        const user = userEvent.setup({ delay: null });
         api.postOnboardingAnswers
             .mockImplementationOnce(advancesTo('profile.name'))
             .mockImplementationOnce(advancesTo('profile.trade'))
@@ -137,7 +174,16 @@ describe('OnboardingFlow — a fresh worker walks the whole flow', () => {
         // 5, 6, 7 — the three questions
         for (const index of [1, 2, 3] as const) {
             await screen.findByRole('heading', { name: THREE_QUESTIONS[index - 1].q_en });
-            await user.type(screen.getByPlaceholderText(message('worker_onboarding.question.placeholder')), LONG_ANSWER);
+            // Pasted, not typed, ONLY here. Every other suite types its answer
+            // and this one asserts nothing per-keystroke -- it is about the
+            // batch that leaves and the lock that comes back. Typing the three
+            // answers is 129 separate awaited interactions in the longest test
+            // in the file, and each one costs a scheduler round trip that grows
+            // with machine load, which is what used to push this single test
+            // past the 5s default on a busy box. The textarea is controlled, so
+            // the paste delivers the same one `onChange` with the same value.
+            await user.click(screen.getByPlaceholderText(message('worker_onboarding.question.placeholder')));
+            await user.paste(LONG_ANSWER);
             const label = index === 3
                 ? message('worker_onboarding.trust.complete_cta')
                 : message('worker_onboarding.question.cta');
@@ -162,7 +208,7 @@ describe('OnboardingFlow — a fresh worker walks the whole flow', () => {
 
 describe('OnboardingFlow — resuming a run started on WhatsApp', () => {
     it('lands on question 2 and still holds the answer given to question 1', async () => {
-        const user = userEvent.setup();
+        const user = userEvent.setup({ delay: null });
         const resumed = at('trust.question.2', {
             trust: {
                 questions: THREE_QUESTIONS,
@@ -194,7 +240,7 @@ describe('OnboardingFlow — resuming a run started on WhatsApp', () => {
 
 describe('OnboardingFlow — the other door moved first', () => {
     it('retries once with the fresh state the 409 body carries, without a second GET', async () => {
-        const user = userEvent.setup();
+        const user = userEvent.setup({ delay: null });
         const fresh = { ...at('legal.review'), run: { ...at('legal.review').run, lockVersion: 7 } };
         api.postOnboardingAnswers
             .mockResolvedValueOnce({ kind: 'lock_conflict', state: fresh })
@@ -214,7 +260,7 @@ describe('OnboardingFlow — the other door moved first', () => {
     });
 
     it('falls back to a GET when the 409 body carries no state', async () => {
-        const user = userEvent.setup();
+        const user = userEvent.setup({ delay: null });
         api.postOnboardingAnswers
             .mockResolvedValueOnce({ kind: 'lock_conflict' })
             .mockResolvedValueOnce({ kind: 'saved', state: at('profile.name') });
@@ -235,7 +281,7 @@ describe('OnboardingFlow — the other door moved first', () => {
     });
 
     it('gives up after one retry rather than looping', async () => {
-        const user = userEvent.setup();
+        const user = userEvent.setup({ delay: null });
         api.postOnboardingAnswers.mockResolvedValue({ kind: 'lock_conflict' });
 
         renderIntl(<OnboardingFlow token={TOKEN} initialState={at('legal.review')} />);
@@ -249,7 +295,7 @@ describe('OnboardingFlow — the other door moved first', () => {
 
 describe('OnboardingFlow — the engine refused a step', () => {
     it('shows the reason inline against the rejected field and stays put', async () => {
-        const user = userEvent.setup();
+        const user = userEvent.setup({ delay: null });
         api.postOnboardingAnswers.mockResolvedValue({
             kind: 'step_rejected',
             rejectedStepKey: 'profile.location',
@@ -348,7 +394,7 @@ describe('OnboardingFlow — the summary polls for the extraction', () => {
 
 describe('OnboardingFlow — language is a header toggle, not a step', () => {
     it('writes preferred_language and moves to the other locale route', async () => {
-        const user = userEvent.setup();
+        const user = userEvent.setup({ delay: null });
         api.patchOnboardingLanguage.mockResolvedValue(at('legal.review'));
 
         renderIntl(<OnboardingFlow token={TOKEN} initialState={at('legal.review')} />);
@@ -369,7 +415,7 @@ describe('OnboardingFlow — a finished run', () => {
     });
 
     it('lets a worker walk back into an earlier question BEFORE the last answer', async () => {
-        const user = userEvent.setup();
+        const user = userEvent.setup({ delay: null });
         api.postOnboardingBack.mockResolvedValue(at('trust.question.1'));
 
         renderIntl(<OnboardingFlow token={TOKEN} initialState={at('trust.question.2')} />);
@@ -398,7 +444,7 @@ describe('OnboardingFlow — a worker the engine will not onboard', () => {
     });
 
     it('stops when a save comes back not_onboardable', async () => {
-        const user = userEvent.setup();
+        const user = userEvent.setup({ delay: null });
         api.postOnboardingAnswers.mockResolvedValue({ kind: 'blocked', reason: 'not_onboardable' });
 
         renderIntl(<OnboardingFlow token={TOKEN} initialState={at('legal.review')} />);
@@ -410,7 +456,7 @@ describe('OnboardingFlow — a worker the engine will not onboard', () => {
 
 describe('OnboardingFlow — the client is behind the run', () => {
     it('re-reads and re-renders on a step mismatch rather than retrying', async () => {
-        const user = userEvent.setup();
+        const user = userEvent.setup({ delay: null });
         api.postOnboardingAnswers.mockResolvedValue({ kind: 'step_mismatch' });
         api.getWorkerOnboarding.mockResolvedValue(at('trust.question.1'));
 
@@ -425,7 +471,7 @@ describe('OnboardingFlow — the client is behind the run', () => {
 
 describe('OnboardingFlow — the lock version follows the run, not the page load', () => {
     it('re-seeds it from the Back response before the next save', async () => {
-        const user = userEvent.setup();
+        const user = userEvent.setup({ delay: null });
         api.postOnboardingBack.mockResolvedValue(at('trust.question.1', {}, 9));
         api.postOnboardingAnswers.mockResolvedValue({ kind: 'saved', state: at('trust.question.2', {}, 10) });
 
@@ -445,7 +491,7 @@ describe('OnboardingFlow — the lock version follows the run, not the page load
     });
 
     it('re-seeds it from the language PATCH', async () => {
-        const user = userEvent.setup();
+        const user = userEvent.setup({ delay: null });
         api.patchOnboardingLanguage.mockResolvedValue(at('legal.review', {}, 4));
         api.postOnboardingAnswers.mockResolvedValue({ kind: 'saved', state: at('profile.name', {}, 5) });
 
@@ -463,7 +509,7 @@ describe('OnboardingFlow — the lock version follows the run, not the page load
 
 describe('OnboardingFlow — parked on a step this door cannot drive', () => {
     it('shows the way out instead of a Continue that could only be refused', async () => {
-        const user = userEvent.setup();
+        const user = userEvent.setup({ delay: null });
         // Real WhatsApp runs sit on `profile.photo`: no handler advances it, so
         // the fallback screen's Continue would post `legal.review` forever.
         renderIntl(<OnboardingFlow token={TOKEN} initialState={at('profile.photo')} />);
@@ -496,7 +542,7 @@ describe('OnboardingFlow — parked on a step this door cannot drive', () => {
 
 describe('OnboardingFlow — the run moved between our read and our write', () => {
     it('keeps the answer being typed when the engine is still on the same screen', async () => {
-        const user = userEvent.setup();
+        const user = userEvent.setup({ delay: null });
         api.postOnboardingAnswers.mockResolvedValue({ kind: 'step_mismatch' });
         api.getWorkerOnboarding.mockResolvedValue(at('trust.question.2', {}, 6));
 
@@ -519,7 +565,7 @@ describe('OnboardingFlow — the run moved between our read and our write', () =
     });
 
     it('rebuilds from the server when the engine has moved to a different screen', async () => {
-        const user = userEvent.setup();
+        const user = userEvent.setup({ delay: null });
         api.postOnboardingAnswers.mockResolvedValue({ kind: 'step_mismatch' });
         api.getWorkerOnboarding.mockResolvedValue(at('trust.question.3'));
 
@@ -536,7 +582,7 @@ describe('OnboardingFlow — the run moved between our read and our write', () =
 
 describe('OnboardingFlow — switching language mid-answer', () => {
     it('does not cost the worker what they had already typed', async () => {
-        const user = userEvent.setup();
+        const user = userEvent.setup({ delay: null });
         const typed = 'x'.repeat(200);
         api.patchOnboardingLanguage.mockResolvedValue(at('trust.question.1'));
 
@@ -554,7 +600,7 @@ describe('OnboardingFlow — switching language mid-answer', () => {
     });
 
     it('does not pour a parked answer into a different step', async () => {
-        const user = userEvent.setup();
+        const user = userEvent.setup({ delay: null });
         api.patchOnboardingLanguage.mockResolvedValue(at('trust.question.1'));
 
         const view = renderIntl(<OnboardingFlow token={TOKEN} initialState={at('trust.question.1')} />);
@@ -571,7 +617,7 @@ describe('OnboardingFlow — switching language mid-answer', () => {
 
 describe('OnboardingFlow — a save that keeps failing', () => {
     it('offers the way out on the second failure, not the first', async () => {
-        const user = userEvent.setup();
+        const user = userEvent.setup({ delay: null });
         api.postOnboardingAnswers.mockRejectedValue(new Error('network'));
 
         renderIntl(<OnboardingFlow token={TOKEN} initialState={at('trust.question.1')} />);
@@ -620,7 +666,7 @@ describe('OnboardingFlow — changing an earlier answer before the last one is s
     }
 
     it('walks back to question 1 and forward again with every stored answer still there', async () => {
-        const user = userEvent.setup();
+        const user = userEvent.setup({ delay: null });
         const answer = () => screen.getByPlaceholderText(message('worker_onboarding.question.placeholder'));
         const next = () => screen.getByRole('button', { name: message('worker_onboarding.question.cta') });
         const back = () => screen.getByRole('button', { name: message('worker_onboarding.common.back') });
@@ -685,7 +731,7 @@ describe('OnboardingFlow — changing an earlier answer before the last one is s
     });
 
     it('does not carry an UNSENT answer back and forward — only what the server has', async () => {
-        const user = userEvent.setup();
+        const user = userEvent.setup({ delay: null });
         const answer = () => screen.getByPlaceholderText(message('worker_onboarding.question.placeholder'));
 
         // Typed on question 3 and never sent, so no door has it. Back lands on
@@ -703,7 +749,7 @@ describe('OnboardingFlow — changing an earlier answer before the last one is s
 
 describe('OnboardingFlow — after the last answer there is no way back', () => {
     it('offers no Back on the photo prompt or the summary, and calls /back from neither', async () => {
-        const user = userEvent.setup();
+        const user = userEvent.setup({ delay: null });
         const backLabel = message('worker_onboarding.common.back');
         api.postOnboardingAnswers.mockResolvedValue({
             kind: 'saved',
