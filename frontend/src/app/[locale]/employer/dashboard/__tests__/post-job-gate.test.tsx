@@ -171,6 +171,12 @@ const wizardEntryPoints = () => [
 
 beforeEach(() => {
     vi.clearAllMocks();
+    // The hero collapses to a one-line bar once it has been seen, and it
+    // carries one of the four entry points counted below. Clearing the flag
+    // keeps every test in this file rendering the same board -- otherwise the
+    // first render's "seen" marker silently changes which buttons the later
+    // ones are asserting about.
+    localStorage.clear();
     seed = { jobs: [activeJob], billing: freePlan, templateCount: 0 };
 });
 

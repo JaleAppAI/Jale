@@ -28,6 +28,7 @@ import { PlanUsageMeter } from '@/components/employer/PlanUsageMeter';
 import { SubscriptionBanner } from '@/components/employer/SubscriptionBanner';
 import { DeleteJobDialog } from '@/components/employer/DeleteJobDialog';
 import { PlanLimitDialog } from '@/components/employer/PlanLimitDialog';
+import { DashboardHero } from '@/components/employer/DashboardHero';
 import { PostJobButton } from '@/components/employer/PostJobButton';
 import { ApiError, deleteJob, getBilling, getJobs, listJobTemplates, updateJobStatus } from '@/lib/api/employer';
 import type { EmployerBilling, Job, JobCreatedOutcome } from '@/lib/api/employer';
@@ -490,27 +491,10 @@ export default function EmployerDashboardPage() {
                                 it never pushes an already-read board down. */}
                             <SubscriptionBanner signage={signage} locale={locale} />
 
-                            <section className="mb-5 overflow-hidden rounded-[var(--radius-card)] bg-[var(--jale-blue-900)] p-5 shadow-[var(--shadow-card)] md:p-7">
-                                <p className="mb-3 inline-flex rounded-full bg-[color-mix(in_srgb,var(--primary-fg)_12%,transparent)] px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-[color-mix(in_srgb,var(--primary-fg)_80%,transparent)]">
-                                    {t('hero.eyebrow')}
-                                </p>
-                                <h2 className="max-w-3xl text-3xl font-extrabold leading-tight text-[var(--primary-fg)] md:text-4xl">
-                                    {t('hero.title')}
-                                </h2>
-                                <p className="mt-3 max-w-2xl text-sm leading-6 text-[color-mix(in_srgb,var(--primary-fg)_72%,transparent)]">
-                                    {t('hero.body')}
-                                </p>
-                                <div className="mt-5 flex flex-wrap items-center gap-2">
-                                    <PostJobButton>{t('hero.primary_cta')}</PostJobButton>
-                                    <Link
-                                        href="/employer/conversations"
-                                        className="inline-flex h-11 items-center justify-center gap-2 rounded-full border border-[color-mix(in_srgb,var(--primary-fg)_25%,transparent)] px-5 text-sm font-semibold text-[var(--primary-fg)] transition-colors hover:bg-[color-mix(in_srgb,var(--primary-fg)_12%,transparent)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
-                                    >
-                                        <Icon name="message" />
-                                        {t('hero.secondary_cta')}
-                                    </Link>
-                                </div>
-                            </section>
+                            {/* Full the first time, a one-line bar after that --
+                                the job list is what a returning employer came
+                                for. See DashboardHero. */}
+                            <DashboardHero />
 
                             <div className="mb-5 grid grid-cols-2 gap-4 md:grid-cols-4">
                                 <MetricCard

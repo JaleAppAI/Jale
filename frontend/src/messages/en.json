@@ -602,7 +602,9 @@
       "title": "Keep every job, applicant, and WhatsApp handoff in one place.",
       "body": "This dashboard uses your live job postings today and reserves space for the upcoming matching, interviews, and growth tools from the prototype.",
       "primary_cta": "Post a job",
-      "secondary_cta": "Open messages"
+      "secondary_cta": "Open messages",
+      "slim_title": "Ready to hire again?",
+      "dismiss_aria": "Collapse the welcome panel"
     },
     "quick_post": {
       "title": "Quick post",

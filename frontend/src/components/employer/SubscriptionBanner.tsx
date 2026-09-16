@@ -14,15 +14,29 @@ import type { SubscriptionSignage } from '@/lib/plan-limit';
  * employer is still inside grace, which key each string comes from -- is made
  * by `subscriptionSignage`; this component only looks keys up and renders.
  *
- * Dismissal is SESSION storage, deliberately, not localStorage: a permanently
- * dismissed "your payment failed" warning is a support ticket. It comes back
- * next session, and `dismissKey` is keyed by the billing state, so a move from
- * past_due to canceled re-shows the banner within the same session too.
+ * Dismissal is keyed by the billing state (`dismissKey`), so a move from
+ * past_due to canceled re-shows the banner even within one session. WHERE that
+ * dismissal is kept depends on what the banner is saying:
+ *
+ *  - the LAPSED banners ("your payment failed", "your subscription ended") keep
+ *    it in SESSION storage, deliberately: a permanently dismissed payment
+ *    warning is a support ticket. They come back next session.
+ *  - the FREE-plan banner keeps it in LOCAL storage. It states a standing fact
+ *    about the account rather than a problem to act on, and nothing about it
+ *    changes between sessions -- so re-showing it on every visit was asking the
+ *    same employer to dismiss the same sentence forever. When the fact changes,
+ *    the key changes with it (it carries the plan code) and the banner returns
+ *    on its own.
  */
-function readDismissed(dismissKey: string | null): boolean {
-  if (dismissKey === null || typeof window === 'undefined') return false;
+
+/** The store this variant's dismissal belongs in. See the note above. */
+function storeFor(variant: 'free' | 'lapsed'): Storage {
+  return variant === 'free' ? window.localStorage : window.sessionStorage;
+}
+function readDismissed(signage: SubscriptionSignage): boolean {
+  if (signage === null || typeof window === 'undefined') return false;
   try {
-    return window.sessionStorage.getItem(dismissKey) === '1';
+    return storeFor(signage.variant).getItem(signage.dismissKey) === '1';
   } catch {
     // Private mode / storage disabled -- show the banner rather than crash.
     return false;
@@ -37,25 +51,24 @@ export function SubscriptionBanner({
   locale: string;
 }) {
   const tBilling = useTranslations('billing');
-  const dismissKey = signage?.dismissKey ?? null;
   // Seeded synchronously on first render, then re-read whenever the billing
   // state (and so the key) changes. Reading storage in the initializer is
   // hydration-safe HERE because this component only renders inside the
   // dashboard's client-only `ready` branch, which never exists in server HTML;
   // it is what stops a banner dismissed earlier in the session from painting
   // for a frame and then vanishing (a flash plus a layout shift on every visit).
-  const [dismissed, setDismissed] = useState(() => readDismissed(dismissKey));
+  const [dismissed, setDismissed] = useState(() => readDismissed(signage));
 
   useEffect(() => {
-    setDismissed(readDismissed(dismissKey));
-  }, [dismissKey]);
+    setDismissed(readDismissed(signage));
+  }, [signage]);
 
   if (signage === null || dismissed) return null;
 
   function dismiss() {
     setDismissed(true);
     try {
-      if (dismissKey !== null) window.sessionStorage.setItem(dismissKey, '1');
+      if (signage !== null) storeFor(signage.variant).setItem(signage.dismissKey, '1');
     } catch {
       // Dismissal just does not survive the next page load. Not worth a crash.
     }
