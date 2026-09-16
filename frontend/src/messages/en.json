@@ -1162,7 +1162,8 @@
       "not_interested_body_no_company": "The employer went with other candidates. Your profile keeps everything you already answered for your next application.",
       "view_job": "View job",
       "view_applications": "View my applications",
-      "find_jobs": "Find other jobs"
+      "find_jobs": "Find other jobs",
+      "already_complete_note": "Your application was sent. Contact the employer through WhatsApp to change it."
     },
     "cert_question": "Do you have {name}?",
     "cert_use_vault": "Use {file} from your vault",

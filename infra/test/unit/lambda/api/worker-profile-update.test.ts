@@ -425,6 +425,83 @@ describe('worker-profile-update', () => {
   });
 
   // ── L6: the stored custom trade is canonicalised ───────────────────
+  /**
+   * F9 (sprint 26). `users.main_trade_other` is free text that only means
+   * anything while `main_trade = 'other'`; `chk_trade_other` (migration 004)
+   * is the constraint that ties them.
+   *
+   * The UPDATE's CASE cleared the text whenever the REQUEST named a
+   * catalogue trade -- but a PATCH is partial, and a payload carrying only
+   * `main_trade_other` left `$3` NULL, fell to the ELSE branch, and wrote the
+   * free text onto a worker whose stored `main_trade` is a real catalogue
+   * value. The row then says "painter" and "dog groomer" at the same time,
+   * and every reader that gates on `main_trade === 'other'` silently ignores
+   * text the worker can still see in their profile.
+   *
+   * The CASE now resolves against `COALESCE($3, main_trade)` -- in an UPDATE
+   * the bare column reference is the PRE-update value, so an omitted
+   * `main_trade` is answered by what is already stored.
+   */
+  describe('main_trade_other coherence with main_trade', () => {
+    const usersUpdateCall = () =>
+      mockQuery.mock.calls.find(([q]) => typeof q === 'string' && q.includes('UPDATE users SET'));
+
+    beforeEach(() => {
+      mockQuery.mockImplementation((q: string) => {
+        if (q.includes('INSERT INTO worker_profiles')) {
+          return Promise.resolve({ rows: [{ user_id: 'u', skills: [], availability: null, years_experience: null, experience_months: null, location: null, bio: null, certifications: [] }] });
+        }
+        return Promise.resolve({ rows: [] });
+      });
+    });
+
+    it('resolves the trade from the request, else the stored column -- never "unknown"', async () => {
+      const res = await handler(mkEv({ main_trade_other: 'dog groomer' }));
+
+      expect(res.statusCode).toBe(200);
+      const [sql, params] = usersUpdateCall()!;
+      // The request named no trade, so $3 is null and the CASE has to fall
+      // back to the stored value rather than treating the row as trade-less.
+      expect(params[2]).toBeNull();
+      expect(sql).toMatch(/WHEN COALESCE\(\$3, main_trade\) = 'other' THEN COALESCE\(\$4, main_trade_other\)/);
+      expect(sql).toMatch(/WHEN COALESCE\(\$3, main_trade\) IS NOT NULL THEN NULL/);
+      // The old shape read $3 alone, so a partial PATCH never cleared anything.
+      expect(sql).not.toMatch(/WHEN \$3 IS NOT NULL THEN NULL/);
+    });
+
+    it('a catalogue main_trade clears any free text sent alongside it', async () => {
+      const res = await handler(mkEv({ main_trade: 'painting', main_trade_other: 'dog groomer' }));
+
+      expect(res.statusCode).toBe(200);
+      const [sql, params] = usersUpdateCall()!;
+      expect(params[2]).toBe('painting');
+      // $3 is a catalogue value, so the CASE writes NULL whatever $4 carries.
+      expect(sql).toMatch(/WHEN COALESCE\(\$3, main_trade\) IS NOT NULL THEN NULL/);
+    });
+
+    it('keeps the free text updatable while the STORED trade is other', async () => {
+      const res = await handler(mkEv({ main_trade_other: 'dog groomer' }));
+
+      expect(res.statusCode).toBe(200);
+      const [sql, params] = usersUpdateCall()!;
+      // The stored-'other' worker is the case a blanket NULL would break:
+      // clearing the text there violates chk_trade_other outright.
+      expect(sql).toMatch(/WHEN COALESCE\(\$3, main_trade\) = 'other' THEN COALESCE\(\$4, main_trade_other\)/);
+      expect(params[3]).toBe('dog groomer');
+    });
+
+    it('still refuses main_trade=other with blank text, before touching the database', async () => {
+      const blank = await handler(mkEv({ main_trade: 'other', main_trade_other: '   ' }));
+      const missing = await handler(mkEv({ main_trade: 'other' }));
+
+      for (const res of [blank, missing]) {
+        expect(res.statusCode).toBe(400);
+        expect(JSON.parse(res.body).error).toBe('main_trade_other_required');
+      }
+      expect(mockGetDbPool).not.toHaveBeenCalled();
+    });
+  });
+
   describe('custom trade canonicalisation', () => {
     /** Answers the one `trade_aliases` SELECT the way migration 060's seeded
      * rows would, and records the query order so the pre-BEGIN placement of

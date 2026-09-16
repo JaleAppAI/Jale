@@ -235,6 +235,19 @@ describe('ApplicationSaveResult branches', () => {
         expect(result).toEqual({ kind: 'blocked', reason: 'stage_locked', state: STATE });
     });
 
+    // F2 (Luis ruling, sprint 26): a completed application is locked on the
+    // web too. The door answers 409 `application_locked` with the fresh
+    // state, whose `details_completed_at` is what makes the flow render its
+    // read-only panel -- so this must land as `blocked`, never as a thrown
+    // ApiError the form has no way to show.
+    it('maps 409 application_locked to { kind: blocked } carrying the fresh state', async () => {
+        fetchMock.mockResolvedValue(json(409, { error: 'application_locked', state: STATE }));
+
+        const result = await postApplicationAnswers(TOKEN, APPLICATION_ID, { years_experience: 7 });
+
+        expect(result).toEqual({ kind: 'blocked', reason: 'application_locked', state: STATE });
+    });
+
     it('maps 409 application_closed to { kind: blocked } carrying the fresh state', async () => {
         fetchMock.mockResolvedValue(json(409, { error: 'application_closed', state: STATE }));
 

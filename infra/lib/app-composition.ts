@@ -101,6 +101,9 @@ export function buildJaleApp(app: cdk.App): void {
     // rdsSg is passed in so the ingress rule can be created INSIDE
     // BastionStack, avoiding a cyclic NetworkStack <-> BastionStack dependency.
     rdsSg: network.rdsSg,
+    // F23: optional, and absent on the `deploy-bastion.sh` path, which
+    // synthesizes this stack alone with no alarm context.
+    alarmTopicArn: app.node.tryGetContext('whatsappAlarmTopicArn'),
   });
 
   // Grant the bastion's instance role read on the internal DB secrets.

@@ -88,6 +88,69 @@ export async function writeAttribution(
   return { written: true };
 }
 
+/** Why a first-touch write did not happen. `already_attributed` is the
+ * normal, correct outcome for a worker who already has a referrer;
+ * `not_persisted` means FORCE RLS filtered the INSERT and is a fault. */
+export type FirstTouchOutcome =
+  | { written: true }
+  | { written: false; reason: 'already_attributed' | 'not_persisted' };
+
+/**
+ * FIRST-TOUCH-ONLY attribution: credits `source` to `workerId` if and only if
+ * the worker has no `worker_attribution` row at all.
+ *
+ * `ON CONFLICT (worker_id) DO NOTHING` is not a softer `writeAttribution` --
+ * it is the only thing the schema permits for this case.
+ * `worker_attribution_first_touch_immutable` (migration 056, extended by 063)
+ * raises on any UPDATE that changes a `first_*` column, so a worker who
+ * already has a row can never be re-credited, and the existing row's
+ * `latest_*` must be left alone too: refreshing it would move the credit for
+ * a touch this lane has decided not to count.
+ *
+ * That makes the call idempotent on replay, which is what the WhatsApp lane
+ * needs -- a worker can type the same code any number of times, and SQS can
+ * redeliver the message that carried it.
+ *
+ * A zero-row result is ambiguous under FORCE RLS: it is either the existing
+ * row (the correct no-op) or a silently filtered write. They are told apart
+ * with an explicit existence read rather than guessed at, because only the
+ * second is worth a metric -- `writeAttribution` was changed once already for
+ * reporting a filtered write as success.
+ */
+export async function writeFirstTouchAttribution(
+  client: PoolClient,
+  workerId: string,
+  source: AttributionSource,
+  now: Date,
+  metric: string,
+): Promise<FirstTouchOutcome> {
+  const nowIso = now.toISOString();
+  const inserted = await client.query(
+    `INSERT INTO worker_attribution
+        (worker_id,
+         first_share_code, first_channel, first_job_id, first_referrer_worker_id, first_referrer_employer_id, first_seen_at,
+         latest_share_code, latest_channel, latest_job_id, latest_referrer_worker_id, latest_referrer_employer_id, latest_seen_at,
+         created_at, updated_at)
+     VALUES ($1,
+             $2, $3, $4, $5, $6, $7,
+             $2, $3, $4, $5, $6, $7,
+             $7, $7)
+     ON CONFLICT (worker_id) DO NOTHING`,
+    [workerId, source.shareCode, source.channel, source.jobId, source.referrerWorkerId, source.referrerEmployerId, nowIso],
+  );
+
+  if (inserted.rowCount === 1) return { written: true };
+
+  const existing = await client.query(
+    `SELECT 1 FROM worker_attribution WHERE worker_id = $1`,
+    [workerId],
+  );
+  if ((existing.rowCount ?? 0) > 0) return { written: false, reason: 'already_attributed' };
+
+  console.error(JSON.stringify({ metric, workerId }));
+  return { written: false, reason: 'not_persisted' };
+}
+
 /**
  * Web referral-apply attribution: resolves a share code and credits the
  * referral for the authenticated claimer.

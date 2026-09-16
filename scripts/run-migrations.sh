@@ -95,18 +95,21 @@ SENTINEL="__JALE_MIGRATION_RUN_OK__"
 # capped so that a fresh database cannot build one oversized request.
 MAX_PAYLOAD_BYTES=60000
 
-# Overhead added by apply_batch()'s APPLY_ONE heredoc (~lines 559-570) around
-# each migration file's base64 payload. The payload itself ($b64) is already
-# counted separately via `encode_migration | wc -c`; everything else in that
-# heredoc is measured here so the batch packer accounts for what SSM actually
+# Overhead added by apply_batch()'s APPLY_ONE heredoc around each migration
+# file's base64 payload. The payload itself ($b64) is already counted
+# separately via `encode_migration | wc -c`; everything else in that heredoc
+# is measured here so the batch packer accounts for what SSM actually
 # receives, not just the payload. Measured by rendering APPLY_ONE with
-# f="" sum="" b64="" and piping the result through `wc -c`: 502 bytes. Within
-# that fixed text, the filename ($f) is substituted 4 times -- the "-> $f"
-# progress line, the "decoded to nothing" and "failed checksum verification"
-# error messages, and the ledger INSERT's VALUES list -- and the checksum
-# ($sum) is substituted 2 times -- the transfer-verification test and that
-# same INSERT. Recompute APPLY_ONE_FIXED_BYTES if APPLY_ONE's body changes.
-APPLY_ONE_FIXED_BYTES=502
+# f="" sum="" b64="" (and LEDGER_TABLE at its real value) and piping the
+# result through `wc -c`: 691 bytes -- was 502 before F16 added the
+# stderr-capture wrapper around the apply, which is worth 189 bytes per file
+# and shrinks each batch by that much. Within that fixed text, the filename
+# ($f) is substituted 4 times -- the "-> $f" progress line, the "decoded to
+# nothing" and "failed checksum verification" error messages, and the ledger
+# INSERT's VALUES list -- and the checksum ($sum) is substituted 2 times --
+# the transfer-verification test and that same INSERT. Recompute
+# APPLY_ONE_FIXED_BYTES if APPLY_ONE's body changes.
+APPLY_ONE_FIXED_BYTES=691
 APPLY_ONE_FILENAME_OCCURRENCES=4
 APPLY_ONE_CHECKSUM_OCCURRENCES=2
 # sha256_of (below) always returns a 64-character lowercase hex digest.
@@ -707,7 +710,13 @@ printf '%s' '$b64' | base64 -d | gunzip > /tmp/jale-mig.sql
 test -s /tmp/jale-mig.sql || { echo "!! $f decoded to nothing" >&2; exit 1; }
 test "\$(sha256sum /tmp/jale-mig.sql | cut -d' ' -f1)" = "$sum" \
   || { echo "!! $f failed checksum verification after transfer" >&2; exit 1; }
-"\${PG[@]}" -f /tmp/jale-mig.sql
+if ! "\${PG[@]}" -f /tmp/jale-mig.sql 2>/tmp/jale-mig.err; then
+  sed 's/^/      /' /tmp/jale-mig.err >&2
+  rm -f /tmp/jale-mig.err /tmp/jale-mig.sql
+  exit 1
+fi
+sed 's/^/      /' /tmp/jale-mig.err
+rm -f /tmp/jale-mig.err
 "\${PG[@]}" -q -c "INSERT INTO $LEDGER_TABLE (filename, checksum)
   VALUES ('$f', '$sum')
   ON CONFLICT (filename) DO UPDATE SET checksum = EXCLUDED.checksum;"

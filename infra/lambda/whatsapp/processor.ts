@@ -107,6 +107,7 @@ import {
 import { loadRequirementSnapshot } from '../lib/application-requirements';
 import { parsePreApplicationPromptList } from '../lib/pre-application-prompts';
 import { hashToken } from '../lib/referral-codes';
+import { writeFirstTouchAttribution } from '../lib/referral-attribution';
 import {
   handlePostLaneMessage,
   discardActiveDraft,
@@ -2222,23 +2223,118 @@ async function handleApplicationStart(
  *     freshness gate that matters is the job's own `status = 'active'`,
  *     enforced by `handleJobAction` (a filled/closed job answers
  *     `job_not_found`).
- * Referral ATTRIBUTION is NOT credited on this path: crediting means writing
- * `referral_pending_claims` / `worker_attribution`, which this lane does not
- * own. Recorded as a follow-up rather than guessed at here.
+ * `share_code` and `expires_at` come back alongside the job because F8
+ * credits the referrer off this same read -- see `creditTypedCodeReferral`.
+ * Neither column changes what the worker is SHOWN: the reply is the job, or
+ * `job_code_not_found`, exactly as before.
  *
  * `jale_whatsapp` already holds SELECT on `referral_apply_tokens` (the same
  * table `parkPendingClaim` UPDATEs from this lane). The raw token is hashed
  * before it touches SQL and is never logged.
  */
-async function resolveApplyTokenJobId(
+interface ApplyTokenRow {
+  job_id: string;
+  share_code: string | null;
+  expires_at: string;
+}
+
+async function resolveApplyToken(
   client: PoolClient,
   rawToken: string,
-): Promise<string | null> {
-  const res = await client.query<{ job_id: string }>(
-    `SELECT job_id FROM referral_apply_tokens WHERE token_hash = $1`,
+): Promise<ApplyTokenRow | null> {
+  const res = await client.query<ApplyTokenRow>(
+    `SELECT job_id, share_code, expires_at FROM referral_apply_tokens WHERE token_hash = $1`,
     [hashToken(rawToken)],
   );
-  return res.rows[0]?.job_id ?? null;
+  return res.rows[0] ?? null;
+}
+
+/**
+ * F8 (Luis ruling, 2026-09-16). An ALREADY-ONBOARDED worker who types a
+ * `JALE-XXXXXXXX` code credits the referrer.
+ *
+ * Until now only the pre-auth lane credited anything: `parkPendingClaim`
+ * parks a claim for a phone with no `users` row, and `claimPendingReferral`
+ * turns it into `worker_attribution` at the end of onboarding. A worker who
+ * already had an account and typed the same code got the job and the referrer
+ * got nothing -- the commonest shape there is, since the person sharing
+ * usually shares with someone already on Jale.
+ *
+ * FIRST ATTRIBUTION ONLY, and that is the schema's rule rather than a policy
+ * choice: `worker_attribution_first_touch_immutable` rejects any UPDATE that
+ * moves a `first_*` column, so `writeFirstTouchAttribution` inserts or does
+ * nothing. A worker who already has a row -- referred, or organic from their
+ * own signup -- is never re-attributed, and typing the code again (or SQS
+ * redelivering the message) changes nothing.
+ *
+ * WHAT IS DELIBERATELY NOT CREDITED:
+ *   - an EXPIRED token. Expiry bounds the browser-to-WhatsApp handoff, and
+ *     `handleTypedJobCode` still answers with the job because the job's own
+ *     `status` is the freshness gate that matters -- but a handoff window
+ *     that closed is not a referral to pay for.
+ *   - a token with no `share_code`, which carries no referrer at all.
+ *   - a SELF-referral. `writeWebAttribution` guards this and says why: the
+ *     first-touch trigger makes self-credit permanent, so any future reward
+ *     keyed on `first_referrer_worker_id` would pay a worker for referring
+ *     themselves. Both referrer columns are checked, exactly as there.
+ *
+ * The token is NOT consumed. Typing a code is an inquiry (see
+ * `resolveApplyToken`'s note), and consuming it here would break the
+ * pre-auth lane for whoever the code was actually sent to.
+ *
+ * `channel` is copied from the share link and never invented.
+ * `job_share_links.channel` and `worker_attribution.first_channel` carry the
+ * SAME six-value CHECK (migration 056), so the copy can never raise -- which
+ * matters more than it reads: this runs inside the turn's transaction, and a
+ * failed statement would abort the whole turn, costing the worker the job
+ * reply over an analytics write.
+ */
+async function creditTypedCodeReferral(
+  client: PoolClient,
+  workerId: string,
+  token: ApplyTokenRow,
+  now: Date,
+): Promise<void> {
+  if (!token.share_code) return;
+  if (new Date(token.expires_at).getTime() <= now.getTime()) return;
+
+  const linkResult = await client.query<{
+    channel: string;
+    referrer_worker_id: string | null;
+    referrer_employer_id: string | null;
+  }>(
+    `SELECT channel, referrer_worker_id, referrer_employer_id
+       FROM job_share_links
+      WHERE code = $1
+        AND revoked_at IS NULL`,
+    [token.share_code],
+  );
+
+  const link = linkResult.rows[0];
+  if (!link) return;
+  if (link.referrer_worker_id === null && link.referrer_employer_id === null) return;
+  if (link.referrer_worker_id === workerId || link.referrer_employer_id === workerId) return;
+
+  const outcome = await writeFirstTouchAttribution(
+    client,
+    workerId,
+    {
+      jobId: token.job_id,
+      channel: link.channel,
+      shareCode: token.share_code,
+      referrerWorkerId: link.referrer_worker_id,
+      referrerEmployerId: link.referrer_employer_id,
+    },
+    now,
+    'TypedCodeAttributionNotPersisted',
+  );
+
+  console.log(JSON.stringify({
+    event: 'TypedCodeReferralAttribution',
+    workerId,
+    written: outcome.written,
+    ...(outcome.written ? {} : { reason: outcome.reason }),
+  }));
 }
 
 /**
@@ -2263,12 +2359,20 @@ async function handleTypedJobCode(
   msg: IncomingMessage,
   rawToken: string,
 ): Promise<void> {
-  const jobId = await resolveApplyTokenJobId(client, rawToken);
-  if (!jobId) {
+  const token = await resolveApplyToken(client, rawToken);
+  if (!token) {
     // Unknown, mistyped, or a code for a deleted job. Never says which --
     // and always names a keyword that works.
     await queueReply(client, msg.messageSid, msg.from, 'job_code_not_found', conv.language);
     return;
+  }
+  const jobId = token.job_id;
+
+  // F8: credit the referrer BEFORE the reply is composed, so the attribution
+  // and the job answer either both land or both roll back with the turn.
+  // Nothing here changes what the worker sees.
+  if (conv.user_id) {
+    await creditTypedCodeReferral(client, conv.user_id, token, new Date());
   }
 
   if (!conv.state_context) {

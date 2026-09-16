@@ -1552,6 +1552,7 @@ describe('Processor Lambda', () => {
     // exit test.
     function mockFillSnapshotRow(
       row: Partial<{
+        id: string;
         worker_id: string; job_id: string; application_status: string;
         application_answers: Record<string, unknown>; job_status: string;
         required_fields: string[]; required_docs: string[]; optional_docs: string[];
@@ -2676,9 +2677,12 @@ describe('Processor Lambda', () => {
           expect(bodies[0]).toContain('"1 ');
 
           // Typing a code is an INQUIRY: the token is read, never consumed,
-          // and no referral claim is parked or credited.
+          // and no pending claim is parked (that is the PRE-auth lane's job).
+          // F8 credits attribution on this path, but only from a token that
+          // actually carries a share_code -- this one does not.
           expect(countQueryByPattern(/UPDATE referral_apply_tokens/i)).toBe(0);
           expect(countQueryByPattern(/referral_pending_claims/i)).toBe(0);
+          expect(countQueryByPattern(/INSERT INTO worker_attribution/i)).toBe(0);
         });
 
         it('appends the referred job to an existing numbered list instead of renumbering it', async () => {
@@ -2726,6 +2730,165 @@ describe('Processor Lambda', () => {
           // No job was looked up and nothing was armed.
           expect(countQueryByPattern(/FROM jobs\s+WHERE id = \$1/i)).toBe(0);
           expect(stateContextUpdates().some((sc) => Array.isArray(sc.recent_jobs))).toBe(false);
+          // F8: an unresolvable code credits nobody.
+          expect(countQueryByPattern(/worker_attribution/i)).toBe(0);
+        });
+
+        // ── F8 (Luis ruling 2026-09-16): typing a code credits the referrer ──
+        //
+        // Before this, only the PRE-auth lane credited anything: a phone with
+        // no `users` row parked a claim (`parkPendingClaim`) that onboarding
+        // later turned into `worker_attribution`. Someone who already had a
+        // Jale account -- the commonest person to share with -- typed the
+        // code, got the job, and the referrer got nothing.
+        describe('F8: referral attribution for an already-onboarded worker', () => {
+          const FUTURE = '2099-01-01T00:00:00.000Z';
+          const PAST = '2020-01-01T00:00:00.000Z';
+
+          function mockToken(overrides: Record<string, unknown> = {}): void {
+            mockQuery.mockResolvedValueOnce({
+              rowCount: 1,
+              rows: [{ job_id: 'job-referred', share_code: 'ABCD1234', expires_at: FUTURE, ...overrides }],
+            });
+          }
+
+          function mockShareLink(overrides: Record<string, unknown> = {}): void {
+            mockQuery.mockResolvedValueOnce({
+              rowCount: 1,
+              rows: [{
+                channel: 'facebook',
+                referrer_worker_id: 'referrer-1',
+                referrer_employer_id: null,
+                ...overrides,
+              }],
+            });
+          }
+
+          /** Everything after the attribution attempt: the job answer itself. */
+          function mockJobAnswerTail(): void {
+            mockStateContextUpdate(); // recent_jobs arm
+            mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [referredJobRow()] });
+            mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox job details
+            mockBoundWorkerTail();
+          }
+
+          function attributionInsert() {
+            return mockQuery.mock.calls.find(
+              ([sql]) => /INSERT INTO worker_attribution/i.test(sql as string),
+            );
+          }
+
+          async function typeCode(sid: string): Promise<void> {
+            await handler(
+              makeSqsEvent({ MessageSid: sid, From: 'whatsapp:+15125551234', Body: 'JALE-ABCD1234' }),
+              {} as any,
+              {} as any,
+            );
+          }
+
+          it('credits the referrer, and still answers with the job exactly as before', async () => {
+            mockConvTurn('SM-code-credit');
+            mockToken();
+            mockShareLink();
+            mockQuery.mockResolvedValueOnce(ok()); // INSERT worker_attribution (inserted)
+            mockJobAnswerTail();
+
+            await typeCode('SM-code-credit');
+
+            const insert = attributionInsert();
+            expect(insert).toBeDefined();
+            // ON CONFLICT DO NOTHING is the whole first-touch rule: the
+            // immutability trigger rejects any UPDATE of a first_* column.
+            expect(insert![0]).toMatch(/ON CONFLICT \(worker_id\) DO NOTHING/i);
+            const params = insert![1] as unknown[];
+            expect(params[0]).toBe('user-1');          // the typing worker
+            expect(params[1]).toBe('ABCD1234');        // share code
+            expect(params[2]).toBe('facebook');        // the LINK's channel, never 'whatsapp'
+            expect(params[3]).toBe('job-referred');
+            expect(params[4]).toBe('referrer-1');      // the referrer being credited
+            expect(params[5]).toBeNull();
+
+            // The visible reply is untouched.
+            const bodies = outboxBodies();
+            expect(bodies).toHaveLength(1);
+            expect(bodies[0]).toContain('Roofer');
+            // And the token is still not consumed.
+            expect(countQueryByPattern(/UPDATE referral_apply_tokens/i)).toBe(0);
+          });
+
+          it('a second code never re-attributes a worker who already has a referrer', async () => {
+            mockConvTurn('SM-code-again');
+            mockToken({ share_code: 'WXYZ5678' });
+            mockShareLink({ referrer_worker_id: 'referrer-2' });
+            mockQuery.mockResolvedValueOnce({ rowCount: 0, rows: [] }); // INSERT ... DO NOTHING: conflict
+            mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [{ '?column?': 1 }] }); // the row already exists
+            mockJobAnswerTail();
+
+            await typeCode('SM-code-again');
+
+            // Nothing may move the existing attribution -- not first_*, which
+            // the trigger rejects, and not latest_* either: this lane decided
+            // the touch does not count.
+            expect(countQueryByPattern(/UPDATE worker_attribution/i)).toBe(0);
+            expect(countQueryByPattern(/DO UPDATE/i)).toBe(0);
+            // Still answered with the job.
+            expect(outboxBodies()[0]).toContain('Roofer');
+          });
+
+          it('an EXPIRED code credits nobody but answers with the job exactly as today', async () => {
+            mockConvTurn('SM-code-expired');
+            mockToken({ expires_at: PAST });
+            mockJobAnswerTail();
+
+            await typeCode('SM-code-expired');
+
+            // Expiry bounds the browser-to-WhatsApp handoff, so there is no
+            // referral to pay for -- but the job's own status is the gate that
+            // decides what the worker is told, and it has not changed.
+            expect(countQueryByPattern(/worker_attribution/i)).toBe(0);
+            expect(countQueryByPattern(/FROM job_share_links/i)).toBe(0);
+            expect(outboxBodies()[0]).toContain('Roofer');
+          });
+
+          it('never credits a worker for referring themselves', async () => {
+            mockConvTurn('SM-code-self');
+            mockToken();
+            mockShareLink({ referrer_worker_id: 'user-1' });
+            mockJobAnswerTail();
+
+            await typeCode('SM-code-self');
+
+            // First touch is immutable, so a self-credit would be permanent
+            // and any reward keyed on first_referrer_worker_id would pay for it.
+            expect(countQueryByPattern(/worker_attribution/i)).toBe(0);
+            expect(outboxBodies()[0]).toContain('Roofer');
+          });
+
+          it('credits an employer referrer through the same door', async () => {
+            mockConvTurn('SM-code-employer');
+            mockToken();
+            mockShareLink({ referrer_worker_id: null, referrer_employer_id: 'employer-9' });
+            mockQuery.mockResolvedValueOnce(ok());
+            mockJobAnswerTail();
+
+            await typeCode('SM-code-employer');
+
+            const params = attributionInsert()![1] as unknown[];
+            expect(params[4]).toBeNull();
+            expect(params[5]).toBe('employer-9');
+          });
+
+          it('credits nobody for an organic link with no referrer at all', async () => {
+            mockConvTurn('SM-code-organic');
+            mockToken();
+            mockShareLink({ referrer_worker_id: null, referrer_employer_id: null });
+            mockJobAnswerTail();
+
+            await typeCode('SM-code-organic');
+
+            expect(countQueryByPattern(/worker_attribution/i)).toBe(0);
+            expect(outboxBodies()[0]).toContain('Roofer');
+          });
         });
 
         it('prose that trips the LOOSE token parser still reaches the employer', async () => {
@@ -3373,6 +3536,12 @@ describe('Processor Lambda', () => {
       // application-fill.test.ts's own exhaustive coverage of
       // `resolveOfferOnlyTurn`) arms the offered application and prompts its
       // first gap on an affirmative reply.
+      //
+      // F1 (sprint 26): that arm now runs through `armFill` like every other
+      // entry point, so the query sequence below is `handleApplicationStart`'s
+      // -- an unsynced ownership load, the `intro_profile_check`
+      // announcement, the seed, the arm write, the post-seed counts, the
+      // counted intro -- and only then the first question.
       it('the seam fires when only fill_offer_application_id is set: "1" arms the offered application and prompts its first gap', async () => {
         mockQuery
           .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
@@ -3388,8 +3557,15 @@ describe('Processor Lambda', () => {
             })],
           })
           .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // v2 forced-idle writeback
-        mockStateContextUpdate(); // resolveOfferOnlyTurn's accept write (offer cleared, fill_application_id armed)
-        mockFillSnapshotRow({ required_fields: ['work_authorization'], application_answers: {} }); // promptNextStep's re-derive
+        mockStateContextUpdate(); // resolveOfferOnlyTurn clears the offer key on its own
+        mockFillSnapshotRow({ id: 'app-2', required_fields: ['work_authorization'], application_answers: {} }); // the UNSYNCED ownership load
+        mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox: intro_profile_check
+        mockSeedNoDefaults();
+        mockStateContextUpdate(); // armFill's arm write
+        mockFillSnapshotRow({ id: 'app-2', required_fields: ['work_authorization'], application_answers: {} }); // armFill's post-seed counts
+        mockCompanyLookup('ABC');
+        mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox: counted intro
+        mockFillSnapshotRow({ id: 'app-2', required_fields: ['work_authorization'], application_answers: {} }); // promptNextStep's re-derive
         mockStateContextUpdate(); // fill_last_prompt_at stamp
         mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox: first field question
         mockQuery
@@ -3411,12 +3587,17 @@ describe('Processor Lambda', () => {
           {} as any,
         );
 
-        // The offer was consumed and turned into an armed fill in ONE write.
+        // The offer was consumed and the lane armed on the offered id.
         const armWrite = stateContextUpdates().find((sc) => sc.fill_application_id === 'app-2');
         expect(armWrite).toBeDefined();
         expect(armWrite?.fill_offer_application_id).toBeNull();
 
-        expect(outboxBodies()).toContain(fieldQuestion('work_authorization', 'en'));
+        // F1: the announcement `armFill` enforces precedes the questions --
+        // the worker is TOLD their profile is about to be used.
+        const bodies = outboxBodies();
+        expect(bodies[0]).toBe(fillMessage('intro_profile_check', 'en'));
+        expect(bodies).toContain(fillMessage('intro', 'en', { company: 'ABC', n_fields: '1', n_docs: '0' }));
+        expect(bodies).toContain(fieldQuestion('work_authorization', 'en'));
 
         // Regression guard (Task 11 review, Critical): the outbox assertion
         // above alone does NOT catch a stale `ctx.stateContext` -- the mock
@@ -3432,8 +3613,13 @@ describe('Processor Lambda', () => {
         const computeNextStepCalls = mockQuery.mock.calls.filter(
           ([sql]) => /FROM job_applications ja JOIN jobs j/i.test(sql as string),
         );
-        expect(computeNextStepCalls).toHaveLength(1);
-        expect(computeNextStepCalls[0][1]).toEqual(['app-2']);
+        // Three snapshot loads now: the unsynced ownership load, armFill's
+        // post-seed synced load, and promptNextStep's re-derive. EVERY one of
+        // them must carry the offered id.
+        expect(computeNextStepCalls).toHaveLength(3);
+        for (const call of computeNextStepCalls) {
+          expect(call[1]).toEqual(['app-2']);
+        }
       });
 
       // ── F1 (sprint 24, BLOCKER): the LISTO gate holds at the tail ──────

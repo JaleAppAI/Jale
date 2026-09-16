@@ -302,6 +302,11 @@ function mapFailure(result: MergeFailure): { status: number; error: string; with
       return { status: 400, error: 'payload_too_large', withState: false };
     case 'stage_locked':
       return { status: 409, error: 'stage_locked', withState: true };
+    // F2: already sent. `withState: true` so the response carries the fresh
+    // state doc, whose own `details_completed_at` is what makes the flow
+    // render its read-only panel -- the worker gets the reason, not an error.
+    case 'locked':
+      return { status: 409, error: 'application_locked', withState: true };
     case 'closed':
       return { status: 409, error: 'application_closed', withState: true };
     case 'certification_document_limit':
