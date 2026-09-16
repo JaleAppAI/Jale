@@ -1355,8 +1355,6 @@
     "details": "Detalles",
     "posted": "Publicado",
     "duration": "Duración",
-    "experience_years_unit": "{n, plural, one {# año} other {# años}}",
-    "experience_months_unit": "{n, plural, one {# mes} other {# meses}}",
     "about_jale": "Jale conecta a trabajadores y empleadores por WhatsApp: sin currículum, sin descargas. Siempre gratis para trabajadores.",
     "facts": {
       "schedule": "Horario y fechas",

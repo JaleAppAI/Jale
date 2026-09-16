@@ -196,7 +196,7 @@ describe('worker job detail — the facts card', () => {
             [t('openings'), '1/3'],
             [t('facts.location'), 'Austin, TX'],
             [t('trade'), message('employer_dashboard.modal.trade.drywall')],
-            [t('required_experience'), '3'],
+            [t('required_experience'), '3 years'],
             [t('language'), message('public_job.language_es')],
         ]);
     });

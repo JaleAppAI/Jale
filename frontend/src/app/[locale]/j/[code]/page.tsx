@@ -13,7 +13,13 @@ import {
 import { Link } from '@/i18n/navigation';
 import { formatLongDate, formatStartDate } from '@/lib/date';
 import { formatPay } from '@/lib/pay';
-import { durationLabel, scheduleSummary, tradeLabel, type Translator } from '@/lib/job-detail-display';
+import {
+  durationLabel,
+  experienceLabel,
+  scheduleSummary,
+  tradeLabel,
+  type Translator,
+} from '@/lib/job-detail-display';
 import { getPublicJob, isClosedJob, PublicJobNotFoundError } from '@/lib/api/publicJob';
 import type { PublicJobActive, PublicJobDocType } from '@/lib/api/publicJob';
 import { buildJobPostingJsonLd, serializeJsonLd } from '@/lib/seo/jobPostingJsonLd';
@@ -377,11 +383,7 @@ export default async function PublicJobPage({ params }: PageProps) {
       .filter(Boolean)
       .join(' · ') || null);
   const tradeText = tradeLabel(active, tTrade, tDetail);
-  const experienceText = formatExperience(
-    t,
-    active.required_experience_years,
-    active.required_experience_months,
-  );
+  const experienceText = experienceLabel(active, tCommon);
   const languageText = active.language_preference && active.language_preference.length > 0
     ? active.language_preference.map(languageLabel).join(' / ')
     : null;
@@ -602,18 +604,4 @@ function docLabel(t: Awaited<ReturnType<typeof getTranslations>>, doc: PublicJob
   if (doc === 'resume') return t('doc_resume');
   if (doc === 'driver_license') return t('doc_driver_license');
   return t('doc_ssn');
-}
-
-/** Combines required_experience_years/months into one localized phrase
- * ("2 years 6 months", "3 years", "6 months"). Returns null when neither
- * field is set (or both are zero), so callers can skip the row entirely. */
-function formatExperience(
-  t: Awaited<ReturnType<typeof getTranslations>>,
-  years: number | null | undefined,
-  months: number | null | undefined,
-): string | null {
-  const parts: string[] = [];
-  if (years) parts.push(t('experience_years_unit', { n: years }));
-  if (months) parts.push(t('experience_months_unit', { n: months }));
-  return parts.length > 0 ? parts.join(' ') : null;
 }
