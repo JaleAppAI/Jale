@@ -252,6 +252,16 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // `chk_trade_other` can never see main_trade='other' with a null other:
     // the canonical 'other' branch always carries text, and the promoted
     // standard-key branch is exactly the case the UPDATE's CASE clears.
+    //
+    // F9: the CASE resolves the trade as `COALESCE($3, main_trade)`, not $3
+    // alone. A PATCH is partial -- a payload carrying only main_trade_other
+    // leaves $3 null, and reading $3 alone sent that text down the ELSE
+    // branch and stored it on a worker whose main_trade is a catalogue
+    // value. In an UPDATE a bare column reference is the PRE-update value,
+    // so the fallback is exactly "the trade already on the row". The ELSE is
+    // now reached only when BOTH are null -- a worker with no trade at all,
+    // where free text is the only thing there is to keep and
+    // `chk_trade_other` explicitly allows main_trade IS NULL.
     const effectiveMainTrade = canonicalTrade?.main_trade ?? main_trade ?? null;
     const normalizedTradeOther = canonicalTrade ? canonicalTrade.main_trade_other : rawTradeOther;
     const userExperience = typeof years_experience === 'string' ? years_experience : null;
@@ -265,8 +275,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          city = COALESCE($2, city),
          main_trade = COALESCE($3, main_trade),
          main_trade_other = CASE
-           WHEN $3 = 'other' THEN COALESCE($4, main_trade_other)
-           WHEN $3 IS NOT NULL THEN NULL
+           WHEN COALESCE($3, main_trade) = 'other' THEN COALESCE($4, main_trade_other)
+           WHEN COALESCE($3, main_trade) IS NOT NULL THEN NULL
            ELSE COALESCE($4, main_trade_other)
          END,
          years_experience = COALESCE($5, years_experience),

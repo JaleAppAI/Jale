@@ -2677,9 +2677,12 @@ describe('Processor Lambda', () => {
           expect(bodies[0]).toContain('"1 ');
 
           // Typing a code is an INQUIRY: the token is read, never consumed,
-          // and no referral claim is parked or credited.
+          // and no pending claim is parked (that is the PRE-auth lane's job).
+          // F8 credits attribution on this path, but only from a token that
+          // actually carries a share_code -- this one does not.
           expect(countQueryByPattern(/UPDATE referral_apply_tokens/i)).toBe(0);
           expect(countQueryByPattern(/referral_pending_claims/i)).toBe(0);
+          expect(countQueryByPattern(/INSERT INTO worker_attribution/i)).toBe(0);
         });
 
         it('appends the referred job to an existing numbered list instead of renumbering it', async () => {
@@ -2727,6 +2730,165 @@ describe('Processor Lambda', () => {
           // No job was looked up and nothing was armed.
           expect(countQueryByPattern(/FROM jobs\s+WHERE id = \$1/i)).toBe(0);
           expect(stateContextUpdates().some((sc) => Array.isArray(sc.recent_jobs))).toBe(false);
+          // F8: an unresolvable code credits nobody.
+          expect(countQueryByPattern(/worker_attribution/i)).toBe(0);
+        });
+
+        // ── F8 (Luis ruling 2026-09-16): typing a code credits the referrer ──
+        //
+        // Before this, only the PRE-auth lane credited anything: a phone with
+        // no `users` row parked a claim (`parkPendingClaim`) that onboarding
+        // later turned into `worker_attribution`. Someone who already had a
+        // Jale account -- the commonest person to share with -- typed the
+        // code, got the job, and the referrer got nothing.
+        describe('F8: referral attribution for an already-onboarded worker', () => {
+          const FUTURE = '2099-01-01T00:00:00.000Z';
+          const PAST = '2020-01-01T00:00:00.000Z';
+
+          function mockToken(overrides: Record<string, unknown> = {}): void {
+            mockQuery.mockResolvedValueOnce({
+              rowCount: 1,
+              rows: [{ job_id: 'job-referred', share_code: 'ABCD1234', expires_at: FUTURE, ...overrides }],
+            });
+          }
+
+          function mockShareLink(overrides: Record<string, unknown> = {}): void {
+            mockQuery.mockResolvedValueOnce({
+              rowCount: 1,
+              rows: [{
+                channel: 'facebook',
+                referrer_worker_id: 'referrer-1',
+                referrer_employer_id: null,
+                ...overrides,
+              }],
+            });
+          }
+
+          /** Everything after the attribution attempt: the job answer itself. */
+          function mockJobAnswerTail(): void {
+            mockStateContextUpdate(); // recent_jobs arm
+            mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [referredJobRow()] });
+            mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox job details
+            mockBoundWorkerTail();
+          }
+
+          function attributionInsert() {
+            return mockQuery.mock.calls.find(
+              ([sql]) => /INSERT INTO worker_attribution/i.test(sql as string),
+            );
+          }
+
+          async function typeCode(sid: string): Promise<void> {
+            await handler(
+              makeSqsEvent({ MessageSid: sid, From: 'whatsapp:+15125551234', Body: 'JALE-ABCD1234' }),
+              {} as any,
+              {} as any,
+            );
+          }
+
+          it('credits the referrer, and still answers with the job exactly as before', async () => {
+            mockConvTurn('SM-code-credit');
+            mockToken();
+            mockShareLink();
+            mockQuery.mockResolvedValueOnce(ok()); // INSERT worker_attribution (inserted)
+            mockJobAnswerTail();
+
+            await typeCode('SM-code-credit');
+
+            const insert = attributionInsert();
+            expect(insert).toBeDefined();
+            // ON CONFLICT DO NOTHING is the whole first-touch rule: the
+            // immutability trigger rejects any UPDATE of a first_* column.
+            expect(insert![0]).toMatch(/ON CONFLICT \(worker_id\) DO NOTHING/i);
+            const params = insert![1] as unknown[];
+            expect(params[0]).toBe('user-1');          // the typing worker
+            expect(params[1]).toBe('ABCD1234');        // share code
+            expect(params[2]).toBe('facebook');        // the LINK's channel, never 'whatsapp'
+            expect(params[3]).toBe('job-referred');
+            expect(params[4]).toBe('referrer-1');      // the referrer being credited
+            expect(params[5]).toBeNull();
+
+            // The visible reply is untouched.
+            const bodies = outboxBodies();
+            expect(bodies).toHaveLength(1);
+            expect(bodies[0]).toContain('Roofer');
+            // And the token is still not consumed.
+            expect(countQueryByPattern(/UPDATE referral_apply_tokens/i)).toBe(0);
+          });
+
+          it('a second code never re-attributes a worker who already has a referrer', async () => {
+            mockConvTurn('SM-code-again');
+            mockToken({ share_code: 'WXYZ5678' });
+            mockShareLink({ referrer_worker_id: 'referrer-2' });
+            mockQuery.mockResolvedValueOnce({ rowCount: 0, rows: [] }); // INSERT ... DO NOTHING: conflict
+            mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [{ '?column?': 1 }] }); // the row already exists
+            mockJobAnswerTail();
+
+            await typeCode('SM-code-again');
+
+            // Nothing may move the existing attribution -- not first_*, which
+            // the trigger rejects, and not latest_* either: this lane decided
+            // the touch does not count.
+            expect(countQueryByPattern(/UPDATE worker_attribution/i)).toBe(0);
+            expect(countQueryByPattern(/DO UPDATE/i)).toBe(0);
+            // Still answered with the job.
+            expect(outboxBodies()[0]).toContain('Roofer');
+          });
+
+          it('an EXPIRED code credits nobody but answers with the job exactly as today', async () => {
+            mockConvTurn('SM-code-expired');
+            mockToken({ expires_at: PAST });
+            mockJobAnswerTail();
+
+            await typeCode('SM-code-expired');
+
+            // Expiry bounds the browser-to-WhatsApp handoff, so there is no
+            // referral to pay for -- but the job's own status is the gate that
+            // decides what the worker is told, and it has not changed.
+            expect(countQueryByPattern(/worker_attribution/i)).toBe(0);
+            expect(countQueryByPattern(/FROM job_share_links/i)).toBe(0);
+            expect(outboxBodies()[0]).toContain('Roofer');
+          });
+
+          it('never credits a worker for referring themselves', async () => {
+            mockConvTurn('SM-code-self');
+            mockToken();
+            mockShareLink({ referrer_worker_id: 'user-1' });
+            mockJobAnswerTail();
+
+            await typeCode('SM-code-self');
+
+            // First touch is immutable, so a self-credit would be permanent
+            // and any reward keyed on first_referrer_worker_id would pay for it.
+            expect(countQueryByPattern(/worker_attribution/i)).toBe(0);
+            expect(outboxBodies()[0]).toContain('Roofer');
+          });
+
+          it('credits an employer referrer through the same door', async () => {
+            mockConvTurn('SM-code-employer');
+            mockToken();
+            mockShareLink({ referrer_worker_id: null, referrer_employer_id: 'employer-9' });
+            mockQuery.mockResolvedValueOnce(ok());
+            mockJobAnswerTail();
+
+            await typeCode('SM-code-employer');
+
+            const params = attributionInsert()![1] as unknown[];
+            expect(params[4]).toBeNull();
+            expect(params[5]).toBe('employer-9');
+          });
+
+          it('credits nobody for an organic link with no referrer at all', async () => {
+            mockConvTurn('SM-code-organic');
+            mockToken();
+            mockShareLink({ referrer_worker_id: null, referrer_employer_id: null });
+            mockJobAnswerTail();
+
+            await typeCode('SM-code-organic');
+
+            expect(countQueryByPattern(/worker_attribution/i)).toBe(0);
+            expect(outboxBodies()[0]).toContain('Roofer');
+          });
         });
 
         it('prose that trips the LOOSE token parser still reaches the employer', async () => {
