@@ -25,6 +25,10 @@ vi.mock('@/i18n/navigation', () => ({
   Link: ({ href, children, ...rest }: { href: string; children: ReactNode }) => (
     <a href={href} {...rest}>{children}</a>
   ),
+  // The page keeps its filters in the query string; this suite is about the
+  // hire celebration, so the navigation is stubbed and never asserted on.
+  useRouter: () => ({ replace: vi.fn() }),
+  usePathname: () => '/worker/home',
 }));
 
 /**
