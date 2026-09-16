@@ -93,6 +93,7 @@ vi.mock('@/hooks/usePageData', async () => {
 });
 
 import { interpolate, message, renderIntl } from '@/components/employer/__tests__/render-intl';
+import { PostJobProvider } from '@/contexts/PostJobContext';
 import EmployerDashboardPage from '../page';
 
 function job(over: Partial<Job>): Job {
@@ -159,7 +160,11 @@ beforeEach(() => {
 
 describe('dashboard stat hints', () => {
     it('gives the Workers Hired card its own progress, not the openings count', () => {
-        renderIntl(<EmployerDashboardPage />);
+        renderIntl(
+            <PostJobProvider>
+                <EmployerDashboardPage />
+            </PostJobProvider>,
+        );
 
         expect(hintUnder(stat('workers_hired'))).toBe(
             interpolate(stat('hired_hint'), { hired: 1, needed: 5 }),
@@ -168,7 +173,11 @@ describe('dashboard stat hints', () => {
     });
 
     it('moves the openings sentence to the Active Jobs card', () => {
-        renderIntl(<EmployerDashboardPage />);
+        renderIntl(
+            <PostJobProvider>
+                <EmployerDashboardPage />
+            </PostJobProvider>,
+        );
 
         expect(hintUnder(stat('active_jobs'))).toBe(
             interpolate(stat('active_hint'), { count: 4 }),

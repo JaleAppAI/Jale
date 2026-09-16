@@ -53,7 +53,14 @@ vi.mock('@/lib/api/employer', async (importOriginal) => ({
     deleteJobTemplate: vi.fn(),
 }));
 
+// The page is really mounted inside the app-wide post-a-job context, whose
+// provider reads the toast API; stub it like the dashboard suites do.
+vi.mock('@/components/ui/toast', () => ({
+    useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn() }),
+}));
+
 // Below every `vi.mock` on purpose (they hoist).
+import { PostJobProvider } from '@/contexts/PostJobContext';
 import EmployerTemplatesPage from '../page';
 
 function template(id: string): JobTemplate {
@@ -80,7 +87,11 @@ describe('employer templates — the meter', () => {
         listJobTemplates.mockResolvedValue([]);
         getBilling.mockResolvedValue(billing(3));
 
-        renderIntl(<EmployerTemplatesPage />);
+        renderIntl(
+            <PostJobProvider>
+                <EmployerTemplatesPage />
+            </PostJobProvider>,
+        );
 
         await waitFor(() => {
             expect(screen.getByText('No templates yet · 3 allowed on your plan')).toBeInTheDocument();
@@ -91,7 +102,11 @@ describe('employer templates — the meter', () => {
         listJobTemplates.mockResolvedValue([template('a'), template('b')]);
         getBilling.mockResolvedValue(billing(3));
 
-        renderIntl(<EmployerTemplatesPage />);
+        renderIntl(
+            <PostJobProvider>
+                <EmployerTemplatesPage />
+            </PostJobProvider>,
+        );
 
         await waitFor(() => {
             expect(screen.getByText('2 saved · 3 allowed on your plan')).toBeInTheDocument();
@@ -103,7 +118,11 @@ describe('employer templates — the meter', () => {
         listJobTemplates.mockResolvedValue([template('a'), template('b')]);
         getBilling.mockRejectedValue(new Error('billing down'));
 
-        renderIntl(<EmployerTemplatesPage />);
+        renderIntl(
+            <PostJobProvider>
+                <EmployerTemplatesPage />
+            </PostJobProvider>,
+        );
 
         await waitFor(() => {
             expect(screen.getByText('2 templates')).toBeInTheDocument();
