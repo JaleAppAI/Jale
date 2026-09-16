@@ -599,7 +599,8 @@
       "messages": "Mensajes",
       "billing": "Facturación",
       "settings": "Configuración",
-      "templates": "Plantillas"
+      "templates": "Plantillas",
+      "unread_badge": "{count, plural, one {# mensaje sin leer} other {# mensajes sin leer}}"
     },
     "hero": {
       "eyebrow": "Got Jale?",

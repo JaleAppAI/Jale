@@ -599,7 +599,8 @@
       "messages": "Messages",
       "billing": "Billing",
       "settings": "Settings",
-      "templates": "Templates"
+      "templates": "Templates",
+      "unread_badge": "{count, plural, one {# unread message} other {# unread messages}}"
     },
     "hero": {
       "eyebrow": "Got Jale?",

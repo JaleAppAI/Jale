@@ -4,6 +4,7 @@ import { useTranslations } from 'next-intl';
 import { Link, usePathname } from '@/i18n/navigation';
 import { Icon } from '@/components/ui/icon';
 import { Skeleton } from '@/components/ui/skeleton';
+import { UnreadBadge } from './UnreadBadge';
 import {
     employerPrimaryNav,
     employerBillingNav,
@@ -45,6 +46,13 @@ type SidebarProps = {
     role: ShellRole;
     homeHref: string;
     chip: SidebarChip;
+    /**
+     * Unread WhatsApp threads, badged on the Messages item. Passed in rather
+     * than read here, exactly like `chip`: `AppShell` owns the reads from the
+     * session contexts and this component only renders what it is handed.
+     * Employer-only by construction -- no worker nav item carries the badge.
+     */
+    unreadCount?: number;
 };
 
 /**
@@ -53,7 +61,7 @@ type SidebarProps = {
  * rather than a literal so the dark theme can deepen it; the white-on-navy
  * foreground is correct in both themes and stays literal.
  */
-export function Sidebar({ role, homeHref, chip }: SidebarProps) {
+export function Sidebar({ role, homeHref, chip, unreadCount = 0 }: SidebarProps) {
     const t = useTranslations('employer_dashboard');
     const tShell = useTranslations('app_shell');
     const pathname = usePathname();
@@ -75,7 +83,7 @@ export function Sidebar({ role, homeHref, chip }: SidebarProps) {
 
             <nav aria-label={tShell('primary_nav')} className="flex-1 overflow-y-auto px-4 py-6">
                 {role === 'employer' ? (
-                    <EmployerNav t={t} pathname={pathname} />
+                    <EmployerNav t={t} pathname={pathname} unreadCount={unreadCount} />
                 ) : (
                     <WorkerNav navLabel={tShell('worker_nav_main')} pathname={pathname} />
                 )}
@@ -171,7 +179,18 @@ function SidebarProfileChip({ role, chip }: { role: ShellRole; chip: SidebarChip
     );
 }
 
-function NavLink({ item, active, label }: { item: NavItem; active: boolean; label: string }) {
+function NavLink({
+    item,
+    active,
+    label,
+    badgeCount = 0,
+}: {
+    item: NavItem;
+    active: boolean;
+    label: string;
+    /** Rendered as a pill after the label. Zero renders nothing at all. */
+    badgeCount?: number;
+}) {
     return (
         <Link
             href={item.href}
@@ -188,7 +207,10 @@ function NavLink({ item, active, label }: { item: NavItem; active: boolean; labe
             ].join(' ')}
         >
             <Icon name={item.icon} />
-            {label}
+            {/* `min-w-0 flex-1` so a long label truncates against the badge
+                rather than pushing it off the 280px rail. */}
+            <span className="min-w-0 flex-1 truncate">{label}</span>
+            <UnreadBadge count={badgeCount} tone="rail" />
         </Link>
     );
 }
@@ -218,16 +240,24 @@ function WorkerNav({ navLabel, pathname }: { navLabel: string; pathname: string 
 function EmployerNav({
     t,
     pathname,
+    unreadCount,
 }: {
     t: ReturnType<typeof useTranslations>;
     pathname: string;
+    unreadCount: number;
 }) {
     return (
         <>
             <NavSectionLabel>{t('nav.main')}</NavSectionLabel>
             <div className="space-y-1">
                 {employerPrimaryNav.map((item) => (
-                    <NavLink key={item.key} item={item} active={isNavItemActive(item, pathname)} label={t(item.labelKey)} />
+                    <NavLink
+                        key={item.key}
+                        item={item}
+                        active={isNavItemActive(item, pathname)}
+                        label={t(item.labelKey)}
+                        badgeCount={item.key === 'messages' ? unreadCount : 0}
+                    />
                 ))}
                 <NavLink
                     item={employerBillingNav}
