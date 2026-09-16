@@ -82,11 +82,25 @@ export const handler = async (): Promise<void> => {
     return;
   }
 
-  const described = await ec2.send(new DescribeInstancesCommand({ InstanceIds: [instanceId] }));
-  const instance = described.Reservations?.[0]?.Instances?.[0];
+  // An explicit instance id that EC2 no longer knows (terminated and aged out
+  // of the API, or replaced under the same stack) is NOT an empty response --
+  // DescribeInstances rejects it with InvalidInstanceID.NotFound. That is the
+  // one way "no instance" actually presents, so it is handled as the clean
+  // case rather than left to fire the sweeper-errors alarm every 15 minutes.
+  let instance;
+  try {
+    const described = await ec2.send(new DescribeInstancesCommand({ InstanceIds: [instanceId] }));
+    instance = described.Reservations?.[0]?.Instances?.[0];
+  } catch (err) {
+    if ((err as { name?: string })?.name === 'InvalidInstanceID.NotFound') {
+      console.log(JSON.stringify({ event: 'BastionTtlSweepNoInstance', instanceId, reason: 'not_found' }));
+      emitMetrics(0, false);
+      return;
+    }
+    throw err;
+  }
 
-  // The stack was destroyed properly, or the instance was replaced. Nothing to
-  // sweep and nothing wrong -- report a clean zero so the alarm clears.
+  // Nothing to sweep and nothing wrong -- report a clean zero so the alarm clears.
   if (!instance || !instance.LaunchTime) {
     console.log(JSON.stringify({ event: 'BastionTtlSweepNoInstance', instanceId }));
     emitMetrics(0, false);
