@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo } from 'react';
-import { useFormatter, useTranslations } from 'next-intl';
+import { useFormatter, useNow, useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import { useUnreadMessages } from '@/contexts/UnreadMessagesContext';
 import { DashboardPanel } from '@/components/ui/dashboard-panel';
@@ -53,6 +53,13 @@ export function LatestMessagePanel({ fallbackJobTitle }: { fallbackJobTitle: str
     const t = useTranslations('employer_dashboard');
     const tMessages = useTranslations('employer_messages');
     const format = useFormatter();
+    /*
+     * The reference point for "2 hours ago", read ONCE per mount rather than
+     * from `Date.now()` in the middle of the render: a clock call during
+     * render is impure, and two renders a second apart would legitimately
+     * produce two different phrases for the same message.
+     */
+    const now = useNow();
     const { items, loading, unreadCount } = useUnreadMessages();
 
     const latest = useMemo(() => newestMessage(items), [items]);
@@ -93,7 +100,7 @@ export function LatestMessagePanel({ fallbackJobTitle }: { fallbackJobTitle: str
                                 dateTime={latest.last_message_at ?? undefined}
                                 className="shrink-0 text-[11px] tabular-nums text-[var(--jale-ink-2)]"
                             >
-                                {format.relativeTime(new Date(latest.last_message_at as string), Date.now())}
+                                {format.relativeTime(new Date(latest.last_message_at as string), now)}
                             </time>
                         </div>
                         <p className="truncate text-xs text-[var(--jale-ink-2)]">
