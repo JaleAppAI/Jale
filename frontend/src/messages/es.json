@@ -74,7 +74,10 @@
       "fri": "Vie",
       "sat": "Sáb",
       "sun": "Dom"
-    }
+    },
+    "experience_years_unit": "{n, plural, one {# año} other {# años}}",
+    "experience_months_unit": "{n, plural, one {# mes} other {# meses}}",
+    "experience_none": "No se requiere experiencia"
   },
   "match": {
     "score_bands": {

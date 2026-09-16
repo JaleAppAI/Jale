@@ -74,7 +74,10 @@
       "fri": "Fri",
       "sat": "Sat",
       "sun": "Sun"
-    }
+    },
+    "experience_years_unit": "{n, plural, one {# year} other {# years}}",
+    "experience_months_unit": "{n, plural, one {# month} other {# months}}",
+    "experience_none": "No experience required"
   },
   "match": {
     "score_bands": {
