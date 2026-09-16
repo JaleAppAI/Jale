@@ -1,11 +1,13 @@
 'use client';
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
+import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { usePageData } from '@/hooks/usePageData';
 import { useStaggerOnce } from '@/hooks/useStaggerOnce';
 import { Link } from '@/i18n/navigation';
 import { AppShell } from '@/components/layout/AppShell';
+import { Button } from '@/components/ui/button';
 import { DashboardPanel } from '@/components/ui/dashboard-panel';
 import { EmptyState } from '@/components/ui/empty-state';
 import { ErrorState } from '@/components/ui/error-state';
@@ -30,6 +32,16 @@ import { normalizeApplicationStatus, TERMINAL_APPLICATION_STATUSES } from '@/lib
 import { visibleJobStatusBadge } from '@/lib/jobStatusDisplay';
 
 export const dynamic = 'force-dynamic';
+
+/**
+ * Rows per request.
+ *
+ * The server used to answer this list with a hard `LIMIT 200`: a worker past
+ * that number could not reach their older applications at all, and everyone
+ * else paid for two hundred rows -- and their engine columns -- on every load.
+ * 50 is the server's own default; the rest arrives on demand, appended.
+ */
+const PAGE_SIZE = 50;
 
 /**
  * KPI row placeholder.
@@ -58,9 +70,23 @@ function MetricRowSkeleton() {
 
 export default function WorkerApplicationsPage() {
   const t = useTranslations('worker_applications');
+  const tCommon = useTranslations('common');
   const tPay = useTranslations('pay');
   const locale = useLocale();
   const { idToken } = useAuth();
+  const errorMessage = useErrorMessage();
+
+  /**
+   * Where the NEXT page starts, as the last response gave it; null once the
+   * list is complete. Page state rather than part of `usePageData`'s data,
+   * because it describes the request rather than anything on screen -- and
+   * because `retry()` re-runs the fetcher below, which seeds it afresh.
+   */
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  /** A failed NEXT page. Never the page's phase: the rows already read are
+   *  real, and this is a footnote under them. */
+  const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
 
   const {
     phase,
@@ -72,8 +98,41 @@ export default function WorkerApplicationsPage() {
   } = usePageData<Application[]>({
     legalReturnUrl: '/worker/applications',
     isEmpty: (data) => data.length === 0,
-    fetcher: async ({ token, signal }) => (await getApplications(token, signal)).applications,
+    fetcher: async ({ token, signal }) => {
+      const page = await getApplications(token, signal, { limit: PAGE_SIZE });
+      setCursor(page.next_cursor);
+      setLoadMoreError(null);
+      return page.applications;
+    },
   });
+
+  /**
+   * The next page, APPENDED.
+   *
+   * Never a reload: the rows the worker has already scrolled through must not
+   * be replaced or reordered under them, and a failure here must leave the
+   * list exactly as it was. Ids already on screen are filtered out as a
+   * belt-and-braces guard -- the keyset cursor cannot repeat a row, but a
+   * duplicate would break React's keys, which is a worse failure than the
+   * one-line check that prevents it.
+   */
+  const loadMore = useCallback(async () => {
+    if (!idToken || !cursor || loadingMore) return;
+    setLoadingMore(true);
+    setLoadMoreError(null);
+    try {
+      const page = await getApplications(idToken, undefined, { limit: PAGE_SIZE, cursor });
+      setData((prev) => {
+        const seen = new Set(prev.map((a) => a.application_id));
+        return [...prev, ...page.applications.filter((a) => !seen.has(a.application_id))];
+      });
+      setCursor(page.next_cursor);
+    } catch (err) {
+      setLoadMoreError(errorMessage(err));
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [idToken, cursor, loadingMore, setData, errorMessage]);
 
   /*
    * The list cascades once, when it first arrives, and never again -- the same
@@ -301,6 +360,23 @@ export default function WorkerApplicationsPage() {
                       })}
                     </ul>
                   )}
+                  {cursor ? (
+                    <div className="flex flex-col items-center gap-2 border-t border-[var(--jale-divider)] px-4 py-4 md:px-5">
+                      {loadMoreError ? (
+                        <p role="alert" className="text-xs font-medium text-[var(--jale-danger)]">
+                          {loadMoreError}
+                        </p>
+                      ) : null}
+                      <Button
+                        variant="ghost"
+                        onClick={() => void loadMore()}
+                        loading={loadingMore}
+                        loadingLabel={tCommon('loading')}
+                      >
+                        {t('load_more')}
+                      </Button>
+                    </div>
+                  ) : null}
                 </DashboardPanel>
               </>
             )}

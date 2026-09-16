@@ -732,13 +732,44 @@ export async function postApplicationPromptAnswers(
   return parseApplicationSaveResult(res);
 }
 
+/** One page of the worker's applications, newest first. */
+export type ApplicationsPage = {
+  applications: Application[];
+  /**
+   * Feed it back as `cursor` for the next page; null means this page is the
+   * end of the list. Opaque -- it encodes the keyset the server pages on, and
+   * nothing but the server may take it apart.
+   */
+  next_cursor: string | null;
+};
+
+/**
+ * PAGED. The server used to answer with a hard `LIMIT 200` and no way to ask
+ * for the rest; it now defaults to 50 and caps at 100.
+ *
+ * `next_cursor` is additive, so a caller that ignores `paging` still gets the
+ * same `applications` array it always did -- just the first page of it. Any
+ * caller that needs "as much as one request can give" (the home page's
+ * best-effort scan for hires and details requests) says so with `limit`.
+ */
 export async function getApplications(
   token: string,
   signal?: AbortSignal,
-): Promise<{ applications: Application[] }> {
-  const res = await apiFetch('/worker/applications', { signal }, token);
+  paging?: { limit?: number; cursor?: string | null },
+): Promise<ApplicationsPage> {
+  const query = new URLSearchParams();
+  if (paging?.limit) query.set('limit', String(paging.limit));
+  if (paging?.cursor) query.set('cursor', paging.cursor);
+  const qs = query.toString();
+  const res = await apiFetch(`/worker/applications${qs ? `?${qs}` : ''}`, { signal }, token);
   if (!res.ok) throw await parseApiError(res, 'fetch_failed');
-  return res.json();
+  const body = await res.json();
+  return {
+    applications: Array.isArray(body?.applications) ? body.applications : [],
+    // Absent on a server that predates paging: "this is the whole list", which
+    // is exactly what that server meant.
+    next_cursor: typeof body?.next_cursor === 'string' ? body.next_cursor : null,
+  };
 }
 
 /** Which half of the hire receipt this call is writing. */

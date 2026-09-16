@@ -1077,7 +1077,8 @@
     "job_status": {
       "closed": "Cerrado",
       "filled": "Cubierto"
-    }
+    },
+    "load_more": "Ver más"
   },
   "worker_application_details": {
     "back": "Volver a mis postulaciones",

@@ -287,7 +287,13 @@ export default function WorkerHomePage() {
   useEffect(() => {
     if (!idToken) return;
     const controller = new AbortController();
-    getApplications(idToken, controller.signal)
+    // The MAXIMUM one request can give (the server caps at 100). This is not a
+    // list the worker reads here -- it is a scan for the two things that
+    // interrupt them, a hire and a details request -- so paging it would mean
+    // walking every page before the page could be drawn. The server's old hard
+    // limit of 200 was never reachable by anyone either; both are far past the
+    // number of applications a worker has open at once.
+    getApplications(idToken, controller.signal, { limit: 100 })
       .then(({ applications }) => {
         setApplicationsFailed(false);
         // `details_status`, not `status`: the timestamp-derived field is the one
