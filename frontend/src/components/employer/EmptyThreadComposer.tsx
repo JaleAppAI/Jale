@@ -18,8 +18,20 @@ import type { InboxItem } from '@/lib/api/employer';
  * silently eat the user's first message; a rejection cannot be forgotten.
  */
 
+/**
+ * The four facts this pane draws -- nothing more.
+ *
+ * A structural subset of `InboxItem` rather than the row itself: the drawer
+ * also opens applicants the inbox does not list (a never-messaged applicant of
+ * a paused job), and it has only what the calling surface handed it. Narrowing
+ * the prop is what lets that caller in without anyone fabricating the twelve
+ * other fields of an inbox row that does not exist. Every existing caller
+ * passes a real `InboxItem` and still satisfies it.
+ */
+export type ComposerSubject = Pick<InboxItem, 'worker_name' | 'job_title' | 'job_city' | 'applied_at'>;
+
 type Props = {
-  item: InboxItem;
+  item: ComposerSubject;
   sending?: boolean;
   /** Failure copy owned by the caller, rendered against the composer. */
   errorMessage?: string | null;
