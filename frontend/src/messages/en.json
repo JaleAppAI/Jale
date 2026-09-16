@@ -582,9 +582,9 @@
       "total_applicants": "Total Applicants",
       "workers_hired": "Workers Hired",
       "paused_closed": "Paused / Closed",
-      "active_hint": "Open roles ready for applicants",
+      "active_hint": "{count} openings still available",
       "applicants_hint": "{count} avg per active job",
-      "hired_hint": "{count} openings still available",
+      "hired_hint": "{hired} of {needed} positions filled",
       "paused_closed_hint": "{paused} paused, {filled} filled, {closed} closed"
     },
     "shell": {

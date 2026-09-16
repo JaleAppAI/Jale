@@ -582,9 +582,9 @@
       "total_applicants": "Total de candidatos",
       "workers_hired": "Trabajadores contratados",
       "paused_closed": "Pausados / Cerrados",
-      "active_hint": "Puestos abiertos listos para candidatos",
+      "active_hint": "{count} puestos aún disponibles",
       "applicants_hint": "{count} promedio por empleo activo",
-      "hired_hint": "{count} puestos aún disponibles",
+      "hired_hint": "{hired} de {needed} puestos cubiertos",
       "paused_closed_hint": "{paused} pausados, {filled} llenos, {closed} cerrados"
     },
     "shell": {
