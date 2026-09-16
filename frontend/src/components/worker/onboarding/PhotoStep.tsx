@@ -1,4 +1,5 @@
 'use client';
+import { useId } from 'react';
 import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
 import { StepBody, StepFooter, StepHeader, StepLayout } from './StepHeader';
@@ -20,6 +21,7 @@ import { StepBody, StepFooter, StepHeader, StepLayout } from './StepHeader';
 export function PhotoStep({ onSkip }: { onSkip: () => void }) {
     const t = useTranslations('worker_onboarding.photo');
     const tShared = useTranslations('worker_onboarding.common');
+    const reasonId = useId();
 
     return (
         <StepLayout>
@@ -34,9 +36,24 @@ export function PhotoStep({ onSkip }: { onSkip: () => void }) {
                             <circle cx="12" cy="13" r="3.5" />
                         </svg>
                     </div>
-                    <Button variant="ghost" size="lg" disabled title={tShared('coming_soon')} className="max-w-[240px]">
+                    <Button
+                        variant="ghost"
+                        size="lg"
+                        disabled
+                        title={tShared('coming_soon')}
+                        aria-describedby={reasonId}
+                        className="max-w-[240px]"
+                    >
                         {t('add')}
                     </Button>
+                    {/* The reason, ON THE PAGE. `title` is a hover affordance and
+                        this is a phone screen: a worker who taps the greyed-out
+                        button gets nothing back and no way to learn why. The
+                        tooltip stays for a pointer; `aria-describedby` ties the
+                        same words to the control for a screen reader. */}
+                    <p id={reasonId} className="mt-1.5 text-xs font-medium text-[var(--jale-ink-2)]">
+                        {tShared('coming_soon')}
+                    </p>
                 </div>
             </StepBody>
             <StepFooter>

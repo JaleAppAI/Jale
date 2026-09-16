@@ -33,6 +33,23 @@ describe('PhotoStep', () => {
         expect(add).toHaveAttribute('title', message('worker_onboarding.common.coming_soon'));
     });
 
+    /*
+     * A `title` tooltip is a HOVER affordance, and this screen is a phone
+     * screen: a worker who taps the greyed-out button gets nothing back and no
+     * way to learn why. The reason has to be on the page.
+     */
+    it('says why the button is disabled in visible text, not only in a tooltip', () => {
+        renderIntl(<PhotoStep {...props()} />);
+        const add = screen.getByRole('button', { name: message('worker_onboarding.photo.add') });
+        const reason = screen.getByText(message('worker_onboarding.common.coming_soon'));
+
+        expect(reason).toBeVisible();
+        // And the button points at it, so the reason reaches a screen reader
+        // as part of the control rather than as a loose paragraph beside it.
+        expect(add).toHaveAttribute('aria-describedby', reason.id);
+        expect(reason.id).not.toBe('');
+    });
+
     it('leads with Finish and keeps the skip quiet underneath, as the prototype does', () => {
         renderIntl(<PhotoStep {...props()} />);
         const finish = screen.getByRole('button', { name: message('worker_onboarding.photo.finish') });

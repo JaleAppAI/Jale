@@ -230,8 +230,42 @@ describe('employer job detail — the facts card', () => {
             [t('job.hiring_progress'), '1/3 hired, 2 open'],
             [shared('modal.location'), 'Austin, TX'],
             [shared('modal.trade_category'), shared('modal.trade.drywall')],
-            [shared('modal.required_experience_years'), '3'],
+            [shared('modal.required_experience_years'), '3 years'],
             [shared('modal.language_preference'), shared('modal.language.es')],
+        ]);
+    });
+
+    /*
+     * A bare "3" under "Experience" is a number, not a requirement -- it reads
+     * as a score as readily as a duration. The unit comes from the same shared
+     * formatter the worker and public pages use, so the three surfaces cannot
+     * describe the same column differently.
+     */
+    it('carries the unit for months, and for a years/months pair', () => {
+        setSeed(fullJob({ required_experience_years: null, required_experience_months: 6 }));
+        const { container: monthsOnly } = renderIntl(<EmployerJobDetailPage />);
+        expect(tiles(monthsOnly)).toContainEqual([
+            shared('modal.required_experience_years'), '6 months',
+        ]);
+
+        setSeed(fullJob({ required_experience_years: 2, required_experience_months: 6 }));
+        const { container: both } = renderIntl(<EmployerJobDetailPage />);
+        expect(tiles(both)).toContainEqual([
+            shared('modal.required_experience_years'), '2 years 6 months',
+        ]);
+    });
+
+    /*
+     * Zero is a STATED requirement, and the tile is rendered for it (the guard
+     * is on null, not on falsiness) -- so it has to say what zero means rather
+     * than print the digit.
+     */
+    it('says no experience is required for a stated zero', () => {
+        setSeed(fullJob({ required_experience_years: 0, required_experience_months: 0 }));
+        const { container } = renderIntl(<EmployerJobDetailPage />);
+
+        expect(tiles(container)).toContainEqual([
+            shared('modal.required_experience_years'), message('common.experience_none'),
         ]);
     });
 

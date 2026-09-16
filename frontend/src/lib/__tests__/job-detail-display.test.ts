@@ -1,13 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import type { ApplicationHire } from '@/lib/api/worker';
+import type { Job as EmployerJob } from '@/lib/api/employer';
+import type { JobDetail as WorkerJobDetail } from '@/lib/api/worker';
+import type { PublicJobActive } from '@/lib/api/publicJob';
 import {
   durationLabel,
+  experienceLabel,
   hireTradeLabel,
   hireTradePhrase,
   scheduleSummary,
   shiftHoursLabel,
   tradeLabel,
   workDayChips,
+  type ExperienceFields,
   type HireTradeFields,
   type ScheduleFields,
   type Translator,
@@ -304,6 +309,70 @@ describe('hireTradePhrase', () => {
         expect(phrase.toLocaleLowerCase()).toBe(label.toLocaleLowerCase());
       }
     }
+  });
+});
+
+describe('experienceLabel', () => {
+  /**
+   * The three payloads that render this row. `tsc` pins the structural param
+   * type against the real wire types, the same way `hireTradeLabel` pins
+   * `ApplicationHire.trade` above -- the module imports nothing itself.
+   */
+  it('accepts the employer, worker and public job shapes', () => {
+    const employer: ExperienceFields = {} as Pick<
+      EmployerJob, 'required_experience_years' | 'required_experience_months'
+    >;
+    const worker: ExperienceFields = {} as Pick<
+      WorkerJobDetail, 'required_experience_years' | 'required_experience_months'
+    >;
+    const publicJob: ExperienceFields = {} as Pick<
+      PublicJobActive, 'required_experience_years' | 'required_experience_months'
+    >;
+    expect(experienceLabel(employer, fakeT)).toBeNull();
+    expect(experienceLabel(worker, fakeT)).toBeNull();
+    expect(experienceLabel(publicJob, fakeT)).toBeNull();
+  });
+
+  it('returns null when the job states no requirement at all', () => {
+    expect(experienceLabel({}, fakeT)).toBeNull();
+    expect(experienceLabel({ required_experience_years: null }, fakeT)).toBeNull();
+    expect(
+      experienceLabel({ required_experience_years: null, required_experience_months: null }, fakeT),
+    ).toBeNull();
+    expect(experienceLabel({ required_experience_years: undefined }, fakeT)).toBeNull();
+  });
+
+  /**
+   * THE DEFECT THIS EXISTS FOR. Zero is a STATED requirement ("none"), not an
+   * absent one -- every call site guards on `!== null`, so a zero reached the
+   * tile and rendered a bare "0" with no unit and no meaning.
+   */
+  it('says "no experience required" for an explicit zero', () => {
+    expect(experienceLabel({ required_experience_years: 0 }, fakeT)).toBe('experience_none');
+    expect(
+      experienceLabel({ required_experience_years: 0, required_experience_months: 0 }, fakeT),
+    ).toBe('experience_none');
+    expect(experienceLabel({ required_experience_months: 0 }, fakeT)).toBe('experience_none');
+  });
+
+  /** The unit is the point: "3" is a number, "3 years" is a requirement. */
+  it('carries the unit for years, months, or both', () => {
+    expect(experienceLabel({ required_experience_years: 3 }, fakeT))
+      .toBe('experience_years_unit({"n":3})');
+    expect(experienceLabel({ required_experience_months: 6 }, fakeT))
+      .toBe('experience_months_unit({"n":6})');
+    expect(
+      experienceLabel({ required_experience_years: 2, required_experience_months: 6 }, fakeT),
+    ).toBe('experience_years_unit({"n":2}) experience_months_unit({"n":6})');
+  });
+
+  it('drops a zero side of a mixed pair rather than printing "0 years"', () => {
+    expect(
+      experienceLabel({ required_experience_years: 0, required_experience_months: 6 }, fakeT),
+    ).toBe('experience_months_unit({"n":6})');
+    expect(
+      experienceLabel({ required_experience_years: 3, required_experience_months: 0 }, fakeT),
+    ).toBe('experience_years_unit({"n":3})');
   });
 });
 

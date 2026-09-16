@@ -203,7 +203,7 @@ describe('worker home -- the hire celebration', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', {
-      name: message('worker_applications.hired_celebration.banner.dismiss'),
+      name: interpolate(message('worker_applications.hired_celebration.banner.dismiss'), { title: 'Welder' }),
     }));
 
     expect(acknowledgeHire).toHaveBeenCalledWith('test-token', APPLICATION_ID, 'dismissed');
@@ -219,7 +219,7 @@ describe('worker home -- the hire celebration', () => {
       name: message('worker_applications.hired_celebration.modal.cta'),
     }));
     fireEvent.click(screen.getByRole('button', {
-      name: message('worker_applications.hired_celebration.banner.dismiss'),
+      name: interpolate(message('worker_applications.hired_celebration.banner.dismiss'), { title: 'Welder' }),
     }));
 
     expect(acknowledgeHire.mock.calls.map((call) => call[2])).toEqual(['seen', 'dismissed']);
@@ -271,7 +271,7 @@ describe('worker home -- the hire celebration', () => {
     await waitFor(() => expect(screen.getByText(BANNER_TITLE)).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', {
-      name: message('worker_applications.hired_celebration.banner.dismiss'),
+      name: interpolate(message('worker_applications.hired_celebration.banner.dismiss'), { title: 'Welder' }),
     }));
 
     expect(screen.queryByText(BANNER_TITLE)).not.toBeInTheDocument();

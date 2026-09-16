@@ -114,3 +114,44 @@ describe('BadgeList', () => {
         expect(definitions).toEqual([path.join('components', 'ui', 'badge-list.tsx')]);
     });
 });
+
+/**
+ * The two BRAND colours, as literals, where they PAINT something.
+ *
+ * `#0179FF` is not even the CTA blue any more -- globals.css retired it at
+ * `--jale-blue-500` because it only reached 4.05:1 under white -- so a literal
+ * copy of it is a second, worse brand blue that no theme change can reach.
+ * `#181855` is `--jale-blue-900`.
+ *
+ * Matched in the two forms that paint: a Tailwind arbitrary value (`bg-[#…]`)
+ * and a bare string literal (`const BRAND_NAVY = '#…'`). Deliberately NOT a
+ * plain substring search -- the hexes are quoted all over the contrast notes
+ * in `button.tsx` and `AuthShell.tsx`, and the standalone legal-page route
+ * handlers define their own `--jale-*` vars because those documents never load
+ * the app stylesheet. A `var(--token, #fallback)` is also left alone: the
+ * literal there is the fallback half, not a replacement for the token.
+ */
+describe('brand colours live in tokens', () => {
+    /** `AuthShell` and `OnboardingHeader` both document the same rule at
+     *  length: a brand PANEL must be immune to token drift, because the day
+     *  someone adds a `.dark` override for that ramp a tokenised panel would
+     *  silently re-tint the brand. */
+    const ALLOWED: Record<string, string[]> = {
+        '#0179FF': [],
+        '#181855': [
+            path.join('components', 'auth', 'AuthShell.tsx'),
+            path.join('components', 'worker', 'onboarding', 'OnboardingHeader.tsx'),
+        ],
+    };
+
+    for (const [hex, allowed] of Object.entries(ALLOWED)) {
+        const painting = new RegExp(`\\[${hex}\\]|['"\`]${hex}['"\`]`, 'i');
+        it(`spells ${hex} as a token everywhere but its sanctioned exceptions`, () => {
+            const offenders = SOURCES
+                .filter(({ text }) => painting.test(text))
+                .map(({ file }) => relative(file))
+                .filter((file) => !allowed.includes(file));
+            expect(offenders).toEqual([]);
+        });
+    }
+});

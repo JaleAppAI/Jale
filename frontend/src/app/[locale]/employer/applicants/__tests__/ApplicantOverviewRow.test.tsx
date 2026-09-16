@@ -106,7 +106,7 @@ describe('ApplicantOverviewRow qualifications', () => {
 
   it('shows the trust pill, reusing the per-job component', () => {
     renderIntl(<ApplicantOverviewRow item={item} />);
-    expect(screen.getByText('Trust 78')).toBeInTheDocument();
+    expect(screen.getByText('Trust 78/100')).toBeInTheDocument();
   });
 
   it('renders no trust pill for a worker who was never assessed', () => {

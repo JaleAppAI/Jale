@@ -497,10 +497,14 @@ export default function EmployerDashboardPage() {
                             <DashboardHero />
 
                             <div className="mb-5 grid grid-cols-2 gap-4 md:grid-cols-4">
+                                {/* Openings are what is NOT yet hired, so the sentence
+                                    belongs to the jobs still taking applicants -- it used to
+                                    sit under Workers Hired, measuring the opposite of that
+                                    card's own number. */}
                                 <MetricCard
                                     label={t('stats.active_jobs')}
                                     value={activeCount}
-                                    hint={t('stats.active_hint')}
+                                    hint={t('stats.active_hint', { count: openRoles })}
                                 />
                                 <MetricCard
                                     label={t('stats.total_applicants')}
@@ -510,7 +514,10 @@ export default function EmployerDashboardPage() {
                                 <MetricCard
                                     label={t('stats.workers_hired')}
                                     value={totalHired}
-                                    hint={t('stats.hired_hint', { count: openRoles })}
+                                    hint={t('stats.hired_hint', {
+                                        hired: totalHired,
+                                        needed: totalPositionsNeeded,
+                                    })}
                                     tone="green"
                                 />
                                 <MetricCard

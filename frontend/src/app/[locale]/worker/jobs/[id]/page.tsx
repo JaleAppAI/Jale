@@ -33,7 +33,13 @@ import { applyFlowReducer, initialApplyFlowState, flowHasProgress, promptAnswers
 import { missingPromptAnswers } from '@/lib/application-requirements-flow';
 import { formatLongDate, formatStartDate } from '@/lib/date';
 import { docTypeLabel } from '@/lib/doc-types';
-import { durationLabel, scheduleSummary, tradeLabel, type Translator } from '@/lib/job-detail-display';
+import {
+  durationLabel,
+  experienceLabel,
+  scheduleSummary,
+  tradeLabel,
+  type Translator,
+} from '@/lib/job-detail-display';
 import { formatPay } from '@/lib/pay';
 import {
   getJob, applyToJob, updateWorkerProfile, getVaultDocuments,
@@ -540,6 +546,7 @@ export default function WorkerJobDetailPage() {
     ? (formatStartDate(job.start_date, locale) ?? job.start_date)
     : null;
   const tradeText = job ? tradeLabel(job, tTradeDisplay, tDetailDisplay) : null;
+  const experienceText = job ? experienceLabel(job, tCommonDisplay) : null;
   const languageText = job?.language_preference && job.language_preference.length > 0
     ? job.language_preference.map((code) => tPublicJob(`language_${code}`)).join(' / ')
     : null;
@@ -582,11 +589,11 @@ export default function WorkerJobDetailPage() {
     if (tradeText) {
       whereTiles.push({ key: 'trade', label: t('trade'), value: tradeText });
     }
-    if (job.required_experience_years !== undefined && job.required_experience_years !== null) {
+    if (experienceText) {
       whereTiles.push({
         key: 'experience',
         label: t('required_experience'),
-        value: <span className="tabular-nums">{String(job.required_experience_years)}</span>,
+        value: <span className="tabular-nums">{experienceText}</span>,
       });
     }
     if (languageText) {

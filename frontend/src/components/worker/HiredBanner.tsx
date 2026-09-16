@@ -94,7 +94,17 @@ export function HiredBanner({
       : t('banner.title_no_company', { title: jobTitle }));
 
   return (
-    <InlineFeedback tone="success" onDismiss={onDismiss} dismissLabel={t('banner.dismiss')}>
+    /* The dismiss label NAMES THE JOB. A worker hired for two jobs sees two of
+       these stacked, and one shared "Dismiss" told a screen reader nothing
+       about which notice each × closed -- the only distinguishing information
+       was the visual position. `jobTitle`, not `companyName`: the latter is
+       the list row's `employer_display_name()` and can be the "Empleador"
+       placeholder. */
+    <InlineFeedback
+      tone="success"
+      onDismiss={onDismiss}
+      dismissLabel={t('banner.dismiss', { title: jobTitle })}
+    >
       <span className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
         {/* The prototype's glyph, not `Icon name="check"`: the shared Icon is
             a fixed 18x18 and would fill this 22px disc edge to edge. */}

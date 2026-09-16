@@ -50,6 +50,12 @@ export type HireTradeFields = {
   } | null;
 };
 
+/** The subset of a job's required-experience fields this module reads. */
+export type ExperienceFields = {
+  required_experience_years?: number | null;
+  required_experience_months?: number | null;
+};
+
 /** The subset of a job's schedule/duration fields this module reads. */
 export type ScheduleFields = {
   expected_duration?: string | null;
@@ -290,6 +296,42 @@ export function durationLabel(job: ScheduleFields, tCommon: Translator): string 
 
   const legacy = job.expected_duration?.trim();
   return legacy || null;
+}
+
+/**
+ * Translated label for a job's required experience, WITH ITS UNIT.
+ *
+ * Three surfaces render this row -- the employer's job page, the worker's, and
+ * the public one -- and only the public one ever said what the number meant.
+ * The other two printed `String(required_experience_years)`, so a job asking
+ * for three years' experience showed a bare "3" under a "Experience" label,
+ * which reads as a score as easily as a duration.
+ *
+ * ABSENT AND ZERO ARE DIFFERENT ANSWERS, and conflating them is the second
+ * half of the same bug. Every call site guards the tile on `!== null`, so a
+ * stated zero reached the renderer and printed "0":
+ *
+ *  - both fields null/undefined -> `null`. The job states no requirement;
+ *    callers keep hiding the row.
+ *  - a stated zero (either field present, nothing above zero) ->
+ *    `tCommon('experience_none')` -- the same "No experience required"
+ *    sentence `ExperienceStepper` shows the employer while they set it.
+ *  - otherwise the non-zero parts, each with its unit, joined by a space:
+ *    "3 years", "6 months", "2 years 6 months".
+ *
+ * `tCommon` is expected to be scoped to the `common` namespace, like
+ * `durationLabel` and `workDayChips` -- the unit keys live there because all
+ * three of these pages need them and none of them owns the others' namespace.
+ */
+export function experienceLabel(job: ExperienceFields, tCommon: Translator): string | null {
+  const { required_experience_years: years, required_experience_months: months } = job;
+  if (years == null && months == null) return null;
+
+  const parts: string[] = [];
+  if (years) parts.push(tCommon('experience_years_unit', { n: years }));
+  if (months) parts.push(tCommon('experience_months_unit', { n: months }));
+
+  return parts.length > 0 ? parts.join(' ') : tCommon('experience_none');
 }
 
 /**
