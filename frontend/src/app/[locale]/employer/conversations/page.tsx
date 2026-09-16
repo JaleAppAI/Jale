@@ -164,6 +164,40 @@ export default function EmployerConversationsPage() {
   const conversation = thread.data?.conversation ?? null;
   const messages = useMemo(() => thread.data?.messages ?? [], [thread.data]);
 
+  /**
+   * Opening a thread from the list.
+   *
+   * Two things happen, and they are deliberately separate. The server-side
+   * receipt belongs to `useThreadReadReceipt` (shared with the drawer, one
+   * rule for both). This is the LOCAL mirror of it: the row has to stop
+   * looking unread in the frame the thread opens, not on whatever future
+   * fetch happens to re-read the inbox -- this page polls the thread, never
+   * the list.
+   *
+   * If the write is refused, the nav badge reverts (the context owns the
+   * number and puts it back) while this page's copy of the row stays cleared
+   * until its next inbox read. That asymmetry is the right way round: the
+   * count an employer navigates by stays honest, and a row they have just
+   * opened and read is not re-flagged underneath them.
+   */
+  const openItem = useCallback(
+    (applicationId: string) => {
+      setSelectedKey(applicationId);
+      setInboxData((prev) => {
+        const target = prev.items.find((item) => item.application_id === applicationId);
+        if (!target?.unread) return prev;
+        return {
+          ...prev,
+          items: prev.items.map((item) =>
+            item.application_id === applicationId ? { ...item, unread: false } : item,
+          ),
+          unread_count: Math.max(0, prev.unread_count - 1),
+        };
+      });
+    },
+    [setInboxData],
+  );
+
   // A deep link picks the thread once, on the first inbox that can resolve it.
   // Ref-guarded so it never fights the user's later selections.
   const deepLinkId = searchParams.get('conversation_id');
@@ -175,8 +209,11 @@ export default function EmployerConversationsPage() {
     if (!target) return;
     setTab(target.tab);
     setJobFilter(null);
-    setSelectedKey(target.application_id);
-  }, [inboxData, deepLinkId]);
+    // Through `openItem`, not `setSelectedKey`: arriving on a thread by link
+    // is an open like any other, and the row behind it must not still read
+    // unread.
+    openItem(target.application_id);
+  }, [inboxData, deepLinkId, openItem]);
 
   // A row that vanished (dismissed elsewhere, or gone on reload) must not leave
   // the board pointing at a thread the user can no longer reach from the list.
@@ -439,7 +476,8 @@ export default function EmployerConversationsPage() {
                   <InboxRow
                     item={item}
                     selected={selectedKey === item.application_id}
-                    onSelect={() => setSelectedKey(item.application_id)}
+                    onSelect={() => openItem(item.application_id)}
+                    unreadLabel={t('unread')}
                     unknownWorkerLabel={t('unknown_worker')}
                     newApplicantLabel={t('new_applicant')}
                     statusLabel={item.conversation_status === 'closed' ? t('status_closed') : t('status_open')}
@@ -621,6 +659,7 @@ function InboxRow({
   newApplicantLabel,
   statusLabel,
   noMessagesLabel,
+  unreadLabel,
 }: {
   item: InboxItem;
   selected: boolean;
@@ -629,11 +668,20 @@ function InboxRow({
   newApplicantLabel: string;
   statusLabel: string;
   noMessagesLabel: string;
+  /** Visually-hidden word for the unread marker. */
+  unreadLabel: string;
 }) {
   const locale = useLocale();
   const name = item.worker_name ?? unknownWorkerLabel;
   const started = Boolean(item.conversation_id);
   const open = item.conversation_status === 'open';
+  /*
+   * Sprint 26 (B3): the worker has written and nobody has read it since. The
+   * API has sent this flag since the badge shipped and this row drew nothing
+   * with it -- so an employer who arrived here from a "3" in the nav had no
+   * way to tell WHICH three threads to open.
+   */
+  const unread = item.unread;
 
   return (
     <button
@@ -650,8 +698,35 @@ function InboxRow({
 
       <span className="min-w-0 flex-1">
         <span className="flex items-baseline justify-between gap-2">
-          <span className="truncate text-sm font-bold text-[var(--jale-ink)]">{name}</span>
-          <span className="shrink-0 text-[10px] tabular-nums text-[var(--jale-ink-2)]">
+          <span className="flex min-w-0 items-baseline gap-1.5">
+            {/* Three signals, not one: a dot, the WORD (so the marker survives
+                a monochrome rendering, a colour-blind reader and a screen
+                reader), and the heavier name below. The dot is `self-center`
+                because its parent aligns baselines and a circle has none. */}
+            {unread ? (
+              <>
+                <span
+                  aria-hidden="true"
+                  className="h-2 w-2 shrink-0 self-center rounded-full bg-[var(--jale-blue-700)]"
+                />
+                <span className="sr-only">{unreadLabel}</span>
+              </>
+            ) : null}
+            <span
+              className={[
+                'truncate text-sm text-[var(--jale-ink)]',
+                unread ? 'font-extrabold' : 'font-bold',
+              ].join(' ')}
+            >
+              {name}
+            </span>
+          </span>
+          <span
+            className={[
+              'shrink-0 text-[10px] tabular-nums',
+              unread ? 'font-bold text-[var(--jale-ink)]' : 'text-[var(--jale-ink-2)]',
+            ].join(' ')}
+          >
             {formatTimeOfDay(item.last_message_at ?? item.applied_at, locale)}
           </span>
         </span>
@@ -673,7 +748,12 @@ function InboxRow({
             {started ? statusLabel : newApplicantLabel}
           </span>
           {started ? (
-            <span className="truncate text-[11px] text-[var(--jale-ink-2)]">
+            <span
+              className={[
+                'truncate text-[11px]',
+                unread ? 'font-semibold text-[var(--jale-ink)]' : 'text-[var(--jale-ink-2)]',
+              ].join(' ')}
+            >
               {'·'} {item.last_message_preview ?? noMessagesLabel}
             </span>
           ) : null}

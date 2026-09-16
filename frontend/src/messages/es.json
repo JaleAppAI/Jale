@@ -576,7 +576,8 @@
       "delivered": "Entregado",
       "failed": "Fallido",
       "received": "Recibido"
-    }
+    },
+    "unread": "Sin leer"
   },
   "employer_dashboard": {
     "stats": {
