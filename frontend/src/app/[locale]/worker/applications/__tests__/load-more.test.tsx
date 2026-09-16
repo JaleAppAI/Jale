@@ -76,8 +76,40 @@ function pagingCalls(): Array<Record<string, unknown> | undefined> {
   return getApplications.mock.calls.map(([, , options]) => options as Record<string, unknown> | undefined);
 }
 
+/**
+ * `mockReset`, NOT `vi.clearAllMocks()`, for `getApplications`.
+ *
+ * `clearAllMocks` calls `mockClear`, which empties `mock.calls` but leaves the
+ * `mockResolvedValueOnce` QUEUE -- and the base `mockResolvedValue` -- in
+ * place. The paging tests below stage a page at a time as one-shots, and a
+ * one-shot outranks whatever the next test stages. So a test that ends without
+ * draining its queue hands its leftover pages to the tests after it, which
+ * then render rows they never staged and fail nowhere near the real cause.
+ *
+ * Only this mock: nothing else in the file carries a queue, and the module
+ * factories' stubs need the implementations `mockClear` keeps.
+ */
+function resetApiMocks() {
+  getApplications.mockReset();
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  resetApiMocks();
+});
+
+describe('the per-test reset', () => {
+  // Written so it does not depend on running after anything: it queues the
+  // leftover itself. Point `resetApiMocks` at `vi.clearAllMocks()` and this
+  // fails with the leftover page.
+  it('drains a leftover one-shot instead of serving it to the next test', async () => {
+    getApplications.mockResolvedValueOnce({ applications: [application(99)], next_cursor: 'leftover' });
+
+    resetApiMocks();
+    getApplications.mockResolvedValue({ applications: [], next_cursor: null });
+
+    await expect(getApplications()).resolves.toEqual({ applications: [], next_cursor: null });
+  });
 });
 
 describe('worker applications — load more', () => {
