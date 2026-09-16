@@ -199,6 +199,9 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
      */
     useEffect(() => subscribeToSignOut((role) => {
         if (userTypeRef.current !== role) return;
+        // Retires any restore still in flight: its response would otherwise
+        // land tokens for the session that has just been signed out.
+        restoreGenerationRef.current += 1;
         setAccessToken(null);
         setIdToken(null);
         setRefreshToken(null);
