@@ -17,11 +17,15 @@
 //    are keyed `jale.session.<role>`, every read says which role is asking, and
 //    signing out of one role does not touch the other.
 //
-// Still not solved, and documented rather than papered over: a sign-out does
-// not propagate to tabs that are already open. Another tab keeps working off
-// its in-memory id token until its next refresh, which then finds an empty slot
-// and clears itself. Making that instant needs a `storage`-event listener,
-// which is deliberately not part of this change.
+// 3) A sign-out propagates to the tabs that are already open, through
+//    `subscribeToSignOut` at the bottom of this file. It used to not: another
+//    tab kept working off its in-memory id token until its next refresh
+//    happened to find an empty slot. Because the slots live in `localStorage`,
+//    the browser already fires a `storage` event in every OTHER tab of the
+//    origin when one is removed -- that event IS the broadcast, and a
+//    `BroadcastChannel` alongside it would only deliver the same sign-out
+//    twice. (Were these in `sessionStorage`, no event would cross tabs at all
+//    and a channel would be the only way.)
 //
 // Two constraints shape the rest.
 //
@@ -285,4 +289,44 @@ export function clearSession(userType?: StoredUserType): void {
   const survivor = ROLES.find((role) => role !== userType && read(local, slotKey(role)));
   if (survivor) write(local, LAST_ROLE_KEY, survivor);
   else remove(local, LAST_ROLE_KEY);
+}
+
+/**
+ * Calls back when a role is signed out in ANOTHER TAB of this origin. Returns
+ * the unsubscribe.
+ *
+ * The browser fires `storage` in every tab except the one that wrote, which is
+ * exactly the audience: the tab that signed out has already dropped its own
+ * tokens. Three cases have to be told apart, and getting any of them wrong is
+ * worse than not listening at all:
+ *
+ *   - a REMOVAL of a role's slot is the sign-out (`newValue === null`);
+ *   - a WRITE to that same key is a refresh-token rotation, which Cognito does
+ *     on every exchange. Treating it as a sign-out would log the browser out
+ *     every few minutes;
+ *   - `key === null` is another tab calling `localStorage.clear()` (a browser
+ *     "clear site data", a test harness), where the event names no key. Every
+ *     role whose slot is now empty counts as signed out.
+ *
+ * Only the slots are watched. `LAST_ROLE_KEY` is a tie-breaker for neutral
+ * routes, not a session.
+ */
+export function subscribeToSignOut(handler: (role: StoredUserType) => void): () => void {
+  if (typeof window === 'undefined') return () => {};
+
+  const onStorage = (event: StorageEvent) => {
+    if (event.key === null) {
+      for (const role of ROLES) {
+        if (!readRoleToken(role)) handler(role);
+      }
+      return;
+    }
+    const role = ROLES.find((candidate) => slotKey(candidate) === event.key);
+    if (!role) return;
+    if (event.newValue !== null) return;
+    handler(role);
+  };
+
+  window.addEventListener('storage', onStorage);
+  return () => window.removeEventListener('storage', onStorage);
 }

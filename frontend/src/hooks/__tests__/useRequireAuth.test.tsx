@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 
 /**
  * The sign-in redirect used to throw away where the user was going.
@@ -24,6 +24,7 @@ const state = {
     isAuthenticated: false,
     isLoading: false,
     userType: null as 'worker' | 'employer' | null,
+    idToken: null as string | null,
     pathname: '/worker/jobs/abc',
     locale: 'es',
 };
@@ -44,15 +45,18 @@ vi.mock('@/contexts/AuthContext', () => ({
         isAuthenticated: state.isAuthenticated,
         isLoading: state.isLoading,
         userType: state.userType,
+        idToken: state.idToken,
     }),
 }));
 vi.mock('@/lib/api', () => ({ isLegalWallError: () => false }));
 
 import { useRequireAuth } from '@/hooks/useRequireAuth';
 
-function Probe({ enabled }: { enabled?: boolean }) {
-    useRequireAuth(enabled === undefined ? undefined : { enabled });
-    return null;
+function Probe({ enabled, role }: { enabled?: boolean; role?: 'worker' | 'employer' }) {
+    const { idToken } = useRequireAuth(
+        enabled === undefined && role === undefined ? undefined : { enabled, role },
+    );
+    return <span data-testid="token">{idToken ?? 'none'}</span>;
 }
 
 beforeEach(() => {
@@ -60,6 +64,7 @@ beforeEach(() => {
     state.isAuthenticated = false;
     state.isLoading = false;
     state.userType = null;
+    state.idToken = null;
     state.pathname = '/worker/jobs/abc';
     state.locale = 'es';
     window.history.replaceState(null, '', '/');
@@ -120,6 +125,75 @@ describe('useRequireAuth', () => {
 
     it('does not redirect when the gate is disabled', () => {
         render(<Probe enabled={false} />);
+
+        expect(replace).not.toHaveBeenCalled();
+    });
+});
+
+/**
+ * The other half of the two-sessions-in-one-browser problem.
+ *
+ * `AuthContext` keeps a slot per role and masks the one the current route is
+ * not about; this hook is what every authenticated page actually asks. A page
+ * that took `useAuth().idToken` directly would, on the render a worker ->
+ * employer navigation lands on, fetch with the token it was leaving and get a
+ * 401/403 until the visitor reloaded by hand. So the token a page is handed is
+ * the one for ITS role, or none.
+ */
+describe('useRequireAuth — the route\'s role', () => {
+    it('hands the page the token when the session is that role', () => {
+        state.isAuthenticated = true;
+        state.userType = 'worker';
+        state.idToken = 'id-worker';
+        state.pathname = '/worker/home';
+
+        render(<Probe />);
+
+        expect(screen.getByTestId('token')).toHaveTextContent('id-worker');
+        expect(replace).not.toHaveBeenCalled();
+    });
+
+    it('withholds it, and goes to this role\'s door, when the session is the other role', () => {
+        state.isAuthenticated = true;
+        state.userType = 'employer';
+        state.idToken = 'id-employer';
+        state.pathname = '/worker/home';
+        state.locale = 'en';
+        window.history.replaceState(null, '', '/en/worker/home');
+
+        render(<Probe />);
+
+        // Never the employer's token on a worker page -- no request is worth
+        // the 401 it would earn.
+        expect(screen.getByTestId('token')).toHaveTextContent('none');
+        // ...and the worker door, not the employer one the session belongs to.
+        expect(replace).toHaveBeenCalledWith('/en/auth/worker?returnUrl=%2Fen%2Fworker%2Fhome');
+    });
+
+    it('lets a page name its own role rather than reading the path', () => {
+        state.isAuthenticated = true;
+        state.userType = 'worker';
+        state.idToken = 'id-worker';
+        // A path that names no role at all: only the page knows what it is.
+        state.pathname = '/legal/accept';
+        state.locale = 'en';
+        window.history.replaceState(null, '', '/en/legal/accept');
+
+        render(<Probe role="employer" />);
+
+        expect(screen.getByTestId('token')).toHaveTextContent('none');
+        expect(replace).toHaveBeenCalledWith('/en/auth/employer?returnUrl=%2Fen%2Flegal%2Faccept');
+    });
+
+    it('still waits while the session is being restored', () => {
+        // The mid-navigation render: AuthContext has dropped the old role's
+        // tokens and is fetching the new role's. Redirecting here would sign
+        // out a visitor who is signed in.
+        state.isLoading = true;
+        state.userType = 'employer';
+        state.pathname = '/worker/home';
+
+        render(<Probe />);
 
         expect(replace).not.toHaveBeenCalled();
     });
