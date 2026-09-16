@@ -1,52 +1,67 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
+import { useConversationDrawer } from '@/contexts/ConversationDrawerContext';
+import { useUnreadMessages } from '@/contexts/UnreadMessagesContext';
 import { useRouter } from '@/i18n/navigation';
 import { usePageData } from '@/hooks/usePageData';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
+import { useThreadReadReceipt } from '@/hooks/useThreadReadReceipt';
 import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/ui/empty-state';
 import { ErrorState } from '@/components/ui/error-state';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { Skeleton, SkeletonCircle, SkeletonLine } from '@/components/ui/skeleton';
 import { useToast } from '@/components/ui/toast';
+import { UnreadBadge } from '@/components/layout/UnreadBadge';
 import {
   ConversationThread,
   initialsFor,
 } from '@/components/employer/ConversationThread';
+import { EmptyThreadComposer } from '@/components/employer/EmptyThreadComposer';
 import { isLegalWallError } from '@/lib/api';
+import { ApiError } from '@/lib/api/errors';
 import { formatTimeOfDay } from '@/lib/date';
 import {
   closeConversation,
   getConversation,
-  getConversations,
   sendConversationMessage,
+  startConversation,
 } from '@/lib/api/employer';
-import type {
-  EmployerConversationResponse,
-  EmployerConversationSummary,
-} from '@/lib/api/employer';
+import type { EmployerConversationResponse, InboxItem } from '@/lib/api/employer';
 
 /**
- * The floating conversations drawer, mounted in the root layout on EVERY page.
+ * The floating conversations drawer, mounted on EVERY page (by
+ * `ConversationDrawerProvider`, which also owns the "open this applicant"
+ * verb other surfaces call).
  *
- * Two things follow from "every page" and are easy to get wrong:
+ * WHERE ITS LIST COMES FROM changed in sprint 26 (B3/B4), and that is the
+ * substance of this file. It used to fetch `GET /employer/conversations`
+ * itself, on open. It now renders `UnreadMessagesContext`'s inbox, for two
+ * reasons that are really one:
  *
- *  - Both `usePageData` instances pass `requireAuth: false`. The default arms a
- *    redirect to /auth for anyone without a session, and this component renders
- *    on the public landing page too -- the default would bounce every anonymous
- *    visitor off the marketing site. The legal-wall handling is still wanted,
- *    which is why the hook is used rather than hand-rolled.
- *  - Nothing is fetched until the drawer is actually opened by an employer.
- *    `canFetch` is in `deps`, so closing the drawer aborts whatever was in
- *    flight and stops the poll instead of leaving it running behind a closed
- *    panel.
+ *  - `openConversation({ application_id, worker_id, job_id })` carries no
+ *    conversation id, because the applicants board has none to give. Something
+ *    has to resolve an APPLICATION to the thread it may or may not have, and
+ *    the inbox is the only endpoint that answers that. A row whose applicant
+ *    has never been messaged must land on the first-message composer, and
+ *    `/employer/conversations` cannot even see such an applicant;
+ *  - one inbox read for the session, rather than a second list endpoint polled
+ *    beside it.
+ *
+ * What the list CONTAINS is unchanged: open threads, newest first (the server
+ * already orders the inbox that way). The selected item is looked up in the
+ * FULL item set, not the filtered list, which is exactly how the conversations
+ * page separates "what the list shows" from "what is open" -- and it is what
+ * lets an applicant with no thread yet be opened without appearing in a list
+ * of conversations that do not exist.
  *
  * Send and close follow the same contract as the conversations page, because
- * both surfaces render the same `ConversationThread`: `onSend`/`onClose` reject
- * on failure, the draft survives, and the dialog reports it.
+ * both surfaces render the same `ConversationThread`: `onSend`/`onClose`
+ * reject on failure, the draft survives, and the dialog reports it. Both then
+ * ask the context to refresh rather than patching a list they no longer own.
  */
 
 const RETURN_URL = '/employer/conversations';
@@ -61,15 +76,55 @@ export function ConversationDrawer() {
   const translateError = useErrorMessage();
   const toast = useToast();
 
+  const { items, loading: inboxLoading, errorKind: inboxErrorKind, retry: retryInbox, refresh, unreadByConversation, unreadCount } =
+    useUnreadMessages();
+  const { openRequest } = useConversationDrawer();
+
   const [open, setOpen] = useState(false);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  /** The selected APPLICATION, not conversation -- see the header note. */
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [closing, setClosing] = useState(false);
   const [composerError, setComposerError] = useState<string | null>(null);
   const [pollNoticeDismissed, setPollNoticeDismissed] = useState(false);
+  /**
+   * Threads this drawer has just STARTED, by application id. The inbox learns
+   * about them on its next read; until then this is what moves the pane from
+   * the first-message composer to the transcript the employer just created.
+   */
+  const [startedThreads, setStartedThreads] = useState<Record<string, string>>({});
 
   const isEmployer = userType === 'employer';
   const canFetch = open && isEmployer;
+
+  /*
+   * A request from elsewhere in the app ("Message" on an applicant row).
+   * Applied by TOKEN rather than by target, so asking twice for the same
+   * applicant re-opens a drawer the employer has since closed.
+   */
+  const appliedRequestRef = useRef(0);
+  useEffect(() => {
+    if (!openRequest || openRequest.token === appliedRequestRef.current) return;
+    appliedRequestRef.current = openRequest.token;
+    setSelectedKey(openRequest.target.application_id);
+    setOpen(true);
+    // The applicant may have applied since the last poll, or been messaged
+    // from another device; ask before deciding they are unreachable.
+    void refresh();
+  }, [openRequest, refresh]);
+
+  const threads = useMemo(
+    () => items.filter((item) => item.conversation_id && item.conversation_status === 'open'),
+    [items],
+  );
+
+  const selectedItem = useMemo(
+    () => items.find((item) => item.application_id === selectedKey) ?? null,
+    [items, selectedKey],
+  );
+  const selectedConversationId = selectedItem
+    ? selectedItem.conversation_id ?? startedThreads[selectedItem.application_id] ?? null
+    : null;
 
   const routeLegalWall = useCallback(
     (err: unknown): boolean => {
@@ -81,28 +136,15 @@ export function ConversationDrawer() {
     [router],
   );
 
-  const list = usePageData<EmployerConversationSummary[] | null>({
-    fetcher: async ({ token, signal }) => {
-      if (!canFetch) return null;
-      const res = await getConversations(token, signal);
-      return res.conversations.filter((item) => item.status === 'open');
-    },
-    requireAuth: false,
-    legalReturnUrl: RETURN_URL,
-    deps: [canFetch],
-    isEmpty: (data) => data !== null && data.length === 0,
-  });
-
-  const { setData: setListData } = list;
-  const conversations = list.data ?? [];
-
   const thread = usePageData<EmployerConversationResponse | null>({
     fetcher: ({ token, signal }) =>
-      canFetch && selectedId ? getConversation(token, selectedId, signal) : Promise.resolve(null),
+      canFetch && selectedConversationId
+        ? getConversation(token, selectedConversationId, signal)
+        : Promise.resolve(null),
     requireAuth: false,
     legalReturnUrl: RETURN_URL,
-    deps: [canFetch, selectedId],
-    pollMs: canFetch && selectedId ? THREAD_POLL_MS : undefined,
+    deps: [canFetch, selectedConversationId],
+    pollMs: canFetch && selectedConversationId ? THREAD_POLL_MS : undefined,
   });
 
   const { setData: setThreadData, refresh: refreshThread, refreshError: threadRefreshError } = thread;
@@ -110,10 +152,21 @@ export function ConversationDrawer() {
   const conversation = thread.data?.conversation ?? null;
   const messages = thread.data?.messages ?? [];
 
+  /*
+   * Reading a thread here clears its badge everywhere, once per open and again
+   * when a new worker message lands while the drawer is on screen. The stamp
+   * comes from the inbox item rather than the transcript -- see the hook.
+   */
+  useThreadReadReceipt({
+    conversationId: selectedConversationId,
+    lastWorkerMessageAt: selectedItem?.last_worker_message_at ?? null,
+    active: canFetch,
+  });
+
   // A composer error belongs to the thread it was raised in.
   useEffect(() => {
     setComposerError(null);
-  }, [selectedId]);
+  }, [selectedKey]);
 
   // Dismissing the poll banner silences this outage, not every future one.
   useEffect(() => {
@@ -121,23 +174,14 @@ export function ConversationDrawer() {
   }, [threadRefreshError]);
 
   async function handleSend(body: string) {
-    if (!idToken || !selectedId) return;
+    if (!idToken || !selectedConversationId) return;
     setSending(true);
     setComposerError(null);
     try {
-      const detail = await sendConversationMessage(idToken, selectedId, body);
+      const detail = await sendConversationMessage(idToken, selectedConversationId, body);
       setThreadData(detail);
-      setListData((prev) =>
-        (prev ?? []).map((item) =>
-          item.id === detail.conversation.id
-            ? {
-                ...item,
-                last_message_at: detail.conversation.last_message_at,
-                last_message_preview: detail.conversation.last_message_preview,
-              }
-            : item,
-        ),
-      );
+      // The list's preview and ordering belong to the inbox now.
+      void refresh();
     } catch (err) {
       if (!routeLegalWall(err)) setComposerError(translateError(err));
       // Re-raised so `ConversationThread` keeps the draft it would otherwise
@@ -148,15 +192,47 @@ export function ConversationDrawer() {
     }
   }
 
+  async function handleFirstSend(body: string) {
+    if (!idToken || !selectedItem) return;
+    setSending(true);
+    setComposerError(null);
+    try {
+      const detail = await startConversation(idToken, {
+        job_id: selectedItem.job_id,
+        worker_id: selectedItem.worker_id,
+        initial_message: body,
+      });
+      setStartedThreads((prev) => ({ ...prev, [selectedItem.application_id]: detail.conversation.id }));
+      void refresh();
+    } catch (err) {
+      if (!routeLegalWall(err)) {
+        // Two refusals specific enough to deserve their own sentence; the
+        // generic classifier would flatten both into "check your input".
+        const code = err instanceof ApiError ? err.code : null;
+        if (code === 'worker_whatsapp_unavailable') {
+          setComposerError(t('worker_whatsapp_unavailable'));
+        } else if (code === 'applicant_not_found') {
+          setComposerError(t('candidate_unavailable'));
+          void refresh();
+        } else {
+          setComposerError(translateError(err));
+        }
+      }
+      throw err;
+    } finally {
+      setSending(false);
+    }
+  }
+
   async function handleClose() {
-    if (!idToken || !selectedId) return;
-    const closedId = selectedId;
+    if (!idToken || !selectedConversationId) return;
     setClosing(true);
     try {
-      await closeConversation(idToken, closedId);
-      // The drawer only ever lists OPEN threads, so a closed one leaves it.
-      setListData((prev) => (prev ?? []).filter((item) => item.id !== closedId));
-      setSelectedId(null);
+      await closeConversation(idToken, selectedConversationId);
+      // The drawer only ever lists OPEN threads; the server owns which tab a
+      // closed one belongs to, so ask it rather than guessing here.
+      void refresh();
+      setSelectedKey(null);
       toast.success(t('conversation_closed'));
     } catch (err) {
       routeLegalWall(err);
@@ -168,11 +244,9 @@ export function ConversationDrawer() {
   }
 
   // Every hook above runs unconditionally; only the OUTPUT is gated. Workers and
-  // signed-out visitors never see the drawer, and `canFetch` keeps them from
-  // ever hitting an employer endpoint.
+  // signed-out visitors never see the drawer, and the context behind `items`
+  // never touches an employer endpoint for them either.
   if (!isAuthenticated || !isEmployer) return null;
-
-  const listBusy = list.phase === 'auth' || list.phase === 'loading';
 
   return (
     <>
@@ -190,8 +264,17 @@ export function ConversationDrawer() {
         aria-expanded={open}
         className="fixed bottom-[calc(6.25rem+env(safe-area-inset-bottom))] right-5 z-30 inline-flex cursor-pointer items-center gap-2 rounded-full bg-[var(--jale-blue-900)] px-4 py-3 text-sm font-bold text-white shadow-[var(--shadow-modal)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)] lg:bottom-5"
       >
-        {/* WhatsApp brand green -- the one sanctioned literal, same in both themes. */}
-        <span className="h-2 w-2 rounded-full bg-[#25D366]" />
+        {/*
+         * The count, when there is one. This used to be a fixed WhatsApp-green
+         * dot -- a decoration that looked exactly the same whether three
+         * workers were waiting on an answer or none were.
+         */}
+        {unreadCount > 0 ? (
+          <UnreadBadge count={unreadCount} tone="rail" />
+        ) : (
+          /* WhatsApp brand green -- the one sanctioned literal, same in both themes. */
+          <span className="h-2 w-2 rounded-full bg-[#25D366]" />
+        )}
         {open ? t('drawer_close') : t('drawer_button')}
       </button>
 
@@ -210,7 +293,7 @@ export function ConversationDrawer() {
           <aside
             className={[
               'min-w-0 flex-col border-[var(--jale-divider)] bg-[var(--jale-paper-2)] sm:flex sm:w-60 sm:shrink-0 sm:border-r',
-              selectedId ? 'hidden' : 'flex w-full',
+              selectedKey ? 'hidden' : 'flex w-full',
             ].join(' ')}
           >
             <div className="shrink-0 border-b border-[var(--jale-divider)] bg-[var(--jale-blue-900)] p-3 text-white">
@@ -219,53 +302,27 @@ export function ConversationDrawer() {
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto">
-              {listBusy ? (
+              {inboxLoading ? (
                 <ConversationListSkeleton label={tCommon('loading')} />
-              ) : list.phase === 'error' && list.errorKind ? (
-                <ErrorState kind={list.errorKind} onRetry={list.retry} compact />
-              ) : conversations.length === 0 ? (
+              ) : inboxErrorKind ? (
+                <ErrorState kind={inboxErrorKind} onRetry={retryInbox} compact />
+              ) : threads.length === 0 ? (
                 <EmptyState icon="message" variant="filtered" title={t('empty')} body={t('empty_drawer_body')} />
               ) : (
                 <ul className="divide-y divide-[var(--jale-divider)]">
-                  {conversations.map((item) => {
-                    const name = item.worker_name ?? t('unknown_worker');
-                    const selected = selectedId === item.id;
-                    return (
-                      <li key={item.id}>
-                        <button
-                          type="button"
-                          onClick={() => setSelectedId(item.id)}
-                          aria-current={selected ? 'true' : undefined}
-                          className={[
-                            'flex w-full cursor-pointer gap-2 p-3 text-left transition-colors',
-                            'focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]',
-                            selected ? 'bg-[var(--jale-blue-50)]' : 'hover:bg-[var(--jale-card)]',
-                          ].join(' ')}
-                        >
-                          <span className="avatar-initials h-8 w-8 shrink-0 text-[10px]">
-                            {initialsFor(name)}
-                          </span>
-                          <span className="min-w-0 flex-1">
-                            <span className="flex items-baseline justify-between gap-2">
-                              <span className="truncate text-sm font-bold text-[var(--jale-ink)]">{name}</span>
-                              <span className="shrink-0 text-[10px] tabular-nums text-[var(--jale-ink-2)]">
-                                {formatTimeOfDay(item.last_message_at, locale)}
-                              </span>
-                            </span>
-                            <span className="block truncate text-xs text-[var(--jale-ink-2)]">
-                              {item.job_city ? `${item.job_title} · ${item.job_city}` : item.job_title}
-                            </span>
-                            <span className="mt-1 flex items-center gap-1.5">
-                              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#25D366]" />
-                              <span className="truncate text-[11px] text-[var(--jale-ink-2)]">
-                                {item.last_message_preview ?? t('no_messages')}
-                              </span>
-                            </span>
-                          </span>
-                        </button>
-                      </li>
-                    );
-                  })}
+                  {threads.map((item) => (
+                    <li key={item.application_id}>
+                      <DrawerThreadRow
+                        item={item}
+                        locale={locale}
+                        selected={selectedKey === item.application_id}
+                        unread={Boolean(item.conversation_id && unreadByConversation[item.conversation_id])}
+                        unknownWorkerLabel={t('unknown_worker')}
+                        noMessagesLabel={t('no_messages')}
+                        onSelect={() => setSelectedKey(item.application_id)}
+                      />
+                    </li>
+                  ))}
                 </ul>
               )}
             </div>
@@ -275,7 +332,7 @@ export function ConversationDrawer() {
           <div
             className={[
               'min-w-0 flex-1 flex-col sm:flex',
-              selectedId ? 'flex' : 'hidden',
+              selectedKey ? 'flex' : 'hidden',
             ].join(' ')}
           >
             <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--jale-divider)] bg-[var(--jale-blue-900)] p-3 text-white sm:hidden">
@@ -304,17 +361,39 @@ export function ConversationDrawer() {
               </div>
             ) : null}
 
-            {!selectedId ? (
+            {!selectedKey ? (
               <div className="flex flex-1 items-center justify-center">
                 <EmptyState icon="message" title={t('empty_select')} body={t('empty_select_body')} />
               </div>
+            ) : !selectedItem ? (
+              /* Asked for by id, and the inbox does not have it: a dismissed
+                 applicant, or one on a job that has since closed without ever
+                 being messaged. Say so rather than showing an empty thread the
+                 employer could type into. */
+              inboxLoading ? (
+                <div className="flex flex-1 items-center justify-center">
+                  <ConversationListSkeleton label={tCommon('loading')} />
+                </div>
+              ) : (
+                <div className="flex flex-1 items-center justify-center">
+                  <EmptyState icon="message" title={t('candidate_unavailable')} body={t('empty_select_body')} />
+                </div>
+              )
+            ) : !selectedConversationId ? (
+              <EmptyThreadComposer
+                item={selectedItem}
+                sending={sending}
+                errorMessage={composerError}
+                onSend={handleFirstSend}
+                onBack={() => setSelectedKey(null)}
+              />
             ) : thread.phase === 'error' && thread.errorKind ? (
               <div className="flex flex-1 items-center justify-center">
                 <ErrorState kind={thread.errorKind} onRetry={thread.retry} compact />
               </div>
             ) : (
               <ConversationThread
-                key={selectedId}
+                key={selectedConversationId}
                 conversation={conversation}
                 messages={messages}
                 loading={thread.phase !== 'ready'}
@@ -323,7 +402,7 @@ export function ConversationDrawer() {
                 errorMessage={composerError}
                 onSend={handleSend}
                 onClose={conversation?.status === 'open' ? handleClose : undefined}
-                onBack={() => setSelectedId(null)}
+                onBack={() => setSelectedKey(null)}
                 backHiddenFrom="sm"
                 compact
               />
@@ -332,6 +411,81 @@ export function ConversationDrawer() {
         </div>
       ) : null}
     </>
+  );
+}
+
+/**
+ * One row of the drawer's list. Extracted when the list moved onto the inbox:
+ * the row now carries an unread marker as well as the four facts it always
+ * had, and an unread thread is the one the employer is looking for.
+ */
+function DrawerThreadRow({
+  item,
+  locale,
+  selected,
+  unread,
+  unknownWorkerLabel,
+  noMessagesLabel,
+  onSelect,
+}: {
+  item: InboxItem;
+  locale: string;
+  selected: boolean;
+  unread: boolean;
+  unknownWorkerLabel: string;
+  noMessagesLabel: string;
+  onSelect: () => void;
+}) {
+  const name = item.worker_name ?? unknownWorkerLabel;
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-current={selected ? 'true' : undefined}
+      className={[
+        'flex w-full cursor-pointer gap-2 p-3 text-left transition-colors',
+        'focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]',
+        selected ? 'bg-[var(--jale-blue-50)]' : 'hover:bg-[var(--jale-card)]',
+      ].join(' ')}
+    >
+      <span className="avatar-initials h-8 w-8 shrink-0 text-[10px]">{initialsFor(name)}</span>
+      <span className="min-w-0 flex-1">
+        <span className="flex items-baseline justify-between gap-2">
+          <span
+            className={[
+              'truncate text-sm text-[var(--jale-ink)]',
+              // Weight, not colour alone: the unread marker has to survive a
+              // monochrome rendering and a colour-blind reader.
+              unread ? 'font-extrabold' : 'font-bold',
+            ].join(' ')}
+          >
+            {name}
+          </span>
+          <span className="shrink-0 text-[10px] tabular-nums text-[var(--jale-ink-2)]">
+            {formatTimeOfDay(item.last_message_at, locale)}
+          </span>
+        </span>
+        <span className="block truncate text-xs text-[var(--jale-ink-2)]">
+          {item.job_city ? `${item.job_title} · ${item.job_city}` : item.job_title}
+        </span>
+        <span className="mt-1 flex items-center gap-1.5">
+          <span
+            className={[
+              'h-1.5 w-1.5 shrink-0 rounded-full',
+              unread ? 'bg-[var(--jale-blue-700)]' : 'bg-[#25D366]',
+            ].join(' ')}
+          />
+          <span
+            className={[
+              'truncate text-[11px]',
+              unread ? 'font-semibold text-[var(--jale-ink)]' : 'text-[var(--jale-ink-2)]',
+            ].join(' ')}
+          >
+            {item.last_message_preview ?? noMessagesLabel}
+          </span>
+        </span>
+      </span>
+    </button>
   );
 }
 

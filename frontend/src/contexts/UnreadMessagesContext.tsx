@@ -6,6 +6,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { usePageData } from '@/hooks/usePageData';
 import { getInbox, markConversationRead } from '@/lib/api/employer';
 import type { EmployerInboxResponse, InboxItem } from '@/lib/api/employer';
+import type { ErrorKind } from '@/lib/api/errors';
 
 /**
  * The employer's inbox, owned ONCE for the whole session, and the unread
@@ -67,6 +68,14 @@ export type UnreadMessagesValue = {
     items: InboxItem[];
     /** True until the first inbox read lands (or forever, for a non-employer). */
     loading: boolean;
+    /**
+     * Why the FIRST read failed, for the surfaces that render a list from
+     * `items` and owe the employer an error state rather than an empty one.
+     * A failed poll never lands here -- it cannot touch loaded data.
+     */
+    errorKind: ErrorKind | null;
+    /** Full reload after a failure: back to the skeleton, then a fresh read. */
+    retry: () => void;
     /** Background reload. Never blanks what is on screen. */
     refresh: () => Promise<void>;
     /**
@@ -119,7 +128,7 @@ export function UnreadMessagesProvider({ children }: { children: ReactNode }) {
         pollMs: canFetch ? INBOX_POLL_MS : undefined,
     });
 
-    const { data, phase, refresh, setData } = inbox;
+    const { data, errorKind, phase, refresh, retry, setData } = inbox;
 
     /** Read inside callbacks that must not re-subscribe on every response. */
     const dataRef = useRef(data);
@@ -181,11 +190,13 @@ export function UnreadMessagesProvider({ children }: { children: ReactNode }) {
             unreadCount: data?.unread_count ?? 0,
             unreadByConversation,
             items: data?.items ?? NO_ITEMS,
-            loading: canFetch && phase !== 'ready',
+            loading: canFetch && phase !== 'ready' && phase !== 'error',
+            errorKind: canFetch ? errorKind : null,
+            retry,
             refresh,
             markRead,
         }),
-        [canFetch, data, markRead, phase, refresh, unreadByConversation],
+        [canFetch, data, errorKind, markRead, phase, refresh, retry, unreadByConversation],
     );
 
     return (

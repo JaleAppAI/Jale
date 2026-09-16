@@ -7,7 +7,7 @@ import React from 'react';
 import { Header } from "@/components/layout/Header";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { SidebarProfileProvider } from "@/contexts/SidebarProfileContext";
-import { ConversationDrawer } from "@/components/employer/ConversationDrawer";
+import { ConversationDrawerProvider } from "@/contexts/ConversationDrawerContext";
 import { ToastProvider } from "@/components/ui/toast";
 import { PostJobProvider } from "@/contexts/PostJobContext";
 import { UnreadMessagesProvider } from "@/contexts/UnreadMessagesContext";
@@ -91,9 +91,14 @@ export default async function RootLayout({
                       the pages, so "Post a job" is reachable from every employer
                       surface rather than only from the dashboard. */}
                   <PostJobProvider>
-                    <Header />
-                    {children}
-                    <ConversationDrawer />
+                    {/* Mounts the drawer itself, the way PostJobProvider
+                        mounts the wizard, so any surface can open a thread
+                        for one applicant instead of only the drawer's own
+                        floating button being able to. */}
+                    <ConversationDrawerProvider>
+                      <Header />
+                      {children}
+                    </ConversationDrawerProvider>
                   </PostJobProvider>
                 </UnreadMessagesProvider>
               </ToastProvider>
