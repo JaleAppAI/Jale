@@ -496,7 +496,10 @@
     "unknown_worker": "Unknown worker",
     "not_scored": "Not scored yet",
     "skills_show_all": "Show all {count} skills",
-    "skills_show_fewer": "Show fewer skills"
+    "skills_show_fewer": "Show fewer skills",
+    "message_action": "Message",
+    "status_label": "Application status",
+    "hire_blocked": "This applicant can\u2019t be marked hired until their details are complete. Open their profile to request them."
   },
   "employer_messages": {
     "title": "Messages",

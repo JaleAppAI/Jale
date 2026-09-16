@@ -496,7 +496,10 @@
     "unknown_worker": "Trabajador desconocido",
     "not_scored": "Sin puntaje aún",
     "skills_show_all": "Ver las {count} habilidades",
-    "skills_show_fewer": "Ver menos habilidades"
+    "skills_show_fewer": "Ver menos habilidades",
+    "message_action": "Mensaje",
+    "status_label": "Estado de la postulaci\u00f3n",
+    "hire_blocked": "No puedes marcar como contratado hasta que sus datos est\u00e9n completos. Abre su perfil para solicitarlos."
   },
   "employer_messages": {
     "title": "Mensajes",
