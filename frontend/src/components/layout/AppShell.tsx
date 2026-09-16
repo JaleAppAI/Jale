@@ -6,6 +6,7 @@ import { useLocale, useTranslations } from 'next-intl';
 import { Link, usePathname } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useSidebarProfile } from '@/contexts/SidebarProfileContext';
+import { useUnreadCount } from '@/contexts/UnreadMessagesContext';
 import { Button } from '@/components/ui/button';
 import { ThemeToggle } from '@/components/ui/theme-toggle';
 import { Sidebar } from './Sidebar';
@@ -42,6 +43,14 @@ export function AppShell({ role, title, subtitle, actions, children }: AppShellP
     const otherLocale = locale === 'en' ? 'es' : 'en';
 
     const chip = useSidebarProfile(role);
+    /*
+     * Read ONCE here and handed to both rails, the same arrangement as the
+     * chip above: the sidebar and the tab bar render the same number, and a
+     * context read inside each of them would be two subscriptions to one fact.
+     * `useUnreadCount` answers 0 where there is no provider, so a shell
+     * composed outside the session tree still renders.
+     */
+    const unreadCount = useUnreadCount();
     const [signingOut, setSigningOut] = useState(false);
 
     const homeHref = role === 'worker' ? '/worker/home' : '/employer/dashboard';
@@ -58,7 +67,7 @@ export function AppShell({ role, title, subtitle, actions, children }: AppShellP
     return (
         <div className="min-h-screen bg-[var(--jale-shell)] text-[var(--jale-ink)]">
             <div className="grid min-h-screen lg:grid-cols-[280px_minmax(0,1fr)]">
-                <Sidebar role={role} homeHref={homeHref} chip={chip} />
+                <Sidebar role={role} homeHref={homeHref} chip={chip} unreadCount={unreadCount} />
 
                 <section className="min-w-0">
                     <header className="sticky top-0 z-10 border-b border-[var(--jale-divider)] bg-[color-mix(in_srgb,var(--jale-card)_92%,transparent)] px-4 py-4 backdrop-blur md:px-6 lg:px-8">
@@ -106,7 +115,7 @@ export function AppShell({ role, title, subtitle, actions, children }: AppShellP
                 </section>
             </div>
 
-            <BottomTabBar role={role} />
+            <BottomTabBar role={role} unreadCount={unreadCount} />
         </div>
     );
 }

@@ -29,6 +29,7 @@ import { SubscriptionBanner } from '@/components/employer/SubscriptionBanner';
 import { DeleteJobDialog } from '@/components/employer/DeleteJobDialog';
 import { PlanLimitDialog } from '@/components/employer/PlanLimitDialog';
 import { DashboardHero } from '@/components/employer/DashboardHero';
+import { LatestMessagePanel } from '@/components/employer/LatestMessagePanel';
 import { PostJobButton } from '@/components/employer/PostJobButton';
 import { ApiError, deleteJob, getBilling, getJobs, listJobTemplates, updateJobStatus } from '@/lib/api/employer';
 import type { EmployerBilling, Job, JobCreatedOutcome } from '@/lib/api/employer';
@@ -733,27 +734,15 @@ export default function EmployerDashboardPage() {
                                 </div>
 
                                 <div className="min-w-0 space-y-5">
-                                    <DashboardPanel>
-                                        <PanelHeader
-                                            title={t('panels.whatsapp_title')}
-                                            action={
-                                                <Link
-                                                    href="/employer/conversations"
-                                                    className="rounded text-xs font-bold text-[var(--jale-blue-700)] hover:underline focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
-                                                >
-                                                    {t('panels.open_messages')}
-                                                </Link>
-                                            }
-                                        />
-                                        <div className="p-5">
-                                            <p className="text-sm font-bold text-[var(--jale-ink)]">
-                                                {recentJob?.title ?? t('panels.no_recent_job')}
-                                            </p>
-                                            <p className="mt-2 text-xs leading-5 text-[var(--jale-ink-2)]">
-                                                {t('panels.whatsapp_body')}
-                                            </p>
-                                        </div>
-                                    </DashboardPanel>
+                                    {/* The panel used to print one fixed
+                                        paragraph about WhatsApp under the most
+                                        recent job's title -- identical on the
+                                        day a worker replied and the day nobody
+                                        did. It now shows the newest message and
+                                        the unread count, and keeps that
+                                        paragraph (and this job title) as its
+                                        empty state. */}
+                                    <LatestMessagePanel fallbackJobTitle={recentJob?.title ?? null} />
 
                                     <DashboardPanel>
                                         <PanelHeader title={t('panels.job_progress_title')} />

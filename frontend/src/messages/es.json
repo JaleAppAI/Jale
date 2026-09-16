@@ -496,7 +496,10 @@
     "unknown_worker": "Trabajador desconocido",
     "not_scored": "Sin puntaje aún",
     "skills_show_all": "Ver las {count} habilidades",
-    "skills_show_fewer": "Ver menos habilidades"
+    "skills_show_fewer": "Ver menos habilidades",
+    "message_action": "Mensaje",
+    "status_label": "Estado de la postulaci\u00f3n",
+    "hire_blocked": "No puedes marcar como contratado hasta que sus datos est\u00e9n completos. Abre su perfil para solicitarlos."
   },
   "employer_messages": {
     "title": "Mensajes",
@@ -573,7 +576,8 @@
       "delivered": "Entregado",
       "failed": "Fallido",
       "received": "Recibido"
-    }
+    },
+    "unread": "Sin leer"
   },
   "employer_dashboard": {
     "stats": {
@@ -599,7 +603,8 @@
       "messages": "Mensajes",
       "billing": "Facturación",
       "settings": "Configuración",
-      "templates": "Plantillas"
+      "templates": "Plantillas",
+      "unread_badge": "{count, plural, one {# mensaje sin leer} other {# mensajes sin leer}}"
     },
     "hero": {
       "eyebrow": "Got Jale?",

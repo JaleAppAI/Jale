@@ -4,6 +4,7 @@ import {
   clearIdempotencyKey,
   getIdempotencyKey,
   isDefinitiveError,
+  markConversationRead,
   updateApplicantStatus,
 } from '../employer';
 import { ApiError as SharedApiError } from '../errors';
@@ -235,5 +236,79 @@ describe('updateApplicantStatus', () => {
 
     expect(err).toBeInstanceOf(ApiError);
     expect(err).toMatchObject({ code: 'resend_not_applicable', status: 400 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// markConversationRead -- the write half of the unread badge (sprint 26, B3).
+// The badge is only honest if the thing that clears it is; this pins the
+// method, the path and what a foreign conversation id comes back as.
+// ---------------------------------------------------------------------------
+
+describe('markConversationRead', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  function jsonResponse(body: unknown, status = 200): Response {
+    return { ok: status >= 200 && status < 300, status, json: async () => body } as Response;
+  }
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    process.env.NEXT_PUBLIC_API_BASE_URL = 'https://api.example.test';
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('POSTs to the conversation read endpoint with no body', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({
+      conversation_id: 'conv-1',
+      employer_last_read_at: '2026-09-16T10:00:00Z',
+    }));
+
+    const result = await markConversationRead('id-token-abc', 'conv-1');
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('https://api.example.test/employer/conversations/conv-1/read');
+    expect(init.method).toBe('POST');
+    expect(init.headers.Authorization).toBe('id-token-abc');
+    expect(init.body).toBeUndefined();
+    expect(result).toEqual({
+      conversation_id: 'conv-1',
+      employer_last_read_at: '2026-09-16T10:00:00Z',
+    });
+  });
+
+  it('aborts when the caller does', async () => {
+    // `apiFetch` chains the caller's signal into its own controller rather
+    // than forwarding the object, so the observable contract is the
+    // REJECTION, not the identity of `init.signal` (see `abort-signal.test`).
+    fetchMock.mockImplementation((_url: string, init: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        const fail = () => {
+          const err = new Error('The operation was aborted.');
+          err.name = 'AbortError';
+          reject(err);
+        };
+        if (init.signal?.aborted) return fail();
+        init.signal?.addEventListener('abort', fail);
+      }));
+    const controller = new AbortController();
+
+    const pending = markConversationRead('id-token-abc', 'conv-1', controller.signal);
+    controller.abort();
+
+    await expect(pending).rejects.toThrow(/aborted/i);
+  });
+
+  it('surfaces a foreign conversation id as a typed ApiError', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ error: 'conversation_not_found' }, 404));
+
+    const err = await markConversationRead('id-token-abc', 'someone-elses').catch((e) => e);
+
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err).toMatchObject({ code: 'conversation_not_found', status: 404 });
   });
 });

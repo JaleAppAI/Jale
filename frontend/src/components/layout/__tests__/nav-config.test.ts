@@ -136,3 +136,30 @@ describe('isNavItemActive on the employer tabs', () => {
         }
     });
 });
+
+// ---------------------------------------------------------------------------
+// Sprint 26 (B3) -- Messages sat third in the sidebar, below Applicants, while
+// being the surface an employer has to come back to every day (a worker's
+// reply is time-limited). Nothing pinned the order, so nothing would have
+// noticed it drifting back. This does.
+// ---------------------------------------------------------------------------
+
+describe('employerPrimaryNav order', () => {
+    it('leads with dashboard, then messages, then the management surfaces', () => {
+        expect(employerPrimaryNav.map((item) => item.key)).toEqual([
+            'dashboard',
+            'messages',
+            'applicants',
+            'templates',
+        ]);
+    });
+
+    it('keeps the mobile bar on the same two daily destinations, in the same order', () => {
+        // The bar is DERIVED from the list above, so reordering the sidebar
+        // reorders the bar -- this is the assertion that says that is wanted.
+        expect(employerMobileNav.map((item) => item.key).slice(0, 2)).toEqual([
+            'dashboard',
+            'messages',
+        ]);
+    });
+});

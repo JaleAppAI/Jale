@@ -83,6 +83,24 @@ type DashboardData = { jobs: Job[]; billing: EmployerBilling | null; templateCou
 /** Assigned by each test before rendering; the fake hook seeds itself from it. */
 let seed: DashboardData;
 
+// The dashboard's WhatsApp panel reads the session-wide inbox. These suites
+// replace `usePageData` with a dashboard-shaped fake, so the real provider
+// would be handed the dashboard's own fixture -- the context is stubbed empty
+// instead, which is the state a board with no messages renders in anyway.
+vi.mock('@/contexts/UnreadMessagesContext', () => ({
+    useUnreadMessages: () => ({
+        items: [],
+        unreadCount: 0,
+        unreadByConversation: {},
+        loading: false,
+        errorKind: null,
+        retry: vi.fn(),
+        refresh: vi.fn(),
+        markRead: vi.fn(),
+    }),
+    useUnreadCount: () => 0,
+}));
+
 vi.mock('@/hooks/usePageData', async () => {
     const react = await import('react');
     return {

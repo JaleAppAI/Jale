@@ -933,6 +933,41 @@ export async function sendConversationMessage(
   return res.json();
 }
 
+/**
+ * What `POST /employer/conversations/{id}/read` answers with. The stamp is
+ * echoed back rather than left implicit so a caller can tell a real write from
+ * a no-op retry; the inbox's `unread` flag is derived from it server-side.
+ */
+export type ConversationReadReceipt = {
+  conversation_id: string;
+  employer_last_read_at: string | null;
+};
+
+/**
+ * Marks a conversation read for the signed-in employer (sprint 26, B3).
+ *
+ * No body: the endpoint takes the moment of the call as the read stamp, and a
+ * client-supplied timestamp would let a slow phone's clock hide a message that
+ * arrived while the request was in flight.
+ *
+ * 404 `conversation_not_found` for a conversation belonging to another
+ * employer -- surfaced as an `ApiError` like every other refusal, so the
+ * optimistic badge decrement can be reverted rather than silently kept.
+ */
+export async function markConversationRead(
+  token: string,
+  conversationId: string,
+  signal?: AbortSignal,
+): Promise<ConversationReadReceipt> {
+  const res = await apiFetch(
+    `/employer/conversations/${conversationId}/read`,
+    { method: 'POST', signal },
+    token,
+  );
+  if (!res.ok) throw await parseApiError(res, 'conversation_read_failed');
+  return res.json();
+}
+
 export async function closeConversation(
   token: string,
   conversationId: string,
