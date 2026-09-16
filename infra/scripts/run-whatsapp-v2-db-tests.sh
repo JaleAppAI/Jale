@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Fail-closed runner for the focused WhatsApp v2 PostgreSQL enforcement and
-# concurrency suites (migrations 042/049/080/086/087/091/092/093/094/095 + onboarding
+# concurrency suites (migrations 042/049/080/086/087/091/092/093/094/095/096 + onboarding
 # concurrency, least-privilege flow coverage, and the 080 application-fill DB
 # contract: worker_documents grants/RLS, the 075/078 cert caps, and -- since
 # migration 091 retired the 022 INSERT guard the 080 suite used to exercise --
@@ -98,11 +98,21 @@
 # 25P02 on five of its eight cases, which is a successful answer merge
 # answering 500.
 #
-# The sprint-26 employer mark-read entry is registered after the web-completion
-# lane release. It applies NO migration either --
-# job_conversations.employer_last_read_at has existed since 028:37 and sprint 26
-# is simply the first code to write it -- but every outcome it asserts is a
-# policy fact a mocked pool cannot produce. job_conversations is RLS ENABLE +
+# The sprint-26 employer mark-read entry is now the LAST one, and like the
+# 094/095 entries it APPLIES A MIGRATION FILE as the real `jale_admin` role:
+# 096 backfills job_conversations.employer_last_read_at, a column that has
+# existed since 028:37 with nothing ever writing it, so that the new unread
+# badge does not light up every thread a worker ever replied to on the day it
+# ships. job_conversations is RLS ENABLE + FORCE and both its policies are
+# GUC-keyed, so that backfill rewrites ZERO rows -- and reports success -- if
+# the file forgets its un-force, and applying it as the superuser (who bypasses
+# RLS entirely) would hide exactly that. It runs LAST because re-applying 096
+# takes ACCESS EXCLUSIVE on job_conversations and stamps every NULL-stamped row
+# in the database, so it must not interleave with a suite holding conversation
+# fixtures open.
+#
+# Its other half needs no migration at all: every outcome of the mark-read
+# UPDATE is a policy fact a mocked pool cannot produce. job_conversations is RLS ENABLE +
 # FORCE and 025's job_conversations_employer_all is keyed on
 # app.current_internal_user_id, so marking ANOTHER employer's thread read is a
 # silent ZERO-ROW no-op rather than an error, and so is marking your OWN thread
@@ -116,7 +126,7 @@
 # verbatim, so a copy that drifts from the shipped SQL fails here.
 #
 # WHAT THE DATABASE MUST BE. `JALE_TEST_DATABASE_URL` must point at a
-# disposable local Postgres 16 database with migrations 001 THROUGH 095
+# disposable local Postgres 16 database with migrations 001 THROUGH 096
 # applied, and the connecting role must be a SUPERUSER. 092 is not optional
 # here: several suites now assert the post-cleanup end state (the 080 entry
 # expects the retired guard FUNCTION to be gone, and the crossover entry no
@@ -145,7 +155,7 @@ if [ -z "${JALE_TEST_DATABASE_URL:-}" ]; then
   echo "run-whatsapp-v2-db-tests: JALE_TEST_DATABASE_URL is not set (or empty)." >&2
   echo "  Refusing to run: the migration-042/049 and concurrency suites SKIP without a" >&2
   echo "  database URL and jest would otherwise exit 0 without verifying anything." >&2
-  echo "  Set it to a local Postgres 16 SUPERUSER url (migrations 001-095 applied)," >&2
+  echo "  Set it to a local Postgres 16 SUPERUSER url (migrations 001-096 applied)," >&2
   echo "  then re-run. The value is never printed." >&2
   exit 1
 fi
@@ -174,7 +184,7 @@ if ! node -e '
     .catch((e) => { console.error("  " + e.message); process.exit(3); });
 ' 2>&1; then
   echo "run-whatsapp-v2-db-tests: JALE_TEST_DATABASE_URL is unusable." >&2
-  echo "  These suites need a disposable local database with migrations 001-095" >&2
+  echo "  These suites need a disposable local database with migrations 001-096" >&2
   echo "  applied, reached as a SUPERUSER: they ALTER ROLE jale_whatsapp/jale_ai to" >&2
   echo "  set test passwords, insert fixtures past RLS, and read columns those roles" >&2
   echo "  are not granted. Refusing to run. The value is never printed." >&2

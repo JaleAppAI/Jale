@@ -54,11 +54,23 @@
  * employer-worker-reads.integration.test.ts uses, so no role passwords are
  * needed. Seeding happens under `RESET ROLE`.
  *
- * NO MIGRATION IS APPLIED HERE. `job_conversations.employer_last_read_at` has
- * existed since 028:37; sprint 26 is the first code to write it.
+ * THE SECOND BLOCK APPLIES MIGRATION 096 FROM THE FILE ITSELF, as the real
+ * non-superuser `jale_admin`. It has to. `employer_last_read_at` has existed
+ * since 028:37 with nothing ever writing it, so 096 backfills the history to
+ * stop the badge lighting up every thread on day one -- and job_conversations
+ * is RLS ENABLE + FORCE with GUC-keyed policies, so that backfill rewrites
+ * ZERO rows and reports success if the file forgets its un-force. Applied as
+ * the SUPERUSER (who bypasses RLS entirely) a 096 that forgot it would pass
+ * perfectly, which is why that block uses a second, password-authenticated
+ * connection as jale_admin rather than SET LOCAL ROLE.
+ *
+ * That block's fixtures are COMMITTED, unlike the first block's: the migration
+ * runs on its own connection and cannot see an uncommitted row. They are
+ * deleted in its afterAll.
  *
  * Set JALE_TEST_DATABASE_URL to a superuser connection string for an isolated,
- * disposable database (see db/local/bootstrap-testbed.sh).
+ * disposable database with migrations 001-096 applied (see
+ * db/local/bootstrap-testbed.sh).
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -72,6 +84,19 @@ const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
 const HANDLER_PATH = path.join(
   __dirname, '..', '..', '..', 'lambda', 'api', 'employer-conversations-read.ts',
 );
+
+const MIGRATION_096_PATH = path.join(
+  __dirname, '..', '..', '..', 'db', 'migrations',
+  '096_job_conversations_employer_read_backfill.sql',
+);
+
+/** Swap the credentials in the superuser URL for another role's. */
+function urlForRole(baseUrl: string, user: string, password: string): string {
+  const u = new URL(baseUrl);
+  u.username = user;
+  u.password = password;
+  return u.toString();
+}
 
 /**
  * The mark-read UPDATE, lifted out of the handler. `$1` conversation id,
@@ -91,7 +116,7 @@ if (!databaseUrl) {
     // eslint-disable-next-line no-console
     console.warn(
       '[employer-conversation-read] DONE_WITH_CONCERNS: set JALE_TEST_DATABASE_URL to a ' +
-        'disposable PostgreSQL 16 database with migrations 001-095 applied to run the ' +
+        'disposable PostgreSQL 16 database with migrations 001-096 applied to run the ' +
         'real-PostgreSQL gate for the employer unread badge.',
     );
     expect(databaseUrl).toBeUndefined();
@@ -425,5 +450,220 @@ maybeDescribe('employer conversation mark-read against real PostgreSQL', () => {
       expect(inbox.items.map((item) => item.conversation_id)).toEqual([ownB]);
       expect(inbox.unread_count).toBe(1);
     });
+  });
+});
+
+
+/**
+ * ── Migration 096: the backfill that keeps the badge from crying wolf ──────
+ *
+ * Every row predating this sprint carries a NULL `employer_last_read_at`,
+ * because nothing has ever written the column. Under the shipped formula that
+ * makes EVERY thread a worker ever replied to unread on day one. 096 stamps
+ * that history; these cases prove it does, that it does not over-reach, and
+ * that a replay is safe.
+ *
+ * Fixtures here are COMMITTED (the migration runs on its own connection and
+ * cannot see an uncommitted row) and deleted in afterAll.
+ */
+maybeDescribe('migration 096 backfills the employer read stamp', () => {
+  const tag = randomUUID().slice(0, 8);
+  /** Fixtures and verification reads. Bypasses RLS, so it can never be the
+   * connection the migration runs on. */
+  const su = new Client({ connectionString: databaseUrl });
+  /** The migration's OWN connection: the real, non-superuser jale_admin. */
+  let admin: Client;
+
+  const migrationSql = fs.readFileSync(MIGRATION_096_PATH, 'utf8');
+
+  const employerId = randomUUID();
+  const employerSub = `s26-096-employer-${tag}`;
+  const workerId = randomUUID();
+  const jobId = randomUUID();
+  const applicationId = randomUUID();
+  const conversationId = randomUUID();
+
+  /** The worker's last message, a day before the backfill runs. */
+  const workerWroteAt = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+  /**
+   * Applies 096 exactly the way run-migrations.sh does: the whole file, in one
+   * simple query, as jale_admin. `pg` sends a multi-statement simple query,
+   * which is what carries BEGIN/COMMIT and the dollar-quoted DO blocks intact
+   * -- and why no bind parameter may appear here.
+   */
+  async function apply096(): Promise<void> {
+    await admin.query(migrationSql);
+  }
+
+  async function stamp(): Promise<Date | null> {
+    const res = await su.query<{ employer_last_read_at: Date | null }>(
+      'SELECT employer_last_read_at FROM job_conversations WHERE id = $1',
+      [conversationId],
+    );
+    return res.rows[0].employer_last_read_at;
+  }
+
+  /** The inbox, read the way the Lambda reads it: as jale_admin, both GUCs
+   * bound, in a transaction that is rolled back so it cannot disturb the
+   * migration cases around it. */
+  async function inboxUnread(): Promise<boolean> {
+    await admin.query('BEGIN');
+    try {
+      await admin.query(`SELECT set_config('app.current_user_id', $1, true)`, [employerSub]);
+      await admin.query(`SELECT set_config('app.current_internal_user_id', $1, true)`, [employerId]);
+      const inbox = await listEmployerInbox(admin as unknown as PoolClient, employerId);
+      expect(inbox.items).toHaveLength(1);
+      expect(inbox.items[0].conversation_id).toBe(conversationId);
+      expect(inbox.unread_count).toBe(inbox.items[0].unread ? 1 : 0);
+      return inbox.items[0].unread;
+    } finally {
+      await admin.query('ROLLBACK');
+    }
+  }
+
+  async function forceFlags(): Promise<{ enabled: boolean; forced: boolean }> {
+    const res = await su.query<{ relrowsecurity: boolean; relforcerowsecurity: boolean }>(
+      `SELECT relrowsecurity, relforcerowsecurity
+         FROM pg_catalog.pg_class WHERE oid = 'public.job_conversations'::regclass`,
+    );
+    return { enabled: res.rows[0].relrowsecurity, forced: res.rows[0].relforcerowsecurity };
+  }
+
+  beforeAll(async () => {
+    await su.connect();
+    if (new URL(databaseUrl as string).username !== 'jale_admin') {
+      await su.query(`ALTER ROLE jale_admin WITH PASSWORD 'test-admin-pw'`);
+    }
+    admin = new Client({
+      connectionString: urlForRole(databaseUrl as string, 'jale_admin', 'test-admin-pw'),
+    });
+    await admin.connect();
+
+    await su.query(
+      `INSERT INTO users (id, cognito_sub, user_type)
+       VALUES ($1, $2, 'employer'), ($3, $4, 'worker')`,
+      [employerId, employerSub, workerId, `s26-096-worker-${tag}`],
+    );
+    await su.query(
+      `INSERT INTO jobs (id, employer_id, title, location, job_type, status)
+       VALUES ($1, $2, 'S26 096 backfill', 'Austin', 'full-time', 'active')`,
+      [jobId, employerId],
+    );
+    await su.query(
+      `INSERT INTO job_applications (id, job_id, worker_id, status)
+       VALUES ($1, $2, $3, 'talking')`,
+      [applicationId, jobId, workerId],
+    );
+    // EXACTLY the shape every pre-sprint-26 row has: the worker has written,
+    // and employer_last_read_at is NULL because nothing has ever written it.
+    await su.query(
+      `INSERT INTO job_conversations
+         (id, job_id, employer_id, worker_id, application_id, status,
+          last_message_at, last_worker_message_at, employer_last_read_at)
+       VALUES ($1, $2, $3, $4, $5, 'open', $6, $6, NULL)`,
+      [conversationId, jobId, employerId, workerId, applicationId, workerWroteAt],
+    );
+  });
+
+  afterAll(async () => {
+    // job_applications.worker_id is ON DELETE RESTRICT and job_conversations
+    // holds a RESTRICT on application_id -- conversations, then applications,
+    // then jobs, then users. try/finally: a failed DELETE must still close
+    // BOTH clients, or jest hangs on the open pg handles.
+    try {
+      await su.query('DELETE FROM job_conversations WHERE id = $1', [conversationId]);
+      await su.query('DELETE FROM job_applications WHERE id = $1', [applicationId]);
+      await su.query('DELETE FROM jobs WHERE id = $1', [jobId]);
+      await su.query('DELETE FROM users WHERE id = ANY($1::uuid[])', [[employerId, workerId]]);
+    } finally {
+      await admin.end();
+      await su.end();
+    }
+  });
+
+  // CASES ARE ORDERED AND STATEFUL: each reads the end state the previous one
+  // produced. Do not reorder them.
+
+  it('1. applies as the real jale_admin, non-superuser and table owner -- which is what makes FORCE bind', async () => {
+    const who = await admin.query<{ user: string; super: boolean }>(
+      `SELECT current_user AS user,
+              (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) AS super`,
+    );
+    expect(who.rows[0].user).toBe('jale_admin');
+    // A superuser bypasses RLS entirely, so a 096 that FORGOT its un-force
+    // would pass a superuser-applied test perfectly. This is the whole reason
+    // this block does not use SET LOCAL ROLE.
+    expect(who.rows[0].super).toBe(false);
+    const owner = await su.query<{ owner: string }>(
+      `SELECT pg_get_userbyid(relowner) AS owner
+         FROM pg_class WHERE oid = 'public.job_conversations'::regclass`,
+    );
+    expect(owner.rows[0].owner).toBe('jale_admin');
+  });
+
+  it('2. a pre-096 row reads as UNREAD before the backfill', async () => {
+    expect(await stamp()).toBeNull();
+    // The day-one wall of stale badges, measured rather than described.
+    expect(await inboxUnread()).toBe(true);
+  });
+
+  it('3. 096 stamps it to the worker message instant, and it reads as READ', async () => {
+    await apply096();
+
+    const after = await stamp();
+    expect(after).not.toBeNull();
+    // GREATEST(COALESCE(last_message_at, created_at),
+    //          COALESCE(last_worker_message_at, created_at)) -- both columns
+    // carry workerWroteAt on this row, so the stamp is exactly that instant,
+    // NOT now(). A backfill that stamped now() would also read as "read", so
+    // the exact value is what distinguishes a correct backfill from a lucky one.
+    expect(after!.getTime()).toBe(workerWroteAt.getTime());
+    expect(await inboxUnread()).toBe(false);
+  });
+
+  it('4. restores ENABLE + FORCE ROW LEVEL SECURITY', async () => {
+    // An un-force the file failed to reverse is a permanent, silent hole in
+    // the tenant boundary: every employer able to read and write every other
+    // employer's conversations.
+    expect(await forceFlags()).toEqual({ enabled: true, forced: true });
+  });
+
+  it('5. a worker message arriving AFTER the backfill flips the thread back to unread', async () => {
+    await su.query(
+      `UPDATE job_conversations
+          SET last_worker_message_at = employer_last_read_at + interval '1 second',
+              last_message_at = employer_last_read_at + interval '1 second'
+        WHERE id = $1`,
+      [conversationId],
+    );
+    // The backfill suppresses HISTORY, not the feature. This is the assertion
+    // that separates the two.
+    expect(await inboxUnread()).toBe(true);
+  });
+
+  it('6. replaying 096 is a no-op: it does NOT re-stamp a row that already has one', async () => {
+    const before = await stamp();
+    const stillUnread = await inboxUnread();
+    expect(stillUnread).toBe(true);
+
+    await apply096();
+
+    // `WHERE employer_last_read_at IS NULL` is the idempotence gate. A replay
+    // that dropped it would silently mark every genuinely-unread thread in
+    // production as read -- the one hazard the file's header calls out.
+    expect((await stamp())!.getTime()).toBe(before!.getTime());
+    expect(await inboxUnread()).toBe(true);
+    expect(await forceFlags()).toEqual({ enabled: true, forced: true });
+  });
+
+  it('7. leaves no conversation anywhere carrying a NULL read stamp', async () => {
+    // The file's own self-check, asserted from outside it: the invariant the
+    // badge depends on, verified as a superuser so RLS cannot hide a row the
+    // migration missed.
+    const res = await su.query<{ count: string }>(
+      'SELECT count(*) AS count FROM job_conversations WHERE employer_last_read_at IS NULL',
+    );
+    expect(Number(res.rows[0].count)).toBe(0);
   });
 });
