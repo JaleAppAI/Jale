@@ -25,6 +25,10 @@ vi.mock('@/i18n/navigation', () => ({
   Link: ({ href, children, ...rest }: { href: string; children: ReactNode }) => (
     <a href={href} {...rest}>{children}</a>
   ),
+  // The page keeps its filters in the query string; this suite is about the
+  // hire celebration, so the navigation is stubbed and never asserted on.
+  useRouter: () => ({ replace: vi.fn() }),
+  usePathname: () => '/worker/home',
 }));
 
 /**
@@ -488,7 +492,9 @@ describe('worker home -- a failed applications fetch is visible', () => {
     rerender(<WorkerHomePage />);
 
     await waitFor(() => expect(getApplications).toHaveBeenCalledTimes(2));
-    expect(getApplications).toHaveBeenLastCalledWith('rotated-token', expect.anything());
+    // The paging options are the scan's own (`{ limit: 100 }`, the server's
+    // cap); what this line is about is the ROTATED token being used.
+    expect(getApplications).toHaveBeenLastCalledWith('rotated-token', expect.anything(), { limit: 100 });
     expect(screen.queryByText(message('worker_home.applications_error'))).not.toBeInTheDocument();
 
     // ...and the retry SUCCEEDS. The details banner arriving proves the

@@ -38,6 +38,9 @@ vi.mock('@/i18n/navigation', () => ({
     Link: ({ href, children, ...rest }: { href: string; children: ReactNode }) => (
         <a href={href} {...rest}>{children}</a>
     ),
+    // "Back to jobs" may return through history; this suite is about the facts
+    // card, so the router is stubbed and never asserted on.
+    useRouter: () => ({ back: vi.fn() }),
 }));
 
 vi.mock('@/contexts/AuthContext', () => ({

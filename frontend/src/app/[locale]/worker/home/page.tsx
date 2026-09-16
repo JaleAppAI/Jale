@@ -2,6 +2,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
+import { useSearchParams } from 'next/navigation';
+import { usePathname, useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { usePageData } from '@/hooks/usePageData';
@@ -33,6 +35,7 @@ import {
 import { HiredBanner } from '@/components/worker/HiredBanner';
 import { HiredCelebrationModal } from '@/components/worker/HiredCelebrationModal';
 import { getJobs, updateWorkerProfile } from '@/lib/api/worker';
+import { markFeedOrigin, rememberFeedUrl } from '@/lib/worker-feed-return';
 import type { Job, PreferredCity } from '@/lib/api/worker';
 
 export const dynamic = 'force-dynamic';
@@ -54,6 +57,45 @@ const FILTER_CHIPS: { value: TypeFilter; labelKey: 'all' | 'full_time' | 'part_t
   { value: 'part-time', labelKey: 'part_time' },
   { value: 'contract',  labelKey: 'contract' },
 ];
+
+/*
+ * The feed's filters live in the QUERY STRING, not in component state alone.
+ *
+ * A worker who narrowed the list, opened a job and came back used to get the
+ * unfiltered feed: the page had remounted and every filter was back to its
+ * default. The URL is what the page is restored from, and every settled filter
+ * change is written back to it -- with `replace`, so narrowing a search does
+ * not leave a history entry per keystroke, and with `scroll: false`, so the
+ * list does not jump while it is being read.
+ */
+const SEARCH_PARAM = 'q';
+const TYPE_PARAM = 'type';
+
+/** Anything but the four known chips is "no filter" -- the query string is
+ *  user-editable and must never forward a value the API has not agreed to. */
+function parseTypeFilter(raw: string | null | undefined): TypeFilter {
+  return FILTER_CHIPS.some((chip) => chip.value === raw) ? (raw as TypeFilter) : 'all';
+}
+
+/** `useSearchParams` returns null outside an App Router (unit tests, and any
+ *  non-app render), so every read goes through this. */
+function paramValue(params: { get(key: string): string | null } | null | undefined, key: string): string {
+  return params?.get(key) ?? '';
+}
+
+/**
+ * The feed's own URL for a set of filters. An empty query string is omitted
+ * ENTIRELY rather than left as a bare '?': that trailing character is not a
+ * filter, and it would make every "is this already the URL" comparison — and
+ * every shared feed link — wrong.
+ */
+function feedHrefFor(pathname: string, search: string, jobType: TypeFilter): string {
+  const params = new URLSearchParams();
+  if (search) params.set(SEARCH_PARAM, search);
+  if (jobType !== 'all') params.set(TYPE_PARAM, jobType);
+  const query = params.toString();
+  return query ? `${pathname}?${query}` : pathname;
+}
 
 /**
  * One unacknowledged hire, with its `hire` block hoisted out of the optional
@@ -119,7 +161,11 @@ function JobRows({ jobs }: { jobs: Job[] }) {
       onAnimationEnd={onCascadeEnd}
     >
       {jobs.map((job) => (
-        <li key={job.id}>
+        /* The click is recorded on the ROW, so it covers the card's link
+           whether it was tapped or opened with Enter: it is what lets the job
+           page's back link use history -- and so restore the scroll position
+           -- instead of a plain link. */
+        <li key={job.id} onClick={markFeedOrigin}>
           <WorkerJobCard job={job} href={`/worker/jobs/${job.id}`} />
         </li>
       ))}
@@ -133,9 +179,22 @@ export default function WorkerHomePage() {
   const tCommon = useTranslations('common');
   const errorMessage = useErrorMessage();
 
-  const [search, setSearch] = useState('');
-  const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [jobType, setJobType] = useState<TypeFilter>('all');
+  /*
+   * Seeded from the URL, ONCE. The filters flow state -> URL from here on:
+   * the box must react to a keystroke immediately, which a value routed
+   * through a navigation cannot, and nothing else writes this page's query
+   * (it is `replace`d, so there is no back/forward within the feed to follow).
+   */
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
+  const [search, setSearch] = useState(() => paramValue(searchParams, SEARCH_PARAM));
+  const [debouncedSearch, setDebouncedSearch] = useState(
+    () => paramValue(searchParams, SEARCH_PARAM).trim(),
+  );
+  const [jobType, setJobType] = useState<TypeFilter>(
+    () => parseTypeFilter(paramValue(searchParams, TYPE_PARAM)),
+  );
   const [preferredCities, setPreferredCities] = useState<PreferredCity[]>([]);
   const [editingCities, setEditingCities] = useState(false);
   const [savingCities, setSavingCities] = useState(false);
@@ -156,6 +215,23 @@ export default function WorkerHomePage() {
 
     return () => window.clearTimeout(handle);
   }, [search]);
+
+  /*
+   * The filters, as a URL. Built from the DEBOUNCED search, so the address bar
+   * is rewritten when the typing settles rather than on every keystroke; a
+   * chip is not debounced and lands immediately.
+   */
+  const feedHref = feedHrefFor(pathname, debouncedSearch, jobType);
+  const currentQuery = searchParams?.toString() ?? '';
+
+  useEffect(() => {
+    // Also where the job page reads its way back from -- recorded even when
+    // the URL already says this, because a page restored FROM the URL never
+    // calls `replace` at all.
+    rememberFeedUrl(feedHref);
+    if (feedHref === (currentQuery ? `${pathname}?${currentQuery}` : pathname)) return;
+    router.replace(feedHref, { scroll: false });
+  }, [feedHref, currentQuery, pathname, router]);
 
   /**
    * Applications waiting on the worker, fetched BEST-EFFORT alongside the
@@ -211,7 +287,13 @@ export default function WorkerHomePage() {
   useEffect(() => {
     if (!idToken) return;
     const controller = new AbortController();
-    getApplications(idToken, controller.signal)
+    // The MAXIMUM one request can give (the server caps at 100). This is not a
+    // list the worker reads here -- it is a scan for the two things that
+    // interrupt them, a hire and a details request -- so paging it would mean
+    // walking every page before the page could be drawn. The server's old hard
+    // limit of 200 was never reachable by anyone either; both are far past the
+    // number of applications a worker has open at once.
+    getApplications(idToken, controller.signal, { limit: 100 })
       .then(({ applications }) => {
         setApplicationsFailed(false);
         // `details_status`, not `status`: the timestamp-derived field is the one

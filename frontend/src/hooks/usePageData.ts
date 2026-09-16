@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { usePathname } from '@/i18n/navigation';
-import { useAuth } from '@/contexts/AuthContext';
 import { classifyError, type ErrorKind } from '@/lib/api/errors';
 import { useRequireAuth } from './useRequireAuth';
 import { initialPageState, pageDataReducer, type PagePhase } from './pageDataReducer';
@@ -54,6 +53,11 @@ export type UsePageDataOptions<T> = {
     pollMs?: number;
     /** Values that invalidate the data. A change resets and reloads. */
     deps?: ReadonlyArray<unknown>;
+    /**
+     * Whose page this is, when the path does not say (see `useRequireAuth`).
+     * Every `/worker/...` and `/employer/...` route can leave it out.
+     */
+    role?: 'worker' | 'employer';
 };
 
 export type UsePageDataResult<T> = {
@@ -106,14 +110,20 @@ export function usePageData<T>(options: UsePageDataOptions<T>): UsePageDataResul
         isEmpty,
         pollMs,
         deps = EMPTY_DEPS,
+        role,
     } = options;
 
-    const { idToken, isLoading } = useAuth();
     const pathname = usePathname();
     // Called unconditionally (hook rules); `enabled` is what actually arms the
     // sign-in redirect. `handleLegalWall` is wanted either way -- reusing it is
     // what keeps the return-URL contract identical to every hand-rolled page.
-    const { handleLegalWall } = useRequireAuth({ enabled: requireAuth });
+    //
+    // The TOKEN comes from here too, not from `useAuth` directly: this hook
+    // hands back the token for the ROLE whose page this is, and null when the
+    // browser's session belongs to the other one. Fetching with that token
+    // could only ever earn a 401/403 -- the sign-in redirect is the answer, not
+    // the request.
+    const { handleLegalWall, idToken, isLoading } = useRequireAuth({ enabled: requireAuth, role });
 
     // Instantiated once for this T so `dispatch` is typed to PageEvent<T>.
     const reducer = pageDataReducer<T>;

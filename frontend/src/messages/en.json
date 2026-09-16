@@ -1078,7 +1078,8 @@
     "job_status": {
       "closed": "Closed",
       "filled": "Filled"
-    }
+    },
+    "load_more": "Load more"
   },
   "worker_application_details": {
     "back": "Back to my applications",

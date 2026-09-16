@@ -1,5 +1,6 @@
 'use client';
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { usePathname } from 'next/navigation';
 import { apiFetch } from '@/lib/api';
 import { getAuthBridge, registerAuthBridge } from '@/lib/auth-bridge';
 import { buildLoginUrl } from '@/lib/login-url';
@@ -7,6 +8,7 @@ import {
     clearSession as clearStoredSession,
     readRoleToken,
     readSession,
+    subscribeToSignOut,
     writeSession,
 } from '@/lib/session-storage';
 import { clearSidebarChips } from '@/lib/sidebar-chip-storage';
@@ -34,12 +36,31 @@ type UserType = 'worker' | 'employer';
 
 const AuthContext = createContext<AuthState | null>(null);
 
-function inferUserTypeFromPath(): UserType | null {
-    if (typeof window === 'undefined') return null;
-    const pathname = window.location.pathname;
+/** The role a path belongs to, or null for one that names none. */
+function roleFromPath(pathname: string): UserType | null {
     if (pathname.includes('/employer')) return 'employer';
     if (pathname.includes('/worker')) return 'worker';
     return null;
+}
+
+function inferUserTypeFromPath(): UserType | null {
+    if (typeof window === 'undefined') return null;
+    return roleFromPath(window.location.pathname);
+}
+
+/**
+ * The current route, as a value that CHANGES on a client-side navigation.
+ *
+ * `window.location` is read once per render and never announces anything, which
+ * is exactly how the provider used to serve an employer page the worker session
+ * it had restored on mount. `usePathname` is null outside an App Router (unit
+ * tests, and any non-app render), so the address bar remains the fallback
+ * rather than the source.
+ */
+function useRoutePathname(): string {
+    const routerPathname = usePathname();
+    if (routerPathname) return routerPathname;
+    return typeof window === 'undefined' ? '' : window.location.pathname;
 }
 
 // Every app route is locale-prefixed by the middleware, so the first path
@@ -69,44 +90,131 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
         setUserType(next);
     };
 
-    // Picks the stored session up on every load. Worker and employer share this
-    // provider, and the store keeps a slot per role, so every read says which
-    // role the current route is about — otherwise a browser with both sessions
-    // open would restore whichever was written last.
+    /**
+     * The route role whose session this provider has finished resolving.
+     *
+     * `undefined` until the first restore lands, which is what keeps
+     * `isLoading` true on the very first render. A route that names no role
+     * settles on the role it ended up restoring, so walking from the landing
+     * page into that role's own pages is not a second restore.
+     */
+    const [settledFor, setSettledFor] = useState<UserType | null | undefined>(undefined);
+    /** Supersedes an in-flight restore when the route changes under it. */
+    const restoreGenerationRef = useRef(0);
+
+    const routeRole = roleFromPath(useRoutePathname());
+    /**
+     * A restore for the CURRENT route has not finished. Derived during render,
+     * deliberately: effects run child-first, so a page's own fetch effect fires
+     * BEFORE this provider's restore effect on the render a navigation lands
+     * on. Anything less than a render-time signal lets that page fetch with the
+     * role it is leaving — the 401 this whole mechanism exists to prevent.
+     */
+    const restorePending = settledFor === undefined
+        || (routeRole !== null && settledFor !== routeRole);
+
+    // Restores the session THIS ROUTE's role is signed in as — on every load,
+    // and again whenever a client-side navigation crosses the worker/employer
+    // line. The store keeps a slot per role, so every read says which role is
+    // asking; otherwise a browser with both sessions open would restore
+    // whichever was written last.
     useEffect(() => {
-        const stored = readSession(inferUserTypeFromPath());
+        if (!restorePending) return;
+
+        const generation = (restoreGenerationRef.current += 1);
+        const settle = (role: UserType | null) => {
+            if (restoreGenerationRef.current !== generation) return;
+            setSettledFor(role);
+            setIsLoading(false);
+        };
+
+        // Already serving this role (arrived from a neutral route, or signed in
+        // on the auth page next door): record it, refresh nothing.
+        if (routeRole !== null && userTypeRef.current === routeRole) {
+            settle(routeRole);
+            return;
+        }
+
+        // The other role's tokens go FIRST and unconditionally. Until the new
+        // slot answers, this tab holds no session at all — handing a page the
+        // token it had a moment ago is the bug, not a stopgap.
+        setAccessToken(null);
+        setIdToken(null);
+        setRefreshToken(null);
+        rememberUserType(null);
+        setIsLoading(true);
+
+        const stored = readSession(routeRole);
         const rt = stored?.refreshToken ?? null;
-        const ut = stored?.userType ?? inferUserTypeFromPath();
-        if (rt) {
-            // Pin the role we inferred, so a later refresh reads a slot rather
-            // than guessing again from a path that may have changed.
-            if (ut) writeSession({ refreshToken: rt, userType: ut });
-            setRefreshToken(rt);
-            rememberUserType(ut);
-            apiFetch('/auth/refresh', {
-                method: 'POST',
-                body: JSON.stringify({ refreshToken: rt, userType: ut }),
-            }).then(async (res) => {
-                if (res.ok) {
-                    const data = await res.json();
-                    setAccessToken(data.accessToken);
-                    setIdToken(data.idToken);
-                } else {
-                    // Scoped to the role whose token was just refused: the
-                    // other role's session is still perfectly good.
-                    clearStoredSession(ut ?? undefined);
-                    setRefreshToken(null);
-                    rememberUserType(null);
-                }
-            }).catch(() => {
+        const ut = stored?.userType ?? routeRole;
+        if (!rt) {
+            // No session for this route's role. Not an error and not a reason
+            // to touch the OTHER role's slot: `useRequireAuth` sends the
+            // visitor to this role's own sign-in door.
+            settle(routeRole);
+            return;
+        }
+
+        // Pin the role we inferred, so a later refresh reads a slot rather
+        // than guessing again from a path that may have changed.
+        if (ut) writeSession({ refreshToken: rt, userType: ut });
+        setRefreshToken(rt);
+        rememberUserType(ut);
+        apiFetch('/auth/refresh', {
+            method: 'POST',
+            body: JSON.stringify({ refreshToken: rt, userType: ut }),
+        }).then(async (res) => {
+            if (res.ok) {
+                const data = await res.json();
+                // A navigation that happened while this was in flight owns the
+                // provider now; landing the old role's tokens on top of it is
+                // precisely what the generation guard is for.
+                if (restoreGenerationRef.current !== generation) return;
+                setAccessToken(data.accessToken);
+                setIdToken(data.idToken);
+            } else {
+                if (restoreGenerationRef.current !== generation) return;
+                // Scoped to the role whose token was just refused: the
+                // other role's session is still perfectly good.
                 clearStoredSession(ut ?? undefined);
                 setRefreshToken(null);
                 rememberUserType(null);
-            }).finally(() => setIsLoading(false));
-        } else {
-            setIsLoading(false);
-        }
-    }, []);
+            }
+        }).catch(() => {
+            if (restoreGenerationRef.current !== generation) return;
+            clearStoredSession(ut ?? undefined);
+            setRefreshToken(null);
+            rememberUserType(null);
+        }).finally(() => settle(routeRole ?? ut ?? null));
+    }, [restorePending, routeRole]);
+
+    /**
+     * A sign-out in ANOTHER TAB of this browser.
+     *
+     * Only this provider's own role is acted on: the slots are keyed precisely
+     * so that signing out of the employer account leaves the worker in the next
+     * tab alone. The redirect is scoped the same way — a tab parked on a role
+     * page has nothing left to show and goes to that role's door, while one on
+     * the landing page or a legal page simply stops being signed in rather than
+     * being yanked onto a login screen it never asked for.
+     */
+    useEffect(() => subscribeToSignOut((role) => {
+        if (userTypeRef.current !== role) return;
+        // Retires any restore still in flight: its response would otherwise
+        // land tokens for the session that has just been signed out.
+        restoreGenerationRef.current += 1;
+        setAccessToken(null);
+        setIdToken(null);
+        setRefreshToken(null);
+        rememberUserType(null);
+        setSettledFor(role);
+        setIsLoading(false);
+        const { pathname, search } = window.location;
+        if (roleFromPath(pathname) !== role) return;
+        window.location.assign(
+            buildLoginUrl(localeFromPathname(pathname), role, `${pathname}${search}`),
+        );
+    }), []);
 
     const setTokens = (tokens: { accessToken: string; idToken: string; refreshToken: string }, ut: 'worker' | 'employer') => {
         setAccessToken(tokens.accessToken);
@@ -250,11 +358,24 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
         };
     }, [refreshIdToken, clearSession]);
 
+    /**
+     * Whether what is in memory belongs to the route being rendered.
+     *
+     * False for exactly one thing: a session for the OTHER role, on a route
+     * that names a role. Everything below is masked in that case, so no
+     * descendant can read — let alone send — a token from the wrong pool
+     * during the renders between the navigation and the restore above.
+     */
+    const serving = routeRole === null || userType === null || userType === routeRole;
+
     return (
         <AuthContext.Provider value={{
-            accessToken, refreshToken, idToken, userType,
-            isAuthenticated: !!idToken,
-            isLoading,
+            accessToken: serving ? accessToken : null,
+            refreshToken: serving ? refreshToken : null,
+            idToken: serving ? idToken : null,
+            userType: serving ? userType : null,
+            isAuthenticated: serving && !!idToken,
+            isLoading: isLoading || restorePending,
             setTokens, logout, refreshIdToken,
         }}>
             {children}

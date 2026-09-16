@@ -10,6 +10,61 @@ import { checkCompliance } from '../legal/check-compliance';
 
 const CORS_HEADERS = corsHeaders();
 
+/*
+ * PAGING.
+ *
+ * This list was a hard `LIMIT 200` with no way to ask for the rest: a worker
+ * with more applications than that could not reach the older ones at all, and
+ * every load paid for two hundred rows plus their engine columns whether or
+ * not anyone scrolled past the first screen.
+ *
+ * Keyset on (applied_at, id) DESC, the same shape as public-jobs-list. An
+ * OFFSET would skip or repeat rows whenever an application was added or
+ * re-sorted between two pages, which on this list is routine -- the rows are
+ * ordered by a timestamp the employer's actions keep changing around.
+ *
+ * The response is backward compatible: `applications` is exactly the array it
+ * always was, with `next_cursor` added beside it. A client that ignores the
+ * cursor gets the first 50 instead of the first 200 and nothing else changes.
+ */
+const DEFAULT_LIMIT = 50;
+const MAX_LIMIT = 100;
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+interface Cursor {
+  appliedAt: string;
+  id: string;
+}
+
+function encodeCursor(appliedAt: string, id: string): string {
+  return Buffer.from(`${appliedAt}|${id}`, 'utf-8').toString('base64');
+}
+
+/** Never throws on malformed input -- an invalid cursor is a 400, not a crash. */
+function decodeCursor(raw: string): Cursor | null {
+  let decoded: string;
+  try {
+    decoded = Buffer.from(raw, 'base64').toString('utf-8');
+  } catch {
+    return null;
+  }
+  const sepIdx = decoded.lastIndexOf('|');
+  if (sepIdx <= 0 || sepIdx === decoded.length - 1) return null;
+  const appliedAt = decoded.slice(0, sepIdx);
+  const id = decoded.slice(sepIdx + 1);
+  if (Number.isNaN(Date.parse(appliedAt))) return null;
+  if (!UUID_RE.test(id)) return null;
+  return { appliedAt, id };
+}
+
+function parseLimit(raw: string | undefined): number {
+  if (!raw) return DEFAULT_LIMIT;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) return DEFAULT_LIMIT;
+  return Math.min(n, MAX_LIMIT);
+}
+
 /**
  * Fills `canonical_en`/`canonical_es` on the hired rows whose trade is the
  * 023 'other' escape hatch, from the 060 `trade_aliases` cache.
@@ -79,6 +134,18 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 401, headers: CORS_HEADERS, body: JSON.stringify({ error: 'unauthorized' }) };
     }
 
+    const limit = parseLimit(event.queryStringParameters?.limit);
+    const rawCursor = event.queryStringParameters?.cursor;
+    let cursor: Cursor | null = null;
+    if (rawCursor) {
+      cursor = decodeCursor(rawCursor);
+      if (!cursor) {
+        // Refused rather than ignored: serving page 1 for a cursor nobody can
+        // read reads, from the client, as an endless list of the same rows.
+        return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_cursor' }) };
+      }
+    }
+
     const pool = await getDbPool();
     client = await pool.connect();
     await client.query('BEGIN');
@@ -109,6 +176,18 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // touching employer_profiles may be added after this one in this
     // transaction. paused is coalesced to closed: billing auto-pause is the
     // employer's private state (spec: workers never see 'paused').
+    const params: unknown[] = [];
+    // Keyset pagination on (applied_at, id) DESC: strictly-less on the TUPLE
+    // is exactly "everything after the last row of the previous page", and is
+    // what makes two applications sharing a timestamp safe.
+    let keyset = '';
+    if (cursor) {
+      params.push(cursor.appliedAt, cursor.id);
+      keyset = ` WHERE (a.applied_at, a.id) < ($${params.length - 1}::timestamptz, $${params.length}::uuid)`;
+    }
+    // One extra row, to learn whether a next page exists without a COUNT.
+    params.push(limit + 1);
+
     const result = await client.query(
       `SELECT a.id AS application_id, a.job_id,
               CASE a.status
@@ -117,6 +196,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 ELSE a.status
               END AS status,
               a.applied_at,
+              -- applied_at cast to text at full Postgres precision, for the
+              -- cursor ONLY (stripped from every row below). The pg driver
+              -- parses timestamptz into a JS Date, whose millisecond
+              -- resolution would truncate the microseconds -- and a truncated
+              -- cursor no longer compares strictly-less than the row that
+              -- produced it, so that row comes back on the next page.
+              a.applied_at::text AS cursor_applied_at,
               a.details_requested_at,
               a.details_completed_at,
               -- 095 hire celebration. COALESCE, not a bare a.hired_at: a
@@ -176,9 +262,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                    AND wd.job_id = a.job_id
               ) AS have_docs
        FROM job_applications a
-       JOIN jobs j ON j.id = a.job_id
-       ORDER BY a.applied_at DESC
-       LIMIT 200`,
+       JOIN jobs j ON j.id = a.job_id${keyset}
+       ORDER BY a.applied_at DESC, a.id DESC
+       LIMIT $${params.length}`,
+      params,
     );
     await client.query('COMMIT');
 
@@ -190,10 +277,16 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // One pure computeRemaining per row on columns already selected -- no
     // per-application engine round trip, and the same answer the worker's
     // own job page and the employer's applicant list give.
-    const applications = result.rows.map((row: any) => {
+    const hasMore = result.rows.length > limit;
+    // The extra row is a signal, not data: it never reaches the client.
+    const page = hasMore ? result.rows.slice(0, limit) : result.rows;
+
+    const applications = page.map((row: any) => {
       const {
         application_answers: _answers,
         prompt_answers: _promptAnswers,
+        // Selected for the cursor below, published on no row.
+        cursor_applied_at: _cursorAppliedAt,
         have_docs: _haveDocs,
         required_fields: _requiredFields,
         optional_fields: _optionalFields,
@@ -263,7 +356,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       console.warn('worker-applications-list trade canonicalisation pass failed:', errorMessage(err));
     }
 
-    return { statusCode: 200, headers: CORS_HEADERS, body: JSON.stringify({ applications }) };
+    const last = page[page.length - 1];
+    // Built from cursor_applied_at (the text cast done in SQL), never from
+    // last.applied_at (a JS Date once the driver has parsed it) -- see the
+    // column's own comment above.
+    const nextCursor = hasMore && last
+      ? encodeCursor(String(last.cursor_applied_at), last.application_id)
+      : null;
+
+    return { statusCode: 200, headers: CORS_HEADERS, body: JSON.stringify({ applications, next_cursor: nextCursor }) };
   } catch (err) {
     if (client) { try { await client.query('ROLLBACK'); } catch {} }
     console.error('worker-applications-list error:', errorMessage(err));

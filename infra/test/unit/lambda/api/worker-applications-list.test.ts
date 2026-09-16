@@ -72,7 +72,10 @@ describe('worker-applications-list', () => {
     });
     const res = await handler(ev);
     expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body)).toEqual({ applications: [{ ...row, ...derived }] });
+    // `applications` is byte-for-byte what it always was; paging added
+    // `next_cursor` BESIDE it, which is what keeps the response backward
+    // compatible for a client that has never heard of a cursor.
+    expect(JSON.parse(res.body)).toEqual({ applications: [{ ...row, ...derived }], next_cursor: null });
 
     // The 070 policy is keyed on app.current_internal_user_id — without this
     // call, closed jobs silently vanish from the list again.
@@ -517,4 +520,131 @@ describe('worker-applications-list', () => {
       });
     });
   });
+
+  /*
+   * PAGING.
+   *
+   * The list used to be a hard `LIMIT 200` with no way to ask for the rest: a
+   * worker with more applications than that simply could not reach the older
+   * ones, and every single load paid for two hundred rows plus their engine
+   * columns whether or not anyone scrolled.
+   *
+   * Keyset on (applied_at, id) DESC, exactly like public-jobs-list: an OFFSET
+   * would skip or repeat rows whenever an application changed underneath the
+   * reader. The response stays backward compatible -- `applications` is the
+   * same array it always was -- with `next_cursor` added beside it.
+   */
+  describe('paging', () => {
+    const ID_A = '11111111-1111-4111-8111-111111111111';
+    const ID_B = '22222222-2222-4222-8222-222222222222';
+
+    /** The columns every row needs to survive the shaper. */
+    const base = (id: string, appliedAt: string) => ({
+      application_id: id, job_id: 'j1', job_title: 'T', company_name: 'Acme',
+      status: 'pending', applied_at: appliedAt, cursor_applied_at: appliedAt, job_status: 'active',
+      application_answers: {}, prompt_answers: {},
+      details_requested_at: null, details_completed_at: null,
+      required_fields: [], optional_fields: [], required_docs: [], optional_docs: [],
+      certification_requirements: null, pre_application_prompts: [], have_docs: [],
+    });
+
+    /** Captured (sql, params) of the applications SELECT. */
+    let listCall: { sql: string; params: unknown[] };
+
+    function serve(rows: unknown[]) {
+      mockQuery.mockImplementation((q: string, params: unknown[]) => {
+        if (q.trim().startsWith('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-internal-id' }] });
+        if (q.includes('FROM job_applications')) {
+          listCall = { sql: q, params: params ?? [] };
+          return Promise.resolve({ rows });
+        }
+        return Promise.resolve({ rows: [] });
+      });
+    }
+
+    const eventWith = (queryStringParameters: Record<string, string> | null) => ({
+      requestContext: { authorizer: { claims: { sub: 'w' } } },
+      queryStringParameters,
+    } as unknown as APIGatewayProxyEvent);
+
+    /** The row limit the SQL was given -- always one MORE than asked for, so
+     *  "is there another page" costs no second query. */
+    const sqlLimit = () => listCall.params[listCall.params.length - 1];
+
+    it('asks for 50 rows by default and reports no next page', async () => {
+      serve([base(ID_A, '2026-09-10T10:00:00Z')]);
+
+      const res = await handler(eventWith(null));
+
+      expect(sqlLimit()).toBe(51);
+      const body = JSON.parse(res.body);
+      expect(body.applications).toHaveLength(1);
+      expect(body.next_cursor).toBeNull();
+    });
+
+    it('caps a greedy limit at 100 and falls back on a nonsense one', async () => {
+      serve([]);
+      await handler(eventWith({ limit: '500' }));
+      expect(sqlLimit()).toBe(101);
+
+      await handler(eventWith({ limit: '0' }));
+      expect(sqlLimit()).toBe(51);
+
+      await handler(eventWith({ limit: 'many' }));
+      expect(sqlLimit()).toBe(51);
+    });
+
+    it('hands back a cursor when there is another page, and only the page itself', async () => {
+      // Asked for 2, answered with 3: the extra row is the "there is more"
+      // signal and must never reach the client.
+      serve([
+        base(ID_A, '2026-09-10T10:00:00.123456Z'),
+        base(ID_B, '2026-09-09T09:00:00.000000Z'),
+        base('33333333-3333-4333-8333-333333333333', '2026-09-08T08:00:00.000000Z'),
+      ]);
+
+      const res = await handler(eventWith({ limit: '2' }));
+
+      const body = JSON.parse(res.body);
+      expect(body.applications.map((a: { application_id: string }) => a.application_id)).toEqual([ID_A, ID_B]);
+      // Built from the LAST row of the page, at full Postgres precision.
+      expect(Buffer.from(body.next_cursor, 'base64').toString('utf-8'))
+        .toBe(`2026-09-09T09:00:00.000000Z|${ID_B}`);
+    });
+
+    it('resumes strictly after the cursor row', async () => {
+      serve([base(ID_B, '2026-09-09T09:00:00Z')]);
+      const cursor = Buffer.from(`2026-09-10T10:00:00.123456Z|${ID_A}`, 'utf-8').toString('base64');
+
+      const res = await handler(eventWith({ cursor, limit: '2' }));
+
+      expect(res.statusCode).toBe(200);
+      // The tuple comparison, not two ANDed columns: a plain `applied_at <`
+      // would drop every row that shares the cursor's timestamp.
+      expect(listCall.sql).toContain('(a.applied_at, a.id) <');
+      expect(listCall.params).toEqual(['2026-09-10T10:00:00.123456Z', ID_A, 3]);
+      expect(JSON.parse(res.body).next_cursor).toBeNull();
+    });
+
+    it('refuses a malformed cursor rather than ignoring it', async () => {
+      serve([]);
+
+      // Silently dropping it would quietly serve page 1 forever, which reads
+      // as an infinite list of the same rows.
+      const res = await handler(eventWith({ cursor: 'not-a-cursor' }));
+
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toBe('invalid_cursor');
+    });
+
+    it('never publishes the cursor column on a row', async () => {
+      serve([base(ID_A, '2026-09-10T10:00:00Z')]);
+
+      const res = await handler(eventWith(null));
+
+      const [application] = JSON.parse(res.body).applications;
+      expect(application).not.toHaveProperty('cursor_applied_at');
+    });
+  });
+
 });
