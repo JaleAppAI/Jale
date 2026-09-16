@@ -85,6 +85,7 @@ import {
   ConversationDrawerProvider,
   useConversationDrawer,
 } from '@/contexts/ConversationDrawerContext';
+import type { ConversationTarget } from '@/contexts/ConversationDrawerContext';
 import type { InboxItem } from '@/lib/api/employer';
 
 function inboxItem(overrides: Partial<InboxItem> & { application_id: string }): InboxItem {
@@ -127,7 +128,7 @@ const neverMessaged = inboxItem({
 });
 
 /** A page that does nothing but ask the drawer to open one applicant. */
-function OpenerPage({ target }: { target: { application_id: string; worker_id: string; job_id: string } }) {
+function OpenerPage({ target }: { target: ConversationTarget }) {
   const { openConversation } = useConversationDrawer();
   return (
     <button type="button" onClick={() => openConversation(target)}>open thread</button>
@@ -247,13 +248,75 @@ describe('openConversation', () => {
     }));
   });
 
-  it('says so when the applicant is not in the inbox at all', async () => {
+  it('says so when the applicant is not in the inbox and the caller sent no name', async () => {
     const user = userEvent.setup();
     renderDrawer(<OpenerPage target={{ application_id: 'gone', worker_id: 'w-9', job_id: 'job-9' }} />);
 
     await user.click(screen.getByRole('button', { name: 'open thread' }));
 
     expect(await screen.findByText(message('employer_messages.candidate_unavailable'))).toBeInTheDocument();
+  });
+});
+
+/*
+ * The applicants board lists applicants of paused, filled and closed jobs; the
+ * inbox lists a never-messaged applicant only while their job is active (and
+ * stops at 200 rows either way). Every such row used to open on "This candidate
+ * is no longer available" -- while `POST /employer/conversations` would have
+ * accepted the message. The row now hands over what it already shows, and the
+ * composer is drawn from that.
+ */
+describe('an applicant the inbox does not list', () => {
+  const offBoard: ConversationTarget = {
+    application_id: 'app-paused',
+    worker_id: 'w-7',
+    job_id: 'job-paused',
+    worker_name: 'Ana Lopez',
+    job_title: 'Concrete Finisher',
+    job_city: 'Dallas',
+    applied_at: '2026-09-02T00:00:00Z',
+  };
+
+  it('opens the first-message composer from the fields the caller passed', async () => {
+    const user = userEvent.setup();
+    renderDrawer(<OpenerPage target={offBoard} />);
+
+    await user.click(screen.getByRole('button', { name: 'open thread' }));
+
+    expect(await screen.findByText('Ana Lopez')).toBeInTheDocument();
+    expect(screen.getByText(/Concrete Finisher · Dallas/)).toBeInTheDocument();
+    expect(screen.getByText(message('employer_messages.new_applicant'))).toBeInTheDocument();
+    expect(screen.queryByText(message('employer_messages.candidate_unavailable'))).not.toBeInTheDocument();
+    // There is no thread to fetch, and no inbox row to fetch one from.
+    expect(getConversation).not.toHaveBeenCalled();
+  });
+
+  it('starts the conversation from it and lands on the thread it just created', async () => {
+    const user = userEvent.setup();
+    startConversation.mockResolvedValue({
+      conversation: { id: 'conv-7', status: 'open' },
+      messages: [],
+    });
+    renderDrawer(<OpenerPage target={offBoard} />);
+    await user.click(screen.getByRole('button', { name: 'open thread' }));
+    await screen.findByText('Ana Lopez');
+
+    await user.type(
+      screen.getByPlaceholderText(message('employer_messages.composer_placeholder')),
+      'Still hiring for this one?',
+    );
+    await user.click(screen.getByRole('button', { name: message('employer_messages.send') }));
+
+    // The ids come from the target, not from an inbox row that does not exist.
+    await waitFor(() => expect(startConversation).toHaveBeenCalledWith('test-token', {
+      job_id: 'job-paused',
+      worker_id: 'w-7',
+      initial_message: 'Still hiring for this one?',
+    }));
+    // And the drawer moves onto the new thread without waiting for the inbox
+    // poll that will eventually carry it.
+    await waitFor(() => expect(getConversation).toHaveBeenCalledWith('test-token', 'conv-7', expect.anything()));
+    expect(refreshInbox).toHaveBeenCalled();
   });
 });
 

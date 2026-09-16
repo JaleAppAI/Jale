@@ -199,10 +199,20 @@ describe('ApplicantOverviewRow actions', () => {
 
     // The application, not a conversation: whether a thread exists is the
     // drawer's question to answer against the inbox.
+    //
+    // With the name and job beside the ids, because this board lists applicants
+    // the inbox does not (a paused or filled job, or past its 200-row cap) and
+    // the drawer cannot draw a first-message composer for someone it has never
+    // heard of. Passing what the row already shows is what keeps those rows off
+    // the "candidate unavailable" dead end.
     expect(openConversation).toHaveBeenCalledWith({
       application_id: 'app-1',
       worker_id: 'w-1',
       job_id: 'j-1',
+      worker_name: 'Maria Garcia',
+      job_title: 'Line Cook',
+      job_city: 'Austin',
+      applied_at: '2026-08-30T00:00:00Z',
     });
   });
 

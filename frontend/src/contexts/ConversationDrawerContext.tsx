@@ -24,10 +24,34 @@ import { ConversationDrawer } from '@/components/employer/ConversationDrawer';
  * there is not.
  */
 
+/**
+ * Who to open, plus -- optionally -- enough to DRAW them.
+ *
+ * The three ids are the request. The display fields are the answer to a defect
+ * the first cut of B4 shipped with: the drawer resolves the application against
+ * the employer inbox, and the inbox does not list every applicant the board
+ * does. It omits applicants of a job that is no longer active and who have
+ * never been messaged (`infra/lambda/lib/employer-inbox.ts`: `c.id IS NOT NULL
+ * OR j.status = 'active'`), and it stops at 200 rows; the applicants board has
+ * no job-status filter at all. Such a row used to open on "This candidate is no
+ * longer available" -- a dead end for a worker the API would happily have let
+ * the employer write to.
+ *
+ * So a caller that already holds the applicant's name and job -- the applicants
+ * board does, on every row -- passes them, and the drawer can draw the
+ * first-message composer without the inbox having heard of them. Optional
+ * because a caller that has only the ids is still a valid caller: it gets the
+ * unavailable state, which for it is the honest answer.
+ */
 export type ConversationTarget = {
     application_id: string;
     worker_id: string;
     job_id: string;
+    /** The four fields `EmptyThreadComposer`'s header renders. */
+    worker_name?: string | null;
+    job_title?: string;
+    job_city?: string | null;
+    applied_at?: string;
 };
 
 /**

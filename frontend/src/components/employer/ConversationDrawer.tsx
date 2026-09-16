@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { useConversationDrawer } from '@/contexts/ConversationDrawerContext';
+import type { ConversationTarget } from '@/contexts/ConversationDrawerContext';
 import { useUnreadMessages } from '@/contexts/UnreadMessagesContext';
 import { useRouter } from '@/i18n/navigation';
 import { usePageData } from '@/hooks/usePageData';
@@ -21,6 +22,7 @@ import {
   initialsFor,
 } from '@/components/employer/ConversationThread';
 import { EmptyThreadComposer } from '@/components/employer/EmptyThreadComposer';
+import type { ComposerSubject } from '@/components/employer/EmptyThreadComposer';
 import { isLegalWallError } from '@/lib/api';
 import { ApiError } from '@/lib/api/errors';
 import { formatTimeOfDay } from '@/lib/date';
@@ -59,6 +61,15 @@ import type { EmployerConversationResponse, InboxItem } from '@/lib/api/employer
  * the same thing since the inbox shipped -- rather than an accident of the new
  * source. (The inbox is also capped at 200 rows; the drawer is a recent-threads
  * panel, not an archive, and the board is the full surface.)
+ *
+ * Which leaves the applicants the inbox does NOT carry, and this is the other
+ * half of resolving an application here: a never-messaged applicant of a job
+ * that is no longer active is absent from the inbox by that same `c.id IS NOT
+ * NULL OR j.status = 'active'` clause, and so is anyone past its 200-row cap --
+ * while the applicants board lists all of them and the API would accept the
+ * message. They are drawn from the fields the opening request carries (see
+ * `ConversationTarget`); "This candidate is no longer available" is kept for
+ * the case it describes, a request that names nobody this drawer can draw.
  *
  * The selected item is looked up in the FULL item set, not the filtered list,
  * which is exactly how the conversations page separates "what the list shows"
@@ -129,9 +140,35 @@ export function ConversationDrawer() {
     () => items.find((item) => item.application_id === selectedKey) ?? null,
     [items, selectedKey],
   );
-  const selectedConversationId = selectedItem
-    ? selectedItem.conversation_id ?? startedThreads[selectedItem.application_id] ?? null
+
+  /**
+   * The request currently on screen, when the employer has not since picked a
+   * different row. It is the ONLY description of an applicant the inbox does
+   * not list, so it is what the composer falls back to below.
+   */
+  const pendingTarget: ConversationTarget | null =
+    openRequest && openRequest.target.application_id === selectedKey ? openRequest.target : null;
+
+  /*
+   * A thread started here is keyed by APPLICATION, which is why this survives
+   * the inbox not knowing the applicant: the employer lands on the transcript
+   * they just created rather than on their own composer, one inbox poll early.
+   */
+  const selectedConversationId = selectedKey
+    ? selectedItem?.conversation_id ?? startedThreads[selectedKey] ?? null
     : null;
+
+  /**
+   * Who the first-message pane draws. The inbox row when there is one; failing
+   * that, the fields the calling surface passed -- the applicants board lists
+   * applicants the inbox does not (see `ConversationTarget`), and those are
+   * exactly the rows that used to open on "no longer available".
+   *
+   * `null` while the inbox is still loading, so a row that IS in the inbox
+   * (possibly with a thread already) is never briefly drawn as a new applicant.
+   */
+  const composerSubject: ComposerSubject | null =
+    selectedItem ?? (inboxLoading ? null : composerSubjectFor(pendingTarget));
 
   const routeLegalWall = useCallback(
     (err: unknown): boolean => {
@@ -200,16 +237,24 @@ export function ConversationDrawer() {
   }
 
   async function handleFirstSend(body: string) {
-    if (!idToken || !selectedItem) return;
+    /*
+     * The applicant being written to: the inbox row when there is one, and
+     * otherwise the request that opened this pane. A missing subject THROWS
+     * rather than returning quietly -- `EmptyThreadComposer` clears the draft
+     * on a resolved promise, so a bare `return` would swallow the employer's
+     * first message.
+     */
+    const subject = selectedItem ?? pendingTarget;
+    if (!idToken || !subject) throw new Error('No applicant to write to');
     setSending(true);
     setComposerError(null);
     try {
       const detail = await startConversation(idToken, {
-        job_id: selectedItem.job_id,
-        worker_id: selectedItem.worker_id,
+        job_id: subject.job_id,
+        worker_id: subject.worker_id,
         initial_message: body,
       });
-      setStartedThreads((prev) => ({ ...prev, [selectedItem.application_id]: detail.conversation.id }));
+      setStartedThreads((prev) => ({ ...prev, [subject.application_id]: detail.conversation.id }));
       void refresh();
     } catch (err) {
       if (!routeLegalWall(err)) {
@@ -372,28 +417,28 @@ export function ConversationDrawer() {
               <div className="flex flex-1 items-center justify-center">
                 <EmptyState icon="message" title={t('empty_select')} body={t('empty_select_body')} />
               </div>
-            ) : !selectedItem ? (
-              /* Asked for by id, and the inbox does not have it: a dismissed
-                 applicant, or one on a job that has since closed without ever
-                 being messaged. Say so rather than showing an empty thread the
-                 employer could type into. */
-              inboxLoading ? (
+            ) : !selectedConversationId ? (
+              composerSubject ? (
+                <EmptyThreadComposer
+                  item={composerSubject}
+                  sending={sending}
+                  errorMessage={composerError}
+                  onSend={handleFirstSend}
+                  onBack={() => setSelectedKey(null)}
+                />
+              ) : inboxLoading ? (
                 <div className="flex flex-1 items-center justify-center">
                   <ConversationListSkeleton label={tCommon('loading')} />
                 </div>
               ) : (
+                /* No thread, no inbox row, and the caller described nobody: a
+                   dismissed applicant, or a row that has genuinely gone. Say so
+                   rather than showing an empty thread the employer could type
+                   into -- and could not address. */
                 <div className="flex flex-1 items-center justify-center">
                   <EmptyState icon="message" title={t('candidate_unavailable')} body={t('empty_select_body')} />
                 </div>
               )
-            ) : !selectedConversationId ? (
-              <EmptyThreadComposer
-                item={selectedItem}
-                sending={sending}
-                errorMessage={composerError}
-                onSend={handleFirstSend}
-                onBack={() => setSelectedKey(null)}
-              />
             ) : thread.phase === 'error' && thread.errorKind ? (
               <div className="flex flex-1 items-center justify-center">
                 <ErrorState kind={thread.errorKind} onRetry={thread.retry} compact />
@@ -419,6 +464,25 @@ export function ConversationDrawer() {
       ) : null}
     </>
   );
+}
+
+/**
+ * The header fields of a first-message pane, from an open request -- or `null`
+ * when the caller passed only ids.
+ *
+ * `job_title` is the gate: it is the one field whose absence would print an
+ * empty line where the job belongs. A missing `applied_at` degrades quietly
+ * (the composer's date formatter drops an unparseable stamp), and a missing
+ * name is a legitimate value the inbox itself carries.
+ */
+function composerSubjectFor(target: ConversationTarget | null): ComposerSubject | null {
+  if (!target || typeof target.job_title !== 'string') return null;
+  return {
+    worker_name: target.worker_name ?? null,
+    job_title: target.job_title,
+    job_city: target.job_city ?? null,
+    applied_at: target.applied_at ?? '',
+  };
 }
 
 /**

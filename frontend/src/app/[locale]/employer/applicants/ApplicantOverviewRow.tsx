@@ -235,11 +235,22 @@ export function ApplicantOverviewRow({ item }: { item: ApplicantOverviewItem }) 
           type="button"
           variant="outline"
           size="sm"
+          /* The ids say WHO, and the four display fields say who they are.
+             This board has no job-status filter, so it lists applicants of
+             paused, filled and closed jobs; the drawer resolves an application
+             against the employer inbox, which lists a never-messaged applicant
+             only while their job is active. Without these fields such a row
+             opened on "This candidate is no longer available" -- for a worker
+             the messaging API would have accepted. */
           onClick={() =>
             openConversation({
               application_id: item.application_id,
               worker_id: item.worker_id,
               job_id: item.job_id,
+              worker_name: item.worker_name,
+              job_title: item.job_title,
+              job_city: item.job_city,
+              applied_at: item.applied_at,
             })
           }
         >
