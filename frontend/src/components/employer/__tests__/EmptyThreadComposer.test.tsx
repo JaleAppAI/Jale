@@ -34,6 +34,8 @@ const item: InboxItem = {
   last_worker_message_at: null,
   last_message_preview: null,
   tab: 'active',
+  // Never-messaged applicant: no worker message, so never unread.
+  unread: false,
 };
 
 const composer = () =>

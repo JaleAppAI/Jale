@@ -98,6 +98,23 @@
 # 25P02 on five of its eight cases, which is a successful answer merge
 # answering 500.
 #
+# The sprint-26 employer mark-read entry is registered after the web-completion
+# lane release. It applies NO migration either --
+# job_conversations.employer_last_read_at has existed since 028:37 and sprint 26
+# is simply the first code to write it -- but every outcome it asserts is a
+# policy fact a mocked pool cannot produce. job_conversations is RLS ENABLE +
+# FORCE and 025's job_conversations_employer_all is keyed on
+# app.current_internal_user_id, so marking ANOTHER employer's thread read is a
+# silent ZERO-ROW no-op rather than an error, and so is marking your OWN thread
+# read with the GUC unset. Both read as success to the unit suite, which mocks
+# the pool and therefore only proves the handler maps rowCount 0 to a 404. This
+# entry proves the database is what produces that 0. It also drives
+# listEmployerInbox on a real connection, which is the only place the unread
+# comparison meets the Date objects node-postgres actually returns for
+# timestamptz (string fixtures cannot fail that way). The mark-read statement is
+# extracted from lambda/api/employer-conversations-read.ts and executed
+# verbatim, so a copy that drifts from the shipped SQL fails here.
+#
 # WHAT THE DATABASE MUST BE. `JALE_TEST_DATABASE_URL` must point at a
 # disposable local Postgres 16 database with migrations 001 THROUGH 095
 # applied, and the connecting role must be a SUPERUSER. 092 is not optional
@@ -187,4 +204,5 @@ exec npx jest --runInBand \
   test/unit/db/worker-intent-defer-093.integration.test.ts \
   test/unit/db/sprint24-data-backfills-094.integration.test.ts \
   test/unit/db/application-hire-ack-095.integration.test.ts \
-  test/unit/db/application-web-completion.integration.test.ts
+  test/unit/db/application-web-completion.integration.test.ts \
+  test/unit/db/employer-conversation-read.integration.test.ts
