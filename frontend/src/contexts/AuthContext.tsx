@@ -9,6 +9,7 @@ import {
     readSession,
     writeSession,
 } from '@/lib/session-storage';
+import { clearSidebarChips } from '@/lib/sidebar-chip-storage';
 import { locales } from '@/i18n/locales';
 
 interface AuthState {
@@ -131,6 +132,12 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
      */
     const clearSession = useCallback((role?: UserType) => {
         clearStoredSession(role);
+        // The sidebar chip's reload cache goes with the session, synchronously:
+        // `logout` assigns `window.location.href` right after this, and a React
+        // effect reacting to the state change below is not guaranteed to run
+        // before that navigation. Leaving it would paint the name of the
+        // account that just signed out over the next one's first frame.
+        clearSidebarChips();
         setAccessToken(null);
         setIdToken(null);
         setRefreshToken(null);

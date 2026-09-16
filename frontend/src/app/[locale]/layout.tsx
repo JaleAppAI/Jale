@@ -6,6 +6,7 @@ import { getMessages } from "next-intl/server";
 import React from 'react';
 import { Header } from "@/components/layout/Header";
 import { AuthProvider } from "@/contexts/AuthContext";
+import { SidebarProfileProvider } from "@/contexts/SidebarProfileContext";
 import { ConversationDrawer } from "@/components/employer/ConversationDrawer";
 import { ToastProvider } from "@/components/ui/toast";
 
@@ -72,11 +73,16 @@ export default async function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
         <NextIntlClientProvider locale={locale} messages={messages}>
           <AuthProvider locale={locale}>
-            <ToastProvider>
-              <Header />
-              {children}
-              <ConversationDrawer />
-            </ToastProvider>
+            {/* One profile load for the whole session. Every page mounts its
+                own AppShell, so a chip fetch owned by the shell ran again on
+                every navigation -- see SidebarProfileContext. */}
+            <SidebarProfileProvider>
+              <ToastProvider>
+                <Header />
+                {children}
+                <ConversationDrawer />
+              </ToastProvider>
+            </SidebarProfileProvider>
           </AuthProvider>
         </NextIntlClientProvider>
       </body>

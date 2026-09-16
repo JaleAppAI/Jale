@@ -17,6 +17,10 @@ import {
 /**
  * What the chip knows about the signed-in account, as resolved by `AppShell`.
  *
+ * The chip is owned by `SidebarProfileContext` (one load per session, cached
+ * across route changes and mirrored into sessionStorage for reloads); this
+ * component only renders the state it is handed.
+ *
  * The three states are explicit because the chip previously had no way to tell
  * them apart: a pending fetch and a failed one both rendered a localized
  * placeholder name ("Your profile" / "Employer team") over a role word dressed
@@ -80,7 +84,11 @@ export function Sidebar({ role, homeHref, chip }: SidebarProps) {
     );
 }
 
-/** Role letter shown on the tile until (or instead of) real initials. */
+/**
+ * Role letter shown on the tile when the profile could not be loaded, and as
+ * the initials fallback for a loaded profile that has no name. Never while the
+ * load is still in flight -- that state is a skeleton.
+ */
 function roleLetter(role: ShellRole): string {
     return role === 'employer' ? 'E' : 'W';
 }
@@ -126,10 +134,21 @@ function SidebarProfileChip({ role, chip }: { role: ShellRole; chip: SidebarChip
             {/* Not `InitialsAvatar`: that is the blue-50/blue-700 tint for
                 light surfaces. This tile sits ON the navy rail, where the
                 readable pairing is solid brand blue with white. It keeps its
-                footprint in every state; only the letters inside it change. */}
-            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[var(--jale-blue-500)] text-sm font-extrabold">
-                {chip.status === 'loaded' ? chip.initials : roleLetter(role)}
-            </div>
+                footprint in every state; only what is inside it changes.
+
+                While we are still LOADING the tile is a skeleton, matching the
+                two skeleton lines beside it. It used to print the role letter
+                there, which made a pending fetch indistinguishable from a
+                resolved profile whose name we simply could not initial -- the
+                bare "W" emblem every navigation used to flash. A letter is
+                content, and there is no content yet. */}
+            {chip.status === 'loading' ? (
+                <Skeleton tone="rail" className="h-11 w-11 shrink-0 rounded-2xl" />
+            ) : (
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[var(--jale-blue-500)] text-sm font-extrabold">
+                    {chip.status === 'loaded' ? chip.initials : roleLetter(role)}
+                </div>
+            )}
 
             {chip.status === 'loading' ? (
                 <div className="min-w-0 flex-1">
