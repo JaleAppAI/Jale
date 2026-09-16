@@ -8,6 +8,7 @@ const PUBLIC_PATTERNS = [
   /^\/terms\/?$/,
   /^\/privacypolicy\/?$/,
   /^\/sms-opt-in\/?$/,
+  /^\/whatsapp\/?$/,
   /^\/legal\/terms(?:\/[^/]+)?\/?$/,
   /^\/legal\/privacy(?:\/[^/]+)?\/?$/,
 ];
@@ -23,6 +24,7 @@ export default function proxy(request: NextRequest): NextResponse {
       pathname === '/terms'
       || pathname === '/privacypolicy'
       || pathname === '/sms-opt-in'
+      || pathname === '/whatsapp'
       || pathname.startsWith('/legal/terms')
       || pathname.startsWith('/legal/privacy')
     ) {

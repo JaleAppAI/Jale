@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import {
     ArrowRight,
     Briefcase,
@@ -24,6 +24,7 @@ import { InitialsAvatar } from '@/components/ui/initials-avatar';
 import { LandingNav } from '@/components/landing/LandingNav';
 import { PhoneMockup } from '@/components/landing/PhoneMockup';
 import { CompaniesCarousel } from '@/components/landing/CompaniesCarousel';
+import { whatsappHref } from '@/lib/whatsapp-link';
 
 /*
  * ===== THEME CONTRACT FOR THIS PAGE =====================================
@@ -51,10 +52,6 @@ import { CompaniesCarousel } from '@/components/landing/CompaniesCarousel';
  * animations, not the app's entrance signature -- and it is already
  * reduced-motion guarded.
  */
-
-// WhatsApp deep link (from the design source). Only the #cta section button
-// opens it; nav/hero/audience CTAs scroll to #cta.
-const WHATSAPP_HREF = 'https://wa.me/17376880702';
 
 // Dot patterns for the brand bands. `--jale-blue-300` is #78a4ff, the exact
 // value the design used, and it does not flip -- so the hero keeps its texture
@@ -133,6 +130,11 @@ function BenefitCard({
 
 export default function Home() {
     const t = useTranslations('landing');
+    const locale = useLocale();
+    // WhatsApp deep link (from the design source). Only the #cta section
+    // button opens it; nav/hero/audience CTAs scroll to #cta. Points at the
+    // /whatsapp redirect route -- see frontend/src/lib/whatsapp-link.ts.
+    const whatsappCtaHref = whatsappHref(locale);
 
     const howSteps = [
         { n: '1', icon: <MessageCircle />, title: t('how.step1_title'), body: t.rich('how.step1_body', { b: semibold }) },
@@ -448,7 +450,7 @@ html { scroll-behavior: smooth; }
                         {t.rich('cta.line', { b: semibold })}
                     </p>
                     <a
-                        href={WHATSAPP_HREF}
+                        href={whatsappCtaHref}
                         target="_blank"
                         rel="noopener"
                         style={{ color: 'var(--jale-blue-800)' }}

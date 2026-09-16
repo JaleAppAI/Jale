@@ -23,6 +23,7 @@ describeIfDocker('FrontendStack (Lambda + CloudFront)', () => {
       workerClientId: 'test-worker-client',
       employerPoolId: 'us-east-1_EMPL',
       employerClientId: 'test-employer-client',
+      whatsappBusinessNumber: '15551234567',
     });
 
     template = Template.fromStack(stack);
@@ -35,6 +36,19 @@ describeIfDocker('FrontendStack (Lambda + CloudFront)', () => {
         PackageType: 'Image',
         MemorySize: 1024,
         Timeout: 30,
+      }),
+    );
+  });
+
+  test('Lambda environment carries WHATSAPP_BUSINESS_NUMBER for the /whatsapp redirect route', () => {
+    template.hasResourceProperties(
+      'AWS::Lambda::Function',
+      Match.objectLike({
+        Environment: Match.objectLike({
+          Variables: Match.objectLike({
+            WHATSAPP_BUSINESS_NUMBER: '15551234567',
+          }),
+        }),
       }),
     );
   });
@@ -465,6 +479,7 @@ describeIfDocker('FrontendStack without survey origin', () => {
       workerClientId: 'test-worker-client',
       employerPoolId: 'us-east-1_EMPL',
       employerClientId: 'test-employer-client',
+      whatsappBusinessNumber: '15551234567',
     });
 
     const tpl = Template.fromStack(stack);

@@ -12,6 +12,7 @@ import * as sns from 'aws-cdk-lib/aws-sns';
 import { Construct } from 'constructs';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
 import { lambdaIntegration, addPathOnlyResource } from '../api-integration';
+import { resolveWhatsappBusinessNumber } from '../whatsapp-business-number';
 
 export interface ReferralsStackProps extends cdk.StackProps {
   readonly vpc: ec2.IVpc;
@@ -158,15 +159,10 @@ export class ReferralsStack extends cdk.Stack {
     const publicSiteBaseUrl = publicSiteBaseUrlRaw.replace(/\/+$/, '');
 
     // Required — public-job-apply-intent.ts builds the wa.me deep link from
-    // this number on every successful mint; there is no fallback.
-    const whatsappBusinessNumber = this.node.tryGetContext('whatsappBusinessNumber')
-      ?? process.env.JALE_WHATSAPP_BUSINESS_NUMBER;
-    if (!whatsappBusinessNumber) {
-      throw new Error(
-        'ReferralsStack requires whatsappBusinessNumber context (or JALE_WHATSAPP_BUSINESS_NUMBER env var) — '
-        + 'pass -c whatsappBusinessNumber=15551234567 (E.164, no leading +)',
-      );
-    }
+    // this number on every successful mint; there is no fallback. Shared
+    // resolution + validation with FrontendStack's /whatsapp route — see
+    // whatsapp-business-number.ts.
+    const whatsappBusinessNumber = resolveWhatsappBusinessNumber(this, 'ReferralsStack');
 
     // The visitor salt lives in Secrets Manager, NOT a Lambda env var: an env
     // var lands in the CloudFormation template, cdk diff output, and every
