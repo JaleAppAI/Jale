@@ -342,7 +342,7 @@ export default function EmployerConversationsPage() {
   return shell(
     <>
       <section className="anim-fade-in mb-5 grid gap-3 md:grid-cols-4">
-        <MetricCard variant="accent" tone="blue" value={activeItems.length} label={t('candidates')} hint={t('subtitle')} />
+        <MetricCard variant="accent" tone="blue" value={activeItems.length} label={t('candidates')} hint={t('candidates_hint')} />
         <MetricCard variant="accent" tone="green" value={repliedCount} label={t('worker_replied')} hint={t('reply_window_open')} />
         <MetricCard variant="accent" tone="amber" value={waitingCount} label={t('waiting_reply')} hint={t('template_invite_sent')} />
         <MetricCard variant="accent" tone="navy" value={newApplicantCount} label={t('new_applicants')} hint={t('not_yet_messaged')} />
