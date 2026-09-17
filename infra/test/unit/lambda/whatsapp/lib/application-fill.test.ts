@@ -3638,6 +3638,84 @@ describe('handleFillMessage — continue-other offer resolution', () => {
     expect(ctx.stateContext.fill_application_id).toBe(OTHER_APPLICATION_ID);
     expect(ctx.stateContext.fill_offer_application_id).toBeNull();
     expect(lastReply(deps)).toBe(fieldQuestion('work_authorization', 'en'));
+    // F1: and it gets there through `armFill`, so the profile-check
+    // announcement and the counted intro precede that first question exactly
+    // as they do on the Start-button arm.
+    expect(allReplies(deps)).toEqual([
+      fillMessage('intro_profile_check', 'en'),
+      fillMessage('intro', 'en', { company: COMPANY, n_fields: '1', n_docs: '0' }),
+      fieldQuestion('work_authorization', 'en'),
+    ]);
+  });
+
+  /**
+   * F1 (sprint 26). A worker with TWO open detail requests finishes the first
+   * and is offered the second. Accepting that offer used to arm
+   * `fill_application_id` by hand and call `promptNextStep` -- bypassing
+   * `armFill`, which is documented as THE one place stage 2 is armed.
+   *
+   * The consequence is the 2026-09-04 incident on the OTHER application:
+   * `promptNextStep`'s synced load copies the worker's vault documents into
+   * the newly-armed application, the step immediately reads `complete`, and
+   * `sendCompletionPrompt` sends it to the employer in the same turn. The
+   * worker was never told their profile would be reused and never agreed to
+   * send anything.
+   *
+   * Both halves are asserted here: the announcement has to come first, and an
+   * all-pre-filled application has to stop at the consent gate.
+   */
+  it('accepting the offer announces the profile check and holds an all-pre-filled application at the consent gate', async () => {
+    const ctx = makeCtx({ stateContext: { fill_offer_application_id: OTHER_APPLICATION_ID } });
+    const deps = makeDeps(ctx);
+    setOtherApp(
+      OTHER_APPLICATION_ID,
+      { job_id: OTHER_JOB_ID, required_docs: ['work_auth_doc'] },
+      { vaultDocs: ['work_auth_doc'] },
+    );
+
+    const result = await handleFillMessage(client, ctx, incomingMsg('1'), deps);
+
+    expect(result).toEqual({ handled: true });
+    expect(ctx.stateContext.fill_application_id).toBe(OTHER_APPLICATION_ID);
+    // Announced BEFORE anything was reused, never discovered afterwards.
+    expect(allReplies(deps)[0]).toBe(fillMessage('intro_profile_check', 'en'));
+    // The gate, armed and addressable across turns -- not a completion.
+    expect(ctx.stateContext.fill_confirm).toEqual({ at: NOW_MS });
+    expect(lastReply(deps)).toBe(fillMessage('confirm_all_prefilled', 'en'));
+    expect(allReplies(deps)).not.toContain(fillMessage('completion', 'en', { company: COMPANY }));
+    expect(ctx.stateContext.fill_offer_application_id).toBeNull();
+  });
+
+  it('accepting the offer names what it reused from the profile, exactly like the Start-button arm', async () => {
+    const ctx = makeCtx({ stateContext: { fill_offer_application_id: OTHER_APPLICATION_ID } });
+    const deps = makeDeps(ctx);
+    setOtherApp(OTHER_APPLICATION_ID, {
+      job_id: OTHER_JOB_ID, required_fields: ['work_authorization', 'date_available'],
+    });
+    fake.defaults = { work_authorization: true };
+
+    await handleFillMessage(client, ctx, incomingMsg('1'), deps);
+
+    expect(allReplies(deps)).toEqual([
+      fillMessage('intro_profile_check', 'en'),
+      `${fillMessage('reuse_fields_line', 'en', { labels: fieldLabel('work_authorization', 'en') })}\n`
+        + `\n${fillMessage('reuse_change_footer', 'en')}`,
+      fillMessage('intro', 'en', { company: COMPANY, n_fields: '1', n_docs: '0' }),
+      fieldQuestion('date_available', 'en'),
+    ]);
+  });
+
+  it('an offered application that vanished between the offer and the reply exits instead of arming', async () => {
+    const ctx = makeCtx({ stateContext: { fill_offer_application_id: OTHER_APPLICATION_ID } });
+    const deps = makeDeps(ctx);
+    // No setOtherApp: the row is simply not there any more.
+
+    const result = await handleFillMessage(client, ctx, incomingMsg('1'), deps);
+
+    expect(result).toEqual({ handled: true });
+    expect(lastReply(deps)).toBe(fillMessage('exit_application_gone', 'en'));
+    expect(ctx.stateContext.fill_application_id).toBeNull();
+    expect(ctx.stateContext.fill_offer_application_id).toBeNull();
   });
 
   it.each(['si', 'yes', '1 si'])('offer reply "%s" also arms the offered application (parseFillConfirmation\'s full yes bucket)', async (body) => {

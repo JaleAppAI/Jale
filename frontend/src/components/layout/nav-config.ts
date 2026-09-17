@@ -31,8 +31,12 @@ export function isNavItemActive(item: NavItem, pathname: string): boolean {
  */
 export const employerPrimaryNav: NavItem[] = [
     { key: 'dashboard', href: '/employer/dashboard', icon: 'grid', labelKey: 'nav.dashboard', exact: true },
-    { key: 'applicants', href: '/employer/applicants', icon: 'user', labelKey: 'nav.applicants' },
+    // Messages sits directly under the dashboard, above the management
+    // surfaces (sprint 26, B3): a worker's reply is the one thing here that
+    // goes stale if it is not read today, and it was previously the third
+    // item, below a deep-dive list an employer visits occasionally.
     { key: 'messages', href: '/employer/conversations', icon: 'message', labelKey: 'nav.messages' },
+    { key: 'applicants', href: '/employer/applicants', icon: 'user', labelKey: 'nav.applicants' },
     { key: 'templates', href: '/employer/templates', icon: 'briefcase', labelKey: 'nav.templates' },
 ];
 
@@ -64,7 +68,8 @@ const employerSidebarOnlyKeys = new Set(['templates', 'applicants']);
  * Employer mobile tab bar. Composed from the very same `NavItem`s the sidebar
  * renders — never a parallel list — so the two surfaces cannot drift apart on a
  * target, an icon or a label key. Four tabs is the practical ceiling for a
- * bottom bar at 360px; these are the four the sidebar leads with.
+ * bottom bar at 360px, and they are taken in sidebar order: the two daily
+ * destinations the sidebar leads with, then billing and settings.
  */
 export const employerMobileNav: NavItem[] = [
     // Templates is a management surface, not a daily destination; applicants

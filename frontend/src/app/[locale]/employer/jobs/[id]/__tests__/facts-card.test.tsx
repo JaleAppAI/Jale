@@ -144,7 +144,9 @@ function fullJob(over: Partial<EmployerJobDetail> = {}): EmployerJobDetail {
         number_of_workers_needed: 3,
         trade_category: 'drywall',
         required_experience_years: 3,
-        required_experience_months: null,
+        // The canonical total the server derives for 3 years, not null: this
+        // fixture is what the API really returns.
+        required_experience_months: 36,
         certifications: [],
         certification_requirements: [
             { name: 'OSHA 10', tier: 'required', proof_required: false },
@@ -230,8 +232,59 @@ describe('employer job detail — the facts card', () => {
             [t('job.hiring_progress'), '1/3 hired, 2 open'],
             [shared('modal.location'), 'Austin, TX'],
             [shared('modal.trade_category'), shared('modal.trade.drywall')],
-            [shared('modal.required_experience_years'), '3'],
+            [shared('modal.required_experience_years'), '3 years'],
             [shared('modal.language_preference'), shared('modal.language.es')],
+        ]);
+    });
+
+    /*
+     * A bare "3" under "Experience" is a number, not a requirement -- it reads
+     * as a score as readily as a duration. The unit comes from the same shared
+     * formatter the worker and public pages use, so the three surfaces cannot
+     * describe the same column differently.
+     */
+    it('carries the unit for a sub-year total, and for one that splits', () => {
+        setSeed(fullJob({ required_experience_years: null, required_experience_months: 6 }));
+        const { container: monthsOnly } = renderIntl(<EmployerJobDetailPage />);
+        expect(tiles(monthsOnly)).toContainEqual([
+            shared('modal.required_experience_years'), '6 months',
+        ]);
+
+        // 30 months, not a (2, 6) pair: `required_experience_months` is the
+        // canonical TOTAL, so the two units come out of ONE figure.
+        setSeed(fullJob({ required_experience_years: 2, required_experience_months: 30 }));
+        const { container: both } = renderIntl(<EmployerJobDetailPage />);
+        expect(tiles(both)).toContainEqual([
+            shared('modal.required_experience_years'), '2 years 6 months',
+        ]);
+    });
+
+    /*
+     * The shape the API actually sends. `lib/job-form.ts` posts years only and
+     * the server stores `months = years * 12` (migration 033 backfilled the
+     * same way), so EVERY job with experience arrives as this pair -- and
+     * reading it as years-plus-remainder printed "3 years 36 months".
+     */
+    it('renders the years/months pair the server really sends as one figure', () => {
+        setSeed(fullJob({ required_experience_years: 3, required_experience_months: 36 }));
+        const { container } = renderIntl(<EmployerJobDetailPage />);
+
+        expect(tiles(container)).toContainEqual([
+            shared('modal.required_experience_years'), '3 years',
+        ]);
+    });
+
+    /*
+     * Zero is a STATED requirement, and the tile is rendered for it (the guard
+     * is on null, not on falsiness) -- so it has to say what zero means rather
+     * than print the digit.
+     */
+    it('says no experience is required for a stated zero', () => {
+        setSeed(fullJob({ required_experience_years: 0, required_experience_months: 0 }));
+        const { container } = renderIntl(<EmployerJobDetailPage />);
+
+        expect(tiles(container)).toContainEqual([
+            shared('modal.required_experience_years'), message('common.experience_none'),
         ]);
     });
 

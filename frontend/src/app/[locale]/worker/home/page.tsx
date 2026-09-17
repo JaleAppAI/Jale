@@ -2,6 +2,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
+import { useSearchParams } from 'next/navigation';
+import { usePathname, useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { usePageData } from '@/hooks/usePageData';
@@ -21,9 +23,9 @@ import { WorkerJobCard } from '@/components/worker/WorkerJobCard';
 import { apiFetch } from '@/lib/api';
 import {
   acknowledgeHire,
-  getApplications,
-  type Application,
-  type ApplicationHire,
+  getApplicationsAttention,
+  type AttentionDetailsRequest,
+  type AttentionHire,
   type HireAckStep,
 } from '@/lib/api/worker';
 import {
@@ -33,6 +35,7 @@ import {
 import { HiredBanner } from '@/components/worker/HiredBanner';
 import { HiredCelebrationModal } from '@/components/worker/HiredCelebrationModal';
 import { getJobs, updateWorkerProfile } from '@/lib/api/worker';
+import { markFeedOrigin, opensInThisTab, rememberFeedUrl } from '@/lib/worker-feed-return';
 import type { Job, PreferredCity } from '@/lib/api/worker';
 
 export const dynamic = 'force-dynamic';
@@ -55,15 +58,54 @@ const FILTER_CHIPS: { value: TypeFilter; labelKey: 'all' | 'full_time' | 'part_t
   { value: 'contract',  labelKey: 'contract' },
 ];
 
-/**
- * One unacknowledged hire, with its `hire` block hoisted out of the optional
- * field.
+/*
+ * The feed's filters live in the QUERY STRING, not in component state alone.
  *
- * The pairing exists so nothing downstream needs `a.hire!`: the filter that
- * builds this list is the ONE place that proves the block is there, and every
- * reader after it gets a non-optional `hire`.
+ * A worker who narrowed the list, opened a job and came back used to get the
+ * unfiltered feed: the page had remounted and every filter was back to its
+ * default. The URL is what the page is restored from, and every settled filter
+ * change is written back to it -- with `replace`, so narrowing a search does
+ * not leave a history entry per keystroke, and with `scroll: false`, so the
+ * list does not jump while it is being read.
  */
-type HireNotice = { application: Application; hire: ApplicationHire };
+const SEARCH_PARAM = 'q';
+const TYPE_PARAM = 'type';
+
+/** Anything but the four known chips is "no filter" -- the query string is
+ *  user-editable and must never forward a value the API has not agreed to. */
+function parseTypeFilter(raw: string | null | undefined): TypeFilter {
+  return FILTER_CHIPS.some((chip) => chip.value === raw) ? (raw as TypeFilter) : 'all';
+}
+
+/** `useSearchParams` returns null outside an App Router (unit tests, and any
+ *  non-app render), so every read goes through this. */
+function paramValue(params: { get(key: string): string | null } | null | undefined, key: string): string {
+  return params?.get(key) ?? '';
+}
+
+/**
+ * The feed's own URL for a set of filters. An empty query string is omitted
+ * ENTIRELY rather than left as a bare '?': that trailing character is not a
+ * filter, and it would make every "is this already the URL" comparison — and
+ * every shared feed link — wrong.
+ */
+function feedHrefFor(pathname: string, search: string, jobType: TypeFilter): string {
+  const params = new URLSearchParams();
+  if (search) params.set(SEARCH_PARAM, search);
+  if (jobType !== 'all') params.set(TYPE_PARAM, jobType);
+  const query = params.toString();
+  return query ? `${pathname}?${query}` : pathname;
+}
+
+/**
+ * One unacknowledged hire, exactly as the server's attention summary reports
+ * it -- `hire` non-optional, because that summary only ever contains hires.
+ *
+ * It is a SUMMARY rather than a row for a reason: this page shows no
+ * applications, and the hire it has to celebrate may be the worker's 137th,
+ * far past any page of the list the old scan could have loaded.
+ */
+type HireNotice = AttentionHire;
 
 /** True while the focused element takes text: an input, a textarea, or anything contenteditable. */
 function isTypingSomewhere(): boolean {
@@ -119,7 +161,15 @@ function JobRows({ jobs }: { jobs: Job[] }) {
       onAnimationEnd={onCascadeEnd}
     >
       {jobs.map((job) => (
-        <li key={job.id}>
+        /* The click is recorded on the ROW, so it covers the card's link
+           whether it was tapped or opened with Enter: it is what lets the job
+           page's back link use history -- and so restore the scroll position
+           -- instead of a plain link. Only a click that actually LEAVES this
+           tab counts; a ctrl-click opens the job beside it and this page stays
+           put, so recording one would describe a navigation that never
+           happened -- in this tab AND in the copy of sessionStorage the new
+           tab inherits. */
+        <li key={job.id} onClick={(event) => { if (opensInThisTab(event)) markFeedOrigin(); }}>
           <WorkerJobCard job={job} href={`/worker/jobs/${job.id}`} />
         </li>
       ))}
@@ -133,9 +183,22 @@ export default function WorkerHomePage() {
   const tCommon = useTranslations('common');
   const errorMessage = useErrorMessage();
 
-  const [search, setSearch] = useState('');
-  const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [jobType, setJobType] = useState<TypeFilter>('all');
+  /*
+   * Seeded from the URL, ONCE. The filters flow state -> URL from here on:
+   * the box must react to a keystroke immediately, which a value routed
+   * through a navigation cannot, and nothing else writes this page's query
+   * (it is `replace`d, so there is no back/forward within the feed to follow).
+   */
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
+  const [search, setSearch] = useState(() => paramValue(searchParams, SEARCH_PARAM));
+  const [debouncedSearch, setDebouncedSearch] = useState(
+    () => paramValue(searchParams, SEARCH_PARAM).trim(),
+  );
+  const [jobType, setJobType] = useState<TypeFilter>(
+    () => parseTypeFilter(paramValue(searchParams, TYPE_PARAM)),
+  );
   const [preferredCities, setPreferredCities] = useState<PreferredCity[]>([]);
   const [editingCities, setEditingCities] = useState(false);
   const [savingCities, setSavingCities] = useState(false);
@@ -157,6 +220,23 @@ export default function WorkerHomePage() {
     return () => window.clearTimeout(handle);
   }, [search]);
 
+  /*
+   * The filters, as a URL. Built from the DEBOUNCED search, so the address bar
+   * is rewritten when the typing settles rather than on every keystroke; a
+   * chip is not debounced and lands immediately.
+   */
+  const feedHref = feedHrefFor(pathname, debouncedSearch, jobType);
+  const currentQuery = searchParams?.toString() ?? '';
+
+  useEffect(() => {
+    // Also where the job page reads its way back from -- recorded even when
+    // the URL already says this, because a page restored FROM the URL never
+    // calls `replace` at all.
+    rememberFeedUrl(feedHref);
+    if (feedHref === (currentQuery ? `${pathname}?${currentQuery}` : pathname)) return;
+    router.replace(feedHref, { scroll: false });
+  }, [feedHref, currentQuery, pathname, router]);
+
   /**
    * Applications waiting on the worker, fetched BEST-EFFORT alongside the
    * profile.
@@ -173,7 +253,7 @@ export default function WorkerHomePage() {
    * refetch already uses: the job feed underneath is real, and this is a
    * footnote rather than a page state.
    */
-  const [needingDetails, setNeedingDetails] = useState<Application[]>([]);
+  const [needingDetails, setNeedingDetails] = useState<AttentionDetailsRequest[]>([]);
   /** The applications call failed, and the worker has not waved it away. */
   const [applicationsFailed, setApplicationsFailed] = useState(false);
   const [applicationsNoticeDismissed, setApplicationsNoticeDismissed] = useState(false);
@@ -211,25 +291,28 @@ export default function WorkerHomePage() {
   useEffect(() => {
     if (!idToken) return;
     const controller = new AbortController();
-    getApplications(idToken, controller.signal)
-      .then(({ applications }) => {
+    // The SUMMARY, not a page of applications. What this page needs is the two
+    // things that interrupt a worker -- an employer waiting on their details,
+    // and a hire nobody has told them about -- and both are questions about
+    // their WHOLE list. Reading them off a page of it (200 rows once, 100
+    // after F26 paged the endpoint) meant an employer waiting on application
+    // 137 was never mentioned at all.
+    getApplicationsAttention(idToken, controller.signal)
+      .then((attention) => {
         setApplicationsFailed(false);
-        // `details_status`, not `status`: the timestamp-derived field is the one
-        // that survives an employer moving the applicant on to `talking`.
-        setNeedingDetails(applications.filter((a) => a.details_status === 'requested'));
-        // `status` IS the authority for a hire, though -- a `hire` block left
-        // behind on a row an employer moved back out of `hired` must not
-        // congratulate anyone. `flatMap` rather than `filter` so the block is
-        // proven present here and non-optional everywhere after.
+        setNeedingDetails(attention.details_requested);
+        // The receipts written THIS VISIT still win: a refetch (an id-token
+        // rotation re-runs this effect) must not resurrect a modal or banner
+        // the worker already closed while the fire-and-forget POST was in
+        // flight or was lost.
         const receipts = receiptsRef.current;
-        setHires(applications.flatMap((a) => {
-          if (a.status !== 'hired' || !a.hire || a.hire.acknowledged_at) return [];
-          const receipt = receipts[a.application_id];
+        setHires(attention.unacknowledged_hires.flatMap((notice) => {
+          const receipt = receipts[notice.application_id];
           if (receipt === 'dismissed') return [];
-          const hire = receipt === 'seen' && a.hire.seen_at === null
-            ? { ...a.hire, seen_at: new Date().toISOString() }
-            : a.hire;
-          return [{ application: a, hire }];
+          const hire = receipt === 'seen' && notice.hire.seen_at === null
+            ? { ...notice.hire, seen_at: new Date().toISOString() }
+            : notice.hire;
+          return [{ ...notice, hire }];
         }));
         setModalSuppressed(isTypingSomewhere());
       })
@@ -283,7 +366,7 @@ export default function WorkerHomePage() {
 
   const closeCelebration = useCallback((applicationId: string) => {
     setHires((prev) => prev.map((notice) => (
-      notice.application.application_id === applicationId
+      notice.application_id === applicationId
         ? { ...notice, hire: { ...notice.hire, seen_at: new Date().toISOString() } }
         : notice
     )));
@@ -292,7 +375,7 @@ export default function WorkerHomePage() {
 
   const dismissHire = useCallback((applicationId: string) => {
     setHires((prev) => prev.filter(
-      (notice) => notice.application.application_id !== applicationId,
+      (notice) => notice.application_id !== applicationId,
     ));
     recordHireStep(applicationId, 'dismissed');
   }, [recordHireStep]);
@@ -450,13 +533,13 @@ export default function WorkerHomePage() {
       <main className="mx-auto max-w-2xl px-4 py-6 md:px-6">
         {celebrating ? (
           <HiredCelebrationModal
-            key={celebrating.application.application_id}
+            key={celebrating.application_id}
             open
-            applicationId={celebrating.application.application_id}
-            jobTitle={celebrating.application.job_title}
-            companyName={celebrating.application.company_name}
+            applicationId={celebrating.application_id}
+            jobTitle={celebrating.job_title}
+            companyName={celebrating.company_name}
             hire={celebrating.hire}
-            onClose={() => closeCelebration(celebrating.application.application_id)}
+            onClose={() => closeCelebration(celebrating.application_id)}
           />
         ) : null}
 
@@ -465,13 +548,13 @@ export default function WorkerHomePage() {
             answer about work the worker has already done beats browsing for
             more of it. */}
         {hires.map((notice) => (
-          <div key={notice.application.application_id} className="mb-4">
+          <div key={notice.application_id} className="mb-4">
             <HiredBanner
-              applicationId={notice.application.application_id}
-              jobTitle={notice.application.job_title}
-              companyName={notice.application.company_name}
+              applicationId={notice.application_id}
+              jobTitle={notice.job_title}
+              companyName={notice.company_name}
               hire={notice.hire}
-              onDismiss={() => dismissHire(notice.application.application_id)}
+              onDismiss={() => dismissHire(notice.application_id)}
             />
           </div>
         ))}

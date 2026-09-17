@@ -479,6 +479,23 @@ export class ApiStack extends cdk.Stack {
     });
     props.dbSecret.grantRead(employerConversationsUpdateLambda.function);
 
+    // T3a — POST /employer/conversations/{conversationId}/read. Stamps
+    // job_conversations.employer_last_read_at, which is what clears the inbox
+    // unread badge. Same shape as the update endpoint above: DB secret only,
+    // no Twilio (it sends nothing).
+    const employerConversationsReadLambda = new JaleLambdaFunction(this, 'EmployerConversationsReadLambda', {
+      entry: path.join(__dirname, '../../lambda/api/employer-conversations-read.ts'),
+      description: 'Employer conversations read endpoint',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: props.dbSecret.secretArn,
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+    });
+    props.dbSecret.grantRead(employerConversationsReadLambda.function);
+
     const employerInboxLambda = new JaleLambdaFunction(this, 'EmployerInboxLambda', {
       entry: path.join(__dirname, '../../lambda/api/employer-inbox.ts'),
       description: 'Employer inbox endpoint',
@@ -951,6 +968,15 @@ export class ApiStack extends cdk.Stack {
     employerConversationResource
       .addResource('messages')
       .addMethod('POST', lambdaIntegration(employerConversationsSendLambda.function), {
+        authorizer: employerAuthorizer,
+        authorizationType: apigateway.AuthorizationType.COGNITO,
+      });
+    // POST, not PATCH: this is not a partial update of the conversation the
+    // caller submits, it is "I have read this now", stamped from the database
+    // clock with no request body at all.
+    employerConversationResource
+      .addResource('read')
+      .addMethod('POST', lambdaIntegration(employerConversationsReadLambda.function), {
         authorizer: employerAuthorizer,
         authorizationType: apigateway.AuthorizationType.COGNITO,
       });

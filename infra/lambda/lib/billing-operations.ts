@@ -63,10 +63,10 @@ export function checkoutRequestHash(request: CheckoutRequest): string {
   return createHash('sha256').update(canonicalCheckoutRequest(request)).digest('hex');
 }
 
-export function isUuid(value: string | undefined | null): value is string {
-  return typeof value === 'string'
-    && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
-}
+// Re-exported, not redefined: every caller of this module keeps its import,
+// and the check itself lives in `./uuid` where a handler that needs nothing
+// else from billing can reach it. See that file.
+export { isUuid } from './uuid';
 
 export function assertAllowedReturnUrl(rawUrl: string, allowedOrigin: string): void {
   const url = new URL(rawUrl);

@@ -596,7 +596,9 @@ maybeDescribe('L2.4: the web stage-2 details door, end to end', () => {
   });
 
   test('9e. an unknown action is 404 and a non-POST on a known one is 405', async () => {
-    const unknown = await call(subs.owner, { method: 'POST', action: 'complete', body: {} });
+    // `complete` became a real door in sprint 26 (the explicit Finish POST),
+    // so the unknown action here must be one no version of the handler knows.
+    const unknown = await call(subs.owner, { method: 'POST', action: 'frobnicate', body: {} });
     expect(unknown.statusCode).toBe(404);
 
     const wrongMethod = await call(subs.owner, { method: 'DELETE', action: 'answers', body: {} });

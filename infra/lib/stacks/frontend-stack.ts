@@ -38,6 +38,14 @@ export interface FrontendStackProps extends cdk.StackProps {
   readonly employerPoolId: string;
   /** Cognito Employer app client ID. */
   readonly employerClientId: string;
+  /**
+   * Jale's WhatsApp business number (E.164, no leading '+', e.g.
+   * '15551234567'). Runtime-only — never baked into the client bundle —
+   * consumed by the /whatsapp redirect route (frontend/src/app/whatsapp/
+   * route.ts). Resolved the SAME way as ReferralsStack's identically-named
+   * value; see infra/lib/whatsapp-business-number.ts.
+   */
+  readonly whatsappBusinessNumber: string;
 }
 
 /**
@@ -120,6 +128,9 @@ export class FrontendStack extends cdk.Stack {
         AWS_LWA_INVOKE_MODE: 'response_stream',
         // Server-side runtime fallback (NEXT_PUBLIC_* are already inlined at build time)
         NEXT_PUBLIC_API_BASE_URL: `https://${props.domainName}/api`,
+        // Runtime-only (not NEXT_PUBLIC_*) — read server-side by the
+        // /whatsapp redirect route, never inlined into the client bundle.
+        WHATSAPP_BUSINESS_NUMBER: props.whatsappBusinessNumber,
       },
     });
 

@@ -1,6 +1,7 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getPublicJobsDbPool } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
+import { decodeCursor, encodeCursor, parseLimit, type KeysetCursor } from '../lib/keyset-paging';
 
 /**
  * GET /public/jobs
@@ -21,8 +22,6 @@ const CORS_HEADERS = corsHeaders();
 const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 500;
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
 // id is selected only to build the keyset cursor -- it is never returned in
 // the response body. cursor_created_at is created_at cast to text at full
 // Postgres precision (microseconds): the pg driver parses timestamptz into a
@@ -34,48 +33,18 @@ const PUBLIC_JOBS_LIST_COLUMNS = `
   created_at, updated_at, created_at::text AS cursor_created_at
 `;
 
-interface Cursor {
-  createdAt: string;
-  id: string;
-}
-
-function encodeCursor(createdAt: string, id: string): string {
-  return Buffer.from(`${createdAt}|${id}`, 'utf-8').toString('base64');
-}
-
-/** Never throws on malformed input -- an invalid cursor is a 400, not a crash. */
-function decodeCursor(raw: string): Cursor | null {
-  let decoded: string;
-  try {
-    decoded = Buffer.from(raw, 'base64').toString('utf-8');
-  } catch {
-    return null;
-  }
-  const sepIdx = decoded.lastIndexOf('|');
-  if (sepIdx <= 0 || sepIdx === decoded.length - 1) return null;
-  const createdAt = decoded.slice(0, sepIdx);
-  const id = decoded.slice(sepIdx + 1);
-  if (Number.isNaN(Date.parse(createdAt))) return null;
-  if (!UUID_RE.test(id)) return null;
-  return { createdAt, id };
-}
-
-function parseLimit(raw: string | undefined): number {
-  if (!raw) return DEFAULT_LIMIT;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) return DEFAULT_LIMIT;
-  return Math.min(n, MAX_LIMIT);
-}
-
 export const handler = async (
   event: APIGatewayProxyEvent,
 ): Promise<APIGatewayProxyResult> => {
   let client;
   try {
-    const limit = parseLimit(event.queryStringParameters?.limit);
+    const limit = parseLimit(event.queryStringParameters?.limit, {
+      defaultLimit: DEFAULT_LIMIT,
+      maxLimit: MAX_LIMIT,
+    });
 
     const rawCursor = event.queryStringParameters?.cursor;
-    let cursor: Cursor | null = null;
+    let cursor: KeysetCursor | null = null;
     if (rawCursor) {
       cursor = decodeCursor(rawCursor);
       if (!cursor) {
@@ -89,7 +58,7 @@ export const handler = async (
     const params: unknown[] = [];
     let where = `status = 'active' AND public_listing_enabled = true`;
     if (cursor) {
-      params.push(cursor.createdAt, cursor.id);
+      params.push(cursor.at, cursor.id);
       // Keyset pagination on (created_at, id) DESC: strictly-less on the tuple
       // is exactly "everything after the last row of the previous page".
       where += ` AND (created_at, id) < ($${params.length - 1}::timestamptz, $${params.length}::uuid)`;

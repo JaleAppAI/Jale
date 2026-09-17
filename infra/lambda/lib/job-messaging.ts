@@ -599,6 +599,43 @@ export async function closeEmployerConversation(
   return (result.rowCount ?? 0) > 0;
 }
 
+/**
+ * Stamp the employer's read marker on their OWN conversation, for
+ * `POST /employer/conversations/{conversationId}/read`.
+ *
+ * Returns the new stamp, or `null` when the UPDATE matched nothing -- which
+ * is a conversation belonging to another employer AND one that does not exist
+ * at all, deliberately indistinguishable. The caller answers the same 404 to
+ * both rather than becoming an existence oracle over every conversation id.
+ *
+ * `now()`, never a client-supplied time: the stamp is compared against the
+ * newest inbound message's created_at (see lib/employer-inbox.ts), which is
+ * written by this same database's clock. A browser running a few seconds fast
+ * would otherwise mark messages read before they arrived.
+ *
+ * RLS scopes this on top of the explicit employer_id predicate:
+ * job_conversations is ENABLE + FORCE (025:87-88) and
+ * job_conversations_employer_all (025:93-97) keys on
+ * app.current_internal_user_id, so the caller must have bound that GUC --
+ * without it this matches ZERO rows and the employer 404s on their own thread.
+ */
+export async function markEmployerConversationRead(
+  client: PoolClient,
+  conversationId: string,
+  employerId: string,
+): Promise<string | null> {
+  const result = await client.query<{ employer_last_read_at: string }>(
+    `UPDATE job_conversations
+        SET employer_last_read_at = now()
+      WHERE id = $1
+        AND employer_id = $2
+    RETURNING employer_last_read_at`,
+    [conversationId, employerId],
+  );
+  if ((result.rowCount ?? 0) === 0) return null;
+  return result.rows[0].employer_last_read_at;
+}
+
 export async function closeWorkerConversation(
   client: PoolClient,
   conversationId: string,

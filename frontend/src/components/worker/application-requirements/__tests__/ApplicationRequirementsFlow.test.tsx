@@ -21,6 +21,7 @@ const getApplicationRequirements = vi.fn();
 const getApplicationDefaults = vi.fn();
 const getVaultDocuments = vi.fn();
 const postApplicationAnswers = vi.fn();
+const postApplicationComplete = vi.fn();
 const postApplicationCertifications = vi.fn();
 const postApplicationPromptAnswers = vi.fn();
 
@@ -30,6 +31,7 @@ vi.mock('@/lib/api/worker', async (importOriginal) => ({
   getApplicationDefaults: (...a: unknown[]) => getApplicationDefaults(...a),
   getVaultDocuments: (...a: unknown[]) => getVaultDocuments(...a),
   postApplicationAnswers: (...a: unknown[]) => postApplicationAnswers(...a),
+  postApplicationComplete: (...a: unknown[]) => postApplicationComplete(...a),
   postApplicationCertifications: (...a: unknown[]) => postApplicationCertifications(...a),
   postApplicationPromptAnswers: (...a: unknown[]) => postApplicationPromptAnswers(...a),
 }));
@@ -152,6 +154,9 @@ describe('ApplicationRequirementsFlow — terminal panels', () => {
     renderFlow(serverState({ application: { details_completed_at: '2026-09-02T00:00:00Z' } }));
     expect(screen.getByText(message('worker_application_details.terminal.already_complete')))
       .toBeInTheDocument();
+    // F2: and it says WHY there is no way to edit, and where to go instead.
+    expect(screen.getByText(message('worker_application_details.terminal.already_complete_note')))
+      .toBeInTheDocument();
   });
 
   it('shows the not-requested panel before the employer asks', () => {
@@ -178,6 +183,36 @@ describe('ApplicationRequirementsFlow — terminal panels', () => {
     expect(
       screen.getByText(message('worker_application_details.terminal.already_complete_body_no_company')),
     ).toBeInTheDocument();
+  });
+
+  /*
+   * The API's `company_name` is `employer_display_name()`, which ends in
+   * COALESCE(..., 'Empleador') -- a Spanish placeholder, not a name. Dropped
+   * into "{company} has it all." it reads as a company literally called
+   * Empleador, and on the English page it is not even in the right language.
+   * It is the same sentinel the hire copy already refuses; this surface has
+   * `_no_company` twins for exactly this, and now uses them.
+   */
+  it('treats the "Empleador" placeholder as no company at all', () => {
+    renderFlow(serverState({
+      application: { details_completed_at: '2026-09-02T00:00:00Z' },
+      job: { company_name: 'Empleador' },
+    }));
+
+    expect(
+      screen.getByText(message('worker_application_details.terminal.already_complete_body_no_company')),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Empleador/)).not.toBeInTheDocument();
+  });
+
+  /* Equality, not a substring test: "Empleadora del Norte" is a real name. */
+  it('keeps a real company name that merely starts with the placeholder word', () => {
+    renderFlow(serverState({
+      application: { details_completed_at: '2026-09-02T00:00:00Z' },
+      job: { company_name: 'Empleadora del Norte' },
+    }));
+
+    expect(screen.getByText(/Empleadora del Norte/)).toBeInTheDocument();
   });
 
   it('every terminal panel keeps a way out', () => {
@@ -301,6 +336,37 @@ describe('ApplicationRequirementsFlow — saving field answers', () => {
     ).toBeInTheDocument());
   });
 
+  /**
+   * F2 (Luis ruling, sprint 26). The web door used to accept edits to an
+   * application the employer already had, while WhatsApp refused them. It now
+   * answers 409 `application_locked` with the fresh state -- which must land
+   * as the read-only panel plus the WhatsApp instruction, not as a thrown
+   * error page and not as an inline "something went wrong".
+   */
+  it('a 409 application_locked write renders the read-only panel and says to use WhatsApp', async () => {
+    const user = userEvent.setup();
+    postApplicationAnswers.mockResolvedValue({
+      kind: 'blocked',
+      reason: 'application_locked',
+      state: serverState({ application: { details_completed_at: '2026-09-02T00:00:00Z' } }),
+    });
+    renderFlow(withField);
+
+    await user.click(screen.getByRole('radio', { name: message('job_requirements.apply.yes') }));
+    await user.click(screen.getByRole('button', {
+      name: message('worker_application_details.continue_button'),
+    }));
+
+    await waitFor(() => expect(
+      screen.getByText(message('worker_application_details.terminal.already_complete')),
+    ).toBeInTheDocument());
+    expect(screen.getByText(message('worker_application_details.terminal.already_complete_note')))
+      .toBeInTheDocument();
+    // The form is gone: read-only means there is nothing left to submit.
+    expect(screen.queryByRole('radio', { name: message('job_requirements.apply.yes') }))
+      .not.toBeInTheDocument();
+  });
+
   it('renders too_large as an inline error, not a thrown page', async () => {
     const user = userEvent.setup();
     postApplicationAnswers.mockResolvedValue({ kind: 'too_large' });
@@ -317,12 +383,20 @@ describe('ApplicationRequirementsFlow — saving field answers', () => {
   });
 });
 
-describe('ApplicationRequirementsFlow — Finish is a re-read', () => {
-  it('shows the completion screen when the re-read says details_completed_at is set', async () => {
+/**
+ * R2. Finish used to be a re-read, because the door completed an application
+ * on ANY GET. That made sending something a page load could do TO a worker:
+ * WhatsApp's armFill pre-fills saved answers and vault documents and then
+ * waits at its LISTO consent gate, so simply opening this page sent the
+ * application, and F2's lock refused every correction afterwards.
+ */
+describe('ApplicationRequirementsFlow — Finish is the completion act', () => {
+  it('completes through an explicit POST, not a re-read', async () => {
     const user = userEvent.setup();
-    getApplicationRequirements.mockResolvedValue(
-      serverState({ application: { details_completed_at: '2026-09-02T00:00:00Z' } }),
-    );
+    postApplicationComplete.mockResolvedValue({
+      kind: 'saved',
+      state: serverState({ application: { details_completed_at: '2026-09-02T00:00:00Z' } }),
+    });
     renderFlow(serverState());
 
     await user.click(screen.getByRole('button', {
@@ -332,8 +406,28 @@ describe('ApplicationRequirementsFlow — Finish is a re-read', () => {
     await waitFor(() => expect(
       screen.getByText(message('worker_application_details.complete.title')),
     ).toBeInTheDocument());
-    // No POST complete exists -- Finish only ever asks.
+    expect(postApplicationComplete).toHaveBeenCalledTimes(1);
+    // The GET must NOT be what completes it any more.
+    expect(getApplicationRequirements).not.toHaveBeenCalled();
     expect(postApplicationAnswers).not.toHaveBeenCalled();
+  });
+
+  it('renders the read-only panel when completion comes back 409 locked', async () => {
+    const user = userEvent.setup();
+    postApplicationComplete.mockResolvedValue({
+      kind: 'blocked',
+      reason: 'application_locked',
+      state: serverState({ application: { details_completed_at: '2026-09-02T00:00:00Z' } }),
+    });
+    renderFlow(serverState());
+
+    await user.click(screen.getByRole('button', {
+      name: message('worker_application_details.review.finish'),
+    }));
+
+    await waitFor(() => expect(
+      screen.getByText(message('worker_application_details.terminal.already_complete')),
+    ).toBeInTheDocument());
   });
 
   it('blocks Finish and names what is missing while the server still owes something', () => {

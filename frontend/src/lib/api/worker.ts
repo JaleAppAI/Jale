@@ -603,10 +603,16 @@ export type ApplicationSaveResult =
   | { kind: 'invalid'; errors: Record<string, string> }
   /**
    * 409. The stage is not open (`stage_locked`: the employer has not asked
-   * for details yet) or the application is over (`application_closed`). Both
-   * carry the fresh state, so the caller re-renders without a second GET.
+   * for details yet), the application is over (`application_closed`), or it
+   * is already sent (`application_locked`, F2 -- the same lock WhatsApp has
+   * always applied). All three carry the fresh state, so the caller
+   * re-renders the matching terminal panel without a second GET.
    */
-  | { kind: 'blocked'; reason: 'stage_locked' | 'application_closed'; state: ApplicationRequirementsState }
+  | {
+    kind: 'blocked';
+    reason: 'stage_locked' | 'application_closed' | 'application_locked';
+    state: ApplicationRequirementsState;
+  }
   /**
    * `payload_too_large`, from EITHER status: 413 is the pre-DB body cap
    * (16 KB, measured before parsing) and 400 is the post-merge column
@@ -668,7 +674,11 @@ async function parseApplicationSaveResult(res: Response): Promise<ApplicationSav
     if (res.status === 409 && code === 'certification_document_limit') {
       return { kind: 'certification_document_limit' };
     }
-    if (res.status === 409 && (code === 'stage_locked' || code === 'application_closed') && state !== undefined) {
+    if (
+      res.status === 409
+      && (code === 'stage_locked' || code === 'application_closed' || code === 'application_locked')
+      && state !== undefined
+    ) {
       return { kind: 'blocked', reason: code, state };
     }
     // ONLY the bare `not_found`. A 404 `worker_not_found` means the session's
@@ -713,6 +723,32 @@ export async function postApplicationCertifications(
 }
 
 /**
+ * THE COMPLETION ACT (R2). Stamps `details_completed_at` and releases the
+ * WhatsApp arm, then answers with the state that resulted.
+ *
+ * This is a POST and not a re-read for a reason the GET used to hide: the
+ * door completed an application on ANY read, so a worker whose answers
+ * WhatsApp had pre-filled -- and who was still waiting at its LISTO consent
+ * gate -- had their application sent by opening the page, and F2's lock then
+ * refused every correction. Sending has to be something the worker does.
+ *
+ * Idempotent: pressing Finish twice, or reloading the confirmation screen,
+ * answers 200 with the same state rather than the `application_locked` 409
+ * an ordinary edit would now get.
+ */
+export async function postApplicationComplete(
+  token: string,
+  applicationId: string,
+): Promise<ApplicationSaveResult> {
+  const res = await apiFetch(
+    `/worker/applications/${applicationId}/complete`,
+    { method: 'POST', body: JSON.stringify({}) },
+    token,
+  );
+  return parseApplicationSaveResult(res);
+}
+
+/**
  * Prompt answers, keyed on prompt id. WRITE-ONCE: an id that already has an
  * answer keeps the stored one (the merge is `new || existing`), so this
  * finishes a partial set rather than editing one. Deliberately NOT
@@ -732,13 +768,143 @@ export async function postApplicationPromptAnswers(
   return parseApplicationSaveResult(res);
 }
 
+/**
+ * One application that still needs the WORKER, wherever it sits in their list.
+ *
+ * The summary below is computed by the server over ALL of a worker's
+ * applications, not over the page: paging the list would otherwise have hidden
+ * the two things a worker opens the app for -- an employer waiting on their
+ * details, and a hire nobody has told them about -- the moment either fell past
+ * the first fifty rows. It carries only what the banners and the celebration
+ * render; it is a summary, not a second list.
+ */
+export type AttentionDetailsRequest = {
+  application_id: string;
+  job_id: string;
+  job_title: string;
+  company_name: string;
+  /** The single badgeable number the banner shows. */
+  remaining_count: number;
+};
+
+export type AttentionHire = {
+  application_id: string;
+  job_id: string;
+  job_title: string;
+  company_name: string;
+  hire: ApplicationHire;
+};
+
+export type ApplicationsAttention = {
+  details_requested: AttentionDetailsRequest[];
+  unacknowledged_hires: AttentionHire[];
+};
+
+function isAttention(value: unknown): value is ApplicationsAttention {
+  if (typeof value !== 'object' || value === null) return false;
+  const row = value as Record<string, unknown>;
+  return Array.isArray(row.details_requested) && Array.isArray(row.unacknowledged_hires);
+}
+
+/**
+ * The same summary, read off the rows in hand.
+ *
+ * The compatibility path for a server that predates `attention` -- the frontend
+ * can deploy before the lambda does, and a browser that got no summary must
+ * still show the banners it showed yesterday. It is exactly the rule the two
+ * pages used to apply themselves, in one place: over the loaded rows only, so
+ * it is as complete as the page is and no more.
+ */
+function attentionFromRows(applications: Application[]): ApplicationsAttention {
+  return {
+    // `details_status`, the TIMESTAMP-derived field -- never `status`, so an
+    // employer who moved the applicant on to `talking` does not stop the row
+    // asking for details it is still waiting on.
+    details_requested: applications
+      .filter((a) => a.details_status === 'requested')
+      .map((a) => ({
+        application_id: a.application_id,
+        job_id: a.job_id,
+        job_title: a.job_title,
+        company_name: a.company_name,
+        remaining_count: a.remaining_count ?? 0,
+      })),
+    // `status` is the authority for a hire: a `hire` block left on a row an
+    // employer moved back out of `hired` must not congratulate anyone.
+    unacknowledged_hires: applications
+      .flatMap((a) => (a.status === 'hired' && a.hire && !a.hire.acknowledged_at
+        ? [{
+          application_id: a.application_id,
+          job_id: a.job_id,
+          job_title: a.job_title,
+          company_name: a.company_name,
+          hire: a.hire,
+        }]
+        : [])),
+  };
+}
+
+/** One page of the worker's applications, newest first. */
+export type ApplicationsPage = {
+  applications: Application[];
+  /**
+   * Feed it back as `cursor` for the next page; null means this page is the
+   * end of the list. Opaque -- it encodes the keyset the server pages on, and
+   * nothing but the server may take it apart.
+   */
+  next_cursor: string | null;
+  /** What needs the worker, across their whole list. See the types above. */
+  attention: ApplicationsAttention;
+};
+
+/**
+ * PAGED. The server used to answer with a hard `LIMIT 200` and no way to ask
+ * for the rest; it now defaults to 50 and caps at 100.
+ *
+ * `next_cursor` is additive, so a caller that ignores `paging` still gets the
+ * same `applications` array it always did -- just the first page of it. Any
+ * caller that needs "as much as one request can give" (the home page's
+ * best-effort scan for hires and details requests) says so with `limit`.
+ */
 export async function getApplications(
   token: string,
   signal?: AbortSignal,
-): Promise<{ applications: Application[] }> {
-  const res = await apiFetch('/worker/applications', { signal }, token);
+  paging?: { limit?: number; cursor?: string | null },
+): Promise<ApplicationsPage> {
+  const query = new URLSearchParams();
+  if (paging?.limit) query.set('limit', String(paging.limit));
+  if (paging?.cursor) query.set('cursor', paging.cursor);
+  const qs = query.toString();
+  const res = await apiFetch(`/worker/applications${qs ? `?${qs}` : ''}`, { signal }, token);
   if (!res.ok) throw await parseApiError(res, 'fetch_failed');
-  return res.json();
+  const body = await res.json();
+  const applications: Application[] = Array.isArray(body?.applications) ? body.applications : [];
+  return {
+    applications,
+    // Absent on a server that predates paging: "this is the whole list", which
+    // is exactly what that server meant.
+    next_cursor: typeof body?.next_cursor === 'string' ? body.next_cursor : null,
+    // Absent on a server that predates the summary: fall back to reading it
+    // off the rows, which is what both pages used to do for themselves.
+    attention: isAttention(body?.attention) ? body.attention : attentionFromRows(applications),
+  };
+}
+
+/**
+ * ONLY what needs the worker -- the home page's question, which is not a list.
+ *
+ * The home page shows no applications; it shows the banners and the hire
+ * celebration. It asks for a page anyway because that is the endpoint, and for
+ * a hundred rows rather than one ONLY so the fallback above still has
+ * something to read on a server that has not shipped `attention` yet. Once
+ * that is everywhere, this can ask for a single row.
+ */
+export async function getApplicationsAttention(
+  token: string,
+  signal?: AbortSignal,
+): Promise<ApplicationsAttention> {
+  const page = await getApplications(token, signal, { limit: 100 });
+  return page.attention;
 }
 
 /** Which half of the hire receipt this call is writing. */

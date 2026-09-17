@@ -3,11 +3,21 @@
 import { useState } from 'react';
 import { useFormatter, useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
+import { useAuth } from '@/contexts/AuthContext';
+import { useConversationDrawer } from '@/contexts/ConversationDrawerContext';
+import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { ApplicationStatusBadge, Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { MatchScoreBadge } from '@/components/ui/match-signals';
+import { Select } from '@/components/ui/select';
+import { useToast } from '@/components/ui/toast';
 import { initialsFor } from '@/components/employer/ConversationThread';
 import { TrustScorePill } from '@/app/[locale]/employer/jobs/[id]/TrustScorePill';
+import { statusSelectOptions } from '@/lib/hire-gate';
+import { ApiError } from '@/lib/api/errors';
+import { updateApplicantStatus } from '@/lib/api/employer';
 import type { ApplicantOverviewItem } from '@/lib/api/employer';
+import type { ApplicationStatus } from '@/lib/status';
 
 const MAX_SKILL_BADGES = 4;
 
@@ -60,7 +70,82 @@ export function ApplicantOverviewRow({ item }: { item: ApplicantOverviewItem }) 
   const tListing = useTranslations('employer_job_listing');
   const tMatch = useTranslations('match');
   const format = useFormatter();
+  const { idToken } = useAuth();
+  const { openConversation } = useConversationDrawer();
+  const toast = useToast();
+  const errorMessage = useErrorMessage();
   const [skillsExpanded, setSkillsExpanded] = useState(false);
+  /**
+   * The status this row has WRITTEN, while the list it came from still holds
+   * the old one. `null` means "whatever the item says", so a refreshed list
+   * simply takes over.
+   */
+  const [savedStatus, setSavedStatus] = useState<ApplicationStatus | null>(null);
+  const [saving, setSaving] = useState(false);
+  /*
+   * ...and this is what makes "a refreshed list simply takes over" true.
+   *
+   * The local write outlives the response that committed it -- the parent
+   * list still holds the old value until it refetches -- so it has to be
+   * dropped the moment the LIST changes its mind. Without this, a row whose
+   * status was moved from anywhere else (the worker detail page, another
+   * device, a dismissal on the messages board) kept showing whatever this
+   * component last wrote, for as long as it stayed mounted.
+   *
+   * The render-phase reset rather than an effect: this is React's documented
+   * "adjusting state when a prop changes" pattern, and an effect would render
+   * the stale status once before correcting it -- a visible flicker of a
+   * status the server has already disagreed with.
+   */
+  const [listStatus, setListStatus] = useState<ApplicationStatus>(item.application_status);
+  if (listStatus !== item.application_status) {
+    setListStatus(item.application_status);
+    setSavedStatus(null);
+  }
+  const status = savedStatus ?? item.application_status;
+
+  async function handleStatusChange(next: ApplicationStatus) {
+    /*
+     * The guard that keeps `details_requested` out of this control.
+     *
+     * `statusSelectOptions` prepends the CURRENT status when it is not one an
+     * employer may pick -- which today means exactly `details_requested` --
+     * because a <select> whose value matches no option renders the first one's
+     * label instead, mislabelling the row. On the worker detail page, Save is
+     * disabled while the draft equals the saved status, and that is what
+     * enforces lib/hire-gate's ruling: the dropdown must never MOVE an
+     * application into `details_requested`, because that transition also
+     * notifies the worker and belongs to the "Request details" button. This
+     * row has no Save button, so this is the whole of that enforcement.
+     */
+    if (!idToken || saving || next === status) return;
+
+    const previous = status;
+    setSavedStatus(next);
+    setSaving(true);
+    try {
+      const updated = await updateApplicantStatus(idToken, item.job_id, item.worker_id, next);
+      // The API is the authority on what was committed.
+      setSavedStatus(updated.status ?? next);
+    } catch (err) {
+      setSavedStatus(previous === item.application_status ? null : previous);
+      /*
+       * The database's own hire gate (migration 091), surfaced. This row
+       * carries no `details_status`, so -- exactly like `hireBlockReason` on
+       * an API that publishes no stage vocabulary -- `hired` is OFFERED and
+       * the 409 is the authority. The remedy (request details) lives on the
+       * profile, so the sentence sends them there rather than listing fields
+       * this row cannot act on.
+       */
+      toast.error(
+        err instanceof ApiError && err.code === 'details_incomplete'
+          ? t('hire_blocked')
+          : errorMessage(err),
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
 
   const name = item.worker_name ?? t('unknown_worker');
   const jobLine = item.job_city ? `${item.job_title} · ${item.job_city}` : item.job_title;
@@ -87,8 +172,8 @@ export function ApplicantOverviewRow({ item }: { item: ApplicantOverviewItem }) 
       </div>
 
       <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-        <ApplicationStatusBadge status={item.application_status}>
-          {tShared(`applicants.status.${item.application_status}`)}
+        <ApplicationStatusBadge status={status}>
+          {tShared(`applicants.status.${status}`)}
         </ApplicationStatusBadge>
         {item.match_score !== null && item.score_band !== null ? (
           <MatchScoreBadge
@@ -136,12 +221,69 @@ export function ApplicantOverviewRow({ item }: { item: ApplicantOverviewItem }) 
         ) : null}
       </div>
 
-      <Link
-        href={`/employer/workers/${item.worker_id}?job_id=${item.job_id}`}
-        className="shrink-0 text-xs font-bold text-[var(--primary)] underline underline-offset-2 focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
-      >
-        {tShared('applicants.view_profile')}
-      </Link>
+      {/* The row's actions. Sprint 26 (B4): triaging this list used to mean
+          opening every applicant -- two clicks and a page load to move
+          somebody to "talking", and no way at all to write to them from here.
+          The two things an employer does after reading a row now happen in
+          it; everything deeper still lives on the profile. */}
+      <div className="flex shrink-0 flex-wrap items-center gap-2">
+        <div className="w-40">
+          {/* The label is the accessible name, not a visible one: the row is a
+              scan surface and a "Status" caption over every select would
+              triple the vertical space it costs.
+
+              No size override: the primitive's 44px minimum is the touch
+              target this control needs on the phone where this list is read,
+              and `Select` joins class strings rather than merging them -- a
+              competing `min-h` would be settled by stylesheet order, not by
+              this call site. */}
+          <Select
+            aria-label={t('status_label')}
+            value={status}
+            disabled={saving || !idToken}
+            onChange={(event) => void handleStatusChange(event.target.value as ApplicationStatus)}
+          >
+            {statusSelectOptions(status).map((option) => (
+              <option key={option} value={option}>
+                {tShared(`applicants.status.${option}`)}
+              </option>
+            ))}
+          </Select>
+        </div>
+
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          /* The ids say WHO, and the four display fields say who they are.
+             This board has no job-status filter, so it lists applicants of
+             paused, filled and closed jobs; the drawer resolves an application
+             against the employer inbox, which lists a never-messaged applicant
+             only while their job is active. Without these fields such a row
+             opened on "This candidate is no longer available" -- for a worker
+             the messaging API would have accepted. */
+          onClick={() =>
+            openConversation({
+              application_id: item.application_id,
+              worker_id: item.worker_id,
+              job_id: item.job_id,
+              worker_name: item.worker_name,
+              job_title: item.job_title,
+              job_city: item.job_city,
+              applied_at: item.applied_at,
+            })
+          }
+        >
+          {t('message_action')}
+        </Button>
+
+        <Link
+          href={`/employer/workers/${item.worker_id}?job_id=${item.job_id}`}
+          className="text-xs font-bold text-[var(--primary)] underline underline-offset-2 focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
+        >
+          {tShared('applicants.view_profile')}
+        </Link>
+      </div>
     </div>
   );
 }

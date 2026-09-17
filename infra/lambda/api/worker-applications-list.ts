@@ -7,8 +7,41 @@ import { buildHireSummary, type HireTrade } from '../lib/application-hire-view';
 import { resolveTradeAlias, type TradeAliasQueryable } from '../lib/trade-canonical';
 import { normalizeProfession } from '../lib/profession';
 import { checkCompliance } from '../legal/check-compliance';
+import { decodeCursor, encodeCursor, parseLimit, type KeysetCursor } from '../lib/keyset-paging';
 
 const CORS_HEADERS = corsHeaders();
+
+/*
+ * PAGING.
+ *
+ * This list was a hard `LIMIT 200` with no way to ask for the rest: a worker
+ * with more applications than that could not reach the older ones at all, and
+ * every load paid for two hundred rows plus their engine columns whether or
+ * not anyone scrolled past the first screen.
+ *
+ * Keyset on (applied_at, id) DESC, the same shape as public-jobs-list. An
+ * OFFSET would skip or repeat rows whenever an application was added or
+ * re-sorted between two pages, which on this list is routine -- the rows are
+ * ordered by a timestamp the employer's actions keep changing around.
+ *
+ * The response is backward compatible: `applications` is exactly the array it
+ * always was, with `next_cursor` added beside it. A client that ignores the
+ * cursor gets the first 50 instead of the first 200 and nothing else changes.
+ */
+const DEFAULT_LIMIT = 50;
+const MAX_LIMIT = 100;
+
+/**
+ * The cap on the attention summary (see `attentionApplicationsSql`).
+ *
+ * Not a page: nothing pages it, and a worker with a hundred employers waiting
+ * on them at once does not exist. It is here because an unbounded read has no
+ * place in a handler whose whole point this sprint was to stop reading
+ * unboundedly -- and if it were ever hit, the banners would under-count rather
+ * than time out.
+ */
+const ATTENTION_LIMIT = 100;
+
 
 /**
  * Fills `canonical_en`/`canonical_es` on the hired rows whose trade is the
@@ -71,12 +104,171 @@ async function fillCanonicalTrades(
   }
 }
 
+/**
+ * `GET /worker/applications`' single SELECT. Exported so the real-PostgreSQL
+ * suites run the statement the handler runs (not a regex-lifted copy that
+ * drifts): `keysetParams` is 0 for a first page and 2 (`applied_at`, `id`)
+ * for a cursor page; the LIMIT is always the next bind position after them.
+ * RLS is what scopes it to the caller -- the statement carries no worker id.
+ */
+/**
+ * Every column both statements below select. One list, because the attention
+ * summary is shaped by exactly the same code as a page row -- a second,
+ * slightly different projection is how the two would drift into disagreeing
+ * about what a worker is owed.
+ */
+const APPLICATION_COLUMNS = `a.id AS application_id, a.job_id,
+        CASE a.status
+          WHEN 'reviewed' THEN 'contacted'
+          WHEN 'rejected' THEN 'not_interested'
+          ELSE a.status
+        END AS status,
+        a.applied_at,
+        -- applied_at cast to text at full Postgres precision, for the
+        -- cursor ONLY (stripped from every row below). The pg driver
+        -- parses timestamptz into a JS Date, whose millisecond
+        -- resolution would truncate the microseconds -- and a truncated
+        -- cursor no longer compares strictly-less than the row that
+        -- produced it, so that row comes back on the next page.
+        a.applied_at::text AS cursor_applied_at,
+        a.details_requested_at,
+        a.details_completed_at,
+        -- 095 hire celebration. COALESCE, not a bare a.hired_at: a
+        -- worker hired in the window between migration 095 and this
+        -- code deploy has a NULL hired_at (nothing wrote it yet) and
+        -- must still get their celebration. updated_at is NOT NULL
+        -- (003), so the projected value is never null -- which is what
+        -- lets the response contract promise a non-null hire.hired_at.
+        -- Every historical hire was stamped by 095 itself, so this
+        -- fallback can never resurrect an old one.
+        COALESCE(a.hired_at, a.updated_at) AS hired_at,
+        a.hired_seen_at,
+        a.hired_ack_at,
+        j.title AS job_title,
+        employer_display_name(j.employer_id) AS company_name,
+        CASE WHEN j.status = 'paused' THEN 'closed' ELSE j.status END AS job_status,
+        -- 091 engine inputs. All of these are STRIPPED below: this list
+        -- publishes only the derived stage vocabulary, never the raw
+        -- answers or the job's requirement arrays.
+        a.application_answers, a.prompt_answers,
+        j.required_fields, j.optional_fields,
+        j.required_docs, j.optional_docs,
+        j.certification_requirements, j.pre_application_prompts,
+        -- The job facts the celebration repeats under "You've been
+        -- hired". Also stripped below, and published ONLY through the
+        -- hire object on a hired row. job_-prefixed so a strip that
+        -- misses one is obvious in the response rather than silently
+        -- shadowing an application column.
+        --
+        -- to_char, because jobs.start_date is a DATE: node-postgres parses a DATE
+        -- into a JS Date at LOCAL midnight, which JSON.stringify then
+        -- emits as a full ISO timestamp -- and, west of UTC, as the
+        -- PREVIOUS calendar day.
+        to_char(j.start_date, 'YYYY-MM-DD') AS job_start_date,
+        j.location AS job_location,
+        j.city AS job_city,
+        j.state AS job_state,
+        j.pay AS job_pay,
+        j.pay_min AS job_pay_min,
+        j.pay_max AS job_pay_max,
+        j.pay_interval AS job_pay_interval,
+        j.shift_schedule AS job_shift_schedule,
+        -- The trade the new copy names ("... te contrató como {trade}").
+        -- Raw on both counts: the 023 enum token is translated by the
+        -- client from its own catalogue, and the 077 free-text column is
+        -- canonicalised after the COMMIT below, not in SQL.
+        j.trade_category AS job_trade_category,
+        j.trade_category_other AS job_trade_category_other,
+        -- JOB-SCOPED, matching what 091's hire gate measures and what
+        -- the employer's own list reports. No document sync here: the
+        -- sync writes to FORCE-RLS worker_documents and this is a
+        -- read-only list.
+        ARRAY(
+          SELECT DISTINCT wd.doc_type
+            FROM worker_documents wd
+           WHERE wd.worker_id = a.worker_id
+             AND wd.job_id = a.job_id
+        ) AS have_docs`;
+
+const APPLICATIONS_FROM = `
+ FROM job_applications a
+ JOIN jobs j ON j.id = a.job_id`;
+
+/**
+ * `GET /worker/applications`' page SELECT. Exported so the real-PostgreSQL
+ * suites run the statement the handler runs (not a regex-lifted copy that
+ * drifts): `keysetParams` is 0 for a first page and 2 (`applied_at`, `id`)
+ * for a cursor page; the LIMIT is always the next bind position after them.
+ * RLS is what scopes it to the caller -- the statement carries no worker id.
+ *
+ * INDEXES: the keyset orders by (applied_at DESC, id DESC) and there is no
+ * index on that pair -- `job_applications` is indexed by worker and by job
+ * (migrations 003/070), so a page is a sort over this worker's rows. That is
+ * cheap at the size one worker's applications reach and was equally true of
+ * the LIMIT 200 this replaced; it is the DEEP pages (a cursor far down a very
+ * long list) that would want `(worker_id, applied_at DESC, id DESC)`. Noted
+ * rather than added: an index migration is a schema change with its own
+ * review, and nothing measured yet says this needs one.
+ */
+export function listApplicationsSql(keysetParams: 0 | 2): string {
+  const keyset = keysetParams === 2
+    ? ' WHERE (a.applied_at, a.id) < ($1::timestamptz, $2::uuid)'
+    : '';
+  const limitParam = keysetParams + 1;
+  return `SELECT ${APPLICATION_COLUMNS}${APPLICATIONS_FROM}${keyset}
+ ORDER BY a.applied_at DESC, a.id DESC
+ LIMIT $${limitParam}`;
+}
+
+/**
+ * The same rows, asked a different question: WHICH OF THIS WORKER'S
+ * APPLICATIONS NEED THEM -- over all of them, not over the page.
+ *
+ * Paging the list created a hole the banners fell into: the home and
+ * applications pages computed "an employer is waiting for your details" and
+ * "you were hired" from the rows they happened to hold, so anything past the
+ * first page was never shown, and the multi-banner printed an unhedged count
+ * of a fraction of the list.
+ *
+ * Both halves are narrow by construction -- an employer has to be waiting on
+ * this worker, or to have hired them without the hire being acknowledged --
+ * so this is a handful of rows however long the list is. `details_completed_at
+ * IS NULL AND details_requested_at IS NOT NULL` is the SUPERSET of
+ * `details_status = 'requested'`; the engine (`computeRemaining`) decides the
+ * rest in TypeScript, exactly as it does for a page row, because "is anything
+ * still outstanding" is not a question SQL can answer here.
+ *
+ * Bounded like everything else that reads a list: $1 is the cap.
+ */
+export function attentionApplicationsSql(): string {
+  return `SELECT ${APPLICATION_COLUMNS}${APPLICATIONS_FROM}
+ WHERE (a.details_requested_at IS NOT NULL AND a.details_completed_at IS NULL)
+    OR (a.status = 'hired' AND a.hired_ack_at IS NULL)
+ ORDER BY a.applied_at DESC, a.id DESC
+ LIMIT $1`;
+}
+
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   let client;
   try {
     const cognitoSub: string | undefined = event.requestContext?.authorizer?.claims?.sub;
     if (!cognitoSub) {
       return { statusCode: 401, headers: CORS_HEADERS, body: JSON.stringify({ error: 'unauthorized' }) };
+    }
+
+    const limit = parseLimit(event.queryStringParameters?.limit, {
+      defaultLimit: DEFAULT_LIMIT,
+      maxLimit: MAX_LIMIT,
+    });
+    const rawCursor = event.queryStringParameters?.cursor;
+    let cursor: KeysetCursor | null = null;
+    if (rawCursor) {
+      cursor = decodeCursor(rawCursor);
+      if (!cursor) {
+        // Refused rather than ignored: serving page 1 for a cursor nobody can
+        // read reads, from the client, as an endless list of the same rows.
+        return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_cursor' }) };
+      }
     }
 
     const pool = await getDbPool();
@@ -109,77 +301,22 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // touching employer_profiles may be added after this one in this
     // transaction. paused is coalesced to closed: billing auto-pause is the
     // employer's private state (spec: workers never see 'paused').
-    const result = await client.query(
-      `SELECT a.id AS application_id, a.job_id,
-              CASE a.status
-                WHEN 'reviewed' THEN 'contacted'
-                WHEN 'rejected' THEN 'not_interested'
-                ELSE a.status
-              END AS status,
-              a.applied_at,
-              a.details_requested_at,
-              a.details_completed_at,
-              -- 095 hire celebration. COALESCE, not a bare a.hired_at: a
-              -- worker hired in the window between migration 095 and this
-              -- code deploy has a NULL hired_at (nothing wrote it yet) and
-              -- must still get their celebration. updated_at is NOT NULL
-              -- (003), so the projected value is never null -- which is what
-              -- lets the response contract promise a non-null hire.hired_at.
-              -- Every historical hire was stamped by 095 itself, so this
-              -- fallback can never resurrect an old one.
-              COALESCE(a.hired_at, a.updated_at) AS hired_at,
-              a.hired_seen_at,
-              a.hired_ack_at,
-              j.title AS job_title,
-              employer_display_name(j.employer_id) AS company_name,
-              CASE WHEN j.status = 'paused' THEN 'closed' ELSE j.status END AS job_status,
-              -- 091 engine inputs. All of these are STRIPPED below: this list
-              -- publishes only the derived stage vocabulary, never the raw
-              -- answers or the job's requirement arrays.
-              a.application_answers, a.prompt_answers,
-              j.required_fields, j.optional_fields,
-              j.required_docs, j.optional_docs,
-              j.certification_requirements, j.pre_application_prompts,
-              -- The job facts the celebration repeats under "You've been
-              -- hired". Also stripped below, and published ONLY through the
-              -- hire object on a hired row. job_-prefixed so a strip that
-              -- misses one is obvious in the response rather than silently
-              -- shadowing an application column.
-              --
-              -- to_char, because jobs.start_date is a DATE: node-postgres parses a DATE
-              -- into a JS Date at LOCAL midnight, which JSON.stringify then
-              -- emits as a full ISO timestamp -- and, west of UTC, as the
-              -- PREVIOUS calendar day.
-              to_char(j.start_date, 'YYYY-MM-DD') AS job_start_date,
-              j.location AS job_location,
-              j.city AS job_city,
-              j.state AS job_state,
-              j.pay AS job_pay,
-              j.pay_min AS job_pay_min,
-              j.pay_max AS job_pay_max,
-              j.pay_interval AS job_pay_interval,
-              j.shift_schedule AS job_shift_schedule,
-              -- The trade the new copy names ("... te contrató como {trade}").
-              -- Raw on both counts: the 023 enum token is translated by the
-              -- client from its own catalogue, and the 077 free-text column is
-              -- canonicalised after the COMMIT below, not in SQL.
-              j.trade_category AS job_trade_category,
-              j.trade_category_other AS job_trade_category_other,
-              -- JOB-SCOPED, matching what 091's hire gate measures and what
-              -- the employer's own list reports. No document sync here: the
-              -- sync writes to FORCE-RLS worker_documents and this is a
-              -- read-only list.
-              ARRAY(
-                SELECT DISTINCT wd.doc_type
-                  FROM worker_documents wd
-                 WHERE wd.worker_id = a.worker_id
-                   AND wd.job_id = a.job_id
-              ) AS have_docs
-       FROM job_applications a
-       JOIN jobs j ON j.id = a.job_id
-       ORDER BY a.applied_at DESC
-       LIMIT 200`,
-    );
+    const params: unknown[] = [];
+    // Keyset pagination on (applied_at, id) DESC: strictly-less on the TUPLE
+    // is exactly "everything after the last row of the previous page", and is
+    // what makes two applications sharing a timestamp safe.
+    if (cursor) params.push(cursor.at, cursor.id);
+    // One extra row, to learn whether a next page exists without a COUNT.
+    params.push(limit + 1);
+
+    const result = await client.query(listApplicationsSql(cursor ? 2 : 0), params);
+    // Beside the page, in the SAME transaction and therefore under the same
+    // two RLS contexts. It reaches employer_profiles only through
+    // employer_display_name(), the same accessor the statement above already
+    // used -- it is a query touching employer_profiles DIRECTLY that migration
+    // 031's transaction-local GUC forbids after that point, and this is not
+    // one. Both statements answer about the caller's own applications only.
+    const attentionResult = await client.query(attentionApplicationsSql(), [ATTENTION_LIMIT]);
     await client.query('COMMIT');
 
     // The 'other' trades to canonicalise, collected as the rows are shaped.
@@ -190,10 +327,20 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // One pure computeRemaining per row on columns already selected -- no
     // per-application engine round trip, and the same answer the worker's
     // own job page and the employer's applicant list give.
-    const applications = result.rows.map((row: any) => {
+    const hasMore = result.rows.length > limit;
+    // The extra row is a signal, not data: it never reaches the client.
+    const page = hasMore ? result.rows.slice(0, limit) : result.rows;
+
+    // ONE shaper for both statements. The attention rows are published in a
+    // narrower form below, but they are derived here, so "what does this
+    // worker still owe" and "is this hire acknowledged" can only ever have one
+    // answer per row.
+    const shapeRow = (row: any) => {
       const {
         application_answers: _answers,
         prompt_answers: _promptAnswers,
+        // Selected for the cursor below, published on no row.
+        cursor_applied_at: _cursorAppliedAt,
         have_docs: _haveDocs,
         required_fields: _requiredFields,
         optional_fields: _optionalFields,
@@ -241,7 +388,45 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         remaining: remainingView(remaining),
         ...(hire ? { hire } : {}),
       };
-    });
+    };
+
+    const applications = page.map(shapeRow);
+
+    /*
+     * What needs the worker, over ALL of their applications.
+     *
+     * Published BESIDE the page, never merged into it: `applications` is the
+     * page the client asked for, and a row smuggled into it would break the
+     * cursor's meaning. The fields are only those the banners and the hire
+     * celebration render -- this is a summary, not a second list.
+     */
+    const attentionRows = attentionResult.rows.map(shapeRow);
+    const attention = {
+      details_requested: attentionRows
+        // `details_status`, not the raw timestamps: an employer's request that
+        // the worker has since satisfied is not something to nag about, and
+        // the engine is what knows the difference.
+        .filter((row: any) => row.details_status === 'requested')
+        .map((row: any) => ({
+          application_id: row.application_id,
+          job_id: row.job_id,
+          job_title: row.job_title,
+          company_name: row.company_name,
+          remaining_count: row.remaining_count,
+        })),
+      unacknowledged_hires: attentionRows
+        // `status` is the authority for a hire (a `hire` block left on a row
+        // an employer moved back out of 'hired' must not congratulate
+        // anyone), and an acknowledged one has nothing left to say.
+        .filter((row: any) => row.status === 'hired' && row.hire && !row.hire.acknowledged_at)
+        .map((row: any) => ({
+          application_id: row.application_id,
+          job_id: row.job_id,
+          job_title: row.job_title,
+          company_name: row.company_name,
+          hire: row.hire,
+        })),
+    };
 
     // AFTER the COMMIT, deliberately. employer_display_name() flipped a
     // transaction-local GUC that widens employer_profiles reads until COMMIT
@@ -263,7 +448,19 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       console.warn('worker-applications-list trade canonicalisation pass failed:', errorMessage(err));
     }
 
-    return { statusCode: 200, headers: CORS_HEADERS, body: JSON.stringify({ applications }) };
+    const last = page[page.length - 1];
+    // Built from cursor_applied_at (the text cast done in SQL), never from
+    // last.applied_at (a JS Date once the driver has parsed it) -- see the
+    // column's own comment above.
+    const nextCursor = hasMore && last
+      ? encodeCursor(String(last.cursor_applied_at), last.application_id)
+      : null;
+
+    return {
+      statusCode: 200,
+      headers: CORS_HEADERS,
+      body: JSON.stringify({ applications, next_cursor: nextCursor, attention }),
+    };
   } catch (err) {
     if (client) { try { await client.query('ROLLBACK'); } catch {} }
     console.error('worker-applications-list error:', errorMessage(err));

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
+import { useJobCreated, usePostJobSnapshot } from '@/contexts/PostJobContext';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { usePageData } from '@/hooks/usePageData';
 import { useStaggerOnce } from '@/hooks/useStaggerOnce';
@@ -24,14 +25,16 @@ import { ProgressRow } from '@/components/ui/progress-row';
 import { useToast } from '@/components/ui/toast';
 import { JobPostingCard } from '@/components/employer/JobPostingCard';
 import { PlanUsageMeter } from '@/components/employer/PlanUsageMeter';
-import { PostJobModal } from '@/components/employer/PostJobModal';
 import { SubscriptionBanner } from '@/components/employer/SubscriptionBanner';
 import { DeleteJobDialog } from '@/components/employer/DeleteJobDialog';
 import { PlanLimitDialog } from '@/components/employer/PlanLimitDialog';
+import { DashboardHero } from '@/components/employer/DashboardHero';
+import { LatestMessagePanel } from '@/components/employer/LatestMessagePanel';
+import { PostJobButton } from '@/components/employer/PostJobButton';
 import { ApiError, deleteJob, getBilling, getJobs, listJobTemplates, updateJobStatus } from '@/lib/api/employer';
 import type { EmployerBilling, Job, JobCreatedOutcome } from '@/lib/api/employer';
 import { errorMessageKey } from '@/lib/api/errors';
-import { activeJobsPreflightModel, planLimitModel, subscriptionSignage } from '@/lib/plan-limit';
+import { planLimitModel, subscriptionSignage } from '@/lib/plan-limit';
 import type { PlanLimitModel } from '@/lib/plan-limit';
 import type { JobStatus, WritableJobStatus } from '@/lib/status';
 
@@ -126,7 +129,6 @@ export default function EmployerDashboardPage() {
     const [jobToDelete, setJobToDelete] = useState<Job | null>(null);
     const [deletingJobId, setDeletingJobId] = useState<string | null>(null);
     const [deleteError, setDeleteError] = useState<string | null>(null);
-    const [modalOpen, setModalOpen] = useState(false);
     const [search, setSearch] = useState('');
     const [statusFilter, setStatusFilter] = useState<JobStatus | 'all'>('all');
     /**
@@ -258,6 +260,23 @@ export default function EmployerDashboardPage() {
     const openRoles = jobs.reduce((sum, job) => sum + (job.open_count ?? 0), 0);
     const jobProgressPercent = share(totalHired, totalPositionsNeeded);
     const applicantDensity = activeCount > 0 ? Math.round(totalApplicants / activeCount) : 0;
+    /**
+     * This board already holds the plan and the live jobs list, so the wizard's
+     * plan-limit preflight reads them from here rather than fetching its own
+     * copy -- which also means the gate is decided in the same frame as the
+     * click. `activeCount` is the live count, deliberately: `activeJobUsage` is
+     * a load-time snapshot and this page pauses and resumes jobs in place.
+     */
+    usePostJobSnapshot(
+        useMemo(
+            () => (data ? { billing: data.billing, jobs, activeCount } : null),
+            [activeCount, data, jobs],
+        ),
+    );
+
+    // Posted from this page's buttons or from any other employer page.
+    useJobCreated(handleJobCreated);
+
     const recentJob = jobs[0];
     const timeToFillJob = jobs.find((job) =>
         (job.status === 'active' || job.status === 'paused') && (job.open_count ?? 0) > 0
@@ -282,9 +301,13 @@ export default function EmployerDashboardPage() {
         ? formatShortDate(timeToFillJob.created_at, locale)
         : null;
 
+    /**
+     * A job was posted -- from this page's buttons or from any other employer
+     * page, since the wizard is mounted once above the router. Closing the
+     * modal and the success toast belong to `PostJobContext`; what is left here
+     * is this board's own reaction to the new row.
+     */
     function handleJobCreated(job: Job, outcome?: JobCreatedOutcome) {
-        setModalOpen(false);
-        toast.success(t('jobs.post_success'));
         // Set BEFORE the `data === null` guard below returns: the template was
         // not saved either way, and that fact must not depend on whether the
         // list happened to be loaded.
@@ -324,36 +347,6 @@ export default function EmployerDashboardPage() {
             opener?.focus();
         }
     }, []);
-
-    /*
-     * The gate the whole task is about.
-     *
-     * EVERY control that opened the wizard now goes through here, which is the
-     * point: the old flow let a free-plan employer with their one slot taken
-     * fill in all three steps and only learn about the cap from the publish
-     * 403 -- whose one self-service way out ("Pause a job") navigates to this
-     * board, and `PostJobModal.handleClose` resets the form on the way, so the
-     * draft they just wrote is gone.
-     *
-     * The count comes from the LIVE jobs list (`activeCount`), not from
-     * `billing.activeJobUsage`: that field is a load-time snapshot, and this
-     * page now pauses and resumes jobs in place, so it goes stale the moment
-     * the employer frees a slot. It is also the number `PlanUsageMeter` shows
-     * them two lines below. `activeJobsPreflightModel` returns null -- meaning
-     * "don't gate" -- whenever billing is missing or malformed, so a slow
-     * best-effort billing read can never lock anyone out of posting; the 403
-     * handling inside the wizard stays as the backstop.
-     */
-    function handlePostJobClick() {
-        const gate = activeJobsPreflightModel(data?.billing ?? null, activeCount, jobs);
-        if (gate) {
-            planLimitOpenerRef.current =
-                document.activeElement instanceof HTMLElement ? document.activeElement : null;
-            setPlanLimit(gate);
-            return;
-        }
-        setModalOpen(true);
-    }
 
     /**
      * Pause an active job / resume a paused one, from the board.
@@ -465,12 +458,7 @@ export default function EmployerDashboardPage() {
     // so the page owes the reader a skeleton rather than a screen of dashes.
     const showSkeleton = phase === 'auth' || phase === 'loading';
 
-    const postJobButton = (
-        <Button onClick={handlePostJobClick} className="h-10">
-            <Icon name="plus" />
-            {t('jobs.post_job')}
-        </Button>
-    );
+    const postJobButton = <PostJobButton className="h-10" />;
 
     return (
         <>
@@ -504,36 +492,20 @@ export default function EmployerDashboardPage() {
                                 it never pushes an already-read board down. */}
                             <SubscriptionBanner signage={signage} locale={locale} />
 
-                            <section className="mb-5 overflow-hidden rounded-[var(--radius-card)] bg-[var(--jale-blue-900)] p-5 shadow-[var(--shadow-card)] md:p-7">
-                                <p className="mb-3 inline-flex rounded-full bg-[color-mix(in_srgb,var(--primary-fg)_12%,transparent)] px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-[color-mix(in_srgb,var(--primary-fg)_80%,transparent)]">
-                                    {t('hero.eyebrow')}
-                                </p>
-                                <h2 className="max-w-3xl text-3xl font-extrabold leading-tight text-[var(--primary-fg)] md:text-4xl">
-                                    {t('hero.title')}
-                                </h2>
-                                <p className="mt-3 max-w-2xl text-sm leading-6 text-[color-mix(in_srgb,var(--primary-fg)_72%,transparent)]">
-                                    {t('hero.body')}
-                                </p>
-                                <div className="mt-5 flex flex-wrap items-center gap-2">
-                                    <Button onClick={handlePostJobClick}>
-                                        <Icon name="plus" />
-                                        {t('hero.primary_cta')}
-                                    </Button>
-                                    <Link
-                                        href="/employer/conversations"
-                                        className="inline-flex h-11 items-center justify-center gap-2 rounded-full border border-[color-mix(in_srgb,var(--primary-fg)_25%,transparent)] px-5 text-sm font-semibold text-[var(--primary-fg)] transition-colors hover:bg-[color-mix(in_srgb,var(--primary-fg)_12%,transparent)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
-                                    >
-                                        <Icon name="message" />
-                                        {t('hero.secondary_cta')}
-                                    </Link>
-                                </div>
-                            </section>
+                            {/* Full the first time, a one-line bar after that --
+                                the job list is what a returning employer came
+                                for. See DashboardHero. */}
+                            <DashboardHero />
 
                             <div className="mb-5 grid grid-cols-2 gap-4 md:grid-cols-4">
+                                {/* Openings are what is NOT yet hired, so the sentence
+                                    belongs to the jobs still taking applicants -- it used to
+                                    sit under Workers Hired, measuring the opposite of that
+                                    card's own number. */}
                                 <MetricCard
                                     label={t('stats.active_jobs')}
                                     value={activeCount}
-                                    hint={t('stats.active_hint')}
+                                    hint={t('stats.active_hint', { count: openRoles })}
                                 />
                                 <MetricCard
                                     label={t('stats.total_applicants')}
@@ -543,7 +515,10 @@ export default function EmployerDashboardPage() {
                                 <MetricCard
                                     label={t('stats.workers_hired')}
                                     value={totalHired}
-                                    hint={t('stats.hired_hint', { count: openRoles })}
+                                    hint={t('stats.hired_hint', {
+                                        hired: totalHired,
+                                        needed: totalPositionsNeeded,
+                                    })}
                                     tone="green"
                                 />
                                 <MetricCard
@@ -573,10 +548,7 @@ export default function EmployerDashboardPage() {
                                         <PanelHeader
                                             title={t('jobs.title')}
                                             action={
-                                                <Button size="sm" onClick={handlePostJobClick}>
-                                                    <Icon name="plus" />
-                                                    {t('jobs.post_job')}
-                                                </Button>
+                                                <PostJobButton size="sm" />
                                             }
                                         />
 
@@ -707,10 +679,7 @@ export default function EmployerDashboardPage() {
                                                     <p className="mx-auto mt-1 max-w-sm text-sm text-[var(--jale-ink-2)]">
                                                         {t('jobs.empty_first_body')}
                                                     </p>
-                                                    <Button onClick={handlePostJobClick} className="mt-5">
-                                                        <Icon name="plus" />
-                                                        {t('jobs.post_job')}
-                                                    </Button>
+                                                    <PostJobButton className="mt-5" />
                                                 </div>
                                             </div>
                                         ) : filteredJobs.length === 0 ? (
@@ -759,36 +728,21 @@ export default function EmployerDashboardPage() {
                                                 <p className="text-sm font-semibold text-[var(--jale-ink)]">{t('quick_post.body')}</p>
                                                 <p className="mt-2 text-xs leading-5 text-[var(--jale-ink-2)]">{t('quick_post.hint')}</p>
                                             </div>
-                                            <Button onClick={handlePostJobClick}>
-                                                <Icon name="plus" />
-                                                {t('quick_post.cta')}
-                                            </Button>
+                                            <PostJobButton>{t('quick_post.cta')}</PostJobButton>
                                         </div>
                                     </DashboardPanel>
                                 </div>
 
                                 <div className="min-w-0 space-y-5">
-                                    <DashboardPanel>
-                                        <PanelHeader
-                                            title={t('panels.whatsapp_title')}
-                                            action={
-                                                <Link
-                                                    href="/employer/conversations"
-                                                    className="rounded text-xs font-bold text-[var(--jale-blue-700)] hover:underline focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
-                                                >
-                                                    {t('panels.open_messages')}
-                                                </Link>
-                                            }
-                                        />
-                                        <div className="p-5">
-                                            <p className="text-sm font-bold text-[var(--jale-ink)]">
-                                                {recentJob?.title ?? t('panels.no_recent_job')}
-                                            </p>
-                                            <p className="mt-2 text-xs leading-5 text-[var(--jale-ink-2)]">
-                                                {t('panels.whatsapp_body')}
-                                            </p>
-                                        </div>
-                                    </DashboardPanel>
+                                    {/* The panel used to print one fixed
+                                        paragraph about WhatsApp under the most
+                                        recent job's title -- identical on the
+                                        day a worker replied and the day nobody
+                                        did. It now shows the newest message and
+                                        the unread count, and keeps that
+                                        paragraph (and this job title) as its
+                                        empty state. */}
+                                    <LatestMessagePanel fallbackJobTitle={recentJob?.title ?? null} />
 
                                     <DashboardPanel>
                                         <PanelHeader title={t('panels.job_progress_title')} />
@@ -877,15 +831,11 @@ export default function EmployerDashboardPage() {
                 </div>
             </AppShell>
 
-            <PostJobModal
-                open={modalOpen}
-                onClose={() => setModalOpen(false)}
-                onJobCreated={handleJobCreated}
-            />
-
-            {/* Mounted unconditionally and driven by `open`, never keyed --
-                for the reason spelled out on DeleteJobDialog below: a Modal
-                that mounts already open never receives focus. */}
+            {/* The RESUME path's dialog. The wizard and the pre-flight gate
+                that shares this model live in `PostJobContext`, one mount for
+                the whole app. Driven by `open`, never keyed -- for the reason
+                spelled out on DeleteJobDialog below: a Modal that mounts
+                already open never receives focus. */}
             <PlanLimitDialog
                 open={planLimit !== null}
                 model={planLimit}

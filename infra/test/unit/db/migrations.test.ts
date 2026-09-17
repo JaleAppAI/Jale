@@ -127,6 +127,7 @@ describe('database migrations', () => {
       '093',
       '094',
       '095',
+      '096',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -1633,6 +1634,146 @@ describe('database migrations', () => {
       // The 003 set_updated_at trigger fires on the backfill and moves
       // updated_at -- a side effect the header must name, not hide.
       expect(text).toMatch(/set_updated_at/);
+    });
+  });
+
+  // 096 is sprint 26's backfill behind the employer unread badge. It adds NO
+  // schema: job_conversations.employer_last_read_at has existed since 028:37
+  // and nothing ever wrote it, so every row carries NULL and the badge would
+  // light up EVERY thread a worker has ever replied to on the day it ships.
+  // The file's whole job is to stamp that history, and it inherits the same
+  // trap 094/095 do -- jale_admin owns job_conversations, 025 FORCEs RLS on
+  // it, and both policies are GUC-keyed, so the backfill rewrites ZERO rows
+  // and reports success unless the file un-forces first.
+  describe('096 backfills employer_last_read_at under FORCE RLS', () => {
+    const sql = () => fs.readFileSync(
+      path.join(migrationsDir, '096_job_conversations_employer_read_backfill.sql'), 'utf8',
+    );
+
+    it('runs as jale_admin in ONE transaction and adds no schema', () => {
+      const text = sql();
+      expect(text).toContain('Connect as jale_admin');
+      expect(text.match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(text.match(/^COMMIT;$/gm)).toHaveLength(1);
+      // The column is 028's. A file that re-adds it would be claiming
+      // provenance it does not have.
+      expect(text).not.toMatch(/ADD COLUMN/i);
+      expect(text).toMatch(/028/);
+    });
+
+    it('un-forces, backfills and re-forces exactly job_conversations (028/094/095 pattern)', () => {
+      const text = sql();
+      const noForce = text.indexOf('ALTER TABLE job_conversations NO FORCE ROW LEVEL SECURITY');
+      const update = text.indexOf('UPDATE job_conversations');
+      const reForce = text.indexOf('ALTER TABLE job_conversations FORCE ROW LEVEL SECURITY');
+      expect(noForce).toBeGreaterThan(-1);
+      expect(update).toBeGreaterThan(noForce);
+      expect(reForce).toBeGreaterThan(update);
+      // Exactly one un-force and one re-force, and on no other table.
+      expect(text.match(/NO FORCE ROW LEVEL SECURITY/g)).toHaveLength(1);
+      expect(text.match(/ALTER TABLE \w+ FORCE ROW LEVEL SECURITY/g)).toHaveLength(1);
+      // And job_conversation_messages is not OPERATED ON at all -- not
+      // un-forced, not written. Reading it would have meant a second FORCE-RLS
+      // bracket and a second ACCESS EXCLUSIVE lock on the larger table, which
+      // was judged too much for an informational count (see the file's "WHY NO
+      // STILL UNREAD COUNT IS REPORTED" section). Mentions in COMMENTS are
+      // fine and expected, so this checks statements, not the whole text.
+      expect(text.match(/ALTER TABLE job_conversation_messages/g)).toBeNull();
+      expect(text.match(/UPDATE job_conversation_messages/g)).toBeNull();
+      expect(text.match(/FROM job_conversation_messages/g)).toBeNull();
+      // `row_security = off` is a no-op for a FORCEd owner -- the trap this
+      // repo has hit before. It must not appear as the mechanism.
+      expect(text).not.toMatch(/SET\s+row_security\s*=\s*off/i);
+    });
+
+    it('gates the backfill on NULL so a replay updates zero rows', () => {
+      const text = sql();
+      expect(text).toMatch(/WHERE employer_last_read_at IS NULL/);
+      // created_at is NOT NULL (025:14), which is what makes the stamp
+      // expression total and the zero-NULLs self-check assertable.
+      expect(text).toMatch(/GREATEST\(/);
+      expect(text).toMatch(/COALESCE\(last_message_at, created_at\)/);
+      expect(text).toMatch(/COALESCE\(last_worker_message_at, created_at\)/);
+      expect(text).toMatch(/GET DIAGNOSTICS/);
+      expect(text).toMatch(/RAISE NOTICE 'migration 096: conversations stamped/);
+    });
+
+    // 094's lesson, restated: once FORCE is back on, jale_admin's own SELECTs
+    // obey the same GUC-keyed policies and return zero rows, so a data check
+    // placed after the re-force can never fail however broken the backfill was.
+    it('puts the DATA self-check inside the un-forced window and the CATALOG check after it', () => {
+      const text = sql();
+      const noForce = text.indexOf('NO FORCE ROW LEVEL SECURITY');
+      const reForce = text.indexOf('ALTER TABLE job_conversations FORCE ROW LEVEL SECURITY');
+      const unforcedWindow = text.slice(noForce, reForce);
+      const afterReForce = text.slice(reForce);
+
+      expect(unforcedWindow).toContain('migration 096: % conversation(s) still carry a NULL employer_last_read_at');
+      // The precondition that catches a deleted/failed NO FORCE, which the
+      // NULL count alone reads as a perfect success.
+      expect(unforcedWindow).toContain('migration 096: job_conversations is still FORCE RLS');
+      expect(afterReForce).toContain('migration 096: job_conversations lost RLS ENABLE + FORCE');
+      expect(afterReForce).not.toContain('still carry a NULL employer_last_read_at');
+    });
+
+    // The residual-unread count is REPORTED, never asserted: on a replay after
+    // the badge ships it is legitimately non-zero, and an assertion would make
+    // --force-replay fail on perfectly correct data.
+    // The file reports how many rows it STAMPED, and nothing else. It used to
+    // also report how many still read as unread, by the pre-round-2
+    // last_worker_message_at rule -- which over-counted by exactly the
+    // opened-but-never-wrote population (openWorkerConversation stamps that
+    // column with no message row), so an operator would read a false non-zero
+    // as "the backfill failed". Re-stating it in the badge's real terms means
+    // reading job_conversation_messages, and that needs its own FORCE-RLS
+    // bracket; not worth it for a number nothing acts on. Absent, and
+    // explained in the header, is the settled answer -- these assertions stop
+    // either version coming back by accident.
+    it('reports the rows it stamped, and does NOT report a residual unread count', () => {
+      const text = sql();
+      expect(text).toMatch(/RAISE NOTICE 'migration 096: conversations stamped/);
+      expect(text).not.toMatch(/RAISE NOTICE[^;]*still reading as unread/);
+      // Specifically not by the superseded rule, which is the version that
+      // would mislead rather than merely go quiet.
+      expect(text).not.toMatch(/last_worker_message_at > employer_last_read_at\s*\)?\s*;/);
+      // The header has to say WHY it is missing, or the next reader adds it
+      // back and re-discovers the FORCE-RLS trap the hard way.
+      expect(text).toMatch(/WHY NO "STILL UNREAD" COUNT IS REPORTED/);
+      expect(text).toMatch(/sees ZERO message rows/i);
+    });
+
+    it('issues no GRANT, and proves the table-level one it relies on', () => {
+      const text = sql();
+      // 025:78's table-level grant already covers the column; a GRANT here
+      // would imply the mark-read endpoint needed a new privilege.
+      expect(text).not.toMatch(/^GRANT /m);
+      expect(text).toContain("has_column_privilege('jale_admin', 'public.job_conversations', 'employer_last_read_at', 'UPDATE')");
+      expect(text).toContain("has_column_privilege('jale_admin', 'public.job_conversations', 'employer_last_read_at', 'SELECT')");
+    });
+
+    it('documents the rule the badge actually uses', () => {
+      const text = sql();
+      // The file's rationale must name the rule it is protecting, or the next
+      // reader "fixes" the backfill to match a formula that no longer ships.
+      expect(text).toMatch(/last_inbound_message_at > employer_last_read_at/);
+      expect(text).toMatch(/openWorkerConversation/);
+      // ...including WHY a column-derived stamp is sound against a
+      // message-derived rule: one transaction writes both.
+      expect(text).toMatch(/SAME TRANSACTION/i);
+    });
+
+    it('documents its deploy order, its lock window and the trigger side effect', () => {
+      const text = sql();
+      expect(text).toMatch(/AFTER 095/);
+      // Order-free for the schema, but employer-visible: applied after the
+      // code deploy, every employer sees the wall of stale badges.
+      expect(text).toMatch(/BEFORE the code deploy/i);
+      expect(text).toMatch(/ACCESS EXCLUSIVE/);
+      // 025:74-76's unconditional trigger moves updated_at on every row the
+      // backfill touches -- named, not hidden.
+      expect(text).toMatch(/set_updated_at/);
+      // The replay-after-ship hazard is the one thing a reader must not miss.
+      expect(text).toMatch(/force-replay/);
     });
   });
 });

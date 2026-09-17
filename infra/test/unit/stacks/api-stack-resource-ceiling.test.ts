@@ -128,14 +128,19 @@ const CEILING = 470;
 // `RESOLVES_TO` inventory at the bottom of this file is the proof.
 // → 399 once other work on this branch added routes ahead of this one → 407
 // once `GET /employer/applicants` (function, role/permission, method, CORS
-// preflight) was added.
+// preflight) was added. → 415 once sprint 26's
+// `POST /employer/conversations/{conversationId}/read` (the employer unread
+// badge's write half) added its Function, execution Role, log group, the
+// `read` Resource, its POST + OPTIONS Methods and the two Lambda::Permissions
+// API Gateway attaches to a method — 8 resources, leaving 55 of headroom
+// against the 470 gate.
 //
 // DELIBERATE COUPLING: an exact count also moves when aws-cdk-lib changes what
 // it emits, so an `npm update` of the CDK can fail this line with no route
 // change at all. That is the intended trade — a bump here is cheap and forces
 // someone to look at the diff, whereas silently absorbing +9 resources is how
 // the stack reached 501 in the first place.
-const MEASURED_RESOURCES = 407;
+const MEASURED_RESOURCES = 415;
 
 /**
  * Every `AWS::ApiGateway::Method` in the template, grouped by the resource it

@@ -5,7 +5,9 @@ import { useLocale, useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
+import { useJobCreated } from '@/contexts/PostJobContext';
 import { AppShell } from '@/components/layout/AppShell';
+import { PostJobButton } from '@/components/employer/PostJobButton';
 import { Button } from '@/components/ui/button';
 import { DashboardPanel } from '@/components/ui/dashboard-panel';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
@@ -60,6 +62,10 @@ export default function EmployerTemplatesPage() {
     refetch();
   }, [refetch]);
 
+  // The wizard can save the job it posts as a template, so a post made from
+  // this page (or any other) can add a row to the list being read.
+  useJobCreated(() => refetch());
+
   useEffect(() => {
     if (!idToken) return;
     // Billing failure just degrades the meter to a plain count.
@@ -69,9 +75,20 @@ export default function EmployerTemplatesPage() {
   }, [idToken]);
 
   const atLimit = templateLimit !== null && templates.length >= templateLimit;
+  /*
+   * "{count} of {limit} templates" read as a fraction of a whole, and at zero
+   * it stated a quantity of templates that does not exist ("0 of 3
+   * templates"). The two facts are separate now -- what is saved, then what
+   * the plan allows -- and the empty case is named rather than counted.
+   *
+   * `meter_count` stays the fallback for a billing call that failed on its
+   * own: with no limit to state, a bare count is the only honest meter.
+   */
   const meter = templateLimit === null
     ? t('templates.meter_count', { count: templates.length })
-    : t('templates.meter', { count: templates.length, limit: templateLimit });
+    : templates.length === 0
+      ? t('templates.meter_empty', { limit: templateLimit })
+      : t('templates.meter', { count: templates.length, limit: templateLimit });
 
   const mergeSaved = (saved: JobTemplate) => {
     setTemplates((current) => {
@@ -96,7 +113,7 @@ export default function EmployerTemplatesPage() {
   };
 
   return (
-    <AppShell role="employer" title={t('templates.title')}>
+    <AppShell role="employer" title={t('templates.title')} actions={<PostJobButton />}>
       <main className="mx-auto max-w-4xl px-4 py-6 md:px-6">
         <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
           {/* While the list is in flight the meter would claim "0 templates" —

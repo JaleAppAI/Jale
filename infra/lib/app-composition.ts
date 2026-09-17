@@ -19,6 +19,7 @@ import { ReferralsStack } from './stacks/referrals-stack';
 import { NotificationsStack } from './stacks/notifications-stack';
 import { FrontendStack } from './stacks/frontend-stack';
 import { resolveWhatsappStatusCallbackUrl } from './whatsapp-status-callback-url';
+import { resolveWhatsappBusinessNumber } from './whatsapp-business-number';
 
 /**
  * The ONE place JaleApp's stacks are composed and wired together.
@@ -100,6 +101,9 @@ export function buildJaleApp(app: cdk.App): void {
     // rdsSg is passed in so the ingress rule can be created INSIDE
     // BastionStack, avoiding a cyclic NetworkStack <-> BastionStack dependency.
     rdsSg: network.rdsSg,
+    // F23: optional, and absent on the `deploy-bastion.sh` path, which
+    // synthesizes this stack alone with no alarm context.
+    alarmTopicArn: app.node.tryGetContext('whatsappAlarmTopicArn'),
   });
 
   // Grant the bastion's instance role read on the internal DB secrets.
@@ -391,6 +395,15 @@ export function buildJaleApp(app: cdk.App): void {
       || app.node.tryGetContext('environment')
       || 'dev';
 
+    // Same context key / env var ReferralsStack reads for its own wa.me deep
+    // link (whatsappBusinessNumber / JALE_WHATSAPP_BUSINESS_NUMBER) — one
+    // operator-set value, shared, fail-closed resolution — see
+    // resolveWhatsappBusinessNumber's doc comment. Deliberately NOT built
+    // from `ctx(...)` (which defaults to '' and never throws): this value is
+    // required, exactly like ReferralsStack's copy, and the frontend's
+    // /whatsapp route must never construct a broken wa.me URL.
+    const whatsappBusinessNumber = resolveWhatsappBusinessNumber(app, 'FrontendStack');
+
     const frontend = new FrontendStack(app, 'JaleFrontendStack', {
       env: { account: env.account, region: 'us-east-1' },
       apiOriginDomainName,
@@ -402,6 +415,7 @@ export function buildJaleApp(app: cdk.App): void {
       workerClientId: ctx('workerClientId', 'JALE_WORKER_CLIENT_ID'),
       employerPoolId: ctx('employerPoolId', 'JALE_EMPLOYER_POOL_ID'),
       employerClientId: ctx('employerClientId', 'JALE_EMPLOYER_CLIENT_ID'),
+      whatsappBusinessNumber,
       crossRegionReferences: true,
     });
   }

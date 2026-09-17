@@ -8,6 +8,19 @@ import { corsHeaders, VALID_USER_TYPES, errorMessage } from '../lib/http';
 const cognito = new CognitoIdentityProviderClient({});
 const CORS_HEADERS = corsHeaders();
 
+/**
+ * Cognito errors that mean "this refresh token is not good any more". Only
+ * these are a 401; the browser drops its stored session on 401/403 and keeps
+ * it on anything else (`AuthContext.isTokenRefusal`).
+ */
+const REFUSAL_ERROR_NAMES = new Set([
+  'NotAuthorizedException',
+  'UserNotFoundException',
+  'InvalidParameterException',
+  'PasswordResetRequiredException',
+  'UserNotConfirmedException',
+]);
+
 export const handler = async (
   event: APIGatewayProxyEvent,
 ): Promise<APIGatewayProxyResult> => {
@@ -63,13 +76,36 @@ export const handler = async (
       }),
     };
   } catch (err: unknown) {
-    console.error('Token refresh failed:', errorMessage(err));
+    const name = (err as { name?: string } | null)?.name ?? '';
+    if (err instanceof SyntaxError) {
+      return {
+        statusCode: 400,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({ error: 'invalid_json', message: 'Request body must be JSON.' }),
+      };
+    }
+    if (REFUSAL_ERROR_NAMES.has(name)) {
+      console.warn('Token refresh refused:', name);
+      return {
+        statusCode: 401,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({
+          error: 'refresh_failed',
+          message: 'Token refresh failed. Please sign in again.',
+        }),
+      };
+    }
+    // Throttling, Cognito internal errors, network faults: the token was not
+    // judged, so the browser must NOT drop it. A 401 here made every Cognito
+    // blip look like a refused session and, since sprint 26's cross-tab
+    // sign-out, signed the whole browser out (sprint 26 review, A1).
+    console.error('Token refresh unavailable:', name || errorMessage(err));
     return {
-      statusCode: 401,
-      headers: CORS_HEADERS,
+      statusCode: 503,
+      headers: { ...CORS_HEADERS, 'Retry-After': '5' },
       body: JSON.stringify({
-        error: 'refresh_failed',
-        message: 'Token refresh failed. Please sign in again.',
+        error: 'refresh_unavailable',
+        message: 'Token refresh is temporarily unavailable. Please try again.',
       }),
     };
   }

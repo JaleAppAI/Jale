@@ -1,19 +1,17 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { Link, usePathname } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
+import { useSidebarProfile } from '@/contexts/SidebarProfileContext';
+import { useUnreadCount } from '@/contexts/UnreadMessagesContext';
 import { Button } from '@/components/ui/button';
 import { ThemeToggle } from '@/components/ui/theme-toggle';
-import { apiFetch } from '@/lib/api';
-import { getEmployerProfile } from '@/lib/api/employer';
-import type { WorkerProfileData } from '@/lib/api/worker';
-import { tradeLabel } from '@/lib/trades';
-import { Sidebar, type SidebarChip } from './Sidebar';
+import { Sidebar } from './Sidebar';
 import { BottomTabBar } from './BottomTabBar';
-import { getInitials, type ShellRole } from './nav-config';
+import type { ShellRole } from './nav-config';
 
 type AppShellProps = {
     role: ShellRole;
@@ -27,92 +25,35 @@ type AppShellProps = {
 };
 
 /**
- * Joins the parts of the chip's second line, dropping the ones the profile does
- * not have. Returns `null` — not `''` — when nothing survives, so the caller
- * cannot accidentally treat "no second line" as "a second line to fill in".
- */
-function joinMeta(parts: Array<string | null | undefined>): string | null {
-    const kept = parts.map((part) => part?.trim()).filter((part): part is string => Boolean(part));
-    return kept.length > 0 ? kept.join(' · ') : null;
-}
-
-/**
  * Role-aware application shell: navy desktop sidebar + sticky white top header +
- * role-aware mobile bottom tab bar. Fetches the minimal profile needed for the
- * sidebar chip; the fetch never gates the page, and the chip reports which of
- * its three states it is actually in rather than papering over two of them.
+ * role-aware mobile bottom tab bar.
+ *
+ * The sidebar chip is READ from `SidebarProfileContext`, never fetched here.
+ * Every page mounts its own shell, so a fetch owned by this component ran again
+ * on every navigation and every reload -- and until it answered the chip had
+ * nothing but a role letter to draw. The profile belongs to the session, so it
+ * is loaded once, above the router, and this component only renders it.
  */
 export function AppShell({ role, title, subtitle, actions, children }: AppShellProps) {
-    const { idToken, logout } = useAuth();
+    const { logout } = useAuth();
     const tHeader = useTranslations('header');
     const tCommon = useTranslations('common');
     const locale = useLocale();
     const pathname = usePathname();
     const otherLocale = locale === 'en' ? 'es' : 'en';
 
-    const [chip, setChip] = useState<SidebarChip>({ status: 'loading' });
+    const chip = useSidebarProfile(role);
+    /*
+     * Read ONCE here and handed to both rails, the same arrangement as the
+     * chip above: the sidebar and the tab bar render the same number, and a
+     * context read inside each of them would be two subscriptions to one fact.
+     * `useUnreadCount` answers 0 where there is no provider, so a shell
+     * composed outside the session tree still renders.
+     */
+    const unreadCount = useUnreadCount();
     const [signingOut, setSigningOut] = useState(false);
 
     const homeHref = role === 'worker' ? '/worker/home' : '/employer/dashboard';
-
-    /*
-     * Best-effort chip fetch: non-blocking, and it never throws into render.
-     * What changed is the failure path -- a rejected request, or a non-OK
-     * worker-profile response, now lands the chip in `failed` instead of
-     * leaving a placeholder that looked exactly like real data.
-     *
-     * `tCommon` is a dependency because the worker meta line is translated
-     * here. next-intl memoises the translator on (messages, locale, namespace),
-     * so its identity is stable and this does not re-fetch on every render.
-     */
-    useEffect(() => {
-        if (!idToken) return;
-        let active = true;
-
-        async function load() {
-            try {
-                if (role === 'employer') {
-                    const profile = await getEmployerProfile(idToken!);
-                    if (!active) return;
-                    const name = profile.company_name?.trim() || profile.full_name?.trim() || null;
-                    setChip({
-                        status: 'loaded',
-                        name,
-                        meta: joinMeta([profile.city, profile.service_area]),
-                        initials: getInitials(name ?? '', 'E'),
-                    });
-                } else {
-                    const res = await apiFetch('/worker/profile', {}, idToken!);
-                    // A non-OK response is a failed load, not an empty profile.
-                    if (!res.ok) throw new Error('worker_profile_unavailable');
-                    const profile = (await res.json()) as WorkerProfileData;
-                    if (!active) return;
-                    const name = profile.full_name?.trim() || null;
-                    setChip({
-                        status: 'loaded',
-                        name,
-                        // `city` is the precise field; `location` is the older
-                        // free-text one kept as a fallback for profiles that
-                        // predate it.
-                        meta: joinMeta([
-                            profile.main_trade
-                                ? tradeLabel(tCommon, profile.main_trade, profile.main_trade_other)
-                                : null,
-                            profile.city ?? profile.location,
-                        ]),
-                        initials: getInitials(name ?? '', 'W'),
-                    });
-                }
-            } catch {
-                if (active) setChip({ status: 'failed' });
-            }
-        }
-
-        load();
-        return () => {
-            active = false;
-        };
-    }, [idToken, role, tCommon]);
 
     async function handleSignOut() {
         setSigningOut(true);
@@ -126,7 +67,7 @@ export function AppShell({ role, title, subtitle, actions, children }: AppShellP
     return (
         <div className="min-h-screen bg-[var(--jale-shell)] text-[var(--jale-ink)]">
             <div className="grid min-h-screen lg:grid-cols-[280px_minmax(0,1fr)]">
-                <Sidebar role={role} homeHref={homeHref} chip={chip} />
+                <Sidebar role={role} homeHref={homeHref} chip={chip} unreadCount={unreadCount} />
 
                 <section className="min-w-0">
                     <header className="sticky top-0 z-10 border-b border-[var(--jale-divider)] bg-[color-mix(in_srgb,var(--jale-card)_92%,transparent)] px-4 py-4 backdrop-blur md:px-6 lg:px-8">
@@ -174,7 +115,7 @@ export function AppShell({ role, title, subtitle, actions, children }: AppShellP
                 </section>
             </div>
 
-            <BottomTabBar role={role} />
+            <BottomTabBar role={role} unreadCount={unreadCount} />
         </div>
     );
 }

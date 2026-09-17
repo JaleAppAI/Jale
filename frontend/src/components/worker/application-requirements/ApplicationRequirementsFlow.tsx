@@ -11,6 +11,7 @@ import {
   getApplicationRequirements,
   getVaultDocuments,
   postApplicationAnswers,
+  postApplicationComplete,
   postApplicationCertifications,
   postApplicationPromptAnswers,
   type ApplicationRequirementsState,
@@ -30,6 +31,7 @@ import { buildCertClaimsPayload } from '@/lib/certification-claims';
 import { missingRequiredCertClaims, missingRequiredCertProofs } from '@/lib/certification-claims';
 import { missingRequiredFields } from '@/lib/application-answers-form';
 import { partitionRequiredDocs } from '@/lib/job-requirements';
+import { realCompanyName } from '@/lib/employer-name';
 import { QuestionsStep } from './QuestionsStep';
 import { DocumentsCertificationsStep, proofFilesFromVault } from './DocumentsCertificationsStep';
 import { PromptTopUpStep } from './PromptTopUpStep';
@@ -254,15 +256,23 @@ export function ApplicationRequirementsFlow({
   }
 
   /**
-   * FINISH IS A RE-READ, not a write. There is no "POST complete": the door
-   * sets `details_completed_at` itself the moment nothing remains, so the only
-   * honest way to report completion is to ask.
+   * FINISH IS A WRITE (R2). It used to be a re-read, because the door
+   * completed an application on any GET -- which meant merely OPENING this
+   * page sent it, including for a worker whose answers WhatsApp had
+   * pre-filled while it waited at its own LISTO consent gate. F2's lock then
+   * refused every correction they tried to make. Sending is now something the
+   * worker does, once, on purpose.
+   *
+   * Routed through `consume` like every other write, so a 409 lands as the
+   * read-only terminal panel instead of a thrown error page.
    */
   async function finish() {
     setInlineError(null);
     dispatch({ type: 'saving' });
     try {
-      dispatch({ type: 'finished', server: await getApplicationRequirements(token, applicationId) });
+      const completed = consume(await postApplicationComplete(token, applicationId));
+      if (completed === null) return;
+      dispatch({ type: 'finished', server: completed });
     } catch (err) {
       dispatch({ type: 'save_failed', errorKind: classifyError(err).kind });
     }
@@ -293,7 +303,15 @@ export function ApplicationRequirementsFlow({
   );
 
   const errorText = flow.errorKind ? tCommon(errorMessageKey(flow.errorKind)) : null;
-  const companyName = job.company_name;
+  /*
+   * NOT `job.company_name` raw. That field is `employer_display_name()`, which
+   * falls back to the "Empleador" placeholder (migration 031) -- a word, not a
+   * name, and a Spanish one at that. Every sentence below that takes a
+   * `{company}` already has a `_no_company` twin for the orphaned-job case;
+   * this is what makes the placeholder take the same path instead of being
+   * printed as if it were a business.
+   */
+  const companyName = realCompanyName(job.company_name);
 
   const header = (
     <>
