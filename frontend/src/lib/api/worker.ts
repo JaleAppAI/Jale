@@ -723,6 +723,32 @@ export async function postApplicationCertifications(
 }
 
 /**
+ * THE COMPLETION ACT (R2). Stamps `details_completed_at` and releases the
+ * WhatsApp arm, then answers with the state that resulted.
+ *
+ * This is a POST and not a re-read for a reason the GET used to hide: the
+ * door completed an application on ANY read, so a worker whose answers
+ * WhatsApp had pre-filled -- and who was still waiting at its LISTO consent
+ * gate -- had their application sent by opening the page, and F2's lock then
+ * refused every correction. Sending has to be something the worker does.
+ *
+ * Idempotent: pressing Finish twice, or reloading the confirmation screen,
+ * answers 200 with the same state rather than the `application_locked` 409
+ * an ordinary edit would now get.
+ */
+export async function postApplicationComplete(
+  token: string,
+  applicationId: string,
+): Promise<ApplicationSaveResult> {
+  const res = await apiFetch(
+    `/worker/applications/${applicationId}/complete`,
+    { method: 'POST', body: JSON.stringify({}) },
+    token,
+  );
+  return parseApplicationSaveResult(res);
+}
+
+/**
  * Prompt answers, keyed on prompt id. WRITE-ONCE: an id that already has an
  * answer keeps the stored one (the merge is `new || existing`), so this
  * finishes a partial set rather than editing one. Deliberately NOT

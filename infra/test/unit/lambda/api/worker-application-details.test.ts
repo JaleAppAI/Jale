@@ -2,7 +2,9 @@ import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { handler } from '../../../../lambda/api/worker-application-details';
 import { getDbPool, setInternalUserRlsContext } from '../../../../lambda/lib/db';
 import {
+  applicationIsOver,
   computeRemaining,
+  detailsLocked,
   detailsStatusFor,
   loadRequirementSnapshot,
   markDetailsCompleteIfDone,
@@ -25,6 +27,14 @@ const mockSetInternalUserRlsContext = setInternalUserRlsContext as jest.Mock;
 const mockLoad = loadRequirementSnapshot as jest.Mock;
 const mockMarkComplete = markDetailsCompleteIfDone as jest.Mock;
 const mockComputeRemaining = computeRemaining as jest.Mock;
+/** R2: pure snapshot predicates. Auto-mocked they return `undefined`, which
+ *  would make every completion-gate assertion below pass for the wrong
+ *  reason, so the REAL implementations are reinstalled in `beforeEach`. */
+const realRequirements = jest.requireActual<typeof import('../../../../lambda/lib/application-requirements')>(
+  '../../../../lambda/lib/application-requirements',
+);
+const mockApplicationIsOver = applicationIsOver as jest.Mock;
+const mockDetailsLocked = detailsLocked as jest.Mock;
 const mockNextStep = nextStep as jest.Mock;
 const mockDetailsStatusFor = detailsStatusFor as jest.Mock;
 const mockMergeFieldAnswers = mergeFieldAnswers as jest.Mock;
@@ -125,6 +135,8 @@ describe('worker-application-details', () => {
     mockLoad.mockResolvedValue(snapshot());
     mockMarkComplete.mockResolvedValue(false);
     mockComputeRemaining.mockReturnValue(REMAINING);
+    mockApplicationIsOver.mockImplementation(realRequirements.applicationIsOver);
+    mockDetailsLocked.mockImplementation(realRequirements.detailsLocked);
     mockNextStep.mockReturnValue({ kind: 'complete', stage: 'details' });
     mockDetailsStatusFor.mockReturnValue('complete');
     mockReleaseLanes.mockResolvedValue({ armed: true, scrubbed: 1, closingLineQueued: true });
@@ -313,20 +325,37 @@ describe('worker-application-details', () => {
     expect(rejected.application.status).toBe('not_interested');
   });
 
-  it('GET completes an application finished through /worker/vault/* and re-reads the snapshot', async () => {
-    const completed = snapshot({ detailsCompletedAt: '2026-09-02T00:00:00.000Z' });
-    mockMarkComplete.mockResolvedValue(true);
-    mockLoad.mockResolvedValueOnce(snapshot()).mockResolvedValue(completed);
+  /**
+   * R2. THE READ NEVER COMPLETES ANYTHING.
+   *
+   * The GET used to call `markDetailsCompleteIfDone`, which was harmless
+   * while a completed application stayed editable. F2 made the timestamp a
+   * LOCK, and the two together were a trap: WhatsApp's `armFill` seeds the
+   * worker's saved answers and copies their vault documents, then
+   * deliberately waits at the LISTO consent gate (branch (f)) -- so the
+   * application is already `complete` before the worker has confirmed
+   * anything. Merely OPENING the web page stamped it, released the bot's
+   * arm, and left every later edit answering 409 `application_locked`. The
+   * worker never agreed to send it and could no longer correct what was
+   * pre-filled for them.
+   *
+   * Completion is now an explicit act: a deliberate POST, or LISTO on
+   * WhatsApp. This asserts on `markDetailsCompleteIfDone` itself -- the
+   * function that issues the UPDATE -- because a body assertion would pass
+   * while the write still happened.
+   */
+  it('GET never stamps details_completed_at, even when nothing is outstanding', async () => {
+    mockComputeRemaining.mockReturnValue({ ...REMAINING, complete: true, fields: [], docs: [] });
 
     const res = await handler(makeEvent());
 
-    expect(mockMarkComplete).toHaveBeenCalledWith(expect.anything(), APP_ID, expect.objectContaining({ applicationId: APP_ID }));
-    expect(mockLoad).toHaveBeenCalledTimes(2);
-    expect(JSON.parse(res.body).application.details_completed_at).toBe('2026-09-02T00:00:00.000Z');
+    expect(res.statusCode).toBe(200);
+    expect(mockMarkComplete).not.toHaveBeenCalled();
+    expect(mockReleaseLanes).not.toHaveBeenCalled();
     expect(sqlCalls()).toContain('COMMIT');
   });
 
-  it('does not re-load the snapshot when nothing flipped', async () => {
+  it('GET reads once and never re-loads: nothing it does can change the snapshot', async () => {
     await handler(makeEvent());
     expect(mockLoad).toHaveBeenCalledTimes(1);
   });
@@ -447,6 +476,87 @@ describe('worker-application-details', () => {
     expect(res.statusCode).toBe(409);
     expect(JSON.parse(res.body).error).toBe('application_locked');
     expect(sqlCalls()).not.toContain('COMMIT');
+  });
+
+  /**
+   * R2: POST {id}/complete -- the explicit completion act.
+   *
+   * There was no "POST complete" before: the GET stamped the timestamp and
+   * the web Finish button was a re-read. That made completion something a
+   * page load could do TO a worker (see the GET test above), which F2's lock
+   * turned from sloppy into harmful.
+   */
+  describe('POST complete -- the explicit completion act', () => {
+    it('stamps, re-reads, and returns the completed state', async () => {
+      const completed = snapshot({ detailsCompletedAt: '2026-09-02T00:00:00.000Z' });
+      mockMarkComplete.mockResolvedValue(true);
+      mockLoad.mockResolvedValueOnce(snapshot()).mockResolvedValue(completed);
+
+      const res = await handler(post('complete', {}));
+
+      expect(res.statusCode).toBe(200);
+      expect(mockMarkComplete).toHaveBeenCalledWith(
+        expect.anything(), APP_ID, expect.objectContaining({ applicationId: APP_ID }),
+      );
+      expect(mockLoad).toHaveBeenCalledTimes(2);
+      expect(JSON.parse(res.body).application.details_completed_at).toBe('2026-09-02T00:00:00.000Z');
+      expect(sqlCalls()).toContain('COMMIT');
+    });
+
+    it('is idempotent on an application that is already complete', async () => {
+      // Finish pressed twice, or a reload of the confirmation screen. Not an
+      // error, and emphatically not 409 `application_locked`: the worker is
+      // asking for the state of something they already sent.
+      mockLoad.mockResolvedValue(snapshot({ detailsCompletedAt: '2026-09-02T00:00:00.000Z' }));
+
+      const res = await handler(post('complete', {}));
+
+      expect(res.statusCode).toBe(200);
+      expect(mockMarkComplete).not.toHaveBeenCalled();
+      expect(mockReleaseLanes).not.toHaveBeenCalled();
+      expect(sqlCalls()).toContain('COMMIT');
+    });
+
+    it('returns the state (not an error) when something is still outstanding, so the review step can say what', async () => {
+      mockMarkComplete.mockResolvedValue(false);
+
+      const res = await handler(post('complete', {}));
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body).application.details_completed_at).toBeNull();
+    });
+
+    it.each([
+      ['a hired application', { applicationStatus: 'hired' }, 'application_closed'],
+      ['a rejected application', { applicationStatus: 'not_interested' }, 'application_closed'],
+      ['a filled job', { jobStatus: 'filled' }, 'application_closed'],
+      ['an apply-stage application nobody asked about', { stage: 'apply' }, 'stage_locked'],
+    ])('refuses to complete %s', async (_label, overrides, error) => {
+      mockLoad.mockResolvedValue(snapshot(overrides));
+
+      const res = await handler(post('complete', {}));
+
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body).error).toBe(error);
+      expect(mockMarkComplete).not.toHaveBeenCalled();
+      expect(sqlCalls()).not.toContain('COMMIT');
+    });
+
+    it('refuses a GET on the completion action', async () => {
+      const res = await handler(makeEvent({
+        httpMethod: 'GET', pathParameters: { applicationId: APP_ID, action: 'complete' },
+      }));
+      expect(res.statusCode).toBe(405);
+    });
+
+    it('after completing, an edit is refused with 409 application_locked', async () => {
+      mockMergeFieldAnswers.mockResolvedValue({ ok: false, reason: 'locked' });
+
+      const res = await handler(post('answers', { answers: { years_experience: 7 } }));
+
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body).error).toBe('application_locked');
+    });
   });
 
   // ── POST certifications / prompt-answers ────────────────────────────
@@ -704,7 +814,8 @@ describe('worker-application-details', () => {
   // ── Routing ─────────────────────────────────────────────────────────
 
   it('404s an unknown action and rolls back', async () => {
-    const res = await handler(post('complete', {}));
+    // Was `complete` until R2 made that a real action.
+    const res = await handler(post('finalise', {}));
 
     expect(res.statusCode).toBe(404);
     expect(JSON.parse(res.body)).toEqual({ error: 'not_found' });
@@ -849,16 +960,17 @@ describe('worker-application-details', () => {
       expect(mockReleasePromptLane).not.toHaveBeenCalled();
     });
 
-    it('DOES release on the GET path when it flips details_completed_at', async () => {
+    it('DOES release on the explicit completion POST when it flips details_completed_at', async () => {
       // The document-last worker. A file uploaded through `/worker/vault/*`
-      // never touches the requirements engine, so the GET's
-      // `markDetailsCompleteIfDone` is what closes their stage -- and because
-      // it flips only `WHERE details_completed_at IS NULL`, no later POST can
-      // ever report `detailsCompleted: true` for that application. Missing
-      // this call left those workers re-prompted forever.
+      // never touches the requirements engine, so the synced load this POST
+      // performs is what closes their stage -- and because
+      // `markDetailsCompleteIfDone` flips only `WHERE details_completed_at IS
+      // NULL`, no later POST can ever report `detailsCompleted: true` for
+      // that application. Missing this call left those workers re-prompted
+      // forever. R2 moved it off the GET, not away.
       mockMarkComplete.mockResolvedValue(true);
 
-      const res = await handler(makeEvent());
+      const res = await handler(post('complete', {}));
 
       expect(res.statusCode).toBe(200);
       expect(mockReleaseLanes).toHaveBeenCalledTimes(1);
@@ -870,16 +982,16 @@ describe('worker-application-details', () => {
       });
     });
 
-    it('does NOT release on a GET that changes nothing', async () => {
+    it('does NOT release on a completion POST that changes nothing', async () => {
       mockMarkComplete.mockResolvedValue(false);
 
-      const res = await handler(makeEvent());
+      const res = await handler(post('complete', {}));
 
       expect(res.statusCode).toBe(200);
       expect(mockReleaseLanes).not.toHaveBeenCalled();
     });
 
-    it('releases on the GET BEFORE buildState flips the 031 GUC', async () => {
+    it('releases on the completion POST BEFORE buildState flips the 031 GUC', async () => {
       mockMarkComplete.mockResolvedValue(true);
       const order: string[] = [];
       mockReleaseLanes.mockImplementation(async () => {
@@ -892,7 +1004,7 @@ describe('worker-application-details', () => {
         return Promise.resolve(defaultQuery(sql));
       });
 
-      await handler(makeEvent());
+      await handler(post('complete', {}));
 
       expect(order).toEqual(['release', 'employer_display_name', 'COMMIT']);
     });

@@ -24,6 +24,20 @@
 # `--exclusively` deploys only JaleBastionStack, so bringing the bastion up
 # never touches JaleNetworkStack or JaleDatabaseStack even though both are
 # synthesized to resolve the cross-stack secret-read grants.
+#
+# WHATSAPP_ALARM_TOPIC_ARN (optional) wires the TTL auto-teardown alarms to a
+# real destination. This is the SAME environment variable the deploy workflow
+# already feeds `-c whatsappAlarmTopicArn` from (vars.WHATSAPP_ALARM_TOPIC_ARN,
+# see .github/workflows/_reusable-deploy.yml), so there is no second convention
+# to remember -- export it and the alarms page somebody, leave it unset and
+# they are created without actions.
+#
+# That mattered more once the bastion gained a TTL: this script is the ONLY
+# path that deploys JaleBastionStack (it is in none of the deploy workflow's
+# stack lists), so without this the auto-teardown backstop alarms were
+# guaranteed to have no action. Unset is still allowed -- a missing alarm topic
+# must never stop an operator bringing up a bastion to run a migration -- but
+# it now says so out loud instead of failing silently.
 
 set -euo pipefail
 
@@ -66,8 +80,21 @@ if [ "$DESTROY" -eq 1 ]; then
   npx cdk -c bastionOnly=true -c "environment=$DEPLOYMENT_ENVIRONMENT" destroy JaleBastionStack --exclusively -o "$OUT_DIR" --force
   echo ">> Bastion destroyed."
 else
+  # Passed as a context flag only when set: `-c whatsappAlarmTopicArn=` with an
+  # empty value would be read by the stack as "a topic was supplied", and
+  # `Topic.fromTopicArn` on an empty string fails at synth.
+  ALARM_CONTEXT=()
+  if [ -n "${WHATSAPP_ALARM_TOPIC_ARN:-}" ]; then
+    ALARM_CONTEXT=(-c "whatsappAlarmTopicArn=$WHATSAPP_ALARM_TOPIC_ARN")
+    echo ">> TTL alarms will notify: $WHATSAPP_ALARM_TOPIC_ARN"
+  else
+    echo ">> WHATSAPP_ALARM_TOPIC_ARN is not set -- the bastion TTL alarms will"
+    echo "   be created with NO notification action. The sweeper still stops the"
+    echo "   bastion; only the backstop is silent. Export it to wire them up."
+  fi
+
   echo ">> Deploying JaleBastionStack (environment=$DEPLOYMENT_ENVIRONMENT)..."
-  npx cdk -c bastionOnly=true -c "environment=$DEPLOYMENT_ENVIRONMENT" deploy JaleBastionStack --exclusively -o "$OUT_DIR" --require-approval never
+  npx cdk -c bastionOnly=true -c "environment=$DEPLOYMENT_ENVIRONMENT" "${ALARM_CONTEXT[@]}" deploy JaleBastionStack --exclusively -o "$OUT_DIR" --require-approval never
   echo ""
   echo ">> Bastion up. Remember to tear it down when finished:"
   echo "     scripts/deploy-bastion.sh --destroy"

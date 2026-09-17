@@ -11,6 +11,7 @@ import {
   getApplicationRequirements,
   getVaultDocuments,
   postApplicationAnswers,
+  postApplicationComplete,
   postApplicationCertifications,
   postApplicationPromptAnswers,
   type ApplicationRequirementsState,
@@ -255,15 +256,23 @@ export function ApplicationRequirementsFlow({
   }
 
   /**
-   * FINISH IS A RE-READ, not a write. There is no "POST complete": the door
-   * sets `details_completed_at` itself the moment nothing remains, so the only
-   * honest way to report completion is to ask.
+   * FINISH IS A WRITE (R2). It used to be a re-read, because the door
+   * completed an application on any GET -- which meant merely OPENING this
+   * page sent it, including for a worker whose answers WhatsApp had
+   * pre-filled while it waited at its own LISTO consent gate. F2's lock then
+   * refused every correction they tried to make. Sending is now something the
+   * worker does, once, on purpose.
+   *
+   * Routed through `consume` like every other write, so a 409 lands as the
+   * read-only terminal panel instead of a thrown error page.
    */
   async function finish() {
     setInlineError(null);
     dispatch({ type: 'saving' });
     try {
-      dispatch({ type: 'finished', server: await getApplicationRequirements(token, applicationId) });
+      const completed = consume(await postApplicationComplete(token, applicationId));
+      if (completed === null) return;
+      dispatch({ type: 'finished', server: completed });
     } catch (err) {
       dispatch({ type: 'save_failed', errorKind: classifyError(err).kind });
     }

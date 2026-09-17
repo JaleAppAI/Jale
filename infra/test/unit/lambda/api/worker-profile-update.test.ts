@@ -490,6 +490,35 @@ describe('worker-profile-update', () => {
       expect(params[3]).toBe('dog groomer');
     });
 
+    /**
+     * R2 review question, CONFIRMED: the second CASE branch nulls a stored
+     * `main_trade_other` on EVERY partial PATCH of a catalogue-trade row --
+     * a save that only touches `bio` clears free text left over from when
+     * the worker's trade was 'other'. That is the intended cleanup: the text
+     * means nothing while `main_trade` is a catalogue value, and leaving it
+     * is what let a row claim "painter" and "dog groomer" at once.
+     *
+     * The case that must NOT be swept up with it is a stored-'other' worker,
+     * whose text is the only record of their trade -- and where clearing it
+     * would violate `chk_trade_other` outright. Pinned here because the
+     * tempting "simplification" is a blanket NULL in that second branch.
+     */
+    it('a partial PATCH that names no trade leaves a stored-other worker\'s free text alone', async () => {
+      const res = await handler(mkEv({ bio: 'Ten years finishing concrete.' }));
+
+      expect(res.statusCode).toBe(200);
+      const [sql, params] = usersUpdateCall()!;
+      // Nothing about the trade was sent: both trade params are null, so the
+      // CASE decides entirely on the STORED value.
+      expect(params[2]).toBeNull();
+      expect(params[3]).toBeNull();
+      // Stored 'other' -> COALESCE(NULL, main_trade_other) -> unchanged.
+      expect(sql).toMatch(/WHEN COALESCE\(\$3, main_trade\) = 'other' THEN COALESCE\(\$4, main_trade_other\)/);
+      // And the branch that clears is reachable only when the resolved trade
+      // is NOT 'other' -- never a blanket NULL.
+      expect(sql).not.toMatch(/WHEN COALESCE\(\$3, main_trade\) IS NOT NULL THEN NULL\s*\n\s*ELSE NULL/);
+    });
+
     it('still refuses main_trade=other with blank text, before touching the database', async () => {
       const blank = await handler(mkEv({ main_trade: 'other', main_trade_other: '   ' }));
       const missing = await handler(mkEv({ main_trade: 'other' }));
