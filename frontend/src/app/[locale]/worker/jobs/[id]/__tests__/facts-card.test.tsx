@@ -126,6 +126,9 @@ function fullJob(over: Partial<JobDetail> = {}): JobDetail {
         open_count: 1,
         trade_category: 'drywall',
         required_experience_years: 3,
+        // The canonical total the server derives for 3 years (job-fields.ts
+        // sets months = years * 12), not null: this is what the API returns.
+        required_experience_months: 36,
         certification_requirements: [
             { name: 'OSHA 10', tier: 'required', proof_required: false },
             { name: 'Scaffold', tier: 'optional', proof_required: false },
