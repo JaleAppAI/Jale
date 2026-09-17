@@ -28,7 +28,6 @@ import type { ApplicationsPage } from '@/lib/api/worker';
 import { orderApplicationsForList } from '@/lib/application-list-order';
 import { formatLongDate, formatStartDateWeekdayShort } from '@/lib/date';
 import { formatPay } from '@/lib/pay';
-import type { Application } from '@/lib/api/worker';
 import { normalizeApplicationStatus, TERMINAL_APPLICATION_STATUSES } from '@/lib/status';
 import { visibleJobStatusBadge } from '@/lib/jobStatusDisplay';
 
