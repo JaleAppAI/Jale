@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
@@ -24,6 +24,7 @@ import {
 import { HiredBanner } from '@/components/worker/HiredBanner';
 import { JobStatusBadge } from '@/components/ui/badge';
 import { acknowledgeHire, getApplications } from '@/lib/api/worker';
+import type { ApplicationsPage } from '@/lib/api/worker';
 import { orderApplicationsForList } from '@/lib/application-list-order';
 import { formatLongDate, formatStartDateWeekdayShort } from '@/lib/date';
 import { formatPay } from '@/lib/pay';
@@ -76,14 +77,9 @@ export default function WorkerApplicationsPage() {
   const { idToken } = useAuth();
   const errorMessage = useErrorMessage();
 
-  /**
-   * Where the NEXT page starts, as the last response gave it; null once the
-   * list is complete. Page state rather than part of `usePageData`'s data,
-   * because it describes the request rather than anything on screen -- and
-   * because `retry()` re-runs the fetcher below, which seeds it afresh.
-   */
-  const [cursor, setCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  /** The in-flight "load more", so unmounting cancels it. */
+  const loadMoreAbortRef = useRef<AbortController | null>(null);
   /** A failed NEXT page. Never the page's phase: the rows already read are
    *  real, and this is a footnote under them. */
   const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
@@ -95,16 +91,23 @@ export default function WorkerApplicationsPage() {
     errorKind,
     retry,
     setData,
-  } = usePageData<Application[]>({
+  /*
+   * The page's data is the SERVER'S ANSWER, whole: the rows, the cursor that
+   * continues them, and the attention summary computed over the worker's
+   * ENTIRE list. Keeping the three together is what stops them disagreeing --
+   * and the summary is precisely the part that must not be derived from the
+   * rows, since the rows stop at fifty.
+   */
+  } = usePageData<ApplicationsPage>({
     legalReturnUrl: '/worker/applications',
-    isEmpty: (data) => data.length === 0,
+    isEmpty: (data) => data.applications.length === 0,
     fetcher: async ({ token, signal }) => {
-      const page = await getApplications(token, signal, { limit: PAGE_SIZE });
-      setCursor(page.next_cursor);
       setLoadMoreError(null);
-      return page.applications;
+      return getApplications(token, signal, { limit: PAGE_SIZE });
     },
   });
+
+  const cursor = apps?.next_cursor ?? null;
 
   /**
    * The next page, APPENDED.
@@ -120,19 +123,37 @@ export default function WorkerApplicationsPage() {
     if (!idToken || !cursor || loadingMore) return;
     setLoadingMore(true);
     setLoadMoreError(null);
+    // Aborted on unmount, like every other request this page makes: a worker
+    // who taps a row while a page is in flight must not leave it running.
+    loadMoreAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadMoreAbortRef.current = controller;
     try {
-      const page = await getApplications(idToken, undefined, { limit: PAGE_SIZE, cursor });
+      const page = await getApplications(idToken, controller.signal, { limit: PAGE_SIZE, cursor });
       setData((prev) => {
-        const seen = new Set(prev.map((a) => a.application_id));
-        return [...prev, ...page.applications.filter((a) => !seen.has(a.application_id))];
+        const seen = new Set(prev.applications.map((a) => a.application_id));
+        return {
+          applications: [
+            ...prev.applications,
+            ...page.applications.filter((a) => !seen.has(a.application_id)),
+          ],
+          next_cursor: page.next_cursor,
+          // Re-read with every page: it is a live answer about the whole list,
+          // and a hire acknowledged in another tab meanwhile should stop
+          // congratulating anyone here too.
+          attention: page.attention,
+        };
       });
-      setCursor(page.next_cursor);
     } catch (err) {
+      // The page went away mid-request; nobody is waiting for an answer.
+      if (controller.signal.aborted) return;
       setLoadMoreError(errorMessage(err));
     } finally {
-      setLoadingMore(false);
+      if (!controller.signal.aborted) setLoadingMore(false);
     }
   }, [idToken, cursor, loadingMore, setData, errorMessage]);
+
+  useEffect(() => () => loadMoreAbortRef.current?.abort(), []);
 
   /*
    * The list cascades once, when it first arrives, and never again -- the same
@@ -150,17 +171,26 @@ export default function WorkerApplicationsPage() {
   // Derived from the already-fetched list: TERMINAL_APPLICATION_STATUSES is
   // hired / not_interested (legacy values normalize onto them); everything
   // else -- including the new `details_requested` -- is active.
-  const list = apps ?? [];
+  const list = apps?.applications ?? [];
   const normalizedStatuses = list.map((a) => normalizeApplicationStatus(a.status));
   const totalCount = list.length;
   const hiredCount = normalizedStatuses.filter((s) => s === 'hired').length;
   const activeCount = normalizedStatuses.filter((s) => !TERMINAL_APPLICATION_STATUSES.includes(s)).length;
 
-  // Rows waiting on the WORKER. Read off `details_status` -- the TIMESTAMP-
-  // derived field -- never off `status`, so an employer who moved a
-  // details_requested applicant along to `talking` does not make the row stop
-  // asking for the details it is still waiting on (B4.0 #7).
-  const needingDetails = list.filter((a) => a.details_status === 'requested');
+  /*
+   * Applications waiting on the WORKER, over their whole list.
+   *
+   * From the server's summary, NOT from `list`: the rows stop at `PAGE_SIZE`,
+   * so an employer waiting on application 137 was never mentioned at all, and
+   * the counted banner below printed an unhedged number describing a fraction
+   * of the list. (The summary applies the same rule this page used to: the
+   * TIMESTAMP-derived `details_status`, never `status`, so an employer who
+   * moved the applicant along to `talking` does not make it stop asking.)
+   *
+   * The per-ROW banners further down stay row-derived -- a banner belongs to
+   * the row it sits under, and rows that are not loaded have no row to sit on.
+   */
+  const needingDetails = apps?.attention.details_requested ?? [];
 
   /** A count over a list that is not all in yet: "50+", not "50". */
   const partial = (count: number) => (cursor ? `${count}+` : count);
@@ -187,11 +217,14 @@ export default function WorkerApplicationsPage() {
    * screen may wait on the network here.
    */
   const dismissHire = useCallback((applicationId: string) => {
-    setData((prev) => prev.map((a) => (
-      a.application_id === applicationId && a.hire
-        ? { ...a, hire: { ...a.hire, acknowledged_at: new Date().toISOString() } }
-        : a
-    )));
+    setData((prev) => ({
+      ...prev,
+      applications: prev.applications.map((a) => (
+        a.application_id === applicationId && a.hire
+          ? { ...a, hire: { ...a.hire, acknowledged_at: new Date().toISOString() } }
+          : a
+      )),
+    }));
     if (!idToken) return;
     void acknowledgeHire(idToken, applicationId, 'dismissed').catch(() => {});
   }, [idToken, setData]);

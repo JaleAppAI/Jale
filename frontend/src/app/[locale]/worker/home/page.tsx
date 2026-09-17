@@ -23,9 +23,9 @@ import { WorkerJobCard } from '@/components/worker/WorkerJobCard';
 import { apiFetch } from '@/lib/api';
 import {
   acknowledgeHire,
-  getApplications,
-  type Application,
-  type ApplicationHire,
+  getApplicationsAttention,
+  type AttentionDetailsRequest,
+  type AttentionHire,
   type HireAckStep,
 } from '@/lib/api/worker';
 import {
@@ -98,14 +98,14 @@ function feedHrefFor(pathname: string, search: string, jobType: TypeFilter): str
 }
 
 /**
- * One unacknowledged hire, with its `hire` block hoisted out of the optional
- * field.
+ * One unacknowledged hire, exactly as the server's attention summary reports
+ * it -- `hire` non-optional, because that summary only ever contains hires.
  *
- * The pairing exists so nothing downstream needs `a.hire!`: the filter that
- * builds this list is the ONE place that proves the block is there, and every
- * reader after it gets a non-optional `hire`.
+ * It is a SUMMARY rather than a row for a reason: this page shows no
+ * applications, and the hire it has to celebrate may be the worker's 137th,
+ * far past any page of the list the old scan could have loaded.
  */
-type HireNotice = { application: Application; hire: ApplicationHire };
+type HireNotice = AttentionHire;
 
 /** True while the focused element takes text: an input, a textarea, or anything contenteditable. */
 function isTypingSomewhere(): boolean {
@@ -249,7 +249,7 @@ export default function WorkerHomePage() {
    * refetch already uses: the job feed underneath is real, and this is a
    * footnote rather than a page state.
    */
-  const [needingDetails, setNeedingDetails] = useState<Application[]>([]);
+  const [needingDetails, setNeedingDetails] = useState<AttentionDetailsRequest[]>([]);
   /** The applications call failed, and the worker has not waved it away. */
   const [applicationsFailed, setApplicationsFailed] = useState(false);
   const [applicationsNoticeDismissed, setApplicationsNoticeDismissed] = useState(false);
@@ -287,31 +287,28 @@ export default function WorkerHomePage() {
   useEffect(() => {
     if (!idToken) return;
     const controller = new AbortController();
-    // The MAXIMUM one request can give (the server caps at 100). This is not a
-    // list the worker reads here -- it is a scan for the two things that
-    // interrupt them, a hire and a details request -- so paging it would mean
-    // walking every page before the page could be drawn. The server's old hard
-    // limit of 200 was never reachable by anyone either; both are far past the
-    // number of applications a worker has open at once.
-    getApplications(idToken, controller.signal, { limit: 100 })
-      .then(({ applications }) => {
+    // The SUMMARY, not a page of applications. What this page needs is the two
+    // things that interrupt a worker -- an employer waiting on their details,
+    // and a hire nobody has told them about -- and both are questions about
+    // their WHOLE list. Reading them off a page of it (200 rows once, 100
+    // after F26 paged the endpoint) meant an employer waiting on application
+    // 137 was never mentioned at all.
+    getApplicationsAttention(idToken, controller.signal)
+      .then((attention) => {
         setApplicationsFailed(false);
-        // `details_status`, not `status`: the timestamp-derived field is the one
-        // that survives an employer moving the applicant on to `talking`.
-        setNeedingDetails(applications.filter((a) => a.details_status === 'requested'));
-        // `status` IS the authority for a hire, though -- a `hire` block left
-        // behind on a row an employer moved back out of `hired` must not
-        // congratulate anyone. `flatMap` rather than `filter` so the block is
-        // proven present here and non-optional everywhere after.
+        setNeedingDetails(attention.details_requested);
+        // The receipts written THIS VISIT still win: a refetch (an id-token
+        // rotation re-runs this effect) must not resurrect a modal or banner
+        // the worker already closed while the fire-and-forget POST was in
+        // flight or was lost.
         const receipts = receiptsRef.current;
-        setHires(applications.flatMap((a) => {
-          if (a.status !== 'hired' || !a.hire || a.hire.acknowledged_at) return [];
-          const receipt = receipts[a.application_id];
+        setHires(attention.unacknowledged_hires.flatMap((notice) => {
+          const receipt = receipts[notice.application_id];
           if (receipt === 'dismissed') return [];
-          const hire = receipt === 'seen' && a.hire.seen_at === null
-            ? { ...a.hire, seen_at: new Date().toISOString() }
-            : a.hire;
-          return [{ application: a, hire }];
+          const hire = receipt === 'seen' && notice.hire.seen_at === null
+            ? { ...notice.hire, seen_at: new Date().toISOString() }
+            : notice.hire;
+          return [{ ...notice, hire }];
         }));
         setModalSuppressed(isTypingSomewhere());
       })
@@ -365,7 +362,7 @@ export default function WorkerHomePage() {
 
   const closeCelebration = useCallback((applicationId: string) => {
     setHires((prev) => prev.map((notice) => (
-      notice.application.application_id === applicationId
+      notice.application_id === applicationId
         ? { ...notice, hire: { ...notice.hire, seen_at: new Date().toISOString() } }
         : notice
     )));
@@ -374,7 +371,7 @@ export default function WorkerHomePage() {
 
   const dismissHire = useCallback((applicationId: string) => {
     setHires((prev) => prev.filter(
-      (notice) => notice.application.application_id !== applicationId,
+      (notice) => notice.application_id !== applicationId,
     ));
     recordHireStep(applicationId, 'dismissed');
   }, [recordHireStep]);
@@ -532,13 +529,13 @@ export default function WorkerHomePage() {
       <main className="mx-auto max-w-2xl px-4 py-6 md:px-6">
         {celebrating ? (
           <HiredCelebrationModal
-            key={celebrating.application.application_id}
+            key={celebrating.application_id}
             open
-            applicationId={celebrating.application.application_id}
-            jobTitle={celebrating.application.job_title}
-            companyName={celebrating.application.company_name}
+            applicationId={celebrating.application_id}
+            jobTitle={celebrating.job_title}
+            companyName={celebrating.company_name}
             hire={celebrating.hire}
-            onClose={() => closeCelebration(celebrating.application.application_id)}
+            onClose={() => closeCelebration(celebrating.application_id)}
           />
         ) : null}
 
@@ -547,13 +544,13 @@ export default function WorkerHomePage() {
             answer about work the worker has already done beats browsing for
             more of it. */}
         {hires.map((notice) => (
-          <div key={notice.application.application_id} className="mb-4">
+          <div key={notice.application_id} className="mb-4">
             <HiredBanner
-              applicationId={notice.application.application_id}
-              jobTitle={notice.application.job_title}
-              companyName={notice.application.company_name}
+              applicationId={notice.application_id}
+              jobTitle={notice.job_title}
+              companyName={notice.company_name}
               hire={notice.hire}
-              onDismiss={() => dismissHire(notice.application.application_id)}
+              onDismiss={() => dismissHire(notice.application_id)}
             />
           </div>
         ))}

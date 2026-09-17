@@ -30,6 +30,17 @@ const CORS_HEADERS = corsHeaders();
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
 
+/**
+ * The cap on the attention summary (see `attentionApplicationsSql`).
+ *
+ * Not a page: nothing pages it, and a worker with a hundred employers waiting
+ * on them at once does not exist. It is here because an unbounded read has no
+ * place in a handler whose whole point this sprint was to stop reading
+ * unboundedly -- and if it were ever hit, the banners would under-count rather
+ * than time out.
+ */
+const ATTENTION_LIMIT = 100;
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 interface Cursor {
@@ -133,12 +144,13 @@ async function fillCanonicalTrades(
  * for a cursor page; the LIMIT is always the next bind position after them.
  * RLS is what scopes it to the caller -- the statement carries no worker id.
  */
-export function listApplicationsSql(keysetParams: 0 | 2): string {
-  const keyset = keysetParams === 2
-    ? ' WHERE (a.applied_at, a.id) < ($1::timestamptz, $2::uuid)'
-    : '';
-  const limitParam = keysetParams + 1;
-  return `SELECT a.id AS application_id, a.job_id,
+/**
+ * Every column both statements below select. One list, because the attention
+ * summary is shaped by exactly the same code as a page row -- a second,
+ * slightly different projection is how the two would drift into disagreeing
+ * about what a worker is owed.
+ */
+const APPLICATION_COLUMNS = `a.id AS application_id, a.job_id,
         CASE a.status
           WHEN 'reviewed' THEN 'contacted'
           WHEN 'rejected' THEN 'not_interested'
@@ -209,11 +221,64 @@ export function listApplicationsSql(keysetParams: 0 | 2): string {
             FROM worker_documents wd
            WHERE wd.worker_id = a.worker_id
              AND wd.job_id = a.job_id
-        ) AS have_docs
+        ) AS have_docs`;
+
+const APPLICATIONS_FROM = `
  FROM job_applications a
- JOIN jobs j ON j.id = a.job_id${keyset}
+ JOIN jobs j ON j.id = a.job_id`;
+
+/**
+ * `GET /worker/applications`' page SELECT. Exported so the real-PostgreSQL
+ * suites run the statement the handler runs (not a regex-lifted copy that
+ * drifts): `keysetParams` is 0 for a first page and 2 (`applied_at`, `id`)
+ * for a cursor page; the LIMIT is always the next bind position after them.
+ * RLS is what scopes it to the caller -- the statement carries no worker id.
+ *
+ * INDEXES: the keyset orders by (applied_at DESC, id DESC) and there is no
+ * index on that pair -- `job_applications` is indexed by worker and by job
+ * (migrations 003/070), so a page is a sort over this worker's rows. That is
+ * cheap at the size one worker's applications reach and was equally true of
+ * the LIMIT 200 this replaced; it is the DEEP pages (a cursor far down a very
+ * long list) that would want `(worker_id, applied_at DESC, id DESC)`. Noted
+ * rather than added: an index migration is a schema change with its own
+ * review, and nothing measured yet says this needs one.
+ */
+export function listApplicationsSql(keysetParams: 0 | 2): string {
+  const keyset = keysetParams === 2
+    ? ' WHERE (a.applied_at, a.id) < ($1::timestamptz, $2::uuid)'
+    : '';
+  const limitParam = keysetParams + 1;
+  return `SELECT ${APPLICATION_COLUMNS}${APPLICATIONS_FROM}${keyset}
  ORDER BY a.applied_at DESC, a.id DESC
  LIMIT $${limitParam}`;
+}
+
+/**
+ * The same rows, asked a different question: WHICH OF THIS WORKER'S
+ * APPLICATIONS NEED THEM -- over all of them, not over the page.
+ *
+ * Paging the list created a hole the banners fell into: the home and
+ * applications pages computed "an employer is waiting for your details" and
+ * "you were hired" from the rows they happened to hold, so anything past the
+ * first page was never shown, and the multi-banner printed an unhedged count
+ * of a fraction of the list.
+ *
+ * Both halves are narrow by construction -- an employer has to be waiting on
+ * this worker, or to have hired them without the hire being acknowledged --
+ * so this is a handful of rows however long the list is. `details_completed_at
+ * IS NULL AND details_requested_at IS NOT NULL` is the SUPERSET of
+ * `details_status = 'requested'`; the engine (`computeRemaining`) decides the
+ * rest in TypeScript, exactly as it does for a page row, because "is anything
+ * still outstanding" is not a question SQL can answer here.
+ *
+ * Bounded like everything else that reads a list: $1 is the cap.
+ */
+export function attentionApplicationsSql(): string {
+  return `SELECT ${APPLICATION_COLUMNS}${APPLICATIONS_FROM}
+ WHERE (a.details_requested_at IS NOT NULL AND a.details_completed_at IS NULL)
+    OR (a.status = 'hired' AND a.hired_ack_at IS NULL)
+ ORDER BY a.applied_at DESC, a.id DESC
+ LIMIT $1`;
 }
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
@@ -275,6 +340,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     params.push(limit + 1);
 
     const result = await client.query(listApplicationsSql(cursor ? 2 : 0), params);
+    // Beside the page, in the SAME transaction and therefore under the same
+    // two RLS contexts. It reaches employer_profiles only through
+    // employer_display_name(), the same accessor the statement above already
+    // used -- it is a query touching employer_profiles DIRECTLY that migration
+    // 031's transaction-local GUC forbids after that point, and this is not
+    // one. Both statements answer about the caller's own applications only.
+    const attentionResult = await client.query(attentionApplicationsSql(), [ATTENTION_LIMIT]);
     await client.query('COMMIT');
 
     // The 'other' trades to canonicalise, collected as the rows are shaped.
@@ -289,7 +361,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // The extra row is a signal, not data: it never reaches the client.
     const page = hasMore ? result.rows.slice(0, limit) : result.rows;
 
-    const applications = page.map((row: any) => {
+    // ONE shaper for both statements. The attention rows are published in a
+    // narrower form below, but they are derived here, so "what does this
+    // worker still owe" and "is this hire acknowledged" can only ever have one
+    // answer per row.
+    const shapeRow = (row: any) => {
       const {
         application_answers: _answers,
         prompt_answers: _promptAnswers,
@@ -342,7 +418,45 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         remaining: remainingView(remaining),
         ...(hire ? { hire } : {}),
       };
-    });
+    };
+
+    const applications = page.map(shapeRow);
+
+    /*
+     * What needs the worker, over ALL of their applications.
+     *
+     * Published BESIDE the page, never merged into it: `applications` is the
+     * page the client asked for, and a row smuggled into it would break the
+     * cursor's meaning. The fields are only those the banners and the hire
+     * celebration render -- this is a summary, not a second list.
+     */
+    const attentionRows = attentionResult.rows.map(shapeRow);
+    const attention = {
+      details_requested: attentionRows
+        // `details_status`, not the raw timestamps: an employer's request that
+        // the worker has since satisfied is not something to nag about, and
+        // the engine is what knows the difference.
+        .filter((row: any) => row.details_status === 'requested')
+        .map((row: any) => ({
+          application_id: row.application_id,
+          job_id: row.job_id,
+          job_title: row.job_title,
+          company_name: row.company_name,
+          remaining_count: row.remaining_count,
+        })),
+      unacknowledged_hires: attentionRows
+        // `status` is the authority for a hire (a `hire` block left on a row
+        // an employer moved back out of 'hired' must not congratulate
+        // anyone), and an acknowledged one has nothing left to say.
+        .filter((row: any) => row.status === 'hired' && row.hire && !row.hire.acknowledged_at)
+        .map((row: any) => ({
+          application_id: row.application_id,
+          job_id: row.job_id,
+          job_title: row.job_title,
+          company_name: row.company_name,
+          hire: row.hire,
+        })),
+    };
 
     // AFTER the COMMIT, deliberately. employer_display_name() flipped a
     // transaction-local GUC that widens employer_profiles reads until COMMIT
@@ -372,7 +486,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       ? encodeCursor(String(last.cursor_applied_at), last.application_id)
       : null;
 
-    return { statusCode: 200, headers: CORS_HEADERS, body: JSON.stringify({ applications, next_cursor: nextCursor }) };
+    return {
+      statusCode: 200,
+      headers: CORS_HEADERS,
+      body: JSON.stringify({ applications, next_cursor: nextCursor, attention }),
+    };
   } catch (err) {
     if (client) { try { await client.query('ROLLBACK'); } catch {} }
     console.error('worker-applications-list error:', errorMessage(err));
