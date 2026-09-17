@@ -127,12 +127,18 @@ describe('AuthProvider — signing out', () => {
         expect(localStorage.getItem(WORKER_SLOT)).toBe('rt-worker');
     });
 
-    it('drops the sidebar chip cache, so the next account cannot inherit a name', async () => {
+    it('drops what the browser remembers about the account that just left', async () => {
         localStorage.setItem(EMPLOYER_SLOT, 'rt-employer');
         sessionStorage.setItem(
             'jale.sidebar_chip.employer',
             JSON.stringify({ name: 'RM Construction', meta: null, initials: 'RC', locale: 'es' }),
         );
+        // Both billing banners: the free one lives in localStorage, the lapsed
+        // one in sessionStorage, and a sign-out has to reach both stores.
+        localStorage.setItem('jale.signage.free.employer_free.acct-1', '1');
+        sessionStorage.setItem('jale.signage.lapsed.past_due.acct-1', '1');
+        // Not ours, and not ours to delete.
+        localStorage.setItem('jale-theme', 'dark');
         window.history.replaceState(null, '', '/es/employer/dashboard');
         const user = userEvent.setup();
 
@@ -144,6 +150,11 @@ describe('AuthProvider — signing out', () => {
         // afterwards, so a React effect reacting to the state change is not a
         // guarantee this ever runs.
         await waitFor(() => expect(sessionStorage.getItem('jale.sidebar_chip.employer')).toBeNull());
+        // A dismissal is one account's answer; the next account to sign in on
+        // this browser has not given one -- least of all about their billing.
+        expect(localStorage.getItem('jale.signage.free.employer_free.acct-1')).toBeNull();
+        expect(sessionStorage.getItem('jale.signage.lapsed.past_due.acct-1')).toBeNull();
+        expect(localStorage.getItem('jale-theme')).toBe('dark');
     });
 
     it('does not overwrite the other role when signing in', async () => {

@@ -144,7 +144,9 @@ function fullJob(over: Partial<EmployerJobDetail> = {}): EmployerJobDetail {
         number_of_workers_needed: 3,
         trade_category: 'drywall',
         required_experience_years: 3,
-        required_experience_months: null,
+        // The canonical total the server derives for 3 years, not null: this
+        // fixture is what the API really returns.
+        required_experience_months: 36,
         certifications: [],
         certification_requirements: [
             { name: 'OSHA 10', tier: 'required', proof_required: false },
@@ -241,17 +243,34 @@ describe('employer job detail — the facts card', () => {
      * formatter the worker and public pages use, so the three surfaces cannot
      * describe the same column differently.
      */
-    it('carries the unit for months, and for a years/months pair', () => {
+    it('carries the unit for a sub-year total, and for one that splits', () => {
         setSeed(fullJob({ required_experience_years: null, required_experience_months: 6 }));
         const { container: monthsOnly } = renderIntl(<EmployerJobDetailPage />);
         expect(tiles(monthsOnly)).toContainEqual([
             shared('modal.required_experience_years'), '6 months',
         ]);
 
-        setSeed(fullJob({ required_experience_years: 2, required_experience_months: 6 }));
+        // 30 months, not a (2, 6) pair: `required_experience_months` is the
+        // canonical TOTAL, so the two units come out of ONE figure.
+        setSeed(fullJob({ required_experience_years: 2, required_experience_months: 30 }));
         const { container: both } = renderIntl(<EmployerJobDetailPage />);
         expect(tiles(both)).toContainEqual([
             shared('modal.required_experience_years'), '2 years 6 months',
+        ]);
+    });
+
+    /*
+     * The shape the API actually sends. `lib/job-form.ts` posts years only and
+     * the server stores `months = years * 12` (migration 033 backfilled the
+     * same way), so EVERY job with experience arrives as this pair -- and
+     * reading it as years-plus-remainder printed "3 years 36 months".
+     */
+    it('renders the years/months pair the server really sends as one figure', () => {
+        setSeed(fullJob({ required_experience_years: 3, required_experience_months: 36 }));
+        const { container } = renderIntl(<EmployerJobDetailPage />);
+
+        expect(tiles(container)).toContainEqual([
+            shared('modal.required_experience_years'), '3 years',
         ]);
     });
 

@@ -2,7 +2,7 @@
 import * as React from 'react';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 
 /*
  * "Post a job" was reachable from exactly one page. Every other employer
@@ -23,9 +23,13 @@ vi.mock('@/i18n/navigation', () => ({
     ),
 }));
 
-vi.mock('@/contexts/AuthContext', () => ({
-    useAuth: () => ({ idToken: 'test-token', userType: 'employer', isAuthenticated: true }),
-}));
+/** Mutable: the restore window and the wrong-role mask are both states here. */
+const authState = {
+    idToken: 'test-token' as string | null,
+    userType: 'employer' as 'employer' | 'worker' | null,
+    isAuthenticated: true,
+};
+vi.mock('@/contexts/AuthContext', () => ({ useAuth: () => authState }));
 
 const toastSuccess = vi.fn();
 vi.mock('@/components/ui/toast', () => ({
@@ -59,7 +63,7 @@ vi.mock('@/components/employer/PostJobModal', () => ({
 
 import { message, renderIntl } from '@/components/employer/__tests__/render-intl';
 import { PostJobButton } from '@/components/employer/PostJobButton';
-import { PostJobProvider, useJobCreated } from '@/contexts/PostJobContext';
+import { PostJobProvider, useJobCreated, usePostJob } from '@/contexts/PostJobContext';
 import type { EmployerBilling, Job } from '@/lib/api/employer';
 
 const activeJob: Job = {
@@ -142,6 +146,9 @@ const postJobButton = () =>
 
 beforeEach(() => {
     vi.clearAllMocks();
+    authState.idToken = 'test-token';
+    authState.userType = 'employer';
+    authState.isAuthenticated = true;
     getJobs.mockResolvedValue([activeJob]);
     getBilling.mockResolvedValue({ ...freePlan, activeJobLimit: 3 });
 });
@@ -231,5 +238,78 @@ describe('post a job from any employer page', () => {
         // The publish-time 403 stays the backstop; a failed read must never be
         // the thing that stops an employer posting.
         await waitFor(() => expect(screen.getByTestId('post-job-wizard')).toBeInTheDocument());
+    });
+});
+
+describe('with no session to post with', () => {
+    /*
+     * Two ordinary ways to be here: the restore window after a reload, and
+     * `AuthContext` masking a session that belongs to the OTHER role. In both,
+     * the provider mounts no modal -- so a button that still looked live took
+     * a click, did nothing visible, and (before this) armed a wizard that then
+     * appeared on its own the moment the token landed.
+     */
+    it('offers a disabled control rather than a click that does nothing', () => {
+        authState.idToken = null;
+        authState.isAuthenticated = false;
+        renderPage();
+
+        const button = postJobButton();
+        expect(button).toBeDisabled();
+        expect(button).toHaveAttribute('aria-disabled', 'true');
+
+        fireEvent.click(button);
+        expect(screen.queryByTestId('post-job-wizard')).not.toBeInTheDocument();
+        expect(getBilling).not.toHaveBeenCalled();
+    });
+
+    it('keeps the wizard shut even if something opens it another way', async () => {
+        authState.idToken = null;
+        authState.isAuthenticated = false;
+        // Captured in an effect, not during render: assigning to an outer
+        // variable while rendering is the side effect the lint rule is about,
+        // and this file should not model something a component may not do.
+        const opener: { current: (() => void) | null } = { current: null };
+        function Probe() {
+            const { openPostJob } = usePostJob();
+            React.useEffect(() => {
+                opener.current = openPostJob;
+            }, [openPostJob]);
+            return null;
+        }
+        const tree = (
+            <PostJobProvider>
+                <Probe />
+                <ApplicantsLikePage />
+            </PostJobProvider>
+        );
+        const { rerender } = renderIntl(tree);
+
+        act(() => opener.current?.());
+
+        /*
+         * The assertion is not "nothing happened now" -- with the modal
+         * unmounted, nothing visible could have. It is that nothing was ARMED:
+         * the SAME provider is now handed a token, mounts the modal, and the
+         * wizard must not appear by itself in front of an employer who is not
+         * asking for it.
+         */
+        authState.idToken = 'test-token';
+        authState.isAuthenticated = true;
+        rerender(tree);
+
+        await waitFor(() => expect(postJobButton()).toBeEnabled());
+        expect(screen.queryByTestId('post-job-wizard')).not.toBeInTheDocument();
+    });
+
+    it('disables the control for a worker session on an employer page', () => {
+        // The mask: `AuthContext` reports no session at all while what is in
+        // memory belongs to the other role.
+        authState.userType = 'worker';
+        authState.idToken = null;
+        authState.isAuthenticated = false;
+        renderPage();
+
+        expect(postJobButton()).toBeDisabled();
     });
 });

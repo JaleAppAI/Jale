@@ -11,6 +11,7 @@ import {
     subscribeToSignOut,
     writeSession,
 } from '@/lib/session-storage';
+import { clearSignageDismissals } from '@/lib/signage-storage';
 import { clearSidebarChips } from '@/lib/sidebar-chip-storage';
 import { locales } from '@/i18n/locales';
 
@@ -246,6 +247,11 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
         // before that navigation. Leaving it would paint the name of the
         // account that just signed out over the next one's first frame.
         clearSidebarChips();
+        // Same reasoning, for the billing banners: a dismissal is one account's
+        // answer, and the next account to sign in on this browser has not given
+        // one. Unscoped, because sign-out is the moment we can be sure nobody
+        // is still reading them.
+        clearSignageDismissals();
         setAccessToken(null);
         setIdToken(null);
         setRefreshToken(null);
