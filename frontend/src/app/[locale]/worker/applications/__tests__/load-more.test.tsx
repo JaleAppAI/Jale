@@ -52,8 +52,15 @@ vi.mock('@/lib/api/worker', async (importOriginal) => ({
   acknowledgeHire: vi.fn(),
 }));
 
-import { message, renderIntl } from '@/components/worker/onboarding/__tests__/render-intl';
+import { interpolate, message, renderIntl } from '@/components/worker/onboarding/__tests__/render-intl';
 import WorkerApplicationsPage from '../page';
+
+const NO_ATTENTION = { details_requested: [], unacknowledged_hires: [] };
+
+/** One server answer: the page, its cursor, and the whole-list summary. */
+function page(applications: Application[], nextCursor: string | null, attention = NO_ATTENTION) {
+  return { applications, next_cursor: nextCursor, attention };
+}
 
 function application(n: number): Application {
   return {
@@ -115,8 +122,8 @@ describe('the per-test reset', () => {
 describe('worker applications — load more', () => {
   it('appends the next page and then stops offering one', async () => {
     getApplications
-      .mockResolvedValueOnce({ applications: [application(1), application(2)], next_cursor: 'cursor-1' })
-      .mockResolvedValueOnce({ applications: [application(3)], next_cursor: null });
+      .mockResolvedValueOnce(page([application(1), application(2)], 'cursor-1'))
+      .mockResolvedValueOnce(page([application(3)], null));
 
     renderIntl(<WorkerApplicationsPage />);
 
@@ -139,7 +146,7 @@ describe('worker applications — load more', () => {
   });
 
   it('offers nothing to load when the first page is the whole list', async () => {
-    getApplications.mockResolvedValue({ applications: [application(1)], next_cursor: null });
+    getApplications.mockResolvedValue(page([application(1)], null));
 
     renderIntl(<WorkerApplicationsPage />);
 
@@ -150,7 +157,7 @@ describe('worker applications — load more', () => {
 
   it('keeps the list and the button when a page fails to load', async () => {
     getApplications
-      .mockResolvedValueOnce({ applications: [application(1)], next_cursor: 'cursor-1' })
+      .mockResolvedValueOnce(page([application(1)], 'cursor-1'))
       .mockRejectedValueOnce(new Error('network'));
 
     renderIntl(<WorkerApplicationsPage />);
@@ -165,5 +172,64 @@ describe('worker applications — load more', () => {
     await waitFor(() => expect(screen.getByText(message('common.errors.unknown'))).toBeInTheDocument());
     expect(screen.getByText('Job 1')).toBeInTheDocument();
     expect(loadMoreButton()).toBeInTheDocument();
+  });
+});
+
+/*
+ * The banners are about the worker's WHOLE list, not about the page in hand.
+ *
+ * An employer waiting on application 137 is exactly the case paging hid: the
+ * page's own rows stop at fifty, and a notice computed from them said nothing
+ * at all -- while the counted banner printed an unhedged number that described
+ * a fraction of the list.
+ */
+describe('worker applications — notices come from the summary', () => {
+  it('announces a waiting application the page never loaded', async () => {
+    getApplications.mockResolvedValue({
+      applications: [application(1)],
+      next_cursor: 'cursor-1',
+      attention: {
+        details_requested: [{
+          application_id: 'app-137',
+          job_id: 'job-137',
+          job_title: 'Roofer',
+          company_name: 'Rucoba & Maya',
+          remaining_count: 3,
+        }],
+        unacknowledged_hires: [],
+      },
+    });
+
+    renderIntl(<WorkerApplicationsPage />);
+
+    await waitFor(() => expect(screen.getByText(interpolate(
+      message('worker_applications.details_banner.row_body'),
+      { company: 'Rucoba & Maya' },
+    ))).toBeInTheDocument());
+  });
+
+  it('counts every waiting application, not just the loaded ones', async () => {
+    const waiting = (n: number) => ({
+      application_id: `app-${n}`,
+      job_id: `job-${n}`,
+      job_title: `Job ${n}`,
+      company_name: 'Rucoba & Maya',
+      remaining_count: 1,
+    });
+    getApplications.mockResolvedValue({
+      applications: [application(1)],
+      next_cursor: 'cursor-1',
+      attention: {
+        details_requested: [waiting(137), waiting(138), waiting(139)],
+        unacknowledged_hires: [],
+      },
+    });
+
+    renderIntl(<WorkerApplicationsPage />);
+
+    await waitFor(() => expect(screen.getByText(interpolate(
+      message('worker_applications.details_banner.many_head'),
+      { count: 3 },
+    ))).toBeInTheDocument());
   });
 });

@@ -75,6 +75,18 @@ function jobFilters(): Array<Record<string, string>> {
   return getJobs.mock.calls.map(([, filters]) => filters as Record<string, string>);
 }
 
+const FEED_ORIGIN_KEY = 'jale.worker.feed-origin';
+
+const job = {
+  id: 'job-1',
+  title: 'Drywall Finisher',
+  location: 'El Paso, TX',
+  job_type: 'full-time',
+  company_name: 'RM Construction',
+  required_docs: [],
+  match_reasons: [],
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   searchParams.current = new URLSearchParams();
@@ -150,5 +162,35 @@ describe('worker feed filters — written to the URL', () => {
     renderIntl(<WorkerHomePage />);
 
     await waitFor(() => expect(sessionStorage.getItem('jale.worker.feed-url')).toBe('/worker/home?q=roofing'));
+  });
+});
+
+/*
+ * "I came here from the feed" is a fact about ONE navigation.
+ *
+ * The job page uses it to go back through history instead of following the
+ * link, because that restores the scroll position. A modifier-click opens the
+ * job in a NEW tab and leaves this one on the feed, so the marker it wrote
+ * here describes a navigation that never happened -- and sessionStorage is
+ * copied into that new tab, so both of them would believe it. Only a click
+ * that navigates this tab may write it.
+ */
+describe('worker feed — marking the way back', () => {
+  it('marks a plain click, which is the one that leaves the feed', async () => {
+    getJobs.mockResolvedValue({ jobs: [job], other_jobs: [] });
+
+    renderIntl(<WorkerHomePage />);
+    fireEvent.click(await screen.findByText('Drywall Finisher'));
+
+    expect(sessionStorage.getItem(FEED_ORIGIN_KEY)).not.toBeNull();
+  });
+
+  it('leaves a ctrl-click alone: that tab stays on the feed', async () => {
+    getJobs.mockResolvedValue({ jobs: [job], other_jobs: [] });
+
+    renderIntl(<WorkerHomePage />);
+    fireEvent.click(await screen.findByText('Drywall Finisher'), { ctrlKey: true });
+
+    expect(sessionStorage.getItem(FEED_ORIGIN_KEY)).toBeNull();
   });
 });

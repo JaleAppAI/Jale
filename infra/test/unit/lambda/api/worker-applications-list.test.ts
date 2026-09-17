@@ -75,7 +75,12 @@ describe('worker-applications-list', () => {
     // `applications` is byte-for-byte what it always was; paging added
     // `next_cursor` BESIDE it, which is what keeps the response backward
     // compatible for a client that has never heard of a cursor.
-    expect(JSON.parse(res.body)).toEqual({ applications: [{ ...row, ...derived }], next_cursor: null });
+    expect(JSON.parse(res.body)).toEqual({
+      applications: [{ ...row, ...derived }],
+      next_cursor: null,
+      // Beside the page, and empty when nothing needs the worker.
+      attention: { details_requested: [], unacknowledged_hires: [] },
+    });
 
     // The 070 policy is keyed on app.current_internal_user_id — without this
     // call, closed jobs silently vanish from the list again.
@@ -554,7 +559,9 @@ describe('worker-applications-list', () => {
     function serve(rows: unknown[]) {
       mockQuery.mockImplementation((q: string, params: unknown[]) => {
         if (q.trim().startsWith('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-internal-id' }] });
-        if (q.includes('FROM job_applications')) {
+        // The PAGE statement, not the attention summary beside it -- both
+        // read job_applications, and only one of them is paged.
+        if (q.includes('FROM job_applications') && !q.includes('details_requested_at IS NOT NULL')) {
           listCall = { sql: q, params: params ?? [] };
           return Promise.resolve({ rows });
         }
@@ -644,6 +651,146 @@ describe('worker-applications-list', () => {
 
       const [application] = JSON.parse(res.body).applications;
       expect(application).not.toHaveProperty('cursor_applied_at');
+    });
+  });
+
+
+  /*
+   * THE ATTENTION SUMMARY.
+   *
+   * Paging the list created a hole the banners fell into: the worker's home
+   * and applications pages computed "an employer is waiting for your details"
+   * and "you were hired" from the rows they happened to have loaded, so a
+   * details request or an unacknowledged hire on application 51 was never
+   * shown at all -- and the multi-banner printed an unhedged count of a
+   * fraction of the list.
+   *
+   * The two questions are asked of ALL of the worker's applications, in the
+   * same RLS-scoped transaction, and answered beside the page rather than
+   * inside it. The rows are few by construction (an employer has to be waiting
+   * on this worker, or have hired them without the hire being acknowledged),
+   * which is what makes the extra statement cheap.
+   */
+  describe('attention summary', () => {
+    const ENGINE = {
+      application_answers: {}, prompt_answers: {},
+      required_fields: [], optional_fields: [], required_docs: [], optional_docs: [],
+      certification_requirements: null, pre_application_prompts: [], have_docs: [],
+    };
+
+    /** A row the page itself returns -- ordinary, needing nothing. */
+    const pageRow = {
+      application_id: 'page-1', job_id: 'j-page', job_title: 'Page job', company_name: 'Acme',
+      status: 'pending', applied_at: 'ts-1', cursor_applied_at: 'ts-1', job_status: 'active',
+      details_requested_at: null, details_completed_at: null,
+      ...ENGINE,
+    };
+
+    /** Application 51: an employer is waiting on it, and the page never has it. */
+    const awaitingDetails = {
+      application_id: 'old-details', job_id: 'j-old', job_title: 'Old job', company_name: 'Older Co',
+      status: 'pending', applied_at: 'ts-old', cursor_applied_at: 'ts-old', job_status: 'active',
+      details_requested_at: '2026-09-01T00:00:00Z', details_completed_at: null,
+      ...ENGINE,
+      // One unanswered required field, so the engine agrees it is still owed.
+      required_fields: ['phone'],
+    };
+
+    /** ...and one hired long enough ago to be off the page too. */
+    const unackedHire = {
+      application_id: 'old-hire', job_id: 'j-hire', job_title: 'Hire job', company_name: 'Hiring Co',
+      status: 'hired', applied_at: 'ts-hire', cursor_applied_at: 'ts-hire', job_status: 'active',
+      details_requested_at: null, details_completed_at: null,
+      hired_at: '2026-09-02T00:00:00Z', hired_seen_at: null, hired_ack_at: null,
+      job_start_date: '2026-09-10', job_location: 'El Paso, TX', job_city: 'El Paso', job_state: 'TX',
+      job_pay: null, job_pay_min: 25, job_pay_max: 30, job_pay_interval: 'hourly',
+      job_shift_schedule: null, job_trade_category: 'drywall', job_trade_category_other: null,
+      ...ENGINE,
+    };
+
+    /** Captured (sql, params) of each statement, by kind. */
+    let attentionCall: { sql: string; params: unknown[] } | null;
+
+    function serve(page: unknown[], attention: unknown[]) {
+      attentionCall = null;
+      mockQuery.mockImplementation((q: string, params: unknown[]) => {
+        const sql = String(q);
+        if (sql.trim().startsWith('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-internal-id' }] });
+        if (sql.includes('details_requested_at IS NOT NULL')) {
+          attentionCall = { sql, params: params ?? [] };
+          return Promise.resolve({ rows: attention });
+        }
+        if (sql.includes('FROM job_applications')) return Promise.resolve({ rows: page });
+        return Promise.resolve({ rows: [] });
+      });
+    }
+
+    const ev2 = { requestContext: { authorizer: { claims: { sub: 'w' } } } } as unknown as APIGatewayProxyEvent;
+
+    it('reports what needs the worker even when it is off the page', async () => {
+      serve([pageRow], [awaitingDetails, unackedHire]);
+
+      const res = await handler(ev2);
+
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      // The page is untouched -- the summary is beside it, not inside it.
+      expect(body.applications.map((a: { application_id: string }) => a.application_id)).toEqual(['page-1']);
+      expect(body.attention.details_requested).toEqual([
+        {
+          application_id: 'old-details',
+          job_id: 'j-old',
+          job_title: 'Old job',
+          company_name: 'Older Co',
+          remaining_count: 1,
+        },
+      ]);
+      const [hire] = body.attention.unacknowledged_hires;
+      expect(hire.application_id).toBe('old-hire');
+      expect(hire.job_title).toBe('Hire job');
+      expect(hire.company_name).toBe('Hiring Co');
+      // The whole celebration payload, the same shape the list row carries.
+      expect(hire.hire).toMatchObject({
+        hired_at: '2026-09-02T00:00:00.000Z',
+        acknowledged_at: null,
+        start_date: '2026-09-10',
+        pay_min: 25,
+      });
+    });
+
+    it('asks only for the rows that can need anything, and bounds them', async () => {
+      serve([], []);
+
+      await handler(ev2);
+
+      expect(attentionCall).not.toBeNull();
+      // Both halves of "needs the worker", and nothing else.
+      expect(attentionCall!.sql).toContain('details_completed_at IS NULL');
+      expect(attentionCall!.sql).toContain("a.status = 'hired'");
+      expect(attentionCall!.sql).toContain('a.hired_ack_at IS NULL');
+      // Bounded: an unbounded scan is what paging exists to avoid.
+      expect(attentionCall!.params).toEqual([100]);
+    });
+
+    it('leaves a details request that is already satisfied out of it', async () => {
+      // Requested, but nothing is actually outstanding -- `details_status`
+      // says 'complete', and a banner asking for nothing is worse than none.
+      serve([], [{ ...awaitingDetails, required_fields: [], application_answers: {} }]);
+
+      const res = await handler(ev2);
+
+      expect(JSON.parse(res.body).attention.details_requested).toEqual([]);
+    });
+
+    it('is empty, not absent, when nothing needs the worker', async () => {
+      serve([pageRow], []);
+
+      const res = await handler(ev2);
+
+      expect(JSON.parse(res.body).attention).toEqual({
+        details_requested: [],
+        unacknowledged_hires: [],
+      });
     });
   });
 

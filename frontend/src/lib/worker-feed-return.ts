@@ -25,6 +25,24 @@ const FEED_URL_KEY = 'jale.worker.feed-url';
 /** "This job page was opened from the feed." True of one navigation only. */
 const FEED_ORIGIN_KEY = 'jale.worker.feed-origin';
 
+/**
+ * How long that stays true.
+ *
+ * The marker is written as a job is opened and spent when that job page
+ * mounts, so in the ordinary case it lives for one navigation. It can outlive
+ * that: a ctrl-click opens the job in a NEW tab and leaves this one on the
+ * feed, and `sessionStorage` is COPIED into the new tab, so the marker can be
+ * left behind on both sides. (`opensInThisTab` below stops it being written at
+ * all for that click; the clock is the backstop for every route to the same
+ * state that nobody has thought of.)
+ *
+ * Two minutes: far longer than any page load, far shorter than the gap before
+ * a worker opens some other job from somewhere else -- and the cost of it
+ * expiring early is only that the back link is followed instead of the history
+ * being walked, which lands on the same feed without the scroll position.
+ */
+const FEED_ORIGIN_TTL_MS = 2 * 60 * 1000;
+
 /** The feed with no filters -- what an unremembered return falls back to. */
 export const WORKER_FEED_HREF = '/worker/home';
 
@@ -72,9 +90,34 @@ export function rememberFeedUrl(href: string): void {
   write(FEED_URL_KEY, href);
 }
 
-/** Called as a job is opened FROM the feed, and only then. */
+/**
+ * Called as a job is opened FROM the feed, and only then.
+ *
+ * The value is the moment it happened: see `FEED_ORIGIN_TTL_MS`.
+ */
 export function markFeedOrigin(): void {
-  write(FEED_ORIGIN_KEY, '1');
+  write(FEED_ORIGIN_KEY, String(Date.now()));
+}
+
+/**
+ * Whether a click will navigate THIS tab.
+ *
+ * A middle-click, or a ctrl/cmd/shift-click, opens the destination somewhere
+ * else and leaves this page exactly where it is -- so it is not a departure
+ * from the feed, and it must not be recorded as one. The same question decides
+ * whether the back link may take over a click, which is why both callers ask
+ * it here rather than each spelling the modifiers out.
+ */
+export function opensInThisTab(event: {
+  button: number;
+  defaultPrevented: boolean;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+}): boolean {
+  if (event.defaultPrevented || event.button !== 0) return false;
+  return !(event.metaKey || event.ctrlKey || event.shiftKey || event.altKey);
 }
 
 export type FeedReturn = {
@@ -95,9 +138,13 @@ export type FeedReturn = {
  * by `consumeFeedOrigin` in a mount effect.
  */
 export function readFeedReturn(): FeedReturn {
+  const markedAt = Number(read(FEED_ORIGIN_KEY));
   return {
     href: read(FEED_URL_KEY) ?? WORKER_FEED_HREF,
-    canGoBack: read(FEED_ORIGIN_KEY) !== null,
+    // A marker with no readable time, or one older than the window, is not
+    // evidence about THIS page's arrival -- `Number(null)` is 0 and
+    // `Number('x')` is NaN, and neither passes.
+    canGoBack: markedAt > 0 && Date.now() - markedAt < FEED_ORIGIN_TTL_MS,
   };
 }
 
