@@ -82,6 +82,26 @@ export function ApplicantOverviewRow({ item }: { item: ApplicantOverviewItem }) 
    */
   const [savedStatus, setSavedStatus] = useState<ApplicationStatus | null>(null);
   const [saving, setSaving] = useState(false);
+  /*
+   * ...and this is what makes "a refreshed list simply takes over" true.
+   *
+   * The local write outlives the response that committed it -- the parent
+   * list still holds the old value until it refetches -- so it has to be
+   * dropped the moment the LIST changes its mind. Without this, a row whose
+   * status was moved from anywhere else (the worker detail page, another
+   * device, a dismissal on the messages board) kept showing whatever this
+   * component last wrote, for as long as it stayed mounted.
+   *
+   * The render-phase reset rather than an effect: this is React's documented
+   * "adjusting state when a prop changes" pattern, and an effect would render
+   * the stale status once before correcting it -- a visible flicker of a
+   * status the server has already disagreed with.
+   */
+  const [listStatus, setListStatus] = useState<ApplicationStatus>(item.application_status);
+  if (listStatus !== item.application_status) {
+    setListStatus(item.application_status);
+    setSavedStatus(null);
+  }
   const status = savedStatus ?? item.application_status;
 
   async function handleStatusChange(next: ApplicationStatus) {

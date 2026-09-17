@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import * as React from 'react';
 import type { ReactNode } from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 /*
@@ -139,8 +139,17 @@ function renderDrawer(children: ReactNode = null) {
   return renderIntl(<ConversationDrawerProvider>{children}</ConversationDrawerProvider>);
 }
 
+afterEach(() => {
+  // Unconditional: `useRealTimers` is a no-op when no fake clock is installed,
+  // and the one test that installs one must not be able to leak it.
+  vi.useRealTimers();
+});
+
 beforeEach(() => {
   markRead.mockReset();
+  // The context reports whether the stamp landed; a receipt that is refused is
+  // retried (see `useThreadReadReceipt`), so the stub has to answer.
+  markRead.mockResolvedValue(true);
   refreshInbox.mockReset();
   getConversation.mockReset();
   startConversation.mockReset();
@@ -320,6 +329,93 @@ describe('an applicant the inbox does not list', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Round-2 review: `startedThreads` is keyed by application, so a thread
+// started here survived the applicant leaving the inbox -- the drawer kept a
+// transcript and a live composer pointed at somebody who had been dismissed.
+// The board has guarded against exactly this since it shipped.
+// ---------------------------------------------------------------------------
+
+describe('an applicant who leaves the inbox', () => {
+  it('is dropped, rather than left on screen as a live transcript', async () => {
+    const user = userEvent.setup();
+    // Picked from the drawer's OWN list, so nothing is describing this
+    // applicant except the inbox row itself.
+    const { rerender } = renderDrawer();
+    await user.click(screen.getByRole('button', {
+      name: new RegExp(message('employer_messages.drawer_button')),
+    }));
+    await user.click(screen.getByText('Maria Garcia'));
+    await screen.findAllByText('I can start Monday');
+
+    // Dismissed elsewhere: the next inbox read simply does not carry them.
+    unreadState = { items: [neverMessaged], unreadCount: 0, unreadByConversation: {} };
+    rerender(<ConversationDrawerProvider>{null}</ConversationDrawerProvider>);
+
+    await waitFor(() =>
+      expect(screen.getByText(message('employer_messages.empty_select'))).toBeInTheDocument(),
+    );
+    expect(screen.queryByText('I can start Monday')).not.toBeInTheDocument();
+  });
+
+  it('keeps an applicant the inbox never listed but the caller described', async () => {
+    const user = userEvent.setup();
+    // T8: the applicants board lists a never-messaged applicant of a paused
+    // job, which the inbox does not carry. Absent from `items` is that
+    // applicant's NORMAL state, not evidence that they are gone.
+    renderDrawer(
+      <OpenerPage
+        target={{
+          application_id: 'app-paused',
+          worker_id: 'w-7',
+          job_id: 'job-paused',
+          worker_name: 'Ana Flores',
+          job_title: 'Framer',
+          job_city: 'El Paso',
+          applied_at: '2026-09-12T00:00:00Z',
+        }}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'open thread' }));
+
+    expect(await screen.findByText('Ana Flores')).toBeInTheDocument();
+    expect(screen.queryByText(message('employer_messages.empty_select'))).not.toBeInTheDocument();
+  });
+});
+
+describe('the drawer list row', () => {
+  it('says "unread" in words, not only in weight and colour', async () => {
+    const user = userEvent.setup();
+    renderDrawer();
+
+    await user.click(screen.getByRole('button', {
+      name: new RegExp(message('employer_messages.drawer_button')),
+    }));
+
+    const row = screen.getByText('Maria Garcia').closest('button');
+    expect(row).not.toBeNull();
+    expect(within(row as HTMLElement).getByText(message('employer_messages.unread'))).toBeInTheDocument();
+  });
+
+  it('says nothing for a thread that has been read', async () => {
+    const user = userEvent.setup();
+    unreadState = {
+      items: [{ ...messaged, unread: false }],
+      unreadCount: 0,
+      unreadByConversation: { 'conv-1': false },
+    };
+    renderDrawer();
+
+    await user.click(screen.getByRole('button', {
+      name: new RegExp(message('employer_messages.drawer_button')),
+    }));
+
+    const row = screen.getByText('Maria Garcia').closest('button');
+    expect(within(row as HTMLElement).queryByText(message('employer_messages.unread'))).not.toBeInTheDocument();
+  });
+});
+
 describe('the read receipt', () => {
   it('marks a thread read once per open, not once per poll', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -336,7 +432,9 @@ describe('the read receipt', () => {
       await vi.advanceTimersByTimeAsync(31_000);
     });
     expect(markRead).toHaveBeenCalledTimes(1);
-    vi.useRealTimers();
+    // The clock is restored in `afterEach`, not here: a failing assertion
+    // above would otherwise leave fake timers installed for every suite that
+    // ran after it in this file.
   });
 
   it('marks again when the worker writes while the thread is on screen', async () => {

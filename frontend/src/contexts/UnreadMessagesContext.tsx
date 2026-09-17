@@ -86,8 +86,14 @@ export type UnreadMessagesValue = {
      * is a read RECEIPT, and refreshing the stamp is what stops a message that
      * arrived between two polls from being counted as unread afterwards. Only
      * the count is guarded, so a second open cannot decrement twice.
+     *
+     * RESOLVES with whether the stamp actually landed, and never rejects.
+     * Callers need the answer: `useThreadReadReceipt` remembers which thread
+     * it has receipted so it does not write on every poll, and a receipt that
+     * was refused must not be remembered as done -- otherwise one failed POST
+     * leaves a thread permanently badged for as long as it stays open.
      */
-    markRead: (conversationId: string) => void;
+    markRead: (conversationId: string) => Promise<boolean>;
 };
 
 const UnreadMessagesContext = createContext<UnreadMessagesValue | null>(null);
@@ -153,9 +159,11 @@ export function UnreadMessagesProvider({ children }: { children: ReactNode }) {
     }, [canFetch, refresh]);
 
     const markRead = useCallback(
-        (conversationId: string) => {
+        async (conversationId: string): Promise<boolean> => {
             const token = idTokenRef.current;
-            if (!token) return;
+            // No session to write with is not a receipt, and saying otherwise
+            // would let the caller record one that never happened.
+            if (!token) return false;
 
             // Whether this thread is currently COUNTED, decided before the
             // optimistic write so the revert knows what to put back.
@@ -166,7 +174,10 @@ export function UnreadMessagesProvider({ children }: { children: ReactNode }) {
             );
             if (wasUnread) setData((prev) => withUnread(prev, conversationId, false));
 
-            void markConversationRead(token, conversationId).catch(() => {
+            try {
+                await markConversationRead(token, conversationId);
+                return true;
+            } catch {
                 // The stamp did not land, so the thread IS still unread. Put
                 // it back rather than leaving a badge that lies in the
                 // reassuring direction; the next poll settles it either way.
@@ -175,14 +186,20 @@ export function UnreadMessagesProvider({ children }: { children: ReactNode }) {
                 // between the optimistic write and this refusal has already
                 // re-counted the thread, and an unconditional +1 would then
                 // count it twice.
-                if (!wasUnread) return;
-                setData((prev) => {
-                    const stillCleared = prev?.items.some(
-                        (item) => item.conversation_id === conversationId && !item.unread,
-                    );
-                    return stillCleared ? withUnread(prev, conversationId, true) : prev;
-                });
-            });
+                //
+                // The revert happens BEFORE `false` goes back to the caller,
+                // so a retry it schedules sees the reverted state rather than
+                // racing it.
+                if (wasUnread) {
+                    setData((prev) => {
+                        const stillCleared = prev?.items.some(
+                            (item) => item.conversation_id === conversationId && !item.unread,
+                        );
+                        return stillCleared ? withUnread(prev, conversationId, true) : prev;
+                    });
+                }
+                return false;
+            }
         },
         [setData],
     );

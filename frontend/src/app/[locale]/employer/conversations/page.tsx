@@ -9,6 +9,7 @@ import { useRouter } from '@/i18n/navigation';
 import { usePageData } from '@/hooks/usePageData';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { useThreadReadReceipt } from '@/hooks/useThreadReadReceipt';
+import { useUnreadMessages } from '@/contexts/UnreadMessagesContext';
 import { AppShell } from '@/components/layout/AppShell';
 import { PostJobButton } from '@/components/employer/PostJobButton';
 import { Button } from '@/components/ui/button';
@@ -116,6 +117,29 @@ export default function EmployerConversationsPage() {
 
   const { data: inboxData, setData: setInboxData, refresh: refreshInbox } = inbox;
 
+  /*
+   * The session's POLLED copy of the same inbox (`UnreadMessagesContext`).
+   *
+   * This page reads `/employer/inbox` once and then polls only the open
+   * THREAD, so its own copy of the list is frozen at load. The context polls
+   * the list every 15s for the nav badge -- so it, not this page, is the one
+   * that learns a worker has written. Two things are taken from it:
+   *
+   *  - the read receipt's stamp (below), or a reply arriving while the thread
+   *    is open would light the badge and never be receipted: the page's stamp
+   *    never changes, so the hook never re-fires, and clicking the row again
+   *    is a no-op;
+   *  - the unread flags the rows render, so a reply lands as a marker on the
+   *    row rather than waiting for a navigation.
+   *
+   * The context is AUTHORITATIVE and the page's own copy is the fallback --
+   * for a row the context has no opinion on, and for the first paint before
+   * its read lands. `openItem`'s local clear below is that same fallback, not
+   * a duplicate to be tidied away.
+   */
+  const { items: polledItems, refresh: refreshPolledInbox, unreadByConversation } =
+    useUnreadMessages();
+
   const items = useMemo(() => inboxData?.items ?? [], [inboxData]);
   const jobs = inboxData?.jobs ?? [];
   const visibleItems = useMemo(
@@ -147,17 +171,40 @@ export default function EmployerConversationsPage() {
 
   const { setData: setThreadData, refresh: refreshThread, refreshError: threadRefreshError } = thread;
 
+  /**
+   * The selected row as the POLL sees it. Matched on the conversation first:
+   * that is what the stamp belongs to, and it is the id that survives a thread
+   * being started elsewhere (the drawer keys those by application until the
+   * inbox catches up). Application id second, for a row with no thread yet.
+   */
+  const polledSelected = useMemo(() => {
+    if (!selectedKey && !selectedConversationId) return null;
+    return (
+      (selectedConversationId
+        ? polledItems.find((item) => item.conversation_id === selectedConversationId)
+        : undefined) ??
+      polledItems.find((item) => item.application_id === selectedKey) ??
+      null
+    );
+  }, [polledItems, selectedConversationId, selectedKey]);
+
   /*
    * Reading a thread here clears its badge everywhere (sprint 26, B3). The
-   * stamp comes from this page's own inbox row rather than from the loaded
-   * transcript: it is the same value the server derives `unread` from, and it
-   * is there before the thread request lands, so opening a thread writes one
-   * receipt instead of two. `active` is unconditional -- unlike the drawer,
-   * this page IS the surface; if a thread is selected it is on screen.
+   * stamp comes from an inbox ROW rather than from the loaded transcript: it
+   * is the same value the server derives `unread` from, and it is there before
+   * the thread request lands, so opening a thread writes one receipt instead
+   * of two.
+   *
+   * From the POLLED row first (round 2): this page's own copy of the list is
+   * frozen at load, so a reply arriving while the employer sits on the thread
+   * never changed the stamp here -- the badge lit and the receipt never fired
+   * again. `active` is unconditional: unlike the drawer, this page IS the
+   * surface; if a thread is selected it is on screen.
    */
   useThreadReadReceipt({
     conversationId: selectedConversationId,
-    lastWorkerMessageAt: selectedItem?.last_worker_message_at ?? null,
+    lastWorkerMessageAt:
+      polledSelected?.last_worker_message_at ?? selectedItem?.last_worker_message_at ?? null,
     active: true,
   });
 
@@ -287,6 +334,10 @@ export default function EmployerConversationsPage() {
       // real thread, which changes the thread instance's deps and makes it load
       // the conversation that now exists.
       applyConversationToItems(detail.conversation, selectedItem.application_id);
+      // ...and the SESSION's copy, or the drawer would go on offering this
+      // applicant its first-message composer for up to a poll interval after
+      // the employer has written to them.
+      void refreshPolledInbox();
     } catch (err) {
       if (!routeLegalWall(err)) {
         // These two are specific enough to deserve their own sentence; the
@@ -315,8 +366,10 @@ export default function EmployerConversationsPage() {
       setThreadData(detail);
       applyConversationToItems(detail.conversation, selectedItem.application_id);
       // Closing moves the row between tabs; the server owns that rule, so ask
-      // it rather than guessing here.
+      // it rather than guessing here -- and ask for the session's copy too,
+      // which is what the drawer lists and the badge counts.
       void refreshInbox();
+      void refreshPolledInbox();
       toast.success(t('conversation_closed'));
     } catch (err) {
       routeLegalWall(err);
@@ -340,6 +393,9 @@ export default function EmployerConversationsPage() {
       }));
       if (selectedKey === target.application_id) setSelectedKey(null);
       setDismissTarget(null);
+      // The drawer lists this thread too, and a dismissed applicant it still
+      // shows is one an employer can still write to.
+      void refreshPolledInbox();
       toast.success(t('candidate_removed'));
     } catch (err) {
       if (!routeLegalWall(err)) setDismissError(translateError(err));
@@ -477,6 +533,11 @@ export default function EmployerConversationsPage() {
                     item={item}
                     selected={selectedKey === item.application_id}
                     onSelect={() => openItem(item.application_id)}
+                    unread={
+                      item.conversation_id && item.conversation_id in unreadByConversation
+                        ? unreadByConversation[item.conversation_id]
+                        : item.unread
+                    }
                     unreadLabel={t('unread')}
                     unknownWorkerLabel={t('unknown_worker')}
                     newApplicantLabel={t('new_applicant')}
@@ -654,6 +715,7 @@ export default function EmployerConversationsPage() {
 function InboxRow({
   item,
   selected,
+  unread,
   onSelect,
   unknownWorkerLabel,
   newApplicantLabel,
@@ -663,6 +725,12 @@ function InboxRow({
 }: {
   item: InboxItem;
   selected: boolean;
+  /**
+   * Whether a worker is waiting on an answer here, as the POLLED inbox sees
+   * it -- the page's own `item.unread` is only the fallback (see the note on
+   * `polledItems`), because this page never re-reads its list.
+   */
+  unread: boolean;
   onSelect: () => void;
   unknownWorkerLabel: string;
   newApplicantLabel: string;
@@ -675,13 +743,6 @@ function InboxRow({
   const name = item.worker_name ?? unknownWorkerLabel;
   const started = Boolean(item.conversation_id);
   const open = item.conversation_status === 'open';
-  /*
-   * Sprint 26 (B3): the worker has written and nobody has read it since. The
-   * API has sent this flag since the badge shipped and this row drew nothing
-   * with it -- so an employer who arrived here from a "3" in the nav had no
-   * way to tell WHICH three threads to open.
-   */
-  const unread = item.unread;
 
   return (
     <button

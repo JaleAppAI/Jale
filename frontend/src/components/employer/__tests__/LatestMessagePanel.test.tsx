@@ -2,7 +2,7 @@
 import * as React from 'react';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { screen } from '@testing-library/react';
+import { act, screen } from '@testing-library/react';
 
 /*
  * The dashboard's WhatsApp panel.
@@ -110,6 +110,41 @@ describe('LatestMessagePanel', () => {
         expect(screen.getByText(/2 hours ago/)).toBeInTheDocument();
         // The static paragraph is gone while there is something real to say.
         expect(screen.queryByText(message('employer_dashboard.panels.whatsapp_body'))).not.toBeInTheDocument();
+    });
+
+    it('catches up with a message that arrives after it mounted', async () => {
+        // Nothing yet, so the panel mounts on its empty state with "now" = NOW.
+        const { rerender } = renderIntl(<LatestMessagePanel fallbackJobTitle="Drywall Finisher" />);
+
+        // 30s later the inbox poll lands a reply. A `useNow()` frozen at mount
+        // would compare it against a moment BEFORE it existed and print "in 30
+        // seconds" -- a message from the future, on the panel whose one job is
+        // to say a worker has written.
+        vi.setSystemTime(new Date(NOW.getTime() + 30_000));
+        unreadState = {
+            loading: false,
+            unreadCount: 1,
+            items: [
+                inboxItem({
+                    application_id: 'app-new',
+                    conversation_id: 'conv-1',
+                    conversation_status: 'open',
+                    last_message_at: new Date(NOW.getTime() + 20_000).toISOString(),
+                    last_message_preview: 'Just replied',
+                    unread: true,
+                }),
+            ],
+        };
+        await act(async () => {
+            // Past the panel's own refresh interval, so "now" moves with the
+            // clock instead of staying where the mount left it.
+            await vi.advanceTimersByTimeAsync(61_000);
+        });
+        rerender(<LatestMessagePanel fallbackJobTitle="Drywall Finisher" />);
+
+        expect(screen.getByText('Just replied')).toBeInTheDocument();
+        expect(screen.queryByText(/^in /)).not.toBeInTheDocument();
+        expect(screen.getByText(/ago$/)).toBeInTheDocument();
     });
 
     it('puts the unread count in the panel header', () => {

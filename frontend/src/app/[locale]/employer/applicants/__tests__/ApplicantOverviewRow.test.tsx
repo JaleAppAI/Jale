@@ -280,3 +280,50 @@ describe('ApplicantOverviewRow actions', () => {
       .toBeInTheDocument();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Round-2 review: the row remembered its own write forever. A status moved
+// from anywhere else -- the worker detail page, another device, a dismissal on
+// the messages board -- was overwritten on screen by whatever this component
+// had last saved, for as long as it stayed mounted.
+// ---------------------------------------------------------------------------
+
+describe('ApplicantOverviewRow status sync', () => {
+  beforeEach(() => {
+    updateApplicantStatus.mockReset();
+    toastError.mockReset();
+  });
+
+  it('lets a refreshed list override the status it saved itself', async () => {
+    const user = userEvent.setup();
+    updateApplicantStatus.mockResolvedValue({ status: 'talking' });
+    const { rerender } = renderIntl(<ApplicantOverviewRow item={item} />);
+
+    const select = () =>
+      screen.getByRole('combobox', { name: message('employer_applicants.status_label') }) as HTMLSelectElement;
+    await user.selectOptions(select(), 'talking');
+    expect(select().value).toBe('talking');
+
+    // What the next fetch of the board publishes: somebody hired them
+    // elsewhere. The list is the authority; this row's memory is not.
+    rerender(<ApplicantOverviewRow item={{ ...item, application_status: 'hired' }} />);
+
+    expect(select().value).toBe('hired');
+  });
+
+  it('keeps its own write while the list still says the old thing', async () => {
+    const user = userEvent.setup();
+    updateApplicantStatus.mockResolvedValue({ status: 'talking' });
+    const { rerender } = renderIntl(<ApplicantOverviewRow item={item} />);
+
+    const select = () =>
+      screen.getByRole('combobox', { name: message('employer_applicants.status_label') }) as HTMLSelectElement;
+    await user.selectOptions(select(), 'talking');
+
+    // A re-render that carries the SAME list value (a sibling row updated, a
+    // filter chip toggled) must not throw the write away.
+    rerender(<ApplicantOverviewRow item={{ ...item }} />);
+
+    expect(select().value).toBe('talking');
+  });
+});

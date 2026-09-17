@@ -28,12 +28,28 @@ const DISPLAY_CAP = 99;
 
 export type UnreadBadgeTone = 'rail' | 'bar';
 
+/*
+ * Both pairs are stated here with their measured contrast, because a filled
+ * pill is the one place in this app where a token swap between themes goes
+ * unnoticed until somebody cannot read a number.
+ *
+ *  - `rail` sits on the navy sidebar and on the drawer's navy launcher. White
+ *    ground with `--jale-sidebar` ink: 19.1:1 dark, 16.5:1 light. The brand
+ *    blue is already the ACTIVE nav pill's colour on that rail, so the badge
+ *    deliberately does not reuse it.
+ *  - `bar` sits on light grounds (the mobile tab bar, the dashboard panel
+ *    header). `--jale-blue-500` (#0064d6) with `--primary-fg` (#ffffff) is
+ *    5.54:1 in BOTH themes: that token is deliberately not re-pointed in
+ *    `.dark` (see globals.css -- "one blue in both themes"), which is exactly
+ *    the property this pill needs.
+ *
+ * NOT `--jale-blue-700`, which this started as: `.dark` re-points it to
+ * `#a8c5ff`, a LIGHT blue, and white on it is 1.74:1 -- a number nobody could
+ * read on the two surfaces where this tone is used.
+ */
 const TONE_CLASS: Record<UnreadBadgeTone, string> = {
-    // On the navy sidebar: the brand blue is already the ACTIVE pill's colour
-    // there, so the badge uses white-on-navy's counterpart instead and stays
-    // legible on both the active and the idle row.
     rail: 'bg-white text-[var(--jale-sidebar)]',
-    bar: 'bg-[var(--jale-blue-700)] text-white',
+    bar: 'bg-[var(--jale-blue-500)] text-[var(--primary-fg)]',
 };
 
 export function UnreadBadge({ count, tone }: { count: number; tone: UnreadBadgeTone }) {

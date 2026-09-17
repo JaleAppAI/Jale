@@ -55,15 +55,21 @@ vi.mock('@/components/ui/toast', () => ({
 }));
 
 const markRead = vi.fn();
+const refreshPolled = vi.fn();
+/**
+ * The session-wide inbox, as the context polls it. Assigned per test: this is
+ * the copy that LEARNS things, and the page's own is frozen at load.
+ */
+let polled: { items: import('@/lib/api/employer').InboxItem[]; unreadByConversation: Record<string, boolean> };
 vi.mock('@/contexts/UnreadMessagesContext', () => ({
   useUnreadMessages: () => ({
-    items: [],
-    unreadCount: 0,
-    unreadByConversation: {},
+    items: polled.items,
+    unreadCount: Object.values(polled.unreadByConversation).filter(Boolean).length,
+    unreadByConversation: polled.unreadByConversation,
     loading: false,
     errorKind: null,
     retry: vi.fn(),
-    refresh: vi.fn(),
+    refresh: refreshPolled,
     markRead,
   }),
   useUnreadCount: () => 0,
@@ -147,6 +153,11 @@ const UNREAD = () => message('employer_messages.unread');
 
 beforeEach(() => {
   markRead.mockReset();
+  markRead.mockResolvedValue(true);
+  refreshPolled.mockReset();
+  // Empty by default: the fallback path (the page's own copy) is what the
+  // original B3 cases below exercise.
+  polled = { items: [], unreadByConversation: {} };
   getInbox.mockReset();
   getConversation.mockReset();
   getInbox.mockResolvedValue(inbox);
@@ -218,5 +229,84 @@ describe('unread rows on the Messages board', () => {
       expect(within(rowFor('Maria Garcia')).queryByText(UNREAD())).not.toBeInTheDocument(),
     );
     expect(within(rowFor('Jose Ruiz')).getByText(UNREAD())).toBeInTheDocument();
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// Round-2 review: this page reads the inbox ONCE and then polls only the open
+// thread, so its own copy of the list is frozen. A reply arriving while the
+// employer sat on the thread lit the nav badge (the context polls) and was
+// never receipted here -- the page's stamp never changed, so the hook never
+// re-fired, and clicking the row again did nothing.
+// ---------------------------------------------------------------------------
+
+describe('a reply that arrives while the thread is open', () => {
+  it('is receipted again, from the polled copy of the inbox', async () => {
+    const user = userEvent.setup();
+    polled = { items: [unreadItem, readItem], unreadByConversation: { 'conv-1': true, 'conv-2': false } };
+    const { rerender } = renderIntl(<EmployerConversationsPage />);
+    await waitFor(() => expect(rowFor('Maria Garcia')).toBeInTheDocument());
+
+    await user.click(rowFor('Maria Garcia'));
+    await waitFor(() => expect(markRead).toHaveBeenCalledTimes(1));
+
+    // What the context's next poll publishes: the worker wrote again.
+    polled = {
+      items: [
+        { ...unreadItem, unread: true, last_worker_message_at: '2026-09-16T11:30:00Z' },
+        readItem,
+      ],
+      unreadByConversation: { 'conv-1': true, 'conv-2': false },
+    };
+    rerender(<EmployerConversationsPage />);
+
+    await waitFor(() => expect(markRead).toHaveBeenCalledTimes(2));
+    expect(markRead).toHaveBeenLastCalledWith('conv-1');
+  });
+
+  it('marks the row again, without the page re-reading its own list', async () => {
+    const user = userEvent.setup();
+    polled = { items: [unreadItem, readItem], unreadByConversation: { 'conv-1': true, 'conv-2': false } };
+    const { rerender } = renderIntl(<EmployerConversationsPage />);
+    await waitFor(() => expect(rowFor('Maria Garcia')).toBeInTheDocument());
+
+    await user.click(rowFor('Maria Garcia'));
+    // Cleared in both copies as the thread opens.
+    polled = { ...polled, unreadByConversation: { 'conv-1': false, 'conv-2': false } };
+    rerender(<EmployerConversationsPage />);
+    await waitFor(() =>
+      expect(within(rowFor('Maria Garcia')).queryByText(UNREAD())).not.toBeInTheDocument(),
+    );
+
+    // The poll then reports a new reply on that same thread.
+    polled = { ...polled, unreadByConversation: { 'conv-1': true, 'conv-2': false } };
+    rerender(<EmployerConversationsPage />);
+
+    expect(within(rowFor('Maria Garcia')).getByText(UNREAD())).toBeInTheDocument();
+    expect(getInbox).toHaveBeenCalledTimes(1);
+  });
+
+  it('tells the session to re-read the inbox after a dismissal', async () => {
+    const user = userEvent.setup();
+    polled = { items: [unreadItem, readItem], unreadByConversation: {} };
+    renderIntl(<EmployerConversationsPage />);
+    await waitFor(() => expect(rowFor('Maria Garcia')).toBeInTheDocument());
+    await user.click(rowFor('Maria Garcia'));
+
+    // The thread pane's "Not interested" opens the confirmation; the dialog
+    // then repeats the label on its confirm button, so the LAST one on screen
+    // is the one that commits.
+    await user.click((await screen.findAllByRole('button', {
+      name: message('employer_messages.not_interested'),
+    }))[0]);
+    const buttons = await screen.findAllByRole('button', {
+      name: message('employer_messages.not_interested'),
+    });
+    await user.click(buttons[buttons.length - 1]);
+
+    // Otherwise the drawer goes on listing -- and offering a composer for --
+    // an applicant this page has just dismissed.
+    await waitFor(() => expect(refreshPolled).toHaveBeenCalled());
   });
 });

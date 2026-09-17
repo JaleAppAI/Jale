@@ -170,6 +170,35 @@ export function ConversationDrawer() {
   const composerSubject: ComposerSubject | null =
     selectedItem ?? (inboxLoading ? null : composerSubjectFor(pendingTarget));
 
+  /*
+   * The applicant vanished from the inbox while the drawer was showing their
+   * thread -- dismissed from the applicants board or the messages board, in
+   * another tab or by the employer themselves a moment ago. Mirrors the
+   * board's own guard (`conversations/page.tsx`): a surface must not keep a
+   * transcript and a live composer pointed at somebody the inbox no longer
+   * lists, and `startedThreads` made that outlast even a reload of the list,
+   * because a thread started HERE is remembered by application id.
+   *
+   * Three things are deliberately NOT treated as vanishing:
+   *   - a loading or failed inbox, which is an absence of an answer rather
+   *     than the answer "gone";
+   *   - a request-described applicant (T8): the applicants board lists people
+   *     the inbox legitimately does not carry -- a never-messaged applicant of
+   *     a paused job -- and `pendingTarget` is the whole point of that feature;
+   *   - nothing at all, while the employer has nothing selected.
+   */
+  useEffect(() => {
+    if (!selectedKey || inboxLoading || inboxErrorKind || pendingTarget) return;
+    if (items.some((item) => item.application_id === selectedKey)) return;
+    setSelectedKey(null);
+    setStartedThreads((prev) => {
+      if (!(selectedKey in prev)) return prev;
+      const next = { ...prev };
+      delete next[selectedKey];
+      return next;
+    });
+  }, [inboxErrorKind, inboxLoading, items, pendingTarget, selectedKey]);
+
   const routeLegalWall = useCallback(
     (err: unknown): boolean => {
       if (!isLegalWallError(err)) return false;
@@ -371,6 +400,7 @@ export function ConversationDrawer() {
                         unread={Boolean(item.conversation_id && unreadByConversation[item.conversation_id])}
                         unknownWorkerLabel={t('unknown_worker')}
                         noMessagesLabel={t('no_messages')}
+                        unreadLabel={t('unread')}
                         onSelect={() => setSelectedKey(item.application_id)}
                       />
                     </li>
@@ -497,6 +527,7 @@ function DrawerThreadRow({
   unread,
   unknownWorkerLabel,
   noMessagesLabel,
+  unreadLabel,
   onSelect,
 }: {
   item: InboxItem;
@@ -505,6 +536,8 @@ function DrawerThreadRow({
   unread: boolean;
   unknownWorkerLabel: string;
   noMessagesLabel: string;
+  /** Visually-hidden word for the unread marker, as on the board's row. */
+  unreadLabel: string;
   onSelect: () => void;
 }) {
   const name = item.worker_name ?? unknownWorkerLabel;
@@ -530,6 +563,11 @@ function DrawerThreadRow({
               unread ? 'font-extrabold' : 'font-bold',
             ].join(' ')}
           >
+            {/* And the WORD, for a reader who has neither weight nor colour.
+                The board's row has said it since B3; this one was reading as
+                an ordinary row to a screen reader. Inside the name so it is
+                announced as part of the row's accessible name. */}
+            {unread ? <span className="sr-only">{unreadLabel} </span> : null}
             {name}
           </span>
           <span className="shrink-0 text-[10px] tabular-nums text-[var(--jale-ink-2)]">

@@ -55,12 +55,18 @@ export function LatestMessagePanel({ fallbackJobTitle }: { fallbackJobTitle: str
     const tMessages = useTranslations('employer_messages');
     const format = useFormatter();
     /*
-     * The reference point for "2 hours ago", read ONCE per mount rather than
-     * from `Date.now()` in the middle of the render: a clock call during
-     * render is impure, and two renders a second apart would legitimately
-     * produce two different phrases for the same message.
+     * The reference point for "2 hours ago". Not `Date.now()` in the middle of
+     * the render -- a clock call during render is impure -- and not a bare
+     * `useNow()` either, which freezes at MOUNT.
+     *
+     * The freeze is not theoretical here: this panel re-renders every time the
+     * inbox poll lands, so a message that arrived after the mount was being
+     * compared against a "now" older than itself, and the panel printed "in 5
+     * minutes" -- a message from the future, on the surface whose whole job is
+     * to say a worker has written. A minute is the resolution this phrase is
+     * ever read at, so that is what it costs.
      */
-    const now = useNow();
+    const now = useNow({ updateInterval: 60_000 });
     const { errorKind, items, loading, retry, unreadCount } = useUnreadMessages();
 
     const latest = useMemo(() => newestMessage(items), [items]);
