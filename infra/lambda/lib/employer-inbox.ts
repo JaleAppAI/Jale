@@ -96,8 +96,13 @@ const INBOX_QUERY = `
   -- A SIBLING of last_msg, not a filter on it: the preview is the newest
   -- message in either direction, the badge is the newest one FROM the worker.
   -- Those are different rows whenever the employer has replied last, so one
-  -- join cannot serve both. Served by idx_job_messages_conversation_created
-  -- (025:44-45) with direction as a filter.
+  -- join cannot serve both. Filtered on direction rather than on
+  -- sender_type = 'worker' on purpose: "arrived from outside" is what the
+  -- badge means. The two are equivalent today (job-messaging.ts:692 is the
+  -- only writer of an inbound row) -- do not "tighten" this to sender_type,
+  -- which would change what the badge counts the day a system-inbound path
+  -- appears. Expected to be served by idx_job_messages_conversation_created
+  -- (025:44-45) with direction as a filter; not measured with EXPLAIN.
   LEFT JOIN LATERAL (
     SELECT jcm.created_at
     FROM job_conversation_messages jcm

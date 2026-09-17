@@ -613,6 +613,18 @@ maybeDescribe('migration 096 backfills the employer read stamp', () => {
   const applicationId = randomUUID();
   const conversationId = randomUUID();
 
+  // A SECOND employer, whose only thread the worker OPENED and never wrote in
+  // -- openWorkerConversation's exact footprint (last_worker_message_at set,
+  // no message row). Its own employer so the single-row inbox assertions stay
+  // simple. This is the population whose meaning round 2 changed, and the one
+  // 096 and the new formula could most easily disagree about.
+  const openedEmployerId = randomUUID();
+  const openedEmployerSub = `s26-096-opened-employer-${tag}`;
+  const openedWorkerId = randomUUID();
+  const openedJobId = randomUUID();
+  const openedApplicationId = randomUUID();
+  const openedConversationId = randomUUID();
+
   /** The worker's last message, a day before the backfill runs. */
   const workerWroteAt = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
@@ -637,19 +649,36 @@ maybeDescribe('migration 096 backfills the employer read stamp', () => {
   /** The inbox, read the way the Lambda reads it: as jale_admin, both GUCs
    * bound, in a transaction that is rolled back so it cannot disturb the
    * migration cases around it. */
-  async function inboxUnread(): Promise<boolean> {
+  async function inboxUnreadFor(sub: string, id: string, conversation: string): Promise<boolean> {
     await admin.query('BEGIN');
     try {
-      await admin.query(`SELECT set_config('app.current_user_id', $1, true)`, [employerSub]);
-      await admin.query(`SELECT set_config('app.current_internal_user_id', $1, true)`, [employerId]);
-      const inbox = await listEmployerInbox(admin as unknown as PoolClient, employerId);
+      await admin.query(`SELECT set_config('app.current_user_id', $1, true)`, [sub]);
+      await admin.query(`SELECT set_config('app.current_internal_user_id', $1, true)`, [id]);
+      const inbox = await listEmployerInbox(admin as unknown as PoolClient, id);
       expect(inbox.items).toHaveLength(1);
-      expect(inbox.items[0].conversation_id).toBe(conversationId);
+      expect(inbox.items[0].conversation_id).toBe(conversation);
       expect(inbox.unread_count).toBe(inbox.items[0].unread ? 1 : 0);
       return inbox.items[0].unread;
     } finally {
       await admin.query('ROLLBACK');
     }
+  }
+
+  async function inboxUnread(): Promise<boolean> {
+    return inboxUnreadFor(employerSub, employerId, conversationId);
+  }
+
+  /** The opened-but-never-wrote thread, read the same way. */
+  async function openedInboxUnread(): Promise<boolean> {
+    return inboxUnreadFor(openedEmployerSub, openedEmployerId, openedConversationId);
+  }
+
+  async function openedStamp(): Promise<Date | null> {
+    const res = await su.query<{ employer_last_read_at: Date | null }>(
+      'SELECT employer_last_read_at FROM job_conversations WHERE id = $1',
+      [openedConversationId],
+    );
+    return res.rows[0].employer_last_read_at;
   }
 
   async function forceFlags(): Promise<{ enabled: boolean; forced: boolean }> {
@@ -707,6 +736,35 @@ maybeDescribe('migration 096 backfills the employer read stamp', () => {
        VALUES ($1, 'worker', 'inbound', 'pre-096 worker message', 'received', $2)`,
       [conversationId, workerWroteAt],
     );
+
+    // ── the opened-but-never-wrote thread ──
+    // last_worker_message_at IS set and NO message row exists, which is
+    // precisely what openWorkerConversation (job-messaging.ts:813) leaves
+    // behind. Under the round-1 formula this was unread; under round 2 it is
+    // not, and 096 must not change that in either direction.
+    await su.query(
+      `INSERT INTO users (id, cognito_sub, user_type)
+       VALUES ($1, $2, 'employer'), ($3, $4, 'worker')`,
+      [openedEmployerId, openedEmployerSub, openedWorkerId, `s26-096-opened-worker-${tag}`],
+    );
+    await su.query(
+      `INSERT INTO jobs (id, employer_id, title, location, job_type, status)
+       VALUES ($1, $2, 'S26 096 opened-only', 'Austin', 'full-time', 'active')`,
+      [openedJobId, openedEmployerId],
+    );
+    await su.query(
+      `INSERT INTO job_applications (id, job_id, worker_id, status)
+       VALUES ($1, $2, $3, 'talking')`,
+      [openedApplicationId, openedJobId, openedWorkerId],
+    );
+    await su.query(
+      `INSERT INTO job_conversations
+         (id, job_id, employer_id, worker_id, application_id, status,
+          last_message_at, last_worker_message_at, employer_last_read_at)
+       VALUES ($1, $2, $3, $4, $5, 'open', NULL, $6, NULL)`,
+      [openedConversationId, openedJobId, openedEmployerId, openedWorkerId,
+       openedApplicationId, workerWroteAt],
+    );
   });
 
   afterAll(async () => {
@@ -720,7 +778,12 @@ maybeDescribe('migration 096 backfills the employer read stamp', () => {
       await su.query('DELETE FROM job_conversations WHERE id = $1', [conversationId]);
       await su.query('DELETE FROM job_applications WHERE id = $1', [applicationId]);
       await su.query('DELETE FROM jobs WHERE id = $1', [jobId]);
-      await su.query('DELETE FROM users WHERE id = ANY($1::uuid[])', [[employerId, workerId]]);
+      await su.query('DELETE FROM job_conversations WHERE id = $1', [openedConversationId]);
+      await su.query('DELETE FROM job_applications WHERE id = $1', [openedApplicationId]);
+      await su.query('DELETE FROM jobs WHERE id = $1', [openedJobId]);
+      await su.query('DELETE FROM users WHERE id = ANY($1::uuid[])', [
+        [employerId, workerId, openedEmployerId, openedWorkerId],
+      ]);
     } finally {
       await admin.end();
       await su.end();
@@ -753,6 +816,14 @@ maybeDescribe('migration 096 backfills the employer read stamp', () => {
     expect(await inboxUnread()).toBe(true);
   });
 
+  it('2b. an OPENED-but-never-wrote thread is NOT unread before the backfill either', async () => {
+    expect(await openedStamp()).toBeNull();
+    // The round-2 formula already excludes it: last_worker_message_at is set,
+    // but no message ever arrived. A NULL stamp is not enough to badge a
+    // thread -- something has to have been SAID.
+    expect(await openedInboxUnread()).toBe(false);
+  });
+
   it('3. 096 stamps it to the worker message instant, and it reads as READ', async () => {
     await apply096();
 
@@ -777,6 +848,19 @@ maybeDescribe('migration 096 backfills the employer read stamp', () => {
     // the tenant boundary: every employer able to read and write every other
     // employer's conversations.
     expect(await forceFlags()).toEqual({ enabled: true, forced: true });
+  });
+
+  it('4b. 096 is HARMLESS to the opened-but-never-wrote thread: stamped, still not unread', async () => {
+    // The backfill reaches it (its stamp was NULL, so GREATEST(...) applies --
+    // here COALESCE(last_message_at, created_at) falls through to created_at,
+    // since this thread has no messages at all) ...
+    expect(await openedStamp()).not.toBeNull();
+    // ... and the badge is unchanged, because the formula never depended on
+    // the stamp for this row. This is the case that shows the migration and
+    // the round-2 definition do not fight each other: 096 suppresses HISTORY
+    // for threads that were genuinely written in, and does nothing at all to
+    // threads that only look written-in because of last_worker_message_at.
+    expect(await openedInboxUnread()).toBe(false);
   });
 
   it('5. a worker message arriving AFTER the backfill flips the thread back to unread', async () => {
