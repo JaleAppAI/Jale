@@ -105,3 +105,32 @@ describe('the mobile Messages tab badge', () => {
         expect(screen.getByText('99+')).toBeInTheDocument();
     });
 });
+
+// ---------------------------------------------------------------------------
+// Round-2 review: the `bar` tone was white on `--jale-blue-700`, which `.dark`
+// re-points to `#a8c5ff` -- a LIGHT blue. 1.74:1 on the mobile Messages tab
+// and the dashboard panel, in the theme where the pill is hardest to read
+// anyway. The token pair below is the one that holds in BOTH themes, and this
+// test is here so a future "tidy the tokens" pass cannot quietly undo it.
+// ---------------------------------------------------------------------------
+
+describe('the badge palette', () => {
+    it('paints the light-ground pill in the blue that is not re-pointed in dark', () => {
+        renderIntl(<BottomTabBar role="employer" unreadCount={2} />);
+
+        const pill = screen.getByText('2').parentElement;
+        // --jale-blue-500 (#0064d6) / --primary-fg (#fff) = 5.54:1 in both
+        // themes. --jale-blue-700 is re-pointed to #a8c5ff by `.dark`.
+        expect(pill?.className).toContain('bg-[var(--jale-blue-500)]');
+        expect(pill?.className).toContain('text-[var(--primary-fg)]');
+        expect(pill?.className).not.toContain('jale-blue-700');
+    });
+
+    it('keeps the navy-ground pill on the white/sidebar pair', () => {
+        renderIntl(<Sidebar role="employer" homeHref="/employer/dashboard" chip={chip} unreadCount={2} />);
+
+        const pill = screen.getByText('2').parentElement;
+        expect(pill?.className).toContain('bg-white');
+        expect(pill?.className).toContain('text-[var(--jale-sidebar)]');
+    });
+});
