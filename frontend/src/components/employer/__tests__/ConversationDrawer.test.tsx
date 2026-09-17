@@ -350,7 +350,7 @@ describe('an applicant who leaves the inbox', () => {
 
     // Dismissed elsewhere: the next inbox read simply does not carry them.
     unreadState = { items: [neverMessaged], unreadCount: 0, unreadByConversation: {} };
-    rerender(<ConversationDrawerProvider />);
+    rerender(<ConversationDrawerProvider>{null}</ConversationDrawerProvider>);
 
     await waitFor(() =>
       expect(screen.getByText(message('employer_messages.empty_select'))).toBeInTheDocument(),
