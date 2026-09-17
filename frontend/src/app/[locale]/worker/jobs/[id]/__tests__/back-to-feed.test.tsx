@@ -143,7 +143,7 @@ describe('worker job detail — back to the feed', () => {
 
     it('goes back through history when the job was opened from the feed', () => {
         sessionStorage.setItem('jale.worker.feed-url', '/worker/home?q=drywall');
-        sessionStorage.setItem('jale.worker.feed-origin', '1');
+        sessionStorage.setItem('jale.worker.feed-origin', String(Date.now()));
         // The arrival itself: a tab that navigated here has an entry to go
         // back TO, which is the other half of the condition.
         historyEntries(2);
@@ -173,7 +173,7 @@ describe('worker job detail — back to the feed', () => {
         // all, while its history holds one entry: `back()` there does nothing
         // at all, which would make "Back to jobs" a dead link.
         sessionStorage.setItem('jale.worker.feed-url', '/worker/home?q=drywall');
-        sessionStorage.setItem('jale.worker.feed-origin', '1');
+        sessionStorage.setItem('jale.worker.feed-origin', String(Date.now()));
         historyEntries(1);
 
         renderIntl(<WorkerJobDetailPage />);
@@ -182,8 +182,24 @@ describe('worker job detail — back to the feed', () => {
         expect(back).not.toHaveBeenCalled();
     });
 
+    it('follows the link when the marker is stale', () => {
+        // The marker describes ONE navigation, moments old. A tab that has been
+        // sitting on a job page since this morning -- or one that inherited the
+        // marker from a ctrl-click and never used it -- must not send the
+        // worker back through a history that has moved on since.
+        sessionStorage.setItem('jale.worker.feed-url', '/worker/home?q=drywall');
+        sessionStorage.setItem('jale.worker.feed-origin', String(Date.now() - 10 * 60 * 1000));
+        historyEntries(2);
+
+        renderIntl(<WorkerJobDetailPage />);
+        fireEvent.click(backLink());
+
+        expect(back).not.toHaveBeenCalled();
+        expect(backLink()).toHaveAttribute('href', '/worker/home?q=drywall');
+    });
+
     it('leaves a ctrl-click alone', () => {
-        sessionStorage.setItem('jale.worker.feed-origin', '1');
+        sessionStorage.setItem('jale.worker.feed-origin', String(Date.now()));
         historyEntries(2);
 
         renderIntl(<WorkerJobDetailPage />);

@@ -29,7 +29,7 @@ import { ProfileCompleteModal, type ProfileCompleteValues } from '@/components/w
 import { ApplyFlow, type ApplyFlowSubmitError } from '@/components/worker/apply-flow/ApplyFlow';
 import { DetailsRequestedBanner } from '@/components/worker/DetailsRequestedBanner';
 import { apiFetch, isLegalWallError } from '@/lib/api';
-import { consumeFeedOrigin, readFeedReturn } from '@/lib/worker-feed-return';
+import { consumeFeedOrigin, opensInThisTab, readFeedReturn } from '@/lib/worker-feed-return';
 import { ApiError, classifyError, parseApiError, type ErrorKind } from '@/lib/api/errors';
 import { applyFlowReducer, initialApplyFlowState, flowHasProgress, promptAnswersPayload } from '@/lib/apply-flow-view';
 import { missingPromptAnswers } from '@/lib/application-requirements-flow';
@@ -107,11 +107,12 @@ export default function WorkerJobDetailPage() {
   const handleBackToFeed = useCallback((event: MouseEvent<HTMLAnchorElement>) => {
     if (!feedReturn.canGoBack) return;
     // A tab opened from a ctrl-click INHERITS this tab's sessionStorage, so it
-    // carries the marker while having a history of exactly one entry --
+    // can carry a marker while having a history of exactly one entry --
     // `back()` there does nothing at all and the link would be a dead end.
     if (window.history.length <= 1) return;
-    if (event.defaultPrevented || event.button !== 0) return;
-    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    // A middle- or modifier-click means "open the feed beside this page", and
+    // hijacking it would navigate this one instead.
+    if (!opensInThisTab(event)) return;
     event.preventDefault();
     router.back();
   }, [feedReturn, router]);

@@ -7,6 +7,7 @@ import { buildHireSummary, type HireTrade } from '../lib/application-hire-view';
 import { resolveTradeAlias, type TradeAliasQueryable } from '../lib/trade-canonical';
 import { normalizeProfession } from '../lib/profession';
 import { checkCompliance } from '../legal/check-compliance';
+import { decodeCursor, encodeCursor, parseLimit, type KeysetCursor } from '../lib/keyset-paging';
 
 const CORS_HEADERS = corsHeaders();
 
@@ -41,40 +42,6 @@ const MAX_LIMIT = 100;
  */
 const ATTENTION_LIMIT = 100;
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-interface Cursor {
-  appliedAt: string;
-  id: string;
-}
-
-function encodeCursor(appliedAt: string, id: string): string {
-  return Buffer.from(`${appliedAt}|${id}`, 'utf-8').toString('base64');
-}
-
-/** Never throws on malformed input -- an invalid cursor is a 400, not a crash. */
-function decodeCursor(raw: string): Cursor | null {
-  let decoded: string;
-  try {
-    decoded = Buffer.from(raw, 'base64').toString('utf-8');
-  } catch {
-    return null;
-  }
-  const sepIdx = decoded.lastIndexOf('|');
-  if (sepIdx <= 0 || sepIdx === decoded.length - 1) return null;
-  const appliedAt = decoded.slice(0, sepIdx);
-  const id = decoded.slice(sepIdx + 1);
-  if (Number.isNaN(Date.parse(appliedAt))) return null;
-  if (!UUID_RE.test(id)) return null;
-  return { appliedAt, id };
-}
-
-function parseLimit(raw: string | undefined): number {
-  if (!raw) return DEFAULT_LIMIT;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) return DEFAULT_LIMIT;
-  return Math.min(n, MAX_LIMIT);
-}
 
 /**
  * Fills `canonical_en`/`canonical_es` on the hired rows whose trade is the
@@ -289,9 +256,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 401, headers: CORS_HEADERS, body: JSON.stringify({ error: 'unauthorized' }) };
     }
 
-    const limit = parseLimit(event.queryStringParameters?.limit);
+    const limit = parseLimit(event.queryStringParameters?.limit, {
+      defaultLimit: DEFAULT_LIMIT,
+      maxLimit: MAX_LIMIT,
+    });
     const rawCursor = event.queryStringParameters?.cursor;
-    let cursor: Cursor | null = null;
+    let cursor: KeysetCursor | null = null;
     if (rawCursor) {
       cursor = decodeCursor(rawCursor);
       if (!cursor) {
@@ -335,7 +305,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // Keyset pagination on (applied_at, id) DESC: strictly-less on the TUPLE
     // is exactly "everything after the last row of the previous page", and is
     // what makes two applications sharing a timestamp safe.
-    if (cursor) params.push(cursor.appliedAt, cursor.id);
+    if (cursor) params.push(cursor.at, cursor.id);
     // One extra row, to learn whether a next page exists without a COUNT.
     params.push(limit + 1);
 

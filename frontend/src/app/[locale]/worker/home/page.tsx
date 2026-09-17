@@ -35,7 +35,7 @@ import {
 import { HiredBanner } from '@/components/worker/HiredBanner';
 import { HiredCelebrationModal } from '@/components/worker/HiredCelebrationModal';
 import { getJobs, updateWorkerProfile } from '@/lib/api/worker';
-import { markFeedOrigin, rememberFeedUrl } from '@/lib/worker-feed-return';
+import { markFeedOrigin, opensInThisTab, rememberFeedUrl } from '@/lib/worker-feed-return';
 import type { Job, PreferredCity } from '@/lib/api/worker';
 
 export const dynamic = 'force-dynamic';
@@ -164,8 +164,12 @@ function JobRows({ jobs }: { jobs: Job[] }) {
         /* The click is recorded on the ROW, so it covers the card's link
            whether it was tapped or opened with Enter: it is what lets the job
            page's back link use history -- and so restore the scroll position
-           -- instead of a plain link. */
-        <li key={job.id} onClick={markFeedOrigin}>
+           -- instead of a plain link. Only a click that actually LEAVES this
+           tab counts; a ctrl-click opens the job beside it and this page stays
+           put, so recording one would describe a navigation that never
+           happened -- in this tab AND in the copy of sessionStorage the new
+           tab inherits. */
+        <li key={job.id} onClick={(event) => { if (opensInThisTab(event)) markFeedOrigin(); }}>
           <WorkerJobCard job={job} href={`/worker/jobs/${job.id}`} />
         </li>
       ))}
