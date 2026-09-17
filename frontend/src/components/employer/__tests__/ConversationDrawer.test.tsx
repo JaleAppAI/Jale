@@ -147,6 +147,9 @@ afterEach(() => {
 
 beforeEach(() => {
   markRead.mockReset();
+  // The context reports whether the stamp landed; a receipt that is refused is
+  // retried (see `useThreadReadReceipt`), so the stub has to answer.
+  markRead.mockResolvedValue(true);
   refreshInbox.mockReset();
   getConversation.mockReset();
   startConversation.mockReset();

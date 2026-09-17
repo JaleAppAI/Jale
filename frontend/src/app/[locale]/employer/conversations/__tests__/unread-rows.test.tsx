@@ -147,6 +147,7 @@ const UNREAD = () => message('employer_messages.unread');
 
 beforeEach(() => {
   markRead.mockReset();
+  markRead.mockResolvedValue(true);
   getInbox.mockReset();
   getConversation.mockReset();
   getInbox.mockResolvedValue(inbox);

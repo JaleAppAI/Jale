@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, render } from '@testing-library/react';
+import { act, render, waitFor } from '@testing-library/react';
 
 /*
  * The read-receipt rule, on its own.
@@ -43,6 +43,7 @@ function setHidden(hidden: boolean) {
 
 beforeEach(() => {
     markRead.mockReset();
+    markRead.mockResolvedValue(true);
     // jsdom reports an unfocused document unless something has been clicked,
     // and "is the employer actually looking at this?" is half the rule -- so
     // the answer is stated explicitly rather than inherited from the harness.
@@ -99,6 +100,59 @@ describe('useThreadReadReceipt', () => {
         });
 
         expect(markRead).toHaveBeenCalledTimes(1);
+    });
+
+    it('tries again when the write was refused', async () => {
+        // A receipt that did not land is not a receipt. Before this, the ref
+        // said "done" the moment the POST was sent, so one refusal left the
+        // thread badged for as long as it stayed open.
+        markRead.mockResolvedValueOnce(false);
+        render(<Probe conversationId="conv-1" lastWorkerMessageAt="2026-09-16T10:00:00Z" />);
+        await waitFor(() => expect(markRead).toHaveBeenCalledTimes(1));
+
+        act(() => {
+            window.dispatchEvent(new Event('focus'));
+        });
+
+        await waitFor(() => expect(markRead).toHaveBeenCalledTimes(2));
+        expect(markRead).toHaveBeenLastCalledWith('conv-1');
+    });
+
+    it('does not retry a receipt that landed', async () => {
+        render(<Probe conversationId="conv-1" lastWorkerMessageAt="2026-09-16T10:00:00Z" />);
+        await waitFor(() => expect(markRead).toHaveBeenCalledTimes(1));
+
+        act(() => {
+            window.dispatchEvent(new Event('focus'));
+            document.dispatchEvent(new Event('visibilitychange'));
+        });
+
+        expect(markRead).toHaveBeenCalledTimes(1);
+    });
+
+    it('gives back only its own claim when a refusal lands late', async () => {
+        // The refusal for conv-1 arrives after the employer has moved on. It
+        // must not make conv-2 -- already receipted -- write again.
+        let refuseFirst: ((written: boolean) => void) | null = null;
+        markRead.mockImplementationOnce(() => new Promise<boolean>((resolve) => {
+            refuseFirst = resolve;
+        }));
+        const { rerender } = render(<Probe conversationId="conv-1" lastWorkerMessageAt={null} />);
+        await waitFor(() => expect(markRead).toHaveBeenCalledTimes(1));
+
+        rerender(<Probe conversationId="conv-2" lastWorkerMessageAt={null} />);
+        await waitFor(() => expect(markRead).toHaveBeenCalledTimes(2));
+
+        await act(async () => {
+            refuseFirst?.(false);
+            await Promise.resolve();
+        });
+        act(() => {
+            window.dispatchEvent(new Event('focus'));
+        });
+
+        // conv-2's receipt stands; nothing re-fires for the thread on screen.
+        expect(markRead).toHaveBeenCalledTimes(2);
     });
 
     it('defers the receipt of a background tab until the employer comes back', () => {

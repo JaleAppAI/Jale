@@ -70,7 +70,29 @@ export function useThreadReadReceipt({
         if (receipted && receipted.id === conversationId && receipted.stamp === lastWorkerMessageAt) {
             return;
         }
-        receiptedRef.current = { id: conversationId, stamp: lastWorkerMessageAt };
-        markRead(conversationId);
+        /*
+         * Claimed BEFORE the write so a re-render mid-flight cannot fire a
+         * second POST for the same thread -- and given back if the write is
+         * refused, because a receipt that did not land is not a receipt. Until
+         * this gave it back, one failed POST left a thread badged for as long
+         * as it stayed open: the ref said "done", so nothing ever tried again.
+         *
+         * The retry rides the next natural trigger (a focus or visibility
+         * bump, a newer worker message, reopening the thread) rather than
+         * firing immediately, which would be an unbounded loop against a
+         * server that is refusing.
+         *
+         * `Promise.resolve` because the value is only contractually a promise:
+         * a caller that hands this hook a synchronous stub still works, and is
+         * read as "assume it landed" rather than crashing on `.then`.
+         */
+        const claim = { id: conversationId, stamp: lastWorkerMessageAt };
+        receiptedRef.current = claim;
+        void Promise.resolve(markRead(conversationId)).then((written) => {
+            // Only ever gives back ITS OWN claim: by the time a refusal lands
+            // the employer may have opened another thread, and clearing that
+            // one's receipt would write a duplicate.
+            if (written === false && receiptedRef.current === claim) receiptedRef.current = null;
+        });
     }, [active, conversationId, lastWorkerMessageAt, markRead, returnToken]);
 }
