@@ -23,6 +23,7 @@ function baseRow(overrides: Record<string, unknown> = {}) {
     last_worker_message_at: null,
     last_message_preview: null,
     employer_last_read_at: null,
+    last_inbound_message_at: null,
     ...overrides,
   };
 }
@@ -120,21 +121,52 @@ describe('listEmployerInbox', () => {
   // ── T3a: the unread flag and its rollup ─────────────────────────────────
   //
   // `employer_last_read_at` has existed on job_conversations since migration
-  // 028 and nothing has ever written it, so EVERY pre-existing row arrives
-  // NULL. That is the case the first test pins: a thread the worker has
-  // written to and the employer has never marked read is unread.
+  // 028 and nothing wrote it before sprint 26, so every pre-existing row
+  // arrived NULL. Migration 096 backfills that history; from here on a NULL
+  // stamp means a conversation created after the backfill and never read.
   //
   // The comparison is deliberately strict (`>`), so a read stamped at the
-  // exact instant of the worker's last message counts as read -- the read
+  // exact instant of the last inbound message counts as read -- the read
   // endpoint writes `now()` after the message landed, and an off-by-one in
   // the other direction would leave a badge nobody can clear.
   describe('unread', () => {
-    it('marks a worker-messaged conversation the employer has never read as unread', async () => {
+    // ── WHY NOT last_worker_message_at (round 2) ──────────────────────────
+    //
+    // That column is a "the worker engaged" signal, NOT "the worker sent a
+    // message". `openWorkerConversation` (lib/job-messaging.ts:813) stamps it
+    // on the worker tapping "Open conversation" and inserts NO message row --
+    // the only three inserts into job_conversation_messages are at :503
+    // (employer outbound), :617 (system outbound) and :692 (worker inbound).
+    // Deriving the badge from it therefore announced a message that does not
+    // exist, and the preview beside that badge showed the EMPLOYER's own last
+    // text. The badge now keys on the newest INBOUND message instead.
+    //
+    // last_worker_message_at is deliberately left alone: the 24-hour Twilio
+    // reply window (isWorkerReplyWindowOpen) is built on exactly that
+    // "engaged" meaning, and narrowing it would close the send window early.
+    it('does NOT mark a thread unread when the worker only OPENED it and never wrote', async () => {
+      mockQuery.mockResolvedValueOnce(rowsResult([
+        baseRow({
+          conversation_id: 'c-1',
+          conversation_status: 'open',
+          // openWorkerConversation's exact footprint: engaged, no message.
+          last_worker_message_at: '2026-09-10T12:00:00Z',
+          last_inbound_message_at: null,
+          employer_last_read_at: null,
+        }),
+      ]));
+      const inbox = await listEmployerInbox(client, EMPLOYER);
+      expect(inbox.items[0].unread).toBe(false);
+      expect(inbox.unread_count).toBe(0);
+    });
+
+    it('marks a thread with a real inbound message the employer has never read as unread', async () => {
       mockQuery.mockResolvedValueOnce(rowsResult([
         baseRow({
           conversation_id: 'c-1',
           conversation_status: 'open',
           last_worker_message_at: '2026-09-10T12:00:00Z',
+          last_inbound_message_at: '2026-09-10T12:00:00Z',
           employer_last_read_at: null,
         }),
       ]));
@@ -142,12 +174,12 @@ describe('listEmployerInbox', () => {
       expect(inbox.items[0].unread).toBe(true);
     });
 
-    it('is not unread once the employer read AFTER the last worker message', async () => {
+    it('is not unread once the employer read AFTER the last inbound message', async () => {
       mockQuery.mockResolvedValueOnce(rowsResult([
         baseRow({
           conversation_id: 'c-1',
           conversation_status: 'open',
-          last_worker_message_at: '2026-09-10T12:00:00Z',
+          last_inbound_message_at: '2026-09-10T12:00:00Z',
           employer_last_read_at: '2026-09-10T12:00:01Z',
         }),
       ]));
@@ -160,7 +192,7 @@ describe('listEmployerInbox', () => {
         baseRow({
           conversation_id: 'c-1',
           conversation_status: 'open',
-          last_worker_message_at: '2026-09-10T12:00:02Z',
+          last_inbound_message_at: '2026-09-10T12:00:02Z',
           employer_last_read_at: '2026-09-10T12:00:01Z',
         }),
       ]));
@@ -168,19 +200,19 @@ describe('listEmployerInbox', () => {
       expect(inbox.items[0].unread).toBe(true);
     });
 
-    it('is not unread when the worker has never written, however long ago it was read', async () => {
+    it('is not unread when no inbound message exists, however long ago it was read', async () => {
       mockQuery.mockResolvedValueOnce(rowsResult([
         baseRow({
           conversation_id: 'c-1',
           conversation_status: 'open',
-          last_worker_message_at: null,
+          last_inbound_message_at: null,
           employer_last_read_at: null,
         }),
         baseRow({
           application_id: 'app-2',
           conversation_id: 'c-2',
           conversation_status: 'open',
-          last_worker_message_at: null,
+          last_inbound_message_at: null,
           employer_last_read_at: '2020-01-01T00:00:00Z',
         }),
       ]));
@@ -193,7 +225,7 @@ describe('listEmployerInbox', () => {
         baseRow({
           conversation_id: 'c-1',
           conversation_status: 'open',
-          last_worker_message_at: '2026-09-10T12:00:00Z',
+          last_inbound_message_at: '2026-09-10T12:00:00Z',
           employer_last_read_at: '2026-09-10T12:00:00Z',
         }),
       ]));
@@ -210,14 +242,14 @@ describe('listEmployerInbox', () => {
         baseRow({
           conversation_id: 'c-1',
           conversation_status: 'open',
-          last_worker_message_at: new Date('2026-09-10T12:00:02Z'),
+          last_inbound_message_at: new Date('2026-09-10T12:00:02Z'),
           employer_last_read_at: new Date('2026-09-10T12:00:01Z'),
         }),
         baseRow({
           application_id: 'app-2',
           conversation_id: 'c-2',
           conversation_status: 'open',
-          last_worker_message_at: new Date('2026-09-10T12:00:01Z'),
+          last_inbound_message_at: new Date('2026-09-10T12:00:01Z'),
           employer_last_read_at: '2026-09-10T12:00:02Z',
         }),
       ]));
@@ -225,8 +257,8 @@ describe('listEmployerInbox', () => {
       expect(inbox.items.map((i) => i.unread)).toEqual([true, false]);
     });
 
-    // A never-messaged applicant has no conversation row at all, so both
-    // columns come back NULL from the LEFT JOIN LATERAL.
+    // A never-messaged applicant has no conversation row at all, so every
+    // conversation column comes back NULL from the LEFT JOIN LATERAL.
     it('is not unread for a never-messaged applicant (no conversation row)', async () => {
       mockQuery.mockResolvedValueOnce(rowsResult([baseRow()]));
       const inbox = await listEmployerInbox(client, EMPLOYER);
@@ -236,9 +268,9 @@ describe('listEmployerInbox', () => {
 
     it('counts unread items across BOTH tabs into unread_count', async () => {
       mockQuery.mockResolvedValueOnce(rowsResult([
-        baseRow({ application_id: 'a1', conversation_id: 'c-1', conversation_status: 'open', last_worker_message_at: '2026-09-10T12:00:00Z' }),
-        baseRow({ application_id: 'a2', conversation_id: 'c-2', conversation_status: 'closed', last_worker_message_at: '2026-09-10T12:00:00Z' }),
-        baseRow({ application_id: 'a3', conversation_id: 'c-3', conversation_status: 'open', last_worker_message_at: '2026-09-10T12:00:00Z', employer_last_read_at: '2026-09-11T00:00:00Z' }),
+        baseRow({ application_id: 'a1', conversation_id: 'c-1', conversation_status: 'open', last_inbound_message_at: '2026-09-10T12:00:00Z' }),
+        baseRow({ application_id: 'a2', conversation_id: 'c-2', conversation_status: 'closed', last_inbound_message_at: '2026-09-10T12:00:00Z' }),
+        baseRow({ application_id: 'a3', conversation_id: 'c-3', conversation_status: 'open', last_inbound_message_at: '2026-09-10T12:00:00Z', employer_last_read_at: '2026-09-11T00:00:00Z' }),
         baseRow({ application_id: 'a4' }),
       ]));
       const inbox = await listEmployerInbox(client, EMPLOYER);
@@ -252,24 +284,80 @@ describe('listEmployerInbox', () => {
       expect(inbox.unread_count).toBe(0);
     });
 
-    it('selects the employer read stamp from the representative conversation', async () => {
+    it('selects the employer read stamp and the newest INBOUND message from SQL', async () => {
       mockQuery.mockResolvedValueOnce(rowsResult([]));
       await listEmployerInbox(client, EMPLOYER);
       const [sql] = mockQuery.mock.calls[0];
       expect(sql).toMatch(/c\.employer_last_read_at/);
       // ...and the LATERAL must project it, or the outer reference is a 42703.
       expect(sql).toMatch(/jc\.employer_last_read_at/);
+      // The unread source: a sibling LATERAL restricted to inbound messages.
+      expect(sql).toMatch(/last_inbound\.created_at AS last_inbound_message_at/);
+      expect(sql).toMatch(/jcm\.direction = 'inbound'/);
     });
 
-    // The read stamp is inbox INPUT, not inbox output: the employer UI has no
-    // use for it and every field in this response is a field the frontend type
+    // The preview is the newest message of ANY direction; the badge is the
+    // newest INBOUND one. Two different rows, so two different LATERALs -- a
+    // single join cannot serve both.
+    it('keeps the preview LATERAL unfiltered by direction', async () => {
+      mockQuery.mockResolvedValueOnce(rowsResult([]));
+      await listEmployerInbox(client, EMPLOYER);
+      const [sql] = mockQuery.mock.calls[0];
+      const preview = sql.slice(sql.indexOf('last_msg.body'), sql.indexOf(') last_msg'));
+      expect(preview).not.toMatch(/direction/);
+    });
+
+    // Both are inbox INPUT, not inbox output: the employer UI has no use for
+    // either, and every field in this response is a field the frontend type
     // has to mirror.
-    it('does not leak employer_last_read_at into the response items', async () => {
+    it('leaks neither employer_last_read_at nor last_inbound_message_at into the items', async () => {
       mockQuery.mockResolvedValueOnce(rowsResult([
-        baseRow({ conversation_id: 'c-1', conversation_status: 'open', employer_last_read_at: '2026-09-11T00:00:00Z' }),
+        baseRow({ conversation_id: 'c-1', conversation_status: 'open', employer_last_read_at: '2026-09-11T00:00:00Z', last_inbound_message_at: '2026-09-10T00:00:00Z' }),
       ]));
       const inbox = await listEmployerInbox(client, EMPLOYER);
       expect(Object.keys(inbox.items[0])).not.toContain('employer_last_read_at');
+      expect(Object.keys(inbox.items[0])).not.toContain('last_inbound_message_at');
+      // ...but last_worker_message_at stays: the drawer's reply-window hint
+      // reads it.
+      expect(Object.keys(inbox.items[0])).toContain('last_worker_message_at');
+    });
+  });
+
+  // ── T3a round 2: a dismissed applicant with a LIVE thread ────────────────
+  //
+  // Inbound routing (lib/job-messaging.ts:657-688) picks its target by
+  // `jc.worker_id` and `jc.status = 'open'` and never looks at the
+  // application's status, so a worker's WhatsApp reply still lands in the
+  // thread of an applicant the employer marked not-interested. Filtering
+  // those rows out of the inbox -- now the drawer's only source -- made that
+  // thread unreachable from every employer surface while messages kept
+  // arriving in it.
+  describe('dismissed applicants', () => {
+    it('keeps a not_interested applicant whose conversation still exists', async () => {
+      mockQuery.mockResolvedValueOnce(rowsResult([]));
+      await listEmployerInbox(client, EMPLOYER);
+      const [sql] = mockQuery.mock.calls[0];
+      expect(sql).toMatch(/\(ja\.status <> 'not_interested' OR c\.id IS NOT NULL\)/);
+      // The other half of the WHERE is untouched: a never-messaged applicant
+      // on a dead posting is still dropped.
+      expect(sql).toMatch(/\(c\.id IS NOT NULL OR j\.status = 'active'\)/);
+    });
+
+    it('still surfaces the dismissal to the UI through application_status', async () => {
+      mockQuery.mockResolvedValueOnce(rowsResult([
+        baseRow({
+          application_status: 'not_interested',
+          conversation_id: 'c-1',
+          conversation_status: 'open',
+          last_inbound_message_at: '2026-09-10T12:00:00Z',
+        }),
+      ]));
+      const inbox = await listEmployerInbox(client, EMPLOYER);
+      expect(inbox.items[0].application_status).toBe('not_interested');
+      // Reachable AND badged: the employer has an unanswered message from
+      // somebody they dismissed, which is exactly what they need to see.
+      expect(inbox.items[0].tab).toBe('active');
+      expect(inbox.items[0].unread).toBe(true);
     });
   });
 });

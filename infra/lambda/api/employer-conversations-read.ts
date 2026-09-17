@@ -1,6 +1,7 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
+import { markEmployerConversationRead } from '../lib/job-messaging';
 import { checkCompliance } from '../legal/check-compliance';
 
 const CORS_HEADERS = corsHeaders();
@@ -11,17 +12,17 @@ const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-
  * `job_conversations.employer_last_read_at` for the employer's OWN thread.
  *
  * This is the write half of the employer unread badge. `lib/employer-inbox.ts`
- * derives `unread` from `last_worker_message_at > employer_last_read_at`, so
- * this endpoint is the only thing that ever clears it.
+ * derives `unread` from `last_inbound_message_at > employer_last_read_at` --
+ * the newest message the worker actually SENT, not last_worker_message_at,
+ * which the "Open conversation" path stamps without a message row -- so this
+ * endpoint is the only thing that ever clears it.
  *
- * ── WHY `now()` AND NOT A CLIENT TIMESTAMP ────────────────────────────────
- * The stamp is compared against `last_worker_message_at`, which the WhatsApp
- * relay writes with the database's own clock. A client-supplied time would be
- * compared against a different clock: a browser running a few seconds fast
- * would mark messages read that had not arrived yet, silently swallowing the
- * badge for the next inbound message. Taking it from the same server clock is
- * what makes the comparison meaningful, and it is why this handler accepts no
- * request body at all.
+ * The UPDATE itself lives in `lib/job-messaging.ts` as
+ * `markEmployerConversationRead`, alongside the other five employer
+ * conversation statements, so there is exactly one place where SQL against
+ * `job_conversations` is written and reviewed. Its own doc comment carries the
+ * `now()`-not-a-client-timestamp reasoning and the RLS contract; this handler
+ * owns the HTTP shape.
  *
  * ── TWO RLS CONTEXTS, BOTH LOAD-BEARING ───────────────────────────────────
  * `job_conversations` is ENABLE + FORCE ROW LEVEL SECURITY (025:87-88) and
@@ -91,6 +92,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
+    // A second read of `users`, deliberately. `checkCompliance` above SELECTs
+    // only `tos_version` (legal/check-compliance.ts:21) -- it never returns
+    // the internal id -- and the id is what
+    // job_conversations_employer_all keys on. Collapsing the two would mean
+    // widening that shared legal utility's return, which every employer and
+    // worker handler depends on; that is a cross-cutting change, not this
+    // endpoint's to make. The same two reads appear in every sibling handler
+    // (employer-conversations-update.ts, -detail.ts, -send.ts, employer-inbox.ts).
     const employerRes = await client.query<{ id: string }>('SELECT id FROM users WHERE cognito_sub = $1', [cognitoSub]);
     const employerId = employerRes.rows[0]?.id;
     if (!employerId) {
@@ -99,17 +108,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
     await setInternalUserRlsContext(client, employerId);
 
-    const updated = await client.query<{ employer_last_read_at: string }>(
-      `UPDATE job_conversations
-          SET employer_last_read_at = now()
-        WHERE id = $1
-          AND employer_id = $2
-      RETURNING employer_last_read_at`,
-      [conversationId, employerId],
-    );
+    const readAt = await markEmployerConversationRead(client, conversationId, employerId);
     await client.query('COMMIT');
 
-    if ((updated.rowCount ?? 0) === 0) {
+    if (readAt === null) {
       return { statusCode: 404, headers: CORS_HEADERS, body: JSON.stringify({ error: 'conversation_not_found' }) };
     }
 
@@ -118,7 +120,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       headers: CORS_HEADERS,
       body: JSON.stringify({
         conversation_id: conversationId,
-        employer_last_read_at: updated.rows[0].employer_last_read_at,
+        employer_last_read_at: readAt,
       }),
     };
   } catch (err) {
