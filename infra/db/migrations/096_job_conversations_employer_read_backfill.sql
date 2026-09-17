@@ -112,33 +112,32 @@
 -- code lands. Applied after, every employer gets the wall of stale badges this
 -- file exists to prevent for however long the gap lasts.
 --
--- ── WHY job_conversation_messages IS UN-FORCED TOO (read-only) ────────────
--- Only for the REPORTED count at the end of the DO block, which asks "how many
--- threads still read as unread?" in the badge's own terms -- i.e. by looking
--- at the message table.
+-- ── WHY NO "STILL UNREAD" COUNT IS REPORTED ───────────────────────────────
+-- It would be useful and it is deliberately absent. Answering "how many
+-- threads still read as unread after this?" means asking the badge's own
+-- question, which reads job_conversation_messages -- and that table is ENABLE
+-- + FORCE ROW LEVEL SECURITY (025:88-89) with job_messages_employer_all
+-- (025:99-107) keyed on app.current_internal_user_id through its parent
+-- conversation. With no GUC set, jale_admin -- the owner, and the role
+-- migrations run as -- sees ZERO message rows. Measured, not assumed: with
+-- only job_conversations un-forced the count comes back 0 on a database where
+-- the true answer is 1. A NOTICE that can never print anything but zero is
+-- worse than none, because "0 still unread" reads as confirmation.
 --
--- job_conversation_messages is ENABLE + FORCE ROW LEVEL SECURITY (025:88-89)
--- and job_messages_employer_all (025:99-107) keys on
--- app.current_internal_user_id through its parent conversation. With no GUC
--- set, jale_admin -- the owner, and the role migrations run as -- sees ZERO
--- message rows. Measured, not assumed: with only job_conversations un-forced,
--- that count returns 0 on a database where the true answer is 1. It would be a
--- NOTICE that can never be anything but zero, which is worse than no NOTICE --
--- an operator would read a permanent "0 still unread" as confirmation.
---
--- Nothing is WRITTEN to this table here, and it is re-forced in the same
--- transaction; the catalog self-check at the bottom asserts ENABLE + FORCE on
--- BOTH tables, because an un-reversed un-force on either is a permanent,
--- silent tenant-boundary hole.
+-- Making it truthful would mean un-forcing job_conversation_messages as well:
+-- a second FORCE-RLS bracket and a second ACCESS EXCLUSIVE lock, on the larger
+-- table, for a number nothing acts on. This file does not touch that table at
+-- all. Anyone who wants the count can run the query from
+-- lib/employer-inbox.ts against a superuser session after the fact, outside
+-- the migration's lock window.
 --
 -- ── LOCK WINDOW ───────────────────────────────────────────────────────────
 -- ALTER TABLE ... [NO] FORCE ROW LEVEL SECURITY takes ACCESS EXCLUSIVE on
--- job_conversations AND on job_conversation_messages, and this transaction
--- holds both until COMMIT. Every read and write of either table blocks for the
--- duration -- so the employer inbox, every conversation view, every employer
--- send, and every inbound WhatsApp worker reply, which is most of the
--- messaging surface. The second table adds little to that blast radius: every
--- conversation read already joins job_conversations, which is locked anyway.
+-- job_conversations, and this transaction holds it until COMMIT. Every read
+-- and write of the table blocks for the duration -- so the employer inbox,
+-- every conversation view, every employer send, and every inbound WhatsApp
+-- worker reply, which is most of the messaging surface. One table only: see
+-- the section above for why the messages table is deliberately left alone.
 --
 -- Neither statement rewrites the table (they only flip a pg_class flag), but
 -- the backfill between them is ONE seq scan plus a row version per
@@ -176,15 +175,11 @@ BEGIN;
 
 -- ── un-force so the backfill can SEE and WRITE every row ──
 ALTER TABLE job_conversations NO FORCE ROW LEVEL SECURITY;
--- ...and so the reported count at the end can SEE the messages it counts.
--- Read-only: nothing below writes to this table.
-ALTER TABLE job_conversation_messages NO FORCE ROW LEVEL SECURITY;
 
 DO $$
 DECLARE
   v_backfilled INTEGER;
   v_null_left  INTEGER;
-  v_still_unread INTEGER;
 BEGIN
   -- PRECONDITION, not a post-condition: the statement above must actually have
   -- un-forced the table. Under FORCE RLS jale_admin's UPDATE is a silent
@@ -219,58 +214,28 @@ BEGIN
   IF v_null_left > 0 THEN
     RAISE EXCEPTION 'migration 096: % conversation(s) still carry a NULL employer_last_read_at -- the backfill did not land', v_null_left;
   END IF;
-
-  -- Reported, deliberately NOT asserted. On a first run this is 0 and says so.
-  -- On a REPLAY after the badge has shipped it is legitimately non-zero -- a
-  -- worker who wrote after their employer last read is genuinely unread, and
-  -- the backfill above correctly leaves that row alone because its stamp is
-  -- not NULL. Asserting zero here would make a later --force-replay fail on
-  -- perfectly correct data, which is exactly the mutable-value trap 095's
-  -- header warns about.
-  -- The badge's OWN rule, shaped exactly like lib/employer-inbox.ts's LATERAL
-  -- so the correspondence is auditable by eye: the newest INBOUND message per
-  -- conversation, compared strictly against the read stamp.
-  SELECT count(*) INTO v_still_unread
-    FROM job_conversations jc
-    LEFT JOIN LATERAL (
-      SELECT jcm.created_at
-        FROM job_conversation_messages jcm
-       WHERE jcm.conversation_id = jc.id
-         AND jcm.direction = 'inbound'
-       ORDER BY jcm.created_at DESC
-       LIMIT 1
-    ) last_inbound ON true
-   WHERE last_inbound.created_at IS NOT NULL
-     AND (jc.employer_last_read_at IS NULL
-          OR last_inbound.created_at > jc.employer_last_read_at);
-  RAISE NOTICE 'migration 096: conversations still reading as unread after the backfill: %', v_still_unread;
 END $$;
 
--- ── restore the tenant boundary, both tables ──
+-- ── restore the tenant boundary ──
 ALTER TABLE job_conversations FORCE ROW LEVEL SECURITY;
-ALTER TABLE job_conversation_messages FORCE ROW LEVEL SECURITY;
 
 -- ── CATALOG self-check, AFTER the re-force ──
 DO $$
-DECLARE
-  v_tbl TEXT;
 BEGIN
   -- An un-force this file failed to reverse would be a permanent, silent hole
   -- in a tenant boundary -- every employer able to read and write every other
-  -- employer's conversations and messages. BOTH tables, because this file
-  -- un-forces both. Worth its own check even though the statements are four
-  -- lines up.
-  FOREACH v_tbl IN ARRAY ARRAY['job_conversations', 'job_conversation_messages'] LOOP
-    IF NOT EXISTS (
-      SELECT 1
-        FROM pg_catalog.pg_class rel
-        JOIN pg_catalog.pg_namespace n ON n.oid = rel.relnamespace
-       WHERE n.nspname = 'public' AND rel.relname = v_tbl
-         AND rel.relrowsecurity AND rel.relforcerowsecurity
-    ) THEN
-      RAISE EXCEPTION 'migration 096: % lost RLS ENABLE + FORCE', v_tbl;
-    END IF;
-  END LOOP;
+  -- employer's conversations. Worth its own check even though the statement
+  -- above is three lines up. One table, because this file un-forces exactly
+  -- one.
+  IF NOT EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_class rel
+      JOIN pg_catalog.pg_namespace n ON n.oid = rel.relnamespace
+     WHERE n.nspname = 'public' AND rel.relname = 'job_conversations'
+       AND rel.relrowsecurity AND rel.relforcerowsecurity
+  ) THEN
+    RAISE EXCEPTION 'migration 096: job_conversations lost RLS ENABLE + FORCE';
+  END IF;
 
   -- The column this file backfills, and the role that reads and writes it.
   -- No GRANT is issued here: 025:78 gives jale_admin table-level
