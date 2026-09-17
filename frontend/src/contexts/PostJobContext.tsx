@@ -69,6 +69,14 @@ export type JobCreatedListener = (job: Job, outcome?: JobCreatedOutcome) => void
 type PostJobValue = {
     /** Opens the wizard, or the limit dialog when the plan has no slot left. */
     openPostJob: (snapshot?: PostJobSnapshot) => void;
+    /**
+     * Whether there is anything for `openPostJob` to do: an employer session
+     * this provider is actually serving. False during the restore window on a
+     * reload, and while `AuthContext` is masking a session that belongs to the
+     * other role. Controls opt out (disable) on it rather than offering a click
+     * that would do nothing.
+     */
+    canOpen: boolean;
     /** True while the lazy billing/jobs read behind the gate is in flight. */
     opening: boolean;
     /** Registers a listener for posted jobs; returns its unsubscribe. */
@@ -151,14 +159,26 @@ export function PostJobProvider({ children }: { children: ReactNode }) {
             openerRef.current =
                 document.activeElement instanceof HTMLElement ? document.activeElement : null;
 
+            /*
+             * No token, nothing to open. There are two ordinary ways to be
+             * here -- the restore window after a reload, and `AuthContext`
+             * masking a session that belongs to the OTHER role -- and in both
+             * the modal below is not even mounted. Setting `open` anyway made
+             * the click silent AND armed a wizard that then appeared on its
+             * own the moment the token landed, which is worse than the dead
+             * click. `canOpen` disables the controls; this is the backstop for
+             * a caller that opens the wizard some other way.
+             */
+            if (!idToken) return;
+
             const known = snapshot ?? pageSnapshotRef.current;
-            if (known || !idToken) {
+            if (known) {
                 // Synchronous whenever the page on screen is already holding
                 // the answer, so the wizard opens in the same frame as the
                 // click. That page keeps its own snapshot current; this
                 // context has no way to learn that a stored one went stale,
                 // which is exactly why it stores none.
-                applySnapshot(known ?? null);
+                applySnapshot(known);
                 return;
             }
 
@@ -202,9 +222,11 @@ export function PostJobProvider({ children }: { children: ReactNode }) {
      * cannot happen would only add a render cascade.
      */
 
+    const canOpen = isEmployer && idToken !== null;
+
     const value = useMemo<PostJobValue>(
-        () => ({ openPostJob, opening, subscribeJobCreated, registerSnapshot }),
-        [openPostJob, opening, subscribeJobCreated, registerSnapshot],
+        () => ({ openPostJob, canOpen, opening, subscribeJobCreated, registerSnapshot }),
+        [openPostJob, canOpen, opening, subscribeJobCreated, registerSnapshot],
     );
 
     return (
