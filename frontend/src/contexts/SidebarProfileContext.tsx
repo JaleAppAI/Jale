@@ -123,7 +123,7 @@ const ROLES: readonly ShellRole[] = ['worker', 'employer'];
 const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
 export function SidebarProfileProvider({ children }: { children: ReactNode }) {
-    const { idToken, isAuthenticated, isLoading } = useAuth();
+    const { idToken, sessionCleared } = useAuth();
     const tCommon = useTranslations('common');
     const locale = useLocale();
 
@@ -179,29 +179,41 @@ export function SidebarProfileProvider({ children }: { children: ReactNode }) {
         [idToken, locale, tCommon],
     );
 
-    // Signing out drops the cache with the session. The storage side is cleared
-    // by `AuthContext.clearSession` (synchronously, so `logout`'s navigation
-    // cannot race it); this is the in-memory half, for the same event.
-    //
-    // `!isLoading` is what tells a sign-out apart from a ROLE SWITCH. While the
-    // session is being re-read for the other role (worker page -> employer
-    // page in a browser signed in as both), AuthContext masks the tokens and
-    // reports `isAuthenticated: false` with `isLoading: true`. That is not the
-    // session ending -- both roles are still signed in -- and wiping the seed
-    // here would repaint the bare role letter on the next reload, the very bug
-    // this provider exists to prevent.
-    const wasAuthenticatedRef = useRef(isAuthenticated);
+    /*
+     * Signing out drops the cache with the session -- and ONLY signing out.
+     *
+     * This used to be inferred from `isAuthenticated` going false, which is
+     * also what two perfectly healthy states look like: a ROLE SWITCH (the
+     * provider masks the tokens while it re-reads the other role's slot) and a
+     * route whose role this browser has no session for at all. Both wiped the
+     * seed, and the next reload painted the bare role letter -- the very bug
+     * this provider exists to prevent. `AuthContext.sessionCleared` is the
+     * explicit announcement instead: it is bumped by `clearSession` and by
+     * nothing else, and it names the role, so the other role's chip -- which
+     * belongs to a session that is still signed in -- is left alone.
+     *
+     * The storage half is cleared by `clearSession` too (synchronously, so
+     * `logout`'s navigation cannot race it); doing it here as well is
+     * idempotent and keeps the two halves of one event in one place.
+     */
+    const clearedEpochRef = useRef(sessionCleared.epoch);
     useEffect(() => {
-        if (isLoading) return;
-        if (wasAuthenticatedRef.current && !isAuthenticated) {
-            requestedRef.current = {};
-            for (const role of ROLES) abortRef.current[role]?.abort();
-            abortRef.current = {};
-            setEntries({});
-            clearSidebarChips();
+        if (sessionCleared.epoch === clearedEpochRef.current) return;
+        clearedEpochRef.current = sessionCleared.epoch;
+        // No role means a full sign-out of everything.
+        const cleared = sessionCleared.role ? [sessionCleared.role as ShellRole] : ROLES;
+        for (const role of cleared) {
+            delete requestedRef.current[role];
+            abortRef.current[role]?.abort();
+            delete abortRef.current[role];
         }
-        wasAuthenticatedRef.current = isAuthenticated;
-    }, [isAuthenticated, isLoading]);
+        setEntries((prev) => {
+            const next = { ...prev };
+            for (const role of cleared) delete next[role];
+            return next;
+        });
+        clearSidebarChips(sessionCleared.role ?? undefined);
+    }, [sessionCleared]);
 
     const chipFor = useCallback(
         (role: ShellRole): SidebarChip => {

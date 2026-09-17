@@ -21,6 +21,17 @@ interface AuthState {
     userType: 'worker' | 'employer' | null;
     isAuthenticated: boolean;
     isLoading: boolean;
+    /**
+     * The last session this provider CLEARED, as a counter that only ever goes
+     * up, with the role it cleared (null for a full sign-out of both).
+     *
+     * An explicit announcement rather than something a consumer infers from
+     * `isAuthenticated` going false: that also happens while a role switch
+     * re-reads the other slot, and on a route whose role this browser simply
+     * has no session for. Neither is a session ending, and a cache that reacts
+     * to them throws away perfectly good state (see `SidebarProfileContext`).
+     */
+    sessionCleared: SessionCleared;
     setTokens: (tokens: { accessToken: string; idToken: string; refreshToken: string }, userType: 'worker' | 'employer') => void;
     logout: () => Promise<void>;
     /**
@@ -34,7 +45,30 @@ interface AuthState {
 
 type UserType = 'worker' | 'employer';
 
+/** See `AuthState.sessionCleared`. `epoch` 0 is "nothing cleared yet". */
+export type SessionCleared = { epoch: number; role: UserType | null };
+
 const AuthContext = createContext<AuthState | null>(null);
+
+/**
+ * A refusal of the TOKEN, as opposed to the server having a bad day.
+ *
+ * Only this may drop a stored session. Every other failure -- a timeout, an
+ * offline phone, a 5xx -- says nothing about whether the refresh token is
+ * still good, and clearing on one of those is now broadcast to every OTHER TAB
+ * of the browser (the slots are shared, and their removal is the cross-tab
+ * sign-out signal), so a single bad request in a lift would sign a worker out
+ * everywhere. A session that is genuinely gone costs one more round trip to
+ * discover; a session thrown away is a sign-in the user has to redo.
+ *
+ * NOTE: `/auth/refresh` itself answers 401 for ANY Cognito failure, throttling
+ * and outages included (infra/lambda/auth/token-refresh.ts), so this guard is
+ * only as sharp as that lambda's status codes. Narrowing them is a backend
+ * change and is reported rather than made here.
+ */
+function isTokenRefusal(res: { status?: number }): boolean {
+    return res.status === 401 || res.status === 403;
+}
 
 /** The role a path belongs to, or null for one that names none. */
 function roleFromPath(pathname: string): UserType | null {
@@ -76,6 +110,7 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
     const [idToken, setIdToken] = useState<string | null>(null);
     const [userType, setUserType] = useState<'worker' | 'employer' | null>(null);
     const [isLoading, setIsLoading] = useState(true);
+    const [sessionCleared, setSessionCleared] = useState<SessionCleared>({ epoch: 0, role: null });
     const refreshInFlight = useRef<Promise<string | null> | null>(null);
     /**
      * The role this provider is signed in as, readable from callbacks that
@@ -89,6 +124,41 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
         userTypeRef.current = next;
         setUserType(next);
     };
+
+    /**
+     * Drops this provider's session, locally, and ANNOUNCES it.
+     *
+     * `role` scopes it, and callers pass the role they were actually signed in
+     * as: clearing both slots would sign the other role out of every tab in
+     * the browser. It also removes a pre-migration copy of that role's session,
+     * so a sign-out cannot be undone by the next load promoting a token it left
+     * behind.
+     *
+     * This is the ONLY way a session ends, which is what makes `sessionCleared`
+     * worth subscribing to: every other "not authenticated" render is a role
+     * switch in progress or a route whose role this browser was never signed in
+     * as.
+     *
+     * Stable identity (only setters and the storage module), so the bridge
+     * below registers exactly once.
+     */
+    const clearSession = useCallback((role?: UserType) => {
+        clearStoredSession(role);
+        // The sidebar chip's reload cache goes with the session, synchronously
+        // and for the SAME role: `logout` assigns `window.location.href` right
+        // after this, and an effect reacting to the announcement below is not
+        // guaranteed to run before that navigation. Leaving it would paint the
+        // name of the account that just signed out over the next one's first
+        // frame -- and clearing both roles would blank a chip belonging to a
+        // session that is still perfectly signed in.
+        clearSidebarChips(role);
+        setSessionCleared((prev) => ({ epoch: prev.epoch + 1, role: role ?? null }));
+        setAccessToken(null);
+        setIdToken(null);
+        setRefreshToken(null);
+        userTypeRef.current = null;
+        setUserType(null);
+    }, []);
 
     /**
      * The route role whose session this provider has finished resolving.
@@ -172,21 +242,32 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
                 if (restoreGenerationRef.current !== generation) return;
                 setAccessToken(data.accessToken);
                 setIdToken(data.idToken);
-            } else {
-                if (restoreGenerationRef.current !== generation) return;
-                // Scoped to the role whose token was just refused: the
-                // other role's session is still perfectly good.
-                clearStoredSession(ut ?? undefined);
-                setRefreshToken(null);
-                rememberUserType(null);
+                return;
             }
-        }).catch(() => {
             if (restoreGenerationRef.current !== generation) return;
-            clearStoredSession(ut ?? undefined);
-            setRefreshToken(null);
-            rememberUserType(null);
+            if (isTokenRefusal(res)) {
+                // Scoped to the role whose token was just refused: the
+                // other role's session is still perfectly good. Through
+                // `clearSession`, so the announcement and the chip cache are
+                // not left to whoever edits this branch next.
+                clearSession(ut ?? undefined);
+                return;
+            }
+            // An OUTAGE, and nothing happens to the session because of it.
+            // The stored slot stays (removing it is broadcast to every other
+            // tab as a sign-out) and so do the in-memory refresh token and
+            // role, so the next `refreshIdToken` has something to retry with.
+            // This route just has no id token for now, which `useRequireAuth`
+            // turns into the sign-in door -- a screen the visitor can act on,
+            // where a cleared session is a sign-in they have to redo.
+        }).catch(() => {
+            // Thrown, so the request got no answer at all: a timeout, an
+            // offline phone, a DNS failure (`ApiError(0)`, lib/api.ts).
+            // Emphatically not a refusal, so -- exactly as above -- the
+            // session is left alone and the generation guard is the only
+            // reason this branch reads anything.
         }).finally(() => settle(routeRole ?? ut ?? null));
-    }, [restorePending, routeRole]);
+    }, [restorePending, routeRole, clearSession]);
 
     /**
      * A sign-out in ANOTHER TAB of this browser.
@@ -203,10 +284,10 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
         // Retires any restore still in flight: its response would otherwise
         // land tokens for the session that has just been signed out.
         restoreGenerationRef.current += 1;
-        setAccessToken(null);
-        setIdToken(null);
-        setRefreshToken(null);
-        rememberUserType(null);
+        // The same exit every other sign-out takes -- the slot is already gone
+        // (the other tab removed it, which is how this fired), and going
+        // through here is what announces it and drops this role's chip cache.
+        clearSession(role);
         setSettledFor(role);
         setIsLoading(false);
         const { pathname, search } = window.location;
@@ -214,7 +295,7 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
         window.location.assign(
             buildLoginUrl(localeFromPathname(pathname), role, `${pathname}${search}`),
         );
-    }), []);
+    }), [clearSession]);
 
     const setTokens = (tokens: { accessToken: string; idToken: string; refreshToken: string }, ut: 'worker' | 'employer') => {
         setAccessToken(tokens.accessToken);
@@ -225,33 +306,6 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
         // worker in the next tab out.
         writeSession({ refreshToken: tokens.refreshToken, userType: ut });
     };
-
-    /**
-     * Drops this provider's session, locally.
-     *
-     * `role` scopes the storage side of it, and callers pass the role they were
-     * actually signed in as: clearing both slots would sign the other role out
-     * of every tab in the browser. It also removes a pre-migration copy of that
-     * role's session, so a sign-out cannot be undone by the next load promoting
-     * a token it left behind.
-     *
-     * Stable identity (only setters and the storage module), so the bridge
-     * below registers exactly once.
-     */
-    const clearSession = useCallback((role?: UserType) => {
-        clearStoredSession(role);
-        // The sidebar chip's reload cache goes with the session, synchronously:
-        // `logout` assigns `window.location.href` right after this, and a React
-        // effect reacting to the state change below is not guaranteed to run
-        // before that navigation. Leaving it would paint the name of the
-        // account that just signed out over the next one's first frame.
-        clearSidebarChips();
-        setAccessToken(null);
-        setIdToken(null);
-        setRefreshToken(null);
-        userTypeRef.current = null;
-        setUserType(null);
-    }, []);
 
     const logout = async () => {
         await apiFetch('/auth/logout', {
@@ -304,7 +358,11 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
                     body: JSON.stringify({ refreshToken: rt, userType: ut }),
                 });
                 if (!res.ok) {
-                    clearSession(ut ?? undefined);
+                    // Only a refusal ends the session; an outage leaves it
+                    // stored and in memory for the next attempt. See
+                    // `isTokenRefusal` -- and note that clearing here removes
+                    // the shared slot, which signs every OTHER TAB out too.
+                    if (isTokenRefusal(res)) clearSession(ut ?? undefined);
                     return null;
                 }
                 const data = await res.json();
@@ -319,7 +377,9 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
                 setIdToken(nextIdToken);
                 return nextIdToken;
             } catch {
-                clearSession(ut ?? undefined);
+                // Never reached the server (timeout, offline, DNS): the caller
+                // gets no token and will surface its own error, but the stored
+                // session is not this request's to throw away.
                 return null;
             }
         })();
@@ -376,6 +436,7 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
             userType: serving ? userType : null,
             isAuthenticated: serving && !!idToken,
             isLoading: isLoading || restorePending,
+            sessionCleared,
             setTokens, logout, refreshIdToken,
         }}>
             {children}

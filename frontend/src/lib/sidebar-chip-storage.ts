@@ -72,13 +72,21 @@ export function writeSidebarChip(role: ShellRole, chip: StoredSidebarChip, local
 }
 
 /**
- * Drops every cached chip. Called from `AuthContext.clearSession`, so the name
- * of the account that just signed out cannot paint for the next one.
+ * Drops a cached chip, so the name of the account that just signed out cannot
+ * paint for the next one. Called from `AuthContext.clearSession`.
+ *
+ * SCOPED BY ROLE, like the session slots themselves: this product is routinely
+ * used with a worker session and an employer session open in the same browser,
+ * and signing out of one -- or having one's token refused -- says nothing
+ * about the other. Only a clear that names no role (a full sign-out) drops
+ * both.
  */
-export function clearSidebarChips(): void {
+export function clearSidebarChips(role?: ShellRole): void {
     if (typeof window === 'undefined') return;
     try {
-        for (const role of ROLES) window.sessionStorage.removeItem(keyFor(role));
+        for (const candidate of role ? [role] : ROLES) {
+            window.sessionStorage.removeItem(keyFor(candidate));
+        }
     } catch {
         // Nothing to clear if storage is unavailable.
     }

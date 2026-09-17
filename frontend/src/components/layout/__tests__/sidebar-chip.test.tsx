@@ -28,6 +28,13 @@ const authState = {
     idToken: 'token-1' as string | null,
     isAuthenticated: true,
     isLoading: false,
+    /**
+     * What AuthContext announces when it CLEARS a session, and the only thing
+     * that drops a cached chip. An epoch rather than an inference: "not
+     * authenticated" is also what a role switch and a role the browser has no
+     * session for look like, and neither is a sign-out.
+     */
+    sessionCleared: { epoch: 0, role: null as 'worker' | 'employer' | null },
     logout: vi.fn(),
 };
 vi.mock('@/contexts/AuthContext', () => ({ useAuth: () => authState }));
@@ -63,6 +70,7 @@ beforeEach(() => {
     authState.idToken = 'token-1';
     authState.isAuthenticated = true;
     authState.isLoading = false;
+    authState.sessionCleared = { epoch: 0, role: null };
     apiFetch.mockResolvedValue(workerProfileResponse());
 });
 
@@ -144,13 +152,54 @@ describe('sidebar profile chip', () => {
         expect(apiFetch).toHaveBeenCalledTimes(1);
     });
 
+    it('keeps the cache on a route whose role is not signed in', async () => {
+        const { rerender } = renderIntl(shell());
+        await waitFor(() => expect(screen.getByText('David Ramos')).toBeInTheDocument());
+
+        // A worker-only browser opening /employer/dashboard: the restore
+        // SETTLES with no session at all -- `isLoading` false, and nothing
+        // masked. That is not a sign-out either, and the worker's chip has to
+        // survive it, or coming back paints the bare letter again.
+        authState.idToken = null;
+        authState.isAuthenticated = false;
+        authState.isLoading = false;
+        rerender(shell('employer route'));
+
+        expect(sessionStorage.getItem(CHIP_KEY)).not.toBeNull();
+
+        authState.idToken = 'token-1';
+        authState.isAuthenticated = true;
+        rerender(shell('back on a worker page'));
+        await waitFor(() => expect(screen.getByText('David Ramos')).toBeInTheDocument());
+        expect(apiFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('drops only the signed-out role when the other one is still in', async () => {
+        sessionStorage.setItem(
+            'jale.sidebar_chip.employer',
+            JSON.stringify({ name: 'Acme', meta: null, initials: 'A', locale: 'en' }),
+        );
+        const { rerender } = renderIntl(shell());
+        await waitFor(() => expect(screen.getByText('David Ramos')).toBeInTheDocument());
+
+        authState.sessionCleared = { epoch: 1, role: 'employer' };
+        rerender(shell('employer signed out'));
+
+        await waitFor(() => expect(sessionStorage.getItem('jale.sidebar_chip.employer')).toBeNull());
+        // The worker in this very tab did not sign out.
+        expect(sessionStorage.getItem(CHIP_KEY)).not.toBeNull();
+        expect(screen.getByText('David Ramos')).toBeInTheDocument();
+    });
+
     it('drops the cache when the session ends', async () => {
         const { rerender } = renderIntl(shell());
         await waitFor(() => expect(screen.getByText('David Ramos')).toBeInTheDocument());
         expect(sessionStorage.getItem(CHIP_KEY)).not.toBeNull();
 
+        // The EXPLICIT signal, which only `AuthContext.clearSession` sends.
         authState.idToken = null;
         authState.isAuthenticated = false;
+        authState.sessionCleared = { epoch: 1, role: 'worker' };
         rerender(shell('signed out'));
 
         await waitFor(() => expect(sessionStorage.getItem(CHIP_KEY)).toBeNull());
