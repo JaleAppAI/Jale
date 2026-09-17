@@ -1,6 +1,15 @@
 'use client';
 
-import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import {
+    createContext,
+    useCallback,
+    useContext,
+    useEffect,
+    useLayoutEffect,
+    useMemo,
+    useRef,
+    useState,
+} from 'react';
 import type { ReactNode } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
@@ -8,6 +17,7 @@ import { apiFetch } from '@/lib/api';
 import { getEmployerProfile } from '@/lib/api/employer';
 import type { WorkerProfileData } from '@/lib/api/worker';
 import { getInitials, type ShellRole } from '@/components/layout/nav-config';
+import { accountKeyFromIdToken } from '@/lib/account-key';
 import type { SidebarChip } from '@/components/layout/Sidebar';
 import {
     clearSidebarChips,
@@ -44,9 +54,20 @@ import { tradeLabel } from '@/lib/trades';
  * and before the browser paints, so there is no mismatch and no flash either.
  */
 
-/** The cache key: the same token AND the same locale means the same chip. */
-function cacheKey(idToken: string, locale: string): string {
-    return `${idToken}|${locale}`;
+/**
+ * The cache key: the same ACCOUNT and the same locale means the same chip.
+ *
+ * Deliberately not the id token. Cognito rotates it on every refresh -- every
+ * hour, and again on every 401 the transport layer retries -- and keying on it
+ * meant each rotation looked like a different person and refetched a profile
+ * that had not changed. The account id is the thing the chip is actually about;
+ * the token stays the credential the fetch is made WITH.
+ *
+ * An undecodable token falls back to the token itself, so a malformed or
+ * unexpected payload costs the odd extra refetch rather than the whole chip.
+ */
+function cacheKey(idToken: string, account: string | null, locale: string): string {
+    return `${account ?? idToken}|${locale}`;
 }
 
 type RoleEntry = {
@@ -148,7 +169,7 @@ export function SidebarProfileProvider({ children }: { children: ReactNode }) {
     const request = useCallback(
         (role: ShellRole) => {
             if (!idToken) return;
-            const key = cacheKey(idToken, locale);
+            const key = cacheKey(idToken, accountKeyFromIdToken(idToken), locale);
             // Already loaded, or already loading, on exactly this key.
             if (requestedRef.current[role] === key) return;
             requestedRef.current[role] = key;
@@ -213,8 +234,13 @@ export function SidebarProfileProvider({ children }: { children: ReactNode }) {
         [entries],
     );
 
+    // Memoized like every other provider in the app: the value is what every
+    // consumer's identity check runs against, and a fresh object each render
+    // re-renders all of them (an AppShell per page) for nothing.
+    const value = useMemo(() => ({ chipFor, request }), [chipFor, request]);
+
     return (
-        <SidebarProfileContext.Provider value={{ chipFor, request }}>
+        <SidebarProfileContext.Provider value={value}>
             {children}
         </SidebarProfileContext.Provider>
     );
