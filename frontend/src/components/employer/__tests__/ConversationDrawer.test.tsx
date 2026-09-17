@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import * as React from 'react';
 import type { ReactNode } from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
@@ -138,6 +138,12 @@ function OpenerPage({ target }: { target: ConversationTarget }) {
 function renderDrawer(children: ReactNode = null) {
   return renderIntl(<ConversationDrawerProvider>{children}</ConversationDrawerProvider>);
 }
+
+afterEach(() => {
+  // Unconditional: `useRealTimers` is a no-op when no fake clock is installed,
+  // and the one test that installs one must not be able to leak it.
+  vi.useRealTimers();
+});
 
 beforeEach(() => {
   markRead.mockReset();
@@ -336,7 +342,9 @@ describe('the read receipt', () => {
       await vi.advanceTimersByTimeAsync(31_000);
     });
     expect(markRead).toHaveBeenCalledTimes(1);
-    vi.useRealTimers();
+    // The clock is restored in `afterEach`, not here: a failing assertion
+    // above would otherwise leave fake timers installed for every suite that
+    // ran after it in this file.
   });
 
   it('marks again when the worker writes while the thread is on screen', async () => {
