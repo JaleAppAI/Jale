@@ -20,6 +20,10 @@ vi.mock('@/i18n/navigation', () => ({
     ),
 }));
 
+/** Mutable: two employers sharing one browser is the case under test. */
+const authState = { idToken: null as string | null };
+vi.mock('@/contexts/AuthContext', () => ({ useAuth: () => authState }));
+
 import { message, renderIntl } from '@/components/employer/__tests__/render-intl';
 import { SubscriptionBanner } from '../SubscriptionBanner';
 import { subscriptionSignage } from '@/lib/plan-limit';
@@ -48,8 +52,26 @@ const pastDueBilling: EmployerBilling = {
     },
 };
 
-const FREE_KEY = 'jale.signage.free.employer_free';
-const LAPSED_KEY = 'jale.signage.lapsed.past_due';
+const FIRST = 'employer-one';
+const SECOND = 'employer-two';
+/*
+ * The stored key is the signage key PLUS the account. Browser storage is per
+ * browser, and the unscoped version of these keys meant the first employer to
+ * dismiss the free-plan banner hid it from every employer who signed in on
+ * that machine afterwards -- including, on a shared office laptop, one who had
+ * never been told what their plan does.
+ */
+const FREE_KEY = `jale.signage.free.employer_free.${FIRST}`;
+const LAPSED_KEY = `jale.signage.lapsed.past_due.${FIRST}`;
+
+/** A token whose payload carries `sub` -- the only claim the key derives from. */
+function idTokenFor(sub: string): string {
+    const body = btoa(JSON.stringify({ sub }))
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/, '');
+    return `header.${body}.signature`;
+}
 
 function render(billing: EmployerBilling) {
     return renderIntl(<SubscriptionBanner signage={subscriptionSignage(billing)} locale="en" />);
@@ -61,6 +83,7 @@ const dismissButton = () =>
 beforeEach(() => {
     localStorage.clear();
     sessionStorage.clear();
+    authState.idToken = idTokenFor(FIRST);
 });
 
 describe('subscription banner dismissal', () => {
@@ -93,6 +116,31 @@ describe('subscription banner dismissal', () => {
         sessionStorage.clear();
         render(pastDueBilling);
         expect(screen.getByText(message('billing.signage.lapsed_title'))).toBeInTheDocument();
+    });
+
+    it('does not dismiss it for the colleague sharing the laptop', () => {
+        const { unmount } = render(freeBilling);
+        fireEvent.click(dismissButton());
+        expect(localStorage.getItem(FREE_KEY)).toBe('1');
+        unmount();
+
+        // A different employer signs in on the same browser. They have not
+        // dismissed anything, and nobody may dismiss it on their behalf.
+        authState.idToken = idTokenFor(SECOND);
+        render(freeBilling);
+
+        expect(screen.getByText(message('billing.signage.free_title'))).toBeInTheDocument();
+    });
+
+    it('remembers nothing when there is no session to attribute it to', () => {
+        // The restore window on a reload. An unscoped dismissal here would be
+        // this browser's answer for every account that ever signs in on it.
+        authState.idToken = null;
+        render(freeBilling);
+        fireEvent.click(dismissButton());
+
+        expect(localStorage.length).toBe(0);
+        expect(sessionStorage.length).toBe(0);
     });
 
     it('stays dismissed for the rest of the session it was dismissed in', () => {

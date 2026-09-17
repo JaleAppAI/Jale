@@ -3,8 +3,10 @@
 import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
+import { useAuth } from '@/contexts/AuthContext';
 import { Icon } from '@/components/ui/icon';
 import { PostJobButton } from '@/components/employer/PostJobButton';
+import { accountKeyFromIdToken, accountScopedKey } from '@/lib/account-key';
 
 /**
  * The dashboard's welcome panel — once.
@@ -17,15 +19,23 @@ import { PostJobButton } from '@/components/employer/PostJobButton';
  *
  * So it is shown once and then collapses to a one-line bar that keeps the one
  * control worth keeping. `localStorage`, not session: "I have seen the
- * introduction" is a fact about the person, not about the tab.
+ * introduction" is a fact about the person, not about the tab -- and so the key
+ * carries WHICH person (see `lib/account-key`). Storage is per browser, and
+ * without that an employer sharing a laptop would never be introduced to their
+ * own board because a colleague had already read the introduction on it.
  */
 
 const STORAGE_KEY = 'jale.employer.hero_seen';
 
-function readSeen(): boolean {
-    if (typeof window === 'undefined') return false;
+/**
+ * Null `account` means we cannot tell whose flag this would be, and both halves
+ * then decline: nothing is read and nothing is written. The cost is one extra
+ * showing of an introduction, which is the right side to fail on.
+ */
+function readSeen(account: string | null): boolean {
+    if (account === null || typeof window === 'undefined') return false;
     try {
-        return window.localStorage.getItem(STORAGE_KEY) === '1';
+        return window.localStorage.getItem(accountScopedKey(STORAGE_KEY, account)) === '1';
     } catch {
         // Storage disabled (private mode, blocked cookies). Showing the full
         // hero is the safe side of this: it is the state that says more.
@@ -33,9 +43,10 @@ function readSeen(): boolean {
     }
 }
 
-function rememberSeen(): void {
+function rememberSeen(account: string | null): void {
+    if (account === null || typeof window === 'undefined') return;
     try {
-        window.localStorage.setItem(STORAGE_KEY, '1');
+        window.localStorage.setItem(accountScopedKey(STORAGE_KEY, account), '1');
     } catch {
         // The collapse just will not survive the next load. Not worth a crash.
     }
@@ -43,6 +54,10 @@ function rememberSeen(): void {
 
 export function DashboardHero() {
     const t = useTranslations('employer_dashboard');
+    const { idToken } = useAuth();
+    // Known by the time this renders: the hero only exists inside the
+    // dashboard's `ready` branch, which the page cannot reach without a token.
+    const account = accountKeyFromIdToken(idToken);
 
     /*
      * Read synchronously on the first render, so a returning employer never
@@ -51,13 +66,13 @@ export function DashboardHero() {
      * `SubscriptionBanner`: this component only renders inside the dashboard's
      * client-only `ready` branch, which never exists in the server HTML.
      */
-    const [seen, setSeen] = useState(readSeen);
+    const [seen, setSeen] = useState(() => readSeen(account));
 
     // Seeing it once is what "seen" means, so the flag is written by the render
     // that showed it -- not by the dismiss button, which is an accelerator.
     useEffect(() => {
-        if (!seen) rememberSeen();
-    }, [seen]);
+        if (!seen) rememberSeen(account);
+    }, [account, seen]);
 
     if (seen) {
         return (

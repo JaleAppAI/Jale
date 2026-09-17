@@ -3,9 +3,12 @@
 import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
+import { useAuth } from '@/contexts/AuthContext';
 import { Icon } from '@/components/ui/icon';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
+import { accountKeyFromIdToken } from '@/lib/account-key';
 import { formatShortDate } from '@/lib/date';
+import { readSignageDismissed, writeSignageDismissed } from '@/lib/signage-storage';
 import type { SubscriptionSignage } from '@/lib/plan-limit';
 
 /**
@@ -14,33 +17,18 @@ import type { SubscriptionSignage } from '@/lib/plan-limit';
  * employer is still inside grace, which key each string comes from -- is made
  * by `subscriptionSignage`; this component only looks keys up and renders.
  *
- * Dismissal is keyed by the billing state (`dismissKey`), so a move from
- * past_due to canceled re-shows the banner even within one session. WHERE that
- * dismissal is kept depends on what the banner is saying:
- *
- *  - the LAPSED banners ("your payment failed", "your subscription ended") keep
- *    it in SESSION storage, deliberately: a permanently dismissed payment
- *    warning is a support ticket. They come back next session.
- *  - the FREE-plan banner keeps it in LOCAL storage. It states a standing fact
- *    about the account rather than a problem to act on, and nothing about it
- *    changes between sessions -- so re-showing it on every visit was asking the
- *    same employer to dismiss the same sentence forever. When the fact changes,
- *    the key changes with it (it carries the plan code) and the banner returns
- *    on its own.
+ * A dismissal is remembered against two things, and `lib/signage-storage` owns
+ * both: the billing STATE (`dismissKey`, so a move from past_due to canceled
+ * re-shows the banner) and the ACCOUNT that dismissed it. The second one was
+ * missing. Browser storage is per browser, not per account, and this product is
+ * routinely used with more than one employer login on one machine -- so the
+ * first employer's "I have read this" was hiding the free-plan signage from
+ * every employer who signed in after them.
  */
 
-/** The store this variant's dismissal belongs in. See the note above. */
-function storeFor(variant: 'free' | 'lapsed'): Storage {
-  return variant === 'free' ? window.localStorage : window.sessionStorage;
-}
-function readDismissed(signage: SubscriptionSignage): boolean {
-  if (signage === null || typeof window === 'undefined') return false;
-  try {
-    return storeFor(signage.variant).getItem(signage.dismissKey) === '1';
-  } catch {
-    // Private mode / storage disabled -- show the banner rather than crash.
-    return false;
-  }
+function readDismissed(signage: SubscriptionSignage, account: string | null): boolean {
+  if (signage === null) return false;
+  return readSignageDismissed(signage.dismissKey, signage.variant, account);
 }
 
 export function SubscriptionBanner({
@@ -51,27 +39,28 @@ export function SubscriptionBanner({
   locale: string;
 }) {
   const tBilling = useTranslations('billing');
+  const { idToken } = useAuth();
+  // Known by the time this renders: the banner only exists inside the
+  // dashboard's `ready` branch, which the page cannot reach without a token.
+  const account = accountKeyFromIdToken(idToken);
   // Seeded synchronously on first render, then re-read whenever the billing
-  // state (and so the key) changes. Reading storage in the initializer is
-  // hydration-safe HERE because this component only renders inside the
-  // dashboard's client-only `ready` branch, which never exists in server HTML;
-  // it is what stops a banner dismissed earlier in the session from painting
-  // for a frame and then vanishing (a flash plus a layout shift on every visit).
-  const [dismissed, setDismissed] = useState(() => readDismissed(signage));
+  // state (and so the key) or the account changes. Reading storage in the
+  // initializer is hydration-safe HERE because this component only renders
+  // inside the dashboard's client-only `ready` branch, which never exists in
+  // server HTML; it is what stops a banner dismissed earlier in the session
+  // from painting for a frame and then vanishing (a flash plus a layout shift
+  // on every visit).
+  const [dismissed, setDismissed] = useState(() => readDismissed(signage, account));
 
   useEffect(() => {
-    setDismissed(readDismissed(signage));
-  }, [signage]);
+    setDismissed(readDismissed(signage, account));
+  }, [account, signage]);
 
   if (signage === null || dismissed) return null;
 
   function dismiss() {
     setDismissed(true);
-    try {
-      if (signage !== null) storeFor(signage.variant).setItem(signage.dismissKey, '1');
-    } catch {
-      // Dismissal just does not survive the next page load. Not worth a crash.
-    }
+    if (signage !== null) writeSignageDismissed(signage.dismissKey, signage.variant, account);
   }
 
   // `formatShortDate` returns null for an unparseable date, and next-intl
