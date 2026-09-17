@@ -3,8 +3,10 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import { Template, Match } from 'aws-cdk-lib/assertions';
 import { BastionStack, DEFAULT_BASTION_TTL_HOURS } from '../../../lib/stacks/bastion-stack';
 
+const ALARM_TOPIC_ARN = 'arn:aws:sns:us-east-2:123456789012:jale-whatsapp-alarms';
+
 /** Stands up a VPC + RDS SG harness and returns the synthesized bastion. */
-function synth(context: Record<string, unknown> = {}): Template {
+function synth(context: Record<string, unknown> = {}, alarmTopicArn?: string): Template {
   const app = new cdk.App({ context });
   const vpcStack = new cdk.Stack(app, 'TestVpcStack');
   const vpc = new ec2.Vpc(vpcStack, 'TestVpc', {
@@ -15,7 +17,7 @@ function synth(context: Record<string, unknown> = {}): Template {
     ],
   });
   const rdsSg = new ec2.SecurityGroup(vpcStack, 'TestRdsSg', { vpc, allowAllOutbound: false });
-  return Template.fromStack(new BastionStack(app, 'TestBastionStack', { vpc, rdsSg }));
+  return Template.fromStack(new BastionStack(app, 'TestBastionStack', { vpc, rdsSg, alarmTopicArn }));
 }
 
 /** The TTL sweeper's environment, from whichever Lambda carries it. */
@@ -264,6 +266,41 @@ describe('BastionStack - TTL auto-teardown (F23)', () => {
       Threshold: 1,
       EvaluationPeriods: 1,
     });
+  });
+
+  /**
+   * R2. `deploy-bastion.sh` is the ONLY path that deploys this stack -- it is
+   * in none of the deploy workflow's stack lists -- so if it never passes an
+   * alarm topic, both backstop alarms are created with no action and the
+   * teardown has no watcher at all. The script now forwards
+   * WHATSAPP_ALARM_TOPIC_ARN (the same variable the deploy workflow feeds
+   * `-c whatsappAlarmTopicArn` from) whenever it is set.
+   *
+   * Both halves are pinned: wired when given, and STILL SYNTHESIZABLE when
+   * not -- a bastion that refuses to deploy without an alarm target is a
+   * bastion nobody can use to run a migration at 2am.
+   */
+  it('wires both alarms to the topic when one is supplied', () => {
+    const template = synth({}, ALARM_TOPIC_ARN);
+
+    const alarms = Object.values(template.findResources('AWS::CloudWatch::Alarm'));
+    expect(alarms).toHaveLength(2);
+    for (const alarm of alarms) {
+      expect(alarm.Properties.AlarmActions).toEqual([ALARM_TOPIC_ARN]);
+    }
+  });
+
+  it('synthesizes without an alarm topic, leaving the alarms action-less', () => {
+    const template = synth();
+
+    const alarms = Object.values(template.findResources('AWS::CloudWatch::Alarm'));
+    expect(alarms).toHaveLength(2);
+    for (const alarm of alarms) {
+      // Absent or empty -- never a fabricated destination, and never a throw.
+      expect(alarm.Properties.AlarmActions ?? []).toEqual([]);
+    }
+    // And the teardown itself does not depend on the alarm at all.
+    template.resourceCountIs('AWS::Events::Rule', 1);
   });
 
   it('adds no CloudFormation export beyond the instance id the scripts already read', () => {

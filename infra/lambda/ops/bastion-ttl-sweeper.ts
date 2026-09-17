@@ -1,4 +1,5 @@
 import { DescribeInstancesCommand, EC2Client, StopInstancesCommand } from '@aws-sdk/client-ec2';
+import { emitEmfMetrics } from '../lib/emf';
 
 /**
  * F23 (Luis ruling, sprint 26): the migration bastion tears itself down.
@@ -47,27 +48,24 @@ const METRIC_NAMESPACE = 'Jale/Bastion';
 const MS_PER_HOUR = 60 * 60 * 1000;
 
 /**
- * One EMF line. `Dimensions: [[]]` publishes the metrics with NO dimensions,
- * which is what the alarm matches on -- there is exactly one bastion per
- * account, so a dimension would only be a way for the alarm and the emitter to
- * disagree.
+ * No dimensions, which is what the alarm matches on -- there is exactly one
+ * bastion per account, so a dimension would only be a way for the alarm and
+ * the emitter to disagree.
  */
 function emitMetrics(ageHours: number, overTtl: boolean): void {
-  console.log(JSON.stringify({
-    _aws: {
-      Timestamp: Date.now(),
-      CloudWatchMetrics: [{
-        Namespace: METRIC_NAMESPACE,
-        Dimensions: [[]],
-        Metrics: [
-          { Name: 'BastionAgeHours', Unit: 'None' },
-          { Name: 'BastionOverTtl', Unit: 'Count' },
-        ],
-      }],
-    },
-    BastionAgeHours: ageHours,
-    BastionOverTtl: overTtl ? 1 : 0,
-  }));
+  emitEmfMetrics(METRIC_NAMESPACE, [
+    { name: 'BastionAgeHours', value: ageHours, unit: 'None' },
+    { name: 'BastionOverTtl', value: overTtl ? 1 : 0 },
+  ]);
+}
+
+/** EC2 reports a refusal to stop as `IncorrectInstanceState`; the SDK surfaces
+ *  it on `name` and, on some paths, only in the message. Both are checked
+ *  rather than picking one and being wrong in production. */
+function isIncorrectInstanceState(err: unknown): boolean {
+  const e = err as { name?: unknown; message?: unknown } | null;
+  return e?.name === 'IncorrectInstanceState'
+    || (typeof e?.message === 'string' && e.message.includes('IncorrectInstanceState'));
 }
 
 export const handler = async (): Promise<void> => {
@@ -116,10 +114,24 @@ export const handler = async (): Promise<void> => {
   const overTtl = running && ageHours >= ttlHours;
 
   if (overTtl) {
-    await ec2.send(new StopInstancesCommand({ InstanceIds: [instanceId] }));
-    console.log(JSON.stringify({
-      event: 'BastionStoppedOnTtl', instanceId, ageHours: Number(ageHours.toFixed(2)), ttlHours,
-    }));
+    try {
+      await ec2.send(new StopInstancesCommand({ InstanceIds: [instanceId] }));
+      console.log(JSON.stringify({
+        event: 'BastionStoppedOnTtl', instanceId, ageHours: Number(ageHours.toFixed(2)), ttlHours,
+      }));
+    } catch (err) {
+      // `IncorrectInstanceState` is the expected answer for an instance EC2
+      // will not stop yet -- most often one still 'pending', which this
+      // function deliberately counts as running so a stuck boot cannot defeat
+      // the TTL. It is a "not now", not a failure: the next sweep is 15
+      // minutes away and the instance will be 'running' by then. Throwing
+      // here would instead trip the sweeper's own Errors alarm every quarter
+      // hour and teach whoever owns it to ignore both alarms.
+      if (!isIncorrectInstanceState(err)) throw err;
+      console.log(JSON.stringify({
+        event: 'BastionStopDeferred', instanceId, state, ttlHours,
+      }));
+    }
   } else {
     console.log(JSON.stringify({
       event: 'BastionTtlSweep', instanceId, state, ageHours: Number(ageHours.toFixed(2)), ttlHours,
