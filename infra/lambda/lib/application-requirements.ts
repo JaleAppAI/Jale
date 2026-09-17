@@ -679,6 +679,22 @@ export function detailsLocked(snapshot: { detailsCompletedAt: unknown }): boolea
 }
 
 /**
+ * Is this application over? Hired, rejected, or its job taken down.
+ *
+ * Split out of `writeGate` (R2) so the explicit completion door can apply the
+ * SAME lifecycle test without inheriting the two gates it must not: `apply`
+ * stage and `locked` mean different things to a write than to a "finish".
+ * Shared rather than restated -- two copies of "what counts as over" is
+ * exactly how one surface ends up accepting writes on a filled job.
+ */
+export function applicationIsOver(snapshot: RequirementSnapshot): boolean {
+  if (snapshot.applicationStatus === 'hired' || snapshot.applicationStatus === 'not_interested') {
+    return true;
+  }
+  return snapshot.jobStatus === 'filled' || snapshot.jobStatus === 'closed';
+}
+
+/**
  * The lifecycle gate every stage-2 write shares. `closed` outranks both
  * `locked` and `stage_locked`: a hired or rejected application is finished,
  * not "already sent" and not "come back when the employer asks".
@@ -692,10 +708,7 @@ function writeGate(
   snapshot: RequirementSnapshot,
   { requireDetailsStage }: { requireDetailsStage: boolean },
 ): { ok: false; reason: 'closed' | 'stage_locked' | 'locked' } | null {
-  if (snapshot.applicationStatus === 'hired' || snapshot.applicationStatus === 'not_interested') {
-    return { ok: false, reason: 'closed' };
-  }
-  if (snapshot.jobStatus === 'filled' || snapshot.jobStatus === 'closed') {
+  if (applicationIsOver(snapshot)) {
     return { ok: false, reason: 'closed' };
   }
   if (requireDetailsStage && snapshot.stage === 'apply') {
@@ -962,10 +975,18 @@ export async function mergePromptAnswers(
 
 /**
  * Flips `details_completed_at` when, and only when, the details stage has
- * nothing outstanding. Called after every merge and on every stage-2 GET --
- * that GET call is what makes a doc uploaded through `/worker/vault/*`
- * (which never touches this module) complete the application on the next
- * read, so no explicit "POST complete" endpoint is needed.
+ * nothing outstanding.
+ *
+ * Called from exactly two kinds of place, and R2 is what made that list
+ * short: after a merge that the WORKER posted, and from the explicit
+ * completion door (`POST {id}/complete`, the web Finish button) or WhatsApp's
+ * LISTO. It used to be called on every stage-2 GET as well -- which is how a
+ * doc uploaded through `/worker/vault/*` closed the stage on the next read,
+ * with no explicit endpoint needed. That was harmless only while a completed
+ * application stayed editable; F2 made this timestamp a LOCK, and a lock a
+ * page load could apply to a worker who had confirmed nothing is a trap, not
+ * a convenience. Completion is an ACT now, so the document-last worker
+ * presses Finish and that POST does the same synced load.
  *
  * Three guards, all necessary:
  *   - stage must be 'details'. An apply-stage application whose worker

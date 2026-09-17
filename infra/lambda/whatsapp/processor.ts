@@ -2368,11 +2368,35 @@ async function handleTypedJobCode(
   }
   const jobId = token.job_id;
 
-  // F8: credit the referrer BEFORE the reply is composed, so the attribution
-  // and the job answer either both land or both roll back with the turn.
-  // Nothing here changes what the worker sees.
+  // F8: credit the referrer before the reply is composed. Nothing here
+  // changes what the worker sees -- and R2 is what makes that true under
+  // failure as well as success.
+  //
+  // A SAVEPOINT, exactly like the three sibling referral writes
+  // (onboarding/steps/start.ts, onboarding/steps/otp.ts,
+  // worker-ready-release.ts), and for the reason start.ts spells out: a plain
+  // try/catch is not enough, because once a statement errors inside an open
+  // Postgres transaction EVERY later statement fails 25P02 even if the error
+  // is swallowed. Without the boundary, a deadlock against the web lane's own
+  // `writeAttribution` on this same worker_id would cost the worker the job
+  // reply they actually asked for and walk the message toward the DLQ -- over
+  // an analytics write. Never logs the token or the code, only a static
+  // metric.
   if (conv.user_id) {
-    await creditTypedCodeReferral(client, conv.user_id, token, new Date());
+    try {
+      await client.query('SAVEPOINT typed_code_referral');
+      await creditTypedCodeReferral(client, conv.user_id, token, new Date());
+      await client.query('RELEASE SAVEPOINT typed_code_referral');
+    } catch {
+      try {
+        await client.query('ROLLBACK TO SAVEPOINT typed_code_referral');
+      } catch {
+        // The transaction/connection itself is unusable at this point --
+        // nothing further to do here; the caller's own transaction handling
+        // (retry/DLQ) takes over as it would for any other failed statement.
+      }
+      console.error(JSON.stringify({ metric: 'TypedCodeAttributionFailed' }));
+    }
   }
 
   if (!conv.state_context) {

@@ -2641,6 +2641,8 @@ describe('Processor Lambda', () => {
         it('a typed JALE- code answers with that job, exactly like the info action, and arms the number the reply names', async () => {
           mockConvTurn('SM-code-info');
           mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [{ job_id: 'job-referred' }] }); // apply-token -> job
+          mockQuery.mockResolvedValueOnce(ok()); // SAVEPOINT typed_code_referral
+          mockQuery.mockResolvedValueOnce(ok()); // RELEASE (no share_code: nothing to credit)
           mockStateContextUpdate(); // recent_jobs arm
           mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [referredJobRow()] }); // handleJobAction's job load
           mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox job details
@@ -2690,6 +2692,8 @@ describe('Processor Lambda', () => {
           // or replacing would silently change what "2 me interesa" means.
           mockConvTurn('SM-code-append', { recent_jobs: ['job-a', 'job-b'] });
           mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [{ job_id: 'job-referred' }] });
+          mockQuery.mockResolvedValueOnce(ok()); // SAVEPOINT typed_code_referral
+          mockQuery.mockResolvedValueOnce(ok()); // RELEASE (no share_code: nothing to credit)
           mockStateContextUpdate();
           mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [referredJobRow()] });
           mockQuery.mockResolvedValueOnce(ok());
@@ -2750,6 +2754,9 @@ describe('Processor Lambda', () => {
               rowCount: 1,
               rows: [{ job_id: 'job-referred', share_code: 'ABCD1234', expires_at: FUTURE, ...overrides }],
             });
+            // R2: the credit is SAVEPOINT-isolated, so the boundary opens
+            // here whatever the credit then decides to do.
+            mockQuery.mockResolvedValueOnce(ok()); // SAVEPOINT typed_code_referral
           }
 
           function mockShareLink(overrides: Record<string, unknown> = {}): void {
@@ -2764,8 +2771,11 @@ describe('Processor Lambda', () => {
             });
           }
 
-          /** Everything after the attribution attempt: the job answer itself. */
-          function mockJobAnswerTail(): void {
+          /** Everything after the attribution attempt: the job answer itself.
+           *  `released: false` for the path where the credit threw and the
+           *  savepoint was rolled back instead of released. */
+          function mockJobAnswerTail({ released = true }: { released?: boolean } = {}): void {
+            if (released) mockQuery.mockResolvedValueOnce(ok()); // RELEASE SAVEPOINT
             mockStateContextUpdate(); // recent_jobs arm
             mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [referredJobRow()] });
             mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox job details
@@ -2878,6 +2888,55 @@ describe('Processor Lambda', () => {
             expect(params[5]).toBe('employer-9');
           });
 
+          /**
+           * R2. This credit runs INSIDE the turn's transaction, and in
+           * Postgres one errored statement poisons the whole transaction:
+           * every later statement fails 25P02, so the job reply is lost, the
+           * record is redelivered, and the message walks toward the DLQ --
+           * over an analytics write. A deadlock (40P01) against the web
+           * lane's own `writeAttribution` on the same worker_id is the
+           * realistic trigger.
+           *
+           * The three sibling referral writes (onboarding/steps/start.ts,
+           * onboarding/steps/otp.ts, worker-ready-release.ts) are each
+           * SAVEPOINT-isolated for exactly this hazard. This one was not.
+           */
+          it('a failing credit never costs the worker their job reply', async () => {
+            mockConvTurn('SM-code-credit-fails');
+            mockToken();
+            mockShareLink();
+            // The attribution INSERT blows up the way a deadlock would.
+            const deadlock: any = new Error('deadlock detected');
+            deadlock.code = '40P01';
+            mockQuery.mockImplementationOnce(() => Promise.reject(deadlock));
+            mockQuery.mockResolvedValueOnce(ok()); // ROLLBACK TO SAVEPOINT
+            mockJobAnswerTail({ released: false });
+
+            await expect(typeCode('SM-code-credit-fails')).resolves.toBeUndefined();
+
+            // The savepoint gave the failure a boundary.
+            const sql = mockQuery.mock.calls.map(([q]) => String(q));
+            expect(sql).toContain('SAVEPOINT typed_code_referral');
+            expect(sql).toContain('ROLLBACK TO SAVEPOINT typed_code_referral');
+            // The turn survived: the worker still got the job they asked about.
+            expect(outboxBodies()[0]).toContain('Roofer');
+          });
+
+          it('releases the savepoint on the happy path rather than leaving it open', async () => {
+            mockConvTurn('SM-code-credit-release');
+            mockToken();
+            mockShareLink();
+            mockQuery.mockResolvedValueOnce(ok()); // INSERT worker_attribution
+            mockJobAnswerTail();
+
+            await typeCode('SM-code-credit-release');
+
+            const sql = mockQuery.mock.calls.map(([q]) => String(q));
+            expect(sql).toContain('SAVEPOINT typed_code_referral');
+            expect(sql).toContain('RELEASE SAVEPOINT typed_code_referral');
+            expect(sql).not.toContain('ROLLBACK TO SAVEPOINT typed_code_referral');
+          });
+
           it('credits nobody for an organic link with no referrer at all', async () => {
             mockConvTurn('SM-code-organic');
             mockToken();
@@ -2976,6 +3035,8 @@ describe('Processor Lambda', () => {
             })
             .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
             .mockResolvedValueOnce({ rowCount: 1, rows: [{ job_id: 'job-referred' }] }) // apply-token -> job
+            .mockResolvedValueOnce(ok()) // SAVEPOINT typed_code_referral (R2)
+            .mockResolvedValueOnce(ok()) // RELEASE (no share_code: nothing to credit)
             .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // recent_jobs arm
             .mockResolvedValueOnce({ rowCount: 1, rows: [referredJobRow()] }) // handleJobAction's job load
             .mockResolvedValueOnce(ok()); // INSERT outbox job details

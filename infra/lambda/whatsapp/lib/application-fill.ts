@@ -839,6 +839,7 @@ function mergeFailureMessage(
   reason: MergeFailureReason | 'invalid',
   key: FillFieldKey,
   lang: Lang,
+  applicationId: string,
 ): string {
   switch (reason) {
     case 'too_large':
@@ -849,6 +850,13 @@ function mergeFailureMessage(
       return fillMessage('exit_application_closed', lang);
     case 'stage_locked':
       return fillMessage('exit_details_not_requested', lang);
+    // F2/R2: the application is already with the employer. Without this case
+    // it fell to `default` and answered with the field's RETRY HINT -- asking
+    // the worker to rephrase an answer no door will ever accept, forever. The
+    // same copy `sendChangeLocked` uses, so a lock reads identically whichever
+    // path notices it.
+    case 'locked':
+      return fillMessage('change_locked', lang, { url: workerApplicationUrl(lang, applicationId) });
     case 'certification_document_limit':
       return fillMessage('cert_cap', lang);
     case 'invalid':
@@ -2191,7 +2199,12 @@ async function finalizeAnswer(
     // fail again, so it is discarded (scrub rule: this counts as
     // 'discard') and the worker is asked to answer fresh.
     await deps.updateStateContext(client, ctx.conversationId, { fill_pending: null });
-    await deps.queueReplyText(client, msg.messageSid, msg.from, mergeFailureMessage(result.reason, key, ctx.lang));
+    await deps.queueReplyText(
+      client, msg.messageSid, msg.from,
+      // Same id `mergeAnswer` just wrote through; `finalizeAnswer` takes no
+      // applicationId of its own.
+      mergeFailureMessage(result.reason, key, ctx.lang, ctx.stateContext.fill_application_id as string),
+    );
     logStep(key, 'merge_failed', result.reason);
     return { handled: true };
   }
@@ -2328,7 +2341,7 @@ async function handleFieldStep(
         : undefined;
     const result = await mergeAnswer(client, ctx, key, det.value, deps);
     if (!result.ok) {
-      await deps.queueReplyText(client, msg.messageSid, msg.from, mergeFailureMessage(result.reason, key, ctx.lang));
+      await deps.queueReplyText(client, msg.messageSid, msg.from, mergeFailureMessage(result.reason, key, ctx.lang, applicationId));
       logStep(key, 'merge_failed', result.reason);
       return { handled: true };
     }
@@ -2355,7 +2368,7 @@ async function handleFieldStep(
   if (menuParsed) {
     const result = await mergeAnswer(client, ctx, key, menuParsed.value, deps);
     if (!result.ok) {
-      await deps.queueReplyText(client, msg.messageSid, msg.from, mergeFailureMessage(result.reason, key, ctx.lang));
+      await deps.queueReplyText(client, msg.messageSid, msg.from, mergeFailureMessage(result.reason, key, ctx.lang, applicationId));
       logStep(key, 'merge_failed', result.reason);
       return { handled: true };
     }
