@@ -81,8 +81,10 @@ import { listEmployerInbox } from '../../../lambda/lib/employer-inbox';
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
 
-const HANDLER_PATH = path.join(
-  __dirname, '..', '..', '..', 'lambda', 'api', 'employer-conversations-read.ts',
+// The mark-read UPDATE moved out of the handler and into the shared
+// conversation SQL module in round 2, next to closeEmployerConversation.
+const MESSAGING_LIB_PATH = path.join(
+  __dirname, '..', '..', '..', 'lambda', 'lib', 'job-messaging.ts',
 );
 
 const MIGRATION_096_PATH = path.join(
@@ -99,16 +101,21 @@ function urlForRole(baseUrl: string, user: string, password: string): string {
 }
 
 /**
- * The mark-read UPDATE, lifted out of the handler. `$1` conversation id,
- * `$2` employer id -- the same binding the Lambda uses.
+ * The mark-read UPDATE, lifted out of `markEmployerConversationRead`.
+ * `$1` conversation id, `$2` employer id -- the same binding the Lambda uses.
+ *
+ * Asserted UNIQUE, not just present: job-messaging.ts carries six other
+ * `UPDATE job_conversations` statements, and a second writer of this column
+ * appearing there is exactly the kind of drift this extraction exists to
+ * catch -- it would mean a second, unreviewed way to clear the badge.
  */
 function markReadSql(): string {
-  const source = fs.readFileSync(HANDLER_PATH, 'utf8');
-  const match = source.match(
-    /UPDATE job_conversations\s+SET employer_last_read_at = now\(\)[\s\S]*?RETURNING employer_last_read_at/,
+  const source = fs.readFileSync(MESSAGING_LIB_PATH, 'utf8');
+  const matches = source.match(
+    /UPDATE job_conversations\s+SET employer_last_read_at = now\(\)[\s\S]*?RETURNING employer_last_read_at/g,
   );
-  expect(match).not.toBeNull();
-  return match![0];
+  expect(matches).toHaveLength(1);
+  return matches![0];
 }
 
 if (!databaseUrl) {
@@ -167,6 +174,7 @@ maybeDescribe('employer conversation mark-read against real PostgreSQL', () => {
   async function newConversation(
     employerId: string,
     lastWorkerMessageAt: string | null,
+    options: { applicationStatus?: string; inbound?: boolean } = {},
   ): Promise<string> {
     seq += 1;
     const jobId = (
@@ -179,11 +187,11 @@ maybeDescribe('employer conversation mark-read against real PostgreSQL', () => {
     const applicationId = (
       await client.query<{ id: string }>(
         `INSERT INTO job_applications (job_id, worker_id, status)
-         VALUES ($1, $2, 'pending') RETURNING id`,
-        [jobId, worker],
+         VALUES ($1, $2, $3) RETURNING id`,
+        [jobId, worker, options.applicationStatus ?? 'pending'],
       )
     ).rows[0].id;
-    return (
+    const conversationId = (
       await client.query<{ id: string }>(
         `INSERT INTO job_conversations
            (job_id, employer_id, worker_id, application_id, status,
@@ -192,6 +200,19 @@ maybeDescribe('employer conversation mark-read against real PostgreSQL', () => {
         [jobId, employerId, worker, applicationId, lastWorkerMessageAt],
       )
     ).rows[0].id;
+    // A REAL inbound message row. Since round 2 the badge keys on the newest
+    // inbound message, not on last_worker_message_at -- which the "Open
+    // conversation" path stamps with no message behind it -- so a fixture
+    // that only sets the column proves nothing about the badge.
+    if (options.inbound !== false && lastWorkerMessageAt !== null) {
+      await client.query(
+        `INSERT INTO job_conversation_messages
+           (conversation_id, sender_type, direction, body, status, created_at)
+         VALUES ($1, 'worker', 'inbound', 'probe inbound', 'received', $2)`,
+        [conversationId, lastWorkerMessageAt],
+      );
+    }
+    return conversationId;
   }
 
   /**
@@ -373,12 +394,25 @@ maybeDescribe('employer conversation mark-read against real PostgreSQL', () => {
 
     // The Date-vs-string fact. node-postgres returns timestamptz as a Date,
     // and Dates compared as strings ("Thu Sep 10 ...") are not chronological.
-    it('flips back to unread when the worker writes AFTER the read stamp', async () => {
+    //
+    // A REAL inbound message one second after the read, not just an advanced
+    // column: since round 2 the badge keys on the message table, so moving
+    // last_worker_message_at alone must NOT light it -- which the
+    // opened-but-never-wrote case below pins from the other side.
+    it('flips back to unread when a message ARRIVES after the read stamp', async () => {
       const employer = await newEmployer();
       const conversation = await newConversation(employer.id, '2026-09-10T12:00:00Z');
 
       const inbox = await asEmployer(employer, async () => {
         await client.query(markReadSql(), [conversation, employer.id]);
+        await client.query(
+          `INSERT INTO job_conversation_messages
+             (conversation_id, sender_type, direction, body, status, created_at)
+           SELECT id, 'worker', 'inbound', 'later reply', 'received',
+                  employer_last_read_at + interval '1 second'
+             FROM job_conversations WHERE id = $1`,
+          [conversation],
+        );
         await client.query(
           `UPDATE job_conversations
               SET last_worker_message_at = employer_last_read_at + interval '1 second',
@@ -393,7 +427,11 @@ maybeDescribe('employer conversation mark-read against real PostgreSQL', () => {
       expect(inbox.items[0].unread).toBe(true);
     });
 
-    it('treats a read stamped at the EXACT instant of the last worker message as read', async () => {
+    // The mirror image, and the round-2 bug in one case: advancing
+    // last_worker_message_at WITHOUT a message -- exactly what
+    // openWorkerConversation (job-messaging.ts:813) does when the worker taps
+    // "Open conversation" -- must leave the badge off.
+    it('does NOT flip back when only last_worker_message_at advances (no message arrived)', async () => {
       const employer = await newEmployer();
       const conversation = await newConversation(employer.id, '2026-09-10T12:00:00Z');
 
@@ -401,8 +439,29 @@ maybeDescribe('employer conversation mark-read against real PostgreSQL', () => {
         await client.query(markReadSql(), [conversation, employer.id]);
         await client.query(
           `UPDATE job_conversations
-              SET last_worker_message_at = employer_last_read_at
+              SET last_worker_message_at = employer_last_read_at + interval '1 hour',
+                  accepted_at = COALESCE(accepted_at, now())
             WHERE id = $1`,
+          [conversation],
+        );
+        return listEmployerInbox(client as unknown as PoolClient, employer.id);
+      });
+
+      expect(inbox.items[0].last_worker_message_at).not.toBeNull();
+      expect(inbox.items[0].unread).toBe(false);
+      expect(inbox.unread_count).toBe(0);
+    });
+
+    it('treats a read stamped at the EXACT instant of the last inbound message as read', async () => {
+      const employer = await newEmployer();
+      const conversation = await newConversation(employer.id, '2026-09-10T12:00:00Z');
+
+      const inbox = await asEmployer(employer, async () => {
+        await client.query(markReadSql(), [conversation, employer.id]);
+        await client.query(
+          `UPDATE job_conversation_messages
+              SET created_at = (SELECT employer_last_read_at FROM job_conversations WHERE id = $1)
+            WHERE conversation_id = $1 AND direction = 'inbound'`,
           [conversation],
         );
         return listEmployerInbox(client as unknown as PoolClient, employer.id);
@@ -434,6 +493,77 @@ maybeDescribe('employer conversation mark-read against real PostgreSQL', () => {
 
       expect(inbox.items).toHaveLength(1);
       expect(inbox.items[0].conversation_id).toBeNull();
+      expect(inbox.items[0].unread).toBe(false);
+      expect(inbox.unread_count).toBe(0);
+    });
+
+    // ── round 2: the dismissed applicant with a live thread ──────────────
+    //
+    // Inbound routing (lib/job-messaging.ts:657-688) picks its target by
+    // jc.worker_id + jc.status = 'open' and never reads the application's
+    // status, so a worker's reply still lands in the thread of somebody the
+    // employer marked not-interested. The inbox is now the drawer's only
+    // source, so filtering that row out hid a live, still-receiving
+    // conversation from every employer surface.
+    it('surfaces a not_interested applicant whose thread is still open and unread', async () => {
+      const employer = await newEmployer();
+      const dismissed = await newConversation(employer.id, '2026-09-10T12:00:00Z', {
+        applicationStatus: 'not_interested',
+      });
+
+      const inbox = await asEmployer(employer, async () =>
+        listEmployerInbox(client as unknown as PoolClient, employer.id));
+
+      expect(inbox.items.map((item) => item.conversation_id)).toEqual([dismissed]);
+      // Reachable...
+      expect(inbox.items[0].application_status).toBe('not_interested');
+      // ...and BADGED: an unanswered message from somebody the employer
+      // dismissed is still an unanswered message.
+      expect(inbox.items[0].unread).toBe(true);
+      expect(inbox.unread_count).toBe(1);
+    });
+
+    // The other half of the same WHERE clause: dismissing an applicant the
+    // employer never messaged must still remove them from the list, or the
+    // "not interested" button does nothing visible.
+    it('still drops a not_interested applicant with NO conversation', async () => {
+      const employer = await newEmployer();
+      seq += 1;
+      const jobId = (
+        await client.query<{ id: string }>(
+          `INSERT INTO jobs (employer_id, title, location, job_type, status)
+           VALUES ($1, $2, 'Austin', 'full-time', 'active') RETURNING id`,
+          [employer.id, `S26 T3a dismissed-no-thread ${seq}`],
+        )
+      ).rows[0].id;
+      await client.query(
+        `INSERT INTO job_applications (job_id, worker_id, status)
+         VALUES ($1, $2, 'not_interested')`,
+        [jobId, worker],
+      );
+
+      const inbox = await asEmployer(employer, async () =>
+        listEmployerInbox(client as unknown as PoolClient, employer.id));
+
+      expect(inbox.items).toHaveLength(0);
+    });
+
+    // The badge's round-2 definition, against a real message table: the
+    // "Open conversation" button stamps last_worker_message_at and inserts
+    // NOTHING, so the thread must stay unbadged until a message really lands.
+    it('does not badge a thread the worker only OPENED (last_worker_message_at with no message row)', async () => {
+      const employer = await newEmployer();
+      const opened = await newConversation(employer.id, '2026-09-10T12:00:00Z', {
+        inbound: false,
+      });
+
+      const inbox = await asEmployer(employer, async () =>
+        listEmployerInbox(client as unknown as PoolClient, employer.id));
+
+      expect(inbox.items.map((item) => item.conversation_id)).toEqual([opened]);
+      // The column IS set -- this is openWorkerConversation's exact footprint.
+      expect(inbox.items[0].last_worker_message_at).not.toBeNull();
+      // ...and the badge is still off, because no message exists.
       expect(inbox.items[0].unread).toBe(false);
       expect(inbox.unread_count).toBe(0);
     });
@@ -483,6 +613,18 @@ maybeDescribe('migration 096 backfills the employer read stamp', () => {
   const applicationId = randomUUID();
   const conversationId = randomUUID();
 
+  // A SECOND employer, whose only thread the worker OPENED and never wrote in
+  // -- openWorkerConversation's exact footprint (last_worker_message_at set,
+  // no message row). Its own employer so the single-row inbox assertions stay
+  // simple. This is the population whose meaning round 2 changed, and the one
+  // 096 and the new formula could most easily disagree about.
+  const openedEmployerId = randomUUID();
+  const openedEmployerSub = `s26-096-opened-employer-${tag}`;
+  const openedWorkerId = randomUUID();
+  const openedJobId = randomUUID();
+  const openedApplicationId = randomUUID();
+  const openedConversationId = randomUUID();
+
   /** The worker's last message, a day before the backfill runs. */
   const workerWroteAt = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
@@ -507,19 +649,36 @@ maybeDescribe('migration 096 backfills the employer read stamp', () => {
   /** The inbox, read the way the Lambda reads it: as jale_admin, both GUCs
    * bound, in a transaction that is rolled back so it cannot disturb the
    * migration cases around it. */
-  async function inboxUnread(): Promise<boolean> {
+  async function inboxUnreadFor(sub: string, id: string, conversation: string): Promise<boolean> {
     await admin.query('BEGIN');
     try {
-      await admin.query(`SELECT set_config('app.current_user_id', $1, true)`, [employerSub]);
-      await admin.query(`SELECT set_config('app.current_internal_user_id', $1, true)`, [employerId]);
-      const inbox = await listEmployerInbox(admin as unknown as PoolClient, employerId);
+      await admin.query(`SELECT set_config('app.current_user_id', $1, true)`, [sub]);
+      await admin.query(`SELECT set_config('app.current_internal_user_id', $1, true)`, [id]);
+      const inbox = await listEmployerInbox(admin as unknown as PoolClient, id);
       expect(inbox.items).toHaveLength(1);
-      expect(inbox.items[0].conversation_id).toBe(conversationId);
+      expect(inbox.items[0].conversation_id).toBe(conversation);
       expect(inbox.unread_count).toBe(inbox.items[0].unread ? 1 : 0);
       return inbox.items[0].unread;
     } finally {
       await admin.query('ROLLBACK');
     }
+  }
+
+  async function inboxUnread(): Promise<boolean> {
+    return inboxUnreadFor(employerSub, employerId, conversationId);
+  }
+
+  /** The opened-but-never-wrote thread, read the same way. */
+  async function openedInboxUnread(): Promise<boolean> {
+    return inboxUnreadFor(openedEmployerSub, openedEmployerId, openedConversationId);
+  }
+
+  async function openedStamp(): Promise<Date | null> {
+    const res = await su.query<{ employer_last_read_at: Date | null }>(
+      'SELECT employer_last_read_at FROM job_conversations WHERE id = $1',
+      [openedConversationId],
+    );
+    return res.rows[0].employer_last_read_at;
   }
 
   async function forceFlags(): Promise<{ enabled: boolean; forced: boolean }> {
@@ -564,6 +723,48 @@ maybeDescribe('migration 096 backfills the employer read stamp', () => {
        VALUES ($1, $2, $3, $4, $5, 'open', $6, $6, NULL)`,
       [conversationId, jobId, employerId, workerId, applicationId, workerWroteAt],
     );
+    // The MESSAGE behind those columns. Since round 2 the badge keys on the
+    // newest inbound message, so a fixture that only set the conversation
+    // columns would be measuring nothing. created_at is workerWroteAt, which
+    // is also what 096 will stamp -- making this the EQUAL-timestamp case, and
+    // equality is what production actually hits: the inbound insert and the
+    // conversation UPDATE that follows it (job-messaging.ts:692-701) share one
+    // transaction, so now() is identical for both.
+    await su.query(
+      `INSERT INTO job_conversation_messages
+         (conversation_id, sender_type, direction, body, status, created_at)
+       VALUES ($1, 'worker', 'inbound', 'pre-096 worker message', 'received', $2)`,
+      [conversationId, workerWroteAt],
+    );
+
+    // ── the opened-but-never-wrote thread ──
+    // last_worker_message_at IS set and NO message row exists, which is
+    // precisely what openWorkerConversation (job-messaging.ts:813) leaves
+    // behind. Under the round-1 formula this was unread; under round 2 it is
+    // not, and 096 must not change that in either direction.
+    await su.query(
+      `INSERT INTO users (id, cognito_sub, user_type)
+       VALUES ($1, $2, 'employer'), ($3, $4, 'worker')`,
+      [openedEmployerId, openedEmployerSub, openedWorkerId, `s26-096-opened-worker-${tag}`],
+    );
+    await su.query(
+      `INSERT INTO jobs (id, employer_id, title, location, job_type, status)
+       VALUES ($1, $2, 'S26 096 opened-only', 'Austin', 'full-time', 'active')`,
+      [openedJobId, openedEmployerId],
+    );
+    await su.query(
+      `INSERT INTO job_applications (id, job_id, worker_id, status)
+       VALUES ($1, $2, $3, 'talking')`,
+      [openedApplicationId, openedJobId, openedWorkerId],
+    );
+    await su.query(
+      `INSERT INTO job_conversations
+         (id, job_id, employer_id, worker_id, application_id, status,
+          last_message_at, last_worker_message_at, employer_last_read_at)
+       VALUES ($1, $2, $3, $4, $5, 'open', NULL, $6, NULL)`,
+      [openedConversationId, openedJobId, openedEmployerId, openedWorkerId,
+       openedApplicationId, workerWroteAt],
+    );
   });
 
   afterAll(async () => {
@@ -572,10 +773,17 @@ maybeDescribe('migration 096 backfills the employer read stamp', () => {
     // then jobs, then users. try/finally: a failed DELETE must still close
     // BOTH clients, or jest hangs on the open pg handles.
     try {
+      // job_conversation_messages.conversation_id is ON DELETE CASCADE
+      // (025:31), so the messages go with the conversation.
       await su.query('DELETE FROM job_conversations WHERE id = $1', [conversationId]);
       await su.query('DELETE FROM job_applications WHERE id = $1', [applicationId]);
       await su.query('DELETE FROM jobs WHERE id = $1', [jobId]);
-      await su.query('DELETE FROM users WHERE id = ANY($1::uuid[])', [[employerId, workerId]]);
+      await su.query('DELETE FROM job_conversations WHERE id = $1', [openedConversationId]);
+      await su.query('DELETE FROM job_applications WHERE id = $1', [openedApplicationId]);
+      await su.query('DELETE FROM jobs WHERE id = $1', [openedJobId]);
+      await su.query('DELETE FROM users WHERE id = ANY($1::uuid[])', [
+        [employerId, workerId, openedEmployerId, openedWorkerId],
+      ]);
     } finally {
       await admin.end();
       await su.end();
@@ -608,6 +816,14 @@ maybeDescribe('migration 096 backfills the employer read stamp', () => {
     expect(await inboxUnread()).toBe(true);
   });
 
+  it('2b. an OPENED-but-never-wrote thread is NOT unread before the backfill either', async () => {
+    expect(await openedStamp()).toBeNull();
+    // The round-2 formula already excludes it: last_worker_message_at is set,
+    // but no message ever arrived. A NULL stamp is not enough to badge a
+    // thread -- something has to have been SAID.
+    expect(await openedInboxUnread()).toBe(false);
+  });
+
   it('3. 096 stamps it to the worker message instant, and it reads as READ', async () => {
     await apply096();
 
@@ -619,6 +835,11 @@ maybeDescribe('migration 096 backfills the employer read stamp', () => {
     // NOT now(). A backfill that stamped now() would also read as "read", so
     // the exact value is what distinguishes a correct backfill from a lucky one.
     expect(after!.getTime()).toBe(workerWroteAt.getTime());
+    // ...and it lands EXACTLY on the inbound message's created_at, so the
+    // suppression depends on the comparison being strict `>`. A `>=` here
+    // would leave every backfilled thread badged -- the whole wall 096 exists
+    // to prevent -- which makes this the case that ties the migration and the
+    // inbox formula together.
     expect(await inboxUnread()).toBe(false);
   });
 
@@ -629,7 +850,30 @@ maybeDescribe('migration 096 backfills the employer read stamp', () => {
     expect(await forceFlags()).toEqual({ enabled: true, forced: true });
   });
 
+  it('4b. 096 is HARMLESS to the opened-but-never-wrote thread: stamped, still not unread', async () => {
+    // The backfill reaches it (its stamp was NULL, so GREATEST(...) applies --
+    // here COALESCE(last_message_at, created_at) falls through to created_at,
+    // since this thread has no messages at all) ...
+    expect(await openedStamp()).not.toBeNull();
+    // ... and the badge is unchanged, because the formula never depended on
+    // the stamp for this row. This is the case that shows the migration and
+    // the round-2 definition do not fight each other: 096 suppresses HISTORY
+    // for threads that were genuinely written in, and does nothing at all to
+    // threads that only look written-in because of last_worker_message_at.
+    expect(await openedInboxUnread()).toBe(false);
+  });
+
   it('5. a worker message arriving AFTER the backfill flips the thread back to unread', async () => {
+    // A real second inbound message, one second after the stamp 096 wrote --
+    // the way a WhatsApp reply arrives the morning after the deploy.
+    await su.query(
+      `INSERT INTO job_conversation_messages
+         (conversation_id, sender_type, direction, body, status, created_at)
+       SELECT id, 'worker', 'inbound', 'post-096 worker message', 'received',
+              employer_last_read_at + interval '1 second'
+         FROM job_conversations WHERE id = $1`,
+      [conversationId],
+    );
     await su.query(
       `UPDATE job_conversations
           SET last_worker_message_at = employer_last_read_at + interval '1 second',

@@ -7,11 +7,19 @@
 --
 -- ── WHAT THIS IS FOR ──────────────────────────────────────────────────────
 -- Sprint 26 gives the employer inbox an unread badge. A thread is unread when
--- the worker has written and the employer has not read since:
+-- a message ARRIVED from the worker and the employer has not read since --
+-- the newest INBOUND row in job_conversation_messages, compared strictly
+-- (lib/employer-inbox.ts):
 --
---     last_worker_message_at IS NOT NULL
+--     last_inbound_message_at IS NOT NULL
 --     AND (employer_last_read_at IS NULL
---          OR last_worker_message_at > employer_last_read_at)
+--          OR last_inbound_message_at > employer_last_read_at)
+--
+-- NOT last_worker_message_at, which is a "the worker engaged" signal rather
+-- than "the worker said something": openWorkerConversation
+-- (lib/job-messaging.ts:813) stamps it when the worker taps "Open
+-- conversation" and inserts NO message row. A badge keyed on it announced
+-- messages that do not exist.
 --
 -- `job_conversations.employer_last_read_at` was added by
 -- 028_job_messaging_hardening.sql:37 and NOTHING has ever written it --
@@ -26,23 +34,38 @@
 -- than no badge. This file stamps the history so the badge starts CLEAN and
 -- only ever lights up for messages that arrive after it shipped.
 --
--- ── WHY `GREATEST(...)` AND NOT THE MESSAGE TIMESTAMP ALONE ───────────────
--- The stamp has to be at least as late as the newest worker message on the
--- row, or the row stays badged and the file has not done its job. Two columns
--- can carry that instant, plus `created_at` as the floor for a thread that has
--- no messages at all (created_at is NOT NULL -- 025:14 -- which is what makes
--- the expression total, and therefore what makes the self-check below able to
--- assert zero remaining NULLs):
+-- ── WHY THE STAMP COMES FROM THE CONVERSATION'S OWN COLUMNS ───────────────
+-- The badge compares against the newest INBOUND MESSAGE, but the backfill
+-- stamps from the CONVERSATION row. That is not a mismatch, and the reason is
+-- worth stating because it is the whole basis of this file working:
+--
+--   lib/job-messaging.ts:692-701 inserts the inbound message and advances
+--   last_message_at / last_worker_message_at in the SAME TRANSACTION, and
+--   now() is transaction-stable in PostgreSQL. So the message's created_at
+--   (its column DEFAULT now()) and those two columns are the SAME INSTANT,
+--   byte for byte.
+--
+-- The stamp therefore lands exactly ON the newest inbound message's
+-- created_at, and the badge's `>` is STRICT, so the thread reads as read. An
+-- inbound rule and a column-derived stamp agree precisely because one
+-- transaction wrote both. (The DB suite asserts that equality directly rather
+-- than trusting this paragraph.)
+--
+-- The stamp has to be at least as late as that instant, or the row stays
+-- badged and the file has not done its job. Two columns can carry it, plus
+-- `created_at` as the floor for a thread that has no messages at all
+-- (created_at is NOT NULL -- 025:14 -- which is what makes the expression
+-- total, and therefore what makes the self-check below able to assert zero
+-- remaining NULLs):
 --
 --   last_message_at         the newest message of ANY kind
 --   last_worker_message_at  the newest message FROM THE WORKER
 --
 -- For every row the shipped code has ever written these two move together or
--- last_message_at is later: lib/job-messaging.ts:697-701 sets BOTH in one
--- statement on an inbound worker message, and :568-571 advances only
--- last_message_at on an outbound employer message. So on real data
--- `GREATEST(...)` and the simpler `COALESCE(last_message_at, created_at)` pick
--- exactly the same instant.
+-- last_message_at is later: :692-701 sets BOTH on an inbound worker message,
+-- and :568-571 advances only last_message_at on an outbound employer message.
+-- So on real data `GREATEST(...)` and the simpler
+-- `COALESCE(last_message_at, created_at)` pick exactly the same instant.
 --
 -- GREATEST is used anyway, for the row the old code COULD have left behind but
 -- the new code must not be broken by: last_worker_message_at set with
@@ -89,12 +112,32 @@
 -- code lands. Applied after, every employer gets the wall of stale badges this
 -- file exists to prevent for however long the gap lasts.
 --
+-- ── WHY NO "STILL UNREAD" COUNT IS REPORTED ───────────────────────────────
+-- It would be useful and it is deliberately absent. Answering "how many
+-- threads still read as unread after this?" means asking the badge's own
+-- question, which reads job_conversation_messages -- and that table is ENABLE
+-- + FORCE ROW LEVEL SECURITY (025:88-89) with job_messages_employer_all
+-- (025:99-107) keyed on app.current_internal_user_id through its parent
+-- conversation. With no GUC set, jale_admin -- the owner, and the role
+-- migrations run as -- sees ZERO message rows. Measured, not assumed: with
+-- only job_conversations un-forced the count comes back 0 on a database where
+-- the true answer is 1. A NOTICE that can never print anything but zero is
+-- worse than none, because "0 still unread" reads as confirmation.
+--
+-- Making it truthful would mean un-forcing job_conversation_messages as well:
+-- a second FORCE-RLS bracket and a second ACCESS EXCLUSIVE lock, on the larger
+-- table, for a number nothing acts on. This file does not touch that table at
+-- all. Anyone who wants the count can run the query from
+-- lib/employer-inbox.ts against a superuser session after the fact, outside
+-- the migration's lock window.
+--
 -- ── LOCK WINDOW ───────────────────────────────────────────────────────────
 -- ALTER TABLE ... [NO] FORCE ROW LEVEL SECURITY takes ACCESS EXCLUSIVE on
 -- job_conversations, and this transaction holds it until COMMIT. Every read
 -- and write of the table blocks for the duration -- so the employer inbox,
 -- every conversation view, every employer send, and every inbound WhatsApp
--- worker reply, which is most of the messaging surface.
+-- worker reply, which is most of the messaging surface. One table only: see
+-- the section above for why the messages table is deliberately left alone.
 --
 -- Neither statement rewrites the table (they only flip a pg_class flag), but
 -- the backfill between them is ONE seq scan plus a row version per
@@ -137,7 +180,6 @@ DO $$
 DECLARE
   v_backfilled INTEGER;
   v_null_left  INTEGER;
-  v_still_unread INTEGER;
 BEGIN
   -- PRECONDITION, not a post-condition: the statement above must actually have
   -- un-forced the table. Under FORCE RLS jale_admin's UPDATE is a silent
@@ -172,20 +214,6 @@ BEGIN
   IF v_null_left > 0 THEN
     RAISE EXCEPTION 'migration 096: % conversation(s) still carry a NULL employer_last_read_at -- the backfill did not land', v_null_left;
   END IF;
-
-  -- Reported, deliberately NOT asserted. On a first run this is 0 and says so.
-  -- On a REPLAY after the badge has shipped it is legitimately non-zero -- a
-  -- worker who wrote after their employer last read is genuinely unread, and
-  -- the backfill above correctly leaves that row alone because its stamp is
-  -- not NULL. Asserting zero here would make a later --force-replay fail on
-  -- perfectly correct data, which is exactly the mutable-value trap 095's
-  -- header warns about.
-  SELECT count(*) INTO v_still_unread
-    FROM job_conversations
-   WHERE last_worker_message_at IS NOT NULL
-     AND (employer_last_read_at IS NULL
-          OR last_worker_message_at > employer_last_read_at);
-  RAISE NOTICE 'migration 096: conversations still reading as unread after the backfill: %', v_still_unread;
 END $$;
 
 -- ── restore the tenant boundary ──
@@ -197,7 +225,8 @@ BEGIN
   -- An un-force this file failed to reverse would be a permanent, silent hole
   -- in a tenant boundary -- every employer able to read and write every other
   -- employer's conversations. Worth its own check even though the statement
-  -- above is three lines up.
+  -- above is three lines up. One table, because this file un-forces exactly
+  -- one.
   IF NOT EXISTS (
     SELECT 1
       FROM pg_catalog.pg_class rel

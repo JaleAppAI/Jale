@@ -1672,6 +1672,15 @@ describe('database migrations', () => {
       // Exactly one un-force and one re-force, and on no other table.
       expect(text.match(/NO FORCE ROW LEVEL SECURITY/g)).toHaveLength(1);
       expect(text.match(/ALTER TABLE \w+ FORCE ROW LEVEL SECURITY/g)).toHaveLength(1);
+      // And job_conversation_messages is not OPERATED ON at all -- not
+      // un-forced, not written. Reading it would have meant a second FORCE-RLS
+      // bracket and a second ACCESS EXCLUSIVE lock on the larger table, which
+      // was judged too much for an informational count (see the file's "WHY NO
+      // STILL UNREAD COUNT IS REPORTED" section). Mentions in COMMENTS are
+      // fine and expected, so this checks statements, not the whole text.
+      expect(text.match(/ALTER TABLE job_conversation_messages/g)).toBeNull();
+      expect(text.match(/UPDATE job_conversation_messages/g)).toBeNull();
+      expect(text.match(/FROM job_conversation_messages/g)).toBeNull();
       // `row_security = off` is a no-op for a FORCEd owner -- the trap this
       // repo has hit before. It must not appear as the mechanism.
       expect(text).not.toMatch(/SET\s+row_security\s*=\s*off/i);
@@ -1710,11 +1719,27 @@ describe('database migrations', () => {
     // The residual-unread count is REPORTED, never asserted: on a replay after
     // the badge ships it is legitimately non-zero, and an assertion would make
     // --force-replay fail on perfectly correct data.
-    it('reports the residual unread count without asserting it', () => {
+    // The file reports how many rows it STAMPED, and nothing else. It used to
+    // also report how many still read as unread, by the pre-round-2
+    // last_worker_message_at rule -- which over-counted by exactly the
+    // opened-but-never-wrote population (openWorkerConversation stamps that
+    // column with no message row), so an operator would read a false non-zero
+    // as "the backfill failed". Re-stating it in the badge's real terms means
+    // reading job_conversation_messages, and that needs its own FORCE-RLS
+    // bracket; not worth it for a number nothing acts on. Absent, and
+    // explained in the header, is the settled answer -- these assertions stop
+    // either version coming back by accident.
+    it('reports the rows it stamped, and does NOT report a residual unread count', () => {
       const text = sql();
-      expect(text).toMatch(/RAISE NOTICE 'migration 096: conversations still reading as unread/);
-      const residual = text.slice(text.indexOf('v_still_unread'));
-      expect(residual).not.toMatch(/RAISE EXCEPTION[^;]*still reading as unread/);
+      expect(text).toMatch(/RAISE NOTICE 'migration 096: conversations stamped/);
+      expect(text).not.toMatch(/RAISE NOTICE[^;]*still reading as unread/);
+      // Specifically not by the superseded rule, which is the version that
+      // would mislead rather than merely go quiet.
+      expect(text).not.toMatch(/last_worker_message_at > employer_last_read_at\s*\)?\s*;/);
+      // The header has to say WHY it is missing, or the next reader adds it
+      // back and re-discovers the FORCE-RLS trap the hard way.
+      expect(text).toMatch(/WHY NO "STILL UNREAD" COUNT IS REPORTED/);
+      expect(text).toMatch(/sees ZERO message rows/i);
     });
 
     it('issues no GRANT, and proves the table-level one it relies on', () => {
@@ -1724,6 +1749,17 @@ describe('database migrations', () => {
       expect(text).not.toMatch(/^GRANT /m);
       expect(text).toContain("has_column_privilege('jale_admin', 'public.job_conversations', 'employer_last_read_at', 'UPDATE')");
       expect(text).toContain("has_column_privilege('jale_admin', 'public.job_conversations', 'employer_last_read_at', 'SELECT')");
+    });
+
+    it('documents the rule the badge actually uses', () => {
+      const text = sql();
+      // The file's rationale must name the rule it is protecting, or the next
+      // reader "fixes" the backfill to match a formula that no longer ships.
+      expect(text).toMatch(/last_inbound_message_at > employer_last_read_at/);
+      expect(text).toMatch(/openWorkerConversation/);
+      // ...including WHY a column-derived stamp is sound against a
+      // message-derived rule: one transaction writes both.
+      expect(text).toMatch(/SAME TRANSACTION/i);
     });
 
     it('documents its deploy order, its lock window and the trigger side effect', () => {
