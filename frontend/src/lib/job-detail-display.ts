@@ -304,20 +304,42 @@ export function durationLabel(job: ScheduleFields, tCommon: Translator): string 
  * Three surfaces render this row -- the employer's job page, the worker's, and
  * the public one -- and only the public one ever said what the number meant.
  * The other two printed `String(required_experience_years)`, so a job asking
- * for three years' experience showed a bare "3" under a "Experience" label,
+ * for three years' experience showed a bare "3" under an "Experience" label,
  * which reads as a score as easily as a duration.
  *
- * ABSENT AND ZERO ARE DIFFERENT ANSWERS, and conflating them is the second
- * half of the same bug. Every call site guards the tile on `!== null`, so a
- * stated zero reached the renderer and printed "0":
+ * MONTHS IS THE CANONICAL TOTAL, NOT A REMAINDER. The two columns are not a
+ * years-and-months pair; `required_experience_months` holds the WHOLE figure:
  *
- *  - both fields null/undefined -> `null`. The job states no requirement;
- *    callers keep hiding the row.
- *  - a stated zero (either field present, nothing above zero) ->
- *    `tCommon('experience_none')` -- the same "No experience required"
- *    sentence `ExperienceStepper` shows the employer while they set it.
- *  - otherwise the non-zero parts, each with its unit, joined by a space:
- *    "3 years", "6 months", "2 years 6 months".
+ *  - `lib/job-form.ts` sends `required_experience_years` and no months field
+ *    at all, and `infra/lambda/lib/job-fields.ts` stores
+ *    `required_experience_months = months ?? years * 12`.
+ *  - migration 033, which added the column, backfilled every legacy row as
+ *    `LEAST(required_experience_years, 80) * 12`.
+ *
+ * So a three-year job is `(years: 3, months: 36)` on the wire, and reading the
+ * pair as independent parts -- which this function and the public page's
+ * `formatExperience` before it both did -- printed "3 years 36 months" on
+ * every job that stated any experience at all.
+ *
+ * `years` is therefore a redundant legacy duplicate and is IGNORED whenever
+ * `months` is present, with no special case for a pair that disagrees: months
+ * is the column of record, and `(3, 0)` means zero months total however the
+ * stale years column reads. It is only consulted as the `* 12` fallback for a
+ * payload too old to carry months.
+ *
+ * ABSENT AND ZERO ARE DIFFERENT ANSWERS. Every call site guards the tile on
+ * `!== null`, so a stated zero reaches the renderer and must say what it
+ * means rather than print "0":
+ *
+ *  - no total derivable (both fields null/undefined) -> `null`. The job states
+ *    no requirement; callers keep hiding the row.
+ *  - a total of zero -> `tCommon('experience_none')`, the same "No experience
+ *    required" sentence `ExperienceStepper` shows the employer while they set
+ *    it. A negative total is impossible (migration 033 CHECKs 0..960) but
+ *    degrades here rather than rendering "-1 years".
+ *  - otherwise the total split into whole years and the leftover months, each
+ *    non-zero part carrying its unit: "3 years", "6 months", "2 years
+ *    6 months".
  *
  * `tCommon` is expected to be scoped to the `common` namespace, like
  * `durationLabel` and `workDayChips` -- the unit keys live there because all
@@ -325,13 +347,18 @@ export function durationLabel(job: ScheduleFields, tCommon: Translator): string 
  */
 export function experienceLabel(job: ExperienceFields, tCommon: Translator): string | null {
   const { required_experience_years: years, required_experience_months: months } = job;
-  if (years == null && months == null) return null;
+  const total = months ?? (years == null ? null : years * 12);
+  if (total == null) return null;
+  if (total <= 0) return tCommon('experience_none');
+
+  const wholeYears = Math.floor(total / 12);
+  const leftoverMonths = total % 12;
 
   const parts: string[] = [];
-  if (years) parts.push(tCommon('experience_years_unit', { n: years }));
-  if (months) parts.push(tCommon('experience_months_unit', { n: months }));
+  if (wholeYears) parts.push(tCommon('experience_years_unit', { n: wholeYears }));
+  if (leftoverMonths) parts.push(tCommon('experience_months_unit', { n: leftoverMonths }));
 
-  return parts.length > 0 ? parts.join(' ') : tCommon('experience_none');
+  return parts.join(' ');
 }
 
 /**

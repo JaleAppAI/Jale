@@ -355,24 +355,74 @@ describe('experienceLabel', () => {
     expect(experienceLabel({ required_experience_months: 0 }, fakeT)).toBe('experience_none');
   });
 
-  /** The unit is the point: "3" is a number, "3 years" is a requirement. */
-  it('carries the unit for years, months, or both', () => {
-    expect(experienceLabel({ required_experience_years: 3 }, fakeT))
+  /*
+   * THE REPORTED DEFECT. Every job the app can create arrives here as this
+   * pair: `lib/job-form.ts` sends `required_experience_years` and nothing
+   * else, and `infra/lambda/lib/job-fields.ts` stores
+   * `required_experience_months = years * 12` (migration 033 backfilled the
+   * legacy rows the same way). So 3 years is (3, 36) on the wire, and reading
+   * the two columns as independent parts printed "3 years 36 months".
+   */
+  it('reads months as the canonical TOTAL, not as a remainder beside the years', () => {
+    expect(experienceLabel({ required_experience_years: 3, required_experience_months: 36 }, fakeT))
       .toBe('experience_years_unit({"n":3})');
-    expect(experienceLabel({ required_experience_months: 6 }, fakeT))
-      .toBe('experience_months_unit({"n":6})');
-    expect(
-      experienceLabel({ required_experience_years: 2, required_experience_months: 6 }, fakeT),
-    ).toBe('experience_years_unit({"n":2}) experience_months_unit({"n":6})');
   });
 
-  it('drops a zero side of a mixed pair rather than printing "0 years"', () => {
+  /** The unit is the point: "3" is a number, "3 years" is a requirement. */
+  it('carries the unit for years, months, or both', () => {
+    // Years only -- the pre-033 payload shape, where the total is years * 12.
+    expect(experienceLabel({ required_experience_years: 2 }, fakeT))
+      .toBe('experience_years_unit({"n":2})');
+    expect(experienceLabel({ required_experience_months: 6 }, fakeT))
+      .toBe('experience_months_unit({"n":6})');
+    // A total that does not divide evenly splits into both units.
+    expect(experienceLabel({ required_experience_months: 30 }, fakeT))
+      .toBe('experience_years_unit({"n":2}) experience_months_unit({"n":6})');
+  });
+
+  it('splits an exact multiple of twelve into whole years with no "0 months" tail', () => {
+    expect(experienceLabel({ required_experience_months: 12 }, fakeT))
+      .toBe('experience_years_unit({"n":1})');
+    expect(experienceLabel({ required_experience_months: 24 }, fakeT))
+      .toBe('experience_years_unit({"n":2})');
+    // And under a year there is no "0 years" head either.
+    expect(experienceLabel({ required_experience_months: 11 }, fakeT))
+      .toBe('experience_months_unit({"n":11})');
+  });
+
+  /*
+   * MONTHS WINS, ALWAYS -- no special case for a pair that disagrees.
+   *
+   * `months` is the column of record (see the function's doc comment), and
+   * nothing the app can create produces a pair that means anything else:
+   * `lib/job-form.ts` has no months field, so the server always derives
+   * `months = years * 12`. A disagreeing pair can only come from a
+   * hand-written API call, and reading `years` there would mean trusting the
+   * duplicate over the canonical column.
+   *
+   * Both assertions below CHANGED with this fix, and deliberately: (2, 6) used
+   * to read as "2 years 6 months" and (3, 0) as "3 years".
+   */
+  it('ignores a stale years column whenever months is present', () => {
     expect(
-      experienceLabel({ required_experience_years: 0, required_experience_months: 6 }, fakeT),
+      experienceLabel({ required_experience_years: 2, required_experience_months: 6 }, fakeT),
     ).toBe('experience_months_unit({"n":6})');
     expect(
       experienceLabel({ required_experience_years: 3, required_experience_months: 0 }, fakeT),
-    ).toBe('experience_years_unit({"n":3})');
+    ).toBe('experience_none');
+    expect(
+      experienceLabel({ required_experience_years: 0, required_experience_months: 6 }, fakeT),
+    ).toBe('experience_months_unit({"n":6})');
+  });
+
+  /*
+   * Impossible per migration 033's CHECK (0..960), but the legacy years column
+   * is only CHECK (>= 0) -- so this degrades to the zero wording rather than
+   * rendering "-1 years -1 months" out of a negative remainder.
+   */
+  it('degrades a negative total to the zero wording', () => {
+    expect(experienceLabel({ required_experience_months: -6 }, fakeT)).toBe('experience_none');
+    expect(experienceLabel({ required_experience_years: -1 }, fakeT)).toBe('experience_none');
   });
 });
 
