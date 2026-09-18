@@ -9,6 +9,7 @@ import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { usePageData } from '@/hooks/usePageData';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { AppShell } from '@/components/layout/AppShell';
+import { PostJobButton } from '@/components/employer/PostJobButton';
 import { AppShellSkeleton } from '@/components/layout/AppShellSkeleton';
 import { ApplicationStatusBadge, Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -45,6 +46,7 @@ import {
     remainingCount,
     statusSelectOptions,
 } from '@/lib/hire-gate';
+import { formatLongDate } from '@/lib/date';
 import { tradeLabel } from '@/lib/trades';
 import { displayAnswer, displayQuestion, normalizeAnswers } from '@/lib/trust-assessment';
 import { AnswerHighlights } from './AnswerHighlights';
@@ -441,7 +443,12 @@ export default function WorkerProfilePage() {
 
     const displayName = profile?.full_name?.trim() || t('fallback_name');
     const skills = profile?.skills ?? [];
-    const appliedAt = profile?.applied_at ? profile.applied_at.slice(0, 10) : t('fallback_applied');
+    // `applied_at` is an INSTANT, not a calendar day, so it takes the
+    // reader's-timezone formatter. It used to be `.slice(0, 10)` -- the raw
+    // ISO date, the machine's spelling, on a page that is otherwise entirely
+    // in the reader's language.
+    const appliedAt = (profile?.applied_at ? formatLongDate(profile.applied_at, locale) : null)
+        ?? t('fallback_applied');
     const yearsExperience = profile?.years_experience ?? null;
     // Both figures come off `worker_profiles` and both have always been on the
     // wire; only the years were rendered, which reported a 20-month worker as
@@ -563,7 +570,7 @@ export default function WorkerProfilePage() {
     /* ===== S2 loaded ======================================================= */
 
     return (
-        <AppShell role="employer" title={displayName} subtitle={shellSubtitle}>
+        <AppShell role="employer" title={displayName} subtitle={shellSubtitle} actions={<PostJobButton />}>
             <div className="mx-auto max-w-4xl px-4 py-6 md:px-6">
                 <div className="anim-fade-in">
                     {backLink}
@@ -818,7 +825,7 @@ export default function WorkerProfilePage() {
                                                             >
                                                                 <span className="min-w-0 text-current">{t(dim.labelKey)}</span>
                                                                 <span className="shrink-0 tabular-nums text-current opacity-70">
-                                                                    {value} pts
+                                                                    {t('trust_points', { value })}
                                                                 </span>
                                                             </div>
                                                         );

@@ -113,8 +113,28 @@ async function reachConfirmStepViaSignIn(user: ReturnType<typeof userEvent.setup
     expect(await screen.findByText(RECOVERY_MARKER)).toBeInTheDocument();
 }
 
+/**
+ * `mockReset`, NOT `vi.clearAllMocks()`, for the six cognito mocks.
+ *
+ * `clearAllMocks` calls `mockClear`, which empties `mock.calls` but leaves the
+ * `mockRejectedValueOnce` / `mockResolvedValueOnce` QUEUE in place. Every test
+ * in this file stages cognito's answers as one-shots, and a one-shot outranks
+ * whatever the next test stages. So a test that ends without draining its
+ * queue -- an assertion that throws half way down, or a timeout on a loaded
+ * machine -- hands its leftovers to the tests after it, which then see a
+ * rejection they never set up and fail nowhere near the real cause.
+ *
+ * Only the cognito mocks: `push`, `setTokens` and the `queryLocations` stub
+ * carry no queues, and `queryLocations` needs the base implementation its
+ * factory gave it, which `mockReset` would drop and `mockClear` keeps.
+ */
+function resetCognitoMocks() {
+    for (const fn of Object.values(cognito)) fn.mockReset();
+}
+
 beforeEach(() => {
     vi.clearAllMocks();
+    resetCognitoMocks();
     // jsdom hands every file in this environment the same storage, so a stale
     // key would make the "must not stage a profile patch" assertion pass or
     // fail for reasons belonging to an earlier test.
@@ -123,6 +143,22 @@ beforeEach(() => {
 
 afterEach(() => {
     cleanup();
+});
+
+describe('the per-test reset', () => {
+    // Written so it does not depend on running after anything: it queues the
+    // leftover itself. Point `resetCognitoMocks` at `vi.clearAllMocks()` and
+    // this fails on the leftover rejection.
+    it('drains a leftover one-shot instead of serving it to the next test', async () => {
+        cognito.employerSignIn.mockRejectedValueOnce(unconfirmedError);
+
+        resetCognitoMocks();
+        cognito.employerSignIn.mockResolvedValue({ accessToken: 'a', idToken: 'i', refreshToken: 'r' });
+
+        await expect(cognito.employerSignIn()).resolves.toEqual({
+            accessToken: 'a', idToken: 'i', refreshToken: 'r',
+        });
+    });
 });
 
 describe('EmployerAuthForm — login step recovery affordances', () => {

@@ -3,6 +3,7 @@
 import { useTranslations } from 'next-intl';
 import { Link, usePathname } from '@/i18n/navigation';
 import { Icon } from '@/components/ui/icon';
+import { UnreadBadge } from './UnreadBadge';
 import {
     employerMobileNav,
     workerPrimaryNav,
@@ -22,7 +23,14 @@ import {
  * An employer on a phone could reach a page and then only leave it by using
  * the browser's back button.
  */
-export function BottomTabBar({ role }: { role: ShellRole }) {
+export function BottomTabBar({
+    role,
+    unreadCount = 0,
+}: {
+    role: ShellRole;
+    /** Unread WhatsApp threads, badged on the Messages tab. See `Sidebar`. */
+    unreadCount?: number;
+}) {
     const tShell = useTranslations('app_shell');
     const pathname = usePathname();
 
@@ -33,7 +41,7 @@ export function BottomTabBar({ role }: { role: ShellRole }) {
         >
             <ul className="mx-auto flex max-w-lg items-stretch justify-around">
                 {role === 'employer' ? (
-                    <EmployerTabs pathname={pathname} />
+                    <EmployerTabs pathname={pathname} unreadCount={unreadCount} />
                 ) : (
                     <WorkerTabs pathname={pathname} />
                 )}
@@ -61,18 +69,34 @@ function WorkerTabs({ pathname }: { pathname: string }) {
     );
 }
 
-function EmployerTabs({ pathname }: { pathname: string }) {
+function EmployerTabs({ pathname, unreadCount }: { pathname: string; unreadCount: number }) {
     const t = useTranslations('employer_dashboard');
     return (
         <>
             {employerMobileNav.map((item) => (
-                <TabLink key={item.key} item={item} pathname={pathname} label={t(item.labelKey)} />
+                <TabLink
+                    key={item.key}
+                    item={item}
+                    pathname={pathname}
+                    label={t(item.labelKey)}
+                    badgeCount={item.key === 'messages' ? unreadCount : 0}
+                />
             ))}
         </>
     );
 }
 
-function TabLink({ item, pathname, label }: { item: NavItem; pathname: string; label: string }) {
+function TabLink({
+    item,
+    pathname,
+    label,
+    badgeCount = 0,
+}: {
+    item: NavItem;
+    pathname: string;
+    label: string;
+    badgeCount?: number;
+}) {
     const active = isNavItemActive(item, pathname);
     return (
         <li className="flex-1">
@@ -86,7 +110,17 @@ function TabLink({ item, pathname, label }: { item: NavItem; pathname: string; l
                     active ? 'text-[var(--jale-blue-700)]' : 'text-[var(--jale-ink-2)]',
                 ].join(' ')}
             >
-                <Icon name={item.icon} />
+                {/* The badge rides the icon rather than the label: the tabs
+                    are 25% of a 360px bar and a pill after the word would push
+                    the label into a second line on the longest one. */}
+                <span className="relative inline-flex">
+                    <Icon name={item.icon} />
+                    {badgeCount > 0 ? (
+                        <span className="absolute -right-2.5 -top-1.5">
+                            <UnreadBadge count={badgeCount} tone="bar" />
+                        </span>
+                    ) : null}
+                </span>
                 {label}
             </Link>
         </li>

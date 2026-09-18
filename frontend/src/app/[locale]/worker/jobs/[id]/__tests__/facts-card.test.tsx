@@ -38,6 +38,9 @@ vi.mock('@/i18n/navigation', () => ({
     Link: ({ href, children, ...rest }: { href: string; children: ReactNode }) => (
         <a href={href} {...rest}>{children}</a>
     ),
+    // "Back to jobs" may return through history; this suite is about the facts
+    // card, so the router is stubbed and never asserted on.
+    useRouter: () => ({ back: vi.fn() }),
 }));
 
 vi.mock('@/contexts/AuthContext', () => ({
@@ -123,6 +126,9 @@ function fullJob(over: Partial<JobDetail> = {}): JobDetail {
         open_count: 1,
         trade_category: 'drywall',
         required_experience_years: 3,
+        // The canonical total the server derives for 3 years (job-fields.ts
+        // sets months = years * 12), not null: this is what the API returns.
+        required_experience_months: 36,
         certification_requirements: [
             { name: 'OSHA 10', tier: 'required', proof_required: false },
             { name: 'Scaffold', tier: 'optional', proof_required: false },
@@ -196,7 +202,7 @@ describe('worker job detail — the facts card', () => {
             [t('openings'), '1/3'],
             [t('facts.location'), 'Austin, TX'],
             [t('trade'), message('employer_dashboard.modal.trade.drywall')],
-            [t('required_experience'), '3'],
+            [t('required_experience'), '3 years'],
             [t('language'), message('public_job.language_es')],
         ]);
     });

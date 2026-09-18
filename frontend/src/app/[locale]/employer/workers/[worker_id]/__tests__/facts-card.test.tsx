@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { screen, within } from '@testing-library/react';
 
 import type { WorkerProfile } from '@/lib/api/employer';
+import { formatLongDate } from '@/lib/date';
 
 /*
  * The applicant card's facts are a `FactsCard`, not a `KVList`.
@@ -84,6 +85,7 @@ vi.mock('@/hooks/usePageData', () => ({
 
 import {
   expectNoRawMessageKeys,
+  interpolate,
   message,
   renderIntl,
 } from '@/components/worker/onboarding/__tests__/render-intl';
@@ -142,6 +144,71 @@ const K = {
   trade: message('employer_worker_profile.trade'),
   transportation: message('employer_worker_profile.transportation'),
 };
+
+describe('employer applicant detail -- the applied date', () => {
+  /*
+   * `applied_at.slice(0, 10)` put a raw ISO calendar date on the page --
+   * "2026-08-28", the machine's spelling, in a locale that writes dates the
+   * other way round. `applied_at` is an INSTANT, so it takes the reader's-
+   * timezone formatter, which is why the expectation is computed rather than
+   * hard-coded: the assertion is "the shared formatter ran", and a literal
+   * would only pin the CI box's timezone.
+   */
+  it('formats the applied date instead of printing the raw ISO string', () => {
+    seedWith(profile());
+    renderIntl(<EmployerWorkerPage />);
+
+    const applied = screen.getByText(message('employer_worker_profile.applied')).parentElement!;
+    expect(applied).toHaveTextContent(formatLongDate('2026-08-28T00:00:00.000Z', 'en')!);
+    expect(applied.textContent).not.toContain('2026-08-28');
+  });
+
+  it('keeps the existing fallback when the applicant has no applied date', () => {
+    seedWith(profile({ applied_at: null }));
+    renderIntl(<EmployerWorkerPage />);
+
+    expect(
+      screen.getByText(message('employer_worker_profile.fallback_applied')),
+    ).toBeInTheDocument();
+  });
+});
+
+describe('employer applicant detail -- the trust panel', () => {
+  /*
+   * The degraded (rebalanced-rubric) branch printed `{value} pts` from a
+   * template literal, so the one word in it never reached the Spanish
+   * catalogue. Every other number on this panel is a bare "{value}/{max}".
+   */
+  it('renders the drifted-rubric point figures through next-intl, in both locales', () => {
+    const drifted = profile({
+      trust_assessment: {
+        profession_key: 'electrician',
+        status: 'scored',
+        competency_score: 71,
+        score_components: {
+          specific_knowledge: 22,
+          practical_experience: 21,
+          safety_awareness: 15,
+          communication_clarity: 13,
+        },
+        rubric_version: 999,
+        answers: null,
+        scored_at: '2026-08-28T00:00:00.000Z',
+      },
+    });
+
+    for (const locale of ['en', 'es'] as const) {
+      seedWith(drifted);
+      const { unmount } = renderIntl(<EmployerWorkerPage />, locale);
+      expect(
+        screen.getByText(
+          interpolate(message('employer_worker_profile.trust_points', locale), { value: 22 }),
+        ),
+      ).toBeInTheDocument();
+      unmount();
+    }
+  });
+});
 
 describe('employer applicant detail -- the facts card', () => {
   it('renders the six applicant tiles as dt/dd pairs', () => {

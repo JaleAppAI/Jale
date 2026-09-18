@@ -113,8 +113,10 @@ describe('Token Refresh API Lambda', () => {
     });
   });
 
-  it('should return 401 if Cognito refresh fails', async () => {
-    mockSend.mockRejectedValue(new Error('Invalid Refresh Token'));
+  it('should return 401 when Cognito refuses the refresh token', async () => {
+    mockSend.mockRejectedValue(
+      Object.assign(new Error('Invalid Refresh Token'), { name: 'NotAuthorizedException' }),
+    );
 
     const event = createEvent({
       refreshToken: 'invalid-ref-token',
@@ -130,11 +132,49 @@ describe('Token Refresh API Lambda', () => {
     });
   });
 
-  it('should return 401 on unexpected outer error', async () => {
-    // Malformed JSON to trigger the catch block
+  it('should return 400 on a malformed body, not a session refusal', async () => {
     const event = { body: 'invalid json {' } as APIGatewayProxyEvent;
-    
+
     const response = await handler(event);
+
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body).error).toBe('invalid_json');
+  });
+
+  // The browser drops its stored session on 401/403 and keeps it on any other
+  // status. Before sprint 26 every failure below was a 401, so a Cognito
+  // throttle or outage signed the user out.
+  it.each([
+    ['TooManyRequestsException'],
+    ['ThrottlingException'],
+    ['InternalErrorException'],
+    ['ServiceUnavailable'],
+  ])('should return 503 when Cognito fails without judging the token (%s)', async (name) => {
+    mockSend.mockRejectedValue(Object.assign(new Error(name), { name }));
+
+    const response = await handler(createEvent({ refreshToken: 'ref-token', userType: 'worker' }));
+
+    expect(response.statusCode).toBe(503);
+    expect(response.headers).toMatchObject({ 'Retry-After': '5' });
+    expect(JSON.parse(response.body).error).toBe('refresh_unavailable');
+  });
+
+  it('should return 503 on a network fault with no error name', async () => {
+    mockSend.mockRejectedValue(new Error('socket hang up'));
+
+    const response = await handler(createEvent({ refreshToken: 'ref-token', userType: 'worker' }));
+
+    expect(response.statusCode).toBe(503);
+  });
+
+  it.each([
+    ['UserNotFoundException'],
+    ['PasswordResetRequiredException'],
+    ['UserNotConfirmedException'],
+  ])('should return 401 for a refusal named %s', async (name) => {
+    mockSend.mockRejectedValue(Object.assign(new Error(name), { name }));
+
+    const response = await handler(createEvent({ refreshToken: 'ref-token', userType: 'employer' }));
 
     expect(response.statusCode).toBe(401);
   });

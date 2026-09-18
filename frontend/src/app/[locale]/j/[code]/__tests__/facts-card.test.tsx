@@ -104,7 +104,9 @@ function fullJob(over: Partial<PublicJobActive> = {}): PublicJobActive {
         shift_end: '16:00',
         trade_category: 'drywall',
         required_experience_years: 3,
-        required_experience_months: null,
+        // The canonical total the server derives for 3 years (job-fields.ts
+        // sets months = years * 12), not null: this is what the API returns.
+        required_experience_months: 36,
         language_preference: ['es'],
         transportation_required: true,
         work_authorization_required: true,

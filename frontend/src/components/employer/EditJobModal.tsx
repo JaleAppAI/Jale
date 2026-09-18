@@ -8,7 +8,7 @@ import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { ApiError, updateJob, type EmployerJobDetail } from '@/lib/api/employer';
 import {
     type JobForm,
-    jobFormToEditPayload, jobToForm, validateFullJobForm, applyLocationToJobForm,
+    jobFormToEditPayload, jobToForm, validateFullJobForm, validateStepBasics, applyLocationToJobForm,
 } from '@/lib/job-form';
 import { MAX_PROMPT_CHARS } from '@/lib/pre-application-prompts';
 import { Button } from '@/components/ui/button';
@@ -59,6 +59,26 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
     /*
+     * "This job has no city."
+     *
+     * The same flag PostJobModal's step 1 and TemplateEditModal set, feeding
+     * the same ring and helper in `JobFormFields` -- a job row that lost (or
+     * never had) its `city_key` still carries its location TEXT, so the picker
+     * opens looking settled and the save is then refused by a sentence under
+     * the footer that points at no field. Asked of the validator rather than of
+     * `city_key` directly, so it agrees with whatever the save will actually
+     * accept (a failed location dataset makes free text legal, and an empty
+     * location is a different error's business).
+     *
+     * Seeded TWICE on purpose: this modal normally stays MOUNTED for the
+     * page's life and is re-prefilled by the open transition below, but it can
+     * also be mounted already open (a page that renders it only while open, and
+     * every test that does the same), where that transition never fires.
+     */
+    const [cityMissing, setCityMissing] = useState(
+        () => validateStepBasics(jobToForm(job)) === 'location_pick_required',
+    );
+    /*
      * Focus lands on the first FIELD, not on the header's dismiss button --
      * which is what `Modal` would otherwise pick as the first focusable
      * descendant, greeting an edit form with its own close button.
@@ -91,6 +111,7 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
             setForm(fresh);
             setInitialForm(fresh);
             setError('');
+            setCityMissing(validateStepBasics(fresh) === 'location_pick_required');
         }
         wasOpen.current = open;
     }, [open, job]);
@@ -116,6 +137,8 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
             case 'shift_incomplete':
                 return setError(t('modal.validation_required'));
             case 'location_pick_required':
+                // The sentence says what is wrong; the ring says where.
+                setCityMissing(true);
                 return setError(t('modal.location_pick_required'));
             case 'state_region':
                 return setError(t('modal.validation_state_region'));
@@ -229,11 +252,16 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
                     onUpdate={update}
                     onLocationChange={(v) => {
                         setForm((c) => applyLocationToJobForm(c, v));
-                        // A real pick resolves the "pick a city" error; drop it
-                        // immediately instead of waiting for the next save attempt.
-                        if (v.cityKey) setError('');
+                        // A real pick resolves both the ring and the sentence;
+                        // typing does not -- free text still leaves `city_key`
+                        // null, which is the whole point of the ring.
+                        if (v.cityKey) {
+                            setCityMissing(false);
+                            setError('');
+                        }
                     }}
                     locked={locked}
+                    locationInvalid={cityMissing}
                     minWorkers={job.hired_count || 1}
                     titleRef={initialFocusRef}
                 />

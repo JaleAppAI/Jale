@@ -2,6 +2,7 @@ import {
   SecretsManagerClient,
   GetSecretValueCommand,
 } from '@aws-sdk/client-secrets-manager';
+import { emitEmfMetrics } from '../../lib/emf';
 
 /**
  * Shared OTP-Twilio helpers used by both the worker custom-auth challenge
@@ -54,19 +55,10 @@ export async function getOtpTwilioSecret(): Promise<OtpTwilioSecret> {
   return cachedSecret;
 }
 
+/** A `Jale/OTP` tally. The EMF envelope itself lives in `lib/emf.ts` (R2);
+ *  this keeps the domain-specific name every call site already reads. */
 export function emitOtpMetric(metricName: string, dimensions: Record<string, string> = {}): void {
-  console.log(JSON.stringify({
-    _aws: {
-      Timestamp: Date.now(),
-      CloudWatchMetrics: [{
-        Namespace: 'Jale/OTP',
-        Dimensions: [Object.keys(dimensions)],
-        Metrics: [{ Name: metricName, Unit: 'Count' }],
-      }],
-    },
-    ...dimensions,
-    [metricName]: 1,
-  }));
+  emitEmfMetrics('Jale/OTP', [{ name: metricName, value: 1 }], dimensions);
 }
 
 // Exported only for tests — clear the module-level cache between scenarios.

@@ -847,6 +847,60 @@ describe('mergeFieldAnswers', () => {
     }
   });
 
+  /**
+   * F2 (Luis ruling, sprint 26): a COMPLETED application is locked
+   * EVERYWHERE, not just on WhatsApp.
+   *
+   * `fillStepFor` has refused a completed application since sprint 23 -- the
+   * bot answers `application_already_complete` -- and `clearFieldAnswer`
+   * enforces the same thing in SQL (`AND details_completed_at IS NULL`). The
+   * web door never checked it: `writeGate` read status, job status and stage,
+   * but not the timestamp, so a worker whose details the employer already has
+   * could keep editing them through the browser and the employer would see
+   * answers change under them after submission.
+   */
+  it('LOCK: a completed application refuses further edits (the gate WhatsApp already applies)', async () => {
+    const query = jest.fn().mockResolvedValueOnce({
+      rows: [detailsRow({
+        required_fields: ['date_of_birth'],
+        details_completed_at: '2026-09-10T00:00:00.000Z',
+      })],
+    });
+    const res = await mergeFieldAnswers(makeClient(query), {
+      applicationId: APP_ID, workerId: WORKER_ID, answers: { date_of_birth: '1990-04-03' },
+    });
+    expect(res).toEqual({ ok: false, reason: 'locked' });
+    // Refused on the snapshot alone -- no merge, no SAVEPOINT, no write.
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+
+  it('LOCK: an INCOMPLETE application is still editable (the gate is the timestamp, nothing else)', async () => {
+    const query = jest.fn()
+      .mockResolvedValueOnce({ rows: [detailsRow({ required_fields: ['date_of_birth'] })] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ total: 60 }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1 })
+      .mockResolvedValueOnce({ rowCount: 1 });
+
+    expect((await mergeFieldAnswers(makeClient(query), {
+      applicationId: APP_ID, workerId: WORKER_ID, answers: { date_of_birth: '1990-04-03' },
+    })).ok).toBe(true);
+  });
+
+  it('LOCK: closed outranks locked -- a hired application is finished, not "sent already"', async () => {
+    const query = jest.fn().mockResolvedValueOnce({
+      rows: [detailsRow({
+        application_status: 'hired',
+        required_fields: ['date_of_birth'],
+        details_completed_at: '2026-09-10T00:00:00.000Z',
+      })],
+    });
+    expect(await mergeFieldAnswers(makeClient(query), {
+      applicationId: APP_ID, workerId: WORKER_ID, answers: { date_of_birth: '1990-04-03' },
+    })).toEqual({ ok: false, reason: 'closed' });
+  });
+
   it('closed takes precedence over stage_locked (a hired apply-stage row is not "come back later")', async () => {
     const query = jest.fn().mockResolvedValueOnce({
       rows: [dbRow({ application_status: 'hired', required_fields: ['date_of_birth'] })],
@@ -1013,6 +1067,17 @@ describe('mergeCertificationClaims', () => {
     expect(JSON.parse(String(query.mock.calls[3][1][0])).certifications).toEqual([
       { name: 'Forklift', has: true, doc_ids: [DOC_ID] },
     ]);
+  });
+
+  it('LOCK: the certification door refuses a completed application the same way', async () => {
+    const query = jest.fn().mockResolvedValueOnce({
+      rows: [certRow({ details_completed_at: '2026-09-10T00:00:00.000Z' })],
+    });
+    expect(await mergeCertificationClaims(makeClient(query), {
+      applicationId: APP_ID, workerId: WORKER_ID,
+      claims: [{ name: 'Forklift', has: true }],
+    })).toEqual({ ok: false, reason: 'locked' });
+    expect(query).toHaveBeenCalledTimes(1);
   });
 
   it('runs no ownership query when no claim carries a doc id', async () => {

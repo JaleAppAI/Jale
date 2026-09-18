@@ -1,4 +1,4 @@
-import { writeAttribution, writeWebAttribution } from '../../../../lambda/lib/referral-attribution';
+import { writeAttribution, writeFirstTouchAttribution, writeWebAttribution } from '../../../../lambda/lib/referral-attribution';
 
 const WORKER_ID = 'aaaaaaaa-0000-0000-0000-000000000001';
 const JOB_ID = 'bbbbbbbb-0000-0000-0000-000000000001';
@@ -116,6 +116,68 @@ describe('writeAttribution', () => {
     expect(result).toEqual({ written: false });
     expect(consoleErrorSpy).toHaveBeenCalledWith(JSON.stringify({ metric: 'EmployerAttributionNotPersisted', workerId: WORKER_ID }));
     consoleErrorSpy.mockRestore();
+  });
+});
+
+describe('writeFirstTouchAttribution (F8)', () => {
+  const SOURCE = {
+    jobId: JOB_ID,
+    channel: 'facebook',
+    shareCode: SHARE_CODE,
+    referrerWorkerId: WORKER_REFERRER_ID,
+    referrerEmployerId: null,
+  };
+
+  it('inserts the touch when the worker has no attribution row yet', async () => {
+    const { query, client } = makeClient();
+    query.mockResolvedValueOnce({ rowCount: 1 });
+
+    const result = await writeFirstTouchAttribution(client, WORKER_ID, SOURCE, NOW, 'TestMetric');
+
+    expect(result).toEqual({ written: true });
+    expect(query).toHaveBeenCalledTimes(1); // no existence probe needed on success
+    const [sql, params] = query.mock.calls[0];
+    expect(sql).toMatch(/ON CONFLICT \(worker_id\) DO NOTHING/i);
+    expect(params).toEqual([WORKER_ID, SHARE_CODE, 'facebook', JOB_ID, WORKER_REFERRER_ID, null, NOW.toISOString()]);
+  });
+
+  it('never carries a DO UPDATE clause -- the first-touch trigger rejects any first_* UPDATE', async () => {
+    const { query, client } = makeClient();
+    query.mockResolvedValueOnce({ rowCount: 1 });
+
+    await writeFirstTouchAttribution(client, WORKER_ID, SOURCE, NOW, 'TestMetric');
+
+    const [sql] = query.mock.calls[0];
+    expect(sql).not.toMatch(/DO UPDATE/i);
+    // latest_* is written on INSERT but never refreshed: a touch this lane
+    // declined to count must not move the credit either.
+    expect(sql).toMatch(/latest_referrer_worker_id/);
+  });
+
+  it('reports already_attributed -- not a fault -- when the row exists, and logs nothing', async () => {
+    const { query, client } = makeClient();
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    query.mockResolvedValueOnce({ rowCount: 0 });            // ON CONFLICT DO NOTHING
+    query.mockResolvedValueOnce({ rowCount: 1, rows: [{}] }); // the row is there
+
+    const result = await writeFirstTouchAttribution(client, WORKER_ID, SOURCE, NOW, 'TestMetric');
+
+    expect(result).toEqual({ written: false, reason: 'already_attributed' });
+    expect(errorSpy).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it('logs the metric and reports not_persisted when zero rows is a silent RLS filter, not a conflict', async () => {
+    const { query, client } = makeClient();
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    query.mockResolvedValueOnce({ rowCount: 0 });             // nothing inserted
+    query.mockResolvedValueOnce({ rowCount: 0, rows: [] });   // and nothing is there either
+
+    const result = await writeFirstTouchAttribution(client, WORKER_ID, SOURCE, NOW, 'TestMetric');
+
+    expect(result).toEqual({ written: false, reason: 'not_persisted' });
+    expect(errorSpy).toHaveBeenCalledWith(JSON.stringify({ metric: 'TestMetric', workerId: WORKER_ID }));
+    errorSpy.mockRestore();
   });
 });
 

@@ -16,7 +16,7 @@ const wrap = (ui: React.ReactElement, locale: 'en' | 'es' = 'en') => (
 describe('TrustScorePill', () => {
     it('renders the score', () => {
         render(wrap(<TrustScorePill score={78} />));
-        expect(screen.getByText('Trust 78')).toBeInTheDocument();
+        expect(screen.getByText('Trust 78/100')).toBeInTheDocument();
     });
 
     it('renders nothing when the worker has no trust score', () => {
@@ -28,11 +28,11 @@ describe('TrustScorePill', () => {
 
     it('renders a real zero', () => {
         render(wrap(<TrustScorePill score={0} />));
-        expect(screen.getByText('Trust 0')).toBeInTheDocument();
+        expect(screen.getByText('Trust 0/100')).toBeInTheDocument();
     });
 
     it('speaks Spanish', () => {
         render(wrap(<TrustScorePill score={78} />, 'es'));
-        expect(screen.getByText('Confianza 78')).toBeInTheDocument();
+        expect(screen.getByText('Confianza 78/100')).toBeInTheDocument();
     });
 });

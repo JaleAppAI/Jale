@@ -4,7 +4,9 @@ import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
 import { usePageData } from '@/hooks/usePageData';
+import { useJobCreated } from '@/contexts/PostJobContext';
 import { AppShell } from '@/components/layout/AppShell';
+import { PostJobButton } from '@/components/employer/PostJobButton';
 import { EmptyState } from '@/components/ui/empty-state';
 import { ErrorState } from '@/components/ui/error-state';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
@@ -28,6 +30,10 @@ export default function EmployerApplicantsPage() {
     isEmpty: (data) => data.applicants.length === 0,
   });
 
+  // A job posted from anywhere in the app can be applied to immediately, and
+  // this list is also where the new job's own filter chip comes from.
+  useJobCreated(() => page.refresh());
+
   const applicants = page.data?.applicants ?? [];
   const jobs = page.data?.jobs ?? [];
   const visible = jobFilter
@@ -35,7 +41,7 @@ export default function EmployerApplicantsPage() {
     : applicants;
 
   return (
-    <AppShell role="employer" title={t('title')}>
+    <AppShell role="employer" title={t('title')} actions={<PostJobButton />}>
       <main className="mx-auto max-w-4xl px-4 py-6 md:px-6">
         <p className="mb-4 text-sm font-semibold text-[var(--jale-ink-2)]">{t('subtitle')}</p>
 

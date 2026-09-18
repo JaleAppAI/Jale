@@ -3,5 +3,3 @@
 infra/ @luisjaleapp
 infra/db/migrations/ @luisjaleapp
 scripts/run-migrations* @luisjaleapp
-docs/deployment-ci-cd-runbook.md @luisjaleapp
-docs/ci-cd-pipeline-spec.md @luisjaleapp

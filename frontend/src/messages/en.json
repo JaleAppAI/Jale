@@ -74,7 +74,10 @@
       "fri": "Fri",
       "sat": "Sat",
       "sun": "Sun"
-    }
+    },
+    "experience_years_unit": "{n, plural, one {# year} other {# years}}",
+    "experience_months_unit": "{n, plural, one {# month} other {# months}}",
+    "experience_none": "No experience required"
   },
   "match": {
     "score_bands": {
@@ -493,7 +496,10 @@
     "unknown_worker": "Unknown worker",
     "not_scored": "Not scored yet",
     "skills_show_all": "Show all {count} skills",
-    "skills_show_fewer": "Show fewer skills"
+    "skills_show_fewer": "Show fewer skills",
+    "message_action": "Message",
+    "status_label": "Application status",
+    "hire_blocked": "This applicant can\u2019t be marked hired until their details are complete. Open their profile to request them."
   },
   "employer_messages": {
     "title": "Messages",
@@ -537,6 +543,7 @@
     "tab_closed": "Closed",
     "all_jobs": "All jobs",
     "candidates": "Candidates",
+    "candidates_hint": "Across all your active jobs",
     "new_applicant": "New applicant",
     "new_applicants": "New applicants",
     "not_yet_messaged": "Not yet messaged",
@@ -569,7 +576,8 @@
       "delivered": "Delivered",
       "failed": "Failed",
       "received": "Received"
-    }
+    },
+    "unread": "Unread"
   },
   "employer_dashboard": {
     "stats": {
@@ -579,9 +587,9 @@
       "total_applicants": "Total Applicants",
       "workers_hired": "Workers Hired",
       "paused_closed": "Paused / Closed",
-      "active_hint": "Open roles ready for applicants",
+      "active_hint": "{count} openings still available",
       "applicants_hint": "{count} avg per active job",
-      "hired_hint": "{count} openings still available",
+      "hired_hint": "{hired} of {needed} positions filled",
       "paused_closed_hint": "{paused} paused, {filled} filled, {closed} closed"
     },
     "shell": {
@@ -595,27 +603,25 @@
       "messages": "Messages",
       "billing": "Billing",
       "settings": "Settings",
-      "templates": "Templates"
+      "templates": "Templates",
+      "unread_badge": "{count, plural, one {# unread message} other {# unread messages}}"
     },
     "hero": {
       "eyebrow": "Got Jale?",
       "title": "Keep every job, applicant, and WhatsApp handoff in one place.",
-      "body": "This dashboard uses your live job postings today and reserves space for the upcoming matching, interviews, and growth tools from the prototype.",
+      "body": "Every job you post, every applicant who answers, and every WhatsApp conversation with them — all on one page.",
       "primary_cta": "Post a job",
-      "secondary_cta": "Open messages"
+      "secondary_cta": "Open messages",
+      "slim_title": "Ready to hire again?",
+      "dismiss_aria": "Collapse the welcome panel"
     },
     "quick_post": {
       "title": "Quick post",
       "body": "Create a new job from the same flow employers already use.",
-      "hint": "The prototype's instant templates are not live yet, so this opens the current post-job modal.",
+      "hint": "Opens the post-job form. Any template you saved is waiting for you inside it.",
       "cta": "Post a job"
     },
     "panels": {
-      "applicants_title": "Applicants preview",
-      "applicants_body": "Global applicant preview is coming soon. Open a job to see real applicants.",
-      "applicant_stub_1": "New applicants",
-      "applicant_stub_2": "Ready to contact",
-      "applicant_stub_3": "Documents pending",
       "job_progress_title": "Job Progress",
       "positions_filled": "Positions filled",
       "positions_open_hint": "{count, plural, one {# role open} other {# roles open}}",
@@ -632,8 +638,7 @@
     },
     "disabled": {
       "label": "Preview",
-      "preview": "Preview",
-      "coming_soon": "Coming soon"
+      "preview": "Preview"
     },
     "jobs": {
       "title": "Job Postings",
@@ -655,7 +660,6 @@
       "applicants_count": "{count, plural, one {# applicant} other {# applicants}}",
       "openings_count": "{open}/{total} open",
       "pay_range": "Pay range",
-      "pay_range_value": "${min}-${max}",
       "hired_progress": "Hiring progress",
       "hired_progress_value": "{hired}/{total} hired, {open} open",
       "not_specified": "Not specified",
@@ -730,7 +734,7 @@
         "pending": "New",
         "contacted": "Contacted",
         "talking": "In conversation",
-        "details_requested": "Details requested",
+        "details_requested": "Awaiting details",
         "hired": "Hired",
         "not_interested": "Not selected"
       }
@@ -872,7 +876,8 @@
     },
     "templates": {
       "title": "Job templates",
-      "meter": "{count} of {limit} templates",
+      "meter": "{count} saved · {limit} allowed on your plan",
+      "meter_empty": "No templates yet · {limit} allowed on your plan",
       "meter_count": "{count} templates",
       "new": "New template",
       "limit_note": "Template limit reached — upgrade for more",
@@ -935,6 +940,7 @@
     "trust_dim_practical_experience": "Practical experience",
     "trust_dim_safety_awareness": "Safety awareness",
     "trust_dim_communication_clarity": "Communication clarity",
+    "trust_points": "{value} pts",
     "trust_status_pending": "Assessment pending",
     "trust_status_scoring": "Scoring in progress",
     "trust_status_scored": "Assessment scored",
@@ -1063,7 +1069,7 @@
         "body_dated": "Starts {date} · The employer will send more details; if none arrive, reach out to them.",
         "body_undated": "Start date to be confirmed · The employer will send more details; if none arrive, reach out to them.",
         "cta": "View application",
-        "dismiss": "Dismiss"
+        "dismiss": "Dismiss the hire notice for {title}"
       },
       "row": {
         "body": "Congratulations! The employer will send more details. If none arrive, reach out to them."
@@ -1077,7 +1083,8 @@
     "job_status": {
       "closed": "Closed",
       "filled": "Filled"
-    }
+    },
+    "load_more": "Load more"
   },
   "worker_application_details": {
     "back": "Back to my applications",
@@ -1155,7 +1162,8 @@
       "not_interested_body_no_company": "The employer went with other candidates. Your profile keeps everything you already answered for your next application.",
       "view_job": "View job",
       "view_applications": "View my applications",
-      "find_jobs": "Find other jobs"
+      "find_jobs": "Find other jobs",
+      "already_complete_note": "Your application was sent. Contact the employer through WhatsApp to change it."
     },
     "cert_question": "Do you have {name}?",
     "cert_use_vault": "Use {file} from your vault",
@@ -1358,8 +1366,6 @@
     "details": "Details",
     "posted": "Posted",
     "duration": "Duration",
-    "experience_years_unit": "{n, plural, one {# year} other {# years}}",
-    "experience_months_unit": "{n, plural, one {# month} other {# months}}",
     "about_jale": "Jale connects workers and employers over WhatsApp - no resume, no downloads. Always free for workers.",
     "facts": {
       "schedule": "Schedule and dates",
@@ -1426,7 +1432,7 @@
       "filtered_title": "No applicants match these filters",
       "filtered_body": "Change the filters, or clear them to see everyone who applied.",
       "clear_filters": "Clear filters",
-      "trust_pill": "Trust {score}",
+      "trust_pill": "Trust {score}/100",
       "request_details": "Request details",
       "request_details_sent": "Details requested — we'll let them know.",
       "details": {

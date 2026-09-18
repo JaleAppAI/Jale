@@ -4,6 +4,7 @@ import { useTranslations } from 'next-intl';
 import { Link, usePathname } from '@/i18n/navigation';
 import { Icon } from '@/components/ui/icon';
 import { Skeleton } from '@/components/ui/skeleton';
+import { UnreadBadge } from './UnreadBadge';
 import {
     employerPrimaryNav,
     employerBillingNav,
@@ -16,6 +17,10 @@ import {
 
 /**
  * What the chip knows about the signed-in account, as resolved by `AppShell`.
+ *
+ * The chip is owned by `SidebarProfileContext` (one load per session, cached
+ * across route changes and mirrored into sessionStorage for reloads); this
+ * component only renders the state it is handed.
  *
  * The three states are explicit because the chip previously had no way to tell
  * them apart: a pending fetch and a failed one both rendered a localized
@@ -41,6 +46,13 @@ type SidebarProps = {
     role: ShellRole;
     homeHref: string;
     chip: SidebarChip;
+    /**
+     * Unread WhatsApp threads, badged on the Messages item. Passed in rather
+     * than read here, exactly like `chip`: `AppShell` owns the reads from the
+     * session contexts and this component only renders what it is handed.
+     * Employer-only by construction -- no worker nav item carries the badge.
+     */
+    unreadCount?: number;
 };
 
 /**
@@ -49,7 +61,7 @@ type SidebarProps = {
  * rather than a literal so the dark theme can deepen it; the white-on-navy
  * foreground is correct in both themes and stays literal.
  */
-export function Sidebar({ role, homeHref, chip }: SidebarProps) {
+export function Sidebar({ role, homeHref, chip, unreadCount = 0 }: SidebarProps) {
     const t = useTranslations('employer_dashboard');
     const tShell = useTranslations('app_shell');
     const pathname = usePathname();
@@ -71,7 +83,7 @@ export function Sidebar({ role, homeHref, chip }: SidebarProps) {
 
             <nav aria-label={tShell('primary_nav')} className="flex-1 overflow-y-auto px-4 py-6">
                 {role === 'employer' ? (
-                    <EmployerNav t={t} pathname={pathname} />
+                    <EmployerNav t={t} pathname={pathname} unreadCount={unreadCount} />
                 ) : (
                     <WorkerNav navLabel={tShell('worker_nav_main')} pathname={pathname} />
                 )}
@@ -80,7 +92,11 @@ export function Sidebar({ role, homeHref, chip }: SidebarProps) {
     );
 }
 
-/** Role letter shown on the tile until (or instead of) real initials. */
+/**
+ * Role letter shown on the tile when the profile could not be loaded, and as
+ * the initials fallback for a loaded profile that has no name. Never while the
+ * load is still in flight -- that state is a skeleton.
+ */
 function roleLetter(role: ShellRole): string {
     return role === 'employer' ? 'E' : 'W';
 }
@@ -126,10 +142,21 @@ function SidebarProfileChip({ role, chip }: { role: ShellRole; chip: SidebarChip
             {/* Not `InitialsAvatar`: that is the blue-50/blue-700 tint for
                 light surfaces. This tile sits ON the navy rail, where the
                 readable pairing is solid brand blue with white. It keeps its
-                footprint in every state; only the letters inside it change. */}
-            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[var(--jale-blue-500)] text-sm font-extrabold">
-                {chip.status === 'loaded' ? chip.initials : roleLetter(role)}
-            </div>
+                footprint in every state; only what is inside it changes.
+
+                While we are still LOADING the tile is a skeleton, matching the
+                two skeleton lines beside it. It used to print the role letter
+                there, which made a pending fetch indistinguishable from a
+                resolved profile whose name we simply could not initial -- the
+                bare "W" emblem every navigation used to flash. A letter is
+                content, and there is no content yet. */}
+            {chip.status === 'loading' ? (
+                <Skeleton tone="rail" className="h-11 w-11 shrink-0 rounded-2xl" />
+            ) : (
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[var(--jale-blue-500)] text-sm font-extrabold">
+                    {chip.status === 'loaded' ? chip.initials : roleLetter(role)}
+                </div>
+            )}
 
             {chip.status === 'loading' ? (
                 <div className="min-w-0 flex-1">
@@ -152,7 +179,18 @@ function SidebarProfileChip({ role, chip }: { role: ShellRole; chip: SidebarChip
     );
 }
 
-function NavLink({ item, active, label }: { item: NavItem; active: boolean; label: string }) {
+function NavLink({
+    item,
+    active,
+    label,
+    badgeCount = 0,
+}: {
+    item: NavItem;
+    active: boolean;
+    label: string;
+    /** Rendered as a pill after the label. Zero renders nothing at all. */
+    badgeCount?: number;
+}) {
     return (
         <Link
             href={item.href}
@@ -169,7 +207,10 @@ function NavLink({ item, active, label }: { item: NavItem; active: boolean; labe
             ].join(' ')}
         >
             <Icon name={item.icon} />
-            {label}
+            {/* `min-w-0 flex-1` so a long label truncates against the badge
+                rather than pushing it off the 280px rail. */}
+            <span className="min-w-0 flex-1 truncate">{label}</span>
+            <UnreadBadge count={badgeCount} tone="rail" />
         </Link>
     );
 }
@@ -199,16 +240,24 @@ function WorkerNav({ navLabel, pathname }: { navLabel: string; pathname: string 
 function EmployerNav({
     t,
     pathname,
+    unreadCount,
 }: {
     t: ReturnType<typeof useTranslations>;
     pathname: string;
+    unreadCount: number;
 }) {
     return (
         <>
             <NavSectionLabel>{t('nav.main')}</NavSectionLabel>
             <div className="space-y-1">
                 {employerPrimaryNav.map((item) => (
-                    <NavLink key={item.key} item={item} active={isNavItemActive(item, pathname)} label={t(item.labelKey)} />
+                    <NavLink
+                        key={item.key}
+                        item={item}
+                        active={isNavItemActive(item, pathname)}
+                        label={t(item.labelKey)}
+                        badgeCount={item.key === 'messages' ? unreadCount : 0}
+                    />
                 ))}
                 <NavLink
                     item={employerBillingNav}

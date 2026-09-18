@@ -430,6 +430,15 @@ export type InboxItem = {
   last_worker_message_at: string | null;
   last_message_preview: string | null;
   tab: InboxTab;
+  /**
+   * The worker has written and the employer has not marked the thread read
+   * since. Computed server-side (`infra/lambda/lib/employer-inbox.ts`) from
+   * `last_worker_message_at` vs `job_conversations.employer_last_read_at`; the
+   * raw read stamp is deliberately not part of this payload.
+   *
+   * Cleared by `POST /employer/conversations/{conversationId}/read`.
+   */
+  unread: boolean;
 };
 
 export type InboxJob = {
@@ -442,6 +451,12 @@ export type InboxJob = {
 export type EmployerInboxResponse = {
   items: InboxItem[];
   jobs: InboxJob[];
+  /**
+   * How many of `items` carry `unread`, across BOTH tabs — a closed thread the
+   * worker answered last is still an unanswered message. Sent as one number so
+   * the nav badge does not have to re-derive it from the list.
+   */
+  unread_count: number;
 };
 
 export type EmployerTrade = 'electrician' | 'plumber' | 'carpenter' | 'concrete' | 'painting' | 'other';
@@ -915,6 +930,41 @@ export async function sendConversationMessage(
     body: JSON.stringify({ body }),
   }, token);
   if (!res.ok) throw await parseApiError(res, 'message_send_failed');
+  return res.json();
+}
+
+/**
+ * What `POST /employer/conversations/{id}/read` answers with. The stamp is
+ * echoed back rather than left implicit so a caller can tell a real write from
+ * a no-op retry; the inbox's `unread` flag is derived from it server-side.
+ */
+export type ConversationReadReceipt = {
+  conversation_id: string;
+  employer_last_read_at: string | null;
+};
+
+/**
+ * Marks a conversation read for the signed-in employer (sprint 26, B3).
+ *
+ * No body: the endpoint takes the moment of the call as the read stamp, and a
+ * client-supplied timestamp would let a slow phone's clock hide a message that
+ * arrived while the request was in flight.
+ *
+ * 404 `conversation_not_found` for a conversation belonging to another
+ * employer -- surfaced as an `ApiError` like every other refusal, so the
+ * optimistic badge decrement can be reverted rather than silently kept.
+ */
+export async function markConversationRead(
+  token: string,
+  conversationId: string,
+  signal?: AbortSignal,
+): Promise<ConversationReadReceipt> {
+  const res = await apiFetch(
+    `/employer/conversations/${conversationId}/read`,
+    { method: 'POST', signal },
+    token,
+  );
+  if (!res.ok) throw await parseApiError(res, 'conversation_read_failed');
   return res.json();
 }
 

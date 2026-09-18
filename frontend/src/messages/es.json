@@ -74,7 +74,10 @@
       "fri": "Vie",
       "sat": "Sáb",
       "sun": "Dom"
-    }
+    },
+    "experience_years_unit": "{n, plural, one {# año} other {# años}}",
+    "experience_months_unit": "{n, plural, one {# mes} other {# meses}}",
+    "experience_none": "No se requiere experiencia"
   },
   "match": {
     "score_bands": {
@@ -90,13 +93,13 @@
       "distance_under_15_miles": "A menos de 15 millas",
       "distance_under_30_miles": "A menos de 30 millas",
       "distance_under_50_miles": "A menos de 50 millas",
-      "zip_exact": "Mismo codigo postal",
-      "location_text_match": "Ubicacion coincide",
+      "zip_exact": "Mismo código postal",
+      "location_text_match": "Ubicación coincide",
       "experience_meets_requirement": "Experiencia adecuada",
       "availability_flexible": "Disponibilidad flexible",
       "availability_matches_job_type": "Disponibilidad adecuada",
       "availability_adjacent": "Horario cercano",
-      "fresh_posting": "Publicacion nueva"
+      "fresh_posting": "Publicación nueva"
     }
   },
   "pay": {
@@ -269,11 +272,11 @@
       "verify": "Verificar",
       "back": "Volver",
       "signup_title": "Crea tu perfil de trabajador",
-      "signup_subtitle": "Escribe tu numero de telefono. Te enviamos un codigo y luego creamos tu perfil juntos.",
-      "signup_prompt": "Nuevo en Jale?",
+      "signup_subtitle": "Escribe tu número de teléfono. Te enviamos un código y luego creamos tu perfil juntos.",
+      "signup_prompt": "¿Nuevo en Jale?",
       "signup_link": "Crea una cuenta",
       "confirm_title": "Confirma tu cuenta",
-      "otp_title": "Ingresa el codigo de 6 digitos",
+      "otp_title": "Ingresa el código de 6 dígitos",
       "code_sent": "SMS enviado a {phone}",
       "resend_prompt": "¿No recibiste el código?",
       "resend_code": "Enviarlo de nuevo",
@@ -281,21 +284,21 @@
       "resend_success": "Enviamos un código nuevo.",
       "create_account": "Crear cuenta",
       "confirm_account": "Confirmar cuenta",
-      "password_note": "Los trabajadores no necesitan contrasena. Iniciaras sesion con tu telefono y un codigo de verificacion.",
+      "password_note": "Los trabajadores no necesitan contraseña. Iniciarás sesión con tu teléfono y un código de verificación.",
       "fields": {
-        "phone": "Numero de telefono"
+        "phone": "Número de teléfono"
       },
       "errors": {
-        "account_exists": "No pudimos continuar con ese telefono. Revisalo e intenta de nuevo.",
-        "account_not_found": "No pudimos continuar con ese telefono. Revisalo e intenta de nuevo.",
-        "invalid_phone": "Ingresa un telefono valido, incluyendo el codigo de area.",
-        "invalid_code": "Ese codigo no es correcto. Revisalo e intenta de nuevo.",
-        "expired_code": "Ese codigo expiro. Pide un codigo nuevo e intenta de nuevo.",
+        "account_exists": "No pudimos continuar con ese teléfono. Revísalo e intenta de nuevo.",
+        "account_not_found": "No pudimos continuar con ese teléfono. Revísalo e intenta de nuevo.",
+        "invalid_phone": "Ingresa un teléfono válido, incluyendo el código de área.",
+        "invalid_code": "Ese código no es correcto. Revísalo e intenta de nuevo.",
+        "expired_code": "Ese código expiró. Pide un código nuevo e intenta de nuevo.",
         "too_many_attempts": "Demasiados intentos. Espera unos minutos e intenta de nuevo.",
-        "invalid_credentials": "No pudimos iniciar sesion con ese telefono.",
-        "account_not_confirmed": "Tu cuenta aun no esta confirmada. Pide un codigo nuevo e intenta de nuevo.",
-        "password_requirements": "La contrasena no cumple los requisitos.",
-        "invalid_email": "Ingresa un correo valido.",
+        "invalid_credentials": "No pudimos iniciar sesión con ese teléfono.",
+        "account_not_confirmed": "Tu cuenta aún no está confirmada. Pide un código nuevo e intenta de nuevo.",
+        "password_requirements": "La contraseña no cumple los requisitos.",
+        "invalid_email": "Ingresa un correo válido.",
         "invalid_signup": "Revisa los datos de la cuenta e intenta de nuevo.",
         "signup_failed": "No pudimos crear la cuenta. Revisa los campos e intenta de nuevo."
       }
@@ -493,7 +496,10 @@
     "unknown_worker": "Trabajador desconocido",
     "not_scored": "Sin puntaje aún",
     "skills_show_all": "Ver las {count} habilidades",
-    "skills_show_fewer": "Ver menos habilidades"
+    "skills_show_fewer": "Ver menos habilidades",
+    "message_action": "Mensaje",
+    "status_label": "Estado de la postulaci\u00f3n",
+    "hire_blocked": "No puedes marcar como contratado hasta que sus datos est\u00e9n completos. Abre su perfil para solicitarlos."
   },
   "employer_messages": {
     "title": "Mensajes",
@@ -510,33 +516,34 @@
     "status_closed": "Cerrada",
     "waiting": "Esperando",
     "active": "Activas",
-    "worker_replied": "Trabajador respondio",
+    "worker_replied": "Trabajador respondió",
     "reply_window_open": "Ventana de 24h abierta",
     "waiting_reply": "Esperando respuesta",
-    "template_invite_sent": "Invitacion enviada",
+    "template_invite_sent": "Invitación enviada",
     "archived_conversations": "Conversaciones archivadas",
     "whatsapp_linked": "Conversaciones conectadas a WhatsApp",
     "thread_status": "Estado del hilo",
-    "current_handoff": "Conexion actual por WhatsApp",
-    "conversation": "Conversacion",
+    "current_handoff": "Conexión actual por WhatsApp",
+    "conversation": "Conversación",
     "worker_reply": "Respuesta del trabajador",
     "received": "Recibida",
     "channel": "Canal",
-    "latest_message": "Ultimo mensaje",
+    "latest_message": "Último mensaje",
     "close": "Cerrar",
-    "closed_hint": "Esta conversacion esta cerrada.",
+    "closed_hint": "Esta conversación está cerrada.",
     "composer_placeholder": "Escriba un mensaje...",
     "send": "Enviar",
     "from_worker": "Trabajador",
     "message_worker": "Mensaje",
     "starting": "Iniciando...",
-    "message_start_failed": "No se pudo iniciar la conversacion.",
-    "worker_whatsapp_unavailable": "Este trabajador todavia no tiene numero de WhatsApp.",
+    "message_start_failed": "No se pudo iniciar la conversación.",
+    "worker_whatsapp_unavailable": "Este trabajador todavía no tiene número de WhatsApp.",
     "default_initial_message": "Hola, te escribo sobre tu aplicación de {jobTitle}. Responde aquí cuando estés disponible.",
     "tab_active": "Activas",
     "tab_closed": "Cerradas",
     "all_jobs": "Todos los empleos",
     "candidates": "Candidatos",
+    "candidates_hint": "En todos sus empleos activos",
     "new_applicant": "Nuevo candidato",
     "new_applicants": "Nuevos candidatos",
     "not_yet_messaged": "Sin mensajes todavía",
@@ -569,7 +576,8 @@
       "delivered": "Entregado",
       "failed": "Fallido",
       "received": "Recibido"
-    }
+    },
+    "unread": "Sin leer"
   },
   "employer_dashboard": {
     "stats": {
@@ -579,9 +587,9 @@
       "total_applicants": "Total de candidatos",
       "workers_hired": "Trabajadores contratados",
       "paused_closed": "Pausados / Cerrados",
-      "active_hint": "Puestos abiertos listos para candidatos",
+      "active_hint": "{count} puestos aún disponibles",
       "applicants_hint": "{count} promedio por empleo activo",
-      "hired_hint": "{count} puestos aún disponibles",
+      "hired_hint": "{hired} de {needed} puestos cubiertos",
       "paused_closed_hint": "{paused} pausados, {filled} llenos, {closed} cerrados"
     },
     "shell": {
@@ -595,27 +603,25 @@
       "messages": "Mensajes",
       "billing": "Facturación",
       "settings": "Configuración",
-      "templates": "Plantillas"
+      "templates": "Plantillas",
+      "unread_badge": "{count, plural, one {# mensaje sin leer} other {# mensajes sin leer}}"
     },
     "hero": {
       "eyebrow": "Got Jale?",
       "title": "Mantenga cada empleo, candidato y conversación de WhatsApp en un solo lugar.",
-      "body": "Este panel usa sus publicaciones reales hoy y reserva espacio para las herramientas futuras de matching, entrevistas y crecimiento del prototipo.",
+      "body": "Cada empleo que publica, cada candidato que responde y cada conversación de WhatsApp con ellos — todo en una sola página.",
       "primary_cta": "Publique un empleo",
-      "secondary_cta": "Abrir mensajes"
+      "secondary_cta": "Abrir mensajes",
+      "slim_title": "¿Listo para contratar de nuevo?",
+      "dismiss_aria": "Contraer el panel de bienvenida"
     },
     "quick_post": {
       "title": "Publicación rápida",
       "body": "Cree un empleo nuevo con el mismo flujo que ya usan los empleadores.",
-      "hint": "Las plantillas instantáneas del prototipo aún no están activas, así que esto abre el modal actual.",
+      "hint": "Abre el formulario para publicar un empleo. Las plantillas que guardó lo esperan adentro.",
       "cta": "Publicar empleo"
     },
     "panels": {
-      "applicants_title": "Vista de candidatos",
-      "applicants_body": "La vista global de candidatos viene pronto. Abra un empleo para ver candidatos reales.",
-      "applicant_stub_1": "Candidatos nuevos",
-      "applicant_stub_2": "Listos para contactar",
-      "applicant_stub_3": "Documentos pendientes",
       "job_progress_title": "Avance del trabajo",
       "positions_filled": "Puestos llenos",
       "positions_open_hint": "{count, plural, one {# puesto abierto} other {# puestos abiertos}}",
@@ -632,8 +638,7 @@
     },
     "disabled": {
       "label": "Vista previa",
-      "preview": "Vista previa",
-      "coming_soon": "Pronto"
+      "preview": "Vista previa"
     },
     "jobs": {
       "title": "Publicaciones de empleo",
@@ -655,7 +660,6 @@
       "applicants_count": "{count, plural, one {# candidato} other {# candidatos}}",
       "openings_count": "{open}/{total} abiertos",
       "pay_range": "Rango de pago",
-      "pay_range_value": "${min}-${max}",
       "hired_progress": "Progreso de contratación",
       "hired_progress_value": "{hired}/{total} contratados, {open} abiertos",
       "not_specified": "No especificado",
@@ -730,7 +734,7 @@
         "pending": "Nuevo",
         "contacted": "Contactado",
         "talking": "En conversación",
-        "details_requested": "Datos solicitados",
+        "details_requested": "Esperando datos",
         "hired": "Contratado",
         "not_interested": "No seleccionado"
       }
@@ -872,7 +876,8 @@
     },
     "templates": {
       "title": "Plantillas de empleo",
-      "meter": "{count} de {limit} plantillas",
+      "meter": "{count} guardadas · {limit} permitidas en su plan",
+      "meter_empty": "Aún no hay plantillas · {limit} permitidas en su plan",
       "meter_count": "{count} plantillas",
       "new": "Nueva plantilla",
       "limit_note": "Límite de plantillas alcanzado — mejore su plan para más",
@@ -935,6 +940,7 @@
     "trust_dim_practical_experience": "Experiencia práctica",
     "trust_dim_safety_awareness": "Conciencia de seguridad",
     "trust_dim_communication_clarity": "Claridad de comunicación",
+    "trust_points": "{value} pts",
     "trust_status_pending": "Evaluación pendiente",
     "trust_status_scoring": "Calificación en curso",
     "trust_status_scored": "Evaluación calificada",
@@ -1063,7 +1069,7 @@
         "body_dated": "Inicio {date} · El empleador te enviará más detalles; si no llegan, comunícate con él.",
         "body_undated": "Fecha de inicio por confirmar · El empleador te enviará más detalles; si no llegan, comunícate con él.",
         "cta": "Ver solicitud",
-        "dismiss": "Cerrar"
+        "dismiss": "Cerrar el aviso de contratación de {title}"
       },
       "row": {
         "body": "¡Felicidades! El empleador te enviará más detalles. Si no llegan, comunícate con él."
@@ -1077,7 +1083,8 @@
     "job_status": {
       "closed": "Cerrado",
       "filled": "Cubierto"
-    }
+    },
+    "load_more": "Ver más"
   },
   "worker_application_details": {
     "back": "Volver a mis postulaciones",
@@ -1155,7 +1162,8 @@
       "not_interested_body_no_company": "El empleador siguió con otros candidatos. Tu perfil guarda todo lo que ya contestaste para tu próxima postulación.",
       "view_job": "Ver el empleo",
       "view_applications": "Ver mis solicitudes",
-      "find_jobs": "Buscar otros empleos"
+      "find_jobs": "Buscar otros empleos",
+      "already_complete_note": "Tu postulación ya se envió. Contacta al empleador por WhatsApp para cambiarla."
     },
     "cert_question": "¿Tienes {name}?",
     "cert_use_vault": "Usar {file} de tu bóveda",
@@ -1313,9 +1321,9 @@
   "public_job": {
     "meta_title": "{title} en {company} - Jale",
     "meta_title_generic": "Oportunidad de empleo - Jale",
-    "meta_description": "{title} en {location}. Postulate por WhatsApp en minutos - sin curriculum, sin formularios.",
-    "meta_description_closed": "Esta posicion en {company} ya no acepta postulaciones, pero Jale tiene mas trabajo para ti.",
-    "meta_description_generic": "Encuentra trabajo por hora rapido. Postulate por WhatsApp - sin curriculum, sin formularios.",
+    "meta_description": "{title} en {location}. Postúlate por WhatsApp en minutos - sin currículum, sin formularios.",
+    "meta_description_closed": "Esta posición en {company} ya no acepta postulaciones, pero Jale tiene más trabajo para ti.",
+    "meta_description_generic": "Encuentra trabajo por hora rápido. Postúlate por WhatsApp - sin currículum, sin formularios.",
     "pay_range": "Rango de pago",
     "start_date": "Fecha de inicio",
     "shift_schedule": "Horario",
@@ -1328,24 +1336,24 @@
     "certifications": "Certificaciones",
     "language_preference": "Idioma",
     "language_any": "Cualquiera",
-    "language_en": "Ingles",
-    "language_es": "Espanol",
+    "language_en": "Inglés",
+    "language_es": "Español",
     "transportation": "Transporte",
     "work_authorization": "Autorización de trabajo",
     "yes": "Requerido",
     "required_docs": "Documentos necesarios para postularte",
-    "doc_resume": "Curriculum",
+    "doc_resume": "Currículum",
     "doc_driver_license": "Licencia de conducir",
     "doc_ssn": "Tarjeta de seguro social / ITIN",
     "apply_button": "Postularse por WhatsApp",
     "apply_web": "Postularse en el sitio web",
     "apply_loading": "Abriendo WhatsApp...",
-    "apply_error": "Algo salio mal. Intenta de nuevo.",
-    "apply_hint": "Terminaras tu postulacion en WhatsApp - no necesitas descargar ninguna app.",
+    "apply_error": "Algo salió mal. Intenta de nuevo.",
+    "apply_hint": "Terminarás tu postulación en WhatsApp - no necesitas descargar ninguna app.",
     "closed_badge": "Cerrada",
     "closed_title": "Este trabajo ya no acepta postulaciones",
-    "closed_body": "Pero hay mas trabajo esperandote en Jale.",
-    "browse_jobs": "Ver mas trabajos en Jale",
+    "closed_body": "Pero hay más trabajo esperándote en Jale.",
+    "browse_jobs": "Ver más trabajos en Jale",
     "eyebrow": "Puesto disponible",
     "referred_banner_worker": "{name} te compartió este trabajo",
     "referred_banner_worker_anonymous": "Alguien te compartió este trabajo",
@@ -1358,8 +1366,6 @@
     "details": "Detalles",
     "posted": "Publicado",
     "duration": "Duración",
-    "experience_years_unit": "{n, plural, one {# año} other {# años}}",
-    "experience_months_unit": "{n, plural, one {# mes} other {# meses}}",
     "about_jale": "Jale conecta a trabajadores y empleadores por WhatsApp: sin currículum, sin descargas. Siempre gratis para trabajadores.",
     "facts": {
       "schedule": "Horario y fechas",
@@ -1426,7 +1432,7 @@
       "filtered_title": "Ningún postulante coincide con estos filtros",
       "filtered_body": "Cambie los filtros, o quítelos para ver a todos los que se postularon.",
       "clear_filters": "Quitar filtros",
-      "trust_pill": "Confianza {score}",
+      "trust_pill": "Confianza {score}/100",
       "request_details": "Solicitar datos",
       "request_details_sent": "Datos solicitados — le avisaremos.",
       "details": {

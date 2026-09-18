@@ -5,6 +5,7 @@ import { Link } from '@/i18n/navigation';
 import { JobStatusBadge } from '@/components/ui/badge';
 import { Icon } from '@/components/ui/icon';
 import { formatShortDate } from '@/lib/date';
+import { formatPay } from '@/lib/pay';
 import type { Job } from '@/lib/api/employer';
 
 interface Props {
@@ -66,6 +67,7 @@ export function JobPostingCard({
   job, href, onDelete, onPause, onResume, statusPending = false, statusBusy = false,
 }: Props) {
   const t = useTranslations('employer_dashboard');
+  const tPay = useTranslations('pay');
   const locale = useLocale();
 
   /*
@@ -88,11 +90,19 @@ export function JobPostingCard({
 
   const postedDate = formatShortDate(job.created_at, locale) ?? job.created_at;
 
-  const pay =
-    job.pay ??
-    (job.pay_min !== null || job.pay_max !== null
-      ? t('jobs.pay_range_value', { min: job.pay_min ?? 0, max: job.pay_max ?? 0 })
-      : null);
+  /*
+   * The shared formatter, not a private "${min}-${max}" key: that one dropped
+   * the INTERVAL, so an employer's own board said "$15-$20" for a job the
+   * worker feed and the public page -- both already on `lib/pay.ts` -- showed
+   * as "$15–$20/hr". The same two numbers describe an hourly job and a weekly
+   * one, so the unit is part of the figure.
+   *
+   * It also settles the precedence the old expression had backwards: the
+   * structured columns win, and `job.pay` (server-persisted English free text,
+   * possibly the "Pay not specified" sentinel) is the fallback for a payload
+   * that has no structured pay at all.
+   */
+  const pay = formatPay(job, tPay);
 
   const meta = [job.location, `${t('jobs.posted')} ${postedDate}`, pay]
     .filter(Boolean)

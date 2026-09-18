@@ -18,6 +18,7 @@ import * as crypto from 'node:crypto';
 import { getDbPool } from '../lib/db';
 import { requireAbsoluteBaseUrl } from '../lib/http';
 import { getGoogleIndexingServiceAccountKey } from '../lib/google-indexing-secret';
+import { emitEmfMetrics } from '../lib/emf';
 
 const MAX_ATTEMPTS = 8;
 const BATCH_SIZE = 25;
@@ -27,29 +28,17 @@ const INDEXING_SCOPE = 'https://www.googleapis.com/auth/indexing';
 const TOKEN_TTL_SECONDS = 5 * 60;
 
 /**
- * CloudWatch EMF metric, emitted the same way `emitOtpMetric()` in
- * `auth/lib/otp-twilio.ts` emits `Jale/OTP` metrics -- a raw `console.log`
- * with an `_aws` CloudWatch Logs embedded-metric block, no MetricFilter
- * needed. Kept local to this file rather than promoted to a shared lib:
- * nothing else in `infra/lambda/` needs it yet.
+ * Fired once per row that transitions to `status = 'failed'` at MAX_ATTEMPTS,
+ * so ReferralsStack's `VisibilityOutboxDrainPermanentFailures` alarm has a
+ * real signal for "this row will never be retried again" instead of relying
+ * on someone noticing `status='failed'` rows by hand.
  *
- * Fired once per row that transitions to `status = 'failed'` at
- * MAX_ATTEMPTS, so ReferralsStack's `VisibilityOutboxDrainPermanentFailures`
- * alarm has a real signal for "this row will never be retried again"
- * instead of relying on someone noticing `status='failed'` rows by hand.
+ * The EMF envelope moved to `lib/emf.ts` in R2 -- this file's own note said
+ * it was kept local only because nothing else needed it yet, and a third
+ * caller (the bastion TTL sweeper) is what changed that.
  */
 function emitPermanentFailureMetric(): void {
-  console.log(JSON.stringify({
-    _aws: {
-      Timestamp: Date.now(),
-      CloudWatchMetrics: [{
-        Namespace: 'Jale/Referrals',
-        Dimensions: [[]],
-        Metrics: [{ Name: 'VisibilityOutboxDrainPermanentFailure', Unit: 'Count' }],
-      }],
-    },
-    VisibilityOutboxDrainPermanentFailure: 1,
-  }));
+  emitEmfMetrics('Jale/Referrals', [{ name: 'VisibilityOutboxDrainPermanentFailure', value: 1 }]);
 }
 
 /** Tallies a row's outcome onto the batch result and emits the permanent-failure metric when terminal. */

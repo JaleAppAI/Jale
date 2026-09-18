@@ -68,6 +68,8 @@ import {
   detailsStatusFor,
   loadRequirementSnapshot,
   markDetailsCompleteIfDone,
+  applicationIsOver,
+  detailsLocked,
   mergeCertificationClaims,
   mergeFieldAnswers,
   mergePromptAnswers,
@@ -113,6 +115,15 @@ const WRITE_ACTIONS = new Set(['answers', 'certifications', 'prompt-answers']);
  * without its own branch would silently become a prompt-answer write.
  */
 const HIRE_ACK_ACTION = 'hire-ack';
+
+/**
+ * R2: the explicit completion act. Deliberately NOT in `WRITE_ACTIONS` --
+ * that set drives the merge dispatch at the bottom of this handler, and
+ * `complete` merges nothing. Unlike `hire-ack` it is answered AFTER the
+ * snapshot load, because the synced load is precisely what closes the stage
+ * for a worker whose last requirement arrived through `/worker/vault/*`.
+ */
+const COMPLETE_ACTION = 'complete';
 
 /**
  * The two steps of the celebration, and the exact strings the browser sends.
@@ -302,6 +313,11 @@ function mapFailure(result: MergeFailure): { status: number; error: string; with
       return { status: 400, error: 'payload_too_large', withState: false };
     case 'stage_locked':
       return { status: 409, error: 'stage_locked', withState: true };
+    // F2: already sent. `withState: true` so the response carries the fresh
+    // state doc, whose own `details_completed_at` is what makes the flow
+    // render its read-only panel -- the worker gets the reason, not an error.
+    case 'locked':
+      return { status: 409, error: 'application_locked', withState: true };
     case 'closed':
       return { status: 409, error: 'application_closed', withState: true };
     case 'certification_document_limit':
@@ -400,7 +416,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         await rollback();
         return fail(405, 'method_not_allowed');
       }
-    } else if (!WRITE_ACTIONS.has(action) && action !== HIRE_ACK_ACTION) {
+    } else if (!WRITE_ACTIONS.has(action) && action !== HIRE_ACK_ACTION && action !== COMPLETE_ACTION) {
       await rollback();
       return fail(404, 'not_found');
     } else if (method !== 'POST') {
@@ -479,36 +495,68 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return fail(404, 'not_found');
     }
 
-    // ── GET: the state document ────────────────────────────────────
+    // ── GET: the state document, and NOTHING ELSE ──────────────────
+    //
+    // R2. This branch used to call `markDetailsCompleteIfDone`, so merely
+    // opening the page could complete the application. That was tolerable
+    // while a completed application stayed editable; F2 turned
+    // `details_completed_at` into a lock, and the pair became a trap.
+    // WhatsApp's `armFill` seeds saved answers and copies vault documents,
+    // then waits at the LISTO consent gate -- so the application is already
+    // `complete` before the worker has agreed to anything. One page load
+    // stamped it, released the bot's arm, and every later edit answered 409
+    // `application_locked`. The worker had confirmed nothing and could no
+    // longer fix what had been pre-filled for them.
+    //
+    // Completion is an explicit act now: `POST {id}/complete` below, or
+    // LISTO on WhatsApp. The read is a read.
     if (action === '') {
-      // A doc uploaded through `/worker/vault/*` never touches this engine,
-      // so the read is what completes the application. Re-load when it
-      // flipped: `details_completed_at` is part of the response.
-      const flipped = await markDetailsCompleteIfDone(client, applicationId, snapshot);
-      if (flipped) {
-        snapshot = await loadRequirementSnapshot(client, applicationId, { syncDocumentSnapshots: true });
-        if (!snapshot) {
-          await rollback();
-          return fail(404, 'not_found');
-        }
-        // The GET completes the stage for a DOCUMENT-last worker: a file
-        // uploaded through `/worker/vault/*` never touches this engine, so
-        // this read is what closes the last requirement. Releasing the bot's
-        // arm here is not belt-and-braces -- `markDetailsCompleteIfDone`
-        // flips `details_completed_at` only `WHERE details_completed_at IS
-        // NULL`, so no later POST can ever report `detailsCompleted: true`
-        // for this application. Without this call those workers keep getting
-        // "Paso X" forever.
-        //
-        // BEFORE `buildState`, same as the POST paths: the 031 GUC trap in
-        // the file header.
-        await releaseWhatsAppLanesForApplication(client, {
-          workerId,
-          applicationId,
-          jobTitle: snapshot.jobTitle,
-          lang: 'es',
-        });
+      const state = await buildState(client, snapshot);
+      await commit();
+      return json(200, state);
+    }
+
+    // ── POST complete: the explicit completion act ─────────────────
+    if (action === COMPLETE_ACTION) {
+      // Lifecycle first, and through the SAME predicate the write doors use.
+      if (applicationIsOver(snapshot)) {
+        await rollback();
+        return fail(409, 'application_closed');
       }
+      if (snapshot.stage === 'apply') {
+        await rollback();
+        return fail(409, 'stage_locked');
+      }
+      // Already sent. Idempotent on purpose -- Finish pressed twice, or a
+      // reload of the confirmation screen, is a worker asking for the state
+      // of something they already sent, never an error and never the lock.
+      if (!detailsLocked(snapshot)) {
+        const flipped = await markDetailsCompleteIfDone(client, applicationId, snapshot);
+        if (flipped) {
+          snapshot = await loadRequirementSnapshot(client, applicationId, { syncDocumentSnapshots: true });
+          if (!snapshot) {
+            await rollback();
+            return fail(404, 'not_found');
+          }
+          // Releasing the bot's arm here is not belt-and-braces --
+          // `markDetailsCompleteIfDone` flips `details_completed_at` only
+          // `WHERE details_completed_at IS NULL`, so no later call can ever
+          // report `detailsCompleted: true` for this application. Without it
+          // those workers keep getting "Paso X" forever.
+          //
+          // BEFORE `buildState`, same as the merge paths: the 031 GUC trap in
+          // the file header.
+          await releaseWhatsAppLanesForApplication(client, {
+            workerId,
+            applicationId,
+            jobTitle: snapshot.jobTitle,
+            lang: 'es',
+          });
+        }
+      }
+      // Still-outstanding returns the state rather than an error, so the
+      // review step re-renders its own "still missing" line instead of the
+      // worker being told only that something went wrong.
       const state = await buildState(client, snapshot);
       await commit();
       return json(200, state);

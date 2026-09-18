@@ -10,6 +10,7 @@ import { useStaggerOnce } from '@/hooks/useStaggerOnce';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { Link, useRouter } from '@/i18n/navigation';
 import { AppShell } from '@/components/layout/AppShell';
+import { PostJobButton } from '@/components/employer/PostJobButton';
 import { AppShellSkeleton } from '@/components/layout/AppShellSkeleton';
 import { ApplicationStatusBadge, Badge, JobStatusBadge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -64,7 +65,13 @@ import {
     detailsRequestFeedbackTone,
 } from '@/lib/hire-gate';
 import { formatLongDate, formatStartDate } from '@/lib/date';
-import { durationLabel, scheduleSummary, tradeLabel, type Translator } from '@/lib/job-detail-display';
+import {
+    durationLabel,
+    experienceLabel,
+    scheduleSummary,
+    tradeLabel,
+    type Translator,
+} from '@/lib/job-detail-display';
 import { PAY_UNSPECIFIED } from '@/lib/pay';
 import {
     JobFactsCard,
@@ -635,6 +642,7 @@ export default function JobDetailPage() {
         ? (formatStartDate(job.start_date, locale) ?? job.start_date)
         : null;
     const tradeText = tradeLabel(job, tTradeDisplay, tDetailDisplay);
+    const experienceText = experienceLabel(job, tCommonDisplay);
     const languageText = job.language_preference.length > 0
         ? job.language_preference.map((lang) => tShared(`modal.language.${lang}`)).join(', ')
         : null;
@@ -680,11 +688,11 @@ export default function JobDetailPage() {
     if (tradeText) {
         whereTiles.push({ key: 'trade', label: tShared('modal.trade_category'), value: tradeText });
     }
-    if (job.required_experience_years !== null) {
+    if (experienceText) {
         whereTiles.push({
             key: 'experience',
             label: tShared('modal.required_experience_years'),
-            value: num(String(job.required_experience_years)),
+            value: num(experienceText),
         });
     }
     if (languageText) {
@@ -765,7 +773,7 @@ export default function JobDetailPage() {
 
     return (
         <>
-            <AppShell role="employer" title={job.title} subtitle={job.location}>
+            <AppShell role="employer" title={job.title} subtitle={job.location} actions={<PostJobButton />}>
                 <main className="mx-auto max-w-5xl px-4 py-6 md:px-6">
                     <div className="anim-fade-in">
                         {backLink}

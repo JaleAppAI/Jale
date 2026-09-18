@@ -33,6 +33,8 @@ import { AuthProvider, useAuth } from '@/contexts/AuthContext';
 const WORKER_SLOT = 'jale.session.worker';
 const EMPLOYER_SLOT = 'jale.session.employer';
 const LAST_ROLE_KEY = 'jale.session.lastRole';
+const WORKER_CHIP = 'jale.sidebar_chip.worker';
+const EMPLOYER_CHIP = 'jale.sidebar_chip.employer';
 
 function Probe() {
     const { userType, isLoading, logout, setTokens } = useAuth();
@@ -127,6 +129,36 @@ describe('AuthProvider — signing out', () => {
         expect(localStorage.getItem(WORKER_SLOT)).toBe('rt-worker');
     });
 
+    it('drops what the browser remembers about the account that just left', async () => {
+        localStorage.setItem(EMPLOYER_SLOT, 'rt-employer');
+        sessionStorage.setItem(
+            'jale.sidebar_chip.employer',
+            JSON.stringify({ name: 'RM Construction', meta: null, initials: 'RC', locale: 'es' }),
+        );
+        // Both billing banners: the free one lives in localStorage, the lapsed
+        // one in sessionStorage, and a sign-out has to reach both stores.
+        localStorage.setItem('jale.signage.free.employer_free.acct-1', '1');
+        sessionStorage.setItem('jale.signage.lapsed.past_due.acct-1', '1');
+        // Not ours, and not ours to delete.
+        localStorage.setItem('jale-theme', 'dark');
+        window.history.replaceState(null, '', '/es/employer/dashboard');
+        const user = userEvent.setup();
+
+        renderProvider();
+        await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('ready:employer'));
+        await user.click(screen.getByRole('button', { name: 'sign out' }));
+
+        // Cleared by `clearSession` itself: `logout` navigates immediately
+        // afterwards, so a React effect reacting to the state change is not a
+        // guarantee this ever runs.
+        await waitFor(() => expect(sessionStorage.getItem('jale.sidebar_chip.employer')).toBeNull());
+        // A dismissal is one account's answer; the next account to sign in on
+        // this browser has not given one -- least of all about their billing.
+        expect(localStorage.getItem('jale.signage.free.employer_free.acct-1')).toBeNull();
+        expect(sessionStorage.getItem('jale.signage.lapsed.past_due.acct-1')).toBeNull();
+        expect(localStorage.getItem('jale-theme')).toBe('dark');
+    });
+
     it('does not overwrite the other role when signing in', async () => {
         localStorage.setItem(WORKER_SLOT, 'rt-worker');
         window.history.replaceState(null, '', '/es/auth/employer');
@@ -161,14 +193,55 @@ describe('AuthProvider — signing out', () => {
     it('drops only the refused role when a stored token no longer works', async () => {
         localStorage.setItem(WORKER_SLOT, 'rt-worker');
         localStorage.setItem(EMPLOYER_SLOT, 'rt-employer');
+        sessionStorage.setItem(WORKER_CHIP, '{"name":"David","meta":null,"initials":"D","locale":"es"}');
+        sessionStorage.setItem(EMPLOYER_CHIP, '{"name":"Acme","meta":null,"initials":"A","locale":"es"}');
         window.history.replaceState(null, '', '/es/worker/home');
-        apiFetch.mockResolvedValue({ ok: false, json: async () => ({}) });
+        // 401 is the pool REFUSING the token -- the one answer that proves the
+        // stored session is worthless.
+        apiFetch.mockResolvedValue({ ok: false, status: 401, json: async () => ({}) });
 
         renderProvider();
 
         await waitFor(() => expect(localStorage.getItem(WORKER_SLOT)).toBeNull());
         // An expired worker token says nothing about the employer session.
         expect(localStorage.getItem(EMPLOYER_SLOT)).toBe('rt-employer');
+        // ...and the chip cache goes with the session that was refused, so the
+        // refused account's name cannot paint for whoever signs in next --
+        // while the employer's own cached chip is none of its business.
+        expect(sessionStorage.getItem(WORKER_CHIP)).toBeNull();
+        expect(sessionStorage.getItem(EMPLOYER_CHIP)).not.toBeNull();
+    });
+
+    /*
+     * A REFUSAL and an OUTAGE are not the same answer.
+     *
+     * Every failure used to clear the slot, and since a removed slot is now
+     * broadcast to every other tab (the cross-tab sign-out), one timed-out
+     * refresh on a phone in a lift signed the whole browser out of a session
+     * that was perfectly valid. Only the pool saying "no" may do that.
+     */
+    it('keeps the session when the refresh never reaches the server', async () => {
+        localStorage.setItem(WORKER_SLOT, 'rt-worker');
+        window.history.replaceState(null, '', '/es/worker/home');
+        apiFetch.mockRejectedValue(new Error('offline'));
+
+        renderProvider();
+
+        await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('ready:'));
+        expect(localStorage.getItem(WORKER_SLOT)).toBe('rt-worker');
+    });
+
+    it('keeps the session when the refresh answers with an outage', async () => {
+        localStorage.setItem(WORKER_SLOT, 'rt-worker');
+        window.history.replaceState(null, '', '/es/worker/home');
+        apiFetch.mockResolvedValue({ ok: false, status: 503, json: async () => ({}) });
+
+        renderProvider();
+
+        await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('ready:'));
+        // A 503 says the server is having a bad day, not that this worker is
+        // signed out -- and the next load exchanges the same token happily.
+        expect(localStorage.getItem(WORKER_SLOT)).toBe('rt-worker');
     });
 });
 

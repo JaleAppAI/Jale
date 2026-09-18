@@ -613,9 +613,45 @@ describe('HiredBanner', () => {
     renderIntl(<HiredBanner {...SUBJECT} hire={hire()} onDismiss={onDismiss} />);
 
     fireEvent.click(screen.getByRole('button', {
-      name: message('worker_applications.hired_celebration.banner.dismiss'),
+      name: interpolate(message('worker_applications.hired_celebration.banner.dismiss'), {
+        title: SUBJECT.jobTitle,
+      }),
     }));
     expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  /*
+   * A worker hired for two jobs sees two of these stacked. With one shared
+   * label, a screen reader announced "Dismiss, button" twice and neither one
+   * said which notice it closed -- the only distinguishing information was the
+   * visual position. The job title is what tells them apart.
+   */
+  it('names the job in the dismiss label, so stacked banners are distinguishable', () => {
+    renderIntl(
+      <>
+        <HiredBanner {...SUBJECT} hire={hire()} onDismiss={vi.fn()} />
+        <HiredBanner {...SUBJECT} jobTitle="Drywall Finisher" hire={hire()} onDismiss={vi.fn()} />
+      </>,
+    );
+
+    const labels = screen
+      .getAllByRole('button')
+      .map((button) => button.getAttribute('aria-label') ?? button.textContent ?? '');
+
+    expect(labels).toEqual([
+      interpolate(message('worker_applications.hired_celebration.banner.dismiss'), {
+        title: 'Welder',
+      }),
+      interpolate(message('worker_applications.hired_celebration.banner.dismiss'), {
+        title: 'Drywall Finisher',
+      }),
+    ]);
+    // The assertion above passes for ANY label that ignores its placeholder,
+    // so the point of the change is asserted separately: the two differ, and
+    // each one names its own job.
+    expect(new Set(labels).size).toBe(2);
+    expect(labels[0]).toContain('Welder');
+    expect(labels[1]).toContain('Drywall Finisher');
   });
 
   it('drops the heading and the link in the compact row variant, keeping the ×', () => {
@@ -635,7 +671,9 @@ describe('HiredBanner', () => {
     expect(screen.queryByRole('link')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', {
-      name: message('worker_applications.hired_celebration.banner.dismiss'),
+      name: interpolate(message('worker_applications.hired_celebration.banner.dismiss'), {
+        title: SUBJECT.jobTitle,
+      }),
     }));
     expect(onDismiss).toHaveBeenCalledTimes(1);
   });

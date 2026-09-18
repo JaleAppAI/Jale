@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { clearSession, readRoleToken, readSession, writeSession } from '@/lib/session-storage';
+import {
+    clearSession,
+    readRoleToken,
+    readSession,
+    subscribeToSignOut,
+    writeSession,
+} from '@/lib/session-storage';
 
 /**
  * The session used to live in `sessionStorage`, which is PER TAB. A worker who
@@ -304,5 +310,65 @@ describe('clearSession', () => {
         expect(() => clearSession()).not.toThrow();
         // A store that refused must not stop the other one from being cleared.
         expect(sessionStorage.getItem(LEGACY_TOKEN_KEY)).toBeNull();
+    });
+});
+
+/**
+ * A sign-out in ANOTHER TAB.
+ *
+ * The browser fires `storage` in every tab but the one that wrote, so a
+ * removal of a role's slot is the only broadcast this needs. The three cases
+ * below are what the listener has to tell apart -- and reading a WRITE as a
+ * sign-out would log the whole browser out every few minutes, because Cognito
+ * rotates the refresh token on every exchange.
+ */
+describe('subscribeToSignOut', () => {
+    function fire(init: StorageEventInit) {
+        window.dispatchEvent(new StorageEvent('storage', init));
+    }
+
+    it('reports the role whose slot was removed', () => {
+        const signedOut = vi.fn();
+        const stop = subscribeToSignOut(signedOut);
+
+        fire({ key: WORKER_SLOT, oldValue: 'rt-worker', newValue: null });
+
+        expect(signedOut).toHaveBeenCalledWith('worker');
+        stop();
+    });
+
+    it('says nothing about a token rotation, or about another key entirely', () => {
+        const signedOut = vi.fn();
+        const stop = subscribeToSignOut(signedOut);
+
+        fire({ key: WORKER_SLOT, oldValue: 'rt-worker', newValue: 'rt-rotated' });
+        fire({ key: LAST_ROLE_KEY, oldValue: 'worker', newValue: null });
+        fire({ key: 'something.else', oldValue: 'x', newValue: null });
+
+        expect(signedOut).not.toHaveBeenCalled();
+        stop();
+    });
+
+    it('reports every emptied role when another tab clears storage outright', () => {
+        // `localStorage.clear()` (a browser "clear site data", an extension)
+        // names no key at all, so the slots have to be re-read.
+        localStorage.setItem(EMPLOYER_SLOT, 'rt-employer');
+        const signedOut = vi.fn();
+        const stop = subscribeToSignOut(signedOut);
+
+        fire({ key: null, oldValue: null, newValue: null });
+
+        expect(signedOut).toHaveBeenCalledWith('worker');
+        expect(signedOut).not.toHaveBeenCalledWith('employer');
+        stop();
+    });
+
+    it('stops listening once unsubscribed', () => {
+        const signedOut = vi.fn();
+        subscribeToSignOut(signedOut)();
+
+        fire({ key: WORKER_SLOT, oldValue: 'rt-worker', newValue: null });
+
+        expect(signedOut).not.toHaveBeenCalled();
     });
 });

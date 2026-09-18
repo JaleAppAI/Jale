@@ -1,12 +1,13 @@
 'use client';
 
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
+import type { MouseEvent } from 'react';
 import { useParams } from 'next/navigation';
 import { useLocale, useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { usePageData } from '@/hooks/usePageData';
-import { Link } from '@/i18n/navigation';
+import { Link, useRouter } from '@/i18n/navigation';
 import { AppShell } from '@/components/layout/AppShell';
 import { Badge, JobStatusBadge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -28,12 +29,19 @@ import { ProfileCompleteModal, type ProfileCompleteValues } from '@/components/w
 import { ApplyFlow, type ApplyFlowSubmitError } from '@/components/worker/apply-flow/ApplyFlow';
 import { DetailsRequestedBanner } from '@/components/worker/DetailsRequestedBanner';
 import { apiFetch, isLegalWallError } from '@/lib/api';
+import { consumeFeedOrigin, opensInThisTab, readFeedReturn } from '@/lib/worker-feed-return';
 import { ApiError, classifyError, parseApiError, type ErrorKind } from '@/lib/api/errors';
 import { applyFlowReducer, initialApplyFlowState, flowHasProgress, promptAnswersPayload } from '@/lib/apply-flow-view';
 import { missingPromptAnswers } from '@/lib/application-requirements-flow';
 import { formatLongDate, formatStartDate } from '@/lib/date';
 import { docTypeLabel } from '@/lib/doc-types';
-import { durationLabel, scheduleSummary, tradeLabel, type Translator } from '@/lib/job-detail-display';
+import {
+  durationLabel,
+  experienceLabel,
+  scheduleSummary,
+  tradeLabel,
+  type Translator,
+} from '@/lib/job-detail-display';
 import { formatPay } from '@/lib/pay';
 import {
   getJob, applyToJob, updateWorkerProfile, getVaultDocuments,
@@ -44,9 +52,6 @@ import { visibleJobStatusBadge } from '@/lib/jobStatusDisplay';
 export const dynamic = 'force-dynamic';
 
 const KNOWN_JOB_TYPES = ['full-time', 'part-time', 'contract'];
-
-/** Where "back to jobs" goes, and the destination the S5 states offer. */
-const JOBS_HREF = '/worker/home';
 
 // 'info' is for the "your progress is saved" note shown when a worker backs
 // out of the in-page apply flow with unsubmitted progress -- not an error and
@@ -70,6 +75,47 @@ function widen(t: unknown): Translator {
 
 export default function WorkerJobDetailPage() {
   const { id } = useParams<{ id: string; locale: string }>();
+  const router = useRouter();
+  /*
+   * Where "back to jobs" goes, and the destination the S5 states offer: the
+   * FEED, with the filters the worker left it under. Those filters live in the
+   * feed's query string, so a bare `/worker/home` would quietly undo them;
+   * `lib/worker-feed-return.ts` remembers the URL and falls back to the plain
+   * feed for a job page nobody reached from it (a shared link, a bookmark).
+   *
+   * Read ONCE, on mount, and never re-read: the answer describes how this
+   * page was ARRIVED at, which cannot change while it is open. The marker is
+   * spent right after, so it describes that one navigation and not every
+   * later job page the worker opens from somewhere else.
+   */
+  const [feedReturn] = useState(readFeedReturn);
+  useEffect(() => { consumeFeedOrigin(); }, []);
+
+  /**
+   * Back to the feed, by HISTORY when this page was opened from it.
+   *
+   * `router.back()` is not merely equivalent to following the link: it restores
+   * the feed's scroll position, so a worker who was ten rows down does not land
+   * back at the top of the list. Every other way of arriving here (a shared
+   * link, a reload, the applications list) follows the href instead, which
+   * carries the remembered filters and is correct from anywhere.
+   *
+   * The modifier keys are left alone on purpose: a middle-click or a
+   * ctrl/cmd-click is "open the feed in a new tab", and hijacking it would
+   * navigate this one instead.
+   */
+  const handleBackToFeed = useCallback((event: MouseEvent<HTMLAnchorElement>) => {
+    if (!feedReturn.canGoBack) return;
+    // A tab opened from a ctrl-click INHERITS this tab's sessionStorage, so it
+    // can carry a marker while having a history of exactly one entry --
+    // `back()` there does nothing at all and the link would be a dead end.
+    if (window.history.length <= 1) return;
+    // A middle- or modifier-click means "open the feed beside this page", and
+    // hijacking it would navigate this one instead.
+    if (!opensInThisTab(event)) return;
+    event.preventDefault();
+    router.back();
+  }, [feedReturn, router]);
   const { idToken } = useAuth();
   const { handleLegalWall } = useRequireAuth();
   const t = useTranslations('worker_job_detail');
@@ -468,7 +514,7 @@ export default function WorkerJobDetailPage() {
       return (
         <ErrorState
           kind="not_found"
-          backHref={JOBS_HREF}
+          backHref={feedReturn.href}
           title={t('not_found.title')}
           body={t('not_found.body')}
         />
@@ -478,7 +524,7 @@ export default function WorkerJobDetailPage() {
       return (
         <ErrorState
           kind="gone"
-          backHref={JOBS_HREF}
+          backHref={feedReturn.href}
           title={t('closed.title')}
           body={t('closed.body')}
         />
@@ -488,7 +534,7 @@ export default function WorkerJobDetailPage() {
     // kind. `backHref` is passed for all of them deliberately: a worker stuck
     // on one job's failure should always have the jobs list one tap away, and
     // no kind is relabelled to obtain that button.
-    return <ErrorState kind={kind} onRetry={retry} backHref={JOBS_HREF} />;
+    return <ErrorState kind={kind} onRetry={retry} backHref={feedReturn.href} />;
   }
 
   // 'auth' means the token gate has not opened yet: nothing has been asked for,
@@ -540,6 +586,7 @@ export default function WorkerJobDetailPage() {
     ? (formatStartDate(job.start_date, locale) ?? job.start_date)
     : null;
   const tradeText = job ? tradeLabel(job, tTradeDisplay, tDetailDisplay) : null;
+  const experienceText = job ? experienceLabel(job, tCommonDisplay) : null;
   const languageText = job?.language_preference && job.language_preference.length > 0
     ? job.language_preference.map((code) => tPublicJob(`language_${code}`)).join(' / ')
     : null;
@@ -582,11 +629,11 @@ export default function WorkerJobDetailPage() {
     if (tradeText) {
       whereTiles.push({ key: 'trade', label: t('trade'), value: tradeText });
     }
-    if (job.required_experience_years !== undefined && job.required_experience_years !== null) {
+    if (experienceText) {
       whereTiles.push({
         key: 'experience',
         label: t('required_experience'),
-        value: <span className="tabular-nums">{String(job.required_experience_years)}</span>,
+        value: <span className="tabular-nums">{experienceText}</span>,
       });
     }
     if (languageText) {
@@ -644,7 +691,8 @@ export default function WorkerJobDetailPage() {
             {/* Chrome the worker keeps in every state, including the S5 ones:
                 an error must never be a dead end. */}
             <Link
-              href={JOBS_HREF}
+              href={feedReturn.href}
+              onClick={handleBackToFeed}
               className="mb-4 inline-block text-xs font-bold uppercase tracking-wide text-[var(--jale-ink-2)] transition-colors hover:text-[var(--jale-ink)]"
             >
               {t('back')}

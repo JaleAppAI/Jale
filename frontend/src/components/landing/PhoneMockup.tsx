@@ -32,7 +32,7 @@ export function PhoneMockup() {
     const bubbleIn =
         'max-w-[85%] rounded-[16px_16px_4px_16px] bg-[#e8f0fe] px-3 py-[9px] leading-[1.4] text-[#1a1a1a]';
     const bubbleOut =
-        'max-w-[85%] rounded-[16px_4px_16px_16px] bg-[#0179FF] px-3 py-[9px] leading-[1.4] text-white';
+        'max-w-[85%] rounded-[16px_4px_16px_16px] bg-[var(--jale-blue-500)] px-3 py-[9px] leading-[1.4] text-white';
 
     return (
         <div className="flex justify-center">
@@ -43,7 +43,7 @@ export function PhoneMockup() {
             >
                 <div className="flex h-[580px] flex-col overflow-hidden rounded-[34px] bg-white">
                     {/* Status bar */}
-                    <div className="flex items-center justify-between px-5 pb-1.5 pt-3 text-xs font-semibold text-[#181855]">
+                    <div className="flex items-center justify-between px-5 pb-1.5 pt-3 text-xs font-semibold text-[var(--jale-blue-900)]">
                         <span>{t('time')}</span>
                         <span className="flex gap-[5px]">
                             <Signal size={14} />
@@ -55,11 +55,11 @@ export function PhoneMockup() {
                     {/* Chat header */}
                     <div className="flex items-center justify-between border-b border-[#e0e0e0] bg-[#f8f8f8] px-4 py-3">
                         <div className="flex flex-1 items-center gap-2.5">
-                            <span className="flex h-9 w-9 items-center justify-center rounded-full bg-[#0179FF] text-xs font-bold text-white">
+                            <span className="flex h-9 w-9 items-center justify-center rounded-full bg-[var(--jale-blue-500)] text-xs font-bold text-white">
                                 J
                             </span>
                             <span className="flex flex-col">
-                                <span className="text-[13px] font-bold leading-tight text-[#181855]">Jale</span>
+                                <span className="text-[13px] font-bold leading-tight text-[var(--jale-blue-900)]">Jale</span>
                                 <span className="text-[11px] leading-tight text-[#99a3b3]">{t('status')}</span>
                             </span>
                         </div>
@@ -81,7 +81,7 @@ export function PhoneMockup() {
 
                     {/* Input row */}
                     <div className="flex items-center gap-2 border-t border-[#e0e0e0] bg-[#f8f8f8] p-3">
-                        <Plus size={20} className="shrink-0 text-[#0179FF]" />
+                        <Plus size={20} className="shrink-0 text-[var(--jale-blue-500)]" />
                         <input
                             type="text"
                             placeholder={t('input')}
@@ -90,8 +90,8 @@ export function PhoneMockup() {
                             aria-hidden
                             className="min-w-0 flex-1 border-0 bg-transparent px-1 py-1.5 font-[inherit] text-[13px] text-[#1a1a1a]"
                         />
-                        <Mic size={20} className="shrink-0 text-[#0179FF]" />
-                        <Send size={20} className="shrink-0 text-[#0179FF]" />
+                        <Mic size={20} className="shrink-0 text-[var(--jale-blue-500)]" />
+                        <Send size={20} className="shrink-0 text-[var(--jale-blue-500)]" />
                     </div>
                 </div>
             </div>
