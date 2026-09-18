@@ -173,6 +173,22 @@ describe('WhatsApp status callback', () => {
     warnSpy.mockRestore();
   });
 
+  // Migration 097: a templated employer -> worker invite correlates through
+  // job_message_outbox. Before 097 this same callback came back unmatched and
+  // took the 503-and-page path above; the handler is unchanged, so this locks
+  // in that a matched-but-unchanged job_message_outbox hit is a quiet 200.
+  it('returns 200 and no unknown-SID metric for a matched job_message_outbox callback', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    query.mockResolvedValueOnce({
+      rows: [{ matched: true, changed: false, source: 'job_message_outbox' }],
+    });
+    const result = await handler(event({ MessageSid: SID, MessageStatus: 'delivered' }));
+    expect(result.statusCode).toBe(200);
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining('WhatsAppStatusCallbackUnknownSid'));
+    warnSpy.mockRestore();
+  });
+
   it('logs WhatsAppStatusCallbackError and returns 503 with zero DB access on a secret/config failure', async () => {
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     jest.spyOn(twilioSecretModule, 'getTwilioSecret').mockRejectedValueOnce(

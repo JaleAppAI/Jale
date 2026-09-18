@@ -37,8 +37,13 @@ export async function GET(request: Request): Promise<Response> {
     });
   }
 
+  // Prefill the same opener a worker types by hand: a greeting. Both words
+  // are in the bot's GREETING_WORDS / detectCommandLanguage lists
+  // (infra/lambda/whatsapp/lib/flows.ts), so a brand-new number gets the
+  // language invite and a returning worker gets the idle menu in their
+  // language. Luis's ruling 2026-09-18: never a command word like "Jobs".
   const { searchParams } = new URL(request.url);
-  const text = searchParams.get('lang') === 'en' ? 'Jobs' : 'Trabajos';
+  const text = searchParams.get('lang') === 'en' ? 'Hello' : 'Hola';
   const location = `https://wa.me/${number}?text=${encodeURIComponent(text)}`;
 
   return new Response(null, {
