@@ -128,6 +128,7 @@ describe('database migrations', () => {
       '094',
       '095',
       '096',
+      '097',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -1774,6 +1775,134 @@ describe('database migrations', () => {
       expect(text).toMatch(/set_updated_at/);
       // The replay-after-ship hazard is the one thing a reader must not miss.
       expect(text).toMatch(/force-replay/);
+    });
+  });
+  // 097 is the sprint-26 hotfix behind WhatsAppStatusCallbackUnknownSid. An
+  // employer -> worker invite is a TEMPLATE send: job-messaging.ts writes the
+  // Twilio SID to job_message_outbox.twilio_message_sid ONLY, because the
+  // job_conversation_messages row has to stay 'waiting_worker_reply' until the
+  // worker replies. 040's unified callback only knew whatsapp_outbox and
+  // job_conversation_messages, so every such callback came back unmatched and
+  // the Lambda returned a retryable 503 that paged an alarm. 097 adds a third
+  // correlation branch -- and, because the callback function is owned by the
+  // NOLOGIN jale_twilio_callback helper and jale_admin holds it with
+  // SET FALSE / INHERIT FALSE, the file must re-borrow the role exactly the
+  // way 042 and 043 do or the CREATE OR REPLACE cannot run at all.
+  describe('097 correlates Twilio callbacks through job_message_outbox', () => {
+    const sql = () => fs.readFileSync(
+      path.join(migrationsDir, '097_twilio_callback_job_message_outbox.sql'), 'utf8',
+    );
+
+    it('runs as jale_admin in ONE transaction and explains the bug', () => {
+      const text = sql();
+      expect(text).toContain('Connect as: jale_admin');
+      expect(text.match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(text.match(/^COMMIT;$/gm)).toHaveLength(1);
+      expect(text).toMatch(/WhatsAppStatusCallbackUnknownSid/);
+      expect(text).toMatch(/job-messaging\.ts/);
+      expect(text).toMatch(/503/);
+    });
+
+    it('adds the SID correlation index on job_message_outbox', () => {
+      expect(sql()).toContain(
+        'CREATE INDEX IF NOT EXISTS idx_job_message_outbox_twilio_message_sid\n'
+        + '  ON public.job_message_outbox (twilio_message_sid)\n'
+        + '  WHERE twilio_message_sid IS NOT NULL;',
+      );
+    });
+
+    it('grants the helper role column-scoped access only, with its own policies', () => {
+      const text = sql();
+      // REVOKE first, or a re-apply cannot converge on the exact ACL the
+      // self-audit at the bottom of the file asserts.
+      expect(text).toContain('REVOKE ALL ON public.job_message_outbox FROM jale_twilio_callback;');
+      expect(text).toContain(
+        'GRANT SELECT (id, message_id, send_kind, status, twilio_message_sid,\n'
+        + '              last_error, created_at),\n'
+        + '      UPDATE (status, last_error)\n'
+        + '  ON public.job_message_outbox TO jale_twilio_callback;',
+      );
+      // A whole-table grant would hand the helper the employer's message body
+      // and content_variables.
+      expect(text).not.toMatch(/GRANT SELECT ON public\.job_message_outbox/);
+      expect(text).toContain('DROP POLICY IF EXISTS job_outbox_twilio_callback_select ON public.job_message_outbox;');
+      expect(text).toContain('DROP POLICY IF EXISTS job_outbox_twilio_callback_update ON public.job_message_outbox;');
+      expect(text).toMatch(
+        /CREATE POLICY job_outbox_twilio_callback_select ON public\.job_message_outbox\s+FOR SELECT TO jale_twilio_callback USING \(true\);/,
+      );
+      expect(text).toMatch(
+        /CREATE POLICY job_outbox_twilio_callback_update ON public\.job_message_outbox\s+FOR UPDATE TO jale_twilio_callback USING \(true\) WITH CHECK \(true\);/,
+      );
+    });
+
+    it('re-borrows the helper role to replace the locked callback, then gives it back', () => {
+      const text = sql();
+      const borrow = text.indexOf("GRANT jale_twilio_callback TO %I WITH SET TRUE, INHERIT FALSE");
+      const setRole = text.indexOf('SET LOCAL ROLE jale_twilio_callback;');
+      const replace = text.indexOf('CREATE OR REPLACE FUNCTION jale_twilio_callback.record_twilio_delivery_status');
+      const reset = text.indexOf('RESET ROLE;');
+      const giveBack = text.indexOf("GRANT jale_twilio_callback TO %I WITH SET FALSE, INHERIT FALSE");
+      expect(borrow).toBeGreaterThan(-1);
+      expect(setRole).toBeGreaterThan(borrow);
+      expect(replace).toBeGreaterThan(setRole);
+      expect(reset).toBeGreaterThan(replace);
+      expect(giveBack).toBeGreaterThan(reset);
+      // 040's self-audit demands exactly one membership row afterwards.
+      expect(text).toContain("REVOKE jale_twilio_callback FROM %I GRANTED BY %I");
+    });
+
+    it('keeps the locked function hardened and the signature identical', () => {
+      const text = sql();
+      expect(text).toMatch(/RETURNS TABLE \(matched BOOLEAN, changed BOOLEAN, source TEXT\)/);
+      expect(text).toContain('SET search_path = pg_catalog, pg_temp');
+      expect(text).toContain('SECURITY DEFINER');
+      expect(text).toContain(
+        'ALTER FUNCTION jale_twilio_callback.record_twilio_delivery_status(TEXT, TEXT, TEXT, TEXT)\n'
+        + '  OWNER TO jale_twilio_callback;',
+      );
+      expect(text).toContain(
+        'REVOKE ALL ON FUNCTION jale_twilio_callback.record_twilio_delivery_status(TEXT, TEXT, TEXT, TEXT)',
+      );
+      expect(text).toContain(
+        'GRANT EXECUTE ON FUNCTION jale_twilio_callback.record_twilio_delivery_status(TEXT, TEXT, TEXT, TEXT)\n'
+        + '  TO jale_whatsapp;',
+      );
+      // Relation names stay fully qualified: the catalog-only search_path is
+      // the whole point of the locked schema.
+      expect(text).toContain('FROM public.job_message_outbox o');
+      expect(text).toContain('UPDATE public.job_message_outbox');
+      expect(text).toContain('UPDATE public.job_conversation_messages');
+    });
+
+    it('keeps the first two branches intact and only falls through when both miss', () => {
+      const text = sql();
+      const whatsapp = text.indexOf("RETURN QUERY SELECT true, v_whatsapp.changed, 'whatsapp_outbox'::TEXT;");
+      const branch2 = text.indexOf("RETURN QUERY SELECT true, v_job_changed, 'job_message_outbox'::TEXT;");
+      const branch3 = text.indexOf('FROM public.job_message_outbox o');
+      expect(whatsapp).toBeGreaterThan(-1);
+      expect(branch2).toBeGreaterThan(whatsapp);
+      expect(branch3).toBeGreaterThan(branch2);
+      // Branch 3 only changes state on a terminal failure landing on a row
+      // still believed 'sent'; message_id is nullable (025 ON DELETE SET NULL).
+      expect(text).toMatch(/IF v_status IN \('failed', 'undelivered'\) AND v_outbox_status = 'sent' THEN/);
+      expect(text).toMatch(/IF v_outbox_message_id IS NOT NULL THEN/);
+      expect(text).toMatch(/AND status IN \('queued', 'waiting_worker_reply'\)/);
+      expect(text).toMatch(/COALESCE\(\s*NULLIF\(CONCAT_WS\(' '/);
+      // The unknown SID must still report unmatched so the Lambda can 503.
+      expect(text).toContain('RETURN QUERY SELECT false, false, NULL::TEXT;');
+    });
+
+    it('fails closed on ownership, hardening, policy and ACL drift', () => {
+      const text = sql();
+      expect(text).toMatch(/migration 097: unified callback must be owned by jale_twilio_callback, SECURITY DEFINER/);
+      expect(text).toMatch(/migration 097: job_message_outbox SID correlation index is missing/);
+      expect(text).toMatch(/migration 097: job_message_outbox Twilio callback RLS policies missing/);
+      expect(text).toMatch(/migration 097: jale_twilio_callback must hold column-scoped privileges only/);
+      expect(text).toMatch(/migration 097: jale_twilio_callback holds unexpected job_message_outbox column privileges/);
+      expect(text).toMatch(/migration 097: unified callback execute ACL drift/);
+      expect(text).toContain('information_schema.column_privileges');
+      expect(text).toMatch(/proconfig @> ARRAY\['search_path=pg_catalog, pg_temp'\]/);
+      expect(text).toMatch(/prosecdef/);
     });
   });
 });
