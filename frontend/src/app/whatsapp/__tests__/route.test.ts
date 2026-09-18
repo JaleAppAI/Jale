@@ -26,17 +26,17 @@ describe('GET /whatsapp', () => {
   it('307-redirects to wa.me with the default (Spanish) prefilled text', async () => {
     const res = await GET(request('/whatsapp'));
     expect(res.status).toBe(307);
-    expect(res.headers.get('Location')).toBe(`https://wa.me/${TEST_NUMBER}?text=Trabajos`);
+    expect(res.headers.get('Location')).toBe(`https://wa.me/${TEST_NUMBER}?text=Hola`);
   });
 
   it('uses the English prefilled text for ?lang=en', async () => {
     const res = await GET(request('/whatsapp?lang=en'));
-    expect(res.headers.get('Location')).toBe(`https://wa.me/${TEST_NUMBER}?text=Jobs`);
+    expect(res.headers.get('Location')).toBe(`https://wa.me/${TEST_NUMBER}?text=Hello`);
   });
 
   it('falls back to the default text for an unrecognized ?lang', async () => {
     const res = await GET(request('/whatsapp?lang=fr'));
-    expect(res.headers.get('Location')).toBe(`https://wa.me/${TEST_NUMBER}?text=Trabajos`);
+    expect(res.headers.get('Location')).toBe(`https://wa.me/${TEST_NUMBER}?text=Hola`);
   });
 
   it('sets Cache-Control: no-store on the redirect', async () => {

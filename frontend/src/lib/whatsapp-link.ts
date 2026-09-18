@@ -4,8 +4,8 @@
 // WHATSAPP_BUSINESS_NUMBER (see that route) and must never be duplicated
 // here.
 //
-// `?lang=en` tells the route to prefill "Jobs" instead of the Spanish
-// default "Trabajos" -- see the route's own lang handling.
+// `?lang=en` tells the route to prefill the English greeting "Hello" instead
+// of the Spanish default "Hola" -- see the route's own lang handling.
 export function whatsappHref(locale: string): string {
   return locale === 'en' ? '/whatsapp?lang=en' : '/whatsapp';
 }
