@@ -34,9 +34,11 @@ BEGIN;
 -- ------------------------------------------------------------
 -- 1. Correlation index. The callback looks rows up by SID; without this the
 --    third branch would seq-scan the outbox on every Twilio callback.
---    Deliberately NOT unique: unlike whatsapp_outbox there is no uniqueness
---    invariant on this column (a retried send can reuse a row and a replaced
---    row can carry an older SID), so the lookup below orders explicitly.
+--    Deliberately NOT unique, unlike whatsapp_outbox's: nothing in the schema
+--    enforces one row per SID. In practice a SID is unique -- job-messaging.ts
+--    stamps exactly one Twilio SID onto exactly one outbox row, keyed by id,
+--    and Twilio SIDs are globally unique -- so the lookup below takes LIMIT 1
+--    and does not need a tiebreak column in the helper's SELECT grant.
 -- ------------------------------------------------------------
 CREATE INDEX IF NOT EXISTS idx_job_message_outbox_twilio_message_sid
   ON public.job_message_outbox (twilio_message_sid)
@@ -53,11 +55,7 @@ CREATE INDEX IF NOT EXISTS idx_job_message_outbox_twilio_message_sid
 --    blocks, including WITH CHECK (true) on the UPDATE policy.
 -- ------------------------------------------------------------
 REVOKE ALL ON public.job_message_outbox FROM jale_twilio_callback;
--- created_at is in the SELECT list because the correlation lookup below has
--- to pick the NEWEST row deterministically when a SID was ever reused; the
--- index is not unique, and an unordered LIMIT 1 would be a coin flip.
-GRANT SELECT (id, message_id, send_kind, status, twilio_message_sid,
-              last_error, created_at),
+GRANT SELECT (id, message_id, send_kind, status, twilio_message_sid, last_error),
       UPDATE (status, last_error)
   ON public.job_message_outbox TO jale_twilio_callback;
 DROP POLICY IF EXISTS job_outbox_twilio_callback_select ON public.job_message_outbox;
@@ -135,13 +133,14 @@ BEGIN
   END IF;
 
   -- Branch 3 (097): the templated employer -> worker invite. The SID lives on
-  -- job_message_outbox and NOWHERE else, by design -- see the header. Take the
-  -- newest row if a SID was ever reused; the index is not unique.
+  -- job_message_outbox and NOWHERE else, by design -- see the header. LIMIT 1
+  -- because the index is not declared unique even though a SID is unique in
+  -- practice; if that ever stopped holding, either row answers the only
+  -- question the callback asks ("is this SID ours?") the same way.
   SELECT o.id, o.message_id, o.status
     INTO v_outbox_id, v_outbox_message_id, v_outbox_status
     FROM public.job_message_outbox o
    WHERE o.twilio_message_sid = p_twilio_message_sid
-   ORDER BY o.created_at DESC, o.id DESC
    LIMIT 1
    FOR UPDATE;
 
@@ -264,8 +263,7 @@ BEGIN
      AND cp.grantee = 'jale_twilio_callback'
      AND NOT (
        (cp.privilege_type = 'SELECT' AND cp.column_name IN
-          ('id', 'message_id', 'send_kind', 'status', 'twilio_message_sid',
-           'last_error', 'created_at'))
+          ('id', 'message_id', 'send_kind', 'status', 'twilio_message_sid', 'last_error'))
        OR
        (cp.privilege_type = 'UPDATE' AND cp.column_name IN ('status', 'last_error'))
      );

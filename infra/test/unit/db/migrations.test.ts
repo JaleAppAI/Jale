@@ -1817,8 +1817,7 @@ describe('database migrations', () => {
       // self-audit at the bottom of the file asserts.
       expect(text).toContain('REVOKE ALL ON public.job_message_outbox FROM jale_twilio_callback;');
       expect(text).toContain(
-        'GRANT SELECT (id, message_id, send_kind, status, twilio_message_sid,\n'
-        + '              last_error, created_at),\n'
+        'GRANT SELECT (id, message_id, send_kind, status, twilio_message_sid, last_error),\n'
         + '      UPDATE (status, last_error)\n'
         + '  ON public.job_message_outbox TO jale_twilio_callback;',
       );

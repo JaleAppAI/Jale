@@ -218,6 +218,18 @@ maybeDescribe('migration 097 Twilio callbacks correlate through job_message_outb
         'SELECT id FROM job_message_outbox WHERE id = $1', [templateOutboxId],
       );
       expect(visible.rowCount).toBe(0);
+      // Pin WHY that is zero rows and not an error: 025 really does grant
+      // jale_whatsapp table-wide SELECT/UPDATE here, so the ONLY thing
+      // standing between the callback role and the row is FORCE RLS plus a
+      // worker-keyed policy. If a future fixture sets app.current_internal_
+      // user_id, this assertion must not silently become vacuous.
+      const grant = await client.query<{ body_select: boolean; row_update: boolean }>(
+        `SELECT has_column_privilege(current_user, 'public.job_message_outbox', 'body', 'SELECT')
+                  AS body_select,
+                has_column_privilege(current_user, 'public.job_message_outbox', 'status', 'UPDATE')
+                  AS row_update`,
+      );
+      expect(grant.rows[0]).toEqual({ body_select: true, row_update: true });
     } finally {
       await client.query('ROLLBACK');
     }
@@ -243,7 +255,6 @@ maybeDescribe('migration 097 Twilio callbacks correlate through job_message_outb
         ORDER BY privilege_type, column_name`,
     );
     expect(acl.rows).toEqual([
-      { column_name: 'created_at', privilege_type: 'SELECT' },
       { column_name: 'id', privilege_type: 'SELECT' },
       { column_name: 'last_error', privilege_type: 'SELECT' },
       { column_name: 'message_id', privilege_type: 'SELECT' },
