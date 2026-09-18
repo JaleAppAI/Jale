@@ -12,8 +12,8 @@
 -- then at job_conversation_messages.twilio_message_sid, so every Twilio status
 -- callback for a templated employer message came back matched=false: the
 -- status-callback Lambda then logged WhatsAppStatusCallbackUnknownSid and
--- returned a retryable 503, which pages an alarm and makes Twilio retry
--- forever. This migration adds job_message_outbox as a third correlation
+-- returned a retryable 503, which pages an alarm and makes Twilio retry the
+-- callback. This migration adds job_message_outbox as a third correlation
 -- source so those callbacks are matched (and a terminal failure is recorded)
 -- without changing either of the first two branches.
 --
