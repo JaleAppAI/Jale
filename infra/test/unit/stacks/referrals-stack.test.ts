@@ -758,6 +758,33 @@ describe('ReferralsStack', () => {
     });
   });
 
+  // A never-seeded secret is a configuration state: it gets a metric (so a
+  // dashboard can show it) but deliberately NO alarm -- the shared Skipped
+  // alarm sat in ALARM every cycle for five weeks in production because of it.
+  test('publishes VisibilityOutboxDrainUnconfigured as a MetricFilter with NO alarm attached', () => {
+    template.hasResourceProperties('AWS::Logs::MetricFilter', {
+      FilterPattern: '"VisibilityOutboxDrainUnconfigured"',
+      MetricTransformations: [
+        { MetricNamespace: 'Jale/Referrals', MetricName: 'VisibilityOutboxDrainUnconfigured', MetricValue: '1' },
+      ],
+    });
+    const alarmsOnUnconfigured = template.findResources('AWS::CloudWatch::Alarm', {
+      Properties: { MetricName: 'VisibilityOutboxDrainUnconfigured' },
+    });
+    expect(Object.keys(alarmsOnUnconfigured)).toHaveLength(0);
+    const alarmsNamedUnconfigured = template.findResources('AWS::CloudWatch::Alarm', {
+      Properties: { AlarmName: 'VisibilityOutboxDrainUnconfigured' },
+    });
+    expect(Object.keys(alarmsNamedUnconfigured)).toHaveLength(0);
+  });
+
+  test('the Skipped alarm description names the OAuth-failure case only, not a missing secret', () => {
+    const alarms = template.findResources('AWS::CloudWatch::Alarm', { Properties: { AlarmName: 'VisibilityOutboxDrainSkipped' } });
+    const [alarm] = Object.values(alarms) as any[];
+    expect(alarm.Properties.AlarmDescription).toMatch(/OAuth/);
+    expect(alarm.Properties.AlarmDescription).not.toMatch(/fires every cycle by design/);
+  });
+
   test('creates the permanent-failure alarm on the Jale/Referrals EMF metric', () => {
     template.hasResourceProperties('AWS::CloudWatch::Alarm', {
       AlarmName: 'VisibilityOutboxDrainPermanentFailures',
