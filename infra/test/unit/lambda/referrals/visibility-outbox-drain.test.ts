@@ -82,6 +82,26 @@ describe('visibility-outbox-drain', () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
+  // A never-seeded secret is a configuration STATE, not a fault. It must log
+  // the unalarmed `VisibilityOutboxDrainUnconfigured` metric -- NOT
+  // `VisibilityOutboxDrainSkipped`, whose alarm sat in ALARM every 5-minute
+  // cycle from 2026-08-14 to 2026-09-22 because production was never seeded.
+  it('logs VisibilityOutboxDrainUnconfigured (never ...Skipped) when the secret is missing', async () => {
+    mockGetKey.mockResolvedValue(null);
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    const errSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await handler();
+
+    const lines = [...logSpy.mock.calls, ...errSpy.mock.calls].map((c) => String(c[0]));
+    const unconfigured = lines.filter((l) => l.includes('VisibilityOutboxDrainUnconfigured'));
+    expect(unconfigured).toHaveLength(1);
+    expect(JSON.parse(unconfigured[0])).toEqual({ metric: 'VisibilityOutboxDrainUnconfigured', reason: 'missing_secret' });
+    expect(lines.some((l) => l.includes('VisibilityOutboxDrainSkipped'))).toBe(false);
+    logSpy.mockRestore();
+    errSpy.mockRestore();
+  });
+
   it('exits cleanly when PUBLIC_SITE_BASE_URL is unset', async () => {
     delete (process.env as any).PUBLIC_SITE_BASE_URL;
     const res = await handler();
@@ -241,6 +261,26 @@ describe('visibility-outbox-drain', () => {
     const res = await handler();
     expect(res).toEqual({ sent: 0, pendingRetry: 0, failed: 0, haltedOnQuota: false });
     expect(mockFetch).toHaveBeenCalledTimes(1); // only the token exchange attempt
+  });
+
+  // Credentials that exist but are rejected ARE the alarmed case: this is
+  // the only path that may still log `VisibilityOutboxDrainSkipped`.
+  it('logs VisibilityOutboxDrainSkipped with reason oauth_failed (and never ...Unconfigured) when the token exchange fails', async () => {
+    const pool = makePool([makeRow()]);
+    mockGetDbPool.mockResolvedValue(pool);
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 401, json: async () => ({}) });
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    const errSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await handler();
+
+    const lines = [...logSpy.mock.calls, ...errSpy.mock.calls].map((c) => String(c[0]));
+    const skipped = lines.filter((l) => l.includes('VisibilityOutboxDrainSkipped'));
+    expect(skipped).toHaveLength(1);
+    expect(JSON.parse(skipped[0])).toEqual({ metric: 'VisibilityOutboxDrainSkipped', reason: 'oauth_failed' });
+    expect(lines.some((l) => l.includes('VisibilityOutboxDrainUnconfigured'))).toBe(false);
+    logSpy.mockRestore();
+    errSpy.mockRestore();
   });
 
   // ── Change 2: EMF metric on permanent failure ──

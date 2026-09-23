@@ -191,6 +191,40 @@ describe('CreateAuthChallenge Lambda', () => {
     await expect(handler(event)).rejects.toThrow('Missing phone_number');
   });
 
+  // Defense in depth for `preventUserExistenceErrors: true`: if Cognito ever
+  // reaches this trigger for an unknown user (define-auth-challenge fails
+  // them first), it must neither send an SMS nor throw -- the throw is what
+  // produced the WorkerOtpSendErrors Lambda error on 2026-09-22.
+  it('userNotFound: sends nothing, throws nothing, returns an unanswerable challenge and emits WorkerOtpUserNotFound', async () => {
+    const event = baseEvent([]);
+    (event.request as any).userNotFound = true;
+    event.request.userAttributes = {} as any;
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    const result = await handler(event);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mockDynamoSend).not.toHaveBeenCalled();
+    expect(mockSecretsSend).not.toHaveBeenCalled();
+    // A well-formed challenge so Cognito's flow shape is unchanged for a
+    // caller probing for existence; the private answer is random and never sent.
+    expect(result.response.privateChallengeParameters?.otp).toMatch(/^\d{6}$/);
+    expect(result.response.publicChallengeParameters?.hint).toBe('SMS sent to ***');
+    expect(result.response.challengeMetadata).toBe(result.response.privateChallengeParameters?.otp);
+    const emitted = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(emitted).toContain('WorkerOtpUserNotFound');
+    logSpy.mockRestore();
+  });
+
+  it('a REAL user with no phone_number attribute still throws (misconfiguration must stay visible)', async () => {
+    const event = baseEvent([]);
+    (event.request as any).userNotFound = false;
+    event.request.userAttributes = {} as any;
+
+    await expect(handler(event)).rejects.toThrow('Missing phone_number');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('does not leak the OTP into publicChallengeParameters', async () => {
     const event = baseEvent([]);
     const result = await handler(event);
