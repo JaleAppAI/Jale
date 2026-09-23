@@ -1022,6 +1022,20 @@ export class WhatsAppStack extends cdk.Stack {
       releaseFailureMetric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
     ).addAlarmAction(alarmAction);
 
+    // Deterministic release failure: the worker row has neither
+    // `whatsapp_number` nor `phone`, so the drain marks the event terminal on
+    // the FIRST attempt (domain-outbox-drain.ts RELEASE_RECIPIENT_UNAVAILABLE_ERROR)
+    // instead of retrying to the cap. Its own alarm so the page names the
+    // actual problem -- and so WhatsAppReleaseFailures / WhatsAppDomainEventsStuck
+    // stay reserved for transient faults that exhausted their retries.
+    const releaseRecipientUnavailableMetric = drainMetricFilter(
+      'WhatsAppReleaseRecipientUnavailableMetric', 'WhatsAppReleaseRecipientUnavailable', 'ReleaseRecipientUnavailable',
+    );
+    alarm(
+      'WhatsAppReleaseRecipientUnavailableAlarm', 'WhatsAppReleaseRecipientUnavailable',
+      releaseRecipientUnavailableMetric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+    ).addAlarmAction(alarmAction);
+
     // Lane C2: symmetric with WhatsAppReleaseFailures — surfaces transient
     // assessment.requested → TrustScorer SQS dispatch failures (emitted by the
     // drain on any dispatch/completion error) before they retry to the
