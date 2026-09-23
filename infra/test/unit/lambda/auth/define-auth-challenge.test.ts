@@ -30,6 +30,37 @@ describe('DefineAuthChallenge Lambda', () => {
     expect(result.response.failAuthentication).toBe(false);
   });
 
+  // `preventUserExistenceErrors: true` (lib/constructs/cognito-pool.ts) makes
+  // Cognito run this trigger for an UNKNOWN phone too, with `userNotFound:
+  // true` and empty userAttributes. It must fail authentication right here:
+  // letting it fall through to CUSTOM_CHALLENGE invoked CreateAuthChallenge,
+  // which threw on the missing phone_number attribute and paged
+  // WorkerOtpSendErrors (2026-09-22).
+  it('fails authentication immediately, with no challenge, when the user does not exist', async () => {
+    const event = baseEvent([]);
+    (event.request as any).userNotFound = true;
+    (event.request as any).userAttributes = {};
+
+    const result = await handler(event);
+
+    expect(result.response.failAuthentication).toBe(true);
+    expect(result.response.issueTokens).toBe(false);
+    expect(result.response.challengeName).toBeUndefined();
+  });
+
+  it('userNotFound wins even when a session is present (never issues tokens or a retry challenge for a missing user)', async () => {
+    const event = baseEvent([
+      { challengeName: 'CUSTOM_CHALLENGE', challengeResult: true, challengeMetadata: '123456' },
+    ]);
+    (event.request as any).userNotFound = true;
+
+    const result = await handler(event);
+
+    expect(result.response.failAuthentication).toBe(true);
+    expect(result.response.issueTokens).toBe(false);
+    expect(result.response.challengeName).toBeUndefined();
+  });
+
   it('issues tokens when last challenge succeeded', async () => {
     const event = baseEvent([
       {
