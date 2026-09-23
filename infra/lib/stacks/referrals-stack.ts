@@ -452,11 +452,21 @@ export class ReferralsStack extends cdk.Stack {
       visibilityOutboxDrainLambda.function.metricErrors({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
     );
 
-    // 2. Deliberate skip paths -- missing/malformed secret or failed OAuth
-    // exchange -- both already log `{"metric":"VisibilityOutboxDrainSkipped"}`;
-    // this MetricFilter (same idiom as AiStack's TrustScorerFailures /
-    // WhatsAppStack's CallbackErrors) turns that log line into an alarmable
-    // metric without any Lambda code change.
+    // 2. Deliberate skip paths. The handler distinguishes two:
+    //
+    //    - `VisibilityOutboxDrainUnconfigured` (secret missing/malformed): a
+    //      configuration STATE. Published as a metric below so a dashboard can
+    //      show it, but deliberately NOT alarmed -- the secret is seeded
+    //      out-of-band and production ran unseeded from 2026-08-14 to
+    //      2026-09-22, which kept the shared alarm in ALARM every 5-minute
+    //      cycle for five weeks and hid the case the alarm is for.
+    //    - `VisibilityOutboxDrainSkipped` (OAuth exchange failed): credentials
+    //      that exist but do not work -- rotated, revoked, or wrong -- the
+    //      "secret breaks and the drain silently no-ops" case. Alarmed.
+    //
+    // Both MetricFilters use the same idiom as AiStack's TrustScorerFailures /
+    // WhatsAppStack's CallbackErrors: the log line becomes an alarmable metric
+    // without any Lambda code change.
     //
     // LITERAL term pattern, NOT `logs.FilterPattern.stringValue('$.metric',
     // ...)`: a JSON selector only matches events that are themselves valid
@@ -464,6 +474,14 @@ export class ReferralsStack extends cdk.Stack {
     // with `timestamp<TAB>requestId<TAB>LEVEL<TAB>`, so the selector this used
     // to carry matched nothing at all. See notifications-stack.ts:260 and
     // test/unit/stacks/metric-filter-patterns.test.ts.
+    new logs.MetricFilter(this, 'VisibilityOutboxDrainUnconfiguredMetric', {
+      logGroup: visibilityOutboxDrainLambda.logGroup,
+      filterPattern: logs.FilterPattern.literal('"VisibilityOutboxDrainUnconfigured"'),
+      metricNamespace: 'Jale/Referrals',
+      metricName: 'VisibilityOutboxDrainUnconfigured',
+      metricValue: '1',
+    });
+
     const skippedMetric = new logs.MetricFilter(this, 'VisibilityOutboxDrainSkippedMetric', {
       logGroup: visibilityOutboxDrainLambda.logGroup,
       filterPattern: logs.FilterPattern.literal('"VisibilityOutboxDrainSkipped"'),
@@ -474,8 +492,9 @@ export class ReferralsStack extends cdk.Stack {
     referralsAlarm(
       'VisibilityOutboxDrainSkippedAlarm',
       'VisibilityOutboxDrainSkipped',
-      'visibility-outbox-drain skipped a cycle -- Google service-account secret missing/malformed or OAuth exchange failed. '
-        + 'In an environment where the secret has never been seeded, this fires every cycle by design.',
+      'visibility-outbox-drain skipped a cycle because the Google Indexing OAuth exchange failed -- the '
+        + 'jale/referrals/google-indexing-key secret exists but its credentials were rejected (rotated, revoked or wrong). '
+        + 'A never-seeded secret is the separate, unalarmed VisibilityOutboxDrainUnconfigured metric.',
       skippedMetric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
     );
 

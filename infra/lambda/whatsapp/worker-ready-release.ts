@@ -671,12 +671,29 @@ export async function releaseWorkerReady(
 
   let released = 0;
   if (renderPlan.length > 0) {
+    // Recipient resolution mirrors every other worker-facing send path
+    // (`loadVerifiedRecipient` in lib/onboarding-renderers.ts,
+    // application-stage-notify.ts, lib/job-messaging.ts): `whatsapp_number`
+    // first, then `users.phone`. `whatsapp_number` is only ever written when
+    // a conversation is BOUND (migrations 047/053/087) -- a worker who
+    // finished the phone-only WEB onboarding (Sprint 22 R2, migration 086)
+    // has `phone` set by `reconcile_worker_signup` and `whatsapp_number`
+    // NULL until they first message WhatsApp. Reading `whatsapp_number`
+    // alone made every web-only worker.ready release throw
+    // `worker_whatsapp_unavailable`, retry to the cap and page
+    // WhatsAppReleaseFailures + WhatsAppDomainEventsStuck (2026-09-22).
+    // NULLIF guards the '' a signup can leave behind (worker-web-signup.ts
+    // passes '' through reconcile_worker_signup's NULLIF/COALESCE).
     const recipientResult = await client.query<{ whatsapp_number: string | null }>(
-      `SELECT whatsapp_number FROM users WHERE id = $1`,
+      `SELECT COALESCE(NULLIF(whatsapp_number, ''), NULLIF(phone, '')) AS whatsapp_number
+         FROM users WHERE id = $1`,
       [workerId],
     );
     const whatsappNumber = recipientResult.rows[0]?.whatsapp_number;
     if (!whatsappNumber) {
+      // Deterministic: neither column carries a number, so a retry cannot
+      // succeed. domain-outbox-drain.ts treats this message as terminal
+      // (no backoff/retry loop, its own metric) -- keep the string stable.
       throw new Error('worker_whatsapp_unavailable');
     }
 

@@ -274,6 +274,72 @@ describe('domain-outbox-drain', () => {
     expect(stuckLines.length).toBeGreaterThanOrEqual(1);
   });
 
+  // 2026-09-22: a web-only worker (users.phone set, whatsapp_number NULL)
+  // made releaseWorkerReady throw `worker_whatsapp_unavailable` on every one
+  // of five attempts; the drain retried a condition a retry cannot change and
+  // paged WhatsAppReleaseFailures, then WhatsAppDomainEventsStuck. The
+  // release now falls back to `phone`; this pins how the drain treats the
+  // residual "no number at all" case -- terminal on the first attempt, its
+  // own metric, none of the transient-fault ones.
+  it('marks a worker_whatsapp_unavailable release terminal on the FIRST attempt with its own metric -- no backoff row, no WhatsAppReleaseFailure, no WhatsAppDomainEventStuck', async () => {
+    const event = makeEvent({ attempts: 0 });
+    const calls = scriptClient({ readyRows: [event] });
+    mockReleaseWorkerReady.mockRejectedValue(new Error('worker_whatsapp_unavailable'));
+
+    const result = await runDrain(fakePool, { renderer: { render: jest.fn() }, now: () => NOW });
+
+    expect(result.failed).toBe(1);
+    expect(result.completed).toBe(0);
+
+    // The transaction that failed was rolled back before the failure was recorded.
+    const rollbackIdx = calls.findIndex((c) => /^ROLLBACK$/.test(c.sql));
+    expect(rollbackIdx).toBeGreaterThanOrEqual(0);
+
+    // Terminal: status='failed' with attempts=1 on the very first failure,
+    // guarded by the same status='processing' AND lease_token predicate as
+    // the capped path -- and NO status='pending' backoff UPDATE at all.
+    const terminalUpdate = calls.find((c) =>
+      /UPDATE worker_domain_outbox/.test(c.sql) && /status\s*=\s*'failed'/.test(c.sql));
+    expect(terminalUpdate).toBeDefined();
+    expect(terminalUpdate!.params).toEqual(
+      expect.arrayContaining([event.event_key, 1, 'worker_whatsapp_unavailable', event.lease_token]),
+    );
+    expect(terminalUpdate!.sql).toMatch(/status\s*=\s*'processing'/);
+    expect(terminalUpdate!.sql).toMatch(/lease_token\s*=\s*\$4/);
+    const backoffUpdate = calls.find((c) =>
+      /UPDATE worker_domain_outbox/.test(c.sql) && /status\s*=\s*'pending'/.test(c.sql));
+    expect(backoffUpdate).toBeUndefined();
+
+    // Exactly one metric line, naming the actual condition.
+    const recipientLines = logLines.filter((l) => l.includes('WhatsAppReleaseRecipientUnavailable'));
+    expect(recipientLines).toHaveLength(1);
+    expect(JSON.parse(recipientLines[0])).toEqual({
+      metric: 'WhatsAppReleaseRecipientUnavailable',
+      event_type: 'worker.ready',
+    });
+    expect(logLines.some((l) => l.includes('WhatsAppReleaseFailure'))).toBe(false);
+    expect(logLines.some((l) => l.includes('WhatsAppDomainEventStuck'))).toBe(false);
+    // Strict PII policy: never the error text, never an id, in a log line.
+    for (const line of logLines) {
+      expect(line).not.toContain(WORKER_ID);
+      expect(line).not.toContain(event.event_key);
+    }
+  });
+
+  it('a transient release error (anything NOT in the non-retryable set) still takes the backoff path', async () => {
+    const event = makeEvent({ attempts: 0 });
+    const calls = scriptClient({ readyRows: [event] });
+    mockReleaseWorkerReady.mockRejectedValue(new Error('connection reset'));
+
+    await runDrain(fakePool, { renderer: { render: jest.fn() }, now: () => NOW });
+
+    const backoffUpdate = calls.find((c) =>
+      /UPDATE worker_domain_outbox/.test(c.sql) && /status\s*=\s*'pending'/.test(c.sql));
+    expect(backoffUpdate).toBeDefined();
+    expect(logLines.some((l) => l.includes('WhatsAppReleaseFailure'))).toBe(true);
+    expect(logLines.some((l) => l.includes('WhatsAppReleaseRecipientUnavailable'))).toBe(false);
+  });
+
   it('sets RLS context before the resolve SELECT and the terminal UPDATE on the assessment.requested completion path too', async () => {
     const event = makeEvent({
       id: 'a-1',

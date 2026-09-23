@@ -27,6 +27,24 @@ export const handler = async (
   let otp: string;
   const session = event.request.session;
 
+  // Defense in depth for `preventUserExistenceErrors: true`: Cognito invokes
+  // the custom-auth triggers for an UNKNOWN user too, with
+  // `request.userNotFound = true` and empty userAttributes. define-auth-challenge
+  // fails authentication before this trigger runs, so this branch is only
+  // reached if that routing ever regresses. It must never send an SMS (there
+  // is no verified recipient) and must not throw (a Lambda error here is what
+  // paged WorkerOtpSendErrors on 2026-09-22): it returns a challenge with a
+  // placeholder answer nobody holds, so verify-auth-challenge fails it, and
+  // emits a metric so the regression is visible.
+  if (event.request.userNotFound === true) {
+    emitOtpMetric('WorkerOtpUserNotFound');
+    otp = generateOtp();
+    event.response.publicChallengeParameters = { hint: 'SMS sent to ***' };
+    event.response.privateChallengeParameters = { otp };
+    event.response.challengeMetadata = otp;
+    return event;
+  }
+
   if (session.length > 0 && session[session.length - 1].challengeMetadata) {
     // Reuse OTP from previous challenge (stored in challengeMetadata)
     otp = session[session.length - 1].challengeMetadata as string;

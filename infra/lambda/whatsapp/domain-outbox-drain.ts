@@ -48,6 +48,30 @@ const BACKOFF_BASE_MS = 30 * 1000; // 30s
 const BACKOFF_CAP_MS = 30 * 60 * 1000; // 30min
 const BACKLOG_AGE_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24h
 
+/**
+ * `releaseWorkerReady` error message for a DETERMINISTIC condition of the
+ * worker's row, not a transient fault: the worker has neither
+ * `users.whatsapp_number` nor `users.phone` (worker-ready-release.ts).
+ * Retrying with backoff cannot change the outcome, so the drain marks the
+ * event terminal on the first occurrence instead of walking it to
+ * MAX_DOMAIN_EVENT_ATTEMPTS, and emits its own metric (not
+ * WhatsAppReleaseFailure / WhatsAppDomainEventStuck) so the alarm names the
+ * actual problem. `last_error` still records the message in the DB row for
+ * `scripts/replay-domain-event.ts`; a replay only helps once a number is on
+ * the row.
+ *
+ * The metric name is written as a literal on the `console.log` line in
+ * processWorkerReady (not looked up through a table) because
+ * test/unit/stacks/metric-filter-patterns.test.ts proves every MetricFilter
+ * term is logged by its Lambda by scanning for exactly that shape.
+ */
+const RELEASE_RECIPIENT_UNAVAILABLE_ERROR = 'worker_whatsapp_unavailable';
+
+function isReleaseRecipientUnavailable(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return message === RELEASE_RECIPIENT_UNAVAILABLE_ERROR;
+}
+
 type DomainEventType = 'worker.ready' | 'assessment.requested';
 
 interface LeasedDomainEventRow {
@@ -219,10 +243,20 @@ function emitBacklogAgedIfStale(event: LeasedDomainEventRow, now: Date): void {
  * current_setting('app.current_internal_user_id', true)`. `last_error` is
  * stored in the DB row only; it is never written to a log line.
  */
-async function markFailure(client: PoolClient, event: LeasedDomainEventRow, err: unknown): Promise<void> {
+async function markFailure(
+  client: PoolClient,
+  event: LeasedDomainEventRow,
+  err: unknown,
+  opts: { terminal?: boolean } = {},
+): Promise<void> {
   const message = err instanceof Error ? err.message : String(err);
   const attempts = event.attempts + 1;
-  const atCap = attempts >= MAX_DOMAIN_EVENT_ATTEMPTS;
+  // `terminal`: a non-retryable condition (see RELEASE_RECIPIENT_UNAVAILABLE_ERROR)
+  // goes straight to status='failed' on this attempt. The caller owns the
+  // metric for that path, so WhatsAppDomainEventStuck stays reserved for
+  // events that genuinely exhausted their retries.
+  const terminal = opts.terminal === true;
+  const atCap = terminal || attempts >= MAX_DOMAIN_EVENT_ATTEMPTS;
 
   await client.query('BEGIN');
   try {
@@ -258,7 +292,7 @@ async function markFailure(client: PoolClient, event: LeasedDomainEventRow, err:
     throw markErr;
   }
 
-  if (atCap) {
+  if (atCap && !terminal) {
     console.log(JSON.stringify({ metric: 'WhatsAppDomainEventStuck', event_type: event.event_type, attempts }));
   }
 }
@@ -268,7 +302,9 @@ async function markFailure(client: PoolClient, event: LeasedDomainEventRow, err:
  * aggregate_id (== workerId), call releaseWorkerReady exactly once, mark
  * the event completed, COMMIT — all in the same transaction, per the
  * binding contract locked by the C6 review. On any throw: ROLLBACK, emit
- * WhatsAppReleaseFailure, then markFailure() in its own transaction.
+ * WhatsAppReleaseFailure, then markFailure() in its own transaction — except
+ * for RELEASE_RECIPIENT_UNAVAILABLE_ERROR, which emits its own metric and is
+ * marked terminal on the first attempt.
  */
 async function processWorkerReady(
   client: PoolClient,
@@ -291,6 +327,14 @@ async function processWorkerReady(
     return true;
   } catch (err) {
     await client.query('ROLLBACK').catch(() => undefined);
+    if (isReleaseRecipientUnavailable(err)) {
+      // Deterministic row condition: one metric line naming it, straight to
+      // status='failed' -- never the retry/backoff loop, never the generic
+      // WhatsAppReleaseFailure or WhatsAppDomainEventStuck pages.
+      console.log(JSON.stringify({ metric: 'WhatsAppReleaseRecipientUnavailable', event_type: event.event_type }));
+      await markFailure(client, event, err, { terminal: true });
+      return false;
+    }
     console.log(JSON.stringify({ metric: 'WhatsAppReleaseFailure', event_type: event.event_type }));
     await markFailure(client, event, err);
     return false;

@@ -65,6 +65,8 @@ function scriptedClient(opts: {
   lifecycle?: string;
   preferredLanguage?: string;
   whatsappNumber?: string | null;
+  /** users.phone -- the fallback recipient for a web-only worker who never bound WhatsApp. */
+  phone?: string | null;
   maxExistingSequence?: number | null;
   /** job_ids the worker has already applied to (job_applications rows). */
   appliedJobIds?: string[];
@@ -230,8 +232,16 @@ function scriptedClient(opts: {
       return { rows: [{ max: opts.maxExistingSequence ?? null }] };
     }
 
-    if (/SELECT whatsapp_number FROM users/.test(sql)) {
-      return { rows: [{ whatsapp_number: opts.whatsappNumber ?? '+15125551234' }] };
+    // Recipient lookup: the SQL COALESCEs whatsapp_number over phone (NULLIF
+    // '' on both), so the fake applies the same rule to the two fixture
+    // columns. `whatsappNumber` undefined keeps the historical default; an
+    // explicit null/'' means "never bound a WhatsApp conversation".
+    if (/COALESCE\(NULLIF\(whatsapp_number, ''\), NULLIF\(phone, ''\)\) AS whatsapp_number/.test(sql)
+      && /FROM users WHERE id = \$1/.test(sql)) {
+      const whatsapp = opts.whatsappNumber === undefined ? '+15125551234' : opts.whatsappNumber;
+      const phone = opts.phone ?? null;
+      const resolved = (whatsapp && whatsapp !== '') ? whatsapp : ((phone && phone !== '') ? phone : null);
+      return { rows: [{ whatsapp_number: resolved }] };
     }
 
     if (/SELECT status FROM worker_message_intents WHERE id = \$1/.test(sql)) {
@@ -795,6 +805,84 @@ describe('releaseWorkerReady', () => {
     const onboardingIntents = [...finalIntents.values()].filter((i) => i.category === 'onboarding');
     expect(onboardingIntents).toHaveLength(1);
     expect(onboardingIntents[0].status).toBe('released');
+  });
+
+  // ── Recipient resolution (2026-09-22 incident) ──────────────────
+  //
+  // A worker who finished the phone-only WEB onboarding has `users.phone`
+  // but no `users.whatsapp_number` (that column is only written when a
+  // WhatsApp conversation is bound). The release used to read
+  // `whatsapp_number` alone and threw `worker_whatsapp_unavailable` for every
+  // such worker -- five retries, then WhatsAppReleaseFailures and
+  // WhatsAppDomainEventsStuck paged. Every other worker-facing send path
+  // already fell back to `phone`; this pins the release to the same rule.
+  describe('recipient resolution', () => {
+    it('releases to users.phone when whatsapp_number is NULL (web-only worker)', async () => {
+      const { client, outboxRows, intents: finalIntents } = scriptedClient({
+        eventStatus: 'processing',
+        intents: [],
+        whatsappNumber: null,
+        phone: '+15125550000',
+      });
+      const { render, requests } = recordingRenderer();
+
+      const result = await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+
+      expect(result).toEqual({ released: 1, expired: 0, superseded: 0, failed: 0 });
+      expect(requests.map((r) => r.kind)).toEqual(['onboarding_complete']);
+      expect(outboxRows).toHaveLength(1);
+      // whatsapp_outbox.whatsapp_number is the FIRST insert param.
+      expect(outboxRows[0].params[0]).toBe('+15125550000');
+      const onboardingIntents = [...finalIntents.values()].filter((i) => i.category === 'onboarding');
+      expect(onboardingIntents[0].status).toBe('released');
+    });
+
+    it('treats an empty-string whatsapp_number like NULL and still falls back to phone', async () => {
+      const { client, outboxRows } = scriptedClient({
+        eventStatus: 'processing',
+        intents: [],
+        whatsappNumber: '',
+        phone: '+15125550000',
+      });
+      const { render } = recordingRenderer();
+
+      await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+
+      expect(outboxRows).toHaveLength(1);
+      expect(outboxRows[0].params[0]).toBe('+15125550000');
+    });
+
+    it('prefers whatsapp_number over phone when both are present', async () => {
+      const { client, outboxRows } = scriptedClient({
+        eventStatus: 'processing',
+        intents: [],
+        whatsappNumber: '+15125551234',
+        phone: '+15125550000',
+      });
+      const { render } = recordingRenderer();
+
+      await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+
+      expect(outboxRows).toHaveLength(1);
+      expect(outboxRows[0].params[0]).toBe('+15125551234');
+    });
+
+    it('throws worker_whatsapp_unavailable -- the exact string the drain treats as terminal -- only when BOTH columns are empty', async () => {
+      const { client, outboxRows } = scriptedClient({
+        eventStatus: 'processing',
+        intents: [],
+        whatsappNumber: null,
+        phone: null,
+      });
+      const { render, requests } = recordingRenderer();
+
+      await expect(releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW }))
+        .rejects.toThrow('worker_whatsapp_unavailable');
+
+      // Nothing was rendered or written for a recipient that does not exist.
+      expect(requests).toHaveLength(0);
+      expect(outboxRows).toHaveLength(0);
+    });
   });
 
   // ── O2: release-time eligibility reload ──────────────────────────

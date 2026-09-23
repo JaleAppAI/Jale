@@ -197,9 +197,19 @@ export async function handler(): Promise<DrainResult> {
   const result: DrainResult = { sent: 0, pendingRetry: 0, failed: 0, haltedOnQuota: false };
 
   // Fail fast, before ever touching the DB, on missing configuration.
+  //
+  // This is a CONFIGURATION state, not a fault: the Google service-account
+  // secret (`jale/referrals/google-indexing-key`, seeded out-of-band -- see
+  // referrals-stack.ts) has not been created, or is unreadable/malformed. It
+  // gets its own metric, `VisibilityOutboxDrainUnconfigured`, which
+  // ReferralsStack publishes WITHOUT an alarm: from 2026-08-14 to 2026-09-22
+  // production had never been seeded, so the shared `VisibilityOutboxDrainSkipped`
+  // alarm sat in ALARM every five-minute cycle for five weeks, which both
+  // paged nobody useful and masked the case it exists for (credentials that
+  // WERE working and then broke -- the `oauth_failed` skip below).
   const key = await getGoogleIndexingServiceAccountKey();
   if (!key) {
-    console.log(JSON.stringify({ metric: 'VisibilityOutboxDrainSkipped', reason: 'missing_secret' }));
+    console.log(JSON.stringify({ metric: 'VisibilityOutboxDrainUnconfigured', reason: 'missing_secret' }));
     return result;
   }
 

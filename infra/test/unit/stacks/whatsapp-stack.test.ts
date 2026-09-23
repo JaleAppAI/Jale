@@ -871,6 +871,9 @@ describe('event-driven outbox wake queues', () => {
     test.each([
       ['WhatsAppDomainEventsStuck'],
       ['WhatsAppReleaseFailures'],
+      // 2026-09-22: deterministic "no recipient number" release failure gets
+      // its own page instead of retrying into the two alarms above.
+      ['WhatsAppReleaseRecipientUnavailable'],
       ['WhatsAppAssessmentDispatchFailures'],
       ['WhatsAppDeferredBacklogAge'],
       ['WhatsAppOtpLockRate'],
@@ -930,6 +933,12 @@ describe('event-driven outbox wake queues', () => {
       template.hasResourceProperties('AWS::Logs::MetricFilter', {
         MetricTransformations: Match.arrayWith([
           Match.objectLike({ MetricName: 'ReleaseFailures', MetricNamespace: 'Jale/WhatsApp' }),
+        ]),
+      });
+      template.hasResourceProperties('AWS::Logs::MetricFilter', {
+        FilterPattern: '"WhatsAppReleaseRecipientUnavailable"',
+        MetricTransformations: Match.arrayWith([
+          Match.objectLike({ MetricName: 'ReleaseRecipientUnavailable', MetricNamespace: 'Jale/WhatsApp' }),
         ]),
       });
       template.hasResourceProperties('AWS::Logs::MetricFilter', {
