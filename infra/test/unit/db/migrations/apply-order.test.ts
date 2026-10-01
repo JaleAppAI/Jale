@@ -106,6 +106,7 @@ const expectedBaselineMigrations = [
   '095_application_hire_ack.sql',
   '096_job_conversations_employer_read_backfill.sql',
   '097_twilio_callback_job_message_outbox.sql',
+  '098_admin_analytics_hires_and_delivery.sql',
 ];
 
 function migrationFiles(): string[] {

@@ -68,6 +68,10 @@ export type AuditEvent = {
 export type AnalyticsRange = '7d' | '30d' | '90d';
 export type AnalyticsBucket = 'day' | 'week';
 
+// Signups chart mode: 'total' plots the running account count, 'new' plots
+// accounts created per bucket.
+export type SignupsView = 'total' | 'new';
+
 export type AnalyticsTotals = {
   totalWorkers: number;
   totalEmployers: number;
@@ -76,6 +80,8 @@ export type AnalyticsTotals = {
   jobsPaused: number;
   jobsFilled: number;
   jobsClosed: number;
+  hiresTotal: number;
+  jobsWithHire: number;
 };
 
 export type SignupBucket = {

@@ -5,7 +5,7 @@
  * analytics functions introduced in migration 088 (admin console Analytics tab).
  *
  * Connection: set JALE_TEST_DATABASE_URL to a local Postgres 16 URL with the full
- * migration chain (001→089) already applied. When absent, the whole suite is
+ * migration chain (001→098) already applied. When absent, the whole suite is
  * explicitly skipped and the concern is logged (Rule 11: no silent skips).
  *
  * The URL must point to an already-migrated database (migrations are NOT applied
@@ -285,6 +285,124 @@ maybeDescribe('admin analytics definer functions', () => {
     await expect(asConsole(consoleUrl, (c) =>
       c.query(`SELECT * FROM admin_analytics_signups(now(), 'hour')`),
     )).rejects.toThrow(/admin_analytics_invalid_bucket/);
+  });
+
+  // 098: hires replace the 'filled' snapshot as the hiring signal.
+  it('totals count hires and jobs with at least one hire (098)', async () => {
+    const before = await asConsole(consoleUrl, async (c) =>
+      (await c.query('SELECT * FROM admin_analytics_totals()')).rows[0]);
+    expect(before).toHaveProperty('hires_total');
+    expect(before).toHaveProperty('jobs_with_hire');
+
+    const su = new Client({ connectionString: superUrl });
+    await su.connect();
+    let hireJobId: string | undefined;
+    let unhireJobId: string | undefined;
+    try {
+      // Two seats, one hire: sync_job_hired_counts (029) sets workers_hired = 1
+      // and leaves status 'active', so the hire shows in hires_total and
+      // jobs_with_hire while jobs_filled stays put -- the exact gap 098 closes.
+      hireJobId = (await su.query(
+        `INSERT INTO jobs (employer_id, title, location, job_type, status, number_of_workers_needed)
+         VALUES ($1, 'IT Analytics Hire Job', 'Austin', 'full-time', 'active', 2) RETURNING id`,
+        [employer1Id],
+      )).rows[0].id;
+      // A second job the same worker was hired on and then un-hired from:
+      // status is 'talking' (sync_job_hired_counts no longer counts it, so
+      // workers_hired and jobs_with_hire do not see it), but hired_at is kept
+      // (095: COALESCE(hired_at, now()) never clears a once-set hire date), so
+      // hires_total -- "applications ever hired" -- must still count it.
+      unhireJobId = (await su.query(
+        `INSERT INTO jobs (employer_id, title, location, job_type, status, number_of_workers_needed)
+         VALUES ($1, 'IT Analytics Unhire Job', 'Austin', 'full-time', 'active', 2) RETURNING id`,
+        [employer1Id],
+      )).rows[0].id;
+      // sync_job_hired_counts (029) is SECURITY DEFINER owned by jale_admin, and
+      // jobs is FORCE RLS with jobs_employer_update keyed on app.current_user_id
+      // (same gap application-hire-ack-095.integration.test.ts documents) -- with
+      // no GUC set the definer's own UPDATE matches zero rows and workers_hired
+      // silently stays 0. Set it to employer1's cognito_sub so the trigger's
+      // cascade actually lands.
+      await su.query(`SELECT set_config('app.current_user_id', $1, false)`, [subs[1]]);
+      await su.query(
+        `INSERT INTO job_applications (job_id, worker_id, status, hired_at) VALUES ($1, $2, 'hired', now())`,
+        [hireJobId, workerId],
+      );
+      await su.query(
+        `INSERT INTO job_applications (job_id, worker_id, status, hired_at)
+         VALUES ($1, $2, 'talking', now() - interval '1 day')`,
+        [unhireJobId, workerId],
+      );
+
+      const after = await asConsole(consoleUrl, async (c) =>
+        (await c.query('SELECT * FROM admin_analytics_totals()')).rows[0]);
+      expect(Number(after.hires_total)).toBe(Number(before.hires_total) + 2);
+      expect(Number(after.jobs_with_hire)).toBe(Number(before.jobs_with_hire) + 1);
+      expect(Number(after.jobs_filled)).toBe(Number(before.jobs_filled));
+    } finally {
+      if (hireJobId) await su.query('DELETE FROM jobs WHERE id = $1', [hireJobId]);
+      if (unhireJobId) await su.query('DELETE FROM jobs WHERE id = $1', [unhireJobId]);
+      await su.end();
+    }
+  });
+
+  // 098: the failures 089 missed. Measured as deltas so unrelated rows in the
+  // test database cannot make the assertions pass by accident.
+  it('delivery failures include send_unknown and undelivered; system rows are not outbound (098)', async () => {
+    const traffic = async () => {
+      const res = await asConsole(consoleUrl, (c) =>
+        c.query(`SELECT * FROM admin_analytics_message_traffic(now() - interval '7 days', 'day')`));
+      const sum = (key: string) => res.rows.reduce((n, r) => n + Number(r[key]), 0);
+      return {
+        waOutbound: sum('wa_outbound'),
+        waFailed: sum('wa_failed'),
+        jmOut: sum('job_messages_out'),
+        jmFailed: sum('job_messages_failed'),
+      };
+    };
+    const before = await traffic();
+
+    const su = new Client({ connectionString: superUrl });
+    await su.connect();
+    try {
+      const convId = (await su.query(
+        'SELECT id FROM job_conversations WHERE job_id = $1 LIMIT 1',
+        [jobActiveId],
+      )).rows[0].id;
+      // Ambiguous send (never retried) and a Twilio-reported undelivery on a
+      // row the app marked sent. Sequence 2 keeps UNIQUE(inbound_message_sid, sequence).
+      await su.query(
+        `INSERT INTO whatsapp_outbox (inbound_message_sid, sequence, whatsapp_number, body, status, created_at)
+         VALUES ($1, 2, '+15550001111', 'it-analytics out unknown', 'send_unknown', now() - interval '1 day')`,
+        [waSids[0]],
+      );
+      await su.query(
+        `INSERT INTO whatsapp_outbox (inbound_message_sid, sequence, whatsapp_number, body, status, twilio_delivery_status, created_at)
+         VALUES ($1, 2, '+15550001111', 'it-analytics out undelivered', 'sent', 'undelivered', now() - interval '1 day')`,
+        [waSids[1]],
+      );
+      await su.query(
+        `INSERT INTO job_conversation_messages (conversation_id, sender_type, direction, body, status, created_at) VALUES
+           ($1, 'employer', 'outbound', 'it-analytics undelivered', 'undelivered', now() - interval '1 day'),
+           ($1, 'system',   'outbound', 'it-analytics system',      'sent',        now() - interval '1 day')`,
+        [convId],
+      );
+
+      const after = await traffic();
+      expect(after.waOutbound).toBe(before.waOutbound + 2);
+      expect(after.waFailed).toBe(before.waFailed + 2); // send_unknown + Twilio undelivered
+      expect(after.jmFailed).toBe(before.jmFailed + 1); // in-app undelivered
+      expect(after.jmOut).toBe(before.jmOut + 1);       // employer row only; system row excluded
+    } finally {
+      await su.query(
+        'DELETE FROM whatsapp_outbox WHERE inbound_message_sid = ANY($1) AND sequence = 2',
+        [waSids],
+      );
+      await su.query(
+        `DELETE FROM job_conversation_messages WHERE body IN ('it-analytics undelivered', 'it-analytics system')`,
+      );
+      await su.end();
+    }
   });
 
   it('console role still cannot read source tables directly', async () => {

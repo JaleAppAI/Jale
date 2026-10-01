@@ -18,14 +18,19 @@ export function DeliveryHealth({ channels }: { channels: DeliveryChannel[] }) {
       <div className="chart-head" style={{ marginBottom: 14 }}>
         <div>
           <h2>Message delivery</h2>
-          <p>Sent this period, and how many failed</p>
+          <p>Sent this period, and how many failed or went unconfirmed</p>
         </div>
       </div>
       <div className="delivery-rows">
         {channels.map((channel) => {
           const total = channel.out + channel.in;
-          const delivered = Math.max(0, total - channel.failed);
-          const rate = percentOf(channel.failed, total, 1);
+          // The bar is outbound-only: failures are outbound rows, so weighing
+          // the delivered segment against total (out + in) understates the
+          // failed share. delivered = out − failed; the `|| 1` guard below
+          // still renders a full, non-failed bar when both are zero.
+          const delivered = Math.max(0, channel.out - channel.failed);
+          // Failures are outbound rows, so the rate is over outbound, not all traffic.
+          const rate = percentOf(channel.failed, channel.out, 1);
           return (
             <div key={channel.name} className="delivery-row">
               <div className="delivery-meta">
@@ -41,8 +46,8 @@ export function DeliveryHealth({ channels }: { channels: DeliveryChannel[] }) {
               </div>
               <div className="delivery-fail">
                 <FailIcon />
-                {channel.failed > 0 && rate
-                  ? `${formatCount(channel.failed)} failed · ${rate}`
+                {channel.failed > 0
+                  ? `${formatCount(channel.failed)} failed or unconfirmed${rate ? ` · ${rate} of outbound` : ''}`
                   : 'No failures'}
               </div>
             </div>

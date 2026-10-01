@@ -117,4 +117,14 @@ assert.equal(fmtLib.periodEndLabel({ ...base, status: 'past_due', currentPeriodE
 assert.equal(fmtLib.periodEndLabel({ ...base, cancelAtPeriodEnd: true, currentPeriodEnd: '2026-09-30T00:00:00.000Z' }), 'Cancels Sep 30');
 assert.equal(fmtLib.periodEndLabel(base), '—');
 
+// ---- cumulativeSeries ----
+assert.deepEqual(fmtLib.cumulativeSeries([1, 0, 2], 10), [8, 8, 10], 'baseline = total − window sum; the last point is the total');
+assert.deepEqual(fmtLib.cumulativeSeries([0, 0, 0], 5), [5, 5, 5], 'no signups → flat at the total, never zero');
+assert.deepEqual(fmtLib.cumulativeSeries([3, 4], 5), [3, 7], 'baseline clamps at 0 if the window outgrows the total');
+assert.deepEqual(fmtLib.cumulativeSeries([], 4), [], 'no buckets → no points');
+
+// ---- analyticsHref ----
+assert.equal(fmtLib.analyticsHref('30d', 'total'), '/analytics?range=30d', 'the default view is omitted from the URL');
+assert.equal(fmtLib.analyticsHref('90d', 'new'), '/analytics?range=90d&signups=new');
+
 console.log('check-chart-geometry: all assertions passed');
