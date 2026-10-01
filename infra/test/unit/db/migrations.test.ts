@@ -129,6 +129,7 @@ describe('database migrations', () => {
       '095',
       '096',
       '097',
+      '098',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -860,6 +861,47 @@ describe('database migrations', () => {
 
     // Forward-only: 087 must not try to edit or drop 086's objects.
     expect(sql).not.toMatch(/DROP FUNCTION/);
+  });
+
+  it('098 adds hire counts and honest delivery failures without widening the console role', () => {
+    const sql = fs.readFileSync(
+      path.join(migrationsDir, '098_admin_analytics_hires_and_delivery.sql'),
+      'utf8',
+    );
+
+    // Exactly the two changed definers, each hardened per 088/089. Line-anchored
+    // so header prose cannot inflate the counts.
+    expect(sql.match(/^SECURITY DEFINER$/gm)).toHaveLength(2);
+    expect(sql.match(/SET search_path = pg_catalog, pg_temp/g)).toHaveLength(2);
+    expect(sql.match(/^LANGUAGE plpgsql$/gm)).toHaveLength(2);
+    expect(
+      sql.match(/PERFORM set_config\('app\.admin_analytics_read', 'on', true\);/g),
+    ).toHaveLength(2);
+    expect(sql.match(/OWNER TO jale_admin;/g)).toHaveLength(2);
+    expect(sql.match(/REVOKE ALL ON FUNCTION public\.admin_analytics_\w+\([^)]*\) FROM PUBLIC;/g)).toHaveLength(2);
+    expect(sql.match(/GRANT EXECUTE ON FUNCTION public\.admin_analytics_\w+\([^)]*\) TO jale_admin_console;/g)).toHaveLength(2);
+    // Same escalation guard as 088/089: the two EXECUTE grants are the only
+    // statements naming the console role as a grantee.
+    expect(sql.match(/TO jale_admin_console/g)).toHaveLength(2);
+
+    // totals changes its return type, so it is the one drop; message_traffic
+    // keeps its signature and is replaced in place.
+    expect(sql.match(/DROP FUNCTION/g)).toHaveLength(1);
+    expect(sql).toContain('DROP FUNCTION public.admin_analytics_totals();');
+    expect(sql).toMatch(/hires_total\s+BIGINT/);
+    expect(sql).toMatch(/jobs_with_hire\s+BIGINT/);
+    expect(sql).toContain('hired_at IS NOT NULL');
+
+    // The corrected failure and outbound definitions.
+    expect(sql).toContain("o.status IN ('failed', 'send_unknown')");
+    expect(sql).toContain("o.twilio_delivery_status IN ('failed', 'undelivered')");
+    expect(sql).toContain("m.status IN ('failed', 'undelivered')");
+    expect(sql).toContain("m.sender_type <> 'system'");
+
+    // No new policies or table access: jobs, job_applications and
+    // job_conversation_messages are already gated by 089.
+    expect(sql).not.toMatch(/CREATE POLICY/);
+    expect(sql).not.toMatch(/GRANT\s+SELECT[\s\S]*?TO jale_admin_console/);
   });
 
   // Same reason as the 082/088/089 blocks above: on RDS there is no Jest, so
