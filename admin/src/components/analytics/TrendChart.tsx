@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import {
   areaPath,
   endPoint,
@@ -29,10 +30,15 @@ export type TrendChartProps = {
   width?: number;
   height?: number;
   tableCaption: string;
+  /** The last bucket is still in progress (today / this week): hollow end-dots, "(so far)" in the table. */
+  partialLast?: boolean;
+  /** Controls rendered first in the chart's tool row, e.g. a view toggle. */
+  tools?: ReactNode;
+  /** viewBox units reserved on the right for end-dot labels. Default 78; widen for longer labels. */
+  right?: number;
 };
 
 const LEFT = 40;
-const RIGHT = 78;
 const TOP = 20;
 const BOTTOM = 30;
 
@@ -44,8 +50,11 @@ export function TrendChart({
   width = 1188,
   height = 290,
   tableCaption,
+  partialLast = false,
+  tools,
+  right = 78,
 }: TrendChartProps) {
-  const plotW = width - LEFT - RIGHT;
+  const plotW = width - LEFT - right;
   const plotH = height - TOP - BOTTOM;
   const max = niceMax(series.flatMap((s) => s.values));
   const ticks = tickValues(max);
@@ -61,6 +70,7 @@ export function TrendChart({
           {subtitle ? <p>{subtitle}</p> : null}
         </div>
         <div className="chart-tools">
+          {tools}
           {series.length > 1 ? (
             <div className="chart-legend" aria-label="Legend">
               {series.map((s) => (
@@ -84,7 +94,7 @@ export function TrendChart({
               <tbody>
                 {labels.map((label, i) => (
                   <tr key={label}>
-                    <td>{label}</td>
+                    <td>{partialLast && i === labels.length - 1 ? `${label} (so far)` : label}</td>
                     {series.map((s) => <td key={s.key} className="num">{formatCount(s.values[i] ?? 0)}</td>)}
                   </tr>
                 ))}
@@ -128,7 +138,14 @@ export function TrendChart({
             const last = s.values[s.values.length - 1] ?? 0;
             return (
               <g key={`${s.key}-end`}>
-                <circle cx={end.x} cy={end.y} r={4} fill={s.color} stroke="#ffffff" strokeWidth={2} />
+                <circle
+                  cx={end.x}
+                  cy={end.y}
+                  r={4}
+                  fill={partialLast ? '#ffffff' : s.color}
+                  stroke={partialLast ? s.color : '#ffffff'}
+                  strokeWidth={2}
+                />
                 <text className="end-label" x={end.x + 10} y={end.y + 4}>{s.endLabel ?? formatCount(last)}</text>
               </g>
             );

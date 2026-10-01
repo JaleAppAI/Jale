@@ -72,6 +72,10 @@ assert.match(trend, /strokeWidth=\{?["']?2/, 'trend lines are 2px');
 assert.doesNotMatch(trend, /strokeDasharray/, 'gridlines are solid hairlines, never dashed');
 assert.match(column, /columnPaths\(/, 'columns use the shared geometry (≤24px, rounded caps)');
 
+assert.match(trend, /partialLast \? '#ffffff' : s\.color/, 'an in-progress last bucket draws a hollow end-dot (never a dashed line)');
+assert.match(trend, /\(so far\)/, 'the table twin marks the in-progress bucket');
+assert.match(trend, /\{tools\}/, 'charts accept a tools slot for view toggles');
+
 const kpi = read('src/components/analytics/KpiTile.tsx');
 const delivery = read('src/components/analytics/DeliveryHealth.tsx');
 const payingList = read('src/components/analytics/PayingEmployersList.tsx');
@@ -94,6 +98,18 @@ assert.match(analyticsPage, /className="kpi-strip"/, 'six KPI tiles sit in one s
 assert.match(analyticsPage, /requireAdminSession\(\)/, 'the page still gates on an admin session');
 assert.match(analyticsPage, /Promise\.all\(\[\s*getSignups/, 'the two-wave fetch (pool cap of 5) is preserved');
 assert.doesNotMatch(analyticsPage, /function bucketLabel/, 'bucketLabel moved to analytics-format');
+assert.match(analyticsPage, /cumulativeSeries\(/, 'signups default to a running total');
+assert.match(analyticsPage, /parseSignupsView\(/, 'the signups view comes from the URL');
+assert.match(analyticsPage, /analyticsHref\(/, 'range and view links preserve each other');
+assert.match(analyticsPage, /label="Hires"/, 'hires replace the filled-jobs snapshot');
+assert.doesNotMatch(analyticsPage, /label="Filled jobs"/, 'the filled-jobs tile is gone');
+assert.equal((analyticsPage.match(/<KpiTile /g) ?? []).length, 6, 'the KPI strip keeps exactly six tiles');
+assert.match(delivery, /failed or unconfirmed/, 'delivery failures are labeled honestly');
+assert.match(delivery, /percentOf\(channel\.failed, channel\.out/, 'the failure rate is a share of outbound messages');
+
+assert.match(trend, /right = 78/, 'TrendChart keeps the 78-unit default gutter and accepts a wider one');
+assert.match(analyticsPage, /right=\{130\}/, 'the Signups chart widens its label gutter');
+assert.doesNotMatch(analyticsPage, /so far/, 'New-view end labels are deltas, never a partial count');
 
 // --- Next 16 async request APIs -------------------------------------------
 // Next 16 removed the synchronous compatibility shim: cookies(), params and
