@@ -110,6 +110,7 @@ assert.match(delivery, /percentOf\(channel\.failed, channel\.out/, 'the failure 
 assert.match(trend, /right = 78/, 'TrendChart keeps the 78-unit default gutter and accepts a wider one');
 assert.match(analyticsPage, /right=\{130\}/, 'the Signups chart widens its label gutter');
 assert.doesNotMatch(analyticsPage, /so far/, 'New-view end labels are deltas, never a partial count');
+assert.match(css, /\.chart-tools \{[^}]*flex-wrap: wrap;/, 'chart tool rows wrap so a view toggle never widens the page on phones');
 
 // --- Next 16 async request APIs -------------------------------------------
 // Next 16 removed the synchronous compatibility shim: cookies(), params and
