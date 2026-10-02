@@ -1,45 +1,78 @@
-import Link from 'next/link';
-import { listVerificationRecords } from '@/lib/server/admin-verifications';
+import {
+  listIdentityLockouts,
+  lockoutOutcomeBadge,
+  lockoutOutcomeText,
+  LOCKOUT_WINDOW_DAYS,
+} from '@/lib/server/admin-lockouts';
 import { requireAdminSession } from '@/lib/server/session';
+
+function formatTime(value: string): string {
+  return new Date(value).toLocaleString();
+}
 
 export default async function VerificationsPage() {
   await requireAdminSession();
-  const { rows: verificationRecords, totalCount } = await listVerificationRecords();
+  const lockouts = await listIdentityLockouts();
+  const lockedOut = lockouts.filter((item) => item.kind === 'lockout');
+  const stuck = lockouts.filter((item) => item.kind === 'stuck');
 
   return (
     <main className="stack-gap">
       <section className="hero">
         <div className="meta">
-          <span className="badge verification">Verifications</span>
+          <span className="badge verification">Lockouts</span>
         </div>
-        <h1>Verification queue</h1>
+        <h1>Phone verification lockouts</h1>
+        <p className="muted" style={{ marginTop: 6 }}>
+          WhatsApp sign-up phone codes, last {LOCKOUT_WINDOW_DAYS} days. Web sign-up lockouts happen
+          inside Cognito and are not recorded here.
+        </p>
       </section>
 
       <section className="card stack-gap">
-        {verificationRecords.map((item) => (
-          <div className="verification-row" key={item.id}>
+        <h2>Locked out</h2>
+        {lockedOut.map((item) => (
+          <div className="verification-row" key={item.challengeId}>
             <div className="stack">
-              <strong>{item.subjectName}</strong>
-              <span className="muted">{item.subjectLabel}</span>
-              <span className="muted">{item.reason}</span>
+              <strong>{item.maskedPhone ?? 'Unknown number'}</strong>
+              <span className="muted">Started {formatTime(item.startedAt)}</span>
             </div>
             <div className="stack">
-              <span className="muted">Status</span>
-              <span className={`badge ${item.status}`}>{item.status.replace(/_/g, ' ')}</span>
-              <span className="muted">Step {item.step}</span>
+              <span className="muted">Outcome</span>
+              <span className={`badge ${lockoutOutcomeBadge(item.outcome)}`}>{lockoutOutcomeText(item)}</span>
             </div>
             <div className="stack">
-              <span className="muted">Contact</span>
-              <span>{item.maskedPhone ?? item.maskedEmail ?? 'Masked'}</span>
-              <span className="muted">Updated {new Date(item.updatedAt).toLocaleString()}</span>
+              <span className="muted">Lockouts</span>
+              <span>{item.lockoutCount}</span>
             </div>
-            <Link className="button" href={`/verifications/${item.id}`}>Review</Link>
+            <div className="stack">
+              <span className="muted">Last lockout</span>
+              <span>{formatTime(item.lastEventAt)}</span>
+            </div>
           </div>
         ))}
-        {verificationRecords.length === 0 ? <p className="muted">No verification records found.</p> : null}
-        {totalCount > verificationRecords.length ? (
-          <p className="muted">Showing {verificationRecords.length} of {totalCount}</p>
-        ) : null}
+        {lockedOut.length === 0 ? <p className="muted">No lockouts in the last {LOCKOUT_WINDOW_DAYS} days.</p> : null}
+      </section>
+
+      <section className="card stack-gap">
+        <h2>Stuck at the code step</h2>
+        {stuck.map((item) => (
+          <div className="verification-row" key={item.challengeId}>
+            <div className="stack">
+              <strong>{item.maskedPhone ?? 'Unknown number'}</strong>
+              <span className="muted">Started {formatTime(item.startedAt)}</span>
+            </div>
+            <div className="stack">
+              <span className="muted">Outcome</span>
+              <span className={`badge ${lockoutOutcomeBadge(item.outcome)}`}>{lockoutOutcomeText(item)}</span>
+            </div>
+            <div className="stack">
+              <span className="muted">Last activity</span>
+              <span>{formatTime(item.lastEventAt)}</span>
+            </div>
+          </div>
+        ))}
+        {stuck.length === 0 ? <p className="muted">No one is stuck at the code step.</p> : null}
       </section>
     </main>
   );

@@ -231,3 +231,96 @@ describe('handleOtpStep — a resent OTP whose SMS could not be sent', () => {
     }
   });
 });
+
+/**
+ * RESEND while the three-strike lock is still active.
+ *
+ * The verify path saves `status: 'locked', lockedUntil: now + 15 min`. A
+ * RESEND during that window used to issue a fresh Cognito code and then ask
+ * `save_worker_pre_auth` (042) to clear the lock, which it refuses ("active
+ * pre-auth lock cannot be cleared or reduced"): the transaction rolled back,
+ * SQS redelivered, every retry texted another code, and the record ended in
+ * the DLQ with no reply. The step must answer with the lock message and touch
+ * nothing.
+ */
+describe('handleOtpStep — RESEND while the lock is still active', () => {
+  const locked = (lockedUntil: Date, overrides: Partial<PreAuthState> = {}) =>
+    makePreAuth({ status: 'locked', attempts: 2, lockedUntil, ...overrides });
+
+  it('replies with the minutes left, issues no code, and persists nothing', async () => {
+    const issueChallenge = jest.fn();
+    const { deps, texts, prompts, savedPatches } = makeDeps(issueChallenge);
+
+    const result = await handleOtpStep(
+      client, makeSession(), makeMsg(), deps,
+      locked(new Date(NOW.getTime() + 10 * 60 * 1000)), PHONE_HASH, NOW,
+    );
+
+    expect(issueChallenge).not.toHaveBeenCalled();
+    expect(savedPatches).toEqual([]);
+    expect(prompts).toEqual([]);
+    expect(texts).toEqual([t('v2_otp_locked', 'es', { minutes: '10' })]);
+    expect(result).toEqual({ handled: true, workerId: null, stepKey: 'identity.verify_otp' });
+  });
+
+  it('rounds a partial minute up, so the worker never retries too early', async () => {
+    const issueChallenge = jest.fn();
+    const { deps, texts } = makeDeps(issueChallenge);
+
+    await handleOtpStep(
+      client, makeSession(), makeMsg({ body: 'resend' }), deps,
+      locked(new Date(NOW.getTime() + 9.5 * 60 * 1000), { preferredLanguage: 'en' }), PHONE_HASH, NOW,
+    );
+
+    expect(issueChallenge).not.toHaveBeenCalled();
+    expect(texts).toEqual([t('v2_otp_locked', 'en', { minutes: '10' })]);
+  });
+
+  it('answers the Resend BUTTON the same way', async () => {
+    const issueChallenge = jest.fn();
+    const { deps, texts, savedPatches } = makeDeps(issueChallenge);
+
+    await handleOtpStep(
+      client, makeSession(),
+      makeMsg({ body: '', interactivePayload: 'otp:resend' } as Partial<OnboardingV2InboundMessage>),
+      deps, locked(new Date(NOW.getTime() + 15 * 60 * 1000)), PHONE_HASH, NOW,
+    );
+
+    expect(issueChallenge).not.toHaveBeenCalled();
+    expect(savedPatches).toEqual([]);
+    expect(texts).toEqual([t('v2_otp_locked', 'es', { minutes: '15' })]);
+  });
+
+  it('reports the lock ahead of the resend cooldown', async () => {
+    // A send 10s ago would trip the 60s cooldown; the lock is the reason that matters.
+    const issueChallenge = jest.fn();
+    const { deps, texts } = makeDeps(issueChallenge);
+    const recentSend = new Date(NOW.getTime() - 10 * 1000).toISOString();
+
+    await handleOtpStep(
+      client, makeSession(), makeMsg(), deps,
+      locked(new Date(NOW.getTime() + 5 * 60 * 1000), { context: { otpSendHistory: [recentSend] } }),
+      PHONE_HASH, NOW,
+    );
+
+    expect(texts).toEqual([t('v2_otp_locked', 'es', { minutes: '5' })]);
+  });
+
+  it('CONTRAST: once the lock has run out, RESEND issues a new code and clears the lock', async () => {
+    const expiresAt = new Date(NOW.getTime() + 5 * 60 * 1000);
+    const issueChallenge = jest.fn(async () => ({ status: 'sent' as const, challengeId: 'chal-new', expiresAt }));
+    const { deps, prompts, savedPatches } = makeDeps(issueChallenge);
+
+    await handleOtpStep(
+      client, makeSession(), makeMsg(), deps,
+      locked(new Date(NOW.getTime() - 60 * 1000)), PHONE_HASH, NOW,
+    );
+
+    expect(issueChallenge).toHaveBeenCalledTimes(1);
+    expect(savedPatches).toHaveLength(1);
+    expect(savedPatches[0]).toMatchObject({
+      status: 'pending', attempts: 0, lockedUntil: null, providerChallengeId: 'chal-new',
+    });
+    expect(prompts).toHaveLength(1);
+  });
+});

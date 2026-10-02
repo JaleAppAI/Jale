@@ -138,7 +138,6 @@ const verificationDetail = read('src/app/verifications/[id]/page.tsx');
 
 for (const [label, source] of [
   ['src/app/cases/[id]/page.tsx', caseDetail],
-  ['src/app/verifications/[id]/page.tsx', verificationDetail],
 ]) {
   assert.match(
     source,
@@ -148,6 +147,19 @@ for (const [label, source] of [
   assert.match(source, /await params/, `${label} must await params before reading the route id`);
   assert.doesNotMatch(source, /\bparams\.id\b/, `${label} must not read .id off the un-awaited params Promise`);
 }
+
+// Roadmap 1b retired the verification review page with its actions; the route
+// survives only as a redirect so old links land on the lockout list.
+assert.match(
+  verificationDetail,
+  /redirect\('\/verifications'\)/,
+  'the retired verification detail route must redirect to /verifications',
+);
+assert.doesNotMatch(
+  verificationDetail,
+  /AdminActionsPanel|getVerificationActions|getVerificationRecord/,
+  'the retired verification detail route must not render actions or read a verification record',
+);
 
 assert.match(
   analyticsPage,
@@ -199,6 +211,37 @@ assert.match(
   proxyHook,
   /requireAdminSession\(\)/,
   'the proxy must keep the note that requireAdminSession() is the real authz boundary',
+);
+
+// --- Roadmap 1b: read-only lockout list and honest dashboard counts ---------
+const verificationsPage = read('src/app/verifications/page.tsx');
+const dashboardPage = read('src/app/page.tsx');
+
+assert.match(
+  nav,
+  /\{ href: '\/verifications', label: 'Lockouts', exact: false \}/,
+  'the nav must label /verifications "Lockouts"',
+);
+assert.match(verificationsPage, /listIdentityLockouts\(\)/, '/verifications must read the lockout list');
+assert.doesNotMatch(
+  verificationsPage,
+  /AdminActionsPanel|className="button"|<form/,
+  '/verifications is read-only: no actions, buttons, or forms',
+);
+assert.match(verificationsPage, /Web sign-up lockouts/, '/verifications must say web sign-up lockouts are not recorded');
+for (const call of ['countOpenAdminCases()', 'listOpenAdminCases(3)', 'countPiiRevealEvents()', 'listIdentityLockouts()']) {
+  assert.ok(dashboardPage.includes(call), `the dashboard must call ${call}`);
+}
+assert.doesNotMatch(
+  dashboardPage,
+  /listAdminCases\(|listAuditEvents\(|listVerificationRecords/,
+  'dashboard counts must come from their own queries, not a filtered page of rows',
+);
+assert.match(dashboardPage, /Locked out \(\{LOCKOUT_WINDOW_DAYS\} days\)/, 'the dashboard tile must read "Locked out (7 days)"');
+assert.equal(
+  existsSync(resolve(root, 'src/lib/server/admin-verifications.ts')),
+  false,
+  'the verification-queue read model was retired (roadmap 1b)',
 );
 
 console.log('admin UI contract checks passed');
