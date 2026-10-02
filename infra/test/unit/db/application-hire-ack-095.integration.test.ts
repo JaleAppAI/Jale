@@ -55,8 +55,8 @@
  * only way the backfill is falsifiable at all: on a virgin database the table
  * is empty and the UPDATE has nothing to prove.
  *
- * CASES ARE ORDERED AND STATEFUL: 2-7 read the end state case 2 produced. Do
- * not reorder them.
+ * CASES ARE ORDERED AND STATEFUL: 2-9 read the end state the cases before
+ * them left behind. Do not reorder them.
  */
 
 import * as fs from 'node:fs';
@@ -64,9 +64,12 @@ import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
 
-import { setInternalUserRlsContext } from '../../../lambda/lib/db';
+import { setInternalUserRlsContext, setRlsContext } from '../../../lambda/lib/db';
 import { buildHireSummary } from '../../../lambda/lib/application-hire-view';
-import { listApplicationsSql } from '../../../lambda/api/worker-applications-list';
+import {
+  attentionApplicationsSql,
+  listApplicationsSql,
+} from '../../../lambda/api/worker-applications-list';
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
 
@@ -123,8 +126,9 @@ function hireAckSql(): { dismissed: string; seen: string } {
  * `GET /worker/applications`' single SELECT, the one the handler actually
  * runs. Sprint 26 (F26) made it a keyset-paged statement, so it is imported
  * from the handler rather than regex-lifted: a copy that drifted from the real
- * SQL is exactly what this suite must not test. First page: no cursor binds,
- * `$1` is the LIMIT. RLS is what scopes it to the caller.
+ * SQL is exactly what this suite must not test. First page: `$1` is the
+ * caller's internal user id -- the statement scopes itself to it -- and `$2`
+ * the LIMIT.
  */
 function listSql(): string {
   return listApplicationsSql(0);
@@ -672,9 +676,11 @@ maybeDescribe('sprint 24: migration 095 stamps and grants the hire acknowledgeme
       await worker.query(`SELECT set_config('app.current_user_id', $1, true)`, [`s24-095-owner-${tag}`]);
       await setInternalUserRlsContext(worker, workerOwner);
 
-      const res = await worker.query<Record<string, any>>(sql, [200]);
+      const res = await worker.query<Record<string, any>>(sql, [workerOwner, 200]);
       const byId = new Map(res.rows.map((row) => [row.application_id, row]));
-      // RLS scoped it to this worker: the OTHER worker's application is absent.
+      // Scoped to this worker -- by the statement's own `a.worker_id = $1`,
+      // with this role's RLS behind it: the OTHER worker's application is
+      // absent. Case 9 takes RLS away and checks the statement alone.
       expect(byId.has(appOther)).toBe(false);
 
       const hired = byId.get(appHired);
@@ -737,6 +743,92 @@ maybeDescribe('sprint 24: migration 095 stamps and grants the hire acknowledgeme
       await worker.query('ROLLBACK');
     } finally {
       await worker.end();
+    }
+  });
+
+  // ── 9. the same SELECTs with RLS bypassed: the SQL alone must scope them ──
+  // Case 8 runs as the testbed's jale_admin, which OBEYS FORCE ROW LEVEL
+  // SECURITY -- so it cannot show whether the statements scope themselves.
+  // A superuser bypasses RLS, so all three statements the handler can run
+  // (first page, cursor page, attention summary) go through `su` here, under
+  // the worker's two GUCs set by the handler's own helpers. Whatever scopes
+  // them to the caller has to be in the SQL.
+  //
+  // One row per half of the attention OR, for EACH worker: a hire not yet
+  // acknowledged and a details request not yet completed. The other worker's
+  // hire is the row that would expose a worker predicate ANDed onto only the
+  // first half of the OR. Worker A's two are the positive control -- a
+  // statement that returned nothing at all must not pass. Everything is set up
+  // inside the transaction and rolled back, so cases 1-8's end state is
+  // untouched.
+  it("9. with RLS bypassed, the list SELECTs still return only the caller's rows", async () => {
+    const appOtherDetails = randomUUID();
+    await su.query('BEGIN');
+    try {
+      await setRlsContext(su, `s24-095-owner-${tag}`);
+      await setInternalUserRlsContext(su, workerOwner);
+      // The posture this case exists for, pinned: no policy is applied to this
+      // session, so nothing but the statement itself can scope the rows.
+      const posture = await su.query<{ active: boolean }>(
+        `SELECT row_security_active('job_applications') AS active`,
+      );
+      expect(posture.rows[0].active).toBe(false);
+
+      // Worker A: its historical hire re-opened (unacknowledged), and a
+      // details request on its pending application.
+      await su.query(`UPDATE job_applications SET hired_ack_at = NULL WHERE id = $1`, [appHired]);
+      await su.query(
+        `UPDATE job_applications SET details_requested_at = now() WHERE id = $1`,
+        [appPending],
+      );
+      // The other worker: the same two shapes.
+      await su.query(`UPDATE job_applications SET hired_ack_at = NULL WHERE id = $1`, [appOther]);
+      await su.query(
+        `INSERT INTO job_applications (id, job_id, worker_id, status, details_requested_at)
+         VALUES ($1, $2, $3, 'pending', now())`,
+        [appOtherDetails, jobPending, workerOther],
+      );
+
+      // A cursor that sorts after every row, so the cursor page is asked
+      // for everything too.
+      const cursorAt = '9999-12-31T23:59:59Z';
+      const cursorId = 'ffffffff-ffff-4fff-bfff-ffffffffffff';
+      // The caller's internal id at $1 on all three, as the handler binds it.
+      const firstPage = await su.query<{ application_id: string }>(
+        listApplicationsSql(0), [workerOwner, 200],
+      );
+      const cursorPage = await su.query<{ application_id: string }>(
+        listApplicationsSql(2), [workerOwner, cursorAt, cursorId, 200],
+      );
+      const attention = await su.query<{ application_id: string }>(
+        attentionApplicationsSql(), [workerOwner, 100],
+      );
+
+      const otherWorkersRows = new Map<string, string>([
+        [appOther, "other worker's unacknowledged hire"],
+        [appOtherDetails, "other worker's details request"],
+      ]);
+      const leaked = (rows: { application_id: string }[]) => rows
+        .map((row) => otherWorkersRows.get(row.application_id))
+        .filter((label) => label !== undefined);
+      // All three at once, so a leak in any of them shows in the one diff.
+      expect({
+        firstPage: leaked(firstPage.rows),
+        cursorPage: leaked(cursorPage.rows),
+        attention: leaked(attention.rows),
+      }).toEqual({ firstPage: [], cursorPage: [], attention: [] });
+
+      // ...and not by returning nothing: EXACTLY worker A's rows. The
+      // projection carries no worker_id, so ownership is checked by id.
+      const ids = (rows: { application_id: string }[]) =>
+        rows.map((row) => row.application_id).sort();
+      expect(ids(firstPage.rows)).toEqual([appHired, appPending, appFresh].sort());
+      expect(ids(cursorPage.rows)).toEqual([appHired, appPending, appFresh].sort());
+      expect(ids(attention.rows)).toEqual([appHired, appPending].sort());
+    } finally {
+      // Always: a failed assertion leaves this transaction open on `su`, and
+      // afterAll's cleanup must not run inside it.
+      await su.query('ROLLBACK');
     }
   });
 });
