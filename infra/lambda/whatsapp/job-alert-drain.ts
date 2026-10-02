@@ -13,4 +13,16 @@ export async function handler(_event: ScheduledEvent): Promise<void> {
   const pool = await getDbPool();
   const result = await drainJobAlertOutbox(pool);
   console.log(JSON.stringify({ metric: 'JobAlertOutboxDrain', ...result }));
+  // The summary above is logged on every run, so it cannot drive an alarm
+  // without a JSON-selector filter (banned: see
+  // test/unit/stacks/metric-filter-patterns.test.ts). This line appears only
+  // when something failed and is what JobAlertDrainFailures counts.
+  // `ambiguous` rows are terminal 'send_unknown' and are never retried.
+  if (result.failed + result.ambiguous > 0) {
+    console.log(JSON.stringify({
+      metric: 'JobAlertOutboxDrainFailure',
+      failed: result.failed,
+      ambiguous: result.ambiguous,
+    }));
+  }
 }

@@ -140,7 +140,9 @@ const CEILING = 470;
 // change at all. That is the intended trade — a bump here is cheap and forces
 // someone to look at the diff, whereas silently absorbing +9 resources is how
 // the stack reached 501 in the first place.
-const MEASURED_RESOURCES = 415;
+// → 417 once roadmap 1c (2026-10-01) added the two JobMessageOutboxSendFailed
+// MetricFilters on the employer conversations create/send Lambdas.
+const MEASURED_RESOURCES = 417;
 
 /**
  * Every `AWS::ApiGateway::Method` in the template, grouped by the resource it

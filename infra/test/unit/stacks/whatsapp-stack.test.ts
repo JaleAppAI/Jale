@@ -580,6 +580,68 @@ describe('event-driven outbox wake queues', () => {
     });
   });
 
+  // ── 1c: unwatched send failures ──────────────────────────────
+  const filtersOn = (t: Template, term: string) =>
+    Object.values(t.findResources('AWS::Logs::MetricFilter', {
+      Properties: { FilterPattern: `"${term}"` },
+    })) as Array<{ Properties: Record<string, any> }>;
+
+  const expectFiveMinuteSumAlarm = (alarmName: string, metricName: string) => {
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: alarmName,
+      Namespace: 'Jale/WhatsApp',
+      MetricName: metricName,
+      Statistic: 'Sum',
+      Period: 300,
+      Threshold: 1,
+      EvaluationPeriods: 1,
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      TreatMissingData: 'notBreaching',
+      AlarmActions: Match.anyValue(),
+    });
+  };
+
+  test('reply send failures from both reply-sending Lambdas feed one alarm', () => {
+    const filters = filtersOn(template, 'OutboxSendFailure');
+    expect(filters).toHaveLength(2);
+    expect(new Set(filters.map((f) => JSON.stringify(f.Properties.LogGroupName))).size).toBe(2);
+    for (const f of filters) {
+      expect(f.Properties.MetricTransformations).toEqual([
+        expect.objectContaining({ MetricNamespace: 'Jale/WhatsApp', MetricName: 'ReplySendFailures', MetricValue: '1' }),
+      ]);
+    }
+    expectFiveMinuteSumAlarm('WhatsAppReplySendFailures', 'ReplySendFailures');
+  });
+
+  test('job-message send failures from both stacks share one metric and one alarm', () => {
+    const whatsappFilters = filtersOn(template, 'JobMessageOutboxSendFailed');
+    const apiFilters = filtersOn(apiTemplate, 'JobMessageOutboxSendFailed');
+    expect(whatsappFilters).toHaveLength(2);
+    expect(new Set(whatsappFilters.map((f) => JSON.stringify(f.Properties.LogGroupName))).size).toBe(2);
+    expect(apiFilters).toHaveLength(2);
+    for (const f of [...whatsappFilters, ...apiFilters]) {
+      expect(f.Properties.MetricTransformations).toEqual([
+        expect.objectContaining({ MetricNamespace: 'Jale/WhatsApp', MetricName: 'JobMessageSendFailures', MetricValue: '1' }),
+      ]);
+    }
+    expectFiveMinuteSumAlarm('WhatsAppJobMessageSendFailures', 'JobMessageSendFailures');
+    // The alarm lives with the alarm topic in WhatsAppStack, not in ApiStack.
+    expect(Object.keys(apiTemplate.findResources('AWS::CloudWatch::Alarm', {
+      Properties: { AlarmName: 'WhatsAppJobMessageSendFailures' },
+    }))).toHaveLength(0);
+  });
+
+  test('job-alert drain failures alarm on the failure-only line', () => {
+    const filters = filtersOn(template, 'JobAlertOutboxDrainFailure');
+    expect(filters).toHaveLength(1);
+    expect(filters[0].Properties.MetricTransformations).toEqual([
+      expect.objectContaining({ MetricNamespace: 'Jale/WhatsApp', MetricName: 'JobAlertDrainFailures', MetricValue: '1' }),
+    ]);
+    // The per-run summary must never be filtered (it would fire every run).
+    expect(filtersOn(template, 'JobAlertOutboxDrain')).toHaveLength(0);
+    expectFiveMinuteSumAlarm('WhatsAppJobAlertDrainFailures', 'JobAlertDrainFailures');
+  });
+
   // ── F4: the template-pending / template-expired worker-intent signals ──
   //
   // `outbox.ts` had been logging `WorkerIntentOutboxTemplatePending` since the

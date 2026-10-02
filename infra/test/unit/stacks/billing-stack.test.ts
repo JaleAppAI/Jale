@@ -234,6 +234,61 @@ describe('BillingStack', () => {
     }
   });
 
+  // ── 1c: the webhook verifier's silent failures ───────────────────
+  test('webhook rejections, handler errors, and Lambda errors alarm to the ops topic', () => {
+    for (const [literal, metricName, alarmName] of [
+      ['BillingWebhookInvalidSignature', 'WebhookInvalidSignature', 'BillingWebhookInvalidSignature'],
+      ['[billing-webhook] handler error', 'WebhookHandlerErrors', 'BillingWebhookHandlerErrors'],
+    ]) {
+      template.hasResourceProperties('AWS::Logs::MetricFilter', {
+        FilterPattern: `"${literal}"`,
+        MetricTransformations: Match.arrayWith([Match.objectLike({
+          MetricNamespace: 'Jale/Billing', MetricName: metricName, MetricValue: '1',
+        })]),
+      });
+      template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+        AlarmName: alarmName,
+        Namespace: 'Jale/Billing',
+        MetricName: metricName,
+        Statistic: 'Sum',
+        Period: 300,
+        Threshold: 1,
+        EvaluationPeriods: 1,
+        ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+        TreatMissingData: 'notBreaching',
+        AlarmActions: Match.anyValue(),
+        OKActions: Match.anyValue(),
+      });
+    }
+
+    for (const [alarmName, functionIdPrefix] of [
+      ['BillingWebhookLambdaErrors', 'BillingWebhookLambda'],
+      ['BillingProcessorLambdaErrors', 'BillingProcessorLambda'],
+    ]) {
+      template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+        AlarmName: alarmName,
+        Namespace: 'AWS/Lambda',
+        MetricName: 'Errors',
+        Statistic: 'Sum',
+        Period: 300,
+        Threshold: 1,
+        EvaluationPeriods: 1,
+        ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+        TreatMissingData: 'notBreaching',
+        AlarmActions: Match.anyValue(),
+        OKActions: Match.anyValue(),
+        // Pin which Lambda this alarm watches: a verifier<->processor swap
+        // must fail this test. The construct's Lambda Function child's
+        // logical id is "<id>Function<hash>"; anchor the prefix so the
+        // regex can only match this Lambda's logical id, not the other's.
+        Dimensions: [{
+          Name: 'FunctionName',
+          Value: { Ref: Match.stringLikeRegexp(`^${functionIdPrefix}`) },
+        }],
+      });
+    }
+  });
+
   // ── Secret isolation matrix ──────────────────────────────────────────────
 
   test('get-billing Lambda has DB_SECRET_ARN but NOT STRIPE_SECRET_ARN', () => {
