@@ -589,6 +589,20 @@ describe('worker-applications-list', () => {
       expect(body.next_cursor).toBeNull();
     });
 
+    // RLS is not what scopes this list: production does not currently enforce
+    // it for jale_admin, the role this Lambda connects as. The statement names
+    // the caller itself -- the internal id the users lookup returned, never the
+    // cognito sub -- and binds it first, on every page.
+    it('scopes a first page to the caller in SQL, with the looked-up worker id as $1', async () => {
+      serve([base(ID_A, '2026-09-10T10:00:00Z')]);
+
+      await handler(eventWith(null));
+
+      expect(listCall.sql).toContain('WHERE a.worker_id = $1');
+      expect(listCall.sql).toContain('LIMIT $2');
+      expect(listCall.params).toEqual(['worker-internal-id', 51]);
+    });
+
     it('caps a greedy limit at 100 and falls back on a nonsense one', async () => {
       serve([]);
       await handler(eventWith({ limit: '500' }));
@@ -629,7 +643,13 @@ describe('worker-applications-list', () => {
       // The tuple comparison, not two ANDed columns: a plain `applied_at <`
       // would drop every row that shares the cursor's timestamp.
       expect(listCall.sql).toContain('(a.applied_at, a.id) <');
-      expect(listCall.params).toEqual(['2026-09-10T10:00:00.123456Z', ID_A, 3]);
+      // ...ANDed onto the caller's own id, never in place of it: the keyset
+      // binds follow the worker id, and the LIMIT is the bind after them.
+      expect(listCall.sql).toContain(
+        'WHERE a.worker_id = $1 AND (a.applied_at, a.id) < ($2::timestamptz, $3::uuid)',
+      );
+      expect(listCall.sql).toContain('LIMIT $4');
+      expect(listCall.params).toEqual(['worker-internal-id', '2026-09-10T10:00:00.123456Z', ID_A, 3]);
       expect(JSON.parse(res.body).next_cursor).toBeNull();
     });
 
@@ -666,8 +686,9 @@ describe('worker-applications-list', () => {
    * fraction of the list.
    *
    * The two questions are asked of ALL of the worker's applications, in the
-   * same RLS-scoped transaction, and answered beside the page rather than
-   * inside it. The rows are few by construction (an employer has to be waiting
+   * same transaction and scoped to the caller the same way the page is (their
+   * id at $1, in the SQL), and answered beside the page rather than inside
+   * it. The rows are few by construction (an employer has to be waiting
    * on this worker, or have hired them without the hire being acknowledged),
    * which is what makes the extra statement cheap.
    */
@@ -768,8 +789,16 @@ describe('worker-applications-list', () => {
       expect(attentionCall!.sql).toContain('details_completed_at IS NULL');
       expect(attentionCall!.sql).toContain("a.status = 'hired'");
       expect(attentionCall!.sql).toContain('a.hired_ack_at IS NULL');
-      // Bounded: an unbounded scan is what paging exists to avoid.
-      expect(attentionCall!.params).toEqual([100]);
+      // Scoped to the caller in SQL, around BOTH halves at once: with the
+      // outer parentheses gone, the worker predicate would bind to the
+      // details half only and every worker's unacknowledged hires would match.
+      expect(attentionCall!.sql).toMatch(
+        /WHERE a\.worker_id = \$1\s+AND \(\(a\.details_requested_at IS NOT NULL AND a\.details_completed_at IS NULL\)\s+OR \(a\.status = 'hired' AND a\.hired_ack_at IS NULL\)\)/,
+      );
+      expect(attentionCall!.sql).toContain('LIMIT $2');
+      // The looked-up internal id first, then the cap. Bounded: an unbounded
+      // scan is what paging exists to avoid.
+      expect(attentionCall!.params).toEqual(['worker-internal-id', 100]);
     });
 
     it('leaves a details request that is already satisfied out of it', async () => {
