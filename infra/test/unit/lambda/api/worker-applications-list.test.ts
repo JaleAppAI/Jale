@@ -589,10 +589,9 @@ describe('worker-applications-list', () => {
       expect(body.next_cursor).toBeNull();
     });
 
-    // RLS is not what scopes this list: production does not currently enforce
-    // it for jale_admin, the role this Lambda connects as. The statement names
-    // the caller itself -- the internal id the users lookup returned, never the
-    // cognito sub -- and binds it first, on every page.
+    // RLS is not what scopes this list: the statement names the caller itself
+    // -- the internal id the users lookup returned, never the cognito sub --
+    // and binds it first, on every page.
     it('scopes a first page to the caller in SQL, with the looked-up worker id as $1', async () => {
       serve([base(ID_A, '2026-09-10T10:00:00Z')]);
 

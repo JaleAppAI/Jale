@@ -746,15 +746,13 @@ maybeDescribe('sprint 24: migration 095 stamps and grants the hire acknowledgeme
     }
   });
 
-  // ── 9. the same SELECTs as production runs them: RLS not in force ──
+  // ── 9. the same SELECTs with RLS bypassed: the SQL alone must scope them ──
   // Case 8 runs as the testbed's jale_admin, which OBEYS FORCE ROW LEVEL
-  // SECURITY -- so it cannot see what this endpoint does where RLS is not in
-  // force. Production's jale_admin is exactly that today: row_security_active()
-  // is false for it even on FORCE-RLS tables, and it is the role this Lambda
-  // connects as. A superuser bypasses RLS the same way, so all three statements
-  // the handler can run (first page, cursor page, attention summary) go through
-  // `su` here, under the worker's two GUCs set by the handler's own helpers.
-  // Whatever scopes them to the caller now has to be in the SQL.
+  // SECURITY -- so it cannot show whether the statements scope themselves.
+  // A superuser bypasses RLS, so all three statements the handler can run
+  // (first page, cursor page, attention summary) go through `su` here, under
+  // the worker's two GUCs set by the handler's own helpers. Whatever scopes
+  // them to the caller has to be in the SQL.
   //
   // One row per half of the attention OR, for EACH worker: a hire not yet
   // acknowledged and a details request not yet completed. The other worker's
@@ -763,7 +761,7 @@ maybeDescribe('sprint 24: migration 095 stamps and grants the hire acknowledgeme
   // statement that returned nothing at all must not pass. Everything is set up
   // inside the transaction and rolled back, so cases 1-8's end state is
   // untouched.
-  it("9. with RLS bypassed, as production runs them, the list SELECTs return only the caller's rows", async () => {
+  it("9. with RLS bypassed, the list SELECTs still return only the caller's rows", async () => {
     const appOtherDetails = randomUUID();
     await su.query('BEGIN');
     try {

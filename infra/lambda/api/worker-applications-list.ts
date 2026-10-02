@@ -196,10 +196,8 @@ const APPLICATIONS_FROM = `
  *
  * The statement scopes itself to the caller -- `a.worker_id = $1` is what
  * keeps every other worker's applications out of this list. RLS on
- * job_applications is defence in depth behind it, never the scope: production
- * does not currently enforce RLS for `jale_admin`, the role this Lambda
- * connects as, so a statement that left the scoping to RLS would return every
- * worker's rows.
+ * job_applications is defence in depth behind it, never the scope: every
+ * statement here must be correct for a session in which no policy applies.
  *
  * INDEXES: `job_applications` is indexed by worker -- 003's `(worker_id)` and
  * 007's `(worker_id, applied_at DESC)` -- so `a.worker_id = $1` makes a page a
