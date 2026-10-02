@@ -218,6 +218,7 @@ function buildStacks(): Record<string, cdk.Stack> {
 
   return {
     AiStack: ai,
+    ApiStack: api,
     WhatsAppStack: whatsapp,
     MediaBoardStack: mediaBoard,
     BillingStack: billing,
@@ -362,6 +363,7 @@ describe('CloudWatch MetricFilter patterns', () => {
       .sort();
     expect(withFilters).toEqual([
       'ai-stack.ts',
+      'api-stack.ts',
       'billing-stack.ts',
       'media-board-stack.ts',
       'notifications-stack.ts',
@@ -375,6 +377,7 @@ describe('CloudWatch MetricFilter patterns', () => {
     const stacks = new Set(FILTERS.map((f) => f.stack));
     for (const expected of [
       'AiStack',
+      'ApiStack',
       'WhatsAppStack',
       'MediaBoardStack',
       'BillingStack',

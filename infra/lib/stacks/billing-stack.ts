@@ -492,5 +492,50 @@ export class BillingStack extends cdk.Stack {
     });
     knownEventSkipAlarm.addAlarmAction(alarmAction);
     knownEventSkipAlarm.addOkAction(alarmAction);
+
+    // ── 1c: the webhook verifier's silent failures (roadmap 2026-10-01) ──
+    // The verifier catches everything: a bad signature returns 400 (and logs
+    // a bare BillingWebhookInvalidSignature line), any other error returns
+    // 500 after logging "[billing-webhook] handler error". Neither throws, so
+    // Lambda's own Errors metric never sees them, and a wrong or rotated
+    // signing secret would reject every Stripe event unnoticed.
+    for (const [id, literal, metricName, alarmName] of [
+      ['BillingWebhookInvalidSignature', 'BillingWebhookInvalidSignature', 'WebhookInvalidSignature', 'BillingWebhookInvalidSignature'],
+      ['BillingWebhookHandlerError', '[billing-webhook] handler error', 'WebhookHandlerErrors', 'BillingWebhookHandlerErrors'],
+    ] as const) {
+      const metricFilter = new logs.MetricFilter(this, `${id}MetricFilter`, {
+        logGroup: webhookVerifierLambda.logGroup,
+        metricNamespace: 'Jale/Billing',
+        metricName,
+        filterPattern: logs.FilterPattern.literal(`"${literal}"`),
+        metricValue: '1',
+      });
+      const verifierAlarm = jaleAlarm(this, `${id}Alarm`, {
+        metric: metricFilter.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmName,
+        actions: [alarmAction],
+      });
+      verifierAlarm.addOkAction(alarmAction);
+    }
+
+    // Uncaught failures in either billing Lambda: the processor throws on a
+    // retryable error so SQS redelivers; the verifier catches every handler
+    // error, so its Errors metric only moves on an init failure, a timeout,
+    // or running out of memory.
+    for (const [id, fn, alarmName] of [
+      ['BillingWebhookLambdaErrorsAlarm', webhookVerifierLambda, 'BillingWebhookLambdaErrors'],
+      ['BillingProcessorLambdaErrorsAlarm', processorLambda, 'BillingProcessorLambdaErrors'],
+    ] as const) {
+      const errorsAlarm = jaleAlarm(this, id, {
+        metric: fn.function.metricErrors({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        alarmName,
+        actions: [alarmAction],
+      });
+      errorsAlarm.addOkAction(alarmAction);
+    }
   }
 }

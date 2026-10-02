@@ -466,6 +466,25 @@ export class ApiStack extends cdk.Stack {
     props.dbSecret.grantRead(employerConversationsSendLambda.function);
     twilioSecret.grantRead(employerConversationsSendLambda.function);
 
+    // 1c: lib/job-messaging.ts logs JobMessageOutboxSendFailed from both
+    // employer conversation endpoints. These filters only publish to the
+    // shared Jale/WhatsApp metric; the JobMessageSendFailures alarm lives in
+    // WhatsAppStack (which owns the alarm topic) and sums every filter.
+    new logs.MetricFilter(this, 'EmployerConversationsCreateSendFailureMetric', {
+      logGroup: employerConversationsCreateLambda.logGroup,
+      filterPattern: logs.FilterPattern.literal('"JobMessageOutboxSendFailed"'),
+      metricNamespace: 'Jale/WhatsApp',
+      metricName: 'JobMessageSendFailures',
+      metricValue: '1',
+    });
+    new logs.MetricFilter(this, 'EmployerConversationsSendSendFailureMetric', {
+      logGroup: employerConversationsSendLambda.logGroup,
+      filterPattern: logs.FilterPattern.literal('"JobMessageOutboxSendFailed"'),
+      metricNamespace: 'Jale/WhatsApp',
+      metricName: 'JobMessageSendFailures',
+      metricValue: '1',
+    });
+
     const employerConversationsUpdateLambda = new JaleLambdaFunction(this, 'EmployerConversationsUpdateLambda', {
       entry: path.join(__dirname, '../../lambda/api/employer-conversations-update.ts'),
       description: 'Employer conversations update endpoint',
