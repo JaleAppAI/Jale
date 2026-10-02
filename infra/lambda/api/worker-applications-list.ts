@@ -105,13 +105,6 @@ async function fillCanonicalTrades(
 }
 
 /**
- * `GET /worker/applications`' single SELECT. Exported so the real-PostgreSQL
- * suites run the statement the handler runs (not a regex-lifted copy that
- * drifts): `keysetParams` is 0 for a first page and 2 (`applied_at`, `id`)
- * for a cursor page; the LIMIT is always the next bind position after them.
- * RLS is what scopes it to the caller -- the statement carries no worker id.
- */
-/**
  * Every column both statements below select. One list, because the attention
  * summary is shaped by exactly the same code as a page row -- a second,
  * slightly different projection is how the two would drift into disagreeing
@@ -197,25 +190,33 @@ const APPLICATIONS_FROM = `
 /**
  * `GET /worker/applications`' page SELECT. Exported so the real-PostgreSQL
  * suites run the statement the handler runs (not a regex-lifted copy that
- * drifts): `keysetParams` is 0 for a first page and 2 (`applied_at`, `id`)
- * for a cursor page; the LIMIT is always the next bind position after them.
- * RLS is what scopes it to the caller -- the statement carries no worker id.
+ * drifts): `$1` is always the caller's internal user id; `keysetParams` is 0
+ * for a first page and 2 (`applied_at`, `id`, at `$2`/`$3`) for a cursor
+ * page; the LIMIT is always the next bind position after them.
  *
- * INDEXES: the keyset orders by (applied_at DESC, id DESC) and there is no
- * index on that pair -- `job_applications` is indexed by worker and by job
- * (migrations 003/070), so a page is a sort over this worker's rows. That is
- * cheap at the size one worker's applications reach and was equally true of
- * the LIMIT 200 this replaced; it is the DEEP pages (a cursor far down a very
- * long list) that would want `(worker_id, applied_at DESC, id DESC)`. Noted
- * rather than added: an index migration is a schema change with its own
- * review, and nothing measured yet says this needs one.
+ * The statement scopes itself to the caller -- `a.worker_id = $1` is what
+ * keeps every other worker's applications out of this list. RLS on
+ * job_applications is defence in depth behind it, never the scope: every
+ * statement here must be correct for a session in which no policy applies.
+ *
+ * INDEXES: `job_applications` is indexed by worker -- 003's `(worker_id)` and
+ * 007's `(worker_id, applied_at DESC)` -- so `a.worker_id = $1` makes a page a
+ * sort over this worker's rows rather than over the whole table. No index
+ * carries the `id` tiebreak the keyset also orders by. That is cheap at the
+ * size one worker's applications reach and was equally true of the LIMIT 200
+ * this replaced; it is the DEEP pages (a cursor far down a very long list)
+ * that would want `(worker_id, applied_at DESC, id DESC)`. Noted rather than
+ * added: an index migration is a schema change with its own review, and
+ * nothing measured yet says this needs one.
  */
 export function listApplicationsSql(keysetParams: 0 | 2): string {
   const keyset = keysetParams === 2
-    ? ' WHERE (a.applied_at, a.id) < ($1::timestamptz, $2::uuid)'
+    ? ' AND (a.applied_at, a.id) < ($2::timestamptz, $3::uuid)'
     : '';
-  const limitParam = keysetParams + 1;
-  return `SELECT ${APPLICATION_COLUMNS}${APPLICATIONS_FROM}${keyset}
+  // The caller at $1, then the keyset binds (if any), then the LIMIT.
+  const limitParam = keysetParams + 2;
+  return `SELECT ${APPLICATION_COLUMNS}${APPLICATIONS_FROM}
+ WHERE a.worker_id = $1${keyset}
  ORDER BY a.applied_at DESC, a.id DESC
  LIMIT $${limitParam}`;
 }
@@ -238,14 +239,19 @@ export function listApplicationsSql(keysetParams: 0 | 2): string {
  * rest in TypeScript, exactly as it does for a page row, because "is anything
  * still outstanding" is not a question SQL can answer here.
  *
- * Bounded like everything else that reads a list: $1 is the cap.
+ * Scoped to the caller exactly as a page is, by the statement itself: `$1`
+ * is their internal user id, and the predicate wraps BOTH halves of the OR --
+ * without the outer parentheses it would bind to the details half only, and
+ * every worker's unacknowledged hires would match. Bounded like everything
+ * else that reads a list: `$2` is the cap.
  */
 export function attentionApplicationsSql(): string {
   return `SELECT ${APPLICATION_COLUMNS}${APPLICATIONS_FROM}
- WHERE (a.details_requested_at IS NOT NULL AND a.details_completed_at IS NULL)
-    OR (a.status = 'hired' AND a.hired_ack_at IS NULL)
+ WHERE a.worker_id = $1
+   AND ((a.details_requested_at IS NOT NULL AND a.details_completed_at IS NULL)
+     OR (a.status = 'hired' AND a.hired_ack_at IS NULL))
  ORDER BY a.applied_at DESC, a.id DESC
- LIMIT $1`;
+ LIMIT $2`;
 }
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
@@ -294,14 +300,18 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       await client.query('COMMIT');
       return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_provisioned' }) };
     }
-    await setInternalUserRlsContext(client, workerRes.rows[0].id);
+    const workerId: string = workerRes.rows[0].id;
+    await setInternalUserRlsContext(client, workerId);
 
     // employer_display_name() flips a transaction-local GUC that makes ALL
     // employer_profiles rows readable until COMMIT (migration 031) — no query
     // touching employer_profiles may be added after this one in this
     // transaction. paused is coalesced to closed: billing auto-pause is the
     // employer's private state (spec: workers never see 'paused').
-    const params: unknown[] = [];
+    //
+    // The caller's own id first, on every page: `a.worker_id = $1` is what
+    // scopes the list to them (see listApplicationsSql), not RLS.
+    const params: unknown[] = [workerId];
     // Keyset pagination on (applied_at, id) DESC: strictly-less on the TUPLE
     // is exactly "everything after the last row of the previous page", and is
     // what makes two applications sharing a timestamp safe.
@@ -310,13 +320,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     params.push(limit + 1);
 
     const result = await client.query(listApplicationsSql(cursor ? 2 : 0), params);
-    // Beside the page, in the SAME transaction and therefore under the same
-    // two RLS contexts. It reaches employer_profiles only through
+    // Beside the page, in the SAME transaction, and scoped to the caller the
+    // same way: their id at $1. It reaches employer_profiles only through
     // employer_display_name(), the same accessor the statement above already
     // used -- it is a query touching employer_profiles DIRECTLY that migration
     // 031's transaction-local GUC forbids after that point, and this is not
-    // one. Both statements answer about the caller's own applications only.
-    const attentionResult = await client.query(attentionApplicationsSql(), [ATTENTION_LIMIT]);
+    // one.
+    const attentionResult = await client.query(attentionApplicationsSql(), [workerId, ATTENTION_LIMIT]);
     await client.query('COMMIT');
 
     // The 'other' trades to canonicalise, collected as the rows are shaped.

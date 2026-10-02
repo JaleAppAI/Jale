@@ -1,11 +1,10 @@
 import {
   getCaseActions,
-  getVerificationActions,
   requiresPiiJustification,
   type AdminActionId,
 } from './action-policy';
 import { buildAdminAuditEvent, type AdminAuditEventDraft, type AdminAuditTargetType } from './audit-contract';
-import type { AdminCaseStatus, AdminCaseType, AdminRole, VerificationRecord } from './types';
+import type { AdminCaseStatus, AdminCaseType, AdminRole } from './types';
 
 export type AdminActionRequest = {
   actionId: AdminActionId;
@@ -20,7 +19,6 @@ export type AdminActionRequestError =
   | 'invalid_action'
   | 'invalid_target_type'
   | 'target_id_required'
-  | 'target_action_mismatch'
   | 'request_id_required'
   | 'message_required'
   | 'pii_justification_required';
@@ -33,18 +31,10 @@ export type ValidateAdminActionInput = {
   actor: string;
   role: AdminRole;
   request: AdminActionRequest;
-} & (
-  | {
-      targetKind: 'case';
-      targetStatus: AdminCaseStatus;
-      targetCaseType: AdminCaseType;
-    }
-  | {
-      targetKind: 'verification';
-      targetStatus: VerificationRecord['status'];
-      targetStep: VerificationRecord['step'];
-    }
-);
+  targetKind: 'case';
+  targetStatus: AdminCaseStatus;
+  targetCaseType: AdminCaseType;
+};
 
 export type ValidateAdminActionResult =
   | {
@@ -71,14 +61,9 @@ const CASE_ACTIONS = new Set<AdminActionId>([
   'reveal_pii',
   'resolve_case',
 ]);
-const VERIFICATION_ACTIONS = new Set<AdminActionId>([
-  'approve_verification',
-  'reject_verification',
-  'request_more_info',
-  'reset_verification_step',
-]);
-const ALL_ACTIONS = new Set<AdminActionId>([...CASE_ACTIONS, ...VERIFICATION_ACTIONS]);
-const TARGET_TYPES = new Set<AdminAuditTargetType>(['admin_case', 'verification', 'whatsapp_outbox']);
+// 'verification' stays an audit target type so historical audit rows render,
+// but new requests may not target it: its actions were retired (roadmap 1b).
+const TARGET_TYPES = new Set<AdminAuditTargetType>(['admin_case', 'whatsapp_outbox']);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function stringField(value: unknown): string | undefined {
@@ -89,21 +74,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-function isActionTargetMismatch(actionId: AdminActionId, targetType: AdminAuditTargetType): boolean {
-  if (targetType === 'verification') {
-    return !VERIFICATION_ACTIONS.has(actionId);
-  }
-
-  return !CASE_ACTIONS.has(actionId);
-}
-
 export function parseAdminActionRequest(input: unknown): ParseAdminActionRequestResult {
   if (!isRecord(input)) {
     return { ok: false, error: 'invalid_action' };
   }
 
   const actionId = stringField(input.actionId) as AdminActionId | undefined;
-  if (!actionId || !ALL_ACTIONS.has(actionId)) {
+  if (!actionId || !CASE_ACTIONS.has(actionId)) {
     return { ok: false, error: 'invalid_action' };
   }
 
@@ -115,10 +92,6 @@ export function parseAdminActionRequest(input: unknown): ParseAdminActionRequest
   const targetId = stringField(input.targetId);
   if (!targetId) {
     return { ok: false, error: 'target_id_required' };
-  }
-
-  if (isActionTargetMismatch(actionId, targetType)) {
-    return { ok: false, error: 'target_action_mismatch' };
   }
 
   const justification = stringField(input.justification);
@@ -160,9 +133,7 @@ export function formDataToAdminActionRequest(formData: FormData): ParseAdminActi
 }
 
 export function validateAdminAction(input: ValidateAdminActionInput): ValidateAdminActionResult {
-  const availableActions = input.targetKind === 'case'
-    ? getCaseActions({ status: input.targetStatus, type: input.targetCaseType }, input.role)
-    : getVerificationActions({ status: input.targetStatus, step: input.targetStep }, input.role);
+  const availableActions = getCaseActions({ status: input.targetStatus, type: input.targetCaseType }, input.role);
   const matchingAction = availableActions.find((action) => action.id === input.request.actionId);
 
   if (!matchingAction) {

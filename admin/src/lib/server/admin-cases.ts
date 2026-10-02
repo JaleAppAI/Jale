@@ -153,6 +153,23 @@ async function listEventsForCases(caseIds: string[]): Promise<Map<string, AdminC
   return byCase;
 }
 
+// The queue's row shape without the timeline. Shared by the paged queue and
+// the dashboard's open-case preview so both map through mapAdminCaseRow.
+const CASE_LIST_SELECT = `
+  SELECT c.id, c.case_type, c.status, c.priority, c.user_id, c.conversation_id,
+         c.employer_id, c.summary, c.details, c.created_at, c.updated_at,
+         au.admin_email AS assigned_admin_email,
+         u.full_name AS user_name,
+         u.phone AS user_phone,
+         u.email AS user_email,
+         employer.full_name AS employer_name
+    FROM admin_cases c
+    LEFT JOIN admin_users au ON au.id = c.assigned_admin_id
+    LEFT JOIN users u ON u.id = c.user_id
+    LEFT JOIN users employer ON employer.id = c.employer_id`;
+
+const OPEN_CASE_FILTER = `c.status NOT IN ('resolved', 'dismissed')`;
+
 // Default page size for queue list reads. Bounds memory/render cost so the
 // queue stays responsive as admin_cases grows; detail pages load single rows.
 export const ADMIN_CASES_PAGE_SIZE = 200;
@@ -169,17 +186,7 @@ export async function listAdminCases(limit: number = ADMIN_CASES_PAGE_SIZE): Pro
   // does). Bounded by LIMIT to avoid unbounded scans at scale.
   const [result, countResult] = await Promise.all([
     pool.query<AdminCaseRow>(
-      `SELECT c.id, c.case_type, c.status, c.priority, c.user_id, c.conversation_id,
-              c.employer_id, c.summary, c.details, c.created_at, c.updated_at,
-              au.admin_email AS assigned_admin_email,
-              u.full_name AS user_name,
-              u.phone AS user_phone,
-              u.email AS user_email,
-              employer.full_name AS employer_name
-         FROM admin_cases c
-         LEFT JOIN admin_users au ON au.id = c.assigned_admin_id
-         LEFT JOIN users u ON u.id = c.user_id
-         LEFT JOIN users employer ON employer.id = c.employer_id
+      `${CASE_LIST_SELECT}
         ORDER BY c.status, c.priority DESC, c.created_at DESC
         LIMIT $1`,
       [limit],
@@ -193,6 +200,28 @@ export async function listAdminCases(limit: number = ADMIN_CASES_PAGE_SIZE): Pro
     rows: result.rows.map((row) => mapAdminCaseRow(row)),
     totalCount: parseInt(countResult.rows[0]?.count ?? '0', 10),
   };
+}
+
+export async function countOpenAdminCases(): Promise<number> {
+  const pool = await getAdminDbPool();
+  const result = await pool.query<{ count: string }>(
+    `SELECT COUNT(*) AS count FROM admin_cases c WHERE ${OPEN_CASE_FILTER}`,
+  );
+  return parseInt(result.rows[0]?.count ?? '0', 10);
+}
+
+// Newest open cases first, by priority. Queried directly so closed rows can
+// never crowd open ones out of a fixed-size page (roadmap audit finding 7).
+export async function listOpenAdminCases(limit: number): Promise<AdminCase[]> {
+  const pool = await getAdminDbPool();
+  const result = await pool.query<AdminCaseRow>(
+    `${CASE_LIST_SELECT}
+      WHERE ${OPEN_CASE_FILTER}
+      ORDER BY c.priority DESC, c.created_at DESC
+      LIMIT $1`,
+    [limit],
+  );
+  return result.rows.map((row) => mapAdminCaseRow(row));
 }
 
 export async function getAdminCase(id: string): Promise<AdminCase | undefined> {
