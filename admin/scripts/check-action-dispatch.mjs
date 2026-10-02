@@ -14,7 +14,6 @@ const sourceFiles = [
   'src/lib/server/db.ts',
   'src/lib/server/session-claims.ts',
   'src/lib/server/admin-cases.ts',
-  'src/lib/server/admin-verifications.ts',
   'src/lib/server/admin-action-dispatch.ts',
 ].map((relativePath) => resolve(root, relativePath));
 
@@ -61,8 +60,6 @@ program.emit(undefined, (fileName, data) => {
         .replaceAll("'./db-secret'", "'./db-secret.mjs'")
         .replaceAll('"./admin-cases"', '"./admin-cases.mjs"')
         .replaceAll("'./admin-cases'", "'./admin-cases.mjs'")
-        .replaceAll('"./admin-verifications"', '"./admin-verifications.mjs"')
-        .replaceAll("'./admin-verifications'", "'./admin-verifications.mjs'")
         .replaceAll('"./db"', '"./db.mjs"')
         .replaceAll("'./db'", "'./db.mjs'"),
     );
@@ -135,24 +132,8 @@ assert.deepEqual(dispatch.buildCaseMutation('resolve_case', {}), {
 
 assert.equal(dispatch.buildCaseMutation('reply_whatsapp', {}), undefined);
 
-assert.deepEqual(dispatch.buildVerificationMutation('approve_verification', {}), {
-  sql: `UPDATE admin_cases SET status = $2, details = details || $3::jsonb, resolved_at = NOW(), updated_at = NOW() WHERE id = $1 AND case_type = 'verification_blocker' AND status NOT IN ('resolved', 'dismissed')`,
-  params: ['verification-id', 'resolved', JSON.stringify({ verificationStatus: 'approved' })],
-});
-
-assert.deepEqual(dispatch.buildVerificationMutation('reject_verification', { justification: 'Docs do not match.' }), {
-  sql: `UPDATE admin_cases SET status = $2, details = details || $3::jsonb, resolved_at = NOW(), updated_at = NOW() WHERE id = $1 AND case_type = 'verification_blocker' AND status NOT IN ('resolved', 'dismissed')`,
-  params: ['verification-id', 'dismissed', JSON.stringify({ verificationStatus: 'rejected', rejectionReason: 'Docs do not match.' })],
-});
-
-assert.match(
-  dispatch.buildVerificationMutation('request_more_info', {})?.sql ?? '',
-  /status NOT IN \('resolved', 'dismissed'\)/,
-);
-assert.match(
-  dispatch.buildVerificationMutation('reset_verification_step', {})?.sql ?? '',
-  /status NOT IN \('resolved', 'dismissed'\)/,
-);
+// Roadmap 1b retired the verification actions and their mutation builder.
+assert.equal(dispatch.buildVerificationMutation, undefined);
 
 console.log('admin action dispatch checks passed');
 

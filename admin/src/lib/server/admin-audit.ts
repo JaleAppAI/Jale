@@ -37,7 +37,7 @@ export function mapAuditEventRow(row: AuditEventRow): AuditEvent {
 }
 
 // Default page size for audit log reads, matching the pattern used in
-// admin-cases and admin-verifications.
+// admin-cases.
 export const AUDIT_PAGE_SIZE = 200;
 
 export type AuditEventList = {
@@ -65,4 +65,12 @@ export async function listAuditEvents(limit: number = AUDIT_PAGE_SIZE): Promise<
     rows: result.rows.map(mapAuditEventRow),
     totalCount: parseInt(countResult.rows[0]?.count ?? '0', 10),
   };
+}
+
+export async function countPiiRevealEvents(): Promise<number> {
+  const pool = await getAdminDbPool();
+  const result = await pool.query<{ count: string }>(
+    `SELECT COUNT(*) AS count FROM admin_audit_log WHERE pii_reveal`,
+  );
+  return parseInt(result.rows[0]?.count ?? '0', 10);
 }

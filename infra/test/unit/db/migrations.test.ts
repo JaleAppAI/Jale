@@ -133,6 +133,7 @@ describe('database migrations', () => {
       '099',
       '100',
       '101',
+      '102',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -1013,6 +1014,84 @@ describe('database migrations', () => {
     expect(tableDef).not.toBe('');
     expect(tableDef).not.toMatch(/phone_hash/);
     expect(sql).not.toMatch(/NEW\.phone_hash|c\.phone_hash/);
+  });
+
+  // Roadmap 1b: the lockout list is one gated definer plus an invoker masking
+  // helper. On RDS there is no Jest, so the migration's own DO block is the
+  // only runtime check; these literals pin that it exists and stays strict.
+  it('102 lists phone-code lockouts through one gated definer without exposing phone hashes', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '102_admin_identity_lockouts.sql'), 'utf8');
+
+    expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+    expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+
+    // CREATE POLICY locks whatsapp_conversations; fail fast rather than queue
+    // every inbound message behind a stuck transaction (099–101's pattern).
+    const iBegin = sql.indexOf('BEGIN;');
+    const iLock = sql.indexOf("SET LOCAL lock_timeout = '5s';");
+    const iPolicy = sql.indexOf('CREATE POLICY');
+    expect(iLock).toBeGreaterThan(iBegin);
+    expect(iPolicy).toBeGreaterThan(iLock);
+
+    // One definer (the list) and one invoker helper (masking); both pinned.
+    expect(sql.match(/^SECURITY DEFINER$/gm)).toHaveLength(1);
+    expect(sql.match(/SET search_path = pg_catalog, pg_temp/g)).toHaveLength(2);
+    expect(sql).toContain('ALTER FUNCTION public.admin_identity_lockouts(INTEGER) OWNER TO jale_admin;');
+    expect(sql).toContain('ALTER FUNCTION public.admin_mask_phone(TEXT) OWNER TO jale_admin;');
+    expect(sql).toContain('REVOKE ALL ON FUNCTION public.admin_identity_lockouts(INTEGER) FROM PUBLIC;');
+    expect(sql).toContain('REVOKE ALL ON FUNCTION public.admin_mask_phone(TEXT) FROM PUBLIC;');
+    // The list's EXECUTE grant is the only statement naming the console role.
+    expect(sql.match(/TO jale_admin_console/g)).toHaveLength(1);
+    expect(sql).toContain('GRANT EXECUTE ON FUNCTION public.admin_identity_lockouts(INTEGER) TO jale_admin_console;');
+    expect(sql).not.toMatch(/GRANT\s+SELECT/);
+
+    // The window is validated BEFORE the gate opens, so a rejected call never
+    // flips it (a runtime check cannot see this: the exception's rollback
+    // would undo the flag either way).
+    const iRaise = sql.indexOf("RAISE EXCEPTION 'admin_identity_lockouts_invalid_days'");
+    const iGate = sql.indexOf("PERFORM set_config('app.admin_analytics_read', 'on', true);");
+    expect(iRaise).toBeGreaterThan(0);
+    expect(iGate).toBeGreaterThan(iRaise);
+    expect(sql.match(/PERFORM set_config\('app\.admin_analytics_read', 'on', true\);/g)).toHaveLength(1);
+
+    // Lockouts come from 101's history; the phone from the conversation hash.
+    expect(sql).toContain('FROM public.worker_identity_challenge_events e');
+    expect(sql).toContain("e.to_status = 'locked'");
+    expect(sql).toContain("encode(sha256(convert_to(btrim(w.whatsapp_number), 'UTF8')), 'hex')");
+
+    // What happened next lives on newer same-phone challenges (expired rows
+    // are never reused).
+    expect(sql).toContain('(n.created_at, n.id) > (c.created_at, c.id)');
+    expect(sql).toContain("OR p.newer_verified THEN 'verified'");
+    expect(sql).toContain('AND NOT nw.newer_progressed');
+    // Only newer rows that reached the code step count, and only a recent
+    // code or lock is a live retry.
+    expect(sql).toContain("n.current_step_key = 'identity.verify_otp'");
+    expect(sql).toContain('WHEN p.newer_live THEN');
+    // Exactly the owner and the console may execute the list; the order is stable.
+    expect(sql.match(/aclexplode\(/g)).toHaveLength(2);
+    expect(sql).toContain('COALESCE(p.last_at, p.updated_at) DESC, p.id;');
+
+    // Exactly one new policy: 089's gated read on whatsapp_conversations.
+    expect(sql.match(/CREATE POLICY/g)).toHaveLength(1);
+    expect(sql).toMatch(
+      /CREATE POLICY whatsapp_conversations_admin_analytics_read\s+ON public\.whatsapp_conversations FOR SELECT\s+TO jale_admin\s+USING \(current_setting\('app\.admin_analytics_read', true\) = 'on'\);/,
+    );
+
+    // The result never carries the hash, user ids, the Cognito session,
+    // context, or the raw number.
+    const resultDef = sql.match(/CREATE FUNCTION public\.admin_identity_lockouts[\s\S]*?\)\nLANGUAGE plpgsql/)?.[0] ?? '';
+    expect(resultDef).not.toBe('');
+    expect(resultDef).not.toMatch(/phone_hash|user_id|provider_challenge_id|context|whatsapp_number/);
+
+    // Self-check: fail closed on drifted policies, masking format, and the gate.
+    expect(sql).toContain('missing or drifted; the lockout list would read zero challenges');
+    expect(sql).toContain('missing or drifted; the lockout list would read zero lockouts');
+    expect(sql).toContain("public.admin_mask_phone('+526641234567') IS DISTINCT FROM '+52 664 *** 4567'");
+    expect(sql).toContain('migration 102: admin_identity_lockouts did not set the read flag');
+
+    // Forward-only.
+    expect(sql).not.toMatch(/DROP (FUNCTION|TABLE|TRIGGER|POLICY)/);
   });
 
   // Same reason as the 082/088/089 blocks above: on RDS there is no Jest, so

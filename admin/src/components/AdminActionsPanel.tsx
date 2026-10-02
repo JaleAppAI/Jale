@@ -12,14 +12,7 @@ type CaseTarget = {
   targetCaseType: string;
 };
 
-type VerificationTarget = {
-  targetType: 'verification';
-  targetId: string;
-  targetStatus: string;
-  targetStep: string;
-};
-
-export type AdminActionsTarget = CaseTarget | VerificationTarget;
+export type AdminActionsTarget = CaseTarget;
 
 type AdminActionsPanelProps = {
   actions: AdminAction[];
@@ -29,25 +22,13 @@ type AdminActionsPanelProps = {
 const INITIAL_STATE: AdminActionFormState = { status: 'idle' };
 
 function TargetHiddenInputs({ target }: { target: AdminActionsTarget }) {
-  if (target.targetType === 'admin_case') {
-    return (
-      <>
-        <input name="targetType" type="hidden" value="admin_case" />
-        <input name="targetId" type="hidden" value={target.targetId} />
-        <input name="targetKind" type="hidden" value="case" />
-        <input name="targetStatus" type="hidden" value={target.targetStatus} />
-        <input name="targetCaseType" type="hidden" value={target.targetCaseType} />
-      </>
-    );
-  }
-
   return (
     <>
-      <input name="targetType" type="hidden" value="verification" />
+      <input name="targetType" type="hidden" value="admin_case" />
       <input name="targetId" type="hidden" value={target.targetId} />
-      <input name="targetKind" type="hidden" value="verification" />
+      <input name="targetKind" type="hidden" value="case" />
       <input name="targetStatus" type="hidden" value={target.targetStatus} />
-      <input name="targetStep" type="hidden" value={target.targetStep} />
+      <input name="targetCaseType" type="hidden" value={target.targetCaseType} />
     </>
   );
 }
