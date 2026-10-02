@@ -129,6 +129,10 @@ describe('database migrations', () => {
       '095',
       '096',
       '097',
+      '098',
+      '099',
+      '100',
+      '101',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -860,6 +864,155 @@ describe('database migrations', () => {
 
     // Forward-only: 087 must not try to edit or drop 086's objects.
     expect(sql).not.toMatch(/DROP FUNCTION/);
+  });
+
+  it('098 adds hire counts and honest delivery failures without widening the console role', () => {
+    const sql = fs.readFileSync(
+      path.join(migrationsDir, '098_admin_analytics_hires_and_delivery.sql'),
+      'utf8',
+    );
+
+    // Exactly the two changed definers, each hardened per 088/089. Line-anchored
+    // so header prose cannot inflate the counts.
+    expect(sql.match(/^SECURITY DEFINER$/gm)).toHaveLength(2);
+    expect(sql.match(/SET search_path = pg_catalog, pg_temp/g)).toHaveLength(2);
+    expect(sql.match(/^LANGUAGE plpgsql$/gm)).toHaveLength(2);
+    expect(
+      sql.match(/PERFORM set_config\('app\.admin_analytics_read', 'on', true\);/g),
+    ).toHaveLength(2);
+    expect(sql.match(/OWNER TO jale_admin;/g)).toHaveLength(2);
+    expect(sql.match(/REVOKE ALL ON FUNCTION public\.admin_analytics_\w+\([^)]*\) FROM PUBLIC;/g)).toHaveLength(2);
+    expect(sql.match(/GRANT EXECUTE ON FUNCTION public\.admin_analytics_\w+\([^)]*\) TO jale_admin_console;/g)).toHaveLength(2);
+    // Same escalation guard as 088/089: the two EXECUTE grants are the only
+    // statements naming the console role as a grantee.
+    expect(sql.match(/TO jale_admin_console/g)).toHaveLength(2);
+
+    // totals changes its return type, so it is the one drop; message_traffic
+    // keeps its signature and is replaced in place.
+    expect(sql.match(/DROP FUNCTION/g)).toHaveLength(1);
+    expect(sql).toContain('DROP FUNCTION public.admin_analytics_totals();');
+    expect(sql).toMatch(/hires_total\s+BIGINT/);
+    expect(sql).toMatch(/jobs_with_hire\s+BIGINT/);
+    expect(sql).toContain('hired_at IS NOT NULL');
+
+    // The corrected failure and outbound definitions.
+    expect(sql).toContain("o.status IN ('failed', 'send_unknown')");
+    expect(sql).toContain("o.twilio_delivery_status IN ('failed', 'undelivered')");
+    expect(sql).toContain("m.status IN ('failed', 'undelivered')");
+    expect(sql).toContain("m.sender_type <> 'system'");
+
+    // No new policies or table access: jobs, job_applications and
+    // job_conversation_messages are already gated by 089.
+    expect(sql).not.toMatch(/CREATE POLICY/);
+    expect(sql).not.toMatch(/GRANT\s+SELECT[\s\S]*?TO jale_admin_console/);
+  });
+
+  // 099–101 (roadmap sub-project 1d) share one shape: a FORCE-RLS, append-only
+  // history table written only by a jale_admin-owned SECURITY DEFINER trigger,
+  // readable only through 089's analytics gate. Returns the SQL so each test
+  // can add its table-specific assertions.
+  function expectHistoryCaptureMigration(file: string, table: string, fn: string, parent: string): string {
+    const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
+
+    // A stuck transaction holding the parent table's lock must not hang the
+    // apply indefinitely; the lock_timeout is set before CREATE TABLE takes
+    // the parent lock.
+    const iBegin = sql.indexOf('BEGIN;');
+    const iLock = sql.indexOf("SET LOCAL lock_timeout = '5s';");
+    const iCreate = sql.indexOf('CREATE TABLE');
+    expect(iBegin).toBeGreaterThanOrEqual(0);
+    expect(iLock).toBeGreaterThan(iBegin);
+    expect(iCreate).toBeGreaterThan(iLock);
+
+    // The backfill's own row-count comparison can't catch an 089-gate that
+    // failed to open (both sides would read 0 and match); the precondition
+    // DO block asserts the gate policy directly against pg_policy instead.
+    expect(sql).toContain('missing or drifted; the backfill would read zero rows');
+
+    expect(sql).toMatch(new RegExp(`CREATE TABLE public\\.${table} \\(`));
+    expect(sql).toMatch(new RegExp(`REFERENCES public\\.${parent}\\(id\\) ON DELETE CASCADE`));
+    expect(sql).toContain('id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY');
+    expect(sql).toContain('is_backfill BOOLEAN NOT NULL DEFAULT false');
+    expect(sql).toContain(`ALTER TABLE public.${table} ENABLE ROW LEVEL SECURITY;`);
+    expect(sql).toContain(`ALTER TABLE public.${table} FORCE ROW LEVEL SECURITY;`);
+    expect(sql).toContain(`REVOKE ALL ON public.${table} FROM PUBLIC;`);
+
+    // Exactly two policies: the trigger's insert path and 089's gated read.
+    expect(sql.match(/CREATE POLICY/g)).toHaveLength(2);
+    expect(sql).toMatch(new RegExp(
+      `CREATE POLICY ${table}_capture_insert\\s+ON public\\.${table} FOR INSERT\\s+TO jale_admin\\s+WITH CHECK \\(true\\);`,
+    ));
+    expect(sql).toMatch(new RegExp(
+      `CREATE POLICY ${table}_admin_analytics_read\\s+ON public\\.${table} FOR SELECT\\s+TO jale_admin\\s+USING \\(current_setting\\('app\\.admin_analytics_read', true\\) = 'on'\\);`,
+    ));
+    // Append-only for every session: no policy can rewrite history.
+    expect(sql).not.toMatch(/FOR (UPDATE|DELETE|ALL)\b/);
+    // No role but the owner gains anything.
+    expect(sql).not.toMatch(/\bGRANT\b/);
+
+    // One trigger function, hardened per 072/089; line-anchored so header prose
+    // cannot inflate the counts.
+    expect(sql.match(/^SECURITY DEFINER$/gm)).toHaveLength(1);
+    expect(sql.match(/SET search_path = pg_catalog, pg_temp/g)).toHaveLength(1);
+    expect(sql).toContain(`ALTER FUNCTION public.${fn}() OWNER TO jale_admin;`);
+    expect(sql).toContain(`REVOKE ALL ON FUNCTION public.${fn}() FROM PUBLIC;`);
+    expect(sql.match(new RegExp(`EXECUTE FUNCTION public\\.${fn}\\(\\)`, 'g'))).toHaveLength(2);
+    expect(sql).toMatch(new RegExp(`AFTER INSERT ON public\\.${parent}`));
+    expect(sql).toMatch(new RegExp(`AFTER UPDATE OF [a-z_, ]+ ON public\\.${parent}`));
+
+    // Backfill reads parents through 089's gate and flags its rows.
+    expect(sql).toContain(`SELECT set_config('app.admin_analytics_read', 'on', true);`);
+    expect(sql).toMatch(new RegExp(`INSERT INTO public\\.${table}\\s*\\([^)]*is_backfill\\)`));
+
+    // Forward-only: never touches an earlier migration's objects.
+    expect(sql).not.toMatch(/DROP (FUNCTION|TABLE|TRIGGER|POLICY)/);
+    return sql;
+  }
+
+  it('099 records application status history through a definer trigger', () => {
+    const sql = expectHistoryCaptureMigration(
+      '099_job_application_status_events.sql',
+      'job_application_status_events',
+      'capture_job_application_status_event',
+      'job_applications',
+    );
+    expect(sql).toContain('AFTER UPDATE OF status ON public.job_applications');
+    expect(sql).toContain('WHEN (OLD.status IS DISTINCT FROM NEW.status)');
+    // Hired rows backfill at their first hire (095), everything else at updated_at.
+    expect(sql).toContain("WHEN a.status = 'hired' AND a.hired_at IS NOT NULL THEN a.hired_at");
+  });
+
+  it('100 records subscription status, plan, and cancellation history through a definer trigger', () => {
+    const sql = expectHistoryCaptureMigration(
+      '100_subscription_status_history.sql',
+      'subscription_status_history',
+      'capture_subscription_status_history',
+      'subscriptions',
+    );
+    expect(sql).toContain('AFTER UPDATE OF status, plan_code, cancel_at_period_end ON public.subscriptions');
+    expect(sql).toContain('OLD.status IS DISTINCT FROM NEW.status');
+    expect(sql).toContain('OLD.plan_code IS DISTINCT FROM NEW.plan_code');
+    expect(sql).toContain('OLD.cancel_at_period_end IS DISTINCT FROM NEW.cancel_at_period_end');
+    // Terminal subscriptions backfill at updated_at so a cancellation is not
+    // dated to the day the subscription started.
+    expect(sql).toContain("WHEN s.status IN ('canceled', 'incomplete_expired') THEN s.updated_at ELSE s.created_at");
+  });
+
+  it('101 records phone-code challenge history without copying phone hashes', () => {
+    const sql = expectHistoryCaptureMigration(
+      '101_worker_identity_challenge_events.sql',
+      'worker_identity_challenge_events',
+      'capture_worker_identity_challenge_event',
+      'worker_identity_challenges',
+    );
+    expect(sql).toContain('AFTER UPDATE OF status, attempts, locked_until ON public.worker_identity_challenges');
+    expect(sql).toContain('OLD.attempts IS DISTINCT FROM NEW.attempts');
+    expect(sql).toContain('OLD.locked_until IS DISTINCT FROM NEW.locked_until');
+    // The unsalted phone hash stays only in the source table.
+    const tableDef = sql.match(/CREATE TABLE public\.worker_identity_challenge_events \([\s\S]*?\n\);/)?.[0] ?? '';
+    expect(tableDef).not.toBe('');
+    expect(tableDef).not.toMatch(/phone_hash/);
+    expect(sql).not.toMatch(/NEW\.phone_hash|c\.phone_hash/);
   });
 
   // Same reason as the 082/088/089 blocks above: on RDS there is no Jest, so

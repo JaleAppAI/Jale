@@ -1088,6 +1088,74 @@ export class WhatsAppStack extends cdk.Stack {
       trustQuestionGenFailedMetric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
     ).addAlarmAction(alarmAction);
 
+    // ── 1c: unwatched send failures (roadmap 2026-10-01) ─────────────
+    // Each of these lines was logged with no filter, so the failure was
+    // silent. OutboxSendFailure covers both a hard Twilio failure and an
+    // ambiguous send left terminally 'send_unknown' and deliberately never
+    // retried (lib/outbox.ts sendPendingOutbox). Both Lambdas that send
+    // inbound replies publish to one metric; like OutboxWakeFailures above,
+    // the alarm reads the shared metric through the first filter.
+    // A quoted term matches anywhere in a line, so a future log term that
+    // merely contains one of these (e.g. "…OutboxSendFailure") in a Lambda
+    // filtered here would silently feed the same metric — keep terms distinct.
+    const replySendFailureMetric = new logs.MetricFilter(this, 'WhatsAppReplySendFailureProcessorMetric', {
+      logGroup: this.processorLambda.logGroup,
+      filterPattern: logs.FilterPattern.literal('"OutboxSendFailure"'),
+      metricNamespace: 'Jale/WhatsApp',
+      metricName: 'ReplySendFailures',
+      metricValue: '1',
+    });
+    new logs.MetricFilter(this, 'WhatsAppReplySendFailureAiProfileWriterMetric', {
+      logGroup: aiProfileWriterLambda.logGroup,
+      filterPattern: logs.FilterPattern.literal('"OutboxSendFailure"'),
+      metricNamespace: 'Jale/WhatsApp',
+      metricName: 'ReplySendFailures',
+      metricValue: '1',
+    });
+    alarm(
+      'WhatsAppReplySendFailuresAlarm', 'WhatsAppReplySendFailures',
+      replySendFailureMetric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+    ).addAlarmAction(alarmAction);
+
+    // JobMessageOutboxSendFailed is logged by lib/job-messaging.ts in every
+    // Lambda that sends job messages: the processor and the outbox sweeper
+    // here, and the two employer conversation endpoints in ApiStack, whose
+    // filters publish to this same metric. This one alarm sums them all.
+    const jobMessageSendFailureMetric = new logs.MetricFilter(this, 'JobMessageSendFailureProcessorMetric', {
+      logGroup: this.processorLambda.logGroup,
+      filterPattern: logs.FilterPattern.literal('"JobMessageOutboxSendFailed"'),
+      metricNamespace: 'Jale/WhatsApp',
+      metricName: 'JobMessageSendFailures',
+      metricValue: '1',
+    });
+    new logs.MetricFilter(this, 'JobMessageSendFailureSweeperMetric', {
+      logGroup: outboxSweeperLambda.logGroup,
+      filterPattern: logs.FilterPattern.literal('"JobMessageOutboxSendFailed"'),
+      metricNamespace: 'Jale/WhatsApp',
+      metricName: 'JobMessageSendFailures',
+      metricValue: '1',
+    });
+    alarm(
+      'JobMessageSendFailuresAlarm', 'WhatsAppJobMessageSendFailures',
+      jobMessageSendFailureMetric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+    ).addAlarmAction(alarmAction);
+
+    // The job-alert drain logs a JobAlertOutboxDrain summary on every run, so
+    // the alarm keys off the failure-only line instead. Nothing produces job
+    // alerts today (job-alert has no trigger), so this stays quiet until that
+    // feature is wired.
+    const jobAlertDrainFailureMetric = new logs.MetricFilter(this, 'JobAlertDrainFailureMetric', {
+      logGroup: jobAlertDrainLambda.logGroup,
+      filterPattern: logs.FilterPattern.literal('"JobAlertOutboxDrainFailure"'),
+      metricNamespace: 'Jale/WhatsApp',
+      metricName: 'JobAlertDrainFailures',
+      metricValue: '1',
+    });
+    alarm(
+      'JobAlertDrainFailuresAlarm', 'WhatsAppJobAlertDrainFailures',
+      jobAlertDrainFailureMetric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+    ).addAlarmAction(alarmAction);
+
     // v2 onboarding funnel: one datapoint per successful step advance
     // (emitted by advanceWorkflow / completeOnboarding in
     // onboarding-repository.ts). Dashboard/diagnosis metric — deliberately

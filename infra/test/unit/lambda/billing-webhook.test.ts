@@ -180,6 +180,28 @@ describe('billing webhook handler', () => {
     }
   });
 
+  it('logs a bare BillingWebhookInvalidSignature metric line on bad signature', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    mockVerifyStripeEvent.mockImplementation(() => {
+      throw new Error('bad signature');
+    });
+    const res = await handler(makeEvent());
+    expect(res.statusCode).toBe(400);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(JSON.stringify({ metric: 'BillingWebhookInvalidSignature' }));
+    // The alarm line carries nothing from the request.
+    const logged = JSON.stringify(warn.mock.calls);
+    expect(logged).not.toContain(PAYLOAD_STRING);
+    expect(logged).not.toMatch(/t=\d+,v1=/);
+  });
+
+  it('does not log the invalid-signature metric when verification succeeds', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await handler(makeEvent());
+    expect(res.statusCode).toBe(200);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('BillingWebhookInvalidSignature');
+  });
+
   // ── UTF-8 (non-base64) body path ───────────────────────────────────────
 
   it('sends a byte-exact envelope for UTF-8 body (isBase64Encoded=false)', async () => {

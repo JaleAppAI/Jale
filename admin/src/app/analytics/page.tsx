@@ -8,9 +8,19 @@ import {
   getPayingEmployers,
   getSignups,
   parseAnalyticsRange,
+  parseSignupsView,
 } from '@/lib/server/admin-analytics';
-import type { AnalyticsRange } from '@/lib/types';
-import { bucketLabel, formatCount, percentOf, perUnit, signedDelta, sum } from '@/lib/analytics-format';
+import type { AnalyticsRange, SignupsView } from '@/lib/types';
+import {
+  analyticsHref,
+  bucketLabel,
+  cumulativeSeries,
+  formatCount,
+  percentOf,
+  perUnit,
+  signedDelta,
+  sum,
+} from '@/lib/analytics-format';
 import { TrendChart } from '@/components/analytics/TrendChart';
 import { ColumnChart } from '@/components/analytics/ColumnChart';
 import { KpiTile } from '@/components/analytics/KpiTile';
@@ -25,17 +35,23 @@ const RANGES: { value: AnalyticsRange; label: string; period: string }[] = [
   { value: '90d', label: 'Last 90 days', period: 'the last 90 days' },
 ];
 
+const SIGNUP_VIEWS: { value: SignupsView; label: string }[] = [
+  { value: 'total', label: 'Total' },
+  { value: 'new', label: 'New' },
+];
+
 const WORKERS_BLUE = '#0179ff';
 const EMPLOYERS_ORANGE = '#eb6834';
 
 export default async function AnalyticsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ range?: string | string[] }>;
+  searchParams: Promise<{ range?: string | string[]; signups?: string | string[] }>;
 }) {
   await requireAdminSession();
-  const { range: rangeParam } = await searchParams;
+  const { range: rangeParam, signups: signupsParam } = await searchParams;
   const range = parseAnalyticsRange(rangeParam ?? DEFAULT_ANALYTICS_RANGE);
+  const signupsView = parseSignupsView(signupsParam);
   const period = RANGES.find((r) => r.value === range)?.period ?? 'this period';
 
   // db.ts caps the shared pool at max: 5, so running all five analytics queries
@@ -63,9 +79,38 @@ export default async function AnalyticsPage({
   const applicationsTotal = sum(applications);
   const appsPerJob = perUnit(applicationsTotal, jobsPostedTotal);
   const payingShare = percentOf(totals.payingEmployers, totals.totalEmployers);
+  const totalJobs = totals.jobsActive + totals.jobsPaused + totals.jobsFilled + totals.jobsClosed;
+  const hireShare = percentOf(totals.jobsWithHire, totalJobs);
 
-  const lastWorkers = workerSignups[workerSignups.length - 1] ?? 0;
-  const lastEmployers = employerSignups[employerSignups.length - 1] ?? 0;
+  // 'total' plots the running account count, which ends at today's total, so
+  // nothing is in progress. 'new' plots per-bucket signups, whose last bucket
+  // (today / this week) is still filling up and must not read as a drop.
+  const cumulative = signupsView === 'total';
+  const workerSeries = cumulative ? cumulativeSeries(workerSignups, totals.totalWorkers) : workerSignups;
+  const employerSeries = cumulative ? cumulativeSeries(employerSignups, totals.totalEmployers) : employerSignups;
+  const lastWorkers = workerSeries[workerSeries.length - 1] ?? 0;
+  const lastEmployers = employerSeries[employerSeries.length - 1] ?? 0;
+  const bucketWord = range === '90d' ? 'week' : 'day';
+  // 'new' end labels are the partial bucket's delta, never a total -- spec:
+  // the end-dot label must never be misread as a running total (audit finding 1).
+  const newEndSuffix = bucketWord === 'week' ? 'this week' : 'today';
+  const workerEndLabel = cumulative ? `${formatCount(lastWorkers)} workers` : `+${formatCount(lastWorkers)} ${newEndSuffix}`;
+  const employerEndLabel = cumulative ? `${formatCount(lastEmployers)} employers` : `+${formatCount(lastEmployers)} ${newEndSuffix}`;
+
+  const signupsToggle = (
+    <nav className="range-picker" aria-label="Signups view">
+      {SIGNUP_VIEWS.map(({ value, label }) => (
+        <Link
+          key={value}
+          className="button"
+          href={analyticsHref(range, value)}
+          aria-current={value === signupsView ? 'page' : undefined}
+        >
+          {label}
+        </Link>
+      ))}
+    </nav>
+  );
 
   return (
     <main className="stack-gap">
@@ -79,7 +124,7 @@ export default async function AnalyticsPage({
             <Link
               key={value}
               className="button"
-              href={`/analytics?range=${value}`}
+              href={analyticsHref(value, signupsView)}
               aria-current={value === range ? 'page' : undefined}
             >
               {label}
@@ -92,19 +137,22 @@ export default async function AnalyticsPage({
         <KpiTile label="Workers" value={totals.totalWorkers} note={`${signedDelta(newWorkers)} this period`} tone={newWorkers > 0 ? 'positive' : 'muted'} />
         <KpiTile label="Employers" value={totals.totalEmployers} note={`${signedDelta(newEmployers)} this period`} tone={newEmployers > 0 ? 'positive' : 'muted'} />
         <KpiTile label="Paying employers" value={totals.payingEmployers} note={payingShare ? `${payingShare} of employers` : 'Active, trialing, or past due'} />
-        <KpiTile label="Active jobs" value={totals.jobsActive} note={`${formatCount(totals.jobsPaused)} paused`} />
-        <KpiTile label="Filled jobs" value={totals.jobsFilled} note="All time" />
-        <KpiTile label="Closed jobs" value={totals.jobsClosed} note="All time" />
+        <KpiTile label="Active jobs" value={totals.jobsActive} note={`${formatCount(totals.jobsPaused)} paused · ${formatCount(totals.jobsClosed)} closed`} />
+        <KpiTile label="Hires" value={totals.hiresTotal} note="All time" />
+        <KpiTile label="Jobs with ≥1 hire" value={totals.jobsWithHire} note={hireShare ? `${hireShare} of all jobs` : 'All time'} />
       </section>
 
       <TrendChart
         title="Signups"
-        subtitle={range === '90d' ? 'New accounts per week' : 'New accounts per day'}
+        subtitle={cumulative ? `Total accounts at the end of each ${bucketWord}` : `New accounts per ${bucketWord}`}
         labels={labels}
-        tableCaption="Signups by period"
+        tableCaption={cumulative ? 'Total accounts by period' : 'New accounts by period'}
+        partialLast
+        right={130}
+        tools={signupsToggle}
         series={[
-          { key: 'workers', label: 'Workers', color: WORKERS_BLUE, values: workerSignups, area: true, endLabel: `${formatCount(lastWorkers)} workers` },
-          { key: 'employers', label: 'Employers', color: EMPLOYERS_ORANGE, values: employerSignups, endLabel: `${formatCount(lastEmployers)} employers` },
+          { key: 'workers', label: 'Workers', color: WORKERS_BLUE, values: workerSeries, area: true, endLabel: workerEndLabel },
+          { key: 'employers', label: 'Employers', color: EMPLOYERS_ORANGE, values: employerSeries, endLabel: employerEndLabel },
         ]}
       />
 
@@ -124,6 +172,7 @@ export default async function AnalyticsPage({
           width={570}
           height={200}
           tableCaption="Applications by period"
+          partialLast
           series={[{ key: 'applications', label: 'Applications', color: WORKERS_BLUE, values: applications, area: true }]}
         />
       </section>

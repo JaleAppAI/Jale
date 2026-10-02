@@ -1,4 +1,4 @@
-import type { AnalyticsRange, PayingEmployer } from './types';
+import type { AnalyticsRange, PayingEmployer, SignupsView } from './types';
 
 const shortDate = (iso: string): string =>
   new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
@@ -30,6 +30,26 @@ export function percentOf(part: number, whole: number, digits = 0): string | nul
 export function perUnit(total: number, units: number, digits = 1): string | null {
   if (units <= 0) return null;
   return (total / units).toFixed(digits);
+}
+
+// Running total per bucket. `total` is today's all-time count and includes
+// every signup in the window, so the count before the window is
+// total − sum(window). Clamped at 0: totals and signups are read in separate
+// query waves, and a deletion between them must not push the baseline negative.
+export function cumulativeSeries(perBucket: number[], total: number): number[] {
+  const values: number[] = [];
+  let running = Math.max(0, total - sum(perBucket));
+  for (const value of perBucket) {
+    running += value;
+    values.push(running);
+  }
+  return values;
+}
+
+// Range and signups-view links each preserve the other; the default view
+// ('total') is left out so existing ?range= links keep their meaning.
+export function analyticsHref(range: AnalyticsRange, signups: SignupsView): string {
+  return signups === 'new' ? `/analytics?range=${range}&signups=new` : `/analytics?range=${range}`;
 }
 
 export function periodEndLabel(row: PayingEmployer): string {

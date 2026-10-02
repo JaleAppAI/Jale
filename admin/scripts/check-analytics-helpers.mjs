@@ -58,6 +58,13 @@ assert.equal(analytics.parseAnalyticsRange('junk'), '30d', 'unknown range falls 
 assert.equal(analytics.parseAnalyticsRange(undefined), '30d', 'missing range falls back to 30d');
 assert.equal(analytics.parseAnalyticsRange(['7d']), '30d', 'array (repeated param) falls back to 30d');
 
+// ---- parseSignupsView ----
+assert.equal(analytics.parseSignupsView('new'), 'new');
+assert.equal(analytics.parseSignupsView('total'), 'total');
+assert.equal(analytics.parseSignupsView(undefined), 'total', 'missing view defaults to the running total');
+assert.equal(analytics.parseSignupsView('junk'), 'total', 'unknown view falls back to total');
+assert.equal(analytics.parseSignupsView(['new']), 'total', 'array (repeated param) falls back to total');
+
 // ---- resolveRange ----
 // Fixed "now" so assertions are deterministic: Sunday 2026-08-30 15:00 UTC.
 const now = new Date('2026-08-30T15:00:00.000Z');
@@ -102,8 +109,13 @@ assert.deepEqual(
   analytics.mapTotalsRow({
     total_workers: '12', total_employers: '5', paying_employers: '3',
     jobs_active: '7', jobs_paused: '1', jobs_filled: '2', jobs_closed: '4',
+    hires_total: '9', jobs_with_hire: '6',
   }),
-  { totalWorkers: 12, totalEmployers: 5, payingEmployers: 3, jobsActive: 7, jobsPaused: 1, jobsFilled: 2, jobsClosed: 4 },
+  {
+    totalWorkers: 12, totalEmployers: 5, payingEmployers: 3,
+    jobsActive: 7, jobsPaused: 1, jobsFilled: 2, jobsClosed: 4,
+    hiresTotal: 9, jobsWithHire: 6,
+  },
 );
 
 assert.deepEqual(

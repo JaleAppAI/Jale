@@ -44,7 +44,11 @@ export const handler = async (
     try {
       stripeEvent = verifyStripeEvent(rawBody, signatureHeader, webhookSigningSecret);
     } catch {
-      // Never log the signature or body — they may contain sensitive data
+      // Never log the signature or body — they may contain sensitive data.
+      // The bare metric line is what the BillingWebhookInvalidSignature alarm
+      // counts: a wrong or rotated signing secret rejects every Stripe event
+      // here with a 400, which was otherwise completely silent.
+      console.warn(JSON.stringify({ metric: 'BillingWebhookInvalidSignature' }));
       return { statusCode: 400, body: 'invalid signature' };
     }
 

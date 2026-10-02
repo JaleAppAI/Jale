@@ -6,15 +6,22 @@ import type {
   MessageTrafficBucket,
   PayingEmployer,
   SignupBucket,
+  SignupsView,
 } from '../types';
 import { getAdminDbPool } from './db';
 
 export const DEFAULT_ANALYTICS_RANGE: AnalyticsRange = '30d';
 
+export const DEFAULT_SIGNUPS_VIEW: SignupsView = 'total';
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export function parseAnalyticsRange(value: unknown): AnalyticsRange {
   return value === '7d' || value === '30d' || value === '90d' ? value : DEFAULT_ANALYTICS_RANGE;
+}
+
+export function parseSignupsView(value: unknown): SignupsView {
+  return value === 'new' ? 'new' : DEFAULT_SIGNUPS_VIEW;
 }
 
 function utcStartOfDay(date: Date): Date {
@@ -78,6 +85,8 @@ export type TotalsRow = {
   jobs_paused: string | number;
   jobs_filled: string | number;
   jobs_closed: string | number;
+  hires_total: string | number;
+  jobs_with_hire: string | number;
 };
 
 export function mapTotalsRow(row: TotalsRow): AnalyticsTotals {
@@ -89,6 +98,8 @@ export function mapTotalsRow(row: TotalsRow): AnalyticsTotals {
     jobsPaused: asCount(row.jobs_paused),
     jobsFilled: asCount(row.jobs_filled),
     jobsClosed: asCount(row.jobs_closed),
+    hiresTotal: asCount(row.hires_total),
+    jobsWithHire: asCount(row.jobs_with_hire),
   };
 }
 
