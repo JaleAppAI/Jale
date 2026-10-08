@@ -286,4 +286,170 @@ assert.match(
 assert.match(analyticsPage, /\$\{formatCount\(newVerified\)\} verified`/, 'the workers tile notes how many new workers verified');
 assert.match(trend, /spreadLabels\(/, 'end labels are spread so close lines stay legible');
 
+// --- Roadmap 2b: employer health page --------------------------------------
+assert.equal(existsSync(resolve(root, 'src/app/analytics/employers/page.tsx')), true, '/analytics/employers exists');
+const employersPage = read('src/app/analytics/employers/page.tsx');
+const employerWeeklyTable = read('src/components/analytics/EmployerWeeklyTable.tsx');
+const slowestEmployers = read('src/components/analytics/SlowestEmployers.tsx');
+const staleJobsList = read('src/components/analytics/StaleJobsList.tsx');
+const analyticsReadModel = read('src/lib/server/admin-analytics.ts');
+
+assert.match(
+  employersPage,
+  /\) \{\n  await requireAdminSession\(\);\n  const \{ weeks: weeksParam \} = await searchParams;/,
+  'the employers page gates on an admin session before reading anything',
+);
+assert.match(employersPage, /searchParams\??:\s*Promise</, 'the employers page types searchParams as a Promise (Next 16)');
+assert.match(employersPage, /const weeks = parseFunnelWeeks\(weeksParam\);/, 'the weeks param is parsed like Funnels (4 / 8 / 12, default 8)');
+assert.match(
+  employersPage,
+  /Promise\.all\(\[\s*getEmployerWeekly\(weeks\),\s*getSlowestEmployers\(weeks\),\s*getStaleJobs\(\),?\s*\]\)/,
+  'the employers page runs its three queries in one wave (pool cap of 5)',
+);
+assert.match(
+  employersPage,
+  /const \{ weekly, summary \} = splitEmployerWeekly\(weeklyRows\);/,
+  'the tiles read the SQL whole-window row, not a mean of the weeks',
+);
+for (const [pattern, point] of [
+  [/<KpiTile label="First response" value=\{formatDuration\(summary\.firstResponseP50Hours\)\} note=\{firstResponseNote\(summary\)\} \/>/, 'First response'],
+  [/<KpiTile label="Reply time" value=\{formatDuration\(summary\.replyP50Hours\)\} note=\{replyNote\(summary\)\} \/>/, 'Reply time'],
+  [/<KpiTile label="Time to hire" value=\{formatDays\(summary\.timeToHireP50Days\)\} note=\{hiresNote\(summary\)\} \/>/, 'Time to hire'],
+  [/<KpiTile label="Stale jobs" value=\{staleJobs\.length\} note=\{staleJobsNote\(summary\.activeJobs\)\} \/>/, 'Stale jobs'],
+]) {
+  assert.match(employersPage, pattern, `the ${point} tile is wired to the window summary`);
+}
+assert.equal((employersPage.match(/<KpiTile /g) ?? []).length, 4, 'the employers page has exactly four tiles');
+for (const [pattern, point] of [
+  [/admin_analytics_employer_weekly\(\$1\)',\s*\[weeks\],/, 'weekly(weeks)'],
+  [/admin_analytics_slowest_employers\(\$1, \$2\)',\s*\[weeks, SLOWEST_EMPLOYERS_LIMIT\],/, 'slowest(weeks, 10)'],
+  [/admin_analytics_stale_jobs\(\$1\)',\s*\[STALE_JOB_DAYS\],/, 'stale(14)'],
+]) {
+  assert.match(analyticsReadModel, pattern, `the read model calls ${point}`);
+}
+assert.match(employersPage, /<AnalyticsTabs active="employers"/, 'the employers page shows the analytics tab row');
+assert.match(employersPage, /employersHref\(value\)/, 'the weeks picker links stay on the Employers tab');
+assert.doesNotMatch(employersPage, /<form|AdminActionsPanel/, 'the employers page is read-only');
+assert.match(
+  tabs,
+  /label: 'Growth'[\s\S]*label: 'Funnels'[\s\S]*\{ key: 'employers', label: 'Employers', href: '\/analytics\/employers' \}/,
+  'the tab row reads Growth · Funnels · Employers',
+);
+assert.match(css, /\.analytics-tabs \{[^}]*flex-wrap: wrap;/, 'the tab row wraps on narrow phones instead of overflowing');
+assert.match(kpi, /typeof value === 'number' \? formatCount\(value\) : value/, 'a tile can show a preformatted duration');
+assert.match(
+  employersPage,
+  /const firstResponseSeries = weekly\.map\(\(week\) => week\.firstResponseP50Hours\);\n  const replySeries = weekly\.map\(\(week\) => week\.replyP50Hours\);/,
+  'weeks with no median stay null (a gap), never 0',
+);
+assert.match(
+  employersPage,
+  /key: 'firstResponse',[\s\S]*values: firstResponseSeries,\n\s*endLabel: formatHours\([\s\S]*key: 'reply',[\s\S]*values: replySeries,\n\s*endLabel: formatHours\(/,
+  'one chart, two weekly median lines, end labels in the axis unit (hours)',
+);
+assert.doesNotMatch(employersPage, /plots at 0|\?\? 0\)/, 'nothing on the chart is flattened to 0');
+assert.match(employersPage, /<EmployerWeeklyTable rows=\{weeklyTableRows\(weekly, now\)\}/, 'the weekly table is newest first');
+assert.match(employersPage, /<SlowestEmployers rows=\{slowest\}/, 'the slowest employers card is on the page');
+assert.match(employersPage, /<StaleJobsList rows=\{staleJobs\} days=\{STALE_JOB_DAYS\}/, 'the stale jobs card is on the page');
+assert.doesNotMatch(
+  employerWeeklyTable + slowestEmployers + staleJobsList,
+  /'use client'/,
+  'employer health components stay server components',
+);
+for (const [label, source] of [
+  ['EmployerWeeklyTable', employerWeeklyTable],
+  ['SlowestEmployers', slowestEmployers],
+  ['StaleJobsList', staleJobsList],
+]) {
+  assert.match(source, /className="card cohort-card"/, `${label}: the card can shrink below its table`);
+  assert.match(
+    source,
+    /<div className="table-scroll" role="region" aria-label="[^"]+ table" tabIndex=\{0\}>\s*<table/,
+    `${label}: the table scrolls inside its card, in a named, focusable region`,
+  );
+}
+assert.match(css, /\.table-scroll:focus-visible \{/, 'a focused scroll region is visible');
+for (const header of [
+  'Week', 'Applications', 'Answered', 'Unanswered 7d', 'First response (p50 / p75)',
+  'Worker messages', 'Reply (p50 / p75)', 'Hires', 'Time to hire',
+]) {
+  assert.ok(new RegExp(`<th[^>]*>${header.replace(/[()]/g, '\\$&')}</th>`).test(employerWeeklyTable), `weekly table column "${header}"`);
+}
+assert.match(employerWeeklyTable, /<td className="num">\{answeredLabel\(row\)\}<\/td>/, 'Answered shows how many answers have no time');
+assert.match(employerWeeklyTable, />settling</, 'still-moving weeks are labelled');
+assert.match(
+  employerWeeklyTable,
+  /title="Under 14 days old: unanswered counts are not final yet"/,
+  'the settling badge does not claim figures are fixed after 7 days',
+);
+assert.doesNotMatch(employerWeeklyTable, /until 7 days after it ends/, 'the settling tooltip no longer promises a 7-day cutoff');
+assert.match(employerWeeklyTable, />approx\.</, 'weeks with approximate hires are marked');
+assert.match(slowestEmployers, /<h2>Slowest employers<\/h2>/);
+assert.match(slowestEmployers, /<th className="num">Unanswered 7d<\/th>/, 'slowest employers uses the weekly table\'s Unanswered 7d header');
+assert.match(slowestEmployers, /No employer has 3\+ applications in these weeks\./, 'slowest employers empty state');
+assert.match(
+  slowestEmployers,
+  /<td className="wrap">\{employerLabel\(row\.displayName, row\.employerId\)\}<\/td>/,
+  'employer names use the shared label and wrap',
+);
+assert.match(staleJobsList, /<h2>Stale jobs<\/h2>/);
+assert.match(
+  staleJobsList,
+  /No active job has gone \{days\}\+ days without employer activity\./,
+  'stale jobs empty state',
+);
+assert.match(staleJobsList, /firstWithRest\(rows, STALE_JOBS_SHOWN\)/, 'stale jobs shows the first 25');
+assert.match(staleJobsList, /and \{formatCount\(more\)\} more/, 'the rest are counted, not listed');
+assert.match(staleJobsList, /<td className="wrap">\{job\.title\}<\/td>/, 'long job titles wrap');
+assert.match(staleJobsList, /<td className="wrap">\{employerLabel\(job\.displayName, job\.employerId\)\}<\/td>/, 'long employer names wrap');
+assert.match(
+  staleJobsList,
+  /isIdleSincePosting\(job\) \? <span className="employer-note">since posting<\/span> : null/,
+  'an idle clock that started at posting is marked',
+);
+assert.match(css, /\.cohort-table td\.wrap \{[^}]*white-space: normal;/, 'wrap cells override the tables\' nowrap');
+const employersCopy = employersPage.replace(/\s+/g, ' '); // JSX text wraps across lines
+for (const [pattern, point] of [
+  [/What counts as an employer action:/, 'what counts as an employer action'],
+  [/Status changes are recorded since Oct 2, 2026\./, 'status changes recorded since Oct 2'],
+  [/Dropdown status changes before Oct 2 have no time, so they count as answered but not in the medians\./, 'untimed answers'],
+  [/Employer actions taken only through the status dropdown before Oct 2 were not recorded, so some jobs show as idle since posting\./, 'idle since posting'],
+  [/Hires from before hire times were recorded are marked approx\./, 'pre-095 hire times approximate'],
+  [/Time to hire includes the worker completing their details\./, 'time to hire includes the worker completing details'],
+  [/a run of consecutive messages from a worker counts once, and conversations closed without a reply are left out\./, 'what a worker message is'],
+  [/The unanswered shares count only applications and worker messages at least 7 days old\./, 'the share denominators'],
+  [/Deleted jobs drop out of every figure\./, 'deleted jobs drop out'],
+  [/A job that was paused and reopened counts its idle days from the last employer action, which can be before the pause\./, 'reopened jobs count idle days from the last employer action'],
+  [/Weeks marked settling are less than 14 days old, so their unanswered counts are not final; a late answer can still change an older week too\./, 'settling is defined'],
+  [/Test employer accounts are left out\./, 'test employer accounts excluded'],
+]) {
+  assert.match(employersCopy, pattern, `the footnote says: ${point}`);
+}
+assert.match(css, /\.employer-approx \{/, 'the approx. marker has its own style');
+
+// An open "Table" twin must scroll inside its chart card, never widen the page
+// at phone width (/analytics and /analytics/employers alike).
+assert.match(
+  trend,
+  /<details className="chart-table">[\s\S]*<\/summary>\s*<div className="table-scroll" role="region" aria-label=\{`\$\{title\} table`\} tabIndex=\{0\}>\s*<table className="data-table">/,
+  "TrendChart's Table twin scrolls inside its card",
+);
+assert.match(trend, /<article className="card chart-card">/, 'a trend card can shrink below its open table');
+assert.match(
+  column,
+  /<details className="chart-table">[\s\S]*<\/summary>\s*<div className="table-scroll" role="region" aria-label=\{`\$\{title\} table`\} tabIndex=\{0\}>\s*<table className="data-table">/,
+  "ColumnChart's Table twin scrolls inside its card",
+);
+assert.match(column, /<article className="card chart-card">/, 'a column card can shrink below its open table');
+assert.match(css, /\.chart-card,\s*\.chart-table \{[^}]*min-width: 0;/, 'chart cards and table twins may shrink below the table');
+assert.match(css, /\.chart-tools,\s*\.chart-table \{[^}]*max-width: 100%;/, 'the tool row and the twin never outgrow their card');
+
+// Gaps and round ticks: a null value is drawn as a gap, never as 0.
+assert.match(trend, /values: \(number \| null\)\[\];/, 'a trend series may have gaps');
+assert.match(trend, /isolatedPoints\(s\.values, plotW, plotH, max\)/, 'a lone point between gaps gets a dot');
+assert.match(trend, /\{ended\.map\(\(s\) => \{/, 'a line whose last value is null has no end dot or label');
+assert.match(trend, /value === null \? '—' : formatCount\(value \?\? 0\)/, 'the Table twin prints a gap as —');
+assert.match(trend, /tickValues\(max, tickIntervals\(max\)\)/, 'trend ticks are round numbers');
+assert.match(column, /tickValues\(max, tickIntervals\(max, \[2, 3, 4, 5\]\)\)/, 'column ticks are round numbers');
+
 console.log('admin UI contract checks passed');

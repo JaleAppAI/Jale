@@ -1,4 +1,4 @@
-import { columnPaths, labelIndices, niceMax, tickValues } from '@/lib/chart-geometry';
+import { columnPaths, labelIndices, niceMax, tickIntervals, tickValues } from '@/lib/chart-geometry';
 import { formatCount } from '@/lib/analytics-format';
 
 export type ColumnChartProps = {
@@ -33,12 +33,13 @@ export function ColumnChart({
   const plotW = width - LEFT - RIGHT;
   const plotH = height - TOP - BOTTOM;
   const max = niceMax(values);
-  const ticks = tickValues(max, 2);
+  // Fewer gridlines on this small chart; still round steps (no 1.25).
+  const ticks = tickValues(max, tickIntervals(max, [2, 3, 4, 5]));
   const dateIdx = labelIndices(labels.length, 3);
   const tickY = (v: number) => TOP + plotH - (v / max) * plotH;
 
   return (
-    <article className="card">
+    <article className="card chart-card">
       <div className="chart-head">
         <div>
           <h2>{title}</h2>
@@ -46,17 +47,19 @@ export function ColumnChart({
         </div>
         <details className="chart-table">
           <summary aria-label={`${title} as a table`}>Table</summary>
-          <table className="data-table">
-            <caption className="muted" style={{ textAlign: 'left', padding: '4px 10px' }}>{tableCaption}</caption>
-            <thead>
-              <tr><th>Period</th><th className="num">{valueHeader}</th></tr>
-            </thead>
-            <tbody>
-              {labels.map((label, i) => (
-                <tr key={label}><td>{label}</td><td className="num">{formatCount(values[i] ?? 0)}</td></tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="table-scroll" role="region" aria-label={`${title} table`} tabIndex={0}>
+            <table className="data-table">
+              <caption className="muted" style={{ textAlign: 'left', padding: '4px 10px' }}>{tableCaption}</caption>
+              <thead>
+                <tr><th>Period</th><th className="num">{valueHeader}</th></tr>
+              </thead>
+              <tbody>
+                {labels.map((label, i) => (
+                  <tr key={label}><td>{label}</td><td className="num">{formatCount(values[i] ?? 0)}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </details>
       </div>
 

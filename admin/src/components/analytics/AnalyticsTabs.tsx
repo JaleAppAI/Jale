@@ -3,6 +3,7 @@ import Link from 'next/link';
 const TABS = [
   { key: 'growth', label: 'Growth', href: '/analytics' },
   { key: 'funnels', label: 'Funnels', href: '/analytics/funnels' },
+  { key: 'employers', label: 'Employers', href: '/analytics/employers' },
 ] as const;
 
 export type AnalyticsTab = (typeof TABS)[number]['key'];

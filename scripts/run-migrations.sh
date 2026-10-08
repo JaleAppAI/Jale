@@ -248,6 +248,7 @@ MIGRATIONS=(
   "101_worker_identity_challenge_events.sql"
   "102_admin_identity_lockouts.sql"
   "113_admin_onboarding_funnel.sql"
+  "114_admin_employer_health.sql"
 )
 
 WORKDIR="$(mktemp -d)"

@@ -2,6 +2,7 @@ import type {
   AnalyticsBucket,
   AnalyticsRange,
   AnalyticsTotals,
+  EmployerWeekly,
   FunnelDoor,
   FunnelWeeks,
   JobsActivityBucket,
@@ -11,6 +12,8 @@ import type {
   PayingEmployer,
   SignupBucket,
   SignupsView,
+  SlowestEmployer,
+  StaleJob,
 } from '../types';
 import { getAdminDbPool } from './db';
 
@@ -317,4 +320,136 @@ export async function getOnboardingStalled(): Promise<OnboardingStalled[]> {
     [FUNNEL_STALLED_DAYS],
   );
   return result.rows.map(mapOnboardingStalledRow);
+}
+
+// ---- 2b: employer health (migration 114) ----
+// The weeks picker reuses 2a's parseFunnelWeeks / FunnelWeeks (4 | 8 | 12).
+// Passed explicitly so the page copy ("14+ days", top 10) and the SQL agree.
+export const STALE_JOB_DAYS = 14;
+export const SLOWEST_EMPLOYERS_LIMIT = 10;
+
+// NUMERIC arrives as a string ("5.2"); NULL (nothing to time) stays null.
+function asNullableNumber(value: string | number | null): number | null {
+  if (value === null) return null;
+  return typeof value === 'number' ? value : Number(value);
+}
+
+export type EmployerWeeklyRow = {
+  week_start: PgTimestamp | null;
+  applications: string | number;
+  answered: string | number;
+  answered_untimed: string | number;
+  unanswered_7d: string | number;
+  applications_due: string | number;
+  first_response_p50_hours: string | number | null;
+  first_response_p75_hours: string | number | null;
+  worker_turns: string | number;
+  turns_unanswered_7d: string | number;
+  turns_due: string | number;
+  reply_p50_hours: string | number | null;
+  reply_p75_hours: string | number | null;
+  hires: string | number;
+  hires_approximate: string | number;
+  time_to_hire_p50_days: string | number | null;
+  time_to_hire_p75_days: string | number | null;
+  active_jobs: string | number | null;
+};
+
+export function mapEmployerWeeklyRow(row: EmployerWeeklyRow): EmployerWeekly {
+  return {
+    weekStart: row.week_start === null ? null : asIso(row.week_start),
+    applications: asCount(row.applications),
+    answered: asCount(row.answered),
+    answeredUntimed: asCount(row.answered_untimed),
+    unanswered7d: asCount(row.unanswered_7d),
+    applicationsDue: asCount(row.applications_due),
+    firstResponseP50Hours: asNullableNumber(row.first_response_p50_hours),
+    firstResponseP75Hours: asNullableNumber(row.first_response_p75_hours),
+    workerTurns: asCount(row.worker_turns),
+    turnsUnanswered7d: asCount(row.turns_unanswered_7d),
+    turnsDue: asCount(row.turns_due),
+    replyP50Hours: asNullableNumber(row.reply_p50_hours),
+    replyP75Hours: asNullableNumber(row.reply_p75_hours),
+    hires: asCount(row.hires),
+    hiresApproximate: asCount(row.hires_approximate),
+    timeToHireP50Days: asNullableNumber(row.time_to_hire_p50_days),
+    timeToHireP75Days: asNullableNumber(row.time_to_hire_p75_days),
+    activeJobs: row.active_jobs === null ? null : asCount(row.active_jobs),
+  };
+}
+
+export type SlowestEmployerRow = {
+  employer_id: string;
+  display_name: string;
+  applications: string | number;
+  unanswered_7d: string | number;
+  first_response_p50_hours: string | number | null;
+  active_jobs: string | number;
+};
+
+export function mapSlowestEmployerRow(row: SlowestEmployerRow): SlowestEmployer {
+  return {
+    employerId: row.employer_id,
+    displayName: row.display_name,
+    applications: asCount(row.applications),
+    unanswered7d: asCount(row.unanswered_7d),
+    firstResponseP50Hours: asNullableNumber(row.first_response_p50_hours),
+    activeJobs: asCount(row.active_jobs),
+  };
+}
+
+export type StaleJobRow = {
+  job_id: string;
+  title: string;
+  employer_id: string;
+  display_name: string;
+  posted_at: PgTimestamp;
+  last_employer_action_at: PgTimestamp;
+  days_idle: string | number;
+  waiting_applicants: string | number;
+  last_application_at: PgTimestamp | null;
+};
+
+export function mapStaleJobRow(row: StaleJobRow): StaleJob {
+  return {
+    jobId: row.job_id,
+    title: row.title,
+    employerId: row.employer_id,
+    displayName: row.display_name,
+    postedAt: asIso(row.posted_at),
+    lastEmployerActionAt: asIso(row.last_employer_action_at),
+    daysIdle: asCount(row.days_idle),
+    waitingApplicants: asCount(row.waiting_applicants),
+    lastApplicationAt: row.last_application_at === null ? null : asIso(row.last_application_at),
+  };
+}
+
+// Every week in the window (zero-filled by SQL) plus the whole-window row
+// (weekStart null); employer-health.ts splits them.
+export async function getEmployerWeekly(weeks: FunnelWeeks): Promise<EmployerWeekly[]> {
+  const pool = await getAdminDbPool();
+  const result = await pool.query<EmployerWeeklyRow>(
+    'SELECT * FROM admin_analytics_employer_weekly($1)',
+    [weeks],
+  );
+  return result.rows.map(mapEmployerWeeklyRow);
+}
+
+export async function getSlowestEmployers(weeks: FunnelWeeks): Promise<SlowestEmployer[]> {
+  const pool = await getAdminDbPool();
+  const result = await pool.query<SlowestEmployerRow>(
+    'SELECT * FROM admin_analytics_slowest_employers($1, $2)',
+    [weeks, SLOWEST_EMPLOYERS_LIMIT],
+  );
+  return result.rows.map(mapSlowestEmployerRow);
+}
+
+// Every stale active job, most idle first; the page shows the first 25.
+export async function getStaleJobs(): Promise<StaleJob[]> {
+  const pool = await getAdminDbPool();
+  const result = await pool.query<StaleJobRow>(
+    'SELECT * FROM admin_analytics_stale_jobs($1)',
+    [STALE_JOB_DAYS],
+  );
+  return result.rows.map(mapStaleJobRow);
 }
