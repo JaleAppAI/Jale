@@ -950,3 +950,104 @@ p {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* ── Analytics: onboarding funnel (2a) ─────────────────────── */
+.analytics-tabs {
+  margin-bottom: 10px;
+}
+
+.funnel-pickers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  justify-content: flex-end;
+}
+
+.kpi-strip.funnel-kpis {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.funnel-bars {
+  display: grid;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.funnel-row {
+  display: grid;
+  gap: 6px;
+}
+
+.funnel-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  font-size: 0.82rem;
+}
+
+.funnel-meta strong {
+  color: var(--jale-ink);
+  font-weight: 650;
+}
+
+.funnel-label {
+  font-weight: 650;
+}
+
+.funnel-track {
+  height: 12px;
+  border-radius: 6px;
+  background: var(--jale-blue-50);
+}
+
+.funnel-fill {
+  height: 100%;
+  min-width: 2px;
+  border-radius: 6px;
+  background: var(--jale-blue-500);
+}
+
+.funnel-fill.stalled {
+  background: var(--jale-blue-200);
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+/* A grid item's minimum width is its content's; without this the wide cohort
+   table widens the whole page grid at phone width. */
+.cohort-card {
+  min-width: 0;
+}
+
+.cohort-table td.num,
+.cohort-table th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.cohort-settling {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--jale-blue-50);
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 650;
+}
+
+@media (max-width: 960px) {
+  .funnel-pickers {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 640px) {
+  .kpi-strip.funnel-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

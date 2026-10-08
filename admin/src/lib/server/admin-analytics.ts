@@ -2,8 +2,12 @@ import type {
   AnalyticsBucket,
   AnalyticsRange,
   AnalyticsTotals,
+  FunnelDoor,
+  FunnelWeeks,
   JobsActivityBucket,
   MessageTrafficBucket,
+  OnboardingCohort,
+  OnboardingStalled,
   PayingEmployer,
   SignupBucket,
   SignupsView,
@@ -87,6 +91,7 @@ export type TotalsRow = {
   jobs_closed: string | number;
   hires_total: string | number;
   jobs_with_hire: string | number;
+  total_verified_workers?: string | number;
 };
 
 export function mapTotalsRow(row: TotalsRow): AnalyticsTotals {
@@ -100,6 +105,7 @@ export function mapTotalsRow(row: TotalsRow): AnalyticsTotals {
     jobsClosed: asCount(row.jobs_closed),
     hiresTotal: asCount(row.hires_total),
     jobsWithHire: asCount(row.jobs_with_hire),
+    totalVerifiedWorkers: asCount(row.total_verified_workers ?? 0),
   };
 }
 
@@ -107,6 +113,7 @@ export type SignupRow = {
   bucket_start: PgTimestamp;
   worker_signups: string | number;
   employer_signups: string | number;
+  worker_signups_verified?: string | number;
 };
 
 export function mapSignupRow(row: SignupRow): SignupBucket {
@@ -114,6 +121,7 @@ export function mapSignupRow(row: SignupRow): SignupBucket {
     bucketStart: asIso(row.bucket_start),
     workerSignups: asCount(row.worker_signups),
     employerSignups: asCount(row.employer_signups),
+    workerSignupsVerified: asCount(row.worker_signups_verified ?? 0),
   };
 }
 
@@ -189,7 +197,7 @@ export async function getSignups(range: AnalyticsRange, now: Date = new Date()):
   return fillBuckets(
     result.rows.map(mapSignupRow),
     bucketStarts(from, bucket, now),
-    (bucketStart) => ({ bucketStart, workerSignups: 0, employerSignups: 0 }),
+    (bucketStart) => ({ bucketStart, workerSignups: 0, employerSignups: 0, workerSignupsVerified: 0 }),
   );
 }
 
@@ -233,4 +241,80 @@ export async function getPayingEmployers(): Promise<PayingEmployer[]> {
   const pool = await getAdminDbPool();
   const result = await pool.query<PayingEmployerRow>('SELECT * FROM admin_analytics_paying_employers()');
   return result.rows.map(mapPayingEmployerRow);
+}
+
+// ---- 2a: worker onboarding funnel (migration 103) ----
+export const DEFAULT_FUNNEL_WEEKS: FunnelWeeks = 8;
+export const DEFAULT_FUNNEL_DOOR: FunnelDoor = 'all';
+// Matches the cohorts function's abandoned threshold.
+export const FUNNEL_STALLED_DAYS = 7;
+
+export function parseFunnelWeeks(value: unknown): FunnelWeeks {
+  return value === '4' ? 4 : value === '12' ? 12 : DEFAULT_FUNNEL_WEEKS;
+}
+
+export function parseFunnelDoor(value: unknown): FunnelDoor {
+  return value === 'whatsapp' || value === 'web' ? value : DEFAULT_FUNNEL_DOOR;
+}
+
+export type OnboardingCohortRow = {
+  cohort_week: PgTimestamp;
+  door: string;
+  started: string | number;
+  code_requested: string | number;
+  verified: string | number;
+  accepted_terms: string | number;
+  finished_profile: string | number;
+  ready: string | number;
+  declined: string | number;
+  in_progress: string | number;
+  abandoned: string | number;
+};
+
+export function mapOnboardingCohortRow(row: OnboardingCohortRow): OnboardingCohort {
+  if (row.door !== 'whatsapp' && row.door !== 'web') {
+    throw new Error(`Unexpected funnel door: ${row.door}`);
+  }
+  return {
+    cohortWeek: asIso(row.cohort_week),
+    door: row.door,
+    started: asCount(row.started),
+    codeRequested: asCount(row.code_requested),
+    verified: asCount(row.verified),
+    acceptedTerms: asCount(row.accepted_terms),
+    finishedProfile: asCount(row.finished_profile),
+    ready: asCount(row.ready),
+    declined: asCount(row.declined),
+    inProgress: asCount(row.in_progress),
+    abandoned: asCount(row.abandoned),
+  };
+}
+
+export type OnboardingStalledRow = {
+  door: string;
+  step_key: string;
+  workers: string | number;
+};
+
+export function mapOnboardingStalledRow(row: OnboardingStalledRow): OnboardingStalled {
+  const door = row.door === 'whatsapp' || row.door === 'web' ? row.door : 'other';
+  return { door, stepKey: row.step_key, workers: asCount(row.workers) };
+}
+
+export async function getOnboardingCohorts(weeks: FunnelWeeks): Promise<OnboardingCohort[]> {
+  const pool = await getAdminDbPool();
+  const result = await pool.query<OnboardingCohortRow>(
+    'SELECT * FROM admin_analytics_onboarding_cohorts($1)',
+    [weeks],
+  );
+  return result.rows.map(mapOnboardingCohortRow);
+}
+
+export async function getOnboardingStalled(): Promise<OnboardingStalled[]> {
+  const pool = await getAdminDbPool();
+  const result = await pool.query<OnboardingStalledRow>(
+    'SELECT * FROM admin_analytics_onboarding_stalled($1)',
+    [FUNNEL_STALLED_DAYS],
+  );
+  return result.rows.map(mapOnboardingStalledRow);
 }

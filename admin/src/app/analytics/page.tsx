@@ -21,6 +21,7 @@ import {
   signedDelta,
   sum,
 } from '@/lib/analytics-format';
+import { AnalyticsTabs } from '@/components/analytics/AnalyticsTabs';
 import { TrendChart } from '@/components/analytics/TrendChart';
 import { ColumnChart } from '@/components/analytics/ColumnChart';
 import { KpiTile } from '@/components/analytics/KpiTile';
@@ -42,6 +43,7 @@ const SIGNUP_VIEWS: { value: SignupsView; label: string }[] = [
 
 const WORKERS_BLUE = '#0179ff';
 const EMPLOYERS_ORANGE = '#eb6834';
+const VERIFIED_BLUE = '#7fb4ff';
 
 export default async function AnalyticsPage({
   searchParams,
@@ -70,11 +72,13 @@ export default async function AnalyticsPage({
   const labels = signups.map((row) => bucketLabel(row.bucketStart, range));
   const workerSignups = signups.map((row) => row.workerSignups);
   const employerSignups = signups.map((row) => row.employerSignups);
+  const verifiedSignups = signups.map((row) => row.workerSignupsVerified);
   const jobsPosted = jobsActivity.map((row) => row.jobsPosted);
   const applications = jobsActivity.map((row) => row.applicationsSubmitted);
 
   const newWorkers = sum(workerSignups);
   const newEmployers = sum(employerSignups);
+  const newVerified = sum(verifiedSignups);
   const jobsPostedTotal = sum(jobsPosted);
   const applicationsTotal = sum(applications);
   const appsPerJob = perUnit(applicationsTotal, jobsPostedTotal);
@@ -88,14 +92,19 @@ export default async function AnalyticsPage({
   const cumulative = signupsView === 'total';
   const workerSeries = cumulative ? cumulativeSeries(workerSignups, totals.totalWorkers) : workerSignups;
   const employerSeries = cumulative ? cumulativeSeries(employerSignups, totals.totalEmployers) : employerSignups;
+  const verifiedSeries = cumulative
+    ? cumulativeSeries(verifiedSignups, totals.totalVerifiedWorkers)
+    : verifiedSignups;
   const lastWorkers = workerSeries[workerSeries.length - 1] ?? 0;
   const lastEmployers = employerSeries[employerSeries.length - 1] ?? 0;
+  const lastVerified = verifiedSeries[verifiedSeries.length - 1] ?? 0;
   const bucketWord = range === '90d' ? 'week' : 'day';
   // 'new' end labels are the partial bucket's delta, never a total -- spec:
   // the end-dot label must never be misread as a running total (audit finding 1).
   const newEndSuffix = bucketWord === 'week' ? 'this week' : 'today';
   const workerEndLabel = cumulative ? `${formatCount(lastWorkers)} workers` : `+${formatCount(lastWorkers)} ${newEndSuffix}`;
   const employerEndLabel = cumulative ? `${formatCount(lastEmployers)} employers` : `+${formatCount(lastEmployers)} ${newEndSuffix}`;
+  const verifiedEndLabel = cumulative ? `${formatCount(lastVerified)} verified` : `+${formatCount(lastVerified)} verified`;
 
   const signupsToggle = (
     <nav className="range-picker" aria-label="Signups view">
@@ -116,6 +125,7 @@ export default async function AnalyticsPage({
     <main className="stack-gap">
       <section className="hero analytics-hero">
         <div>
+          <AnalyticsTabs active="growth" />
           <h1>Analytics</h1>
           <p className="muted">Growth over {period} · computed live</p>
         </div>
@@ -134,7 +144,7 @@ export default async function AnalyticsPage({
       </section>
 
       <section className="kpi-strip" aria-label="Key figures">
-        <KpiTile label="Workers" value={totals.totalWorkers} note={`${signedDelta(newWorkers)} this period`} tone={newWorkers > 0 ? 'positive' : 'muted'} />
+        <KpiTile label="Workers" value={totals.totalWorkers} note={`${signedDelta(newWorkers)} this period · ${formatCount(newVerified)} verified`} tone={newWorkers > 0 ? 'positive' : 'muted'} />
         <KpiTile label="Employers" value={totals.totalEmployers} note={`${signedDelta(newEmployers)} this period`} tone={newEmployers > 0 ? 'positive' : 'muted'} />
         <KpiTile label="Paying employers" value={totals.payingEmployers} note={payingShare ? `${payingShare} of employers` : 'Active, trialing, or past due'} />
         <KpiTile label="Active jobs" value={totals.jobsActive} note={`${formatCount(totals.jobsPaused)} paused · ${formatCount(totals.jobsClosed)} closed`} />
@@ -152,6 +162,7 @@ export default async function AnalyticsPage({
         tools={signupsToggle}
         series={[
           { key: 'workers', label: 'Workers', color: WORKERS_BLUE, values: workerSeries, area: true, endLabel: workerEndLabel },
+          { key: 'verified', label: 'Verified workers', color: VERIFIED_BLUE, values: verifiedSeries, endLabel: verifiedEndLabel },
           { key: 'employers', label: 'Employers', color: EMPLOYERS_ORANGE, values: employerSeries, endLabel: employerEndLabel },
         ]}
       />
