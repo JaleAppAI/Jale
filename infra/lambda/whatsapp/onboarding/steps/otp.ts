@@ -34,6 +34,16 @@ export async function handleOtpStep(
 
   const isResend = msg.interactivePayload === 'otp:resend' || (!isInteractive && isResendCommand(msg.body));
   if (isResend) {
+    // A RESEND during an active three-strike lock must not issue a code:
+    // save_worker_pre_auth (042) refuses to clear an active lock, so the save
+    // below would roll back after Cognito had already sent the code, and every
+    // SQS redelivery would send another. Answer with the time left instead.
+    if (preAuth.lockedUntil && preAuth.lockedUntil.getTime() > now.getTime()) {
+      const minutes = String(Math.ceil((preAuth.lockedUntil.getTime() - now.getTime()) / 60_000));
+      await sendPreAuthText(client, deps, msg, responseLang, 'v2_otp_locked', { minutes });
+      return { handled: true, workerId: null, stepKey: 'identity.verify_otp' };
+    }
+
     const history = readHistory(preAuth.context, 'otpSendHistory');
     // OTP resend has its own (tighter) cadence — 60s cooldown, 3/hour cap —
     // distinct from the 10min/5-per-day start-invitation policy.

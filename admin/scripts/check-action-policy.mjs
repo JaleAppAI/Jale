@@ -89,19 +89,13 @@ assert.equal(
   'readonly admins should not be able to trigger mutations or PII reveals',
 );
 
-assert.deepEqual(
-  policy.getVerificationActions({ status: 'pending', step: 'identity' }, 'admin_ops').map((action) => action.id),
-  ['approve_verification', 'reject_verification', 'request_more_info', 'reset_verification_step'],
-);
-
-assert.equal(
-  policy.getVerificationActions({ status: 'approved', step: 'identity' }, 'admin_ops').every((action) => action.disabled),
-  true,
-  'approved verifications should not expose active mutation buttons',
-);
+// Roadmap 1b retired the four verification actions (they edited demo
+// admin_cases rows only and never touched worker_identity_challenges).
+assert.equal(policy.getVerificationActions, undefined, 'verification actions were retired (roadmap 1b)');
 
 assert.equal(policy.requiresAuditLog('reveal_pii'), true);
-assert.equal(policy.requiresAuditLog('approve_verification'), true);
+assert.equal(policy.requiresAuditLog('resolve_case'), true);
+assert.equal(policy.requiresAuditLog('approve_verification'), false);
 assert.equal(policy.requiresPiiJustification('reveal_pii'), true);
 assert.equal(policy.requiresPiiJustification('request_more_info'), false);
 
@@ -131,7 +125,16 @@ assert.deepEqual(
     targetType: 'admin_case',
     targetId: 'case_hel_1001',
   }),
-  { ok: false, error: 'target_action_mismatch' },
+  { ok: false, error: 'invalid_action' },
+);
+
+assert.deepEqual(
+  requests.parseAdminActionRequest({
+    actionId: 'request_more_info',
+    targetType: 'verification',
+    targetId: 'verify_3001',
+  }),
+  { ok: false, error: 'invalid_target_type' },
 );
 
 const preview = requests.validateAdminAction({
@@ -173,13 +176,13 @@ assert.equal(closedPreview.error, 'action_disabled');
 
 const auditEvent = audit.buildAdminAuditEvent({
   actor: 'Ivan',
-  actionId: 'approve_verification',
-  targetType: 'verification',
-  targetId: 'verify_3001',
-  justification: 'All documents reviewed.',
+  actionId: 'resolve_case',
+  targetType: 'admin_case',
+  targetId: 'case_hel_1001',
+  justification: 'Issue handled on call.',
 });
-assert.equal(auditEvent.action, 'approve_verification');
+assert.equal(auditEvent.action, 'resolve_case');
 assert.equal(auditEvent.piiReveal, false);
-assert.equal(auditEvent.summary, 'Ivan requested approve_verification for verification verify_3001. Justification: All documents reviewed.');
+assert.equal(auditEvent.summary, 'Ivan requested resolve_case for admin_case case_hel_1001. Justification: Issue handled on call.');
 
 console.log('admin action contract checks passed');

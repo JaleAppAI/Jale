@@ -1,6 +1,6 @@
 import { buildAdminAuditEvent } from '../audit-contract';
 import { validateAdminAction, type AdminActionRequest } from '../action-requests';
-import type { AdminCaseStatus, AdminCaseType, VerificationRecord } from '../types';
+import type { AdminCaseStatus, AdminCaseType } from '../types';
 import type { AdminSession } from './session-claims';
 import { revealCaseContact, type RevealedContact } from './admin-cases';
 import { getAdminDbPool } from './db';
@@ -98,47 +98,6 @@ export function buildCaseMutation(actionId: AdminActionRequest['actionId'], inpu
   return undefined;
 }
 
-export function buildVerificationMutation(actionId: AdminActionRequest['actionId'], input: MutationInput): MutationSpec | undefined {
-  if (actionId === 'approve_verification') {
-    return {
-      sql: `UPDATE admin_cases SET status = $2, details = details || $3::jsonb, resolved_at = NOW(), updated_at = NOW() WHERE id = $1 AND case_type = 'verification_blocker' AND status NOT IN ('resolved', 'dismissed')`,
-      params: ['verification-id', 'resolved', JSON.stringify({ verificationStatus: 'approved' })],
-    };
-  }
-
-  if (actionId === 'reject_verification') {
-    return {
-      sql: `UPDATE admin_cases SET status = $2, details = details || $3::jsonb, resolved_at = NOW(), updated_at = NOW() WHERE id = $1 AND case_type = 'verification_blocker' AND status NOT IN ('resolved', 'dismissed')`,
-      params: ['verification-id', 'dismissed', JSON.stringify({
-        verificationStatus: 'rejected',
-        rejectionReason: input.justification ?? input.note ?? '',
-      })],
-    };
-  }
-
-  if (actionId === 'request_more_info') {
-    return {
-      sql: `UPDATE admin_cases SET status = $2, details = details || $3::jsonb, updated_at = NOW() WHERE id = $1 AND case_type = 'verification_blocker' AND status NOT IN ('resolved', 'dismissed')`,
-      params: ['verification-id', 'pending_worker', JSON.stringify({
-        verificationStatus: 'needs_more_info',
-        lastAdminNote: input.note ?? input.justification ?? '',
-      })],
-    };
-  }
-
-  if (actionId === 'reset_verification_step') {
-    return {
-      sql: `UPDATE admin_cases SET status = $2, details = details || $3::jsonb, updated_at = NOW() WHERE id = $1 AND case_type = 'verification_blocker' AND status NOT IN ('resolved', 'dismissed')`,
-      params: ['verification-id', 'pending_worker', JSON.stringify({
-        verificationStatus: 'reset',
-        resetReason: input.note ?? input.justification ?? '',
-      })],
-    };
-  }
-
-  return undefined;
-}
-
 function forTargetId(spec: MutationSpec | undefined, targetId: string): MutationSpec | undefined {
   if (!spec) {
     return undefined;
@@ -198,22 +157,7 @@ export async function dispatchAdminAction(session: AdminSession, request: AdminA
       ? (client) => revealCaseContact(client, request.targetId)
       : undefined;
 
-    return executeMutation(
-      session,
-      request,
-      'case',
-      forTargetId(buildCaseMutation(request.actionId, request), request.targetId),
-      reveal,
-    );
-  }
-
-  if (request.targetType === 'verification') {
-    return executeMutation(
-      session,
-      request,
-      'verification',
-      forTargetId(buildVerificationMutation(request.actionId, request), request.targetId),
-    );
+    return executeMutation(session, request, forTargetId(buildCaseMutation(request.actionId, request), request.targetId), reveal);
   }
 
   return { ok: false, status: 400, message: 'Unsupported admin action target.' };
@@ -324,7 +268,6 @@ async function sendCaseWhatsAppReply(
 async function executeMutation(
   session: AdminSession,
   request: AdminActionRequest,
-  targetKind: 'case' | 'verification',
   mutation: MutationSpec | undefined,
   reveal?: RevealFn,
 ): Promise<AdminActionDispatchResult> {
@@ -334,32 +277,19 @@ async function executeMutation(
   let released = false;
   try {
     await client.query('BEGIN');
-    const target = await lockAdminTarget(client as unknown as DbClient, request.targetId, targetKind);
+    const target = await lockAdminTarget(client as unknown as DbClient, request.targetId);
     if (!target) {
       await client.query('ROLLBACK');
-      return {
-        ok: false,
-        status: 404,
-        message: targetKind === 'case' ? 'Admin case not found.' : 'Verification record not found.',
-      };
+      return { ok: false, status: 404, message: 'Admin case not found.' };
     }
-    const validation = targetKind === 'case'
-      ? validateAdminAction({
-          actor: session.email ?? session.sub,
-          role: session.role,
-          request,
-          targetKind: 'case',
-          targetStatus: target.status as AdminCaseStatus,
-          targetCaseType: target.caseType as AdminCaseType,
-        })
-      : validateAdminAction({
-          actor: session.email ?? session.sub,
-          role: session.role,
-          request,
-          targetKind: 'verification',
-          targetStatus: target.status as VerificationRecord['status'],
-          targetStep: target.step as VerificationRecord['step'],
-        });
+    const validation = validateAdminAction({
+      actor: session.email ?? session.sub,
+      role: session.role,
+      request,
+      targetKind: 'case',
+      targetStatus: target.status as AdminCaseStatus,
+      targetCaseType: target.caseType as AdminCaseType,
+    });
     if (!validation.ok) {
       await client.query('ROLLBACK');
       return { ok: false, status: validation.status, message: validation.message };
@@ -409,37 +339,16 @@ async function executeMutation(
 async function lockAdminTarget(
   client: DbClient,
   targetId: string,
-  targetKind: 'case' | 'verification',
-): Promise<{ status: string; caseType?: string; step?: string } | undefined> {
-  const result = await client.query<{
-    status: string;
-    case_type: string;
-    details: Record<string, unknown> | null;
-  }>(
-    `SELECT status, case_type, details
+): Promise<{ status: string; caseType: string } | undefined> {
+  const result = await client.query<{ status: string; case_type: string }>(
+    `SELECT status, case_type
        FROM admin_cases
       WHERE id = $1
-        AND ($2 = 'case' OR case_type = 'verification_blocker')
       FOR UPDATE`,
-    [targetId, targetKind],
+    [targetId],
   );
   const row = result.rows[0];
-  if (!row) return undefined;
-  if (targetKind === 'case') {
-    return { status: row.status, caseType: row.case_type };
-  }
-  const explicitStatus = typeof row.details?.verificationStatus === 'string'
-    ? row.details.verificationStatus
-    : undefined;
-  const status = explicitStatus
-    ?? (row.status === 'resolved' ? 'approved'
-      : row.status === 'dismissed' ? 'rejected'
-        : row.status === 'pending_worker' ? 'needs_more_info'
-          : 'pending');
-  const step = typeof row.details?.verificationStep === 'string'
-    ? row.details.verificationStep
-    : 'account';
-  return { status, step };
+  return row ? { status: row.status, caseType: row.case_type } : undefined;
 }
 
 function staleResult(): AdminActionDispatchResult {

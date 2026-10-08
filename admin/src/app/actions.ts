@@ -6,12 +6,11 @@ import { dispatchAdminAction } from '@/lib/server/admin-action-dispatch';
 import type { RevealedContact } from '@/lib/server/admin-cases';
 import { requireAdminSession } from '@/lib/server/session';
 
-function revalidateAdminRoutes(targetType: string, targetId: string): void {
+function revalidateAdminRoutes(targetId: string): void {
   revalidatePath('/');
   revalidatePath('/cases');
-  revalidatePath('/verifications');
   revalidatePath('/audit');
-  revalidatePath(`/${targetType === 'verification' ? 'verifications' : 'cases'}/${targetId}`);
+  revalidatePath(`/cases/${targetId}`);
 }
 
 export type AdminActionFormState = {
@@ -44,7 +43,7 @@ export async function submitAdminActionState(
     return { status: 'error', message: result.message, actionId: parsed.value.actionId };
   }
 
-  revalidateAdminRoutes(parsed.value.targetType, parsed.value.targetId);
+  revalidateAdminRoutes(parsed.value.targetId);
 
   return {
     status: 'ok',

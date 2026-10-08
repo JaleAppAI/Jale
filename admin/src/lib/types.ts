@@ -40,18 +40,27 @@ export type AdminTimelineEvent = {
   piiReveal?: boolean;
 };
 
-export type VerificationRecord = {
-  id: string;
-  subjectType: 'worker' | 'employer';
-  subjectName: string;
-  subjectLabel: string;
-  status: 'pending' | 'approved' | 'rejected' | 'needs_more_info' | 'reset';
-  step: 'identity' | 'phone' | 'account' | 'docs';
-  reason: string;
-  updatedAt: string;
-  assignedAdmin: string;
-  maskedPhone?: string;
-  maskedEmail?: string;
+// Roadmap 1b: one row of admin_identity_lockouts() (migration 102).
+export type IdentityLockoutKind = 'lockout' | 'stuck';
+
+export type IdentityLockoutOutcome =
+  | 'locked'
+  | 'lock_expired'
+  | 'retrying'
+  | 'verified'
+  | 'superseded'
+  | 'code_expired';
+
+export type IdentityLockout = {
+  challengeId: string;
+  kind: IdentityLockoutKind;
+  maskedPhone: string | null;
+  outcome: IdentityLockoutOutcome;
+  lockoutCount: number;
+  attempts: number;
+  lockedUntil: string | null;
+  lastEventAt: string;
+  startedAt: string;
 };
 
 export type AuditEvent = {
