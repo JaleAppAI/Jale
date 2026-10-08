@@ -134,7 +134,7 @@ describe('database migrations', () => {
       '100',
       '101',
       '102',
-      '103',
+      '113',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -1098,8 +1098,8 @@ describe('database migrations', () => {
   // Roadmap 2a: the onboarding funnel is four gated definers -- two new, two
   // recreated with one extra verified column. On RDS the migration's own DO
   // block is the only runtime check; these literals pin that it stays strict.
-  it('103 adds the onboarding funnel definers without exposing workers', () => {
-    const sql = fs.readFileSync(path.join(migrationsDir, '103_admin_onboarding_funnel.sql'), 'utf8');
+  it('113 adds the onboarding funnel definers without exposing workers', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '113_admin_onboarding_funnel.sql'), 'utf8');
 
     expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
     expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
@@ -1188,10 +1188,10 @@ describe('database migrations', () => {
       'admin_analytics_signups',
       'admin_analytics_totals',
     ]) {
-      expect(sql).toContain(`migration 103: ${fn} did not set the read flag`);
+      expect(sql).toContain(`migration 113: ${fn} did not set the read flag`);
     }
-    expect(sql).toContain('migration 103: admin_analytics_signups result drifted');
-    expect(sql).toContain('migration 103: admin_analytics_totals result drifted');
+    expect(sql).toContain('migration 113: admin_analytics_signups result drifted');
+    expect(sql).toContain('migration 113: admin_analytics_totals result drifted');
     expect(sql.match(/aclexplode\(/g)).toHaveLength(1);
     // A NULL proconfig (no pinned search_path) must fail the check, not skip it.
     expect(sql).toContain("NOT COALESCE(fn.proconfig @> ARRAY['search_path=pg_catalog, pg_temp'], false)");

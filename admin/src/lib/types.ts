@@ -126,7 +126,7 @@ export type PayingEmployer = {
   cancelAtPeriodEnd: boolean;
 };
 
-// Roadmap 2a: the worker onboarding funnel (migration 103).
+// Roadmap 2a: the worker onboarding funnel (migration 113).
 export type FunnelWeeks = 4 | 8 | 12;
 export type FunnelDoor = 'all' | 'whatsapp' | 'web';
 

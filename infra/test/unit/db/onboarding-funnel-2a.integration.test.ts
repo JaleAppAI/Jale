@@ -1,7 +1,7 @@
 /**
  * onboarding-funnel-2a.integration.test.ts
  *
- * PostgreSQL-backed tests for migration 103 (roadmap 2a): weekly onboarding
+ * PostgreSQL-backed tests for migration 113 (roadmap 2a): weekly onboarding
  * cohorts by first-contact door, the stalled-run snapshot, and the verified
  * columns on admin_analytics_signups / admin_analytics_totals.
  *
@@ -107,7 +107,7 @@ if (!databaseUrl) {
   console.warn('JALE_TEST_DATABASE_URL not set — skipping 2a onboarding funnel integration tests');
 }
 
-maybeDescribe('2a onboarding funnel (103)', () => {
+maybeDescribe('2a onboarding funnel (113)', () => {
   let superUrl = '';
   let consoleUrl = '';
   let whatsappUrl = '';

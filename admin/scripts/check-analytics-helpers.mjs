@@ -181,7 +181,7 @@ assert.equal(analytics.FUNNEL_STALLED_DAYS, 7);
 assert.equal(
   analytics.mapSignupRow({ bucket_start: new Date('2026-08-25T00:00:00.000Z'), worker_signups: '3', employer_signups: '1' }).workerSignupsVerified,
   0,
-  'a database without migration 103 maps to 0 verified, never NaN',
+  'a database without migration 113 maps to 0 verified, never NaN',
 );
 assert.equal(
   analytics.mapTotalsRow({

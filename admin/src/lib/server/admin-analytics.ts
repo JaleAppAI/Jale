@@ -243,7 +243,7 @@ export async function getPayingEmployers(): Promise<PayingEmployer[]> {
   return result.rows.map(mapPayingEmployerRow);
 }
 
-// ---- 2a: worker onboarding funnel (migration 103) ----
+// ---- 2a: worker onboarding funnel (migration 113) ----
 export const DEFAULT_FUNNEL_WEEKS: FunnelWeeks = 8;
 export const DEFAULT_FUNNEL_DOOR: FunnelDoor = 'all';
 // Matches the cohorts function's abandoned threshold.

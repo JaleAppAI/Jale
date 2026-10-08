@@ -1,7 +1,9 @@
 -- ============================================================
--- 103_admin_onboarding_funnel.sql
+-- 113_admin_onboarding_funnel.sql
 -- Run manually AFTER 102_admin_identity_lockouts.sql, connected as
 -- jale_admin (NOT the RDS master user). Forward-only (ADR-005).
+-- Numbered 113 to leave 104-112 for migrations written in parallel; it
+-- depends on nothing after 102, so it may be applied before or after them.
 --
 -- Roadmap sub-project 2a
 -- (docs/superpowers/specs/2026-10-08-admin-analytics-2a-funnels-design.md).
@@ -71,7 +73,7 @@ BEGIN
          AND p.polroles = ARRAY['jale_admin'::regrole::oid]
          AND pg_get_expr(p.polqual, p.polrelid) = pol.qual
     ) THEN
-      RAISE EXCEPTION 'migration 103: policy % on % missing or drifted; the funnel would read zero rows', pol.name, pol.rel;
+      RAISE EXCEPTION 'migration 113: policy % on % missing or drifted; the funnel would read zero rows', pol.name, pol.rel;
     END IF;
   END LOOP;
 END $$;
@@ -422,7 +424,7 @@ BEGIN
   ] LOOP
     fn_oid := to_regprocedure(fn_sig)::OID;
     IF fn_oid IS NULL THEN
-      RAISE EXCEPTION 'migration 103: % missing', fn_sig;
+      RAISE EXCEPTION 'migration 113: % missing', fn_sig;
     END IF;
 
     SELECT owner.rolname AS owner_name, p.prosecdef, p.proconfig INTO fn
@@ -430,10 +432,10 @@ BEGIN
      WHERE p.oid = fn_oid;
     IF fn.owner_name IS DISTINCT FROM 'jale_admin' OR NOT fn.prosecdef
        OR NOT COALESCE(fn.proconfig @> ARRAY['search_path=pg_catalog, pg_temp'], false) THEN
-      RAISE EXCEPTION 'migration 103: % owner/secdef/search_path wrong', fn_sig;
+      RAISE EXCEPTION 'migration 113: % owner/secdef/search_path wrong', fn_sig;
     END IF;
     IF NOT has_function_privilege('jale_admin_console', fn_oid, 'EXECUTE') THEN
-      RAISE EXCEPTION 'migration 103: % not executable by console', fn_sig;
+      RAISE EXCEPTION 'migration 113: % not executable by console', fn_sig;
     END IF;
     -- Exactly the owner and the console may execute (PUBLIC is grantee 0).
     IF EXISTS (
@@ -441,40 +443,40 @@ BEGIN
        WHERE p.oid = fn_oid AND a.privilege_type = 'EXECUTE'
          AND a.grantee NOT IN (p.proowner, 'jale_admin_console'::regrole::oid)
     ) THEN
-      RAISE EXCEPTION 'migration 103: % executable by a role other than its owner and the console', fn_sig;
+      RAISE EXCEPTION 'migration 113: % executable by a role other than its owner and the console', fn_sig;
     END IF;
   END LOOP;
 
   -- Exact result shapes: a recreated function that lost an old column fails too.
   IF pg_get_function_result(to_regprocedure('public.admin_analytics_signups(timestamptz, text)'))
        IS DISTINCT FROM 'TABLE(bucket_start timestamp with time zone, worker_signups bigint, employer_signups bigint, worker_signups_verified bigint)' THEN
-    RAISE EXCEPTION 'migration 103: admin_analytics_signups result drifted';
+    RAISE EXCEPTION 'migration 113: admin_analytics_signups result drifted';
   END IF;
   IF pg_get_function_result(to_regprocedure('public.admin_analytics_totals()'))
        IS DISTINCT FROM 'TABLE(total_workers bigint, total_employers bigint, paying_employers bigint, jobs_active bigint, jobs_paused bigint, jobs_filled bigint, jobs_closed bigint, hires_total bigint, jobs_with_hire bigint, total_verified_workers bigint)' THEN
-    RAISE EXCEPTION 'migration 103: admin_analytics_totals result drifted';
+    RAISE EXCEPTION 'migration 113: admin_analytics_totals result drifted';
   END IF;
 
   -- 098's pattern: clear the gate before EACH call and read it back.
   PERFORM set_config('app.admin_analytics_read', '', true);
   PERFORM * FROM public.admin_analytics_onboarding_cohorts(4);
   IF current_setting('app.admin_analytics_read', true) IS DISTINCT FROM 'on' THEN
-    RAISE EXCEPTION 'migration 103: admin_analytics_onboarding_cohorts did not set the read flag';
+    RAISE EXCEPTION 'migration 113: admin_analytics_onboarding_cohorts did not set the read flag';
   END IF;
   PERFORM set_config('app.admin_analytics_read', '', true);
   PERFORM * FROM public.admin_analytics_onboarding_stalled(7);
   IF current_setting('app.admin_analytics_read', true) IS DISTINCT FROM 'on' THEN
-    RAISE EXCEPTION 'migration 103: admin_analytics_onboarding_stalled did not set the read flag';
+    RAISE EXCEPTION 'migration 113: admin_analytics_onboarding_stalled did not set the read flag';
   END IF;
   PERFORM set_config('app.admin_analytics_read', '', true);
   PERFORM * FROM public.admin_analytics_signups(now(), 'day');
   IF current_setting('app.admin_analytics_read', true) IS DISTINCT FROM 'on' THEN
-    RAISE EXCEPTION 'migration 103: admin_analytics_signups did not set the read flag';
+    RAISE EXCEPTION 'migration 113: admin_analytics_signups did not set the read flag';
   END IF;
   PERFORM set_config('app.admin_analytics_read', '', true);
   PERFORM * FROM public.admin_analytics_totals();
   IF current_setting('app.admin_analytics_read', true) IS DISTINCT FROM 'on' THEN
-    RAISE EXCEPTION 'migration 103: admin_analytics_totals did not set the read flag';
+    RAISE EXCEPTION 'migration 113: admin_analytics_totals did not set the read flag';
   END IF;
 
   FOREACH v_arg IN ARRAY ARRAY[0, 27] LOOP
@@ -485,7 +487,7 @@ BEGIN
       v_raised := SQLERRM = 'admin_analytics_invalid_weeks';
     END;
     IF NOT v_raised THEN
-      RAISE EXCEPTION 'migration 103: admin_analytics_onboarding_cohorts(%) did not reject the window', v_arg;
+      RAISE EXCEPTION 'migration 113: admin_analytics_onboarding_cohorts(%) did not reject the window', v_arg;
     END IF;
   END LOOP;
   FOREACH v_arg IN ARRAY ARRAY[0, 91] LOOP
@@ -496,7 +498,7 @@ BEGIN
       v_raised := SQLERRM = 'admin_analytics_invalid_days';
     END;
     IF NOT v_raised THEN
-      RAISE EXCEPTION 'migration 103: admin_analytics_onboarding_stalled(%) did not reject the window', v_arg;
+      RAISE EXCEPTION 'migration 113: admin_analytics_onboarding_stalled(%) did not reject the window', v_arg;
     END IF;
   END LOOP;
 END $$;
