@@ -5,7 +5,6 @@ import {
   labelIndices,
   linePath,
   niceMax,
-  spreadLabels,
   tickValues,
   xPositions,
 } from '@/lib/chart-geometry';
@@ -62,9 +61,6 @@ export function TrendChart({
   const xs = xPositions(labels.length, plotW);
   const dateIdx = labelIndices(labels.length);
   const tickY = (v: number) => TOP + plotH - (v / max) * plotH;
-  // Lines that finish close together would print their end labels on top of
-  // each other; 14 viewBox units is one 12px label plus a little air.
-  const labelYs = spreadLabels(series.map((s) => endPoint(s.values, plotW, plotH, max).y + 4), 14, plotH + 4);
 
   return (
     <article className="card">
@@ -137,7 +133,7 @@ export function TrendChart({
               strokeLinecap="round"
             />
           ))}
-          {series.map((s, idx) => {
+          {series.map((s) => {
             const end = endPoint(s.values, plotW, plotH, max);
             const last = s.values[s.values.length - 1] ?? 0;
             return (
@@ -150,7 +146,7 @@ export function TrendChart({
                   stroke={partialLast ? s.color : '#ffffff'}
                   strokeWidth={2}
                 />
-                <text className="end-label" x={end.x + 10} y={labelYs[idx]}>{s.endLabel ?? formatCount(last)}</text>
+                <text className="end-label" x={end.x + 10} y={end.y + 4}>{s.endLabel ?? formatCount(last)}</text>
               </g>
             );
           })}

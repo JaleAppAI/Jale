@@ -152,7 +152,6 @@ $MigrationFiles = @(
     '100_subscription_status_history.sql'
     '101_worker_identity_challenge_events.sql'
     '102_admin_identity_lockouts.sql'
-    '113_admin_onboarding_funnel.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path
