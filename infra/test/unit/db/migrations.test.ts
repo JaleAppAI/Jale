@@ -134,6 +134,7 @@ describe('database migrations', () => {
       '100',
       '101',
       '102',
+      '113',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -1092,6 +1093,108 @@ describe('database migrations', () => {
 
     // Forward-only.
     expect(sql).not.toMatch(/DROP (FUNCTION|TABLE|TRIGGER|POLICY)/);
+  });
+
+  // Roadmap 2a: the onboarding funnel is four gated definers -- two new, two
+  // recreated with one extra verified column. On RDS the migration's own DO
+  // block is the only runtime check; these literals pin that it stays strict.
+  it('113 adds the onboarding funnel definers without exposing workers', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '113_admin_onboarding_funnel.sql'), 'utf8');
+
+    expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+    expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+
+    // Four definers, each hardened per 089/098.
+    expect(sql.match(/^SECURITY DEFINER$/gm)).toHaveLength(4);
+    expect(sql.match(/SET search_path = pg_catalog, pg_temp/g)).toHaveLength(4);
+    expect(sql.match(/PERFORM set_config\('app\.admin_analytics_read', 'on', true\);/g)).toHaveLength(4);
+    expect(sql.match(/OWNER TO jale_admin;/g)).toHaveLength(4);
+    expect(sql.match(/REVOKE ALL ON FUNCTION public\.admin_analytics_\w+\([^)]*\) FROM PUBLIC;/g)).toHaveLength(4);
+    expect(sql.match(/GRANT EXECUTE ON FUNCTION public\.admin_analytics_\w+\([^)]*\) TO jale_admin_console;/g)).toHaveLength(4);
+    // The four EXECUTE grants are the only statements naming the console role.
+    expect(sql.match(/TO jale_admin_console/g)).toHaveLength(4);
+
+    // Only the two return-type changes drop anything; nothing new is opened.
+    expect(sql.match(/DROP FUNCTION/g)).toHaveLength(2);
+    expect(sql).toContain('DROP FUNCTION public.admin_analytics_signups(TIMESTAMPTZ, TEXT);');
+    expect(sql).toContain('DROP FUNCTION public.admin_analytics_totals();');
+    expect(sql).not.toMatch(/CREATE POLICY|CREATE INDEX|GRANT\s+SELECT/);
+
+    // Each new function validates its input before the gate opens.
+    for (const [fn, error] of [
+      ['admin_analytics_onboarding_cohorts', 'admin_analytics_invalid_weeks'],
+      ['admin_analytics_onboarding_stalled', 'admin_analytics_invalid_days'],
+      ['admin_analytics_signups', 'admin_analytics_invalid_bucket'],
+    ]) {
+      const body = sql.match(new RegExp(`CREATE FUNCTION public\\.${fn}[\\s\\S]*?\\nEND \\$\\$;`))?.[0] ?? '';
+      expect(body).not.toBe('');
+      const iRaise = body.indexOf(`RAISE EXCEPTION '${error}'`);
+      const iGate = body.indexOf("PERFORM set_config('app.admin_analytics_read', 'on', true);");
+      expect(iRaise).toBeGreaterThan(0);
+      expect(iGate).toBeGreaterThan(iRaise);
+    }
+
+    // Results carry counts and step keys only -- never a person.
+    for (const fn of ['admin_analytics_onboarding_cohorts', 'admin_analytics_onboarding_stalled']) {
+      const result = sql.match(new RegExp(`CREATE FUNCTION public\\.${fn}[\\s\\S]*?\\)\\nLANGUAGE plpgsql`))?.[0] ?? '';
+      expect(result).not.toBe('');
+      expect(result).not.toMatch(/phone|user_id|whatsapp_number|cognito/);
+    }
+
+    // The funnel definitions the spec pins.
+    expect(sql).toContain("t.reason IN ('otp_verified', 'web_start')");
+    expect(sql).toContain("t.reason = 'web_worker_bypass'");
+    expect(sql).toContain('WHERE NOT a.dry_run');
+    expect(sql).toContain("('trust.question.1', 13)");
+    expect(sql).toContain("encode(sha256(convert_to(btrim(w.whatsapp_number), 'UTF8')), 'hex')");
+    expect(sql).toMatch(/worker_signups_verified\s+BIGINT/);
+    expect(sql).toMatch(/total_verified_workers\s+BIGINT/);
+
+    // One person per human: an unlinked conversation joins the worker
+    // account with the same phone (conversation-router.ts's rule).
+    expect(sql).toContain('COALESCE(w.user_id, pm.id) AS user_id');
+    expect(sql).toContain('ORDER BY CASE WHEN u.whatsapp_number = btrim(w.whatsapp_number) THEN 0 ELSE 1 END, u.created_at, u.id');
+    // A number keeps one conversation row forever: one first written before
+    // the launch week starts at its first challenge since then, and with none
+    // it has no start at all (a returning pre-v2 contact is not a starter).
+    expect(sql).toContain('CASE WHEN w.created_at >= v_launch_week THEN w.created_at ELSE fc.first_at END AS started_at');
+    expect(sql).toContain('AND ch.created_at >= v_launch_week');
+    expect(sql).toContain(') fc ON w.created_at < v_launch_week');
+    // The stalled door is classified by presence: the creating transition and
+    // a Terms skip share created_at, so ordering would be a coin flip.
+    expect(sql).toContain("CASE WHEN bool_or(t.reason = 'otp_verified') THEN 'whatsapp'");
+    expect(sql).toContain('WHERE p.last_progress <= now() - make_interval(days => p_days)');
+    // Week arithmetic is TimeZone-independent; an empty database still plans the query.
+    expect(sql).toContain("(date_trunc('week', now() AT TIME ZONE 'UTC') - make_interval(weeks => p_weeks - 1)) AT TIME ZONE 'UTC'");
+    expect(sql).toContain("COALESCE(date_trunc('week', v_launch, 'UTC'), 'infinity'::TIMESTAMPTZ)");
+
+    // Self-check: the seven policies it reads through, ACLs, exact result
+    // shapes, the gate for every function, and input errors.
+    expect(sql).toContain('missing or drifted; the funnel would read zero rows');
+    for (const tuple of [
+      "('public.worker_onboarding_state', 'worker_onboarding_state_definer', '*', 'true')",
+      "('public.worker_workflow_runs', 'worker_workflow_runs_definer', '*', 'true')",
+      "('public.worker_workflow_transitions', 'worker_workflow_transitions_definer', '*', 'true')",
+      "('public.worker_identity_challenges', 'worker_identity_challenges_definer', '*', 'true')",
+      "('public.worker_reset_audit', 'worker_reset_audit_admin_read', 'r', 'true')",
+      "('public.users', 'users_admin_analytics_read', 'r', v_gate)",
+      "('public.whatsapp_conversations', 'whatsapp_conversations_admin_analytics_read', 'r', v_gate)",
+    ]) {
+      expect(sql).toContain(tuple);
+    }
+    for (const fn of [
+      'admin_analytics_onboarding_cohorts',
+      'admin_analytics_onboarding_stalled',
+      'admin_analytics_signups',
+      'admin_analytics_totals',
+    ]) {
+      expect(sql).toContain(`migration 113: ${fn} did not set the read flag`);
+    }
+    expect(sql).toContain('migration 113: admin_analytics_signups result drifted');
+    expect(sql).toContain('migration 113: admin_analytics_totals result drifted');
+    expect(sql.match(/aclexplode\(/g)).toHaveLength(1);
+    // A NULL proconfig (no pinned search_path) must fail the check, not skip it.
+    expect(sql).toContain("NOT COALESCE(fn.proconfig @> ARRAY['search_path=pg_catalog, pg_temp'], false)");
   });
 
   // Same reason as the 082/088/089 blocks above: on RDS there is no Jest, so

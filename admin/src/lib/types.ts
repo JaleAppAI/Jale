@@ -91,12 +91,14 @@ export type AnalyticsTotals = {
   jobsClosed: number;
   hiresTotal: number;
   jobsWithHire: number;
+  totalVerifiedWorkers: number;
 };
 
 export type SignupBucket = {
   bucketStart: string;
   workerSignups: number;
   employerSignups: number;
+  workerSignupsVerified: number;
 };
 
 export type JobsActivityBucket = {
@@ -123,3 +125,46 @@ export type PayingEmployer = {
   currentPeriodEnd?: string;
   cancelAtPeriodEnd: boolean;
 };
+
+// Roadmap 2a: the worker onboarding funnel (migration 113).
+export type FunnelWeeks = 4 | 8 | 12;
+export type FunnelDoor = 'all' | 'whatsapp' | 'web';
+
+export type CohortCounts = {
+  cohortWeek: string;
+  started: number;
+  codeRequested: number;
+  verified: number;
+  acceptedTerms: number;
+  finishedProfile: number;
+  ready: number;
+  declined: number;
+  inProgress: number;
+  abandoned: number;
+};
+
+export type OnboardingCohort = CohortCounts & { door: 'whatsapp' | 'web' };
+
+export type OnboardingStalled = {
+  door: 'whatsapp' | 'web' | 'other';
+  stepKey: string;
+  workers: number;
+};
+
+export type FunnelStageKey =
+  | 'started'
+  | 'codeRequested'
+  | 'verified'
+  | 'acceptedTerms'
+  | 'finishedProfile'
+  | 'ready';
+
+export type FunnelStage = {
+  key: FunnelStageKey;
+  label: string;
+  count: number;
+  ofStarted: string | null;
+  ofPrevious: string | null;
+};
+
+export type StalledStep = { stepKey: string; label: string; workers: number };

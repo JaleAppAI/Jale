@@ -244,4 +244,46 @@ assert.equal(
   'the verification-queue read model was retired (roadmap 1b)',
 );
 
+// --- Roadmap 2a: onboarding funnel page ------------------------------------
+assert.equal(existsSync(resolve(root, 'src/app/analytics/funnels/page.tsx')), true, '/analytics/funnels exists');
+const funnelsPage = read('src/app/analytics/funnels/page.tsx');
+const tabs = read('src/components/analytics/AnalyticsTabs.tsx');
+const funnelBars = read('src/components/analytics/FunnelBars.tsx');
+const cohortTable = read('src/components/analytics/CohortTable.tsx');
+const stalledList = read('src/components/analytics/StalledList.tsx');
+
+assert.match(funnelsPage, /requireAdminSession\(\)/, 'the funnels page gates on an admin session');
+assert.match(funnelsPage, /searchParams\??:\s*Promise</, 'the funnels page types searchParams as a Promise (Next 16)');
+assert.match(funnelsPage, /await searchParams/, 'the funnels page awaits searchParams');
+assert.match(
+  funnelsPage,
+  /Promise\.all\(\[\s*getOnboardingCohorts\(weeks\),\s*getOnboardingStalled\(\)\s*\]\)/,
+  'the funnels page runs its two queries in one wave (pool cap of 5)',
+);
+assert.match(funnelsPage, /<AnalyticsTabs active="funnels"/, 'the funnels page shows the analytics tab row');
+assert.doesNotMatch(funnelsPage, /<form|AdminActionsPanel/, 'the funnels page is read-only');
+assert.match(tabs, /href: '\/analytics\/funnels'/, 'the tab row links to the funnels page');
+assert.match(tabs, /aria-current/, 'the active tab is marked for assistive tech');
+assert.doesNotMatch(
+  tabs + funnelBars + cohortTable + stalledList,
+  /'use client'/,
+  'funnel components stay server components',
+);
+assert.match(cohortTable, /<table/, 'cohorts render as a real table');
+assert.match(cohortTable, />settling</, 'still-moving weeks are labelled');
+assert.match(funnelsPage, /showCode=\{door === 'whatsapp'\}/, 'the Code column appears only for the WhatsApp door');
+assert.match(cohortTable, /className="card cohort-card"/, 'the cohort card can shrink below its table');
+assert.match(css, /\.cohort-card \{[^}]*min-width: 0;/, 'a wide cohort table scrolls inside its card instead of widening the page');
+assert.match(css, /\.table-scroll \{[^}]*overflow-x: auto;/, 'the cohort table scrolls horizontally inside its card');
+
+assert.match(analyticsPage, /<AnalyticsTabs active="growth"/, 'the growth page shows the analytics tab row');
+assert.match(analyticsPage, /key: 'verified'/, 'the signups chart has a verified-workers line');
+assert.match(
+  analyticsPage,
+  /cumulativeSeries\(verifiedSignups, totals\.totalVerifiedWorkers\)/,
+  'the verified running total ends at today\'s verified count',
+);
+assert.match(analyticsPage, /\$\{formatCount\(newVerified\)\} verified`/, 'the workers tile notes how many new workers verified');
+assert.match(trend, /spreadLabels\(/, 'end labels are spread so close lines stay legible');
+
 console.log('admin UI contract checks passed');
