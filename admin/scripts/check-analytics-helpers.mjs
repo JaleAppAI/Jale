@@ -4,6 +4,10 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import ts from 'typescript';
 
+// Date helpers must print UTC whatever the host zone; CI runs in UTC, where a
+// helper that forgot timeZone: 'UTC' would still pass.
+process.env.TZ = 'America/Los_Angeles';
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const outDir = resolve(root, '.test-artifacts/analytics-helpers');
 const sourceFiles = [
@@ -14,6 +18,8 @@ const sourceFiles = [
   'src/lib/funnel.ts',
   'src/lib/employer-health.ts',
   'src/lib/ops-health.ts',
+  'src/lib/restarts.ts',
+  'src/lib/digest.ts',
 ].map((relativePath) => resolve(root, relativePath));
 
 for (const sourcePath of sourceFiles) {
@@ -49,6 +55,8 @@ program.emit(undefined, (fileName, data) => {
         .replaceAll("'./db'", "'./db.mjs'")
         .replaceAll("'./analytics-format'", "'./analytics-format.mjs'")
         .replaceAll("'../ops-health'", "'./ops-health.mjs'")
+        .replaceAll("'./ops-health'", "'./ops-health.mjs'")
+        .replaceAll("'./funnel'", "'./funnel.mjs'")
         .replaceAll("'../types'", "'./types.mjs'"),
     );
   }
@@ -58,6 +66,8 @@ const analytics = await import(pathToFileURL(resolve(outDir, 'admin-analytics.mj
 const funnel = await import(pathToFileURL(resolve(outDir, 'funnel.mjs')));
 const health = await import(pathToFileURL(resolve(outDir, 'employer-health.mjs')));
 const ops = await import(pathToFileURL(resolve(outDir, 'ops-health.mjs')));
+const restarts = await import(pathToFileURL(resolve(outDir, 'restarts.mjs')));
+const digest = await import(pathToFileURL(resolve(outDir, 'digest.mjs')));
 
 // ---- parseAnalyticsRange ----
 assert.equal(analytics.parseAnalyticsRange('7d'), '7d');
@@ -917,5 +927,260 @@ for (const line of [
 }
 assert.equal(ops.opsHref(4), '/analytics/ops?weeks=4');
 assert.equal(ops.opsHref(12), '/analytics/ops?weeks=12');
+
+// ---- 2d: start over and back, operator resets, applicant digest ----
+for (const getter of ['getOnboardingRestarts', 'getOperatorResets', 'getDigestAdoption', 'getDigestSends']) {
+  assert.equal(typeof analytics[getter], 'function', `${getter} is exported`);
+}
+const rsNow = new Date('2026-10-08T15:00:00.000Z'); // a Thursday; the current week starts Oct 5
+const rsW0 = '2026-09-14T00:00:00.000Z';
+const rsW1 = '2026-09-21T00:00:00.000Z';
+const rsW2 = '2026-09-28T00:00:00.000Z';
+const rsW3 = '2026-10-05T00:00:00.000Z';
+
+// stepOrder is exported unchanged: 113's order, unknown keys last.
+assert.equal(funnel.stepOrder('start.choose_language'), 0);
+assert.equal(funnel.stepOrder('legal.review'), 2);
+assert.equal(funnel.stepOrder('profile.name'), 5);
+assert.equal(funnel.stepOrder('profile.photo_type'), 16);
+assert.equal(funnel.stepOrder('something.new'), 17, 'an unknown step sorts after every known one');
+
+// Mappers: pg returns BIGINT as a string and TIMESTAMPTZ as a Date; a NULL
+// week is the whole window, a NULL step is all steps; a door outside
+// all / whatsapp / web is an error.
+const rsRow = {
+  week_start: new Date(rsW2), door: 'whatsapp', step_key: 'profile.location',
+  reached: '10', restart_workers: '2', restart_presses: '3', back_workers: '4', back_presses: '6',
+};
+assert.deepEqual(analytics.mapOnboardingRestartRow(rsRow), {
+  weekStart: rsW2, door: 'whatsapp', stepKey: 'profile.location',
+  reached: 10, restartWorkers: 2, restartPresses: 3, backWorkers: 4, backPresses: 6,
+});
+assert.deepEqual(
+  analytics.mapOnboardingRestartRow({ ...rsRow, week_start: null, door: 'all', step_key: null }),
+  { weekStart: null, door: 'all', stepKey: null, reached: 10, restartWorkers: 2, restartPresses: 3, backWorkers: 4, backPresses: 6 },
+  'the window all-steps row keeps both NULLs',
+);
+assert.throws(() => analytics.mapOnboardingRestartRow({ ...rsRow, door: 'other' }), /Unexpected restarts door: other/);
+
+// Fixture: the SQL's rows for every door, shuffled. 'all' is the SQL's own row
+// (distinct across doors), so it is never the sum of the two doors; an
+// all-steps row (stepKey null) counts workers distinct across steps, so it is
+// never the sum of the step rows either (presses are).
+const rsFig = (reached, restartWorkers, restartPresses, backWorkers, backPresses) =>
+  ({ reached, restartWorkers, restartPresses, backWorkers, backPresses });
+const rsRows = [
+  { weekStart: null, door: 'all', stepKey: 'profile.location', ...rsFig(25, 3, 4, 5, 7) },
+  { weekStart: rsW3, door: 'all', stepKey: 'profile.location', ...rsFig(9, 2, 2, 2, 3) },
+  { weekStart: null, door: 'web', stepKey: 'profile.location', ...rsFig(10, 0, 0, 3, 5) },
+  { weekStart: rsW3, door: 'all', stepKey: null, ...rsFig(20, 3, 4, 3, 5) },
+  { weekStart: null, door: 'all', stepKey: 'trust.question.2', ...rsFig(4, 1, 1, 2, 2) },
+  { weekStart: rsW1, door: 'all', stepKey: 'profile.location', ...rsFig(8, 1, 2, 2, 3) },
+  { weekStart: null, door: 'web', stepKey: null, ...rsFig(12, 0, 0, 3, 5) },
+  { weekStart: null, door: 'all', stepKey: 'legal.review', ...rsFig(40, 0, 0, 2, 2) },
+  { weekStart: rsW2, door: 'web', stepKey: 'profile.location', ...rsFig(4, 1, 1, 3, 5) },
+  { weekStart: rsW2, door: 'web', stepKey: null, ...rsFig(4, 1, 1, 3, 5) },
+  { weekStart: null, door: 'all', stepKey: 'profile.trade', ...rsFig(300, 1, 1, 0, 0) },
+  { weekStart: rsW1, door: 'all', stepKey: 'legal.review', ...rsFig(20, 0, 0, 2, 2) },
+  { weekStart: rsW1, door: 'all', stepKey: null, ...rsFig(25, 1, 2, 3, 5) },
+  { weekStart: null, door: 'whatsapp', stepKey: 'profile.location', ...rsFig(14, 3, 4, 2, 2) },
+  { weekStart: null, door: 'whatsapp', stepKey: null, ...rsFig(20, 3, 4, 2, 2) },
+  { weekStart: rsW3, door: 'all', stepKey: 'profile.name', ...rsFig(12, 1, 1, 1, 1) },
+  { weekStart: rsW3, door: 'all', stepKey: 'profile.trade', ...rsFig(6, 1, 1, 1, 1) },
+  { weekStart: null, door: 'all', stepKey: null, ...rsFig(400, 5, 7, 8, 11) },
+  { weekStart: null, door: 'all', stepKey: 'profile.name', ...rsFig(30, 1, 1, 0, 0) },
+  { weekStart: '2026-08-31T00:00:00.000Z', door: 'all', stepKey: 'profile.name', ...rsFig(5, 9, 9, 9, 9) },
+  { weekStart: '2026-08-31T00:00:00.000Z', door: 'all', stepKey: null, ...rsFig(5, 9, 9, 9, 9) },
+];
+
+// Start over is a WhatsApp command: the web door has none.
+assert.equal(restarts.hasStartOver('all'), true);
+assert.equal(restarts.hasStartOver('whatsapp'), true);
+assert.equal(restarts.hasStartOver('web'), false);
+
+// By step: the door's window step rows in onboarding order (never the
+// all-steps row); workers · share of the workers who were at the step.
+assert.deepEqual(restarts.restartStepRows(rsRows, 'all'), [
+  { stepKey: 'legal.review', label: 'Terms', reached: 40, startedOver: '0 · 0%', wentBack: '2 · 5%', presses: 2 },
+  { stepKey: 'profile.name', label: 'Name', reached: 30, startedOver: '1 · 3%', wentBack: '0 · 0%', presses: 1 },
+  { stepKey: 'profile.location', label: 'Location', reached: 25, startedOver: '3 · 12%', wentBack: '5 · 20%', presses: 11 },
+  { stepKey: 'profile.trade', label: 'Trade', reached: 300, startedOver: '1 · <1%', wentBack: '0 · 0%', presses: 1 },
+  { stepKey: 'trust.question.2', label: 'Trust question 2', reached: 4, startedOver: '1 · 25%', wentBack: '2 · 50%', presses: 3 },
+], 'onboarding order; a small share never rounds to 0%');
+assert.deepEqual(
+  restarts.restartStepRows(rsRows, 'whatsapp').map((row) => [row.label, row.reached, row.startedOver]),
+  [['Location', 14, '3 · 21%']],
+  'a door shows its own window rows, never re-derived from All',
+);
+assert.deepEqual(
+  restarts.restartStepRows(rsRows, 'web'),
+  [{ stepKey: 'profile.location', label: 'Location', reached: 10, startedOver: '—', wentBack: '3 · 30%', presses: 5 }],
+  'the web door has no start over: a dash, and only back presses',
+);
+
+// The total row: the window all-steps row, never a sum of the steps
+// (the steps add up to 6 workers who started over and 9 who went back).
+assert.deepEqual(
+  restarts.restartTotals(rsRows, 'all'),
+  { reached: 400, startedOver: '5 · 1%', wentBack: '8 · 2%', presses: 18 },
+);
+assert.deepEqual(restarts.restartTotals(rsRows, 'whatsapp'), { reached: 20, startedOver: '3 · 15%', wentBack: '2 · 10%', presses: 6 });
+assert.deepEqual(restarts.restartTotals(rsRows, 'web'), { reached: 12, startedOver: '—', wentBack: '3 · 25%', presses: 5 });
+assert.deepEqual(
+  restarts.restartTotals([], 'all'),
+  { reached: 0, startedOver: '0 · —', wentBack: '0 · —', presses: 0 },
+  'a missing all-steps row reads as zeros; nobody at a step means no share',
+);
+assert.equal(restarts.restartsEmpty(rsRows, 'all'), false);
+assert.equal(restarts.restartsEmpty(rsRows, 'web'), false);
+assert.equal(restarts.restartsEmpty([], 'all'), true, 'no rows: the empty state');
+assert.equal(
+  restarts.restartsEmpty([{ weekStart: null, door: 'whatsapp', stepKey: 'legal.review', ...rsFig(40, 0, 0, 0, 0) }], 'whatsapp'),
+  true,
+  'steps reached but nobody pressed: the empty state',
+);
+assert.equal(
+  restarts.restartsEmpty([{ weekStart: null, door: 'web', stepKey: 'profile.name', ...rsFig(3, 1, 1, 0, 0) }], 'web'),
+  true,
+  'the web door ignores start-over presses',
+);
+
+// By week: every week of the window, oldest first, from the week's all-steps
+// row (workers distinct across steps: 3 started over in the week of Oct 5,
+// though the steps add up to 4 and the biggest step has 2); a week with no row
+// is 0; weeks outside the window are ignored.
+assert.deepEqual(restarts.restartWeeks(rsRows, 'all', 4, rsNow), [
+  { weekStart: rsW0, restartWorkers: 0, backWorkers: 0 },
+  { weekStart: rsW1, restartWorkers: 1, backWorkers: 3 },
+  { weekStart: rsW2, restartWorkers: 0, backWorkers: 0 },
+  { weekStart: rsW3, restartWorkers: 3, backWorkers: 3 },
+]);
+assert.deepEqual(
+  restarts.restartWeeks(rsRows, 'web', 4, rsNow).map((week) => [week.restartWorkers, week.backWorkers]),
+  [[0, 0], [0, 0], [0, 3], [0, 0]],
+  'the web door counts workers who went back only',
+);
+assert.equal(restarts.restartWeeks([], 'all', 12, rsNow).length, 12);
+
+// Operator resets.
+const rsResetRow = {
+  week_start: new Date('2026-07-27T00:00:00.000Z'), reason: 'cutover: reset all workers into onboarding v2',
+  workers: '412', resets: '415', bulk: true, run_started_at: new Date('2026-07-29T14:05:00.000Z'),
+};
+// workers and resets differ, so a swap of the two columns fails here.
+assert.deepEqual(analytics.mapOperatorResetRow(rsResetRow), {
+  weekStart: '2026-07-27T00:00:00.000Z', reason: 'cutover: reset all workers into onboarding v2',
+  workers: 412, resets: 415, bulk: true, runStartedAt: '2026-07-29T14:05:00.000Z',
+});
+assert.equal(
+  analytics.mapOperatorResetRow({ ...rsResetRow, week_start: new Date(rsW2), reason: '(no reason)', workers: '2', resets: '3', bulk: false, run_started_at: null }).runStartedAt,
+  null,
+  'a counted row has no run time',
+);
+const rsResets = [
+  { weekStart: rsW2, reason: 'QA retest', workers: 2, resets: 3, bulk: false, runStartedAt: null },
+  { weekStart: '2026-07-27T00:00:00.000Z', reason: 'QA batch', workers: 15, resets: 15, bulk: true, runStartedAt: '2026-08-02T09:00:00.000Z' },
+  { weekStart: rsW3, reason: 'stuck on voice note ••••', workers: 2, resets: 4, bulk: false, runStartedAt: null },
+  { weekStart: rsW3, reason: 'QA retest', workers: 1, resets: 3, bulk: false, runStartedAt: null },
+  { weekStart: '2026-07-27T00:00:00.000Z', reason: 'cutover: reset all workers into onboarding v2', workers: 412, resets: 412, bulk: true, runStartedAt: '2026-07-29T14:05:00.000Z' },
+  { weekStart: rsW3, reason: '(no reason)', workers: 3, resets: 3, bulk: false, runStartedAt: null },
+];
+assert.deepEqual(
+  restarts.resetTableRows(rsResets, rsNow).map((row) => [row.label, row.current, row.reason, row.workers, row.resets]),
+  [
+    ['Week of Oct 5', true, 'stuck on voice note ••••', 2, 4],
+    ['Week of Oct 5', true, '(no reason)', 3, 3],
+    ['Week of Oct 5', true, 'QA retest', 1, 3],
+    ['Week of Sep 28', false, 'QA retest', 2, 3],
+  ],
+  'bulk runs left out; newest week first, then most resets, then reason',
+);
+assert.deepEqual(restarts.resetTableRows(rsResets.filter((row) => row.bulk), rsNow), [], 'only bulk runs: the table is empty');
+assert.equal(
+  restarts.bulkRunsNote(rsResets, rsNow),
+  "Left out: 2 bulk runs ('cutover: reset all workers into onboarding v2', 412 workers, Jul 29; 'QA batch', 15 workers, Aug 2).",
+  'oldest run first',
+);
+assert.equal(
+  restarts.bulkRunsNote(rsResets.filter((row) => row.reason !== 'QA batch'), rsNow),
+  "Left out: 1 bulk run ('cutover: reset all workers into onboarding v2', 412 workers, Jul 29).",
+);
+assert.equal(
+  restarts.bulkRunsNote([{ ...rsResets[4], workers: 1204 }], new Date('2027-01-06T12:00:00.000Z')),
+  "Left out: 1 bulk run ('cutover: reset all workers into onboarding v2', 1,204 workers, Jul 29, 2026).",
+  'a run from another year shows the year',
+);
+assert.equal(
+  restarts.bulkRunsNote([{ ...rsResets[4], runStartedAt: '2026-07-29T23:30:00.000Z' }], rsNow),
+  "Left out: 1 bulk run ('cutover: reset all workers into onboarding v2', 412 workers, Jul 29).",
+  'the run date is the UTC day',
+);
+assert.equal(
+  restarts.bulkRunsNote([{ ...rsResets[4], runStartedAt: '2026-07-30T00:30:00.000Z' }], rsNow),
+  "Left out: 1 bulk run ('cutover: reset all workers into onboarding v2', 412 workers, Jul 30).",
+  'just after midnight UTC is already the next day',
+);
+assert.equal(
+  restarts.bulkRunsNote([{ ...rsResets[4], runStartedAt: '2027-01-01T00:30:00.000Z' }], new Date('2027-01-06T12:00:00.000Z')),
+  "Left out: 1 bulk run ('cutover: reset all workers into onboarding v2', 412 workers, Jan 1).",
+  'the year is the UTC year: just after New Year UTC is already the current year',
+);
+assert.equal(restarts.bulkRunsNote(rsResets.filter((row) => !row.bulk), rsNow), null, 'no bulk runs, no note');
+
+// Applicant digest.
+assert.deepEqual(
+  analytics.mapDigestAdoptionRow({ employers: '280', digest_on: '34', digest_on_with_email: '29' }),
+  { employers: 280, digestOn: 34, digestOnWithEmail: 29 },
+);
+for (const [employers, digestOn, digestOnWithEmail, line] of [
+  [280, 34, 29, 'Digest on for 12% of employers (34 of 280) · 29 of them have an email address'],
+  [0, 0, 0, 'Digest on for — of employers (0 of 0)'],
+  [280, 0, 0, 'Digest on for 0% of employers (0 of 280)'],
+  [300, 1, 1, 'Digest on for <1% of employers (1 of 300) · 1 of them has an email address'],
+  [1200, 1199, 0, 'Digest on for >99% of employers (1,199 of 1,200) · 0 of them have an email address'],
+  [5, 5, 5, 'Digest on for 100% of employers (5 of 5) · 5 of them have an email address'],
+]) {
+  assert.equal(digest.adoptionLine({ employers, digestOn, digestOnWithEmail }), line, `adoptionLine(${digestOn} of ${employers})`);
+}
+assert.deepEqual(
+  analytics.mapDigestSendsRow({
+    week_start: new Date(rsW2), emailed: '13', sent: '7', failed: '1', unknown: '2', in_progress: '3', employers_reached: '4',
+  }),
+  { weekStart: rsW2, emailed: 13, sent: 7, failed: 1, unknown: 2, inProgress: 3, employersReached: 4 },
+);
+assert.equal(
+  analytics.mapDigestSendsRow({ week_start: null, emailed: '0', sent: '0', failed: '0', unknown: '0', in_progress: '0', employers_reached: '0' }).weekStart,
+  null,
+  'the window row keeps its NULL week',
+);
+const dgFig = (emailed, sent, failed, unknown, inProgress, employersReached) =>
+  ({ emailed, sent, failed, unknown, inProgress, employersReached });
+const dgSplit = digest.splitDigestSends([
+  { weekStart: rsW3, ...dgFig(4, 2, 0, 0, 2, 2) },
+  { weekStart: null, ...dgFig(16, 12, 1, 1, 2, 5) },
+  { weekStart: rsW1, ...dgFig(3, 3, 0, 0, 0, 3) },
+  { weekStart: rsW0, ...dgFig(0, 0, 0, 0, 0, 0) },
+  { weekStart: rsW2, ...dgFig(9, 7, 1, 1, 0, 4) },
+]);
+assert.deepEqual(dgSplit.weekly.map((week) => week.weekStart), [rsW0, rsW1, rsW2, rsW3], 'every week, oldest first');
+assert.equal('weekStart' in dgSplit.window, false);
+assert.deepEqual(
+  dgSplit.window,
+  dgFig(16, 12, 1, 1, 2, 5),
+  'the total row is the SQL window row: employers reached is distinct across the weeks (5, not 9)',
+);
+assert.deepEqual(digest.splitDigestSends([]), { weekly: [], window: dgFig(0, 0, 0, 0, 0, 0) }, 'a missing window row reads as zero');
+assert.deepEqual(
+  digest.digestTableRows(dgSplit, rsNow).map((row) => [row.label, row.current, row.emailed, row.employersReached]),
+  [
+    ['Week of Oct 5', true, 4, 2],
+    ['Week of Sep 28', false, 9, 4],
+    ['Week of Sep 21', false, 3, 3],
+    ['Week of Sep 14', false, 0, 0],
+  ],
+  'newest first; the current week is so far',
+);
+assert.equal(digest.digestEmpty(dgSplit), false);
+assert.equal(digest.digestEmpty(digest.splitDigestSends([{ weekStart: rsW3, ...dgFig(0, 0, 0, 0, 0, 0) }, { weekStart: null, ...dgFig(0, 0, 0, 0, 0, 0) }])), true, 'nothing emailed: the empty state');
 
 console.log('check-analytics-helpers: all assertions passed');

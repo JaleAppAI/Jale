@@ -1198,6 +1198,9 @@ maybeDescribe('employer_digest_settings integration (migration 082)', () => {
       // cannot run a service-wide UPDATE here. Adding a name to this list
       // should always be a deliberate act.
       expect(state.policies).toEqual([
+        // 117: the admin console's gated, SELECT-only analytics read (only
+        // while an admin_analytics_* definer has opened the flag).
+        'employer_digest_settings_admin_analytics_read',
         'employer_digest_settings_delivery_feedback_select',
         'employer_digest_settings_delivery_feedback_update',
         'employer_digest_settings_digest_enumerator_select',

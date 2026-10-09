@@ -132,7 +132,8 @@ export function stepLabel(stepKey: string): string {
   return STEP_LABELS[stepKey] ?? stepKey;
 }
 
-function stepOrder(stepKey: string): number {
+// The step's place in onboarding (113's order); unknown keys sort after every known one.
+export function stepOrder(stepKey: string): number {
   const index = STEP_ORDER.indexOf(stepKey);
   return index === -1 ? STEP_ORDER.length : index;
 }

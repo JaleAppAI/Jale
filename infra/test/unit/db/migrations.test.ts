@@ -137,6 +137,7 @@ describe('database migrations', () => {
       '113',
       '114',
       '115',
+      '117',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -1681,6 +1682,378 @@ describe('database migrations', () => {
     expect(sql.match(/PERFORM set_config\('app\.admin_analytics_read', '', true\);/g)).toHaveLength(6);
     expect(sql).toContain('FOREACH v_arg IN ARRAY ARRAY[0, 27] LOOP');
     expect(sql).toContain("v_raised := SQLERRM = 'admin_analytics_invalid_weeks';");
+  });
+
+  // Roadmap 2d: case status timing (one column, two triggers, a one-time
+  // backfill), one gated read policy and four gated definers. On RDS the
+  // migration's own DO blocks are the only runtime check; these literals pin
+  // that they stay strict.
+  it('117 adds case status timing, the restart, reset and digest definers and one gated read without exposing people', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '117_admin_queues.sql'), 'utf8');
+    // The code without comments, for what it may never read or return.
+    const code = sql.replace(/--[^\n]*/g, '');
+
+    expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+    expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+    // The code is ASCII only: the arrow and the mask bullets are U& escapes,
+    // so no client encoding can mangle them.
+    expect(code).toMatch(/^[\x00-\x7F]*$/);
+
+    // Lock timeout first, then the preconditions, then the column, its
+    // backfill, its default and NOT NULL, then the triggers.
+    const iBegin = sql.indexOf('BEGIN;');
+    const iLock = sql.indexOf("SET LOCAL lock_timeout = '5s';");
+    const iPre = sql.indexOf('DO $$');
+    const iAdd = sql.indexOf('ALTER TABLE public.admin_cases ADD COLUMN status_changed_at TIMESTAMPTZ;');
+    const iFill = sql.indexOf('-- BEGIN status_changed_at backfill');
+    const iNotNull = sql.indexOf('  ALTER COLUMN status_changed_at SET NOT NULL;');
+    const iTrigger = sql.indexOf('CREATE TRIGGER');
+    const iPolicy = sql.indexOf('CREATE POLICY');
+    expect(iLock).toBeGreaterThan(iBegin);
+    expect(iPre).toBeGreaterThan(iLock);
+    expect(iAdd).toBeGreaterThan(iPre);
+    expect(iFill).toBeGreaterThan(iAdd);
+    expect(iNotNull).toBeGreaterThan(iFill);
+    expect(iTrigger).toBeGreaterThan(iNotNull);
+    expect(iPolicy).toBeGreaterThan(iLock);
+
+    // Exactly one policy -- 089's gate, verbatim, SELECT-only, jale_admin --
+    // and no grant, index, drop or FORCE.
+    expect(sql.match(/CREATE POLICY/g)).toHaveLength(1);
+    expect(sql).toMatch(new RegExp(
+      'CREATE POLICY employer_digest_settings_admin_analytics_read\\s+ON public\\.employer_digest_settings FOR SELECT\\s+TO jale_admin\\s+'
+      + "USING \\(current_setting\\('app\\.admin_analytics_read', true\\) = 'on'\\);",
+    ));
+    expect(sql).not.toMatch(/CREATE INDEX|GRANT\s+(SELECT|INSERT|UPDATE|DELETE|ALL)|DROP (FUNCTION|TABLE|TRIGGER|POLICY|INDEX|COLUMN|CONSTRAINT)|FORCE ROW LEVEL SECURITY;/);
+
+    // The column: added bare, backfilled, then DEFAULT now() and NOT NULL.
+    expect(sql.match(/ALTER TABLE/g)).toHaveLength(2);
+    expect(sql).toContain(
+      'ALTER TABLE public.admin_cases\n'
+      + '  ALTER COLUMN status_changed_at SET DEFAULT now(),\n'
+      + '  ALTER COLUMN status_changed_at SET NOT NULL;\n',
+    );
+    // The backfill: one statement between the markers (the integration suite
+    // runs exactly this text), never earlier than created_at.
+    const backfill = sql.match(/\n-- BEGIN status_changed_at backfill\n([\s\S]*?)-- END status_changed_at backfill\n/)?.[1];
+    expect(backfill).toBe(
+      'UPDATE public.admin_cases c\n'
+      + '   SET status_changed_at = greatest(c.created_at, CASE\n'
+      + "         WHEN c.status IN ('resolved', 'dismissed') THEN COALESCE(c.resolved_at, c.created_at)\n"
+      + "         WHEN c.status = 'pending_worker' THEN COALESCE((\n"
+      + '           SELECT min(a.created_at)\n'
+      + '             FROM public.admin_audit_log a\n'
+      + "            WHERE a.target_type IN ('admin_case', 'verification')\n"
+      + '              AND a.target_id = c.id::text\n'
+      + "              AND a.action IN ('request_more_info', 'reply_whatsapp', 'reset_verification_step')\n"
+      + '         ), c.created_at)\n'
+      + '         ELSE c.created_at\n'
+      + '       END);\n',
+    );
+
+    // Both triggers: timing, UPDATE OF status, FOR EACH ROW, the WHEN clause.
+    expect(sql.match(/^CREATE TRIGGER/gm)).toHaveLength(2);
+    expect(sql).toContain(
+      'CREATE TRIGGER admin_cases_stamp_status_change\n'
+      + '  BEFORE UPDATE OF status ON public.admin_cases\n'
+      + '  FOR EACH ROW\n'
+      + '  WHEN (OLD.status IS DISTINCT FROM NEW.status)\n'
+      + '  EXECUTE FUNCTION public.admin_cases_stamp_status_change();\n',
+    );
+    expect(sql).toContain(
+      'CREATE TRIGGER admin_cases_record_status_change\n'
+      + '  AFTER UPDATE OF status ON public.admin_cases\n'
+      + '  FOR EACH ROW\n'
+      + '  WHEN (OLD.status IS DISTINCT FROM NEW.status)\n'
+      + '  EXECUTE FUNCTION public.admin_cases_record_status_change();\n',
+    );
+    // The stamp reads nothing and is no definer; the timeline writer is one,
+    // catches nothing, and writes the event verbatim.
+    const stamp = sql.match(/CREATE FUNCTION public\.admin_cases_stamp_status_change\(\)[\s\S]*?\nEND \$\$;/)?.[0] ?? '';
+    expect(stamp).toBe(
+      'CREATE FUNCTION public.admin_cases_stamp_status_change()\n'
+      + 'RETURNS TRIGGER\n'
+      + 'LANGUAGE plpgsql\n'
+      + 'SET search_path = pg_catalog, pg_temp\n'
+      + 'AS $$\n'
+      + 'BEGIN\n'
+      + '  NEW.status_changed_at := now();\n'
+      + '  RETURN NEW;\n'
+      + 'END $$;',
+    );
+    const record = sql.match(/CREATE FUNCTION public\.admin_cases_record_status_change\(\)[\s\S]*?\nEND \$\$;/)?.[0] ?? '';
+    expect(record).toContain('RETURNS TRIGGER\nLANGUAGE plpgsql\nSECURITY DEFINER\nSET search_path = pg_catalog, pg_temp\n');
+    expect(record).not.toMatch(/EXCEPTION|PERFORM|SELECT/);
+    expect(record).toContain(
+      '  INSERT INTO public.admin_case_events (case_id, event_type, actor_type, actor_id, payload)\n'
+      + '  VALUES (\n'
+      + '    NEW.id,\n'
+      + "    'status_changed',\n"
+      + "    CASE WHEN session_user = 'jale_admin_console' THEN 'admin' ELSE 'system' END,\n"
+      + '    NULL,\n'
+      + '    jsonb_build_object(\n'
+      + "      'title', 'Status changed',\n",
+    );
+    for (const side of ['OLD', 'NEW']) {
+      expect(record).toMatch(new RegExp(
+        `CASE ${side}\\.status WHEN 'open' THEN 'Open'\\s+WHEN 'pending_worker' THEN 'Pending worker'\\s+`
+        + "WHEN 'pending_admin' THEN 'Pending admin'\\s+WHEN 'resolved' THEN 'Resolved'\\s+"
+        + `WHEN 'dismissed' THEN 'Dismissed'\\s+ELSE ${side}\\.status END`,
+      ));
+    }
+    expect(record).toContain("|| U&' \\2192 '\n");
+    expect(record).toContain("      'from', OLD.status,\n      'to', NEW.status));\n  RETURN NULL;\n");
+
+    // Four read definers with the signatures the console calls and two
+    // trigger functions; every one owned by jale_admin, PUBLIC revoked; only
+    // the four are granted, and only to the console.
+    const fns = [
+      ['admin_analytics_onboarding_restarts', '(p_weeks INTEGER)', '(INTEGER)'],
+      ['admin_analytics_operator_resets', '(p_weeks INTEGER)', '(INTEGER)'],
+      ['admin_analytics_digest_adoption', '()', '()'],
+      ['admin_analytics_digest_sends', '(p_weeks INTEGER)', '(INTEGER)'],
+    ] as const;
+    for (const [fn, params, args] of fns) {
+      expect(sql).toContain(`CREATE FUNCTION public.${fn}${params}\nRETURNS TABLE (`);
+      expect(sql).toContain(`ALTER FUNCTION public.${fn}${args} OWNER TO jale_admin;`);
+      expect(sql).toContain(`REVOKE ALL ON FUNCTION public.${fn}${args} FROM PUBLIC;`);
+      expect(sql).toContain(`GRANT EXECUTE ON FUNCTION public.${fn}${args} TO jale_admin_console;`);
+    }
+    for (const fn of ['admin_cases_stamp_status_change', 'admin_cases_record_status_change']) {
+      expect(sql).toContain(`ALTER FUNCTION public.${fn}() OWNER TO jale_admin;`);
+      expect(sql).toContain(`REVOKE ALL ON FUNCTION public.${fn}() FROM PUBLIC;`);
+      expect(sql).not.toContain(`GRANT EXECUTE ON FUNCTION public.${fn}()`);
+    }
+    expect(sql.match(/^CREATE FUNCTION/gm)).toHaveLength(6);
+    expect(sql.match(/^SECURITY DEFINER$/gm)).toHaveLength(5);
+    expect(sql.match(/^SET search_path = pg_catalog, pg_temp$/gm)).toHaveLength(6);
+    expect(sql.match(/PERFORM set_config\('app\.admin_analytics_read', 'on', true\);/g)).toHaveLength(4);
+    // The four EXECUTE grants are the only statements granting to the console.
+    expect(sql.match(/TO jale_admin_console/g)).toHaveLength(4);
+
+    // Results carry counts, week starts, door ids, step keys, masked reasons,
+    // booleans and the listed timestamps only.
+    const never = /user_id|run_id|phone_hash|\boperator\b|table_counts|inbound_message_sid|metadata|recipient_email|subject|body_text|body_html|last_error|idempotency_key|headers|source_id|ses_message_id|\bemail\b|cognito_sub|full_name|\bphone\b|employer_id/;
+    for (const [fn] of fns) {
+      const body = sql.match(new RegExp(`CREATE FUNCTION public\\.${fn}\\([\\s\\S]*?\\nEND \\$\\$;`))?.[0] ?? '';
+      expect(body).not.toBe('');
+      const result = body.match(/RETURNS TABLE \(([\s\S]*?)\)\nLANGUAGE plpgsql/)?.[1] ?? '';
+      expect(result).not.toBe('');
+      expect(result).not.toMatch(never);
+      // The gate opens before the query, and after every input check.
+      const iGate = body.indexOf("PERFORM set_config('app.admin_analytics_read', 'on', true);");
+      expect(iGate).toBeGreaterThan(0);
+      expect(iGate).toBeLessThan(body.indexOf('RETURN QUERY'));
+      const iRaise = body.indexOf("RAISE EXCEPTION 'admin_analytics_invalid_weeks'");
+      if (fn === 'admin_analytics_digest_adoption') {
+        expect(iRaise).toBe(-1);
+        expect(body).toContain("BEGIN\n  -- No arguments to validate.\n  PERFORM set_config('app.admin_analytics_read', 'on', true);");
+      } else {
+        expect(iRaise).toBeGreaterThan(0);
+        expect(iGate).toBeGreaterThan(iRaise);
+      }
+    }
+    expect(sql.match(/IF p_weeks IS NULL OR p_weeks < 1 OR p_weeks > 26 THEN/g)).toHaveLength(3);
+    // Nothing personal or operational is read at all; user ids, the employer
+    // key, emails and subs are read only to count, join or filter.
+    expect(code).not.toMatch(/phone_hash|\boperator\b|table_counts|inbound_message_sid|metadata|recipient_email|subject|body_text|body_html|last_error|idempotency_key|headers|ses_message_id|full_name|\bphone\b/);
+    expect(code.match(/source_id/g)).toHaveLength(2);
+    expect(code).toContain('o.source_id AS employer,');
+    expect(code).toContain('WHERE u.id = o.source_id\n');
+
+    // Weeks: a TimeZone-independent window, every row grouped by its UTC
+    // Monday, the digest weeks zero-filled.
+    expect(code.match(/v_from := \(date_trunc\('week', now\(\) AT TIME ZONE 'UTC'\) - make_interval\(weeks => p_weeks - 1\)\) AT TIME ZONE 'UTC';/g)).toHaveLength(3);
+    expect(code.match(/FROM generate_series\(0, p_weeks - 1\) AS g\(n\)/g)).toHaveLength(1);
+    expect(code).toContain("SELECT date_trunc('week', t.created_at, 'UTC') AS wk,");
+    expect(code).toContain("SELECT date_trunc('week', m.created_at, 'UTC') AS wk,");
+    expect(code).toContain("SELECT date_trunc('week', min(b.created_at), 'UTC'),");
+    expect(code).toContain("SELECT date_trunc('week', o.created_at, 'UTC') AS wk,");
+    expect(code.match(/date_trunc\('week', [a-z]\.created_at\)/g)).toBeNull();
+    expect(code).toContain('WHERE t.created_at >= v_from\n');
+    expect(code).toContain('AND m.created_at >= v_from\n');
+    expect(code).toContain('WHERE b.created_at >= v_from\n');
+    expect(code).toContain('AND o.created_at >= v_from\n');
+
+    // Restarts: 113's 17 steps in its order; the door by presence over all
+    // of a run's rows; bypass workers out; the three worker reasons by the
+    // step left; voice retry loops out; reached = every worker at the step
+    // (arrived or pressed); 'all' once per worker; all-steps rows (step
+    // NULL) distinct across steps, first in their group.
+    expect(code).toContain(
+      "VALUES ('start.choose_language', 1), ('identity.verify_otp', 2), ('legal.review', 3),\n"
+      + "           ('profile.voice_choice', 4), ('profile.voice_processing', 5), ('profile.name', 6),\n"
+      + "           ('profile.location', 7), ('profile.trade', 8), ('profile.custom_trade', 9),\n"
+      + "           ('profile.experience', 10), ('profile.transportation', 11), ('profile.availability', 12),\n"
+      + "           ('trust.question.1', 13), ('trust.question.2', 14), ('trust.question.3', 15),\n"
+      + "           ('profile.photo', 16), ('profile.photo_type', 17)",
+    );
+    expect(code).toContain("VALUES ('all', 1), ('whatsapp', 2), ('web', 3)");
+    expect(code).toContain(
+      "CASE WHEN bool_or(t.reason = 'otp_verified') THEN 'whatsapp' ELSE 'web' END AS d\n"
+      + '      FROM public.worker_workflow_transitions t\n'
+      + "     WHERE t.reason IN ('otp_verified', 'web_start')\n"
+      + '     GROUP BY t.run_id',
+    );
+    expect(code).toContain("WHERE t.reason = 'web_worker_bypass'");
+    // A run with no door transition (adopted) still counts under 'all'.
+    expect(code).toContain('     WHERE d.door IS NOT NULL\n       AND r.user_id NOT IN (SELECT b.user_id FROM bypass_users b)\n');
+    expect(code).toContain(
+      "CASE WHEN t.reason = 'worker_restart' THEN 'restart'\n"
+      + "                WHEN t.reason IN ('worker_back', 'worker_back_web') THEN 'back'\n"
+      + "                ELSE 'arrived'\n",
+    );
+    expect(code).toContain(
+      "CASE WHEN t.reason IN ('worker_restart', 'worker_back', 'worker_back_web') THEN t.from_step_key\n"
+      + '                ELSE t.to_step_key\n',
+    );
+    expect(code).toContain("AND t.reason !~ '_retry_offered$'");
+    expect(code).toContain('JOIN steps s ON s.step_key = m.step');
+    expect(code).toContain("CROSS JOIN LATERAL (VALUES ('all'), (rd.d)) AS d(door)");
+    expect(code).toContain('count(DISTINCT f.user_id) AS n_reached,');
+    expect(code).toContain("count(DISTINCT f.user_id) FILTER (WHERE f.kind = 'restart') AS n_restart_workers");
+    expect(code).toContain("count(*) FILTER (WHERE f.kind = 'restart') AS n_restart_presses");
+    expect(code).toContain("count(DISTINCT f.user_id) FILTER (WHERE f.kind = 'back') AS n_back_workers");
+    expect(code).toContain("count(*) FILTER (WHERE f.kind = 'back') AS n_back_presses");
+    expect(code).toContain('GROUP BY GROUPING SETS ((f.wk, f.door, f.step), (f.door, f.step), (f.wk, f.door), (f.door))');
+    expect(code).toContain('LEFT JOIN steps s ON s.step_key = a.step\n   ORDER BY a.wk NULLS LAST, d.ord, s.ord NULLS FIRST;');
+
+    // Resets: real resets only; the mask (trim, then in this order email-like
+    // tokens, UUID-shaped tokens, phone-like runs (separators include / and
+    // _), any other 4+ digit run; 80 characters with no trailing space;
+    // '(no reason)'); bulk = 10+ distinct workers of one raw reason in a
+    // span of at most an hour that contains the reset; runs split at an
+    // hour; only in-window resets counted; non-bulk rows first.
+    expect(code).toContain('WHERE NOT a.dry_run');
+    const bullets = "U&'\\2022\\2022\\2022\\2022'";
+    const hex = (n: number): string => `[0-9A-Fa-f]{${n}}`;
+    // (whitespace collapsed: line breaks and indentation inside the call are layout)
+    expect(code.replace(/\s+/g, ' ').replace(/\( /g, '(')).toContain(
+      'COALESCE(NULLIF(rtrim(left('
+      + 'regexp_replace(regexp_replace(regexp_replace(regexp_replace(btrim(a.reason), '
+      + `'[^[:space:]]+@[^[:space:]]+', ${bullets}, 'g'), `
+      + `'${[hex(8), hex(4), hex(4), hex(4), hex(12)].join('-')}', ${bullets}, 'g'), `
+      + `'\\+?[0-9][0-9 ()./_-]{5,}[0-9]', ${bullets}, 'g'), `
+      + `'[0-9]{4,}', ${bullets}, 'g'), 80)), ''), `
+      + "'(no reason)') AS shown,",
+    );
+    expect(code.match(/regexp_replace\(/g)).toHaveLength(4);
+    // The old two-step mask (phone-like runs without / and _, no email or ID) is gone.
+    expect(code).not.toContain("'\\+?[0-9][0-9 ().-]{5,}[0-9]'");
+    expect(code).toContain('lag(a.created_at) OVER (PARTITION BY a.reason, a.user_id ORDER BY a.created_at, a.id) AS prev_at');
+    expect(code).toContain("WHERE x.prev_at >= x.created_at - interval '1 hour'");
+    expect(code).toContain(
+      'count(*) OVER (PARTITION BY x.raw ORDER BY x.created_at\n'
+      + "                          RANGE BETWEEN CURRENT ROW AND interval '1 hour' FOLLOWING) AS span_rows",
+    );
+    // Distinct workers per span: the resets minus the repeats inside it,
+    // found by a join on the reason (no correlated probe per reset).
+    expect(code).toContain(
+      'JOIN repeats p ON p.raw = st.raw\n'
+      + '                    AND p.prev_at >= st.created_at\n'
+      + '                    AND p.created_at >= st.created_at\n'
+      + "                    AND p.created_at <= st.created_at + interval '1 hour'",
+    );
+    expect(code).toContain('st.span_rows - COALESCE(d.n, 0) AS span_workers');
+    expect(code).not.toMatch(/FROM repeats p\s+WHERE/);
+    expect(code).toContain('max(sp.created_at) FILTER (WHERE sp.span_workers >= 10)');
+    expect(code).toContain('RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)');
+    expect(code).toContain(">= sp.created_at - interval '1 hour', false) AS is_bulk");
+    expect(code).toContain("> m.created_at - interval '1 hour'\n                    THEN 0 ELSE 1 END AS new_run");
+    expect(code).toContain('GROUP BY b.raw, b.shown, b.run_no');
+    expect(code).toContain('ORDER BY o.is_bulk, o.wk, o.started, o.shown COLLATE "C";');
+
+    // Digest: 114's test-account filter verbatim, the producer's email check
+    // verbatim, a missing settings row is off, employers by index probe, the
+    // email outcomes, distinct employers reached.
+    expect(code.match(/AND NOT COALESCE\(u\.email LIKE '%@jale\.test' OR u\.cognito_sub LIKE 'seed-%', false\)/g)).toHaveLength(2);
+    expect(code).toContain("u.email IS NOT NULL AND length(u.email) BETWEEN 3 AND 320 AND position('@' IN u.email) > 1");
+    expect(code).toContain('WHERE s.employer_id = u.id\n       LIMIT 1\n    ) d ON true');
+    expect(code).toContain("count(*) FILTER (WHERE d.enabled),");
+    expect(code.match(/LIMIT 1\n/g)).toHaveLength(2);
+    expect(code).toContain("WHERE o.source_type = 'employer_digest'");
+    expect(code).toContain("count(*) FILTER (WHERE f.status = 'failed' AND f.attempt_count >= 5) AS n_failed");
+    expect(code).toContain("count(*) FILTER (WHERE f.status = 'send_unknown') AS n_unknown");
+    expect(code).toContain("count(*) FILTER (WHERE f.status = 'pending' OR (f.status = 'failed' AND f.attempt_count < 5)) AS n_in_progress");
+    expect(code).toContain("count(DISTINCT f.employer) FILTER (WHERE f.status = 'sent') AS n_reached");
+    expect(code).toContain('GROUP BY GROUPING SETS ((f.wk), ())');
+
+    // Preconditions: 042's definer and admin-read policies, 037's admin
+    // select, 089's users gate, 026's admin_cases / admin_case_events /
+    // audit-log access; jale_admin may insert events; no restrictive policy
+    // that applies to jale_admin hides a read (or fails the event insert).
+    for (const row of [
+      "('public.worker_workflow_runs', 'worker_workflow_runs_definer', '*', 'true', 'true')",
+      "('public.worker_workflow_transitions', 'worker_workflow_transitions_definer', '*', 'true', 'true')",
+      "('public.worker_reset_audit', 'worker_reset_audit_admin_read', 'r', 'true', NULL)",
+      "('public.email_outbox', 'email_outbox_admin_select', 'r', 'true', NULL)",
+      "('public.users', 'users_admin_analytics_read', 'r', v_gate, NULL)",
+      "('public.admin_cases', 'admin_cases_service_all', '*', 'true', 'true')",
+      "('public.admin_case_events', 'admin_case_events_service_all', '*', 'true', 'true')",
+    ]) {
+      expect(code).toContain(row);
+    }
+    expect(code).toContain('AND pg_get_expr(p.polwithcheck, p.polrelid) IS NOT DISTINCT FROM pol.chk');
+    expect(code).toContain("AND p.polname = 'admin_audit_log_select'");
+    expect(code).toContain("IF NOT has_table_privilege('jale_admin', 'public.admin_case_events', 'INSERT') THEN");
+    for (const table of ['users', 'worker_workflow_runs', 'worker_workflow_transitions', 'worker_reset_audit',
+      'email_outbox', 'employer_digest_settings', 'admin_cases', 'admin_audit_log']) {
+      expect(code).toContain(`'public.${table}'::regclass`);
+    }
+    expect(code).toContain("AND p.polcmd IN ('r', '*'))\n            OR (p.polrelid = 'public.admin_case_events'::regclass AND p.polcmd IN ('r', 'a', '*')))");
+    expect(code).toContain(
+      "AND ('jale_admin'::regrole::oid = ANY (p.polroles) OR 0::OID = ANY (p.polroles)\n"
+      + '            OR EXISTS (SELECT 1 FROM unnest(p.polroles) AS r(role_oid)\n'
+      + "                        WHERE r.role_oid <> 0 AND pg_has_role('jale_admin', r.role_oid, 'USAGE')))",
+    );
+    expect(sql).toContain('migration 117: a restrictive policy for jale_admin, a role it inherits, or PUBLIC');
+
+    // Self-check: schema-qualified catalog output; the column; both triggers
+    // via pg_get_triggerdef; the policy; per function the result, owner,
+    // definer flag, pinned search_path and exact EXECUTE grantees; the gate;
+    // bad weeks rejected; the triggers smoke-tested in a rolled-back sub-block.
+    expect(code).toContain('SET LOCAL search_path = pg_catalog, pg_temp;');
+    expect(code).toContain(
+      "AND a.atttypid = 'timestamptz'::regtype\n       AND a.attnotnull\n       AND NOT a.attisdropped\n"
+      + "       AND pg_get_expr(d.adbin, d.adrelid) = 'now()'",
+    );
+    expect(sql).toContain('v_stamp    CONSTANT TEXT := $q$CREATE TRIGGER admin_cases_stamp_status_change BEFORE UPDATE OF status ON public.admin_cases FOR EACH ROW WHEN ((old.status IS DISTINCT FROM new.status)) EXECUTE FUNCTION public.admin_cases_stamp_status_change()$q$;');
+    expect(sql).toContain('v_record   CONSTANT TEXT := $q$CREATE TRIGGER admin_cases_record_status_change AFTER UPDATE OF status ON public.admin_cases FOR EACH ROW WHEN ((old.status IS DISTINCT FROM new.status)) EXECUTE FUNCTION public.admin_cases_record_status_change()$q$;');
+    expect(code.match(/AND t\.tgenabled = 'O'\n {7}AND pg_get_triggerdef\(t\.oid\) = v_(stamp|record)/g)).toHaveLength(2);
+    expect(sql).toContain("v_gate     CONSTANT TEXT := $q$(current_setting('app.admin_analytics_read'::text, true) = 'on'::text)$q$;");
+    expect(code).toContain(
+      "AND p.polroles = ARRAY['jale_admin'::regrole::oid]\n"
+      + '       AND pg_get_expr(p.polqual, p.polrelid) = v_gate\n'
+      + '       AND p.polwithcheck IS NULL',
+    );
+    expect(code.match(/'TABLE\(/g)).toHaveLength(4);
+    expect(code.match(/'trigger', (true|false), false\)/g)).toHaveLength(2);
+    expect(sql).toContain('result drifted');
+    expect(sql.match(/aclexplode\(/g)).toHaveLength(1);
+    expect(code).toContain('AND p.prosecdef = fn.definer\n');
+    expect(code).toContain("AND COALESCE(p.proconfig @> ARRAY['search_path=pg_catalog, pg_temp'], false)");
+    expect(code).toContain("AND NOT (fn.console AND a.grantee = 'jale_admin_console'::regrole::oid)");
+    for (const [fn] of fns) {
+      expect(sql).toContain(`migration 117: ${fn} did not set the read flag`);
+    }
+    expect(sql.match(/PERFORM set_config\('app\.admin_analytics_read', '', true\);/g)).toHaveLength(4);
+    expect(sql).toContain('FOREACH v_arg IN ARRAY ARRAY[0, 27] LOOP');
+    expect(sql).toContain("v_raised := SQLERRM = 'admin_analytics_invalid_weeks';");
+    expect(code).toContain("UPDATE public.admin_cases SET status = 'open' WHERE id = v_case;");
+    expect(code).toContain("UPDATE public.admin_cases SET status = 'pending_worker' WHERE id = v_case;");
+    expect(code).toContain(
+      "AND e.payload = jsonb_build_object('title', 'Status changed', 'detail', U&'Open \\2192 Pending worker',\n"
+      + "                                            'from', 'open', 'to', 'pending_worker')",
+    );
+    expect(code).toContain(
+      '    RAISE EXCEPTION USING MESSAGE = v_sentinel;\n'
+      + '  EXCEPTION WHEN raise_exception THEN\n'
+      + '    IF SQLERRM IS DISTINCT FROM v_sentinel THEN\n'
+      + '      RAISE;\n'
+      + '    END IF;\n'
+      + '  END;\n',
+    );
+    expect(sql).toContain('migration 117: the trigger smoke test did not run or left rows behind');
   });
 
   // Same reason as the 082/088/089 blocks above: on RDS there is no Jest, so

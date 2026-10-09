@@ -229,7 +229,7 @@ assert.doesNotMatch(
   '/verifications is read-only: no actions, buttons, or forms',
 );
 assert.match(verificationsPage, /Web sign-up lockouts/, '/verifications must say web sign-up lockouts are not recorded');
-for (const call of ['countOpenAdminCases()', 'listOpenAdminCases(3)', 'countPiiRevealEvents()', 'listIdentityLockouts()']) {
+for (const call of ['countOpenCasesByWait()', 'listOpenAdminCases(3)', 'countPiiRevealEvents()', 'listIdentityLockouts()']) {
   assert.ok(dashboardPage.includes(call), `the dashboard must call ${call}`);
 }
 assert.doesNotMatch(
@@ -237,6 +237,7 @@ assert.doesNotMatch(
   /listAdminCases\(|listAuditEvents\(|listVerificationRecords/,
   'dashboard counts must come from their own queries, not a filtered page of rows',
 );
+assert.doesNotMatch(dashboardPage, /countOpenAdminCases\(/, 'the Open cases total comes from the by-wait counts (roadmap 2d)');
 assert.match(dashboardPage, /Locked out \(\{LOCKOUT_WINDOW_DAYS\} days\)/, 'the dashboard tile must read "Locked out (7 days)"');
 assert.equal(
   existsSync(resolve(root, 'src/lib/server/admin-verifications.ts')),
@@ -758,5 +759,342 @@ for (const [pattern, point] of [
 ]) {
   assert.doesNotMatch(opsCopy, pattern, `the footnote no longer claims ${point}`);
 }
+
+// --- Roadmap 2d: case aging (/cases, the case page, Home) ------------------
+// Markup pins reuse 2c's opsSeq (literal pieces, `\s*` between them).
+const casesPage = read('src/app/cases/page.tsx');
+
+assert.match(
+  dashboardPage,
+  /AdminDashboardPage\(\) \{\n  await requireAdminSession\(\);\n/,
+  'Home gates on an admin session before any query',
+);
+assert.match(
+  dashboardPage,
+  opsSeq(
+    'const [openByWait, openCases, piiRevealCount, lockouts] = await Promise.all([',
+    'countOpenCasesByWait(),',
+    'listOpenAdminCases(3),',
+    'countPiiRevealEvents(),',
+    'listIdentityLockouts(),',
+    ']);',
+  ),
+  'Home still runs its four queries in one wave (pool cap of 5)',
+);
+assert.match(
+  dashboardPage,
+  opsSeq('<span className="muted">Open cases</span>', '<strong>{openCasesTotal(openByWait)}</strong>', '<span>{waitingOnUsNote(openByWait)}</span>'),
+  'the Open cases tile shows the total and how many wait on us',
+);
+assert.match(dashboardPage, /<h2>Open cases by wait<\/h2>/, 'Home has the Open cases by wait card');
+assert.match(
+  dashboardPage,
+  /<p>Time in the current status \u00b7 a reply from the worker does not change it<\/p>/,
+  'the card subtitle says a worker reply does not move a case (nothing does: Waiting on worker can be stale)',
+);
+assert.doesNotMatch(dashboardPage, /<p>Time in the current status<\/p>/, 'the bare subtitle is gone');
+assert.match(
+  dashboardPage,
+  opsSeq(
+    '<div className="table-scroll" role="region" aria-label="Open cases by wait table" tabIndex={0}>',
+    '<table className="data-table cohort-table">',
+  ),
+  'the card is a real table in a named, focusable scroll region',
+);
+assert.match(
+  dashboardPage,
+  opsSeq(
+    '{WAIT_BUCKETS.map((bucket) => (',
+    '<th key={bucket.id} className="num" scope="col">{bucket.label}</th>',
+    '))}',
+    '<th className="num" scope="col">Total</th>',
+  ),
+  'the four wait columns, then Total, are column headers',
+);
+assert.match(
+  dashboardPage,
+  opsSeq('{WAIT_ROWS.map((row) => (', '<tr key={row.id}>', '<th scope="row">{row.label}</th>'),
+  'Waiting on us / Waiting on worker are row headers',
+);
+assert.match(
+  dashboardPage,
+  opsSeq(
+    '{WAIT_BUCKETS.map((bucket) => (',
+    '<td key={bucket.id} className="num">{formatCount(openByWait[row.id][bucket.id])}</td>',
+    '))}',
+    '<td className="num">{formatCount(waitTotal(openByWait[row.id]))}</td>',
+  ),
+  'each row reads its own counts and its own total',
+);
+assert.match(dashboardPage, /\{casePreviewWait\(item, now\)\}/, 'each open-queue preview row says how long it has waited');
+assert.match(
+  casesPage,
+  /await requireAdminSession\(\);\n  const \{ rows: adminCases, totalCount \} = await listAdminCases\(\);\n  const now = new Date\(\);/,
+  '/cases gates on the session, then reads the queue',
+);
+assert.match(casesPage, /\{caseOpenedLine\(item, now\)\}/, 'each /cases row says when it was opened');
+assert.match(casesPage, /\{caseWaitLine\(item, now\)\}/, 'each /cases row says who it waits on and for how long, or when it closed');
+assert.match(
+  caseDetail,
+  opsSeq('<span>{caseOpenedMeta(item, now)}</span>', '<span>{caseStatusMeta(item, now)}</span>', '<span>Updated '),
+  'the case page meta shows its age and time in status beside Updated',
+);
+
+// --- Roadmap 2d: start over and back (Funnels), applicant digest (Employers) ---
+for (const [path, point] of [
+  ['src/components/analytics/RestartsByStep.tsx', 'the Start over and back section'],
+  ['src/components/analytics/OperatorResets.tsx', 'the Operator resets section'],
+  ['src/components/analytics/DigestEmails.tsx', 'the Applicant digest emails card'],
+]) {
+  assert.equal(existsSync(resolve(root, path)), true, `${point} exists (${path})`);
+}
+const queuesRestarts = read('src/components/analytics/RestartsByStep.tsx');
+const queuesResets = read('src/components/analytics/OperatorResets.tsx');
+const queuesDigest = read('src/components/analytics/DigestEmails.tsx');
+// opsSeq (2c, above): literal markup as a pattern, `\s*` between the pieces.
+
+// Funnels: the session gate before any data, then two waves of two.
+assert.match(
+  funnelsPage,
+  /\) \{\n  await requireAdminSession\(\);\n  const \{ weeks: weeksParam, door: doorParam \} = await searchParams;/,
+  'the funnels page gates on an admin session before reading anything',
+);
+assert.match(
+  funnelsPage,
+  /const \[cohortRows, stalledRows\] = await Promise\.all\(\[getOnboardingCohorts\(weeks\), getOnboardingStalled\(\)\]\);\n  const \[restartRows, resetRows\] = await Promise\.all\(\[getOnboardingRestarts\(weeks\), getOperatorResets\(weeks\)\]\);/,
+  'four queries in two waves of two, the second after the first (pool cap of 5)',
+);
+assert.equal((funnelsPage.match(/Promise\.all\(/g) ?? []).length, 2, 'the funnels page has exactly two query waves');
+assert.equal((funnelsPage.match(/\bget[A-Z]\w*\(/g) ?? []).length, 4, 'the funnels page issues exactly the four queries');
+assert.match(
+  funnelsPage,
+  /<CohortTable rows=\{tableRows\} showCode=\{door === 'whatsapp'\} \/>\n\n      <RestartsByStep rows=\{restartRows\} door=\{door\} weeks=\{weeks\} now=\{now\} \/>\n      <OperatorResets rows=\{resetRows\} now=\{now\} \/>/,
+  'below the cohort table: start over and back (follows the door), then operator resets (no door)',
+);
+
+// Employers: the existing wave of three, then adoption + sends.
+assert.match(
+  employersPage,
+  /const \[weeklyRows, slowest, staleJobs\] = await Promise\.all\(\[\s*getEmployerWeekly\(weeks\),\s*getSlowestEmployers\(weeks\),\s*getStaleJobs\(\),?\s*\]\);\n  const \[adoption, digestRows\] = await Promise\.all\(\[getDigestAdoption\(\), getDigestSends\(weeks\)\]\);/,
+  'five queries in two waves: the existing three, then adoption + sends (pool cap of 5)',
+);
+assert.equal((employersPage.match(/Promise\.all\(/g) ?? []).length, 2, 'the employers page has exactly two query waves');
+assert.equal((employersPage.match(/\bget[A-Z]\w*\(/g) ?? []).length, 5, 'the employers page issues exactly the five queries');
+assert.match(employersPage, /const digest = splitDigestSends\(digestRows\);/, 'the digest total row is the SQL window row');
+assert.match(
+  employersPage,
+  /<StaleJobsList rows=\{staleJobs\} days=\{STALE_JOB_DAYS\} \/>\n\n      <DigestEmails adoption=\{adoption\} sends=\{digest\} now=\{now\} \/>/,
+  'the digest card sits below Stale jobs',
+);
+
+for (const [pattern, point] of [
+  [/pool\.query<OnboardingRestartRow>\(\s*'SELECT \* FROM admin_analytics_onboarding_restarts\(\$1\)',\s*\[weeks\],\s*\)/, 'onboarding_restarts(weeks)'],
+  [/pool\.query<OperatorResetRow>\(\s*'SELECT \* FROM admin_analytics_operator_resets\(\$1\)',\s*\[weeks\],\s*\)/, 'operator_resets(weeks)'],
+  [/pool\.query<DigestAdoptionRow>\('SELECT \* FROM admin_analytics_digest_adoption\(\)'\)/, 'digest_adoption()'],
+  [/pool\.query<DigestSendsRow>\(\s*'SELECT \* FROM admin_analytics_digest_sends\(\$1\)',\s*\[weeks\],\s*\)/, 'digest_sends(weeks)'],
+]) {
+  assert.match(analyticsReadModel, pattern, `the read model calls ${point}`);
+}
+assert.match(
+  analyticsReadModel,
+  /if \(!row\) \{\n    throw new Error\('admin_analytics_digest_adoption\(\) returned no row'\);/,
+  'a missing adoption row is an error, never "digest on for 0%"',
+);
+
+const queuesSections = [
+  ['RestartsByStep', queuesRestarts],
+  ['OperatorResets', queuesResets],
+  ['DigestEmails', queuesDigest],
+];
+for (const [label, source] of queuesSections) {
+  assert.doesNotMatch(source, /'use client'/, `${label} stays a server component`);
+  assert.match(source, /className="card cohort-card"/, `${label}: the card can shrink below its table`);
+  const tables = (source.match(/<table/g) ?? []).length;
+  const regions = (
+    source.match(/<div className="table-scroll" role="region" aria-label="[^"]+ table" tabIndex=\{0\}>\s*<table className="data-table cohort-table">/g) ?? []
+  ).length;
+  assert.equal(tables, 1, `${label} renders one table`);
+  assert.equal(regions, tables, `${label}: the table scrolls inside its card, in a named, focusable region`);
+}
+for (const [label, source] of queuesSections.slice(1)) {
+  assert.match(
+    source,
+    /row\.current \? <span className="cohort-settling" title="This week is still in progress">so far<\/span> : null/,
+    `${label}: the current week is marked as still in progress`,
+  );
+}
+
+// Every table's header row and cells, verbatim and in order.
+for (const [label, source, pieces] of [
+  ['restarts header', queuesRestarts, ['<tr>', '<th>Step</th>', '<th className="num">Reached</th>', '<th className="num">Started over</th>', '<th className="num">Went back</th>', '<th className="num">Presses</th>', '</tr>']],
+  ['restarts cells', queuesRestarts, [
+    '{steps.map((row) => (',
+    '<tr key={row.stepKey}>',
+    '<td>{row.label}</td>',
+    '<td className="num">{formatCount(row.reached)}</td>',
+    '<td className="num">{row.startedOver}</td>',
+    '<td className="num">{row.wentBack}</td>',
+    '<td className="num">{formatCount(row.presses)}</td>',
+  ]],
+  ['restarts total row', queuesRestarts, [
+    '<tfoot>',
+    '<tr>',
+    '<th scope="row">All steps</th>',
+    '<td className="num">{formatCount(totals.reached)}</td>',
+    '<td className="num">{totals.startedOver}</td>',
+    '<td className="num">{totals.wentBack}</td>',
+    '<td className="num">{formatCount(totals.presses)}</td>',
+    '</tr>',
+    '</tfoot>',
+  ]],
+  ['resets header', queuesResets, ['<tr>', '<th>Week</th>', '<th>Reason</th>', '<th className="num">Workers</th>', '<th className="num">Resets</th>', '</tr>']],
+  ['resets cells', queuesResets, [
+    '<td className="wrap restarts-reason">{row.reason}</td>',
+    '<td className="num">{formatCount(row.workers)}</td>',
+    '<td className="num">{formatCount(row.resets)}</td>',
+  ]],
+  ['digest header', queuesDigest, ['<tr>', '<th>Week</th>', '<th className="num">Emailed</th>', '<th className="num">Sent</th>', '<th className="num">Failed</th>', '<th className="num">Unknown</th>', '<th className="num">Still sending</th>', '<th className="num">Employers reached</th>', '</tr>']],
+  ['digest cells', queuesDigest, [
+    '<td className="num">{formatCount(row.emailed)}</td>',
+    '<td className="num">{formatCount(row.sent)}</td>',
+    '<td className="num">{formatCount(row.failed)}</td>',
+    '<td className="num">{formatCount(row.unknown)}</td>',
+    '<td className="num">{formatCount(row.inProgress)}</td>',
+    '<td className="num">{formatCount(row.employersReached)}</td>',
+  ]],
+  ['digest total row', queuesDigest, [
+    '<tfoot>',
+    '<tr>',
+    '<th scope="row">These weeks</th>',
+    '<td className="num">{formatCount(sends.window.emailed)}</td>',
+    '<td className="num">{formatCount(sends.window.sent)}</td>',
+    '<td className="num">{formatCount(sends.window.failed)}</td>',
+    '<td className="num">{formatCount(sends.window.unknown)}</td>',
+    '<td className="num">{formatCount(sends.window.inProgress)}</td>',
+    '<td className="num">{formatCount(sends.window.employersReached)}</td>',
+    '</tr>',
+    '</tfoot>',
+  ]],
+]) {
+  assert.match(source, opsSeq(...pieces), `${label}: verbatim and in order`);
+}
+assert.equal((queuesRestarts.match(/<th[\s>]/g) ?? []).length, 6, 'the start over and back table has five columns and a total row');
+assert.equal((queuesResets.match(/<th[\s>]/g) ?? []).length, 4, 'the operator resets table has exactly four columns');
+assert.equal((queuesDigest.match(/<th[\s>]/g) ?? []).length, 8, 'the digest table has seven columns and a total row');
+
+// Start over and back.
+assert.match(queuesRestarts, /<h2>Start over and back<\/h2>/);
+assert.match(
+  queuesRestarts,
+  /if \(restartsEmpty\(rows, door\)\) \{[\s\S]*?<p className="muted">No one started over or went back in these weeks\.<\/p>[\s\S]*?\n  \}/,
+  'nobody pressed: an empty state instead of a table and a flat chart',
+);
+assert.match(queuesRestarts, /const steps = restartStepRows\(rows, door\);/, 'the door\'s whole-window step rows, in onboarding order');
+assert.match(
+  queuesRestarts,
+  /const totals = restartTotals\(rows, door\);/,
+  'the total row is the SQL all-steps row (workers distinct across steps), never a sum of the steps',
+);
+assert.match(
+  queuesRestarts,
+  /\{startOver \? null : <p className="muted restarts-note">No start over on the web<\/p>\}/,
+  'the web door says why Started over is a dash',
+);
+assert.match(
+  queuesRestarts,
+  opsSeq(
+    '<TrendChart',
+    'title="Start over and back by week"',
+  ),
+  'the weekly chart',
+);
+assert.match(
+  queuesRestarts,
+  opsSeq(
+    "labels={byWeek.map((week) => bucketLabel(week.weekStart, '90d'))}",
+    'tableCaption="Workers by week"',
+    'partialLast',
+    'series={startOver ? [startedOver, wentBack] : [wentBack]}',
+  ),
+  'one point per week of the window, the current week in progress; no start-over line on the web',
+);
+assert.match(queuesRestarts, /const byWeek = restartWeeks\(rows, door, weeks, now\);/, 'every week of the window, zero-filled');
+assert.match(queuesRestarts, /label: 'Started over',\n    color: STARTED_OVER_BLUE,\n    values: byWeek\.map\(\(week\) => week\.restartWorkers\),/, 'workers who started over, distinct across steps');
+assert.match(queuesRestarts, /label: 'Went back',\n    color: WENT_BACK_ORANGE,\n    values: byWeek\.map\(\(week\) => week\.backWorkers\),/, 'workers who went back, distinct across steps');
+assert.match(queuesRestarts, /const STARTED_OVER_BLUE = '#0179ff';\nconst WENT_BACK_ORANGE = '#eb6834';/, 'the validated blue / orange pair');
+
+// Operator resets.
+assert.match(queuesResets, /<h2>Operator resets<\/h2>/);
+assert.match(queuesResets, /<p>Operator resets have no door, so this table shows every door\.<\/p>/, 'the resets table says it ignores the door picker');
+assert.match(queuesResets, /const tableRows = resetTableRows\(rows, now\);/, 'bulk runs are left out of the table');
+assert.match(
+  queuesResets,
+  opsSeq(
+    '{tableRows.length === 0 ? (',
+    '<p className="muted">',
+    "{bulkNote === null ? 'No operator resets in these weeks.' : 'No other operator resets in these weeks.'}",
+    '</p>',
+    ') : (',
+  ),
+  'operator resets empty state; with only bulk runs it says no OTHER resets, so it does not contradict the bulk note',
+);
+assert.match(queuesResets, /const bulkNote = bulkRunsNote\(rows, now\);/);
+assert.match(
+  queuesResets,
+  /\{bulkNote === null \? null : <p className="muted restarts-note">\{bulkNote\}<\/p>\}/,
+  'bulk runs are listed under the table, also when the table is empty',
+);
+assert.match(
+  queuesResets,
+  opsSeq('</table>', '</div>', ')}', '{bulkNote === null ? null : <p className="muted restarts-note">{bulkNote}</p>}', '</article>'),
+  'the bulk note sits outside the table branch, so it shows under the empty state too',
+);
+
+// Applicant digest emails.
+assert.match(queuesDigest, /<h2>Applicant digest emails<\/h2>/);
+assert.match(queuesDigest, /<p className="digest-adoption">\{adoptionLine\(adoption\)\}<\/p>/, 'the adoption line always shows');
+assert.match(
+  queuesDigest,
+  /\{digestEmpty\(sends\) \? \(\s*<p className="muted">No digest emails in these weeks\.<\/p>\s*\) : \(\s*<div className="table-scroll"/,
+  'nothing emailed in these weeks: the table gives way to the empty state',
+);
+assert.match(queuesDigest, /\{digestTableRows\(sends, now\)\.map\(\(row\) => \(/, 'newest week first');
+
+const funnelsCopy = funnelsPage.replace(/\s+/g, ' '); // JSX text wraps across lines
+for (const [pattern, point] of [
+  [/voice-note retry loops and system moves do not count as going back\./, 'retry loops and system moves are not going back'],
+  [/Workers reset by an operator lose their onboarding history, so their earlier restarts are not counted/, 'resets delete earlier restarts'],
+  [/Reached counts the workers who were at a step in these weeks: they arrived there, or started over or went back from it\./, 'what Reached counts'],
+  [/All steps and the weekly chart count each worker once, so the steps can add up to more; Presses count every press/, 'workers once across steps, presses add up'],
+  [/On All, the start-over share is of every worker who was at the step, web included\./, 'the All door start-over share'],
+  [/a reason used for 10 or more workers within an hour is a bulk run, left out of the counts and listed under the table\./, 'the bulk rule'],
+  [/Start over and back counts moves made since the last operator reset of each worker\./, 'moves since the last reset count'],
+  [/Reasons are typed by operators; long numbers, emails and IDs are hidden\./, 'reasons are masked: long numbers, emails and IDs'],
+]) {
+  assert.match(funnelsCopy, pattern, `the funnels footnote says: ${point}`);
+}
+for (const [pattern, point] of [
+  [/can pass 100%/, 'that a share can pass 100% (Reached includes everyone who pressed)'],
+  [/Presses and the chart count every press/, 'that the chart counts presses (it counts workers)'],
+  [/Runs of 4 or more digits in a reason are masked\./, 'the old mask rule (phone-like runs are hidden too)'],
+  [/Reasons are typed by operators; long numbers are hidden\./, 'the old mask sentence (emails and IDs are hidden too)'],
+]) {
+  assert.doesNotMatch(funnelsCopy, pattern, `the funnels footnote no longer claims ${point}`);
+}
+const digestCopy = employersPage.replace(/\s+/g, ' ');
+for (const [pattern, point] of [
+  [/Applicant digest emails launched on Aug 23, 2026, so earlier weeks are empty\./, 'the launch date'],
+  [/only on days with new applicants/, 'emailed only on days with new applicants'],
+  [/Unknown means the send timed out and may have arrived \(it is never retried\)/, 'what Unknown means'],
+  [/Bounces and spam complaints switch the digest off for that employer but do not show as failures\./, 'bounces and complaints are not failures'],
+  [/Failed means the send gave up after 5 attempts; .*Still sending means queued or waiting to retry\./, 'Failed and Still sending'],
+  [/Employers reached counts employers with at least one digest sent\./, 'what Employers reached counts'],
+]) {
+  assert.match(digestCopy, pattern, `the employers footnote says: ${point}`);
+}
+
+assert.match(css, /\.restarts-note \{[^}]*overflow-wrap: anywhere;/, 'a long bulk-run reason wraps inside its card');
+assert.match(css, /\.cohort-table td\.restarts-reason \{\n  min-width: 14rem;\n\}/, 'a long reason keeps room for a few words per line on phones');
+assert.match(css, /\.digest-adoption \{/, 'the adoption line has its own spacing');
 
 console.log('admin UI contract checks passed');

@@ -114,6 +114,7 @@ const expectedBaselineMigrations = [
   '113_admin_onboarding_funnel.sql',
   '114_admin_employer_health.sql',
   '115_admin_ops_health.sql',
+  '117_admin_queues.sql',
 ];
 
 function migrationFiles(): string[] {
