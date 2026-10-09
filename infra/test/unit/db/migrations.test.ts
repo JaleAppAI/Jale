@@ -136,6 +136,7 @@ describe('database migrations', () => {
       '102',
       '113',
       '114',
+      '115',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -1363,6 +1364,323 @@ describe('database migrations', () => {
     expect(sql).toContain('FOREACH v_arg IN ARRAY ARRAY[0, 27] LOOP');
     expect(sql).toContain('FOREACH v_arg IN ARRAY ARRAY[0, 101] LOOP');
     expect(sql).toContain('FOREACH v_arg IN ARRAY ARRAY[0, 366] LOOP');
+  });
+
+  // Roadmap 2c: ops health is one column the AI writer fills, four gated
+  // read policies and six gated definers. On RDS the migration's own DO
+  // blocks are the only runtime check; these literals pin that they stay strict.
+  it('115 adds the ops health definers, the failure cause and four gated reads without exposing people or messages', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '115_admin_ops_health.sql'), 'utf8');
+    // The code without comments, for what it may never read or return.
+    const code = sql.replace(/--[^\n]*/g, '');
+
+    expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+    expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+
+    // Lock timeout first, then the preconditions, then the one column, then
+    // exactly four policies -- 089's gate, verbatim, SELECT-only, jale_admin.
+    const iBegin = sql.indexOf('BEGIN;');
+    const iLock = sql.indexOf("SET LOCAL lock_timeout = '5s';");
+    const iPre = sql.indexOf('DO $$');
+    const iAlter = sql.indexOf('ALTER TABLE');
+    const iPolicy = sql.indexOf('CREATE POLICY');
+    expect(iLock).toBeGreaterThan(iBegin);
+    expect(iPre).toBeGreaterThan(iLock);
+    expect(iAlter).toBeGreaterThan(iPre);
+    expect(iPolicy).toBeGreaterThan(iAlter);
+    expect(sql.match(/CREATE POLICY/g)).toHaveLength(4);
+    for (const table of ['job_message_outbox', 'worker_profile_ai_extractions', 'worker_trust_extractions', 'billing_webhook_events']) {
+      expect(sql).toMatch(new RegExp(
+        `CREATE POLICY ${table}_admin_analytics_read\\s+ON public\\.${table} FOR SELECT\\s+TO jale_admin\\s+`
+        + `USING \\(current_setting\\('app\\.admin_analytics_read', true\\) = 'on'\\);`,
+      ));
+    }
+    // No policy on whatsapp_outbox: its owner reads it (ENABLE, not FORCE).
+    expect(sql).not.toMatch(/CREATE POLICY \w+\s+ON public\.whatsapp_outbox/);
+    expect(sql).not.toMatch(/CREATE INDEX|GRANT\s+(SELECT|INSERT|UPDATE|ALL)|DROP (FUNCTION|TABLE|TRIGGER|POLICY|INDEX|COLUMN|CONSTRAINT)|FORCE ROW LEVEL SECURITY;/);
+
+    // The one column the AI writer fills: nullable, no default, its CHECK verbatim.
+    expect(sql.match(/ALTER TABLE/g)).toHaveLength(1);
+    expect(sql).toContain(
+      'ALTER TABLE public.worker_profile_ai_extractions\n'
+      + '  ADD COLUMN failure_kind TEXT,\n'
+      + '  ADD CONSTRAINT worker_profile_ai_extractions_failure_kind_check CHECK (\n'
+      + '    failure_kind IS NULL OR (\n'
+      + "      status = 'failed' AND failure_kind IN ('transcribe', 'empty_transcript',\n"
+      + "        'audio_read', 'model_call', 'bad_json', 'bad_shape', 'pipeline_error')));\n",
+    );
+
+    // Six definers with the signatures the console calls, each hardened per 089/098.
+    const fns = [
+      ['admin_analytics_message_backlog', '()', '()'],
+      ['admin_analytics_message_failures', '(p_weeks INTEGER)', '(INTEGER)'],
+      ['admin_analytics_voice_extraction', '(p_weeks INTEGER)', '(INTEGER)'],
+      ['admin_analytics_trust_extraction', '(p_weeks INTEGER)', '(INTEGER)'],
+      ['admin_analytics_billing_inbox', '(p_weeks INTEGER)', '(INTEGER)'],
+      ['admin_analytics_billing_inbox_now', '()', '()'],
+    ] as const;
+    for (const [fn, params, args] of fns) {
+      expect(sql).toContain(`CREATE FUNCTION public.${fn}${params}\nRETURNS TABLE (`);
+      expect(sql).toContain(`ALTER FUNCTION public.${fn}${args} OWNER TO jale_admin;`);
+      expect(sql).toContain(`REVOKE ALL ON FUNCTION public.${fn}${args} FROM PUBLIC;`);
+      expect(sql).toContain(`GRANT EXECUTE ON FUNCTION public.${fn}${args} TO jale_admin_console;`);
+    }
+    expect(sql.match(/^CREATE FUNCTION/gm)).toHaveLength(6);
+    expect(sql.match(/^SECURITY DEFINER$/gm)).toHaveLength(6);
+    expect(sql.match(/^SET search_path = pg_catalog, pg_temp$/gm)).toHaveLength(6);
+    expect(sql.match(/PERFORM set_config\('app\.admin_analytics_read', 'on', true\);/g)).toHaveLength(6);
+    // The six EXECUTE grants are the only statements naming the console role.
+    expect(sql.match(/TO jale_admin_console/g)).toHaveLength(6);
+
+    // Results carry counts, shares, week starts, lane ids, model ids,
+    // extractor versions, event types and listed timestamps only.
+    const never = /whatsapp_number|\bbody\b|content_variables|content_template|last_error|twilio_error_message|twilio_message_sid|inbound_message_sid|source_id|idempotency_key|conversation_id|message_id|transcript_text|extracted_fields|confidence_scores|user_id|assessment_id|summary_en|summary_es|\berror\b|stripe_event_id|stripe_object_id|last_error_code/;
+    for (const [fn] of fns) {
+      const body = sql.match(new RegExp(`CREATE FUNCTION public\\.${fn}\\([\\s\\S]*?\\nEND \\$\\$;`))?.[0] ?? '';
+      expect(body).not.toBe('');
+      const result = body.match(/RETURNS TABLE \(([\s\S]*?)\)\nLANGUAGE plpgsql/)?.[1] ?? '';
+      expect(result).not.toBe('');
+      expect(result).not.toMatch(never);
+      // The gate opens before the query, and after every input check.
+      const iGate = body.indexOf("PERFORM set_config('app.admin_analytics_read', 'on', true);");
+      expect(iGate).toBeGreaterThan(0);
+      expect(iGate).toBeLessThan(body.indexOf('RETURN QUERY'));
+      const iRaise = body.indexOf("RAISE EXCEPTION 'admin_analytics_invalid_weeks'");
+      if (fn === 'admin_analytics_message_backlog' || fn === 'admin_analytics_billing_inbox_now') {
+        expect(iRaise).toBe(-1);
+        expect(body).toContain("BEGIN\n  -- No arguments to validate.\n  PERFORM set_config('app.admin_analytics_read', 'on', true);");
+      } else {
+        expect(iRaise).toBeGreaterThan(0);
+        expect(iGate).toBeGreaterThan(iRaise);
+      }
+    }
+    expect(sql.match(/IF p_weeks IS NULL OR p_weeks < 1 OR p_weeks > 26 THEN/g)).toHaveLength(4);
+    // Nothing personal is read at all, except the voice JSON, which leaves
+    // only as found-field names and a main_trade = 'other' flag.
+    expect(code).not.toMatch(/whatsapp_number|\.body\b|content_variables|content_template|last_error|twilio_error|twilio_message_sid|inbound_message_sid|source_id|idempotency_key|conversation_id|message_id|transcript_text|user_id|assessment_id|summary_e[ns]|\.error\b|stripe_event_id|stripe_object_id/);
+    expect(code.match(/extracted_fields/g)).toHaveLength(2);
+    expect(code.match(/confidence_scores/g)).toHaveLength(2);
+    expect(code).toContain('x.extracted_fields AS f,\n           x.confidence_scores AS c,');
+    expect(code).toContain("s.f ->> 'main_trade' = 'other' AS other_trade");
+    expect(code).toContain('ARRAY(\n             SELECT k.name\n');
+    expect(code.match(/t\.extracted\b/g)).toHaveLength(2);
+
+    // Weeks: a TimeZone-independent window, every row set grouped by its own
+    // UTC Monday, every week zero-filled.
+    expect(code.match(/v_from := \(date_trunc\('week', now\(\) AT TIME ZONE 'UTC'\) - make_interval\(weeks => p_weeks - 1\)\) AT TIME ZONE 'UTC';/g)).toHaveLength(4);
+    expect(code.match(/FROM generate_series\(0, p_weeks - 1\) AS g\(n\)/g)).toHaveLength(4);
+    for (const key of ['o.created_at', 'x.created_at', 't.created_at', 'b.received_at']) {
+      expect(code).toContain(`date_trunc('week', ${key}, 'UTC') AS wk`);
+    }
+    expect(code).toContain("SELECT date_trunc('week', m.created_at, 'UTC'),");
+    expect(code.match(/date_trunc\('week', [a-z]\.(created|received)_at\)/g)).toBeNull();
+
+    // Lanes, in display order, and their retry windows.
+    expect(code).toContain(
+      "VALUES ('reply',               1, interval '30 minutes', true),\n"
+      + "           ('admin',               2, interval '10 minutes', true),\n"
+      + "           ('worker_notification', 3, interval '24 hours',   true),\n"
+      + "           ('employer_invite',     4, interval '30 minutes', true),\n"
+      + "           ('employer_freeform',   5, interval '30 minutes', true),\n"
+      + "           ('job_alert',           6, interval '30 minutes', false)",
+    );
+    expect(code).toContain(
+      "VALUES ('reply', 1, true), ('admin', 2, true), ('worker_notification', 3, true),\n"
+      + "           ('employer_invite', 4, true), ('employer_freeform', 5, true), ('job_alert', 6, false)",
+    );
+    expect(code.match(/CASE WHEN o\.source_type IS NULL THEN 'reply'\n {16}WHEN o\.source_type = 'admin_case' THEN 'admin'\n {16}WHEN o\.source_type = 'worker_intent' THEN 'worker_notification'\n {16}WHEN o\.source_type = 'job_alert' THEN 'job_alert'\n/g)).toHaveLength(2);
+    expect(code.match(/CASE m\.send_kind WHEN 'template' THEN 'employer_invite' WHEN 'freeform' THEN 'employer_freeform' END/g)).toHaveLength(2);
+    // No lane CASE falls through: an unknown source maps to no lane and is
+    // dropped before grouping (it could otherwise add a second all-lanes row).
+    expect(code).not.toMatch(/ELSE '(reply|admin|worker_notification|employer_invite|employer_freeform|job_alert)'/);
+    expect(code.match(/WHERE x\.lane_id IS NOT NULL\n/g)).toHaveLength(2);
+    // Open = still being retried and created less than 48 h ago; a failed
+    // worker notification is never retried (093's 48-hour ceiling).
+    expect(code).toContain(
+      "WHERE o.created_at > now() - interval '48 hours'\n"
+      + "       AND (o.status = 'pending'\n"
+      + "            OR (o.status = 'failed' AND o.attempt_count < 5\n"
+      + "                AND o.source_type IS DISTINCT FROM 'worker_intent')\n"
+      + "            OR (o.status = 'send_unknown' AND o.source_type IS NOT DISTINCT FROM 'worker_intent'\n"
+      + '                AND COALESCE(o.worker_intent_leased_until > now(), false)))',
+    );
+    expect(code).toContain(
+      "WHERE m.created_at > now() - interval '48 hours'\n"
+      + "       AND (m.status = 'pending'\n"
+      + "            OR (m.status = 'failed' AND m.attempt_count < 5 AND m.sent_at IS NULL))",
+    );
+    expect(code).toContain("count(*) FILTER (WHERE x.created_at > now() - interval '1 hour') AS n_under_1h");
+    expect(code).toContain("count(*) FILTER (WHERE x.created_at <= now() - interval '24 hours') AS n_24_48h");
+    expect(code).toContain('count(*) FILTER (WHERE x.created_at < now() - l.retry) AS n_stuck');
+    expect(code).toContain('min(x.created_at) FILTER (WHERE x.created_at < now() - l.retry) AS oldest_stuck');
+    expect(code).toContain('WHERE l.always_shown OR a.lane_id IS NOT NULL');
+    // Failures: the same "still being retried" rule; gave up = unsent and
+    // not open; delivery failures are disjoint from both.
+    expect(code).toContain(
+      "o.status IN ('pending', 'failed', 'send_unknown') AS is_unsent,\n"
+      + "           o.status = 'pending'\n"
+      + "             OR (o.status = 'failed' AND o.attempt_count < 5\n"
+      + "                 AND o.source_type IS DISTINCT FROM 'worker_intent')\n"
+      + "             OR (o.status = 'send_unknown' AND o.source_type IS NOT DISTINCT FROM 'worker_intent'\n"
+      + '                 AND COALESCE(o.worker_intent_leased_until > now(), false)) AS is_retrying,',
+    );
+    expect(code).toContain("o.status = 'sent' AND COALESCE(o.twilio_delivery_status IN ('failed', 'undelivered'), false) AS is_delivery_failed");
+    expect(code).toContain(
+      "m.status IN ('pending', 'send_unknown') OR (m.status = 'failed' AND m.sent_at IS NULL),\n"
+      + "           m.status = 'pending' OR (m.status = 'failed' AND m.attempt_count < 5 AND m.sent_at IS NULL),\n"
+      + "           m.status = 'failed' AND m.sent_at IS NOT NULL\n",
+    );
+    expect(code).toContain(
+      'count(*) FILTER (WHERE x.is_unsent\n'
+      + "                              AND NOT (x.is_retrying AND x.created_at > now() - interval '48 hours')) AS n_gave_up",
+    );
+    // The 48-hour horizon is the messages': backlog (2), failures (1). Billing
+    // has its own one-hour boundary (the processor dead-letters an event after
+    // about 20 minutes): the backlog's two age edges plus billing right now (4:
+    // stuck, failed, the unresolved range's lower edge and the oldest). The
+    // billing dead-letter queue keeps a message 14 days, so the 14-day age cap
+    // appears once: on the unresolved count.
+    expect(code.match(/interval '48 hours'/g)).toHaveLength(3);
+    expect(code.match(/interval '1 hour'/g)).toHaveLength(6);
+    expect(code.match(/interval '14 days'/g)).toHaveLength(1);
+    expect(code).toContain('GROUP BY GROUPING SETS ((x.wk, x.lane_id), (x.lane_id), ())');
+    expect(code).toContain("SELECT a.wk, a.lane_id FROM agg a WHERE a.lane_id = 'job_alert'");
+
+    // Voice: test profiles out, every cause, wrong-shape completed rows,
+    // the inclusive 0.75 gate on JSON numbers, blank strings not found,
+    // main_trade_other only with main_trade = 'other', model attribution.
+    expect(code).toContain('AND NOT x.ai_test_profile');
+    expect(code).toContain(
+      "COALESCE(jsonb_typeof(x.extracted_fields) = 'object'\n"
+      + "                    AND jsonb_typeof(x.confidence_scores) = 'object', false) AS is_object",
+    );
+    expect(code).toContain(
+      "CASE WHEN s.status = 'failed' THEN COALESCE(s.failure_kind, 'unrecorded')\n"
+      + "                WHEN s.status = 'completed' AND NOT s.is_object THEN 'bad_shape'\n",
+    );
+    expect(code).toContain(
+      "FROM unnest(ARRAY['full_name', 'city', 'main_trade', 'main_trade_other',\n"
+      + "                                 'years_experience', 'has_transportation', 'availability']) AS k(name)",
+    );
+    expect(code).toContain("WHEN 'string' THEN (s.f ->> k.name) ~ '[^[:space:]]'\n                      WHEN 'null' THEN false\n");
+    expect(code).toContain(
+      "CASE WHEN jsonb_typeof(s.c -> k.name) = 'number'\n"
+      + '                      THEN (s.c -> k.name)::NUMERIC >= 0.75\n'
+      + '                      ELSE false\n',
+    );
+    expect(code).toContain("count(*) FILTER (WHERE a.is_usable AND a.other_trade AND 'main_trade_other' = ANY (a.found)) AS n_other");
+    expect(code).toContain(
+      "CASE WHEN f.is_usable OR f.cause IN ('model_call', 'bad_json', 'bad_shape')\n"
+      + '                THEN f.bedrock_model_id END AS model_id',
+    );
+    expect(code).toContain('GROUPING(a.model_id) = 1 AS every_row');
+    expect(code).toContain('GROUP BY GROUPING SETS ((a.wk), (), (a.wk, a.model_id), (a.model_id))');
+    for (const cause of ['transcribe', 'empty_transcript', 'audio_read', 'model_call', 'bad_json', 'bad_shape', 'pipeline_error', 'unrecorded']) {
+      expect(code).toContain(`count(*) FILTER (WHERE a.cause = '${cause}') AS n_${cause}`);
+    }
+
+    // Trust: in-flight rows out; not enough detail = completed without a
+    // model; sections = non-empty arrays among the five, averaged over
+    // completed rows with a model, one decimal.
+    expect(code).toContain("AND t.status IN ('completed', 'failed')");
+    expect(code).toContain("FROM unnest(ARRAY['skills', 'tools', 'experience_signals', 'safety', 'notable']) AS k(name)");
+    expect(code).toContain("WHERE jsonb_typeof(t.extracted -> k.name) = 'array'\n               AND t.extracted -> k.name <> '[]'::JSONB) AS sections");
+    expect(code).toContain("count(*) FILTER (WHERE f.status = 'completed' AND NOT f.with_model) AS n_not_enough");
+    expect(code).toContain("round(avg(f.sections) FILTER (WHERE f.status = 'completed' AND f.with_model), 1) AS avg_sections");
+
+    // Billing: weeks by received_at; retried = more than one attempt; stuck
+    // = received with no live lease (the processor's re-claim predicate);
+    // right now, stuck and failed only within one hour (the processor
+    // dead-letters an event after about 20 minutes: 3 SQS receives, 6 minutes
+    // apart), those received an hour to 14 days ago unresolved (dead-lettered
+    // within the queue's 14-day retention, so they can be redriven; older ones
+    // have left the queue), the oldest over the within-one-hour stuck and
+    // failed events.
+    expect(code).toContain('count(*) FILTER (WHERE f.attempt_count > 1) AS n_retried');
+    expect(code).toContain("count(*) FILTER (WHERE f.type = 'invoice.payment_failed') AS n_payment_failed");
+    expect(code).toContain(
+      "SELECT count(*) FILTER (WHERE b.processing_status = 'received'\n"
+      + "                            AND b.received_at > now() - interval '1 hour'),\n"
+      + "         count(*) FILTER (WHERE b.processing_status = 'failed'\n"
+      + "                            AND b.received_at > now() - interval '1 hour'),\n"
+      + "         count(*) FILTER (WHERE b.received_at <= now() - interval '1 hour'\n"
+      + "                            AND b.received_at > now() - interval '14 days'),\n"
+      + "         min(b.received_at) FILTER (WHERE b.received_at > now() - interval '1 hour')\n"
+      + '    FROM public.billing_webhook_events b\n',
+    );
+    // The comments say so too: no billing comment keeps the 48-hour retry
+    // story, each says the processor dead-letters after about 20 minutes, and
+    // each says the queue keeps a dead letter 14 days: those can be redriven
+    // from the queue, older events must be resent from Stripe.
+    const billingComments = [
+      sql.match(/-- \(6\) admin_analytics_billing_inbox_now\(\)[\s\S]*?\n--\n/)?.[0] ?? '',
+      sql.match(/-- BILLING \(billing_webhook_events\)[\s\S]*?\n--\n/)?.[0] ?? '',
+      sql.match(/CREATE FUNCTION public\.admin_analytics_billing_inbox_now\(\)[\s\S]*?\nEND \$\$;/)?.[0] ?? '',
+    ];
+    for (const comment of billingComments) {
+      expect(comment).not.toBe('');
+      expect(comment).not.toMatch(/48/);
+      const flat = comment.replace(/\s*\n\s*--\s*/g, ' '); // the comment's wrapped lines, joined
+      expect(flat).toContain('about 20 minutes');
+      expect(flat).toContain('14 days');
+      expect(flat).toContain('redriven from the queue');
+      expect(flat).toContain('resent from Stripe');
+      expect(flat).not.toMatch(/manual redrive/);
+    }
+    expect(billingComments[2]).toContain('(3 SQS\n  -- receives, 6 minutes apart');
+    // whatsapp_outbox does have created_at indexes (004, 027, 040: partial,
+    // for pending / failed rows); the full scan comes from the send_unknown
+    // branch and the all-status weekly window.
+    expect(sql).not.toContain('no created_at index');
+    expect(sql).toContain('whatsapp_outbox has only partial created_at indexes');
+    expect(code).toContain(
+      "WHERE (b.processing_status = 'received'\n"
+      + '          AND (b.lease_expires_at IS NULL OR b.lease_expires_at < now()))\n'
+      + "      OR b.processing_status = 'failed';",
+    );
+    expect(code.match(/GROUP BY GROUPING SETS \(\(f\.wk\), \(\), \(f\.wk, f\.(version|type)\), \(f\.\1\)\)/g)).toHaveLength(2);
+
+    // Self-check: whatsapp_outbox stays unforced and owned by jale_admin; no
+    // restrictive policy that applies to jale_admin; the writer can insert the cause; the column, its
+    // CHECK and the four policies; per function the result shape, owner,
+    // definer, pinned search_path, console-only EXECUTE and the gate; bad
+    // weeks rejected.
+    expect(code).toContain("WHERE c.oid = 'public.whatsapp_outbox'::regclass\n       AND NOT c.relforcerowsecurity\n       AND c.relowner = 'jale_admin'::regrole::oid");
+    expect(sql).toContain('migration 115: whatsapp_outbox is FORCE ROW LEVEL SECURITY or not owned by jale_admin');
+    // Only a SELECT or ALL policy can hide rows from a read; a RESTRICTIVE
+    // INSERT / UPDATE / DELETE policy (043's, for jale_whatsapp) never does.
+    expect(code).toContain("AND NOT p.polpermissive\n       AND p.polcmd IN ('r', '*')\n");
+    // ... for jale_admin, PUBLIC, or any role whose privileges jale_admin has
+    // (has_privs_of_role, the test RLS itself applies).
+    expect(code).toContain(
+      "AND ('jale_admin'::regrole::oid = ANY (p.polroles) OR 0::OID = ANY (p.polroles)\n"
+      + '            OR EXISTS (SELECT 1 FROM unnest(p.polroles) AS r(role_oid)\n'
+      + "                        WHERE r.role_oid <> 0 AND pg_has_role('jale_admin', r.role_oid, 'USAGE')))",
+    );
+    for (const table of ['whatsapp_outbox', 'job_message_outbox', 'worker_profile_ai_extractions', 'worker_trust_extractions', 'billing_webhook_events']) {
+      expect(code).toContain(`'public.${table}'::regclass`);
+    }
+    expect(sql).toContain('migration 115: a restrictive policy for jale_admin, a role it inherits, or PUBLIC');
+    expect(code).toContain("IF NOT has_column_privilege('jale_whatsapp', 'public.worker_profile_ai_extractions', 'failure_kind', 'INSERT') THEN");
+    expect(code).toContain("AND a.atttypid = 'text'::regtype\n       AND NOT a.attnotnull\n       AND NOT a.atthasdef");
+    expect(sql).toContain("v_check  CONSTANT TEXT := $q$CHECK (((failure_kind IS NULL) OR ((status = 'failed'::text) AND (failure_kind = ANY (ARRAY['transcribe'::text, 'empty_transcript'::text, 'audio_read'::text, 'model_call'::text, 'bad_json'::text, 'bad_shape'::text, 'pipeline_error'::text])))))$q$;");
+    expect(code).toContain('AND con.convalidated\n       AND pg_get_constraintdef(con.oid) = v_check');
+    expect(sql).toContain("v_gate   CONSTANT TEXT := $q$(current_setting('app.admin_analytics_read'::text, true) = 'on'::text)$q$;");
+    for (const table of ['job_message_outbox', 'worker_profile_ai_extractions', 'worker_trust_extractions', 'billing_webhook_events']) {
+      expect(sql).toContain(`('public.${table}', '${table}_admin_analytics_read')`);
+    }
+    expect(code).toContain("AND p.polroles = ARRAY['jale_admin'::regrole::oid]\n         AND pg_get_expr(p.polqual, p.polrelid) = v_gate");
+    expect(code.match(/'TABLE\(/g)).toHaveLength(6);
+    expect(sql).toContain('result drifted');
+    expect(sql.match(/aclexplode\(/g)).toHaveLength(1);
+    // A NULL proconfig (no pinned search_path) must fail the check, not skip it.
+    expect(sql).toContain("AND COALESCE(p.proconfig @> ARRAY['search_path=pg_catalog, pg_temp'], false)");
+    for (const [fn] of fns) {
+      expect(sql).toContain(`migration 115: ${fn} did not set the read flag`);
+    }
+    expect(sql.match(/PERFORM set_config\('app\.admin_analytics_read', '', true\);/g)).toHaveLength(6);
+    expect(sql).toContain('FOREACH v_arg IN ARRAY ARRAY[0, 27] LOOP');
+    expect(sql).toContain("v_raised := SQLERRM = 'admin_analytics_invalid_weeks';");
   });
 
   // Same reason as the 082/088/089 blocks above: on RDS there is no Jest, so

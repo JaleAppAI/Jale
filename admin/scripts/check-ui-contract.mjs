@@ -452,4 +452,311 @@ assert.match(trend, /value === null \? '—' : formatCount\(value \?\? 0\)/, 'th
 assert.match(trend, /tickValues\(max, tickIntervals\(max\)\)/, 'trend ticks are round numbers');
 assert.match(column, /tickValues\(max, tickIntervals\(max, \[2, 3, 4, 5\]\)\)/, 'column ticks are round numbers');
 
+// --- Roadmap 2c: ops health page -----------------------------------------------
+assert.equal(existsSync(resolve(root, 'src/app/analytics/ops/page.tsx')), true, '/analytics/ops exists');
+const opsPage = read('src/app/analytics/ops/page.tsx');
+const opsBacklog = read('src/components/analytics/MessageBacklog.tsx');
+const opsFailures = read('src/components/analytics/MessageFailures.tsx');
+const opsVoice = read('src/components/analytics/VoiceExtraction.tsx');
+const opsTrust = read('src/components/analytics/TrustExtraction.tsx');
+const opsBilling = read('src/components/analytics/BillingInbox.tsx');
+// Literal markup as a pattern: `\s*` between pieces, everything else escaped.
+const opsSeq = (...pieces) =>
+  new RegExp(pieces.map((piece) => piece.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s*'));
+
+// Page wiring: the session gate before any data, the weeks param, two waves of three.
+assert.match(
+  opsPage,
+  /\) \{\n  await requireAdminSession\(\);\n  const \{ weeks: weeksParam \} = await searchParams;\n  const weeks = parseFunnelWeeks\(weeksParam\);/,
+  'the ops page gates on an admin session before reading anything, then parses weeks like Funnels (4 / 8 / 12, default 8)',
+);
+assert.match(opsPage, /searchParams\??:\s*Promise</, 'the ops page types searchParams as a Promise (Next 16)');
+assert.match(
+  opsPage,
+  /const \[backlog, failureRows, inboxNow\] = await Promise\.all\(\[\s*getMessageBacklog\(\),\s*getMessageFailures\(weeks\),\s*getBillingInboxNow\(\),?\s*\]\);\n  const \[voiceRows, trustRows, billingRows\] = await Promise\.all\(\[\s*getVoiceExtraction\(weeks\),\s*getTrustExtraction\(weeks\),\s*getBillingInbox\(weeks\),?\s*\]\);/,
+  'six queries in two waves of three, the second after the first (pool cap of 5)',
+);
+assert.equal((opsPage.match(/Promise\.all\(/g) ?? []).length, 2, 'the ops page has exactly two query waves');
+assert.equal((opsPage.match(/\bget[A-Z]\w*\(/g) ?? []).length, 6, 'the ops page issues exactly the six queries');
+assert.match(
+  opsPage,
+  /const failures = splitMessageFailures\(failureRows\);\n  const voice = splitVoiceExtraction\(voiceRows\);\n  const trust = splitTrustExtraction\(trustRows\);\n  const billing = splitBillingInbox\(billingRows\);/,
+  'tiles and sections read the SQL rows through the pure splitters (window rows, never sums of weeks)',
+);
+assert.match(
+  opsPage,
+  opsSeq(
+    '<section className="kpi-strip funnel-kpis" aria-label="Key figures">',
+    '<KpiTile label="Messages stuck now" value={stuckMessages(backlog)} note={messagesStuckNote(backlog, now)} />',
+    '<KpiTile label="Billing events stuck" value={billingStuck(inboxNow)} note={billingStuckNote(inboxNow, now)} />',
+    '<KpiTile label="Message failure rate" value={formatFailureRate(failures.window)} note={failureRateNote(failures.window)} />',
+    '<KpiTile label="Voice extraction success" value={voiceSuccess(voice.window)} note={voiceSuccessNote(voice.window)} />',
+    '</section>',
+  ),
+  'a named strip of exactly these four tiles, wired as the spec says',
+);
+assert.equal((opsPage.match(/<KpiTile /g) ?? []).length, 4, 'the ops page has exactly four tiles');
+for (const [pattern, point] of [
+  [/pool\.query<MessageBacklogRow>\('SELECT \* FROM admin_analytics_message_backlog\(\)'\)/, 'message_backlog()'],
+  [/pool\.query<MessageFailuresRow>\(\s*'SELECT \* FROM admin_analytics_message_failures\(\$1\)',\s*\[weeks\],\s*\)/, 'message_failures(weeks)'],
+  [/pool\.query<VoiceExtractionRow>\(\s*'SELECT \* FROM admin_analytics_voice_extraction\(\$1\)',\s*\[weeks\],\s*\)/, 'voice_extraction(weeks)'],
+  [/pool\.query<TrustExtractionRow>\(\s*'SELECT \* FROM admin_analytics_trust_extraction\(\$1\)',\s*\[weeks\],\s*\)/, 'trust_extraction(weeks)'],
+  [/pool\.query<BillingInboxRow>\(\s*'SELECT \* FROM admin_analytics_billing_inbox\(\$1\)',\s*\[weeks\],\s*\)/, 'billing_inbox(weeks)'],
+  [/pool\.query<BillingInboxNowRow>\('SELECT \* FROM admin_analytics_billing_inbox_now\(\)'\)/, 'billing_inbox_now()'],
+]) {
+  assert.match(analyticsReadModel, pattern, `the read model calls ${point}`);
+}
+assert.match(
+  analyticsReadModel,
+  /if \(!row\) \{\n    throw new Error\('admin_analytics_billing_inbox_now\(\) returned no row'\);/,
+  'a missing live billing row is an error, never "nothing stuck"',
+);
+assert.match(
+  tabs,
+  /label: 'Growth'[\s\S]*label: 'Funnels'[\s\S]*label: 'Employers'[\s\S]*\{ key: 'ops', label: 'Ops', href: '\/analytics\/ops' \}/,
+  'the tab row reads Growth · Funnels · Employers · Ops',
+);
+for (const [page, key] of [[analyticsPage, 'growth'], [funnelsPage, 'funnels'], [employersPage, 'employers'], [opsPage, 'ops']]) {
+  assert.match(page, new RegExp(`<AnalyticsTabs active="${key}" />`), `the ${key} page shows the four-tab row`);
+}
+assert.match(
+  opsPage,
+  opsSeq(
+    '<nav className="range-picker" aria-label="Weeks">',
+    '{WEEK_OPTIONS.map((value) => (',
+    '<Link',
+    'key={value}',
+    'className="button"',
+    'href={opsHref(value)}',
+    "aria-current={value === weeks ? 'page' : undefined}",
+    '>',
+    '{value} weeks',
+    '</Link>',
+  ),
+  'the weeks picker links stay on the Ops tab and mark the current choice',
+);
+assert.match(opsPage, /const WEEK_OPTIONS: FunnelWeeks\[\] = \[4, 8, 12\];/, 'the picker offers 4 / 8 / 12 weeks');
+assert.match(
+  opsPage,
+  /Weeks change the weekly sections and the two rate tiles; stuck counts are always live\./,
+  'the picker says what the weeks change',
+);
+assert.doesNotMatch(opsPage, /<form|AdminActionsPanel/, 'the ops page is read-only');
+assert.match(
+  opsPage,
+  /<\/section>\n\n      <MessageBacklog lanes=\{backlog\} \/>\n      <MessageFailures failures=\{failures\} now=\{now\} \/>\n      <VoiceExtraction voice=\{voice\} now=\{now\} \/>\n      <TrustExtraction trust=\{trust\} now=\{now\} \/>\n      <BillingInbox billing=\{billing\} inbox=\{inboxNow\} now=\{now\} \/>/,
+  'after the tiles, the sections follow the spec: backlog, failures, voice, trust, billing',
+);
+
+const opsSections = [
+  ['MessageBacklog', opsBacklog],
+  ['MessageFailures', opsFailures],
+  ['VoiceExtraction', opsVoice],
+  ['TrustExtraction', opsTrust],
+  ['BillingInbox', opsBilling],
+];
+for (const [label, source] of opsSections) {
+  assert.doesNotMatch(source, /'use client'/, `${label} stays a server component`);
+  assert.match(source, /className="card cohort-card"/, `${label}: the card can shrink below its table`);
+  const tables = (source.match(/<table/g) ?? []).length;
+  const regions = (
+    source.match(/<div className="table-scroll" role="region" aria-label="[^"]+ table" tabIndex=\{0\}>\s*<table className="data-table cohort-table">/g) ?? []
+  ).length;
+  assert.ok(tables > 0, `${label} renders a table`);
+  assert.equal(regions, tables, `${label}: every table scrolls inside its card, in a named, focusable region`);
+}
+for (const [label, source] of opsSections.slice(1)) {
+  assert.match(
+    source,
+    /row\.current \? <span className="cohort-settling" title="This week is still in progress">so far<\/span> : null/,
+    `${label}: the current week is marked as still in progress`,
+  );
+}
+
+// Every table's header row and cells, verbatim and in order: a renamed,
+// reordered or rewired column fails here.
+for (const [label, source, pieces] of [
+  ['backlog header', opsBacklog, ['<tr>', '<th>Lane</th>', '<th className="num">Under 1 h</th>', '<th className="num">1–24 h</th>', '<th className="num">24–48 h</th>', '<th className="num">Stuck</th>', '</tr>']],
+  ['backlog cells', opsBacklog, [
+    '<td className="num">{formatCount(row.openUnder1h)}</td>',
+    '<td className="num">{formatCount(row.open1To24h)}</td>',
+    '<td className="num">{formatCount(row.open24To48h)}</td>',
+    "<td className={row.stuck > 0 ? 'num ops-stuck' : 'num'}>{formatCount(row.stuck)}</td>",
+  ]],
+  ['failures header', opsFailures, ['<tr>', '<th>Week</th>', '{failures.lanes.map((lane) => (', '<th key={lane.lane} className="num">{lane.label}</th>', '))}', '</tr>']],
+  ['failures cells', opsFailures, ['{row.cells.map((cell, i) => (', '<td key={failures.lanes[i].lane} className="num">{failedOfCreated(cell)}</td>', '))}']],
+  ['failures total row', opsFailures, ['<tfoot>', '<tr>', '<th scope="row">These weeks</th>', '{failures.lanes.map((lane) => (', '<td key={lane.lane} className="num">{failedOfCreated(lane.window)}</td>']],
+  ['voice header', opsVoice, ['<tr>', '<th>Week</th>', '<th className="num">Voice notes</th>', '<th className="num">Usable</th>', '<th className="num">Failed</th>', '<th>Top cause</th>', '</tr>']],
+  ['voice cells', opsVoice, [
+    '<td className="num">{formatCount(row.processed)}</td>',
+    '<td className="num">{formatCount(row.usable)}</td>',
+    '<td className="num">{formatCount(row.failed)}</td>',
+    '<td className="wrap ops-cause">{topCauseLabel(row)}</td>',
+  ]],
+  ['completeness header', opsVoice, ['<tr>', '<th>Field</th>', '{completeness.columns.map((column) => (', "<th key={column.key} className={column.model ? 'num ops-model' : 'num'}>", '{column.label}', '<span className="ops-sub">{formatCount(column.usable)} usable</span>', '</th>']],
+  ['completeness cells', opsVoice, ['<td className="wrap">{row.label}</td>', '{row.cells.map((cell, i) => (', '<td key={completeness.columns[i].key} className="num">', '{cell.share}', '<span className="ops-sub">{formatCount(cell.found)} of {formatCount(cell.of)}</span>']],
+  ['trust header', opsTrust, ['<tr>', '<th>Week</th>', '<th>Version</th>', '<th className="num">Extractions</th>', '<th className="num">Failed</th>', '<th className="num">Not enough detail</th>', '<th className="num">Avg sections of 5</th>', '</tr>']],
+  ['trust cells', opsTrust, [
+    "<td>{row.version ?? '—'}</td>",
+    '<td className="num">{formatCount(row.extractions)}</td>',
+    '<td className="num">{formatCount(row.failed)}</td>',
+    '<td className="num">{formatCount(row.notEnoughDetail)}</td>',
+    '<td className="num">{formatAvgSections(row.avgSections)}</td>',
+  ]],
+  ['billing header', opsBilling, ['<tr>', '<th>Week</th>', '<th className="num">Received</th>', '<th className="num">Processed</th>', '<th className="num">Skipped</th>', '<th className="num">Failed</th>', '<th className="num">Retried</th>', '<th className="num">Payment-failed invoices</th>', '</tr>']],
+  ['billing cells', opsBilling, [
+    '<td className="num">{formatCount(row.received)}</td>',
+    '<td className="num">{formatCount(row.processed)}</td>',
+    '<td className="num">{formatCount(row.skipped)}</td>',
+    '<td className="num">{formatCount(row.failed)}</td>',
+    '<td className="num">{formatCount(row.retried)}</td>',
+    '<td className="num">{formatCount(row.paymentFailedInvoices)}</td>',
+  ]],
+]) {
+  assert.match(source, opsSeq(...pieces), `${label}: verbatim and in order`);
+}
+assert.equal((opsBacklog.match(/<th[\s>]/g) ?? []).length, 5, 'the backlog table has exactly five columns');
+assert.equal((opsVoice.match(/<th[\s>]/g) ?? []).length, 7, 'voice: five weekly columns, then Field plus one column per completeness source');
+assert.equal((opsTrust.match(/<th[\s>]/g) ?? []).length, 6, 'the trust table has exactly six columns');
+assert.equal((opsBilling.match(/<th[\s>]/g) ?? []).length, 7, 'the billing table has exactly seven columns');
+
+// Right now: message backlog.
+assert.match(opsBacklog, /<h2>Right now: message backlog<\/h2>/);
+assert.match(opsBacklog, /<p>Messages from the last 48 hours not sent yet \(waiting, retrying or in flight\), by how long ago they were created<\/p>/, 'the backlog says open means under 48 h');
+assert.match(
+  opsBacklog,
+  /openMessages\(lanes\) === 0 \? \(\s*<p className="muted">No messages waiting\.<\/p>/,
+  'nothing open: the backlog says so instead of a table of zeros',
+);
+assert.match(opsBacklog, /backlogRows\(lanes\)\.map/, 'lanes in display order with their labels');
+assert.match(opsBacklog, /<span className="ops-sub">\{row\.stuckAfter\}<\/span>/, 'each lane shows its retry window');
+
+// Message failures: one rate line per lane, gaps where a lane created nothing.
+assert.match(
+  opsFailures,
+  /if \(failureChartEmpty\(failures\)\) \{[\s\S]*?<h2>Message failures by week<\/h2>[\s\S]*?<p className="muted">No messages created in these weeks\.<\/p>[\s\S]*?\n  \}/,
+  'no lane created anything: an empty state, not a bare 0–1 axis',
+);
+assert.match(
+  opsFailures,
+  opsSeq(
+    '<TrendChart',
+    'title="Message failures by week"',
+    'subtitle="Gave up + delivery failures, % of the messages each lane created that week · blank where a lane created nothing"',
+    "labels={failures.weeks.map((week) => bucketLabel(week, '90d'))}",
+    'tableCaption="Failure rate (%) by week"',
+    'partialLast',
+    'series={failures.lanes.map((lane) => {',
+  ),
+  'the failure chart: one point per week, the current week drawn as in progress',
+);
+assert.match(
+  opsFailures,
+  opsSeq(
+    'const values = lane.weekly.map(failureRate);',
+    'return {',
+    'key: lane.lane,',
+    'label: lane.label,',
+    'color: LANE_COLORS[lane.lane],',
+    'values,',
+    'endLabel: latestRateLabel(lane),',
+    '};',
+  ),
+  'one line per lane: its fixed color, null gaps (never 0%), the current week as the end label',
+);
+assert.doesNotMatch(opsFailures, /\?\? 0\)/, 'nothing on the failure chart is flattened to 0');
+const opsLaneColors = opsFailures.match(/const LANE_COLORS: Record<MessageLane, string> = \{([\s\S]*?)\};/);
+assert.ok(opsLaneColors, 'the lane colors are one fixed table');
+const opsColorEntries = [...opsLaneColors[1].matchAll(/(\w+): '(#[0-9a-f]{6})',/g)].map((entry) => [entry[1], entry[2]]);
+assert.deepEqual(
+  opsColorEntries,
+  [
+    ['reply', '#0179ff'],
+    ['admin', '#eb6834'],
+    ['worker_notification', '#1baf7a'],
+    ['employer_invite', '#eda100'],
+    ['employer_freeform', '#e87ba4'],
+    ['job_alert', '#008300'],
+  ],
+  'each lane keeps the validated color, in palette order',
+);
+assert.equal(new Set(opsColorEntries.map((entry) => entry[1])).size, 6, 'no two lanes share a color');
+
+// AI voice extraction.
+assert.match(opsVoice, /voice\.window\.processed === 0[\s\S]*<p className="muted">No voice notes in these weeks\.<\/p>/, 'voice empty state');
+assert.match(opsVoice, /<h2>Why extractions failed<\/h2>/);
+assert.match(opsVoice, /const reasons = failureReasons\(voice\.window\);/, 'causes come from the window row, incl. Cause not recorded');
+assert.match(
+  opsVoice,
+  /<strong>\{formatCount\(reason\.count\)\}<\/strong> · \{wholePercent\(reason\.count, voice\.window\.failed\)\}/,
+  "each cause's share is of the failures, not of every attempt",
+);
+assert.match(opsVoice, /<p className="muted">No failed extractions in these weeks\.<\/p>/);
+assert.match(opsVoice, /<h2>Field completeness<\/h2>/);
+assert.match(opsVoice, /const completeness = completenessTable\(voice\.window, voice\.models\);/, 'one column per model when more than one appears');
+
+// Trust extraction.
+assert.match(opsTrust, /<h2>Trust extraction<\/h2>/);
+assert.match(opsTrust, /trust\.window\.extractions === 0 \? \(\s*<p className="muted">No trust extractions in these weeks\.<\/p>/, 'trust empty state');
+assert.match(opsTrust, /newestWeeksFirst\(trust\.weekly, now\)\.map/, 'rows per extractor version, newest week first');
+
+// Billing inbox.
+assert.match(opsBilling, /<h2>Billing inbox<\/h2>/);
+assert.match(opsBilling, /<strong>Right now:<\/strong> \{billingLiveLine\(inbox, now\)\}/, 'the live stuck / failed / unresolved line');
+assert.match(opsBilling, /const empty = billing\.window\.received === 0;/, 'billing emptiness comes from the window row');
+assert.match(
+  opsBilling,
+  /\{empty \? \(\s*<p className="muted">No billing events in these weeks\.<\/p>\s*\) : \(\s*<div className="table-scroll"/,
+  'no events in these weeks: the weekly table gives way to the empty state',
+);
+assert.match(
+  opsBilling,
+  /\{empty \? null : \(\s*<article className="card">\s*<div className="chart-head" style=\{\{ marginBottom: 14 \}\}>\s*<div>\s*<h2>Skipped events by type<\/h2>/,
+  'no events in these weeks: no skipped-events card either',
+);
+assert.match(opsBilling, /const skipped = skippedByType\(billing\.eventTypes\);/);
+assert.match(opsBilling, /<p className="muted">No skipped events in these weeks\.<\/p>/);
+assert.match(opsBilling, /<span className="funnel-label ops-code">\{type\.eventType\}<\/span>/, 'long event types wrap');
+
+assert.match(css, /\.chart-legend \{[^}]*flex-wrap: wrap;/, 'a six-lane legend wraps on phones instead of widening the card');
+assert.match(css, /\.chart-tools \{\n  min-width: 0;\n\}/, 'a Table twin wider than the card scrolls inside it at tablet widths too');
+assert.match(css, /\.cohort-table td\.ops-stuck \{/, 'stuck cells have their own highlight');
+assert.match(css, /\.cohort-table th\.ops-model \{[^}]*white-space: normal;[^}]*overflow-wrap: break-word;/, 'model-id headers wrap');
+assert.match(css, /\.ops-code \{[^}]*overflow-wrap: anywhere;/, 'event types wrap');
+assert.match(css, /\.cohort-table td\.ops-cause \{\n  min-width: 14rem;\n\}/, 'a tied top cause gets room for two causes per line');
+
+const opsCopy = opsPage.replace(/\s+/g, ' '); // JSX text wraps across lines
+for (const [pattern, point] of [
+  [/WhatsApp replies 30 min, Admin replies 10 min, Worker notifications 24 h, Employer invites and Employer free-text messages 30 min, Job alerts \(old lane\) 30 min\./, 'the lane retry windows'],
+  [/Open means created in the last 48 hours and not sent yet: waiting, retrying, or in flight\./, 'what open means'],
+  [/WhatsApp replies are retried only while their incoming message is redelivered \(about 30 minutes\); after that they are stranded\./, 'replies are stranded after redelivery stops'],
+  [/Worker notifications can legitimately wait up to 48 hours for a message template to be approved; the 24-hour mark matches the existing backlog alarm\./, 'worker notifications can wait 48 hours'],
+  [/After 48 hours nothing retries a message, so anything still unsent counts as gave up\./, 'the 48-hour horizon'],
+  [/Gave up also covers the last of 5 attempts failing, a send that ended with an unknown result, and any failed worker notification/, 'what else gave up means'],
+  [/A delivery failure was sent, but Twilio reported it failed or undelivered\./, 'what a delivery failure is'],
+  [/Free-text employer messages record delivery failures on the conversation, not in this lane;/, 'free-text delivery failures are counted elsewhere'],
+  [/Deleting a job deletes its employer-message history\./, 'deleting a job deletes its employer-message history'],
+  [/Job alerts now go out as worker notifications; only the old job-alert lane is dormant/, 'only the old job-alert lane is dormant'],
+  [/Voice figures count only voice notes that produced a row, as attempts: a note processed twice counts twice, and a pipeline crash or timeout leaves no row, so that note is not counted\./, 'voice counts only notes that produced a row'],
+  [/Failure causes are recorded only since migration 115 was applied; failed rows from before then show as Cause not recorded\./, 'causes are recorded only since 115'],
+  [/Pipeline error also includes AI calls that timed out after 60 seconds and, occasionally, an extra row written after a successful save\./, 'what else Pipeline error covers'],
+  [/confidence 0\.75 or higher, the threshold onboarding uses\./, 'completeness uses the onboarding threshold'],
+  [/Test profiles are left out of the voice figures\./, 'test profiles are excluded from voice only'],
+  [/Billing stuck means received but never claimed, or the 5-minute processing claim expired\./, 'billing stuck includes never-claimed events'],
+  [/Billing events are retried for about 20 minutes; any still stuck or failed after an hour have been dead-lettered and can be redriven from the queue for 14 days\. Older ones have left the queue and must be resent from Stripe\./, 'billing retries stop after about 20 minutes; the queue keeps dead letters 14 days'],
+  [/Weeks marked so far are still in progress, and messages that are still open can still add failures to their week\./, 'what so far means'],
+]) {
+  assert.match(opsCopy, pattern, `the footnote says: ${point}`);
+}
+for (const [pattern, point] of [
+  [/Test profiles are left out\./, 'a page-wide test-profile claim'],
+  [/nothing sends job alerts/, 'that job alerts stopped'],
+  [/will retry/, 'that every failed billing event will be retried'],
+  [/failed, retrying/, 'that every billing event that failed is still being retried'],
+  [/dead-lettered and need a manual redrive\./, 'that every dead-lettered billing event can be redriven (the queue keeps them 14 days)'],
+  [/Open means not sent yet, still retrying, or in flight\./, 'an open definition without the 48-hour horizon'],
+]) {
+  assert.doesNotMatch(opsCopy, pattern, `the footnote no longer claims ${point}`);
+}
+
 console.log('admin UI contract checks passed');

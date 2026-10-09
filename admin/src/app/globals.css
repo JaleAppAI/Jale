@@ -1090,7 +1090,8 @@ p {
   outline-offset: 2px;
 }
 
-/* Three tabs fit at 375 px; on narrower phones they wrap instead of overflowing. */
+/* The tab row wraps instead of overflowing: with four tabs, Ops starts a
+   second row at 375 px; at 320 px two tabs sit on each row. */
 .analytics-tabs {
   flex-wrap: wrap;
 }
@@ -1121,4 +1122,85 @@ p {
 .chart-tools,
 .chart-table {
   max-width: 100%;
+}
+
+/* ── Analytics: ops health (2c) ────────────────────────────── */
+/* Reuses 2a/2b's .kpi-strip.funnel-kpis, .cohort-card, .table-scroll regions,
+   .cohort-table, td.wrap, .cohort-settling (the "so far" badge) and the
+   .funnel-bars rows. */
+
+/* Up to six lanes in one legend: wrap on phones instead of widening the card. */
+.chart-legend {
+  flex-wrap: wrap;
+}
+
+/* A six-lane Table twin (1,000 px) is wider than the card below ~1,200 px.
+   Where the chart head is still a row (961-1,200 px), the tool row may shrink
+   below it so the twin scrolls inside its region instead of widening the page. */
+.chart-tools {
+  min-width: 0;
+}
+
+/* The weeks picker and its note ("Weeks change ..."). */
+.ops-picker {
+  display: grid;
+  gap: 6px;
+  justify-items: end;
+}
+
+.ops-picker p {
+  margin: 0;
+  font-size: 0.75rem;
+  text-align: right;
+}
+
+/* A smaller second line in a cell or header: retry window, usable count, found of. */
+.ops-sub {
+  display: block;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 650;
+}
+
+/* A lane with messages past its retry window. */
+.cohort-table td.ops-stuck {
+  background: var(--jale-danger-bg);
+  color: #a51e28;
+  font-weight: 700;
+}
+
+/* Model ids (us.anthropic.claude-haiku-4-5-20251001-v1:0) wrap inside their
+   header, at the hyphens where they can. */
+.cohort-table th.ops-model {
+  min-width: 8rem;
+  max-width: 12rem;
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+
+/* A tied top cause names every tied cause; room for about two per line,
+   also on phones (after 2b's 7 rem phone floor for td.wrap). */
+.cohort-table td.ops-cause {
+  min-width: 14rem;
+}
+
+/* Stripe event types have no spaces; they wrap anywhere rather than overflow. */
+.ops-code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ops-live {
+  margin: 0 0 10px;
+  font-size: 0.85rem;
+}
+
+@media (max-width: 960px) {
+  .ops-picker {
+    justify-items: start;
+  }
+
+  .ops-picker p {
+    text-align: left;
+  }
 }

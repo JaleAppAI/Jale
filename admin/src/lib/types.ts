@@ -229,3 +229,113 @@ export type StaleJob = {
   waitingApplicants: number;
   lastApplicationAt: string | null;
 };
+
+// Roadmap 2c: ops health (migration 115). Lane ids are the SQL's; their labels
+// and retry windows live in ops-health.ts.
+export type MessageLane =
+  | 'reply'
+  | 'admin'
+  | 'worker_notification'
+  | 'employer_invite'
+  | 'employer_freeform'
+  | 'job_alert';
+
+// One row of admin_analytics_message_backlog(): a lane's open messages right
+// now, by age. Open rows are under 48 h old (older ones count as gave up);
+// stuck = open past the lane's retry window (a subset of open).
+export type MessageBacklogLane = {
+  lane: MessageLane;
+  openUnder1h: number;
+  open1To24h: number;
+  open24To48h: number;
+  stuck: number;
+  oldestStuckAt: string | null;
+};
+
+export type MessageFailureFigures = {
+  created: number;
+  gaveUp: number;
+  deliveryFailed: number;
+};
+
+// One row of admin_analytics_message_failures: a (week, lane) pair. weekStart
+// null = the whole window; lane null = every lane (a window row).
+export type MessageFailuresWeekly = MessageFailureFigures & {
+  weekStart: string | null;
+  lane: MessageLane | null;
+};
+
+// Voice extraction counts attempts (rows), not distinct voice notes.
+export type VoiceExtractionFigures = {
+  processed: number;
+  failed: number;
+  failedTranscribe: number;
+  failedEmptyTranscript: number;
+  failedAudioRead: number;
+  failedModelCall: number;
+  failedBadJson: number;
+  failedBadShape: number;
+  failedPipelineError: number;
+  // failure_kind NULL: failures from before migration 115.
+  failedUnrecorded: number;
+  usable: number;
+  fullNameFound: number;
+  cityFound: number;
+  mainTradeFound: number;
+  // Usable rows whose main trade is "other": the Other trade denominator.
+  mainTradeOtherDue: number;
+  mainTradeOtherFound: number;
+  yearsExperienceFound: number;
+  hasTransportationFound: number;
+  availabilityFound: number;
+};
+
+// One row of admin_analytics_voice_extraction. model null = every row,
+// attributed or not; a model row counts only that model's usable rows and its
+// model_call / bad_json / bad_shape failures. weekStart null = the whole window.
+export type VoiceExtractionWeekly = VoiceExtractionFigures & {
+  weekStart: string | null;
+  model: string | null;
+};
+
+export type TrustExtractionFigures = {
+  extractions: number;
+  failed: number;
+  notEnoughDetail: number;
+  // Mean non-empty sections of 5 over model-backed completed rows; null = none.
+  avgSections: number | null;
+};
+
+// One row of admin_analytics_trust_extraction; extractorVersion null = all versions.
+export type TrustExtractionWeekly = TrustExtractionFigures & {
+  weekStart: string | null;
+  extractorVersion: string | null;
+};
+
+export type BillingInboxFigures = {
+  received: number;
+  processed: number;
+  skipped: number;
+  failed: number;
+  retried: number;
+  paymentFailedInvoices: number;
+};
+
+// One row of admin_analytics_billing_inbox; eventType null = all event types.
+export type BillingInboxWeekly = BillingInboxFigures & {
+  weekStart: string | null;
+  eventType: string | null;
+};
+
+// admin_analytics_billing_inbox_now(). Stuck = received, never claimed or
+// with an expired claim; failed now = failed. Both count only events
+// received in the last hour; oldest = the oldest of those (null when none).
+// unresolvedOlder = dead-lettered in the last 14 days (received 1 h-14 d ago,
+// still stuck or failed): they can be redriven from the queue; older events
+// have left the queue and must be resent from Stripe.
+export type BillingInboxNow = {
+  stuckReceived: number;
+  failedNow: number;
+  unresolvedOlder: number;
+  oldestStuckAt: string | null;
+};
