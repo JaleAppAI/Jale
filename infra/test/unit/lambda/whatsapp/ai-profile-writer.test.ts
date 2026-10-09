@@ -1157,3 +1157,479 @@ describe('custom trade canonicalisation (v1 voice path)', () => {
     expect(usersUpdate()![1]).toContain('Soldador');
   });
 });
+
+// ── 2c (Ops health): every failed row records why it failed ─────────────
+//
+// `worker_profile_ai_extractions.failure_kind` (migration 115) is what the
+// admin Ops page groups failures by. Model / JSON / shape failures are caught
+// in-Lambda (no throw, so the state machine no longer re-invokes this lambda
+// for them). A FAILED invocation from the pipeline is `transcribe` unless the
+// Transcribe job had already COMPLETED: the only state that runs after a
+// COMPLETED job is InvokeOnCompleted, so its catch means this lambda failed.
+
+const VP_EXECUTION_ARN = 'arn:aws:states:us-east-2:123456789012:execution:profile-voice-pipeline:vp-MMvoice-2c';
+const VP_TRANSCRIPT = 'My name is Jose, I am a plumber in Denver';
+
+/** An extraction INSERT as a column -> value map, so assertions never depend
+ * on parameter order: `$n` is bound, quoted literals are unquoted, and the
+ * failed row's media guard `(SELECT m.id FROM worker_profile_media m WHERE
+ * m.id = $n)` resolves as Postgres would — the id when it is one of
+ * `existingMediaIds`, otherwise NULL. */
+function insertedRow(sql: string, params: unknown[], existingMediaIds: string[]): Record<string, unknown> {
+  const [, columnList, valueList] = sql.match(/\(([^)]*)\)\s*VALUES\s*\(([\s\S]*)\)\s*RETURNING/)!;
+  const columns = columnList.split(',').map((column) => column.trim());
+  const values = valueList.split(',').map((value) => value.trim());
+  expect(values).toHaveLength(columns.length);
+  return Object.fromEntries(columns.map((column, i) => {
+    const placeholder = values[i].match(/^\$(\d+)$/);
+    if (placeholder) return [column, params[Number(placeholder[1]) - 1]];
+    const mediaGuard = values[i].match(/^\(SELECT m\.id FROM worker_profile_media m WHERE m\.id = \$(\d+)\)$/);
+    if (mediaGuard) {
+      const mediaId = params[Number(mediaGuard[1]) - 1];
+      return [column, existingMediaIds.includes(mediaId as string) ? mediaId : null];
+    }
+    return [column, values[i].replace(/^'(.*)'$/, '$1')];
+  }));
+}
+
+/** The one extraction INSERT this invocation made, as a column -> value map
+ * (`media-1`, the fixture's voice note, exists unless told otherwise). */
+function extractionInsertRow(existingMediaIds: string[] = ['media-1']): Record<string, unknown> {
+  const inserts = mockQuery.mock.calls.filter(([sql]: [string]) =>
+    /INSERT INTO worker_profile_ai_extractions/.test(sql),
+  );
+  expect(inserts).toHaveLength(1);
+  const [sql, params] = inserts[0] as [string, unknown[]];
+  return insertedRow(sql, params, existingMediaIds);
+}
+
+/** The FAILED #vp event: unchanged contract, whatever the cause. */
+function expectFailedVpEvent(extractionId: string) {
+  expect(mockSqsSend).toHaveBeenCalledTimes(1);
+  const params = Object.fromEntries(new URLSearchParams(mockSqsSend.mock.calls[0][0].input.MessageBody));
+  expect(parseVoiceTranscriptEvent(params)).toEqual({
+    version: 'v2',
+    kind: 'profile_intake',
+    status: 'FAILED',
+    phone: '+15125551234',
+    runId: 'run-abc',
+    stepKey: 'profile.voice_processing',
+    language: 'en',
+    origMessageSid: 'MMvoice-2c',
+    startedAt: '2026-07-27T00:00:00.000Z',
+    executionArn: VP_EXECUTION_ARN,
+    extractionId,
+    fields: null,
+    confidences: null,
+    summaryEn: null,
+    summaryEs: null,
+  });
+}
+
+function makeBedrockTextResponse(text: string) {
+  return { output: { message: { content: [{ text }] } } };
+}
+
+function runVoicePipeline(status: 'COMPLETED' | 'FAILED', contextOverrides: Record<string, unknown> = {}) {
+  return handler({
+    status,
+    executionArn: VP_EXECUTION_ARN,
+    executionContext: v2ExecutionContext({ inboundMessageSid: 'MMvoice-2c', ...contextOverrides }),
+  } as any, {} as any, () => {});
+}
+
+describe('failure_kind on every failed extraction row (2c)', () => {
+  beforeEach(() => {
+    mockQuery.mockImplementation((sql: string) => {
+      if (/INSERT INTO worker_profile_ai_extractions/.test(sql)) {
+        return Promise.resolve({ rows: [{ id: 'extraction-2c' }] });
+      }
+      return Promise.resolve({ rows: [{ next_seq: 1, cognito_sub: 'worker-sub' }], rowCount: 1 });
+    });
+  });
+
+  describe('FAILED invocations from the voice pipeline', () => {
+    it('records transcribe when the Transcribe job reported FAILED (no caught error)', async () => {
+      await runVoicePipeline('FAILED', {
+        transcribeStatus: { TranscriptionJob: { TranscriptionJobStatus: 'FAILED' } },
+      });
+
+      expect(mockS3Send).not.toHaveBeenCalled();
+      expect(mockBedrockSend).not.toHaveBeenCalled();
+      expect(extractionInsertRow()).toEqual({
+        user_id: 'user-1',
+        voice_message_media_id: 'media-1',
+        bedrock_model_id: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+        status: 'failed',
+        failure_kind: 'transcribe',
+        asr_metadata: null,
+      });
+      expectFailedVpEvent('extraction-2c');
+    });
+
+    it.each([
+      ['the StartTranscribeJob catch (no poll yet)', {
+        error: { Error: 'Transcribe.BadRequestException', Cause: 'The requested job name already exists.' },
+      }],
+      ['the GetTranscribeJob catch (job still IN_PROGRESS)', {
+        transcribeStatus: { TranscriptionJob: { TranscriptionJobStatus: 'IN_PROGRESS' } },
+        error: { Error: 'Transcribe.LimitExceededException', Cause: 'Rate exceeded' },
+      }],
+      ['the GetTranscribeJob catch with a States.* error (job still QUEUED)', {
+        transcribeStatus: { TranscriptionJob: { TranscriptionJobStatus: 'QUEUED' } },
+        error: { Error: 'States.TaskFailed', Cause: 'Service call failed' },
+      }],
+    ])('records transcribe for an error caught at %s', async (_label, context) => {
+      await runVoicePipeline('FAILED', context);
+
+      expect(extractionInsertRow()).toMatchObject({
+        status: 'failed',
+        failure_kind: 'transcribe',
+        voice_message_media_id: 'media-1',
+        asr_metadata: null,
+      });
+      expectFailedVpEvent('extraction-2c');
+    });
+
+    it.each([
+      ['threw', { Error: 'Error', Cause: '{"errorType":"Error","errorMessage":"commit failed"}' }],
+      ['timed out', { Error: 'Sandbox.Timedout', Cause: 'Task timed out after 60.00 seconds' }],
+    ])('records pipeline_error when this lambda %s after Transcribe COMPLETED (the InvokeOnCompleted catch)', async (_label, error) => {
+      await runVoicePipeline('FAILED', {
+        transcribeStatus: { TranscriptionJob: { TranscriptionJobStatus: 'COMPLETED' } },
+        error,
+      });
+
+      expect(mockS3Send).not.toHaveBeenCalled();
+      expect(mockBedrockSend).not.toHaveBeenCalled();
+      expect(extractionInsertRow()).toEqual({
+        user_id: 'user-1',
+        voice_message_media_id: 'media-1',
+        bedrock_model_id: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+        status: 'failed',
+        failure_kind: 'pipeline_error',
+        asr_metadata: null,
+      });
+      expectFailedVpEvent('extraction-2c');
+    });
+
+    it('still writes the failed row (media id NULL) and sends the FAILED event when the media row was never committed', async () => {
+      // A processor turn that rolled back after StartExecution leaves the
+      // running execution holding a media id with no committed row; the
+      // completed INSERT then fails the foreign key and the InvokeOnCompleted
+      // catch lands here. The mock enforces the same foreign key.
+      mockQuery.mockImplementation((sql: string, params: unknown[]) => {
+        if (/INSERT INTO worker_profile_ai_extractions/.test(sql)) {
+          if (insertedRow(sql, params, []).voice_message_media_id != null) {
+            return Promise.reject(Object.assign(
+              new Error('insert or update on table "worker_profile_ai_extractions" violates foreign key constraint'),
+              { code: '23503' },
+            ));
+          }
+          return Promise.resolve({ rows: [{ id: 'extraction-2c' }] });
+        }
+        return Promise.resolve({ rows: [{ next_seq: 1, cognito_sub: 'worker-sub' }], rowCount: 1 });
+      });
+
+      await expect(runVoicePipeline('FAILED', {
+        voiceMessageMediaId: 'media-rolled-back',
+        transcribeStatus: { TranscriptionJob: { TranscriptionJobStatus: 'COMPLETED' } },
+        error: { Error: 'error', Cause: '{"errorType":"error","errorMessage":"violates foreign key constraint"}' },
+      })).resolves.toBeUndefined();
+
+      expect(extractionInsertRow([])).toMatchObject({
+        status: 'failed',
+        failure_kind: 'pipeline_error',
+        voice_message_media_id: null,
+      });
+      expectFailedVpEvent('extraction-2c');
+    });
+
+    it('never logs or stores the caught error name or cause', async () => {
+      const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+      const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      await runVoicePipeline('FAILED', {
+        transcribeStatus: { TranscriptionJob: { TranscriptionJobStatus: 'COMPLETED' } },
+        error: { Error: 'Sandbox.Timedout', Cause: '{"errorType":"Error","errorMessage":"commit failed"}' },
+      });
+
+      const logged = [...logSpy.mock.calls, ...errorSpy.mock.calls]
+        .map((args) => args.map(String).join(' '))
+        .join('\n');
+      expect(logged).toContain('"metric":"AiProfileWriterExtractionFailed","failureKind":"pipeline_error"');
+      const written = JSON.stringify([mockQuery.mock.calls, mockSqsSend.mock.calls]);
+      for (const text of ['commit failed', 'Sandbox.Timedout']) {
+        expect(logged).not.toContain(text);
+        expect(written).not.toContain(text);
+      }
+      logSpy.mockRestore();
+      errorSpy.mockRestore();
+    });
+
+    it('records transcribe for a legacy-shaped failed event', async () => {
+      await handler({
+        userId: 'user-1',
+        conversationId: 'conv-1',
+        inboundMessageSid: 'MMvoice-legacy-2c',
+        whatsappNumber: '+15125551234',
+        language: 'es',
+        status: 'failed',
+        errorMessage: 'TranscribeJobFailed',
+      }, {} as any, () => {});
+
+      expect(extractionInsertRow()).toMatchObject({ status: 'failed', failure_kind: 'transcribe' });
+    });
+  });
+
+  describe('failures caught inside the lambda', () => {
+    it('records empty_transcript, keeping asr_metadata', async () => {
+      mockS3Send.mockResolvedValue(makeEmptyTranscriptS3Response());
+
+      await expect(runVoicePipeline('COMPLETED')).resolves.toBeUndefined();
+
+      expect(mockBedrockSend).not.toHaveBeenCalled();
+      const row = extractionInsertRow();
+      expect(row).toMatchObject({
+        status: 'failed',
+        failure_kind: 'empty_transcript',
+        voice_message_media_id: 'media-1',
+      });
+      expect(row).not.toHaveProperty('transcript_text');
+      expect(JSON.parse(row.asr_metadata as string)).toMatchObject({ provider: 'transcribe' });
+      expectFailedVpEvent('extraction-2c');
+    });
+
+    it('records audio_read when the transcript cannot be read (asr_metadata NULL)', async () => {
+      mockS3Send.mockRejectedValue(new Error('S3 unavailable'));
+
+      await expect(runVoicePipeline('COMPLETED')).resolves.toBeUndefined();
+
+      expect(mockBedrockSend).not.toHaveBeenCalled();
+      expect(extractionInsertRow()).toEqual({
+        user_id: 'user-1',
+        voice_message_media_id: 'media-1',
+        bedrock_model_id: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+        status: 'failed',
+        failure_kind: 'audio_read',
+        asr_metadata: null,
+      });
+      expectFailedVpEvent('extraction-2c');
+    });
+
+    it('records model_call when the Bedrock call rejects — caught, no throw', async () => {
+      mockS3Send.mockResolvedValue(makeTranscriptS3Response(VP_TRANSCRIPT));
+      mockBedrockSend.mockRejectedValue(
+        Object.assign(new Error('Too many requests, please wait'), { name: 'ThrottlingException' }),
+      );
+
+      await expect(runVoicePipeline('COMPLETED')).resolves.toBeUndefined();
+
+      expect(mockBedrockSend).toHaveBeenCalledTimes(1);
+      const row = extractionInsertRow();
+      expect(row).toMatchObject({
+        status: 'failed',
+        failure_kind: 'model_call',
+        voice_message_media_id: 'media-1',
+      });
+      expect(row).not.toHaveProperty('transcript_text');
+      expect(JSON.parse(row.asr_metadata as string)).toMatchObject({ provider: 'transcribe' });
+      expect(JSON.stringify(mockQuery.mock.calls)).not.toContain(VP_TRANSCRIPT);
+      expect(mockQuery.mock.calls.some(([sql]: [string]) => sql === 'COMMIT')).toBe(true);
+      expect(mockQuery.mock.calls.some(([sql]: [string]) => sql === 'ROLLBACK')).toBe(false);
+      expectFailedVpEvent('extraction-2c');
+    });
+
+    it('records bad_json when the model reply does not parse — caught, no throw', async () => {
+      mockS3Send.mockResolvedValue(makeTranscriptS3Response(VP_TRANSCRIPT));
+      mockBedrockSend.mockResolvedValue(makeBedrockTextResponse('Sorry, I can only describe this worker in prose.'));
+
+      await expect(runVoicePipeline('COMPLETED')).resolves.toBeUndefined();
+
+      const row = extractionInsertRow();
+      expect(row).toMatchObject({
+        status: 'failed',
+        failure_kind: 'bad_json',
+        voice_message_media_id: 'media-1',
+      });
+      expect(row).not.toHaveProperty('transcript_text');
+      expect(JSON.parse(row.asr_metadata as string)).toMatchObject({ provider: 'transcribe' });
+      expectFailedVpEvent('extraction-2c');
+    });
+
+    it.each([
+      ['extracted_fields is null', '{"extracted_fields":null,"confidence_scores":{"full_name":0.9},"summary_en":"s","summary_es":"s"}'],
+      ['extracted_fields is a string', '{"extracted_fields":"Jose, plumber","confidence_scores":{"full_name":0.9},"summary_en":"s","summary_es":"s"}'],
+      ['confidence_scores is an array', '{"extracted_fields":{"full_name":"Jose"},"confidence_scores":[0.9],"summary_en":"s","summary_es":"s"}'],
+      ['both keys are missing', '{"summary_en":"Jose, a plumber.","summary_es":"Jose, un plomero."}'],
+      ['the reply is JSON null', 'null'],
+      ['the reply is a JSON array', '[]'],
+    ])('records bad_shape when %s — caught, no throw', async (_label, reply) => {
+      mockS3Send.mockResolvedValue(makeTranscriptS3Response(VP_TRANSCRIPT));
+      mockBedrockSend.mockResolvedValue(makeBedrockTextResponse(reply));
+
+      await expect(runVoicePipeline('COMPLETED')).resolves.toBeUndefined();
+
+      const row = extractionInsertRow();
+      expect(row).toMatchObject({
+        status: 'failed',
+        failure_kind: 'bad_shape',
+        voice_message_media_id: 'media-1',
+      });
+      expect(row).not.toHaveProperty('transcript_text');
+      expect(row).not.toHaveProperty('extracted_fields');
+      expectFailedVpEvent('extraction-2c');
+    });
+
+    it('logs the cause only — never the transcript or the error text', async () => {
+      const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+      const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      mockS3Send.mockResolvedValue(makeTranscriptS3Response(VP_TRANSCRIPT));
+      mockBedrockSend.mockRejectedValue(new Error('upstream said: Jose is a plumber'));
+
+      await runVoicePipeline('COMPLETED');
+
+      const logged = [...logSpy.mock.calls, ...errorSpy.mock.calls]
+        .map((args) => args.map(String).join(' '))
+        .join('\n');
+      expect(logged).toContain('"metric":"AiProfileWriterExtractionFailed","failureKind":"model_call"');
+      expect(logged).not.toContain('Jose');
+      expect(logged).not.toContain('upstream said');
+      logSpy.mockRestore();
+      errorSpy.mockRestore();
+    });
+
+    it('keeps the SDK error class name on the model_call log line only — never its message, the transcript or a row', async () => {
+      const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+      const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      mockS3Send.mockResolvedValue(makeTranscriptS3Response(VP_TRANSCRIPT));
+      mockBedrockSend.mockRejectedValue(
+        Object.assign(new Error('Too many requests, please wait; prompt began Jose'), { name: 'ThrottlingException' }),
+      );
+
+      await expect(runVoicePipeline('COMPLETED')).resolves.toBeUndefined();
+
+      const logged = [...logSpy.mock.calls, ...errorSpy.mock.calls]
+        .map((args) => args.map(String).join(' '))
+        .join('\n');
+      const failedLine = logSpy.mock.calls
+        .map(([msg]) => String(msg))
+        .filter((msg) => msg.includes('AiProfileWriterExtractionFailed'));
+      expect(failedLine).toEqual([
+        '{"metric":"AiProfileWriterExtractionFailed","failureKind":"model_call","errorName":"ThrottlingException","v2":true}',
+      ]);
+      // Only the class name leaves the lambda, and only in the log: the
+      // message, the transcript and the name are in no row and no event.
+      const written = JSON.stringify([mockQuery.mock.calls, mockSqsSend.mock.calls]);
+      for (const text of ['Too many requests', 'please wait', 'prompt began', 'Jose']) {
+        expect(logged).not.toContain(text);
+        expect(written).not.toContain(text);
+      }
+      expect(written).not.toContain('ThrottlingException');
+      expect(extractionInsertRow()).toMatchObject({ status: 'failed', failure_kind: 'model_call' });
+      logSpy.mockRestore();
+      errorSpy.mockRestore();
+    });
+
+    it.each([
+      ['a string rejection', 'upstream said: Jose is a plumber'],
+      ['an object whose name is not a string', { name: 42, message: 'upstream said: Jose is a plumber' }],
+      ['a null rejection', null],
+      ['an undefined rejection', undefined],
+    ])('logs errorName "unknown" when the Bedrock rejection is %s', async (_label, rejection) => {
+      const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+      const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      mockS3Send.mockResolvedValue(makeTranscriptS3Response(VP_TRANSCRIPT));
+      mockBedrockSend.mockRejectedValue(rejection);
+
+      await expect(runVoicePipeline('COMPLETED')).resolves.toBeUndefined();
+
+      const logged = [...logSpy.mock.calls, ...errorSpy.mock.calls]
+        .map((args) => args.map(String).join(' '))
+        .join('\n');
+      expect(logged).toContain(
+        '"metric":"AiProfileWriterExtractionFailed","failureKind":"model_call","errorName":"unknown","v2":true',
+      );
+      expect(logged).not.toContain('upstream said');
+      expect(extractionInsertRow()).toMatchObject({ status: 'failed', failure_kind: 'model_call' });
+      logSpy.mockRestore();
+      errorSpy.mockRestore();
+    });
+
+    it('bounds a very long error name to 100 characters', async () => {
+      const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+      mockS3Send.mockResolvedValue(makeTranscriptS3Response(VP_TRANSCRIPT));
+      mockBedrockSend.mockRejectedValue(Object.assign(new Error('x'), { name: 'E'.repeat(150) }));
+
+      await runVoicePipeline('COMPLETED');
+
+      const logged = logSpy.mock.calls.map(([msg]) => String(msg)).join('\n');
+      expect(logged).toContain(`"errorName":"${'E'.repeat(100)}","v2":true`);
+      expect(logged).not.toContain('E'.repeat(101));
+      logSpy.mockRestore();
+    });
+
+    it.each([
+      ['bad_json', 'Sorry, I can only describe this worker in prose.'],
+      ['bad_shape', '{"summary_en":"Jose, a plumber.","summary_es":"Jose, un plomero."}'],
+    ])('leaves the %s log line without an errorName', async (kind, reply) => {
+      const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+      mockS3Send.mockResolvedValue(makeTranscriptS3Response(VP_TRANSCRIPT));
+      mockBedrockSend.mockResolvedValue(makeBedrockTextResponse(reply));
+
+      await runVoicePipeline('COMPLETED');
+
+      const failedLines = logSpy.mock.calls
+        .map(([msg]) => String(msg))
+        .filter((msg) => msg.includes('AiProfileWriterExtractionFailed'));
+      expect(failedLines).toEqual([`{"metric":"AiProfileWriterExtractionFailed","failureKind":"${kind}","v2":true}`]);
+      logSpy.mockRestore();
+    });
+  });
+
+  it('success path unchanged: completed row has no failure_kind, #vp event carries the extraction', async () => {
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    mockS3Send.mockResolvedValue(makeTranscriptS3Response(VP_TRANSCRIPT));
+    mockBedrockSend.mockResolvedValue(makeBedrockResponse(
+      { full_name: 'Jose', city: 'Denver, CO', main_trade: 'plumber' },
+      { full_name: 0.9, city: 0.8, main_trade: 0.95 },
+      'Jose, a plumber in Denver.',
+      'Jose, un plomero en Denver.',
+    ));
+
+    await runVoicePipeline('COMPLETED');
+
+    const row = extractionInsertRow();
+    expect(row).toEqual({
+      user_id: 'user-1',
+      voice_message_media_id: 'media-1',
+      bedrock_model_id: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+      transcript_text: VP_TRANSCRIPT,
+      extracted_fields: JSON.stringify({ full_name: 'Jose', city: 'Denver, CO', main_trade: 'plumber' }),
+      confidence_scores: JSON.stringify({ full_name: 0.9, city: 0.8, main_trade: 0.95 }),
+      status: 'completed',
+      asr_metadata: expect.any(String),
+    });
+    expect(mockSqsSend).toHaveBeenCalledTimes(1);
+    const params = Object.fromEntries(new URLSearchParams(mockSqsSend.mock.calls[0][0].input.MessageBody));
+    expect(parseVoiceTranscriptEvent(params)).toEqual({
+      version: 'v2',
+      kind: 'profile_intake',
+      status: 'COMPLETED',
+      phone: '+15125551234',
+      runId: 'run-abc',
+      stepKey: 'profile.voice_processing',
+      language: 'en',
+      origMessageSid: 'MMvoice-2c',
+      startedAt: '2026-07-27T00:00:00.000Z',
+      executionArn: VP_EXECUTION_ARN,
+      extractionId: 'extraction-2c',
+      fields: { full_name: 'Jose', city: 'Denver, CO', main_trade: 'plumber' },
+      confidences: { full_name: 0.9, city: 0.8, main_trade: 0.95 },
+      summaryEn: 'Jose, a plumber in Denver.',
+      summaryEs: 'Jose, un plomero en Denver.',
+    });
+    expect(logSpy.mock.calls.map(([msg]) => String(msg)).join('\n')).not.toContain('AiProfileWriterExtractionFailed');
+    logSpy.mockRestore();
+  });
+});

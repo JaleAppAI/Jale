@@ -64,6 +64,12 @@ export interface AiProfileWriterContext {
   transcriptOutputKey?: string;
   voiceMessageMediaId?: string;
   v2?: V2ProfileIntakeMarker;
+  /** VoiceTranscriptionPipeline state: the last GetTranscriptionJob result
+   * (`$.transcribeStatus`). Read only by `pipelineFailureKind`. */
+  transcribeStatus?: { TranscriptionJob?: { TranscriptionJobStatus?: string } };
+  /** VoiceTranscriptionPipeline state: a catch's error output (`$.error`).
+   * Read only by `pipelineFailureKind`; never logged or stored. */
+  error?: { Error?: string; Cause?: string };
 }
 
 export interface VoicePipelineAiProfileWriterEvent {
@@ -115,6 +121,53 @@ function parseBedrockJsonResponse(responseText: string): BedrockResult {
   return JSON.parse(jsonText) as BedrockResult;
 }
 
+/**
+ * Why an extraction failed: `worker_profile_ai_extractions.failure_kind`.
+ * Migration 115's CHECK allows exactly these seven values; the admin Ops page
+ * groups failures by them.
+ */
+type FailureKind =
+  | 'transcribe'
+  | 'empty_transcript'
+  | 'audio_read'
+  | 'model_call'
+  | 'bad_json'
+  | 'bad_shape'
+  | 'pipeline_error';
+
+type ExtractionOutcome =
+  | { ok: true; result: BedrockResult }
+  // `errorName` is the SDK error's class name (a ThrottlingException, a
+  // timeout...), kept for the log line of a model_call failure only.
+  | { ok: false; failureKind: 'model_call'; errorName: string }
+  | { ok: false; failureKind: 'bad_json' | 'bad_shape' };
+
+/** A JSON object: not null, not an array (what `jsonb_typeof` calls 'object'). */
+function isJsonObject(value: unknown): boolean {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The cause for a FAILED invocation from VoiceTranscriptionPipeline
+ * (lib/constructs/voice-transcription-pipeline.ts). InvokeOnFailed is reached
+ * three ways:
+ *   - CheckTranscribeStatus saw the job FAILED: no `error`;
+ *   - the StartTranscribeJob / GetTranscribeJob catches: `error` set, with
+ *     `transcribeStatus` absent or still QUEUED / IN_PROGRESS;
+ *   - the InvokeOnCompleted catch (this lambda threw, timed out or could not
+ *     be invoked): `error` set, with `transcribeStatus` COMPLETED, because a
+ *     COMPLETED job is the only way into InvokeOnCompleted.
+ * The error name cannot tell the catches apart: Transcribe API errors are
+ * `Transcribe.<Name>Exception`, but Step Functions' own `States.*` errors
+ * carry no service prefix and either task can raise them. The job status can.
+ */
+function pipelineFailureKind(ctx: AiProfileWriterContext): FailureKind {
+  if (!ctx.error) return 'transcribe';
+  return ctx.transcribeStatus?.TranscriptionJob?.TranscriptionJobStatus === 'COMPLETED'
+    ? 'pipeline_error'
+    : 'transcribe';
+}
+
 // ── ASR metadata prompt block ─────────────────────────────────────
 //
 // Appended to the end of the user prompt, calibration-only: it never
@@ -150,9 +203,12 @@ function buildAsrMetadataPromptBlock(transcript: TranscriptResult): string {
 }
 
 // ── Bedrock extraction ───────────────────────────────────────────
+// Never throws: a rejected call, an unparseable reply and a reply without
+// object `extracted_fields` / `confidence_scores` each come back as a
+// failure cause, and the handler writes a failed row for it.
 async function extractProfileFromTranscript(
   transcript: TranscriptResult,
-): Promise<BedrockResult> {
+): Promise<ExtractionOutcome> {
   const keywordsText =
     INDUSTRY_KEYWORDS.length > 0
       ? `\nKnown industry keywords: ${INDUSTRY_KEYWORDS.join(', ')}.`
@@ -190,17 +246,42 @@ async function extractProfileFromTranscript(
     `Transcript: ${transcript.text}` +
     (asrMetadataBlock ? `\n\n${asrMetadataBlock}` : '');
 
-  const res = await bedrock.send(
-    new ConverseCommand({
-      modelId: BEDROCK_MODEL_ID,
-      system: [{ text: systemPrompt }],
-      messages: [{ role: 'user', content: [{ text: userPrompt }] }],
-      inferenceConfig: { maxTokens: 1024 },
-    }),
-  );
+  let responseText: string;
+  try {
+    const res = await bedrock.send(
+      new ConverseCommand({
+        modelId: BEDROCK_MODEL_ID,
+        system: [{ text: systemPrompt }],
+        messages: [{ role: 'user', content: [{ text: userPrompt }] }],
+        inferenceConfig: { maxTokens: 1024 },
+      }),
+    );
+    responseText = res.output?.message?.content?.[0]?.text ?? '';
+  } catch (err) {
+    // The class name only (bounded): never the message, which can echo the
+    // prompt, and never a stack.
+    const rawName = (err as { name?: unknown } | null | undefined)?.name;
+    const errorName = typeof rawName === 'string' ? rawName.slice(0, 100) : 'unknown';
+    return { ok: false, failureKind: 'model_call', errorName };
+  }
 
-  const responseText = res.output?.message?.content?.[0]?.text ?? '';
-  return parseBedrockJsonResponse(responseText);
+  let parsed: BedrockResult;
+  try {
+    parsed = parseBedrockJsonResponse(responseText);
+  } catch {
+    return { ok: false, failureKind: 'bad_json' };
+  }
+
+  // `parseBedrockJsonResponse` only casts. A reply that parses but lacks the
+  // two objects must not become a `completed` row.
+  if (
+    !isJsonObject(parsed)
+    || !isJsonObject(parsed.extracted_fields)
+    || !isJsonObject(parsed.confidence_scores)
+  ) {
+    return { ok: false, failureKind: 'bad_shape' };
+  }
+  return { ok: true, result: parsed };
 }
 
 // ── DB helpers ───────────────────────────────────────────────────
@@ -472,12 +553,15 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
   // Neither needs DB state, and holding a Postgres transaction open across
   // two network calls (S3 + Bedrock) needlessly extends the lock window.
   // `effectiveStatus` starts as the incoming status; the guard below
-  // downgrades it to FAILED on an S3 read error or an empty transcript,
-  // mirroring voice-trust-receiver.ts's graceful degrade — the DB flow
-  // below then runs the SAME FAILED branch it always has, exactly as if
-  // Transcribe itself had reported failure. Bedrock JSON-parse failures are
-  // out of scope for this guard and still throw uncaught, same as today.
+  // downgrades it to FAILED on an S3 read error, an empty transcript, or a
+  // model / JSON / shape failure, mirroring voice-trust-receiver.ts's
+  // graceful degrade — the DB flow below then runs the SAME FAILED branch it
+  // always has, exactly as if Transcribe itself had reported failure.
+  // `failureKind` records why, on every failed row (2c).
   let effectiveStatus = normalized.status;
+  let failureKind: FailureKind | null =
+    normalized.status === 'FAILED' ? pipelineFailureKind(normalized.ctx) : null;
+  let modelErrorName: string | undefined;
   let transcriptResult: TranscriptResult | undefined;
   let extraction: BedrockResult | undefined;
 
@@ -495,6 +579,7 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
           v2: !!v2,
         }));
         effectiveStatus = 'FAILED';
+        failureKind = 'empty_transcript';
       }
     } catch {
       console.log(JSON.stringify({
@@ -503,6 +588,7 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
         v2: !!v2,
       }));
       effectiveStatus = 'FAILED';
+      failureKind = 'audio_read';
     }
 
     if (effectiveStatus === 'COMPLETED' && transcriptResult) {
@@ -518,8 +604,29 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
         v2: !!v2,
       }));
 
-      extraction = await extractProfileFromTranscript(transcriptResult);
+      const outcome = await extractProfileFromTranscript(transcriptResult);
+      if (outcome.ok) {
+        extraction = outcome.result;
+      } else {
+        effectiveStatus = 'FAILED';
+        failureKind = outcome.failureKind;
+        if (outcome.failureKind === 'model_call') modelErrorName = outcome.errorName;
+      }
     }
+  }
+
+  if (effectiveStatus === 'FAILED') {
+    // The cause only — never transcript text, extracted fields or error
+    // text. Model / JSON / shape failures no longer throw, so this line is
+    // the only log trace they leave. A model_call failure also carries the
+    // SDK error's class name (e.g. ThrottlingException), which tells
+    // throttling from an access or timeout problem; no other cause does.
+    console.log(JSON.stringify({
+      metric: 'AiProfileWriterExtractionFailed',
+      failureKind,
+      ...(failureKind === 'model_call' ? { errorName: modelErrorName ?? 'unknown' } : {}),
+      v2: !!v2,
+    }));
   }
 
   const asrMetadata = buildAsrMetadata(transcriptResult);
@@ -542,13 +649,19 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
     await setWorkerRlsContextByUserId(client, userId);
 
     if (effectiveStatus === 'FAILED') {
-      // Write failed extraction record
+      // Write failed extraction record: why it failed, the ASR metadata when
+      // known, and the voice note only when its media row exists. This is
+      // the last-resort path: a media id left by a rolled-back processor turn
+      // (its redelivery swallowed as ExecutionAlreadyExists) would otherwise
+      // fail the foreign key here too, and the worker would get no FAILED
+      // event. Never `transcript_text`. Naming `failure_kind` needs migration
+      // 115 applied before this deploys.
       const failedExtraction = await client.query<{ id: string }>(
         `INSERT INTO worker_profile_ai_extractions
-           (user_id, bedrock_model_id, status, asr_metadata)
-         VALUES ($1, $2, 'failed', $3)
+           (user_id, voice_message_media_id, bedrock_model_id, status, failure_kind, asr_metadata)
+         VALUES ($1, (SELECT m.id FROM worker_profile_media m WHERE m.id = $2), $3, 'failed', $4, $5)
          RETURNING id`,
-        [userId, BEDROCK_MODEL_ID, asrMetadataParam],
+        [userId, voiceMessageMediaId ?? null, BEDROCK_MODEL_ID, failureKind, asrMetadataParam],
       );
 
       if (v2) {
@@ -601,8 +714,9 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
     }
 
     // effectiveStatus === 'COMPLETED' — guaranteed by the guard above:
-    // reaching this point means the transcript read succeeded and the
-    // transcript was non-empty, so both are defined.
+    // reaching this point means the transcript read succeeded, the
+    // transcript was non-empty and the extraction came back well-formed, so
+    // both are defined.
     const result = extraction as BedrockResult;
     const transcript = transcriptResult as TranscriptResult;
 

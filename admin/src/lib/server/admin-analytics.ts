@@ -2,10 +2,15 @@ import type {
   AnalyticsBucket,
   AnalyticsRange,
   AnalyticsTotals,
+  BillingInboxNow,
+  BillingInboxWeekly,
   EmployerWeekly,
   FunnelDoor,
   FunnelWeeks,
   JobsActivityBucket,
+  MessageBacklogLane,
+  MessageFailuresWeekly,
+  MessageLane,
   MessageTrafficBucket,
   OnboardingCohort,
   OnboardingStalled,
@@ -14,7 +19,10 @@ import type {
   SignupsView,
   SlowestEmployer,
   StaleJob,
+  TrustExtractionWeekly,
+  VoiceExtractionWeekly,
 } from '../types';
+import { isMessageLane } from '../ops-health';
 import { getAdminDbPool } from './db';
 
 export const DEFAULT_ANALYTICS_RANGE: AnalyticsRange = '30d';
@@ -452,4 +460,224 @@ export async function getStaleJobs(): Promise<StaleJob[]> {
     [STALE_JOB_DAYS],
   );
   return result.rows.map(mapStaleJobRow);
+}
+
+// ---- 2c: ops health (migration 115) ----
+// The weeks picker reuses 2a's parseFunnelWeeks / FunnelWeeks (4 | 8 | 12).
+
+function asNullableIso(value: PgTimestamp | null): string | null {
+  return value === null ? null : asIso(value);
+}
+
+// Lane ids are a contract with migration 115: an unknown id is an error, not
+// a row the page would silently mislabel.
+function asLane(value: string): MessageLane {
+  if (!isMessageLane(value)) {
+    throw new Error(`Unexpected message lane: ${value}`);
+  }
+  return value;
+}
+
+export type MessageBacklogRow = {
+  lane: string;
+  open_under_1h: string | number;
+  open_1_24h: string | number;
+  open_24_48h: string | number;
+  stuck: string | number;
+  oldest_stuck_at: PgTimestamp | null;
+};
+
+export function mapMessageBacklogRow(row: MessageBacklogRow): MessageBacklogLane {
+  return {
+    lane: asLane(row.lane),
+    openUnder1h: asCount(row.open_under_1h),
+    open1To24h: asCount(row.open_1_24h),
+    open24To48h: asCount(row.open_24_48h),
+    stuck: asCount(row.stuck),
+    oldestStuckAt: asNullableIso(row.oldest_stuck_at),
+  };
+}
+
+export type MessageFailuresRow = {
+  week_start: PgTimestamp | null;
+  lane: string | null;
+  created: string | number;
+  gave_up: string | number;
+  delivery_failed: string | number;
+};
+
+export function mapMessageFailuresRow(row: MessageFailuresRow): MessageFailuresWeekly {
+  return {
+    weekStart: asNullableIso(row.week_start),
+    lane: row.lane === null ? null : asLane(row.lane),
+    created: asCount(row.created),
+    gaveUp: asCount(row.gave_up),
+    deliveryFailed: asCount(row.delivery_failed),
+  };
+}
+
+export type VoiceExtractionRow = {
+  week_start: PgTimestamp | null;
+  model: string | null;
+  processed: string | number;
+  failed: string | number;
+  failed_transcribe: string | number;
+  failed_empty_transcript: string | number;
+  failed_audio_read: string | number;
+  failed_model_call: string | number;
+  failed_bad_json: string | number;
+  failed_bad_shape: string | number;
+  failed_pipeline_error: string | number;
+  failed_unrecorded: string | number;
+  usable: string | number;
+  full_name_found: string | number;
+  city_found: string | number;
+  main_trade_found: string | number;
+  main_trade_other_due: string | number;
+  main_trade_other_found: string | number;
+  years_experience_found: string | number;
+  has_transportation_found: string | number;
+  availability_found: string | number;
+};
+
+export function mapVoiceExtractionRow(row: VoiceExtractionRow): VoiceExtractionWeekly {
+  return {
+    weekStart: asNullableIso(row.week_start),
+    model: row.model,
+    processed: asCount(row.processed),
+    failed: asCount(row.failed),
+    failedTranscribe: asCount(row.failed_transcribe),
+    failedEmptyTranscript: asCount(row.failed_empty_transcript),
+    failedAudioRead: asCount(row.failed_audio_read),
+    failedModelCall: asCount(row.failed_model_call),
+    failedBadJson: asCount(row.failed_bad_json),
+    failedBadShape: asCount(row.failed_bad_shape),
+    failedPipelineError: asCount(row.failed_pipeline_error),
+    failedUnrecorded: asCount(row.failed_unrecorded),
+    usable: asCount(row.usable),
+    fullNameFound: asCount(row.full_name_found),
+    cityFound: asCount(row.city_found),
+    mainTradeFound: asCount(row.main_trade_found),
+    mainTradeOtherDue: asCount(row.main_trade_other_due),
+    mainTradeOtherFound: asCount(row.main_trade_other_found),
+    yearsExperienceFound: asCount(row.years_experience_found),
+    hasTransportationFound: asCount(row.has_transportation_found),
+    availabilityFound: asCount(row.availability_found),
+  };
+}
+
+export type TrustExtractionRow = {
+  week_start: PgTimestamp | null;
+  extractor_version: string | null;
+  extractions: string | number;
+  failed: string | number;
+  not_enough_detail: string | number;
+  avg_sections: string | number | null;
+};
+
+export function mapTrustExtractionRow(row: TrustExtractionRow): TrustExtractionWeekly {
+  return {
+    weekStart: asNullableIso(row.week_start),
+    extractorVersion: row.extractor_version,
+    extractions: asCount(row.extractions),
+    failed: asCount(row.failed),
+    notEnoughDetail: asCount(row.not_enough_detail),
+    avgSections: asNullableNumber(row.avg_sections),
+  };
+}
+
+export type BillingInboxRow = {
+  week_start: PgTimestamp | null;
+  event_type: string | null;
+  received: string | number;
+  processed: string | number;
+  skipped: string | number;
+  failed: string | number;
+  retried: string | number;
+  payment_failed_invoices: string | number;
+};
+
+export function mapBillingInboxRow(row: BillingInboxRow): BillingInboxWeekly {
+  return {
+    weekStart: asNullableIso(row.week_start),
+    eventType: row.event_type,
+    received: asCount(row.received),
+    processed: asCount(row.processed),
+    skipped: asCount(row.skipped),
+    failed: asCount(row.failed),
+    retried: asCount(row.retried),
+    paymentFailedInvoices: asCount(row.payment_failed_invoices),
+  };
+}
+
+export type BillingInboxNowRow = {
+  stuck_received: string | number;
+  failed_now: string | number;
+  unresolved_older: string | number;
+  oldest_stuck_at: PgTimestamp | null;
+};
+
+export function mapBillingInboxNowRow(row: BillingInboxNowRow): BillingInboxNow {
+  return {
+    stuckReceived: asCount(row.stuck_received),
+    failedNow: asCount(row.failed_now),
+    unresolvedOlder: asCount(row.unresolved_older),
+    oldestStuckAt: asNullableIso(row.oldest_stuck_at),
+  };
+}
+
+// One row per active lane (zeros included), plus job alerts while they have
+// open rows. Open rows are under 48 h old.
+export async function getMessageBacklog(): Promise<MessageBacklogLane[]> {
+  const pool = await getAdminDbPool();
+  const result = await pool.query<MessageBacklogRow>('SELECT * FROM admin_analytics_message_backlog()');
+  return result.rows.map(mapMessageBacklogRow);
+}
+
+// Every (week, lane) pair plus the whole-window rows; ops-health.ts splits them.
+export async function getMessageFailures(weeks: FunnelWeeks): Promise<MessageFailuresWeekly[]> {
+  const pool = await getAdminDbPool();
+  const result = await pool.query<MessageFailuresRow>(
+    'SELECT * FROM admin_analytics_message_failures($1)',
+    [weeks],
+  );
+  return result.rows.map(mapMessageFailuresRow);
+}
+
+export async function getVoiceExtraction(weeks: FunnelWeeks): Promise<VoiceExtractionWeekly[]> {
+  const pool = await getAdminDbPool();
+  const result = await pool.query<VoiceExtractionRow>(
+    'SELECT * FROM admin_analytics_voice_extraction($1)',
+    [weeks],
+  );
+  return result.rows.map(mapVoiceExtractionRow);
+}
+
+export async function getTrustExtraction(weeks: FunnelWeeks): Promise<TrustExtractionWeekly[]> {
+  const pool = await getAdminDbPool();
+  const result = await pool.query<TrustExtractionRow>(
+    'SELECT * FROM admin_analytics_trust_extraction($1)',
+    [weeks],
+  );
+  return result.rows.map(mapTrustExtractionRow);
+}
+
+export async function getBillingInbox(weeks: FunnelWeeks): Promise<BillingInboxWeekly[]> {
+  const pool = await getAdminDbPool();
+  const result = await pool.query<BillingInboxRow>(
+    'SELECT * FROM admin_analytics_billing_inbox($1)',
+    [weeks],
+  );
+  return result.rows.map(mapBillingInboxRow);
+}
+
+// Exactly one row; a missing row is an error, never "nothing stuck".
+export async function getBillingInboxNow(): Promise<BillingInboxNow> {
+  const pool = await getAdminDbPool();
+  const result = await pool.query<BillingInboxNowRow>('SELECT * FROM admin_analytics_billing_inbox_now()');
+  const row = result.rows[0];
+  if (!row) {
+    throw new Error('admin_analytics_billing_inbox_now() returned no row');
+  }
+  return mapBillingInboxNowRow(row);
 }
