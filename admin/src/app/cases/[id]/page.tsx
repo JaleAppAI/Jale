@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { AdminActionsPanel } from '@/components/AdminActionsPanel';
 import { getCaseActions } from '@/lib/action-policy';
+import { caseOpenedMeta, caseStatusMeta } from '@/lib/case-aging';
 import { getAdminCase } from '@/lib/server/admin-cases';
 import { requireAdminSession } from '@/lib/server/session';
 
@@ -16,6 +17,7 @@ export default async function CaseDetailPage({ params }: { params: Promise<{ id:
   }
 
   const actions = getCaseActions(item, role);
+  const now = new Date();
 
   return (
     <main className="stack-gap">
@@ -32,6 +34,8 @@ export default async function CaseDetailPage({ params }: { params: Promise<{ id:
           <span>Case {item.caseNumber ?? item.id}</span>
           <span>Conversation {item.conversationId}</span>
           <span>Assigned to {item.assignedAdmin}</span>
+          <span>{caseOpenedMeta(item, now)}</span>
+          <span>{caseStatusMeta(item, now)}</span>
           <span>Updated {new Date(item.updatedAt).toLocaleString()}</span>
         </div>
       </section>

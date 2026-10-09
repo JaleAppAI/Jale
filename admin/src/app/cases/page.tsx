@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { caseOpenedLine, caseWaitLine } from '@/lib/case-aging';
 import { listAdminCases } from '@/lib/server/admin-cases';
 import { requireAdminSession } from '@/lib/server/session';
 
@@ -13,6 +14,7 @@ const statusTone: Record<string, string> = {
 export default async function CasesPage() {
   await requireAdminSession();
   const { rows: adminCases, totalCount } = await listAdminCases();
+  const now = new Date();
 
   return (
     <main className="stack-gap">
@@ -33,10 +35,12 @@ export default async function CasesPage() {
                 <span>Case {item.caseNumber ?? item.id}</span>
                 <span>Conversation {item.conversationId}</span>
               </span>
+              <span className="muted">{caseOpenedLine(item, now)}</span>
             </div>
             <div className="stack">
               <span className="muted">Status</span>
               <span className={`badge ${statusTone[item.status] ?? item.status}`}>{item.status.replace(/_/g, ' ')}</span>
+              <span>{caseWaitLine(item, now)}</span>
               <span className="muted">Priority {item.priority}</span>
             </div>
             <div className="stack">

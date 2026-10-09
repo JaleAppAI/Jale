@@ -1,6 +1,15 @@
 import Link from 'next/link';
+import { formatCount } from '@/lib/analytics-format';
+import {
+  casePreviewWait,
+  openCasesTotal,
+  WAIT_BUCKETS,
+  WAIT_ROWS,
+  waitingOnUsNote,
+  waitTotal,
+} from '@/lib/case-aging';
 import { countPiiRevealEvents } from '@/lib/server/admin-audit';
-import { countOpenAdminCases, listOpenAdminCases } from '@/lib/server/admin-cases';
+import { countOpenCasesByWait, listOpenAdminCases } from '@/lib/server/admin-cases';
 import {
   listIdentityLockouts,
   lockoutOutcomeBadge,
@@ -13,12 +22,14 @@ export default async function AdminDashboardPage() {
   await requireAdminSession();
   // Each tile has its own query: filtering a 200-row page undercounted open
   // cases and reveals once the tables outgrew it (roadmap audit finding 7).
-  const [openCaseCount, openCases, piiRevealCount, lockouts] = await Promise.all([
-    countOpenAdminCases(),
+  // One wave of four: db.ts caps the shared pool at max: 5.
+  const [openByWait, openCases, piiRevealCount, lockouts] = await Promise.all([
+    countOpenCasesByWait(),
     listOpenAdminCases(3),
     countPiiRevealEvents(),
     listIdentityLockouts(),
   ]);
+  const now = new Date();
 
   const lockedOut = lockouts.filter((item) => item.kind === 'lockout');
   const stuckCount = lockouts.length - lockedOut.length;
@@ -33,8 +44,8 @@ export default async function AdminDashboardPage() {
       <section className="grid three">
         <article className="card kpi">
           <span className="muted">Open cases</span>
-          <strong>{openCaseCount}</strong>
-          <span>Need review</span>
+          <strong>{openCasesTotal(openByWait)}</strong>
+          <span>{waitingOnUsNote(openByWait)}</span>
         </article>
         <article className="card kpi">
           <span className="muted">Locked out ({LOCKOUT_WINDOW_DAYS} days)</span>
@@ -47,6 +58,39 @@ export default async function AdminDashboardPage() {
           <span>Reveal events</span>
         </article>
       </section>
+
+      <article className="card cohort-card">
+        <div className="chart-head" style={{ marginBottom: 8 }}>
+          <div>
+            <h2>Open cases by wait</h2>
+            <p>Time in the current status · a reply from the worker does not change it</p>
+          </div>
+        </div>
+        <div className="table-scroll" role="region" aria-label="Open cases by wait table" tabIndex={0}>
+          <table className="data-table cohort-table">
+            <thead>
+              <tr>
+                <td />
+                {WAIT_BUCKETS.map((bucket) => (
+                  <th key={bucket.id} className="num" scope="col">{bucket.label}</th>
+                ))}
+                <th className="num" scope="col">Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {WAIT_ROWS.map((row) => (
+                <tr key={row.id}>
+                  <th scope="row">{row.label}</th>
+                  {WAIT_BUCKETS.map((bucket) => (
+                    <td key={bucket.id} className="num">{formatCount(openByWait[row.id][bucket.id])}</td>
+                  ))}
+                  <td className="num">{formatCount(waitTotal(openByWait[row.id]))}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </article>
 
       <section className="grid two">
         <article className="card">
@@ -61,6 +105,7 @@ export default async function AdminDashboardPage() {
                   <strong>{item.summary}</strong>
                   <span className="muted">{item.workerName} · {item.maskedPhone}</span>
                   <span className={`badge ${item.status}`}>{item.status}</span>
+                  <span className="muted">{casePreviewWait(item, now)}</span>
                 </div>
                 <div className="stack">
                   <span className="muted">Case type</span>

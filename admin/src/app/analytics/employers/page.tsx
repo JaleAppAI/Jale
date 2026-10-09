@@ -2,12 +2,15 @@ import Link from 'next/link';
 import { requireAdminSession } from '@/lib/server/session';
 import {
   STALE_JOB_DAYS,
+  getDigestAdoption,
+  getDigestSends,
   getEmployerWeekly,
   getSlowestEmployers,
   getStaleJobs,
   parseFunnelWeeks,
 } from '@/lib/server/admin-analytics';
 import { bucketLabel } from '@/lib/analytics-format';
+import { splitDigestSends } from '@/lib/digest';
 import {
   employersHref,
   firstResponseNote,
@@ -22,6 +25,7 @@ import {
 } from '@/lib/employer-health';
 import type { FunnelWeeks } from '@/lib/types';
 import { AnalyticsTabs } from '@/components/analytics/AnalyticsTabs';
+import { DigestEmails } from '@/components/analytics/DigestEmails';
 import { EmployerWeeklyTable } from '@/components/analytics/EmployerWeeklyTable';
 import { KpiTile } from '@/components/analytics/KpiTile';
 import { SlowestEmployers } from '@/components/analytics/SlowestEmployers';
@@ -45,14 +49,16 @@ export default async function EmployersPage({
   const weeks = parseFunnelWeeks(weeksParam);
   const now = new Date();
 
-  // One wave of three queries: db.ts caps the shared pool at max: 5.
+  // Two waves, the second after the first: db.ts caps the shared pool at max: 5.
   const [weeklyRows, slowest, staleJobs] = await Promise.all([
     getEmployerWeekly(weeks),
     getSlowestEmployers(weeks),
     getStaleJobs(),
   ]);
+  const [adoption, digestRows] = await Promise.all([getDigestAdoption(), getDigestSends(weeks)]);
 
   const { weekly, summary } = splitEmployerWeekly(weeklyRows);
+  const digest = splitDigestSends(digestRows);
   const labels = weekly.map((week) => bucketLabel(week.weekStart, '90d'));
   const lastWeek = weekly[weekly.length - 1];
   // A week with nothing to time has no median (null): the chart leaves a gap.
@@ -118,6 +124,8 @@ export default async function EmployersPage({
 
       <StaleJobsList rows={staleJobs} days={STALE_JOB_DAYS} />
 
+      <DigestEmails adoption={adoption} sends={digest} now={now} />
+
       <p className="muted" style={{ fontSize: '0.78rem' }}>
         What counts as an employer action: a message to the worker, a details request, a hire with a recorded
         time, or a status change to contacted, details requested, hired or not interested. Status changes are
@@ -130,7 +138,14 @@ export default async function EmployersPage({
         worker counts once, and conversations closed without a reply are left out. The unanswered shares count
         only applications and worker messages at least 7 days old. Weeks marked settling are less than 14 days
         old, so their unanswered counts are not final; a late answer can still change an older week too. Deleted
-        jobs drop out of every figure. Test employer accounts are left out.
+        jobs drop out of every figure. Test employer accounts are left out. Applicant digest emails launched on
+        Aug 23, 2026, so earlier weeks are empty. An employer with the digest on is emailed at most once a day,
+        only on days with new applicants, and only when they have an email address. Digest emails count by the
+        week they were queued. Failed means the send gave up after 5 attempts; Unknown means the send timed out
+        and may have arrived (it is never retried); Still sending means queued or waiting to retry. Bounces and
+        spam complaints switch the digest off for that employer but do not show as failures. Employers reached
+        counts employers with at least one digest sent. Who has the digest on, and their email address, is as of
+        now; digest emails of deleted employers drop out.
       </p>
     </main>
   );

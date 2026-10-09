@@ -1204,3 +1204,27 @@ p {
     text-align: left;
   }
 }
+
+/* ── Analytics: admin queues (2d) ──────────────────────────── */
+/* Reuses 2a-2c's .cohort-card, .table-scroll regions, .cohort-table, td.wrap
+   (operator reset reasons) and .cohort-settling (the "so far" badge). */
+
+/* A line under a table: the web door's start-over note, the bulk runs left
+   out of the operator resets. A long reason wraps anywhere. */
+.restarts-note {
+  margin: 10px 0 0;
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
+/* A reason is up to 80 characters: room for about four words per line, also
+   on phones (after 2b's 7 rem phone floor for td.wrap). */
+.cohort-table td.restarts-reason {
+  min-width: 14rem;
+}
+
+/* "Digest on for 12% of employers (34 of 280) · ..." above the digest table. */
+.digest-adoption {
+  margin: 0 0 10px;
+  font-size: 0.85rem;
+}

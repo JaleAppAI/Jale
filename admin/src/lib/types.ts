@@ -24,6 +24,8 @@ export type AdminCase = {
   assignedAdmin: string;
   createdAt: string;
   updatedAt: string;
+  // When the case entered its current status (migration 117), ISO.
+  statusChangedAt: string;
   lastMessage: string;
   maskedPhone: string;
   maskedEmail?: string;
@@ -339,3 +341,65 @@ export type BillingInboxNow = {
   unresolvedOlder: number;
   oldestStuckAt: string | null;
 };
+
+// Roadmap 2d: admin queues (migration 117). Start over and back by
+// onboarding step, operator resets, and the applicant digest email.
+export type RestartFigures = {
+  // Distinct workers who were at the step in the period: they arrived there by
+  // any move other than start over, back or a voice-note retry, or they started
+  // over or went back from it. restartWorkers and backWorkers never exceed it.
+  reached: number;
+  restartWorkers: number;
+  restartPresses: number;
+  backWorkers: number;
+  backPresses: number;
+};
+
+// One row of admin_analytics_onboarding_restarts: a (week, door, step) with
+// any count. The step is the one the worker left; stepKey null = all steps
+// (workers distinct across steps, presses summed). weekStart null = the whole
+// window (workers distinct across it); 'all' is computed in SQL.
+export type OnboardingRestart = RestartFigures & {
+  weekStart: string | null;
+  door: FunnelDoor;
+  stepKey: string | null;
+};
+
+// One row of admin_analytics_operator_resets. bulk false: one (week, masked
+// reason) group, runStartedAt null. bulk true: one bulk run (10+ workers reset
+// with the same reason within an hour), left out of the counts; runStartedAt
+// is its first in-window reset (a run that began before the window reports
+// only its in-window part) and weekStart that reset's week.
+export type OperatorReset = {
+  weekStart: string;
+  reason: string;
+  workers: number;
+  resets: number;
+  bulk: boolean;
+  runStartedAt: string | null;
+};
+
+// admin_analytics_digest_adoption(), right now: non-test employers; of them,
+// digest on; of those, an email address the digest producer would send to.
+export type DigestAdoption = {
+  employers: number;
+  digestOn: number;
+  digestOnWithEmail: number;
+};
+
+export type DigestSendFigures = {
+  emailed: number;
+  sent: number;
+  // Gave up: failed on the 5th attempt.
+  failed: number;
+  // send_unknown: the send timed out; never retried, it may have arrived.
+  unknown: number;
+  // Pending, or failed with fewer than 5 attempts (it will be retried).
+  inProgress: number;
+  // Distinct employers with a sent digest (distinct across the window on the window row).
+  employersReached: number;
+};
+
+// One row of admin_analytics_digest_sends: every week of the window
+// (zero-filled by SQL), plus the whole window when weekStart is null.
+export type DigestSendsWeekly = DigestSendFigures & { weekStart: string | null };

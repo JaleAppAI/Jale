@@ -4,6 +4,8 @@ import type {
   AnalyticsTotals,
   BillingInboxNow,
   BillingInboxWeekly,
+  DigestAdoption,
+  DigestSendsWeekly,
   EmployerWeekly,
   FunnelDoor,
   FunnelWeeks,
@@ -13,7 +15,9 @@ import type {
   MessageLane,
   MessageTrafficBucket,
   OnboardingCohort,
+  OnboardingRestart,
   OnboardingStalled,
+  OperatorReset,
   PayingEmployer,
   SignupBucket,
   SignupsView,
@@ -680,4 +684,135 @@ export async function getBillingInboxNow(): Promise<BillingInboxNow> {
     throw new Error('admin_analytics_billing_inbox_now() returned no row');
   }
   return mapBillingInboxNowRow(row);
+}
+
+// ---- 2d: admin queues (migration 117) ----
+// The weeks picker reuses 2a's parseFunnelWeeks / FunnelWeeks (4 | 8 | 12).
+
+export type OnboardingRestartRow = {
+  week_start: PgTimestamp | null;
+  door: string;
+  step_key: string | null;
+  reached: string | number;
+  restart_workers: string | number;
+  restart_presses: string | number;
+  back_workers: string | number;
+  back_presses: string | number;
+};
+
+// Doors are a contract with migration 117, which computes 'all' itself: an
+// unknown door is an error, never a row the page would silently drop.
+export function mapOnboardingRestartRow(row: OnboardingRestartRow): OnboardingRestart {
+  if (row.door !== 'all' && row.door !== 'whatsapp' && row.door !== 'web') {
+    throw new Error(`Unexpected restarts door: ${row.door}`);
+  }
+  return {
+    weekStart: asNullableIso(row.week_start),
+    door: row.door,
+    stepKey: row.step_key,
+    reached: asCount(row.reached),
+    restartWorkers: asCount(row.restart_workers),
+    restartPresses: asCount(row.restart_presses),
+    backWorkers: asCount(row.back_workers),
+    backPresses: asCount(row.back_presses),
+  };
+}
+
+export type OperatorResetRow = {
+  week_start: PgTimestamp;
+  reason: string;
+  workers: string | number;
+  resets: string | number;
+  bulk: boolean;
+  run_started_at: PgTimestamp | null;
+};
+
+export function mapOperatorResetRow(row: OperatorResetRow): OperatorReset {
+  return {
+    weekStart: asIso(row.week_start),
+    reason: row.reason,
+    workers: asCount(row.workers),
+    resets: asCount(row.resets),
+    bulk: row.bulk,
+    runStartedAt: asNullableIso(row.run_started_at),
+  };
+}
+
+export type DigestAdoptionRow = {
+  employers: string | number;
+  digest_on: string | number;
+  digest_on_with_email: string | number;
+};
+
+export function mapDigestAdoptionRow(row: DigestAdoptionRow): DigestAdoption {
+  return {
+    employers: asCount(row.employers),
+    digestOn: asCount(row.digest_on),
+    digestOnWithEmail: asCount(row.digest_on_with_email),
+  };
+}
+
+export type DigestSendsRow = {
+  week_start: PgTimestamp | null;
+  emailed: string | number;
+  sent: string | number;
+  failed: string | number;
+  unknown: string | number;
+  in_progress: string | number;
+  employers_reached: string | number;
+};
+
+export function mapDigestSendsRow(row: DigestSendsRow): DigestSendsWeekly {
+  return {
+    weekStart: asNullableIso(row.week_start),
+    emailed: asCount(row.emailed),
+    sent: asCount(row.sent),
+    failed: asCount(row.failed),
+    unknown: asCount(row.unknown),
+    inProgress: asCount(row.in_progress),
+    employersReached: asCount(row.employers_reached),
+  };
+}
+
+// Rows only where something happened, per (week, door, step) and per (week,
+// door) for all steps (step_key NULL), plus the same for the whole window;
+// restarts.ts splits them by door and step and zero-fills the weeks.
+export async function getOnboardingRestarts(weeks: FunnelWeeks): Promise<OnboardingRestart[]> {
+  const pool = await getAdminDbPool();
+  const result = await pool.query<OnboardingRestartRow>(
+    'SELECT * FROM admin_analytics_onboarding_restarts($1)',
+    [weeks],
+  );
+  return result.rows.map(mapOnboardingRestartRow);
+}
+
+// Counted (week, reason) groups, then one row per bulk run.
+export async function getOperatorResets(weeks: FunnelWeeks): Promise<OperatorReset[]> {
+  const pool = await getAdminDbPool();
+  const result = await pool.query<OperatorResetRow>(
+    'SELECT * FROM admin_analytics_operator_resets($1)',
+    [weeks],
+  );
+  return result.rows.map(mapOperatorResetRow);
+}
+
+// Exactly one row; a missing row is an error, never "digest on for 0%".
+export async function getDigestAdoption(): Promise<DigestAdoption> {
+  const pool = await getAdminDbPool();
+  const result = await pool.query<DigestAdoptionRow>('SELECT * FROM admin_analytics_digest_adoption()');
+  const row = result.rows[0];
+  if (!row) {
+    throw new Error('admin_analytics_digest_adoption() returned no row');
+  }
+  return mapDigestAdoptionRow(row);
+}
+
+// Every week of the window (zero-filled by SQL) plus the whole-window row.
+export async function getDigestSends(weeks: FunnelWeeks): Promise<DigestSendsWeekly[]> {
+  const pool = await getAdminDbPool();
+  const result = await pool.query<DigestSendsRow>(
+    'SELECT * FROM admin_analytics_digest_sends($1)',
+    [weeks],
+  );
+  return result.rows.map(mapDigestSendsRow);
 }
