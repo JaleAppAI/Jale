@@ -12,6 +12,7 @@ const sourceFiles = [
   'src/lib/server/admin-analytics.ts',
   'src/lib/analytics-format.ts',
   'src/lib/funnel.ts',
+  'src/lib/employer-health.ts',
 ].map((relativePath) => resolve(root, relativePath));
 
 for (const sourcePath of sourceFiles) {
@@ -53,6 +54,7 @@ program.emit(undefined, (fileName, data) => {
 
 const analytics = await import(pathToFileURL(resolve(outDir, 'admin-analytics.mjs')));
 const funnel = await import(pathToFileURL(resolve(outDir, 'funnel.mjs')));
+const health = await import(pathToFileURL(resolve(outDir, 'employer-health.mjs')));
 
 // ---- parseAnalyticsRange ----
 assert.equal(analytics.parseAnalyticsRange('7d'), '7d');
@@ -271,5 +273,174 @@ assert.equal(funnel.shareShade(0, 10), 'rgba(1, 121, 255, 0.06)');
 assert.equal(funnel.shareShade(10, 10), 'rgba(1, 121, 255, 0.36)');
 assert.equal(funnel.funnelsHref(8, 'all'), '/analytics/funnels?weeks=8');
 assert.equal(funnel.funnelsHref(4, 'web'), '/analytics/funnels?weeks=4&door=web');
+
+// ---- 2b: employer health ----
+assert.equal(analytics.STALE_JOB_DAYS, 14);
+assert.equal(analytics.SLOWEST_EMPLOYERS_LIMIT, 10);
+assert.equal(typeof analytics.getEmployerWeekly, 'function');
+assert.equal(typeof analytics.getSlowestEmployers, 'function');
+assert.equal(typeof analytics.getStaleJobs, 'function');
+
+// pg returns BIGINT and NUMERIC as strings, INTEGER as a number, TIMESTAMPTZ as
+// a Date; SQL NULL must stay null (never 0, never NaN).
+const employerWeekRow = {
+  week_start: new Date('2026-09-28T00:00:00.000Z'),
+  applications: '12', answered: '9', answered_untimed: '1', unanswered_7d: '2', applications_due: '10',
+  first_response_p50_hours: '5.2', first_response_p75_hours: '74.4',
+  worker_turns: '7', turns_unanswered_7d: '1', turns_due: '4', reply_p50_hours: '1.5', reply_p75_hours: '50.0',
+  hires: '2', hires_approximate: '1', time_to_hire_p50_days: '3.1', time_to_hire_p75_days: '4.0',
+  active_jobs: null,
+};
+const employerWeek = {
+  weekStart: '2026-09-28T00:00:00.000Z',
+  applications: 12, answered: 9, answeredUntimed: 1, unanswered7d: 2, applicationsDue: 10,
+  firstResponseP50Hours: 5.2, firstResponseP75Hours: 74.4,
+  workerTurns: 7, turnsUnanswered7d: 1, turnsDue: 4, replyP50Hours: 1.5, replyP75Hours: 50,
+  hires: 2, hiresApproximate: 1, timeToHireP50Days: 3.1, timeToHireP75Days: 4,
+  activeJobs: null,
+};
+assert.deepEqual(analytics.mapEmployerWeeklyRow(employerWeekRow), employerWeek);
+const employerSummaryRow = analytics.mapEmployerWeeklyRow({
+  ...employerWeekRow,
+  week_start: null,
+  first_response_p50_hours: null, first_response_p75_hours: null,
+  reply_p50_hours: null, reply_p75_hours: null,
+  time_to_hire_p50_days: null, time_to_hire_p75_days: null,
+  active_jobs: '6',
+});
+assert.equal(employerSummaryRow.weekStart, null, 'the whole-window row keeps its NULL week');
+assert.equal(employerSummaryRow.firstResponseP50Hours, null, 'a NULL percentile stays null');
+assert.equal(employerSummaryRow.timeToHireP75Days, null);
+assert.equal(employerSummaryRow.activeJobs, 6);
+
+assert.deepEqual(
+  analytics.mapSlowestEmployerRow({
+    employer_id: '7f3a9c2e-0000-4000-8000-000000000001', display_name: 'Empleador',
+    applications: '5', unanswered_7d: '3', first_response_p50_hours: null, active_jobs: '2',
+  }),
+  {
+    employerId: '7f3a9c2e-0000-4000-8000-000000000001', displayName: 'Empleador',
+    applications: 5, unanswered7d: 3, firstResponseP50Hours: null, activeJobs: 2,
+  },
+);
+assert.equal(
+  analytics.mapSlowestEmployerRow({
+    employer_id: '7f3a9c2e-0000-4000-8000-000000000002', display_name: 'Pinturas MX',
+    applications: '4', unanswered_7d: '0', first_response_p50_hours: '12.5', active_jobs: '1',
+  }).firstResponseP50Hours,
+  12.5,
+);
+const staleJob = analytics.mapStaleJobRow({
+  job_id: '0b1c2d3e-0000-4000-8000-000000000003', title: 'Ayudante de pintor',
+  employer_id: '7f3a9c2e-0000-4000-8000-000000000002', display_name: 'Pinturas MX',
+  posted_at: new Date('2026-09-01T12:00:00.000Z'), last_employer_action_at: new Date('2026-09-10T08:00:00.000Z'),
+  days_idle: 28, waiting_applicants: '4', last_application_at: null,
+});
+assert.deepEqual(
+  staleJob,
+  {
+    jobId: '0b1c2d3e-0000-4000-8000-000000000003', title: 'Ayudante de pintor',
+    employerId: '7f3a9c2e-0000-4000-8000-000000000002', displayName: 'Pinturas MX',
+    postedAt: '2026-09-01T12:00:00.000Z', lastEmployerActionAt: '2026-09-10T08:00:00.000Z',
+    daysIdle: 28, waitingApplicants: 4, lastApplicationAt: null,
+  },
+);
+const staleSincePosting = analytics.mapStaleJobRow({
+  job_id: '0b1c2d3e-0000-4000-8000-000000000004', title: 'Albañil',
+  employer_id: '7f3a9c2e-0000-4000-8000-000000000002', display_name: 'Pinturas MX',
+  posted_at: new Date('2026-09-01T12:00:00.000Z'), last_employer_action_at: new Date('2026-09-01T12:00:00.000Z'),
+  days_idle: 37, waiting_applicants: '1', last_application_at: new Date('2026-10-01T09:30:00.000Z'),
+});
+assert.equal(staleSincePosting.lastApplicationAt, '2026-10-01T09:30:00.000Z');
+assert.equal(health.isIdleSincePosting(staleSincePosting), true, 'no recorded action: the clock started at posting');
+assert.equal(health.isIdleSincePosting(staleJob), false);
+
+// Durations: under 48 hours in hours, otherwise days; one decimal; NULL is a dash.
+assert.equal(health.formatDuration(null), '—');
+assert.equal(health.formatDuration(0), '0.0 h');
+assert.equal(health.formatDuration(5.2), '5.2 h');
+assert.equal(health.formatDuration(47.9), '47.9 h', 'just under 48 hours stays in hours');
+assert.equal(health.formatDuration(48), '2.0 d', '48 hours switches to days');
+assert.equal(health.formatDuration(74.4), '3.1 d');
+assert.equal(health.formatHours(74.4), '74.4 h', 'chart end labels stay in the axis unit');
+assert.equal(health.formatHours(null), '—');
+assert.equal(health.formatDays(null), '—');
+assert.equal(health.formatDays(0.5), '0.5 d', 'time to hire is always in days');
+assert.equal(health.formatDays(3.1), '3.1 d');
+assert.equal(health.formatDurationPair(5.2, 74.4), '5.2 h / 3.1 d');
+assert.equal(health.formatDurationPair(null, null), '—', 'no timed answers: one dash, not "— / —"');
+
+// Employer label: the business name, or the fallback with the id's first 4 characters.
+assert.equal(health.employerLabel('Pinturas MX', '7f3a9c2e-0000-4000-8000-000000000002'), 'Pinturas MX');
+assert.equal(health.employerLabel('Empleador', '7f3a9c2e-0000-4000-8000-000000000001'), 'Empleador · 7f3a');
+
+// The weekly function's NULL-week row is the window summary; weeks come out oldest first.
+const olderEmployerWeek = { ...employerWeek, weekStart: '2026-09-21T00:00:00.000Z', hiresApproximate: 0 };
+const employerSplit = health.splitEmployerWeekly([
+  { ...employerWeek, weekStart: null, applications: 30, activeJobs: 6 },
+  employerWeek,
+  olderEmployerWeek,
+]);
+assert.deepEqual(
+  employerSplit.weekly.map((week) => week.weekStart),
+  ['2026-09-21T00:00:00.000Z', '2026-09-28T00:00:00.000Z'],
+  'week rows oldest first, without the summary row',
+);
+assert.equal('activeJobs' in employerSplit.weekly[0], false, 'week rows carry no active-jobs figure');
+assert.equal(employerSplit.summary.applications, 30, 'the summary is the SQL window row, not a sum of weeks');
+assert.equal(employerSplit.summary.activeJobs, 6);
+assert.equal('weekStart' in employerSplit.summary, false);
+const emptySplit = health.splitEmployerWeekly([]);
+assert.deepEqual(emptySplit.weekly, []);
+assert.equal(emptySplit.summary.applications, 0, 'a missing summary row reads as zero');
+assert.equal(emptySplit.summary.firstResponseP50Hours, null);
+assert.equal(emptySplit.summary.activeJobs, 0);
+
+// Settling: now < week_start + 14 days.
+const healthNow = new Date('2026-10-08T15:00:00.000Z'); // a Thursday
+assert.equal(health.isWeekSettling('2026-10-05T00:00:00.000Z', healthNow), true, 'the current week');
+assert.equal(health.isWeekSettling('2026-09-28T00:00:00.000Z', healthNow), true, 'last week: settles on Oct 12');
+assert.equal(health.isWeekSettling('2026-09-21T00:00:00.000Z', healthNow), false, 'settled on Oct 5');
+assert.equal(
+  health.isWeekSettling('2026-09-28T00:00:00.000Z', new Date('2026-10-12T00:00:00.000Z')),
+  false,
+  'exactly 14 days after the week starts it has settled',
+);
+
+const employerTableRows = health.weeklyTableRows([olderEmployerWeek, employerWeek], healthNow);
+assert.deepEqual(employerTableRows.map((row) => row.label), ['Week of Sep 28', 'Week of Sep 21'], 'newest first');
+assert.deepEqual(employerTableRows.map((row) => row.settling), [true, false]);
+assert.deepEqual(employerTableRows.map((row) => row.approximate), [true, false], 'approx. only where a hire is approximate');
+assert.equal(employerTableRows[0].applications, 12, 'table rows keep the week figures');
+
+// Tile notes; every share is zero-safe.
+const zeroFigures = emptySplit.summary;
+assert.equal(health.firstResponseNote(employerWeek), '20% unanswered after 7 days', '2 of the 10 applications 7+ days old');
+assert.equal(health.firstResponseNote({ ...zeroFigures, applicationsDue: 5 }), '0% unanswered after 7 days');
+assert.equal(health.firstResponseNote({ ...zeroFigures, applications: 3 }), '— unanswered after 7 days', 'only young applications: no share yet');
+assert.equal(health.firstResponseNote(zeroFigures), '— unanswered after 7 days', 'no applications, no share');
+assert.equal(health.replyNote(employerWeek), '25% of worker messages unanswered', '1 of the 4 turns 7+ days old');
+assert.equal(health.replyNote({ ...zeroFigures, turnsDue: 3 }), '0% of worker messages unanswered');
+assert.equal(health.replyNote({ ...zeroFigures, workerTurns: 2 }), '— of worker messages unanswered', 'only young turns: no share yet');
+assert.equal(health.answeredLabel(employerWeek), '9 · 1 untimed');
+assert.equal(health.answeredLabel({ ...zeroFigures, answered: 1200 }), '1,200', 'no untimed part when every answer is timed');
+assert.equal(health.hiresNote(employerWeek), '2 hires · 1 approximate');
+assert.equal(health.hiresNote({ ...zeroFigures, hires: 3 }), '3 hires', 'no approximate part when none are approximate');
+assert.equal(health.hiresNote({ ...zeroFigures, hires: 1 }), '1 hire');
+assert.equal(health.hiresNote(zeroFigures), '0 hires');
+assert.equal(health.staleJobsNote(6), 'of 6 active jobs');
+assert.equal(health.staleJobsNote(1), 'of 1 active job');
+assert.equal(health.staleJobsNote(0), 'of 0 active jobs');
+
+// Stale jobs: the first 25, then "and N more".
+assert.equal(health.STALE_JOBS_SHOWN, 25);
+const thirtyJobs = Array.from({ length: 30 }, (_, i) => i);
+assert.deepEqual(health.firstWithRest(thirtyJobs, 25), { shown: thirtyJobs.slice(0, 25), more: 5 });
+assert.deepEqual(health.firstWithRest([1, 2], 25), { shown: [1, 2], more: 0 });
+
+assert.equal(health.formatDay(null), '—');
+assert.equal(health.formatDay('2026-09-01T23:30:00.000Z'), 'Sep 1, 2026', 'calendar day in UTC');
+assert.equal(health.employersHref(4), '/analytics/employers?weeks=4');
+assert.equal(health.employersHref(8), '/analytics/employers?weeks=8');
 
 console.log('check-analytics-helpers: all assertions passed');

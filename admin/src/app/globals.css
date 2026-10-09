@@ -1051,3 +1051,74 @@ p {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* ── Analytics: employer health (2b) ───────────────────────── */
+/* Reuses 2a's .kpi-strip.funnel-kpis, .cohort-card, .table-scroll,
+   .cohort-table and .cohort-settling. */
+.employer-approx {
+  margin-left: 6px;
+  color: var(--jale-warning);
+  font-size: 0.7rem;
+  font-weight: 650;
+}
+
+.employer-more {
+  margin: 10px 0 0;
+  font-size: 0.82rem;
+}
+
+/* "since posting" under an Idle value. */
+.employer-note {
+  display: block;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 650;
+}
+
+/* Free text (job titles, company names) wraps instead of widening the table,
+   so the columns after it stay in reach. */
+.cohort-table td.wrap {
+  min-width: 10rem;
+  max-width: 18rem;
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+
+/* Scroll regions take keyboard focus (tabIndex 0); show where the focus is. */
+.table-scroll:focus-visible {
+  outline: 2px solid var(--jale-blue-500);
+  outline-offset: 2px;
+}
+
+/* Three tabs fit at 375 px; on narrower phones they wrap instead of overflowing. */
+.analytics-tabs {
+  flex-wrap: wrap;
+}
+
+@media (max-width: 640px) {
+  .analytics-tabs .button {
+    width: auto;
+    flex: 1 1 auto;
+  }
+
+  /* Narrow enough that the column after a long title (Idle, Applications)
+     starts inside the first screen of the scroll box; a long word still
+     widens its column rather than breaking mid-word. */
+  .cohort-table td.wrap {
+    min-width: 7rem;
+    max-width: none;
+  }
+}
+
+/* A chart's open "Table" twin scrolls inside its card (the table sits in a
+   .table-scroll) instead of widening the page at phone width: the card, the
+   tool row and the twin may all be narrower than the table. */
+.chart-card,
+.chart-table {
+  min-width: 0;
+}
+
+.chart-tools,
+.chart-table {
+  max-width: 100%;
+}

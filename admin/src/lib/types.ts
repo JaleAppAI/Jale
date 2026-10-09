@@ -168,3 +168,64 @@ export type FunnelStage = {
 };
 
 export type StalledStep = { stepKey: string; label: string; workers: number };
+
+// Roadmap 2b: employer health (migration 114). Durations are hours (first
+// response, reply) or days (time to hire); null = nothing to time (SQL NULL).
+export type EmployerHealthFigures = {
+  applications: number;
+  answered: number;
+  answeredUntimed: number;
+  unanswered7d: number;
+  // Applications applied 7+ days ago: the denominator of the unanswered share.
+  applicationsDue: number;
+  firstResponseP50Hours: number | null;
+  firstResponseP75Hours: number | null;
+  workerTurns: number;
+  turnsUnanswered7d: number;
+  // Worker turns started 7+ days ago (closed-with-no-reply excluded).
+  turnsDue: number;
+  replyP50Hours: number | null;
+  replyP75Hours: number | null;
+  hires: number;
+  hiresApproximate: number;
+  timeToHireP50Days: number | null;
+  timeToHireP75Days: number | null;
+};
+
+// One row of admin_analytics_employer_weekly: a week, or the whole window
+// when weekStart is null (activeJobs is set on that row only).
+export type EmployerWeekly = EmployerHealthFigures & {
+  weekStart: string | null;
+  activeJobs: number | null;
+};
+
+export type EmployerWeek = EmployerHealthFigures & { weekStart: string };
+
+export type EmployerHealthSummary = EmployerHealthFigures & { activeJobs: number };
+
+export type EmployerWeekTableRow = EmployerWeek & {
+  label: string;
+  settling: boolean;
+  approximate: boolean;
+};
+
+export type SlowestEmployer = {
+  employerId: string;
+  displayName: string;
+  applications: number;
+  unanswered7d: number;
+  firstResponseP50Hours: number | null;
+  activeJobs: number;
+};
+
+export type StaleJob = {
+  jobId: string;
+  title: string;
+  employerId: string;
+  displayName: string;
+  postedAt: string;
+  lastEmployerActionAt: string;
+  daysIdle: number;
+  waitingApplicants: number;
+  lastApplicationAt: string | null;
+};

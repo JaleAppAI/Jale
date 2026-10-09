@@ -135,6 +135,7 @@ describe('database migrations', () => {
       '101',
       '102',
       '113',
+      '114',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -1195,6 +1196,173 @@ describe('database migrations', () => {
     expect(sql.match(/aclexplode\(/g)).toHaveLength(1);
     // A NULL proconfig (no pinned search_path) must fail the check, not skip it.
     expect(sql).toContain("NOT COALESCE(fn.proconfig @> ARRAY['search_path=pg_catalog, pg_temp'], false)");
+  });
+
+  // Roadmap 2b: employer health is three gated definers plus the one gated
+  // read policy job_conversations was missing. On RDS the migration's own DO
+  // block is the only runtime check; these literals pin that it stays strict.
+  it('114 adds the employer health definers and the job_conversations gate without exposing people', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '114_admin_employer_health.sql'), 'utf8');
+    // The code without comments, for what it may never read or return.
+    const code = sql.replace(/--[^\n]*/g, '');
+
+    expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+    expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+
+    // Exactly one new policy, 089's gate on job_conversations, created after
+    // the lock timeout (099/102's pattern). Nothing else is opened or dropped.
+    const iBegin = sql.indexOf('BEGIN;');
+    const iLock = sql.indexOf("SET LOCAL lock_timeout = '5s';");
+    const iPolicy = sql.indexOf('CREATE POLICY');
+    expect(iLock).toBeGreaterThan(iBegin);
+    expect(iPolicy).toBeGreaterThan(iLock);
+    expect(sql.match(/CREATE POLICY/g)).toHaveLength(1);
+    expect(sql).toMatch(
+      /CREATE POLICY job_conversations_admin_analytics_read\s+ON public\.job_conversations FOR SELECT\s+TO jale_admin\s+USING \(current_setting\('app\.admin_analytics_read', true\) = 'on'\);/,
+    );
+    expect(sql).not.toMatch(/CREATE INDEX|GRANT\s+SELECT|ALTER TABLE|DROP (FUNCTION|TABLE|TRIGGER|POLICY|INDEX)/);
+
+    // Three definers with the signatures the console calls, each hardened per 089/098.
+    for (const signature of [
+      'admin_analytics_employer_weekly(p_weeks INTEGER)',
+      'admin_analytics_slowest_employers(p_weeks INTEGER, p_limit INTEGER DEFAULT 10)',
+      'admin_analytics_stale_jobs(p_days INTEGER DEFAULT 14)',
+    ]) {
+      expect(sql).toContain(`CREATE FUNCTION public.${signature}\nRETURNS TABLE (`);
+    }
+    expect(sql.match(/^CREATE FUNCTION/gm)).toHaveLength(3);
+    expect(sql.match(/^SECURITY DEFINER$/gm)).toHaveLength(3);
+    expect(sql.match(/^SET search_path = pg_catalog, pg_temp$/gm)).toHaveLength(3);
+    expect(sql.match(/PERFORM set_config\('app\.admin_analytics_read', 'on', true\);/g)).toHaveLength(3);
+    for (const fn of [
+      'admin_analytics_employer_weekly(INTEGER)',
+      'admin_analytics_slowest_employers(INTEGER, INTEGER)',
+      'admin_analytics_stale_jobs(INTEGER)',
+    ]) {
+      expect(sql).toContain(`ALTER FUNCTION public.${fn} OWNER TO jale_admin;`);
+      expect(sql).toContain(`REVOKE ALL ON FUNCTION public.${fn} FROM PUBLIC;`);
+      expect(sql).toContain(`GRANT EXECUTE ON FUNCTION public.${fn} TO jale_admin_console;`);
+    }
+    // The three EXECUTE grants are the only statements naming the console role.
+    expect(sql.match(/TO jale_admin_console/g)).toHaveLength(3);
+
+    // Each function validates every input before the gate opens.
+    for (const [fn, errors] of [
+      ['admin_analytics_employer_weekly', ['admin_analytics_invalid_weeks']],
+      ['admin_analytics_slowest_employers', ['admin_analytics_invalid_weeks', 'admin_analytics_invalid_limit']],
+      ['admin_analytics_stale_jobs', ['admin_analytics_invalid_days']],
+    ] as const) {
+      const body = sql.match(new RegExp(`CREATE FUNCTION public\\.${fn}[\\s\\S]*?\\nEND \\$\\$;`))?.[0] ?? '';
+      expect(body).not.toBe('');
+      const iGate = body.indexOf("PERFORM set_config('app.admin_analytics_read', 'on', true);");
+      for (const error of errors) {
+        const iRaise = body.indexOf(`RAISE EXCEPTION '${error}'`);
+        expect(iRaise).toBeGreaterThan(0);
+        expect(iGate).toBeGreaterThan(iRaise);
+      }
+
+      // Results carry counts, durations, week starts, job and employer ids,
+      // titles and business names only -- never a person.
+      const result = sql.match(new RegExp(`CREATE FUNCTION public\\.${fn}[\\s\\S]*?\\)\\nLANGUAGE plpgsql`))?.[0] ?? '';
+      expect(result).not.toBe('');
+      expect(result).not.toMatch(/full_name|email|phone|worker_id|application_id|body|cognito/);
+    }
+    expect(sql.match(/IF p_weeks IS NULL OR p_weeks < 1 OR p_weeks > 26 THEN/g)).toHaveLength(2);
+    expect(sql).toContain('IF p_limit IS NULL OR p_limit < 1 OR p_limit > 100 THEN');
+    expect(sql).toContain('IF p_days IS NULL OR p_days < 1 OR p_days > 365 THEN');
+    // The honest denominators sit right after the counts they divide.
+    expect(sql).toMatch(/unanswered_7d\s+BIGINT,\n\s+applications_due\s+BIGINT,\n\s+first_response_p50_hours\s+NUMERIC,/);
+    expect(sql).toMatch(/turns_unanswered_7d\s+BIGINT,\n\s+turns_due\s+BIGINT,\n\s+reply_p50_hours\s+NUMERIC,/);
+    expect(code).toContain("count(*) FILTER (WHERE f.applied_at <= now() - interval '7 days') AS n_due");
+    expect(code).toContain("count(*) FILTER (WHERE t.turn_at <= now() - interval '7 days') AS n_due");
+
+    // Names come only from employer_display_name(); the email column appears
+    // only in the test-account filter, which is NULL-safe (most employers
+    // have no email) and used in WHERE, never selected.
+    expect(code).not.toMatch(/full_name|phone|\.body\b|worker_id/);
+    expect(code.match(/public\.employer_display_name\([rs]\.emp\)/g)).toHaveLength(2);
+    expect(code.match(/email/g)).toHaveLength(3);
+    expect(code.match(/AND NOT COALESCE\(u\.email LIKE '%@jale\.test' OR u\.cognito_sub LIKE 'seed-%', false\)/g)).toHaveLength(3);
+
+    // The employer action set, the same in all three functions, found by
+    // per-application LATERAL index lookups (a join to an all-time aggregate
+    // became a quadratic nested loop), and nothing that worker activity,
+    // triggers, Twilio or an open thread can move.
+    expect(code).not.toMatch(/GROUP BY x\.application_id|FROM actions/);
+    expect(code.match(/LEFT JOIN LATERAL \(/g)).toHaveLength(4);
+    expect(code.match(/WHERE c\.application_id = ap\.id\n {15}AND m\.sender_type = 'employer'\n {12}UNION ALL\n {12}SELECT ap\.details_requested_at\n {12}UNION ALL\n {12}SELECT ap\.hired_at WHERE NOT ap\.hire_approx\n/g)).toHaveLength(2);
+    expect(code).toContain("WHERE c.application_id = a.id\n               AND m.sender_type = 'employer'\n            UNION ALL\n            SELECT a.details_requested_at\n");
+    expect(code.match(/WHERE ev\.application_id = (ap|a)\.id\n {15}AND NOT ev\.is_backfill\n {15}AND ev\.to_status IN \('contacted', 'details_requested', 'hired', 'not_interested'\)/g)).toHaveLength(3);
+    // A 095-backfilled hire time (hired_at = hired_seen_at = hired_ack_at) is
+    // not an action time; the hire still counts, flagged approximate.
+    expect(code.match(/COALESCE\(a\.hired_at = a\.hired_seen_at AND a\.hired_at = a\.hired_ack_at, false\)/g)).toHaveLength(4);
+    expect(code).toContain('SELECT a.hired_at WHERE NOT COALESCE(a.hired_at = a.hired_seen_at AND a.hired_at = a.hired_ack_at, false)');
+    expect(code).toContain('COALESCE(a.hired_at = a.hired_seen_at AND a.hired_at = a.hired_ack_at, false) AS approx');
+    expect(code).not.toMatch(/updated_at|last_message_at|last_worker_message_at|closed_at|accepted_at|sent_at|delivered_at|employer_last_read_at/);
+
+    // First response: the earliest action; any status but pending is answered.
+    expect(code.match(/SELECT min\(x\.at\) AS first_at/g)).toHaveLength(2);
+    expect(code).toContain("count(*) FILTER (WHERE f.first_at IS NOT NULL OR f.status <> 'pending') AS n_answered");
+    expect(code).toContain("count(*) FILTER (WHERE f.first_at IS NULL AND f.status <> 'pending') AS n_untimed");
+    // Turns: system rows ignored, (created_at, id) order for both the turn
+    // start and its reply, closed-before-reply left out.
+    expect(code).toContain("WHERE m.sender_type <> 'system'");
+    expect(code).toContain('lag(m.sender_type) OVER (PARTITION BY m.conversation_id ORDER BY m.created_at, m.id) AS prev_sender');
+    expect(code).toContain('AND (m.created_at, m.id) > (t.created_at, t.id)');
+    expect(code).toContain("AND t.prev_sender IS DISTINCT FROM 'worker'");
+    expect(code).toContain("WHERE t.reply_at IS NOT NULL OR t.conv_status <> 'closed'");
+
+    // Weeks: a TimeZone-independent window, and each row set grouped by its
+    // own UTC Monday (application, turn, hire), each with its own GROUPING
+    // SETS joined to every week (NULL = the whole window).
+    expect(code.match(/v_from := \(date_trunc\('week', now\(\) AT TIME ZONE 'UTC'\) - make_interval\(weeks => p_weeks - 1\)\) AT TIME ZONE 'UTC';/g)).toHaveLength(2);
+    expect(code).toContain('FROM generate_series(0, p_weeks - 1) AS g(n)');
+    for (const key of ['ap.applied_at', 't.created_at', 'a.hired_at']) {
+      expect(code).toContain(`date_trunc('week', ${key}, 'UTC') AS wk`);
+    }
+    expect(code.match(/GROUP BY GROUPING SETS \(\([fth]\.wk\), \(\)\)/g)).toHaveLength(3);
+    expect(code.match(/LEFT JOIN (fr|rt|hr) ON \1\.wk IS NOT DISTINCT FROM w\.wk/g)).toHaveLength(3);
+    expect(code).toContain('CASE WHEN w.wk IS NULL THEN (');
+    // Slowest: 3+ applications, the spec's order (no timed answer last), the limit applied last.
+    expect(code).toContain('HAVING count(*) >= 3');
+    expect(code).toContain('ORDER BY r.n_unanswered DESC, r.p50 DESC NULLS LAST, r.emp\n   LIMIT p_limit;');
+    // Stale: posting is the first action, idle time in whole days, p_days inclusive.
+    expect(code).toContain('greatest(l.created_at, max(la.last_at)) AS last_at');
+    expect(code).toContain('floor(extract(epoch FROM now() - i.last_at) / 86400)::INTEGER AS idle_days');
+    expect(code).toContain('WHERE s.idle_days >= p_days\n   ORDER BY s.idle_days DESC, s.id;');
+
+    // Self-check: the six policies it reads through, no restrictive policy,
+    // the name helper's grant, the new policy, ACLs, the gate for every
+    // function, and input errors.
+    expect(sql).toContain('missing or drifted; the employer health page would read zero rows');
+    for (const tuple of [
+      "('public.users', 'users_admin_analytics_read', 'r', v_gate)",
+      "('public.jobs', 'jobs_admin_analytics_read', 'r', v_gate)",
+      "('public.job_applications', 'job_applications_admin_analytics_read', 'r', v_gate)",
+      "('public.job_conversation_messages', 'job_conversation_messages_admin_analytics_read', 'r', v_gate)",
+      "('public.job_application_status_events', 'job_application_status_events_admin_analytics_read', 'r', v_gate)",
+      "('public.employer_profiles', 'employer_profiles_name_lookup', 'r', v_name)",
+    ]) {
+      expect(sql).toContain(tuple);
+    }
+    expect(sql).toContain("v_name CONSTANT TEXT := $q$(current_setting('app.employer_name_lookup'::text, true) = 'on'::text)$q$;");
+    expect(code).toContain('AND NOT p.polpermissive');
+    expect(code).toContain("AND ('jale_admin'::regrole::oid = ANY (p.polroles) OR 0::OID = ANY (p.polroles))");
+    for (const table of ['users', 'jobs', 'job_applications', 'job_conversations', 'job_conversation_messages', 'job_application_status_events', 'employer_profiles']) {
+      expect(code).toContain(`'public.${table}'::regclass`);
+    }
+    expect(sql).toContain('migration 114: a restrictive policy for jale_admin or PUBLIC');
+    expect(code).toContain("IF NOT has_function_privilege('jale_admin', 'public.employer_display_name(uuid)', 'EXECUTE') THEN");
+    expect(sql).toContain('migration 114: policy job_conversations_admin_analytics_read missing or drifted');
+    for (const fn of ['admin_analytics_employer_weekly', 'admin_analytics_slowest_employers', 'admin_analytics_stale_jobs']) {
+      expect(sql).toContain(`migration 114: ${fn} did not set the read flag`);
+    }
+    expect(sql.match(/aclexplode\(/g)).toHaveLength(1);
+    // A NULL proconfig (no pinned search_path) must fail the check, not skip it.
+    expect(sql).toContain("NOT COALESCE(fn.proconfig @> ARRAY['search_path=pg_catalog, pg_temp'], false)");
+    expect(sql).toContain('FOREACH v_arg IN ARRAY ARRAY[0, 27] LOOP');
+    expect(sql).toContain('FOREACH v_arg IN ARRAY ARRAY[0, 101] LOOP');
+    expect(sql).toContain('FOREACH v_arg IN ARRAY ARRAY[0, 366] LOOP');
   });
 
   // Same reason as the 082/088/089 blocks above: on RDS there is no Jest, so
