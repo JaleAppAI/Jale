@@ -174,6 +174,7 @@ SUITES=(
   test/unit/db/application-hire-ack-095.integration.test.ts
   test/unit/db/employer-conversation-read.integration.test.ts
   test/unit/db/worker-referred-jobs-103.integration.test.ts
+  test/unit/db/access-manifest-alignment-118.integration.test.ts
 )
 
 usage() {

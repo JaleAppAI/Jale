@@ -149,6 +149,7 @@ describe('database migrations', () => {
       '114',
       '115',
       '117',
+      '118',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -2067,6 +2068,59 @@ describe('database migrations', () => {
       + '  END;\n',
     );
     expect(sql).toContain('migration 117: the trigger smoke test did not run or left rows behind');
+  });
+
+  // 118 aligns the catalog with the reviewed access manifest. Where there is
+  // no Jest, its own DO blocks are the only check, so these literals pin that
+  // they stay strict, and that the file changes nothing but the five tables'
+  // FORCE flag and the owner of schema public.
+  it('118 aligns five tables\' FORCE flag and the owner of schema public with the access manifest, and nothing else', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '118_access_manifest_alignment.sql'), 'utf8');
+    const code = sql.replace(/--[^\n]*/g, '');
+
+    expect(sql).toContain('-- Run manually AFTER 117_admin_queues.sql,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n');
+    expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+    expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+    expect(code).toMatch(/^[\x00-\x7F]*$/);
+    const iBegin = sql.indexOf('BEGIN;');
+    const iLock = sql.indexOf("SET LOCAL lock_timeout = '5s';");
+    const iFirstDo = sql.indexOf('DO $$');
+    expect(iBegin).toBeLessThan(iLock);
+    expect(iLock).toBeLessThan(iFirstDo);
+
+    // The same five tables in the change block and in the closing check.
+    const lists = [...code.matchAll(/v_tables CONSTANT TEXT\[\] := ARRAY\[([^\]]*)\]/g)].map((m) => m[1].replace(/\s+/g, ' ').trim());
+    expect(lists).toEqual(Array(2).fill(
+      "'document_upload_tokens', 'whatsapp_conversations', 'whatsapp_outbox', 'whatsapp_processed_messages', 'worker_thread_counters'",
+    ));
+
+    // Exactly two statements change anything, each only when it must.
+    expect(code.match(/\bALTER\b/g)).toHaveLength(2);
+    expect(code).toContain("EXECUTE format('ALTER TABLE %I.%I NO FORCE ROW LEVEL SECURITY', 'public', v_name);");
+    expect(code).toContain('    ALTER SCHEMA public OWNER TO jale_admin;\n');
+    expect(code).not.toMatch(/(?<!NO )FORCE ROW LEVEL SECURITY/);
+    expect(code).not.toMatch(/\b(GRANT|REVOKE|DROP|INSERT|UPDATE|DELETE|TRUNCATE|SECURITY DEFINER)\b/);
+    expect(code).not.toMatch(/\bCREATE\s+(OR\s+REPLACE\s+)?[A-Z]/);
+    expect(code).not.toMatch(/\bSET\s+(LOCAL\s+)?ROLE\b/);
+
+    // Preconditions refuse before anything changes; the closing check refuses to commit.
+    for (const message of [
+      'migration 118: connect as jale_admin (this session runs as %)',
+      'migration 118: public.% is missing',
+      'migration 118: public.% is forced, and jale_admin cannot act as its owner %',
+      'migration 118: schema public is owned by %, and jale_admin cannot act as that role',
+      'migration 118: schema public cannot change owner: jale_admin lacks CREATE on the database',
+      'migration 118: still forced or missing: %',
+      'migration 118: schema public is owned by %, not jale_admin',
+    ]) {
+      expect(sql).toContain(message);
+    }
+    expect(code).toContain("pg_catalog.pg_has_role(current_user, t.relowner, 'USAGE')");
+    expect(code).toContain("pg_catalog.pg_has_role(current_user, v_owner, 'USAGE')");
+    expect(code).toContain("pg_catalog.has_database_privilege(current_database(), 'CREATE')");
+    expect(code.indexOf('connect as jale_admin')).toBeLessThan(code.indexOf('NO FORCE ROW LEVEL SECURITY'));
+    expect(code.indexOf('lacks CREATE on the database')).toBeLessThan(code.indexOf('NO FORCE ROW LEVEL SECURITY'));
+    expect(code.indexOf('still forced or missing')).toBeGreaterThan(code.indexOf('ALTER SCHEMA public OWNER TO jale_admin;'));
   });
 
   // Same reason as the 082/088/089 blocks above: on RDS there is no Jest, so
