@@ -981,7 +981,11 @@ export class AuditStack extends cdk.Stack {
       s3KeyPrefix: 'config',
       configSnapshotDeliveryProperties: { deliveryFrequency: 'TwentyFour_Hours' },
     });
-    channel.addResourceDependency(recorder);
+    // Neither waits on the other. The recorder's create starts recording, which
+    // needs a delivery channel, and the channel's create needs a recorder, so
+    // a dependency either way deadlocks (the create failed NotStabilized).
+    // CloudFormation creates them side by side, each after the bucket policy.
+    recorder.node.addDependency(bucket);
     channel.node.addDependency(bucket);
   }
 
