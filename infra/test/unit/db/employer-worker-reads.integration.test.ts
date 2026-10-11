@@ -1,10 +1,10 @@
 /**
  * employer-worker-reads.integration.test.ts
  *
- * PostgreSQL-backed gate for three employer-facing applicant reads, run
+ * PostgreSQL-backed gate for the two employer-facing applicant reads, run
  * against REAL PostgreSQL 16 with migrations 001-086 applied.
  *
- * These handlers are covered by unit suites that `jest.mock` the whole of
+ * These two handlers are covered by unit suites that `jest.mock` the whole of
  * `lambda/lib/db`, so NOTHING in the repository ever hands their SQL to a
  * planner or to the RLS policies that govern it. That gap is not theoretical:
  * it is what let `SELECT id, ...` ship in the documents query, where three of
@@ -31,7 +31,6 @@
 import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
 import { EMPLOYER_WORKER_DOCS_SQL } from '../../../lambda/api/employer-worker-docs';
-import { employerWorkerPostsQuery } from '../../../lambda/api/employer-worker-posts';
 import { TRUST_EXTRACTION_SQL } from '../../../lambda/api/employer-worker-profile';
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
@@ -203,54 +202,6 @@ maybeDescribe('employer applicant reads against real PostgreSQL', () => {
         (await client.query(EMPLOYER_WORKER_DOCS_SQL, [worker, jobId, subs.employerB])).rows,
       );
       expect(rows).toHaveLength(0);
-    });
-  });
-
-  describe('employer-worker-posts SQL', () => {
-    let postId: string;
-
-    beforeAll(async () => {
-      // A published post with one approved media item: a post the
-      // employer's page of the worker's board shows.
-      postId = (
-        await client.query<{ id: string }>(
-          `INSERT INTO worker_posts (worker_id, caption, source, status)
-           VALUES ($1, 'Fixture post', 'web', 'published') RETURNING id`,
-          [worker],
-        )
-      ).rows[0].id;
-      await client.query(
-        `INSERT INTO worker_post_media
-           (post_id, worker_id, s3_key, s3_version_id, sort_order, content_type, file_size, moderation_status)
-         VALUES ($1, $2, $3, 'v1', 0, 'image/jpeg', 12345, 'approved')`,
-        [postId, worker, `${worker}/posts/${postId}/fixture.jpg`],
-      );
-    });
-
-    const postsFor = (employerId: string) =>
-      employerWorkerPostsQuery({ workerId: worker, employerId, before: null, beforeId: null, limit: 24 });
-
-    it('returns the post to the employer the worker applied to, the statement run alone', async () => {
-      const { text, values } = postsFor(employerA);
-      const rows = (await client.query<{ id: string }>(text, values)).rows;
-      expect(rows.map((row) => row.id)).toEqual([postId]);
-    });
-
-    it('returns nothing to an employer the worker never applied to, the statement run alone', async () => {
-      // The test bed's superuser session: only the statement's own
-      // predicates decide what comes back. Without the relationship in the
-      // statement, this returns the worker's post.
-      const { text, values } = postsFor(employerB);
-      const rows = (await client.query(text, values)).rows;
-      expect(rows).toHaveLength(0);
-    });
-
-    it('returns the post to the employer the worker applied to, with the settings the handler binds', async () => {
-      const rows = await asEmployer(subs.employerA, employerA, async () => {
-        const { text, values } = postsFor(employerA);
-        return (await client.query<{ id: string }>(text, values)).rows;
-      });
-      expect(rows.map((row) => row.id)).toEqual([postId]);
     });
   });
 

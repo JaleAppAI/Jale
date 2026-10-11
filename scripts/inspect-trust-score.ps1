@@ -5,11 +5,13 @@
 # JaleDatabaseStack admin secret. No local psql or DB credentials required.
 #
 # Usage:
-#   .\scripts\deploy-bastion.ps1           # or: bash scripts/deploy-bastion.sh
-#   .\scripts\inspect-trust-score.ps1 -Phone 15551234567
-#   .\scripts\inspect-trust-score.ps1 -Phone 15551234567 -LogPath .\tmp\trust-score.log
+#   cd infra
+#   npx cdk deploy JaleBastionStack
+#   cd ..
+#   .\scripts\inspect-trust-score.ps1 -Phone 19152272188
+#   .\scripts\inspect-trust-score.ps1 -Phone 19152272188 -LogPath .\tmp\trust-score.log
 #
-# Phone may be passed as 15551234567, +15551234567, or whatsapp:+15551234567.
+# Phone may be passed as 19152272188, +19152272188, or whatsapp:+19152272188.
 
 [CmdletBinding()]
 param(
@@ -35,7 +37,7 @@ function Normalize-Phone {
   $clean = $clean -replace '[\s().-]', ''
 
   if ($clean -notmatch '^\+?\d{8,15}$') {
-    throw 'Phone must contain 8-15 digits, for example 15551234567 or +15551234567.'
+    throw 'Phone must contain 8-15 digits, for example 19152272188 or +19152272188.'
   }
 
   if (-not $clean.StartsWith('+')) {
@@ -110,7 +112,7 @@ function Write-InspectionLog {
 }
 
 if ([string]::IsNullOrWhiteSpace($Phone)) {
-  $Phone = Read-Host 'Enter worker phone number to inspect, for example +15551234567'
+  $Phone = Read-Host 'Enter worker phone number to inspect, for example +19152272188'
 }
 
 $PhoneE164 = Normalize-Phone $Phone
@@ -131,7 +133,7 @@ $bastionResult = Invoke-ExternalCommand {
 
 if ($bastionResult.ExitCode -ne 0) {
   Write-Host "!! Could not describe $BastionStack." -ForegroundColor Red
-  Write-Host "   Deploy it first: .\scripts\deploy-bastion.ps1 (or: bash scripts/deploy-bastion.sh)"
+  Write-Host "   Deploy it first: cd infra; npx cdk deploy $BastionStack"
   Write-Host "   AWS CLI output:" -ForegroundColor Yellow
   Write-Host ($bastionResult.Output | Out-String)
   exit 1
@@ -141,7 +143,7 @@ $bastionId = ($bastionResult.Output | Out-String).Trim()
 
 if ([string]::IsNullOrEmpty($bastionId) -or $bastionId -eq 'None') {
   Write-Host "!! Could not find BastionInstanceId output on $BastionStack." -ForegroundColor Red
-  Write-Host "   Deploy it first: .\scripts\deploy-bastion.ps1 (or: bash scripts/deploy-bastion.sh)"
+  Write-Host "   Deploy it first: cd infra; npx cdk deploy $BastionStack"
   exit 1
 }
 Write-Host "   bastion: $bastionId"

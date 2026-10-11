@@ -3,13 +3,10 @@ import { handler } from '../../../../lambda/post-confirmation/index';
 import { CognitoIdentityProviderClient, AdminAddUserToGroupCommand } from '@aws-sdk/client-cognito-identity-provider';
 import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
-import { setAuditContext } from '../../../../lambda/lib/audit/context';
-import { expectContextBeforeWrite, idlessCallerFor } from '../api/audit-expectations';
 
 jest.mock('@aws-sdk/client-cognito-identity-provider');
 jest.mock('@aws-sdk/client-sqs');
 jest.mock('../../../../lambda/lib/db');
-jest.mock('../../../../lambda/lib/audit/context');
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
@@ -173,26 +170,5 @@ describe('Post-confirmation trigger Lambda', () => {
       QueueUrl: 'https://sqs.dlq.url',
       MessageBody: expect.stringContaining('DB Duplicate Key'),
     }));
-  });
-
-  describe('change context', () => {
-    it('states an anonymous actor, with no id, before the users row is created', async () => {
-      mockCognitoSend.mockResolvedValue({});
-      mockQuery.mockResolvedValue({});
-      await handler(createEvent('worker'), { awsRequestId: 'fixture-invocation-1' } as never);
-      expect(setAuditContext).toHaveBeenCalledTimes(1);
-      expect(setAuditContext).toHaveBeenCalledWith(
-        expect.objectContaining({ query: mockQuery }),
-        expect.objectContaining({ actorKind: 'anonymous', actorId: null, channel: 'web', requestId: 'fixture-invocation-1' }),
-        'auth.post_confirmation',
-      );
-      expectContextBeforeWrite(mockQuery, setAuditContext as jest.Mock, /INSERT INTO users/);
-    });
-
-    it('states nothing for other trigger sources', async () => {
-      const event = createEvent('worker');
-      await handler({ ...event, triggerSource: 'PostConfirmation_ConfirmForgotPassword' } as never);
-      expect(setAuditContext).not.toHaveBeenCalled();
-    });
   });
 });

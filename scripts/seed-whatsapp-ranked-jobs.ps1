@@ -5,10 +5,11 @@
 # JaleDatabaseStack admin secret. No local psql or DB credentials required.
 #
 # Usage:
-#   .\scripts\deploy-bastion.ps1           # or: bash scripts/deploy-bastion.sh
-#   .\scripts\seed-whatsapp-ranked-jobs.ps1 -Phone 5551234567
+#   cd infra; npx cdk deploy JaleBastionStack
+#   cd ..
+#   .\scripts\seed-whatsapp-ranked-jobs.ps1 -Phone 9152272188
 #   .\scripts\seed-whatsapp-ranked-jobs.ps1 -WorkerId <worker-users-id>
-#   .\scripts\seed-whatsapp-ranked-jobs.ps1 -Phone 5551234567 -AlsoSeedJobCandidates
+#   .\scripts\seed-whatsapp-ranked-jobs.ps1 -Phone 9152272188 -AlsoSeedJobCandidates
 
 [CmdletBinding()]
 param(
@@ -37,7 +38,7 @@ function Normalize-Phone {
   $clean = $clean -replace '[\s().-]', ''
 
   if ($clean -notmatch '^\+?\d{8,15}$') {
-    throw 'Phone must contain 8-15 digits, for example 5551234567 or +15551234567.'
+    throw 'Phone must contain 8-15 digits, for example 9152272188 or +19152272188.'
   }
 
   if ($clean.StartsWith('+')) {
@@ -102,7 +103,7 @@ $bastionResult = Invoke-ExternalCommand {
 
 if ($bastionResult.ExitCode -ne 0) {
   Write-Host "!! Could not describe $BastionStack." -ForegroundColor Red
-  Write-Host "   Deploy it first: .\scripts\deploy-bastion.ps1 (or: bash scripts/deploy-bastion.sh)"
+  Write-Host "   Deploy it first: cd infra; npx cdk deploy $BastionStack"
   Write-Host ($bastionResult.Output | Out-String)
   exit 1
 }
@@ -110,7 +111,7 @@ if ($bastionResult.ExitCode -ne 0) {
 $bastionId = ($bastionResult.Output | Out-String).Trim()
 if ([string]::IsNullOrEmpty($bastionId) -or $bastionId -eq 'None') {
   Write-Host "!! Could not find BastionInstanceId output on $BastionStack." -ForegroundColor Red
-  Write-Host "   Deploy it first: .\scripts\deploy-bastion.ps1 (or: bash scripts/deploy-bastion.sh)"
+  Write-Host "   Deploy it first: cd infra; npx cdk deploy $BastionStack"
   exit 1
 }
 Write-Host "   bastion: $bastionId"

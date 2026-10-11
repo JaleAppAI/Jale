@@ -1,7 +1,6 @@
 'use client';
 import type { ReactNode } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
-import { ReportEntryButton } from '@/components/report/ReportEntryButton';
 
 /*
  * ===== BRAND SURFACE ==================================================
@@ -45,27 +44,24 @@ export function OnboardingHeader({
             style={{ backgroundColor: BRAND_NAVY }}
         >
             <span className="text-xl font-bold tracking-[-0.02em] text-white">Jale</span>
-            <div className="flex items-center gap-2">
-                <ReportEntryButton tone="brand" size="sm" />
-                <div role="group" aria-label={t('language_group')} className="inline-flex overflow-hidden rounded-full border border-white/30">
-                    {(['en', 'es'] as const).map((language) => (
-                        <button
-                            key={language}
-                            type="button"
-                            aria-pressed={active === language}
-                            disabled={busy || !onSelect}
-                            onClick={() => onSelect?.(language)}
-                            className={[
-                                'min-w-[44px] px-2.5 py-1 text-xs font-semibold tracking-[0.04em] transition-colors',
-                                'focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]',
-                                'disabled:cursor-default',
-                                active === language ? 'bg-white text-[#181855]' : 'bg-transparent text-white/80 hover:text-white',
-                            ].join(' ')}
-                        >
-                            {t(language === 'en' ? 'language_en' : 'language_es')}
-                        </button>
-                    ))}
-                </div>
+            <div role="group" aria-label={t('language_group')} className="inline-flex overflow-hidden rounded-full border border-white/30">
+                {(['en', 'es'] as const).map((language) => (
+                    <button
+                        key={language}
+                        type="button"
+                        aria-pressed={active === language}
+                        disabled={busy || !onSelect}
+                        onClick={() => onSelect?.(language)}
+                        className={[
+                            'min-w-[44px] px-2.5 py-1 text-xs font-semibold tracking-[0.04em] transition-colors',
+                            'focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]',
+                            'disabled:cursor-default',
+                            active === language ? 'bg-white text-[#181855]' : 'bg-transparent text-white/80 hover:text-white',
+                        ].join(' ')}
+                    >
+                        {t(language === 'en' ? 'language_en' : 'language_es')}
+                    </button>
+                ))}
             </div>
         </div>
     );

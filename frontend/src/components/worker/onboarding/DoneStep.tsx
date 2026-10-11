@@ -2,9 +2,8 @@
 import type { ReactNode } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
-import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { questionText } from '@/lib/onboarding-flow';
-import type { OnboardingState, ReferredJobSummary } from '@/lib/api/worker';
+import type { OnboardingState } from '@/lib/api/worker';
 import {
     availabilityLabelKey,
     experienceLabelKey,
@@ -14,27 +13,6 @@ import {
     tradeLabel,
     transportLabelKey,
 } from '@/lib/worker-vocab';
-import { ReferredJobDock, ReferredJobTicket } from './ReferredJobTicket';
-import { useTicketDock } from './useTicketDock';
-
-/**
- * Where the summary goes next. `OnboardingFlow` decides which -- it holds the
- * server's job, this tab's stash and the routes -- and this screen draws it.
- * One union rather than a set of flags, so a shape can never be half one thing
- * and half another (an Apply button over a closed job).
- */
-export type DoneNext =
-    /** The job they came for is open: its ticket, Apply, and every job as the way past it. */
-    | { kind: 'apply'; job: ReferredJobSummary }
-    /** It stopped taking applications: say so, and offer the feed. */
-    | { kind: 'closed'; job: ReferredJobSummary }
-    /** The server has no job on file but this tab does -- the claim never landed. */
-    | { kind: 'handoff' }
-    /** Nothing referred: the feed, which is where the jobs are (not the profile). */
-    | { kind: 'feed' };
-
-/** Which way the worker went; `OnboardingFlow` turns it into a route. */
-export type DoneAction = 'apply' | 'jobs' | 'handoff';
 
 /**
  * The summary screen: what an employer will see, said back to the worker.
@@ -43,14 +21,8 @@ export type DoneAction = 'apply' | 'jobs' | 'handoff';
  * asynchronously after the last answer lands, so this screen opens on "Reading
  * your answers…" and flips to the skills when the poll in `OnboardingFlow`
  * sees `completed`. A worker is never BLOCKED on it — the profile is already
- * live and the way on is enabled throughout, which is why the waiting copy
- * says they can keep going.
- *
- * The way on is the job they came for when there is one (decided 2026-10-01):
- * its ticket with Apply, or a plain "it closed" — and otherwise the jobs feed.
- * Never the profile page, which shows no jobs at all. The ticket stays at the
- * BOTTOM of the summary (decided 2026-10-02), and a stub docked to the screen's
- * edge carries Apply while it is out of sight.
+ * live and "Go to my profile" is enabled throughout, which is why the waiting
+ * copy says they can keep going.
  *
  * A `failed` extraction is stated plainly rather than hidden or retried
  * forever: their answers still reach employers verbatim, which is the part
@@ -62,20 +34,24 @@ export type DoneAction = 'apply' | 'jobs' | 'handoff';
  */
 export function DoneStep({
     state,
-    next,
+    hasJobHandoff = false,
     extractionStalled = false,
     onFinish,
 }: {
     state: OnboardingState;
-    /** What to offer as the way on. See `DoneNext`. */
-    next: DoneNext;
+    /**
+     * The worker got here from a shared job link and still has that job
+     * waiting. The CTA then says so instead of promising a profile page —
+     * `OnboardingFlow` owns both the flag and where the button actually goes.
+     */
+    hasJobHandoff?: boolean;
     /**
      * The summary gave up waiting for the extraction (see `MAX_POLLS`). Not
      * the same as `status: 'failed'` — nothing failed, we just stopped asking
      * — so it gets its own, calmer sentence.
      */
     extractionStalled?: boolean;
-    onFinish: (action: DoneAction) => void;
+    onFinish: () => void;
 }) {
     const locale = useLocale();
     const spanish = locale === 'es';
@@ -174,7 +150,7 @@ export function DoneStep({
                     ) : answers.map((answer) => (
                         <div key={answer.index} className="border-t border-[var(--jale-divider)] pt-2.5 text-sm first:border-t-0 first:pt-0">
                             <p className="mb-0.5 text-[13px] text-[var(--jale-ink-2)]">{questionText(state, answer.index, locale)}</p>
-                            <p data-private className="font-light text-[var(--jale-ink)]">
+                            <p className="font-light text-[var(--jale-ink)]">
                                 {`“${answer.text}” `}
                                 <span className="inline-block rounded-full bg-[var(--jale-input)] px-2 py-0.5 text-[11px] font-bold uppercase tracking-[0.08em] text-[var(--jale-ink-2)]">
                                     {tShared(answer.source === 'voice' ? 'voice_badge' : 'typed_badge')}
@@ -186,73 +162,11 @@ export function DoneStep({
             </div>
 
             <div className="mt-[22px] flex flex-col gap-2.5">
-                <DoneActions next={next} onFinish={onFinish} />
+                <Button className="w-full" size="lg" onClick={onFinish}>
+                    {hasJobHandoff ? t('cta_job') : t('cta')}
+                </Button>
             </div>
         </div>
-    );
-}
-
-/**
- * The bottom of the summary, one shape per `DoneNext`. The primary action is
- * always the full-width large button and a second way on, when there is one,
- * the quiet ghost under it -- the same pair `PhotoStep` uses one screen
- * earlier. For an open job the large button rides on the job's ticket.
- */
-function DoneActions({ next, onFinish }: { next: DoneNext; onFinish: (action: DoneAction) => void }) {
-    const t = useTranslations('worker_onboarding.done');
-
-    switch (next.kind) {
-        case 'apply':
-            return <ApplyActions job={next.job} onFinish={onFinish} />;
-        case 'closed':
-            return (
-                <>
-                    {/* `info`, so `role="status"`: a fact about the job, not an
-                        error the worker caused or can fix. */}
-                    <InlineFeedback tone="info">{t('job_closed', { title: next.job.title })}</InlineFeedback>
-                    <Button className="w-full" size="lg" onClick={() => onFinish('jobs')}>
-                        {t('see_jobs')}
-                    </Button>
-                </>
-            );
-        case 'handoff':
-            return (
-                <Button className="w-full" size="lg" onClick={() => onFinish('handoff')}>
-                    {t('cta_job')}
-                </Button>
-            );
-        case 'feed':
-            return (
-                <Button className="w-full" size="lg" onClick={() => onFinish('jobs')}>
-                    {t('see_jobs')}
-                </Button>
-            );
-    }
-}
-
-/**
- * The open job's way on: its ticket, every job under it, and the stub that
- * stands in for the ticket while it is out of sight. Both Apply buttons are
- * one action, `onFinish('apply')` -- the stub is a shortcut to the same place,
- * never a second path.
- *
- * The stub is rendered after the ghost button and portalled to the end of
- * `document.body` (see `ReferredJobDock`), so the tab order meets the ticket
- * first. Where it sits on screen is CSS (`fixed`), not markup.
- */
-function ApplyActions({ job, onFinish }: { job: ReferredJobSummary; onFinish: (action: DoneAction) => void }) {
-    const t = useTranslations('worker_onboarding.done');
-    const { ticketRef, dockRef, dockShown } = useTicketDock();
-    const apply = () => onFinish('apply');
-
-    return (
-        <>
-            <ReferredJobTicket ref={ticketRef} job={job} onApply={apply} />
-            <Button variant="ghost" className="w-full" onClick={() => onFinish('jobs')}>
-                {t('see_all_jobs')}
-            </Button>
-            <ReferredJobDock ref={dockRef} job={job} shown={dockShown} onApply={apply} />
-        </>
     );
 }
 

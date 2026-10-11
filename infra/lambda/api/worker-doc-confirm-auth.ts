@@ -1,7 +1,5 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { HeadObjectCommand, S3Client } from '@aws-sdk/client-s3';
-import { auditCaller } from '../lib/audit/caller';
-import { setAuditContext } from '../lib/audit/context';
 import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
@@ -57,10 +55,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     const pool = await getDbPool();
     client = await pool.connect();
-
-    // Two short transactions with the S3 object check between them, so no
-    // transaction is ever held open across a network call. The first proves
-    // who the caller is and that the key is theirs; the second writes.
     await client.query('BEGIN');
 
     // Compliance with cognito_sub convention.
@@ -85,12 +79,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       await client.query('COMMIT');
       return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'forbidden' }) };
     }
-    await client.query('COMMIT');
 
     try {
       const head = await s3.send(new HeadObjectCommand({ Bucket: process.env.DOCUMENTS_BUCKET!, Key: s3_key }));
       if (head.ContentType !== mime_type || !head.ServerSideEncryption
           || head.ContentLength == null || head.ContentLength <= 0) {
+        await client.query('COMMIT');
         return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_upload' }) };
       }
     } catch (headErr) {
@@ -101,15 +95,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       // failed browser upload. The response body stays generic on purpose; S3
       // details are not the caller's business.
       console.error('worker-doc-confirm-auth HeadObject failed:', errorMessage(headErr));
+      await client.query('COMMIT');
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'uploaded_object_not_found' }) };
     }
 
-    // The write transaction. Both caller settings are transaction-local, so
-    // they are set again here; worker_documents uses the internal id.
-    await client.query('BEGIN');
-    await setRlsContext(client, cognitoSub);
+    // Switch to worker_documents RLS convention (user.id::text).
     await setInternalUserRlsContext(client, workerId);
-    await setAuditContext(client, auditCaller(event, { kind: 'worker', id: workerId }, 'web'), 'worker.document_confirm');
 
     const isCertification = doc_type === 'certification_doc';
 

@@ -88,7 +88,7 @@ describe('updateWorkerProfile — lang', () => {
     // by presence (`skills: []` clears the list).
     vi.stubGlobal('window', { location: { pathname: '/es/worker/profile' } });
     const patch: WorkerProfilePatch = {
-      full_name: 'Alex R',
+      full_name: 'David C',
       skills: [],
       availability: 'full_time',
       years_experience: 5,

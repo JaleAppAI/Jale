@@ -14,13 +14,13 @@ import {
   CognitoPoolProps,
   resolveCognitoDeletionProtection,
 } from '../constructs/cognito-pool';
-import { dedicatedDbLogin } from '../constructs/db-login-secrets';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
 
 export interface AuthStackProps extends cdk.StackProps {
   readonly vpc: ec2.IVpc;
   readonly privateSubnets: ec2.ISubnet[];
   readonly lambdaSg: ec2.ISecurityGroup;
+  readonly dbSecret: secretsmanager.ISecret;
 }
 
 export class AuthStack extends cdk.Stack {
@@ -38,13 +38,10 @@ export class AuthStack extends cdk.Stack {
     });
 
     // ── Post-Confirmation Lambda ──
-    // Connects as the request login: the trigger only inserts the confirmed
-    // user's own row, with that user's sub as the caller context.
-    const apiDb = dedicatedDbLogin(this, 'jale_api');
     const postConfirmationLambda = new JaleLambdaFunction(this, 'PostConfirmationLambda', {
       entry: path.join(__dirname, '../../lambda/post-confirmation/index.ts'),
       environment: {
-        ...apiDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         DLQ_URL: dlq.queueUrl,
       },
       vpc: props.vpc,
@@ -54,7 +51,7 @@ export class AuthStack extends cdk.Stack {
       maxEventAge: cdk.Duration.hours(1),
     });
 
-    apiDb.grantRead(postConfirmationLambda.function);
+    props.dbSecret.grantRead(postConfirmationLambda.function);
     dlq.grantSendMessages(postConfirmationLambda.function);
     this.postConfirmationLambda = postConfirmationLambda;
 

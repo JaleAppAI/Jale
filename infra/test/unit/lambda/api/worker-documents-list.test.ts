@@ -2,18 +2,8 @@ import type { APIGatewayProxyEvent } from 'aws-lambda';
 jest.mock('@aws-sdk/s3-request-presigner', () => ({ getSignedUrl: jest.fn().mockResolvedValue('https://get.example') }));
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
-jest.mock('../../../../lambda/lib/audit/record', () => ({
-  ...jest.requireActual('../../../../lambda/lib/audit/record'),
-  recordAccess: jest.fn(),
-  recordAttempt: jest.fn(),
-}));
-jest.mock('../../../../lambda/lib/audit/context');
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { DOCUMENT_LINK_TTL_SECONDS, handler } from '../../../../lambda/api/worker-documents-list';
-import { recordAccess, recordAttempt } from '../../../../lambda/lib/audit/record';
-import {
-  callerFor, expectAttemptAfter, expectRecordedInsideTransaction, queryOrder, withRequestId,
-} from './audit-expectations';
+import { handler } from '../../../../lambda/api/worker-documents-list';
 import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
 
@@ -109,7 +99,7 @@ describe('worker-documents-list', () => {
     expect(body.documents[0].cert_name).toBeNull();
   });
 
-  it('does not presign urls when the query returns no vault docs', async () => {
+  it('does not presign urls when RLS returns no vault docs', async () => {
     mockQuery.mockImplementation((q: string) => {
       if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'u1' }] });
       if (q.includes('FROM worker_documents')) return Promise.resolve({ rows: [] });
@@ -122,67 +112,5 @@ describe('worker-documents-list', () => {
     expect(JSON.parse(res.body).documents).toEqual([]);
     expect(mockSetInternalUserRlsContext).toHaveBeenCalledWith(expect.anything(), 'u1');
     expect(mockGetSignedUrl).not.toHaveBeenCalled();
-  });
-
-  describe('access record', () => {
-    const mockRecordAccess = recordAccess as jest.Mock;
-    const mockRecordAttempt = recordAttempt as jest.Mock;
-    const worker = callerFor('worker', 'u1');
-    const client = expect.objectContaining({ query: mockQuery });
-    const now = Date.parse('2026-10-05T12:00:00.000Z');
-    let nowSpy: jest.SpyInstance;
-    const docRow = { id: 'doc-1', doc_type: 'resume', s3_key: 'k', file_name: 'f.pdf', file_size: 10, uploaded_at: 'ts', cert_name: null };
-
-    beforeEach(() => {
-      mockRecordAccess.mockResolvedValue(undefined);
-      mockRecordAttempt.mockResolvedValue(undefined);
-      mockGetSignedUrl.mockResolvedValue('https://get.example');
-      nowSpy = jest.spyOn(Date, 'now').mockReturnValue(now);
-      mockQuery.mockImplementation((q: string) => {
-        if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'u1' }] });
-        if (q.includes('FROM worker_documents')) return Promise.resolve({ rows: [docRow] });
-        return Promise.resolve({});
-      });
-    });
-    afterEach(() => nowSpy.mockRestore());
-
-    it('records the worker reading their own vault before COMMIT, with the link expiry', async () => {
-      const res = await handler(withRequestId(ev));
-      expect(res.statusCode).toBe(200);
-      const { documents } = JSON.parse(res.body);
-      expect(mockRecordAccess).toHaveBeenCalledWith(client, worker, {
-        surface: 'worker.vault',
-        subjectUserIds: ['u1'],
-        recordIds: ['doc-1'],
-        resultCount: 1,
-        fieldNames: Object.keys(documents[0]).sort(),
-        purpose: { kind: 'self' },
-        linkExpiresAt: new Date(now + DOCUMENT_LINK_TTL_SECONDS * 1000),
-      });
-      expectRecordedInsideTransaction(mockQuery, mockRecordAccess, /FROM worker_documents/);
-      expect(DOCUMENT_LINK_TTL_SECONDS).toBe(900);
-      expect(mockGetSignedUrl).toHaveBeenCalledWith(expect.anything(), expect.anything(), { expiresIn: DOCUMENT_LINK_TTL_SECONDS });
-      expect(mockGetSignedUrl.mock.invocationCallOrder[0]).toBeGreaterThan(queryOrder(mockQuery, 'COMMIT'));
-    });
-
-    it('answers 500 with no documents and signs nothing when the record cannot be written', async () => {
-      mockRecordAccess.mockRejectedValue(new Error('audit'));
-      const res = await handler(withRequestId(ev));
-      expect(res.statusCode).toBe(500);
-      expect(JSON.parse(res.body)).toEqual({ error: 'internal_error' });
-      expect(mockGetSignedUrl).not.toHaveBeenCalled();
-      expectAttemptAfter(mockQuery, mockRecordAttempt, 'ROLLBACK');
-      expect(mockRecordAttempt).toHaveBeenCalledWith(client, worker, {
-        surface: 'worker.vault', outcome: 'failed', subjectUserIds: ['u1'], purpose: { kind: 'self' },
-      });
-    });
-
-    it('records nothing before the worker is known (a 404 for no users row)', async () => {
-      mockQuery.mockImplementation(() => Promise.resolve({ rows: [] }));
-      const res = await handler(withRequestId(ev));
-      expect(res.statusCode).toBe(404);
-      expect(mockRecordAccess).not.toHaveBeenCalled();
-      expect(mockRecordAttempt).not.toHaveBeenCalled();
-    });
   });
 });

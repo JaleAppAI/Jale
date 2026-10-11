@@ -31,21 +31,18 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
-  // Under Next 14/webpack, amazon-cognito-identity-js 6.3.16 read js-cookie as
-  // a namespace (`import * as Cookies`, then Cookies.set/get/remove), and
-  // js-cookie 3's ESM build exports only a default, so the build failed with a
-  // named-export error; aliasing js-cookie to a no-op shim silenced it. Next 16
-  // builds with Turbopack, which rejects a `webpack` key outright, so the alias
-  // moved here. SDK 6.3.20 uses a default import instead, so that error no
-  // longer exists; the alias stays for the reason below.
+  // amazon-cognito-identity-js imports { get, remove } from 'js-cookie' as
+  // named ESM exports, which no version of js-cookie actually provides. Under
+  // Next 14/webpack that was a hard build error, silenced by aliasing js-cookie
+  // to a no-op shim; Next 16 builds with Turbopack, which rejects a `webpack`
+  // key outright, so the alias moved here.
   //
-  // As of Next 16.3.8 / js-cookie 3.0.8 / amazon-cognito-identity-js 6.3.20,
-  // the app never reaches CookieStorage (the SDK's only js-cookie importer),
-  // so neither js-cookie nor the shim is bundled. The alias is what keeps
-  // js-cookie out: without it Turbopack bundles it, unused, into the client
-  // and SSR chunks. A missing alias target is not a build error (Turbopack
-  // silently falls back to the real package), so keep the shim at this path.
-  // Code that does reach CookieStorage gets the no-op shim.
+  // Turbopack tree-shakes the only importer (CookieStorage — the admin app uses
+  // AuthenticationDetails / CognitoUser / CognitoUserPool and never
+  // CookieStorage) before resolving the specifier, so as of Next 16.3.4 this
+  // alias is inert: a build with a deliberately missing target still succeeds.
+  // It is kept as a guard so that a future code path reaching CookieStorage
+  // fails over to the shim instead of re-introducing the named-export error.
   turbopack: {
     resolveAlias: {
       'js-cookie': './src/lib/js-cookie-shim.mjs',

@@ -3,38 +3,8 @@ import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { promptAnswersView, stageView } from '../lib/application-stage-view';
 import { checkCompliance } from '../legal/check-compliance';
-import { auditCaller, type AuditCaller } from '../lib/audit/caller';
-import { recordAccess, recordAttempt, responseFieldNames, type AttemptEvent } from '../lib/audit/record';
 
 const CORS_HEADERS = corsHeaders();
-const SURFACE = 'employer.worker_profile';
-
-/**
- * Both trust statements below name their caller themselves: the employer
- * bound in `app.current_internal_user_id` must have an applicant
- * relationship with the worker
- * (`jale_internal.employer_has_applicant_relationship`, the same predicate
- * the employer read policies use). So neither returns another employer's
- * applicant even when run on its own, outside the handler's job and
- * applicant gates, and the row policies stay a second boundary. The helper
- * takes the worker id as an argument, so it is evaluated once per statement.
- */
-
-/**
- * The worker's latest trust assessment -- a scored one if there is one.
- * Exported so the real-PostgreSQL gates execute THIS text.
- *
- * $1 worker id.
- */
-export const TRUST_ASSESSMENT_SQL = `
-  SELECT id, profession_key, status, competency_score, score_components,
-         answers, scored_at, rubric_version
-    FROM worker_trust_assessments
-   WHERE user_id = $1
-     AND jale_internal.employer_has_applicant_relationship(
-           current_setting('app.current_internal_user_id', true), $1)
-   ORDER BY (status = 'scored') DESC, created_at DESC
-   LIMIT 1`;
 
 /**
  * The latest extraction for ONE assessment -- completed if there is one, else
@@ -57,8 +27,6 @@ export const TRUST_EXTRACTION_SQL = `
   SELECT status, extracted, summary_en, summary_es, extractor_version, created_at
     FROM worker_trust_extractions
    WHERE assessment_id = $1 AND user_id = $2
-     AND jale_internal.employer_has_applicant_relationship(
-           current_setting('app.current_internal_user_id', true), $2)
    ORDER BY (status = 'completed') DESC, created_at DESC
    LIMIT 1`;
 
@@ -66,8 +34,6 @@ export const handler = async (
   event: APIGatewayProxyEvent,
 ): Promise<APIGatewayProxyResult> => {
   let client;
-  let caller: AuditCaller | undefined;
-  let attempt: Omit<AttemptEvent, 'outcome'> | undefined;
   try {
     const cognitoSub: string | undefined = event.requestContext?.authorizer?.claims?.sub;
     if (!cognitoSub) {
@@ -133,11 +99,6 @@ export const handler = async (
       };
     }
     await setInternalUserRlsContext(client, employerId);
-    // Access records name the employer; a refusal or failure from here on is
-    // recorded as an attempt once the transaction has ended.
-    caller = auditCaller(event, { kind: 'employer', id: employerId }, 'web');
-    const purpose = { kind: 'job', id: jobId } as const;
-    attempt = { surface: SURFACE, subjectUserIds: [workerId], purpose };
 
     // Verify employer owns the job
     const jobCheck = await client.query(
@@ -146,7 +107,6 @@ export const handler = async (
     );
     if (jobCheck.rows.length === 0) {
       await client.query('COMMIT');
-      await recordAttempt(client, caller, { ...attempt, outcome: 'denied' });
       return {
         statusCode: 403,
         headers: CORS_HEADERS,
@@ -184,8 +144,8 @@ export const handler = async (
               j.required_fields, j.optional_fields,
               j.required_docs, j.optional_docs,
               j.certification_requirements, j.pre_application_prompts,
-              -- JOB-SCOPED, and no syncDocumentSnapshots: this is an
-              -- employer session on the request login, and the sync sets a worker GUC
+              -- JOB-SCOPED, and no syncDocumentSnapshots: this is a
+              -- jale_admin employer session, and the sync sets a worker GUC
               -- and writes FORCE-RLS worker_documents. Same set 091's hire
               -- gate measures.
               ARRAY(
@@ -204,7 +164,6 @@ export const handler = async (
 
     if (result.rows.length === 0) {
       await client.query('COMMIT');
-      await recordAttempt(client, caller, { ...attempt, outcome: 'not_found' });
       return {
         statusCode: 404,
         headers: CORS_HEADERS,
@@ -216,7 +175,15 @@ export const handler = async (
     // shared PoolClient, which can't run two queries concurrently) so a
     // worker/job combination that doesn't resolve to an applicant never pays
     // for a trust-assessment lookup whose result would just be discarded.
-    const assessmentRes = await client.query(TRUST_ASSESSMENT_SQL, [workerId]);
+    const assessmentRes = await client.query(
+      `SELECT id, profession_key, status, competency_score, score_components,
+              answers, scored_at, rubric_version
+         FROM worker_trust_assessments
+        WHERE user_id = $1
+        ORDER BY (status = 'scored') DESC, created_at DESC
+        LIMIT 1`,
+      [workerId],
+    );
     const ta = assessmentRes.rows[0] ?? null;
     const trust_assessment = ta
       ? {
@@ -283,6 +250,8 @@ export const handler = async (
       }
     }
 
+    await client.query('COMMIT');
+
     // Engine inputs in, derived vocabulary out -- the raw columns never
     // reach the wire.
     const {
@@ -297,29 +266,17 @@ export const handler = async (
       pre_application_prompts: prompts,
       ...applicant
     } = result.rows[0];
-    const body = {
-      ...applicant,
-      ...stageView(result.rows[0]),
-      prompt_answers: promptAnswersView(prompts, rawPromptAnswers),
-      trust_assessment,
-      trust_extraction,
-    };
-
-    // The read and its access record commit together, before anything leaves.
-    await recordAccess(client, caller, {
-      surface: SURFACE,
-      subjectUserIds: [result.rows[0].worker_id],
-      recordIds: [result.rows[0].application_id],
-      resultCount: 1,
-      fieldNames: responseFieldNames(body),
-      purpose,
-    });
-    await client.query('COMMIT');
 
     return {
       statusCode: 200,
       headers: CORS_HEADERS,
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        ...applicant,
+        ...stageView(result.rows[0]),
+        prompt_answers: promptAnswersView(prompts, rawPromptAnswers),
+        trust_assessment,
+        trust_extraction,
+      }),
     };
   } catch (err) {
     if (client) {
@@ -328,7 +285,6 @@ export const handler = async (
       } catch {
         // ignore rollback errors
       }
-      if (caller && attempt) await recordAttempt(client, caller, { ...attempt, outcome: 'failed' });
     }
     console.error('employer-worker-profile error:', errorMessage(err));
     return {

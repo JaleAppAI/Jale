@@ -7,7 +7,7 @@ import {
   type Queryable,
 } from '../../../scripts/whatsapp-runtime-controls';
 
-const PHONE = '+19155550123';
+const PHONE = '+19152272188';
 
 function hashPhone(phone: string): string {
   return createHash('sha256').update(phone.trim()).digest('hex');

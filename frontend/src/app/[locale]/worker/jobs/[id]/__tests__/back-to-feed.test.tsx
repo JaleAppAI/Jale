@@ -79,7 +79,7 @@ const job: JobDetail = {
     title: 'Drywall Finisher',
     location: 'Austin, TX',
     job_type: 'full-time',
-    company_name: 'NB Construction',
+    company_name: 'RM Construction',
     pay_min: 22,
     pay_max: 26,
     pay_interval: 'hourly',

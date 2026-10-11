@@ -67,7 +67,7 @@ function application(n: number): Application {
     application_id: `app-${n}`,
     job_id: `job-${n}`,
     job_title: `Job ${n}`,
-    company_name: 'NB Construction',
+    company_name: 'RM Construction',
     status: 'pending',
     applied_at: '2026-09-01T10:00:00.000Z',
     job_status: 'active',
@@ -193,7 +193,7 @@ describe('worker applications — notices come from the summary', () => {
           application_id: 'app-137',
           job_id: 'job-137',
           job_title: 'Roofer',
-          company_name: 'Northwind & Birch',
+          company_name: 'Rucoba & Maya',
           remaining_count: 3,
         }],
         unacknowledged_hires: [],
@@ -204,7 +204,7 @@ describe('worker applications — notices come from the summary', () => {
 
     await waitFor(() => expect(screen.getByText(interpolate(
       message('worker_applications.details_banner.row_body'),
-      { company: 'Northwind & Birch' },
+      { company: 'Rucoba & Maya' },
     ))).toBeInTheDocument());
   });
 
@@ -213,7 +213,7 @@ describe('worker applications — notices come from the summary', () => {
       application_id: `app-${n}`,
       job_id: `job-${n}`,
       job_title: `Job ${n}`,
-      company_name: 'Northwind & Birch',
+      company_name: 'Rucoba & Maya',
       remaining_count: 1,
     });
     getApplications.mockResolvedValue({

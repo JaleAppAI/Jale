@@ -3,17 +3,11 @@ import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { closeEmployerConversation, getEmployerConversationDetail } from '../lib/job-messaging';
 import { checkCompliance } from '../legal/check-compliance';
-import { auditCaller, type AuditCaller } from '../lib/audit/caller';
-import { conversationReadEvent } from '../lib/audit/conversations';
-import { recordAccess, recordAttempt, type AttemptEvent } from '../lib/audit/record';
 
 
 const CORS_HEADERS = corsHeaders();
-const SURFACE = 'employer.conversation_update';
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   let client;
-  let caller: AuditCaller | undefined;
-  let attempt: Omit<AttemptEvent, 'outcome'> | undefined;
 
   try {
     const cognitoSub: string | undefined = event.requestContext.authorizer?.claims?.sub;
@@ -56,17 +50,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_provisioned' }) };
     }
     await setInternalUserRlsContext(client, employerId);
-    caller = auditCaller(event, { kind: 'employer', id: employerId }, 'web');
-    attempt = { surface: SURFACE, recordIds: [conversationId] };
 
     const updated = await closeEmployerConversation(client, conversationId, employerId);
     const detail = await getEmployerConversationDetail(client, conversationId, employerId);
-    // Only a response that carries the thread is a read of it.
-    if (updated && detail) await recordAccess(client, caller, conversationReadEvent(SURFACE, detail));
     await client.query('COMMIT');
 
     if (!updated || !detail) {
-      await recordAttempt(client, caller, { ...attempt, outcome: 'not_found' });
       return { statusCode: 404, headers: CORS_HEADERS, body: JSON.stringify({ error: 'conversation_not_found' }) };
     }
 
@@ -76,10 +65,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       body: JSON.stringify(detail),
     };
   } catch (err) {
-    if (client) {
-      try { await client.query('ROLLBACK'); } catch {}
-      if (caller && attempt) await recordAttempt(client, caller, { ...attempt, outcome: 'failed' });
-    }
+    if (client) { try { await client.query('ROLLBACK'); } catch {} }
     console.error('employer-conversations-update error:', errorMessage(err));
     return { statusCode: 500, headers: CORS_HEADERS, body: JSON.stringify({ error: 'internal_error' }) };
   } finally {

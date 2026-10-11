@@ -1,9 +1,9 @@
 import * as cdk from 'aws-cdk-lib';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { Template, Match } from 'aws-cdk-lib/assertions';
 import { NotificationsStack } from '../../../lib/stacks/notifications-stack';
-import { dbLoginSecretName } from '../../../lib/constructs/db-login-secrets';
 
 const PRODUCER_DESCRIPTION = 'Employer daily digest producer';
 const UNSUBSCRIBE_DESCRIPTION = 'Employer digest unsubscribe endpoint (unauthenticated)';
@@ -39,6 +39,7 @@ function buildStack(options: {
   const infraHarness = new cdk.Stack(app, 'NotificationsInfraHarness');
   const vpc = new ec2.Vpc(infraHarness, 'Vpc', { maxAzs: 2 });
   const lambdaSg = new ec2.SecurityGroup(infraHarness, 'LambdaSg', { vpc });
+  const dbSecret = new secretsmanager.Secret(infraHarness, 'DbSecret');
 
   const apiHarness = new cdk.Stack(app, 'NotificationsApiHarness');
   // `defaultCorsPreflightOptions` is not decoration here: ApiStack's real
@@ -59,6 +60,7 @@ function buildStack(options: {
   const stack = new NotificationsStack(app, 'TestNotificationsStack', {
     vpc,
     lambdaSg,
+    dbSecret,
     publicResource,
     alarmTopicArn: options.alarmTopicArn,
     emailConfigurationSetName: options.emailConfigurationSetName,
@@ -555,14 +557,11 @@ describe('NotificationsStack', () => {
       });
     });
 
-    it('runs the handler in the VPC as its own SES-feedback job login', () => {
+    it('runs the handler in the VPC as jale_admin, on the same secret the settings API uses', () => {
       feedbackTemplate.hasResourceProperties('AWS::Lambda::Function', {
         Description: 'SES bounce/complaint handler — switches the employer digest off',
         Timeout: 30,
-        Environment: { Variables: Match.objectLike({
-          DB_SECRET_ARN: dbLoginSecretName('jale_job_ses_feedback'),
-          DB_EXPECTED_LOGIN: 'jale_job_ses_feedback',
-        }) },
+        Environment: { Variables: Match.objectLike({ DB_SECRET_ARN: Match.anyValue() }) },
         VpcConfig: Match.anyValue(),
       });
     });

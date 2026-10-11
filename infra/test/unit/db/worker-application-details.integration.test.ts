@@ -503,8 +503,8 @@ maybeDescribe('L2.4: the web stage-2 details door, end to end', () => {
   });
 
   test('8b. the employer can now hire A, and still cannot hire the untouched B', async () => {
-    // An employer session on the bed: SET LOCAL ROLE to the bed's owner role,
-    // so the employer policies and the 091 trigger apply to the UPDATE.
+    // A real jale_admin employer session: SET LOCAL ROLE so the employer
+    // policies (and the 091 trigger) apply exactly as they do in production.
     const hireA = async (applicationId: string) => {
       await su.query('BEGIN');
       try {

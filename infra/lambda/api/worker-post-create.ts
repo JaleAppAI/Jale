@@ -1,7 +1,5 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { S3Client, HeadObjectCommand } from '@aws-sdk/client-s3';
-import { auditCaller } from '../lib/audit/caller';
-import { setAuditContext } from '../lib/audit/context';
 import { getDbPool, setRlsContext, setInternalUserRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
@@ -193,7 +191,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       await client.query('BEGIN');
       await setRlsContext(client, cognitoSub);
       await setInternalUserRlsContext(client, workerId);
-      await setAuditContext(client, auditCaller(event, { kind: 'worker', id: workerId }, 'web'), 'worker.post_create');
 
       let postRow;
       try {

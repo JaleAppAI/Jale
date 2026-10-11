@@ -18,15 +18,15 @@ import { DetailsRequestedBanner, DetailsRequestedMultiBanner } from '../DetailsR
 
 describe('DetailsRequestedBanner', () => {
   it('links to THIS application, not to the list', () => {
-    renderIntl(<DetailsRequestedBanner applicationId="app-41f" companyName="Northwind & Birch" />);
+    renderIntl(<DetailsRequestedBanner applicationId="app-41f" companyName="Rucoba & Maya" />);
     expect(screen.getByRole('link', { name: message('worker_applications.details_banner.one_cta') }))
       .toHaveAttribute('href', '/worker/applications/app-41f');
   });
 
   it('names the employer', () => {
-    renderIntl(<DetailsRequestedBanner applicationId="app-1" companyName="Northwind & Birch" />);
+    renderIntl(<DetailsRequestedBanner applicationId="app-1" companyName="Rucoba & Maya" />);
     expect(screen.getByText(
-      interpolate(message('worker_applications.details_banner.row_body'), { company: 'Northwind & Birch' }),
+      interpolate(message('worker_applications.details_banner.row_body'), { company: 'Rucoba & Maya' }),
     )).toBeInTheDocument();
   });
 

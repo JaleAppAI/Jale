@@ -64,18 +64,6 @@ export type RouteResult =
       handoff: 'ready';
       workerId: string;
       stepKey: 'ready';
-      /**
-       * Set only by `handleOtpStep`'s bind of an ALREADY-ready
-       * worker. The inbound body was the OTP code, so the processor must not
-       * route it as a ready worker's command -- it sends the referred job's
-       * card when there is one, and nothing at all otherwise.
-       */
-      consumedAsOtp?: true;
-      /**
-       * The job that bind claimed, when it is still open and this worker has
-       * not applied to it. Only ever present alongside `consumedAsOtp`.
-       */
-      referredJobId?: string;
     };
 
 // ── Locally-composed deps (no canonical types redeclared here) ─────────

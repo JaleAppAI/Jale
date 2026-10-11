@@ -36,7 +36,7 @@ export function YesNo({ value, onChange, label, ariaLabel }: { value: boolean | 
   return (
     <div className="flex items-center gap-2">
       {label && <span className="text-xs font-semibold text-[var(--jale-ink-2)]">{label}</span>}
-      <div data-private role="radiogroup" aria-label={ariaLabel ?? label} className="flex gap-1 rounded-full border border-[var(--jale-divider)] p-0.5">
+      <div role="radiogroup" aria-label={ariaLabel ?? label} className="flex gap-1 rounded-full border border-[var(--jale-divider)] p-0.5">
         {[true, false].map((option) => {
           const selected = value === option;
           return (
@@ -67,20 +67,16 @@ export function UploadButton({ disabled, label, onFile }: { disabled?: boolean; 
       htmlFor={inputId}
       className={[
         'inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-full border border-[var(--jale-divider)] px-3 text-xs font-semibold text-[var(--jale-ink)]',
-        'hover:bg-[var(--jale-paper-2)] focus-within:shadow-[var(--shadow-focus)]',
+        'hover:bg-[var(--jale-paper-2)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]',
         disabled ? 'pointer-events-none opacity-50' : '',
       ].join(' ')}
     >
       <Icon name="upload" />
       {label}
-      {/* `sr-only` rather than `hidden`, as on the document-link page: a
-          display:none input cannot take focus, which left this control
-          unreachable by keyboard. The label shows the focus ring through
-          `focus-within`. */}
       <input
         id={inputId}
         type="file"
-        className="sr-only"
+        hidden
         disabled={disabled}
         accept="application/pdf,image/jpeg,image/png"
         onChange={(e) => {

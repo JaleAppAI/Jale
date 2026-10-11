@@ -8,9 +8,9 @@
 // Lambda notifies Google's Indexing API so a newly public/removed job page
 // gets crawled promptly instead of waiting on organic discovery.
 //
-// Runs on its own job login, jale_job_visibility_drain, which may read and
-// update every row of job_visibility_events for draining and holds nothing
-// else (per the schema contract).
+// Runs as jale_admin (the app DB secret) -- job_visibility_events is
+// RLS default-deny, and jale_admin has the direct SELECT/UPDATE policies for
+// draining (per the schema contract).
 //
 // Never logs the service-account key, the OAuth assertion, or the access
 // token -- only static metric codes and HTTP status codes.

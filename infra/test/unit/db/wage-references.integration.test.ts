@@ -20,8 +20,6 @@
 import { Client } from 'pg';
 import * as path from 'path';
 import { loadSeed, upsertWageReferences, upsertCrosswalk } from '../../../scripts/seed-oews-wages';
-import { reviewedPolicyCopies } from './helpers/policy-copies';
-import { describeInProfiles } from './helpers/login-pool';
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
 const seedPath = path.join(__dirname, '..', '..', '..', 'scripts', 'data', 'oews-tx-seed.json');
@@ -51,9 +49,6 @@ function urlForRole(baseUrl: string, user: string, password: string): string {
   return u.toString();
 }
 
-// These tests check row policies as the standard and request test beds apply
-// them, so they run in those profiles only. Without a database URL the suite
-// still skips.
 function maybeDescribe(name: string, fn: () => void): void {
   if (!databaseUrl) {
     describe.skip(name, fn);
@@ -63,7 +58,7 @@ function maybeDescribe(name: string, fn: () => void): void {
         `This is a DONE_WITH_CONCERNS gate: Docker/Postgres was unavailable at test time.`,
     );
   } else {
-    describeInProfiles(['standard', 'request'], name, fn);
+    describe(name, fn);
   }
 }
 
@@ -122,42 +117,30 @@ maybeDescribe('wage_references / city_cbsa_crosswalk integration (migration 071)
       }
     });
 
-    it('wage_references has exactly its read policy (SELECT, USING true, to jale_admin) and that policy\'s reviewed copies outside a seed window', async () => {
+    it('wage_references has exactly one policy (SELECT, USING true, to jale_admin) outside a seed window', async () => {
       if (!databaseUrl) return;
-      const { rows, copies } = await withClient(superuserUrl, async (client) => ({
-        rows: (await client.query<{ policyname: string; cmd: string; roles: string[]; qual: string | null }>(
-          `SELECT policyname, cmd, roles::text[] AS roles, qual FROM pg_policies WHERE tablename = 'wage_references'`,
-        )).rows,
-        copies: await reviewedPolicyCopies(client, 'public.wage_references'),
-      }));
-      // The copies are a later migration's, for a dedicated login; none on a bed without it.
-      expect(rows.map((r) => r.policyname).sort())
-        .toEqual(['wage_references_read_all', ...copies.map((copy) => copy.policyname)].sort());
-      const byName = new Map(rows.map((r) => [r.policyname, r]));
-      expect(byName.get('wage_references_read_all'))
-        .toEqual({ policyname: 'wage_references_read_all', cmd: 'SELECT', roles: ['jale_admin'], qual: 'true' });
-      for (const copy of copies) {
-        expect(byName.get(copy.policyname)).toEqual({ policyname: copy.policyname, cmd: copy.cmd, roles: copy.roles, qual: 'true' });
-      }
+      const rows = await withClient(superuserUrl, (client) =>
+        client.query<{ policyname: string; cmd: string; roles: string[] }>(
+          `SELECT policyname, cmd, roles::text[] AS roles FROM pg_policies WHERE tablename = 'wage_references'`,
+        ),
+      );
+      expect(rows.rows).toHaveLength(1);
+      expect(rows.rows[0].policyname).toBe('wage_references_read_all');
+      expect(rows.rows[0].cmd).toBe('SELECT');
+      expect(rows.rows[0].roles).toEqual(['jale_admin']);
     });
 
-    it('city_cbsa_crosswalk has exactly its read policy (SELECT, USING true, to jale_admin) and that policy\'s reviewed copies outside a seed window', async () => {
+    it('city_cbsa_crosswalk has exactly one policy (SELECT, USING true, to jale_admin) outside a seed window', async () => {
       if (!databaseUrl) return;
-      const { rows, copies } = await withClient(superuserUrl, async (client) => ({
-        rows: (await client.query<{ policyname: string; cmd: string; roles: string[]; qual: string | null }>(
-          `SELECT policyname, cmd, roles::text[] AS roles, qual FROM pg_policies WHERE tablename = 'city_cbsa_crosswalk'`,
-        )).rows,
-        copies: await reviewedPolicyCopies(client, 'public.city_cbsa_crosswalk'),
-      }));
-      // The copies are a later migration's, for a dedicated login; none on a bed without it.
-      expect(rows.map((r) => r.policyname).sort())
-        .toEqual(['city_cbsa_crosswalk_read_all', ...copies.map((copy) => copy.policyname)].sort());
-      const byName = new Map(rows.map((r) => [r.policyname, r]));
-      expect(byName.get('city_cbsa_crosswalk_read_all'))
-        .toEqual({ policyname: 'city_cbsa_crosswalk_read_all', cmd: 'SELECT', roles: ['jale_admin'], qual: 'true' });
-      for (const copy of copies) {
-        expect(byName.get(copy.policyname)).toEqual({ policyname: copy.policyname, cmd: copy.cmd, roles: copy.roles, qual: 'true' });
-      }
+      const rows = await withClient(superuserUrl, (client) =>
+        client.query<{ policyname: string; cmd: string; roles: string[] }>(
+          `SELECT policyname, cmd, roles::text[] AS roles FROM pg_policies WHERE tablename = 'city_cbsa_crosswalk'`,
+        ),
+      );
+      expect(rows.rows).toHaveLength(1);
+      expect(rows.rows[0].policyname).toBe('city_cbsa_crosswalk_read_all');
+      expect(rows.rows[0].cmd).toBe('SELECT');
+      expect(rows.rows[0].roles).toEqual(['jale_admin']);
     });
   });
 

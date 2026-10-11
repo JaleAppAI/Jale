@@ -13,14 +13,6 @@ describe('proxy', () => {
     expect(res.headers.get('location')).toBeNull();
   });
 
-  // The worker web link picks its own locale (Spanish by default); next-intl
-  // would otherwise send it to /en/app, which is a 404.
-  it('passes /app straight through (NextResponse.next, no locale redirect)', () => {
-    const res = proxy(requestFor('/app'));
-    expect(res.status).toBe(200);
-    expect(res.headers.get('location')).toBeNull();
-  });
-
   // Control case: without the /whatsapp bypass this test itself would fail,
   // proving the assertions above actually distinguish next-intl's redirect
   // from a pass-through instead of passing trivially.

@@ -2,32 +2,11 @@
 // signup/OTP flow. Kept deliberately narrow: the redirect target is built
 // from a bare job UUID, never a caller-supplied path -- an attacker-supplied
 // query param that cannot express a path cannot express an open redirect.
-//
-// The stash is a BACKUP now, not the record. Sign-in tells the server which
-// job the worker came for, and every onboarding screen reads it
-// back from there, so it survives a new tab, another device and a login
-// bounce. The stash only covers the one case the server cannot: a claim that
-// never landed. That is also why nothing clears it on a visit that simply
-// lacks `job`/`share` -- such visits are exactly the bounces it exists for.
-
-import { locales } from '@/i18n/locales';
-import { sanitizeReturnPath } from './login-url';
 
 const STORAGE_KEY = 'pendingReferral';
 const COMPLETING_KEY = 'authFlowCompleting';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/** `/{locale}/worker/jobs/{id}`, optionally followed by a query or fragment. */
-const JOB_RETURN_PATH_RE = /^\/([a-z]{2})\/worker\/jobs\/([^/?#]+)(?:[?#].*)?$/;
-
-/**
- * How long sign-in waits for the claim before it starts the session anyway.
- * About four seconds: long enough for a slow phone connection to land the
- * request, short enough that a worker who has just typed the right code is
- * not left wondering whether it worked.
- */
-export const CLAIM_WAIT_MS = 4_000;
 
 export interface PendingReferral {
   jobId: string | null;
@@ -42,71 +21,14 @@ export function validateJobId(value: string | null | undefined): string | null {
 }
 
 /**
- * The job a `returnUrl` is about, when it is a worker job page.
- *
- * `useRequireAuth` bounces a signed-out visitor to
- * `/{locale}/auth/worker?returnUrl=/{locale}/worker/jobs/<uuid>`, and that
- * sign-in is about that job exactly as a `?job=` link would be. Only a
- * same-origin path survives (`sanitizeReturnPath` runs first), only the job
- * DETAIL page counts, and the only thing that can come out is a bare UUID.
- */
-export function jobIdFromReturnPath(path: string | null | undefined): string | null {
-  const safe = sanitizeReturnPath(path ?? null);
-  if (!safe) return null;
-  const match = JOB_RETURN_PATH_RE.exec(safe);
-  if (!match || !(locales as readonly string[]).includes(match[1])) return null;
-  return validateJobId(match[2]);
-}
-
-/**
- * Runs `work` and waits for it to settle -- or for `ms` to pass, whichever
- * comes first. Never rejects: a failed or hung claim is simply over.
- *
- * It deliberately does NOT cancel `work`, and hands it nothing it could be
- * cancelled through. A claim still in flight when the wait ends keeps going
- * after the sign-in form unmounts (under `apiFetch`'s own per-attempt timeout)
- * and still lands; the onboarding read then picks the job up on a later
- * response. `work` is a function rather than a promise so a synchronous throw
- * is caught here too.
- */
-export async function settleWithin(work: () => unknown, ms: number): Promise<'settled' | 'timed_out'> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<'timed_out'>((resolve) => {
-    timer = setTimeout(() => resolve('timed_out'), ms);
-  });
-  const settled = new Promise<unknown>((resolve) => resolve(work()))
-    .then(() => 'settled' as const, () => 'settled' as const);
-  try {
-    return await Promise.race([settled, timeout]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/**
- * The tab's session storage, or null where it cannot be used: outside the
- * browser; where the browser blocks this site's data, when the property access
- * itself throws; and where storage is switched off, when the property is null
- * (some in-app web views). Every helper below reaches storage through this and
- * inside its own `try`, so a refusal reads as "nothing stashed" or "not
- * completing" and can never interrupt a sign-in.
- */
-function sessionStore(): Storage | null {
-  try {
-    return typeof sessionStorage === 'undefined' ? null : (sessionStorage ?? null);
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Stashes the referral context for the duration of the signup/OTP flow.
- * Best-effort carry-through, not core auth: storage that is blocked, switched
- * off or full simply keeps nothing.
+ * No-ops outside the browser and swallows storage errors (private
+ * browsing / quota) since this is best-effort carry-through, not core auth.
  */
 export function stashPendingReferral(referral: PendingReferral): void {
+  if (typeof sessionStorage === 'undefined') return;
   try {
-    sessionStore()?.setItem(STORAGE_KEY, JSON.stringify(referral));
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(referral));
   } catch {
     // best-effort only
   }
@@ -114,12 +36,8 @@ export function stashPendingReferral(referral: PendingReferral): void {
 
 /** Reads the stashed referral context, tolerating garbage/missing JSON. */
 export function readPendingReferral(): PendingReferral | null {
-  let raw: string | null;
-  try {
-    raw = sessionStore()?.getItem(STORAGE_KEY) ?? null;
-  } catch {
-    return null;
-  }
+  if (typeof sessionStorage === 'undefined') return null;
+  const raw = sessionStorage.getItem(STORAGE_KEY);
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw);
@@ -133,8 +51,9 @@ export function readPendingReferral(): PendingReferral | null {
 }
 
 export function clearPendingReferral(): void {
+  if (typeof sessionStorage === 'undefined') return;
   try {
-    sessionStore()?.removeItem(STORAGE_KEY);
+    sessionStorage.removeItem(STORAGE_KEY);
   } catch {
     // best-effort only
   }
@@ -146,24 +65,27 @@ export function clearPendingReferral(): void {
 // the two don't both claim the referral and race on the redirect.
 
 export function markAuthFlowCompleting(): void {
+  if (typeof sessionStorage === 'undefined') return;
   try {
-    sessionStore()?.setItem(COMPLETING_KEY, '1');
+    sessionStorage.setItem(COMPLETING_KEY, '1');
   } catch {
     // best-effort only
   }
 }
 
 export function isAuthFlowCompleting(): boolean {
+  if (typeof sessionStorage === 'undefined') return false;
   try {
-    return sessionStore()?.getItem(COMPLETING_KEY) === '1';
+    return sessionStorage.getItem(COMPLETING_KEY) === '1';
   } catch {
     return false;
   }
 }
 
 export function clearAuthFlowCompleting(): void {
+  if (typeof sessionStorage === 'undefined') return;
   try {
-    sessionStore()?.removeItem(COMPLETING_KEY);
+    sessionStorage.removeItem(COMPLETING_KEY);
   } catch {
     // best-effort only
   }

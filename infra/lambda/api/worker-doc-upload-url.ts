@@ -1,5 +1,5 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { getDbPool } from '../lib/db';
@@ -10,19 +10,12 @@ import { validateCertName } from '../lib/cert-name';
 const CORS_HEADERS = corsHeaders();
 const s3 = new S3Client({});
 const VALID_DOC_TYPES = DOC_TYPES;
+const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const MIME_TO_EXT: Record<string, string> = {
   'application/pdf': 'pdf',
   'image/jpeg': 'jpg',
   'image/png': 'png',
 };
-
-/** The resolve call's refusals, answered exactly as before the call existed. */
-const RESOLVE_REFUSALS = new Map<string, { statusCode: number; body: Record<string, unknown> }>([
-  ['invalid_token', { statusCode: 401, body: { error: 'invalid_token' } }],
-  ['document_already_confirmed', { statusCode: 409, body: { error: 'document_already_confirmed' } }],
-  ['invalid_doc_type', { statusCode: 400, body: { error: 'invalid_doc_type', valid: DOC_TYPES } }],
-  ['invalid_mime_type', { statusCode: 400, body: { error: 'invalid_mime_type', valid: Object.keys(MIME_TO_EXT) } }],
-]);
 
 export const handler = async (
   event: APIGatewayProxyEvent,
@@ -87,26 +80,55 @@ export const handler = async (
     const pool = await getDbPool();
     client = await pool.connect();
 
-    // All of the database work is one capability call: it validates the
-    // token (unexpired, unsubmitted, application still present), the doc
-    // type and the MIME type, and issues or re-issues the slot -- never a
-    // confirmed one -- with an object key built in the database from the
-    // token's job and worker. The presign runs inside the same transaction,
-    // so a failed presign leaves no slot issued.
     await client.query('BEGIN');
-    const resolved = await client.query<{ outcome: string; s3_key: string | null }>(
-      `SELECT outcome, s3_key FROM jale_cap.upload_token_resolve($1, $2, $3)`,
-      [tokenHash, doc_type, mime_type],
+
+    const tokenResult = await client.query(
+      `SELECT t.worker_id, t.job_id
+       FROM document_upload_tokens t
+       JOIN job_applications ja
+         ON ja.job_id = t.job_id
+        AND ja.worker_id = t.worker_id
+       WHERE t.token_hash = $1
+         AND t.used = false
+         AND t.expires_at > now()`,
+      [tokenHash],
     );
-    const outcome = resolved.rows[0]?.outcome;
-    const refusal = outcome === undefined ? undefined : RESOLVE_REFUSALS.get(outcome);
-    if (refusal) {
+
+    if (tokenResult.rows.length === 0) {
       await client.query('ROLLBACK');
-      return { statusCode: refusal.statusCode, headers: CORS_HEADERS, body: JSON.stringify(refusal.body) };
+      return {
+        statusCode: 401,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({ error: 'invalid_token' }),
+      };
     }
-    const s3Key = resolved.rows[0]?.s3_key;
-    if (outcome !== 'ok' || !s3Key) {
-      throw new Error(`upload_token_resolve_unexpected_outcome:${String(outcome)}`);
+
+    const { worker_id, job_id } = tokenResult.rows[0];
+    const s3Key = `documents/${job_id}/${worker_id}/${doc_type}/${randomUUID()}.${ext}`;
+
+    const slotResult = await client.query(
+      `INSERT INTO document_upload_token_slots (
+         token_hash, doc_type, issued_s3_key, expected_mime_type, max_file_size, requested_at
+       )
+       VALUES ($1, $2, $3, $4, $5, now())
+       ON CONFLICT (token_hash, doc_type) DO UPDATE
+         SET issued_s3_key = EXCLUDED.issued_s3_key,
+             expected_mime_type = EXCLUDED.expected_mime_type,
+             max_file_size = EXCLUDED.max_file_size,
+             requested_at = now(),
+             s3_version_id = NULL
+       WHERE document_upload_token_slots.confirmed_at IS NULL
+       RETURNING issued_s3_key`,
+      [tokenHash, doc_type, s3Key, mime_type, MAX_FILE_SIZE],
+    );
+
+    if (slotResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return {
+        statusCode: 409,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({ error: 'document_already_confirmed' }),
+      };
     }
 
     const url = await getSignedUrl(

@@ -51,7 +51,7 @@ const STATE = {
     job: {
         id: 'job-1',
         title: 'Concrete Finisher',
-        company_name: 'NB Construction',
+        company_name: 'RM Construction',
         status: 'active',
         required_fields: ['date_available'],
         optional_fields: [],

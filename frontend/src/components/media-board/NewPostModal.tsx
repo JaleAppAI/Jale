@@ -11,7 +11,6 @@ import {
   uploadFileToS3,
 } from '@/lib/api/worker';
 import { downscaleImage } from '@/lib/image-resize';
-import { useReportCategoryHint } from '@/components/report/report-problem-context';
 
 const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 const MAX_PHOTOS = 10;
@@ -34,8 +33,6 @@ export function NewPostModal({
   const [caption, setCaption] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  // While the composer is open, a report is about uploading photos.
-  useReportCategoryHint('uploads');
 
   function handlePick(e: React.ChangeEvent<HTMLInputElement>) {
     setError(null);

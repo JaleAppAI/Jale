@@ -10,7 +10,6 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
 import { JaleCognitoPool } from '../constructs/cognito-pool';
-import { dedicatedDbLogin } from '../constructs/db-login-secrets';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
 import { normalizeWhatsappStatusCallbackUrl } from '../whatsapp-status-callback-url';
 import { BEDROCK_MODEL_ID, bedrockArns } from '../bedrock-arns';
@@ -22,6 +21,7 @@ export interface ApiStackProps extends cdk.StackProps {
   readonly vpc: ec2.IVpc;
   readonly privateSubnets: ec2.ISubnet[];
   readonly lambdaSg: ec2.ISecurityGroup;
+  readonly dbSecret: secretsmanager.ISecret;
   readonly candidateMaterializationQueue?: sqs.IQueue;
   readonly employerCandidateRerankQueue?: sqs.IQueue;
   readonly aliasGeneratorFn: lambda.IFunction;
@@ -104,14 +104,6 @@ export class ApiStack extends cdk.Stack {
       'jale/whatsapp/twilio',
     );
 
-    // ── Database logins ──
-    // Every authenticated route here connects as the request login. The one
-    // unauthenticated route that touches the database, worker web signup,
-    // connects as the public login, which can only execute the functions
-    // that route calls.
-    const apiDb = dedicatedDbLogin(this, 'jale_api');
-    const apiPublicDb = dedicatedDbLogin(this, 'jale_api_public');
-
     // ── API Gateway CloudWatch account role ──
     // This is an account-level setting (one per region) required before API Gateway
     // can write access logs to CloudWatch. Without it, stage creation fails with
@@ -140,17 +132,7 @@ export class ApiStack extends cdk.Stack {
       deployOptions: {
         stageName,
         accessLogDestination: new apigateway.LogGroupLogDestination(accessLogGroup),
-        // The standard fields, unchanged and in their usual order, plus the
-        // integration's own request id (for a Lambda proxy route, the
-        // invocation id that heads that Lambda's log lines), so a request id
-        // seen by a client leads to the handler's logs. Then the
-        // integration's latency and status.
-        accessLogFormat: apigateway.AccessLogFormat.custom(JSON.stringify({
-          ...JSON.parse(apigateway.AccessLogFormat.jsonWithStandardFields().toString()),
-          awsEndpointRequestId: apigateway.AccessLogField.contextAwsEndpointRequestId(),
-          integrationLatency: apigateway.AccessLogField.contextIntegrationLatency(),
-          integrationStatus: apigateway.AccessLogField.contextIntegrationStatus(),
-        })),
+        accessLogFormat: apigateway.AccessLogFormat.jsonWithStandardFields(),
         throttlingBurstLimit: 100,
         throttlingRateLimit: 50,
       },
@@ -225,11 +207,11 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        ...apiDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
-    apiDb.grantRead(payReferenceLambda.function);
+    props.dbSecret.grantRead(payReferenceLambda.function);
 
     // Worker profile — worker auth, DB access
     const workerProfileLambda = new JaleLambdaFunction(this, 'WorkerProfileLambda', {
@@ -238,12 +220,12 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        ...apiDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
-    apiDb.grantRead(workerProfileLambda.function);
+    props.dbSecret.grantRead(workerProfileLambda.function);
 
     // Worker application defaults — worker auth, DB access. Prefill data
     // for a new application (worker_application_defaults,
@@ -254,12 +236,12 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        ...apiDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
-    apiDb.grantRead(workerApplicationDefaultsGetLambda.function);
+    props.dbSecret.grantRead(workerApplicationDefaultsGetLambda.function);
 
     // Employer digest settings — employer auth, DB access. GET + PATCH on one
     // Lambda (employer-profile precedent). Reads/writes
@@ -270,12 +252,12 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        ...apiDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
-    apiDb.grantRead(employerDigestSettingsLambda.function);
+    props.dbSecret.grantRead(employerDigestSettingsLambda.function);
 
     // Employer profile — employer auth, DB access
     const employerProfileLambda = new JaleLambdaFunction(this, 'EmployerProfileLambda', {
@@ -284,12 +266,12 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        ...apiDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
-    apiDb.grantRead(employerProfileLambda.function);
+    props.dbSecret.grantRead(employerProfileLambda.function);
 
     // Employer jobs list — employer auth, DB access
     const employerJobsListLambda = new JaleLambdaFunction(this, 'EmployerJobsListLambda', {
@@ -298,12 +280,12 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        ...apiDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
-    apiDb.grantRead(employerJobsListLambda.function);
+    props.dbSecret.grantRead(employerJobsListLambda.function);
 
     // Employer jobs create — employer auth, DB access
     const employerJobsCreateLambda = new JaleLambdaFunction(this, 'EmployerJobsCreateLambda', {
@@ -312,12 +294,12 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        ...apiDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
-    apiDb.grantRead(employerJobsCreateLambda.function);
+    props.dbSecret.grantRead(employerJobsCreateLambda.function);
 
     // Employer job detail — employer auth, DB access
     const employerJobsDetailLambda = new JaleLambdaFunction(this, 'EmployerJobsDetailLambda', {
@@ -326,12 +308,12 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        ...apiDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
-    apiDb.grantRead(employerJobsDetailLambda.function);
+    props.dbSecret.grantRead(employerJobsDetailLambda.function);
 
     const employerJobsUpdateLambda = new JaleLambdaFunction(this, 'EmployerJobsUpdateLambda', {
       entry: path.join(__dirname, '../../lambda/api/employer-jobs-update.ts'),
@@ -339,12 +321,12 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        ...apiDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
-    apiDb.grantRead(employerJobsUpdateLambda.function);
+    props.dbSecret.grantRead(employerJobsUpdateLambda.function);
 
     const employerJobsDeleteLambda = new JaleLambdaFunction(this, 'EmployerJobsDeleteLambda', {
       entry: path.join(__dirname, '../../lambda/api/employer-jobs-delete.ts'),
@@ -352,12 +334,12 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        ...apiDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
-    apiDb.grantRead(employerJobsDeleteLambda.function);
+    props.dbSecret.grantRead(employerJobsDeleteLambda.function);
 
     // T-A1: AI job-description generation — employer auth, NO DB access (the
     // construct still places it in the VPC like every sibling Lambda; that's
@@ -402,12 +384,12 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        ...apiDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
-    apiDb.grantRead(employerJobApplicantsLambda.function);
+    props.dbSecret.grantRead(employerJobApplicantsLambda.function);
 
     // Employer application status update — employer auth, DB access
     const employerApplicationStatusUpdateLambda = new JaleLambdaFunction(this, 'EmployerApplicationStatusUpdateLambda', {
@@ -416,7 +398,7 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        ...apiDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
         // Deep link in the worker's stage-change WhatsApp message. Same source
@@ -424,7 +406,7 @@ export class ApiStack extends cdk.Stack {
         FRONTEND_BASE_URL: allowedOrigin,
       },
     });
-    apiDb.grantRead(employerApplicationStatusUpdateLambda.function);
+    props.dbSecret.grantRead(employerApplicationStatusUpdateLambda.function);
 
     const employerConversationsListLambda = new JaleLambdaFunction(this, 'EmployerConversationsListLambda', {
       entry: path.join(__dirname, '../../lambda/api/employer-conversations-list.ts'),
@@ -432,12 +414,12 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        ...apiDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
-    apiDb.grantRead(employerConversationsListLambda.function);
+    props.dbSecret.grantRead(employerConversationsListLambda.function);
 
     const employerConversationsDetailLambda = new JaleLambdaFunction(this, 'EmployerConversationsDetailLambda', {
       entry: path.join(__dirname, '../../lambda/api/employer-conversations-detail.ts'),
@@ -445,12 +427,12 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        ...apiDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
-    apiDb.grantRead(employerConversationsDetailLambda.function);
+    props.dbSecret.grantRead(employerConversationsDetailLambda.function);
 
     const employerConversationsCreateLambda = new JaleLambdaFunction(this, 'EmployerConversationsCreateLambda', {
       entry: path.join(__dirname, '../../lambda/api/employer-conversations-create.ts'),
@@ -458,14 +440,14 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        ...apiDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         TWILIO_SECRET_ARN: twilioSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
         TWILIO_STATUS_CALLBACK_URL: whatsappStatusCallbackUrl,
       },
     });
-    apiDb.grantRead(employerConversationsCreateLambda.function);
+    props.dbSecret.grantRead(employerConversationsCreateLambda.function);
     twilioSecret.grantRead(employerConversationsCreateLambda.function);
 
     const employerConversationsSendLambda = new JaleLambdaFunction(this, 'EmployerConversationsSendLambda', {
@@ -474,14 +456,14 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        ...apiDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         TWILIO_SECRET_ARN: twilioSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
         TWILIO_STATUS_CALLBACK_URL: whatsappStatusCallbackUrl,
       },
     });
-    apiDb.grantRead(employerConversationsSendLambda.function);
+    props.dbSecret.grantRead(employerConversationsSendLambda.function);
     twilioSecret.grantRead(employerConversationsSendLambda.function);
 
     // 1c: lib/job-messaging.ts logs JobMessageOutboxSendFailed from both
@@ -509,12 +491,12 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        ...apiDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
-    apiDb.grantRead(employerConversationsUpdateLambda.function);
+    props.dbSecret.grantRead(employerConversationsUpdateLambda.function);
 
     // T3a — POST /employer/conversations/{conversationId}/read. Stamps
     // job_conversations.employer_last_read_at, which is what clears the inbox
@@ -526,12 +508,12 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        ...apiDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
-    apiDb.grantRead(employerConversationsReadLambda.function);
+    props.dbSecret.grantRead(employerConversationsReadLambda.function);
 
     const employerInboxLambda = new JaleLambdaFunction(this, 'EmployerInboxLambda', {
       entry: path.join(__dirname, '../../lambda/api/employer-inbox.ts'),
@@ -539,12 +521,12 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        ...apiDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
-    apiDb.grantRead(employerInboxLambda.function);
+    props.dbSecret.grantRead(employerInboxLambda.function);
 
     const employerApplicantsOverviewLambda = new JaleLambdaFunction(this, 'EmployerApplicantsOverviewLambda', {
       entry: path.join(__dirname, '../../lambda/api/employer-applicants-overview.ts'),
@@ -552,12 +534,12 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        ...apiDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
-    apiDb.grantRead(employerApplicantsOverviewLambda.function);
+    props.dbSecret.grantRead(employerApplicantsOverviewLambda.function);
 
     // Employer templates list — employer auth, DB access
     const employerTemplatesListLambda = new JaleLambdaFunction(this, 'EmployerTemplatesListLambda', {
@@ -566,12 +548,12 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        ...apiDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
-    apiDb.grantRead(employerTemplatesListLambda.function);
+    props.dbSecret.grantRead(employerTemplatesListLambda.function);
 
     // Employer templates save — employer auth, DB access
     const employerTemplatesSaveLambda = new JaleLambdaFunction(this, 'EmployerTemplatesSaveLambda', {
@@ -580,12 +562,12 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        ...apiDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
-    apiDb.grantRead(employerTemplatesSaveLambda.function);
+    props.dbSecret.grantRead(employerTemplatesSaveLambda.function);
 
     // Employer templates delete — employer auth, DB access
     const employerTemplatesDeleteLambda = new JaleLambdaFunction(this, 'EmployerTemplatesDeleteLambda', {
@@ -594,12 +576,12 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        ...apiDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
-    apiDb.grantRead(employerTemplatesDeleteLambda.function);
+    props.dbSecret.grantRead(employerTemplatesDeleteLambda.function);
 
     // Token refresh — no auth (refresh token is the credential), no DB
     const tokenRefreshLambda = new JaleLambdaFunction(this, 'TokenRefreshLambda', {
@@ -634,12 +616,12 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        ...apiPublicDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         WORKER_POOL_ID: props.workerPool.userPoolId,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
-    apiPublicDb.grantRead(workerWebSignupLambda.function);
+    props.dbSecret.grantRead(workerWebSignupLambda.function);
 
     // Worker jobs list — worker auth, DB access
     const workerJobsListLambda = new JaleLambdaFunction(this, 'WorkerJobsListLambda', {
@@ -648,12 +630,12 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        ...apiDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
-    apiDb.grantRead(workerJobsListLambda.function);
+    props.dbSecret.grantRead(workerJobsListLambda.function);
 
     // Worker job detail — worker auth, DB access
     const workerJobsDetailLambda = new JaleLambdaFunction(this, 'WorkerJobsDetailLambda', {
@@ -662,12 +644,12 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        ...apiDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
-    apiDb.grantRead(workerJobsDetailLambda.function);
+    props.dbSecret.grantRead(workerJobsDetailLambda.function);
 
     // Worker job apply — worker auth, DB access
     const workerJobsApplyLambda = new JaleLambdaFunction(this, 'WorkerJobsApplyLambda', {
@@ -676,12 +658,12 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        ...apiDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
-    apiDb.grantRead(workerJobsApplyLambda.function);
+    props.dbSecret.grantRead(workerJobsApplyLambda.function);
 
     const employerJobCandidatesLambda = new JaleLambdaFunction(this, 'EmployerJobCandidatesLambda', {
       entry: path.join(__dirname, '../../lambda/api/employer-job-candidates.ts'),
@@ -689,7 +671,7 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        ...apiDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
         ...(props.employerCandidateRerankQueue
@@ -697,7 +679,7 @@ export class ApiStack extends cdk.Stack {
           : {}),
       },
     });
-    apiDb.grantRead(employerJobCandidatesLambda.function);
+    props.dbSecret.grantRead(employerJobCandidatesLambda.function);
     props.employerCandidateRerankQueue?.grantSendMessages(employerJobCandidatesLambda.function);
 
     // Worker applications list — worker auth, DB access
@@ -707,12 +689,12 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        ...apiDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
-    apiDb.grantRead(workerApplicationsListLambda.function);
+    props.dbSecret.grantRead(workerApplicationsListLambda.function);
 
     // Worker profile update — worker auth, DB access
     const workerProfileUpdateLambda = new JaleLambdaFunction(this, 'WorkerProfileUpdateLambda', {
@@ -721,13 +703,13 @@ export class ApiStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        ...apiDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
         ALIAS_GENERATOR_ARN: props.aliasGeneratorFn.functionArn,
       },
     });
-    apiDb.grantRead(workerProfileUpdateLambda.function);
+    props.dbSecret.grantRead(workerProfileUpdateLambda.function);
     props.aliasGeneratorFn.grantInvoke(workerProfileUpdateLambda.function);
 
     // ── IAM: Cognito permissions for auth Lambdas ──
@@ -1193,29 +1175,6 @@ export class ApiStack extends cdk.Stack {
         // real database-connection brake and must not be looser than theirs.
         {
           ResourcePath: '/public/employer-digest/unsubscribe',
-          HttpMethod: 'POST',
-          ThrottlingBurstLimit: 10,
-          ThrottlingRateLimit: 5,
-        },
-        // Report a problem (ReportsStack). The signed-out create is the
-        // tightest tier: it writes a report and queues an email, and the edge
-        // rate rule and the per-address counts in the database sit in front
-        // of and behind it. The signed-out GET serves the pause switches the
-        // form reads. The signed-in routes are per account in the database.
-        {
-          ResourcePath: '/public/reports/{action}',
-          HttpMethod: 'POST',
-          ThrottlingBurstLimit: 5,
-          ThrottlingRateLimit: 2,
-        },
-        {
-          ResourcePath: '/public/reports/{action}',
-          HttpMethod: 'GET',
-          ThrottlingBurstLimit: 20,
-          ThrottlingRateLimit: 10,
-        },
-        {
-          ResourcePath: '/reports/{action}',
           HttpMethod: 'POST',
           ThrottlingBurstLimit: 10,
           ThrottlingRateLimit: 5,

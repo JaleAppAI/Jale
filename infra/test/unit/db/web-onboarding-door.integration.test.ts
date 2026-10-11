@@ -2,7 +2,7 @@
  * web-onboarding-door.integration.test.ts
  *
  * Sprint 22 R2-C23. The WEB DOOR against REAL PostgreSQL 16 with migrations
- * 001-103 applied, driven through the ACTUAL Lambda handler with a fake
+ * 001-086 applied, driven through the ACTUAL Lambda handler with a fake
  * Cognito claims event — not through the driver, and not through hand-built
  * SQL. Everything the browser depends on is exercised end to end: the entry
  * sequence, the grants, RLS, the HTTP status/`error` vocabulary, the
@@ -93,19 +93,13 @@ const { routeOnboardingV2 } = require('../../../lambda/whatsapp/onboarding-v2');
 const driver = require('../../../lambda/whatsapp/web/onboarding-driver');
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { setInternalUserRlsContext } = jest.requireActual('../../../lambda/lib/db');
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const { buildOnboardingState } = require('../../../lambda/whatsapp/web/onboarding-state');
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const { loadWorkerGate } = require('../../../lambda/whatsapp/lib/onboarding-repository');
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const { recordReferredJob } = require('../../../lambda/lib/referred-jobs');
 
 if (!databaseUrl) {
   test('CONCERN: the web onboarding door DB suite was not run', () => {
     // eslint-disable-next-line no-console
     console.warn(
       '[web-onboarding-door] DONE_WITH_CONCERNS: set JALE_TEST_DATABASE_URL to a disposable '
-      + 'PostgreSQL 16 superuser URL with migrations 001-103 applied.',
+      + 'PostgreSQL 16 superuser URL with migrations 001-086 applied.',
     );
     expect(databaseUrl).toBeUndefined();
   });
@@ -127,9 +121,7 @@ maybeDescribe('R2-C23: the web onboarding door, end to end', () => {
   const WORKERS = ['happy', 'zip', 'city', 'confirm', 'resume', 'wa', 'lock', 'ready', 'suspended',
     'batch', 'photo', 'preauth', 'revert', 'voice', 'cap',
     // S23 L7 (cohort ToS skip) and L6 (voice answers).
-    'tosdone', 'tosstale', 'toshalf', 'mic',
-    // The referred job on the document.
-    'referred', 'referredOther', 'refbroken'] as const;
+    'tosdone', 'tosstale', 'toshalf', 'mic'] as const;
 
   /** The exact shape API Gateway's Cognito authorizer hands the Lambda. */
   function event(
@@ -289,7 +281,6 @@ maybeDescribe('R2-C23: the web onboarding door, end to end', () => {
         trust: { questions: [], answers: [] },
         pendingLocationConfirm: null,
         extraction: null,
-        referredJob: null,
       });
     });
 
@@ -1440,139 +1431,6 @@ maybeDescribe('R2-C23: the web onboarding door, end to end', () => {
       expect(typed.trust.answers).toContainEqual(
         expect.objectContaining({ index: 2, source: 'text' }),
       );
-    });
-  });
-
-  // =======================================================================
-  // 11. The referred job (migration 103's list) on the document
-  // =======================================================================
-
-  describe('11. the referred job', () => {
-    // Needs migration 103. The superuser case below proves the explicit
-    // worker predicate.
-    const employerId = randomUUID();
-    const jobOld = randomUUID();
-    const jobNew = randomUUID();
-    const jobOfOther = randomUUID();
-    const jobIds = [jobOld, jobNew, jobOfOther];
-    const at = (minutes: number) => new Date(Date.parse('2026-09-01T00:00:00Z') + minutes * 60_000);
-
-    const OLD = {
-      id: jobOld, title: 'S27 door referred old', company: 'NB Construction', location: 'Las Cruces, NM',
-      payMin: null, payMax: null, payInterval: null, payRaw: null, open: true,
-    };
-    const NEW = {
-      id: jobNew, title: 'S27 door referred new', company: 'Jale', location: 'El Paso, TX',
-      payMin: 22, payMax: 26, payInterval: 'hourly', payRaw: '$22-$26/hour', open: true,
-    };
-    const OTHERS = {
-      id: jobOfOther, title: "S27 door another worker's", company: 'Other Co', location: 'El Paso, TX',
-      payMin: null, payMax: null, payInterval: null, payRaw: null, open: true,
-    };
-
-    beforeAll(async () => {
-      await su.query(
-        `INSERT INTO users (id, cognito_sub, user_type) VALUES ($1, $2, 'employer')`,
-        [employerId, `s27-door-employer-${employerId.slice(0, 8)}`],
-      );
-      await su.query(
-        `INSERT INTO jobs (id, employer_id, title, company, location, job_type, status,
-                           pay, pay_min, pay_max, pay_interval)
-         VALUES ($1, $4, 'S27 door referred old', 'NB Construction', 'Las Cruces, NM', 'part-time', 'active',
-                 NULL, NULL, NULL, NULL),
-                ($2, $4, 'S27 door referred new', NULL, 'El Paso, TX', 'full-time', 'active',
-                 '$22-$26/hour', 22, 26, 'hourly'),
-                ($3, $4, 'S27 door another worker''s', 'Other Co', 'El Paso, TX', 'full-time', 'active',
-                 NULL, NULL, NULL, NULL)`,
-        [jobOld, jobNew, jobOfOther, employerId],
-      );
-      // Through the library, as the doors write them. The NEWEST row in the
-      // table is someone else's, so any read that leaked across workers
-      // would pick it.
-      expect(await recordReferredJob(su, { workerId: ids.referred, jobId: jobOld, source: 'share_link', now: at(0) })).toBe(true);
-      expect(await recordReferredJob(su, { workerId: ids.referred, jobId: jobNew, source: 'job_page', now: at(1) })).toBe(true);
-      expect(await recordReferredJob(su, { workerId: ids.referredOther, jobId: jobOfOther, source: 'typed_code', now: at(2) })).toBe(true);
-    });
-
-    afterAll(async () => {
-      // job_applications.worker_id is RESTRICT, so the applications go before
-      // the outer afterAll deletes the users; the jobs take their
-      // worker_referred_jobs rows with them (ON DELETE CASCADE).
-      await su.query(`DELETE FROM job_applications WHERE job_id = ANY($1::uuid[])`, [jobIds]);
-      await su.query(`DELETE FROM jobs WHERE id = ANY($1::uuid[])`, [jobIds]);
-      await su.query(`DELETE FROM users WHERE id = $1`, [employerId]);
-    });
-
-    test('GET carries the newest unapplied referred job, never another worker\'s', async () => {
-      const response = await get('referred');
-      expect(response.statusCode).toBe(200);
-      expect(response.body.referredJob).toEqual(NEW);
-      expect((await get('referredOther')).body.referredJob).toEqual(OTHERS);
-    });
-
-    test('the predicate, not RLS, scopes it: the builder run as the superuser agrees', async () => {
-      // The superuser is not filtered by any policy, so only the explicit
-      // worker_id = $1 keeps OTHERS out.
-      await su.query('BEGIN');
-      try {
-        const gate = await loadWorkerGate(su, ids.referred);
-        const state = await buildOnboardingState(su, { workerId: ids.referred, gate });
-        expect(state.referredJob).toEqual(NEW);
-      } finally {
-        await su.query('ROLLBACK');
-      }
-    });
-
-    test('every state-carrying response has it: the POST answer, a 422 and a 409', async () => {
-      const state = (await get('referred')).body;
-      const accepted = await answers('referred', state.run.lockVersion, [{ stepKey: 'legal.review', value: 'accept' }]);
-      expect(accepted.statusCode).toBe(200);
-      expect(accepted.body.referredJob).toEqual(NEW);
-
-      const mismatch = await answers('referred', accepted.body.run.lockVersion, [{ stepKey: 'trust.question.1', value: { text: 'x' } }]);
-      expect(mismatch.statusCode).toBe(422);
-      expect(mismatch.body.state.referredJob).toEqual(NEW);
-
-      const stale = await answers('referred', accepted.body.run.lockVersion + 5, [{ stepKey: 'profile.name', value: 'Ana' }]);
-      expect(stale.statusCode).toBe(409);
-      expect(stale.body.state.referredJob).toEqual(NEW);
-    });
-
-    test('once the worker applies, the next one shows; a job closed since shows open: false; then null', async () => {
-      await su.query(`INSERT INTO job_applications (job_id, worker_id, status) VALUES ($1, $2, 'pending')`, [jobNew, ids.referred]);
-      expect((await get('referred')).body.referredJob).toEqual(OLD);
-
-      await su.query(`UPDATE jobs SET status = 'closed' WHERE id = $1`, [jobOld]);
-      expect((await get('referred')).body.referredJob).toEqual({ ...OLD, open: false });
-
-      await su.query(`INSERT INTO job_applications (job_id, worker_id, status) VALUES ($1, $2, 'pending')`, [jobOld, ids.referred]);
-      expect((await get('referred')).body.referredJob).toBeNull();
-      // And still never the other worker's open, unapplied job.
-      expect((await get('referredOther')).body.referredJob).toEqual(OTHERS);
-    });
-
-    test('a failing read is null plus a static metric, never a 500 -- and the request still commits', async () => {
-      const errors = jest.spyOn(console, 'error').mockImplementation(() => {});
-      await su.query(`REVOKE SELECT ON worker_referred_jobs FROM jale_whatsapp`);
-      try {
-        // This worker's FIRST GET, so the request writes (it starts the run).
-        const response = await get('refbroken');
-        expect(response.statusCode).toBe(200);
-        expect(response.body.referredJob).toBeNull();
-        expect(response.body.run.stepKey).toBe('legal.review');
-        // Without the savepoint the failed SELECT would abort the transaction
-        // and the handler's COMMIT would silently roll it back: a 200 for a
-        // run that never existed.
-        const runs = await su.query<{ id: string }>(
-          `SELECT id FROM worker_workflow_runs WHERE user_id = $1`, [ids.refbroken],
-        );
-        expect(runs.rows.map((row) => row.id)).toEqual([response.body.run.id]);
-        expect(errors.mock.calls.map(([line]) => line)).toContain(JSON.stringify({ metric: 'ReferredJobStateReadFailed' }));
-      } finally {
-        await su.query(`GRANT SELECT ON worker_referred_jobs TO jale_whatsapp`);
-        errors.mockRestore();
-      }
-      expect((await get('refbroken')).body.referredJob).toBeNull();
     });
   });
 });

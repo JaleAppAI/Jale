@@ -8,14 +8,7 @@ import type {
   SignupBucket,
   SignupsView,
 } from '../types';
-import {
-  recordAdminAccess,
-  recordAdminAttempt,
-  withAdminReadTransaction,
-  type AuditQueryClient,
-} from './audit/record';
 import { getAdminDbPool } from './db';
-import type { AdminSession } from './session-claims';
 
 export const DEFAULT_ANALYTICS_RANGE: AnalyticsRange = '30d';
 
@@ -236,35 +229,8 @@ export async function getMessageTraffic(range: AnalyticsRange, now: Date = new D
   );
 }
 
-export async function getPayingEmployers(client: AuditQueryClient): Promise<PayingEmployer[]> {
-  const result = await client.query<PayingEmployerRow>('SELECT * FROM admin_analytics_paying_employers()');
+export async function getPayingEmployers(): Promise<PayingEmployer[]> {
+  const pool = await getAdminDbPool();
+  const result = await pool.query<PayingEmployerRow>('SELECT * FROM admin_analytics_paying_employers()');
   return result.rows.map(mapPayingEmployerRow);
-}
-
-/**
- * Of the analytics page, only the paying-employers list names anyone, so
- * it alone is read in a recorded transaction. The aggregates are not
- * recorded. A read that fails records a failed attempt once its client is
- * released.
- */
-export async function loadPayingEmployers(session: AdminSession): Promise<PayingEmployer[]> {
-  try {
-    return await withAdminReadTransaction(session, async (client) => {
-      const rows = await getPayingEmployers(client);
-      await recordAdminAccess(session, {
-        surface: 'admin.analytics_paying_employers',
-        categories: ['analytics', 'billing'],
-        subjectUserIds: rows.map((row) => row.employerId),
-        resultCount: rows.length,
-      }, client);
-      return rows;
-    });
-  } catch (error) {
-    await recordAdminAttempt(session, {
-      surface: 'admin.analytics_paying_employers',
-      categories: ['analytics', 'billing'],
-      outcome: 'failed',
-    });
-    throw error;
-  }
 }

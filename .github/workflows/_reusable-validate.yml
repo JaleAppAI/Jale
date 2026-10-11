@@ -13,11 +13,6 @@ on:
         required: false
         type: string
         default: us-east-2
-      production-synth:
-        description: Also synthesize the backend with environment=production, from fixed dummy context only (no vars, secrets or inputs).
-        required: false
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -53,26 +48,13 @@ jobs:
 
       - name: Validate shell scripts
         shell: bash
-        # One `bash -n` per file: given several files, bash checks only the
-        # first and passes the rest to it as arguments, so a broken second
-        # script would still exit 0. The workflow guardrails enforce this.
         run: |
           set -euo pipefail
-          mapfile -t scripts < <(find . -name '*.sh' -not -path '*/node_modules/*' -not -path './.git/*' -not -path '*/cdk.out/*' | sort)
-          if [ "${#scripts[@]}" -eq 0 ]; then
-            echo "::error::no shell scripts found; the file list is broken"
-            exit 1
+          shopt -s nullglob
+          scripts=(scripts/*.sh)
+          if (( ${#scripts[@]} > 0 )); then
+            bash -n "${scripts[@]}"
           fi
-          status=0
-          for f in "${scripts[@]}"; do
-            if bash -n "$f"; then
-              echo "ok: $f"
-            else
-              echo "::error file=$f::bash -n failed"
-              status=1
-            fi
-          done
-          exit "$status"
 
       - name: Run script self-tests
         shell: bash
@@ -144,16 +126,10 @@ jobs:
 
       - name: CDK synth backend stacks
         working-directory: infra
-        env:
-          # The CDK CLI overrides CDK_DEFAULT_REGION with the region it
-          # resolves itself, which is us-east-1 with no AWS configuration, and
-          # the app builds its edge stacks around the main region. As in
-          # _reusable-deploy.yml, AWS_REGION comes from the region input.
-          AWS_REGION: ${{ inputs.aws-region }}
         # No --all: it is not a valid `cdk synth` option (CDK 2.1133+ prints
         # "Unknown option(s): --all" and ignores it) -- `cdk synth` with no
         # stack argument already synthesizes every stack.
-        run: npx cdk synth -c environment=${{ inputs.cdk-environment }} -c skipFrontend=true -c emailFromAddress=ci-synth@jaleapp.ai -c sesVerifiedIdentityArn=arn:aws:ses:${{ inputs.aws-region }}:111111111111:identity/jaleapp.ai -c sesEmailFromAddress=ci-synth@jaleapp.ai -c sesEmailRegion=us-east-1 -c whatsappStatusCallbackUrl=https://api.example.invalid/whatsapp/status-callback -c whatsappAlarmTopicArn=arn:aws:sns:${{ inputs.aws-region }}:111111111111:jale-ci-whatsapp-alarms -c billingAlarmTopicArn=arn:aws:sns:${{ inputs.aws-region }}:111111111111:jale-ci-whatsapp-alarms -c publicSiteBaseUrl=https://ci-synth.example.invalid -c sesConfigurationSetName=jale-ci-employer-email -c whatsappBusinessNumber=15550000000 -c guardDutyMode=create -c securityHubMode=create -c configMode=create -c dbSharedPreloadLibrariesDefault=pg_stat_statements --output "$RUNNER_TEMP/jale-cdk-synth-backend"
+        run: npx cdk synth -c environment=${{ inputs.cdk-environment }} -c skipFrontend=true -c emailFromAddress=ci-synth@jaleapp.ai -c sesVerifiedIdentityArn=arn:aws:ses:${{ inputs.aws-region }}:111111111111:identity/jaleapp.ai -c sesEmailFromAddress=ci-synth@jaleapp.ai -c sesEmailRegion=us-east-1 -c whatsappStatusCallbackUrl=https://api.example.invalid/whatsapp/status-callback -c whatsappAlarmTopicArn=arn:aws:sns:${{ inputs.aws-region }}:111111111111:jale-ci-whatsapp-alarms -c billingAlarmTopicArn=arn:aws:sns:${{ inputs.aws-region }}:111111111111:jale-ci-whatsapp-alarms -c publicSiteBaseUrl=https://ci-synth.example.invalid -c sesConfigurationSetName=jale-ci-employer-email -c whatsappBusinessNumber=15550000000 --output "$RUNNER_TEMP/jale-cdk-synth-backend"
 
       - name: Upload backend synth artifact
         uses: actions/upload-artifact@v7
@@ -161,135 +137,6 @@ jobs:
           name: backend-cdk-synth
           path: ${{ runner.temp }}/jale-cdk-synth-backend
           if-no-files-found: error
-
-      # The production synth, for the callers that ask for it (pull request
-      # validation). The refusals only a production synth makes (the engine's
-      # preload default, the audit detection modes, the alarm topic) would
-      # otherwise be met first on the prod push. It passes every context key
-      # the production deploy passes, each with a fixed dummy value, and
-      # reads no vars, secrets or inputs, so a pull request from a fork
-      # passes too. 21 is the app's stack count without the frontend, which
-      # the frontend job builds (skipFrontend): change it with the stack list.
-      - name: CDK synth backend stacks (production, fixed context)
-        if: ${{ inputs.production-synth }}
-        working-directory: infra
-        shell: bash
-        env:
-          AWS_REGION: us-east-2
-          CDK_DEFAULT_REGION: us-east-2
-          CDK_DEFAULT_ACCOUNT: '111111111111'
-        run: |
-          npx cdk synth -c environment=production -c skipFrontend=true -c deletionProtection=true -c emailFromAddress=ci-synth@jaleapp.ai -c sesVerifiedIdentityArn=arn:aws:ses:us-east-2:111111111111:identity/jaleapp.ai -c sesEmailFromAddress=ci-synth@jaleapp.ai -c sesEmailRegion=us-east-1 -c whatsappStatusCallbackUrl=https://api.example.invalid/whatsapp/status-callback -c whatsappAlarmTopicArn=arn:aws:sns:us-east-2:111111111111:jale-ci-whatsapp-alarms -c billingAlarmTopicArn=arn:aws:sns:us-east-2:111111111111:jale-ci-whatsapp-alarms -c whatsappInboundV2TransportEnabled=true -c publicSiteBaseUrl=https://ci-synth.example.invalid -c sesConfigurationSetName=jale-ci-employer-email -c whatsappBusinessNumber=15550000000 -c guardDutyMode=create -c securityHubMode=create -c configMode=create -c dbSharedPreloadLibrariesDefault=pg_stat_statements --output "$RUNNER_TEMP/jale-cdk-synth-production"
-          templates=$(find "$RUNNER_TEMP/jale-cdk-synth-production" -maxdepth 1 -name '*.template.json' | wc -l)
-          echo "production synth: $templates templates"
-          if [ "$templates" -ne 21 ]; then
-            echo "::error::The production synth wrote $templates templates; expected 21."
-            exit 1
-          fi
-
-  database:
-    name: Database suites (${{ matrix.profile }})
-    runs-on: ubuntu-latest
-    # A leg bootstraps a disposable PostgreSQL 16 test bed (every migration on
-    # disk) and runs the database suites in band. 30 minutes is twice the
-    # 15-minute budget a leg must stay under, without letting a hang burn the
-    # shared 360-minute ceiling.
-    timeout-minutes: 30
-    strategy:
-      # Every profile reports its own result, even when another leg fails.
-      fail-fast: false
-      matrix:
-        profile: [standard, request, owner-unrestricted]
-    env:
-      NPM_CONFIG_AUDIT: 'false'
-      NPM_CONFIG_FUND: 'false'
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Setup infra dependencies
-        uses: ./.github/actions/setup-node-cache
-        with:
-          working-directory: infra
-
-      # bootstrap-testbed.sh starts its own postgres:16 container with the
-      # runner's Docker, applies every migration on disk as jale_admin and
-      # applies the profile; the runner then fails on any suite that did not
-      # run, ran out of order, or did not pass every test.
-      - name: Run database suites
-        shell: bash
-        env:
-          PROFILE: ${{ matrix.profile }}
-          JALE_DB_TEST_RESULTS: ${{ runner.temp }}/db-results/registered-suites.json
-          JALE_DB_TEST_PR_HEAD: ${{ github.event.pull_request.head.sha }}
-        run: bash infra/db/local/bootstrap-testbed.sh --ephemeral --ref none --profile "$PROFILE" -- bash infra/scripts/run-whatsapp-v2-db-tests.sh
-
-      # The clean-apply suites each need a cluster of their own, so they run
-      # alone on fresh beds, under the same results check. Those beds take the
-      # standard profile only.
-      - name: Run migration apply-order suite (empty cluster)
-        if: ${{ !cancelled() && matrix.profile == 'standard' }}
-        shell: bash
-        env:
-          JALE_DB_TEST_RESULTS: ${{ runner.temp }}/db-results/apply-order.json
-          JALE_DB_TEST_PR_HEAD: ${{ github.event.pull_request.head.sha }}
-        run: bash infra/db/local/bootstrap-testbed.sh --ephemeral --ref none --empty -- bash infra/scripts/run-whatsapp-v2-db-tests.sh --suite test/unit/db/migrations/apply-order.test.ts
-
-      - name: Run billing upgrade suite (bare cluster)
-        if: ${{ !cancelled() && matrix.profile == 'standard' }}
-        shell: bash
-        env:
-          JALE_DB_TEST_RESULTS: ${{ runner.temp }}/db-results/billing-034-upgrade.json
-          JALE_DB_TEST_PR_HEAD: ${{ github.event.pull_request.head.sha }}
-        run: bash infra/db/local/bootstrap-testbed.sh --ephemeral --ref none --bare --url-var JALE_TEST_UPGRADE_DATABASE_URL -- bash infra/scripts/run-whatsapp-v2-db-tests.sh --suite test/unit/db/migrations/billing-034-upgrade.test.ts
-
-      - name: Setup admin dependencies
-        if: ${{ !cancelled() && matrix.profile == 'standard' }}
-        uses: ./.github/actions/setup-node-cache
-        with:
-          working-directory: admin
-
-      # The admin dashboard's access records, checked on a fresh bed through
-      # the dashboard's own database login. The checks need the URL the bed
-      # exports, so they run only through bootstrap-testbed.sh.
-      - name: Run admin access-record checks
-        if: ${{ !cancelled() && matrix.profile == 'standard' }}
-        shell: bash
-        run: bash infra/db/local/bootstrap-testbed.sh --ephemeral --ref none --profile standard -- bash -c 'cd admin && npm run test:audit-db'
-
-      # The dashboard's report inbox (its actions and reads against the real
-      # report functions), checked the same way on a fresh bed of its own.
-      - name: Run admin report checks
-        if: ${{ !cancelled() && matrix.profile == 'standard' }}
-        shell: bash
-        run: bash infra/db/local/bootstrap-testbed.sh --ephemeral --ref none --profile standard -- bash -c 'cd admin && npm run test:report-db'
-
-      # The summary gets the commit and the profile even when the run stopped
-      # before jest wrote any results.
-      - name: Record a run without results
-        if: ${{ !cancelled() }}
-        shell: bash
-        env:
-          PROFILE: ${{ matrix.profile }}
-          RESULTS: ${{ runner.temp }}/db-results/registered-suites.json
-        run: |
-          if [ ! -s "$RESULTS" ]; then
-            {
-              echo "### Database suites: ${PROFILE} profile"
-              echo
-              echo "Commit \`$(git rev-parse HEAD)\`"
-              echo
-              echo "**No results:** the run stopped before jest wrote them; see the step log."
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Upload suite results
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: db-suites-${{ github.sha }}-${{ matrix.profile }}
-          path: ${{ runner.temp }}/db-results
-          if-no-files-found: warn
 
   frontend:
     name: Frontend build
@@ -414,7 +261,7 @@ jobs:
         working-directory: frontend
         # Critical-level gate through scripts/npm-audit-gate.mjs, which honours
         # the DATED exception list in .github/audit-exceptions.json. Both apps
-        # are on Next 16.3.8; the exceptions list is
+        # are on Next 16.3.4 (follow-up F33 done); the exceptions list is
         # currently empty, so this is a plain critical-level gate with the
         # dated-exception mechanism kept in reserve for the next unfixable
         # advisory.

@@ -17,8 +17,9 @@ const CORS_HEADERS = corsHeaders();
  * dual-auth handler in this codebase at the time this was written): this
  * endpoint surfaces only public BLS government statistics, no PII and no
  * per-user data, so gating it on ToS acceptance status isn't warranted
- * either. The caller context is still set for transaction hygiene; both
- * tables are public reference data.
+ * either. RLS context is still set for standard transaction hygiene, even
+ * though wage_references / city_cbsa_crosswalk grant jale_admin a flat
+ * read-all policy (USING (true)) regardless of app.current_user_id.
  *
  * Error bodies never echo the raw trade/city_key query params back -- fixed
  * error codes only (invalid_trade / invalid_city_key / no_reference /

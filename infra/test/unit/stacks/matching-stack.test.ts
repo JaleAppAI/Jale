@@ -12,16 +12,15 @@ describe('MatchingStack', () => {
     const harness = new cdk.Stack(app, 'MatchingHarness');
     const vpc = new ec2.Vpc(harness, 'Vpc', { maxAzs: 2 });
     const lambdaSg = new ec2.SecurityGroup(harness, 'LambdaSg', { vpc });
+    const dbSecret = new secretsmanager.Secret(harness, 'DbSecret');
     const matchingDbSecret = new secretsmanager.Secret(harness, 'MatchingDbSecret');
 
     const stack = new MatchingStack(app, 'TestMatchingStack', {
       vpc,
       privateSubnets: vpc.privateSubnets,
       lambdaSg,
+      dbSecret,
       matchingDbSecret,
-      dbEndpointAddress: 'db.example.internal',
-      dbEndpointPort: '5432',
-      dbName: 'jale',
     });
 
     template = Template.fromStack(stack);

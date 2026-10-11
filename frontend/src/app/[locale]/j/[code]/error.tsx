@@ -1,9 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
 import { ErrorState } from '@/components/ui/error-state';
-import { recordError } from '@/components/report/seams/report-context';
-import { describeBoundaryError } from '@/components/report/boundary-error';
 
 // Catches anything getPublicJob() throws that is NOT a
 // PublicJobNotFoundError (that case calls notFound() and never reaches this
@@ -19,14 +16,7 @@ import { describeBoundaryError } from '@/components/report/boundary-error';
 // came from the one fetch this route makes, and `server` is the only kind that
 // is both retryable (so `reset` is offered) and honest about a page whose data
 // call did not come back.
-//
-// The error is recorded for "Report a problem", and `ErrorState` offers that
-// report next to "Try again" through the provider in the locale layout.
-export default function PublicJobError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
-  useEffect(() => {
-    recordError({ kind: 'error', message: describeBoundaryError(error) });
-  }, [error]);
-
+export default function PublicJobError({ reset }: { error: Error; reset: () => void }) {
   return (
     <div className="flex min-h-screen items-center justify-center bg-[var(--jale-paper)] px-4 py-12">
       <div className="mx-auto w-full max-w-sm">

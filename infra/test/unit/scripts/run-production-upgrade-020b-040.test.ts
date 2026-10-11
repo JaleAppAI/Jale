@@ -130,29 +130,6 @@ describe('production upgrade 020b/035-046 operator tooling', () => {
     expect(script).toContain("trigger.tgname='whatsapp_outbox_worker_intent_delivery_state'");
   });
 
-  it('requires no runtime-control row that a later migration in the chain deletes', () => {
-    // A completion predicate is checked against whatever schema the database
-    // has reached, so it may rely only on seed rows that later migrations keep.
-    // Migration 054 deletes 042's 'onboarding_v2_enabled' row by design.
-    const script = fs.readFileSync(scriptPath, 'utf8');
-    const migrationsDir = path.join(repoRoot, 'infra', 'db', 'migrations');
-    const deletedKeys = new Set<string>();
-    for (const file of fs.readdirSync(migrationsDir).filter((name) => name.endsWith('.sql'))) {
-      const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
-      for (const m of sql.matchAll(/DELETE\s+FROM\s+(?:public\.)?whatsapp_runtime_controls\s+WHERE\s+control_key\s*=\s*'([a-z0-9_]+)'/gi)) {
-        deletedKeys.add(m[1]);
-      }
-    }
-    expect([...deletedKeys]).toContain('onboarding_v2_enabled');
-
-    const requiredKeys = new Set<string>();
-    for (const clause of script.matchAll(/FROM public\.whatsapp_runtime_controls\s+WHERE control_key(?:\s+IN\s*\(([^)]*)\)|\s*=\s*('[^']*'))/g)) {
-      for (const key of (clause[1] ?? clause[2]).matchAll(/'([a-z0-9_]+)'/g)) requiredKeys.add(key[1]);
-    }
-    expect([...requiredKeys]).toContain('deferred_delivery_enabled');
-    expect([...requiredKeys].filter((key) => deletedKeys.has(key))).toEqual([]);
-  });
-
   it('keeps credentials on the bastion and does not rotate service passwords', () => {
     const script = fs.readFileSync(scriptPath, 'utf8');
 
@@ -242,33 +219,6 @@ describe('production upgrade 020b/035-046 operator tooling', () => {
         `SELECT (${predicates[8]}) AS complete`,
       );
       expect(transportDrift.rows).toEqual([{ complete: false }]);
-      await client.query('ROLLBACK');
-
-      // 042's durable seed row is what the runtime-control clause requires.
-      await client.query('BEGIN');
-      await client.query(
-        "DELETE FROM whatsapp_runtime_controls WHERE control_key = 'deferred_delivery_enabled'",
-      );
-      const seedDrift = await client.query<{ complete: boolean }>(
-        `SELECT (${predicates[7]}) AS complete`,
-      );
-      expect(seedDrift.rows).toEqual([{ complete: false }]);
-      await client.query('ROLLBACK');
-
-      // A database where 042 never ran: neither marker the script checks first
-      // exists and the completion predicate is false, so 042 reads as absent
-      // (pending), never as complete.
-      const present042 = script.match(/042_\*\)\n\s+present="([^"]+)"/)?.[1];
-      expect(present042).toBeDefined();
-      await client.query('BEGIN');
-      await client.query('DROP TABLE public.worker_onboarding_state CASCADE');
-      await client.query(
-        'DROP FUNCTION IF EXISTS public.bind_verified_identity_and_start_workflow(text,uuid,uuid,integer,text,text,jsonb) CASCADE',
-      );
-      const neverApplied = await client.query<{ present: boolean; complete: boolean }>(
-        `SELECT (${present042}) AS present, (${predicates[7]}) AS complete`,
-      );
-      expect(neverApplied.rows).toEqual([{ present: false, complete: false }]);
       await client.query('ROLLBACK');
     } finally {
       await client.end();

@@ -11,7 +11,6 @@ import {
 import type { ApplyFlowAction, ApplyFlowState } from '@/lib/apply-flow-view';
 import type { JobDetail } from '@/lib/api/worker';
 import { PromptAnswerField } from './PromptAnswerField';
-import { useReportCategoryHint } from '@/components/report/report-problem-context';
 
 /**
  * STAGE 1: applying, whole and entire, on ONE screen.
@@ -61,8 +60,6 @@ export function ApplyFlow({
 }: ApplyFlowProps) {
   const t = useTranslations('worker_job_detail.apply_flow');
   const tCommon = useTranslations('common');
-  // Inside a job page, whose route alone says "finding jobs".
-  useReportCategoryHint('applying');
 
   const prompts = job.pre_application_prompts ?? [];
   const missing = missingPromptAnswers(prompts, state.answers);

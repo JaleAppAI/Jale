@@ -10,25 +10,20 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test:policy": "node scripts/check-action-policy.mjs && node scripts/check-report-policy.mjs",
-    "test:server-db": "node scripts/check-server-db-helpers.mjs && node scripts/check-audit-record.mjs",
-    "test:session": "node scripts/check-session-helpers.mjs && node scripts/check-audit-session.mjs",
+    "test:policy": "node scripts/check-action-policy.mjs",
+    "test:server-db": "node scripts/check-server-db-helpers.mjs",
+    "test:session": "node scripts/check-session-helpers.mjs",
     "test:session-store": "node scripts/check-admin-session-store.mjs",
-    "test:read-models": "node scripts/check-read-models.mjs && node scripts/check-audit-loaders.mjs",
+    "test:read-models": "node scripts/check-read-models.mjs",
     "test:analytics": "node scripts/check-analytics-helpers.mjs",
     "test:charts": "node scripts/check-chart-geometry.mjs",
-    "test:dispatch": "node scripts/check-action-dispatch.mjs && node scripts/check-report-actions.mjs && node scripts/check-audit-actions.mjs",
+    "test:dispatch": "node scripts/check-action-dispatch.mjs",
     "test:safe-redirect": "node scripts/check-safe-redirect.mjs",
-    "test:ui": "node scripts/check-ui-contract.mjs && node scripts/check-access-history-view.mjs",
-    "test:mfa": "node scripts/check-mfa-setup.mjs",
-    "test:report-db": "node scripts/check-report-db.mjs",
-    "test:audit-db": "node scripts/check-audit-db.mjs"
+    "test:ui": "node scripts/check-ui-contract.mjs",
+    "test:mfa": "node scripts/check-mfa-setup.mjs"
   },
   "dependencies": {
-    "@aws-sdk/client-cloudwatch-logs": "^3.1130.0",
-    "@aws-sdk/client-s3": "3.1130.0",
     "@aws-sdk/client-secrets-manager": "^3.1129.0",
-    "@aws-sdk/s3-request-presigner": "3.1130.0",
     "amazon-cognito-identity-js": "^6.3.20",
     "aws-jwt-verify": "^5.2.1",
     "next": "16.3.8",
@@ -46,6 +41,6 @@
     "typescript": "6.0.3"
   },
   "overrides": {
-    "js-cookie": "^3.0.7"
+    "js-cookie": "2"
   }
 }

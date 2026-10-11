@@ -48,7 +48,6 @@
 
 import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
-import { describeInProfiles } from './helpers/login-pool';
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
 
@@ -143,9 +142,6 @@ async function asWhatsappInternal<T>(
   }
 }
 
-// These tests check row policies as the standard and request test beds apply
-// them, so they run in those profiles only. Without a database URL the suite
-// still skips.
 function maybeDescribe(name: string, fn: () => void): void {
   if (!databaseUrl) {
     // Rule 11: explicit, loud skip — not a silent pass
@@ -156,7 +152,7 @@ function maybeDescribe(name: string, fn: () => void): void {
         `This is a DONE_WITH_CONCERNS gate: Docker/Postgres was unavailable at test time.`,
     );
   } else {
-    describeInProfiles(['standard', 'request'], name, fn);
+    describe(name, fn);
   }
 }
 

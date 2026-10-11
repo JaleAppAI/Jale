@@ -3,15 +3,11 @@ import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { listEmployerInbox } from '../lib/employer-inbox';
 import { checkCompliance } from '../legal/check-compliance';
-import { auditCaller, type AuditCaller } from '../lib/audit/caller';
-import { recordAccess, recordAttempt, responseFieldNames } from '../lib/audit/record';
 
 
 const CORS_HEADERS = corsHeaders();
-const SURFACE = 'employer.inbox';
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   let client;
-  let caller: AuditCaller | undefined;
 
   try {
     const cognitoSub: string | undefined = event.requestContext.authorizer?.claims?.sub;
@@ -45,17 +41,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_provisioned' }) };
     }
     await setInternalUserRlsContext(client, employerId);
-    caller = auditCaller(event, { kind: 'employer', id: employerId }, 'web');
 
     const inbox = await listEmployerInbox(client, employerId);
-    const items = inbox.items;
-    await recordAccess(client, caller, {
-      surface: SURFACE,
-      subjectUserIds: items.map((item) => item.worker_id),
-      recordIds: items.flatMap((item) => (item.conversation_id ? [item.conversation_id] : [])),
-      resultCount: items.length,
-      fieldNames: responseFieldNames(items),
-    });
     await client.query('COMMIT');
 
     return {
@@ -64,10 +51,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       body: JSON.stringify(inbox),
     };
   } catch (err) {
-    if (client) {
-      try { await client.query('ROLLBACK'); } catch {}
-      if (caller) await recordAttempt(client, caller, { surface: SURFACE, outcome: 'failed' });
-    }
+    if (client) { try { await client.query('ROLLBACK'); } catch {} }
     console.error('employer-inbox error:', errorMessage(err));
     return { statusCode: 500, headers: CORS_HEADERS, body: JSON.stringify({ error: 'internal_error' }) };
   } finally {

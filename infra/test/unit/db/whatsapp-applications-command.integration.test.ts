@@ -100,7 +100,7 @@ maybeDescribe('sprint 23 WhatsApp applications-command DB contract', () => {
     );
     await setup.query(
       `INSERT INTO employer_profiles (user_id, company_name)
-       VALUES ($1, 'NB Construction'), ($2, 'Other Co')`,
+       VALUES ($1, 'RM Construction'), ($2, 'Other Co')`,
       [employerId, otherEmployerId],
     );
 
@@ -194,7 +194,7 @@ maybeDescribe('sprint 23 WhatsApp applications-command DB contract', () => {
       try {
         const rows = await loadWorkerApplications(asLaneClient(reader), workerId);
         const row = rows.find((r) => r.applicationId === appNeedsDetails);
-        expect(row?.companyName).toBe('NB Construction');
+        expect(row?.companyName).toBe('RM Construction');
         expect(row?.jobTitle).toBe('S23 needs details');
         expect(row?.status).toBe('contacted');
       } finally {

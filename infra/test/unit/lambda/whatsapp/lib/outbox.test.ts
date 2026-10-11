@@ -7,7 +7,6 @@ jest.mock('@aws-sdk/client-secrets-manager', () => ({
 const mockFetch = jest.fn();
 (global as any).fetch = mockFetch;
 
-jest.mock('../../../../../lambda/lib/audit/context');
 import {
   AmbiguousTwilioSendError,
   drainJobAlertOutbox,
@@ -18,10 +17,6 @@ import {
   insertAuthorizedIntentOutbox,
   _clearOutboxTwilioSecretCacheForTests,
 } from '../../../../../lambda/whatsapp/lib/outbox';
-import { auditCallerFor } from '../../../../../lambda/lib/audit/caller';
-import { setAuditContext } from '../../../../../lambda/lib/audit/context';
-
-const PLATFORM = auditCallerFor('fixture-invocation-0001', { kind: 'platform' }, 'whatsapp');
 
 describe('worker-intent outbox drain', () => {
   const originalEnv = process.env;
@@ -142,7 +137,7 @@ describe('worker-intent outbox drain', () => {
       id: 'outbox-63016', whatsapp_number: '+15125551234', body: null,
       content_template: 'application_update_en',
       content_variables: {
-        '1': 'Concrete Finisher', '2': 'Northwind & Birch',
+        '1': 'Concrete Finisher', '2': 'Rucoba & Maya',
         '3': 'app-11111111-2222-4333-8444-555555555555',
         '4': 'https://jaleapp.ai/en/worker/applications/11111111-2222-4333-8444-555555555555',
         __fallback_body: 'Application update for Concrete Finisher: ...',
@@ -280,7 +275,7 @@ describe('worker-intent outbox drain', () => {
       .mockResolvedValueOnce({
         rows: [applicationIntentRow({
           content_template: 'employer_message_invite_en',
-          content_variables: { '1': 'Northwind & Birch', '2': 'Concrete Finisher' },
+          content_variables: { '1': 'Rucoba & Maya', '2': 'Concrete Finisher' },
         })],
       })
       .mockResolvedValueOnce({ rows: [{ failed: true }] });
@@ -514,7 +509,7 @@ describe('whatsapp outbox templates', () => {
       return { rowCount: 1, rows: [] };
     });
 
-    await sendPendingAdminOutbox({ query } as any, PLATFORM);
+    await sendPendingAdminOutbox({ query } as any);
 
     expect(query).toHaveBeenCalledWith('BEGIN');
     expect(query).toHaveBeenCalledWith(
@@ -553,7 +548,7 @@ describe('whatsapp outbox templates', () => {
       return { rowCount: 1, rows: [] };
     });
 
-    await sendPendingAdminOutbox({ query } as any, PLATFORM);
+    await sendPendingAdminOutbox({ query } as any);
 
     const sentBody = mockFetch.mock.calls[0][1].body as string;
     expect(sentBody).toContain('ContentSid=HX_admin_en');
@@ -595,7 +590,7 @@ describe('whatsapp outbox templates', () => {
       return { rowCount: 1, rows: [] };
     });
 
-    await sendPendingAdminOutbox({ query } as any, PLATFORM);
+    await sendPendingAdminOutbox({ query } as any);
 
     const sentBody = mockFetch.mock.calls[0][1].body as string;
     expect(sentBody).toContain('Body=Please+send%0Athe+missing+document.');
@@ -621,7 +616,7 @@ describe('whatsapp outbox templates', () => {
       return { rowCount: 1, rows: [] };
     });
 
-    await sendPendingAdminOutbox({ query } as any, PLATFORM);
+    await sendPendingAdminOutbox({ query } as any);
 
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining('SET status = $1'),
@@ -659,7 +654,7 @@ describe('whatsapp outbox templates', () => {
       return { rowCount: 1, rows: [] };
     });
 
-    await sendPendingAdminOutbox({ query } as any, PLATFORM);
+    await sendPendingAdminOutbox({ query } as any);
 
     const statements = query.mock.calls.map(([sql]) => String(sql));
     expect(statements.filter((sql) => sql === 'BEGIN')).toHaveLength(3);
@@ -801,7 +796,7 @@ describe('whatsapp outbox templates', () => {
         .mockResolvedValueOnce({ rows: [{ status: 'eligible' }] })
         .mockResolvedValueOnce({ rows: [{ id: 'outbox-worker-intent-1' }] });
 
-      const result = await insertAuthorizedIntentOutbox({ query } as any, { workerId: 'worker-1', intentId: 'intent-1' }, {
+      const result = await insertAuthorizedIntentOutbox({ query } as any, 'intent-1', {
         whatsappNumber: '+15125551234',
         body: 'A new job is available',
         contentTemplate: null,
@@ -809,9 +804,8 @@ describe('whatsapp outbox templates', () => {
       });
 
       expect(result).toEqual({ outboxId: 'outbox-worker-intent-1' });
-      expect(query.mock.calls[0][0]).toMatch(/SELECT status FROM worker_message_intents WHERE id = \$1\s+AND user_id = \$2/);
-      // The intent's worker is named in the read itself, not only its id.
-      expect(query.mock.calls[0][1]).toEqual(['intent-1', 'worker-1']);
+      expect(query.mock.calls[0][0]).toMatch(/SELECT status FROM worker_message_intents/);
+      expect(query.mock.calls[0][1]).toEqual(['intent-1']);
       const insertCall = query.mock.calls[1];
       expect(insertCall[0]).toMatch(/INSERT INTO whatsapp_outbox/);
       expect(insertCall[0]).toMatch(/'worker_intent'/);
@@ -827,7 +821,7 @@ describe('whatsapp outbox templates', () => {
     it('throws unauthorized_worker_outbox_row when the intent is still deferred', async () => {
       query.mockResolvedValueOnce({ rows: [{ status: 'deferred' }] });
 
-      await expect(insertAuthorizedIntentOutbox({ query } as any, { workerId: 'worker-1', intentId: 'intent-2' }, {
+      await expect(insertAuthorizedIntentOutbox({ query } as any, 'intent-2', {
         whatsappNumber: '+15125551234',
         body: 'hi',
         contentTemplate: null,
@@ -841,35 +835,12 @@ describe('whatsapp outbox templates', () => {
     it('throws unauthorized_worker_outbox_row when no intent row exists', async () => {
       query.mockResolvedValueOnce({ rows: [] });
 
-      await expect(insertAuthorizedIntentOutbox({ query } as any, { workerId: 'worker-1', intentId: 'intent-missing' }, {
+      await expect(insertAuthorizedIntentOutbox({ query } as any, 'intent-missing', {
         whatsappNumber: '+15125551234',
         body: 'hi',
         contentTemplate: null,
         contentVariables: null,
       })).rejects.toThrow('unauthorized_worker_outbox_row');
     });
-  });
-});
-
-describe('sendPendingAdminOutbox change context', () => {
-  it('states the platform after each BEGIN, before the case delivery is recorded', async () => {
-    const query: jest.Mock = jest.fn();
-    query.mockImplementation(async (sql: string) => {
-      if (String(sql).includes('FROM whatsapp_outbox')) {
-        return query.mock.calls.filter(([s]) => String(s).includes('FROM whatsapp_outbox')).length === 1
-          ? { rows: [{ id: 'outbox-admin-1', sequence: 0, whatsapp_number: 'fixture-number', body: 'Fixture', content_template: null, content_variables: null }] }
-          : { rows: [] };
-      }
-      return { rowCount: 1, rows: [] };
-    });
-    (setAuditContext as jest.Mock).mockClear();
-    await sendPendingAdminOutbox({ query } as any, PLATFORM);
-    const begins = query.mock.calls.filter(([sql]) => sql === 'BEGIN').length;
-    expect(begins).toBe(2);
-    expect(setAuditContext).toHaveBeenCalledTimes(2);
-    expect(setAuditContext).toHaveBeenCalledWith(expect.objectContaining({ query }), PLATFORM, 'whatsapp.admin_outbox');
-    const record = query.mock.calls.findIndex(([sql]) => /record_admin_whatsapp_delivery/.test(String(sql)));
-    expect((setAuditContext as jest.Mock).mock.invocationCallOrder[0]).toBeLessThan(query.mock.invocationCallOrder[record]);
-    expect((setAuditContext as jest.Mock).mock.invocationCallOrder[0]).toBeGreaterThan(query.mock.invocationCallOrder[0]);
   });
 });

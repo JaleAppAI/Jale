@@ -17,7 +17,6 @@ import {
 // The real constant, not a literal: outbox.ts exports it (sprint 23) precisely
 // so consumers stop mirroring '__fallback_body' by hand and drifting from it.
 import { FALLBACK_BODY_KEY } from '../../../../../lambda/whatsapp/lib/outbox';
-import { t } from '../../../../../lambda/whatsapp/lib/templates';
 import {
   _clearCategoryRenderersForTests,
   enqueueWorkerMessage,
@@ -498,28 +497,8 @@ describe('onboarding-renderers', () => {
       }));
     }
 
-    function referredJob(overrides: Record<string, unknown> = {}) {
-      return {
-        jobId: 'job-ref',
-        title: 'Finish Carpenter',
-        companyName: 'Acme Builders',
-        location: 'Austin, TX' as string | null,
-        pay: '$22-26/hr' as string | null,
-        ...overrides,
-      };
-    }
-
     const kinds: ReadonlyArray<(lang: PreferredLanguage) => ReleaseRenderRequest> = [
-      (language) => ({ kind: 'onboarding_complete', workerId: WORKER_ID, language, referredJobCount: 0 }),
-      // Sprint 27: the welcome when referred job cards follow it.
-      (language) => ({ kind: 'onboarding_complete', workerId: WORKER_ID, language, referredJobCount: 2 }),
-      // Sprint 27: one referred job, as its own tappable card.
-      (language) => ({
-        kind: 'referred_job',
-        workerId: WORKER_ID,
-        language,
-        job: referredJob(),
-      }),
+      (language) => ({ kind: 'onboarding_complete', workerId: WORKER_ID, language }),
       (language) => ({
         kind: 'account_notice',
         workerId: WORKER_ID,
@@ -549,7 +528,7 @@ describe('onboarding-renderers', () => {
       }),
     ];
 
-    it('handles every kind in both languages (14 combinations)', async () => {
+    it('handles all five kinds in both languages (10 combinations)', async () => {
       const renderer = createReleaseRenderer();
       let count = 0;
       for (const buildRequest of kinds) {
@@ -561,7 +540,7 @@ describe('onboarding-renderers', () => {
           count += 1;
         }
       }
-      expect(count).toBe(14);
+      expect(count).toBe(10);
     });
 
     it('produces different EN and ES output for each release kind', async () => {
@@ -572,67 +551,6 @@ describe('onboarding-renderers', () => {
         const enText = JSON.stringify(enResult);
         const esText = JSON.stringify(esResult);
         expect(enText).not.toEqual(esText);
-      }
-    });
-
-    // ── Sprint 27: the referred job is a CARD, and the welcome counts them ──
-
-    it('renders a referred job as the job_alert card: five variables, the job-<id> button, and the fallback body', async () => {
-      const renderer = createReleaseRenderer();
-      for (const language of languages) {
-        const result = await renderer.render({ kind: 'referred_job', workerId: WORKER_ID, language, job: referredJob() });
-
-        expect(result.body).toBeNull();
-        expect(result.contentTemplate).toBe(language === 'en' ? 'job_alert_en' : 'job_alert_es');
-        expect(result.contentVariables).toMatchObject({
-          '1': 'Finish Carpenter',
-          '2': 'Acme Builders',
-          '3': 'Austin, TX',
-          '4': '$22-26/hr',
-          '5': 'job-job-ref',
-        });
-        const fallback = result.contentVariables![FALLBACK_BODY_KEY];
-        expect(fallback).toContain('Finish Carpenter - Acme Builders');
-      }
-    });
-
-    it('the referred card is the SAME message as a one-job alert digest -- one builder, never two', async () => {
-      const renderer = createReleaseRenderer();
-      const job = referredJob();
-      const card = await renderer.render({ kind: 'referred_job', workerId: WORKER_ID, language: 'es', job });
-      const digest = await renderer.render({
-        kind: 'job_alert_digest', workerId: WORKER_ID, language: 'es', jobs: [{ ...job, score: 0 }],
-      });
-      expect(card).toEqual(digest);
-    });
-
-    it('a referred card still renders as a template with no location and no pay (bilingual placeholders)', async () => {
-      const renderer = createReleaseRenderer();
-      const result = await renderer.render({
-        kind: 'referred_job', workerId: WORKER_ID, language: 'es', job: referredJob({ location: null, pay: null }),
-      });
-      expect(result.contentTemplate).toBe('job_alert_es');
-      expect(result.contentVariables!['3']).toBe('Ubicacion no especificada');
-    });
-
-    it('a referred card carries no "a friend referred you" framing in either language', async () => {
-      const renderer = createReleaseRenderer();
-      for (const language of languages) {
-        const text = JSON.stringify(await renderer.render({ kind: 'referred_job', workerId: WORKER_ID, language, job: referredJob() }));
-        expect(text).not.toMatch(/friend|amigo|recomend|referred/i);
-      }
-    });
-
-    it('the welcome names the cards that follow it: none, one, or several', async () => {
-      const renderer = createReleaseRenderer();
-      for (const language of languages) {
-        const welcome = async (referredJobCount: number) => (await renderer.render({
-          kind: 'onboarding_complete', workerId: WORKER_ID, language, referredJobCount,
-        })).body;
-        expect(await welcome(0)).toBe(t('v2_ready', language));
-        expect(await welcome(1)).toBe(t('v2_ready_jobs_one', language));
-        expect(await welcome(2)).toBe(t('v2_ready_jobs_many', language));
-        expect(await welcome(3)).toBe(t('v2_ready_jobs_many', language));
       }
     });
 
@@ -804,7 +722,7 @@ describe('job_alert category renderer: single-job template send', () => {
     expect(result!.body).toContain('Electricista');
   });
 
-  it('keeps the multi-job digest as plain text (the release supersedes free-form rows outside the 24h window)', async () => {
+  it('keeps the multi-job digest as plain text (release-time send, always inside the reply window)', async () => {
     const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'en' });
     const result = await categoryRenderers.job_alert(client, baseInput({
       payload: { jobs: [singleJob, { ...singleJob, jobId: 'job-10', title: 'Plomero' }] },

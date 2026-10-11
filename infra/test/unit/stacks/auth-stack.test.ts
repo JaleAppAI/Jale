@@ -24,6 +24,7 @@ describe('AuthStack', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
     });
     template = Template.fromStack(auth);
   });
@@ -512,6 +513,7 @@ describe('AuthStack — employer SES email', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
     });
     sesTemplate = Template.fromStack(auth);
   });
@@ -601,6 +603,7 @@ describe('AuthStack — SES context validation', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
     });
   };
 
@@ -655,6 +658,7 @@ describe('AuthStack Cognito DeletionProtection', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
     });
     return Template.fromStack(auth);
   };

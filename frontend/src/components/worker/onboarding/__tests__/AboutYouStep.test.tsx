@@ -69,7 +69,7 @@ describe('AboutYouStep', () => {
         expect(cta()).toBeDisabled();
 
         rerender(
-            <AboutYouStep {...props({ draft: draft({ firstName: 'Alex', lastName: 'Rivera' }) })} />,
+            <AboutYouStep {...props({ draft: draft({ firstName: 'David', lastName: 'Castellanos' }) })} />,
         );
         expect(cta()).toBeDisabled();
     });
@@ -78,15 +78,15 @@ describe('AboutYouStep', () => {
         const onSubmit = vi.fn();
         renderIntl(<AboutYouStep {...props({
             draft: draft({
-                firstName: 'Alex',
-                lastName: 'Rivera',
+                firstName: 'David',
+                lastName: 'Castellanos',
                 location: { text: 'El Paso, TX 79901', city: 'El Paso', state: 'TX', zip: '79901' },
             }),
             onSubmit,
         })} />);
         await userEvent.click(screen.getByRole('button', { name: message('worker_onboarding.about.cta') }));
         expect(onSubmit).toHaveBeenCalledWith([
-            { stepKey: 'profile.name', value: 'Alex Rivera' },
+            { stepKey: 'profile.name', value: 'David Castellanos' },
             { stepKey: 'profile.location', value: { kind: 'city_state', city: 'El Paso', state: 'TX' } },
         ]);
     });

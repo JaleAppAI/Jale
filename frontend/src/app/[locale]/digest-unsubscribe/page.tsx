@@ -6,7 +6,6 @@ import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
 import { DashboardPanel } from '@/components/ui/dashboard-panel';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
-import { recordFetch } from '@/lib/report/context';
 
 export const dynamic = 'force-dynamic';
 
@@ -66,15 +65,14 @@ export default function DigestUnsubscribePage() {
         setRetryable(null);
         setPhase('submitting');
         try {
-            const url = `${process.env.NEXT_PUBLIC_API_BASE_URL}/public/employer-digest/unsubscribe`;
-            const res = await recordFetch({ method: 'POST', url }, () => fetch(
-                url,
+            const res = await fetch(
+                `${process.env.NEXT_PUBLIC_API_BASE_URL}/public/employer-digest/unsubscribe`,
                 {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ token }),
                 },
-            ));
+            );
             if (res.ok) {
                 setPhase('done');
                 return;

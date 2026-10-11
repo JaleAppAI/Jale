@@ -9,7 +9,7 @@ import {
 } from '../../../scripts/reset-whatsapp-onboarding-v2';
 
 const USER_ID = 'aaaaaaaa-0000-0000-0000-000000000001';
-const PHONE = '+19155550123';
+const PHONE = '+19152272188';
 const REASON = 'retest onboarding v2 gate';
 
 function hashPhone(phone: string): string {

@@ -160,7 +160,7 @@ export async function enqueueWorkerMessage(
       );
       throw new Error(`renderer_unavailable:${input.category}`);
     } else {
-      const { outboxId } = await insertAuthorizedIntentOutbox(client, { workerId: input.workerId, intentId }, rendered);
+      const { outboxId } = await insertAuthorizedIntentOutbox(client, intentId, rendered);
       await client.query(
         `UPDATE worker_message_intents SET outbox_id = $1 WHERE id = $2`,
         [outboxId, intentId],

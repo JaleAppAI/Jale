@@ -3,22 +3,8 @@ import { handler } from '../../../../lambda/api/employer-worker-profile';
 import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
 
-import { recordAccess, recordAttempt } from '../../../../lambda/lib/audit/record';
-import {
-  callerFor, expectAttemptAfter, expectRecordedInsideTransaction, withRequestId,
-} from './audit-expectations';
-
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
-jest.mock('../../../../lambda/lib/audit/record', () => ({
-  ...jest.requireActual('../../../../lambda/lib/audit/record'),
-  recordAccess: jest.fn(),
-  recordAttempt: jest.fn(),
-}));
-jest.mock('../../../../lambda/lib/audit/context');
-
-const mockRecordAccess = recordAccess as jest.Mock;
-const mockRecordAttempt = recordAttempt as jest.Mock;
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
@@ -552,8 +538,8 @@ describe('employer-worker-profile Lambda', () => {
       expect(sql).toContain('j.required_fields');
       expect(sql).toContain('j.certification_requirements');
       expect(sql).toContain('j.pre_application_prompts');
-      // Job-scoped, no vault fallback and no document sync: this is an
-      // employer session on the request login.
+      // Job-scoped, no vault fallback and no document sync: this is a
+      // jale_admin employer session.
       expect(sql).toContain('AND wd.job_id = ja.job_id');
       expect(sql).toContain('AS have_docs');
     });
@@ -618,92 +604,6 @@ describe('employer-worker-profile Lambda', () => {
       });
       expect(body.details_status).toBe('complete');
       expect(body.remaining.complete).toBe(false);
-    });
-  });
-
-  describe('access record', () => {
-    const employer = callerFor('employer', 'employer-id');
-    const client = expect.objectContaining({ query: mockQuery });
-
-    beforeEach(() => {
-      mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
-      mockRecordAccess.mockResolvedValue(undefined);
-      mockRecordAttempt.mockResolvedValue(undefined);
-    });
-
-    it('records the read after the last read and before COMMIT, naming exactly what is returned', async () => {
-      setupMockQuery({
-        profile: { rows: [{ ...mockProfile, ...stageColumns }] },
-        assessment: { rows: [{ id: 'assessment-id', status: 'scored', answers: [] }] },
-        extraction: { rows: [] },
-      });
-      const res = await handler(withRequestId(makeEvent('employer-sub')));
-      expect(res.statusCode).toBe(200);
-      expect(mockRecordAccess).toHaveBeenCalledTimes(1);
-      expect(mockRecordAccess).toHaveBeenCalledWith(client, employer, {
-        surface: 'employer.worker_profile',
-        subjectUserIds: ['worker-uuid'],
-        recordIds: ['app-uuid'],
-        resultCount: 1,
-        fieldNames: Object.keys(JSON.parse(res.body)).sort(),
-        purpose: { kind: 'job', id: 'job-uuid' },
-      });
-      expectRecordedInsideTransaction(mockQuery, mockRecordAccess, /FROM worker_trust_extractions/);
-      expect(mockRecordAttempt).not.toHaveBeenCalled();
-    });
-
-    it('answers 500 with none of the data when the record cannot be written', async () => {
-      setupMockQuery({ profile: { rows: [{ ...mockProfile, ...stageColumns }] } });
-      mockRecordAccess.mockRejectedValue(new Error('audit: the access record could not be written'));
-      const res = await handler(withRequestId(makeEvent('employer-sub')));
-      expect(res.statusCode).toBe(500);
-      expect(JSON.parse(res.body)).toEqual({ error: 'internal_error' });
-      expect(mockQuery.mock.calls.some(([q]) => q === 'COMMIT')).toBe(false);
-      expectAttemptAfter(mockQuery, mockRecordAttempt, 'ROLLBACK');
-      expect(mockRecordAttempt).toHaveBeenCalledWith(client, employer, {
-        surface: 'employer.worker_profile',
-        outcome: 'failed',
-        subjectUserIds: ['worker-uuid'],
-        purpose: { kind: 'job', id: 'job-uuid' },
-      });
-    });
-
-    it('records a denied attempt after the 403 for a job the employer does not own', async () => {
-      setupMockQuery({ jobOwnership: { rows: [] } });
-      const res = await handler(withRequestId(makeEvent('employer-sub')));
-      expect(res.statusCode).toBe(403);
-      expect(mockRecordAccess).not.toHaveBeenCalled();
-      expectAttemptAfter(mockQuery, mockRecordAttempt, 'COMMIT');
-      expect(mockRecordAttempt).toHaveBeenCalledWith(client, employer, {
-        surface: 'employer.worker_profile',
-        outcome: 'denied',
-        subjectUserIds: ['worker-uuid'],
-        purpose: { kind: 'job', id: 'job-uuid' },
-      });
-    });
-
-    it('records a not_found attempt after the 404 for a worker who is not an applicant', async () => {
-      setupMockQuery({ profile: { rows: [] } });
-      const res = await handler(withRequestId(makeEvent('employer-sub')));
-      expect(res.statusCode).toBe(404);
-      expect(mockRecordAccess).not.toHaveBeenCalled();
-      expectAttemptAfter(mockQuery, mockRecordAttempt, 'COMMIT');
-      expect(mockRecordAttempt.mock.calls[0][2]).toMatchObject({ outcome: 'not_found', subjectUserIds: ['worker-uuid'] });
-    });
-
-    it('records nothing for 401, 400, 409 or the legal wall', async () => {
-      await handler(makeEvent(null));
-      await handler({ ...makeEvent('employer-sub'), pathParameters: {} } as never);
-      mockCheckCompliance.mockResolvedValue({ compliant: false, userExists: true });
-      setupMockQuery();
-      expect((await handler(makeEvent('employer-sub'))).statusCode).toBe(403);
-      mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: false });
-      expect((await handler(makeEvent('employer-sub'))).statusCode).toBe(409);
-      mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
-      setupMockQuery({ employer: { rows: [] } });
-      expect((await handler(makeEvent('employer-sub'))).statusCode).toBe(409);
-      expect(mockRecordAccess).not.toHaveBeenCalled();
-      expect(mockRecordAttempt).not.toHaveBeenCalled();
     });
   });
 });

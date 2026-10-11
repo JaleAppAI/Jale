@@ -1,395 +1,236 @@
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
-import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 
 // infra/test/unit/scripts -> infra
 const infraRoot = path.join(__dirname, '..', '..', '..');
 const scriptPath = path.join(infraRoot, 'scripts', 'run-whatsapp-v2-db-tests.sh');
 
-function readScript(): string {
-  return fs.readFileSync(scriptPath, 'utf8');
-}
+const SUITE_042 = 'test/unit/db/whatsapp-onboarding-042.integration.test.ts';
+const SUITE_CONCURRENCY = 'test/unit/db/whatsapp-onboarding-concurrency.integration.test.ts';
+const SUITE_049 = 'test/unit/db/whatsapp-flow-049.integration.test.ts';
+// worker_profiles/users CHECK-constraint suite (2026-07-26 saveLocation /
+// chk_trade_other incident): real adapters against the real schema, plus the
+// full remaining profile-flow SQL as jale_whatsapp.
+const SUITE_PROFILE_CONSTRAINTS = 'test/unit/db/worker-profiles-constraints.integration.test.ts';
+// The migration-052 entry that used to sit here is GONE. Migration 092
+// dropped 052's pending-name half (both definers and both users columns), so
+// its five staging cases had nothing left to exercise. Its other four cases
+// covered objects 092 deliberately KEEPS -- 052's worker_skills DELETE grant
+// and policy, saveTrustAnswer's upsert-by-question_index, and
+// findPreviousStepKey -- and those moved verbatim into the 092 suite rather
+// than being deleted with the file. Deregistering a suite must never be a
+// quiet way to lose coverage.
+// Reset CLI bind-list gate (2026-07-27): runReset shipped binding the full
+// [userId, phone, phoneHash] list to every per-table statement, which real
+// Postgres rejects on the first `user_id = $1` predicate. Only a real
+// database enforces bind counts, so this suite is the regression gate.
+const SUITE_RESET = 'test/unit/db/whatsapp-onboarding-reset.integration.test.ts';
+const SUITE_RETRIGGER = 'test/unit/db/retrigger-sweep-definer.integration.test.ts';
+// migration 080 (2026-08-20): WhatsApp application-fill DB contract --
+// jale_whatsapp DELETE-then-INSERT on worker_documents under RLS, the 073
+// application_answers column grant, the 075/078 cert caps (both constraint
+// names) under RLS including the RLS-scoped-COUNT footgun, and the
+// snapshot-copy savepoint rollback. Migration 091 retired the 022 INSERT
+// guard this suite used to exercise through its GUC bypass, so its two GUC
+// cases became one absence assertion (the doc-less INSERT now succeeds with
+// no GUC, and the GUC is inert).
+const SUITE_080 = 'test/unit/db/whatsapp-application-fill-080.integration.test.ts';
+// S22 R2-C0 / R2-C23 (2026-08-28): the WEB door onto the v2 onboarding
+// engine. The spike proves `jale_whatsapp` can drive the state machine for a
+// web-origin worker at all (migration 086's SECURITY DEFINER entry points,
+// the run.context durable bag, cross-tenant negatives); the door suite drives
+// the four HTTP routes through the real handler against the real role. Both
+// exist only because column-scoped grants and RLS are invisible to a mocked
+// pool -- a `SELECT *` this role cannot run is a 42501 nothing else catches.
+const SUITE_WEB_SPIKE = 'test/unit/db/web-onboarding-door-spike.integration.test.ts';
+const SUITE_WEB_DOOR = 'test/unit/db/web-onboarding-door.integration.test.ts';
+// Sprint 22 R2-C6: the replacement for the deleted migration-053 suite. The
+// web-worker bypass lane is gone, so what needs a real database now is the
+// CROSSOVER -- a worker who starts (or finishes) onboarding on the web and
+// then messages WhatsApp for the first time, through the real pre-auth ->
+// OTP -> bind_verified_identity_and_start_workflow path.
+const SUITE_CROSSOVER = 'test/unit/db/web-worker-whatsapp-crossover.integration.test.ts';
+// Sprint 22 R2-POLISH: the 086 EMPLOYER side, which had no fail-closed home
+// until now. The extraction suite covers worker_trust_extractions' FORCE RLS
+// and its four read lanes plus the two SECURITY DEFINER entry points; the
+// reads suite executes the two employer applicant queries as their EXPORTED
+// query text (not a copy) against the real policies. Both are here for the
+// reason the whole list exists: a mocked pool has no planner and no policies,
+// so the ambiguous `id` that 500'd every employer documents request -- and any
+// 42501 on a column these roles are not granted -- is invisible without one.
+const SUITE_EXTRACTIONS_086 = 'test/unit/db/trust-extractions-086.integration.test.ts';
+const SUITE_EMPLOYER_READS = 'test/unit/db/employer-worker-reads.integration.test.ts';
+// The R2 hostile-input battery: SQL/encoding/boundary/envelope/lock/RLS probes
+// driven through the real web-door handler against the real policies.
+const SUITE_HOSTILE_INPUTS = 'test/unit/db/web-onboarding-hostile-inputs.integration.test.ts';
+// Sprint 23 L2.1: the migration-091 application-stages contract. The hire
+// trigger is deliberately NOT security definer -- it reads jobs and
+// worker_documents under the CALLER's RLS and fails closed when the job row
+// is invisible -- so its entire behavior (including the vault-only doc that
+// must NOT satisfy it) exists only where real policies do. Same for the
+// column-scoped jale_whatsapp grants: details_requested_at is withheld on
+// purpose, and a mocked pool would let that write through.
+const SUITE_STAGES_091 = 'test/unit/db/application-stages-091.integration.test.ts';
+// Sprint 23 L2.4: the WEB stage-2 details door. Belongs here for the same
+// reason as its neighbours -- `jobapp_whatsapp_select` is USING (true), so the
+// door's own `worker_id = $2` is the ONLY cross-tenant boundary, and
+// `jobapp_whatsapp_update` keys on a GUC whose absence is a zero-row UPDATE
+// (a SQL SUCCESS a mocked pool renders as a green 200 over a write that never
+// happened). It also drives 091's BEFORE-UPDATE hire gate to a PASS, which
+// nothing else in the repo does.
+const SUITE_APPLICATION_DETAILS = 'test/unit/db/worker-application-details.integration.test.ts';
+// Sprint 23 L2.5: the employer stage notification. It belongs here for the
+// same reason as the two above -- the whole feature turns on
+// `users_employer_applicant_read` (020b:261-269) seeing the EMPLOYER's users.id
+// in app.current_internal_user_id. Under a mocked pool every variant passes;
+// against the real policies the wrong GUC silently drops every notification.
+// Sprint 23 L3: the WhatsApp lane's two NEW statements -- the `aplicaciones`
+// listing and the continue-other offer filter. Both belong here for the same
+// reason as their neighbours: `jobapp_whatsapp_select` is USING (true), so
+// the listing's own `worker_id = $1` is the ONLY thing keeping one worker out
+// of another's applications, and a mocked pool proves nothing about that. The
+// listing also resolves the company through `employer_display_name` (031), a
+// SECURITY DEFINER path jale_whatsapp can only reach because it holds no
+// grant on employer_profiles at all.
+const SUITE_APPLICATIONS_COMMAND = 'test/unit/db/whatsapp-applications-command.integration.test.ts';
+const SUITE_STAGE_NOTIFY = 'test/unit/db/application-stage-notify.integration.test.ts';
+// Sprint 23 L8: the migration-092 cleanup contract. Every assertion in it is
+// a catalog or ACL fact, which is exactly the class a mocked pool cannot
+// hold: that five dead objects are ABSENT, that the two column-scoped
+// REVOKEs took nothing else with them (the failure mode is a bare
+// `REVOKE SELECT ON users`, which type-checks fine and breaks every inbound
+// WhatsApp turn), and that the web onboarding door and the WhatsApp bind
+// path still complete for a web-registered worker without 053's bypass
+// definer. It also carries the four surviving cases from the deleted 052
+// suite.
+const SUITE_CLEANUP_092 = 'test/unit/db/onboarding-cleanup-092.integration.test.ts';
+// Sprint 24 L3: the cross-job answer-reuse boundary, after the 2026-09-04
+// incident (an employer saw answers the worker gave to another company).
+// Here rather than in a mocked suite because worker_application_defaults is
+// RLS ENABLE + FORCE (079) and 091's write policy keys on
+// app.current_internal_user_id -- a write-back with no GUC is a zero-row
+// no-op that reads as success -- and because two of its assertions are
+// PostgreSQL facts, not app-level ones: that the jsonb `-` operator REMOVES
+// an answer key (a stored null would still read as answered), and that
+// `ON CONFLICT DO NOTHING` suppresses the snapshot copy's new
+// `RETURNING doc_type` on the idempotent re-call the engine makes every turn.
+const SUITE_FIELD_REUSE = 'test/unit/db/application-field-reuse.integration.test.ts';
 
-/**
- * The runner's SUITES=( ... ) array, in order. Parsed from that block alone, so
- * a suite path mentioned in a comment elsewhere in the script is never read
- * as a registration.
- */
-function registeredSuites(script = readScript()): string[] {
-  const block = /^SUITES=\(\n([\s\S]*?)^\)$/m.exec(script);
-  if (!block) throw new Error('run-whatsapp-v2-db-tests.sh has no SUITES=( ... ) block');
-  return block[1]
-    .split('\n')
-    .map((line) => line.replace(/#.*$/, '').trim())
-    .filter((line) => line !== '');
-}
+// Sprint 24 L4: migration 093's defer_worker_intent_outbox -- the third
+// outcome for a leased worker_intent row, which reschedules WITHOUT spending
+// an attempt. It is here for three facts a mocked pool cannot hold: 043's
+// whatsapp_outbox_worker_intent_lease_consistency CHECK (a defer that
+// releases one of the two lease columns, or moves to 'pending' with both
+// still set, is a 23514 that type-checks fine), the two-condition lease fence
+// (token equality AND an un-expired deadline -- dropping either is a
+// zero-row-vs-one-row difference), and attempt_count, whose non-advance is
+// the entire reason the function exists. It is LAST because 043's lease RPC
+// is global by design: leasing advances the attempt_count of any fixture row
+// an earlier suite left behind, so it must not run before one.
+const SUITE_DEFER_093 = 'test/unit/db/worker-intent-defer-093.integration.test.ts';
 
-function testFilesUnder(dir: string): string[] {
-  const files: string[] = [];
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) files.push(...testFilesUnder(full));
-    else if (entry.name.endsWith('.test.ts')) files.push(path.relative(infraRoot, full).split(path.sep).join('/'));
-  }
-  return files;
-}
+// Sprint 24 P4: migration 094's two data backfills. It is here, and LAST,
+// for the fact the migration itself is built around: both tables it writes
+// are RLS ENABLE + FORCE with GUC-keyed policies, so jale_admin -- the OWNER,
+// and the role the migration runs as -- sees ZERO rows unless the file
+// un-forces first. Applying 094 as the superuser would pass even if the
+// un-force were missing, so this suite applies the migration FILE as the real
+// jale_admin role, which is the only way the zero-row no-op is falsifiable.
+// It also settles the SQL/TypeScript parity that nothing else can: the
+// migration re-implements normalizeProfession + resolveTradeAlias +
+// standardTradeKeyForCategory in SQL, and the suite drives
+// canonicalizeWorkerTrade over every trade_aliases alias, trade_key and
+// canonical_es and compares the pair each side produces.
+// LAST because it re-applies a migration: the two ALTER TABLE ... FORCE
+// statements take ACCESS EXCLUSIVE on `users`, so it must not interleave with
+// a suite holding fixture rows open.
+const SUITE_BACKFILLS_094 = 'test/unit/db/sprint24-data-backfills-094.integration.test.ts';
 
-// A test reaches a database when it reads a test-database URL from the
-// environment (JALE_TEST_DATABASE_URL, JALE_TEST_UPGRADE_DATABASE_URL, ...).
-const READS_A_TEST_DATABASE_URL = /process\.env\.JALE_TEST_[A-Z_]*DATABASE_URL/;
+// Sprint 24 hotfix: migration 095's hire-acknowledgement columns. Here, and
+// LAST, for three facts a mocked pool cannot hold: that a backfill on
+// job_applications (RLS ENABLE + FORCE, every policy GUC-keyed) rewrites ZERO
+// rows unless the file un-forces first -- and would report success; that the
+// 095 column grant lets jale_whatsapp write hired_seen_at/hired_ack_at while
+// hired_at is a 42501 rather than a silently dropped column; and that one
+// worker acknowledging another's hire is a zero-row policy result, not an
+// error. Both shipped statements (the employer's status UPDATE and the two
+// hire-ack variants) are extracted from their own .ts sources and executed
+// verbatim against the real policies, so a re-typed copy that drifts fails.
+// LAST because re-applying 095 takes ACCESS EXCLUSIVE on job_applications and
+// stamps every hired row present, so it must not interleave with a suite
+// holding application fixtures open.
+const SUITE_HIRE_ACK_095 = 'test/unit/db/application-hire-ack-095.integration.test.ts';
 
-/**
- * Every database suite on disk, relative to infra/: each *.integration.test.ts
- * under test/unit/db, and any other test under test/unit that reads a
- * test-database URL, whatever it is named.
- */
-function databaseSuitesOnDisk(): string[] {
-  return testFilesUnder(path.join(infraRoot, 'test', 'unit'))
-    .filter((file) =>
-      (file.startsWith('test/unit/db/') && file.endsWith('.integration.test.ts'))
-      || READS_A_TEST_DATABASE_URL.test(fs.readFileSync(path.join(infraRoot, file), 'utf8')))
-    .sort();
-}
+// Sprint 24 round 2 lane 1.5: the web door's release of the WhatsApp fill /
+// prompt arm. Registered after 095 and last. It applies NO migration -- it
+// does not compete for the ACCESS EXCLUSIVE locks that pin 094/095 to the end
+// -- but every one of its claims is a database fact a mocked pool reports as
+// success. That `state_context - text[]` REMOVES the keys the processor's
+// dispatch tail gates on (a null merge and a removal are both "disarmed" to a
+// `typeof === 'string'` reader, and only real jsonb tells them apart); that
+// the `user_id` predicate rather than RLS is what keeps one worker's web
+// submission out of another's conversation row, since `wa_conv_full` is
+// USING (true); that the 24-hour window comes from the INBOUND log
+// (`whatsapp_processed_messages.first_seen_at`) and NOT from
+// `whatsapp_conversations.updated_at`, whose trigger fires on outbound writes
+// too; and -- provable nowhere else -- that a 42501 inside the release leaves
+// the caller's transaction COMMITtable, because the module wraps itself in a
+// SAVEPOINT. Removing that savepoint fails five of the suite's eight cases
+// with 25P02, which in production is a successful answer merge answering 500.
+const SUITE_WEB_COMPLETION = 'test/unit/db/application-web-completion.integration.test.ts';
+// Sprint 26 T3a — the employer unread badge's mark-read UPDATE and the inbox
+// unread derivation against the real job_conversations policies.
+const SUITE_EMPLOYER_CONVERSATION_READ = 'test/unit/db/employer-conversation-read.integration.test.ts';
 
-/**
- * Database suites the default run does not include, each with the reason. Every
- * other database suite must be registered in SUITES.
- */
-const EXCLUDED: Readonly<Record<string, string>> = {
-  'test/unit/db/migrations/apply-order.test.ts':
-    'It applies the migration chain itself as jale_admin, so it needs a virgin cluster '
-    + '(bootstrap-testbed.sh --empty) rather than the migrated bed the registered suites share. '
-    + "The database job's standard leg runs it alone with --suite.",
-  'test/unit/db/migrations/billing-034-upgrade.test.ts':
-    'It creates jale_admin itself and reads JALE_TEST_UPGRADE_DATABASE_URL, so it needs a bare '
-    + 'cluster (bootstrap-testbed.sh --bare) rather than the migrated bed. '
-    + "The database job's standard leg runs it alone with --suite.",
-  'test/unit/db/helpers/login-pool.test.ts':
-    'Not a database suite: unit tests of helpers/login-pool.ts. It sets the URL variable to a '
-    + 'fake loopback value to exercise the helper and never connects, so it runs with the other '
-    + 'unit tests in the infra job.',
-};
-
-// The order rules the SUITES list carries (the runner's sequencer runs it
-// exactly as listed). Catalog-only suites first, before any fixture exists;
-// then 043, whose global lease must find only its own row; and last the tail.
-const CATALOG_FIRST = [
-  'test/unit/db/least-privilege-coverage.integration.test.ts',
-  'test/unit/db/least-privilege-posture.integration.test.ts',
-  'test/unit/db/least-privilege-cap-functions.integration.test.ts',
-];
-const SUITE_LEASE_043 = 'test/unit/db/whatsapp-worker-intent-043.integration.test.ts';
-// 093 leases worker_intent rows globally and advances the attempt count of
-// every row it leases, so it follows every suite that could own one. After it
-// come the suites that re-apply their migration file as jale_admin, in
-// migration order: a replay takes ACCESS EXCLUSIVE locks and backfills every
-// matching row on the bed.
-const TAIL = [
-  'test/unit/db/worker-intent-defer-093.integration.test.ts',
-  'test/unit/db/sprint24-data-backfills-094.integration.test.ts',
-  'test/unit/db/application-hire-ack-095.integration.test.ts',
-  'test/unit/db/employer-conversation-read.integration.test.ts',
-  'test/unit/db/worker-referred-jobs-103.integration.test.ts',
-];
-
-/**
- * Runs the script with a scrubbed environment: no database URL and no profile
- * unless the overrides set one. The final verification battery runs with
- * JALE_TEST_DATABASE_URL exported, and jest inherits process.env, so these
- * children must not depend on it being absent.
- */
-function runScript(args: string[], overrides: NodeJS.ProcessEnv = {}): SpawnSyncReturns<string> {
+// The guard must fail closed regardless of the ambient environment. The final
+// verification battery exports JALE_TEST_DATABASE_URL to run the guarded
+// command against the real testbed, and jest inherits process.env — so the
+// missing/empty-URL child processes below scrub the variable explicitly rather
+// than relying on it being absent.
+function runGuard(overrides: NodeJS.ProcessEnv): ReturnType<typeof spawnSync> {
   const env: NodeJS.ProcessEnv = { ...process.env };
   delete env.JALE_TEST_DATABASE_URL;
-  delete env.JALE_TEST_UPGRADE_DATABASE_URL;
-  delete env.JALE_TEST_DB_PROFILE;
-  delete env.JALE_DB_TEST_RESULTS;
-  delete env.JALE_DB_TEST_PR_HEAD;
-  delete env.GITHUB_STEP_SUMMARY;
   Object.assign(env, overrides);
-  return spawnSync('bash', [scriptPath, ...args], { env, encoding: 'utf8' });
+  return spawnSync('bash', [scriptPath], { env, encoding: 'utf8' });
 }
 
-function output(result: SpawnSyncReturns<string>): string {
-  return `${result.stdout ?? ''}${result.stderr ?? ''}`;
-}
-
-// ---------------------------------------------------------------------------
-// Jest JSON results fixtures. The shape is jest 30's --json output (field for
-// field what `jest --json --outputFile` writes), built per suite so a test can
-// make exactly one thing wrong.
-// ---------------------------------------------------------------------------
-type Status = 'passed' | 'failed' | 'pending' | 'todo' | 'skipped' | 'disabled' | 'focused';
-
-interface SuiteSpec {
-  file: string;
-  statuses?: Status[];
-  start?: number;
-  suiteStatus?: string;
-}
-
-const realInfraRoot = fs.realpathSync(infraRoot);
-
-function suiteResult(spec: SuiteSpec, index: number) {
-  const statuses = spec.statuses ?? ['passed', 'passed'];
-  const startTime = spec.start ?? 1_790_000_000_000 + index * 1_000;
-  const assertionResults = statuses.map((status, n) => ({
-    ancestorTitles: [`suite ${index}`],
-    duration: status === 'passed' || status === 'failed' ? 4 : null,
-    failing: false,
-    failureDetails: [],
-    failureMessages: status === 'failed' ? ['Error: expected 0, received 1'] : [],
-    fullName: `suite ${index} case ${n}`,
-    invocations: 1,
-    location: null,
-    numPassingAsserts: status === 'passed' ? 1 : 0,
-    retryMessages: [],
-    retryReasons: [],
-    status,
-    title: `case ${n}`,
-    startAt: startTime + n,
-  }));
-  const failing = statuses.includes('failed');
-  const allRan = statuses.every((status) => status === 'passed' || status === 'failed');
-  return {
-    assertionResults,
-    endTime: startTime + 400,
-    message: failing ? '  ● suite case failed' : '',
-    name: path.join(realInfraRoot, spec.file),
-    startTime,
-    status: spec.suiteStatus ?? (failing ? 'failed' : allRan ? 'passed' : 'focused'),
-    summary: '',
-  };
-}
-
-function jestResults(specs: SuiteSpec[]) {
-  const testResults = specs.map(suiteResult);
-  const all = testResults.flatMap((suite) => suite.assertionResults);
-  const count = (...statuses: Status[]) => all.filter((test) => statuses.includes(test.status)).length;
-  const failedSuites = testResults.filter((suite) => suite.status === 'failed').length;
-  return {
-    numFailedTestSuites: failedSuites,
-    numFailedTests: count('failed'),
-    numPassedTestSuites: testResults.filter((suite) => suite.status !== 'failed').length,
-    numPassedTests: count('passed'),
-    numPendingTestSuites: testResults.filter((suite) => suite.status === 'skipped').length,
-    numPendingTests: count('pending', 'skipped', 'disabled'),
-    numRuntimeErrorTestSuites: 0,
-    numTodoTests: count('todo'),
-    numTotalTestSuites: testResults.length,
-    numTotalTests: all.length,
-    openHandles: [],
-    snapshot: {
-      added: 0, didUpdate: false, failure: false, filesAdded: 0, filesRemoved: 0, filesRemovedList: [],
-      filesUnmatched: 0, filesUpdated: 0, matched: 0, total: 0, unchecked: 0, uncheckedKeysByFile: [],
-      unmatched: 0, updated: 0,
-    },
-    startTime: 1_789_999_999_000,
-    // Jest reports success with pending tests: only failures clear it.
-    success: failedSuites === 0,
-    testResults,
-    wasInterrupted: false,
-  };
-}
-
-/** Every registered suite, once, in order, every test passing. */
-function cleanSpecs(): SuiteSpec[] {
-  return registeredSuites().map((file) => ({ file }));
-}
-
-let scratch: string;
-beforeAll(() => {
-  scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'run-db-tests-'));
-});
-afterAll(() => {
-  fs.rmSync(scratch, { recursive: true, force: true });
-});
-
-let fixtureCount = 0;
-function checkResults(results: unknown, overrides: NodeJS.ProcessEnv = {}): SpawnSyncReturns<string> {
-  fixtureCount += 1;
-  const file = path.join(scratch, `results-${fixtureCount}.json`);
-  fs.writeFileSync(file, typeof results === 'string' ? results : JSON.stringify(results));
-  return runScript(['--check-results', file], overrides);
-}
-
-describe('run-whatsapp-v2-db-tests.sh registers every database suite', () => {
-  it('registers every database suite on disk, or excuses it with a reason', () => {
-    const registered = new Set(registeredSuites());
-    const unaccounted = databaseSuitesOnDisk().filter((file) => !registered.has(file) && !(file in EXCLUDED));
-    expect(unaccounted).toEqual([]);
-  });
-
-  it('registers each suite once, only database suites that exist, and nothing it also excuses', () => {
-    const suites = registeredSuites();
-    const onDisk = new Set(databaseSuitesOnDisk());
-    expect(suites.filter((file, index) => suites.indexOf(file) !== index)).toEqual([]);
-    expect(suites.filter((file) => !onDisk.has(file))).toEqual([]);
-    expect(suites.filter((file) => file in EXCLUDED)).toEqual([]);
-  });
-
-  it('excuses only database suites that exist, each with a reason', () => {
-    const onDisk = new Set(databaseSuitesOnDisk());
-    for (const [file, reason] of Object.entries(EXCLUDED)) {
-      expect({ file, onDisk: onDisk.has(file) }).toEqual({ file, onDisk: true });
-      expect(reason.length).toBeGreaterThan(40);
-    }
-  });
-
-  it('runs the catalog-only suites first, then 043, and ends with the 093 lease and the migration re-apply tail', () => {
-    const suites = registeredSuites();
-    expect(suites.slice(0, CATALOG_FIRST.length + 1)).toEqual([...CATALOG_FIRST, SUITE_LEASE_043]);
-    expect(suites.slice(-TAIL.length)).toEqual(TAIL);
-  });
-
-  it('runs jest in band, by exact path, in the declared order, and checks the JSON it writes', () => {
-    const script = readScript();
+describe('test:whatsapp-v2-db fail-closed URL guard', () => {
+  it('invokes exactly the migration-042, concurrency, migration-049, profile-constraint, web-door, crossover and 086 employer-read suites in-band', () => {
+    const script = fs.readFileSync(scriptPath, 'utf8');
+    const suites = script.match(/test\/unit\/db\/[a-zA-Z0-9_.-]+\.integration\.test\.ts/g) ?? [];
+    // Order is load-bearing only as a convention: the list reads
+    // chronologically by migration/feature, so a new suite is APPENDED rather
+    // than slotted alphabetically.
+    expect(suites).toEqual([
+      SUITE_042, SUITE_CONCURRENCY, SUITE_049, SUITE_PROFILE_CONSTRAINTS,
+      SUITE_RESET, SUITE_RETRIGGER, SUITE_080, SUITE_WEB_SPIKE, SUITE_WEB_DOOR, SUITE_CROSSOVER,
+      SUITE_EXTRACTIONS_086, SUITE_EMPLOYER_READS, SUITE_HOSTILE_INPUTS,
+      SUITE_STAGES_091,
+      SUITE_APPLICATION_DETAILS,
+      SUITE_APPLICATIONS_COMMAND,
+      SUITE_CLEANUP_092,
+      SUITE_FIELD_REUSE,
+      SUITE_STAGE_NOTIFY,
+      SUITE_DEFER_093,
+      SUITE_BACKFILLS_094,
+      SUITE_HIRE_ACK_095,
+      SUITE_WEB_COMPLETION,
+      SUITE_EMPLOYER_CONVERSATION_READ,
+    ]);
+    // The deregistered migration-052 suite must be gone from the script
+    // entirely -- including from any tombstone comment, which this file's own
+    // extraction regex would read back as a live list entry.
+    expect(script).not.toContain('whatsapp-onboarding-052');
     expect(script).toContain('--runInBand');
-    expect(script).toContain('--runTestsByPath');
-    expect(script).toContain('--testSequencer');
-    expect(script).toMatch(/--json --outputFile/);
-    // jest must not replace the shell: the results check runs after it.
-    expect(script).not.toMatch(/\bexec\s+npx\s+jest/);
-  });
-});
-
-describe('run-whatsapp-v2-db-tests.sh results check (--check-results)', () => {
-  it('accepts results in which every registered suite ran once, in order, with every test passing', () => {
-    const result = checkResults(jestResults(cleanSpecs()));
-    expect({ status: result.status, out: output(result) }).toMatchObject({ status: 0 });
-    for (const file of registeredSuites()) {
-      expect(result.stdout).toContain(file);
-    }
+    // No other db integration suite leaks into this focused command.
+    expect(script).not.toMatch(
+      /whatsapp-delivery-040|whatsapp-support-039|billing-|entitlement-concurrency|apply-order|rls-relationship/,
+    );
   });
 
-  it('fails on a single pending test, naming its suite and the test', () => {
-    const specs = cleanSpecs();
-    specs[2] = { ...specs[2], statuses: ['passed', 'pending'] };
-    const result = checkResults(jestResults(specs));
-    expect(result.status).not.toBe(0);
-    expect(output(result)).toContain(`${specs[2].file} › suite 2 case 1: pending`);
-  });
-
-  it('fails on a todo test', () => {
-    const specs = cleanSpecs();
-    specs[0] = { ...specs[0], statuses: ['passed', 'todo'] };
-    const result = checkResults(jestResults(specs));
-    expect(result.status).not.toBe(0);
-    expect(output(result)).toContain(`${specs[0].file} › suite 0 case 1: todo`);
-  });
-
-  it('fails on a suite jest skipped as a whole', () => {
-    const specs = cleanSpecs();
-    specs[1] = { ...specs[1], statuses: ['pending', 'pending'], suiteStatus: 'skipped' };
-    const result = checkResults(jestResults(specs));
-    expect(result.status).not.toBe(0);
-    expect(output(result)).toContain(`${specs[1].file}: suite status skipped`);
-  });
-
-  it('fails on a failed test even when everything else passed', () => {
-    const specs = cleanSpecs();
-    specs[3] = { ...specs[3], statuses: ['passed', 'failed'] };
-    const result = checkResults(jestResults(specs));
-    expect(result.status).not.toBe(0);
-    expect(output(result)).toContain(`${specs[3].file} › suite 3 case 1: failed`);
-  });
-
-  it('fails when a registered suite did not run', () => {
-    const specs = cleanSpecs();
-    const [missing] = specs.splice(4, 1);
-    const result = checkResults(jestResults(specs));
-    expect(result.status).not.toBe(0);
-    expect(output(result)).toContain(`${missing.file}: did not run`);
-  });
-
-  it('fails when a suite ran twice, or a suite that is not registered ran', () => {
-    const specs = cleanSpecs();
-    const twice = specs[5].file;
-    specs.push({ file: twice, start: 1_790_100_000_000 });
-    specs.push({ file: 'test/unit/db/helpers/login-pool.test.ts', start: 1_790_100_001_000 });
-    const result = checkResults(jestResults(specs));
-    expect(result.status).not.toBe(0);
-    expect(output(result)).toContain(`${twice}: ran 2 times`);
-    expect(output(result)).toContain('test/unit/db/helpers/login-pool.test.ts: ran, but is not registered');
-  });
-
-  it('fails when the suites ran out of the declared order', () => {
-    const specs = cleanSpecs();
-    const first = specs[0].file;
-    const second = specs[1].file;
-    specs[0] = { file: first, start: 1_790_000_001_500 };
-    specs[1] = { file: second, start: 1_789_999_999_500 };
-    const result = checkResults(jestResults(specs));
-    expect(result.status).not.toBe(0);
-    expect(output(result)).toContain(`did not run in the declared order: position 1 should be ${first}, ran ${second}`);
-  });
-
-  it('fails on a suite that ran no tests', () => {
-    const specs = cleanSpecs();
-    specs[6] = { ...specs[6], statuses: [] };
-    const result = checkResults(jestResults(specs));
-    expect(result.status).not.toBe(0);
-    expect(output(result)).toContain(`${specs[6].file}: ran no tests`);
-  });
-
-  it('fails when the results file is missing or is not JSON', () => {
-    const missing = runScript(['--check-results', path.join(scratch, 'no-such-results.json')]);
-    expect(missing.status).not.toBe(0);
-    expect(output(missing)).toContain('no readable jest results');
-    const garbled = checkResults('{"testResults": [');
-    expect(garbled.status).not.toBe(0);
-    expect(output(garbled)).toContain('no readable jest results');
-  });
-
-  it('writes the commit, the profile and per-suite counts to the step summary', () => {
-    const summary = path.join(scratch, 'step-summary.md');
-    fs.writeFileSync(summary, '');
-    const specs = cleanSpecs();
-    specs[0] = { ...specs[0], statuses: ['passed', 'passed', 'passed'] };
-    const result = checkResults(jestResults(specs), {
-      GITHUB_STEP_SUMMARY: summary,
-      JALE_TEST_DB_PROFILE: 'owner-unrestricted',
-      JALE_DB_TEST_PR_HEAD: 'f'.repeat(40),
-    });
-    expect(result.status).toBe(0);
-    const head = spawnSync('git', ['-C', infraRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
-    const markdown = fs.readFileSync(summary, 'utf8');
-    expect(markdown).toContain('owner-unrestricted');
-    expect(markdown).toContain(head);
-    expect(markdown).toContain('f'.repeat(40));
-    expect(markdown).toContain(`| ${specs[0].file} | 3 | 3 | 0 | 0 | 0 |`);
-    for (const file of registeredSuites()) {
-      expect(markdown).toContain(`| ${file} |`);
-    }
-  });
-});
-
-describe('run-whatsapp-v2-db-tests.sh profile pass-through', () => {
-  it('rejects an unknown JALE_TEST_DB_PROFILE before doing anything else', () => {
-    const result = checkResults(jestResults(cleanSpecs()), { JALE_TEST_DB_PROFILE: 'production' });
-    expect(result.status).not.toBe(0);
-    expect(output(result)).toMatch(/JALE_TEST_DB_PROFILE must be standard, request or owner-unrestricted/);
-  });
-
-  it('defaults the profile to standard and exports it to the suites', () => {
-    const summary = path.join(scratch, 'default-profile.md');
-    fs.writeFileSync(summary, '');
-    const result = checkResults(jestResults(cleanSpecs()), { GITHUB_STEP_SUMMARY: summary });
-    expect(result.status).toBe(0);
-    expect(fs.readFileSync(summary, 'utf8')).toContain('standard profile');
-    // Exported, so every suite reads the same validated value. The runner
-    // never filters suites by profile: a suite that applies to some profiles
-    // declares it (describeInProfiles / itInProfiles in
-    // test/unit/db/helpers/login-pool.ts), and the results check fails any
-    // registered suite that did not run.
-    expect(readScript()).toMatch(/^export JALE_TEST_DB_PROFILE=/m);
-  });
-});
-
-describe('run-whatsapp-v2-db-tests.sh fail-closed URL guard', () => {
   it('never dereferences the URL value in an echo/printf (no credential leak)', () => {
-    const script = readScript();
+    const script = fs.readFileSync(scriptPath, 'utf8');
     // The variable NAME may appear as literal message text; its VALUE
     // (`$JALE_TEST_DATABASE_URL` / `${JALE_TEST_DATABASE_URL...}`) must never be
     // printed.
@@ -397,24 +238,16 @@ describe('run-whatsapp-v2-db-tests.sh fail-closed URL guard', () => {
   });
 
   it('exits non-zero with a clear message when JALE_TEST_DATABASE_URL is unset', () => {
-    const result = runScript([]);
+    const result = runGuard({});
     expect(result.status).not.toBe(0);
-    expect(output(result)).toMatch(/JALE_TEST_DATABASE_URL/);
+    const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+    expect(output).toMatch(/JALE_TEST_DATABASE_URL/);
     // Nothing that looks like a connection URL is ever emitted.
-    expect(output(result)).not.toMatch(/:\/\//);
+    expect(output).not.toMatch(/:\/\//);
   });
 
   it('exits non-zero when JALE_TEST_DATABASE_URL is empty', () => {
-    const result = runScript([], { JALE_TEST_DATABASE_URL: '' });
+    const result = runGuard({ JALE_TEST_DATABASE_URL: '' });
     expect(result.status).not.toBe(0);
   });
-
-  it('fails closed when a suite run alone with --suite skips for want of a database', () => {
-    // A real jest run of one database suite with no URL: it registers pending
-    // tests and jest itself exits 0, so only the results check can fail it.
-    const result = runScript(['--suite', 'test/unit/db/billing-job-limit.integration.test.ts']);
-    expect(result.status).not.toBe(0);
-    expect(output(result)).toContain('test/unit/db/billing-job-limit.integration.test.ts › ');
-    expect(output(result)).toContain(': pending');
-  }, 120_000);
 });

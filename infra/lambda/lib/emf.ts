@@ -26,16 +26,6 @@ export interface EmfMetric {
   unit?: string;
 }
 
-export interface EmfOptions {
-  /**
-   * Also declare the dimensionless set, so the same line publishes the
-   * per-dimension series AND a rollup with no dimensions. An alarm with no
-   * `Dimensions` property reads only the rollup; without it, a metric emitted
-   * with dimensions is a different metric and that alarm never sees it.
-   */
-  rollup?: boolean;
-}
-
 /**
  * Emits one EMF line carrying every metric in `metrics` under `namespace`.
  *
@@ -43,30 +33,19 @@ export interface EmfOptions {
  * which is the pairing CloudWatch requires -- a declared dimension with no
  * matching field is silently dropped. Passing none declares `[[]]`: the
  * metric has no dimensions, which is what an alarm with no `Dimensions`
- * property matches. `options.rollup` adds that dimensionless set alongside
- * the dimensioned one.
- *
- * `fields` are extra top-level properties that are not dimensions: context
- * for whoever reads the line, never declared to CloudWatch. They are written
- * first, so the envelope, a dimension or a metric value of the same name
- * always wins over a field.
+ * property matches.
  */
 export function emitEmfMetrics(
   namespace: string,
   metrics: EmfMetric[],
   dimensions: Record<string, string> = {},
-  options: EmfOptions = {},
-  fields: Record<string, unknown> = {},
 ): void {
-  const keys = Object.keys(dimensions);
-  const dimensionSets = options.rollup && keys.length > 0 ? [keys, []] : [keys];
   const payload: Record<string, unknown> = {
-    ...fields,
     _aws: {
       Timestamp: Date.now(),
       CloudWatchMetrics: [{
         Namespace: namespace,
-        Dimensions: dimensionSets,
+        Dimensions: [Object.keys(dimensions)],
         Metrics: metrics.map(({ name, unit }) => ({ Name: name, Unit: unit ?? 'Count' })),
       }],
     },

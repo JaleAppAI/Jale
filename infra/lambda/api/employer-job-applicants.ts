@@ -6,17 +6,12 @@ import { promptAnswersView, stageView } from '../lib/application-stage-view';
 import { parsePreApplicationPromptList } from '../lib/pre-application-prompts';
 import { APPLICATION_STATUSES } from '../lib/job-fields';
 import { checkCompliance } from '../legal/check-compliance';
-import { auditCaller, type AuditCaller } from '../lib/audit/caller';
-import { recordAccess, recordAttempt, responseFieldNames, type AttemptEvent } from '../lib/audit/record';
 
 const CORS_HEADERS = corsHeaders();
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const SURFACE = 'employer.job_applicants';
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   let client;
-  let caller: AuditCaller | undefined;
-  let attempt: Omit<AttemptEvent, 'outcome'> | undefined;
 
   try {
     const cognitoSub: string = event.requestContext.authorizer?.claims?.sub;
@@ -60,12 +55,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_provisioned' }) };
     }
     await setInternalUserRlsContext(client, employerId);
-    caller = auditCaller(event, { kind: 'employer', id: employerId }, 'web');
-    const purpose = { kind: 'job', id: jobId } as const;
-    attempt = { surface: SURFACE, purpose };
 
-    // Verify this job belongs to the caller (the employer_id predicate
-    // returns no row if not).
+    // Verify this job belongs to the caller (RLS returns no rows if not).
     // Also carries optional_fields/optional_docs so the applicant query
     // below can compute each applicant's not_provided list without a
     // second round trip -- and, since 091, the rest of the job's
@@ -81,7 +72,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     );
     if (jobCheck.rowCount === 0) {
       await client.query('COMMIT');
-      await recordAttempt(client, caller, { ...attempt, outcome: 'denied' });
       return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'forbidden' }) };
     }
     const jobRow = (jobCheck.rows ?? [])[0] ?? {};
@@ -165,30 +155,27 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          wp.availability,
          wp.years_experience,
          wp.location,
-         -- Optional docs (job's optional_docs, param $3) this applicant has
-         -- NOT attached to THIS job -- folded into not_provided below
-         -- alongside skipped optional_fields answers. A document counts as
-         -- provided only when it is attached to this application's job: a
-         -- vault-only copy (job_id NULL), or one attached to another job,
-         -- does not, so the employer is never told a document was provided
-         -- that this job cannot show.
+         -- Optional docs (job's optional_docs, param $3) this applicant's
+         -- vault/job worker_documents rows do NOT cover -- folded into
+         -- not_provided below alongside skipped optional_fields answers.
          ARRAY(
            SELECT dt FROM unnest($3::text[]) AS dt
            WHERE NOT EXISTS (
              SELECT 1 FROM worker_documents wd
               WHERE wd.worker_id = ja.worker_id
                 AND wd.doc_type = dt
-                AND wd.job_id = ja.job_id
+                AND (wd.job_id IS NULL OR wd.job_id = ja.job_id)
            )
          ) AS missing_optional_docs,
          -- JOB-SCOPED doc types, the input computeRemaining expects and
-         -- exactly what 091's hire gate measures. Same scope as
-         -- missing_optional_docs above (attached to this job only): that one
-         -- answers "did the worker skip an optional item", this one answers
-         -- "can this application be hired".
+         -- exactly what 091's hire gate measures. DELIBERATELY narrower than
+         -- missing_optional_docs above, which also counts vault rows
+         -- (job_id IS NULL): that one answers "did the worker skip an
+         -- optional item", this one answers "can this application be hired".
+         -- The two can disagree on the same row; both are correct.
          --
-         -- No syncDocumentSnapshots here: this is an employer session, and
-         -- the sync sets a WORKER caller context and writes worker_documents
+         -- No syncDocumentSnapshots here: this is an employer (jale_admin)
+         -- session, and the sync sets a WORKER GUC and writes worker_documents
          -- (FORCE RLS). Only worker sessions may do that.
          ARRAY(
            SELECT DISTINCT wd.doc_type
@@ -205,10 +192,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       params,
     );
 
+    await client.query('COMMIT');
+
     // The employer must see exactly which optional items were skipped:
     // not_provided = optional_fields absent from this applicant's answers,
-    // plus the optional_docs not attached to this job (missing_optional_docs,
-    // computed in SQL above).
+    // plus optional_docs missing_optional_docs computed in SQL above.
     // missing_optional_docs is an internal helper column, dropped from the
     // response -- only its contribution to not_provided is exposed.
     const applicants = result.rows.map((row: any) => {
@@ -251,18 +239,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     });
 
-    // Every listed applicant is recorded before COMMIT; the helper splits a
-    // list longer than 500 into parts that share the request id.
-    await recordAccess(client, caller, {
-      surface: SURFACE,
-      subjectUserIds: result.rows.map((row: { worker_id: string }) => row.worker_id),
-      recordIds: result.rows.map((row: { application_id: string }) => row.application_id),
-      resultCount: result.rows.length,
-      fieldNames: responseFieldNames(applicants),
-      purpose,
-    });
-    await client.query('COMMIT');
-
     return {
       statusCode: 200,
       headers: CORS_HEADERS,
@@ -273,10 +249,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       }),
     };
   } catch (err) {
-    if (client) {
-      try { await client.query('ROLLBACK'); } catch (_) {}
-      if (caller && attempt) await recordAttempt(client, caller, { ...attempt, outcome: 'failed' });
-    }
+    if (client) { try { await client.query('ROLLBACK'); } catch (_) {} }
     console.error('employer-job-applicants error:', errorMessage(err));
     return { statusCode: 500, headers: CORS_HEADERS, body: JSON.stringify({ error: 'internal_error' }) };
   } finally {

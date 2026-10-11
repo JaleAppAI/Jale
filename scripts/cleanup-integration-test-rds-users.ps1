@@ -5,9 +5,12 @@
 # JaleBastionStack via SSM, using the JaleDatabaseStack admin secret.
 #
 # Usage:
-#   .\scripts\deploy-bastion.ps1           # or: bash scripts/deploy-bastion.sh
+#   cd infra
+#   npx cdk deploy JaleBastionStack
+#   cd ..
 #   .\scripts\cleanup-integration-test-rds-users.ps1
-#   .\scripts\deploy-bastion.ps1 -Destroy  # or: bash scripts/deploy-bastion.sh --destroy
+#   cd infra
+#   npx cdk destroy JaleBastionStack
 
 [CmdletBinding()]
 param(
@@ -48,7 +51,7 @@ $bastionId = (aws cloudformation describe-stacks `
 
 if ([string]::IsNullOrEmpty($bastionId) -or $bastionId -eq 'None') {
     Write-Host "!! Could not find BastionInstanceId output on $BastionStack." -ForegroundColor Red
-    Write-Host "   Deploy it first: .\scripts\deploy-bastion.ps1 (or: bash scripts/deploy-bastion.sh)"
+    Write-Host "   Deploy it first: cd infra; npx cdk deploy $BastionStack"
     exit 1
 }
 Write-Host "   bastion: $bastionId"

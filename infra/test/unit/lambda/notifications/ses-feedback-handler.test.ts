@@ -11,6 +11,7 @@ jest.mock('../../../../lambda/lib/db', () => ({
 
 import { handler } from '../../../../lambda/notifications/ses-feedback-handler';
 
+const EMPLOYER_ID = '11111111-2222-4333-8444-555555555555';
 const MESSAGE_ID = '0100018f-1234-abcd-0000-000000000000';
 const RECIPIENT = 'employer@example.test';
 
@@ -43,32 +44,24 @@ function complaint(feedbackType?: string) {
   };
 }
 
-/**
- * jale_cap.apply_ses_feedback answers with `outcome`: `digest` (the employer's
- * digest was switched off; `changed` rows changed), `not_digest` (with the
- * row's source_type) or `unknown_message`.
- */
-function configureDb(options: { outcome?: string; sourceType?: string | null; changed?: number } = {}) {
-  const outcome = options.outcome ?? 'digest';
+/** email_outbox lookup answers with `row`; the definer answers with `disabled`. */
+function configureDb(options: { row?: { source_type: string; source_id: string } | null; disabled?: number } = {}) {
+  const row = options.row === undefined
+    ? { source_type: 'employer_digest', source_id: EMPLOYER_ID }
+    : options.row;
   mockQuery.mockImplementation((sql: string) => {
-    if (String(sql).includes('jale_cap.apply_ses_feedback')) {
-      return Promise.resolve({
-        rows: [{
-          outcome,
-          source_type: options.sourceType === undefined
-            ? (outcome === 'unknown_message' ? null : 'employer_digest')
-            : options.sourceType,
-          changed: options.changed ?? (outcome === 'digest' ? 1 : 0),
-        }],
-        rowCount: 1,
-      });
+    if (String(sql).includes('FROM email_outbox')) {
+      return Promise.resolve({ rows: row ? [row] : [], rowCount: row ? 1 : 0 });
+    }
+    if (String(sql).includes('disable_digest_for_employer')) {
+      return Promise.resolve({ rows: [{ disabled: options.disabled ?? 1 }], rowCount: 1 });
     }
     return Promise.resolve({ rows: [] });
   });
 }
 
-function capabilityCall() {
-  return mockQuery.mock.calls.find((call) => String(call[0]).includes('jale_cap.apply_ses_feedback'));
+function definerCall() {
+  return mockQuery.mock.calls.find((call) => String(call[0]).includes('disable_digest_for_employer'));
 }
 
 function loggedText(...spies: jest.SpyInstance[]): string {
@@ -96,24 +89,23 @@ describe('SES feedback handler', () => {
 
   // ── Acts ──────────────────────────────────────────────────────────────────
 
-  it('switches the digest off for a PERMANENT bounce on a digest message, in one capability call', async () => {
+  it('switches the digest off for a PERMANENT bounce on a digest message', async () => {
     const summary = await handler(snsEvent(bounce('Permanent')));
     expect(summary).toMatchObject({ processed: 1, disabled: 1, transient: 0, unknownMessage: 0 });
 
-    // The job login holds no table rights: the message id goes to
-    // jale_cap.apply_ses_feedback, which finds the outbox row and switches
-    // that employer's digest off, and nothing else is issued.
-    expect(mockQuery.mock.calls.map((call) => String(call[0]).replace(/\s+/g, ' ').trim())).toEqual([
-      'SELECT outcome, source_type, changed FROM jale_cap.apply_ses_feedback($1)',
-    ]);
-    expect(capabilityCall()![1]).toEqual([MESSAGE_ID]);
-    expect(loggedText(infoLog)).toContain('ses_feedback_digest_disabled');
+    const lookup = mockQuery.mock.calls.find((call) => String(call[0]).includes('FROM email_outbox'));
+    expect(lookup![0]).toContain('WHERE ses_message_id = $1');
+    expect(lookup![1]).toEqual([MESSAGE_ID]);
+
+    expect(definerCall()).toBeDefined();
+    expect(String(definerCall()![0])).toContain('public.disable_digest_for_employer');
+    expect(definerCall()![1]).toEqual([EMPLOYER_ID]);
   });
 
   it('switches the digest off for a COMPLAINT, regardless of any bounce field', async () => {
     const summary = await handler(snsEvent(complaint()));
     expect(summary.disabled).toBe(1);
-    expect(capabilityCall()).toBeDefined();
+    expect(definerCall()).toBeDefined();
   });
 
   it.each(['abuse', 'fraud', 'virus', 'other'])(
@@ -121,21 +113,20 @@ describe('SES feedback handler', () => {
     async (feedbackType) => {
       const summary = await handler(snsEvent(complaint(feedbackType)));
       expect(summary.disabled).toBe(1);
-      expect(capabilityCall()).toBeDefined();
+      expect(definerCall()).toBeDefined();
     },
   );
 
   it('reads the identity-notification field name too, not only the configuration-set one', async () => {
     await handler(snsEvent(bounce('Permanent', { useLegacyField: true })));
-    expect(capabilityCall()).toBeDefined();
+    expect(definerCall()).toBeDefined();
   });
 
   it('reports disabled 0 when the employer had already opted out, without treating it as an error', async () => {
-    configureDb({ outcome: 'digest', changed: 0 });
+    configureDb({ disabled: 0 });
     const summary = await handler(snsEvent(bounce('Permanent')));
     expect(summary).toMatchObject({ processed: 1, disabled: 0 });
-    expect(capabilityCall()).toBeDefined();
-    expect(loggedText(infoLog)).toContain('"changed":0');
+    expect(definerCall()).toBeDefined();
   });
 
   // ── Declines to act ───────────────────────────────────────────────────────
@@ -150,6 +141,7 @@ describe('SES feedback handler', () => {
     const summary = await handler(snsEvent(complaint('not-spam')));
     expect(summary).toMatchObject({ processed: 1, disabled: 0, transient: 1 });
     expect(mockQuery).not.toHaveBeenCalled();
+    expect(definerCall()).toBeUndefined();
   });
 
   it('counts a TRANSIENT bounce and never reaches the database', async () => {
@@ -166,28 +158,19 @@ describe('SES feedback handler', () => {
     expect(mockQuery).not.toHaveBeenCalled();
   });
 
-  it('counts a message id no outbox row claims', async () => {
-    configureDb({ outcome: 'unknown_message' });
+  it('writes nothing for a message id no outbox row claims', async () => {
+    configureDb({ row: null });
     const summary = await handler(snsEvent(bounce('Permanent')));
     expect(summary).toMatchObject({ unknownMessage: 1, disabled: 0 });
+    expect(definerCall()).toBeUndefined();
     expect(loggedText(errorLog)).toContain('ses_feedback_unknown_message');
-    expect(loggedText(infoLog)).not.toContain('ses_feedback_digest_disabled');
   });
 
-  it('counts a bounced message that was not a digest, naming its source type', async () => {
-    configureDb({ outcome: 'not_digest', sourceType: 'billing_pause' });
+  it('writes nothing when the bounced message was not a digest', async () => {
+    configureDb({ row: { source_type: 'billing_pause', source_id: EMPLOYER_ID } });
     const summary = await handler(snsEvent(bounce('Permanent')));
     expect(summary).toMatchObject({ notDigest: 1, disabled: 0 });
-    expect(loggedText(errorLog)).toContain('"metric":"ses_feedback_not_digest"');
-    expect(loggedText(errorLog)).toContain('"sourceType":"billing_pause"');
-    expect(loggedText(infoLog)).not.toContain('ses_feedback_digest_disabled');
-  });
-
-  it('throws on an outcome it does not know, so the event is retried and then dead-lettered', async () => {
-    configureDb({ outcome: 'something_new' });
-    await expect(handler(snsEvent(bounce('Permanent')))).rejects.toThrow(/ses_feedback_unexpected_outcome/);
-    expect(loggedText(errorLog)).toContain('ses_feedback_failed');
-    expect(mockRelease).toHaveBeenCalled();
+    expect(definerCall()).toBeUndefined();
   });
 
   it('counts a malformed notification and returns normally instead of retrying it forever', async () => {
@@ -223,7 +206,7 @@ describe('SES feedback handler', () => {
    */
   it('never logs the recipient address, on any path', async () => {
     await handler(snsEvent(bounce('Permanent')));
-    configureDb({ outcome: 'unknown_message' });
+    configureDb({ row: null });
     await handler(snsEvent(bounce('Permanent')));
     await handler(snsEvent(bounce('Transient')));
     await handler(snsEvent(complaint()));

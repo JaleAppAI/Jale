@@ -1,30 +1,24 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { createHash } from 'crypto';
 import { HeadObjectCommand, S3Client } from '@aws-sdk/client-s3';
-import { auditCaller } from '../lib/audit/caller';
-import { setAuditContext } from '../lib/audit/context';
 import { getDbPool } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
-import { DOC_TYPES } from '../lib/job-fields';
+import { DOC_TYPES, MAX_CERTIFICATION_FILES, MAX_CERTIFICATION_FILES_PER_NAME } from '../lib/job-fields';
 import { validateCertName } from '../lib/cert-name';
 
 const CORS_HEADERS = corsHeaders();
 const VALID_DOC_TYPES: readonly string[] = DOC_TYPES;
 const MAX_FILE_NAME_LENGTH = 255;
 const s3 = new S3Client({});
-
-/**
- * The confirm call's refusals and their answers. The certification caps
- * (20 per slot, 5 per name: 075/078) and the replace-or-append rules live in
- * jale_cap.upload_token_confirm; any refusal leaves the slot unconfirmed.
- */
-const CONFIRM_REFUSALS = new Map<string, number>([
-  ['invalid_or_confirmed_upload', 409],
-  ['invalid_file_size', 400],
-  ['document_conflict', 409],
-  ['certification_document_limit', 409],
-  ['certification_document_name_limit', 409],
-]);
+const UNIQUE_VIOLATION = '23505';
+const CHECK_VIOLATION = '23514';
+const CERTIFICATION_DOC_LIMIT_CONSTRAINT = 'certification_document_limit';
+// Introduced by 078_worker_documents_cert_name.sql alongside the total-cap
+// raise (5 -> 20) -- a DIFFERENT constraint name than the one above on
+// purpose, so this catch block can tell "too many files in this slot" apart
+// from "too many files under this one name/label" and answer each with its
+// own error code (see the per-name pre-check below for the full rationale).
+const CERTIFICATION_DOC_NAME_LIMIT_CONSTRAINT = 'certification_document_name_limit';
 
 function sanitizeFileName(fileName: string): string {
   return fileName
@@ -100,31 +94,43 @@ export const handler = async (
     const pool = await getDbPool();
     client = await pool.connect();
 
-    // The slot pre-check, before the object is inspected, so an invalid,
-    // confirmed or mismatched slot answers 409 ahead of every object check.
-    // One read-only capability call; no transaction is open across S3.
-    const slotResult = await client.query<{ outcome: string; max_file_size: number | string | null }>(
-      `SELECT outcome, max_file_size FROM jale_cap.upload_token_slot($1, $2, $3, $4)`,
+    const slotResult = await client.query(
+      `SELECT token.worker_id,
+              token.job_id,
+              slots.doc_type,
+              slots.issued_s3_key,
+              slots.expected_mime_type,
+              slots.max_file_size
+       FROM document_upload_tokens token
+       JOIN document_upload_token_slots slots
+         ON slots.token_hash = token.token_hash
+       JOIN job_applications ja
+         ON ja.job_id = token.job_id
+        AND ja.worker_id = token.worker_id
+       WHERE token.token_hash = $1
+         AND slots.doc_type = $2
+         AND slots.issued_s3_key = $3
+         AND slots.expected_mime_type = $4
+         AND slots.confirmed_at IS NULL
+         AND token.used = false
+         AND token.expires_at > now()`,
       [tokenHash, doc_type, s3_key, mime_type],
     );
-    const slot = slotResult.rows[0];
-    if (slot?.outcome === 'invalid_or_confirmed_upload') {
+    if (slotResult.rows.length === 0) {
       return {
         statusCode: 409,
         headers: CORS_HEADERS,
         body: JSON.stringify({ error: 'invalid_or_confirmed_upload' }),
       };
     }
-    if (slot?.outcome !== 'ok' || slot.max_file_size == null) {
-      throw new Error(`upload_token_slot_unexpected_outcome:${String(slot?.outcome)}`);
-    }
 
+    const slot = slotResult.rows[0];
     let head;
     try {
       head = await s3.send(
         new HeadObjectCommand({
           Bucket: process.env.DOCUMENTS_BUCKET!,
-          Key: s3_key,
+          Key: slot.issued_s3_key,
         }),
       );
     } catch {
@@ -147,7 +153,7 @@ export const handler = async (
       };
     }
 
-    if (head.ContentType !== mime_type) {
+    if (head.ContentType !== slot.expected_mime_type) {
       return {
         statusCode: 400,
         headers: CORS_HEADERS,
@@ -166,33 +172,205 @@ export const handler = async (
     const safeFileName = sanitizeFileName(file_name) || `${doc_type}.${mime_type.split('/')[1] ?? 'file'}`;
     const s3VersionId = head.VersionId ?? null;
 
-    // All of confirm's database work, atomically, under the token's worker:
-    // re-validates the token, the application and the unconfirmed slot bound
-    // to this key and MIME type, checks the server-observed size against the
-    // slot, applies the certification caps, marks the slot confirmed and
-    // inserts or replaces the worker's document. Never mutates the token, so a
-    // still-pending sibling slot stays confirmable.
+    const { worker_id } = slot;
+    const isCertification = doc_type === 'certification_doc';
     await client.query('BEGIN');
     transactionStarted = true;
-    // Whoever holds the link is the actor; the link names no person.
-    await setAuditContext(client, auditCaller(event, { kind: 'token_holder' }, 'web'), 'token_holder.document_confirm');
-    const confirmResult = await client.query<{ outcome: string; document_id: string | null }>(
-      `SELECT outcome, document_id FROM jale_cap.upload_token_confirm($1, $2, $3, $4, $5, $6, $7, $8)`,
-      [tokenHash, doc_type, s3_key, mime_type, safeFileName, head.ContentLength, s3VersionId, certName],
+
+    // Set token-auth context to the worker's internal UUID. Cognito-sub RLS
+    // uses app.current_user_id; internal UUID flows use this separate setting.
+    await client.query("SELECT set_config('app.current_internal_user_id', $1, true)", [worker_id]);
+
+    // Entry point note for the WhatsApp side (Ivan's team): the
+    // applications.ts snapshot-copy path (copyRequiredDocumentSnapshots)
+    // writes worker_documents rows through the SAME
+    // enforce_certification_document_limit() trigger the pre-checks and
+    // catch-mapping below defend against -- there is no separate cap for that
+    // insert path, so any WhatsApp-originated certification_doc write is
+    // subject to the identical total (20) and per-name (5) caps, and can
+    // raise the identical two constraint names.
+    if (isCertification) {
+      // Defense-in-depth cap, mirrored by the DB trigger added in
+      // 075_worker_documents_multi_certification.sql (errcode 23514, constraint
+      // certification_document_limit -- also mapped below). Checked BEFORE the
+      // slot is confirmed: a cap rejection must never burn the upload slot,
+      // since the guarded UPDATE below can only ever fire once per slot.
+      const countResult = await client.query(
+        `SELECT COUNT(*)::int AS count FROM worker_documents WHERE worker_id = $1 AND job_id = $2 AND doc_type = 'certification_doc'`,
+        [worker_id, slot.job_id],
+      );
+      if (countResult.rows[0].count >= MAX_CERTIFICATION_FILES) {
+        await client.query('ROLLBACK');
+        transactionStarted = false;
+        return {
+          statusCode: 409,
+          headers: CORS_HEADERS,
+          body: JSON.stringify({ error: 'certification_document_limit' }),
+        };
+      }
+
+      // Per-name cap, added by 078_worker_documents_cert_name.sql alongside
+      // the total-cap raise above (5 -> 20). `cert_name IS NOT DISTINCT FROM`
+      // (not `=`) is required: cert_name is nullable, and every unlabeled
+      // certification_doc row in this slot -- every legacy row, and any
+      // future upload that omits a label -- shares ONE bucket under NULL, so
+      // `=` would silently never match and this cap would never fire for the
+      // unlabeled case. See 078's header NULL-GROUPING SEMANTIC section for
+      // the full empirical verification. This is also defense-in-depth: the
+      // insert's catch below maps the same trigger's certification_document_name_limit
+      // constraint (errcode 23514) as a TOCTOU backstop.
+      const nameCountResult = await client.query(
+        `SELECT COUNT(*)::int AS count FROM worker_documents WHERE worker_id = $1 AND job_id = $2 AND doc_type = 'certification_doc' AND cert_name IS NOT DISTINCT FROM $3`,
+        [worker_id, slot.job_id, certName],
+      );
+      if (nameCountResult.rows[0].count >= MAX_CERTIFICATION_FILES_PER_NAME) {
+        await client.query('ROLLBACK');
+        transactionStarted = false;
+        return {
+          statusCode: 409,
+          headers: CORS_HEADERS,
+          body: JSON.stringify({ error: 'certification_document_name_limit' }),
+        };
+      }
+    }
+
+    // Guards the slot against races and re-confirmation: only ever fires once
+    // per slot (confirmed_at IS NULL), and never mutates document_upload_tokens
+    // -- a still-pending sibling slot on the same token must stay confirmable.
+    const confirmResult = await client.query(
+      `WITH valid_token AS (
+         SELECT token.worker_id, token.job_id
+         FROM document_upload_tokens token
+         WHERE token.token_hash = $1
+           AND token.used = false
+           AND token.expires_at > now()
+           AND EXISTS (
+             SELECT 1
+             FROM job_applications ja
+             WHERE ja.job_id = token.job_id
+               AND ja.worker_id = token.worker_id
+           )
+       ),
+       confirmed_slot AS (
+         UPDATE document_upload_token_slots slots
+         SET confirmed_at = now(),
+             s3_version_id = $6
+         FROM valid_token token
+         WHERE slots.token_hash = $1
+           AND slots.doc_type = $2
+           AND slots.issued_s3_key = $3
+           AND slots.expected_mime_type = $4
+           AND slots.max_file_size = $5
+           AND slots.confirmed_at IS NULL
+         RETURNING token.worker_id,
+                   token.job_id,
+                   slots.doc_type,
+                   slots.issued_s3_key,
+                   slots.expected_mime_type
+       )
+       SELECT worker_id, job_id, doc_type, issued_s3_key, expected_mime_type FROM confirmed_slot`,
+      [
+        tokenHash,
+        doc_type,
+        slot.issued_s3_key,
+        slot.expected_mime_type,
+        Number(slot.max_file_size),
+        s3VersionId,
+      ],
     );
-    const outcome = confirmResult.rows[0]?.outcome;
-    const refusalStatus = outcome === undefined ? undefined : CONFIRM_REFUSALS.get(outcome);
-    if (refusalStatus !== undefined) {
+
+    if (confirmResult.rows.length === 0) {
       await client.query('ROLLBACK');
       transactionStarted = false;
       return {
-        statusCode: refusalStatus,
+        statusCode: 409,
         headers: CORS_HEADERS,
-        body: JSON.stringify({ error: outcome }),
+        body: JSON.stringify({ error: 'invalid_or_confirmed_upload' }),
       };
     }
-    if (outcome !== 'ok') {
-      throw new Error(`upload_token_confirm_unexpected_outcome:${String(outcome)}`);
+
+    const confirmed = confirmResult.rows[0];
+
+    // worker_documents_per_job_unique (and, pre-075, the plain implicit index)
+    // only ever admits one row per (worker, job, doc_type) for non-certification
+    // types, so this DELETE-then-INSERT is the "replace" -- no ON CONFLICT
+    // arbiter, so it keeps working once 075 narrows that index's predicate to
+    // exclude certification_doc (an arbiter's WHERE clause must match an
+    // index's predicate exactly, so widening the index would otherwise break
+    // inference for every doc type, not just certifications).
+    if (!isCertification) {
+      await client.query(
+        `DELETE FROM worker_documents WHERE worker_id = $1 AND job_id = $2 AND doc_type = $3`,
+        [confirmed.worker_id, confirmed.job_id, confirmed.doc_type],
+      );
+    }
+
+    const insertParams = [
+      confirmed.worker_id,
+      confirmed.job_id,
+      confirmed.doc_type,
+      confirmed.issued_s3_key,
+      safeFileName,
+      head.ContentLength,
+      confirmed.expected_mime_type,
+      s3VersionId,
+      certName,
+    ];
+    // cert_name is always NULL here for non-certification doc_types
+    // (validateCertName rejects any non-blank value on them, above) --
+    // included for column symmetry with the certification-path insert, not
+    // because it's ever non-NULL on those rows.
+    const insertSql = `INSERT INTO worker_documents (worker_id, job_id, doc_type, s3_key, file_name, file_size, mime_type, s3_version_id, cert_name)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       RETURNING id`;
+
+    if (isCertification) {
+      try {
+        await client.query(insertSql, insertParams);
+      } catch (insertErr) {
+        const pgErr = insertErr as { code?: string; constraint?: string };
+        const isCertLimit = pgErr?.code === UNIQUE_VIOLATION
+          || (pgErr?.code === CHECK_VIOLATION && pgErr?.constraint === CERTIFICATION_DOC_LIMIT_CONSTRAINT);
+        // TOCTOU backstop for the per-name pre-check above: two concurrent
+        // confirms can each pass the pre-check's count and then collide in
+        // the trigger, same race the total cap already accepts (078's header).
+        const isCertNameLimit = pgErr?.code === CHECK_VIOLATION
+          && pgErr?.constraint === CERTIFICATION_DOC_NAME_LIMIT_CONSTRAINT;
+        if (isCertLimit || isCertNameLimit) {
+          await client.query('ROLLBACK');
+          transactionStarted = false;
+          return {
+            statusCode: 409,
+            headers: CORS_HEADERS,
+            body: JSON.stringify({
+              error: isCertNameLimit ? CERTIFICATION_DOC_NAME_LIMIT_CONSTRAINT : CERTIFICATION_DOC_LIMIT_CONSTRAINT,
+            }),
+          };
+        }
+        throw insertErr;
+      }
+    } else {
+      try {
+        await client.query(insertSql, insertParams);
+      } catch (insertErr) {
+        // Concurrent confirms of two independently-issued token slots for the
+        // same (worker, job, doc_type) can race the DELETE-then-INSERT above:
+        // both DELETEs see the same prior row (or none), then the second
+        // INSERT collides on worker_documents_per_job_unique. Map it to a 409
+        // rather than a 500 — the transaction rolls back cleanly and the
+        // caller can simply retry (the first confirm's row stands).
+        const pgErr = insertErr as { code?: string };
+        if (pgErr?.code === UNIQUE_VIOLATION) {
+          await client.query('ROLLBACK');
+          transactionStarted = false;
+          return {
+            statusCode: 409,
+            headers: CORS_HEADERS,
+            body: JSON.stringify({ error: 'document_conflict' }),
+          };
+        }
+        throw insertErr;
+      }
     }
 
     await client.query('COMMIT');

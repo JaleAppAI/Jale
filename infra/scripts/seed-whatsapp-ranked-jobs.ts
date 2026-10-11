@@ -3,7 +3,7 @@
  *
  * Usage:
  *   DB_HOST=<host> DB_PORT=5432 DB_NAME=jale DB_USER=jale_admin DB_PASSWORD=<pw> \
- *   WORKER_PHONE=9155550123 npx tsx scripts/seed-whatsapp-ranked-jobs.ts
+ *   WORKER_PHONE=9152272188 npx tsx scripts/seed-whatsapp-ranked-jobs.ts
  *
  * Optional:
  *   WORKER_ID=<users.id>
@@ -44,7 +44,7 @@ function normalizePhone(value: string | undefined): string {
   }
   const clean = value.trim().replace(/^whatsapp:/, '').replace(/[\s().-]/g, '');
   if (!/^\+?\d{8,15}$/.test(clean)) {
-    throw new Error('WORKER_PHONE must contain 8-15 digits, for example 9155550123 or +19155550123.');
+    throw new Error('WORKER_PHONE must contain 8-15 digits, for example 9152272188 or +19152272188.');
   }
   if (clean.startsWith('+')) {
     return clean;

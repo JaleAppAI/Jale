@@ -7,7 +7,6 @@ import { ApiStack } from '../../../lib/stacks/api-stack';
 import { AiStack } from '../../../lib/stacks/ai-stack';
 import { LegalStack } from '../../../lib/stacks/legal-stack';
 import { ReferralsStack } from '../../../lib/stacks/referrals-stack';
-import { dbLoginSecretName } from '../../../lib/constructs/db-login-secrets';
 
 describe('ReferralsStack', () => {
   let template: Template;
@@ -31,6 +30,7 @@ describe('ReferralsStack', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
     });
     const ai = new AiStack(app, 'TestAiStack', {
       vpc: network.vpc,
@@ -45,6 +45,7 @@ describe('ReferralsStack', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
       aliasGeneratorFn: ai.aliasGeneratorFn.function,
       whatsappStatusCallbackUrl: 'https://api.example.com/whatsapp/status-callback',
     });
@@ -54,6 +55,7 @@ describe('ReferralsStack', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
       api: api.api,
       dualAuthorizer: api.dualAuthorizer,
     });
@@ -62,6 +64,7 @@ describe('ReferralsStack', () => {
       privateSubnets: network.privateSubnets,
       referralsLambdaSg: network.referralsLambdaSg,
       referralsDbSecret: database.referralsDbSecret,
+      appDbSecret: database.dbSecret,
       api: api.api,
       // /public is owned and exported by ApiStack now: this stack must reuse
       // the node, never call addResource('public') itself.
@@ -216,7 +219,7 @@ describe('ReferralsStack', () => {
     expect(env).not.toHaveProperty('REFERRALS_DB_SECRET_ARN');
   });
 
-  test('worker-facing Lambdas connect as the request login, not the public-jobs login', () => {
+  test('worker-facing Lambdas reference the app DB secret (jale_admin), NOT jale/referrals/db', () => {
     const referralsSecretResources = dbTemplate.findResources('AWS::SecretsManager::Secret', {
       Properties: { Name: 'jale/referrals/db' },
     });
@@ -229,9 +232,6 @@ describe('ReferralsStack', () => {
       });
       const fnLogicalIds = Object.keys(fnResources);
       expect(fnLogicalIds).toHaveLength(1);
-      const env = (Object.values(fnResources)[0] as any).Properties.Environment?.Variables ?? {};
-      expect(env.DB_SECRET_ARN).toBe(dbLoginSecretName('jale_api'));
-      expect(env.DB_EXPECTED_LOGIN).toBe('jale_api');
 
       const policies = template.findResources('AWS::IAM::Policy');
       for (const [policyId, policy] of Object.entries(policies)) {
@@ -345,7 +345,7 @@ describe('ReferralsStack', () => {
     });
   });
 
-  test('worker-referral-claim Lambda uses the request login, not the public-jobs login', () => {
+  test('worker-referral-claim Lambda uses the app DB secret, not the referrals secret', () => {
     const resources = template.findResources('AWS::Lambda::Function', {
       Properties: { Description: 'Worker referral claim endpoint' },
     });
@@ -353,7 +353,6 @@ describe('ReferralsStack', () => {
     expect(fns).toHaveLength(1);
     const env = (fns[0] as any).Properties.Environment?.Variables ?? {};
     expect(env).toHaveProperty('DB_SECRET_ARN');
-    expect(env.DB_EXPECTED_LOGIN).toBe('jale_api');
     // Deliberately NO REQUIRED_TOS_VERSION: the claim endpoint has no
     // compliance gate (it fires post-OTP, pre-legal-wall -- see the handler's
     // inline note). Its absence here pins that design.
@@ -400,15 +399,14 @@ describe('ReferralsStack', () => {
     });
   });
 
-  test('public-listing Lambda uses the request login only', () => {
+  test('public-listing Lambda uses the app DB secret only — consent writes go through jale_admin', () => {
     const resources = template.findResources('AWS::Lambda::Function', {
       Properties: { Description: 'Employer opt-in toggle for the public job page' },
     });
     const fns = Object.values(resources);
     expect(fns).toHaveLength(1);
     const env = (fns[0] as any).Properties.Environment?.Variables ?? {};
-    expect(env.DB_SECRET_ARN).toBe(dbLoginSecretName('jale_api'));
-    expect(env.DB_EXPECTED_LOGIN).toBe('jale_api');
+    expect(env).toHaveProperty('DB_SECRET_ARN');
     expect(env).not.toHaveProperty('REFERRALS_DB_SECRET_ARN');
   });
 
@@ -446,15 +444,14 @@ describe('ReferralsStack', () => {
     });
   });
 
-  test('retention sweeper connects as its own job login — jale_public_jobs must never hold DELETE', () => {
+  test('retention sweeper uses the app DB secret — jale_public_jobs must never hold DELETE', () => {
     const resources = template.findResources('AWS::Lambda::Function', {
       Properties: { Description: 'Referral retention sweeper (tokens, claims, aged opens)' },
     });
     const fns = Object.values(resources);
     expect(fns).toHaveLength(1);
     const env = (fns[0] as any).Properties.Environment?.Variables ?? {};
-    expect(env.DB_SECRET_ARN).toBe(dbLoginSecretName('jale_job_retention'));
-    expect(env.DB_EXPECTED_LOGIN).toBe('jale_job_retention');
+    expect(env).toHaveProperty('DB_SECRET_ARN');
     expect(env).not.toHaveProperty('REFERRALS_DB_SECRET_ARN');
   });
 

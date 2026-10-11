@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import '@testing-library/jest-dom/vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { OnboardingState, ReferredJobSummary } from '@/lib/api/worker';
+import type { OnboardingState } from '@/lib/api/worker';
 
 vi.mock('@/lib/location-search', () => ({
     queryLocations: vi.fn(async () => []),
@@ -27,15 +27,7 @@ vi.mock('@/i18n/navigation', () => ({
 }));
 
 import { OnboardingFlow } from '@/components/worker/onboarding/OnboardingFlow';
-import {
-    THREE_QUESTIONS,
-    expectNoRawMessageKeys,
-    interpolate,
-    message,
-    onboardingState,
-    renderIntl,
-    type TestLocale,
-} from './render-intl';
+import { THREE_QUESTIONS, interpolate, message, onboardingState, renderIntl } from './render-intl';
 
 const TOKEN = 'id-token';
 const LONG_ANSWER = 'I frame houses and set trusses with a crew.';
@@ -142,15 +134,15 @@ describe('OnboardingFlow — a fresh worker walks the whole flow', () => {
 
         // 2 — about
         await screen.findByRole('heading', { name: message('worker_onboarding.about.title') });
-        await user.type(screen.getByLabelText(message('worker_onboarding.about.first_name')), 'Alex');
-        await user.type(screen.getByLabelText(message('worker_onboarding.about.last_name')), 'Rivera');
+        await user.type(screen.getByLabelText(message('worker_onboarding.about.first_name')), 'David');
+        await user.type(screen.getByLabelText(message('worker_onboarding.about.last_name')), 'Castellanos');
         await user.type(screen.getByRole('combobox'), '79901');
         await user.click(screen.getByRole('button', { name: message('worker_onboarding.about.cta') }));
         expect(api.postOnboardingAnswers).toHaveBeenLastCalledWith(TOKEN, {
             // Each save carries the lock the PREVIOUS response handed back.
             lockVersion: 2,
             answers: [
-                { stepKey: 'profile.name', value: 'Alex Rivera' },
+                { stepKey: 'profile.name', value: 'David Castellanos' },
                 { stepKey: 'profile.location', value: { kind: 'zip', zip: '79901' } },
             ],
         });
@@ -312,8 +304,8 @@ describe('OnboardingFlow — the engine refused a step', () => {
         });
 
         renderIntl(<OnboardingFlow token={TOKEN} initialState={at('profile.name')} />);
-        await user.type(screen.getByLabelText(message('worker_onboarding.about.first_name')), 'Alex');
-        await user.type(screen.getByLabelText(message('worker_onboarding.about.last_name')), 'Rivera');
+        await user.type(screen.getByLabelText(message('worker_onboarding.about.first_name')), 'David');
+        await user.type(screen.getByLabelText(message('worker_onboarding.about.last_name')), 'Castellanos');
         await user.type(screen.getByRole('combobox'), '79901');
         await user.click(screen.getByRole('button', { name: message('worker_onboarding.about.cta') }));
 
@@ -790,223 +782,8 @@ describe('OnboardingFlow — after the last answer there is no way back', () => 
         const buttons = screen.getAllByRole('button').map((b) => b.textContent ?? '');
         // The language toggle pair aside, the summary offers exactly one way
         // on, and nothing here reopens the questions.
-        expect(buttons.some((label) => label.includes(message('worker_onboarding.done.see_jobs')))).toBe(true);
+        expect(buttons.some((label) => label.includes(message('worker_onboarding.done.cta')))).toBe(true);
         expect(buttons.some((label) => /improve|mejorar/i.test(label))).toBe(false);
         expect(buttons).toHaveLength(3);
-    });
-});
-
-const REFERRED: ReferredJobSummary = {
-    id: '8f3a2c1d-4b5e-4f60-9a71-2c3d4e5f6071',
-    title: 'Concrete Finisher',
-    company: 'NB Construction',
-    location: 'San Antonio, TX',
-    payMin: 22,
-    payMax: 26,
-    payInterval: 'hourly',
-    payRaw: null,
-    open: true,
-};
-const CLOSED: ReferredJobSummary = { ...REFERRED, open: false };
-/** A job only this tab knows about: the claim that would have told the server never landed. */
-const STASHED_JOB_ID = '1b2c3d4e-5f60-4a71-8b92-0c1d2e3f4a5b';
-
-/** The strip's sentence as a reader sees it: tags dropped, values filled in. */
-function stripText(job: ReferredJobSummary, locale: TestLocale = 'en') {
-    const key = job.open ? 'worker_onboarding.referred_job.strip' : 'worker_onboarding.referred_job.strip_closed';
-    return interpolate(message(key, locale).replace(/<\/?[a-z]+>/g, ''), { title: job.title, company: job.company });
-}
-
-/** The strip itself: the one paragraph whose whole text is exactly that sentence. */
-function queryStrip(text: string) {
-    return screen.queryByText((_, element) => element?.tagName === 'P' && element.textContent === text);
-}
-
-function stash(jobId: string) {
-    window.sessionStorage.setItem('pendingReferral', JSON.stringify({ jobId, shareCode: null }));
-}
-
-/**
- * Decided 2026-10-01: a strip on every onboarding step names the job the worker
- * came for. It reads the SERVER's answer and nothing in this tab, so it
- * is there on a new tab, on another device and after a login bounce -- every
- * place the old session-only stash lost it.
- */
-describe('OnboardingFlow — the job they came for, on every screen', () => {
-    it('names it under the rail from the server alone, with nothing in this tab', () => {
-        // beforeEach cleared sessionStorage: this is a new tab, or another device.
-        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('legal.review', { referredJob: REFERRED })} />);
-
-        expect(queryStrip(stripText(REFERRED))).toBeInTheDocument();
-        expectNoRawMessageKeys();
-    });
-
-    it('marks a job that is no longer open', () => {
-        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('trust.question.1', { referredJob: CLOSED })} />);
-
-        expect(queryStrip(stripText(CLOSED))).toBeInTheDocument();
-        expect(queryStrip(stripText(REFERRED))).not.toBeInTheDocument();
-    });
-
-    it('says it in Spanish', () => {
-        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('legal.review', { referredJob: CLOSED })} />, 'es');
-
-        expect(queryStrip(stripText(CLOSED, 'es'))).toBeInTheDocument();
-        expectNoRawMessageKeys();
-    });
-
-    it('draws nothing when no job was referred', () => {
-        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('legal.review')} />);
-
-        expect(queryStrip(stripText(REFERRED))).not.toBeInTheDocument();
-        expect(queryStrip(stripText(CLOSED))).not.toBeInTheDocument();
-    });
-
-    it('stays on an exit panel', () => {
-        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('legal.review', { lifecycle: 'suspended', referredJob: REFERRED })} />);
-
-        expect(screen.getByRole('alert')).toHaveTextContent(message('worker_onboarding.blocked.suspended'));
-        expect(queryStrip(stripText(REFERRED))).toBeInTheDocument();
-    });
-
-    it('stays on the summary', () => {
-        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('trust.question.3', { lifecycle: 'ready', referredJob: REFERRED })} />);
-
-        expect(screen.getByText(message('worker_onboarding.done.title'))).toBeInTheDocument();
-        expect(queryStrip(stripText(REFERRED))).toBeInTheDocument();
-    });
-
-    it('stays put across a save', async () => {
-        const user = userEvent.setup({ delay: null });
-        api.postOnboardingAnswers.mockImplementationOnce(advancesTo('profile.name', { referredJob: REFERRED }));
-        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('legal.review', { referredJob: REFERRED })} />);
-
-        await user.click(screen.getByRole('button', { name: message('worker_onboarding.terms.cta') }));
-        await screen.findByRole('heading', { name: message('worker_onboarding.about.title') });
-        expect(queryStrip(stripText(REFERRED))).toBeInTheDocument();
-    });
-
-    it('does not blink out when one response comes back without it', async () => {
-        // A failed job read degrades to `referredJob: null` rather than
-        // failing the whole response. One such answer mid-flow must not pull
-        // the strip out from under the screen and put it back on the next.
-        const user = userEvent.setup({ delay: null });
-        api.postOnboardingAnswers.mockImplementationOnce(advancesTo('profile.name', { referredJob: null }));
-        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('legal.review', { referredJob: REFERRED })} />);
-
-        await user.click(screen.getByRole('button', { name: message('worker_onboarding.terms.cta') }));
-        await screen.findByRole('heading', { name: message('worker_onboarding.about.title') });
-        expect(queryStrip(stripText(REFERRED))).toBeInTheDocument();
-    });
-
-    it('appears as soon as a response carries it', async () => {
-        // A claim still in flight when the flow opened lands a step later.
-        const user = userEvent.setup({ delay: null });
-        api.postOnboardingAnswers.mockImplementationOnce(advancesTo('profile.name', { referredJob: REFERRED }));
-        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('legal.review')} />);
-        expect(queryStrip(stripText(REFERRED))).not.toBeInTheDocument();
-
-        await user.click(screen.getByRole('button', { name: message('worker_onboarding.terms.cta') }));
-        await screen.findByRole('heading', { name: message('worker_onboarding.about.title') });
-        expect(queryStrip(stripText(REFERRED))).toBeInTheDocument();
-    });
-
-    it('follows the job when the server moves on to another one', async () => {
-        const user = userEvent.setup({ delay: null });
-        const NEXT: ReferredJobSummary = { ...REFERRED, id: STASHED_JOB_ID, title: 'Framer', company: 'Rivera Builders' };
-        api.postOnboardingAnswers.mockImplementationOnce(advancesTo('profile.name', { referredJob: NEXT }));
-        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('legal.review', { referredJob: REFERRED })} />);
-
-        await user.click(screen.getByRole('button', { name: message('worker_onboarding.terms.cta') }));
-        await screen.findByRole('heading', { name: message('worker_onboarding.about.title') });
-        expect(queryStrip(stripText(NEXT))).toBeInTheDocument();
-        expect(queryStrip(stripText(REFERRED))).not.toBeInTheDocument();
-    });
-});
-
-/**
- * Decided 2026-10-01: Done shows the job card with Apply, a closed-job state,
- * or falls back to the jobs feed -- never the profile, which shows no jobs.
- * The exits from the MIDDLE of the flow are a different thing and keep going
- * to the profile (the job is safe on the server either way).
- */
-describe('OnboardingFlow — where the summary sends the worker', () => {
-    const finished = (overrides: Partial<OnboardingState> = {}) =>
-        at('trust.question.3', { lifecycle: 'ready', ...overrides });
-
-    it('opens the apply flow of the open job they came for', async () => {
-        const user = userEvent.setup({ delay: null });
-        stash(REFERRED.id);
-        renderIntl(<OnboardingFlow token={TOKEN} initialState={finished({ referredJob: REFERRED })} />);
-
-        await user.click(screen.getByRole('button', { name: message('worker_onboarding.done.apply') }));
-
-        expect(router.push).toHaveBeenCalledWith(`/worker/jobs/${REFERRED.id}?apply=1`);
-        expect(window.sessionStorage.getItem('pendingReferral')).toBeNull();
-    });
-
-    it("prefers the server's job to the one this tab remembers", async () => {
-        const user = userEvent.setup({ delay: null });
-        stash(STASHED_JOB_ID);
-        renderIntl(<OnboardingFlow token={TOKEN} initialState={finished({ referredJob: REFERRED })} />);
-
-        await user.click(screen.getByRole('button', { name: message('worker_onboarding.done.apply') }));
-
-        expect(router.push).toHaveBeenCalledWith(`/worker/jobs/${REFERRED.id}?apply=1`);
-    });
-
-    it('lets them look at every job instead', async () => {
-        const user = userEvent.setup({ delay: null });
-        stash(REFERRED.id);
-        renderIntl(<OnboardingFlow token={TOKEN} initialState={finished({ referredJob: REFERRED })} />);
-
-        await user.click(screen.getByRole('button', { name: message('worker_onboarding.done.see_all_jobs') }));
-
-        expect(router.replace).toHaveBeenCalledWith('/worker/home');
-        expect(window.sessionStorage.getItem('pendingReferral')).toBeNull();
-    });
-
-    it('sends them to the feed when the job has closed', async () => {
-        const user = userEvent.setup({ delay: null });
-        renderIntl(<OnboardingFlow token={TOKEN} initialState={finished({ referredJob: CLOSED })} />);
-
-        expect(screen.queryByRole('button', { name: message('worker_onboarding.done.apply') })).not.toBeInTheDocument();
-        await user.click(screen.getByRole('button', { name: message('worker_onboarding.done.see_jobs') }));
-
-        expect(router.replace).toHaveBeenCalledWith('/worker/home');
-    });
-
-    it('sends them to the feed when no job was referred, not to the profile', async () => {
-        const user = userEvent.setup({ delay: null });
-        renderIntl(<OnboardingFlow token={TOKEN} initialState={finished()} />);
-
-        await user.click(screen.getByRole('button', { name: message('worker_onboarding.done.see_jobs') }));
-
-        expect(router.replace).toHaveBeenCalledWith('/worker/home');
-        expect(router.replace).not.toHaveBeenCalledWith('/worker/profile');
-    });
-
-    it("falls back to this tab's job when the server has none on file", async () => {
-        // The claim failed, so the server says null -- but the stash still knows. This
-        // is the old hand-off, kept so a failed claim is never worse than before.
-        const user = userEvent.setup({ delay: null });
-        stash(STASHED_JOB_ID);
-        renderIntl(<OnboardingFlow token={TOKEN} initialState={finished()} />);
-
-        await user.click(screen.getByRole('button', { name: message('worker_onboarding.done.cta_job') }));
-
-        expect(router.replace).toHaveBeenCalledWith(`/worker/jobs/${STASHED_JOB_ID}`);
-        expect(window.sessionStorage.getItem('pendingReferral')).toBeNull();
-    });
-
-    it('keeps the exits on the profile, and leaves the stash alone', async () => {
-        const user = userEvent.setup({ delay: null });
-        stash(REFERRED.id);
-        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('profile.photo', { referredJob: REFERRED })} />);
-
-        await user.click(screen.getByRole('button', { name: message('worker_onboarding.common.go_to_profile') }));
-
-        expect(router.replace).toHaveBeenCalledWith('/worker/profile');
-        expect(window.sessionStorage.getItem('pendingReferral')).not.toBeNull();
     });
 });

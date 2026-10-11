@@ -13,7 +13,7 @@
  * 15.5.24, a major upgrade, and a plain `npm audit --audit-level=critical`
  * had no way to say those two were not reachable in Jale's deployment (nor
  * would lowering the level, which would hide every future critical too).
- * Both apps are now on Next.js 16.3.8 and .github/audit-exceptions.json is
+ * Both apps are now on Next.js 16.3.4 and .github/audit-exceptions.json is
  * currently empty (2026-09-10) -- the mechanism stays in place at critical
  * for whatever the next unfixable advisory turns out to be.
  *

@@ -22,14 +22,19 @@
  * consequence of dismissing a banner. It also needs no state document, so it
  * never touches `buildState` and never flips the 031 GUC below.
  *
- * ── IT RUNS ON THE WHATSAPP LOGIN (binding) ───────────────────────────
- * This door runs on the WhatsApp login beside the web onboarding door: it is
- * declared in `whatsapp-stack.ts` next to that door, and it resolves the
- * caller through 086's `resolve_worker_internal_id` SECURITY DEFINER exactly
- * as that door does.
+ * ── WHY IT RUNS AS jale_whatsapp (binding) ────────────────────────────
+ * `job_applications` is FORCE RLS and the only worker-scoped UPDATE policy
+ * is `jobapp_whatsapp_update` (migration 028), for role `jale_whatsapp`,
+ * keyed on the GUC `app.current_internal_user_id` (= `users.id`). There is
+ * no worker UPDATE policy for `jale_admin`, so this door cannot be an
+ * ApiStack Lambda; it is declared in `whatsapp-stack.ts` next to the web
+ * onboarding door with `DB_SECRET_ARN = jale/whatsapp/db`, and it resolves
+ * the caller through 086's `resolve_worker_internal_id` SECURITY DEFINER
+ * exactly as that door does.
  *
- * Every application query here carries an explicit `AND worker_id = $2`.
- * The shared engine's own snapshot SELECT is
+ * `jobapp_whatsapp_select` is `USING (true)` (028), so RLS proves NOTHING
+ * about ownership on a read: every application query here carries an
+ * explicit `AND worker_id = $2`. The shared engine's own snapshot SELECT is
  * keyed on the application id alone by design — this handler is the caller
  * that must have proven ownership first, and the `worker_id = $2` SELECT in
  * the entry sequence below is that proof.
@@ -47,9 +52,9 @@
  * `employer_profiles` reads until COMMIT (migration 031, and the same
  * comment in `worker-jobs-detail.ts:44-46`). It is therefore the LAST query
  * of every request, issued from `buildState` — which is why `buildState` is
- * called exactly ONCE per request, immediately before the COMMIT, on every
- * path that returns a state document (the GET, the completion POST, a
- * successful write, and the 409 bodies that carry `state`).
+ * called exactly ONCE per request, immediately before the COMMIT or
+ * ROLLBACK, on all three paths that need a state document (the GET, a
+ * successful POST, and the two 409 bodies that carry `state`).
  */
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import type { PoolClient } from 'pg';
@@ -78,13 +83,8 @@ import {
   releasePromptLaneForApplication,
   releaseWhatsAppLanesForApplication,
 } from '../lib/application-web-completion';
-import { auditCaller, type AuditCaller } from '../lib/audit/caller';
-import { setAuditContext } from '../lib/audit/context';
-import { recordAccess, recordAttempt, responseFieldNames, type AttemptEvent } from '../lib/audit/record';
 
 const CORS_HEADERS = corsHeaders();
-/** The access surface, and the change-record surface for this door's writes. */
-const SURFACE = 'worker.application_details';
 
 /**
  * 16 KB, taken as a BYTE length on the raw body BEFORE `JSON.parse` and
@@ -124,14 +124,6 @@ const HIRE_ACK_ACTION = 'hire-ack';
  * for a worker whose last requirement arrived through `/worker/vault/*`.
  */
 const COMPLETE_ACTION = 'complete';
-
-/**
- * The savepoint a `WRITE_ACTIONS` door takes before its snapshot load. A
- * merge the engine refuses with a state document rolls back to it, which
- * undoes the load's document copies and the merge's own writes while keeping
- * the transaction open, so the state's access record commits with the read.
- */
-const WRITE_SAVEPOINT = 'application_details_write';
 
 /**
  * The two steps of the celebration, and the exact strings the browser sends.
@@ -200,14 +192,9 @@ interface StateDoc {
  * request does before it commits or rolls back. Its final two queries are
  * the job's `employer_id` (the snapshot deliberately does not carry it, and
  * the engine is not this lane's to extend) and `employer_display_name` — see
- * the 031 note in the file header for why nothing may follow them. `record`,
- * when given, writes the access record for the state before those two.
+ * the 031 note in the file header for why nothing may follow them.
  */
-async function buildState(
-  client: PoolClient,
-  snapshot: RequirementSnapshot,
-  record?: (state: StateDoc) => Promise<void>,
-): Promise<StateDoc> {
+async function buildState(client: PoolClient, snapshot: RequirementSnapshot): Promise<StateDoc> {
   const remaining = computeRemaining(snapshot);
 
   // `answers` is the worker's field answers ONLY. 'certifications' is a
@@ -224,7 +211,23 @@ async function buildState(
   const docTypes = Array.from(new Set([...snapshot.requiredDocs, ...snapshot.optionalDocs]));
   const haveDocs = new Set(snapshot.haveDocs);
 
-  const state: StateDoc = {
+  const employerRes = await client.query<{ employer_id: string | null }>(
+    `SELECT employer_id FROM jobs WHERE id = $1`,
+    [snapshot.jobId],
+  );
+  const employerId = employerRes.rows[0]?.employer_id ?? null;
+
+  // LAST QUERY OF THE TRANSACTION. See the file header.
+  let companyName: string | null = null;
+  if (employerId) {
+    const nameRes = await client.query<{ company_name: string | null }>(
+      `SELECT employer_display_name($1) AS company_name`,
+      [employerId],
+    );
+    companyName = nameRes.rows[0]?.company_name ?? null;
+  }
+
+  return {
     application: {
       id: snapshot.applicationId,
       job_id: snapshot.jobId,
@@ -250,7 +253,7 @@ async function buildState(
     job: {
       id: snapshot.jobId,
       title: snapshot.jobTitle,
-      company_name: null,
+      company_name: companyName,
       status: snapshot.jobStatus,
       required_fields: snapshot.requiredFields,
       optional_fields: snapshot.optionalFields,
@@ -266,32 +269,7 @@ async function buildState(
     remaining,
     next_step: nextStep(snapshot),
   };
-
-  // The access record names the state about to be returned, so it is written
-  // here, before the job's employer queries: employer_display_name() must stay
-  // the last query of the transaction (031), so nothing may follow it.
-  if (record) await record(state);
-
-  const employerRes = await client.query<{ employer_id: string | null }>(
-    `SELECT employer_id FROM jobs WHERE id = $1`,
-    [snapshot.jobId],
-  );
-  const employerId = employerRes.rows[0]?.employer_id ?? null;
-
-  // LAST QUERY OF THE TRANSACTION. See the file header.
-  let companyName: string | null = null;
-  if (employerId) {
-    const nameRes = await client.query<{ company_name: string | null }>(
-      `SELECT employer_display_name($1) AS company_name`,
-      [employerId],
-    );
-    companyName = nameRes.rows[0]?.company_name ?? null;
-  }
-
-  state.job.company_name = companyName;
-  return state;
 }
-
 
 // ── Entry sequence ────────────────────────────────────────────────────
 
@@ -384,8 +362,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   const requiredTosVersion = process.env.REQUIRED_TOS_VERSION ?? '1.0';
 
   let client: PoolClient | undefined;
-  let caller: AuditCaller | undefined;
-  let attempt: Omit<AttemptEvent, 'outcome'> | undefined;
   let settled = false;
   const commit = async (): Promise<void> => { await client!.query('COMMIT'); settled = true; };
   const rollback = async (): Promise<void> => { await client!.query('ROLLBACK'); settled = true; };
@@ -401,20 +377,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return fail(404, 'worker_not_found');
     }
     await setInternalUserRlsContext(client, workerId);
-    // The worker is the actor for every write below (the snapshot sync copies
-    // vault documents; the merges write answers), and for the access record.
-    caller = auditCaller(event, { kind: 'worker', id: workerId }, 'web');
-    await setAuditContext(client, caller, SURFACE);
-    attempt = { surface: SURFACE, recordIds: [applicationId], subjectUserIds: [workerId] };
-    const readCaller = caller;
-    const recordRead = (state: StateDoc): Promise<void> => recordAccess(client!, readCaller, {
-      surface: SURFACE,
-      subjectUserIds: [workerId],
-      recordIds: [applicationId],
-      resultCount: 1,
-      fieldNames: responseFieldNames(state),
-      purpose: { kind: 'self' },
-    });
 
     // The legal wall. Unlike the onboarding door (where accepting the terms
     // IS step one) this is an ordinary `/worker/*` route and must be gated.
@@ -431,15 +393,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return fail(403, 'legal_required', { requiredVersion: requiredTosVersion, currentVersion });
     }
 
-    // OWNERSHIP: the explicit `worker_id = $2` predicate decides it; a miss
-    // is a 404.
+    // OWNERSHIP. `jobapp_whatsapp_select` is USING (true), so this explicit
+    // `worker_id = $2` is the only thing standing between a worker and
+    // somebody else's application.
     const ownedRes = await client.query<{ id: string }>(
       `SELECT id FROM job_applications WHERE id = $1 AND worker_id = $2`,
       [applicationId, workerId],
     );
     if (ownedRes.rows.length === 0) {
       await rollback();
-      await recordAttempt(client, caller, { ...attempt, outcome: 'not_found' });
       return fail(404, 'not_found');
     }
 
@@ -465,9 +427,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // ── POST hire-ack: the celebration state ───────────────────────
     // Answered here, BEFORE the snapshot load, for the reason in the file
     // header. Ownership has already been proven by the SELECT above; the
-    // UPDATE re-states `worker_id = $2` so the statement scopes itself, and it
-    // adds `status = 'hired'` so a row that is not a hire cannot be marked as
-    // one.
+    // UPDATE re-states `worker_id = $2` anyway because that predicate is what
+    // 028's jobapp_whatsapp_update policy is keyed on, and it adds
+    // `status = 'hired'` so a row that is not a hire cannot be marked as one.
     //
     // 095 grants jale_whatsapp UPDATE on these two columns and NOT on
     // hired_at: the hire date is the employer's claim, written only by
@@ -517,14 +479,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       });
     }
 
-    // A write door's load and merge run under one savepoint. The load is not
-    // a pure read (it copies vault documents onto the job), and a write the
-    // engine refuses with a state document must keep neither the copies nor
-    // anything the merge wrote, while the state it returns is still recorded
-    // and committed with the read, in this transaction. The GET and the
-    // completion POST commit their load, so they take no savepoint.
-    if (WRITE_ACTIONS.has(action)) await client.query(`SAVEPOINT ${WRITE_SAVEPOINT}`);
-
     let snapshot: RequirementSnapshot | null;
     try {
       snapshot = await loadRequirementSnapshot(client, applicationId, { syncDocumentSnapshots: true });
@@ -538,7 +492,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
     if (!snapshot) {
       await rollback();
-      await recordAttempt(client, caller, { ...attempt, outcome: 'not_found' });
       return fail(404, 'not_found');
     }
 
@@ -558,7 +511,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // Completion is an explicit act now: `POST {id}/complete` below, or
     // LISTO on WhatsApp. The read is a read.
     if (action === '') {
-      const state = await buildState(client, snapshot, recordRead);
+      const state = await buildState(client, snapshot);
       await commit();
       return json(200, state);
     }
@@ -583,7 +536,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           snapshot = await loadRequirementSnapshot(client, applicationId, { syncDocumentSnapshots: true });
           if (!snapshot) {
             await rollback();
-            await recordAttempt(client, caller, { ...attempt, outcome: 'not_found' });
             return fail(404, 'not_found');
           }
           // Releasing the bot's arm here is not belt-and-braces --
@@ -605,7 +557,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       // Still-outstanding returns the state rather than an error, so the
       // review step re-renders its own "still missing" line instead of the
       // worker being told only that something went wrong.
-      const state = await buildState(client, snapshot, recordRead);
+      const state = await buildState(client, snapshot);
       await commit();
       return json(200, state);
     }
@@ -666,15 +618,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     if (result.ok) {
-      // The merge stands: the rest of the request runs outside its savepoint.
-      await client.query(`RELEASE SAVEPOINT ${WRITE_SAVEPOINT}`);
-
       // The FRESH state: the merge may have filled the last gap and flipped
       // `details_completed_at`, and the browser renders straight from this.
       const fresh = await loadRequirementSnapshot(client, applicationId, { syncDocumentSnapshots: true });
       if (!fresh) {
         await rollback();
-        await recordAttempt(client, caller, { ...attempt, outcome: 'not_found' });
         return fail(404, 'not_found');
       }
 
@@ -715,31 +663,22 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         });
       }
 
-      const state = await buildState(client, fresh, recordRead);
+      const state = await buildState(client, fresh);
       await commit();
       return json(200, state);
     }
 
     const mapped = mapFailure(result);
-    if (!mapped.withState) {
-      await rollback();
-      // The application vanished under the merge: a named subject not found.
-      if (mapped.status === 404) await recordAttempt(client, caller, { ...attempt, outcome: 'not_found' });
-      return fail(mapped.status, mapped.error, mapped.extra ?? {});
-    }
     // The 409 bodies carry the state so the browser can re-render without a
-    // second round trip. Rolling back to the write savepoint undoes the
-    // refused merge and the load's document copies; the state, built from the
-    // snapshot read before the merge, is then recorded and committed in this
-    // same transaction, and leaves only once that COMMIT has succeeded.
-    // `buildState` stays the last thing before it (the 031 note above).
-    await client.query(`ROLLBACK TO SAVEPOINT ${WRITE_SAVEPOINT}`);
-    const state = await buildState(client, snapshot, recordRead);
-    await commit();
-    return fail(mapped.status, mapped.error, { ...(mapped.extra ?? {}), state });
+    // second round trip — built BEFORE the rollback, since building it is
+    // itself two queries.
+    const extra = mapped.withState
+      ? { ...(mapped.extra ?? {}), state: await buildState(client, snapshot) }
+      : (mapped.extra ?? {});
+    await rollback();
+    return fail(mapped.status, mapped.error, extra);
   } catch (err) {
     if (client && !settled) await client.query('ROLLBACK').catch(() => undefined);
-    if (client && caller && attempt) await recordAttempt(client, caller, { ...attempt, outcome: 'failed' });
     console.error(JSON.stringify({
       metric: 'WorkerApplicationDetailsRequestFailed',
       method,

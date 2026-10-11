@@ -33,6 +33,20 @@ function buildQuery(routes: QueryRoute[]): jest.Mock {
   });
 }
 
+/** `coordinateSelects` -- identical SQL for both `worker_profiles` and
+ * `jobs`, distinguished only by the table-name param. Defaults to "no
+ * lat/lon columns" (NULL::numeric fallback) for every table unless
+ * overridden. */
+function coordinateColumnsRoute(hasCoords: Partial<Record<'worker_profiles' | 'jobs' | 'worker_preferred_cities', boolean>> = {}): QueryRoute {
+  return {
+    test: (sql) => /FROM information_schema\.columns/.test(sql),
+    handler: (_sql, params) => {
+      const table = params[0] as 'worker_profiles' | 'jobs' | 'worker_preferred_cities';
+      return { rows: hasCoords[table] ? [{ column_name: 'latitude' }, { column_name: 'longitude' }] : [] };
+    },
+  };
+}
+
 function workerRoute(row: Record<string, unknown> | null): QueryRoute {
   return {
     test: (sql) => /FROM users u/.test(sql),
@@ -59,39 +73,12 @@ function jobsListRoute(rows: Record<string, unknown>[]): QueryRoute {
   };
 }
 
-/** `listOpenReferredJobIds` (referred-jobs.ts): the worker's open, unapplied
- * referred jobs, newest first. The order is the database's, so the route
- * hands the ids back as given -- cut at the LIMIT param like the real query. */
-function referredJobsRoute(idsOrError: string[] | Error): QueryRoute {
+function pinFetchRoute(rows: Record<string, unknown>[]): QueryRoute {
   return {
-    test: (sql) => /FROM worker_referred_jobs r/.test(sql),
-    handler: (_sql, params) => {
-      if (idsOrError instanceof Error) {
-        throw idsOrError;
-      }
-      const limit = params[1] as number | null;
-      return { rows: idsOrError.slice(0, limit ?? undefined).map((job_id) => ({ job_id })) };
-    },
+    test: (sql) => /FROM jobs j/.test(sql) && /j\.id = \$2/.test(sql),
+    handler: () => ({ rows }),
   };
 }
-
-/** The ONE fetch of the referred jobs that are not already ranked. Answers
- * as `j.id = ANY($2::uuid[])` would: only the requested rows, in `rows`' own
- * order (the database promises none). */
-function pinFetchRoute(rowsOrError: Record<string, unknown>[] | Error): QueryRoute {
-  return {
-    test: (sql) => /FROM jobs j/.test(sql) && /j\.id = ANY\(\$2::uuid\[\]\)/.test(sql),
-    handler: (_sql, params) => {
-      if (rowsOrError instanceof Error) {
-        throw rowsOrError;
-      }
-      const wanted = params[1] as string[];
-      return { rows: rowsOrError.filter((row) => wanted.includes(row.id as string)) };
-    },
-  };
-}
-
-const PIN_FETCH = /j\.id = ANY\(\$2::uuid\[\]\)/;
 
 function findCall(query: jest.Mock, pattern: RegExp): [string, unknown[]] | undefined {
   return query.mock.calls.find(([sql]) => pattern.test(sql)) as [string, unknown[]] | undefined;
@@ -109,6 +96,7 @@ function worker(overrides: Partial<Record<string, unknown>> = {}): Record<string
     latitude: null,
     longitude: null,
     worker_skills: [],
+    attributed_job_id: null,
     ...overrides,
   };
 }
@@ -486,12 +474,13 @@ describe('job-matching pure scoring', () => {
 
     it('scores the referral-pinned job with the city anchors', async () => {
       const query = buildQuery([
+        coordinateColumnsRoute({ jobs: true }),
         workerRoute(worker({
           latitude: null, longitude: null, city: null, profile_location: null,
+          attributed_job_id: 'job-ref',
         })),
         tradeAliasesRoute([]),
         jobsListRoute([]),
-        referredJobsRoute(['job-ref']),
         pinFetchRoute([job({ id: 'job-ref', latitude: 32.3199, longitude: -106.7637, location: 'Las Cruces, NM' })]),
       ]);
 
@@ -521,8 +510,9 @@ describe('job-matching pure scoring', () => {
 });
 
 describe('listMatchedJobsForWorker', () => {
-  it('selects the coordinate columns directly, with no information_schema probe', async () => {
+  it('lists matches when optional coordinate columns are absent', async () => {
     const query = buildQuery([
+      coordinateColumnsRoute(),
       workerRoute(worker({ availability: 'weekends' })),
       tradeAliasesRoute([]),
       jobsListRoute([job({
@@ -542,13 +532,10 @@ describe('listMatchedJobsForWorker', () => {
 
     const workerCall = findCall(query, /FROM users u/);
     const jobsCall = findCall(query, /FROM jobs j/);
-    expect(workerCall?.[0]).toContain('wp.latitude');
-    expect(workerCall?.[0]).toContain('wp.longitude');
-    expect(jobsCall?.[0]).toContain('j.latitude');
-    expect(jobsCall?.[0]).toContain('j.longitude');
-    expect(workerCall?.[0]).not.toContain('NULL::numeric');
-    expect(jobsCall?.[0]).not.toContain('NULL::numeric');
-    expect(query.mock.calls.some(([sql]) => /information_schema/i.test(String(sql)))).toBe(false);
+    expect(workerCall?.[0]).toContain('NULL::numeric AS latitude');
+    expect(workerCall?.[0]).toContain('NULL::numeric AS longitude');
+    expect(jobsCall?.[0]).toContain('NULL::numeric AS latitude');
+    expect(jobsCall?.[0]).toContain('NULL::numeric AS longitude');
     expect(result).toHaveLength(1);
     expect(result[0].title).toBe('Drywall Profile Match Crew');
     expect(result[0].match_components.profession).toBeGreaterThan(0);
@@ -572,6 +559,7 @@ describe('listMatchedJobsForWorker', () => {
     });
 
     const query = buildQuery([
+      coordinateColumnsRoute(),
       workerRoute(worker()),
       tradeAliasesRoute([]),
       jobsListRoute([...newerIrrelevantJobs, olderRelevantJob]),
@@ -600,10 +588,10 @@ describe('listMatchedJobsForWorker', () => {
     });
 
     const query = buildQuery([
-      workerRoute(worker({ main_trade_other: 'Soldador' })),
+      coordinateColumnsRoute(),
+      workerRoute(worker({ main_trade_other: 'Soldador', attributed_job_id: 'job-welder' })),
       tradeAliasesRoute([]),
       jobsListRoute([]),
-      referredJobsRoute(['job-welder']),
       pinFetchRoute([welderJob]),
     ]);
 
@@ -628,10 +616,10 @@ describe('listMatchedJobsForWorker', () => {
 
     const now = new Date('2026-05-14T12:00:00Z');
     const query = buildQuery([
-      workerRoute(worker()),
+      coordinateColumnsRoute(),
+      workerRoute(worker({ attributed_job_id: 'job-referred' })),
       tradeAliasesRoute([]),
       jobsListRoute([drywallJob('job-newer', now), drywallJob('job-referred', new Date(now.getTime() - 10_000))]),
-      referredJobsRoute(['job-referred']),
     ]);
 
     const result = await listMatchedJobsForWorker(
@@ -642,7 +630,7 @@ describe('listMatchedJobsForWorker', () => {
 
     // No pin-fetch query should have run -- the referred job was already
     // in the ranked candidate set.
-    expect(query.mock.calls.some(([sql]) => PIN_FETCH.test(sql as string))).toBe(false);
+    expect(query.mock.calls.some(([sql]) => /j\.id = \$2/.test(sql as string))).toBe(false);
     expect(result[0].id).toBe('job-referred');
     expect(result[0].match_reasons[0]).toBe('referred_job');
     expect(result.map((j) => j.id)).toEqual(['job-referred', 'job-newer']);
@@ -650,11 +638,10 @@ describe('listMatchedJobsForWorker', () => {
 
   it('skips the referral pin when the worker searched for something specific', async () => {
     const query = buildQuery([
-      workerRoute(worker()),
+      coordinateColumnsRoute(),
+      workerRoute(worker({ attributed_job_id: 'job-welder' })),
       tradeAliasesRoute([]),
       jobsListRoute([]),
-      referredJobsRoute(['job-welder']),
-      pinFetchRoute([job({ id: 'job-welder' })]),
     ]);
 
     const result = await listMatchedJobsForWorker(
@@ -663,16 +650,16 @@ describe('listMatchedJobsForWorker', () => {
       { limit: 5, channel: 'whatsapp', search: 'plumber' },
     );
 
-    expect(query.mock.calls.some(([sql]) => /worker_referred_jobs|SAVEPOINT/.test(sql as string) || PIN_FETCH.test(sql as string))).toBe(false);
+    expect(query.mock.calls.some(([sql]) => /j\.id = \$2/.test(sql as string))).toBe(false);
     expect(result).toHaveLength(0);
   });
 
   it('does not pin a referred job the worker already applied to', async () => {
     const query = buildQuery([
-      workerRoute(worker({ main_trade_other: 'Soldador' })),
+      coordinateColumnsRoute(),
+      workerRoute(worker({ main_trade_other: 'Soldador', attributed_job_id: 'job-welder' })),
       tradeAliasesRoute([]),
       jobsListRoute([]),
-      referredJobsRoute(['job-welder']),
       pinFetchRoute([]), // active + not-applied fetch finds nothing (applied or closed)
     ]);
 
@@ -685,197 +672,6 @@ describe('listMatchedJobsForWorker', () => {
     expect(result).toHaveLength(0);
   });
 
-  describe('every open referred job is pinned (migration 103 list)', () => {
-    const now = new Date('2026-05-14T12:00:00Z');
-    const drywall = (id: string, ageMs: number) => job({
-      id,
-      title: `Drywall Crew ${id}`,
-      description: 'Sheetrock hanging, taping, mud, and texture.',
-      created_at: new Date(now.getTime() - ageMs),
-    });
-    // Unrelated trades: the Drywaller's profession filter drops these, so only
-    // a pin can show them.
-    const welder = (id: string) => job({ id, title: `Welder ${id}`, description: 'Arc welding.' });
-    const statements = (query: jest.Mock) => query.mock.calls.map(([sql]) => sql as string);
-    const indexOf = (query: jest.Mock, pattern: RegExp) => statements(query).findIndex((sql) => pattern.test(sql));
-
-    it('pins them newest first, ahead of the ranked list, fetching only the unranked ones in ONE query', async () => {
-      const query = buildQuery([
-        workerRoute(worker()),
-        tradeAliasesRoute([]),
-        jobsListRoute([drywall('job-organic-new', 0), drywall('job-ref-ranked', 5_000), drywall('job-organic-old', 10_000)]),
-        referredJobsRoute(['job-ref-new', 'job-ref-ranked', 'job-ref-old']),
-        // The database returns the fetched rows in no particular order.
-        pinFetchRoute([welder('job-ref-old'), welder('job-ref-new')]),
-      ]);
-
-      const result = await listMatchedJobsForWorker({ query } as never, 'worker-1', { limit: 5, channel: 'api' });
-
-      expect(result.map((j) => j.id)).toEqual([
-        'job-ref-new', 'job-ref-ranked', 'job-ref-old', 'job-organic-new', 'job-organic-old',
-      ]);
-      expect(result.slice(0, 3).every((j) => j.match_reasons[0] === 'referred_job')).toBe(true);
-      expect(result.slice(3).some((j) => j.match_reasons.includes('referred_job'))).toBe(false);
-
-      const fetches = query.mock.calls.filter(([sql]) => PIN_FETCH.test(sql as string));
-      expect(fetches).toHaveLength(1);
-      expect(fetches[0][1]).toEqual(['worker-1', ['job-ref-new', 'job-ref-old']]);
-      expect(findCall(query, /FROM worker_referred_jobs r/)?.[1]).toEqual(['worker-1', 5]);
-    });
-
-    it('re-applies the open and not-applied predicates in the pin fetch, bound to the worker', async () => {
-      const query = buildQuery([
-        workerRoute(worker()),
-        tradeAliasesRoute([]),
-        jobsListRoute([]),
-        referredJobsRoute(['job-ref']),
-        pinFetchRoute([welder('job-ref')]),
-      ]);
-
-      await listMatchedJobsForWorker({ query } as never, 'worker-1', { limit: 5, channel: 'api' });
-
-      const [sql] = findCall(query, PIN_FETCH)!;
-      const flat = sql.replace(/\s+/g, ' ');
-      expect(flat).toContain("j.status = 'active'");
-      expect(flat).toContain('NOT EXISTS ( SELECT 1 FROM job_applications ja WHERE ja.job_id = j.id AND ja.worker_id = $1 )');
-      expect(flat).not.toMatch(/city_key|ILIKE|job_type =/);
-    });
-
-    it('never lets the pins exceed the page', async () => {
-      const query = buildQuery([
-        workerRoute(worker()),
-        tradeAliasesRoute([]),
-        jobsListRoute([drywall('job-organic', 0)]),
-        referredJobsRoute(['job-a', 'job-b', 'job-c']),
-        pinFetchRoute([welder('job-a'), welder('job-b'), welder('job-c')]),
-      ]);
-
-      const result = await listMatchedJobsForWorker({ query } as never, 'worker-1', { limit: 2, channel: 'whatsapp' });
-
-      expect(result.map((j) => j.id)).toEqual(['job-a', 'job-b']);
-      expect(findCall(query, /FROM worker_referred_jobs r/)?.[1]).toEqual(['worker-1', 2]);
-    });
-
-    it.each([
-      ['an explicit search', { search: 'drywall' }],
-      ['a job-type filter', { jobType: 'full-time' }],
-      ['the excludeCityKeys fallback pass', { excludeCityKeys: ['el-paso-tx'] }],
-    ])('is suppressed by %s -- no savepoint, no list read, no fetch, and no referred reason', async (_label, filter) => {
-      const query = buildQuery([
-        workerRoute(worker()),
-        tradeAliasesRoute([]),
-        jobsListRoute([drywall('job-ref-ranked', 0)]),
-        referredJobsRoute(['job-ref-ranked', 'job-ref-new']),
-        pinFetchRoute([welder('job-ref-new')]),
-      ]);
-
-      const result = await listMatchedJobsForWorker({ query } as never, 'worker-1', { limit: 5, channel: 'api', ...filter });
-
-      expect(statements(query).some((sql) => /worker_referred_jobs|SAVEPOINT/.test(sql) || PIN_FETCH.test(sql))).toBe(false);
-      expect(result.map((j) => j.id)).toEqual(['job-ref-ranked']);
-      expect(result[0].match_reasons).not.toContain('referred_job');
-    });
-
-    it('is NOT suppressed by cityKeys alone', async () => {
-      const query = buildQuery([
-        workerRoute(worker()),
-        tradeAliasesRoute([]),
-        jobsListRoute([drywall('job-in-city', 0)]),
-        referredJobsRoute(['job-ref-a', 'job-ref-b']),
-        pinFetchRoute([welder('job-ref-b'), welder('job-ref-a')]),
-      ]);
-
-      const result = await listMatchedJobsForWorker({ query } as never, 'worker-1', {
-        limit: 5, channel: 'api', cityKeys: ['el-paso-tx'],
-      });
-
-      expect(result.map((j) => j.id)).toEqual(['job-ref-a', 'job-ref-b', 'job-in-city']);
-    });
-
-    it('runs the pin read inside its own SAVEPOINT, released on success', async () => {
-      const query = buildQuery([
-        workerRoute(worker()),
-        tradeAliasesRoute([]),
-        jobsListRoute([]),
-        referredJobsRoute(['job-ref']),
-        pinFetchRoute([welder('job-ref')]),
-      ]);
-
-      await listMatchedJobsForWorker({ query } as never, 'worker-1', { limit: 5, channel: 'api' });
-
-      const savepoint = indexOf(query, /^SAVEPOINT referred_job_pins$/);
-      const list = indexOf(query, /FROM worker_referred_jobs r/);
-      const fetch = indexOf(query, PIN_FETCH);
-      const release = indexOf(query, /^RELEASE SAVEPOINT referred_job_pins$/);
-      expect(savepoint).toBeGreaterThan(indexOf(query, /ORDER BY j\.created_at/));
-      expect(savepoint).toBeLessThan(list);
-      expect(list).toBeLessThan(fetch);
-      expect(fetch).toBeLessThan(release);
-      expect(statements(query).some((sql) => /ROLLBACK/.test(sql))).toBe(false);
-    });
-
-    it.each([
-      ['the list read', [referredJobsRoute(new Error('relation "worker_referred_jobs" does not exist')), pinFetchRoute([])]],
-      ['the pin fetch', [referredJobsRoute(['job-ref-new', 'job-ref-ranked']), pinFetchRoute(new Error('canceling statement due to statement timeout'))]],
-    ])('a failure in %s rolls back to the savepoint and returns the ranked list with no pins', async (_label, pinRoutes) => {
-      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-      try {
-        const query = buildQuery([
-          workerRoute(worker()),
-          tradeAliasesRoute([]),
-          jobsListRoute([drywall('job-organic', 0), drywall('job-ref-ranked', 5_000)]),
-          ...(pinRoutes as QueryRoute[]),
-        ]);
-
-        const result = await listMatchedJobsForWorker({ query } as never, 'worker-1', { limit: 5, channel: 'api' });
-
-        expect(result.map((j) => j.id)).toEqual(['job-organic', 'job-ref-ranked']);
-        expect(result.some((j) => j.match_reasons.includes('referred_job'))).toBe(false);
-        expect(statements(query)).toContain('ROLLBACK TO SAVEPOINT referred_job_pins');
-        expect(statements(query)).not.toContain('RELEASE SAVEPOINT referred_job_pins');
-        // Static metric: never a worker or job id.
-        expect(warn.mock.calls.map(([line]) => JSON.parse(line as string))).toEqual([
-          { metric: 'ReferredJobPinFailed', reason: 'Error' },
-        ]);
-      } finally {
-        warn.mockRestore();
-      }
-    });
-
-    it('still returns the ranked list when even the rollback to the savepoint fails', async () => {
-      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-      try {
-        const query = buildQuery([
-          workerRoute(worker()),
-          tradeAliasesRoute([]),
-          jobsListRoute([drywall('job-organic', 0)]),
-          referredJobsRoute(new Error('connection terminated')),
-          {
-            test: (sql) => sql === 'ROLLBACK TO SAVEPOINT referred_job_pins',
-            handler: () => { throw new Error('current transaction is aborted'); },
-          },
-        ]);
-
-        await expect(listMatchedJobsForWorker({ query } as never, 'worker-1', { limit: 5, channel: 'api' }))
-          .resolves.toEqual([expect.objectContaining({ id: 'job-organic' })]);
-      } finally {
-        warn.mockRestore();
-      }
-    });
-
-    it('no longer reads worker_attribution: the worker query carries no referral', async () => {
-      const query = buildQuery([
-        workerRoute(worker()),
-        tradeAliasesRoute([]),
-        jobsListRoute([]),
-      ]);
-
-      await listMatchedJobsForWorker({ query } as never, 'worker-1', { limit: 5, channel: 'api' });
-
-      expect(statements(query).some((sql) => /worker_attribution|attributed_job_id/.test(sql))).toBe(false);
-    });
-  });
-
   it('resolves an organic Soldador-to-Welder match via the trade_aliases cache, without any pin', async () => {
     const welderRow: TradeAliasRow = {
       trade_key: 'welder',
@@ -886,7 +682,8 @@ describe('listMatchedJobsForWorker', () => {
     };
 
     const query = buildQuery([
-      workerRoute(worker({ main_trade_other: 'Soldador' })),
+      coordinateColumnsRoute(),
+      workerRoute(worker({ main_trade_other: 'Soldador', attributed_job_id: null })),
       tradeAliasesRoute([welderRow]),
       jobsListRoute([job({ id: 'job-welder', title: 'Welder needed', description: 'Arc welding for structural steel.' })]),
     ]);
@@ -909,7 +706,7 @@ describe('listMatchedJobsForWorker', () => {
     // `workerHasProfessionData` filter in `listMatchedJobsForWorker`. Title
     // and description are deliberately free of any welder-adjacent word (no
     // "weld"/"welder"/"welding" substring) so the only possible signal is
-    // `trade_category_other` itself; the worker has no referred jobs, so the
+    // `trade_category_other` itself; `attributed_job_id` is null so the
     // referral pin can't paper over a scoring miss.
     const welderRow: TradeAliasRow = {
       trade_key: 'welder',
@@ -920,7 +717,8 @@ describe('listMatchedJobsForWorker', () => {
     };
 
     const query = buildQuery([
-      workerRoute(worker({ main_trade_other: 'Soldador' })),
+      coordinateColumnsRoute(),
+      workerRoute(worker({ main_trade_other: 'Soldador', attributed_job_id: null })),
       tradeAliasesRoute([welderRow]),
       jobsListRoute([job({
         id: 'job-other-welder',
@@ -945,6 +743,7 @@ describe('listMatchedJobsForWorker', () => {
 
   it('BE-T6: SELECTs trade_category_other in the jobs query (jale_matching already holds table-level SELECT on jobs, migration 010)', async () => {
     const query = buildQuery([
+      coordinateColumnsRoute(),
       workerRoute(worker()),
       tradeAliasesRoute([]),
       jobsListRoute([]),
@@ -958,6 +757,7 @@ describe('listMatchedJobsForWorker', () => {
 
   it('091: SELECTs pre_application_prompts and passes it through to the shaped job', async () => {
     const query = buildQuery([
+      coordinateColumnsRoute(),
       workerRoute(worker({ main_trade_other: 'Soldador' })),
       tradeAliasesRoute([{
         trade_key: 'welder', canonical_en: 'Welder', canonical_es: 'Soldador',
@@ -989,7 +789,8 @@ describe('listMatchedJobsForWorker', () => {
     };
 
     const query = buildQuery([
-      workerRoute(worker({ main_trade_other: 'Albañil' })),
+      coordinateColumnsRoute(),
+      workerRoute(worker({ main_trade_other: 'Albañil', attributed_job_id: null })),
       tradeAliasesRoute([concreteRow]),
       jobsListRoute([job({ id: 'job-concrete', title: 'Concrete Crew', description: 'Pouring and finishing foundations.' })]),
     ]);
@@ -1011,7 +812,8 @@ describe('listMatchedJobsForWorker', () => {
 
   it('degrades to legacy behavior on a trade_aliases cache miss, without throwing', async () => {
     const query = buildQuery([
-      workerRoute(worker({ main_trade: 'other', main_trade_other: 'Roofer' })),
+      coordinateColumnsRoute(),
+      workerRoute(worker({ main_trade: 'other', main_trade_other: 'Roofer', attributed_job_id: null })),
       tradeAliasesRoute([]),
       jobsListRoute([job({ id: 'job-roofer', title: 'Helper wanted', description: 'General site helper, various tasks.' })]),
     ]);
@@ -1025,7 +827,8 @@ describe('listMatchedJobsForWorker', () => {
 
   it('degrades gracefully when the trade_aliases query itself rejects', async () => {
     const query = buildQuery([
-      workerRoute(worker({ main_trade_other: 'Soldador' })),
+      coordinateColumnsRoute(),
+      workerRoute(worker({ main_trade_other: 'Soldador', attributed_job_id: null })),
       tradeAliasesRoute(new Error('connection reset')),
       jobsListRoute([job({ id: 'job-welder', title: 'Welder needed', description: 'Arc welding.' })]),
     ]);
@@ -1047,10 +850,12 @@ describe('listMatchedJobsForWorker', () => {
     };
 
     const query = buildQuery([
+      coordinateColumnsRoute(),
       workerRoute(worker({
         main_trade: 'electrician',
         main_trade_other: null,
         worker_skills: ['soldador'],
+        attributed_job_id: null,
       })),
       tradeAliasesRoute([welderRow]),
       jobsListRoute([
@@ -1074,6 +879,7 @@ describe('listMatchedJobsForWorker', () => {
 
   it('filters by preferred city keys in SQL', async () => {
     const query = buildQuery([
+      coordinateColumnsRoute(),
       workerRoute(worker()),
       tradeAliasesRoute([]),
       jobsListRoute([]),
@@ -1092,6 +898,7 @@ describe('listMatchedJobsForWorker', () => {
 
   it('excludes city keys for the fallback query', async () => {
     const query = buildQuery([
+      coordinateColumnsRoute(),
       workerRoute(worker()),
       tradeAliasesRoute([]),
       jobsListRoute([]),
@@ -1121,10 +928,10 @@ describe('listMatchedJobsForWorker', () => {
     });
 
     const query = buildQuery([
-      workerRoute(worker()),
+      coordinateColumnsRoute(),
+      workerRoute(worker({ attributed_job_id: 'job-referred-elsewhere' })),
       tradeAliasesRoute([]),
       jobsListRoute([]),
-      referredJobsRoute(['job-referred-elsewhere']),
       pinFetchRoute([outOfCityJob]),
     ]);
 
@@ -1142,10 +949,10 @@ describe('listMatchedJobsForWorker', () => {
     // The fallback runs alongside a primary query that already pinned the
     // referral; re-pinning here would surface the same job in both lists.
     const query = buildQuery([
-      workerRoute(worker()),
+      coordinateColumnsRoute(),
+      workerRoute(worker({ attributed_job_id: 'job-referred-elsewhere' })),
       tradeAliasesRoute([]),
       jobsListRoute([]),
-      referredJobsRoute(['job-referred-elsewhere']),
       pinFetchRoute([job({ id: 'job-referred-elsewhere' })]),
     ]);
 
@@ -1155,12 +962,13 @@ describe('listMatchedJobsForWorker', () => {
       excludeCityKeys: ['el-paso-tx'],
     });
 
-    expect(query.mock.calls.some(([sql]) => /worker_referred_jobs|SAVEPOINT/.test(sql as string) || PIN_FETCH.test(sql as string))).toBe(false);
+    expect(query.mock.calls.some(([sql]) => /j\.id = \$2/.test(sql as string))).toBe(false);
     expect(result).toHaveLength(0);
   });
 
   it('applies no city clause when no keys are given', async () => {
     const query = buildQuery([
+      coordinateColumnsRoute(),
       workerRoute(worker()),
       tradeAliasesRoute([]),
       jobsListRoute([]),
@@ -1174,6 +982,7 @@ describe('listMatchedJobsForWorker', () => {
 
   it('keeps the LIMIT placeholder index correct when city filters are applied', async () => {
     const query = buildQuery([
+      coordinateColumnsRoute(),
       workerRoute(worker()),
       tradeAliasesRoute([]),
       jobsListRoute([]),
@@ -1203,8 +1012,9 @@ describe('listMatchedJobsForWorker', () => {
 });
 
 describe('loadWorkerPreferredCities', () => {
-  it('returns city keys with centroids in created_at order', async () => {
+  it('returns city keys with centroids in created_at order, guarded by the column probe', async () => {
     const query = buildQuery([
+      coordinateColumnsRoute({ worker_preferred_cities: true }),
       {
         test: (sql) => /FROM worker_preferred_cities/.test(sql),
         handler: () => ({ rows: [
@@ -1225,21 +1035,19 @@ describe('loadWorkerPreferredCities', () => {
     expect(params).toEqual(['worker-1']);
   });
 
-  it('selects the centroid columns directly, with no information_schema probe', async () => {
+  it('selects NULL coordinates before migration 064 is applied', async () => {
     const query = buildQuery([
+      coordinateColumnsRoute(),  // no coordinate columns anywhere
       {
         test: (sql) => /FROM worker_preferred_cities/.test(sql),
-        handler: () => ({ rows: [{ city_key: 'el-paso-tx', latitude: '31.7619', longitude: '-106.4850' }] }),
+        handler: () => ({ rows: [{ city_key: 'el-paso-tx', latitude: null, longitude: null }] }),
       },
     ]);
 
     await loadWorkerPreferredCities({ query } as never, 'worker-1');
 
     const [sql] = findCall(query, /FROM worker_preferred_cities/)!;
-    expect(sql).toContain('wpc.latitude');
-    expect(sql).toContain('wpc.longitude');
-    expect(sql).not.toContain('NULL::numeric');
-    expect(query.mock.calls.some(([q]) => /information_schema/i.test(String(q)))).toBe(false);
+    expect(sql).toContain('NULL::numeric AS latitude');
   });
 });
 

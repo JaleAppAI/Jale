@@ -604,7 +604,7 @@ export default function WorkerProfilePage() {
                                             <FactsCard.Tiles>
                                                 <FactsCard.Tile label={t('phone')} muted={!profile.phone}>
                                                     {profile.phone ? (
-                                                        <span data-private className="tabular-nums">{profile.phone}</span>
+                                                        <span className="tabular-nums">{profile.phone}</span>
                                                     ) : (
                                                         t('fallback_phone')
                                                     )}
@@ -783,7 +783,7 @@ export default function WorkerProfilePage() {
                                                         under a neighbour. */}
                                                     {entry.question ?? t('prompt_answers_question_removed')}
                                                 </p>
-                                                <p data-private className="mt-1 whitespace-pre-wrap text-sm text-[var(--jale-ink-2)]">
+                                                <p className="mt-1 whitespace-pre-wrap text-sm text-[var(--jale-ink-2)]">
                                                     {entry.text}
                                                 </p>
                                             </li>
@@ -866,7 +866,7 @@ export default function WorkerProfilePage() {
                                                         <p className="whitespace-pre-wrap text-sm font-semibold text-[var(--jale-ink)]">
                                                             {displayQuestion(a, locale)}
                                                         </p>
-                                                        <p data-private className="mt-1 whitespace-pre-wrap text-sm text-[var(--jale-ink-2)]">
+                                                        <p className="mt-1 whitespace-pre-wrap text-sm text-[var(--jale-ink-2)]">
                                                             {ans.text}
                                                         </p>
                                                         {ans.kind === 'voice' ? (

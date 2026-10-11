@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useState } from 'react';
 import { useParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import {
@@ -76,14 +76,7 @@ export default function WorkerUploadPage() {
   const token = params.token as string;
 
   const [uploads, setUploads] = useState<Partial<Record<DocType, UploadedDoc>>>({});
-  /** Slots whose confirm call succeeded: the link stored this page's file. */
   const [confirmedDocs, setConfirmedDocs] = useState<Partial<Record<DocType, boolean>>>({});
-  /**
-   * Slots whose confirm call answered that the slot may already hold a
-   * document (see `handleSubmit`). What it holds may not be the file chosen
-   * here (another tab, an earlier visit), so the receipt never names that file.
-   */
-  const [receivedEarlier, setReceivedEarlier] = useState<Partial<Record<DocType, boolean>>>({});
   const [slotErrors, setSlotErrors] = useState<Partial<Record<DocType, string>>>({});
   const [uploadingDocs, setUploadingDocs] = useState<Partial<Record<DocType, boolean>>>({});
   const [submitting, setSubmitting] = useState(false);
@@ -91,12 +84,6 @@ export default function WorkerUploadPage() {
   const [submitError, setSubmitError] = useState('');
   /** S9. Terminal: there is no retry that can bring a spent link back. */
   const [linkDead, setLinkDead] = useState(false);
-  /**
-   * Uploads still on their way, counted outside render so the submit guard
-   * reads the live number. Submitting spends the link, and a document still
-   * uploading would never be confirmed: the link could not take it later.
-   */
-  const uploadsInFlight = useRef(0);
 
   // Was a page-local map over five hand-copied `upload_page.doc_*` keys.
   // `DOC_TYPES` above is the only list this anonymous flow renders, and every
@@ -116,14 +103,12 @@ export default function WorkerUploadPage() {
       return;
     }
 
-    uploadsInFlight.current += 1;
     setUploadingDocs((prev) => ({ ...prev, [doc_type]: true }));
     try {
       const { url, s3_key } = await getUploadUrl(token, doc_type, file.type);
       await uploadFileToS3(url, file);
       setUploads((prev) => ({ ...prev, [doc_type]: { file, s3_key } }));
       setConfirmedDocs((prev) => ({ ...prev, [doc_type]: false }));
-      setReceivedEarlier((prev) => ({ ...prev, [doc_type]: false }));
     } catch (err) {
       // The presign call is the first thing every attempt does, which is what
       // turns a dead link into an answer on the user's FIRST action instead of
@@ -139,19 +124,17 @@ export default function WorkerUploadPage() {
           : errorMessage(err, { unknown: t('error_upload') }),
       }));
     } finally {
-      uploadsInFlight.current -= 1;
       setUploadingDocs((prev) => ({ ...prev, [doc_type]: false }));
     }
   };
 
   const handleSubmit = async () => {
-    if (uploadsInFlight.current > 0) return;
     setSubmitting(true);
     setSubmitError('');
     try {
       for (const doc_type of DOC_TYPES) {
         const uploaded = uploads[doc_type];
-        if (!uploaded || confirmedDocs[doc_type] || receivedEarlier[doc_type]) continue;
+        if (!uploaded || confirmedDocs[doc_type]) continue;
 
         try {
           await confirmUpload(token, uploaded.s3_key, doc_type, uploaded.file);
@@ -166,12 +149,7 @@ export default function WorkerUploadPage() {
           // `submitUpload` answers 200 in the first case and 401 invalid_token
           // in the second, which lands on the terminal screen below. Stopping
           // here instead would strand the user on a retry that can never work.
-          // Either way this page cannot tell which file the slot holds: it is
-          // kept apart, skipped on a later submit, and never named on the
-          // receipt.
           if (!isSlotAlreadyConfirmed(err)) throw err;
-          setReceivedEarlier((prev) => ({ ...prev, [doc_type]: true }));
-          continue;
         }
         setConfirmedDocs((prev) => ({ ...prev, [doc_type]: true }));
       }
@@ -197,7 +175,6 @@ export default function WorkerUploadPage() {
   };
 
   const uploadedCount = DOC_TYPES.filter((d) => uploads[d]).length;
-  const anyUploading = DOC_TYPES.some((d) => uploadingDocs[d]);
 
   /* ===== S9 — invalid or expired link (terminal) ========================= */
 
@@ -227,13 +204,9 @@ export default function WorkerUploadPage() {
   /* ===== S7 success ====================================================== */
 
   if (submitted) {
-    // Only what the link stored: a document confirmed in this submission or
-    // an earlier one, never one that merely finished uploading. A slot the
-    // link answered as possibly received before is listed without this page's
-    // file name, since what it holds may be another file.
-    const receipt = DOC_TYPES.filter((d) => uploads[d] && (confirmedDocs[d] || receivedEarlier[d])).map((d) => ({
+    const receipt = DOC_TYPES.filter((d) => uploads[d]).map((d) => ({
       label: docLabel(d),
-      value: confirmedDocs[d] ? uploads[d]!.file.name : t('error_already_received'),
+      value: uploads[d]!.file.name,
     }));
 
     return (
@@ -251,7 +224,7 @@ export default function WorkerUploadPage() {
             </div>
 
             {receipt.length > 0 ? (
-              <div data-private className="mt-5 border-t border-[var(--jale-divider)] pt-1">
+              <div className="mt-5 border-t border-[var(--jale-divider)] pt-1">
                 <KVList items={receipt} />
               </div>
             ) : null}
@@ -307,7 +280,7 @@ export default function WorkerUploadPage() {
                           <Badge tone="neutral">{t('status_missing')}</Badge>
                         )}
                       </div>
-                      <p data-private={uploaded ? '' : undefined} className="mt-1 truncate text-xs text-[var(--jale-ink-2)]">
+                      <p className="mt-1 truncate text-xs text-[var(--jale-ink-2)]">
                         {uploaded ? uploaded.file.name : t('file_hint')}
                       </p>
                     </div>
@@ -376,7 +349,7 @@ export default function WorkerUploadPage() {
 
         <Button
           onClick={handleSubmit}
-          disabled={uploadedCount === 0 || anyUploading}
+          disabled={uploadedCount === 0}
           loading={submitting}
           loadingLabel={tCommon('loading')}
           className="mt-4 w-full"

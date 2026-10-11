@@ -1,12 +1,9 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3';
-import { auditCaller } from '../lib/audit/caller';
-import { setAuditContext } from '../lib/audit/context';
 import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
 import { DOC_TYPES } from '../lib/job-fields';
-import { isUuid } from '../lib/uuid';
 
 const CORS_HEADERS = corsHeaders();
 const s3 = new S3Client({});
@@ -22,12 +19,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const docType = event.pathParameters?.doc_type;
     if (!docType || !VALID_DOC_TYPES.includes(docType as any)) {
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_doc_type', valid: VALID_DOC_TYPES }) };
-    }
-
-    // A single-row delete names its row by `id` (below), which must be a UUID.
-    const id = event.queryStringParameters?.id;
-    if (id !== undefined && !isUuid(id)) {
-      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_document_id' }) };
     }
 
     const pool = await getDbPool();
@@ -47,19 +38,17 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const workerId: string = userRes.rows[0].id;
 
     await setInternalUserRlsContext(client, workerId);
-    await setAuditContext(client, auditCaller(event, { kind: 'worker', id: workerId }, 'web'), 'worker.document_delete');
 
     // Optional `id` query parameter targets a single row -- needed to delete
     // one of several certification_doc files from a slot without touching the
     // others. Without it, the delete is the original type-wide vault delete.
-    // The row must also be of the route's document type, so an id never
-    // deletes a document of another type.
+    const id = event.queryStringParameters?.id;
     const delRes = id
       ? await client.query(
           `DELETE FROM worker_documents
-           WHERE worker_id = $1 AND id = $2 AND doc_type = $3 AND job_id IS NULL
+           WHERE worker_id = $1 AND id = $2 AND job_id IS NULL
            RETURNING s3_key`,
-          [workerId, id, docType],
+          [workerId, id],
         )
       : await client.query(
           `DELETE FROM worker_documents

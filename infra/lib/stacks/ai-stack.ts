@@ -128,7 +128,6 @@ export class AiStack extends cdk.Stack implements AiStackOutputs {
       timeout: 30,
       environment: {
         DB_SECRET_ARN: props.aiDbSecret.secretName,
-        DB_EXPECTED_LOGIN: 'jale_ai',
         BEDROCK_MODEL_ID,
       },
     });
@@ -148,7 +147,6 @@ export class AiStack extends cdk.Stack implements AiStackOutputs {
       timeout: 30,
       environment: {
         DB_SECRET_ARN: props.aiDbSecret.secretName,
-        DB_EXPECTED_LOGIN: 'jale_ai',
         BEDROCK_MODEL_ID,
       },
     });
@@ -168,7 +166,6 @@ export class AiStack extends cdk.Stack implements AiStackOutputs {
       timeout: 60,
       environment: {
         DB_SECRET_ARN: props.aiDbSecret.secretName,
-        DB_EXPECTED_LOGIN: 'jale_ai',
         BEDROCK_MODEL_ID,
         SSM_RUBRIC_PARAM: rubricParam.parameterName,
         TRUST_ASSESSMENT_QUEUE_URL: this.trustAssessmentQueue.queueUrl,
@@ -225,7 +222,6 @@ export class AiStack extends cdk.Stack implements AiStackOutputs {
       memorySize: 512,
       environment: {
         DB_SECRET_ARN: props.aiDbSecret.secretName,
-        DB_EXPECTED_LOGIN: 'jale_ai',
         BEDROCK_MODEL_ID,
         TRUST_EXTRACTION_QUEUE_URL: this.trustExtractionQueue.queueUrl,
       },

@@ -66,7 +66,7 @@ function trade(
  * every assertion below says WHICH of the two sources the copy used.
  */
 function hired(overrides: Partial<ApplicationHire> = {}): ApplicationHire {
-  return hire({ trade: trade(), company: 'NB Construction', ...overrides });
+  return hire({ trade: trade(), company: 'RM Construction', ...overrides });
 }
 
 /**
@@ -170,8 +170,8 @@ describe('HiredCelebrationModal', () => {
     // Both halves of one claim: the key the component picked, AND the sentence
     // a worker actually reads. A key-only assertion passes just as happily on
     // the production bug this replaces.
-    const expected = copy('modal.title_trade', { company: 'NB Construction', trade: tradeWord('electrician') });
-    expect(expected).toBe('NB Construction hired you for the electrician position');
+    const expected = copy('modal.title_trade', { company: 'RM Construction', trade: tradeWord('electrician') });
+    expect(expected).toBe('RM Construction hired you for the electrician position');
     expect(screen.getByRole('heading', { name: expected })).toBeInTheDocument();
     // `hire.company`, not the list row's `company_name`.
     expect(screen.queryByText(new RegExp(SUBJECT.companyName))).not.toBeInTheDocument();
@@ -190,7 +190,7 @@ describe('HiredCelebrationModal', () => {
 
     expect(screen.getByRole('heading', {
       name: copy('modal.title_trade', {
-        company: 'NB Construction', trade: tradeWord('electrician', locale),
+        company: 'RM Construction', trade: tradeWord('electrician', locale),
       }, locale),
     })).toBeInTheDocument();
     expect(screen.getByText(SUBJECT.jobTitle)).toBeInTheDocument();
@@ -213,7 +213,7 @@ describe('HiredCelebrationModal', () => {
 
     const word = locale === 'es' ? 'soldador' : 'welder';
     expect(screen.getByRole('heading', {
-      name: copy('modal.title_trade', { company: 'NB Construction', trade: word }, locale),
+      name: copy('modal.title_trade', { company: 'RM Construction', trade: word }, locale),
     })).toBeInTheDocument();
     expectNoRawMessageKeys();
   });
@@ -231,7 +231,7 @@ describe('HiredCelebrationModal', () => {
 
     expect(screen.getByRole('heading', {
       name: copy('modal.title_trade', {
-        company: 'NB Construction', trade: 'Tile setter helper',
+        company: 'RM Construction', trade: 'Tile setter helper',
       }, locale),
     })).toBeInTheDocument();
     expectNoRawMessageKeys();
@@ -247,7 +247,7 @@ describe('HiredCelebrationModal', () => {
     );
 
     expect(screen.getByRole('heading', {
-      name: copy('modal.title', { company: 'NB Construction' }, locale),
+      name: copy('modal.title', { company: 'RM Construction' }, locale),
     })).toBeInTheDocument();
     expect(screen.getByText(SUBJECT.jobTitle)).toBeInTheDocument();
     expectNoRawMessageKeys();
@@ -259,7 +259,7 @@ describe('HiredCelebrationModal', () => {
     );
 
     expect(screen.getByRole('heading', {
-      name: copy('modal.title', { company: 'NB Construction' }),
+      name: copy('modal.title', { company: 'RM Construction' }),
     })).toBeInTheDocument();
     expectNoRawMessageKeys();
   });
@@ -481,9 +481,9 @@ describe('HiredBanner', () => {
     renderIntl(<HiredBanner {...SUBJECT} hire={hired()} onDismiss={vi.fn()} />);
 
     const expected = copy('banner.title_trade', {
-      trade: tradeWord('electrician'), company: 'NB Construction',
+      trade: tradeWord('electrician'), company: 'RM Construction',
     });
-    expect(expected).toBe("You're hired for the electrician position · NB Construction");
+    expect(expected).toBe("You're hired for the electrician position · RM Construction");
     expect(screen.getByText(expected)).toBeInTheDocument();
     expect(screen.getByText(SUBJECT.jobTitle)).toBeInTheDocument();
     expect(screen.getByRole('link', {
@@ -496,7 +496,7 @@ describe('HiredBanner', () => {
     renderIntl(<HiredBanner {...SUBJECT} hire={hired()} onDismiss={vi.fn()} />, locale);
 
     expect(screen.getByText(copy('banner.title_trade', {
-      trade: tradeWord('electrician', locale), company: 'NB Construction',
+      trade: tradeWord('electrician', locale), company: 'RM Construction',
     }, locale))).toBeInTheDocument();
     expect(screen.getByText(SUBJECT.jobTitle)).toBeInTheDocument();
     expectNoRawMessageKeys();
@@ -512,7 +512,7 @@ describe('HiredBanner', () => {
 
     const word = locale === 'es' ? 'soldador' : 'welder';
     expect(screen.getByText(copy('banner.title_trade', {
-      trade: word, company: 'NB Construction',
+      trade: word, company: 'RM Construction',
     }, locale))).toBeInTheDocument();
     expectNoRawMessageKeys();
   });
@@ -522,7 +522,7 @@ describe('HiredBanner', () => {
     renderIntl(<HiredBanner {...SUBJECT} hire={subject} onDismiss={vi.fn()} />, locale);
 
     expect(screen.getByText(copy('banner.title_trade', {
-      trade: 'Tile setter helper', company: 'NB Construction',
+      trade: 'Tile setter helper', company: 'RM Construction',
     }, locale))).toBeInTheDocument();
     expectNoRawMessageKeys();
   });
@@ -546,7 +546,7 @@ describe('HiredBanner', () => {
     renderIntl(<HiredBanner {...SUBJECT} hire={subject} onDismiss={vi.fn()} />, locale);
 
     expect(screen.getByText(copy('banner.title', {
-      title: SUBJECT.jobTitle, company: 'NB Construction',
+      title: SUBJECT.jobTitle, company: 'RM Construction',
     }, locale))).toBeInTheDocument();
     // The heading already names the job, so there is NO separate title line --
     // no element whose whole text is the job title.
@@ -560,7 +560,7 @@ describe('HiredBanner', () => {
     );
 
     expect(screen.getByText(copy('banner.title', {
-      title: SUBJECT.jobTitle, company: 'NB Construction',
+      title: SUBJECT.jobTitle, company: 'RM Construction',
     }))).toBeInTheDocument();
     expectNoRawMessageKeys();
   });
@@ -661,7 +661,7 @@ describe('HiredBanner', () => {
     // Unchanged by A1: no heading of any variant, and no job-title line
     // either -- the row above states the job, the company and the Hired chip.
     expect(screen.queryByText(copy('banner.title_trade', {
-      trade: tradeWord('electrician'), company: 'NB Construction',
+      trade: tradeWord('electrician'), company: 'RM Construction',
     }))).not.toBeInTheDocument();
     expect(screen.queryByText(SUBJECT.jobTitle)).not.toBeInTheDocument();
     // The row already shows the job, the company and the Hired chip; the

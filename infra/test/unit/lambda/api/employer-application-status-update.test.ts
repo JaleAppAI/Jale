@@ -165,7 +165,7 @@ describe('employer-application-status-update', () => {
     expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
   });
 
-  it('returns 403 when the ownership query finds no job', async () => {
+  it('returns 403 when RLS hides the job from the employer', async () => {
     mockQuery.mockImplementation((q: string) => {
       if (q.includes('FROM jobs')) return Promise.resolve({ rowCount: 0, rows: [] });
       return Promise.resolve({});
@@ -342,7 +342,7 @@ describe('employer-application-status-update', () => {
         return Promise.resolve({ rows: [{ status: statusAfter }] });
       }
       if (q.includes('employer_display_name')) {
-        return Promise.resolve({ rowCount: 1, rows: [{ company_name: 'NB Construction' }] });
+        return Promise.resolve({ rowCount: 1, rows: [{ company_name: 'RM Construction' }] });
       }
       if (q.includes('UPDATE job_applications')) {
         return Promise.resolve({
@@ -381,7 +381,7 @@ describe('employer-application-status-update', () => {
     const displayNameIdx = sqls.findIndex((s: string) => s.includes('employer_display_name'));
     expect(displayNameIdx).toBeGreaterThan(visibilityIdx);
     expect(mockNotify.mock.calls[0][1]).toMatchObject({
-      kind: 'hired', companyName: 'NB Construction', jobTitle: 'Concrete Finisher',
+      kind: 'hired', companyName: 'RM Construction', jobTitle: 'Concrete Finisher',
     });
   });
 
@@ -456,7 +456,7 @@ describe('employer-application-status-update', () => {
         });
       }
       if (q.includes('employer_display_name')) {
-        return Promise.resolve({ rowCount: 1, rows: [{ company_name: 'NB Construction' }] });
+        return Promise.resolve({ rowCount: 1, rows: [{ company_name: 'RM Construction' }] });
       }
       if (q.includes('UPDATE job_applications')) {
         if (opts.updateError) return Promise.reject(opts.updateError);
@@ -491,7 +491,8 @@ describe('employer-application-status-update', () => {
     const res = await handler(makeEvent({ body: JSON.stringify({ status: 'details_requested' }) }));
 
     expect(res.statusCode).toBe(200);
-    // The employer's users.id is the caller context for the whole transaction.
+    // users_employer_applicant_read (020b:261-269) is jale_admin's only path to
+    // a worker row and matches on this GUC holding the EMPLOYER's users.id.
     expect(mockSetInternalUserRlsContext).toHaveBeenCalledTimes(1);
     expect(mockSetInternalUserRlsContext).toHaveBeenCalledWith(expect.anything(), EMPLOYER_ID);
 
@@ -558,12 +559,10 @@ describe('employer-application-status-update', () => {
       kind: 'details_requested',
       jobId: JOB_ID,
       jobTitle: 'Concrete Finisher',
-      companyName: 'NB Construction',
+      companyName: 'RM Construction',
       frontendBaseUrl: 'https://jaleapp.ai',
+      updatedAt: UPDATED_AT,
     });
-    // The per-change dedupe key is derived from the application row by the
-    // claim function, so the handler no longer passes a timestamp.
-    expect(mockNotify.mock.calls[0][1]).not.toHaveProperty('updatedAt');
 
     // employer_display_name() widens employer_profiles reads until COMMIT, so
     // it must be the LAST employer-adjacent query -- immediately before the
@@ -753,6 +752,7 @@ describe('employer-application-status-update', () => {
     expect(mockNotify.mock.calls[0][1]).toMatchObject({
       kind: 'details_requested',
       applicationId: APPLICATION_ID,
+      updatedAt: UPDATED_AT,
     });
   });
 

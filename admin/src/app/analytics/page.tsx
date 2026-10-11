@@ -5,8 +5,8 @@ import {
   getAnalyticsTotals,
   getJobsActivity,
   getMessageTraffic,
+  getPayingEmployers,
   getSignups,
-  loadPayingEmployers,
   parseAnalyticsRange,
   parseSignupsView,
 } from '@/lib/server/admin-analytics';
@@ -48,7 +48,7 @@ export default async function AnalyticsPage({
 }: {
   searchParams: Promise<{ range?: string | string[]; signups?: string | string[] }>;
 }) {
-  const session = await requireAdminSession();
+  await requireAdminSession();
   const { range: rangeParam, signups: signupsParam } = await searchParams;
   const range = parseAnalyticsRange(rangeParam ?? DEFAULT_ANALYTICS_RANGE);
   const signupsView = parseSignupsView(signupsParam);
@@ -62,11 +62,9 @@ export default async function AnalyticsPage({
     getJobsActivity(range),
     getMessageTraffic(range),
   ]);
-  // The aggregates name no one. The paying-employers list does, so it loads in
-  // its own recorded transaction (one connection) and is recorded before render.
   const [totals, payingEmployers] = await Promise.all([
     getAnalyticsTotals(),
-    loadPayingEmployers(session),
+    getPayingEmployers(),
   ]);
 
   const labels = signups.map((row) => bucketLabel(row.bucketStart, range));
@@ -106,7 +104,6 @@ export default async function AnalyticsPage({
           key={value}
           className="button"
           href={analyticsHref(range, value)}
-          prefetch={false}
           aria-current={value === signupsView ? 'page' : undefined}
         >
           {label}
@@ -128,7 +125,6 @@ export default async function AnalyticsPage({
               key={value}
               className="button"
               href={analyticsHref(value, signupsView)}
-              prefetch={false}
               aria-current={value === range ? 'page' : undefined}
             >
               {label}

@@ -16,7 +16,6 @@
 
 import type { PoolClient } from 'pg';
 
-import { getReferredJobForOnboarding, type ReferredJobSummary } from '../../lib/referred-jobs';
 import { loadRunContext } from '../onboarding/durable-context';
 import type { WorkerGate } from '../lib/onboarding-repository';
 import type { BilingualQuestion } from '../onboarding/constants';
@@ -55,10 +54,6 @@ export interface OnboardingStateDto {
     summary_en: string | null;
     summary_es: string | null;
   } | null;
-  /** The job the worker came for, for the Done screen and the job strip: the
-   * newest referred job they have not applied to, open ones first (migration
-   * 103's list). Null when there is none -- or when the read failed. */
-  referredJob: ReferredJobSummary | null;
 }
 
 const ZIP = /^\d{5}$/;
@@ -121,33 +116,6 @@ function buildAnswers(raw: unknown): Array<{ index: number; text: string; source
       source: typeof a.answer_source === 'string' ? a.answer_source : 'text',
     }))
     .sort((a, b) => a.index - b.index);
-}
-
-/**
- * The referred job is a nicety on this document, never a reason for it to
- * fail: `WebOnboardingRequestFailedAlarm` fires on the first 500. The read
- * runs inside the request's transaction, where a failed statement aborts
- * everything after it (25P02) and a later COMMIT silently rolls the whole
- * request back -- so it gets its own SAVEPOINT, and any failure is null plus a
- * static metric. The handler sets `app.current_internal_user_id` before any
- * builder call; the library scopes the read with an explicit `worker_id = $1`.
- */
-async function readReferredJob(client: PoolClient, workerId: string): Promise<ReferredJobSummary | null> {
-  try {
-    await client.query('SAVEPOINT referred_job_state');
-    const job = await getReferredJobForOnboarding(client, workerId);
-    await client.query('RELEASE SAVEPOINT referred_job_state');
-    return job;
-  } catch {
-    try {
-      await client.query('ROLLBACK TO SAVEPOINT referred_job_state');
-    } catch {
-      // Transaction already unusable; the handler's next statement reports it.
-    }
-    // Static metric only -- never the worker or job id.
-    console.error(JSON.stringify({ metric: 'ReferredJobStateReadFailed' }));
-    return null;
-  }
 }
 
 export async function buildOnboardingState(
@@ -224,8 +192,6 @@ export async function buildOnboardingState(
     [workerId],
   );
 
-  const referredJob = await readReferredJob(client, workerId);
-
   const userRow = user.rows[0];
   const mainTrade = userRow?.main_trade ?? null;
   const pending = runContext.v2LocationPendingConfirm as { city: string; state: string } | null | undefined;
@@ -260,6 +226,5 @@ export async function buildOnboardingState(
         summary_es: extraction.rows[0].summary_es,
       }
       : null,
-    referredJob,
   };
 }

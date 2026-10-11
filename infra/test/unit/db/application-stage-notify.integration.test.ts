@@ -5,24 +5,28 @@ import {
   enqueueApplicationStageNotification,
   type ApplicationStageKind,
 } from '../../../lambda/lib/application-stage-notify';
-import { loginUrl } from './helpers/login-pool';
+import { _clearCategoryRenderersForTests } from '../../../lambda/whatsapp/lib/worker-delivery-gateway';
 
 /**
- * The employer stage notification against a real database,
- * on the request login (jale_api).
+ * Sprint 23 L2.5 -- the employer stage notification against the REAL policies.
  *
- * This suite exists because the whole feature turns on one setting that no
- * mocked pool can enforce. `enqueueApplicationStageNotification` runs inside
- * the employer's API transaction, and both capability functions it calls --
- * `jale_cap.employer_stage_recipient` and
- * `jale_cap.employer_claim_worker_intent` -- take the caller from
- * `app.current_internal_user_id` and check in SQL that the application is on
- * one of that caller's jobs.
+ * This suite exists because the whole feature turns on one GUC that no mocked
+ * pool can enforce. `enqueueApplicationStageNotification` runs as jale_admin
+ * inside the employer's API transaction, and the renderer's recipient lookup
+ * reaches the worker's `users` row ONLY through
+ * `users_employer_applicant_read` (020b:261-269, repaired by 038):
  *
- * With that setting holding the EMPLOYER's users.id the message is queued.
- * Pointed at the WORKER instead, the call is refused outright (42501) and
- * nothing is written -- never a silent 200 with no WhatsApp message. Case (b)
- * below pins that so the old silent drop cannot come back.
+ *   USING (user_type = 'worker'
+ *          AND jale_internal.employer_has_applicant_relationship(
+ *                current_setting('app.current_internal_user_id', true), id))
+ *
+ * With that GUC holding the EMPLOYER's users.id the SELECT succeeds and the
+ * message is queued. With it unset, or pointed at the WORKER (the shape
+ * job-messaging.ts:505-529 uses, which only ever runs on the non-rendering
+ * deferred branch), the SELECT returns zero rows, the renderer returns null,
+ * and the gateway silently rejects the intent as `renderer_unavailable` -- a
+ * 200 to the employer and no WhatsApp message, forever. Case (b) below pins
+ * that so the bug cannot come back.
  */
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
@@ -68,15 +72,17 @@ maybeDescribe('application stage notification against the real RLS policies', ()
   const FRONTEND_BASE_URL = 'https://jaleapp.ai';
 
   /**
-   * One connection per logical operation, signed in as the request login,
-   * jale_api: BEGIN, then the two transaction-local settings the employer API
-   * sets -- `app.current_user_id` (Cognito sub) and
+   * One connection per logical operation, mirroring
+   * whatsapp-application-fill-080.integration.test.ts: BEGIN, SET LOCAL ROLE
+   * jale_admin (transaction-scoped), then the two session GUCs the employer
+   * API sets -- `app.current_user_id` (Cognito sub) and
    * `app.current_internal_user_id` (users.id).
    */
   async function connectAsEmployerApi(internalUserId: string | null): Promise<Client> {
-    const client = new Client({ connectionString: loginUrl('jale_api') });
+    const client = new Client({ connectionString: databaseUrl });
     await client.connect();
     await client.query('BEGIN');
+    await client.query('SET LOCAL ROLE jale_admin');
     await client.query(`SELECT set_config('app.current_user_id', $1, true)`, [`t25-employer-${employerId}`]);
     if (internalUserId !== null) {
       await client.query(`SELECT set_config('app.current_internal_user_id', $1, true)`, [internalUserId]);
@@ -84,14 +90,9 @@ maybeDescribe('application stage notification against the real RLS policies', ()
     return client;
   }
 
-  /**
-   * The claim derives the per-change dedupe key from the application row
-   * (its status and updated_at), so each application is seeded in the
-   * status it is notified about.
-   */
   async function notify(
     client: Client,
-    input: { applicationId: string; workerId: string; kind?: ApplicationStageKind },
+    input: { applicationId: string; workerId: string; kind?: ApplicationStageKind; updatedAt?: Date },
   ) {
     return enqueueApplicationStageNotification(client as unknown as PoolClient, {
       applicationId: input.applicationId,
@@ -99,8 +100,9 @@ maybeDescribe('application stage notification against the real RLS policies', ()
       kind: input.kind ?? 'details_requested',
       jobId: jobIdFor(input.applicationId),
       jobTitle: 'Concrete Finisher',
-      companyName: 'Fixture Builders',
+      companyName: 'RM Construction',
       frontendBaseUrl: FRONTEND_BASE_URL,
+      updatedAt: input.updatedAt ?? UPDATED_AT,
     });
   }
 
@@ -153,13 +155,12 @@ maybeDescribe('application stage notification against the real RLS policies', ()
       [jobIds, employerId],
     );
 
-    // The applicant relationship the capability functions check, each in the
-    // status it is notified about, at a fixed updated_at.
+    // The applicant relationship users_employer_applicant_read depends on.
     await setup.query(
-      `INSERT INTO job_applications (id, job_id, worker_id, status, updated_at)
-       SELECT id, job_id, worker_id, CASE WHEN id = $4 THEN 'hired' ELSE 'details_requested' END, $5
+      `INSERT INTO job_applications (id, job_id, worker_id, status)
+       SELECT id, job_id, worker_id, 'talking'
          FROM unnest($1::uuid[], $2::uuid[], $3::uuid[]) AS t(id, job_id, worker_id)`,
-      [applicationIds, jobIds, applicationWorkers, appHired, UPDATED_AT],
+      [applicationIds, jobIds, applicationWorkers],
     );
 
     await setup.query(
@@ -178,6 +179,10 @@ maybeDescribe('application stage notification against the real RLS policies', ()
     await setup.query(
       `UPDATE whatsapp_runtime_controls SET enabled = true WHERE control_key = 'deferred_delivery_enabled'`,
     );
+  });
+
+  afterEach(() => {
+    _clearCategoryRenderersForTests();
   });
 
   afterAll(async () => {
@@ -230,25 +235,27 @@ maybeDescribe('application stage notification against the real RLS policies', ()
     expect(outbox[0].source_type).toBe('worker_intent');
     const vars = outbox[0].content_variables as Record<string, string>;
     expect(vars['1']).toBe('Concrete Finisher');
-    expect(vars['2']).toBe('Fixture Builders');
+    expect(vars['2']).toBe('RM Construction');
     expect(vars['3']).toBe(`app-${appEmployerGuc}`);
     expect(vars['4']).toBe(`${FRONTEND_BASE_URL}/es/worker/applications/${appEmployerGuc}`);
     expect(typeof vars.__fallback_body).toBe('string');
-    expect(vars.__fallback_body).toContain('Fixture Builders');
+    expect(vars.__fallback_body).toContain('RM Construction');
   });
 
-  it('(b) is refused -- not silently dropped -- when that setting is pointed at the WORKER instead', async () => {
+  it('(b) is silently dropped when that GUC is pointed at the WORKER instead -- the L2.5 review defect', async () => {
     const client = await connectAsEmployerApi(workerReady);
     try {
-      await expect(notify(client, { applicationId: appWorkerGuc, workerId: workerReady }))
-        .rejects.toMatchObject({ code: '42501' });
-      await client.query('ROLLBACK');
+      const result = await notify(client, { applicationId: appWorkerGuc, workerId: workerReady });
+      expect(result).toEqual({ outcome: 'renderer_unavailable', reason: 'renderer_unavailable' });
+      await client.query('COMMIT');
     } finally {
       await client.end();
     }
 
     const { intents, outbox } = await readIntentAndOutbox(appWorkerGuc);
-    expect(intents).toHaveLength(0);
+    expect(intents).toHaveLength(1);
+    expect(intents[0]).toMatchObject({ status: 'rejected', decision_reason: 'renderer_unavailable' });
+    expect(intents[0].outbox_id).toBeNull();
     expect(outbox).toHaveLength(0);
   });
 
@@ -286,7 +293,7 @@ maybeDescribe('application stage notification against the real RLS policies', ()
     expect(outbox).toHaveLength(0);
   });
 
-  it('(e) is idempotent: the same change claimed twice yields one intent and one outbox row', async () => {
+  it('(e) is idempotent: the same updatedAt twice yields one intent and one outbox row', async () => {
     const first = await connectAsEmployerApi(employerId);
     let firstIntentId: string;
     try {
@@ -313,7 +320,7 @@ maybeDescribe('application stage notification against the real RLS policies', ()
     expect(outbox).toHaveLength(1);
   });
 
-  it('(g) a RESEND -- same application, later updated_at -- yields a second intent and outbox row', async () => {
+  it('(g) a RESEND -- same application, later updatedAt -- yields a second intent and outbox row', async () => {
     // Sprint 24 (B7): the employer's "Resend request" re-PATCHes the same
     // status; the handler's UPDATE stamps `updated_at = now()` (the
     // transaction timestamp), so the dedupe key differs from the first send's
@@ -332,12 +339,11 @@ maybeDescribe('application stage notification against the real RLS policies', ()
 
     const resend = await connectAsEmployerApi(employerId);
     try {
-      // The resend PATCH's own UPDATE, in the same transaction as its claim.
-      await resend.query(
-        `UPDATE job_applications SET status = 'details_requested', updated_at = now() WHERE id = $1`,
-        [appResend],
-      );
-      const result = await notify(resend, { applicationId: appResend, workerId: workerReady });
+      const result = await notify(resend, {
+        applicationId: appResend,
+        workerId: workerReady,
+        updatedAt: new Date(UPDATED_AT.getTime() + 60_000),
+      });
       expect(result).toMatchObject({ outcome: 'enqueued', outboxMaterialized: true });
       expect((result as { intentId: string }).intentId).not.toBe(firstIntentId);
       await resend.query('COMMIT');

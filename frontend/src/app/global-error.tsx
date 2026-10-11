@@ -1,7 +1,6 @@
 'use client';
 
 import './globals.css';
-import { SUPPORT_CONTACT } from '@/lib/support-contact';
 
 /**
  * Last-resort boundary: catches errors thrown by the ROOT layout itself, which
@@ -19,25 +18,7 @@ import { SUPPORT_CONTACT } from '@/lib/support-contact';
  * `var(..., fallback)` pairs render correctly with the stylesheet and degrade to
  * the literal light-theme values without it. The dark theme deliberately does
  * not apply here -- the init script lives in the layout that just failed.
- *
- * "Report a problem" cannot open here (it needs the providers that just
- * failed), so the page names the other ways to reach the team instead: the
- * support address the legal pages publish and the WhatsApp keyword. Static
- * text, no form.
  */
-const helpStyle = {
-    margin: '0.75rem 0 0',
-    fontSize: '0.8125rem',
-    lineHeight: 1.5,
-    color: 'var(--jale-ink-2, #5b6480)',
-} as const;
-const mailStyle = {
-    color: 'var(--jale-blue-700, #0050ad)',
-    fontWeight: 600,
-    textDecoration: 'underline',
-    textUnderlineOffset: 2,
-    wordBreak: 'break-all',
-} as const;
 export default function GlobalError({ reset }: { error: Error & { digest?: string }; reset: () => void }) {
     return (
         <html lang="en">
@@ -74,7 +55,6 @@ export default function GlobalError({ reset }: { error: Error & { digest?: strin
                         Something went wrong. Please reload the page.
                     </p>
                     <p
-                        lang="es"
                         style={{
                             margin: '0.5rem 0 0',
                             fontSize: '0.875rem',
@@ -103,21 +83,6 @@ export default function GlobalError({ reset }: { error: Error & { digest?: strin
                     >
                         Reload / Recargar
                     </button>
-
-                    <p style={{ ...helpStyle, marginTop: '1.5rem' }}>
-                        Need help? Email{' '}
-                        <a href={`mailto:${SUPPORT_CONTACT.email}`} style={mailStyle}>
-                            {SUPPORT_CONTACT.email}
-                        </a>{' '}
-                        or send “{SUPPORT_CONTACT.whatsappKeyword}” to Jale on WhatsApp.
-                    </p>
-                    <p lang="es" style={helpStyle}>
-                        ¿Necesitas ayuda? Escribe a{' '}
-                        <a href={`mailto:${SUPPORT_CONTACT.email}`} style={mailStyle}>
-                            {SUPPORT_CONTACT.email}
-                        </a>{' '}
-                        o envía «{SUPPORT_CONTACT.whatsappKeyword}» a Jale por WhatsApp.
-                    </p>
                 </div>
             </body>
         </html>

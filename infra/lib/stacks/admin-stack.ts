@@ -8,8 +8,6 @@ import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
-import * as iam from 'aws-cdk-lib/aws-iam';
-import * as kms from 'aws-cdk-lib/aws-kms';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as route53 from 'aws-cdk-lib/aws-route53';
 import * as route53targets from 'aws-cdk-lib/aws-route53-targets';
@@ -30,10 +28,6 @@ export interface AdminStackProps extends cdk.StackProps {
    * role with column-scoped cross-user read of `users` (migration 025).
    */
   readonly adminDbSecret: secretsmanager.ISecret;
-  /** Report images (ReportsStack). The console opens attached images, and only those. */
-  readonly reportImagesBucket: s3.IBucket;
-  /** The report images bucket's key. */
-  readonly reportImagesKey: kms.IKey;
   /** CloudFront certificate for admin.<domain>, created in us-east-1. */
   readonly certificate: acm.ICertificate;
   /** CloudFront-scoped WAF web ACL created in us-east-1. */
@@ -169,31 +163,14 @@ export class AdminStack extends cdk.Stack {
         AWS_LAMBDA_EXEC_WRAPPER: '/opt/extensions/lambda-adapter',
         AWS_LWA_INVOKE_MODE: 'response_stream',
         DB_SECRET_ARN: props.adminDbSecret.secretArn,
-        // Kept for parity with every other database workload; the admin app
-        // pins its login in its own pool code (admin/src/lib/server/db.ts).
-        DB_EXPECTED_LOGIN: 'jale_admin_console',
         NEXT_PUBLIC_ADMIN_USER_POOL_ID: this.adminPool.userPoolId,
         NEXT_PUBLIC_ADMIN_CLIENT_ID: this.adminClient.userPoolClientId,
         NEXT_PUBLIC_ADMIN_REGION: cdk.Stack.of(this).region,
         NEXT_PUBLIC_ADMIN_HOSTED_DOMAIN: adminDomain,
-        REPORT_IMAGES_BUCKET: props.reportImagesBucket.bucketName,
       },
     });
 
     props.adminDbSecret.grantRead(adminFunction);
-
-    // Report images: the console presigns a short-lived GET for an attached
-    // image, so it needs read on `images/*` and decrypt on the bucket's key.
-    // Nothing else: no listing, no writes, and no access to uploads that were
-    // never attached (`incoming/*`).
-    adminFunction.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['s3:GetObject'],
-      resources: [props.reportImagesBucket.arnForObjects('images/*')],
-    }));
-    adminFunction.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['kms:Decrypt'],
-      resources: [props.reportImagesKey.keyArn],
-    }));
 
     const functionUrl = adminFunction.addFunctionUrl({
       authType: lambda.FunctionUrlAuthType.AWS_IAM,

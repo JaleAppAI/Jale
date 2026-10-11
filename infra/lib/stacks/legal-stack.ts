@@ -2,8 +2,8 @@ import * as path from 'node:path';
 import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { Construct } from 'constructs';
-import { dedicatedDbLogin } from '../constructs/db-login-secrets';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
 import { lambdaIntegration, addPathOnlyResource } from '../api-integration';
 
@@ -11,6 +11,7 @@ export interface LegalStackProps extends cdk.StackProps {
   readonly vpc: ec2.IVpc;
   readonly privateSubnets: ec2.ISubnet[];
   readonly lambdaSg: ec2.ISecurityGroup;
+  readonly dbSecret: secretsmanager.ISecret;
   readonly api: apigateway.RestApi;
   readonly dualAuthorizer: apigateway.CognitoUserPoolsAuthorizer;
 }
@@ -60,20 +61,18 @@ export class LegalStack extends cdk.Stack {
     });
 
     // ── accept-tos Lambda ──
-    // Connects as the request login.
-    const apiDb = dedicatedDbLogin(this, 'jale_api');
     const acceptTosFn = new JaleLambdaFunction(this, 'AcceptTosLambda', {
       entry: path.join(__dirname, '../../lambda/legal/accept-tos.ts'),
       description: 'Records user acceptance of ToS and privacy policy',
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        ...apiDb.environment,
+        DB_SECRET_ARN: props.dbSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
-    apiDb.grantRead(acceptTosFn.function);
+    props.dbSecret.grantRead(acceptTosFn.function);
 
     // ── API Gateway routes ──
     // Path-only: nothing on /legal itself, only /legal/tos and /legal/accept.

@@ -2,8 +2,6 @@ import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
-import * as s3 from 'aws-cdk-lib/aws-s3';
-import * as kms from 'aws-cdk-lib/aws-kms';
 import { Template, Match } from 'aws-cdk-lib/assertions';
 import { AdminStack, getAdminDurability } from '../../../lib/stacks/admin-stack';
 
@@ -11,9 +9,6 @@ const describeIfDocker = process.env.SKIP_DOCKER_TESTS ? describe.skip : describ
 
 describeIfDocker('AdminStack', () => {
   let template: Template;
-  let stack: AdminStack;
-  let reportImagesBucket: s3.Bucket;
-  let reportImagesKey: kms.Key;
 
   beforeAll(() => {
     const app = new cdk.App({ context: { environment: 'prod' } });
@@ -23,15 +18,13 @@ describeIfDocker('AdminStack', () => {
     const vpc = new ec2.Vpc(support, 'Vpc', { maxAzs: 2 });
     const lambdaSg = new ec2.SecurityGroup(support, 'LambdaSg', { vpc });
     const adminDbSecret = new secretsmanager.Secret(support, 'AdminDbSecret');
-    reportImagesKey = new kms.Key(support, 'ReportImagesKey');
-    reportImagesBucket = new s3.Bucket(support, 'ReportImagesBucket', { encryptionKey: reportImagesKey });
     const certificate = acm.Certificate.fromCertificateArn(
       support,
       'AdminCert',
       'arn:aws:acm:us-east-1:111111111111:certificate/00000000-0000-0000-0000-000000000000',
     );
 
-    stack = new AdminStack(app, 'TestAdminStack', {
+    const stack = new AdminStack(app, 'TestAdminStack', {
       env: { account: '111111111111', region: 'us-east-1' },
       domainName: 'example.com',
       hostedZoneId: 'Z1234567890ABC',
@@ -39,8 +32,6 @@ describeIfDocker('AdminStack', () => {
       privateSubnets: vpc.selectSubnets({ subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS }).subnets,
       lambdaSg,
       adminDbSecret,
-      reportImagesBucket,
-      reportImagesKey,
       certificate,
       webAclArn: 'arn:aws:wafv2:us-east-1:111111111111:global/webacl/admin/00000000-0000-0000-0000-000000000000',
     });
@@ -157,52 +148,6 @@ describeIfDocker('AdminStack', () => {
     });
   });
 
-  // ── Report images: read the attached images, nothing else ──
-
-  /** Every Allow statement on the admin Lambda's role, flattened per action. */
-  function adminRolePermissions(): Array<{ action: string; resource: string }> {
-    const resources = template.toJSON().Resources as Record<string, any>;
-    const fn = Object.values(resources).find((r) => r.Type === 'AWS::Lambda::Function'
-      && r.Properties.FunctionName === 'jale-admin-nextjs');
-    const roleId = fn.Properties.Role['Fn::GetAtt'][0];
-    const out: Array<{ action: string; resource: string }> = [];
-    for (const r of Object.values(resources)) {
-      if (r.Type !== 'AWS::IAM::Policy' || !r.Properties.Roles.some((x: any) => x.Ref === roleId)) continue;
-      for (const statement of [r.Properties.PolicyDocument.Statement].flat()) {
-        expect(statement.Effect).toBe('Allow');
-        for (const action of [statement.Action].flat() as string[]) {
-          for (const resource of [statement.Resource].flat()) out.push({ action, resource: JSON.stringify(resource) });
-        }
-      }
-    }
-    return out;
-  }
-
-  test('the admin Lambda can read report images and nothing else in the reports bucket', () => {
-    const resolve = (value: unknown) => JSON.stringify(cdk.Stack.of(stack).resolve(value));
-    const s3Rights = adminRolePermissions().filter((p) => p.action.startsWith('s3:'));
-    expect(s3Rights).toEqual([
-      { action: 's3:GetObject', resource: resolve(reportImagesBucket.arnForObjects('images/*')) },
-    ]);
-    expect(JSON.stringify(s3Rights)).not.toContain('incoming');
-  });
-
-  test('the admin Lambda can only decrypt with the report images key', () => {
-    const resolve = (value: unknown) => JSON.stringify(cdk.Stack.of(stack).resolve(value));
-    const kmsRights = adminRolePermissions().filter((p) => p.action.startsWith('kms:'));
-    expect(kmsRights).toEqual([
-      { action: 'kms:Decrypt', resource: resolve(reportImagesKey.keyArn) },
-    ]);
-  });
-
-  test('the admin Lambda is told the report images bucket', () => {
-    const resources = template.toJSON().Resources as Record<string, any>;
-    const fn = Object.values(resources).find((r) => r.Type === 'AWS::Lambda::Function'
-      && r.Properties.FunctionName === 'jale-admin-nextjs');
-    expect(fn.Properties.Environment.Variables.REPORT_IMAGES_BUCKET)
-      .toEqual(cdk.Stack.of(stack).resolve(reportImagesBucket.bucketName));
-  });
-
   test('outputs the admin url and Cognito identifiers', () => {
     template.hasOutput('AdminUrl', {
       Value: 'https://admin.example.com',
@@ -233,8 +178,6 @@ describeIfDocker('AdminStack Cognito DeletionProtection', () => {
     const vpc = new ec2.Vpc(support, 'Vpc', { maxAzs: 2 });
     const lambdaSg = new ec2.SecurityGroup(support, 'LambdaSg', { vpc });
     const adminDbSecret = new secretsmanager.Secret(support, 'AdminDbSecret');
-    const reportImagesKey = new kms.Key(support, 'ReportImagesKey');
-    const reportImagesBucket = new s3.Bucket(support, 'ReportImagesBucket', { encryptionKey: reportImagesKey });
     const certificate = acm.Certificate.fromCertificateArn(
       support,
       'AdminCert',
@@ -248,8 +191,6 @@ describeIfDocker('AdminStack Cognito DeletionProtection', () => {
       privateSubnets: vpc.selectSubnets({ subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS }).subnets,
       lambdaSg,
       adminDbSecret,
-      reportImagesBucket,
-      reportImagesKey,
       webAclArn: 'arn:aws:wafv2:us-east-1:111111111111:global/webacl/admin/00000000-0000-0000-0000-000000000000',
       certificate,
     });

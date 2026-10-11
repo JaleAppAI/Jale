@@ -23,7 +23,6 @@
 import { Client } from 'pg';
 import { DIGEST_SETTINGS_UPSERT_SQL } from '../../../lambda/api/employer-digest-settings';
 import { MAX_EMAIL_SEND_ATTEMPTS } from '../../../lambda/lib/email-outbox';
-import { itInProfiles } from './helpers/login-pool';
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
 
@@ -324,8 +323,7 @@ maybeDescribe('email_outbox delivery metadata + digest feedback definer (migrati
    * The whole reason the definer exists. If this ever goes green with the
    * definer deleted, the bounce handler is writing nothing and saying nothing.
    */
-  // Checks row policies as the standard and request test beds apply them.
-  itInProfiles(['standard', 'request'], 'fails closed: on the bed, a bare UPDATE on the owner connection with no GUC set changes zero rows and raises nothing', async () => {
+  it('fails closed: a bare jale_admin UPDATE with no GUC set changes zero rows and raises nothing', async () => {
     const rowCount = await withClient(adminUrl, async (client) => {
       const result = await client.query(
         `UPDATE employer_digest_settings SET enabled = false WHERE employer_id = $1`,

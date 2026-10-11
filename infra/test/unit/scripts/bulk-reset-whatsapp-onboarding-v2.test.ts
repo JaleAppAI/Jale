@@ -9,7 +9,7 @@ import {
 
 const REASON = 'cutover: reset all workers into onboarding v2';
 
-const WORKER_A = { id: 'aaaaaaaa-0000-0000-0000-000000000001', phone: '+19155550123' };
+const WORKER_A = { id: 'aaaaaaaa-0000-0000-0000-000000000001', phone: '+19152272188' };
 const WORKER_B = { id: 'bbbbbbbb-0000-0000-0000-000000000002', phone: '+19152272189' };
 const WORKER_C = { id: 'cccccccc-0000-0000-0000-000000000003', phone: '+19152272190' };
 const ALL_WORKERS = [WORKER_A, WORKER_B, WORKER_C];

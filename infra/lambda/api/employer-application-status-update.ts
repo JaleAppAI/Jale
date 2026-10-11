@@ -101,20 +101,25 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const job = jobCheck.rows[0];
 
     // `app.current_internal_user_id` must hold the EMPLOYER's users.id for the
-    // rest of this transaction -- the same thing employer-job-applicants.ts
-    // does. The stage notification's capability functions
-    // (`jale_cap.employer_stage_recipient` and
-    // `jale_cap.employer_claim_worker_intent`) read the caller from it and
-    // check in SQL that the application is on one of the caller's jobs, so
-    // the employer stays the caller for the whole transaction.
+    // rest of this transaction -- the same thing employer-job-applicants.ts:55
+    // does. Two readers below depend on it:
+    //   * `users_employer_applicant_read` (020b:261-269, repaired by 038) is
+    //     the ONLY jale_admin SELECT policy that exposes a worker row, and it
+    //     matches on `employer_has_applicant_relationship(<this GUC>, users.id)`.
+    //     The stage notification's renderer reads the worker's phone through
+    //     it; with the GUC unset (or pointed at the worker) that SELECT returns
+    //     zero rows and every notification is silently dropped as
+    //     `renderer_unavailable`.
+    //   * `worker_message_intents_definer` / the 042 `*_definer` policies admit
+    //     jale_admin regardless, so nothing else in the enqueue needs a switch.
     await setInternalUserRlsContext(client, job.employer_user_id);
 
     // `details_completed_at` rides along in the SAME row read as `status`:
     // the F3 resend guard below needs both, the row is already FOR UPDATE, and
     // a second SELECT would only add a round trip. No grant is widened by
-    // this -- the request login already reads the column here (the UPDATE
-    // below RETURNs it) and in employer-job-applicants.ts; 091's column-level
-    // grants restrict jale_whatsapp's UPDATE, not the request login's SELECT.
+    // this -- jale_admin already reads the column here (the UPDATE below
+    // RETURNs it) and in employer-job-applicants.ts:148; 091's column-level
+    // grants restrict jale_whatsapp's UPDATE, not jale_admin's SELECT.
     const application = await client.query(
       `SELECT id, status, details_completed_at
        FROM job_applications
@@ -285,9 +290,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       const companyName: string = companyRes.rows?.[0]?.company_name ?? EMPLOYER_NAME_FALLBACK;
       const applicationId: string = result.rows[0].application_id;
 
-      // A RESEND needs no bypass option here. The claim dedupes on
-      // `application-stage:<applicationId>:<status>:<updated_at ms>`, which it
-      // derives from the application row, and the UPDATE above sets
+      // A RESEND needs no bypass option here. `enqueueApplicationStageNotification`
+      // dedupes on `application-stage:<applicationId>:<kind>:<updatedAt ms>`
+      // (application-stage-notify.ts:347) and the UPDATE above sets
       // `updated_at = now()` unconditionally, which in Postgres is the
       // TRANSACTION timestamp -- so this request, being its own transaction,
       // carries a stamp no earlier notification used. The dedupe constraint
@@ -301,9 +306,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         jobTitle: job.title, // jobs.title is NOT NULL (003:15).
         companyName,
         frontendBaseUrl: process.env.FRONTEND_BASE_URL ?? DEFAULT_FRONTEND_BASE_URL,
+        updatedAt: result.rows[0].updated_at,
       });
 
-      // A worker with no usable WhatsApp number cannot be rendered. That is
+      // A worker with no verified WhatsApp number cannot be rendered. That is
       // not a reason to refuse the employer's status change -- record it and
       // commit. Every other enqueue failure propagates to the 500 path, which
       // rolls the status change back.

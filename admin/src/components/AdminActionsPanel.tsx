@@ -155,22 +155,14 @@ export function AdminActionsPanel({ actions, target }: AdminActionsPanelProps) {
                 {isCurrentActionPending ? 'Processing...' : adminAction.label}
               </button>
               {adminAction.piiReveal ? (
-                <>
-                  <textarea
-                    aria-describedby={`${adminAction.id}-reason-hint`}
-                    aria-label={`${adminAction.label} justification`}
-                    disabled={adminAction.disabled || isAnyActionPending}
-                    maxLength={500}
-                    minLength={20}
-                    name="justification"
-                    placeholder="Required PII reveal justification"
-                    required
-                  />
-                  {/* The reason is stored with the access record (at most 500 characters). */}
-                  <p className="muted" id={`${adminAction.id}-reason-hint`}>
-                    The reason is recorded. Do not include personal details.
-                  </p>
-                </>
+                <textarea
+                  aria-label={`${adminAction.label} justification`}
+                  disabled={adminAction.disabled || isAnyActionPending}
+                  minLength={20}
+                  name="justification"
+                  placeholder="Required PII reveal justification"
+                  required
+                />
               ) : (
                 <input
                   aria-label={`${adminAction.label} note`}

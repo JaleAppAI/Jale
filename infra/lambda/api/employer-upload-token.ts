@@ -1,8 +1,6 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { createHash, randomBytes } from 'crypto';
-import { auditCaller } from '../lib/audit/caller';
-import { setAuditContext } from '../lib/audit/context';
-import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
+import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
 
@@ -76,8 +74,8 @@ export const handler = async (
       };
     }
 
-    const applicantCheck = await client.query<{ worker_id: string; job_id: string; employer_user_id: string }>(
-      `SELECT ja.worker_id, ja.job_id, employer.id AS employer_user_id
+    const applicantCheck = await client.query(
+      `SELECT ja.worker_id, ja.job_id
        FROM job_applications ja
        JOIN jobs j ON j.id = ja.job_id
        JOIN users employer ON employer.id = j.employer_id
@@ -95,35 +93,15 @@ export const handler = async (
       };
     }
 
-    // The capability function reads the caller from the internal id, the
-    // employer's users.id proven by the join above.
-    await setInternalUserRlsContext(client, applicantCheck.rows[0].employer_user_id);
-    await setAuditContext(
-      client,
-      auditCaller(event, { kind: 'employer', id: applicantCheck.rows[0].employer_user_id }, 'web'),
-      'employer.upload_link',
-    );
-
-    // Only the hash reaches the database; the function re-checks ownership
-    // and the application, and sets the 7-day expiry itself.
     const rawToken = randomBytes(32).toString('hex');
     const tokenHash = createHash('sha256').update(rawToken).digest('hex');
-    const issued = await client.query<{ outcome: string }>(
-      `SELECT outcome, expires_at FROM jale_cap.upload_token_issue($1, $2, $3)`,
-      [tokenHash, job_id, worker_id],
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+
+    await client.query(
+      `INSERT INTO document_upload_tokens (token_hash, worker_id, job_id, expires_at)
+       VALUES ($1, $2, $3, $4)`,
+      [tokenHash, worker_id, job_id, expiresAt],
     );
-    const outcome = issued.rows[0]?.outcome;
-    if (outcome === 'forbidden') {
-      await client.query('ROLLBACK');
-      return {
-        statusCode: 403,
-        headers: CORS_HEADERS,
-        body: JSON.stringify({ error: 'forbidden' }),
-      };
-    }
-    if (outcome !== 'ok') {
-      throw new Error(`upload_token_issue_unexpected_outcome:${String(outcome)}`);
-    }
 
     await client.query('COMMIT');
 

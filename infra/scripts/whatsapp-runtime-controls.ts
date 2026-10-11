@@ -19,12 +19,12 @@
  *   DB_HOST=<host> DB_PORT=5432 DB_NAME=jale DB_USER=jale_admin DB_PASSWORD=<pw> \
  *   npx tsx scripts/whatsapp-runtime-controls.ts --show
  *   npx tsx scripts/whatsapp-runtime-controls.ts --enable deferred_delivery
- *   npx tsx scripts/whatsapp-runtime-controls.ts --allow-phone +19155550123
+ *   npx tsx scripts/whatsapp-runtime-controls.ts --allow-phone +19152272188
  *   npx tsx scripts/whatsapp-runtime-controls.ts --go-global
  *
  *   # Voice intake (051): same actions, targeted via --control
  *   npx tsx scripts/whatsapp-runtime-controls.ts --enable voice_intake
- *   npx tsx scripts/whatsapp-runtime-controls.ts --allow-phone +19155550123 --control voice_intake
+ *   npx tsx scripts/whatsapp-runtime-controls.ts --allow-phone +19152272188 --control voice_intake
  *   npx tsx scripts/whatsapp-runtime-controls.ts --go-global --control voice_intake
  *
  *   # Verify Twilio Content Template SIDs against approval state — needs only

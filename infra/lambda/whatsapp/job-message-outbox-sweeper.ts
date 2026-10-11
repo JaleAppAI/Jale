@@ -18,7 +18,7 @@ export async function handler(): Promise<void> {
     );
     for (const row of stale.rows) {
       try {
-        await sendPendingJobMessageOutbox(client, { actorUserId: row.worker_id, actorKind: 'worker' });
+        await sendPendingJobMessageOutbox(client, { actorUserId: row.worker_id });
       } catch (err) {
         console.log(JSON.stringify({
           metric: 'JobOutboxSweepWorkerFailed',

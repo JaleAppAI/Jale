@@ -2,17 +2,18 @@ import * as path from 'node:path';
 import * as cdk from 'aws-cdk-lib';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as kms from 'aws-cdk-lib/aws-kms';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import { Construct } from 'constructs';
 import { NetworkStack } from './network-stack';
 import { ApiStack } from './api-stack';
-import { dedicatedDbLogin } from '../constructs/db-login-secrets';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
 import { lambdaIntegration, addPathOnlyResource } from '../api-integration';
 
 export interface DocumentsStackProps extends cdk.StackProps {
   readonly network: NetworkStack;
   readonly api: ApiStack;
+  readonly dbSecret: secretsmanager.ISecret;
   readonly allowedOrigin: string;
   readonly requiredTosVersion: string;
 }
@@ -60,20 +61,13 @@ export class DocumentsStack extends cdk.Stack {
     });
     this.bucket = docsBucket;
 
-    // Two database logins. The tokenized, unauthenticated upload flow connects
-    // as the public login, which can only execute the upload-token functions.
-    // Every authenticated route connects as the request login.
-    const apiDb = dedicatedDbLogin(this, 'jale_api');
-    const apiPublicDb = dedicatedDbLogin(this, 'jale_api_public');
-
     const commonEnv = {
+      DB_SECRET_ARN: props.dbSecret.secretArn,
       ALLOWED_ORIGIN: props.allowedOrigin,
       REQUIRED_TOS_VERSION: props.requiredTosVersion,
       DOCUMENTS_BUCKET: docsBucket.bucketName,
       FRONTEND_BASE_URL: props.allowedOrigin,
     };
-    const requestEnv = { ...apiDb.environment, ...commonEnv };
-    const publicEnv = { ...apiPublicDb.environment, ...commonEnv };
 
     const lambdaProps = {
       vpc: props.network.vpc,
@@ -87,18 +81,18 @@ export class DocumentsStack extends cdk.Stack {
     // resources (12 CloudFormation resources in ApiStack, now 4). See
     // `lambda/api/worker-documents-dispatch.ts` and `lambda/lib/
     // path-dispatch.ts`. Environment is the union of the three, which is
-    // `commonEnv` plus the public login — all three read exactly that.
+    // `commonEnv` — all three read exactly that.
     const workerDocumentsDispatchFn = new JaleLambdaFunction(this, 'WorkerDocumentsDispatch', {
       entry: path.join(__dirname, '../../lambda/api/worker-documents-dispatch.ts'),
       description: 'worker-documents-dispatch',
-      environment: publicEnv,
+      environment: commonEnv,
       ...lambdaProps,
     });
 
     const uploadTokenFn = new JaleLambdaFunction(this, 'EmployerUploadToken', {
       entry: path.join(__dirname, '../../lambda/api/employer-upload-token.ts'),
       description: 'employer-upload-token',
-      environment: requestEnv,
+      environment: commonEnv,
       ...lambdaProps,
     });
 
@@ -124,7 +118,7 @@ export class DocumentsStack extends cdk.Stack {
     const workerVaultDispatchFn = new JaleLambdaFunction(this, 'WorkerVaultDispatch', {
       entry: path.join(__dirname, '../../lambda/api/worker-vault-dispatch.ts'),
       description: 'worker-vault-dispatch',
-      environment: requestEnv,
+      environment: commonEnv,
       ...lambdaProps,
     });
 
@@ -132,7 +126,7 @@ export class DocumentsStack extends cdk.Stack {
     const workerDocumentsListFn = new JaleLambdaFunction(this, 'WorkerDocumentsList', {
       entry: path.join(__dirname, '../../lambda/api/worker-documents-list.ts'),
       description: 'worker-documents-list',
-      environment: requestEnv,
+      environment: commonEnv,
       ...lambdaProps,
     });
 
@@ -140,7 +134,7 @@ export class DocumentsStack extends cdk.Stack {
     const workerDocDeleteFn = new JaleLambdaFunction(this, 'WorkerDocDelete', {
       entry: path.join(__dirname, '../../lambda/api/worker-doc-delete.ts'),
       description: 'worker-doc-delete',
-      environment: requestEnv,
+      environment: commonEnv,
       ...lambdaProps,
     });
 
@@ -154,17 +148,17 @@ export class DocumentsStack extends cdk.Stack {
     // upload/confirm path.
     docsBucket.grantPut(workerDocumentsDispatchFn.function); // upload-url: kms:GenerateDataKey
     docsBucket.grantRead(workerDocumentsDispatchFn.function); // confirm: HeadObject verification
-    apiPublicDb.grantRead(workerDocumentsDispatchFn.function); // all three delegates
-    apiDb.grantRead(uploadTokenFn.function);
+    props.dbSecret.grantRead(workerDocumentsDispatchFn.function); // all three delegates
+    props.dbSecret.grantRead(uploadTokenFn.function);
 
     // Authenticated worker doc Lambda permissions
     docsBucket.grantPut(workerVaultDispatchFn.function); // upload-url-auth: PUT presigned URL
     docsBucket.grantRead(workerVaultDispatchFn.function); // confirm-auth: HeadObject verification
-    apiDb.grantRead(workerVaultDispatchFn.function);
+    props.dbSecret.grantRead(workerVaultDispatchFn.function);
     docsBucket.grantRead(workerDocumentsListFn.function); // GET presigned URL generation
     docsBucket.grantDelete(workerDocDeleteFn.function); // DELETE object
-    apiDb.grantRead(workerDocumentsListFn.function);
-    apiDb.grantRead(workerDocDeleteFn.function);
+    props.dbSecret.grantRead(workerDocumentsListFn.function);
+    props.dbSecret.grantRead(workerDocDeleteFn.function);
 
     // Wire API Gateway routes
     const restApi = props.api.api;

@@ -1,5 +1,4 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { auditCaller } from '../lib/audit/caller';
 import { getDbPool } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { getStripe, getStripeSecret, StripeConfigError } from '../lib/stripe-client';
@@ -85,13 +84,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         { idempotencyKey: prepared.customerIdempotencyKey },
       );
       try {
-        await persistBillingCustomer(
-          client,
-          cognitoSub,
-          prepared.userId,
-          customer.id,
-          auditCaller(event, { kind: 'employer', id: prepared.userId }, 'web'),
-        );
+        await persistBillingCustomer(client, cognitoSub, prepared.userId, customer.id);
         customerId = customer.id;
       } catch (err) {
         if (err instanceof BillingCustomerConflictError) {

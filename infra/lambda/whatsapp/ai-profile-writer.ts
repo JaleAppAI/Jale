@@ -7,8 +7,6 @@ import {
   ConverseCommand,
 } from '@aws-sdk/client-bedrock-runtime';
 import { getDbPool, setRlsContext } from '../lib/db';
-import { auditCallerFor } from '../lib/audit/caller';
-import { setAuditContext } from '../lib/audit/context';
 import { readTranscriptResult, type TranscriptResult } from '../lib/transcript';
 import { t, type Lang } from './lib/templates';
 import { sendPendingOutbox } from './lib/outbox';
@@ -455,7 +453,7 @@ async function sendV2ProfileIntakeEvent(input: {
   }));
 }
 
-export const handler: Handler<AiProfileWriterEvent> = async (event, context) => {
+export const handler: Handler<AiProfileWriterEvent> = async (event) => {
   const normalized = normalizeEvent(event);
   const {
     userId,
@@ -542,13 +540,6 @@ export const handler: Handler<AiProfileWriterEvent> = async (event, context) => 
   try {
     await client.query('BEGIN');
     await setWorkerRlsContextByUserId(client, userId);
-    // Work on the shared WhatsApp login: the platform is the actor of the
-    // profile it writes from the voice note, named by this invocation.
-    await setAuditContext(
-      client,
-      auditCallerFor(context?.awsRequestId ?? '', { kind: 'platform' }, 'whatsapp'),
-      'whatsapp.ai_profile',
-    );
 
     if (effectiveStatus === 'FAILED') {
       // Write failed extraction record

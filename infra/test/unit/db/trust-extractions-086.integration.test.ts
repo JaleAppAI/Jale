@@ -28,9 +28,6 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Client, type QueryResultRow } from 'pg';
-import { describeInProfiles } from './helpers/login-pool';
-
-import { reviewedPolicyCopies } from './helpers/policy-copies';
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
 
@@ -46,11 +43,8 @@ if (!databaseUrl) {
   });
 }
 
-// These tests check row policies as the standard and request test beds apply
-// them, so they run in those profiles only. Without a database URL the suite
-// still skips.
 function maybeDescribe(name: string, fn: () => void): void {
-  if (databaseUrl) describeInProfiles(['standard', 'request'], name, fn);
+  if (databaseUrl) describe(name, fn);
   else describe.skip(name, fn);
 }
 
@@ -230,16 +224,12 @@ maybeDescribe('migration 086: trust extractions and the web onboarding door', ()
         WHERE schemaname = 'public' AND tablename = 'worker_trust_extractions'
         ORDER BY policyname`,
     );
-    // The four policies 086 creates, plus exactly the reviewed copies a later
-    // migration adds for a dedicated login (none on a bed without it).
-    const copies = await reviewedPolicyCopies(setup, 'public.worker_trust_extractions');
-    expect(result.rows.map((r) => r.policyname).sort()).toEqual([
+    expect(result.rows.map((r) => r.policyname)).toEqual([
       'wte_ai_service_rows',
       'wte_employer_applicant_read',
       'wte_worker_own_internal',
       'wte_worker_own_sub',
-      ...copies.map((copy) => copy.policyname),
-    ].sort());
+    ]);
     for (const row of result.rows) {
       expect(row.roles).not.toContain('public');
       expect(row.roles.length).toBeGreaterThan(0);
@@ -249,9 +239,6 @@ maybeDescribe('migration 086: trust extractions and the web onboarding door', ()
     expect(byName.get('wte_worker_own_internal')).toMatchObject({ cmd: 'SELECT', roles: ['jale_admin', 'jale_whatsapp'] });
     expect(byName.get('wte_employer_applicant_read')).toMatchObject({ cmd: 'SELECT', roles: ['jale_admin'] });
     expect(byName.get('wte_worker_own_sub')).toMatchObject({ cmd: 'SELECT', roles: ['jale_admin'] });
-    for (const copy of copies) {
-      expect(byName.get(copy.policyname)).toMatchObject({ cmd: copy.cmd, roles: copy.roles });
-    }
   });
 
   it('lets jale_ai insert and update an extraction row', async () => {

@@ -11,7 +11,7 @@ import {
 } from '../../../scripts/repair-whatsapp-onboarding-v2';
 
 const USER_ID = 'aaaaaaaa-0000-0000-0000-000000000002';
-const PHONE = '+19155550123';
+const PHONE = '+19152272188';
 const REASON = 'unwedge run stuck at profile.location after saveLocation fix';
 
 /** Records every {text, values} call and answers deterministically by SQL shape. */

@@ -7,18 +7,11 @@
  * their Start invitation. Every DB write below is asserted via a
  * scriptable `client.query` fake (mirrors `onboarding-repository.test.ts`'s
  * style), never a real PoolClient.
- *
- * Sprint 27 ends the old "byte-identical reply either way" rule on
- * purpose: a VALID token for an ACTIVE job is now acknowledged by name
- * before the invitation. What must still never vary is anything that says
- * whether an account exists -- the no-account, candidate and bound-session
- * arms below stay identical to each other.
  */
 
 import { handleStartStep } from '../../../../../../lambda/whatsapp/onboarding/steps/start';
 import { formatApplyToken, parseApplyToken } from '../../../../../../lambda/lib/referral-codes';
 import { t } from '../../../../../../lambda/whatsapp/lib/templates';
-import { buildV2StartInvitationPrompt } from '../../../../../../lambda/whatsapp/lib/interactive-templates';
 import type { PreAuthState } from '../../../../../../lambda/whatsapp/lib/onboarding-repository';
 import type { OnboardingV2Deps, OnboardingV2Session, OnboardingV2InboundMessage } from '../../../../../../lambda/whatsapp/onboarding/types';
 
@@ -27,10 +20,6 @@ const PHONE_HASH = 'a'.repeat(64);
 const NOW = new Date('2026-07-29T12:00:00.000Z');
 const RAW_TOKEN = 'ABCD1234';
 const JOB_ID = 'bbbbbbbb-0000-0000-0000-000000000001';
-const JOB_LABEL = { title: 'Finish Carpenter', company: 'Acme Builders' };
-/** The referral acknowledgement, word for word as it is sent. */
-const ACK_ES = 'Recibimos tu solicitud para: Finish Carpenter - Acme Builders. Sigue los pasos y te enviamos el trabajo para postularte.';
-const ACK_EN = 'Got it: Finish Carpenter - Acme Builders. Follow the steps and we will send you the job so you can apply.';
 
 function makeSession(overrides: Partial<OnboardingV2Session> = {}): OnboardingV2Session {
   return {
@@ -60,10 +49,6 @@ function makeReferralClient(opts: {
   shareCode?: string | null;
   referrerWorkerId?: string | null;
   jobId?: string;
-  /** The token row's own locale; defaults to 'es'. */
-  locale?: string | null;
-  /** Whether the token's job is still active; defaults to true. */
-  jobActive?: boolean;
   failOn?: RegExp;
 }): jest.Mock {
   return jest.fn(async (sql: string) => {
@@ -75,13 +60,7 @@ function makeReferralClient(opts: {
     }
     if (/UPDATE referral_apply_tokens/.test(sql)) {
       return opts.tokenFound
-        ? {
-            rows: [{
-              share_code: opts.shareCode ?? null,
-              job_id: opts.jobId ?? JOB_ID,
-              locale: opts.locale === undefined ? 'es' : opts.locale,
-            }],
-          }
+        ? { rows: [{ share_code: opts.shareCode ?? null, job_id: opts.jobId ?? JOB_ID, locale: 'es' }] }
         : { rows: [] };
     }
     if (/FROM job_share_links/.test(sql)) {
@@ -89,10 +68,6 @@ function makeReferralClient(opts: {
     }
     if (/INSERT INTO referral_pending_claims/.test(sql)) {
       return { rows: [] };
-    }
-    // The job the ack names -- an ACTIVE job only.
-    if (/FROM jobs\s+WHERE id = \$1\s+AND status = 'active'/.test(sql)) {
-      return opts.jobActive === false ? { rows: [] } : { rows: [JOB_LABEL] };
     }
     throw new Error(`referral test client: unexpected query ${sql}`);
   });
@@ -102,14 +77,11 @@ function makeDeps(): {
   deps: OnboardingV2Deps;
   prompts: unknown[];
   texts: unknown[];
-  /** Every pre-auth send in the order it was queued, prompts and texts alike. */
-  sent: Array<{ kind: 'prompt' | 'text'; value: unknown }>;
   savedPatches: unknown[];
   issueChallenge: jest.Mock;
 } {
   const prompts: unknown[] = [];
   const texts: unknown[] = [];
-  const sent: Array<{ kind: 'prompt' | 'text'; value: unknown }> = [];
   const savedPatches: unknown[] = [];
   const issueChallenge = jest.fn(async () => ({
     status: 'sent' as const,
@@ -132,11 +104,9 @@ function makeDeps(): {
     },
     enqueuePreAuthPrompt: async (_c: any, _sid: string, _to: string, prompt: unknown) => {
       prompts.push(prompt);
-      sent.push({ kind: 'prompt', value: prompt });
     },
     enqueuePreAuthText: async (_c: any, _sid: string, _to: string, body: string) => {
       texts.push(body);
-      sent.push({ kind: 'text', value: body });
     },
     hashNormalizedPhone: (p: string) => `hash:${p}`,
     tosUrl: 'https://jale.example/tos',
@@ -147,7 +117,7 @@ function makeDeps(): {
     voiceIntake: { enabled: false, startTrustTranscription: async () => ({ started: false }), ingestProfileVoiceNote: async () => ({ started: false }) },
   } as unknown as OnboardingV2Deps;
 
-  return { deps, prompts, texts, sent, savedPatches, issueChallenge };
+  return { deps, prompts, texts, savedPatches, issueChallenge };
 }
 
 const client = { query: jest.fn() } as any;
@@ -164,8 +134,8 @@ describe('handleStartStep — job referral code recognition', () => {
     consoleErrorSpy.mockRestore();
   });
 
-  it('a valid apply token for an active job parks a claim (behind a SAVEPOINT), names the job, then sends the invitation -- no user row, no OTP', async () => {
-    const { deps, prompts, texts, sent, savedPatches, issueChallenge } = makeDeps();
+  it('a valid apply token parks a claim (behind a SAVEPOINT), sends the normal invitation, creates no user row and issues no OTP', async () => {
+    const { deps, prompts, texts, savedPatches, issueChallenge } = makeDeps();
     client.query = makeReferralClient({ tokenFound: true, shareCode: 'SHARECOD', referrerWorkerId: 'worker-referrer' });
 
     const body = `${formatApplyToken(RAW_TOKEN)} I want this job`;
@@ -180,96 +150,20 @@ describe('handleStartStep — job referral code recognition', () => {
     expect(issueChallenge).not.toHaveBeenCalled();
     expect(savedPatches.some((p: any) => p.currentStepKey === 'identity.verify_otp' || 'providerChallengeId' in p)).toBe(false);
 
-    // SAVEPOINT, consume, share-link lookup, upsert, the job label, RELEASE
-    // SAVEPOINT — every statement client.query saw at all. The label read
-    // sits INSIDE the savepoint, so a failure there is isolated too.
+    // SAVEPOINT, consume, share-link lookup, upsert, RELEASE SAVEPOINT —
+    // every statement client.query saw at all.
     const statements: string[] = client.query.mock.calls.map((call: any[]) => String(call[0]));
     expect(statements).toEqual([
       'SAVEPOINT referral_park',
       expect.stringMatching(/UPDATE referral_apply_tokens/),
       expect.stringMatching(/FROM job_share_links/),
       expect.stringMatching(/INSERT INTO referral_pending_claims/),
-      expect.stringMatching(/FROM jobs\s+WHERE id = \$1\s+AND status = 'active'/),
       'RELEASE SAVEPOINT referral_park',
     ]);
 
-    // The ack text first, then the normal start invitation -- no bound-phase send.
-    expect(sent.map((s) => s.kind)).toEqual(['text', 'prompt']);
-    expect(texts).toHaveLength(1);
+    // Exactly the normal start invitation went out — no bound-phase send.
     expect(prompts).toHaveLength(1);
-  });
-
-  it('the ack names the job: its title and company, in the approved copy', async () => {
-    const { deps, texts } = makeDeps();
-    client.query = makeReferralClient({ tokenFound: true, shareCode: null });
-
-    await handleStartStep(client, makeSession(), makeMsg(formatApplyToken(RAW_TOKEN)), deps, null, PHONE_HASH, NOW);
-
-    expect(texts).toEqual([ACK_ES]);
-    expect(texts[0]).toContain(JOB_LABEL.title);
-    expect(texts[0]).toContain(JOB_LABEL.company);
-  });
-
-  it("an EN token locale answers in English when the phone has no pre-auth language yet -- the ack AND the invitation", async () => {
-    // The English prefill ("I want to apply for this job: JALE-...") is not
-    // hello/hi/hey, so `detectLanguage` gave the brand-new conversation 'es'.
-    // The token row's own locale is the only signal that this person is on
-    // the English page.
-    const { deps, texts, prompts } = makeDeps();
-    client.query = makeReferralClient({ tokenFound: true, shareCode: null, locale: 'en' });
-
-    await handleStartStep(
-      client, makeSession({ language: 'es' }), makeMsg(`I want to apply for this job: ${formatApplyToken(RAW_TOKEN)}`),
-      deps, null, PHONE_HASH, NOW,
-    );
-
-    expect(texts).toEqual([ACK_EN]);
-    expect(prompts).toEqual([buildV2StartInvitationPrompt('en')]);
-  });
-
-  it("a pre-auth row's preferred language wins over the token locale", async () => {
-    const { deps, texts } = makeDeps();
-    client.query = makeReferralClient({ tokenFound: true, shareCode: null, locale: 'en' });
-    const preAuth: PreAuthState = {
-      challengeId: 'chal-pref',
-      phoneHash: PHONE_HASH,
-      providerChallengeId: null,
-      candidateUserId: null,
-      preferredLanguage: 'es',
-      currentStepKey: 'start.choose_language',
-      context: {},
-      status: 'pending',
-      attempts: 0,
-      expiresAt: null,
-      lockedUntil: null,
-    };
-
-    await handleStartStep(client, makeSession({ language: 'en' }), makeMsg(formatApplyToken(RAW_TOKEN)), deps, preAuth, PHONE_HASH, NOW);
-
-    expect(texts).toEqual([ACK_ES]);
-  });
-
-  it('a token locale other than en/es is ignored: the reply falls back to the conversation language', async () => {
-    const { deps, texts } = makeDeps();
-    client.query = makeReferralClient({ tokenFound: true, shareCode: null, locale: 'fr' });
-
-    await handleStartStep(client, makeSession({ language: 'en' }), makeMsg(formatApplyToken(RAW_TOKEN)), deps, null, PHONE_HASH, NOW);
-
-    expect(texts).toEqual([ACK_EN]);
-  });
-
-  it('a parked token whose job is no longer active gets the invitation only -- no ack for a job we cannot send', async () => {
-    const { deps, texts, prompts } = makeDeps();
-    client.query = makeReferralClient({ tokenFound: true, shareCode: null, jobActive: false });
-
-    await handleStartStep(client, makeSession(), makeMsg(formatApplyToken(RAW_TOKEN)), deps, null, PHONE_HASH, NOW);
-
     expect(texts).toHaveLength(0);
-    expect(prompts).toHaveLength(1);
-    // Still parked: the claim is the referrer's credit, whatever the job's state.
-    const statements: string[] = client.query.mock.calls.map((call: any[]) => String(call[0]));
-    expect(statements).toContain('RELEASE SAVEPOINT referral_park');
-    expect(statements.some((sql) => /INSERT INTO referral_pending_claims/.test(sql))).toBe(true);
   });
 
   it('a failed park (simulated lock/serialization error on the FIRST statement) still sends the Start invitation and resolves normally', async () => {
@@ -285,8 +179,7 @@ describe('handleStartStep — job referral code recognition', () => {
       handleStartStep(client, makeSession(), makeMsg(body), deps, null, PHONE_HASH, NOW),
     ).resolves.toEqual({ handled: true, workerId: null, stepKey: 'start.choose_language' });
 
-    // The invitation still went out — the referral failure never propagated —
-    // and no ack names a job whose park was rolled back.
+    // The invitation still went out — the referral failure never propagated.
     expect(prompts).toHaveLength(1);
     expect(texts).toHaveLength(0);
 
@@ -352,17 +245,17 @@ describe('handleStartStep — job referral code recognition', () => {
     }
   });
 
-  it('the reply is byte-identical for a phone with no account, a candidateUserId, and a bound session.user_id -- ack and invitation alike', async () => {
+  it('the acknowledgement is byte-identical for a phone with no account, a candidateUserId, and a bound session.user_id', async () => {
     const body = formatApplyToken(RAW_TOKEN);
 
     // Arm A: no prior account at all.
-    const { deps: depsA, sent: sentA } = makeDeps();
+    const { deps: depsA, prompts: promptsA } = makeDeps();
     client.query = makeReferralClient({ tokenFound: true, shareCode: null });
     await handleStartStep(client, makeSession(), makeMsg(body, 'SM-no-account'), depsA, null, PHONE_HASH, NOW);
 
     // Arm B: a pre-auth candidateUserId (phone matches an existing account,
     // web-signup-linked, but no gate/run yet).
-    const { deps: depsB, sent: sentB } = makeDeps();
+    const { deps: depsB, prompts: promptsB } = makeDeps();
     client.query = makeReferralClient({ tokenFound: true, shareCode: null });
     const preAuthWithCandidate: PreAuthState = {
       challengeId: 'chal-1',
@@ -382,7 +275,7 @@ describe('handleStartStep — job referral code recognition', () => {
     // Arm C: session.user_id already bound (the shape routeOnboardingV2
     // hands handleStartStep when the conversation row's phone matched an
     // existing account but no gate row exists yet).
-    const { deps: depsC, sent: sentC } = makeDeps();
+    const { deps: depsC, prompts: promptsC } = makeDeps();
     client.query = makeReferralClient({ tokenFound: true, shareCode: null });
     await handleStartStep(
       client,
@@ -394,12 +287,11 @@ describe('handleStartStep — job referral code recognition', () => {
       NOW,
     );
 
-    // The ack followed by the invitation, in every arm...
-    expect(sentA.map((s) => s.kind)).toEqual(['text', 'prompt']);
-    expect(sentA[0].value).toBe(ACK_ES);
-    // ...and nothing anywhere in the reply says which arm this was.
-    expect(sentB).toEqual(sentA);
-    expect(sentC).toEqual(sentA);
+    expect(promptsA).toHaveLength(1);
+    expect(promptsB).toHaveLength(1);
+    expect(promptsC).toHaveLength(1);
+    expect(promptsA[0]).toEqual(promptsB[0]);
+    expect(promptsA[0]).toEqual(promptsC[0]);
   });
 
   it('an unknown/expired/already-consumed token behaves exactly like no code: identical invitation, no disclosure', async () => {
@@ -409,7 +301,7 @@ describe('handleStartStep — job referral code recognition', () => {
     await handleStartStep(client, makeSession(), makeMsg('hola', 'SM-no-code'), depsBaseline, null, PHONE_HASH, NOW);
 
     // An unknown/expired/consumed token.
-    const { deps, prompts, texts } = makeDeps();
+    const { deps, prompts } = makeDeps();
     client.query = makeReferralClient({ tokenFound: false });
     const body = formatApplyToken(RAW_TOKEN);
     const result = await handleStartStep(client, makeSession(), makeMsg(body, 'SM-bad-code'), deps, null, PHONE_HASH, NOW);
@@ -418,9 +310,8 @@ describe('handleStartStep — job referral code recognition', () => {
     expect(prompts).toHaveLength(1);
     expect(promptsBaseline).toHaveLength(1);
     // Deep equality, not just "no suspicious substring" — the two outbound
-    // prompts must be indistinguishable, and a dead token earns no ack.
+    // prompts must be indistinguishable.
     expect(prompts[0]).toEqual(promptsBaseline[0]);
-    expect(texts).toHaveLength(0);
   });
 
   it('no apply token in the body never touches the referral tables at all', async () => {
@@ -434,7 +325,7 @@ describe('handleStartStep — job referral code recognition', () => {
     expect(prompts).toHaveLength(1);
   });
 
-  it('sending a code while inside the START cooldown parks the claim but sends nothing -- not the ack, not the invitation', async () => {
+  it('sending a code while inside the START cooldown parks the claim but produces no extra outbound message', async () => {
     const { deps, prompts, texts } = makeDeps();
     client.query = makeReferralClient({ tokenFound: true, shareCode: null });
 
@@ -457,22 +348,13 @@ describe('handleStartStep — job referral code recognition', () => {
     const result = await handleStartStep(client, session, makeMsg(body), deps, recentlySent, PHONE_HASH, NOW);
 
     // Cooldown still blocks the invitation resend — the referral code draws
-    // on the SAME send budget, it does not bypass it, and the ack is part of
-    // that same reply.
+    // on the SAME send budget, it does not bypass it.
     expect(result).toEqual({ handled: true, workerId: null, stepKey: 'start.choose_language' });
     expect(prompts).toHaveLength(0);
     expect(texts).toHaveLength(0);
-    // But the claim was still parked: SAVEPOINT, consume token, upsert, the
-    // job label, RELEASE SAVEPOINT (no share_code lookup since shareCode is
-    // null here).
-    const statements: string[] = client.query.mock.calls.map((call: any[]) => String(call[0]));
-    expect(statements).toEqual([
-      'SAVEPOINT referral_park',
-      expect.stringMatching(/UPDATE referral_apply_tokens/),
-      expect.stringMatching(/INSERT INTO referral_pending_claims/),
-      expect.stringMatching(/FROM jobs/),
-      'RELEASE SAVEPOINT referral_park',
-    ]);
+    // But the claim was still parked: SAVEPOINT, consume token, upsert,
+    // RELEASE SAVEPOINT (no share_code lookup since shareCode is null here).
+    expect(client.query).toHaveBeenCalledTimes(4);
   });
 });
 

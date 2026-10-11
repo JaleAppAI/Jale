@@ -35,8 +35,6 @@ jest.mock('../../../../lambda/lib/db', () => ({
   setRlsContext: jest.fn(),
 }));
 
-jest.mock('../../../../lambda/lib/audit/context');
-
 const mockSendPendingOutbox = jest.fn();
 jest.mock('../../../../lambda/whatsapp/lib/outbox', () => ({
   sendPendingOutbox: mockSendPendingOutbox,
@@ -51,8 +49,6 @@ process.env.QUESTION_GENERATOR_ARN = 'arn:aws:lambda:us-east-2:123:function:ques
 process.env.WHATSAPP_INBOUND_V2_QUEUE_URL = 'https://sqs.us-east-2.amazonaws.com/123456789012/whatsapp-inbound-v2.fifo';
 
 import { handler } from '../../../../lambda/whatsapp/ai-profile-writer';
-import { setAuditContext } from '../../../../lambda/lib/audit/context';
-import { expectContextBeforeWrite } from '../api/audit-expectations';
 import { parseVoiceTranscriptEvent } from '../../../../lambda/whatsapp/lib/voice-events';
 import { TRADE_KEYS, EXPERIENCE_KEYS, AVAILABILITY_KEYS } from '../../../../lambda/lib/worker-vocab';
 
@@ -154,17 +150,7 @@ test('handler writes completed extraction and updates user on success', async ()
     mediaBucketName: 'jale-worker-media-test',
     transcriptOutputKey: 'user-1/transcripts/job-1.json',
     status: 'transcription_complete',
-  }, { awsRequestId: 'fixture-invocation-0003' } as any, () => {});
-
-  // The platform on WhatsApp is named, by this invocation, before the
-  // users write; the worker is the subject, never the actor.
-  expect(setAuditContext).toHaveBeenCalledTimes(1);
-  expect(setAuditContext).toHaveBeenCalledWith(
-    expect.objectContaining({ query: mockQuery }),
-    { actorKind: 'platform', actorId: null, channel: 'whatsapp', requestId: 'fixture-invocation-0003' },
-    'whatsapp.ai_profile',
-  );
-  expectContextBeforeWrite(mockQuery, setAuditContext as jest.Mock, /UPDATE users/);
+  }, {} as any, () => {});
 
   // Should have read transcript from S3
   expect(mockS3Send).toHaveBeenCalledTimes(1);

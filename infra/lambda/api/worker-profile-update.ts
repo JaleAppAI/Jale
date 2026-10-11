@@ -1,6 +1,4 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { auditCaller } from '../lib/audit/caller';
-import { setAuditContext } from '../lib/audit/context';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { setWorkerCoordinates, type WorkerLocationSource } from '../lib/location';
@@ -247,13 +245,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'legal_required', requiredVersion: process.env.REQUIRED_TOS_VERSION, currentVersion: compliance.currentVersion }) };
     }
 
-    // The change records name the worker by users.id, so it is read before
-    // the first write.
-    const actorRes = await client.query<{ id: string }>('SELECT id FROM users WHERE cognito_sub = $1', [cognitoSub]);
-    const actorId = actorRes.rows[0]?.id;
-    if (!actorId) throw new Error('worker profile update: the caller has no users row');
-    await setAuditContext(client, auditCaller(event, { kind: 'worker', id: actorId }, 'web'), 'worker.profile_update');
-
     const normalizedFullName = typeof full_name === 'string' && full_name.trim().length > 0 ? full_name.trim() : null;
     const normalizedCity = typeof city === 'string' && city.trim().length > 0 ? city.trim() : null;
     const normalizedLocation = typeof location === 'string' && location.trim().length > 0 ? location.trim() : normalizedCity;
@@ -371,9 +362,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // cities. The RETURNING above already carried the stored list; this
     // overwrites it with the new one because those rows post-date that read.
     //
-    // A non-worker account sending preferred_cities fails the write (500, not
-    // 403). Known and accepted: the security outcome is correct and no client
-    // legitimately makes that call.
+    // The 065 RLS policy resolves the row owner through user_type = 'worker',
+    // so a non-worker account reaching this endpoint with preferred_cities
+    // writes zero rows and trips the transaction, surfacing as a 500 rather
+    // than a 403. Known and accepted: the security outcome is correct and no
+    // client can legitimately produce that call.
     if (preferredProvided) {
       await client.query('DELETE FROM worker_preferred_cities WHERE user_id = $1', [profile.user_id]);
       if (preferredCities.length > 0) {

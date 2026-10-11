@@ -4,7 +4,7 @@
  * Real-PostgreSQL gate for the deferred re-trigger sweep
  * (delivery-retrigger-sweep.ts) against migrations 001-043. Templated on
  * whatsapp-onboarding-concurrency.integration.test.ts's harness: `withSuperuser`
- * for fixtures (bypasses RLS) and
+ * for fixtures (bypasses RLS), `applyLocalRlsRecursionWorkaround`, and
  * `SET ROLE jale_whatsapp` + `setInternalUserRlsContext` for the real
  * `releaseWorkerReady` call.
  *
@@ -50,6 +50,41 @@ if (!databaseUrl) {
 function maybeDescribe(name: string, fn: () => void): void {
   if (databaseUrl) describe(name, fn);
   else describe.skip(name, fn);
+}
+
+/** Mirrors whatsapp-onboarding-concurrency.integration.test.ts exactly. */
+async function applyLocalRlsRecursionWorkaround(client: Client): Promise<void> {
+  await client.query(`
+    CREATE OR REPLACE FUNCTION employer_has_applicant_relationship(
+      p_employer_internal_id text,
+      p_worker_id uuid
+    ) RETURNS boolean
+    LANGUAGE sql
+    STABLE
+    SECURITY DEFINER
+    SET search_path = public
+    AS $fn$
+      SELECT EXISTS (
+        SELECT 1
+          FROM job_applications ja
+          JOIN jobs j ON j.id = ja.job_id
+         WHERE ja.worker_id = p_worker_id
+           AND j.employer_id::text = p_employer_internal_id
+      );
+    $fn$;
+  `);
+  await client.query('DROP POLICY IF EXISTS users_employer_applicant_read ON users');
+  await client.query(`
+    CREATE POLICY users_employer_applicant_read
+      ON users FOR SELECT TO jale_admin
+      USING (
+        user_type = 'worker'
+        AND employer_has_applicant_relationship(
+          current_setting('app.current_internal_user_id', true),
+          id
+        )
+      )
+  `);
 }
 
 async function withSuperuser<T>(fn: (client: Client) => Promise<T>): Promise<T> {
@@ -182,6 +217,7 @@ maybeDescribe('WhatsApp v2 deferred delivery re-trigger sweep (O1)', () => {
 
   beforeAll(async () => {
     await withSuperuser(async (c) => {
+      await applyLocalRlsRecursionWorkaround(c);
       const snapshot = await c.query<RuntimeControlSnapshot>(
         `SELECT control_key, enabled, global_enabled FROM whatsapp_runtime_controls WHERE control_key = 'deferred_delivery_enabled'`,
       );
@@ -216,7 +252,6 @@ maybeDescribe('WhatsApp v2 deferred delivery re-trigger sweep (O1)', () => {
   // scenario 5, which covers all four categories end-to-end.
   describe('sweep + drain end-to-end', () => {
     const workerId = randomUUID();
-    const inboundSid = `o1-inbound-${randomUUID()}`;
     const employerId = randomUUID();
     let jobId: string;
     let originalRunId: string;
@@ -228,11 +263,6 @@ maybeDescribe('WhatsApp v2 deferred delivery re-trigger sweep (O1)', () => {
           `o1-s1-worker-${workerId}`,
           '+15550091101',
         ]);
-        // The 24-hour window precondition (sprint 27), now explicit: the worker messaged us recently, so free-form release entries are deliverable.
-        await c.query(
-          `INSERT INTO whatsapp_processed_messages (message_sid, whatsapp_number, status) VALUES ($1, $2, 'completed')`,
-          [inboundSid, '+15550091101'],
-        );
         await c.query(`INSERT INTO users (id, cognito_sub, user_type) VALUES ($1, $2, 'employer')`, [
           employerId,
           `o1-s1-employer-${employerId}`,
@@ -284,7 +314,6 @@ maybeDescribe('WhatsApp v2 deferred delivery re-trigger sweep (O1)', () => {
 
     afterAll(async () => {
       await withSuperuser(async (c) => {
-        await c.query('DELETE FROM whatsapp_processed_messages WHERE message_sid = $1', [inboundSid]);
         await c.query('DELETE FROM worker_domain_outbox WHERE aggregate_id = $1', [workerId]);
         await c.query('DELETE FROM jobs WHERE id = $1', [jobId]);
         await c.query('DELETE FROM users WHERE id = ANY($1::uuid[])', [[workerId, employerId]]);
@@ -392,7 +421,6 @@ maybeDescribe('WhatsApp v2 deferred delivery re-trigger sweep (O1)', () => {
 
   describe('processing-trigger enable race', () => {
     const workerId = randomUUID();
-    const inboundSid = `o1-inbound-${randomUUID()}`;
     const originalEventKey = `worker.ready:processing-race:${workerId}`;
 
     beforeAll(async () => {
@@ -401,11 +429,6 @@ maybeDescribe('WhatsApp v2 deferred delivery re-trigger sweep (O1)', () => {
           `INSERT INTO users (id, cognito_sub, user_type, whatsapp_number)
            VALUES ($1, $2, 'worker', $3)`,
           [workerId, `o1-race-worker-${workerId}`, '+15550091102'],
-        );
-        // The 24-hour window precondition (sprint 27), now explicit: the worker messaged us recently, so free-form release entries are deliverable.
-        await c.query(
-          `INSERT INTO whatsapp_processed_messages (message_sid, whatsapp_number, status) VALUES ($1, $2, 'completed')`,
-          [inboundSid, '+15550091102'],
         );
         await c.query(`INSERT INTO worker_onboarding_state (user_id, lifecycle) VALUES ($1, 'ready')`, [workerId]);
         await c.query(
@@ -431,7 +454,6 @@ maybeDescribe('WhatsApp v2 deferred delivery re-trigger sweep (O1)', () => {
 
     afterAll(async () => {
       await withSuperuser(async (c) => {
-        await c.query('DELETE FROM whatsapp_processed_messages WHERE message_sid = $1', [inboundSid]);
         await c.query('DELETE FROM worker_domain_outbox WHERE aggregate_id = $1', [workerId]);
         await c.query('DELETE FROM users WHERE id = $1', [workerId]);
       });
@@ -539,11 +561,11 @@ maybeDescribe('WhatsApp v2 deferred delivery re-trigger sweep (O1)', () => {
     );
   });
 
-  // The replay CLI's write path on the bed's owner connection, with the row
-  // policies forced as the chain leaves them. Unit tests use a fake client
-  // that cannot model row policies; this is the check that would catch an
-  // always-false or policy-blocked mutation.
-  describe('exact-ID replay on the bed, with the row policies forced as the chain leaves them', () => {
+  // O3: the replay CLI's write path under a REAL jale_admin connection and real
+  // FORCE RLS. Unit tests use a fake client that cannot model RLS — this is the
+  // gate that would catch an always-false / RLS-blocked mutation (the class of
+  // bug the C9 gate caught for employer_chat eligibility).
+  describe('exact-ID replay (O3) under real RLS as jale_admin', () => {
     const workerId = randomUUID();
     const failedKey = `worker.ready:replay-failed:${workerId}`;
     const completedKey = `worker.ready:replay-done:${workerId}`;
@@ -607,7 +629,6 @@ maybeDescribe('WhatsApp v2 deferred delivery re-trigger sweep (O1)', () => {
 
   describe('exact-ID replay authorization and drain idempotency under real RLS', () => {
     const workerId = randomUUID();
-    const inboundSid = `o3-inbound-${randomUUID()}`;
     const unauthorizedKey = `worker.ready:replay-unauthorized:${workerId}`;
     const replayKey = `worker.ready:replay-idempotent:${workerId}`;
 
@@ -617,11 +638,6 @@ maybeDescribe('WhatsApp v2 deferred delivery re-trigger sweep (O1)', () => {
           `INSERT INTO users (id, cognito_sub, user_type, whatsapp_number)
            VALUES ($1, $2, 'worker', $3)`,
           [workerId, `o3-replay-hardening-${workerId}`, '+15550092202'],
-        );
-        // The 24-hour window precondition (sprint 27), now explicit: the worker messaged us recently, so free-form release entries are deliverable.
-        await c.query(
-          `INSERT INTO whatsapp_processed_messages (message_sid, whatsapp_number, status) VALUES ($1, $2, 'completed')`,
-          [inboundSid, '+15550092202'],
         );
         await c.query(`INSERT INTO worker_onboarding_state (user_id, lifecycle) VALUES ($1, 'ready')`, [workerId]);
         await c.query(
@@ -650,7 +666,6 @@ maybeDescribe('WhatsApp v2 deferred delivery re-trigger sweep (O1)', () => {
 
     afterAll(async () => {
       await withSuperuser(async (c) => {
-        await c.query('DELETE FROM whatsapp_processed_messages WHERE message_sid = $1', [inboundSid]);
         await c.query('DELETE FROM worker_domain_outbox WHERE aggregate_id = $1', [workerId]);
         await c.query('DELETE FROM users WHERE id = $1', [workerId]);
       });

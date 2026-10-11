@@ -91,7 +91,6 @@ import { randomBytes } from 'crypto';
 import { Client } from 'pg';
 import type { PoolClient } from 'pg';
 import { writeWebAttribution } from '../../../lambda/lib/referral-attribution';
-import { itInProfiles, loginUrl } from './helpers/login-pool';
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
 
@@ -991,17 +990,13 @@ maybeDescribe('job-referrals RLS integration (migration 056)', () => {
       return { code, jobId: resolvedJobId };
     }
 
-    /**
-     * Runs the real function on its request login, jale_api, under the given
-     * cognito context. The share code resolves through
-     * jale_cap.resolve_share_link, which only the request login may execute.
-     */
+    /** Runs the real function as jale_admin under the given cognito context. */
     async function claimAs(
       cognitoSub: string,
       workerId: string,
       shareCode: string,
     ): Promise<{ written: boolean }> {
-      return asAdmin(loginUrl('jale_api'), cognitoSub, (client) =>
+      return asAdmin(adminUrl, cognitoSub, (client) =>
         writeWebAttribution(client as unknown as PoolClient, workerId, shareCode, new Date()),
       );
     }
@@ -1081,8 +1076,7 @@ maybeDescribe('job-referrals RLS integration (migration 056)', () => {
       const claimer = await makeClaimWorker();
       const link = await makeShareLink('sms', referrer.id);
 
-      // The request login, like claimAs.
-      const client = new Client({ connectionString: loginUrl('jale_api') });
+      const client = new Client({ connectionString: adminUrl });
       await client.connect();
       try {
         await client.query('BEGIN');
@@ -1149,8 +1143,7 @@ maybeDescribe('job-referrals RLS integration (migration 056)', () => {
       }
     });
 
-    // Checks row policies as the standard and request test beds apply them.
-    itInProfiles(['standard', 'request'], 'on the bed, a direct INSERT into job_visibility_events on the owner connection affects zero rows or errors', async () => {
+    it('a direct INSERT into job_visibility_events as jale_admin affects zero rows or errors', async () => {
       const jobId = await makeJob();
       const publicCode = randomCode(6);
       let rowCount: number | null = null;
@@ -1247,8 +1240,7 @@ maybeDescribe('job-referrals RLS integration (migration 056)', () => {
       expect(result.rows).toHaveLength(1);
     });
 
-    // Checks row policies as the standard and request test beds apply them.
-    itInProfiles(['standard', 'request'], 'is NOT visible to a different user under the owner policy (revoked, to isolate from the 059 claim-read policy)', async () => {
+    it('is NOT visible to a different user under the owner policy (revoked, to isolate from the 059 claim-read policy)', async () => {
       // job_share_links_claim_read (059) is USING (revoked_at IS NULL) with
       // no referrer predicate at all, so ANY unrevoked row is visible to ANY
       // jale_admin session by exact code -- that is by design (059: a code
@@ -1352,8 +1344,7 @@ maybeDescribe('job-referrals RLS integration (migration 056)', () => {
       }
     }
 
-    // Checks row policies as the standard and request test beds apply them.
-    itInProfiles(['standard', 'request'], 'a direct SELECT under RLS with no GUC set returns zero rows (pins the bug this migration fixes)', async () => {
+    it('a direct SELECT under RLS with no GUC set returns zero rows (pins the bug this migration fixes)', async () => {
       const jobId = await makeJob(); // location set, city left NULL by makeJob
       const direct = await asAdminNoRlsContext((client) =>
         client.query(`SELECT id, location FROM jobs WHERE city IS NULL AND location IS NOT NULL AND id = $1`, [jobId]),
@@ -1672,11 +1663,11 @@ maybeDescribe('job-referrals RLS integration (migration 056)', () => {
       }
     });
 
-    it('the employer partial unique index is a live ON CONFLICT arbiter on the bed\'s owner connection, not the superuser', async () => {
+    it('the employer partial unique index is a live ON CONFLICT arbiter under the real owner RLS context (jale_admin, not superuser)', async () => {
       // The spec calls this index "the ON CONFLICT arbiter another task's
-      // INSERT will target" -- on the bed that INSERT runs on the owner
-      // connection under the rebuilt job_share_links_owner WITH CHECK, not as
-      // the superuser. If the DO UPDATE branch's resulting row got filtered
+      // INSERT will target" -- that INSERT runs as jale_admin under the
+      // rebuilt job_share_links_owner WITH CHECK, not as a superuser that
+      // bypasses RLS. If the DO UPDATE branch's resulting row got filtered
       // by the policy's USING clause, this would silently affect zero rows
       // (056's documented hazard class) instead of the real upsert the
       // downstream task depends on.

@@ -202,297 +202,94 @@ import { sendPendingJobMessageOutbox } from '../../../../lambda/lib/job-messagin
 import { sendTwilioWhatsAppMessage, AmbiguousTwilioSendError, TwilioTemplateInvalidError } from '../../../../lambda/whatsapp/lib/outbox';
 
 const CONV_B2 = 'bbbbbbbb-0000-0000-0000-00000000000c';
-const EMPLOYER_ID = 'cccccccc-0000-0000-0000-0000000000e1';
-
-// A client that answers by statement, not by call order, and records the
-// transaction state at each Twilio send.
-function outboxClient(pendingRows: any[]) {
-  const calls: Array<{ sql: string; params: unknown[] }> = [];
-  let inTransaction = false;
-  const query = jest.fn(async (sql: string, params: unknown[] = []) => {
-    calls.push({ sql, params });
-    if (/^\s*BEGIN/i.test(sql)) inTransaction = true;
-    if (/^\s*(COMMIT|ROLLBACK)/i.test(sql)) inTransaction = false;
-    if (/FROM job_message_outbox o/.test(sql)) return { rows: pendingRows, rowCount: pendingRows.length };
-    return { rows: [], rowCount: 1 };
-  });
-  return { client: { query } as any, calls, isInTransaction: () => inTransaction };
-}
-
-const freeformRow = (id: string, conversationId: string, messageId: string, body: string) => ({
-  id, conversation_id: conversationId, message_id: messageId, whatsapp_number: '+1', body,
-  content_template: null, content_variables: null, send_kind: 'freeform',
-});
 
 describe('sendPendingJobMessageOutbox hardening (R8)', () => {
   beforeEach(() => jest.clearAllMocks());
 
   it('a failing row skips the REST of its conversation but other conversations still send', async () => {
-    const { client } = outboxClient([
-      freeformRow('o1', CONV_A, 'm1', 'a1'),
-      freeformRow('o2', CONV_A, 'm2', 'a2'),
-      freeformRow('o3', CONV_B2, 'm3', 'b1'),
-    ]);
+    mockQuery
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })   // set_config (RLS context)
+      .mockResolvedValueOnce({ rows: [
+        { id: 'o1', conversation_id: CONV_A, message_id: 'm1', whatsapp_number: '+1', body: 'a1', content_template: null, content_variables: null },
+        { id: 'o2', conversation_id: CONV_A, message_id: 'm2', whatsapp_number: '+1', body: 'a2', content_template: null, content_variables: null },
+        { id: 'o3', conversation_id: CONV_B2, message_id: 'm3', whatsapp_number: '+1', body: 'b1', content_template: null, content_variables: null },
+      ], rowCount: 3 })                                    // SELECT pending
+      .mockResolvedValue({ rows: [], rowCount: 1 });       // all subsequent updates
     (sendTwilioWhatsAppMessage as jest.Mock)
       .mockRejectedValueOnce(new Error('twilio down'))     // o1 fails
       .mockResolvedValue('SMxx');                          // o3 succeeds
-    await expect(sendPendingJobMessageOutbox(client, { actorUserId: WORKER, actorKind: 'worker' }))
+    await expect(sendPendingJobMessageOutbox(client, { actorUserId: WORKER }))
       .resolves.toBeUndefined();                           // no rethrow (mixed outcome)
     expect(sendTwilioWhatsAppMessage).toHaveBeenCalledTimes(2); // o1 attempted + o3; o2 SKIPPED
   });
 
   it('selects only rows under the attempt cap', async () => {
-    const { client, calls } = outboxClient([]);
-    await sendPendingJobMessageOutbox(client, { actorUserId: WORKER, actorKind: 'worker' });
-    const selectCall = calls.find((c) => /FROM job_message_outbox/.test(c.sql));
-    expect(selectCall!.sql).toMatch(/attempt_count < 5/);
-  });
-
-  it('a worker-mode flush names the worker explicitly in its SQL', async () => {
-    const { client, calls } = outboxClient([]);
-    await sendPendingJobMessageOutbox(client, { actorUserId: WORKER, actorKind: 'worker' });
-    const select = calls.find((c) => /FROM job_message_outbox/.test(c.sql))!;
-    expect(select.sql).toMatch(/JOIN job_conversations jc ON jc\.id = o\.conversation_id/);
-    expect(select.sql).toMatch(/WHERE jc\.worker_id = \$1/);
-    expect(select.sql).not.toMatch(/jc\.employer_id/);
-    expect(select.params).toEqual([WORKER]);
-  });
-
-  it('an employer-mode flush names the employer explicitly and keeps the conversation filter', async () => {
-    const { client, calls } = outboxClient([]);
-    await sendPendingJobMessageOutbox(client, { conversationId: CONV_A, actorUserId: EMPLOYER_ID, actorKind: 'employer' });
-    const select = calls.find((c) => /FROM job_message_outbox/.test(c.sql))!;
-    expect(select.sql).toMatch(/WHERE jc\.employer_id = \$1/);
-    expect(select.sql).toMatch(/AND o\.conversation_id = \$2/);
-    expect(select.params).toEqual([EMPLOYER_ID, CONV_A]);
-  });
-
-  it('sets the actor only transaction-locally, inside its own transactions, and never across the Twilio call', async () => {
-    const { client, calls, isInTransaction } = outboxClient([freeformRow('o1', CONV_A, 'm1', 'a1')]);
-    const openDuringSend: boolean[] = [];
-    let callsBeforeSend = -1;
-    (sendTwilioWhatsAppMessage as jest.Mock).mockImplementation(async () => {
-      openDuringSend.push(isInTransaction());
-      callsBeforeSend = calls.length;
-      return 'SMxx';
-    });
-    await sendPendingJobMessageOutbox(client, { actorUserId: WORKER, actorKind: 'worker' });
-
-    expect(openDuringSend).toEqual([false]);
-    expect(isInTransaction()).toBe(false);
-    const settings = calls.filter((c) => /set_config/.test(c.sql));
-    expect(settings.length).toBeGreaterThan(0);
-    for (const s of settings) {
-      expect(s.sql).toBe(`SELECT set_config('app.current_internal_user_id', $1, true)`);
-      expect(s.params).toEqual([WORKER]);
-    }
-    // Every set_config directly follows a BEGIN.
-    calls.forEach((c, i) => {
-      if (/set_config/.test(c.sql)) expect(calls[i - 1].sql).toBe('BEGIN');
-    });
-    // The statements that touch the outbox all run inside a transaction: the
-    // read, the claim (committed before the provider is called), the marks.
-    const sequence = calls.map((c) => c.sql.trim().split(/\s+/)[0].toUpperCase());
-    expect(sequence).toEqual([
-      'BEGIN', 'SELECT', 'SELECT', 'COMMIT',
-      'BEGIN', 'SELECT', 'UPDATE', 'COMMIT',
-      'BEGIN', 'SELECT', 'UPDATE', 'UPDATE', 'COMMIT',
-    ]);
-    expect(callsBeforeSend).toBe(8);
-    expect(calls[6].sql).toMatch(/SET status = 'send_unknown'/);
-  });
-
-  it('claims each row before the provider call with a statement that names the caller', async () => {
-    for (const [actorKind, actorUserId, column] of [
-      ['worker', WORKER, 'jc.worker_id'],
-      ['employer', EMPLOYER_ID, 'jc.employer_id'],
-    ] as const) {
-      const { client, calls } = outboxClient([freeformRow('o1', CONV_A, 'm1', 'a1')]);
-      (sendTwilioWhatsAppMessage as jest.Mock).mockResolvedValue('SMxx');
-      await sendPendingJobMessageOutbox(client, { actorUserId, actorKind });
-      const claim = calls.find((c) => /SET status = 'send_unknown'/.test(c.sql));
-      const text = claim!.sql.replace(/\s+/g, ' ');
-      expect(text).toContain("o.status IN ('pending', 'failed')");
-      expect(text).toContain('o.attempt_count < 5');
-      expect(text).toContain(`AND ${column} = $2`);
-      expect(claim!.params).toEqual(['o1', actorUserId]);
-    }
-  });
-
-  it('skips a row another flush has claimed, and the rest of its conversation, and still sends the other conversations', async () => {
-    const { client, calls } = outboxClient([
-      freeformRow('o1', CONV_A, 'm1', 'a1'),
-      freeformRow('o2', CONV_A, 'm2', 'a2'),
-      freeformRow('o3', CONV_B2, 'm3', 'b1'),
-    ]);
-    const inner = client.query.getMockImplementation();
-    client.query.mockImplementation(async (sql: string, params: unknown[] = []) => {
-      if (/SET status = 'send_unknown'/.test(sql) && params[0] === 'o1') {
-        calls.push({ sql, params });
-        return { rows: [], rowCount: 0 };
-      }
-      return inner(sql, params);
-    });
-    (sendTwilioWhatsAppMessage as jest.Mock).mockResolvedValue('SMxx');
-
-    await expect(sendPendingJobMessageOutbox(client, { actorUserId: WORKER, actorKind: 'worker' }))
-      .resolves.toBeUndefined();
-
-    expect((sendTwilioWhatsAppMessage as jest.Mock).mock.calls.map(([, row]) => row.id)).toEqual(['o3']);
-    // o2 waits behind the held o1, so the conversation keeps its order.
-    expect(calls.filter((c) => /SET status = 'send_unknown'/.test(c.sql)).map((c) => c.params[0])).toEqual(['o1', 'o3']);
-    expect(calls.some((c) => /SET status = \$1/.test(c.sql))).toBe(false);
-  });
-
-  it('keeps a row claimed as send_unknown when the provider accepted it but the mark fails: never failed, never resendable', async () => {
-    const { client, calls } = outboxClient([freeformRow('o1', CONV_A, 'm1', 'a1'), freeformRow('o2', CONV_B2, 'm2', 'b1')]);
-    (sendTwilioWhatsAppMessage as jest.Mock).mockResolvedValue('SMxx');
-    let failedOnce = false;
-    const inner = client.query.getMockImplementation();
-    client.query.mockImplementation(async (sql: string, params: unknown[] = []) => {
-      if (!failedOnce && /SET status = 'sent'/.test(sql)) {
-        failedOnce = true;
-        calls.push({ sql, params });
-        throw new Error('connection reset');
-      }
-      return inner(sql, params);
-    });
-    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
-    let logged: unknown[] = [];
-    try {
-      await expect(sendPendingJobMessageOutbox(client, { actorUserId: WORKER, actorKind: 'worker' }))
-        .resolves.toBeUndefined();
-      logged = logSpy.mock.calls.map(([line]) => JSON.parse(String(line)));
-    } finally {
-      logSpy.mockRestore();
-    }
-    // Counted by the send-failure alarm, as an ambiguous send, and told apart.
-    expect(logged).toEqual([{ metric: 'JobMessageOutboxSendFailed', outboxId: 'o1', ambiguous: true, markFailed: true }]);
-    expect(calls.some((c) => /^ROLLBACK/.test(c.sql))).toBe(true);
-    // Claimed before the send; no failure is written for o1, and the
-    // employer's message is not marked failed.
-    expect(calls.filter((c) => /SET status = 'send_unknown'/.test(c.sql)).map((c) => c.params[0])).toEqual(['o1', 'o2']);
-    expect(calls.some((c) => /UPDATE job_message_outbox/.test(c.sql) && /SET status = \$1/.test(c.sql))).toBe(false);
-    expect(calls.some((c) => /UPDATE job_conversation_messages/.test(c.sql) && /status = 'failed'/.test(c.sql))).toBe(false);
-    // The provider's message id is kept on the claimed row, for reconciling.
-    const keep = calls.find((c) => /SET twilio_message_sid = COALESCE\(\$2, twilio_message_sid\)/.test(c.sql));
-    expect(keep!.sql).toMatch(/AND o\.status = 'send_unknown'/);
-    expect(keep!.sql).toMatch(/AND jc\.worker_id = \$4/);
-    expect(keep!.params).toEqual(['o1', 'SMxx', 'connection reset', WORKER]);
-    // The other conversation still sends.
-    expect(sendTwilioWhatsAppMessage).toHaveBeenCalledTimes(2);
-  });
-
-  it('a later flush never sends again a row whose accepted send could not be marked', async () => {
-    // Statuses held across flushes, as the table holds them.
-    const rows = new Map([['o1', { ...freeformRow('o1', CONV_A, 'm1', 'a1'), status: 'pending', attempt_count: 0 }]]);
-    let failNextSentMark = true;
-    let outboxReads = 0;
-    const claimed: string[] = [];
-    const query = jest.fn(async (sql: string, params: unknown[] = []) => {
-      if (/FROM job_message_outbox o/.test(sql)) {
-        outboxReads += 1;
-        const due = [...rows.values()].filter((r) => ['pending', 'failed'].includes(r.status) && r.attempt_count < 5);
-        return { rows: due, rowCount: due.length };
-      }
-      if (/SET status = 'send_unknown'/.test(sql)) {
-        claimed.push(params[0] as string);
-        const row = rows.get(params[0] as string);
-        if (!row || !['pending', 'failed'].includes(row.status)) return { rows: [], rowCount: 0 };
-        row.status = 'send_unknown';
-        return { rows: [], rowCount: 1 };
-      }
-      if (/UPDATE job_message_outbox/.test(sql) && /SET status = 'sent'/.test(sql)) {
-        if (failNextSentMark) {
-          failNextSentMark = false;
-          throw new Error('connection reset');
-        }
-        rows.get(params[0] as string)!.status = 'sent';
-        return { rows: [], rowCount: 1 };
-      }
-      if (/UPDATE job_message_outbox/.test(sql) && /SET status = \$1/.test(sql)) {
-        const row = rows.get(params[2] as string)!;
-        row.status = params[0] as string;
-        row.attempt_count += 1;
-        return { rows: [], rowCount: 1 };
-      }
-      return { rows: [], rowCount: 1 };
-    });
-    (sendTwilioWhatsAppMessage as jest.Mock).mockResolvedValue('SMxx');
-    const flush = () => sendPendingJobMessageOutbox({ query } as any, { actorUserId: WORKER, actorKind: 'worker' });
-    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
-    try {
-      // The first flush sends o1, then the mark fails: the expected failure.
-      // The flush keeps o1 claimed, logs it as an ambiguous send, and resolves.
-      await expect(flush()).resolves.toBeUndefined();
-      expect(failNextSentMark).toBe(false);
-      expect(logSpy.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
-        { metric: 'JobMessageOutboxSendFailed', outboxId: 'o1', ambiguous: true, markFailed: true },
-      ]);
-      expect(outboxReads).toBe(1);
-      expect(rows.get('o1')!.status).toBe('send_unknown');
-
-      // The second flush reads the outbox, finds nothing it may send, and
-      // resolves: it neither claims nor sends o1.
-      await expect(flush()).resolves.toBeUndefined();
-      expect(outboxReads).toBe(2);
-    } finally {
-      logSpy.mockRestore();
-    }
-    expect(claimed).toEqual(['o1']);
-    expect(sendTwilioWhatsAppMessage).toHaveBeenCalledTimes(1);
-    expect(rows.get('o1')!.status).toBe('send_unknown');
+    mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+    await sendPendingJobMessageOutbox(client, { actorUserId: WORKER });
+    const selectCall = mockQuery.mock.calls.find(([sql]) => /FROM job_message_outbox/.test(sql));
+    expect(selectCall![0]).toMatch(/attempt_count < 5/);
   });
 
   it('rethrows when ALL pending rows are in failed conversations (total outage)', async () => {
-    const { client } = outboxClient([freeformRow('o1', CONV_A, 'm1', 'fail')]);
+    mockQuery
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })   // set_config
+      .mockResolvedValueOnce({ rows: [
+        { id: 'o1', conversation_id: CONV_A, message_id: 'm1', whatsapp_number: '+1', body: 'fail', content_template: null, content_variables: null },
+      ], rowCount: 1 })
+      .mockResolvedValue({ rows: [], rowCount: 1 });
     (sendTwilioWhatsAppMessage as jest.Mock)
       .mockRejectedValueOnce(new Error('total outage'));
-    await expect(sendPendingJobMessageOutbox(client, { actorUserId: WORKER, actorKind: 'worker' }))
+    await expect(sendPendingJobMessageOutbox(client, { actorUserId: WORKER }))
       .rejects.toThrow('total outage');
   });
 
   it('parks an ambiguous (accepted-but-timed-out) send as send_unknown, not failed, and leaves the message row alone', async () => {
-    const { client, calls } = outboxClient([
-      freeformRow('o1', CONV_A, 'm1', 'a1'),
-      freeformRow('o2', CONV_B2, 'm2', 'b1'),
-    ]);
+    mockQuery
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })   // set_config
+      .mockResolvedValueOnce({ rows: [
+        { id: 'o1', conversation_id: CONV_A, message_id: 'm1', whatsapp_number: '+1', body: 'a1', content_template: null, content_variables: null },
+        { id: 'o2', conversation_id: CONV_B2, message_id: 'm2', whatsapp_number: '+1', body: 'b1', content_template: null, content_variables: null },
+      ], rowCount: 2 })                                    // SELECT pending
+      .mockResolvedValue({ rows: [], rowCount: 1 });       // subsequent updates
     (sendTwilioWhatsAppMessage as jest.Mock)
       .mockRejectedValueOnce(new AmbiguousTwilioSendError('Twilio request timed out')) // o1 ambiguous
       .mockResolvedValue('SMxx');                          // o2 succeeds (avoids total-outage rethrow)
 
-    await sendPendingJobMessageOutbox(client, { actorUserId: WORKER, actorKind: 'worker' });
+    await sendPendingJobMessageOutbox(client, { actorUserId: WORKER });
 
-    const outboxUpdate = calls.find((c) =>
-      /UPDATE job_message_outbox/.test(c.sql) && /SET status = \$1/.test(c.sql));
+    const outboxUpdate = mockQuery.mock.calls.find(([sql]) =>
+      /UPDATE job_message_outbox/.test(sql) && /SET status = \$1/.test(sql));
     expect(outboxUpdate).toBeDefined();
-    expect(outboxUpdate!.params).toEqual(['send_unknown', 'Twilio request timed out', 'o1']);
+    expect(outboxUpdate![1]).toEqual(['send_unknown', 'Twilio request timed out', 'o1']);
 
-    const messageUpdate = calls.find((c) =>
-      /UPDATE job_conversation_messages/.test(c.sql) && /status = 'failed'/.test(c.sql));
+    const messageUpdate = mockQuery.mock.calls.find(([sql]) =>
+      /UPDATE job_conversation_messages/.test(sql) && /status = 'failed'/.test(sql));
     expect(messageUpdate).toBeUndefined();
   });
 
   it('marks a normal (non-ambiguous) send error as failed, including the message row', async () => {
-    const { client, calls } = outboxClient([
-      freeformRow('o1', CONV_A, 'm1', 'a1'),
-      freeformRow('o2', CONV_B2, 'm2', 'b1'),
-    ]);
+    mockQuery
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })   // set_config
+      .mockResolvedValueOnce({ rows: [
+        { id: 'o1', conversation_id: CONV_A, message_id: 'm1', whatsapp_number: '+1', body: 'a1', content_template: null, content_variables: null },
+        { id: 'o2', conversation_id: CONV_B2, message_id: 'm2', whatsapp_number: '+1', body: 'b1', content_template: null, content_variables: null },
+      ], rowCount: 2 })                                    // SELECT pending
+      .mockResolvedValue({ rows: [], rowCount: 1 });       // subsequent updates
     (sendTwilioWhatsAppMessage as jest.Mock)
       .mockRejectedValueOnce(new Error('Twilio 400 bad request'))  // o1 fails
       .mockResolvedValue('SMxx');                                 // o2 succeeds (avoids total-outage rethrow)
 
-    await sendPendingJobMessageOutbox(client, { actorUserId: WORKER, actorKind: 'worker' });
+    await sendPendingJobMessageOutbox(client, { actorUserId: WORKER });
 
-    const outboxUpdate = calls.find((c) =>
-      /UPDATE job_message_outbox/.test(c.sql) && /SET status = \$1/.test(c.sql));
+    const outboxUpdate = mockQuery.mock.calls.find(([sql]) =>
+      /UPDATE job_message_outbox/.test(sql) && /SET status = \$1/.test(sql));
     expect(outboxUpdate).toBeDefined();
-    expect(outboxUpdate!.params).toEqual(['failed', 'Twilio 400 bad request', 'o1']);
+    expect(outboxUpdate![1]).toEqual(['failed', 'Twilio 400 bad request', 'o1']);
 
-    const messageUpdate = calls.find((c) =>
-      /UPDATE job_conversation_messages/.test(c.sql) && /status = 'failed'/.test(c.sql));
+    const messageUpdate = mockQuery.mock.calls.find(([sql]) =>
+      /UPDATE job_conversation_messages/.test(sql) && /status = 'failed'/.test(sql));
     expect(messageUpdate).toBeDefined();
-    expect(messageUpdate!.params).toEqual(['m1']);
+    expect(messageUpdate![1]).toEqual(['m1']);
   });
 
   it('does NOT mark the conversation message sent when a TEMPLATE row sends successfully', async () => {
@@ -500,53 +297,62 @@ describe('sendPendingJobMessageOutbox hardening (R8)', () => {
     // the worker-reply flush. Marking the employer message 'sent' here would
     // silently drop it forever, since the flush only rescues rows still in
     // 'waiting_worker_reply'.
-    const { client, calls } = outboxClient([
-      { id: 'o1', conversation_id: CONV_A, message_id: 'm1', whatsapp_number: '+1', body: null, content_template: 'invite_v1', content_variables: {}, send_kind: 'template' },
-    ]);
+    mockQuery
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })   // set_config
+      .mockResolvedValueOnce({ rows: [
+        { id: 'o1', conversation_id: CONV_A, message_id: 'm1', whatsapp_number: '+1', body: null, content_template: 'invite_v1', content_variables: {}, send_kind: 'template' },
+      ], rowCount: 1 })                                    // SELECT pending
+      .mockResolvedValue({ rows: [], rowCount: 1 });       // subsequent updates
     (sendTwilioWhatsAppMessage as jest.Mock).mockResolvedValueOnce('SMtemplate');
 
-    await sendPendingJobMessageOutbox(client, { actorUserId: WORKER, actorKind: 'worker' });
+    await sendPendingJobMessageOutbox(client, { actorUserId: WORKER });
 
-    const outboxUpdate = calls.find((c) =>
-      /UPDATE job_message_outbox/.test(c.sql) && /SET status = 'sent'/.test(c.sql));
+    const outboxUpdate = mockQuery.mock.calls.find(([sql]) =>
+      /UPDATE job_message_outbox/.test(sql) && /SET status = 'sent'/.test(sql));
     expect(outboxUpdate).toBeDefined();
-    expect(outboxUpdate!.params).toEqual(['o1', 'SMtemplate']);
+    expect(outboxUpdate![1]).toEqual(['o1', 'SMtemplate']);
 
-    const messageUpdate = calls.find((c) =>
-      /UPDATE job_conversation_messages/.test(c.sql) && /status = 'sent'/.test(c.sql));
+    const messageUpdate = mockQuery.mock.calls.find(([sql]) =>
+      /UPDATE job_conversation_messages/.test(sql) && /status = 'sent'/.test(sql));
     expect(messageUpdate).toBeUndefined();
   });
 
   it('still marks the conversation message failed when a template row fails unambiguously', async () => {
     // Failure-marking is unchanged for both send kinds: a dead invite must
     // still surface as 'failed' on the employer's message.
-    const { client, calls } = outboxClient([
-      { id: 'o1', conversation_id: CONV_A, message_id: 'm1', whatsapp_number: '+1', body: null, content_template: 'invite_v1', content_variables: {}, send_kind: 'template' },
-      freeformRow('o2', CONV_B2, 'm2', 'b1'),
-    ]);
+    mockQuery
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })   // set_config
+      .mockResolvedValueOnce({ rows: [
+        { id: 'o1', conversation_id: CONV_A, message_id: 'm1', whatsapp_number: '+1', body: null, content_template: 'invite_v1', content_variables: {}, send_kind: 'template' },
+        { id: 'o2', conversation_id: CONV_B2, message_id: 'm2', whatsapp_number: '+1', body: 'b1', content_template: null, content_variables: null, send_kind: 'freeform' },
+      ], rowCount: 2 })                                    // SELECT pending
+      .mockResolvedValue({ rows: [], rowCount: 1 });       // subsequent updates
     (sendTwilioWhatsAppMessage as jest.Mock)
       .mockRejectedValueOnce(new Error('Twilio 400 bad request'))  // o1 (template) fails
       .mockResolvedValue('SMxx');                                 // o2 succeeds (avoids total-outage rethrow)
 
-    await sendPendingJobMessageOutbox(client, { actorUserId: WORKER, actorKind: 'worker' });
+    await sendPendingJobMessageOutbox(client, { actorUserId: WORKER });
 
-    const messageUpdate = calls.find((c) =>
-      /UPDATE job_conversation_messages/.test(c.sql) && /status = 'failed'/.test(c.sql));
+    const messageUpdate = mockQuery.mock.calls.find(([sql]) =>
+      /UPDATE job_conversation_messages/.test(sql) && /status = 'failed'/.test(sql));
     expect(messageUpdate).toBeDefined();
-    expect(messageUpdate!.params).toEqual(['m1']);
+    expect(messageUpdate![1]).toEqual(['m1']);
   });
 
   it('emits JobMessageTemplateSidInvalid when the send throws TwilioTemplateInvalidError', async () => {
     const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
-    const { client, calls } = outboxClient([
-      { id: 'o1', conversation_id: CONV_A, message_id: 'm1', whatsapp_number: '+1', body: null, content_template: 'employer_message_invite_es', content_variables: {}, send_kind: 'template' },
-      freeformRow('o2', CONV_B2, 'm2', 'b1'),
-    ]);
+    mockQuery
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })   // set_config
+      .mockResolvedValueOnce({ rows: [
+        { id: 'o1', conversation_id: CONV_A, message_id: 'm1', whatsapp_number: '+1', body: null, content_template: 'employer_message_invite_es', content_variables: {}, send_kind: 'template' },
+        { id: 'o2', conversation_id: CONV_B2, message_id: 'm2', whatsapp_number: '+1', body: 'b1', content_template: null, content_variables: null, send_kind: 'freeform' },
+      ], rowCount: 2 })                                    // SELECT pending
+      .mockResolvedValue({ rows: [], rowCount: 1 });       // subsequent updates
     (sendTwilioWhatsAppMessage as jest.Mock)
       .mockRejectedValueOnce(new TwilioTemplateInvalidError('employer_message_invite_es', 21655))  // o1 fails
       .mockResolvedValue('SMxx');                                 // o2 succeeds (avoids total-outage rethrow)
 
-    await sendPendingJobMessageOutbox(client, { actorUserId: WORKER, actorKind: 'worker' });
+    await sendPendingJobMessageOutbox(client, { actorUserId: WORKER });
 
     const metricLog = logSpy.mock.calls.find(([line]) =>
       typeof line === 'string' && line.includes('JobMessageTemplateSidInvalid'));
@@ -558,11 +364,11 @@ describe('sendPendingJobMessageOutbox hardening (R8)', () => {
       outboxId: 'o1',
     });
 
-    const outboxUpdate = calls.find((c) =>
-      /UPDATE job_message_outbox/.test(c.sql) && /SET status = \$1/.test(c.sql));
+    const outboxUpdate = mockQuery.mock.calls.find(([sql]) =>
+      /UPDATE job_message_outbox/.test(sql) && /SET status = \$1/.test(sql));
     expect(outboxUpdate).toBeDefined();
-    expect(outboxUpdate!.sql).toMatch(/attempt_count = attempt_count \+ 1/);
-    expect(outboxUpdate!.params).toEqual([
+    expect(outboxUpdate![0]).toMatch(/attempt_count = attempt_count \+ 1/);
+    expect(outboxUpdate![1]).toEqual([
       'failed',
       'Twilio template invalid (code 21655): employer_message_invite_es',
       'o1',
@@ -576,167 +382,64 @@ import { createApplicantConversation } from '../../../../lambda/lib/job-messagin
 
 const EMPLOYER = 'cccccccc-0000-0000-0000-000000000001';
 
-// Minimal row as returned by loadConversationForEmployer.
+// Minimal ConversationAccessRow as returned by loadConversationForEmployer.
 function conversationAccessRow(overrides: any = {}) {
   return {
     id: CONV_A, job_id: 'job-1', employer_id: EMPLOYER, worker_id: WORKER,
     application_id: 'app-a', status: 'open',
-    worker_phone: '+15125551234',
+    worker_phone: '+15125551234', worker_language: 'es',
     company_name: 'ACME', job_title: 'Plomero',
     last_worker_message_at: null,  // window CLOSED -> template branch
     ...overrides,
   };
 }
 
-interface EmployerScript {
-  /** The loadConversationForEmployer row. */
-  conversation?: Record<string, unknown>;
-  /** employer_worker_delivery_context; lifecycle defaults to 'ready'. */
-  lifecycle?: 'onboarding' | 'ready' | 'suspended' | null;
-  workflowLanguage?: 'en' | 'es';
-  whatsappLanguage?: string | null;
-  /** employer_claim_worker_intent's decision. */
-  claim?: { action: string; reason: string };
-  /** The template dedupe check: an un-actioned invite or resume template exists. */
-  pendingTemplate?: boolean;
-  /** Message ids handed out in order by the message INSERT. */
-  messageIds?: string[];
-  /** createApplicantConversation: the applicant access row and any open conversation. */
-  access?: Record<string, unknown> | null;
-  openConversation?: Record<string, unknown> | null;
-  crossSession?: boolean;
-}
-
-/**
- * A client that answers the employer send and create paths by statement,
- * never by call order, and records every call.
- */
-function employerClient(script: EmployerScript = {}) {
-  const calls: Array<{ sql: string; params: unknown[] }> = [];
-  const messageIds = [...(script.messageIds ?? ['msg-1'])];
-  const query = jest.fn(async (sql: string, params: unknown[] = []) => {
-    calls.push({ sql, params });
-    const text = sql.replace(/\s+/g, ' ');
-    if (/jale_cap\.employer_worker_delivery_context\(/.test(text)) {
-      return {
-        rows: [{
-          lifecycle: script.lifecycle === undefined ? 'ready' : script.lifecycle,
-          workflow_language: script.workflowLanguage ?? 'es',
-          whatsapp_language: script.whatsappLanguage === undefined ? 'es' : script.whatsappLanguage,
-        }],
-        rowCount: 1,
-      };
-    }
-    if (/jale_cap\.employer_claim_worker_intent\(/.test(text)) {
-      const decision = script.claim ?? { action: 'defer', reason: 'worker_onboarding' };
-      return {
-        rows: [{
-          intent_id: 'intent-1', decision_action: decision.action, decision_reason: decision.reason,
-          outbox_id: null, outbox_materialized: false,
-        }],
-        rowCount: 1,
-      };
-    }
-    if (/FROM jobs j JOIN job_applications ja/.test(text)) {
-      const access = script.access === undefined
-        ? {
-          job_id: 'job-1', employer_id: EMPLOYER, worker_id: WORKER, application_id: 'app-a',
-          worker_phone: '+15125551234', company_name: 'ACME', job_title: 'Plomero',
-        }
-        : script.access;
-      return { rows: access ? [access] : [], rowCount: access ? 1 : 0 };
-    }
-    if (/FROM job_conversations jc WHERE jc\.job_id = \$1/.test(text) && /jc\.status = 'open'/.test(text)) {
-      const open = script.openConversation ?? null;
-      return { rows: open ? [open] : [], rowCount: open ? 1 : 0 };
-    }
-    if (/FROM job_conversations jc JOIN jobs j/.test(text) && /jc\.id = \$1/.test(text)) {
-      return { rows: [script.conversation ?? conversationAccessRow()], rowCount: 1 };
-    }
-    if (/assign_worker_thread_number/.test(text)) return { rows: [{ n: 3 }], rowCount: 1 };
-    if (/INSERT INTO job_conversations/.test(text)) return { rows: [{ id: CONV_A }], rowCount: 1 };
-    if (/SELECT EXISTS/.test(text) && /last_worker_message_at > now\(\) - interval/.test(text)) {
-      return { rows: [{ active: script.crossSession ?? false }], rowCount: 1 };
-    }
-    if (/INSERT INTO job_conversation_messages/.test(text)) {
-      return { rows: [{ id: messageIds.length > 1 ? messageIds.shift() : messageIds[0] }], rowCount: 1 };
-    }
-    if (/SELECT EXISTS/.test(text) && /send_kind = 'template'/.test(text)) {
-      return { rows: [{ exists: script.pendingTemplate ?? false }], rowCount: 1 };
-    }
-    return { rows: [], rowCount: 1 };
-  });
-  return { client: { query } as any, calls };
-}
-
-const WORKER_LANE_SQL = /whatsapp_conversations|worker_onboarding_state|worker_workflow_runs|worker_message_intents|whatsapp_runtime_controls|whatsapp_outbox/;
-
-function indexOf(calls: Array<{ sql: string }>, pattern: RegExp): number {
-  return calls.findIndex((c) => pattern.test(c.sql));
-}
-
-function outboxInserts(calls: Array<{ sql: string; params: unknown[] }>) {
-  return calls.filter((c) => /INSERT INTO job_message_outbox/.test(c.sql));
-}
-
-describe('queueConversationMessageFromEmployer: gate and languages through the delivery context', () => {
-  beforeEach(() => jest.clearAllMocks());
-
-  it('reads the gate through jale_cap.employer_worker_delivery_context, with no worker-lane SQL and no caller switch', async () => {
-    const { client: c, calls } = employerClient({ lifecycle: 'ready' });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'hola');
-
-    const context = calls.find((call) => /jale_cap\.employer_worker_delivery_context\(\$1\)/.test(call.sql));
-    expect(context).toBeDefined();
-    expect(context!.params).toEqual([WORKER]);
-    expect(calls.filter((call) => WORKER_LANE_SQL.test(call.sql))).toEqual([]);
-    expect(calls.some((call) => /set_config/.test(call.sql))).toBe(false);
-    // The gate is read before the message is stamped.
-    expect(indexOf(calls, /employer_worker_delivery_context/)).toBeLessThan(indexOf(calls, /INSERT INTO job_conversation_messages/));
-  });
-
-  it('an English worker outside the reply window gets the English resume template and fallback copy', async () => {
-    const { client: c, calls } = employerClient({ lifecycle: 'ready', whatsappLanguage: 'en' });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'hello');
-    const [template] = outboxInserts(calls);
-    expect(template.params).toContain('employer_message_resume_en');
-    expect(JSON.parse(template.params[4] as string).__fallback_body).toBe(
-      'ACME sent you a message about Plomero. Reply here to open the conversation.',
-    );
-  });
-
-  it('a Spanish worker gets the Spanish resume template', async () => {
-    const { client: c, calls } = employerClient({ lifecycle: 'ready', whatsappLanguage: 'es' });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'hola');
-    expect(outboxInserts(calls)[0].params).toContain('employer_message_resume_es');
-  });
-
-  it('a worker with no WhatsApp conversation language keeps the Spanish template, as before', async () => {
-    const { client: c, calls } = employerClient({ lifecycle: 'ready', whatsappLanguage: null, workflowLanguage: 'en' });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'hola');
-    expect(outboxInserts(calls)[0].params).toContain('employer_message_resume_es');
-  });
-});
-
 describe('queueConversationMessageFromEmployer template dedupe (R7)', () => {
   beforeEach(() => jest.clearAllMocks());
 
   it('does not queue a second invite template while one is un-actioned', async () => {
-    const { client: c, calls } = employerClient({ pendingTemplate: true });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'second overnight msg');
-    expect(outboxInserts(calls).some((call) => /'template'/.test(call.sql))).toBe(false);
+    mockQuery
+      .mockResolvedValueOnce({ rows: [conversationAccessRow()], rowCount: 1 })   // loadConversationForEmployer
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })                          // setInternalUserRlsContext(worker)
+      .mockResolvedValueOnce({ rows: [{ lifecycle: 'ready' }], rowCount: 1 })    // loadWorkerGate -> ready
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })                          // setInternalUserRlsContext(employer)
+      .mockResolvedValueOnce({ rows: [{ id: 'msg-1' }], rowCount: 1 })            // INSERT message (waiting_worker_reply)
+      .mockResolvedValueOnce({ rows: [{ exists: true }], rowCount: 1 })           // pending-template EXISTS check -> true
+      .mockResolvedValue({ rows: [], rowCount: 1 });                              // remaining updates
+    await queueConversationMessageFromEmployer(client, CONV_A, EMPLOYER, 'second overnight msg');
+    const queuedTemplate = mockQuery.mock.calls.some(([sql]) =>
+      /INSERT INTO job_message_outbox/.test(sql) && /'template'/.test(sql));
+    expect(queuedTemplate).toBe(false);
   });
 
   it('queues a template when none is pending yet', async () => {
-    const { client: c, calls } = employerClient({ pendingTemplate: false });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'first overnight msg');
-    expect(outboxInserts(calls).some((call) => /'template'/.test(call.sql))).toBe(true);
+    mockQuery
+      .mockResolvedValueOnce({ rows: [conversationAccessRow()], rowCount: 1 })   // load
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })                          // setInternalUserRlsContext(worker)
+      .mockResolvedValueOnce({ rows: [{ lifecycle: 'ready' }], rowCount: 1 })    // loadWorkerGate -> ready
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })                          // setInternalUserRlsContext(employer)
+      .mockResolvedValueOnce({ rows: [{ id: 'msg-1' }], rowCount: 1 })            // INSERT message
+      .mockResolvedValueOnce({ rows: [{ exists: false }], rowCount: 1 })          // pending-template EXISTS -> false
+      .mockResolvedValue({ rows: [], rowCount: 1 });
+    await queueConversationMessageFromEmployer(client, CONV_A, EMPLOYER, 'first overnight msg');
+    const queuedTemplate = mockQuery.mock.calls.some(([sql]) =>
+      /INSERT INTO job_message_outbox/.test(sql) && /'template'/.test(sql));
+    expect(queuedTemplate).toBe(true);
   });
 
   it('ignores permanently-failed templates in the dedupe check (dead invites must not suppress new ones)', async () => {
-    const { client: c, calls } = employerClient({ pendingTemplate: false });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'msg after dead template');
-    const dedupeSql = calls.map((call) => call.sql).find((sql) => /send_kind = 'template'/.test(sql) && /SELECT EXISTS/.test(sql));
+    mockQuery
+      .mockResolvedValueOnce({ rows: [conversationAccessRow()], rowCount: 1 })   // load
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })                          // setInternalUserRlsContext(worker)
+      .mockResolvedValueOnce({ rows: [{ lifecycle: 'ready' }], rowCount: 1 })    // loadWorkerGate -> ready
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })                          // setInternalUserRlsContext(employer)
+      .mockResolvedValueOnce({ rows: [{ id: 'msg-1' }], rowCount: 1 })            // INSERT message
+      .mockResolvedValueOnce({ rows: [{ exists: false }], rowCount: 1 })          // dedupe EXISTS
+      .mockResolvedValue({ rows: [], rowCount: 1 });
+    await queueConversationMessageFromEmployer(client, CONV_A, EMPLOYER, 'msg after dead template');
+    const dedupeSql = mockQuery.mock.calls
+      .map(([sql]) => sql as string)
+      .find((sql) => /send_kind = 'template'/.test(sql) && /SELECT EXISTS/.test(sql));
     expect(dedupeSql).toBeDefined();
     // A template that exhausted its send attempts was never delivered — it is
     // not an "un-actioned invite" and must not suppress queueing a new one.
@@ -744,52 +447,51 @@ describe('queueConversationMessageFromEmployer template dedupe (R7)', () => {
   });
 });
 
-describe('createApplicantConversation', () => {
+describe('createApplicantConversation thread-number assignment', () => {
   beforeEach(() => jest.clearAllMocks());
 
   it('assigns worker_thread_number via assign_worker_thread_number on create', async () => {
-    const { client: c, calls } = employerClient();
-    await createApplicantConversation(c, EMPLOYER, 'job-1', WORKER, 'hola, te escribo sobre el trabajo');
+    const EMP = 'cccccccc-0000-0000-0000-000000000001';
+    const accessRow = {
+      job_id: 'job-1', employer_id: EMP, worker_id: WORKER, application_id: 'app-a',
+      worker_phone: '+15125551234', worker_language: 'es', company_name: 'ACME', job_title: 'Plomero',
+    };
+    mockQuery
+      .mockResolvedValueOnce({ rows: [accessRow], rowCount: 1 })        // (1) access check
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })                 // (2) existing OPEN conversation: none
+      .mockResolvedValueOnce({ rows: [{ n: 3 }], rowCount: 1 })         // (3) assign_worker_thread_number -> 3
+      .mockResolvedValueOnce({ rows: [{ id: CONV_A }], rowCount: 1 })   // (4) INSERT ... RETURNING id
+      .mockResolvedValueOnce({ rows: [{                                 // (5) re-SELECT building ConversationAccessRow
+        id: CONV_A, job_id: 'job-1', employer_id: EMP, worker_id: WORKER, application_id: 'app-a',
+        status: 'open', worker_phone: '+15125551234', worker_language: 'es',
+        company_name: 'ACME', job_title: 'Plomero', last_worker_message_at: null,
+        worker_thread_number: 3,
+      }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ active: false }], rowCount: 1 }) // (6) cross-session EXISTS check -> no active session
+      .mockResolvedValueOnce({ rows: [{                                 // (7) loadConversationForEmployer (inside queueConversationMessageFromEmployer)
+        id: CONV_A, job_id: 'job-1', employer_id: EMP, worker_id: WORKER, application_id: 'app-a',
+        status: 'open', worker_phone: '+15125551234', worker_language: 'es',
+        company_name: 'ACME', job_title: 'Plomero', last_worker_message_at: null,
+        worker_thread_number: 3,
+      }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })                 // (8) setInternalUserRlsContext(worker)
+      .mockResolvedValueOnce({ rows: [{ lifecycle: 'ready' }], rowCount: 1 }) // (9) loadWorkerGate -> ready
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })                 // (10) setInternalUserRlsContext(employer)
+      .mockResolvedValueOnce({ rows: [{ id: 'msg-1' }], rowCount: 1 })  // (11) INSERT job_conversation_messages
+      .mockResolvedValueOnce({ rows: [{ exists: false }], rowCount: 1 }) // (12) pending-template EXISTS check -> false
+      .mockResolvedValue({ rows: [], rowCount: 1 });                    // (13+) INSERT outbox, UPDATE conversations, UPDATE applications
+
+    await createApplicantConversation(client, EMP, 'job-1', WORKER, 'hola, te escribo sobre el trabajo');
 
     // Assertion (a): counter function was called with workerId
-    const counter = calls.find((call) => /assign_worker_thread_number\s*\(\s*\$1\s*\)/.test(call.sql));
-    expect(counter).toBeDefined();
-    expect(counter!.params).toEqual([WORKER]);
+    expect(mockQuery.mock.calls.some(([sql]) =>
+      /assign_worker_thread_number\s*\(\s*\$1\s*\)/.test(sql))).toBe(true);
 
     // Assertion (b): INSERT includes worker_thread_number column
-    const insert = calls.find((call) => /INSERT INTO job_conversations/.test(call.sql));
+    const insert = mockQuery.mock.calls.find(([sql]) =>
+      /INSERT INTO job_conversations/.test(sql));
     expect(insert).toBeDefined();
-    expect(insert!.sql).toMatch(/worker_thread_number/);
-    expect(insert!.params).toEqual(['job-1', EMPLOYER, WORKER, 'app-a', 3]);
-  });
-
-  it('queues the invite template in the WhatsApp language from the delivery context, with no worker-lane SQL', async () => {
-    const { client: c, calls } = employerClient({ whatsappLanguage: 'en' });
-    const created = await createApplicantConversation(c, EMPLOYER, 'job-1', WORKER, 'hello about the job');
-    expect(created).toEqual({ conversationId: CONV_A });
-    const [template] = outboxInserts(calls);
-    expect(template.params).toContain('employer_message_invite_en');
-    expect(calls.filter((call) => WORKER_LANE_SQL.test(call.sql))).toEqual([]);
-  });
-
-  it('reuses an open conversation for the same applicant', async () => {
-    const { client: c, calls } = employerClient({ openConversation: { id: CONV_B } });
-    const created = await createApplicantConversation(c, EMPLOYER, 'job-1', WORKER, 'hola');
-    expect(created).toEqual({ conversationId: CONV_B });
-    expect(calls.some((call) => /INSERT INTO job_conversations/.test(call.sql))).toBe(false);
-  });
-
-  it('refuses a worker who is not an applicant, and one with no number', async () => {
-    await expect(createApplicantConversation(employerClient({ access: null }).client, EMPLOYER, 'job-1', WORKER, 'hola'))
-      .rejects.toThrow('applicant_not_found');
-    const noPhone = employerClient({
-      access: {
-        job_id: 'job-1', employer_id: EMPLOYER, worker_id: WORKER, application_id: 'app-a',
-        worker_phone: null, company_name: 'ACME', job_title: 'Plomero',
-      },
-    });
-    await expect(createApplicantConversation(noPhone.client, EMPLOYER, 'job-1', WORKER, 'hola'))
-      .rejects.toThrow('worker_whatsapp_unavailable');
+    expect(insert![0]).toMatch(/worker_thread_number/);
   });
 });
 
@@ -839,105 +541,183 @@ describe('closeWorkerConversation', () => {
   });
 });
 
-describe('queueConversationMessageFromEmployer: a worker who is not ready gets the intent claim', () => {
+describe('queueConversationMessageFromEmployer onboarding gate', () => {
   beforeEach(() => jest.clearAllMocks());
+
+  // A scripted client that dispatches by SQL substring rather than call
+  // order — resilient to internal reordering, matches the convention used
+  // by worker-delivery-gateway.test.ts's scriptedClient.
+  function scriptedClient() {
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    const query = jest.fn(async (sql: string, params: unknown[] = []) => {
+      calls.push({ sql, params });
+      if (/FROM job_conversations jc\s*\n\s*JOIN jobs j/.test(sql) && /jc\.id = \$1/.test(sql)) {
+        return { rows: [conversationAccessRow()], rowCount: 1 };
+      }
+      if (/INSERT INTO job_conversation_messages/.test(sql)) {
+        return { rows: [{ id: 'msg-v2-1' }], rowCount: 1 };
+      }
+      if (/INSERT INTO worker_message_intents/.test(sql)) {
+        return { rows: [{ id: 'intent-1', outbox_id: null, status: 'deferred' }] };
+      }
+      if (/FROM worker_onboarding_state/.test(sql)) {
+        return { rows: [] };
+      }
+      if (/UPDATE worker_message_intents/.test(sql)) {
+        return { rowCount: 1, rows: [] };
+      }
+      return { rows: [], rowCount: 1 };
+    });
+    return { query, calls };
+  }
 
   // 2026-07-27 parity-audit fix: the intent path is for ONBOARDING workers
   // only. Routing READY workers through it destroyed the employer's text
   // (row stamped 'queued', no outbox row ever, flush only rescues
-  // 'waiting_worker_reply').
+  // 'waiting_worker_reply'). scriptedClient's default gate response (no
+  // worker_onboarding_state rows) models the onboarding/no-row case; the
+  // ready case overrides it below.
+  function scriptedClientWithReadyGate() {
+    const base = scriptedClient();
+    const inner = base.query.getMockImplementation()!;
+    base.query.mockImplementation(async (sql: string, params: unknown[] = []) => {
+      if (/FROM worker_onboarding_state/.test(sql)) {
+        base.calls.push({ sql, params });
+        return {
+          rows: [{
+            user_id: WORKER, lifecycle: 'ready', run_id: 'run-1',
+            workflow_version: 1, current_step_key: 'trust.question.3',
+            status: 'completed', preferred_language: 'es', lock_version: 9,
+          }],
+          rowCount: 1,
+        };
+      }
+      return inner(sql, params);
+    });
+    return base;
+  }
 
   it('a READY worker takes the v1 freeform path with the text intact — never the intent', async () => {
-    const { client: c, calls } = employerClient({
-      lifecycle: 'ready',
-      conversation: conversationAccessRow({ last_worker_message_at: new Date(), worker_thread_number: 1 }),
+    const { query, calls } = scriptedClientWithReadyGate();
+    // Open reply window -> freeform.
+    const openWindowRow = conversationAccessRow({ last_worker_message_at: new Date(), worker_thread_number: 1 });
+    query.mockImplementationOnce(async (sql: string, params: unknown[] = []) => {
+      calls.push({ sql, params });
+      return { rows: [openWindowRow], rowCount: 1 };
     });
 
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'te espero manana a las 8');
+    await queueConversationMessageFromEmployer({ query } as any, CONV_A, EMPLOYER, 'te espero manana a las 8');
 
-    expect(calls.some((call) => /employer_claim_worker_intent/.test(call.sql))).toBe(false);
-    const freeform = outboxInserts(calls).find((call) =>
-      call.params.some((param) => typeof param === 'string' && (param as string).includes('te espero manana a las 8')));
+    // No intent — the employer's words travel the real delivery path.
+    expect(calls.some((c) => /INSERT INTO worker_message_intents/.test(c.sql))).toBe(false);
+    const freeform = calls.find((c) =>
+      /INSERT INTO job_message_outbox/.test(c.sql) && c.params.some((p) => typeof p === 'string' && (p as string).includes('te espero manana a las 8')));
     expect(freeform).toBeDefined();
     // Freeform-eligible message keeps the v1 'queued' stamp.
-    const msgInsert = calls.find((call) => /INSERT INTO job_conversation_messages/.test(call.sql));
+    const msgInsert = calls.find((c) => /INSERT INTO job_conversation_messages/.test(c.sql));
     expect(msgInsert!.params[2]).toBe('queued');
   });
 
-  it('an ONBOARDING worker is claimed through jale_cap.employer_claim_worker_intent: the message is the source, with copy pre-rendered in the workflow language', async () => {
-    const { client: c, calls } = employerClient({ lifecycle: 'onboarding', workflowLanguage: 'en' });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'hola');
-
-    const claims = calls.filter((call) => /jale_cap\.employer_claim_worker_intent\(\$1, \$2, \$3, \$4::jsonb, \$5::jsonb\)/.test(call.sql));
-    expect(claims).toHaveLength(1);
-    const [workerId, kind, sourceId, payload, message] = claims[0].params;
-    expect([workerId, kind, sourceId]).toEqual([WORKER, 'employer_chat', 'msg-1']);
-    expect(JSON.parse(payload as string)).toEqual({ conversationId: CONV_A, companyName: 'ACME', jobTitle: 'Plomero' });
-    expect(JSON.parse(message as string)).toEqual({
-      body: 'ACME wants to chat with you about the Plomero job. Reply CHATS to open the chat.',
+  it('an ONBOARDING worker (no gate row) gets the intent AND the text is stamped waiting_worker_reply even inside the reply window', async () => {
+    const { query, calls } = scriptedClient(); // gate: no rows -> onboarding
+    const openWindowRow = conversationAccessRow({ last_worker_message_at: new Date() });
+    query.mockImplementationOnce(async (sql: string, params: unknown[] = []) => {
+      calls.push({ sql, params });
+      return { rows: [openWindowRow], rowCount: 1 };
     });
 
+    await queueConversationMessageFromEmployer({ query } as any, CONV_A, EMPLOYER, 'hola');
+
+    expect(calls.some((c) => /INSERT INTO worker_message_intents/.test(c.sql))).toBe(true);
     // The stored row is the ONLY carrier of the text on this path: it must
-    // be flush-recoverable, never 'queued' -- even inside the reply window.
-    const msgInsert = calls.find((call) => /INSERT INTO job_conversation_messages/.test(call.sql));
-    expect(msgInsert!.params[2]).toBe('waiting_worker_reply');
-    expect(outboxInserts(calls)).toEqual([]);
-    // The claim comes after the message it names, and before the conversation bookkeeping.
-    expect(indexOf(calls, /employer_claim_worker_intent/)).toBeGreaterThan(indexOf(calls, /INSERT INTO job_conversation_messages/));
-    expect(indexOf(calls, /UPDATE job_conversations/)).toBeGreaterThan(indexOf(calls, /employer_claim_worker_intent/));
-    expect(calls.filter((call) => WORKER_LANE_SQL.test(call.sql))).toEqual([]);
-    expect(calls.some((call) => /set_config/.test(call.sql))).toBe(false);
-  });
-
-  it('a Spanish onboarding worker gets the Spanish copy', async () => {
-    const { client: c, calls } = employerClient({ lifecycle: 'onboarding', workflowLanguage: 'es' });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'hola');
-    const claim = calls.find((call) => /employer_claim_worker_intent/.test(call.sql))!;
-    expect(JSON.parse(claim.params[4] as string).body).toBe(
-      'ACME quiere hablar contigo sobre el trabajo de Plomero. Responde MENSAJES para abrir el chat.',
-    );
-  });
-
-  it('a worker with no onboarding row yet is treated as onboarding, even inside the reply window', async () => {
-    const { client: c, calls } = employerClient({
-      lifecycle: null,
-      conversation: conversationAccessRow({ last_worker_message_at: new Date() }),
-    });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'hola');
-    expect(calls.some((call) => /employer_claim_worker_intent/.test(call.sql))).toBe(true);
-    const msgInsert = calls.find((call) => /INSERT INTO job_conversation_messages/.test(call.sql));
+    // be flush-recoverable, never 'queued'.
+    const msgInsert = calls.find((c) => /INSERT INTO job_conversation_messages/.test(c.sql));
     expect(msgInsert!.params[2]).toBe('waiting_worker_reply');
   });
 
-  it('a worker whose phone fails to normalize takes the same path: deferred claim, no outbox row', async () => {
-    const { client: c, calls } = employerClient({
-      lifecycle: 'onboarding',
-      conversation: conversationAccessRow({ worker_phone: null, last_worker_message_at: new Date() }),
+  it('a worker whose phone fails to normalize now takes the same gate read as everyone else — deferred intent, not the old v1 freeform fallback', async () => {
+    // Known, accepted behavior change: previously a null/unparseable
+    // worker_phone short-circuited v2Enabled to false and fell through to
+    // the v1 freeform/template path untouched. With the gate unconditional,
+    // a worker with no phone and no gate row is just another ONBOARDING
+    // worker: the intent path, same as anyone else without a ready gate row.
+    const { query, calls } = scriptedClient(); // gate: no rows -> onboarding
+    const noPhoneRow = conversationAccessRow({ worker_phone: null, last_worker_message_at: new Date() });
+    query.mockImplementationOnce(async (sql: string, params: unknown[] = []) => {
+      calls.push({ sql, params });
+      return { rows: [noPhoneRow], rowCount: 1 };
     });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'hola');
-    expect(outboxInserts(calls)).toEqual([]);
-    expect(calls.some((call) => /employer_claim_worker_intent/.test(call.sql))).toBe(true);
+
+    await queueConversationMessageFromEmployer({ query } as any, CONV_A, EMPLOYER, 'hola');
+
+    expect(calls.some((c) => /INSERT INTO job_message_outbox/.test(c.sql))).toBe(false);
+    expect(calls.some((c) => /INSERT INTO worker_message_intents/.test(c.sql))).toBe(true);
+    const msgInsert = calls.find((c) => /INSERT INTO job_conversation_messages/.test(c.sql));
+    expect(msgInsert!.params[2]).toBe('waiting_worker_reply');
   });
 
-  it('a suspended worker is a normal answer (reject/worker_suspended), as before', async () => {
-    const { client: c } = employerClient({ lifecycle: 'suspended', claim: { action: 'reject', reason: 'worker_suspended' } });
-    await expect(queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'hola')).resolves.toEqual({
-      messageId: 'msg-1', queuedAsTemplate: true,
+  it('a matched worker creates exactly one employer_chat intent with the exact dedupe key and expiry, and issues no job_message_outbox insert', async () => {
+    const { query, calls } = scriptedClient();
+    const beforeMs = Date.now();
+
+    await queueConversationMessageFromEmployer({ query } as any, CONV_A, EMPLOYER, 'hola');
+
+    expect(calls.some((c) => /INSERT INTO job_message_outbox/.test(c.sql))).toBe(false);
+
+    const intentInserts = calls.filter((c) => /INSERT INTO worker_message_intents/.test(c.sql));
+    expect(intentInserts).toHaveLength(1);
+    const params = intentInserts[0].params;
+    expect(params[0]).toBe(WORKER);
+    expect(params[1]).toBe('employer_chat');
+    expect(params[2]).toBe('job-messaging');
+    expect(params[3]).toBe('job_conversation_message');
+    expect(params[4]).toBe('msg-v2-1');
+    expect(params[5]).toBe('employer-chat:msg-v2-1');
+    expect(params[6]).toBe(40);
+    expect(JSON.parse(params[8] as string)).toEqual({
+      conversationId: CONV_A,
+      companyName: 'ACME',
+      jobTitle: 'Plomero',
     });
+    const expiresAt = params[9] as Date;
+    const expectedExpiryMs = beforeMs + 7 * 24 * 60 * 60 * 1000;
+    expect(Math.abs(expiresAt.getTime() - expectedExpiryMs)).toBeLessThan(5000);
+
+    // job_conversation_messages insert (unchanged) still happened.
+    expect(calls.some((c) => /INSERT INTO job_conversation_messages/.test(c.sql))).toBe(true);
+
+    const workerContextIndex = calls.findIndex((c) =>
+      c.sql.includes("set_config('app.current_internal_user_id'") &&
+      c.params[0] === WORKER);
+    const intentIndex = calls.findIndex((c) => /INSERT INTO worker_message_intents/.test(c.sql));
+    const restoredEmployerContextIndex = calls.findIndex((c, index) =>
+      index > intentIndex &&
+      c.sql.includes("set_config('app.current_internal_user_id'") &&
+      c.params[0] === EMPLOYER);
+    const conversationUpdateIndex = calls.findIndex((c) =>
+      /UPDATE job_conversations/.test(c.sql));
+    expect(workerContextIndex).toBeGreaterThanOrEqual(0);
+    expect(intentIndex).toBeGreaterThan(workerContextIndex);
+    expect(restoredEmployerContextIndex).toBeGreaterThan(intentIndex);
+    expect(conversationUpdateIndex).toBeGreaterThan(restoredEmployerContextIndex);
+
   });
 
-  it('an allowed claim with nothing to send throws, so the send rolls back as before', async () => {
-    const { client: c, calls } = employerClient({ lifecycle: 'onboarding', claim: { action: 'reject', reason: 'renderer_unavailable' } });
-    await expect(queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'hola')).rejects.toThrow('renderer_unavailable:employer_chat');
-    expect(calls.some((call) => /UPDATE job_conversations/.test(call.sql))).toBe(false);
-  });
+  it('a repeated employer send does not create a second intent for the same message', async () => {
+    const { query, calls } = scriptedClient();
 
-  it('each employer message gets its own claim, named by that message', async () => {
-    const { client: c, calls } = employerClient({ lifecycle: 'onboarding', messageIds: ['msg-1', 'msg-2'] });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'hola');
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'hola de nuevo');
-    const sources = calls.filter((call) => /employer_claim_worker_intent/.test(call.sql)).map((call) => call.params[2]);
-    expect(sources).toEqual(['msg-1', 'msg-2']);
+    await queueConversationMessageFromEmployer({ query } as any, CONV_A, EMPLOYER, 'hola');
+    await queueConversationMessageFromEmployer({ query } as any, CONV_A, EMPLOYER, 'hola de nuevo');
+
+    // Each call inserts a fresh job_conversation_messages row (distinct
+    // messageId), so each gets its own dedupe_key — this asserts the two
+    // dedupe keys are message-scoped and distinct, matching the intent
+    // table's design (dedupeKey `employer-chat:<messageId>`), not that a
+    // single call is repeated (that dedupe is enqueueWorkerMessage's own
+    // ON CONFLICT, covered in worker-delivery-gateway.test.ts).
+    const intentInserts = calls.filter((c) => /INSERT INTO worker_message_intents/.test(c.sql));
+    expect(intentInserts).toHaveLength(2);
+    expect(intentInserts[0].params[5]).toBe(intentInserts[1].params[5]); // same messageId mock -> same dedupe key
   });
 });
 
@@ -946,13 +726,20 @@ describe('context header on employer freeform messages', () => {
 
   it('freeform employer message includes 🏢 context header', async () => {
     // last_worker_message_at: new Date() makes it a freeform (window open)
-    const { client: c, calls } = employerClient({
-      conversation: conversationAccessRow({ worker_thread_number: 2, last_worker_message_at: new Date() }),
-    });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'Hola, ¿puedes?');
-    const [outboxInsert] = outboxInserts(calls);
+    const row = conversationAccessRow({ worker_thread_number: 2, last_worker_message_at: new Date() });
+    mockQuery
+      .mockResolvedValueOnce({ rows: [row], rowCount: 1 }) // loadConversationForEmployer
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // setInternalUserRlsContext(worker)
+      .mockResolvedValueOnce({ rows: [{ lifecycle: 'ready' }], rowCount: 1 }) // loadWorkerGate -> ready
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // setInternalUserRlsContext(employer)
+      .mockResolvedValueOnce({ rows: [{ id: 'msg-1' }], rowCount: 1 }) // INSERT message
+      .mockResolvedValue({ rows: [], rowCount: 1 });
+    await queueConversationMessageFromEmployer(client, CONV_A, EMPLOYER, 'Hola, ¿puedes?');
+    const outboxInsert = mockQuery.mock.calls.find(([sql]: [string]) =>
+      /INSERT INTO job_message_outbox/.test(sql) || /INSERT INTO.*outbox/.test(sql));
     // The body argument (one of the $N params) should start with 🏢
-    const bodyParam = outboxInsert.params.find((p) => typeof p === 'string' && (p as string).startsWith('🏢')) as string;
+    const params: any[] = outboxInsert![1];
+    const bodyParam = params.find((p: any) => typeof p === 'string' && p.startsWith('🏢'));
     expect(bodyParam).toBeDefined();
     expect(bodyParam).toMatch(/^🏢 ACME — Plomero \(#2\)\n/);
     expect(bodyParam).toContain('Hola, ¿puedes?');
@@ -960,27 +747,60 @@ describe('context header on employer freeform messages', () => {
 
   it('template path does NOT get a header', async () => {
     // last_worker_message_at: null → window closed → template branch
-    const { client: c, calls } = employerClient({
-      conversation: conversationAccessRow({ worker_thread_number: 1, last_worker_message_at: null }),
-    });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'Hola');
-    const inserts = outboxInserts(calls);
-    expect(inserts.length).toBeGreaterThan(0);
-    inserts.forEach((call) => {
-      expect(call.params.some((p) => typeof p === 'string' && (p as string).includes('🏢'))).toBe(false);
+    const row = conversationAccessRow({ worker_thread_number: 1, last_worker_message_at: null });
+    mockQuery
+      .mockResolvedValueOnce({ rows: [row], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // setInternalUserRlsContext(worker)
+      .mockResolvedValueOnce({ rows: [{ lifecycle: 'ready' }], rowCount: 1 }) // loadWorkerGate -> ready
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // setInternalUserRlsContext(employer)
+      .mockResolvedValueOnce({ rows: [{ id: 'msg-1' }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ exists: false }], rowCount: 1 })
+      .mockResolvedValue({ rows: [], rowCount: 1 });
+    await queueConversationMessageFromEmployer(client, CONV_A, EMPLOYER, 'Hola');
+    // All INSERT INTO outbox calls should NOT have a body param starting with 🏢
+    const outboxInserts = mockQuery.mock.calls.filter(([sql]: [string]) =>
+      /INSERT INTO.*outbox/.test(sql) || /INSERT INTO job_message_outbox/.test(sql));
+    outboxInserts.forEach((call: [string, any[]]) => {
+      const params: any[] = call[1];
+      const hasHeader = params.some((p: any) => typeof p === 'string' && p.includes('🏢'));
+      expect(hasHeader).toBe(false);
     });
   });
 });
 
 describe('template outbox visibility (spec 2026-08-13)', () => {
   it('queueWorkerInviteTemplate carries the message_id so failures mark the employer message', async () => {
-    // Down the template path: ready worker, reply window closed, no pending invite.
-    const { client: c, calls } = employerClient({ messageIds: ['msg-77'] });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'hola');
-    const [outboxInsert] = outboxInserts(calls);
+    // Drive queueConversationMessageFromEmployer down the template path:
+    // conversation loaded, worker gate ready, reply window closed (default
+    // conversationAccessRow has last_worker_message_at: null), no pending invite.
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    const scriptedQuery = jest.fn(async (sql: string, params: unknown[] = []) => {
+      calls.push({ sql, params });
+      // Distinguish loadConversationForEmployer from the pendingInvite EXISTS
+      // check below — both contain "FROM job_conversations jc" (the dedupe
+      // query joins it in a subquery), so also require the jobs join that
+      // only the top-level load performs.
+      if (sql.includes('FROM job_conversations jc') && sql.includes('JOIN jobs j')) {
+        return { rows: [conversationAccessRow()], rowCount: 1 };
+      }
+      if (sql.includes('FROM worker_onboarding_state')) {
+        return { rows: [{ lifecycle: 'ready' }], rowCount: 1 };
+      }
+      if (sql.includes('INSERT INTO job_conversation_messages')) {
+        return { rows: [{ id: 'msg-77' }], rowCount: 1 };
+      }
+      if (sql.includes('SELECT EXISTS')) {
+        return { rows: [{ exists: false }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    });
+
+    await queueConversationMessageFromEmployer({ query: scriptedQuery } as any, CONV_A, EMPLOYER, 'hola');
+
+    const outboxInsert = calls.find((c) => c.sql.includes('INSERT INTO job_message_outbox'));
     expect(outboxInsert).toBeDefined();
-    expect(outboxInsert.sql).toContain('message_id');
-    expect(outboxInsert.params).toContain('msg-77');
+    expect(outboxInsert!.sql).toContain('message_id');
+    expect(outboxInsert!.params).toContain('msg-77');
   });
 });
 

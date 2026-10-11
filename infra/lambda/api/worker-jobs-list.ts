@@ -75,10 +75,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         excludeCityKeys: cityKeys,
         ...(cityAnchors.length > 0 ? { cityAnchors } : {}),
       });
-      // Referral pins (every open referred job the worker has not applied
-      // to -- there can be several) ride on the first query whatever their
-      // city, and a pinned job outside the preferred cities can come back
-      // from this one as an ordinary match -- never show the same job twice.
+      // A referral-pinned job is fetched by id with no city filter, so it can
+      // come back from both queries -- never show the same job twice.
       const seen = new Set(jobs.map((job) => job.id));
       otherJobs = fallback.filter((job) => !seen.has(job.id)).slice(0, OTHER_JOBS_CAP);
     }

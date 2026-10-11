@@ -1,7 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { Template, Match } from 'aws-cdk-lib/assertions';
-import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import { NetworkStack } from '../../../lib/stacks/network-stack';
 import { DatabaseStack } from '../../../lib/stacks/database-stack';
 import { AuthStack } from '../../../lib/stacks/auth-stack';
@@ -35,6 +34,7 @@ describe('ApiStack', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
     });
     const employerCandidateRerankQueue = new sqs.Queue(network, 'EmployerCandidateRerankQueue');
     const ai = new AiStack(app, 'TestAiStack', {
@@ -50,6 +50,7 @@ describe('ApiStack', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
       employerCandidateRerankQueue,
       aliasGeneratorFn: ai.aliasGeneratorFn.function,
       whatsappStatusCallbackUrl: 'https://api.example.com/whatsapp/status-callback',
@@ -59,6 +60,7 @@ describe('ApiStack', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
       api: api.api,
       dualAuthorizer: api.dualAuthorizer,
     });
@@ -68,6 +70,7 @@ describe('ApiStack', () => {
       privateSubnets: network.privateSubnets,
       billingLambdaSg: network.billingLambdaSg,
       billingDbSecret: database.billingDbSecret,
+      appDbSecret: database.dbSecret,
       api: api.api,
       employerAuthorizer: api.employerAuthorizer,
       employerResource: api.employerResource,
@@ -79,6 +82,7 @@ describe('ApiStack', () => {
       privateSubnets: network.privateSubnets,
       referralsLambdaSg: network.referralsLambdaSg,
       referralsDbSecret: database.referralsDbSecret,
+      appDbSecret: database.dbSecret,
       api: api.api,
       publicResource: api.publicResource,
       workerAuthorizer: api.workerAuthorizer,
@@ -92,6 +96,7 @@ describe('ApiStack', () => {
     new NotificationsStack(app, 'TestNotificationsStack', {
       vpc: network.vpc,
       lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
       publicResource: api.publicResource,
     });
     apiStack = api;
@@ -273,50 +278,6 @@ describe('ApiStack', () => {
       ThrottlingBurstLimit: 10,
       ThrottlingRateLimit: 5,
     }));
-  });
-
-  // ── Report a problem: method throttles and request-id logging ──
-
-  test('centralized MethodSettings throttles the three report routes, once each', () => {
-    const stages = template.findResources('AWS::ApiGateway::Stage');
-    const methodSettings: any[] = (Object.values(stages)[0] as any).Properties.MethodSettings;
-
-    const expected: Array<[string, string, number, number]> = [
-      ['/public/reports/{action}', 'POST', 5, 2],
-      ['/public/reports/{action}', 'GET', 20, 10],
-      ['/reports/{action}', 'POST', 10, 5],
-    ];
-    for (const [resourcePath, httpMethod, burst, rate] of expected) {
-      const matches = methodSettings.filter(
-        (s) => s.ResourcePath === resourcePath && s.HttpMethod === httpMethod,
-      );
-      expect(matches).toEqual([{
-        ResourcePath: resourcePath,
-        HttpMethod: httpMethod,
-        ThrottlingBurstLimit: burst,
-        ThrottlingRateLimit: rate,
-      }]);
-    }
-  });
-
-  test('access log keeps every standard field and adds the endpoint request id, integration latency and status', () => {
-    const stages = template.findResources('AWS::ApiGateway::Stage');
-    const stage = Object.values(stages)[0] as any;
-    const format = JSON.parse(stage.Properties.AccessLogSetting.Format);
-    const standard = JSON.parse(apigateway.AccessLogFormat.jsonWithStandardFields().toString());
-
-    // Nothing an existing reader of the log relies on moves or changes.
-    expect(Object.keys(standard).length).toBeGreaterThanOrEqual(10);
-    expect(Object.keys(format).slice(0, Object.keys(standard).length)).toEqual(Object.keys(standard));
-    for (const [field, value] of Object.entries(standard)) {
-      expect(format[field]).toBe(value);
-    }
-    expect(format).toEqual({
-      ...standard,
-      awsEndpointRequestId: '$context.awsEndpointRequestId',
-      integrationLatency: '$context.integrationLatency',
-      integrationStatus: '$context.integrationStatus',
-    });
   });
 
   test('Employer jobs list Lambda function exists', () => {
@@ -1143,6 +1104,7 @@ describe('ApiStack phase-1 rename deploy (-c workerJobsRenamePhase1=true)', () =
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
     });
     const employerCandidateRerankQueue = new sqs.Queue(network, 'EmployerCandidateRerankQueue');
     const ai = new AiStack(app, 'TestAiStack', {
@@ -1158,6 +1120,7 @@ describe('ApiStack phase-1 rename deploy (-c workerJobsRenamePhase1=true)', () =
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
       employerCandidateRerankQueue,
       aliasGeneratorFn: ai.aliasGeneratorFn.function,
       whatsappStatusCallbackUrl: 'https://api.example.com/whatsapp/status-callback',
@@ -1168,6 +1131,7 @@ describe('ApiStack phase-1 rename deploy (-c workerJobsRenamePhase1=true)', () =
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
       api: phase1Api.api,
       dualAuthorizer: phase1Api.dualAuthorizer,
     });
@@ -1178,6 +1142,7 @@ describe('ApiStack phase-1 rename deploy (-c workerJobsRenamePhase1=true)', () =
       privateSubnets: network.privateSubnets,
       referralsLambdaSg: network.referralsLambdaSg,
       referralsDbSecret: database.referralsDbSecret,
+      appDbSecret: database.dbSecret,
       api: phase1Api.api,
       publicResource: phase1Api.publicResource,
       workerAuthorizer: phase1Api.workerAuthorizer,
@@ -1232,6 +1197,7 @@ describe('ApiStack phase-1 rename deploy (-c workerJobsRenamePhase1=true)', () =
         vpc: network.vpc,
         privateSubnets: network.privateSubnets,
         lambdaSg: network.lambdaSg,
+        dbSecret: database.dbSecret,
       });
       const employerCandidateRerankQueue = new sqs.Queue(network, 'EmployerCandidateRerankQueue');
       const ai = new AiStack(app, 'TestAiStack', {
@@ -1247,6 +1213,7 @@ describe('ApiStack phase-1 rename deploy (-c workerJobsRenamePhase1=true)', () =
         vpc: network.vpc,
         privateSubnets: network.privateSubnets,
         lambdaSg: network.lambdaSg,
+        dbSecret: database.dbSecret,
         employerCandidateRerankQueue,
         aliasGeneratorFn: ai.aliasGeneratorFn.function,
         whatsappStatusCallbackUrl: 'https://api.example.com/whatsapp/status-callback',

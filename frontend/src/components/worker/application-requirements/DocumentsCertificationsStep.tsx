@@ -582,7 +582,7 @@ export function CertClaimRow({
         <div className="mt-3 grid gap-2">
           {matchDoc ? (
             <div className="flex flex-wrap items-center gap-2">
-              <span data-private className="inline-flex items-center gap-1.5 text-xs font-semibold text-[var(--jale-success)]">
+              <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-[var(--jale-success)]">
                 <Icon name="check" />
                 {tFlow('cert_use_vault', { file: matchDoc.file_name })}
               </span>

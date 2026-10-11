@@ -84,13 +84,6 @@
      of protecting them. */
   --jale-hero-halo: #d9f2e2;
 
-  /* The tear line across the onboarding summary's job ticket, and the dashed
-     top edge of the stub that stands in for it -- one colour, so the stub
-     reads as torn off the ticket. The rgba components of --jale-blue-500
-     (#0064d6), tracked by hand like --shadow-focus below. Composites to 1.75:1
-     on the ticket's --jale-blue-50: decorative, it marks the tear and no more. */
-  --jale-perforation: rgba(0,100,214,.38);
-
   /* Motion */
   --motion-duration-fast: 150ms;
   --motion-duration-base: 90ms;
@@ -123,9 +116,6 @@
   --shadow-focus: 0 0 0 3px rgba(0,100,214,.10);
   --shadow-btn:   0 4px 12px rgba(0,100,214,.30);
   --shadow-modal: 0 20px 50px -10px rgba(10,23,54,.25);
-  /* Cast UPWARD: the docked job stub sits on the viewport's bottom edge and
-     the summary scrolls up under it. --jale-ink (#181855) at .10. */
-  --shadow-dock:  0 -6px 18px rgba(24,24,85,.10);
 
   /* Radii */
   --radius-card:  1rem;
@@ -185,7 +175,6 @@
   --shadow-focus:          var(--shadow-focus);
   --shadow-btn:            var(--shadow-btn);
   --shadow-modal:          var(--shadow-modal);
-  --shadow-dock:           var(--shadow-dock);
 
   --radius-card:           var(--radius-card);
   --radius-input:          var(--radius-input);
@@ -420,14 +409,7 @@ input[type="password"]::-webkit-credentials-auto-fill-button { display: none; }
   --shadow-focus: 0 0 0 3px rgba(120,164,255,.65);
   --shadow-btn:   0 4px 12px rgba(69,133,255,.35);
   --shadow-modal: 0 20px 50px -10px rgba(0,0,0,.5);
-  /* Black for the same reason as the scrim below: an ink-tinted shadow does
-     not darken a dark page, so the stub would stop reading as lifted. */
-  --shadow-dock:  0 -6px 18px rgba(0,0,0,.35);
   /* Not in the light block's ink tint: over a dark page a 45% navy scrim is
      nearly invisible, so the modal would stop reading as modal. */
   --jale-backdrop: rgba(0,0,0,.55);
-  /* The dark --jale-blue-700 (#a8c5ff) at .40, by hand. The light value would
-     composite to 1.35:1 on this theme's --jale-blue-50 and all but vanish;
-     this one holds 2.44:1, so the tear still reads. */
-  --jale-perforation: rgba(168,197,255,.40);
 }

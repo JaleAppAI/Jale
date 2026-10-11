@@ -8,9 +8,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { routeOnboardingV2, dispatchWebBoundStep } from '../../../../lambda/whatsapp/onboarding-v2';
-import { hashToken } from '../../../../lambda/lib/referral-codes';
-import { parseTypedApplyToken } from '../../../../lambda/whatsapp/lib/flows';
+import { routeOnboardingV2 } from '../../../../lambda/whatsapp/onboarding-v2';
 import type {
   OnboardingV2Deps,
   OnboardingV2Session,
@@ -45,89 +43,8 @@ function recordConsent(workerId: string, version: string): void {
   consentDb.add(`${workerId}|${version}`);
 }
 
-// Sprint 27: the referral statements an apply token issues -- the token
-// row, the pending claim, the referred-jobs record and the job label -- plus
-// the parameterless SAVEPOINT around them, which the profile fallthrough
-// below cannot take (it reads `params[0]`). In memory and keyed the way the
-// real tables are. Empty by default, so a worker who sends no token never
-// touches it; reset before every test.
-const referralDb = {
-  tokens: new Map<string, {
-    job_id: string; share_code: string | null; locale: string | null;
-    expires_at: string; consumed_at: string | null;
-  }>(),
-  claims: new Map<string, { job_id: string; claimed_at: string | null }>(),
-  activeJobs: new Map<string, { title: string; company: string }>(),
-  recorded: [] as Array<{ workerId: string; jobId: string; source: string }>,
-  statements: [] as string[],
-  failOn: null as RegExp | null,
-  reset(): void {
-    this.tokens.clear();
-    this.claims.clear();
-    this.activeJobs.clear();
-    this.recorded = [];
-    this.statements = [];
-    this.failOn = null;
-  },
-};
-
-const REFERRAL_SQL = /^(SAVEPOINT|RELEASE SAVEPOINT|ROLLBACK TO SAVEPOINT) |referral_apply_tokens|referral_pending_claims|worker_referred_jobs|worker_attribution|job_share_links|FROM jobs\b/;
-
-function referralQuery(sql: string, params: unknown[]): { rows: unknown[]; rowCount: number } | null {
-  if (!REFERRAL_SQL.test(sql)) return null;
-  referralDb.statements.push(sql);
-  if (referralDb.failOn?.test(sql)) throw new Error('simulated_referral_failure');
-  const result = (rows: unknown[]) => ({ rows, rowCount: rows.length });
-
-  if (/^(SAVEPOINT|RELEASE SAVEPOINT|ROLLBACK TO SAVEPOINT) /.test(sql)) return result([]);
-  if (/SELECT job_id, share_code, expires_at FROM referral_apply_tokens/.test(sql)) {
-    const token = referralDb.tokens.get(params[0] as string);
-    return result(token ? [{ job_id: token.job_id, share_code: token.share_code, expires_at: token.expires_at }] : []);
-  }
-  if (/UPDATE referral_apply_tokens/.test(sql)) {
-    const token = referralDb.tokens.get(params[0] as string);
-    if (!token || token.consumed_at !== null || token.expires_at <= (params[1] as string)) return result([]);
-    token.consumed_at = params[1] as string;
-    return result([{ share_code: token.share_code, job_id: token.job_id, locale: token.locale }]);
-  }
-  if (/INSERT INTO referral_pending_claims/.test(sql)) {
-    referralDb.claims.set(params[0] as string, { job_id: params[1] as string, claimed_at: null });
-    return { rows: [], rowCount: 1 };
-  }
-  if (/SELECT job_id\s+FROM referral_pending_claims/.test(sql)) {
-    const claim = referralDb.claims.get(params[0] as string);
-    return result(claim && claim.claimed_at === null ? [{ job_id: claim.job_id }] : []);
-  }
-  if (/UPDATE referral_pending_claims/.test(sql)) {
-    const claim = referralDb.claims.get(params[0] as string);
-    if (!claim || claim.claimed_at !== null) return result([]);
-    claim.claimed_at = params[1] as string;
-    return result([{ job_id: claim.job_id, share_code: null, referrer_worker_id: null }]);
-  }
-  if (/INSERT INTO worker_referred_jobs/.test(sql)) {
-    // recordReferredJob's INSERT ... SELECT FROM jobs WHERE status = 'active'.
-    if (!referralDb.activeJobs.has(params[1] as string)) return { rows: [], rowCount: 0 };
-    referralDb.recorded.push({ workerId: params[0] as string, jobId: params[1] as string, source: params[2] as string });
-    return { rows: [], rowCount: 1 };
-  }
-  if (/INSERT INTO worker_attribution/.test(sql)) return { rows: [], rowCount: 1 };
-  if (/FROM job_share_links/.test(sql)) return result([]);
-  if (/FROM jobs\s+WHERE id = \$1\s+AND status = 'active'/.test(sql)) {
-    const label = referralDb.activeJobs.get(params[0] as string);
-    return result(label ? [label] : []);
-  }
-  if (/FROM jobs j/.test(sql)) {
-    return result(referralDb.activeJobs.has(params[0] as string) ? [{ open: 1 }] : []);
-  }
-  throw new Error(`onboarding-v2 test client: unexpected referral query ${sql}`);
-}
-
-beforeEach(() => referralDb.reset());
-
 const client = {
-  query: async (sql: string, params: unknown[] = []) => {
-    const referral = referralQuery(sql, params);
-    if (referral) return referral;
+  query: async (sql: string, params: unknown[]) => {
     if (/legal_consent_log/.test(sql)) {
       const key = `${params[0] as string}|${params[1] as string}`;
       const rows = consentDb.has(key) ? [{ ok: true }] : [];
@@ -723,14 +640,9 @@ describe('identity.verify_otp', () => {
       messageSid: 'SM0123456789abcdef0123456789abcdef',
     }), deps);
 
-    // The handoff `routeOnboardingV2` returns for any other message from a
-    // ready worker, so the OTP turn and the next turn agree -- plus the
-    // `consumedAsOtp` marker that THIS body was the code, which the processor
-    // must never route as a command. Nothing was parked for this phone, so
-    // there is no referred job to deliver.
-    expect(result).toEqual({
-      handled: false, handoff: 'ready', workerId: 'user-1', stepKey: 'ready', consumedAsOtp: true,
-    });
+    // Byte-for-byte the handoff `routeOnboardingV2` returns for any other
+    // message from a ready worker, so the OTP turn and the next turn agree.
+    expect(result).toEqual({ handled: false, handoff: 'ready', workerId: 'user-1', stepKey: 'ready' });
     // No onboarding prompt on this turn...
     expect(gateway.calls).toHaveLength(sentBefore);
     // ...and no write to a completed run.
@@ -1172,168 +1084,6 @@ describe('command gate', () => {
 
       warnSpy.mockRestore();
     });
-  });
-});
-
-// ── Sprint 27: an apply token from a worker mid-onboarding ────────────
-//
-// The "Apply" prefill sent after sign-in has started used to land on
-// whatever step the run was on: stored as the worker's NAME at profile.name,
-// or as an answer further on. It is recognised here instead -- recorded on
-// the worker's referred-jobs list, parked for the referrer's credit at
-// completion, acknowledged by name -- and the step is simply asked again.
-
-describe('an apply token from a bound worker mid-onboarding', () => {
-  const RAW_TOKEN = 'ABCD1234';
-  const PHONE_HASH = fakeHashNormalizedPhone('+15551234567');
-  const JOB_A = 'bbbbbbbb-0000-0000-0000-00000000000a';
-  const JOB_B = 'bbbbbbbb-0000-0000-0000-00000000000b';
-  const PREFILL_ES = `Quiero postularme a este trabajo: JALE-${RAW_TOKEN}`;
-  /** The approved copy, verbatim. */
-  const ACK_BOUND_ES = 'Guardamos este trabajo para ti: Finish Carpenter - Acme Builders. Termina tu perfil y te lo enviamos.';
-
-  function seedToken(rawToken: string, jobId: string, overrides: Partial<{ consumed_at: string | null; expires_at: string }> = {}): void {
-    referralDb.tokens.set(hashToken(rawToken), {
-      job_id: jobId,
-      share_code: null,
-      locale: 'es',
-      expires_at: '2099-01-01T00:00:00.000Z',
-      consumed_at: null,
-      ...overrides,
-    });
-  }
-
-  function seedNameStep(gateRepo: ReturnType<typeof createFakeGateRepo>, userId: string): WorkerGate {
-    return seedActiveGate(gateRepo, { userId, currentStepKey: 'profile.name', preferredLanguage: 'es' });
-  }
-
-  it('the ES prefill at profile.name is NOT saved as the name: the job is recorded and parked, named back, and the question asked again', async () => {
-    const { deps, gateRepo, gateway, adapters } = makeDeps();
-    const gate = seedNameStep(gateRepo, 'user-r3-1');
-    seedToken(RAW_TOKEN, JOB_A);
-    referralDb.activeJobs.set(JOB_A, { title: 'Finish Carpenter', company: 'Acme Builders' });
-
-    const result = await routeOnboardingV2(client, makeSession({ user_id: gate.userId }), makeMsg(PREFILL_ES), deps);
-
-    expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'profile.name' });
-    // Never an answer: no name saved, the run did not move.
-    expect(adapters.profile.saveName).not.toHaveBeenCalled();
-    expect(gateRepo._gates.get(gate.userId)?.currentStepKey).toBe('profile.name');
-
-    // On this worker's list, from this door...
-    expect(referralDb.recorded).toEqual([{ workerId: gate.userId, jobId: JOB_A, source: 'whatsapp_token' }]);
-    // ...and parked under this phone, so the referrer is still credited at
-    // completion, exactly when they would have been.
-    expect(referralDb.claims.get(PHONE_HASH)).toEqual({ job_id: JOB_A, claimed_at: null });
-
-    // Every referral statement sits inside ONE savepoint.
-    const sql = referralDb.statements;
-    expect(sql[0]).toMatch(/^SAVEPOINT /);
-    expect(sql[sql.length - 1]).toMatch(/^RELEASE SAVEPOINT /);
-    expect(sql.filter((s) => /SAVEPOINT/.test(s))).toHaveLength(2);
-
-    // The job named back, then the same question again.
-    expect(gateway.calls.map((c) => c.sourceType)).toEqual([
-      'onboarding_v2:v2_referral_ack_bound',
-      'onboarding_v2:profile.name',
-    ]);
-    expect(gateway.calls[0].payload.body).toBe(ACK_BOUND_ES);
-  });
-
-  it('an EARLIER unclaimed parked job is recorded before the new token replaces its claim -- both jobs are kept', async () => {
-    const { deps, gateRepo } = makeDeps();
-    const gate = seedNameStep(gateRepo, 'user-r3-2');
-    referralDb.claims.set(PHONE_HASH, { job_id: JOB_B, claimed_at: null });
-    seedToken(RAW_TOKEN, JOB_A);
-    referralDb.activeJobs.set(JOB_A, { title: 'Finish Carpenter', company: 'Acme Builders' });
-    referralDb.activeJobs.set(JOB_B, { title: 'Roofer', company: 'NB Construction' });
-
-    await routeOnboardingV2(client, makeSession({ user_id: gate.userId }), makeMsg(PREFILL_ES), deps);
-
-    expect(referralDb.recorded).toEqual([
-      { workerId: gate.userId, jobId: JOB_B, source: 'whatsapp_token' },
-      { workerId: gate.userId, jobId: JOB_A, source: 'whatsapp_token' },
-    ]);
-    // Last code wins the claim, as it always has.
-    expect(referralDb.claims.get(PHONE_HASH)).toEqual({ job_id: JOB_A, claimed_at: null });
-  });
-
-  it('a token that was already consumed (or expired) still counts: its row exists, so it is still never saved as an answer', async () => {
-    const { deps, gateRepo, gateway, adapters } = makeDeps();
-    const gate = seedNameStep(gateRepo, 'user-r3-3');
-    seedToken(RAW_TOKEN, JOB_A, { consumed_at: '2025-12-31T00:00:00.000Z' });
-    referralDb.activeJobs.set(JOB_A, { title: 'Finish Carpenter', company: 'Acme Builders' });
-
-    await routeOnboardingV2(client, makeSession({ user_id: gate.userId }), makeMsg(PREFILL_ES), deps);
-
-    expect(adapters.profile.saveName).not.toHaveBeenCalled();
-    expect(referralDb.recorded).toEqual([{ workerId: gate.userId, jobId: JOB_A, source: 'whatsapp_token' }]);
-    expect(gateway.calls[0].payload.body).toBe(ACK_BOUND_ES);
-  });
-
-  it('a token for a job that is no longer active records nothing and says nothing -- the question is simply asked again', async () => {
-    const { deps, gateRepo, gateway, adapters } = makeDeps();
-    const gate = seedNameStep(gateRepo, 'user-r3-4');
-    seedToken(RAW_TOKEN, JOB_A); // JOB_A is not in activeJobs
-
-    await routeOnboardingV2(client, makeSession({ user_id: gate.userId }), makeMsg(PREFILL_ES), deps);
-
-    expect(adapters.profile.saveName).not.toHaveBeenCalled();
-    expect(referralDb.recorded).toEqual([]);
-    expect(gateway.calls.map((c) => c.sourceType)).toEqual(['onboarding_v2:profile.name']);
-  });
-
-  it('"Jale-Martinez" with NO token row behind it is a name, and is saved as one', async () => {
-    // Not vacuous: the strict parser really does read this name as a token.
-    expect(parseTypedApplyToken('Jale-Martinez')).toBe('MART1NEZ');
-    const { deps, gateRepo, adapters, gateway } = makeDeps();
-    const gate = seedNameStep(gateRepo, 'user-r3-5');
-
-    const result = await routeOnboardingV2(client, makeSession({ user_id: gate.userId }), makeMsg('Jale-Martinez'), deps);
-
-    expect(adapters.profile.saveName).toHaveBeenCalledWith(client, gate.userId, 'Jale-Martinez');
-    expect(result.stepKey).toBe('profile.location');
-    expect(referralDb.recorded).toEqual([]);
-    expect(gateway.calls.some((c) => c.sourceType.includes('v2_referral_ack_bound'))).toBe(false);
-  });
-
-  it('a failing referral write rolls back its savepoint, logs a static metric, and only asks the question again', async () => {
-    const { deps, gateRepo, gateway, adapters } = makeDeps();
-    const gate = seedNameStep(gateRepo, 'user-r3-6');
-    seedToken(RAW_TOKEN, JOB_A);
-    referralDb.activeJobs.set(JOB_A, { title: 'Finish Carpenter', company: 'Acme Builders' });
-    referralDb.failOn = /INSERT INTO worker_referred_jobs/;
-    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-
-    try {
-      const result = await routeOnboardingV2(client, makeSession({ user_id: gate.userId }), makeMsg(PREFILL_ES), deps);
-
-      expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'profile.name' });
-      expect(referralDb.statements.some((s) => /^ROLLBACK TO SAVEPOINT /.test(s))).toBe(true);
-      // Still never an answer, and nothing claims a job was saved.
-      expect(adapters.profile.saveName).not.toHaveBeenCalled();
-      expect(gateway.calls.map((c) => c.sourceType)).toEqual(['onboarding_v2:profile.name']);
-      const logged = errorSpy.mock.calls.map((call) => call.map(String).join(' ')).join('\n');
-      expect(logged).toContain('ReferralTokenBoundFailed');
-      expect(logged).not.toContain(RAW_TOKEN);
-      expect(logged).not.toContain(PHONE_HASH);
-    } finally {
-      errorSpy.mockRestore();
-    }
-  });
-
-  it('the WEB door is untouched: a form value goes straight to the step handler, with no referral read at all', async () => {
-    // routeBoundStepHydrated is WhatsApp-only; the web door dispatches past
-    // it. A name typed into the web form is the name.
-    const { deps, gateRepo, adapters } = makeDeps();
-    const gate = seedNameStep(gateRepo, 'user-r3-7');
-    seedToken(RAW_TOKEN, JOB_A);
-    referralDb.activeJobs.set(JOB_A, { title: 'Finish Carpenter', company: 'Acme Builders' });
-
-    await dispatchWebBoundStep(client, makeSession({ user_id: gate.userId }), makeMsg(`JALE-${RAW_TOKEN}`), deps, gate, new Date('2026-01-01T00:00:00.000Z'));
-
-    expect(adapters.profile.saveName).toHaveBeenCalledWith(client, gate.userId, `JALE-${RAW_TOKEN}`);
-    expect(referralDb.statements).toEqual([]);
   });
 });
 

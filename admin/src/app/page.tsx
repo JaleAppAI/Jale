@@ -1,7 +1,8 @@
 import Link from 'next/link';
-import { REVEAL_TILE_DAYS } from '@/lib/server/admin-audit';
-import { loadAdminDashboard } from '@/lib/server/admin-cases';
+import { countPiiRevealEvents } from '@/lib/server/admin-audit';
+import { countOpenAdminCases, listOpenAdminCases } from '@/lib/server/admin-cases';
 import {
+  listIdentityLockouts,
   lockoutOutcomeBadge,
   lockoutOutcomeText,
   LOCKOUT_WINDOW_DAYS,
@@ -9,18 +10,18 @@ import {
 import { requireAdminSession } from '@/lib/server/session';
 
 export default async function AdminDashboardPage() {
-  const session = await requireAdminSession();
-  // One recorded read. Each tile keeps its own query (filtering a 200-row page
-  // undercounted open cases and reveals once the tables outgrew it), and the
-  // cases and lockouts shown are recorded before the page renders.
-  const {
-    openCaseCount,
-    openCases,
-    revealCount,
-    lockedOutCount,
-    stuckCount,
-    recentLockouts,
-  } = await loadAdminDashboard(session);
+  await requireAdminSession();
+  // Each tile has its own query: filtering a 200-row page undercounted open
+  // cases and reveals once the tables outgrew it (roadmap audit finding 7).
+  const [openCaseCount, openCases, piiRevealCount, lockouts] = await Promise.all([
+    countOpenAdminCases(),
+    listOpenAdminCases(3),
+    countPiiRevealEvents(),
+    listIdentityLockouts(),
+  ]);
+
+  const lockedOut = lockouts.filter((item) => item.kind === 'lockout');
+  const stuckCount = lockouts.length - lockedOut.length;
 
   return (
     <main className="stack-gap">
@@ -37,13 +38,13 @@ export default async function AdminDashboardPage() {
         </article>
         <article className="card kpi">
           <span className="muted">Locked out ({LOCKOUT_WINDOW_DAYS} days)</span>
-          <strong>{lockedOutCount}</strong>
+          <strong>{lockedOut.length}</strong>
           <span>{stuckCount} stuck at the code step</span>
         </article>
         <article className="card kpi">
-          <span className="muted">Contact reveals ({REVEAL_TILE_DAYS} days)</span>
-          <strong>{revealCount}</strong>
-          <span>From the access records</span>
+          <span className="muted">Audit events</span>
+          <strong>{piiRevealCount}</strong>
+          <span>Reveal events</span>
         </article>
       </section>
 
@@ -51,7 +52,7 @@ export default async function AdminDashboardPage() {
         <article className="card">
           <div className="section-title">
             <h2>Open queue</h2>
-            <Link className="button" href="/cases" prefetch={false}>View all</Link>
+            <Link className="button" href="/cases">View all</Link>
           </div>
           <div className="list">
             {openCases.map((item) => (
@@ -69,7 +70,7 @@ export default async function AdminDashboardPage() {
                   <span className="muted">Assigned admin</span>
                   <span>{item.assignedAdmin}</span>
                 </div>
-                <Link className="button" href={`/cases/${item.id}`} prefetch={false}>Open</Link>
+                <Link className="button" href={`/cases/${item.id}`}>Open</Link>
               </div>
             ))}
             {openCases.length === 0 ? <p className="muted">No open cases.</p> : null}
@@ -79,10 +80,10 @@ export default async function AdminDashboardPage() {
         <article className="card">
           <div className="section-title">
             <h2>Recent lockouts</h2>
-            <Link className="button" href="/verifications" prefetch={false}>View all</Link>
+            <Link className="button" href="/verifications">View all</Link>
           </div>
           <div className="list">
-            {recentLockouts.map((item) => (
+            {lockedOut.slice(0, 3).map((item) => (
               <div className="verification-row" key={item.challengeId}>
                 <div className="stack">
                   <strong>{item.maskedPhone ?? 'Unknown number'}</strong>
@@ -98,7 +99,7 @@ export default async function AdminDashboardPage() {
                 </div>
               </div>
             ))}
-            {lockedOutCount === 0 ? <p className="muted">No lockouts in the last {LOCKOUT_WINDOW_DAYS} days.</p> : null}
+            {lockedOut.length === 0 ? <p className="muted">No lockouts in the last {LOCKOUT_WINDOW_DAYS} days.</p> : null}
           </div>
         </article>
       </section>

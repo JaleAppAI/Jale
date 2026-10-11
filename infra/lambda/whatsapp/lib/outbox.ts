@@ -1,6 +1,4 @@
 import type { PoolClient } from 'pg';
-import type { AuditCaller } from '../../lib/audit/caller';
-import { setAuditContext } from '../../lib/audit/context';
 import { isTwilioMessageSid, type TwilioSecret } from './twilio';
 import {
   getTwilioSecret,
@@ -694,19 +692,12 @@ export async function countAgedWorkerIntentOutbox(
   }
 }
 
-/**
- * `caller` is the platform on WhatsApp. Recording a delivery can update the
- * support case it belongs to, which the change log covers, so every
- * transaction of the drain names it as the actor.
- */
 export async function sendPendingAdminOutbox(
   client: PoolClient,
-  caller: AuditCaller,
   limit = 25,
 ): Promise<void> {
   for (let processed = 0; processed < limit; processed += 1) {
     await client.query('BEGIN');
-    await setAuditContext(client, caller, 'whatsapp.admin_outbox');
     try {
       const pending = await client.query<{
         id: string;
@@ -801,19 +792,15 @@ export function _clearOutboxTwilioSecretCacheForTests(): void {
  * Throws `Error('unauthorized_worker_outbox_row')` when the intent row is
  * missing or not in an authorized status — this is a deliberate guard
  * against writing an outbox row for a deferred/rejected/expired intent.
- * The status read names the intent's worker as well as its id, so an id
- * that is not this worker's reads as missing.
  */
 export async function insertAuthorizedIntentOutbox(
   client: PoolClient,
-  intent: { workerId: string; intentId: string },
+  intentId: string,
   message: RenderedOutboxMessage,
 ): Promise<{ outboxId: string }> {
-  const { workerId, intentId } = intent;
   const statusResult = await client.query<{ status: string }>(
-    `SELECT status FROM worker_message_intents WHERE id = $1
-        AND user_id = $2`,
-    [intentId, workerId],
+    `SELECT status FROM worker_message_intents WHERE id = $1`,
+    [intentId],
   );
   const status = statusResult.rows[0]?.status;
   if (status !== 'eligible' && status !== 'leased') {

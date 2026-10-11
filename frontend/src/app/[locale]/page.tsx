@@ -1,7 +1,5 @@
 import * as React from 'react';
-import type { Metadata } from 'next';
 import { useLocale, useTranslations } from 'next-intl';
-import { getTranslations } from 'next-intl/server';
 import {
     ArrowRight,
     Briefcase,
@@ -128,32 +126,6 @@ function BenefitCard({
             <p className="text-sm leading-[1.55] text-[var(--jale-ink-2)]">{body}</p>
         </div>
     );
-}
-
-// Link preview for jaleapp.ai in either language. The opaque 1200x630 brand
-// card is shared with the worker sign-up's preview; every other brand PNG is
-// transparent and previews badly. `alternates` is deliberately not set, so the
-// root layout's RSS link is inherited.
-const OG_IMAGE = { url: '/brand/og-default.png', width: 1200, height: 630, alt: 'Jale' };
-
-export async function generateMetadata({ params }: { params: Promise<{ locale: string }> }): Promise<Metadata> {
-    const { locale } = await params;
-    const t = await getTranslations({ locale, namespace: 'seo.landing' });
-    const title = t('title');
-    const description = t('description');
-
-    return {
-        title,
-        description,
-        openGraph: {
-            title,
-            description,
-            images: [OG_IMAGE],
-            type: 'website',
-            locale: locale === 'es' ? 'es_US' : 'en_US',
-        },
-        twitter: { card: 'summary_large_image', title, description, images: [OG_IMAGE] },
-    };
 }
 
 export default function Home() {
@@ -497,7 +469,6 @@ html { scroll-behavior: smooth; }
                     <div>
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
-                            data-capture-safe
                             src="/brand/wordmark-white.png"
                             alt="Jale"
                             className="block h-[50px] w-auto"

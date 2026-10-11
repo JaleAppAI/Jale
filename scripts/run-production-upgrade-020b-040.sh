@@ -312,9 +312,6 @@ SQL
     042_*)
       present="to_regclass('public.worker_onboarding_state') IS NOT NULL OR to_regprocedure('public.bind_verified_identity_and_start_workflow(text,uuid,uuid,integer,text,text,jsonb)') IS NOT NULL"
       # COMPLETE_042_BEGIN
-      # 042 seeds two runtime-control rows. 054 deletes 'onboarding_v2_enabled'
-      # by design, so only 'deferred_delivery_enabled' is checked: it holds on
-      # every later schema.
       complete=$(cat <<'SQL'
 (SELECT count(*) FROM pg_class table_class
   JOIN pg_namespace namespace ON namespace.oid=table_class.relnamespace
@@ -417,8 +414,8 @@ AND NOT has_table_privilege('jale_whatsapp','public.whatsapp_runtime_controls','
 AND NOT has_table_privilege('jale_whatsapp','public.whatsapp_runtime_controls','DELETE')
 AND NOT has_any_column_privilege('jale_whatsapp','public.worker_identity_challenges','SELECT')
 AND NOT has_table_privilege('jale_whatsapp','public.worker_reset_audit','INSERT')
-AND EXISTS (SELECT 1 FROM public.whatsapp_runtime_controls
-  WHERE control_key='deferred_delivery_enabled')
+AND (SELECT count(*) FROM public.whatsapp_runtime_controls
+  WHERE control_key IN ('onboarding_v2_enabled','deferred_delivery_enabled'))=2
 SQL
 )
       # COMPLETE_042_END

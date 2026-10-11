@@ -1,6 +1,4 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { auditCaller } from '../lib/audit/caller';
-import { setAuditContext } from '../lib/audit/context';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
@@ -103,13 +101,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       const companyDescription = cleanText(body.company_description);
       const hiringTradesProvided = Object.prototype.hasOwnProperty.call(body, 'hiring_trades');
       const jobTypesProvided = Object.prototype.hasOwnProperty.call(body, 'typical_job_types');
-
-      // The change records name the employer by users.id, so it is read
-      // before the first write.
-      const actorRes = await client.query<{ id: string }>('SELECT id FROM users WHERE cognito_sub = $1', [cognitoSub]);
-      const actorId = actorRes.rows[0]?.id;
-      if (!actorId) throw new Error('employer profile: the caller has no users row');
-      await setAuditContext(client, auditCaller(event, { kind: 'employer', id: actorId }, 'web'), 'employer.profile_update');
 
       if (companyName) {
         await client.query('UPDATE users SET full_name = $1, phone = COALESCE($2, phone) WHERE cognito_sub = $3', [companyName, phone, cognitoSub]);

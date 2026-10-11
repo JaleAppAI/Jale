@@ -27,7 +27,6 @@ import { buildJobPageUrls } from '@/lib/seo/siteUrl';
 import { ApplyButton, ApplyButtonSkeleton } from './ApplyButton';
 import { WebApplyButton, WebApplyButtonSkeleton } from './WebApplyButton';
 import { LocaleToggle, LocaleToggleFallback } from './LocaleToggle';
-import { ReportEntryButton } from '@/components/report/ReportEntryButton';
 import { ReferralContext, ReferralRibbonSkeleton } from './ReferralContext';
 
 export const revalidate = 60;
@@ -186,19 +185,15 @@ function BrandBand({ path, otherLocale, languageLabel }: BrandBandProps) {
     <header className="bg-[var(--jale-blue-900)] pt-7 pb-16 px-4">
       <div className="max-w-md md:max-w-2xl mx-auto flex items-center justify-between gap-3">
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img data-capture-safe src="/brand/wordmark-white.png" alt="Jale" className="h-7 w-auto" />
+        <img src="/brand/wordmark-white.png" alt="Jale" className="h-7 w-auto" />
         {/* The fallback is a working link, not a skeleton -- see LocaleToggle. */}
-        <div className="flex items-center gap-2">
-          {/* The page's only chrome, so the report entry lives here too. */}
-          <ReportEntryButton tone="brand" />
-          <Suspense
-            fallback={
-              <LocaleToggleFallback path={path} otherLocale={otherLocale} label={languageLabel} />
-            }
-          >
-            <LocaleToggle path={path} otherLocale={otherLocale} label={languageLabel} />
-          </Suspense>
-        </div>
+        <Suspense
+          fallback={
+            <LocaleToggleFallback path={path} otherLocale={otherLocale} label={languageLabel} />
+          }
+        >
+          <LocaleToggle path={path} otherLocale={otherLocale} label={languageLabel} />
+        </Suspense>
       </div>
     </header>
   );

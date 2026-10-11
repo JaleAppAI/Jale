@@ -12,8 +12,6 @@ import { loadWorkerGate, type WorkerGate } from './lib/onboarding-repository';
 import { loadRuntimeControls } from './lib/runtime-controls';
 import { evaluateDelivery } from './lib/delivery-policy';
 import { insertAuthorizedIntentOutbox } from './lib/outbox';
-import { isWithinSessionWindow } from './lib/session-window';
-import { listOpenReferredJobIds } from '../lib/referred-jobs';
 
 // Renderer contracts (ReleaseRenderRequest/ReleaseRenderedMessage/ReleaseRenderer) are
 // owned by C2 in onboarding-types.ts per Binding Resolution #6. This module imports
@@ -44,8 +42,6 @@ export interface ReleaseDeps {
 
 const LEASE_DURATION_MS = 5 * 60 * 1000;
 const JOB_ALERT_DIGEST_CAP = 10;
-/** Referred job cards at completion: at most three (decided 2026-10-01). */
-const REFERRED_JOB_CARD_CAP = 3;
 const GROUPED_CATEGORIES: MessageCategory[] = ['onboarding', 'account', 'job_alert', 'employer_chat'];
 
 interface LeasedIntentRow {
@@ -207,28 +203,30 @@ export async function releaseWorkerReady(
     ],
   );
 
-  // ── Step 1b: the jobs this worker came for (sprint 27) ──
-  // One intent PER JOB from the worker's referred-jobs list (migration 103):
-  // the open jobs they have not applied to, newest first, at most three --
-  // each is sent as its own tappable job card after the welcome. This list,
-  // not `referral_pending_claims`, is the source: it is filled from every
-  // door (the web link, the WhatsApp token at any stage, a typed code), and
-  // a claim only ever named one job.
+  // ── Step 1b: the job this worker was referred to (migration 056) ──
+  // claimPendingReferral recorded the claim inside the same transaction that
+  // flipped lifecycle to 'ready'. Without a second intent here the worker gets
+  // the welcome and is never told about the job they actually came for.
   //
-  // source_id is the JOB id, so the batch `FROM jobs` lookup in step 3
-  // resolves each one with no extra query and the job's CURRENT status is
-  // re-checked at release. The dedupe key is per job, so a retried or
-  // duplicate worker.ready event can never send the same card twice.
+  // source_id is the JOB id, not the worker id, so the batch `FROM jobs` lookup
+  // in step 3 resolves it with no extra query and the job's CURRENT status is
+  // what decides the copy — a worker may take days to finish onboarding.
   //
   // SAVEPOINT-isolated: this runs inside the caller's transaction, where a bare
   // try/catch is not enough (an errored statement aborts the whole transaction,
   // so every later statement would fail too). A referral must never cost the
   // worker their welcome message.
-  let referredOrder: string[] = [];
   try {
     await client.query('SAVEPOINT referral_job_intent');
-    referredOrder = await listOpenReferredJobIds(client, workerId, { limit: REFERRED_JOB_CARD_CAP });
-    for (const jobId of referredOrder) {
+    const claim = await client.query<{ job_id: string; referrer_worker_id: string | null }>(
+      `SELECT job_id, referrer_worker_id FROM referral_pending_claims WHERE claimed_worker_id = $1`,
+      [workerId],
+    );
+    if (claim.rows[0]) {
+      // A visitor can reach the public page untagged and tap Apply themselves,
+      // producing a real claim with no referrer. Carry that fact on the payload
+      // so the copy does not tell them a friend referred them when none did.
+      const referred = claim.rows[0].referrer_worker_id !== null;
       await client.query(
         `INSERT INTO worker_message_intents
             (user_id, category, owner_service, source_type, source_id, dedupe_key,
@@ -238,16 +236,15 @@ export async function releaseWorkerReady(
          ON CONFLICT ON CONSTRAINT worker_message_intent_dedupe DO NOTHING`,
         [
           workerId,
-          jobId,
-          `referral-job:${workerId}:${jobId}`,
+          claim.rows[0].job_id,
+          `referral-job:${workerId}`,
           DELIVERY_POLICY_VERSION,
-          JSON.stringify({ kind: 'referred_job' }),
+          JSON.stringify({ kind: 'referred_job', referred }),
         ],
       );
     }
     await client.query('RELEASE SAVEPOINT referral_job_intent');
   } catch {
-    referredOrder = [];
     try {
       await client.query('ROLLBACK TO SAVEPOINT referral_job_intent');
     } catch {
@@ -275,17 +272,13 @@ export async function releaseWorkerReady(
     [workerId, GROUPED_CATEGORIES],
   );
 
-  // Every statement below that changes or authorizes an intent by id also
-  // names the worker (`user_id`), so it is scoped to this worker in the
-  // statement itself, not only by where its ids came from.
   const leasedUntil = new Date(now.getTime() + LEASE_DURATION_MS);
   if (leaseResult.rows.length > 0) {
     await client.query(
       `UPDATE worker_message_intents
           SET status = 'leased', leased_until = $2, updated_at = now()
-        WHERE id = ANY($1::uuid[])
-          AND user_id = $3`,
-      [leaseResult.rows.map((r) => r.id), leasedUntil, workerId],
+        WHERE id = ANY($1::uuid[])`,
+      [leaseResult.rows.map((r) => r.id), leasedUntil],
     );
   }
 
@@ -309,35 +302,20 @@ export async function releaseWorkerReady(
     await client.query(
       `UPDATE worker_message_intents
           SET status = $1, decision_reason = $2, updated_at = now()
-        WHERE id = $3
-          AND user_id = $4`,
-      [status, reason, intent.id, workerId],
+        WHERE id = $3`,
+      [status, reason, intent.id],
     );
   }
 
   const gate = await loadWorkerGate(client, workerId);
   const controls = await loadRuntimeControls(client);
 
-  // Decided 2026-10-01: "linked" means users.whatsapp_number is set --
-  // it is written only when the worker binds WhatsApp with a code. A worker
-  // who did everything on the web is not linked: a card's button cannot act
-  // for a number with no account behind it (the tap is answered with the
-  // start invitation), so their welcome and referred jobs are not sent here
-  // at all -- the web Done card and the feed pin carry the job. users.phone,
-  // the recipient fallback below, does not count.
-  const linkedResult = await client.query<{ linked: boolean }>(
-    `SELECT NULLIF(whatsapp_number, '') IS NOT NULL AS linked FROM users WHERE id = $1`,
-    [workerId],
-  );
-  const linked = linkedResult.rows[0]?.linked === true;
-
   // ── Step 3: reload live source rows — never trust the stored payload for
   // eligibility. ──
   const jobAlertIntents = working.filter((i) => i.category === 'job_alert');
   // referred_job intents carry a job id in source_id too, so they share this one
-  // lookup. location/pay are nullable on jobs (migration 003); so is company,
-  // which reads 'Jale' exactly as the feed does (job-matching.ts) -- an empty
-  // company used to drop a one-job card to the free-form digest.
+  // lookup. location/pay are additive here and only read by the referred-job
+  // renderer; both are nullable on jobs (migration 003).
   const referredJobIntents = working.filter((i) => i.sourceType === 'referred_job');
   const jobIdsToLoad = [...new Set([...jobAlertIntents, ...referredJobIntents].map((i) => i.sourceId))];
   const jobRows = jobIdsToLoad.length
@@ -350,7 +328,7 @@ export async function releaseWorkerReady(
           // English-only `pay` string; `pay` stays the raw legacy fallback.
           pay_min: number | null; pay_max: number | null; pay_interval: string | null;
         }>(
-          `SELECT id, status, title, COALESCE(company, 'Jale') AS company, location, pay, pay_min, pay_max, pay_interval
+          `SELECT id, status, title, company, location, pay, pay_min, pay_max, pay_interval
              FROM jobs WHERE id = ANY($1::uuid[])`,
           [jobIdsToLoad],
         )
@@ -359,13 +337,12 @@ export async function releaseWorkerReady(
   const jobById = new Map(jobRows.map((r) => [r.id, r]));
 
   // Mirrors the producer's own dedup guard (job-alert.ts:101-104): a worker
-  // who has since applied to the job no longer needs the alert -- or the card.
-  const appliedCheckIntents = [...jobAlertIntents, ...referredJobIntents];
-  const appliedJobRows = appliedCheckIntents.length
+  // who has since applied to the job no longer needs the alert.
+  const appliedJobRows = jobAlertIntents.length
     ? (
         await client.query<{ job_id: string }>(
           `SELECT job_id FROM job_applications WHERE worker_id = $1 AND job_id = ANY($2::uuid[])`,
-          [workerId, appliedCheckIntents.map((i) => i.sourceId)],
+          [workerId, jobAlertIntents.map((i) => i.sourceId)],
         )
       ).rows
     : [];
@@ -420,22 +397,7 @@ export async function releaseWorkerReady(
   // evaluateDelivery for the rest. ──
   const survivors: WorkingIntent[] = [];
   for (const intent of working) {
-    if (intent.sourceType === 'referred_job') {
-      // The list only ever names open, unapplied jobs, but an intent left
-      // from an earlier release (or a job that closed since) can still point
-      // at one. A closed job is never sent -- there is no "filled" message.
-      const job = jobById.get(intent.sourceId);
-      if (!job || job.status !== 'active') {
-        await discard(intent, 'superseded', 'job_not_active');
-        superseded++;
-        continue;
-      }
-      if (appliedJobIds.has(intent.sourceId)) {
-        await discard(intent, 'superseded', 'worker_already_applied');
-        superseded++;
-        continue;
-      }
-    } else if (intent.category === 'job_alert') {
+    if (intent.category === 'job_alert') {
       const job = jobById.get(intent.sourceId);
       if (!job || job.status !== 'active') {
         await discard(intent, 'superseded', 'job_not_active');
@@ -505,60 +467,30 @@ export async function releaseWorkerReady(
     // the intent simply returns to the deferred pool for a future release.
   }
 
-  // ── Group 1: onboarding — the welcome, then the referred job cards. ──
-  // Every source_type but referred_job keeps at most one intent, so a
-  // duplicate onboarding_complete is superseded, not sent twice. Referred
-  // jobs keep one intent per JOB (source_id), at most three, newest first --
-  // the order the list returned them in.
-  //
-  // For a worker with no linked WhatsApp the welcome and every referred
-  // intent are superseded as `whatsapp_not_linked` before anything renders.
-  // The referred intents were created first (step 1b) on purpose, so the
-  // decision is visible per job. Every other category keeps today's
-  // behaviour, recipient fallback to users.phone included. This runs before
-  // the window rule below, so these intents never read
-  // `outside_session_window`.
+  // ── Group 1: onboarding — at most one PER source_type. ──
+  // Was "at most one" outright. That is still the guarantee for any single
+  // source_type — a duplicate onboarding_complete is superseded, not sent twice
+  // — but the group now carries two distinct kinds: the welcome, and the job the
+  // worker was referred to (migration 056). Collapsing across source_types would
+  // silently discard the referral message, so the worker would complete
+  // onboarding and never learn about the job that brought them here.
+  // Mirrors the per-sourceType shape group 2 already uses below.
   const onboardingSurvivors = survivors.filter((i) => i.category === 'onboarding');
-  const welcomeKept: WorkingIntent[] = [];
-  let referredKept: WorkingIntent[] = [];
-  const bySource = new Map<string, WorkingIntent[]>();
+  const onboardingBySourceType = new Map<string, WorkingIntent[]>();
   for (const intent of onboardingSurvivors) {
-    if (!linked && (intent.sourceType === 'onboarding_complete' || intent.sourceType === 'referred_job')) {
-      await discard(intent, 'superseded', 'whatsapp_not_linked');
-      superseded++;
-      continue;
-    }
-    const key = intent.sourceType === 'referred_job' ? `referred_job:${intent.sourceId}` : intent.sourceType;
-    const list = bySource.get(key) ?? [];
+    const list = onboardingBySourceType.get(intent.sourceType) ?? [];
     list.push(intent);
-    bySource.set(key, list);
+    onboardingBySourceType.set(intent.sourceType, list);
   }
-  for (const list of bySource.values()) {
+  const onboardingKept: WorkingIntent[] = [];
+  for (const list of onboardingBySourceType.values()) {
     const sorted = withinGroupOrder(list);
-    if (sorted[0].sourceType === 'referred_job') referredKept.push(sorted[0]);
-    else welcomeKept.push(sorted[0]);
+    onboardingKept.push(sorted[0]);
     for (const extra of sorted.slice(1)) {
       await discard(extra, 'superseded', 'onboarding_already_confirmed');
       superseded++;
     }
   }
-  // Newest first: the list's own order; anything it did not return this time
-  // (an intent from an earlier release) goes after, newest intent first.
-  const listRank = (intent: WorkingIntent): number => {
-    const rank = referredOrder.indexOf(intent.sourceId);
-    return rank === -1 ? referredOrder.length : rank;
-  };
-  referredKept.sort((a, b) => {
-    const byRank = listRank(a) - listRank(b);
-    if (byRank !== 0) return byRank;
-    return b.createdAt.getTime() - a.createdAt.getTime();
-  });
-  for (const extra of referredKept.slice(REFERRED_JOB_CARD_CAP)) {
-    await discard(extra, 'superseded', 'referred_job_capacity_exceeded');
-    superseded++;
-  }
-  referredKept = referredKept.slice(0, REFERRED_JOB_CARD_CAP);
-  const referredCardJobIds = new Set(referredKept.map((i) => i.sourceId));
 
   // ── Group 2: account — newest intent per sourceType wins. ──
   const accountSurvivors = survivors.filter((i) => i.category === 'account');
@@ -579,17 +511,7 @@ export async function releaseWorkerReady(
   }
 
   // ── Group 3: job_alert — at most the ten strongest still-valid matches. ──
-  // A job that already gets its own referred card is not repeated in the
-  // digest.
-  const jobAlertSurvivors: WorkingIntent[] = [];
-  for (const intent of survivors.filter((i) => i.category === 'job_alert')) {
-    if (referredCardJobIds.has(intent.sourceId)) {
-      await discard(intent, 'superseded', 'covered_by_referred_card');
-      superseded++;
-      continue;
-    }
-    jobAlertSurvivors.push(intent);
-  }
+  const jobAlertSurvivors = survivors.filter((i) => i.category === 'job_alert');
   const jobAlertSorted = [...jobAlertSurvivors].sort((a, b) => {
     const scoreA = readJobAlertScore(a);
     const scoreB = readJobAlertScore(b);
@@ -613,10 +535,8 @@ export async function releaseWorkerReady(
   );
   let nextSequence = (maxSeqResult.rows[0]?.max ?? 0) + 1;
 
-  // Group 1 is the welcome first, then the cards in their newest-first order
-  // (not `withinGroupOrder`: every card carries the same priority).
   const orderedGroups = [
-    [...withinGroupOrder(welcomeKept), ...referredKept],
+    withinGroupOrder(onboardingKept),
     withinGroupOrder(accountKept),
     withinGroupOrder(jobAlertKept),
     withinGroupOrder(employerChatKept),
@@ -633,35 +553,46 @@ export async function releaseWorkerReady(
   const language: PreferredLanguage = gate?.preferredLanguage ?? 'es';
   const renderPlan: RenderPlanEntry[] = [];
 
-  // Group 1: the welcome, told how many cards follow it, then one entry --
-  // and one outbox row -- per referred job, each its own job_alert card.
-  if (welcomeKept.length > 0) {
+  // Group 1 now holds two distinct kinds, so each gets its own render entry —
+  // one shared request across both would render the referred job as a second
+  // welcome message.
+  const completeKept = onboardingKept.filter((i) => i.sourceType !== 'referred_job');
+  const referredJobKept = onboardingKept.filter((i) => i.sourceType === 'referred_job');
+
+  if (completeKept.length > 0) {
     renderPlan.push({
-      request: { kind: 'onboarding_complete', workerId, language, referredJobCount: referredKept.length },
-      intents: withinGroupOrder(welcomeKept),
+      request: { kind: 'onboarding_complete', workerId, language },
+      intents: withinGroupOrder(completeKept),
     });
   }
 
-  for (const intent of referredKept) {
-    // Active by construction: the eligibility pass superseded every other.
-    const job = jobById.get(intent.sourceId)!;
+  if (referredJobKept.length > 0) {
+    // The job's CURRENT status decides the copy. A job filled while the worker
+    // was still onboarding yields job: null and the honest "already taken"
+    // variant — never a dead listing, and never silence.
+    const referredJob = jobById.get(referredJobKept[0].sourceId);
     renderPlan.push({
       request: {
         kind: 'referred_job',
         workerId,
         language,
-        job: {
-          jobId: job.id,
-          title: job.title,
-          companyName: job.company,
-          location: job.location,
-          pay: job.pay,
-          payMin: job.pay_min,
-          payMax: job.pay_max,
-          payInterval: job.pay_interval,
-        },
+        // Recorded when the intent was synthesized; false for an untagged
+        // arrival, so the copy never invents a referrer.
+        referred: referredJobKept[0].payload.referred === true,
+        job: referredJob && referredJob.status === 'active'
+          ? {
+              jobId: referredJob.id,
+              title: referredJob.title,
+              companyName: referredJob.company ?? '',
+              location: referredJob.location,
+              pay: referredJob.pay,
+              payMin: referredJob.pay_min,
+              payMax: referredJob.pay_max,
+              payInterval: referredJob.pay_interval,
+            }
+          : null,
       },
-      intents: [intent],
+      intents: withinGroupOrder(referredJobKept),
     });
   }
 
@@ -766,26 +697,10 @@ export async function releaseWorkerReady(
       throw new Error('worker_whatsapp_unavailable');
     }
 
-    // WhatsApp delivers free-form text only within 24h of the
-    // worker's last message. This release is NOT always inside that window:
-    // a web-only worker may never have written to us, a failed send holds
-    // up the rows queued behind it, and a replayed event can run days
-    // late. Asked once, on the DB clock; outside it, any entry that
-    // rendered without a content template is superseded instead of written.
-    // Templates (job cards, employer_message_*) are deliverable regardless.
-    const withinWindow = await isWithinSessionWindow(client, whatsappNumber);
-
     for (const entry of renderPlan) {
       const rendered: ReleaseRenderedMessage = await deps.renderer.render(entry.request);
-      if (!withinWindow && !rendered.contentTemplate) {
-        for (const intent of entry.intents) {
-          await discard(intent, 'superseded', 'outside_session_window');
-          superseded++;
-        }
-        continue;
-      }
       const primary = entry.intents[0];
-      const { outboxId } = await insertAuthorizedIntentOutbox(client, { workerId, intentId: primary.id }, {
+      const { outboxId } = await insertAuthorizedIntentOutbox(client, primary.id, {
         whatsappNumber,
         body: rendered.body,
         contentTemplate: rendered.contentTemplate,
@@ -797,9 +712,8 @@ export async function releaseWorkerReady(
         await client.query(
           `UPDATE worker_message_intents
               SET status = 'released', release_sequence = $1, outbox_id = $2, updated_at = now()
-            WHERE id = $3
-              AND user_id = $4`,
-          [sequence, outboxId, intent.id, workerId],
+            WHERE id = $3`,
+          [sequence, outboxId, intent.id],
         );
         released++;
       }
