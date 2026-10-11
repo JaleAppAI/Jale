@@ -1,3 +1,4 @@
+import type { OpenCasesByWait } from '../case-aging';
 import type { AdminCase, AdminCaseStatus, AdminCaseType, AdminTimelineEvent, IdentityLockout } from '../types';
 import { countRecentReveals, REVEAL_TILE_DAYS } from './admin-audit';
 import { listIdentityLockouts } from './admin-lockouts';
@@ -22,6 +23,7 @@ export type AdminCaseRow = {
   details: Record<string, unknown> | null;
   created_at: Date | string;
   updated_at: Date | string;
+  status_changed_at: Date | string;
   assigned_admin_email: string | null;
   user_name: string | null;
   user_phone: string | null;
@@ -133,6 +135,7 @@ export function mapAdminCaseRow(row: AdminCaseRow, events: AdminCaseEventRow[] =
     assignedAdmin: row.assigned_admin_email ?? 'Unassigned',
     createdAt: asIso(row.created_at),
     updatedAt: asIso(row.updated_at),
+    statusChangedAt: asIso(row.status_changed_at),
     lastMessage: detailString(details, 'lastMessage') ?? '',
     maskedPhone: maskPhone(row.user_phone),
     ...(maskedEmail ? { maskedEmail } : {}),
@@ -143,12 +146,16 @@ export function mapAdminCaseRow(row: AdminCaseRow, events: AdminCaseEventRow[] =
 
 type QueryClient = AuditQueryClient;
 
+// Newest first. One transaction can write two events with the same created_at
+// (a queued reply, then the "Status changed" its UPDATE fires, migration 117).
+// The status change is the later write, so it sorts first in this newest-first
+// list; id makes any other tie stable.
 async function listEventsForCase(client: QueryClient, caseId: string): Promise<AdminCaseEventRow[]> {
   const result = await client.query<AdminCaseEventRow>(
     `SELECT id, case_id, event_type, actor_type, payload, created_at
        FROM admin_case_events
       WHERE case_id = $1
-      ORDER BY created_at DESC`,
+      ORDER BY created_at DESC, (event_type = 'status_changed') DESC, id`,
     [caseId],
   );
   return result.rows;
@@ -158,7 +165,7 @@ async function listEventsForCase(client: QueryClient, caseId: string): Promise<A
 // the dashboard's open-case preview so both map through mapAdminCaseRow.
 const CASE_LIST_SELECT = `
   SELECT c.id, c.case_type, c.status, c.priority, c.user_id, c.conversation_id,
-         c.employer_id, c.summary, c.details, c.created_at, c.updated_at,
+         c.employer_id, c.summary, c.details, c.created_at, c.updated_at, c.status_changed_at,
          au.admin_email AS assigned_admin_email,
          u.full_name AS user_name,
          u.phone AS user_phone,
@@ -170,6 +177,22 @@ const CASE_LIST_SELECT = `
     LEFT JOIN users employer ON employer.id = c.employer_id`;
 
 const OPEN_CASE_FILTER = `c.status NOT IN ('resolved', 'dismissed')`;
+const CLOSED_CASE_FILTER = `c.status IN ('resolved', 'dismissed')`;
+
+// Queue order (roadmap 2d): waiting on us (open, pending admin), then waiting on
+// the worker, then closed. Open cases: highest priority first, then the longest
+// time in their current status. Closed cases: most recently closed first. id
+// breaks ties so the order is stable. Shared by /cases and the Home preview.
+export const CASE_QUEUE_ORDER = `
+  ORDER BY CASE
+             WHEN ${CLOSED_CASE_FILTER} THEN 2
+             WHEN c.status = 'pending_worker' THEN 1
+             ELSE 0
+           END,
+           CASE WHEN ${OPEN_CASE_FILTER} THEN c.priority END DESC,
+           CASE WHEN ${OPEN_CASE_FILTER} THEN c.status_changed_at END,
+           CASE WHEN ${CLOSED_CASE_FILTER} THEN c.status_changed_at END DESC,
+           c.id`;
 
 // Default page size for queue list reads. Bounds memory/render cost so the
 // queue stays responsive as admin_cases grows; detail pages load single rows.
@@ -184,7 +207,7 @@ export type AdminCaseList = {
 };
 
 export type AdminDashboard = {
-  openCaseCount: number;
+  openByWait: OpenCasesByWait;
   openCases: AdminCase[];
   revealCount: number;
   lockedOutCount: number;
@@ -206,7 +229,7 @@ export async function listAdminCaseRows(client: QueryClient, limit: number = ADM
   // Bounded by LIMIT to avoid unbounded scans at scale.
   const result = await client.query<AdminCaseRow>(
     `${CASE_LIST_SELECT}
-      ORDER BY c.status, c.priority DESC, c.created_at DESC
+      ${CASE_QUEUE_ORDER}
       LIMIT $1`,
     [limit],
   );
@@ -220,20 +243,58 @@ export async function listAdminCaseRows(client: QueryClient, limit: number = ADM
   };
 }
 
-export async function countOpenAdminCases(client: QueryClient): Promise<number> {
-  const result = await client.query<{ count: string }>(
-    `SELECT COUNT(*) AS count FROM admin_cases c WHERE ${OPEN_CASE_FILTER}`,
-  );
-  return parseInt(result.rows[0]?.count ?? '0', 10);
+// Home's Open cases tile and "Open cases by wait" card (roadmap 2d): open cases
+// by who they wait on and by time in their current status. Buckets of
+// now() - status_changed_at: [0, 24 h), [24 h, 72 h), [72 h, 168 h), [168 h, ∞);
+// a time ahead of the clock falls in the first. Bucket ids are case-aging.ts's.
+export const OPEN_CASES_BY_WAIT_SQL = `
+  SELECT CASE WHEN c.status = 'pending_worker' THEN 'worker' ELSE 'us' END AS waiting_on,
+         CASE
+           WHEN now() - c.status_changed_at < interval '24 hours' THEN 'under_1d'
+           WHEN now() - c.status_changed_at < interval '72 hours' THEN 'days_1_3'
+           WHEN now() - c.status_changed_at < interval '168 hours' THEN 'days_3_7'
+           ELSE 'over_7d'
+         END AS bucket,
+         COUNT(*) AS count
+    FROM admin_cases c
+   WHERE ${OPEN_CASE_FILTER}
+   GROUP BY 1, 2`;
+
+export type OpenCasesByWaitRow = { waiting_on: string; bucket: string; count: string };
+
+// Zero-fills the cells the grouped query leaves out; an unknown id is an error.
+export function mapOpenCasesByWaitRows(rows: OpenCasesByWaitRow[]): OpenCasesByWait {
+  const byWait: OpenCasesByWait = {
+    us: { under_1d: 0, days_1_3: 0, days_3_7: 0, over_7d: 0 },
+    worker: { under_1d: 0, days_1_3: 0, days_3_7: 0, over_7d: 0 },
+  };
+
+  for (const row of rows) {
+    if (row.waiting_on !== 'us' && row.waiting_on !== 'worker') {
+      throw new Error(`Unexpected waiting_on: ${row.waiting_on}`);
+    }
+    const counts = byWait[row.waiting_on];
+    if (!Object.hasOwn(counts, row.bucket)) {
+      throw new Error(`Unexpected wait bucket: ${row.bucket}`);
+    }
+    counts[row.bucket as keyof typeof counts] = parseInt(row.count, 10);
+  }
+
+  return byWait;
 }
 
-// Newest open cases first, by priority. Queried directly so closed rows can
-// never crowd open ones out of a fixed-size page (roadmap audit finding 7).
+export async function countOpenCasesByWait(client: QueryClient): Promise<OpenCasesByWait> {
+  const result = await client.query<OpenCasesByWaitRow>(OPEN_CASES_BY_WAIT_SQL);
+  return mapOpenCasesByWaitRows(result.rows);
+}
+
+// Open cases in queue order. Queried directly so closed rows can never crowd
+// open ones out of a fixed-size page (roadmap audit finding 7).
 export async function listOpenAdminCaseRows(client: QueryClient, limit: number): Promise<AdminCaseRow[]> {
   const result = await client.query<AdminCaseRow>(
     `${CASE_LIST_SELECT}
       WHERE ${OPEN_CASE_FILTER}
-      ORDER BY c.priority DESC, c.created_at DESC
+      ${CASE_QUEUE_ORDER}
       LIMIT $1`,
     [limit],
   );
@@ -342,7 +403,7 @@ export async function loadCaseDetail(session: AdminSession, id: string): Promise
 export async function loadAdminDashboard(session: AdminSession): Promise<AdminDashboard> {
   try {
     return await withAdminReadTransaction(session, async (client) => {
-      const openCaseCount = await countOpenAdminCases(client);
+      const openByWait = await countOpenCasesByWait(client);
       const openRows = await listOpenAdminCaseRows(client, DASHBOARD_PREVIEW_SIZE);
       const revealCount = await countRecentReveals(client, REVEAL_TILE_DAYS);
       const lockouts = await listIdentityLockouts(client);
@@ -365,7 +426,7 @@ export async function loadAdminDashboard(session: AdminSession): Promise<AdminDa
       }, client);
 
       return {
-        openCaseCount,
+        openByWait,
         openCases: openRows.map((row) => mapAdminCaseRow(row)),
         revealCount,
         lockedOutCount: lockedOut.length,

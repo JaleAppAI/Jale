@@ -3,7 +3,9 @@ import { requireAdminSession } from '@/lib/server/session';
 import {
   FUNNEL_STALLED_DAYS,
   getOnboardingCohorts,
+  getOnboardingRestarts,
   getOnboardingStalled,
+  getOperatorResets,
   parseFunnelDoor,
   parseFunnelWeeks,
 } from '@/lib/server/admin-analytics';
@@ -22,6 +24,8 @@ import { AnalyticsTabs } from '@/components/analytics/AnalyticsTabs';
 import { CohortTable } from '@/components/analytics/CohortTable';
 import { FunnelBars } from '@/components/analytics/FunnelBars';
 import { KpiTile } from '@/components/analytics/KpiTile';
+import { OperatorResets } from '@/components/analytics/OperatorResets';
+import { RestartsByStep } from '@/components/analytics/RestartsByStep';
 import { StalledList } from '@/components/analytics/StalledList';
 
 export const dynamic = 'force-dynamic';
@@ -44,8 +48,10 @@ export default async function FunnelsPage({
   const door = parseFunnelDoor(doorParam);
   const now = new Date();
 
-  // One wave of two queries: db.ts caps the shared pool at max: 5.
+  // Two waves of two queries, the second after the first: db.ts caps the
+  // shared pool at max: 5.
   const [cohortRows, stalledRows] = await Promise.all([getOnboardingCohorts(weeks), getOnboardingStalled()]);
+  const [restartRows, resetRows] = await Promise.all([getOnboardingRestarts(weeks), getOperatorResets(weeks)]);
 
   const cohorts = cohortsForDoor(cohortRows, door, cohortWeekStarts(weeks, now));
   const total = totalCounts(cohorts);
@@ -115,11 +121,24 @@ export default async function FunnelsPage({
 
       <CohortTable rows={tableRows} showCode={door === 'whatsapp'} />
 
+      <RestartsByStep rows={restartRows} door={door} weeks={weeks} now={now} />
+      <OperatorResets rows={resetRows} now={now} />
+
       <p className="muted" style={{ fontSize: '0.78rem' }}>
         Workers reset by an operator and accounts from the retired web bypass are left out, so Verified
         here differs from the verified sign-ups on the Growth tab. Weeks before the onboarding
         funnel launched show no starters.
-        {' '}{formatCount(total.declined)} declined the terms in these weeks.
+        {' '}{formatCount(total.declined)} declined the terms in these weeks. Start over and back counts
+        workers by the step they left with the start over command (WhatsApp only) or back; voice-note retry
+        loops and system moves do not count as going back. Workers reset by an operator lose their onboarding
+        history, so their earlier restarts are not counted. Start over and back counts moves made since the last
+        operator reset of each worker. Reached counts the workers who were at a step in these weeks: they arrived
+        there, or started over or went back from it. All steps and the weekly chart count each worker once, so
+        the steps can add up to more; Presses count every press, so a worker who pressed twice counts twice. On
+        All, the start-over share is of every worker who was at the step, web included. Operator resets count
+        every reset an operator ran; a reason used for 10 or more workers within an hour is a bulk run, left out
+        of the counts and listed under the table. Reasons are typed by operators; long numbers, emails and IDs
+        are hidden.
       </p>
     </main>
   );

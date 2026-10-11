@@ -575,6 +575,9 @@ MIGRATIONS=(
   "111_audit_change_log.sql"
   "112_audit_operator_functions.sql"
   "113_admin_onboarding_funnel.sql"
+  "114_admin_employer_health.sql"
+  "115_admin_ops_health.sql"
+  "117_admin_queues.sql"
 )
 
 WORKDIR="$(mktemp -d)"

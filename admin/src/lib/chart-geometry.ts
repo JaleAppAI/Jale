@@ -2,15 +2,16 @@
  * Pure SVG geometry for the analytics charts. No React, no DOM: every function
  * maps numbers to path strings or coordinates so the check script can pin the
  * exact output. Sizes are the SVG plot area (width × height); `max` is the
- * axis maximum from `niceMax`.
+ * axis maximum from `niceMax`. A `null` value is a gap (no data for that
+ * bucket), never a zero.
  */
 
 const NICE_STEPS = [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10];
 
 const fmt = (n: number): string => n.toFixed(1);
 
-export function niceMax(values: number[]): number {
-  const max = values.reduce((acc, v) => (v > acc ? v : acc), 0);
+export function niceMax(values: (number | null)[]): number {
+  const max = values.reduce<number>((acc, v) => (v !== null && v > acc ? v : acc), 0);
   if (max <= 1) return 1;
   const magnitude = 10 ** Math.floor(Math.log10(max));
   for (const step of NICE_STEPS) {
@@ -18,6 +19,18 @@ export function niceMax(values: number[]): number {
     if (candidate >= max) return Number(candidate.toPrecision(12));
   }
   return 10 * magnitude;
+}
+
+// How many intervals to split the axis into so every tick is a round number:
+// the first count whose step is 1, 2 or 5 times a power of ten, else the
+// first count. niceMax values always find one among 3, 4, 5, 6.
+export function tickIntervals(max: number, counts: number[] = [3, 4, 5, 6]): number {
+  const round = counts.find((n) => {
+    const step = max / n;
+    const mantissa = step / 10 ** Math.floor(Math.log10(step));
+    return [1, 2, 5, 10].some((nice) => Math.abs(mantissa - nice) < 1e-9);
+  });
+  return round ?? counts[0];
 }
 
 export function tickValues(max: number, intervals = 3): number[] {
@@ -37,18 +50,47 @@ function yFor(value: number, height: number, max: number): number {
   return height - (value / max) * height;
 }
 
-export function linePath(values: number[], width: number, height: number, max: number): string {
+// A null lifts the pen: each run of values starts with a move, so no segment
+// is drawn through a gap. All-number input gives exactly one run.
+export function linePath(values: (number | null)[], width: number, height: number, max: number): string {
   const xs = xPositions(values.length, width);
-  return values
-    .map((v, i) => `${i === 0 ? 'M' : 'L'}${fmt(xs[i])},${fmt(yFor(v, height, max))}`)
-    .join(' ');
+  const parts: string[] = [];
+  let penDown = false;
+  values.forEach((v, i) => {
+    if (v === null) {
+      penDown = false;
+      return;
+    }
+    parts.push(`${penDown ? 'L' : 'M'}${fmt(xs[i])},${fmt(yFor(v, height, max))}`);
+    penDown = true;
+  });
+  return parts.join(' ');
+}
+
+// Points with no value on either side draw no line, so they get a dot. The
+// last point is left out: it carries the end dot.
+export function isolatedPoints(
+  values: (number | null)[],
+  width: number,
+  height: number,
+  max: number,
+): { x: number; y: number }[] {
+  const xs = xPositions(values.length, width);
+  const points: { x: number; y: number }[] = [];
+  for (let i = 0; i < values.length - 1; i += 1) {
+    const v = values[i];
+    if (v !== null && (i === 0 || values[i - 1] === null) && values[i + 1] === null) {
+      points.push({ x: xs[i], y: yFor(v, height, max) });
+    }
+  }
+  return points;
 }
 
 export function areaPath(values: number[], width: number, height: number, max: number): string {
   return `${linePath(values, width, height, max)} L${width},${height} L0,${height} Z`;
 }
 
-export function endPoint(values: number[], width: number, height: number, max: number): { x: number; y: number } {
+export function endPoint(values: (number | null)[], width: number, height: number, max: number): { x: number; y: number } {
   const xs = xPositions(values.length, width);
   const last = values[values.length - 1] ?? 0;
   return { x: xs[xs.length - 1], y: yFor(last, height, max) };

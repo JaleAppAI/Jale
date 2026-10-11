@@ -133,4 +133,35 @@ assert.deepEqual(geo.spreadLabels([100, 104, 200], 14, 244), [100, 114, 200]);
 assert.deepEqual(geo.spreadLabels([200, 104, 100], 14, 244), [200, 114, 100]);
 assert.deepEqual(geo.spreadLabels([244, 244, 244], 14, 244), [216, 230, 244], 'flat zero lines stack upward');
 
+// 2b: a null value is a gap (a week with no median), never a zero. The pen
+// lifts over it; a point with no neighbour gets a dot instead of a line.
+assert.equal(geo.linePath([1, null, 3], 100, 30, 3), 'M0.0,20.0 M100.0,0.0', 'a null lifts the pen');
+assert.equal(
+  geo.linePath([null, 2, 4, null, 3, 3], 500, 40, 4),
+  'M100.0,20.0 L200.0,0.0 M400.0,10.0 L500.0,10.0',
+  'a leading null is skipped and every run after a gap starts with a move',
+);
+assert.equal(geo.linePath([2, 4, null, null], 300, 40, 4), 'M0.0,20.0 L100.0,0.0', 'trailing nulls draw nothing');
+assert.equal(geo.linePath([null, null], 100, 40, 4), '', 'all null: no path at all');
+assert.equal(geo.niceMax([null, 7, null]), 8, 'nulls are ignored when sizing the axis');
+assert.equal(geo.niceMax([null]), 1);
+assert.deepEqual(geo.isolatedPoints([2, null, 3, 4], 300, 40, 4), [{ x: 0, y: 20 }], 'a lone point gets a dot');
+assert.deepEqual(geo.isolatedPoints([null, 2, null, 4], 300, 40, 4), [{ x: 100, y: 20 }], 'the last point is left to the end dot');
+assert.deepEqual(geo.isolatedPoints([1, null], 100, 40, 4), [{ x: 0, y: 30 }]);
+assert.deepEqual(geo.isolatedPoints([1, 2, 3], 200, 40, 4), [], 'a connected line has no lone points');
+
+// 2b: round tick steps. The first interval count (3, 4, 5, 6 by default)
+// whose step is 1, 2 or 5 times a power of ten: no 26.667 on an 80 h axis.
+for (const [max, intervals] of [
+  [1, 5], [1.2, 6], [1.5, 3], [2, 4], [2.5, 5], [3, 3], [4, 4], [5, 5], [6, 3], [8, 4], [10, 5],
+  [12, 6], [30, 3], [80, 4], [100, 5], [150, 3], [1500, 3],
+]) {
+  assert.equal(geo.tickIntervals(max), intervals, `tickIntervals(${max})`);
+}
+assert.deepEqual(geo.tickValues(80, geo.tickIntervals(80)), [0, 20, 40, 60, 80]);
+assert.deepEqual(geo.tickValues(1.2, geo.tickIntervals(1.2)), [0, 0.2, 0.4, 0.6, 0.8, 1, 1.2]);
+assert.equal(geo.tickIntervals(10, [2, 3, 4, 5]), 2, 'the column chart prefers fewer lines: 0 / 5 / 10');
+assert.equal(geo.tickIntervals(2.5, [2, 3, 4, 5]), 5);
+assert.equal(geo.tickIntervals(1.2, [2, 3, 4, 5]), 2, 'no round step: the first choice');
+
 console.log('check-chart-geometry: all assertions passed');
