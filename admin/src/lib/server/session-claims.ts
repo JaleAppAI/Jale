@@ -1,11 +1,36 @@
 import type { AdminRole } from '../types';
 
-export type AdminSession = {
+/** Who a verified admin id token says the caller is. Not yet a session. */
+export type AdminIdentity = {
   sub: string;
   email?: string;
   role: AdminRole;
   groups: string[];
 };
+
+/**
+ * The signed-in admin for one request.
+ *
+ * A real session carries the server-side ids every access record names:
+ * `sessionId` (admin_sessions.id), `adminUserId` (admin_users.id) and a fresh
+ * `requestId` per request. The local-preview stand-in (development only) has
+ * none of them and is marked `preview: true`; the audit helpers never write
+ * an event for it, and refuse any other session that lacks the ids.
+ */
+export type AdminSession = AdminIdentity & (
+  | {
+      preview?: undefined;
+      sessionId: string;
+      adminUserId: string;
+      requestId: string;
+    }
+  | {
+      preview: true;
+      sessionId?: undefined;
+      adminUserId?: undefined;
+      requestId?: undefined;
+    }
+);
 
 export type AdminTokenClaims = {
   sub?: unknown;
@@ -28,7 +53,7 @@ export function selectHighestAdminRole(groups: unknown): AdminRole | undefined {
   return ADMIN_ROLE_PRIORITY.find((role) => groups.includes(role));
 }
 
-export function buildAdminSessionFromClaims(claims: AdminTokenClaims): AdminSession {
+export function buildAdminSessionFromClaims(claims: AdminTokenClaims): AdminIdentity {
   const sub = typeof claims.sub === 'string' ? claims.sub.trim() : '';
   if (!sub) {
     throw new Error('Admin token is missing subject');

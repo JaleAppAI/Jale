@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
 import type { PoolClient } from 'pg';
+import type { AuditCaller } from './audit/caller';
+import { setAuditContext } from './audit/context';
 import { setRlsContext } from './db';
 import { checkCompliance } from '../legal/check-compliance';
 
@@ -248,9 +250,11 @@ export async function persistBillingCustomer(
   cognitoSub: string,
   userId: string,
   providerCustomerId: string,
+  caller: AuditCaller,
 ): Promise<void> {
   await client.query('BEGIN');
   await setRlsContext(client, cognitoSub);
+  await setAuditContext(client, caller, 'employer.billing_checkout');
   await client.query(
     `INSERT INTO billing_customers (user_id, provider, provider_customer_id)
      VALUES ($1, 'stripe', $2)

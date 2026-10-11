@@ -139,8 +139,15 @@ export async function loadVerifiedRecipient(
 // None of these read a payload's OTP or raw inbound body, and none embed a
 // raw phone number.
 
-function buildOnboardingCompleteMessage(lang: Lang): ReleaseRenderedMessage {
-  return { body: t('v2_ready', lang), contentTemplate: null, contentVariables: null };
+/**
+ * The welcome. When referred job cards follow it in the same release, it
+ * says so -- "here is the job you were interested in" --
+ * instead of promising to let them know later about work that is already
+ * on its way.
+ */
+function buildOnboardingCompleteMessage(lang: Lang, referredJobCount = 0): ReleaseRenderedMessage {
+  const key = referredJobCount === 0 ? 'v2_ready' : referredJobCount === 1 ? 'v2_ready_jobs_one' : 'v2_ready_jobs_many';
+  return { body: t(key, lang), contentTemplate: null, contentVariables: null };
 }
 
 function buildSecurityNoticeMessage(lang: Lang): ReleaseRenderedMessage {
@@ -245,64 +252,6 @@ function buildJobAlertDigestText(lang: Lang, jobs: ReadonlyArray<DigestJob>): st
   return [header, ...lines, footer].join('\n');
 }
 
-/**
- * The job a worker was referred to (migration 056), sent as a second message
- * after the welcome.
- *
- * Plain text, deliberately. Buttons on WhatsApp require an approved content
- * template, and the existing `job_alert_*` template has fixed variable slots —
- * referral framing cannot be injected into it without a new Meta-approved
- * template, which is external lead time rather than a code change. Freeform is
- * deliverable here for the same reason the multi-job digest below is: the
- * worker.ready release fires moments after the worker's own message, so we are
- * always inside WhatsApp's 24h customer-service window. So we carry the
- * referral framing and point at the JOBS/TRABAJOS keyword the processor already
- * handles, rather than inventing a button payload no handler receives.
- */
-function buildReferredJobMessage(
-  lang: Lang,
-  job: {
-    jobId: string; title: string; companyName: string; location: string | null; pay: string | null;
-    payMin?: number | null; payMax?: number | null; payInterval?: string | null;
-  } | null,
-  referred: boolean,
-): ReleaseRenderedMessage {
-  // A visitor can reach the public page with no share tag and tap Apply on their
-  // own. The claim is still real and the job is still the one they wanted, but
-  // no one referred them -- saying "a friend referred you" to that person is
-  // simply false, so the framing follows whether a referrer actually exists.
-  if (!job) {
-    const body = referred
-      ? (lang === 'es'
-          ? 'El trabajo al que te recomendaron ya se ocupo, pero tenemos otros como ese. Escribe TRABAJOS para verlos.'
-          : 'The job you were referred to has been filled, but we have others like it. Reply JOBS to see them.')
-      : (lang === 'es'
-          ? 'El trabajo que te interesaba ya se ocupo, pero tenemos otros como ese. Escribe TRABAJOS para verlos.'
-          : 'The job you were interested in has been filled, but we have others like it. Reply JOBS to see them.');
-    return { body, contentTemplate: null, contentVariables: null };
-  }
-
-  // title/companyName/location are employer free text — rendered as stored,
-  // never translated. pay and location are both nullable (migration 003), so
-  // each is omitted rather than rendered as a dangling separator. Unlike the
-  // digest branch below, there is no "not specified" filler here by design —
-  // pay simply drops out of the line when there is nothing to show.
-  const localizedJobPay = formatPayRangeLocalized(
-    toPayNumber(job.payMin), toPayNumber(job.payMax), job.payInterval ?? null, lang,
-  ) ?? job.pay ?? null;
-  const headline = [job.title, job.companyName].filter((p) => p && p.length > 0).join(' - ');
-  const detail = [job.location, localizedJobPay].filter((p) => p && p.length > 0).join(' - ');
-  const intro = referred
-    ? (lang === 'es' ? 'Un amigo te recomendo este trabajo:' : 'A friend referred you to this job:')
-    : (lang === 'es' ? 'Este es el trabajo que te interesaba:' : 'Here is the job you were interested in:');
-  const closing =
-    lang === 'es'
-      ? 'Escribe TRABAJOS para postularte o ver otros.'
-      : 'Reply JOBS to apply or see others.';
-  const body = `${intro}\n\n${headline}${detail ? `\n${detail}` : ''}\n\n${closing}`;
-  return { body, contentTemplate: null, contentVariables: null };
-}
-
 function buildJobAlertDigestMessage(
   lang: Lang,
   jobsIn: ReadonlyArray<DigestJob>,
@@ -315,10 +264,13 @@ function buildJobAlertDigestMessage(
   // parseButtonPayload in flows.ts). This is the alert that reaches a
   // DORMANT ready worker — outside WhatsApp's 24h customer-service window
   // Meta rejects freeform sends, so the plain-text version silently never
-  // arrived, and it also had no Accept/Decline/Info buttons. The
-  // multi-job digest keeps plain text: it is only produced by the
-  // worker.ready release, moments after the worker's own message, so it is
-  // always inside the window.
+  // arrived, and it also had no Accept/Decline/Info buttons. Since sprint 27,
+  // the same builder renders each referred job's card, so the two can never
+  // drift. The multi-job digest stays plain text, and plain text is only
+  // deliverable inside the window -- which is NOT guaranteed at release time
+  // (a web-only worker never wrote to us; a replayed event can be days
+  // late). The release checks the window itself (lib/session-window.ts) and
+  // supersedes any free-form row outside it; this renderer stays clock-free.
   //
   // `jobs.pay` is nullable (migration 003) and a pre-existing deferred
   // intent may carry no `location` either — the template must still render
@@ -542,7 +494,7 @@ export function createReleaseRenderer(): ReleaseRenderer {
     async render(request: ReleaseRenderRequest): Promise<ReleaseRenderedMessage> {
       switch (request.kind) {
         case 'onboarding_complete':
-          return buildOnboardingCompleteMessage(request.language);
+          return buildOnboardingCompleteMessage(request.language, request.referredJobCount ?? 0);
         case 'account_notice':
           // Sprint 24 round 2: the web-completion arm sits beside the stage
           // arm because `enqueueWorkerMessage` runs a CATEGORY renderer only
@@ -558,7 +510,8 @@ export function createReleaseRenderer(): ReleaseRenderer {
             ?? buildAccountNoticeMessage(request.language, request.sourceType)
           );
         case 'referred_job':
-          return buildReferredJobMessage(request.language, request.job, request.referred);
+          // One card per referred job: exactly the one-job alert.
+          return buildJobAlertDigestMessage(request.language, [{ ...request.job, score: 0 }]);
         case 'job_alert_digest':
           return buildJobAlertDigestMessage(request.language, request.jobs);
         case 'employer_chat_single':

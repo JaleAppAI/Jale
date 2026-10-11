@@ -24,4 +24,31 @@ describe('cdk app entrypoint', () => {
     expect(app).toContain("new FrontendStack(app, 'JaleFrontendStack'");
     expect(app).toContain("new AdminStack(app, 'JaleAdminStack'");
   });
+
+  it('composes the reports stack after ApiStack and before AdminStack, which reads its images', () => {
+    const app = readComposition();
+    const apiAt = app.indexOf("new ApiStack(app, 'JaleApiStack'");
+    const reportsAt = app.indexOf("new ReportsStack(app, 'JaleReportsStack'");
+    const adminAt = app.indexOf("new AdminStack(app, 'JaleAdminStack'");
+
+    expect(apiAt).toBeGreaterThan(-1);
+    expect(reportsAt).toBeGreaterThan(apiAt);
+    expect(adminAt).toBeGreaterThan(reportsAt);
+    expect(app.slice(adminAt)).toContain('reportImagesBucket: reports.imagesBucket');
+    expect(app.slice(adminAt)).toContain('reportImagesKey: reports.imagesKey');
+  });
+
+  it('composes the audit stacks, the audit stack right after the database stack', () => {
+    const app = readComposition();
+    const database = app.indexOf("new DatabaseStack(app, 'JaleDatabaseStack'");
+    const archive = app.indexOf("new AuditArchiveStack(app, 'JaleAuditArchiveStack'");
+    const audit = app.indexOf("new AuditStack(app, 'JaleAuditStack'");
+    const bastion = app.indexOf("new BastionStack(app, 'JaleBastionStack'");
+    expect(database).toBeGreaterThan(-1);
+    expect(archive).toBeGreaterThan(database);
+    expect(audit).toBeGreaterThan(archive);
+    expect(bastion).toBeGreaterThan(audit);
+    expect(app).toContain('new AuditEdgeStack(app, EDGE_STACK_IDS[region]');
+    expect(app).toContain('grantAuditFallback(construct)');
+  });
 });

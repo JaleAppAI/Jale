@@ -8,6 +8,7 @@ import { AuthShell } from '@/components/auth/AuthShell';
 import { CenteredCardSkeleton } from '@/components/ui/page-skeletons';
 import { validateJobId, isAuthFlowCompleting } from '@/lib/referral-return';
 import { assignReturnPath, sanitizeReturnPath } from '@/lib/login-url';
+import { normalizeShareCode } from '@/lib/share-code';
 import { claimReferral } from '@/lib/api/worker';
 
 export const dynamic = 'force-dynamic';
@@ -30,13 +31,15 @@ export default function WorkerAuthPage() {
             if (isAuthFlowCompleting()) return;
 
             // An already-authenticated worker never mounts WorkerAuthForm, so
-            // this is the only place that can claim the referral for them.
-            // Fire-and-forget: a bad/expired code, or a missing idToken,
-            // must never delay or block the redirect.
+            // this is the only place that can tell the server about the job
+            // they followed a link to -- tagged or not: the job goes on their
+            // referred-jobs list either way, and a share code also claims its
+            // referral credit. Fire-and-forget: a bad/expired code, or a
+            // missing idToken, must never delay or block the redirect.
             const jobId = validateJobId(searchParams.get('job'));
-            const shareCode = searchParams.get('share');
-            if (shareCode && idToken) {
-                claimReferral(idToken, shareCode).catch(() => {});
+            const shareCode = normalizeShareCode(searchParams.get('share'));
+            if ((jobId || shareCode) && idToken) {
+                claimReferral(idToken, { jobId, shareCode }).catch(() => {});
             }
             if (jobId) {
                 router.replace(`/worker/jobs/${jobId}`);

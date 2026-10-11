@@ -2,9 +2,17 @@ import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { handler } from '../../../../lambda/api/worker-post-delete';
 import { getDbPool, setRlsContext, setInternalUserRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
+import { setAuditContext } from '../../../../lambda/lib/audit/context';
+import { callerFor, expectContextBeforeWrite, withRequestId } from './audit-expectations';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
+jest.mock('../../../../lambda/lib/audit/record', () => ({
+  ...jest.requireActual('../../../../lambda/lib/audit/record'),
+  recordAccess: jest.fn(),
+  recordAttempt: jest.fn(),
+}));
+jest.mock('../../../../lambda/lib/audit/context');
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockQuery = jest.fn();
@@ -57,5 +65,15 @@ describe('worker-post-delete Lambda', () => {
     const res = await handler(makeEvent(POST_ID));
     expect(res.statusCode).toBe(404);
     expect(JSON.parse(res.body).error).toBe('post_not_found');
+  });
+
+  describe('change context', () => {
+    it('states the worker before the post is marked deleted', async () => {
+      const res = await handler(withRequestId(makeEvent(POST_ID)));
+      expect(res.statusCode).toBe(200);
+      expect(setAuditContext).toHaveBeenCalledTimes(1);
+      expect(setAuditContext).toHaveBeenCalledWith(expect.objectContaining({ query: mockQuery }), callerFor('worker', 'worker-uuid'), 'worker.post_delete');
+      expectContextBeforeWrite(mockQuery, setAuditContext as jest.Mock, /UPDATE worker_posts/);
+    });
   });
 });

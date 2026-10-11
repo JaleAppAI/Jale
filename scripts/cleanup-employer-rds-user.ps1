@@ -4,17 +4,14 @@
 # employer account creation for that email address.
 #
 # Usage:
-#   cd infra
-#   npx cdk deploy JaleBastionStack
-#   cd ..
+#   .\scripts\deploy-bastion.ps1           # or: bash scripts/deploy-bastion.sh
 #   .\scripts\cleanup-employer-rds-user.ps1
 #   # Prompts for the employer email to delete.
 #   # Or run non-interactively:
 #   .\scripts\cleanup-employer-rds-user.ps1 -Email 'employer@example.com'
 #   # If pool lookup by name is unavailable, pass it explicitly:
 #   .\scripts\cleanup-employer-rds-user.ps1 -Email 'employer@example.com' -EmployerPoolId 'us-east-2_abc123'
-#   cd infra
-#   npx cdk destroy JaleBastionStack
+#   .\scripts\deploy-bastion.ps1 -Destroy  # or: bash scripts/deploy-bastion.sh --destroy
 
 [CmdletBinding()]
 param(
@@ -70,7 +67,7 @@ $bastionId = (aws cloudformation describe-stacks `
 
 if ([string]::IsNullOrEmpty($bastionId) -or $bastionId -eq 'None') {
   Write-Host "!! Could not find BastionInstanceId output on $BastionStack." -ForegroundColor Red
-  Write-Host "   Deploy it first: cd infra; npx cdk deploy $BastionStack"
+  Write-Host "   Deploy it first: .\scripts\deploy-bastion.ps1 (or: bash scripts/deploy-bastion.sh)"
   exit 1
 }
 Write-Host "   bastion: $bastionId"
@@ -250,6 +247,9 @@ COMMIT;
 
 $sqlB64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($sql))
 
+# Bash runs this text as code, so it carries no operator value: an address
+# with shell syntax in it ($(...) or backticks) passes the address check. The
+# address reaches the bastion only inside the base64-encoded SQL.
 $remoteScript = @"
 #!/bin/bash
 set -euo pipefail
@@ -270,7 +270,7 @@ echo "$sqlB64" | base64 -d > "`$TMP"
 psql -h "`$DB_HOST" -p "`$DB_PORT" -U "`$DB_USER" -d "`$DB_NAME" -v ON_ERROR_STOP=1 -f "`$TMP"
 rm -f "`$TMP"
 unset PGPASSWORD DB_PASS DB_SECRET_JSON
-echo ">> Employer RDS user cleanup completed for $Email."
+echo ">> Employer RDS user cleanup completed."
 "@
 $remoteScript = $remoteScript -replace "`r`n", "`n"
 
@@ -286,7 +286,7 @@ try {
       --region $Region `
       --document-name 'AWS-RunShellScript' `
       --instance-ids $bastionId `
-      --comment "Jale employer RDS cleanup for $Email" `
+      --comment "Jale employer RDS cleanup" `
       --parameters "file://$paramsFile" `
       --query 'Command.CommandId' `
       --output text).Trim()

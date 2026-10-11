@@ -7,11 +7,18 @@ import { errorMessage } from '../lib/http';
  *
  * SNS delivers one SES event per record; a permanent bounce or any complaint
  * for a digest message switches that employer's daily digest off and bumps
- * their unsubscribe_token_version, through migration 090's SECURITY DEFINER
- * `public.disable_digest_for_employer(uuid)`. Nothing else in the system
- * reacts to delivery feedback today, so before this handler existed a dead
- * mailbox kept receiving a daily send forever -- which is precisely what
- * moves a sending domain onto a blocklist.
+ * their unsubscribe_token_version. Nothing else in the system reacts to
+ * delivery feedback today, so before this handler existed a dead mailbox kept
+ * receiving a daily send forever -- which is precisely what moves a sending
+ * domain onto a blocklist.
+ *
+ * ── How ───────────────────────────────────────────────────────────
+ * The handler runs on its own job login, which holds no table rights. One
+ * capability call, `jale_cap.apply_ses_feedback(ses_message_id)`, finds the
+ * outbox row the notification names and, for a digest row, switches that
+ * employer's digest off (migration 090's `disable_digest_for_employer`). Its
+ * outcome is `digest` (with the number of rows changed), `not_digest` (with
+ * the row's source_type) or `unknown_message`.
  *
  * ── Which employer ────────────────────────────────────────────────
  * NOT the bounced address. The notification's `mail.messageId` is the id SES
@@ -56,9 +63,10 @@ interface SesFeedbackSummary {
   malformed: number;
 }
 
-interface OutboxLookupRow {
-  source_type: string;
-  source_id: string;
+interface SesFeedbackOutcomeRow {
+  outcome: string;
+  source_type: string | null;
+  changed: number | string | null;
 }
 
 function metric(name: string, fields: Record<string, unknown> = {}): void {
@@ -142,16 +150,13 @@ export const handler = async (event: SNSEvent): Promise<SesFeedbackSummary> => {
         continue;
       }
 
-      // Runs as jale_admin under 037's email_outbox_admin_select USING (true),
-      // so no RLS GUC is needed for the lookup -- and none is set, because the
-      // definer below pins the only one that matters, itself.
-      const lookup = await client.query<OutboxLookupRow>(
-        `SELECT source_type, source_id FROM email_outbox WHERE ses_message_id = $1`,
+      const applied = await client.query<SesFeedbackOutcomeRow>(
+        `SELECT outcome, source_type, changed FROM jale_cap.apply_ses_feedback($1)`,
         [messageId],
       );
-      const row = lookup.rows[0];
+      const row = applied.rows[0];
 
-      if (!row) {
+      if (row?.outcome === 'unknown_message') {
         // Genuinely expected sometimes: mail SES sent before 090 shipped, and
         // any row whose finalising UPDATE lost its `status = 'send_unknown'`
         // guard. Never a write, always a count.
@@ -160,7 +165,7 @@ export const handler = async (event: SNSEvent): Promise<SesFeedbackSummary> => {
         continue;
       }
 
-      if (row.source_type !== 'employer_digest') {
+      if (row?.outcome === 'not_digest') {
         // A billing-pause notice bounced. Its source_id is a billing event,
         // not an employer, so there is nothing here that could be switched off
         // without guessing.
@@ -169,11 +174,14 @@ export const handler = async (event: SNSEvent): Promise<SesFeedbackSummary> => {
         continue;
       }
 
-      const disabled = await client.query<{ disabled: number }>(
-        `SELECT public.disable_digest_for_employer($1::uuid) AS disabled`,
-        [row.source_id],
-      );
-      if (Number(disabled.rows[0]?.disabled ?? 0) > 0) {
+      if (row?.outcome !== 'digest') {
+        // A contract mismatch, not a payload problem: retrying lets a fixed
+        // deployment apply it, and the dead-letter queue keeps it otherwise.
+        throw new Error(`ses_feedback_unexpected_outcome:${row?.outcome ?? 'none'}`);
+      }
+
+      const changed = Number(row.changed ?? 0);
+      if (changed > 0) {
         summary.disabled += 1;
       }
       // eslint-disable-next-line no-console
@@ -181,7 +189,7 @@ export const handler = async (event: SNSEvent): Promise<SesFeedbackSummary> => {
         metric: 'ses_feedback_digest_disabled',
         eventType,
         messageId,
-        changed: Number(disabled.rows[0]?.disabled ?? 0),
+        changed,
       }));
     }
   } catch (error) {

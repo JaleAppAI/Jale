@@ -2,9 +2,17 @@ import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { handler } from '../../../../lambda/api/worker-jobs-apply';
 import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
+import { setAuditContext } from '../../../../lambda/lib/audit/context';
+import { callerFor, expectContextBeforeWrite, withRequestId } from './audit-expectations';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
+jest.mock('../../../../lambda/lib/audit/record', () => ({
+  ...jest.requireActual('../../../../lambda/lib/audit/record'),
+  recordAccess: jest.fn(),
+  recordAttempt: jest.fn(),
+}));
+jest.mock('../../../../lambda/lib/audit/context');
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetInternalUserRlsContext = setInternalUserRlsContext as jest.Mock;
@@ -121,7 +129,7 @@ describe('worker-jobs-apply', () => {
     }
   });
 
-  it('returns 403 apply_forbidden on an RLS denial', async () => {
+  it('returns 403 apply_forbidden on a permission error', async () => {
     mockQuery.mockImplementation((q: string) => {
       if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-id' }] });
       if (q.includes('FROM jobs')) return Promise.resolve({ rows: [jobRow()] });
@@ -253,5 +261,16 @@ describe('worker-jobs-apply -- legacy payload compat window (B4.5, one release)'
     const res = await handler(evWith({ answers: { date_of_birth: '1990-04-03' } }));
     expect(res.statusCode).toBe(400);
     expect(JSON.parse(res.body)).toEqual({ error: 'missing_prompt_answers', missing: ['p1', 'p2'] });
+  });
+
+  describe('change context', () => {
+    it('states the worker before the application and its document copies are written', async () => {
+      routeApply(jobRow({ required_docs: ['resume'] }));
+      const res = await handler(withRequestId(ev));
+      expect(res.statusCode).toBe(201);
+      expect(setAuditContext).toHaveBeenCalledTimes(1);
+      expect(setAuditContext).toHaveBeenCalledWith(expect.objectContaining({ query: mockQuery }), callerFor('worker', 'worker-id'), 'worker.job_apply');
+      expectContextBeforeWrite(mockQuery, setAuditContext as jest.Mock, /INSERT INTO job_applications/);
+    });
   });
 });

@@ -9,6 +9,7 @@ import * as route53targets from 'aws-cdk-lib/aws-route53-targets';
 import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as wafv2 from 'aws-cdk-lib/aws-wafv2';
 import { Platform } from 'aws-cdk-lib/aws-ecr-assets';
 import { Construct } from 'constructs';
 import { jaleAlarm } from '../constructs/jale-alarm';
@@ -220,6 +221,10 @@ function handler(event) {
       },
     );
 
+    // Every /api/* request also carries the viewer's address, as CloudFront
+    // saw it, in `x-jale-viewer-address`. The function always overwrites the
+    // header, so a value the client sent never reaches the API. The behaviour's
+    // origin request policy forwards every viewer header, this one included.
     const rewriteApiPrefix = new cloudfront.Function(
       this,
       'RewriteApiPrefixFunction',
@@ -229,6 +234,7 @@ function handler(event) {
 function handler(event) {
   var request = event.request;
   request.uri = request.uri.replace(/^\\/api(?=\\/|$)/, '') || '/';
+  request.headers['x-jale-viewer-address'] = { value: event.viewer.ip };
   return request;
 }
 `),
@@ -409,6 +415,68 @@ function handler(event) {
       additionalBehaviors['/jale-logo-dark.png'] = surveyBehavior(false);
     }
 
+    // ── Edge rate rule ──────────────────────────────────────────────
+    // One rate-based rule: at most 10 signed-out report submissions per
+    // address in 10 minutes, the smallest limit and the longest window WAF
+    // offers. The exact per-hour and per-day limits are enforced behind it,
+    // by the API. Scoped to that one route, and no managed rule groups, so
+    // nothing else in the web app is inspected or blocked.
+    const webAcl = new wafv2.CfnWebACL(this, 'FrontendWebAcl', {
+      scope: 'CLOUDFRONT',
+      defaultAction: { allow: {} },
+      visibilityConfig: {
+        cloudWatchMetricsEnabled: true,
+        metricName: 'jale-frontend-web-acl',
+        sampledRequestsEnabled: false,
+      },
+      rules: [
+        {
+          name: 'PublicReportsRateLimit',
+          priority: 0,
+          action: { block: {} },
+          statement: {
+            rateBasedStatement: {
+              aggregateKeyType: 'IP',
+              limit: 10,
+              evaluationWindowSec: 600,
+              scopeDownStatement: {
+                andStatement: {
+                  statements: [
+                    {
+                      byteMatchStatement: {
+                        fieldToMatch: { method: {} },
+                        positionalConstraint: 'EXACTLY',
+                        searchString: 'POST',
+                        textTransformations: [{ priority: 0, type: 'NONE' }],
+                      },
+                    },
+                    {
+                      byteMatchStatement: {
+                        fieldToMatch: { uriPath: {} },
+                        positionalConstraint: 'STARTS_WITH',
+                        searchString: '/api/public/reports/',
+                        // Decoded and normalized first, so an encoded or
+                        // dot-segment spelling of the path is counted too.
+                        textTransformations: [
+                          { priority: 0, type: 'URL_DECODE' },
+                          { priority: 1, type: 'NORMALIZE_PATH' },
+                        ],
+                      },
+                    },
+                  ],
+                },
+              },
+            },
+          },
+          visibilityConfig: {
+            cloudWatchMetricsEnabled: true,
+            metricName: 'jale-public-reports-rate-limit',
+            sampledRequestsEnabled: false,
+          },
+        },
+      ],
+    });
+
     // ── CloudFront distribution ─────────────────────────────────────
     this.distribution = new cloudfront.Distribution(this, 'FrontendDistribution', {
       comment: 'Jale frontend (Next.js Lambda) + survey + API routing',
@@ -430,6 +498,7 @@ function handler(event) {
         ],
       },
       additionalBehaviors,
+      webAclId: webAcl.attrArn,
       enableIpv6: true,
       httpVersion: cloudfront.HttpVersion.HTTP2_AND_3,
       // PRICE_CLASS_100 = US/Canada/Europe edge locations only (cheaper).

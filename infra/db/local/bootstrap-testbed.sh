@@ -2,11 +2,23 @@
 #
 # bootstrap-testbed.sh — disposable PostgreSQL 16 testbed for the WhatsApp v2 work.
 #
-# Applies the migration chain as the plain non-superuser `jale_admin` owner, which
-# is what every migration header requires ("Connect as: jale_admin (NOT the RDS
-# master user)") and what the DB suites assert. A superuser bootstrap has
-# rolbypassrls = t, so it silently skips the FORCE ROW LEVEL SECURITY behavior that
-# migration 042's security model is built on.
+# Applies the migration chain as `jale_admin`, a plain non-superuser owner login
+# this script creates in the local bed, which is what the DB suites assert. A
+# superuser bootstrap has rolbypassrls = t, so it silently skips the FORCE ROW
+# LEVEL SECURITY behavior that migration 042's security model is built on.
+#
+# Profiles (--profile, exported to the command as JALE_TEST_DB_PROFILE):
+#   standard  (default) the bed as described above.
+#   request   the same database; suites connect code under test as its real
+#             login (infra/test/unit/db/helpers/login-pool.ts) over a real
+#             authenticated connection, never SET ROLE.
+#   owner-unrestricted
+#             proves that handlers scope in SQL: after the chain is applied,
+#             the bed gives its migration login the BYPASSRLS role attribute
+#             for the rest of the run, so the caller predicates in handler SQL
+#             must hold on their own.
+# The profile is (re)applied on every run, so a reused persistent bed never
+# keeps a previous run's profile.
 #
 # Two modes:
 #   --persistent (default)  drive the docker-compose container `jale-wa-v2-pg`
@@ -36,6 +48,9 @@ Options:
   --bare             Container and database only — no roles, no extension.
                      For billing-034-upgrade.test.ts, which creates jale_admin
                      itself as a non-executor GRANT target on purpose.
+  --profile NAME     standard (default), request or owner-unrestricted.
+                     Exported to the command as JALE_TEST_DB_PROFILE. --empty
+                     and --bare accept only standard.
   --url-user USER    User in the emitted URL: jale_admin or postgres.
                      Default: postgres when migrated, jale_admin when --empty.
   --url-var NAME     Env var to export. Default: JALE_TEST_DATABASE_URL.
@@ -54,7 +69,7 @@ Options:
   --no-tests         Bootstrap only; ignore any -- command.
   -h, --help         Show this help.
 
-Anything after -- runs with JALE_TEST_DATABASE_URL exported.
+Anything after -- runs with JALE_TEST_DATABASE_URL and JALE_TEST_DB_PROFILE exported.
 EOF
 }
 
@@ -75,6 +90,7 @@ empty=0
 bare=0
 url_user=""
 url_var="JALE_TEST_DATABASE_URL"
+profile="standard"
 custom_cmd=()
 
 while [[ $# -gt 0 ]]; do
@@ -90,6 +106,7 @@ while [[ $# -gt 0 ]]; do
     --container) container="$2"; shift 2 ;;
     --empty) empty=1; shift ;;
     --bare) bare=1; shift ;;
+    --profile) profile="$2"; shift 2 ;;
     --url-user) url_user="$2"; shift 2 ;;
     --url-var) url_var="$2"; shift 2 ;;
     --verify) verify=1; shift ;;
@@ -101,6 +118,15 @@ while [[ $# -gt 0 ]]; do
     *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+case "$profile" in
+  standard|request|owner-unrestricted) ;;
+  *) echo "--profile must be standard, request or owner-unrestricted" >&2; exit 2 ;;
+esac
+if [[ ( "$empty" -eq 1 || "$bare" -eq 1 ) && "$profile" != "standard" ]]; then
+  echo "--empty and --bare build a bed without the chain; they accept only --profile standard" >&2
+  exit 2
+fi
 
 command -v docker >/dev/null 2>&1 || { echo "docker is required." >&2; exit 127; }
 
@@ -138,6 +164,12 @@ psql_admin() {
 psql_maint() {
   docker exec -i -e PGPASSWORD="$superpass" "$container" \
     psql -v ON_ERROR_STOP=1 -U "$superuser" -d postgres "$@"
+}
+# The ledger's checksum: a 64-character lowercase hex SHA-256, as the runner records.
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | cut -d' ' -f1
+  else echo "need sha256sum or shasum" >&2; exit 127; fi
 }
 
 cleanup() {
@@ -217,9 +249,15 @@ fi
 if [[ "$bare" -eq 1 && "$url_user" == "$admin_user" ]]; then
   echo "--bare creates no jale_admin role; use --url-user postgres" >&2; exit 2
 fi
+# The URL exported to the command carries the bed's password; what the script
+# prints is display_url, with the password masked. CI logs are public.
 case "$url_user" in
-  "$admin_user") url="postgres://${admin_user}:${admin_pass}@127.0.0.1:${port}/${db}" ;;
-  "$superuser")  url="postgres://${superuser}:${superpass}@127.0.0.1:${port}/${db}" ;;
+  "$admin_user")
+    url="postgres://${admin_user}:${admin_pass}@127.0.0.1:${port}/${db}"
+    display_url="postgres://${admin_user}:***@127.0.0.1:${port}/${db}" ;;
+  "$superuser")
+    url="postgres://${superuser}:${superpass}@127.0.0.1:${port}/${db}"
+    display_url="postgres://${superuser}:***@127.0.0.1:${port}/${db}" ;;
   *) echo "--url-user must be $admin_user or $superuser" >&2; exit 2 ;;
 esac
 
@@ -275,10 +313,9 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 DO \$\$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${admin_user}') THEN
-    -- Exactly the production ownership model. CREATEROLE is required because
-    -- migrations 039/040/042 create helper roles and the DB suites ALTER ROLE
-    -- ... PASSWORD. NOBYPASSRLS is the load-bearing attribute: it is what makes
-    -- FORCE ROW LEVEL SECURITY observable.
+    -- The bed's owner. CREATEROLE because migrations 039/040/042 create
+    -- helper roles and the DB suites ALTER ROLE ... PASSWORD; NOBYPASSRLS so
+    -- FORCE ROW LEVEL SECURITY is observable in this bed.
     CREATE ROLE ${admin_user}
       LOGIN NOSUPERUSER NOCREATEDB CREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS
       PASSWORD '${admin_pass}';
@@ -364,55 +401,90 @@ SQL
   fi
 
   # -------------------------------------------------------------------------
-  # 7. Apply every migration as jale_admin, in order, stopping on first error.
+  # 7. Apply every migration as jale_admin, in order, stopping on first error,
+  # and record each one in the migration ledger the way scripts/run-migrations.sh
+  # does: public.schema_migrations, created by jale_admin before the first file,
+  # closed to PUBLIC, one row per applied file with its SHA-256. Suites read the
+  # ledger to learn which migrations the bed carries
+  # (infra/test/unit/db/helpers/policy-copies.ts).
   # -------------------------------------------------------------------------
+  psql_admin -q <<'LEDGER' >/dev/null
+CREATE TABLE IF NOT EXISTS public.schema_migrations (
+  filename   TEXT PRIMARY KEY,
+  applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE public.schema_migrations
+  ADD COLUMN IF NOT EXISTS checksum   TEXT,
+  ADD COLUMN IF NOT EXISTS applied_by TEXT NOT NULL DEFAULT current_user;
+REVOKE ALL ON public.schema_migrations FROM PUBLIC;
+LEDGER
+
   echo ">> Applying ${#files[@]} migrations as $admin_user"
   for file in "${files[@]}"; do
-    echo "   -> $(basename "$file")"
+    name="$(basename "$file")"
+    sum="$(sha256_of "$file")"
+    echo "   -> $name"
     psql_admin -f - < "$file" >/dev/null
+    psql_admin -q -v filename="$name" -v checksum="$sum" <<'RECORD' >/dev/null
+INSERT INTO public.schema_migrations (filename, checksum)
+VALUES (:'filename', :'checksum')
+ON CONFLICT (filename) DO UPDATE SET checksum = EXCLUDED.checksum;
+RECORD
   done
 
   [[ -n "$ref_dir" ]] && rm -rf "$ref_dir"
 
   # -------------------------------------------------------------------------
-  # 8. Service-role login passwords the DB suites expect.
-  # See infra/test/unit/db/billing-rls.integration.test.ts:40-52.
+  # 8. Login test passwords the DB suites expect: `test-<name>-pw`, <name> being
+  # the login without `jale_` and without underscores. The logins come from the
+  # MERGED access manifest (infra/db/access/manifest.json plus every
+  # manifest.d/*.json fragment), so a later change that adds a login in its own
+  # fragment needs no edit here. A login whose migration is not applied is
+  # skipped. login-pool.test.ts keeps the helper and
+  # infra/test/unit/db/helpers/login-pool.ts in agreement.
+  # See also infra/test/unit/db/billing-rls.integration.test.ts:40-52.
   # -------------------------------------------------------------------------
-  echo ">> Setting service-role test passwords"
-  psql_admin <<'SQL' >/dev/null
-DO $$
-DECLARE
-  r RECORD;
-BEGIN
-  FOR r IN
-    SELECT * FROM (VALUES
-      ('jale_billing',       'test-billing-pw'),
-      ('jale_matching',      'test-matching-pw'),
-      ('jale_whatsapp',      'test-whatsapp-pw'),
-      ('jale_ai',            'test-ai-pw'),
-      ('jale_admin_console', 'test-adminconsole-pw')
-    ) AS t(role_name, pw)
-  LOOP
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r.role_name) THEN
-      EXECUTE format('ALTER ROLE %I WITH PASSWORD %L', r.role_name, r.pw);
-    END IF;
-  END LOOP;
-END
-$$;
-SQL
+  echo ">> Setting login test passwords"
+  command -v node >/dev/null 2>&1 || { echo "node is required to read the access manifest's logins." >&2; exit 127; }
+  passwords_sql="$(node "$script_dir/testbed-login-passwords.mjs" "$repo/infra/db/access")"
+  psql_admin <<<"$passwords_sql" >/dev/null
   fi
 fi
 
-echo ">> ${url_var}=$url"
+# ---------------------------------------------------------------------------
+# 8b. Reset the owner to the attributes the chain expects. Done on every run,
+# outside the short-circuit above, because a reused persistent bed may still
+# carry an earlier run's owner-unrestricted profile. Only a superuser can
+# grant or remove BYPASSRLS. --bare has no jale_admin.
+# ---------------------------------------------------------------------------
+if [[ "$bare" -eq 0 ]]; then
+  psql_super -c "ALTER ROLE ${admin_user} NOBYPASSRLS" >/dev/null
+fi
+
+echo ">> ${url_var}=$display_url"
 
 # ---------------------------------------------------------------------------
-# 9. Acceptance probes.
+# 9. Acceptance probes. They check the bed as the chain left it, so they run
+# before the profile is applied.
 # ---------------------------------------------------------------------------
 if [[ "$verify" -eq 1 ]]; then
   echo
   echo ">> Verifying the testbed"
   bash "$script_dir/verify-testbed.sh" --container "$container" --db "$db"
 fi
+
+# ---------------------------------------------------------------------------
+# 9b. The profile. standard and request leave the bed as it is; for the rest
+# of this run, owner-unrestricted gives the migration login the
+# BYPASSRLS role attribute, so handler SQL must scope on its own.
+# ---------------------------------------------------------------------------
+if [[ "$profile" == "owner-unrestricted" ]]; then
+  echo ">> Profile owner-unrestricted: caller predicates in handler SQL must hold on their own"
+  psql_super -c "ALTER ROLE ${admin_user} BYPASSRLS" >/dev/null
+else
+  echo ">> Profile ${profile}: the bed is left as the migration chain built it"
+fi
+echo ">> JALE_TEST_DB_PROFILE=$profile"
 
 # ---------------------------------------------------------------------------
 # 10. Optional verification command, with the URL exported under $url_var
@@ -422,5 +494,5 @@ fi
 if [[ "$run_tests" -eq 1 && ${#custom_cmd[@]} -gt 0 ]]; then
   echo
   echo ">> Running verification command"
-  (cd "$repo" && env "$url_var=$url" "${custom_cmd[@]}")
+  (cd "$repo" && env "$url_var=$url" "JALE_TEST_DB_PROFILE=$profile" "${custom_cmd[@]}")
 fi

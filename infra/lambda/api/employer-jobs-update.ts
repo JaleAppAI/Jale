@@ -552,9 +552,10 @@ async function handleFieldEdit(
     // fires on an actual before/after flip) would silently no-op here. When
     // the edited job is effectively visible, ping Google's Indexing API via
     // enqueueVisibilityPing so it re-crawls the updated content -- guarded by
-    // a dedupe check (direct SELECT is RLS-permitted for jale_admin on this
-    // table per migration 062's drain policy) so rapid successive edits don't
-    // flood the quota-limited drain with redundant pending rows.
+    // a dedupe check so rapid successive edits don't flood the quota-limited
+    // drain with redundant pending rows. The dedupe read stays in this
+    // transaction, after the ownership check above, with the caller's context
+    // set.
     const updatedJob = result.rows[0];
     if (isEffectivelyVisible(updatedJob.status, updatedJob.public_listing_enabled) && updatedJob.public_code) {
       const pending = await client.query(

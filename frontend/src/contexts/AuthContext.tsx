@@ -4,6 +4,7 @@ import { usePathname } from 'next/navigation';
 import { apiFetch } from '@/lib/api';
 import { getAuthBridge, registerAuthBridge } from '@/lib/auth-bridge';
 import { buildLoginUrl } from '@/lib/login-url';
+import { clearReportBuffers } from '@/lib/report/context';
 import {
     clearSession as clearStoredSession,
     readRoleToken,
@@ -42,9 +43,37 @@ interface AuthState {
      * in-flight /auth/refresh POST.
      */
     refreshIdToken: () => Promise<string | null>;
+    /**
+     * The id token for a request that must not move the page (the report
+     * form): the current one, renewed first when it is about to expire.
+     * Resolves null when there is no session or it cannot be renewed -- and
+     * then it does nothing else: no session clearing, no `onSessionExpired`,
+     * no navigation. The caller decides what null means.
+     */
+    getValidIdTokenOrNull: () => Promise<string | null>;
 }
 
 type UserType = 'worker' | 'employer';
+
+/** Renew an id token this close to its expiry rather than send it. */
+const ID_TOKEN_RENEW_MARGIN_MS = 60_000;
+
+/**
+ * Whether a JWT's `exp` falls within `marginMs` from now. A token whose
+ * expiry cannot be read is sent as it is: the server is the judge of it.
+ */
+function idTokenExpiresWithin(token: string, marginMs: number): boolean {
+    const payload = token.split('.')[1];
+    if (!payload) return false;
+    try {
+        const base64 = payload.replace(/-/g, '+').replace(/_/g, '/');
+        const claims: unknown = JSON.parse(atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, '=')));
+        const exp = (claims as { exp?: unknown } | null)?.exp;
+        return typeof exp === 'number' && exp * 1000 - Date.now() <= marginMs;
+    } catch {
+        return false;
+    }
+}
 
 /** See `AuthState.sessionCleared`. `epoch` 0 is "nothing cleared yet". */
 export type SessionCleared = { epoch: number; role: UserType | null };
@@ -158,6 +187,7 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
         // one. Unscoped, because sign-out is the moment we can be sure nobody
         // is still reading them.
         clearSignageDismissals();
+        clearReportBuffers();
         setSessionCleared((prev) => ({ epoch: prev.epoch + 1, role: role ?? null }));
         setAccessToken(null);
         setIdToken(null);
@@ -434,6 +464,56 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
      */
     const serving = routeRole === null || userType === null || userType === routeRole;
 
+    /**
+     * See `AuthState.getValidIdTokenOrNull`.
+     *
+     * A refused renewal is deliberately NOT handled the way `refreshIdToken`
+     * handles it. Clearing the session flips `isAuthenticated`, and a page's
+     * auth guard then navigates to the sign-in screen -- with the caller's
+     * form, and whatever the person typed into it, still open. Null is the
+     * whole answer here; the next ordinary request finds a dead session the
+     * usual way. The renewal still joins (and is joined by) any other refresh
+     * in flight, so the two never race each other's tokens.
+     */
+    const getValidIdTokenOrNull = useCallback(async (): Promise<string | null> => {
+        const current = serving ? idToken : null;
+        if (!current) return null;
+        if (!idTokenExpiresWithin(current, ID_TOKEN_RENEW_MARGIN_MS)) return current;
+        if (refreshInFlight.current) return refreshInFlight.current;
+
+        const role = userTypeRef.current;
+        const rt = role ? readRoleToken(role) : null;
+        if (!role || !rt) return null;
+
+        const run = (async (): Promise<string | null> => {
+            try {
+                // Token-less, so apiFetch's own 401 path never sees it.
+                const res = await apiFetch('/auth/refresh', {
+                    method: 'POST',
+                    body: JSON.stringify({ refreshToken: rt, userType: role }),
+                });
+                if (!res.ok) return null;
+                const data = await res.json();
+                const next = typeof data?.idToken === 'string' && data.idToken.length > 0 ? data.idToken : null;
+                // Only land it if this provider still serves the role it was for.
+                if (next && userTypeRef.current === role) {
+                    setAccessToken(typeof data.accessToken === 'string' ? data.accessToken : null);
+                    setIdToken(next);
+                }
+                return next;
+            } catch {
+                return null;
+            }
+        })();
+
+        refreshInFlight.current = run;
+        try {
+            return await run;
+        } finally {
+            if (refreshInFlight.current === run) refreshInFlight.current = null;
+        }
+    }, [serving, idToken]);
+
     return (
         <AuthContext.Provider value={{
             accessToken: serving ? accessToken : null,
@@ -444,6 +524,7 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
             isLoading: isLoading || restorePending,
             sessionCleared,
             setTokens, logout, refreshIdToken,
+            getValidIdTokenOrNull,
         }}>
             {children}
         </AuthContext.Provider>

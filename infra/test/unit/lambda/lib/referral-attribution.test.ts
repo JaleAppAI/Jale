@@ -1,4 +1,4 @@
-import { writeAttribution, writeFirstTouchAttribution, writeWebAttribution } from '../../../../lambda/lib/referral-attribution';
+import { isSelfReferral, writeAttribution, writeFirstTouchAttribution, writeWebAttribution } from '../../../../lambda/lib/referral-attribution';
 
 const WORKER_ID = 'aaaaaaaa-0000-0000-0000-000000000001';
 const JOB_ID = 'bbbbbbbb-0000-0000-0000-000000000001';
@@ -189,7 +189,7 @@ describe('writeWebAttribution -- employer-link attribution', () => {
     const { query, client } = makeClient();
     query.mockImplementation((sql: string) => {
       if (typeof sql !== 'string') return Promise.resolve({});
-      if (sql.includes('FROM job_share_links')) {
+      if (sql.includes('jale_cap.resolve_share_link')) {
         return Promise.resolve({ rows: link ? [link] : [] });
       }
       if (sql.includes('INSERT INTO worker_attribution')) {
@@ -211,8 +211,13 @@ describe('writeWebAttribution -- employer-link attribution', () => {
     const result = await writeWebAttribution(client, WORKER_ID, SHARE_CODE, NOW);
 
     expect(result).toEqual({ written: true });
-    const linkCall = query.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('FROM job_share_links'));
+    const linkCall = query.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('jale_cap.resolve_share_link'));
     expect(linkCall![0]).toMatch(/SELECT job_id, channel, referrer_worker_id, referrer_employer_id/);
+    // The code resolves through the capability function, never a direct read
+    // of other referrers' links.
+    expect(linkCall![0]).toMatch(/FROM jale_cap\.resolve_share_link\(\$1\)/);
+    expect(linkCall![1]).toEqual([SHARE_CODE]);
+    expect(query.mock.calls.some(([sql]) => typeof sql === 'string' && /\bjob_share_links\b/.test(sql))).toBe(false);
 
     const attributionCall = query.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO worker_attribution'));
     expect(attributionCall).toBeDefined();
@@ -291,5 +296,25 @@ describe('writeWebAttribution -- employer-link attribution', () => {
 
     expect(result).toEqual({ written: false });
     expect(query.mock.calls.some(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO worker_attribution'))).toBe(false);
+  });
+});
+
+// Sprint 27: the two self-referral guards writeWebAttribution has always
+// applied, extracted so the WhatsApp claim (whatsapp/lib/referral-claims.ts)
+// applies exactly the same rule. writeWebAttribution's own behaviour is
+// pinned by the cases above and must not move.
+describe('isSelfReferral', () => {
+  it('is true when the worker referrer is the claiming worker', () => {
+    expect(isSelfReferral({ referrer_worker_id: WORKER_ID, referrer_employer_id: null }, WORKER_ID)).toBe(true);
+  });
+
+  it('is true when the employer referrer id equals the claiming id (defensive parity)', () => {
+    expect(isSelfReferral({ referrer_worker_id: null, referrer_employer_id: WORKER_ID }, WORKER_ID)).toBe(true);
+  });
+
+  it('is false for a different worker referrer, an employer referrer, or no referrer at all', () => {
+    expect(isSelfReferral({ referrer_worker_id: WORKER_REFERRER_ID, referrer_employer_id: null }, WORKER_ID)).toBe(false);
+    expect(isSelfReferral({ referrer_worker_id: null, referrer_employer_id: EMPLOYER_REFERRER_ID }, WORKER_ID)).toBe(false);
+    expect(isSelfReferral({ referrer_worker_id: null, referrer_employer_id: null }, WORKER_ID)).toBe(false);
   });
 });

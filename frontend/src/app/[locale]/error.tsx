@@ -1,8 +1,13 @@
 'use client';
 
+import { useEffect } from 'react';
 import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
 import { StateAction } from '@/components/ui/empty-state';
+import { useOptionalReportProblem } from '@/components/report/report-problem-context';
+import { ReportProblemAction } from '@/components/report/ReportProblemAction';
+import { recordError } from '@/components/report/seams/report-context';
+import { describeBoundaryError } from '@/components/report/boundary-error';
 
 /**
  * Route error boundary for every localized page.
@@ -16,9 +21,18 @@ import { StateAction } from '@/components/ui/empty-state';
  * `error` is intentionally not rendered: it is an exception message, which is
  * neither translated nor safe to show. `errors.unknown` is the honest sentence
  * for "we do not know what happened".
+ *
+ * It is, however, recorded for "Report a problem" (scrubbed and shortened by
+ * the context module), and the page offers that report next to "Try again".
+ * The boundary sits inside the locale layout, so the report provider is there.
  */
-export default function LocaleError({ reset }: { error: Error & { digest?: string }; reset: () => void }) {
+export default function LocaleError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
     const t = useTranslations('common');
+    const reporting = useOptionalReportProblem();
+
+    useEffect(() => {
+        recordError({ kind: 'error', message: describeBoundaryError(error) });
+    }, [error]);
 
     return (
         <div className="flex min-h-screen items-center justify-center bg-[var(--jale-paper)] px-4 py-12">
@@ -32,6 +46,9 @@ export default function LocaleError({ reset }: { error: Error & { digest?: strin
                     <Button variant="primary" onClick={reset}>
                         {t('retry')}
                     </Button>
+                    {reporting ? (
+                        <ReportProblemAction onReport={() => reporting.openReport({ error: { kind: 'unknown' } })} />
+                    ) : null}
                     <StateAction action={{ label: t('error_state.go_home'), href: '/' }} tone="ghost" />
                 </div>
             </div>

@@ -8,11 +8,17 @@ import {
   sendPendingJobMessageOutbox,
 } from '../lib/job-messaging';
 import { checkCompliance } from '../legal/check-compliance';
+import { auditCaller, type AuditCaller } from '../lib/audit/caller';
+import { conversationReadEvent } from '../lib/audit/conversations';
+import { recordAccess, recordAttempt, type AttemptEvent } from '../lib/audit/record';
 
 
 const CORS_HEADERS = corsHeaders();
+const SURFACE = 'employer.conversation_create';
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   let client;
+  let caller: AuditCaller | undefined;
+  let attempt: Omit<AttemptEvent, 'outcome'> | undefined;
   let outbox: { conversationId: string; employerId: string } | null = null;
 
   try {
@@ -55,9 +61,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_provisioned' }) };
     }
     await setInternalUserRlsContext(client, employerId);
+    caller = auditCaller(event, { kind: 'employer', id: employerId }, 'web');
+    attempt = { surface: SURFACE, subjectUserIds: [workerId], purpose: { kind: 'job', id: jobId } };
 
     const created = await createApplicantConversation(client, employerId, jobId, workerId, initialMessage);
     const detail = await getEmployerConversationDetail(client, created.conversationId, employerId);
+    if (detail) await recordAccess(client, caller, conversationReadEvent(SURFACE, detail));
     outbox = { conversationId: created.conversationId, employerId };
     await client.query('COMMIT');
 
@@ -65,6 +74,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       await sendPendingJobMessageOutbox(client, {
         conversationId: outbox.conversationId,
         actorUserId: outbox.employerId,
+        actorKind: 'employer',
       });
     }
 
@@ -77,11 +87,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (client) { try { await client.query('ROLLBACK'); } catch {} }
     const message = errorMessage(err);
     if (message === 'applicant_not_found') {
+      if (client && caller && attempt) await recordAttempt(client, caller, { ...attempt, outcome: 'not_found' });
       return { statusCode: 404, headers: CORS_HEADERS, body: JSON.stringify({ error: 'applicant_not_found' }) };
     }
     if (message === 'worker_whatsapp_unavailable') {
       return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'worker_whatsapp_unavailable' }) };
     }
+    if (client && caller && attempt) await recordAttempt(client, caller, { ...attempt, outcome: 'failed' });
     console.error('employer-conversations-create error:', message);
     return { statusCode: 500, headers: CORS_HEADERS, body: JSON.stringify({ error: 'internal_error' }) };
   } finally {

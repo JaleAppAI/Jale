@@ -31,8 +31,6 @@ export interface WhatsAppStackProps extends cdk.StackProps {
   readonly privateSubnets: ec2.ISubnet[];
   /** Lambda security group */
   readonly lambdaSg: ec2.ISecurityGroup;
-  /** jale_admin DB secret (NOT used by WhatsApp Lambdas — they use their own) */
-  readonly dbSecret: secretsmanager.ISecret;
   /** Worker Cognito pool used for admin creation and CUSTOM_AUTH */
   readonly workerPool: JaleCognitoPool;
   /** Existing API Gateway (from ApiStack) — webhook route added here */
@@ -270,6 +268,7 @@ export class WhatsAppStack extends cdk.Stack {
       timeout: 60,
       environment: {
         DB_SECRET_ARN: whatsappDbSecret.secretName, // alias: getDbPool() reads this
+        DB_EXPECTED_LOGIN: 'jale_whatsapp',
         TWILIO_SECRET_ARN: twilioSecret.secretName,
         TWILIO_REQUEST_TIMEOUT_MS: '4000',
         WORKER_POOL_ID: props.workerPool.userPoolId,
@@ -370,6 +369,7 @@ export class WhatsAppStack extends cdk.Stack {
       securityGroups: [props.lambdaSg],
       environment: {
         DB_SECRET_ARN: whatsappDbSecret.secretName,
+        DB_EXPECTED_LOGIN: 'jale_whatsapp',
         TWILIO_SECRET_ARN: twilioSecret.secretName,
         TWILIO_REQUEST_TIMEOUT_MS: '4000',
         ALLOWED_ORIGIN: allowedOrigin,
@@ -391,6 +391,7 @@ export class WhatsAppStack extends cdk.Stack {
       securityGroups: [props.lambdaSg],
       environment: {
         DB_SECRET_ARN: whatsappDbSecret.secretName,
+        DB_EXPECTED_LOGIN: 'jale_whatsapp',
         TWILIO_SECRET_ARN: twilioSecret.secretName,
         TWILIO_REQUEST_TIMEOUT_MS: '4000',
         ALLOWED_ORIGIN: allowedOrigin,
@@ -416,6 +417,7 @@ export class WhatsAppStack extends cdk.Stack {
         timeout: 60,
         environment: {
           DB_SECRET_ARN: whatsappDbSecret.secretName,
+          DB_EXPECTED_LOGIN: 'jale_whatsapp',
           TWILIO_SECRET_ARN: twilioSecret.secretName,
           TWILIO_REQUEST_TIMEOUT_MS: '4000',
           TWILIO_STATUS_CALLBACK_URL: statusCallbackUrl,
@@ -452,6 +454,7 @@ export class WhatsAppStack extends cdk.Stack {
       securityGroups: [props.lambdaSg],
       environment: {
         DB_SECRET_ARN: whatsappDbSecret.secretName,
+        DB_EXPECTED_LOGIN: 'jale_whatsapp',
         TRUST_ASSESSMENT_QUEUE_URL: props.trustAssessmentQueue.queueUrl,
         TRUST_EXTRACTION_QUEUE_URL: props.trustExtractionQueue.queueUrl,
         WORKER_INTENT_WAKE_QUEUE_URL: workerIntentWakeQueue.queueUrl,
@@ -488,6 +491,7 @@ export class WhatsAppStack extends cdk.Stack {
       securityGroups: [props.lambdaSg],
       environment: {
         DB_SECRET_ARN: whatsappDbSecret.secretName,
+        DB_EXPECTED_LOGIN: 'jale_whatsapp',
         TWILIO_SECRET_ARN: twilioSecret.secretName,
         ALLOWED_ORIGIN: allowedOrigin,
         TWILIO_STATUS_CALLBACK_URL: statusCallbackUrl,
@@ -514,6 +518,7 @@ export class WhatsAppStack extends cdk.Stack {
       securityGroups: [props.lambdaSg],
       environment: {
         DB_SECRET_ARN: whatsappDbSecret.secretName,
+        DB_EXPECTED_LOGIN: 'jale_whatsapp',
       },
     });
     whatsappDbSecret.grantRead(retriggerSweepLambda.function);
@@ -530,6 +535,7 @@ export class WhatsAppStack extends cdk.Stack {
       securityGroups: [props.lambdaSg],
       environment: {
         DB_SECRET_ARN: whatsappDbSecret.secretName,
+        DB_EXPECTED_LOGIN: 'jale_whatsapp',
         TWILIO_SECRET_ARN: twilioSecret.secretName,
         TWILIO_REQUEST_TIMEOUT_MS: '4000',
         TWILIO_STATUS_CALLBACK_URL: statusCallbackUrl,
@@ -575,6 +581,7 @@ export class WhatsAppStack extends cdk.Stack {
       timeout: 60,
       environment: {
         DB_SECRET_ARN: whatsappDbSecret.secretName,
+        DB_EXPECTED_LOGIN: 'jale_whatsapp',
         TWILIO_SECRET_ARN: twilioSecret.secretName,
         TWILIO_REQUEST_TIMEOUT_MS: '4000',
         MEDIA_BUCKET_NAME: mediaBucket.bucketName,
@@ -754,6 +761,7 @@ export class WhatsAppStack extends cdk.Stack {
       securityGroups: [props.lambdaSg],
       environment: {
         DB_SECRET_ARN: whatsappDbSecret.secretName,
+        DB_EXPECTED_LOGIN: 'jale_whatsapp',
         TWILIO_SECRET_ARN: twilioSecret.secretName,
         TWILIO_STATUS_CALLBACK_URL: statusCallbackUrl,
       },
@@ -1284,6 +1292,7 @@ export class WhatsAppStack extends cdk.Stack {
       environment: {
         // Same role as the processor: getDbPool() reads this alias.
         DB_SECRET_ARN: whatsappDbSecret.secretName,
+        DB_EXPECTED_LOGIN: 'jale_whatsapp',
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
         // createTrustQuestionGenerator invokes this synchronously to build a
@@ -1465,6 +1474,7 @@ export class WhatsAppStack extends cdk.Stack {
       environment: {
         // jale_whatsapp, for the RLS reason above. getDbPool() reads this.
         DB_SECRET_ARN: whatsappDbSecret.secretName,
+        DB_EXPECTED_LOGIN: 'jale_whatsapp',
         // Unlike the onboarding door this IS an ordinary `/worker/*` route,
         // so it carries the legal wall (004 grants jale_whatsapp SELECT on
         // `users.tos_version`).

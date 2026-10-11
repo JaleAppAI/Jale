@@ -1,0 +1,1153 @@
+{
+  "logins": {
+    "jale_job_audit_export": {
+      "kind": "job",
+      "created_by": "109",
+      "connection_limit": 2,
+      "prepare_secret": true,
+      "settings": {
+        "idle_in_transaction_session_timeout": "60s"
+      },
+      "workloads": "The audit archive export job (AuditExport).",
+      "reason": "EXECUTE on the jale_audit export functions only; USAGE on jale_audit and no table rights."
+    }
+  },
+  "capability_owners": {
+    "jale_audit_owner": {
+      "created_by": "109",
+      "reason": "Owns the jale_audit schema, the append-only audit tables and their functions; no role but it holds any privilege on an audit table."
+    },
+    "jale_ops_owner": {
+      "created_by": "109",
+      "reason": "Owns the jale_ops schema and the operator read functions; holds only the column reads those functions need."
+    }
+  },
+  "tables": {
+    "jale_audit.changes": {
+      "classification": "excluded",
+      "owner": "jale_audit_owner",
+      "rls": {
+        "enabled": false,
+        "forced": false
+      },
+      "reason": "Append-only change records written by the change-log triggers. No grants and no row security: only owner-run functions read or write it.",
+      "access": {}
+    },
+    "jale_audit.events": {
+      "classification": "excluded",
+      "owner": "jale_audit_owner",
+      "rls": {
+        "enabled": false,
+        "forced": false
+      },
+      "reason": "Append-only access, attempt, session and action events. No grants and no row security: record_event and other owner-run functions are the only path.",
+      "access": {}
+    },
+    "jale_audit.export_batches": {
+      "classification": "excluded",
+      "owner": "jale_audit_owner",
+      "rls": {
+        "enabled": false,
+        "forced": false
+      },
+      "reason": "Append-only record of every committed export window and release batch. No grants and no row security: only owner-run export functions write it.",
+      "access": {}
+    },
+    "jale_audit.export_holds": {
+      "classification": "excluded",
+      "owner": "jale_audit_owner",
+      "rls": {
+        "enabled": false,
+        "forced": false
+      },
+      "reason": "Append-only review trail of rows the export job held back (hold, release, export). No grants and no row security: only owner-run functions write it.",
+      "access": {}
+    },
+    "jale_audit.export_state": {
+      "classification": "excluded",
+      "owner": "jale_audit_owner",
+      "rls": {
+        "enabled": false,
+        "forced": false
+      },
+      "reason": "One row per export stream: its watermark. Changed only by the export commit, under the guard's export path; no grants and no row security.",
+      "access": {}
+    }
+  },
+  "functions": {
+    "jale_audit.capture_change()": {
+      "owner": "jale_audit_owner",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "",
+      "returns": "trigger",
+      "execute": [],
+      "created_by": "111",
+      "reason": "The change-record trigger function on the sensitive tables: one record per statement naming the covered columns that changed, the rows' ids and subjects, the login and the audit context; never fails a write on the context."
+    },
+    "jale_audit.change_line(jale_audit.changes)": {
+      "owner": "jale_audit_owner",
+      "security": "invoker",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "c jale_audit.changes",
+      "returns": "text",
+      "execute": [],
+      "created_by": "109",
+      "reason": "Export helper: the canonical JSON line of a change record; owner only."
+    },
+    "jale_audit.compare_window(text, xid8, xid8, bigint[])": {
+      "owner": "jale_audit_owner",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_stream text, p_from xid8, p_to xid8, p_held_seqs bigint[]",
+      "returns": "TABLE(row_count integer, lines_sha256 bytea)",
+      "execute": [
+        "jale_job_audit_export"
+      ],
+      "created_by": "109",
+      "reason": "Export: recomputes a window's row count and line digest for the daily comparison."
+    },
+    "jale_audit.event_counts(timestamp with time zone)": {
+      "owner": "jale_audit_owner",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_since timestamp with time zone",
+      "returns": "TABLE(kind text, outcome text, surface text, events bigint)",
+      "execute": [
+        "jale_ops_owner"
+      ],
+      "created_by": "112",
+      "reason": "Counts access events since a time per kind, outcome and surface, for the operator count function; counts only."
+    },
+    "jale_audit.event_line(jale_audit.events)": {
+      "owner": "jale_audit_owner",
+      "security": "invoker",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "e jale_audit.events",
+      "returns": "text",
+      "execute": [],
+      "created_by": "109",
+      "reason": "Export helper: the canonical JSON line of an event; owner only."
+    },
+    "jale_audit.export_commit(text, xid8, xid8, integer, bigint, bigint, bytea, text, bigint[])": {
+      "owner": "jale_audit_owner",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_stream text, p_from xid8, p_to xid8, p_row_count integer, p_seq_min bigint, p_seq_max bigint, p_digest bytea, p_object_key text, p_held_seqs bigint[]",
+      "returns": "bigint",
+      "execute": [
+        "jale_job_audit_export"
+      ],
+      "created_by": "109",
+      "reason": "Export: records a written window and its holds after recomputing it, and moves the watermark."
+    },
+    "jale_audit.export_commit_release(text, bigint[], bytea, text)": {
+      "owner": "jale_audit_owner",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_stream text, p_seqs bigint[], p_digest bytea, p_object_key text",
+      "returns": "bigint",
+      "execute": [
+        "jale_job_audit_export"
+      ],
+      "created_by": "109",
+      "reason": "Export: records a release batch after recomputing its digest."
+    },
+    "jale_audit.export_released(text, integer)": {
+      "owner": "jale_audit_owner",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_stream text, p_limit integer",
+      "returns": "TABLE(seq bigint, line text)",
+      "execute": [
+        "jale_job_audit_export"
+      ],
+      "created_by": "109",
+      "reason": "Export: released rows not yet exported, for a release batch."
+    },
+    "jale_audit.export_backlog(text)": {
+      "owner": "jale_audit_owner",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_stream text",
+      "returns": "TABLE(pending_rows bigint, oldest_pending_at timestamp with time zone)",
+      "execute": [
+        "jale_job_audit_export"
+      ],
+      "created_by": "109",
+      "reason": "Export: how far a stream's export is behind, as the rows at or above its watermark and the oldest one's time."
+    },
+    "jale_audit.export_rows(text, xid8, xid8, bigint, integer)": {
+      "owner": "jale_audit_owner",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_stream text, p_from xid8, p_to xid8, p_after_seq bigint, p_limit integer",
+      "returns": "TABLE(seq bigint, line text)",
+      "execute": [
+        "jale_job_audit_export"
+      ],
+      "created_by": "109",
+      "reason": "Export: one page of a window's canonical JSON lines."
+    },
+    "jale_audit.export_status()": {
+      "owner": "jale_audit_owner",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "",
+      "returns": "TABLE(stream text, watermark xid8, watermark_at timestamp with time zone, unexported_rows bigint, batches bigint, last_batch_at timestamp with time zone, last_batch_rows integer, held_rows bigint, released_pending bigint)",
+      "execute": [
+        "jale_ops_owner"
+      ],
+      "created_by": "112",
+      "reason": "Reports the archive export per stream (watermark, batches, held rows), for the operator status function; counts and times only."
+    },
+    "jale_audit.export_window(text)": {
+      "owner": "jale_audit_owner",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_stream text",
+      "returns": "TABLE(from_xact xid8, to_xact xid8, prev_digest bytea)",
+      "execute": [
+        "jale_job_audit_export"
+      ],
+      "created_by": "109",
+      "reason": "Export: the next window of a stream, from its watermark to the current snapshot's xmin, and the digest to chain after."
+    },
+    "jale_audit.history_search(jsonb, jsonb, integer, timestamp with time zone)": {
+      "owner": "jale_audit_owner",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_actor jsonb, p_filter jsonb, p_limit integer, p_before timestamp with time zone",
+      "returns": "TABLE(source text, seq bigint, entry_id uuid, occurred_at timestamp with time zone, kind text, outcome text, actor_kind text, actor_id uuid, actor_role text, actor_session uuid, actor_email text, channel text, surface text, categories text[], subject_user_ids uuid[], record_type text, record_ids uuid[], result_count integer, field_names text[], purpose_kind text, purpose_id uuid, reason text, link_expires_at timestamp with time zone, part smallint, parts smallint, table_name text, operation text, row_count integer, changed_fields text[], context_status text, action text, target_type text, target_id text, summary text, pii_reveal boolean, request_id text, db_login text, db_pid integer)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "109",
+      "reason": "The access history view: returns events, change records and the dashboard's frozen action records for one filter, and records its own read event."
+    },
+    "jale_audit.json_integer(jsonb, text, bigint, bigint, text)": {
+      "owner": "jale_audit_owner",
+      "security": "invoker",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_doc jsonb, p_key text, p_min bigint, p_max bigint, p_context text",
+      "returns": "bigint",
+      "execute": [],
+      "created_by": "109",
+      "reason": "Validation helper for the jale_audit functions; owner only."
+    },
+    "jale_audit.json_text(jsonb, text, text)": {
+      "owner": "jale_audit_owner",
+      "security": "invoker",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_doc jsonb, p_key text, p_context text",
+      "returns": "text",
+      "execute": [],
+      "created_by": "109",
+      "reason": "Validation helper for the jale_audit functions; owner only."
+    },
+    "jale_audit.json_text_list(jsonb, text, integer, text, text)": {
+      "owner": "jale_audit_owner",
+      "security": "invoker",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_doc jsonb, p_key text, p_max integer, p_pattern text, p_context text",
+      "returns": "text[]",
+      "execute": [],
+      "created_by": "109",
+      "reason": "Validation helper for the jale_audit functions; owner only."
+    },
+    "jale_audit.json_timestamptz(jsonb, text, text)": {
+      "owner": "jale_audit_owner",
+      "security": "invoker",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_doc jsonb, p_key text, p_context text",
+      "returns": "timestamp with time zone",
+      "execute": [],
+      "created_by": "109",
+      "reason": "Validation helper for the jale_audit functions; owner only."
+    },
+    "jale_audit.json_uuid(jsonb, text, text)": {
+      "owner": "jale_audit_owner",
+      "security": "invoker",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_doc jsonb, p_key text, p_context text",
+      "returns": "uuid",
+      "execute": [],
+      "created_by": "109",
+      "reason": "Validation helper for the jale_audit functions; owner only."
+    },
+    "jale_audit.json_uuid_list(jsonb, text, integer, text)": {
+      "owner": "jale_audit_owner",
+      "security": "invoker",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_doc jsonb, p_key text, p_max integer, p_context text",
+      "returns": "uuid[]",
+      "execute": [],
+      "created_by": "109",
+      "reason": "Validation helper for the jale_audit functions; owner only."
+    },
+    "jale_audit.last_digest(text)": {
+      "owner": "jale_audit_owner",
+      "security": "invoker",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_stream text",
+      "returns": "bytea",
+      "execute": [],
+      "created_by": "109",
+      "reason": "Export helper: the digest a stream's next object chains after; owner only."
+    },
+    "jale_audit.legacy_line(admin_audit_log)": {
+      "owner": "jale_audit_owner",
+      "security": "invoker",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "l admin_audit_log",
+      "returns": "text",
+      "execute": [],
+      "created_by": "110",
+      "reason": "Export helper: the canonical JSON line of a dashboard action record; owner only."
+    },
+    "jale_audit.legacy_summary(text, text, text)": {
+      "owner": "jale_audit_owner",
+      "security": "invoker",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_actor_role text, p_action text, p_target_type text",
+      "returns": "text",
+      "execute": [],
+      "created_by": "110",
+      "reason": "The neutral summary of a dashboard action record, from its role, action and target type; owner only."
+    },
+    "jale_audit.list_holds()": {
+      "owner": "jale_audit_owner",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "",
+      "returns": "TABLE(stream text, seq bigint, occurred_at timestamp with time zone, surface text, held_at timestamp with time zone, pattern_kind text)",
+      "execute": [
+        "jale_admin"
+      ],
+      "created_by": "112",
+      "reason": "A supervised operation: lists the held rows nobody has released (stream, seq, time, surface, hold time and the kind of value the row's free text holds) for the master's release or redaction; never the text or a subject."
+    },
+    "jale_audit.listed_rows(text, bigint[])": {
+      "owner": "jale_audit_owner",
+      "security": "invoker",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_stream text, p_seqs bigint[]",
+      "returns": "TABLE(seq bigint, line text)",
+      "execute": [],
+      "created_by": "109",
+      "reason": "Export helper: the lines of listed rows for one stream; owner only."
+    },
+    "jale_audit.purge_expired(integer)": {
+      "owner": "jale_audit_owner",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_batch integer",
+      "returns": "TABLE(stream text, deleted integer)",
+      "execute": [
+        "jale_job_audit_export"
+      ],
+      "created_by": "109",
+      "reason": "Export: deletes rows past 13 months that are archived and not held, under the guard's purge path."
+    },
+    "jale_audit.record_event(jsonb)": {
+      "owner": "jale_audit_owner",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_event jsonb",
+      "returns": "bigint",
+      "execute": [
+        "jale_admin_console",
+        "jale_api",
+        "jale_whatsapp"
+      ],
+      "created_by": "109",
+      "reason": "The one way to add an access, attempt, session or action event: validates every key against the code lists and inserts one row."
+    },
+    "jale_audit.redact_and_release(text, bigint)": {
+      "owner": "jale_audit_owner",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_stream text, p_seq bigint",
+      "returns": "bigint",
+      "execute": [
+        "jale_admin"
+      ],
+      "created_by": "109",
+      "reason": "A supervised operation: replaces a held event's reason with [redacted] and releases it."
+    },
+    "jale_audit.redact_value_spans(text)": {
+      "owner": "jale_audit_owner",
+      "security": "invoker",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_text text",
+      "returns": "text",
+      "execute": [],
+      "created_by": "110",
+      "reason": "Replaces value-shaped spans (phone numbers, email addresses, links) with [removed]; owner only."
+    },
+    "jale_audit.reject_change()": {
+      "owner": "jale_audit_owner",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "",
+      "returns": "trigger",
+      "execute": [],
+      "created_by": "109",
+      "reason": "The guard's trigger function: refuses every change to an audit record except the purge, redaction and export paths."
+    },
+    "jale_audit.release_hold(text, bigint)": {
+      "owner": "jale_audit_owner",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_stream text, p_seq bigint",
+      "returns": "bigint",
+      "execute": [
+        "jale_admin"
+      ],
+      "created_by": "109",
+      "reason": "A supervised operation: releases a held row into the next release batch."
+    },
+    "jale_audit.require_object_key(text, text, text)": {
+      "owner": "jale_audit_owner",
+      "security": "invoker",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_stream text, p_object_key text, p_context text",
+      "returns": "void",
+      "execute": [],
+      "created_by": "109",
+      "reason": "Export helper: refuses an object key outside the stream's prefix; owner only."
+    },
+    "jale_audit.require_stream(text, text)": {
+      "owner": "jale_audit_owner",
+      "security": "invoker",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_stream text, p_context text",
+      "returns": "void",
+      "execute": [],
+      "created_by": "109",
+      "reason": "Export helper: refuses an unknown stream; owner only."
+    },
+    "jale_audit.require_window(xid8, xid8, text)": {
+      "owner": "jale_audit_owner",
+      "security": "invoker",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_from xid8, p_to xid8, p_context text",
+      "returns": "void",
+      "execute": [],
+      "created_by": "109",
+      "reason": "Export helper: refuses a window that reaches past the current snapshot's xmin; owner only."
+    },
+    "jale_audit.reveal_count(integer)": {
+      "owner": "jale_audit_owner",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_days integer",
+      "returns": "bigint",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "109",
+      "reason": "The dashboard tile's aggregate: the number of contact reveals in recent days, a count only."
+    },
+    "jale_audit.scrub_legacy_metadata(jsonb, text, text, text)": {
+      "owner": "jale_audit_owner",
+      "security": "invoker",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_metadata jsonb, p_actor_role text, p_action text, p_target_type text",
+      "returns": "jsonb",
+      "execute": [],
+      "created_by": "110",
+      "reason": "The one transform both the one-time scrub and the insert trigger apply to dashboard action records; owner only."
+    },
+    "jale_audit.legacy_admin_id(text)": {
+      "owner": "jale_audit_owner",
+      "security": "invoker",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_email text",
+      "returns": "uuid",
+      "execute": [],
+      "created_by": "110",
+      "reason": "The admin a dashboard action record names, from its stored email: the one admin account whose email matches case-insensitively, else NULL; used by the one-time fill and the insert trigger; owner only."
+    },
+    "jale_audit.scrub_legacy_row()": {
+      "owner": "jale_audit_owner",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "",
+      "returns": "trigger",
+      "execute": [],
+      "created_by": "110",
+      "reason": "Insert trigger on the dashboard's action records: applies the shared transform and stamps the writing transaction; never fails an insert."
+    },
+    "jale_audit.utc_text(timestamp with time zone)": {
+      "owner": "jale_audit_owner",
+      "security": "invoker",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_at timestamp with time zone",
+      "returns": "text",
+      "execute": [],
+      "created_by": "109",
+      "reason": "Export helper: renders an instant as canonical UTC text; owner only."
+    },
+    "jale_audit.value_span_kind(text)": {
+      "owner": "jale_audit_owner",
+      "security": "invoker",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_text text",
+      "returns": "text",
+      "execute": [],
+      "created_by": "112",
+      "reason": "The audit owner's helper for list_holds: names the kind of value a text holds by the shared value-span patterns of redact_value_spans."
+    },
+    "jale_audit.window_rows(text, xid8, xid8, bigint, integer)": {
+      "owner": "jale_audit_owner",
+      "security": "invoker",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_stream text, p_from xid8, p_to xid8, p_after_seq bigint, p_limit integer",
+      "returns": "TABLE(seq bigint, line text)",
+      "execute": [],
+      "created_by": "109",
+      "reason": "Export helper: a window's lines for one stream; owner only."
+    },
+    "jale_ops.audit_event_counts(timestamp with time zone)": {
+      "owner": "jale_ops_owner",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_since timestamp with time zone",
+      "returns": "TABLE(kind text, outcome text, surface text, events bigint)",
+      "execute": [
+        "jale_admin",
+        "jale_ops_readonly"
+      ],
+      "created_by": "112",
+      "reason": "Operator and release check: access events since a time per kind, outcome and surface; counts only. The master runs it before any personal login exists."
+    },
+    "jale_ops.audit_export_status()": {
+      "owner": "jale_ops_owner",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "",
+      "returns": "TABLE(stream text, watermark xid8, watermark_at timestamp with time zone, unexported_rows bigint, batches bigint, last_batch_at timestamp with time zone, last_batch_rows integer, held_rows bigint, released_pending bigint)",
+      "execute": [
+        "jale_admin",
+        "jale_ops_readonly"
+      ],
+      "created_by": "112",
+      "reason": "Operator and release check: the archive export per stream; counts and times only. The master runs it before any personal login exists."
+    },
+    "jale_ops.delivery_status(uuid)": {
+      "owner": "jale_ops_owner",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_user_id uuid",
+      "returns": "TABLE(channel text, record_id uuid, kind text, status text, provider_status text, provider_error_code text, attempts integer, created_at timestamp with time zone, sent_at timestamp with time zone, status_updated_at timestamp with time zone, next_attempt_at timestamp with time zone)",
+      "execute": [
+        "jale_ops_readonly"
+      ],
+      "created_by": "112",
+      "reason": "Operator read: one user's WhatsApp, job message and email delivery statuses and provider codes; never a body, a template or error text."
+    },
+    "jale_ops.find_user(text, text)": {
+      "owner": "jale_ops_owner",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_kind text, p_value text",
+      "returns": "uuid",
+      "execute": [
+        "jale_ops_readonly"
+      ],
+      "created_by": "112",
+      "reason": "Operator lookup: the user id for an email address, a phone or WhatsApp number, or a sign-in subject passed as a bound parameter; never echoes the value."
+    },
+    "jale_ops.migration_ledger()": {
+      "owner": "jale_ops_owner",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "",
+      "returns": "TABLE(filename text, applied_at timestamp with time zone, checksum text, applied_by text)",
+      "execute": [
+        "jale_ops_readonly"
+      ],
+      "created_by": "112",
+      "reason": "Operator read: the migration ledger (file, time, checksum, login), where it exists."
+    },
+    "jale_ops.onboarding_status(uuid)": {
+      "owner": "jale_ops_owner",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_user_id uuid",
+      "returns": "TABLE(source text, record_id uuid, run_id uuid, status text, step_key text, to_step_key text, attempts integer, created_at timestamp with time zone, changed_at timestamp with time zone, completed_at timestamp with time zone, expires_at timestamp with time zone, locked_until timestamp with time zone)",
+      "execute": [
+        "jale_ops_readonly"
+      ],
+      "created_by": "112",
+      "reason": "Operator read: one worker's onboarding state, workflow runs, step changes and identity challenges; codes and times only."
+    },
+    "jale_ops.outbox_status(uuid)": {
+      "owner": "jale_ops_owner",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_user_id uuid",
+      "returns": "TABLE(source text, record_id uuid, kind text, service text, status text, attempts integer, priority integer, outbox_id uuid, created_at timestamp with time zone, updated_at timestamp with time zone, next_attempt_at timestamp with time zone, expires_at timestamp with time zone)",
+      "execute": [
+        "jale_ops_readonly"
+      ],
+      "created_by": "112",
+      "reason": "Operator read: one worker's domain events and message intents; types, statuses, attempts and times, never a payload or error text."
+    },
+    "jale_ops.provision_person(text, text, integer)": {
+      "owner": "jale_ops_owner",
+      "security": "invoker",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "IN p_handle text, IN p_verifier text, IN p_valid_days integer",
+      "kind": "procedure",
+      "returns": null,
+      "execute": [
+        "jale_admin"
+      ],
+      "created_by": "112",
+      "reason": "Personal operator logins (separable unit): creates jale_person_<handle> in the accepted operator shape from a SCRAM verifier; an invoker procedure only the master runs."
+    },
+    "jale_ops.remove_person(text)": {
+      "owner": "jale_ops_owner",
+      "security": "invoker",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "IN p_handle text",
+      "kind": "procedure",
+      "returns": null,
+      "execute": [
+        "jale_admin"
+      ],
+      "created_by": "112",
+      "reason": "Personal operator logins (separable unit): drops an operator login; an invoker procedure only the master runs."
+    },
+    "jale_ops.renew_person(text, text, integer)": {
+      "owner": "jale_ops_owner",
+      "security": "invoker",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "IN p_handle text, IN p_verifier text, IN p_valid_days integer",
+      "kind": "procedure",
+      "returns": null,
+      "execute": [
+        "jale_admin"
+      ],
+      "created_by": "112",
+      "reason": "Personal operator logins (separable unit): a new verifier and expiry for an existing operator login; an invoker procedure only the master runs."
+    },
+    "jale_ops.trust_assessment_status(uuid)": {
+      "owner": "jale_ops_owner",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_user_id uuid",
+      "returns": "TABLE(assessment_id uuid, profession_key text, status text, rubric_version text, scoring_model_id text, created_at timestamp with time zone, scored_at timestamp with time zone)",
+      "execute": [
+        "jale_ops_readonly"
+      ],
+      "created_by": "112",
+      "reason": "Operator read: one worker's trust assessment statuses and versions; never a score, a rationale or an answer."
+    },
+    "jale_ops.user_status(uuid)": {
+      "owner": "jale_ops_owner",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_user_id uuid",
+      "returns": "TABLE(user_id uuid, user_type text, tenant_id uuid, has_email boolean, has_phone boolean, has_whatsapp boolean, whatsapp_linked_at timestamp with time zone, tos_version text, tos_accepted_at timestamp with time zone, privacy_version text, privacy_accepted_at timestamp with time zone, created_at timestamp with time zone, updated_at timestamp with time zone)",
+      "execute": [
+        "jale_ops_readonly"
+      ],
+      "created_by": "112",
+      "reason": "Operator read: one user's account codes and times, contact values only as presence flags."
+    }
+  },
+  "sequences": {
+    "jale_audit.changes_seq_seq": {
+      "owner": "jale_audit_owner",
+      "usage": [],
+      "select": [],
+      "update": [],
+      "reason": "Identity sequence of an append-only audit table; used only by its owner's inserts."
+    },
+    "jale_audit.events_seq_seq": {
+      "owner": "jale_audit_owner",
+      "usage": [],
+      "select": [],
+      "update": [],
+      "reason": "Identity sequence of an append-only audit table; used only by its owner's inserts."
+    },
+    "jale_audit.export_batches_seq_seq": {
+      "owner": "jale_audit_owner",
+      "usage": [],
+      "select": [],
+      "update": [],
+      "reason": "Identity sequence of an append-only audit table; used only by its owner's inserts."
+    },
+    "jale_audit.export_holds_seq_seq": {
+      "owner": "jale_audit_owner",
+      "usage": [],
+      "select": [],
+      "update": [],
+      "reason": "Identity sequence of an append-only audit table; used only by its owner's inserts."
+    },
+    "public.admin_audit_log_seq_seq": {
+      "owner": "jale_audit_owner",
+      "usage": [],
+      "select": [],
+      "update": [],
+      "reason": "Identity sequence of an append-only audit table; used only by its owner's inserts."
+    }
+  },
+  "schemas": {
+    "jale_audit": {
+      "owner": "jale_audit_owner",
+      "usage": [
+        "jale_admin",
+        "jale_admin_console",
+        "jale_api",
+        "jale_job_audit_export",
+        "jale_ops_owner",
+        "jale_whatsapp"
+      ],
+      "create": [],
+      "reason": "Append-only audit storage. Closed to PUBLIC; USAGE for the logins that call its functions (recording, the access history, the export) and for the master's supervised hold release; and for the operator owner, which calls the two count-only audit functions."
+    },
+    "jale_ops": {
+      "owner": "jale_ops_owner",
+      "usage": [
+        "jale_admin",
+        "jale_ops_readonly"
+      ],
+      "create": [],
+      "reason": "Operator read functions. Closed to PUBLIC; USAGE for the operator group (personal operator logins) and for the master, which runs the two audit count functions and the personal-login procedures."
+    }
+  },
+  "table_additions": {
+    "public.admin_users": {
+      "access": {
+        "jale_audit_owner": {
+          "select": [
+            "admin_email",
+            "id"
+          ],
+          "reason": "history_search shows admin email addresses next to admin actors."
+        }
+      },
+      "policies": {
+        "admin_users_audit_owner_read": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_audit_owner"
+          ],
+          "origin": "new",
+          "using": "true",
+          "with_check": null,
+          "open": true,
+          "reason": "The audit owner reads two columns of every admin account to label admin actors."
+        }
+      },
+      "reason": "The audit owner's column read of admin email addresses (migration 109)."
+    },
+    "public.admin_audit_log": {
+      "owner": "jale_audit_owner",
+      "policies": {
+        "admin_audit_log_audit_owner_read": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_audit_owner"
+          ],
+          "origin": "new",
+          "using": "true",
+          "with_check": null,
+          "open": true,
+          "reason": "The owner reads every record for the export, the access history and the reveal tile."
+        },
+        "admin_audit_log_audit_owner_purge": {
+          "command": "DELETE",
+          "permissive": true,
+          "to": [
+            "jale_audit_owner"
+          ],
+          "origin": "new",
+          "using": "(current_setting('jale_audit.purge'::text, true) = 'on'::text)",
+          "with_check": null,
+          "reason": "The owner deletes a record only under the retention purge flag; the guard checks each row again."
+        }
+      },
+      "reason": "Frozen and append-only (migration 110): owned by the audit owner, scrubbed on insert, guarded, exported as its own stream."
+    },
+    "public.users": {
+      "access": {
+        "jale_ops_owner": {
+          "select": [
+            "cognito_sub",
+            "created_at",
+            "email",
+            "id",
+            "phone",
+            "privacy_accepted_at",
+            "privacy_version",
+            "tenant_id",
+            "tos_accepted_at",
+            "tos_version",
+            "updated_at",
+            "user_type",
+            "whatsapp_linked_at",
+            "whatsapp_number"
+          ],
+          "reason": "The operator functions read these columns; outputs are identifiers, codes, times and counts only."
+        }
+      },
+      "policies": {
+        "users_ops_owner_read": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_ops_owner"
+          ],
+          "origin": "new",
+          "using": "true",
+          "with_check": null,
+          "open": true,
+          "reason": "The operator owner reads the listed columns of every row; the functions filter by the user asked for."
+        }
+      },
+      "reason": "The operator owner's column read for the operator functions (migration 112)."
+    },
+    "public.worker_onboarding_state": {
+      "access": {
+        "jale_ops_owner": {
+          "select": [
+            "created_at",
+            "id",
+            "lifecycle",
+            "lifecycle_changed_at",
+            "ready_at",
+            "updated_at",
+            "user_id"
+          ],
+          "reason": "The operator functions read these columns; outputs are identifiers, codes, times and counts only."
+        }
+      },
+      "policies": {
+        "worker_onboarding_state_ops_owner_read": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_ops_owner"
+          ],
+          "origin": "new",
+          "using": "true",
+          "with_check": null,
+          "open": true,
+          "reason": "The operator owner reads the listed columns of every row; the functions filter by the user asked for."
+        }
+      },
+      "reason": "The operator owner's column read for the operator functions (migration 112)."
+    },
+    "public.worker_workflow_runs": {
+      "access": {
+        "jale_ops_owner": {
+          "select": [
+            "completed_at",
+            "created_at",
+            "current_step_key",
+            "id",
+            "status",
+            "updated_at",
+            "user_id"
+          ],
+          "reason": "The operator functions read these columns; outputs are identifiers, codes, times and counts only."
+        }
+      },
+      "policies": {
+        "worker_workflow_runs_ops_owner_read": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_ops_owner"
+          ],
+          "origin": "new",
+          "using": "true",
+          "with_check": null,
+          "open": true,
+          "reason": "The operator owner reads the listed columns of every row; the functions filter by the user asked for."
+        }
+      },
+      "reason": "The operator owner's column read for the operator functions (migration 112)."
+    },
+    "public.worker_workflow_transitions": {
+      "access": {
+        "jale_ops_owner": {
+          "select": [
+            "created_at",
+            "from_step_key",
+            "id",
+            "run_id",
+            "to_step_key"
+          ],
+          "reason": "The operator functions read these columns; outputs are identifiers, codes, times and counts only."
+        }
+      },
+      "policies": {
+        "worker_workflow_transitions_ops_owner_read": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_ops_owner"
+          ],
+          "origin": "new",
+          "using": "true",
+          "with_check": null,
+          "open": true,
+          "reason": "The operator owner reads the listed columns of every row; the functions filter by the user asked for."
+        }
+      },
+      "reason": "The operator owner's column read for the operator functions (migration 112)."
+    },
+    "public.worker_identity_challenges": {
+      "access": {
+        "jale_ops_owner": {
+          "select": [
+            "attempts",
+            "candidate_user_id",
+            "created_at",
+            "current_step_key",
+            "expires_at",
+            "id",
+            "locked_until",
+            "status",
+            "updated_at",
+            "verified_user_id"
+          ],
+          "reason": "The operator functions read these columns; outputs are identifiers, codes, times and counts only."
+        }
+      },
+      "policies": {
+        "worker_identity_challenges_ops_owner_read": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_ops_owner"
+          ],
+          "origin": "new",
+          "using": "true",
+          "with_check": null,
+          "open": true,
+          "reason": "The operator owner reads the listed columns of every row; the functions filter by the user asked for."
+        }
+      },
+      "reason": "The operator owner's column read for the operator functions (migration 112)."
+    },
+    "public.worker_trust_assessments": {
+      "access": {
+        "jale_ops_owner": {
+          "select": [
+            "created_at",
+            "id",
+            "profession_key",
+            "rubric_version",
+            "scored_at",
+            "scoring_model_id",
+            "status",
+            "user_id"
+          ],
+          "reason": "The operator functions read these columns; outputs are identifiers, codes, times and counts only."
+        }
+      },
+      "policies": {
+        "worker_trust_assessments_ops_owner_read": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_ops_owner"
+          ],
+          "origin": "new",
+          "using": "true",
+          "with_check": null,
+          "open": true,
+          "reason": "The operator owner reads the listed columns of every row; the functions filter by the user asked for."
+        }
+      },
+      "reason": "The operator owner's column read for the operator functions (migration 112)."
+    },
+    "public.worker_domain_outbox": {
+      "access": {
+        "jale_ops_owner": {
+          "select": [
+            "aggregate_id",
+            "attempts",
+            "created_at",
+            "event_type",
+            "id",
+            "next_attempt_at",
+            "status",
+            "updated_at"
+          ],
+          "reason": "The operator functions read these columns; outputs are identifiers, codes, times and counts only."
+        }
+      },
+      "policies": {
+        "worker_domain_outbox_ops_owner_read": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_ops_owner"
+          ],
+          "origin": "new",
+          "using": "true",
+          "with_check": null,
+          "open": true,
+          "reason": "The operator owner reads the listed columns of every row; the functions filter by the user asked for."
+        }
+      },
+      "reason": "The operator owner's column read for the operator functions (migration 112)."
+    },
+    "public.worker_message_intents": {
+      "access": {
+        "jale_ops_owner": {
+          "select": [
+            "category",
+            "created_at",
+            "expires_at",
+            "id",
+            "outbox_id",
+            "owner_service",
+            "priority",
+            "status",
+            "updated_at",
+            "user_id"
+          ],
+          "reason": "The operator functions read these columns; outputs are identifiers, codes, times and counts only."
+        }
+      },
+      "policies": {
+        "worker_message_intents_ops_owner_read": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_ops_owner"
+          ],
+          "origin": "new",
+          "using": "true",
+          "with_check": null,
+          "open": true,
+          "reason": "The operator owner reads the listed columns of every row; the functions filter by the user asked for."
+        }
+      },
+      "reason": "The operator owner's column read for the operator functions (migration 112)."
+    },
+    "public.whatsapp_outbox": {
+      "access": {
+        "jale_ops_owner": {
+          "select": [
+            "attempt_count",
+            "created_at",
+            "id",
+            "next_attempt_at",
+            "sent_at",
+            "source_type",
+            "status",
+            "twilio_delivery_status",
+            "twilio_error_code",
+            "twilio_status_updated_at",
+            "whatsapp_number"
+          ],
+          "reason": "The operator functions read these columns; outputs are identifiers, codes, times and counts only."
+        }
+      },
+      "policies": {
+        "whatsapp_outbox_ops_owner_read": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_ops_owner"
+          ],
+          "origin": "new",
+          "using": "true",
+          "with_check": null,
+          "open": true,
+          "reason": "The operator owner reads the listed columns of every row; the functions filter by the user asked for."
+        }
+      },
+      "reason": "The operator owner's column read for the operator functions (migration 112)."
+    },
+    "public.job_message_outbox": {
+      "access": {
+        "jale_ops_owner": {
+          "select": [
+            "attempt_count",
+            "created_at",
+            "id",
+            "send_kind",
+            "sent_at",
+            "status",
+            "whatsapp_number"
+          ],
+          "reason": "The operator functions read these columns; outputs are identifiers, codes, times and counts only."
+        }
+      },
+      "policies": {
+        "job_message_outbox_ops_owner_read": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_ops_owner"
+          ],
+          "origin": "new",
+          "using": "true",
+          "with_check": null,
+          "open": true,
+          "reason": "The operator owner reads the listed columns of every row; the functions filter by the user asked for."
+        }
+      },
+      "reason": "The operator owner's column read for the operator functions (migration 112)."
+    },
+    "public.email_outbox": {
+      "access": {
+        "jale_ops_owner": {
+          "select": [
+            "attempt_count",
+            "created_at",
+            "id",
+            "next_attempt_at",
+            "recipient_email",
+            "sent_at",
+            "source_type",
+            "status"
+          ],
+          "reason": "The operator functions read these columns; outputs are identifiers, codes, times and counts only."
+        }
+      },
+      "policies": {
+        "email_outbox_ops_owner_read": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_ops_owner"
+          ],
+          "origin": "new",
+          "using": "true",
+          "with_check": null,
+          "open": true,
+          "reason": "The operator owner reads the listed columns of every row; the functions filter by the user asked for."
+        }
+      },
+      "reason": "The operator owner's column read for the operator functions (migration 112)."
+    },
+    "public.schema_migrations": {
+      "access": {
+        "jale_ops_owner": {
+          "select": [
+            "applied_at",
+            "applied_by",
+            "checksum",
+            "filename"
+          ],
+          "reason": "The operator functions read these columns; outputs are identifiers, codes, times and counts only."
+        }
+      },
+      "reason": "jale_ops.migration_ledger reads the ledger (migration 112); granted only where the ledger exists."
+    }
+  }
+}

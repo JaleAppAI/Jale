@@ -40,6 +40,8 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import type { PoolClient } from 'pg';
 
 import { getDbPool, setInternalUserRlsContext } from '../../lib/db';
+import { auditCaller } from '../../lib/audit/caller';
+import { setAuditContext } from '../../lib/audit/context';
 import { corsHeaders, errorMessage } from '../../lib/http';
 import { loadWorkerGate, type WorkerGate } from '../lib/onboarding-repository';
 import { publishOutboxWakes } from '../lib/outbox-wake';
@@ -280,6 +282,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return fail(404, 'worker_not_found');
     }
     await setInternalUserRlsContext(client, workerId);
+    await setAuditContext(client, auditCaller(event, { kind: 'worker', id: workerId }, 'web'), 'worker.onboarding');
 
     // The requested language only ever seeds a NEW run; a live run's own
     // preference wins (`start_web_onboarding_workflow` ignores the argument

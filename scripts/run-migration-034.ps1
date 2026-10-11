@@ -13,10 +13,10 @@
 #
 # Usage:
 #
-#   1. Deploy the bastion:   `npx cdk deploy JaleBastionStack` (from infra/)
+#   1. Deploy the bastion:   `pwsh scripts/deploy-bastion.ps1` (or `bash scripts/deploy-bastion.sh`)
 #   2. Inspect first:        `pwsh scripts/run-migration-034.ps1 -VerifyOnly`
 #   3. Apply the migration:  `pwsh scripts/run-migration-034.ps1`
-#   4. Destroy the bastion:  `npx cdk destroy JaleBastionStack`
+#   4. Destroy the bastion:  `pwsh scripts/deploy-bastion.ps1 -Destroy` (or `bash scripts/deploy-bastion.sh --destroy`)
 #
 # What -VerifyOnly does (safe to run anytime, never mutates the database):
 #   - Connects to RDS via the bastion as jale_admin (read-only)
@@ -66,6 +66,14 @@ param(
     [switch]$VerifyOnly
 )
 
+# Retired: this runner refuses to run. It keeps no migration ledger, and
+# most of these runners reset role passwords unconditionally, so a re-run
+# could replay applied migrations or break live logins. Use
+# scripts/run-migrations.sh, which keeps the ledger, verifies checksums and
+# changes a password only when asked to. There is no override.
+[Console]::Error.WriteLine('!! scripts/run-migration-034.ps1 is retired and refuses to run: it keeps no migration ledger, and it resets the jale_billing password on every run. Use: bash scripts/run-migrations.sh (see --help).')
+exit 1
+
 $ErrorActionPreference = 'Stop'
 
 $BastionStack = 'JaleBastionStack'
@@ -99,7 +107,7 @@ if ($bastionId) { $bastionId = $bastionId.Trim() }
 
 if ([string]::IsNullOrEmpty($bastionId) -or $bastionId -eq 'None') {
     Write-Host "!! Could not find BastionInstanceId output on $BastionStack." -ForegroundColor Red
-    Write-Host "   Deploy the stack first: cd infra; npx cdk deploy $BastionStack"
+    Write-Host "   Deploy the stack first: .\scripts\deploy-bastion.ps1 (or: bash scripts/deploy-bastion.sh)"
     exit 1
 }
 Write-Host "   bastion: $bastionId"
@@ -492,7 +500,7 @@ if ($VerifyOnly) {
     Write-Host "     pwsh scripts/run-migration-034.ps1"
 } else {
     Write-Host ">> All done. Next:"
-    Write-Host "   cd infra; npx cdk destroy JaleBastionStack    # cost hygiene"
+    Write-Host "   .\scripts\deploy-bastion.ps1 -Destroy    # cost hygiene; or: bash scripts/deploy-bastion.sh --destroy"
     Write-Host "   Deploy whatever billing-consuming stack(s) read jale/billing/db once ready."
 }
 Write-Host ""

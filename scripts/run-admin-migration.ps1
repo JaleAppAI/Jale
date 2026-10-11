@@ -7,6 +7,14 @@ param(
     [string]$Region = $(if ($env:AWS_REGION) { $env:AWS_REGION } else { 'us-east-2' })
 )
 
+# Retired: this runner refuses to run. It keeps no migration ledger, and
+# most of these runners reset role passwords unconditionally, so a re-run
+# could replay applied migrations or break live logins. Use
+# scripts/run-migrations.sh, which keeps the ledger, verifies checksums and
+# changes a password only when asked to. There is no override.
+[Console]::Error.WriteLine('!! scripts/run-admin-migration.ps1 is retired and refuses to run: it keeps no migration ledger, and it resets the jale_admin_console password on every run. Use: bash scripts/run-migrations.sh (see --help).')
+exit 1
+
 $ErrorActionPreference = 'Stop'
 $BastionStack = 'JaleBastionStack'
 $DatabaseStack = 'JaleDatabaseStack'

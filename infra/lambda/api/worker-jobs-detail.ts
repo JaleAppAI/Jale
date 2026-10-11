@@ -89,7 +89,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // answered; narrowing it to job-scoped would tell every vault-holding
     // worker to re-upload, since only a worker-session document sync
     // materializes those job rows and this handler deliberately runs none
-    // (jale_admin session -- the sync sets a worker GUC and writes to
+    // (a request-login session -- the sync sets a worker GUC and writes to
     // FORCE-RLS worker_documents).
     //
     // The probe now covers OPTIONAL doc types too: without that widening,

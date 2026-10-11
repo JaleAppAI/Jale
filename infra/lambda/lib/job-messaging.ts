@@ -1,9 +1,14 @@
 import type { PoolClient } from 'pg';
 import { setInternalUserRlsContext } from './db';
 import { sendTwilioWhatsAppMessage, AmbiguousTwilioSendError, TwilioTemplateInvalidError } from '../whatsapp/lib/outbox';
-import { categoryRenderers } from '../whatsapp/lib/onboarding-renderers';
-import { enqueueWorkerMessage, registerCategoryRenderer } from '../whatsapp/lib/worker-delivery-gateway';
-import { loadWorkerGate } from '../whatsapp/lib/onboarding-repository';
+import { createReleaseRenderer } from '../whatsapp/lib/onboarding-renderers';
+import type { PreferredLanguage } from '../whatsapp/lib/onboarding-types';
+import {
+  claimMessageFrom,
+  claimWorkerIntent,
+  isRendererUnavailable,
+  loadWorkerDeliveryContext,
+} from './employer-worker-lane';
 
 const FALLBACK_BODY_KEY = '__fallback_body';
 const WORKER_REPLY_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -11,8 +16,8 @@ const MAX_MESSAGE_LENGTH = 2000;
 // Outbox rows stop auto-retrying at this attempt count (R8). The R7 template
 // dedupe must treat rows at the cap as dead, so the two queries share it.
 const MAX_SEND_ATTEMPTS = 5;
-// C6 employer_chat intent expiry (plan intent-parameters table).
-const EMPLOYER_CHAT_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
+// Pure: renders the same copy the employer_chat category renderer sends.
+const releaseRenderer = createReleaseRenderer();
 
 type ConversationAccessRow = {
   id: string;
@@ -22,7 +27,6 @@ type ConversationAccessRow = {
   application_id: string;
   status: 'open' | 'closed';
   worker_phone: string | null;
-  worker_language: string | null;
   company_name: string | null;
   job_title: string | null;
   last_worker_message_at: Date | string | null;
@@ -144,12 +148,27 @@ function buildContextHeader(
   return `🏢 ${co} — ${jt}${num}\n`;
 }
 
-async function setSessionInternalUser(client: PoolClient, userId: string): Promise<void> {
-  await client.query(`SELECT set_config('app.current_internal_user_id', $1, false)`, [userId]);
-}
-
-async function clearSessionInternalUser(client: PoolClient): Promise<void> {
-  await client.query(`SELECT set_config('app.current_internal_user_id', '', false)`);
+/**
+ * Runs `fn` in its own short transaction with `actorUserId` as the caller
+ * (app.current_internal_user_id, transaction-local). For code that runs
+ * outside a caller's transaction: the setting ends with the COMMIT or
+ * ROLLBACK, so nothing outlives the call on a pooled connection.
+ */
+async function inActorTransaction<T>(
+  client: PoolClient,
+  actorUserId: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  await client.query('BEGIN');
+  try {
+    await setInternalUserRlsContext(client, actorUserId);
+    const result = await fn();
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw err;
+  }
 }
 
 async function loadConversationForEmployer(
@@ -166,7 +185,6 @@ async function loadConversationForEmployer(
        jc.application_id,
        jc.status,
        COALESCE(NULLIF(u.whatsapp_number, ''), NULLIF(u.phone, ''), NULLIF(wp.phone, '')) AS worker_phone,
-       wc.language AS worker_language,
        COALESCE(ep.company_name, employer.full_name, j.company, 'Jale') AS company_name,
        j.title AS job_title,
        jc.last_worker_message_at,
@@ -177,7 +195,6 @@ async function loadConversationForEmployer(
      JOIN users u ON u.id = jc.worker_id
      LEFT JOIN worker_profiles wp ON wp.user_id = jc.worker_id
      LEFT JOIN employer_profiles ep ON ep.user_id = jc.employer_id
-     LEFT JOIN whatsapp_conversations wc ON wc.user_id = jc.worker_id
      WHERE jc.id = $1
        AND jc.employer_id = $2`,
     [conversationId, employerId],
@@ -190,6 +207,7 @@ async function queueWorkerInviteTemplate(
   conversation: ConversationAccessRow,
   templateName: string,
   messageId: string,
+  workerLanguage: string | null,
 ): Promise<void> {
   const whatsappNumber = normalizeWhatsappNumber(conversation.worker_phone);
   if (!whatsappNumber) throw new Error('worker_whatsapp_unavailable');
@@ -213,7 +231,7 @@ async function queueWorkerInviteTemplate(
         '2': jobTitle,
         '5': `conversation:open:${conversation.id}`,
         '6': `conversation:decline:${conversation.id}`,
-        [FALLBACK_BODY_KEY]: buildInviteFallback(companyName, jobTitle, conversation.worker_language),
+        [FALLBACK_BODY_KEY]: buildInviteFallback(companyName, jobTitle, workerLanguage),
       }),
     ],
   );
@@ -338,7 +356,6 @@ export async function createApplicantConversation(
        ja.worker_id,
        ja.id AS application_id,
        COALESCE(NULLIF(u.whatsapp_number, ''), NULLIF(u.phone, ''), NULLIF(wp.phone, '')) AS worker_phone,
-       wc.language AS worker_language,
        COALESCE(ep.company_name, employer.full_name, j.company, 'Jale') AS company_name,
        j.title AS job_title
      FROM jobs j
@@ -347,7 +364,6 @@ export async function createApplicantConversation(
      JOIN users u ON u.id = ja.worker_id
      LEFT JOIN worker_profiles wp ON wp.user_id = ja.worker_id
      LEFT JOIN employer_profiles ep ON ep.user_id = j.employer_id
-     LEFT JOIN whatsapp_conversations wc ON wc.user_id = ja.worker_id
      WHERE j.id = $1
        AND j.employer_id = $2
        AND ja.worker_id = $3`,
@@ -358,35 +374,19 @@ export async function createApplicantConversation(
   if (!row) throw new Error('applicant_not_found');
   if (!normalizeWhatsappNumber(row.worker_phone)) throw new Error('worker_whatsapp_unavailable');
 
-  let conversation = await client.query<ConversationAccessRow>(
-    `SELECT
-       jc.id,
-       jc.job_id,
-       jc.employer_id,
-       jc.worker_id,
-       jc.application_id,
-       jc.status,
-       COALESCE(NULLIF(u.whatsapp_number, ''), NULLIF(u.phone, ''), NULLIF(wp.phone, '')) AS worker_phone,
-       wc.language AS worker_language,
-       COALESCE(ep.company_name, employer.full_name, j.company, 'Jale') AS company_name,
-       j.title AS job_title,
-       jc.last_worker_message_at
-     FROM job_conversations jc
-     JOIN jobs j ON j.id = jc.job_id
-     JOIN users employer ON employer.id = jc.employer_id
-     JOIN users u ON u.id = jc.worker_id
-     LEFT JOIN worker_profiles wp ON wp.user_id = jc.worker_id
-     LEFT JOIN employer_profiles ep ON ep.user_id = jc.employer_id
-     LEFT JOIN whatsapp_conversations wc ON wc.user_id = jc.worker_id
-     WHERE jc.job_id = $1
-       AND jc.employer_id = $2
-       AND jc.worker_id = $3
-       AND jc.status = 'open'
-     LIMIT 1`,
+  const open = await client.query<{ id: string }>(
+    `SELECT jc.id
+       FROM job_conversations jc
+      WHERE jc.job_id = $1
+        AND jc.employer_id = $2
+        AND jc.worker_id = $3
+        AND jc.status = 'open'
+      LIMIT 1`,
     [jobId, employerId, workerId],
   );
 
-  if (conversation.rowCount === 0) {
+  let conversationId = open.rows[0]?.id;
+  if (!conversationId) {
     const threadNumber = await client.query<{ n: number }>(
       `SELECT assign_worker_thread_number($1) AS n`,
       [workerId],
@@ -398,34 +398,7 @@ export async function createApplicantConversation(
        RETURNING id`,
       [jobId, employerId, workerId, row.application_id, threadNumber.rows[0].n],
     );
-
-    conversation = await client.query<ConversationAccessRow>(
-      `SELECT
-         $1::uuid AS id,
-         $2::uuid AS job_id,
-         $3::uuid AS employer_id,
-         $4::uuid AS worker_id,
-         $5::uuid AS application_id,
-         'open'::text AS status,
-         $6::text AS worker_phone,
-         $7::text AS worker_language,
-         $8::text AS company_name,
-         $9::text AS job_title,
-         NULL::timestamptz AS last_worker_message_at,
-         $10::int AS worker_thread_number`,
-      [
-        created.rows[0].id,
-        row.job_id,
-        employerId,
-        workerId,
-        row.application_id,
-        row.worker_phone,
-        row.worker_language,
-        row.company_name,
-        row.job_title,
-        threadNumber.rows[0].n,
-      ],
-    );
+    conversationId = created.rows[0].id;
   }
 
   // The WhatsApp session is per phone number, not per conversation. If the worker
@@ -441,20 +414,65 @@ export async function createApplicantConversation(
           AND id != $3
           AND last_worker_message_at > now() - interval '24 hours'
      ) AS active`,
-    [employerId, workerId, conversation.rows[0].id],
+    [employerId, workerId, conversationId],
   );
   const workerSessionOpen = crossSessionRow.rows[0]?.active ?? false;
 
+  // A new conversation opens with the invite template; the template's
+  // language is chosen in the send, from the worker's delivery context.
   await queueConversationMessageFromEmployer(
     client,
-    conversation.rows[0].id,
+    conversationId,
     employerId,
     initialMessage,
-    inviteTemplateName(conversation.rows[0].worker_language),
+    'invite',
     { forceCanSendFreeform: workerSessionOpen },
   );
 
-  return { conversationId: conversation.rows[0].id };
+  return { conversationId };
+}
+
+/**
+ * Claims the deferred `employer_chat` intent for an employer message to a
+ * worker who is not ready, through `jale_cap.employer_claim_worker_intent`.
+ * The message row is the intent's source. The copy is rendered here, as the
+ * employer_chat renderer renders one conversation, in the worker's workflow
+ * language; the claim uses it only if delivery is allowed now, and a
+ * deferred intent is rendered again when the worker's held messages are
+ * released.
+ */
+async function claimEmployerChatIntent(
+  client: PoolClient,
+  conversation: ConversationAccessRow,
+  messageId: string,
+  language: PreferredLanguage,
+): Promise<void> {
+  const companyName = conversation.company_name;
+  const jobTitle = conversation.job_title;
+  const rendered = companyName !== null && jobTitle !== null
+    ? await releaseRenderer.render({
+      kind: 'employer_chat_single',
+      workerId: conversation.worker_id,
+      language,
+      conversationId: conversation.id,
+      companyName,
+      jobTitle,
+    })
+    : null;
+  const claim = await claimWorkerIntent(client, {
+    workerId: conversation.worker_id,
+    kind: 'employer_chat',
+    sourceId: messageId,
+    payload: {
+      conversationId: conversation.id,
+      companyName,
+      jobTitle,
+    },
+    message: claimMessageFrom(rendered),
+  });
+  // An allowed delivery with nothing to send fails the send, so its
+  // transaction rolls back, as it always has.
+  if (isRendererUnavailable(claim.decision)) throw new Error('renderer_unavailable:employer_chat');
 }
 
 export async function queueConversationMessageFromEmployer(
@@ -462,7 +480,7 @@ export async function queueConversationMessageFromEmployer(
   conversationId: string,
   employerId: string,
   body: string,
-  closedWindowTemplateName?: string,
+  closedWindowTemplate: 'invite' | 'resume' = 'resume',
   options?: { forceCanSendFreeform?: boolean },
 ): Promise<{ messageId: string; queuedAsTemplate: boolean }> {
   const conversation = await loadConversationForEmployer(client, conversationId, employerId);
@@ -483,17 +501,13 @@ export async function queueConversationMessageFromEmployer(
   // intact.
   //
   // Same convention as the delivery gateway (worker-delivery-gateway.ts): no
-  // onboarding-state row means not-ready-to-receive. The gate read is
-  // worker-owned under forced RLS, so switch context around it exactly like
-  // the intent enqueue below.
-  await setInternalUserRlsContext(client, conversation.worker_id);
-  let workerOnboarding: boolean;
-  try {
-    const gate = await loadWorkerGate(client, conversation.worker_id);
-    workerOnboarding = (gate?.lifecycle ?? 'onboarding') !== 'ready';
-  } finally {
-    await setInternalUserRlsContext(client, employerId);
-  }
+  // onboarding-state row means not-ready-to-receive. The lifecycle and the
+  // worker's languages come from jale_cap.employer_worker_delivery_context,
+  // which checks in SQL that the worker is one of the caller's applicants and
+  // locks the worker's onboarding row for the rest of the transaction. The
+  // employer stays the caller throughout.
+  const delivery = await loadWorkerDeliveryContext(client, conversation.worker_id);
+  const workerOnboarding = (delivery.lifecycle ?? 'onboarding') !== 'ready';
 
   // On the intent path the stored row is the ONLY carrier of the text, so
   // it must be 'waiting_worker_reply' regardless of the reply window — the
@@ -509,30 +523,7 @@ export async function queueConversationMessageFromEmployer(
   const messageId = message.rows[0].id;
 
   if (workerOnboarding) {
-    registerCategoryRenderer('employer_chat', categoryRenderers.employer_chat);
-    // The API transaction is employer-scoped, while the forced-RLS intent is
-    // worker-owned. Switch only around the enqueue and restore the employer
-    // before the conversation/application writes below.
-    await setInternalUserRlsContext(client, conversation.worker_id);
-    try {
-      await enqueueWorkerMessage(client, {
-        workerId: conversation.worker_id,
-        category: 'employer_chat',
-        ownerService: 'job-messaging',
-        sourceType: 'job_conversation_message',
-        sourceId: messageId,
-        dedupeKey: `employer-chat:${messageId}`,
-        priority: 40,
-        expiresAt: new Date(Date.now() + EMPLOYER_CHAT_EXPIRY_MS),
-        payload: {
-          conversationId: conversation.id,
-          companyName: conversation.company_name,
-          jobTitle: conversation.job_title,
-        },
-      });
-    } finally {
-      await setInternalUserRlsContext(client, employerId);
-    }
+    await claimEmployerChatIntent(client, conversation, messageId, delivery.workflowLanguage);
   } else if (canSendFreeform) {
     await queueEmployerFreeformMessage(client, conversation, messageId, body);
   } else {
@@ -555,12 +546,10 @@ export async function queueConversationMessageFromEmployer(
       [conversation.id],
     );
     if (!pendingInvite.rows[0]?.exists) {
-      await queueWorkerInviteTemplate(
-        client,
-        conversation,
-        closedWindowTemplateName ?? resumeTemplateName(conversation.worker_language),
-        messageId,
-      );
+      const templateName = closedWindowTemplate === 'invite'
+        ? inviteTemplateName(delivery.whatsappLanguage)
+        : resumeTemplateName(delivery.whatsappLanguage);
+      await queueWorkerInviteTemplate(client, conversation, templateName, messageId, delivery.whatsappLanguage);
     }
   }
 
@@ -613,11 +602,8 @@ export async function closeEmployerConversation(
  * written by this same database's clock. A browser running a few seconds fast
  * would otherwise mark messages read before they arrived.
  *
- * RLS scopes this on top of the explicit employer_id predicate:
- * job_conversations is ENABLE + FORCE (025:87-88) and
- * job_conversations_employer_all (025:93-97) keys on
- * app.current_internal_user_id, so the caller must have bound that GUC --
- * without it this matches ZERO rows and the employer 404s on their own thread.
+ * The explicit employer_id predicate scopes this; the caller binds
+ * app.current_internal_user_id first.
  */
 export async function markEmployerConversationRead(
   client: PoolClient,
@@ -919,49 +905,144 @@ async function declineWorkerConversation(
   return (result.rowCount ?? 0) > 0;
 }
 
+/** Whose rows a flush may send: the worker's, or the employer's. */
+export type JobOutboxActorKind = 'worker' | 'employer';
+
+/**
+ * Sends the pending employer-message outbox rows of ONE caller, then marks
+ * each row sent or failed.
+ *
+ * Runs on two logins: the employer conversation endpoints call it as the
+ * employer (`actorKind: 'employer'`, always with the conversation just
+ * written), and the WhatsApp processor and the outbox sweeper call it as the
+ * worker (`actorKind: 'worker'`, with or without a conversation). The SELECT
+ * names the caller explicitly (`jc.employer_id` or `jc.worker_id` = the
+ * actor), so a flush is confined to the caller's own conversations by its
+ * own SQL; the row policies on job_message_outbox are a second boundary.
+ *
+ * Must be called OUTSIDE a transaction. Each database step runs in its own
+ * short transaction with the actor set transaction-locally, and no
+ * transaction is ever held open across the Twilio call.
+ *
+ * Each row is CLAIMED before Twilio is called: its own committed step moves
+ * it from pending/failed to `send_unknown`, the parked state no flush or
+ * sweep selects again. Overlapping flushes (the employer endpoints, the
+ * processor, the sweeper) therefore never send one row twice: the one that
+ * claims it sends it, and the others skip it and the rest of its
+ * conversation, so a conversation keeps its order. After the send the row
+ * is marked `sent`, or `failed` on a definite error (retried under the
+ * attempt cap). A row Twilio accepted is never made sendable again, even
+ * when marking it fails; it stays `send_unknown`, like an ambiguous send.
+ */
 export async function sendPendingJobMessageOutbox(
   client: PoolClient,
-  options: { conversationId?: string; actorUserId: string },
+  options: { conversationId?: string; actorUserId: string; actorKind: JobOutboxActorKind },
 ): Promise<void> {
-  await setSessionInternalUser(client, options.actorUserId);
-  try {
-    const params: string[] = [];
-    let conversationFilter = '';
-    if (options.conversationId) {
-      params.push(options.conversationId);
-      conversationFilter = `AND conversation_id = $${params.length}`;
+  const { actorUserId } = options;
+  const actorColumn = options.actorKind === 'employer' ? 'jc.employer_id' : 'jc.worker_id';
+  const params: string[] = [actorUserId];
+  let conversationFilter = '';
+  if (options.conversationId) {
+    params.push(options.conversationId);
+    conversationFilter = `AND o.conversation_id = $${params.length}`;
+  }
+
+  const pending = await inActorTransaction(client, actorUserId, () => client.query<{
+    id: string;
+    conversation_id: string;
+    message_id: string | null;
+    whatsapp_number: string;
+    body: string | null;
+    content_template: string | null;
+    content_variables: Record<string, string> | null;
+    send_kind: string;
+  }>(
+    `SELECT o.id, o.conversation_id, o.message_id, o.whatsapp_number, o.body,
+            o.content_template, o.content_variables, o.send_kind
+       FROM job_message_outbox o
+       JOIN job_conversations jc ON jc.id = o.conversation_id
+      WHERE ${actorColumn} = $1
+        AND o.status IN ('pending', 'failed')
+        AND o.attempt_count < ${MAX_SEND_ATTEMPTS}
+        ${conversationFilter}
+      ORDER BY o.conversation_id, o.created_at ASC
+      LIMIT 10`,
+    params,
+  ));
+
+  const failedConversations = new Set<string>();
+  // Conversations this flush stops at without a send failure: another flush
+  // holds one of its rows, or a sent row could not be marked.
+  const heldConversations = new Set<string>();
+  let lastError: Error | null = null;
+
+  for (const row of pending.rows) {
+    // preserve in-conversation order
+    if (failedConversations.has(row.conversation_id) || heldConversations.has(row.conversation_id)) continue;
+
+    // The claim, committed before Twilio is called. It names the caller in
+    // the statement itself, as the read above does. No row back: another
+    // flush claimed it after this one read it.
+    const claim = await inActorTransaction(client, actorUserId, () => client.query(
+      `UPDATE job_message_outbox o
+          SET status = 'send_unknown'
+        WHERE o.id = $1
+          AND o.status IN ('pending', 'failed')
+          AND o.attempt_count < ${MAX_SEND_ATTEMPTS}
+          AND EXISTS (SELECT 1
+                        FROM job_conversations jc
+                       WHERE jc.id = o.conversation_id
+                         AND ${actorColumn} = $2)`,
+      [row.id, actorUserId],
+    ));
+    if ((claim.rowCount ?? 0) !== 1) {
+      heldConversations.add(row.conversation_id);
+      continue;
     }
 
-    const pending = await client.query<{
-      id: string;
-      conversation_id: string;
-      message_id: string | null;
-      whatsapp_number: string;
-      body: string | null;
-      content_template: string | null;
-      content_variables: Record<string, string> | null;
-      send_kind: string;
-    }>(
-      `SELECT id, conversation_id, message_id, whatsapp_number, body, content_template, content_variables, send_kind
-       FROM job_message_outbox
-       WHERE status IN ('pending', 'failed')
-         AND attempt_count < ${MAX_SEND_ATTEMPTS}
-         ${conversationFilter}
-       ORDER BY conversation_id, created_at ASC
-       LIMIT 10`,
-      params,
-    );
-
-    const failedConversations = new Set<string>();
-    let lastError: Error | null = null;
-
-    for (const row of pending.rows) {
-      if (failedConversations.has(row.conversation_id)) continue; // preserve in-conversation order
-      try {
-        const twilioMessageSid = await sendTwilioWhatsAppMessage(
-          `whatsapp:${row.whatsapp_number}`,
-          row,
+    let twilioMessageSid: string;
+    try {
+      twilioMessageSid = await sendTwilioWhatsAppMessage(
+        `whatsapp:${row.whatsapp_number}`,
+        row,
+      );
+    } catch (err) {
+      failedConversations.add(row.conversation_id);
+      lastError = err as Error;
+      const ambiguous = err instanceof AmbiguousTwilioSendError;
+      console.log(JSON.stringify({ metric: 'JobMessageOutboxSendFailed', outboxId: row.id, ambiguous }));
+      if (err instanceof TwilioTemplateInvalidError) {
+        console.log(JSON.stringify({
+          metric: 'JobMessageTemplateSidInvalid',
+          template: err.templateName,
+          conversationId: row.conversation_id,
+          outboxId: row.id,
+        }));
+      }
+      await inActorTransaction(client, actorUserId, async () => {
+        await client.query(
+          `UPDATE job_message_outbox
+              SET status = $1,
+                  attempt_count = attempt_count + 1,
+                  last_error = $2
+            WHERE id = $3`,
+          [ambiguous ? 'send_unknown' : 'failed', (err as Error).message, row.id],
         );
+        if (row.message_id && !ambiguous) {
+          await client.query(
+            `UPDATE job_conversation_messages
+                SET status = 'failed'
+              WHERE id = $1`,
+            [row.message_id],
+          );
+        }
+      });
+      // Do not rethrow here; skip remaining rows for this conversation and continue others.
+      continue;
+    }
+
+    try {
+      await inActorTransaction(client, actorUserId, async () => {
         await client.query(
           `UPDATE job_message_outbox
               SET status = 'sent',
@@ -983,48 +1064,39 @@ export async function sendPendingJobMessageOutbox(
             [row.message_id, twilioMessageSid],
           );
         }
-      } catch (err) {
-        failedConversations.add(row.conversation_id);
-        lastError = err as Error;
-        const ambiguous = err instanceof AmbiguousTwilioSendError;
-        console.log(JSON.stringify({ metric: 'JobMessageOutboxSendFailed', outboxId: row.id, ambiguous }));
-        if (err instanceof TwilioTemplateInvalidError) {
-          console.log(JSON.stringify({
-            metric: 'JobMessageTemplateSidInvalid',
-            template: err.templateName,
-            conversationId: row.conversation_id,
-            outboxId: row.id,
-          }));
-        }
-        await client.query(
-          `UPDATE job_message_outbox
-              SET status = $1,
-                  attempt_count = attempt_count + 1,
-                  last_error = $2
-            WHERE id = $3`,
-          [ambiguous ? 'send_unknown' : 'failed', (err as Error).message, row.id],
-        );
-        if (row.message_id && !ambiguous) {
-          await client.query(
-            `UPDATE job_conversation_messages
-                SET status = 'failed'
-              WHERE id = $1`,
-            [row.message_id],
-          );
-        }
-        // Do not rethrow here; skip remaining rows for this conversation and continue others.
-      }
+      });
+    } catch (err) {
+      // Twilio accepted this message, so the row stays claimed as
+      // send_unknown and is never sent again; the conversation stops here
+      // for this flush. It ends like an ambiguous send, and is logged as
+      // one, so the send-failure alarm still counts it. Best effort, on its
+      // own: keep Twilio's message id and the error on the claimed row, for
+      // reconciling.
+      heldConversations.add(row.conversation_id);
+      console.log(JSON.stringify({
+        metric: 'JobMessageOutboxSendFailed', outboxId: row.id, ambiguous: true, markFailed: true,
+      }));
+      await inActorTransaction(client, actorUserId, () => client.query(
+        `UPDATE job_message_outbox o
+            SET twilio_message_sid = COALESCE($2, twilio_message_sid),
+                last_error = $3
+          WHERE o.id = $1
+            AND o.status = 'send_unknown'
+            AND EXISTS (SELECT 1
+                          FROM job_conversations jc
+                         WHERE jc.id = o.conversation_id
+                           AND ${actorColumn} = $4)`,
+        [row.id, twilioMessageSid, (err as Error).message, actorUserId],
+      )).catch(() => undefined);
     }
+  }
 
-    // Surface failure only when nothing succeeded and something failed (total outage).
-    if (
-      lastError &&
-      pending.rows.length > 0 &&
-      pending.rows.every((r) => failedConversations.has(r.conversation_id))
-    ) {
-      throw lastError;
-    }
-  } finally {
-    await clearSessionInternalUser(client);
+  // Surface failure only when nothing succeeded and something failed (total outage).
+  if (
+    lastError &&
+    pending.rows.length > 0 &&
+    pending.rows.every((r) => failedConversations.has(r.conversation_id))
+  ) {
+    throw lastError;
   }
 }

@@ -21,7 +21,7 @@ describe('job-message-outbox-sweeper', () => {
       .mockResolvedValueOnce(undefined);                  // w2 ok
     await handler();
     expect(mockSendPending).toHaveBeenCalledTimes(2);
-    expect(mockSendPending).toHaveBeenCalledWith(expect.anything(), { actorUserId: 'w2' });
+    expect(mockSendPending).toHaveBeenCalledWith(expect.anything(), { actorUserId: 'w2', actorKind: 'worker' });
     expect(mockRelease).toHaveBeenCalled();
   });
 

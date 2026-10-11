@@ -15,7 +15,7 @@ jest.mock('@aws-sdk/client-cognito-identity-provider', () => ({
 
 describe('ensureWorkerCognitoAccount', () => {
   it('creates and reconciles a missing worker account before returning it', async () => {
-    const phone = '+19152272188';
+    const phone = '+19155550123';
     const notFound = Object.assign(new Error('not found'), { name: 'UserNotFoundException' });
     const send = jest.fn()
       .mockRejectedValueOnce(notFound)
@@ -73,7 +73,7 @@ describe('reconcileWorkerCognitoAccount', () => {
         UserStatus: 'CONFIRMED',
         UserAttributes: [
           { Name: 'sub', Value: 'worker-sub' },
-          { Name: 'phone_number', Value: '+19152272188' },
+          { Name: 'phone_number', Value: '+19155550123' },
           { Name: 'phone_number_verified', Value: 'true' },
           { Name: 'custom:user_type', Value: 'worker' },
           { Name: 'name', Value: 'Stored Worker' },
@@ -84,7 +84,7 @@ describe('reconcileWorkerCognitoAccount', () => {
     const result = await reconcileWorkerCognitoAccount({
       client: { send } as any,
       userPoolId: 'pool',
-      phone: '+19152272188',
+      phone: '+19155550123',
     });
 
     expect(result).toEqual({ cognitoSub: 'worker-sub', storedName: 'Stored Worker' });
@@ -102,7 +102,7 @@ describe('reconcileWorkerCognitoAccount', () => {
         UserStatus: 'CONFIRMED',
         UserAttributes: [
           { Name: 'sub', Value: 'worker-sub' },
-          { Name: 'phone_number', Value: '+19152272188' },
+          { Name: 'phone_number', Value: '+19155550123' },
           { Name: 'phone_number_verified', Value: 'false' },
           { Name: 'custom:user_type', Value: 'worker' },
         ],
@@ -112,7 +112,7 @@ describe('reconcileWorkerCognitoAccount', () => {
     await reconcileWorkerCognitoAccount({
       client: { send } as any,
       userPoolId: 'pool',
-      phone: '+19152272188',
+      phone: '+19155550123',
     });
 
     // No update-attributes call at all — the unverified flag stands.
@@ -131,7 +131,7 @@ describe('reconcileWorkerCognitoAccount', () => {
     await reconcileWorkerCognitoAccount({
       client: { send } as any,
       userPoolId: 'pool',
-      phone: '+19152272188',
+      phone: '+19155550123',
     });
 
     expect(send.mock.calls.map(([command]) => command.type)).toEqual([
@@ -149,7 +149,7 @@ describe('reconcileWorkerCognitoAccount', () => {
       UserStatus: 'CONFIRMED',
       UserAttributes: [
         { Name: 'sub', Value: 'employer-sub' },
-        { Name: 'phone_number', Value: '+19152272188' },
+        { Name: 'phone_number', Value: '+19155550123' },
         { Name: 'custom:user_type', Value: 'employer' },
       ],
     });
@@ -157,7 +157,7 @@ describe('reconcileWorkerCognitoAccount', () => {
     await expect(reconcileWorkerCognitoAccount({
       client: { send } as any,
       userPoolId: 'pool',
-      phone: '+19152272188',
+      phone: '+19155550123',
     })).rejects.toThrow('conflicting Cognito account type');
     expect(send).toHaveBeenCalledTimes(1);
   });

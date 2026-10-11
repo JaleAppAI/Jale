@@ -3,7 +3,6 @@ import * as cdk from 'aws-cdk-lib';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
-import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as cloudwatchActions from 'aws-cdk-lib/aws-cloudwatch-actions';
@@ -11,13 +10,13 @@ import * as sns from 'aws-cdk-lib/aws-sns';
 import { Construct } from 'constructs';
 import { NetworkStack } from './network-stack';
 import { ApiStack } from './api-stack';
+import { dedicatedDbLogin } from '../constructs/db-login-secrets';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
 import { lambdaIntegration } from '../api-integration';
 
 export interface MediaBoardStackProps extends cdk.StackProps {
   readonly network: NetworkStack;
   readonly api: ApiStack;
-  readonly dbSecret: secretsmanager.ISecret;
   /** WhatsAppStack's jale-worker-media bucket — posts share it (spec §1). */
   readonly mediaBucket: s3.Bucket;
   /**
@@ -61,8 +60,11 @@ export class MediaBoardStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: MediaBoardStackProps) {
     super(scope, id, props);
 
+    // Every route here is authenticated, so every Lambda connects as the
+    // request login.
+    const apiDb = dedicatedDbLogin(this, 'jale_api');
     const commonEnv = {
-      DB_SECRET_ARN: props.dbSecret.secretArn,
+      ...apiDb.environment,
       ALLOWED_ORIGIN: props.allowedOrigin,
       REQUIRED_TOS_VERSION: props.requiredTosVersion,
       MEDIA_BUCKET: props.mediaBucket.bucketName,
@@ -135,7 +137,7 @@ export class MediaBoardStack extends cdk.Stack {
     props.mediaBucket.grantRead(employerWorkerDetailFn.function);
     props.documentsBucket.grantRead(employerWorkerDetailFn.function);
     for (const fn of [postsDispatchFn, createFn, listFn, deleteFn, employerWorkerDetailFn]) {
-      props.dbSecret.grantRead(fn.function);
+      apiDb.grantRead(fn.function);
     }
 
     const restApi = props.api.api;

@@ -1,5 +1,5 @@
 import {
-  listIdentityLockouts,
+  loadLockouts,
   lockoutOutcomeBadge,
   lockoutOutcomeText,
   LOCKOUT_WINDOW_DAYS,
@@ -11,8 +11,9 @@ function formatTime(value: string): string {
 }
 
 export default async function VerificationsPage() {
-  await requireAdminSession();
-  const lockouts = await listIdentityLockouts();
+  const session = await requireAdminSession();
+  // Records every challenge shown before rendering.
+  const lockouts = await loadLockouts(session);
   const lockedOut = lockouts.filter((item) => item.kind === 'lockout');
   const stuck = lockouts.filter((item) => item.kind === 'stuck');
 

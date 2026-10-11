@@ -117,7 +117,7 @@ export function AnswerHighlights({ extraction }: { extraction: TrustExtraction |
       ) : null}
 
       {summary ? (
-        <p className="mt-2 whitespace-pre-wrap text-sm text-[var(--jale-ink-2)]">{summary}</p>
+        <p data-private className="mt-2 whitespace-pre-wrap text-sm text-[var(--jale-ink-2)]">{summary}</p>
       ) : null}
     </div>
   );

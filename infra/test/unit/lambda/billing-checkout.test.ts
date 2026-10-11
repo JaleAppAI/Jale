@@ -1,11 +1,14 @@
 import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../../../lambda/lib/db';
+import { setAuditContext } from '../../../lambda/lib/audit/context';
+import { callerFor, expectContextBeforeWrite, withRequestId } from './api/audit-expectations';
 import { checkCompliance } from '../../../lambda/legal/check-compliance';
 import { getStripe, getStripeSecret, StripeConfigError } from '../../../lambda/lib/stripe-client';
 import { checkoutRequestHash } from '../../../lambda/lib/billing-operations';
 import { handler } from '../../../lambda/billing/checkout';
 
 jest.mock('../../../lambda/lib/db');
+jest.mock('../../../lambda/lib/audit/context');
 jest.mock('../../../lambda/legal/check-compliance');
 // Keep the real StripeConfigError class (so `instanceof` checks in
 // checkout.ts work against genuine instances) while mocking the async
@@ -494,6 +497,43 @@ describe('billing checkout handler', () => {
     expect(mockSetRlsContext).toHaveBeenCalledTimes(3);
   });
 
+  it('holds no transaction open across any network call (secret read, customer create, session create)', async () => {
+    let open = false;
+    const openAtCall: Record<string, boolean> = {};
+    let billingCustomersCallCount = 0;
+    query.mockImplementation((sql: string) => {
+      const statement = sql.trim().toUpperCase();
+      if (statement === 'BEGIN') open = true;
+      if (statement === 'COMMIT' || statement === 'ROLLBACK') open = false;
+      if (sql.includes('SELECT id, email FROM users')) return Promise.resolve({ rows: [{ id: 'user-1', email: 'e@example.com' }] });
+      if (sql.includes('SELECT code FROM billing_plans')) return Promise.resolve({ rows: [{ code: 'employer_pro' }] });
+      if (sql.includes('SELECT provider_customer_id FROM billing_customers')) {
+        billingCustomersCallCount += 1;
+        if (billingCustomersCallCount === 1) return Promise.resolve({ rows: [] });
+        return Promise.resolve({ rows: [{ provider_customer_id: 'cus_123' }] });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+    mockGetStripeSecret.mockImplementation(async () => {
+      openAtCall.getStripeSecret = open;
+      return { priceIdEmployerPro: 'price_employer_pro' };
+    });
+    customerCreate.mockImplementation(async () => {
+      openAtCall.customersCreate = open;
+      return { id: 'cus_123' };
+    });
+    checkoutCreate.mockImplementation(async () => {
+      openAtCall.sessionsCreate = open;
+      return { id: 'cs_123', url: 'https://checkout.stripe.test/session', expires_at: 2_000_000 };
+    });
+
+    const res = await handler(event());
+
+    expect(res.statusCode).toBe(200);
+    expect(openAtCall).toEqual({ getStripeSecret: false, customersCreate: false, sessionsCreate: false });
+    expect(open).toBe(false);
+  });
+
   it('reuses an existing persisted customer and performs zero Stripe customers.create calls', async () => {
     query.mockImplementation((sql: string) => {
       if (sql.includes('SELECT id, email FROM users')) return Promise.resolve({ rows: [{ id: 'user-1', email: 'e@example.com' }] });
@@ -550,5 +590,29 @@ describe('billing checkout handler', () => {
     );
     // Never treated as a retryable provider error — no ROLLBACK-driven 503.
     expect(res.statusCode).not.toBe(503);
+  });
+
+  describe('change context', () => {
+    it('states the employer in the transaction that stores a new payment customer', async () => {
+      let inserted = false;
+      query.mockImplementation((sql: string) => {
+        if (sql.includes('SELECT id, email FROM users')) return Promise.resolve({ rows: [{ id: 'user-1', email: null }] });
+        if (sql.includes('SELECT code FROM billing_plans')) return Promise.resolve({ rows: [{ code: 'employer_pro' }] });
+        if (sql.includes('INSERT INTO billing_customers')) {
+          inserted = true;
+          return Promise.resolve({ rows: [] });
+        }
+        if (sql.includes('SELECT provider_customer_id FROM billing_customers')) {
+          return Promise.resolve({ rows: inserted ? [{ provider_customer_id: 'cus_123' }] : [] });
+        }
+        return Promise.resolve({ rows: [] });
+      });
+      const res = await handler(withRequestId(event()));
+      expect(res.statusCode).toBe(200);
+      expect(customerCreate).toHaveBeenCalled();
+      expect(setAuditContext).toHaveBeenCalledTimes(1);
+      expect(setAuditContext).toHaveBeenCalledWith(expect.objectContaining({ query }), callerFor('employer', 'user-1'), 'employer.billing_checkout');
+      expectContextBeforeWrite(query, setAuditContext as jest.Mock, /INSERT INTO billing_customers/);
+    });
   });
 });

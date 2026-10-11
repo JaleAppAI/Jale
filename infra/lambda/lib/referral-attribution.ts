@@ -164,14 +164,39 @@ export async function writeFirstTouchAttribution(
 }
 
 /**
+ * The two self-referral guards every claim path applies to a share link
+ * before crediting it -- shared so the web claim (`writeWebAttribution`
+ * below) and the WhatsApp claim (`whatsapp/lib/referral-claims.ts`) can never
+ * drift apart.
+ *
+ * Worker: a worker claiming their OWN share link earns no credit. Without
+ * this, the first_* immutability trigger would make the self-credit
+ * permanent and any future referral reward keyed on
+ * first_referrer_worker_id would pay a worker for referring themselves.
+ *
+ * Employer: defensive parity with the worker check. An employer-referred
+ * link's referrer_employer_id is a users.id from the employer side of the
+ * table, so it cannot legitimately equal the claiming worker's own id -- but
+ * the guard costs nothing and closes the same self-credit hazard should that
+ * invariant ever be violated upstream.
+ */
+export function isSelfReferral(
+  link: { referrer_worker_id: string | null; referrer_employer_id: string | null },
+  workerId: string,
+): boolean {
+  return (link.referrer_worker_id !== null && link.referrer_worker_id === workerId)
+    || (link.referrer_employer_id !== null && link.referrer_employer_id === workerId);
+}
+
+/**
  * Web referral-apply attribution: resolves a share code and credits the
  * referral for the authenticated claimer.
  *
- * The share-link read relies on `job_share_links_claim_read` (migration 059):
- * a share code is a capability token, so possession of the code IS the
- * authorization to resolve it — the same contract the anonymous public role
- * already has. Before 059, the only `jale_admin` policy was owner-scoped and
- * this read returned zero rows for every genuine (non-self) referral.
+ * A share code is a capability token: possession of the code IS the
+ * authorization to resolve it -- the same contract the anonymous public role
+ * already has. The code resolves through `jale_cap.resolve_share_link`, which
+ * returns the one active link for it and no row for an unknown, malformed or
+ * revoked code; nothing here lists links.
  */
 export async function writeWebAttribution(
   client: PoolClient,
@@ -186,9 +211,7 @@ export async function writeWebAttribution(
     referrer_employer_id: string | null;
   }>(
     `SELECT job_id, channel, referrer_worker_id, referrer_employer_id
-       FROM job_share_links
-      WHERE code = $1
-        AND revoked_at IS NULL`,
+       FROM jale_cap.resolve_share_link($1)`,
     [shareCode],
   );
 
@@ -197,20 +220,7 @@ export async function writeWebAttribution(
     return { written: false };
   }
 
-  // Self-referral guard: a worker claiming their OWN share link earns no
-  // credit. Without this, the first_* immutability trigger would make the
-  // self-credit permanent and any future referral reward keyed on
-  // first_referrer_worker_id would pay a worker for referring themselves.
-  if (link.referrer_worker_id !== null && link.referrer_worker_id === workerId) {
-    return { written: false };
-  }
-
-  // Defensive parity with the worker check above. An employer-referred link's
-  // referrer_employer_id is a users.id from the employer side of the table,
-  // so it cannot legitimately equal the claiming worker's own id -- but the
-  // guard costs nothing and closes the same self-credit hazard should that
-  // invariant ever be violated upstream.
-  if (link.referrer_employer_id !== null && link.referrer_employer_id === workerId) {
+  if (isSelfReferral(link, workerId)) {
     return { written: false };
   }
 

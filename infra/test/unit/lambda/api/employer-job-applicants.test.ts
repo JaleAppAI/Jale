@@ -3,8 +3,17 @@ import { handler } from '../../../../lambda/api/employer-job-applicants';
 import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
 
+import { recordAccess, recordAttempt } from '../../../../lambda/lib/audit/record';
+import { callerFor, expectAttemptAfter, expectRecordedInsideTransaction, withRequestId } from './audit-expectations';
+
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
+jest.mock('../../../../lambda/lib/audit/record', () => ({
+  ...jest.requireActual('../../../../lambda/lib/audit/record'),
+  recordAccess: jest.fn(),
+  recordAttempt: jest.fn(),
+}));
+jest.mock('../../../../lambda/lib/audit/context');
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
@@ -113,6 +122,25 @@ describe('employer-job-applicants Lambda', () => {
     expect(applicantQuery).toContain('ja.application_answers');
   });
 
+  it('counts an optional document as provided only when it is attached to this job, never a vault-only copy', async () => {
+    mockQuery
+      .mockResolvedValueOnce({}) // BEGIN
+      .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] }) // employer lookup
+      .mockResolvedValueOnce({ rows: [{ id: JOB_ID, optional_fields: [], optional_docs: ['resume'] }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // applicants
+      .mockResolvedValueOnce({}); // COMMIT
+
+    expect((await handler(makeEvent())).statusCode).toBe(200);
+
+    const applicantQuery = String(
+      mockQuery.mock.calls.find(([queryText]) => String(queryText).includes('FROM job_applications ja'))?.[0],
+    );
+    const missingDocs = applicantQuery.slice(0, applicantQuery.indexOf('AS missing_optional_docs'));
+    const coverage = missingDocs.slice(missingDocs.lastIndexOf('FROM worker_documents wd'));
+    expect(coverage).toContain('AND wd.job_id = ja.job_id');
+    expect(coverage).not.toMatch(/job_id\s+IS\s+NULL/i);
+  });
+
   it('reports an empty not_provided when the applicant answered every optional field and has every optional doc', async () => {
     mockQuery
       .mockResolvedValueOnce({}) // BEGIN
@@ -206,8 +234,8 @@ describe('employer-job-applicants Lambda', () => {
       expect(sql).toContain('ja.details_requested_at');
       expect(sql).toContain('ja.details_completed_at');
       // Job-scoped: the vault (`job_id IS NULL`) does NOT count, matching
-      // what 091's hire gate measures. The separate vault-or-job
-      // missing_optional_docs probe above is a different contract.
+      // what 091's hire gate measures. missing_optional_docs has the same
+      // scope (see the not_provided tests above).
       expect(sql).toContain('WHERE wd.worker_id = ja.worker_id');
       expect(sql).toContain('AND wd.job_id = ja.job_id');
       expect(sql).toContain('AS have_docs');
@@ -293,6 +321,92 @@ describe('employer-job-applicants Lambda', () => {
       const applicant = JSON.parse((await handler(makeEvent())).body).applicants[0];
       expect(applicant.have_docs).toBeUndefined();
       expect(applicant.missing_optional_docs).toBeUndefined();
+    });
+  });
+
+  describe('access record', () => {
+    const mockRecordAccess = recordAccess as jest.Mock;
+    const mockRecordAttempt = recordAttempt as jest.Mock;
+    const employer = callerFor('employer', 'employer-id');
+    const client = expect.objectContaining({ query: mockQuery });
+    const row = (n: number) => ({
+      application_id: `app-${n}`, worker_id: `worker-${n % 2}`, full_name: 'Fixture Name', phone: 'fixture-phone',
+      status: 'pending', applied_at: '2026-10-01T00:00:00.000Z', application_answers: {}, prompt_answers: {},
+      details_requested_at: null, details_completed_at: null, skills: [], availability: null,
+      years_experience: null, location: null, missing_optional_docs: [], have_docs: [],
+    });
+
+    beforeEach(() => {
+      mockRecordAccess.mockResolvedValue(undefined);
+      mockRecordAttempt.mockResolvedValue(undefined);
+    });
+
+    it('records every listed applicant before COMMIT; the helper splits long lists', async () => {
+      const rows = [row(1), row(2), row(3)];
+      mockQuery
+        .mockResolvedValueOnce({}) // BEGIN
+        .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] }) // employer lookup
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: JOB_ID }] }) // job ownership
+        .mockResolvedValueOnce({ rows, rowCount: rows.length }) // applicants
+        .mockResolvedValueOnce({}); // COMMIT
+      const res = await handler(withRequestId(makeEvent()));
+      expect(res.statusCode).toBe(200);
+      const { applicants } = JSON.parse(res.body);
+      expect(mockRecordAccess).toHaveBeenCalledTimes(1);
+      expect(mockRecordAccess).toHaveBeenCalledWith(client, employer, {
+        surface: 'employer.job_applicants',
+        subjectUserIds: ['worker-1', 'worker-0', 'worker-1'],
+        recordIds: ['app-1', 'app-2', 'app-3'],
+        resultCount: 3,
+        fieldNames: Object.keys(applicants[0]).sort(),
+        purpose: { kind: 'job', id: JOB_ID },
+      });
+      expectRecordedInsideTransaction(mockQuery, mockRecordAccess, /FROM job_applications ja/);
+    });
+
+    it('answers 500 with no applicants when the record cannot be written', async () => {
+      mockQuery
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: JOB_ID }] })
+        .mockResolvedValueOnce({ rows: [row(1)], rowCount: 1 })
+        .mockResolvedValue({});
+      mockRecordAccess.mockRejectedValue(new Error('audit: the access record could not be written'));
+      const res = await handler(withRequestId(makeEvent()));
+      expect(res.statusCode).toBe(500);
+      expect(JSON.parse(res.body)).toEqual({ error: 'internal_error' });
+      expect(mockQuery.mock.calls.some(([q]) => q === 'COMMIT')).toBe(false);
+      expectAttemptAfter(mockQuery, mockRecordAttempt, 'ROLLBACK');
+      expect(mockRecordAttempt.mock.calls[0][2]).toEqual({
+        surface: 'employer.job_applicants', outcome: 'failed', purpose: { kind: 'job', id: JOB_ID },
+      });
+    });
+
+    it('records a denied attempt after the 403 for another employer\'s job', async () => {
+      mockQuery
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] })
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+        .mockResolvedValue({});
+      const res = await handler(withRequestId(makeEvent()));
+      expect(res.statusCode).toBe(403);
+      expect(mockRecordAccess).not.toHaveBeenCalled();
+      expectAttemptAfter(mockQuery, mockRecordAttempt, 'COMMIT');
+      expect(mockRecordAttempt).toHaveBeenCalledWith(client, employer, {
+        surface: 'employer.job_applicants', outcome: 'denied', purpose: { kind: 'job', id: JOB_ID },
+      });
+    });
+
+    it('records nothing for an invalid status filter (400)', async () => {
+      mockQuery
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: JOB_ID }] })
+        .mockResolvedValue({});
+      const res = await handler(withRequestId(makeEvent({ status: 'nonsense' })));
+      expect(res.statusCode).toBe(400);
+      expect(mockRecordAccess).not.toHaveBeenCalled();
+      expect(mockRecordAttempt).not.toHaveBeenCalled();
     });
   });
 });

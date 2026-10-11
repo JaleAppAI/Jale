@@ -1,4 +1,4 @@
-import type { SQSEvent, SQSHandler, SQSRecord } from 'aws-lambda';
+import type { Context, SQSEvent, SQSHandler, SQSRecord } from 'aws-lambda';
 import type { PoolClient } from 'pg';
 import { randomUUID } from 'node:crypto';
 import {
@@ -14,6 +14,8 @@ import {
 } from '@aws-sdk/client-sfn';
 import { applyWorkerToJob } from '../lib/applications';
 import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
+import { auditCallerFor, type AuditCaller } from '../lib/audit/caller';
+import { setAuditContext } from '../lib/audit/context';
 import { cityAnchorsFrom, listMatchedJobsForWorker, loadWorkerPreferredCities } from '../lib/job-matching';
 import { formatPayRangeLocalized, payNotSpecifiedLabel } from '../lib/job-fields';
 import {
@@ -24,7 +26,7 @@ import {
   sendPendingJobMessageOutbox,
 } from '../lib/job-messaging';
 import { parseFormBody, type TwilioSecret } from './lib/twilio';
-import { sendPendingOutbox, queueOutboxText } from './lib/outbox';
+import { sendPendingOutbox, queueOutboxText, FALLBACK_BODY_KEY } from './lib/outbox';
 import {
   isLikelyOtpCode,
   resolveWorkerIdForWhatsappNumber,
@@ -106,8 +108,9 @@ import {
 } from './lib/applications-command';
 import { loadRequirementSnapshot } from '../lib/application-requirements';
 import { parsePreApplicationPromptList } from '../lib/pre-application-prompts';
-import { hashToken } from '../lib/referral-codes';
 import { writeFirstTouchAttribution } from '../lib/referral-attribution';
+import { recordReferredJob } from '../lib/referred-jobs';
+import { resolveApplyToken, type ApplyTokenRow } from './lib/referral-claims';
 import {
   handlePostLaneMessage,
   discardActiveDraft,
@@ -256,8 +259,12 @@ async function queueJobTemplate(
   to: string,
   lang: Lang,
   job: {
-    id: string; title: string; company: string; location: string; pay: string;
+    id: string; title: string; company: string; location: string; pay?: string;
   } & LocalizablePay,
+  /** The text the send degrades to when the template's
+   * ContentSid is not registered (`FALLBACK_BODY_KEY`, lib/outbox.ts) --
+   * stripped from the variables before Twilio sees them. */
+  fallbackBody?: string,
 ): Promise<void> {
   const whatsappNumber = to.replace(/^whatsapp:/, '');
   const templateName = lang === 'en' ? 'job_alert_en' : 'job_alert_es';
@@ -267,6 +274,7 @@ async function queueJobTemplate(
     '3': job.location,
     '4': localizedJobPay(job, lang),
     '5': `job-${job.id}`,
+    ...(fallbackBody ? { [FALLBACK_BODY_KEY]: fallbackBody } : {}),
   };
   await client.query(
     `INSERT INTO whatsapp_outbox
@@ -584,10 +592,32 @@ async function hasPlaceholderDependents(
   return false;
 }
 
-export const handler: SQSHandler = async (event: SQSEvent): Promise<void> => {
+/** The change-record surface of every write an inbound message makes. */
+const INBOUND_SURFACE = 'whatsapp.inbound';
+
+/**
+ * The actor of an inbound message's writes: the worker the
+ * number is bound to, or an anonymous actor until it is -- never the number
+ * itself. Every caller carries the invocation's request id, never a provider
+ * message id.
+ */
+interface InboundAudit {
+  callerFor(workerId: string | null): AuditCaller;
+}
+
+function inboundAudit(invocationId: string): InboundAudit {
+  const anonymous = auditCallerFor(invocationId, { kind: 'anonymous' }, 'whatsapp');
+  return {
+    callerFor: (workerId) => (workerId
+      ? auditCallerFor(anonymous.requestId, { kind: 'worker', id: workerId }, 'whatsapp')
+      : anonymous),
+  };
+}
+
+export const handler: SQSHandler = async (event: SQSEvent, context?: Pick<Context, 'awsRequestId'>): Promise<void> => {
   for (const record of event.Records) {
     try {
-      await processRecord(record);
+      await processRecord(record, inboundAudit(context?.awsRequestId ?? ''));
     } catch (err) {
       console.error('[processor] record failed:', err);
       // Re-throw so SQS retries via visibility timeout → eventually DLQ
@@ -596,7 +626,7 @@ export const handler: SQSHandler = async (event: SQSEvent): Promise<void> => {
   }
 };
 
-async function processRecord(record: SQSRecord): Promise<void> {
+async function processRecord(record: SQSRecord, audit: InboundAudit): Promise<void> {
   const params = parseFormBody(record.body);
   const messageSid = params.MessageSid;
   const from = params.From; // "whatsapp:+15125551234"
@@ -688,7 +718,7 @@ async function processRecord(record: SQSRecord): Promise<void> {
           );
           const actorUserId = actor.rows[0]?.user_id;
           if (actorUserId) {
-            await sendPendingJobMessageOutbox(client, { actorUserId });
+            await sendPendingJobMessageOutbox(client, { actorUserId, actorKind: 'worker' });
           }
           await markCompleted(client, messageSid);
           return;
@@ -711,6 +741,9 @@ async function processRecord(record: SQSRecord): Promise<void> {
         whatsappNumber,
         defaultLang,
       );
+      // Every write this message makes names its actor; the engine switches
+      // it to the worker once it binds the number (see routeMessage).
+      await setAuditContext(client, audit.callerFor(conv.user_id), INBOUND_SURFACE);
 
       console.log('[processor] payload source', {
         messageSid,
@@ -728,7 +761,7 @@ async function processRecord(record: SQSRecord): Promise<void> {
         mediaUrl,
         mediaSid,
         mediaContentType,
-      }, wakeSignals, voiceEvent);
+      }, wakeSignals, voiceEvent, audit);
       jobOutboxActorUserId = routedWorkerId ?? jobOutboxActorUserId;
 
       // Flip the claim to 'db_committed' in the SAME tx. After COMMIT, SQS
@@ -782,7 +815,7 @@ async function processRecord(record: SQSRecord): Promise<void> {
     // already durably committed.
     await sendPendingOutbox(client, messageSid);
     if (jobOutboxActorUserId) {
-      await sendPendingJobMessageOutbox(client, { actorUserId: jobOutboxActorUserId });
+      await sendPendingJobMessageOutbox(client, { actorUserId: jobOutboxActorUserId, actorKind: 'worker' });
     }
     await markCompleted(client, messageSid);
   } finally {
@@ -968,6 +1001,7 @@ async function routeMessage(
   msg: IncomingMessage,
   wakeSignals: PostCommitWakeSignals,
   voiceEvent: VoiceEventV2 | null,
+  audit: InboundAudit,
 ): Promise<string | null> {
   // v2 is now the only onboarding lane — the legacy state machine has been
   // deleted. `runtimeControls`/`phoneHash` are still needed for the
@@ -981,7 +1015,12 @@ async function routeMessage(
   const v2Deps: OnboardingV2Deps = {
     adapters: createOnboardingV2Adapters({ reconcileUserRow, cognitoClient: cognito }),
     repo: {
-      setInternalUserRlsContext,
+      // The engine names the worker here at the start of a bound session and
+      // right after it binds a number; from then on the worker is the actor.
+      setInternalUserRlsContext: async (repoClient, workerId) => {
+        await setInternalUserRlsContext(repoClient, workerId);
+        await setAuditContext(repoClient, audit.callerFor(workerId), INBOUND_SURFACE);
+      },
       loadPreAuthStateForUpdate,
       savePreAuthState,
       bindVerifiedIdentityAndStartWorkflow,
@@ -1084,6 +1123,18 @@ async function routeMessage(
   conv.conversation_state = 'idle';
   conv.language = v2Session.language;
   conv.state_context = v2Session.state_context as unknown as ProfileStateContext;
+
+  // This turn's body was the WhatsApp code that just linked an
+  // already-ready (web-completed) worker. It is not a command, and never a
+  // message for an employer: the idle router below would answer it with the
+  // help text or relay it into an open chat. Send the referred job's card
+  // when the bind claimed one, and nothing otherwise.
+  if (result.consumedAsOtp) {
+    if (result.referredJobId) {
+      await queueReferredJobCard(client, conv, msg, result.referredJobId);
+    }
+    return conv.user_id;
+  }
 
   const from = msg.from;
 
@@ -1901,8 +1952,10 @@ async function handleIdle(
         excludeCityKeys: cityKeys,
         ...(cityAnchors.length > 0 ? { cityAnchors } : {}),
       });
-      // The referral pin is fetched by id with no city filter, so it can come
-      // back from both queries -- never send the same job twice.
+      // Referral pins (every open referred job the worker has not applied
+      // to -- there can be several) ride on the first query whatever their
+      // city, and a pinned job outside the preferred cities can come back
+      // from this one as an ordinary match -- never send the same job twice.
       const seen = new Set(jobs.map((job) => job.id));
       jobs = [...jobs, ...fallback.filter((job) => !seen.has(job.id))].slice(0, 5);
     }
@@ -2207,9 +2260,12 @@ async function handleApplicationStart(
   );
 }
 
-/**
- * Sprint 24 C4: resolves a TYPED `JALE-XXXXXXXX` apply token to the job it
- * points at. READ ONLY, and deliberately so.
+/*
+ * Sprint 24: how a TYPED `JALE-XXXXXXXX` apply token is resolved to the
+ * job it points at -- `resolveApplyToken`, which lives in
+ * whatsapp/lib/referral-claims.ts since sprint 27 (the bound-onboarding
+ * router tells a real token from a name like "Jale-Martinez" with the same
+ * read). READ ONLY, and deliberately so.
  *
  * The pre-auth resolver for the same code is `parkPendingClaim`
  * (whatsapp/lib/referral-claims.ts), which CONSUMES the token
@@ -2232,22 +2288,6 @@ async function handleApplicationStart(
  * table `parkPendingClaim` UPDATEs from this lane). The raw token is hashed
  * before it touches SQL and is never logged.
  */
-interface ApplyTokenRow {
-  job_id: string;
-  share_code: string | null;
-  expires_at: string;
-}
-
-async function resolveApplyToken(
-  client: PoolClient,
-  rawToken: string,
-): Promise<ApplyTokenRow | null> {
-  const res = await client.query<ApplyTokenRow>(
-    `SELECT job_id, share_code, expires_at FROM referral_apply_tokens WHERE token_hash = $1`,
-    [hashToken(rawToken)],
-  );
-  return res.rows[0] ?? null;
-}
 
 /**
  * F8 (Luis ruling, 2026-09-16). An ALREADY-ONBOARDED worker who types a
@@ -2397,6 +2437,10 @@ async function handleTypedJobCode(
       }
       console.error(JSON.stringify({ metric: 'TypedCodeAttributionFailed' }));
     }
+
+    // Sprint 27: the job is also KEPT -- pinned to the top of TRABAJOS
+    // and the web feed until the worker applies or it closes.
+    await recordTypedCodeReferredJob(client, conv.user_id, jobId);
   }
 
   if (!conv.state_context) {
@@ -2642,19 +2686,133 @@ async function handleJobAction(
     const r = job.rows[0];
     const recentIndex = conv.state_context?.recent_jobs?.indexOf(jobId) ?? -1;
     const commandIndex = recentIndex >= 0 ? recentIndex + 1 : 1;
-    const pay = localizedJobPay(r, conv.language);
     await queueText(
       client,
       inboundMessageSid,
       from,
-      conv.language === 'es'
-        ? `Detalles del trabajo\n\n${r.title}\n${r.company}\n${r.location}\n${pay}\n\nResponde "${commandIndex} me interesa" para aplicar.`
-        : `Job details\n\n${r.title}\n${r.company}\n${r.location}\n${pay}\n\nReply "${commandIndex} interested" to apply.`,
+      buildJobDetailsText(r, conv.language, commandIndex),
     );
   }
+}
+
+/**
+ * The "info" reply for one job: what a typed code or an info tap answers
+ * with, and the text a job card degrades to without its ContentSid
+ * (`queueReferredJobCard`). `commandIndex` is the job's 1-based position in
+ * `state_context.recent_jobs`, which is what "<n> me interesa" resolves
+ * against.
+ */
+function buildJobDetailsText(
+  job: { title: string; company: string; location: string } & LocalizablePay,
+  lang: Lang,
+  commandIndex: number,
+): string {
+  const pay = localizedJobPay(job, lang);
+  return lang === 'es'
+    ? `Detalles del trabajo\n\n${job.title}\n${job.company}\n${job.location}\n${pay}\n\nResponde "${commandIndex} me interesa" para aplicar.`
+    : `Job details\n\n${job.title}\n${job.company}\n${job.location}\n${pay}\n\nReply "${commandIndex} interested" to apply.`;
 }
 
 // localizeDocList lives in lib/application-fill.ts (Task 11). Sprint 23
 // deleted this file's accept-time intro (the fill is armed from the stage-2
 // notification now), so the completion arm in that module is its only
 // caller and this file no longer imports it.
+
+/**
+ * The referred job a web-completed worker came for, sent as the
+ * tappable job card (`job_alert_{lang}`) on the turn their WhatsApp code
+ * linked them -- an inbound reply, so it is inside the 24-hour window by
+ * construction. Same five variables as every other job card, plus the
+ * fallback text (the info reply) the send degrades to without a registered
+ * ContentSid. Company falls back to 'Jale' in the read itself, like the feed.
+ *
+ * The job is APPENDED to `recent_jobs` first, exactly as `handleTypedJobCode`
+ * does, so the card's "<n> me interesa" names the number that list resolves.
+ *
+ * Returns false (and sends nothing) when the job is no longer active.
+ */
+export async function queueReferredJobCard(
+  client: PoolClient,
+  conv: Pick<ConversationRow, 'id' | 'language' | 'state_context'>,
+  msg: { messageSid: string; from: string },
+  jobId: string,
+): Promise<boolean> {
+  const job = await client.query<{
+    id: string; title: string; company: string; location: string;
+    pay_min: number | null; pay_max: number | null; pay_interval: string | null;
+    pay_raw: string | null;
+  }>(
+    `SELECT id,
+            title,
+            COALESCE(company, 'Jale') AS company,
+            location,
+            pay_min,
+            pay_max,
+            pay_interval,
+            pay AS pay_raw
+       FROM jobs
+      WHERE id = $1
+        AND status = 'active'`,
+    [jobId],
+  );
+  const row = job.rows[0];
+  if (!row) return false;
+
+  if (!conv.state_context) {
+    conv.state_context = {} as ProfileStateContext;
+  }
+  const recentJobs = conv.state_context.recent_jobs ?? [];
+  if (!recentJobs.includes(jobId)) {
+    // In place, never reassigned -- see handleTypedJobCode.
+    conv.state_context.recent_jobs = [...recentJobs, jobId];
+    await updateConversation(client, conv.id, { state_context: conv.state_context });
+  }
+  const commandIndex = conv.state_context.recent_jobs!.indexOf(jobId) + 1;
+
+  await queueJobTemplate(
+    client,
+    msg.messageSid,
+    msg.from,
+    conv.language,
+    row,
+    buildJobDetailsText(row, conv.language, commandIndex),
+  );
+  return true;
+}
+
+/**
+ * A ready worker who TYPES a job code keeps that job on their
+ * referred-jobs list (`worker_referred_jobs`, migration 103, source
+ * 'typed_code'). `recordReferredJob` writes nothing for a job that is no
+ * longer active.
+ *
+ * The internal setting is set explicitly, right before the write: migration
+ * 103's `jale_whatsapp` policy on that table is keyed on
+ * `app.current_internal_user_id`, and nothing earlier on the idle router's
+ * path is guaranteed to set it. Setting it again for the same worker is
+ * harmless.
+ *
+ * Its own SAVEPOINT, like the attribution credit before it: a failed
+ * statement would otherwise abort the turn (25P02) and cost the worker the
+ * job reply they asked for. Logs a static metric only.
+ */
+export async function recordTypedCodeReferredJob(
+  client: PoolClient,
+  workerId: string,
+  jobId: string,
+): Promise<void> {
+  try {
+    await client.query('SAVEPOINT typed_code_record');
+    await setInternalUserRlsContext(client, workerId);
+    await recordReferredJob(client, { workerId, jobId, source: 'typed_code' });
+    await client.query('RELEASE SAVEPOINT typed_code_record');
+  } catch {
+    try {
+      await client.query('ROLLBACK TO SAVEPOINT typed_code_record');
+    } catch {
+      // The transaction itself is unusable; the caller's retry/DLQ handling
+      // takes over as it would for any other failed statement.
+    }
+    console.error(JSON.stringify({ metric: 'TypedCodeRecordFailed' }));
+  }
+}

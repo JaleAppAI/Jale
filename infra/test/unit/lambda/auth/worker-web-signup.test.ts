@@ -9,6 +9,8 @@ import {
 } from '@aws-sdk/client-cognito-identity-provider';
 import { handler } from '../../../../lambda/auth/worker-web-signup';
 import { getDbPool } from '../../../../lambda/lib/db';
+import { setAuditContext } from '../../../../lambda/lib/audit/context';
+import { expectContextBeforeWrite, idlessCallerFor } from '../api/audit-expectations';
 
 const mockSend = jest.fn();
 
@@ -46,6 +48,7 @@ jest.mock('@aws-sdk/client-cognito-identity-provider', () => {
 });
 
 jest.mock('../../../../lambda/lib/db');
+jest.mock('../../../../lambda/lib/audit/context');
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockQuery = jest.fn();
@@ -95,16 +98,16 @@ describe('worker-web-signup', () => {
 
     // R2-C4: the request body is PHONE ONLY. The worker's name is asked for
     // inside the onboarding flow itself, at `profile.name`.
-    const res = await handler(mkEv({ phone: '+19152272188' }));
+    const res = await handler(mkEv({ phone: '+19155550123' }));
 
     expect(res.statusCode).toBe(200);
     expect(mockSend.mock.calls[0][0]).toBeInstanceOf(AdminCreateUserCommand);
     expect(mockSend.mock.calls[0][0].input).toEqual(expect.objectContaining({
       UserPoolId: 'worker-pool',
-      Username: '+19152272188',
+      Username: '+19155550123',
       MessageAction: 'SUPPRESS',
       UserAttributes: expect.arrayContaining([
-        { Name: 'phone_number', Value: '+19152272188' },
+        { Name: 'phone_number', Value: '+19155550123' },
         // 2026-07-26 hardening: an unauthenticated POST proves nothing.
         // Verified stays 'false' until verify-auth-challenge flips it on a
         // correct OTP.
@@ -121,13 +124,13 @@ describe('worker-web-signup', () => {
     expect(mockSend.mock.calls[2][0]).toBeInstanceOf(AdminAddUserToGroupCommand);
     expect(mockSend.mock.calls[2][0].input).toEqual({
       UserPoolId: 'worker-pool',
-      Username: '+19152272188',
+      Username: '+19155550123',
       GroupName: 'Workers',
     });
     expect(mockSend.mock.calls[3][0]).toBeInstanceOf(AdminSetUserPasswordCommand);
     expect(mockSend.mock.calls[3][0].input).toEqual({
       UserPoolId: 'worker-pool',
-      Username: '+19152272188',
+      Username: '+19155550123',
       Password: expect.any(String),
       Permanent: true,
     });
@@ -138,7 +141,7 @@ describe('worker-web-signup', () => {
     // test/unit/db/web-worker-whatsapp-crossover.integration.test.ts.
     expect(mockQuery).toHaveBeenCalledWith('SELECT reconcile_worker_signup($1, $2, $3)', [
       'worker-sub',
-      '+19152272188',
+      '+19155550123',
       '',
     ]);
     // ...and that is the ONLY statement this endpoint issues: migration
@@ -147,6 +150,11 @@ describe('worker-web-signup', () => {
     expect(statements).toEqual(['BEGIN', 'SELECT reconcile_worker_signup($1, $2, $3)', 'COMMIT']);
     expect(mockQuery.mock.invocationCallOrder[1]).toBeLessThan(mockSend.mock.invocationCallOrder[3]);
     expect(mockRelease).toHaveBeenCalled();
+    // The sign-up is not yet a verified identity, so the
+    // change record names an anonymous actor with no id.
+    expect(setAuditContext).toHaveBeenCalledTimes(1);
+    expect(setAuditContext).toHaveBeenCalledWith(expect.objectContaining({ query: mockQuery }), idlessCallerFor('anonymous'), 'auth.worker_web_signup');
+    expectContextBeforeWrite(mockQuery, setAuditContext as jest.Mock, /reconcile_worker_signup/);
   });
 
   it('repairs an existing worker using Cognito-stored identity data', async () => {
@@ -157,7 +165,7 @@ describe('worker-web-signup', () => {
         UserStatus: 'CONFIRMED',
         UserAttributes: [
           { Name: 'sub', Value: 'worker-sub' },
-          { Name: 'phone_number', Value: '+19152272188' },
+          { Name: 'phone_number', Value: '+19155550123' },
           { Name: 'phone_number_verified', Value: 'true' },
           { Name: 'custom:user_type', Value: 'worker' },
           { Name: 'name', Value: 'Stored Worker' },
@@ -165,7 +173,7 @@ describe('worker-web-signup', () => {
       })
       .mockResolvedValueOnce({});
 
-    const res = await handler(mkEv({ phone: '+19152272188' }));
+    const res = await handler(mkEv({ phone: '+19155550123' }));
 
     expect(res.statusCode).toBe(200);
     expect(mockSend).toHaveBeenCalledTimes(3);
@@ -174,7 +182,7 @@ describe('worker-web-signup', () => {
     // no-op), and `profile.name` inside the flow is the only name writer.
     expect(mockQuery).toHaveBeenCalledWith('SELECT reconcile_worker_signup($1, $2, $3)', [
       'worker-sub',
-      '+19152272188',
+      '+19155550123',
       '',
     ]);
     const statements = mockQuery.mock.calls.map(([sql]) => sql as string);
@@ -197,27 +205,27 @@ describe('worker-web-signup', () => {
       .mockResolvedValueOnce({});
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
 
-    const res = await handler(mkEv({ phone: '+19152272188', fullName: 'Ivan Worker' }));
+    const res = await handler(mkEv({ phone: '+19155550123', fullName: 'Robin Worker' }));
 
     expect(res.statusCode).toBe(200);
     // Logged once, and the value itself never appears in the log line.
     expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain('Ivan Worker');
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain('Robin Worker');
     warnSpy.mockRestore();
 
     // The name reaches neither Cognito nor the database.
-    expect(JSON.stringify(mockSend.mock.calls)).not.toContain('Ivan Worker');
+    expect(JSON.stringify(mockSend.mock.calls)).not.toContain('Robin Worker');
     const statements = mockQuery.mock.calls.map(([sql]) => sql as string);
     expect(statements).toEqual(['BEGIN', 'SELECT reconcile_worker_signup($1, $2, $3)', 'COMMIT']);
     expect(mockQuery).toHaveBeenCalledWith('SELECT reconcile_worker_signup($1, $2, $3)', [
       'worker-sub',
-      '+19152272188',
+      '+19155550123',
       '',
     ]);
   });
 
   it('rejects a body with no phone at all, and never opens a pool', async () => {
-    const res = await handler(mkEv({ fullName: 'Ivan Worker' }));
+    const res = await handler(mkEv({ fullName: 'Robin Worker' }));
 
     expect(res.statusCode).toBe(400);
     expect(JSON.parse(res.body)).toEqual({
@@ -233,7 +241,7 @@ describe('worker-web-signup', () => {
       .mockRejectedValueOnce({ name: 'UsernameExistsException' })
       .mockRejectedValueOnce(new Error('temporary Cognito failure'));
 
-    const res = await handler(mkEv({ phone: '+19152272188' }));
+    const res = await handler(mkEv({ phone: '+19155550123' }));
 
     expect(res.statusCode).toBe(500);
     expect(JSON.parse(res.body)).toEqual({

@@ -24,7 +24,7 @@ describe('realCompanyName', () => {
   });
 
   it('returns a real name, trimmed', () => {
-    expect(realCompanyName('Rucoba & Maya')).toBe('Rucoba & Maya');
-    expect(realCompanyName('  RM Construction ')).toBe('RM Construction');
+    expect(realCompanyName('Northwind & Birch')).toBe('Northwind & Birch');
+    expect(realCompanyName('  NB Construction ')).toBe('NB Construction');
   });
 });

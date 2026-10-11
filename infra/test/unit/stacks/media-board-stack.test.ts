@@ -28,7 +28,6 @@ function buildMediaBoardApp(alarmTopicArn?: string): { template: Template; apiTe
     vpc: network.vpc,
     privateSubnets: network.privateSubnets,
     lambdaSg: network.lambdaSg,
-    dbSecret: database.dbSecret,
   });
   const ai = new AiStack(app, 'TestAiStack', {
     vpc: network.vpc,
@@ -43,7 +42,6 @@ function buildMediaBoardApp(alarmTopicArn?: string): { template: Template; apiTe
     vpc: network.vpc,
     privateSubnets: network.privateSubnets,
     lambdaSg: network.lambdaSg,
-    dbSecret: database.dbSecret,
     aliasGeneratorFn: ai.aliasGeneratorFn.function,
     whatsappStatusCallbackUrl: 'https://callbacks.example.test/prod/whatsapp/status-callback',
   });
@@ -55,7 +53,6 @@ function buildMediaBoardApp(alarmTopicArn?: string): { template: Template; apiTe
     vpc: network.vpc,
     privateSubnets: network.privateSubnets,
     lambdaSg: network.lambdaSg,
-    dbSecret: database.dbSecret,
     api: api.api,
     dualAuthorizer: api.dualAuthorizer,
   });
@@ -74,7 +71,6 @@ function buildMediaBoardApp(alarmTopicArn?: string): { template: Template; apiTe
     vpc: network.vpc,
     privateSubnets: network.privateSubnets,
     lambdaSg: network.lambdaSg,
-    dbSecret: database.dbSecret,
     workerPool: auth.workerPool,
     api: api.api,
     workerResource: api.workerResource,
@@ -99,7 +95,6 @@ function buildMediaBoardApp(alarmTopicArn?: string): { template: Template; apiTe
   const documents = new DocumentsStack(app, 'TestDocumentsStack', {
     network,
     api,
-    dbSecret: database.dbSecret,
     allowedOrigin: 'https://jaleapp.ai',
     requiredTosVersion: 'v1.0',
   });
@@ -107,7 +102,6 @@ function buildMediaBoardApp(alarmTopicArn?: string): { template: Template; apiTe
   const mediaBoard = new MediaBoardStack(app, 'TestMediaBoardStack', {
     network,
     api,
-    dbSecret: database.dbSecret,
     mediaBucket: whatsapp.mediaBucket,
     documentsBucket: documents.bucket,
     allowedOrigin: 'https://jaleapp.ai',

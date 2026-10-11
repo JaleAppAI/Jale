@@ -26,7 +26,6 @@ describe('DocumentsStack', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
     });
     const ai = new AiStack(app, 'TestAiStack', {
       vpc: network.vpc,
@@ -41,7 +40,6 @@ describe('DocumentsStack', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
       aliasGeneratorFn: ai.aliasGeneratorFn.function,
       whatsappStatusCallbackUrl: 'https://api.example.com/whatsapp/status-callback',
     });
@@ -49,14 +47,12 @@ describe('DocumentsStack', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
       api: api.api,
       dualAuthorizer: api.dualAuthorizer,
     });
     const documents = new DocumentsStack(app, 'TestDocumentsStack', {
       network,
       api,
-      dbSecret: database.dbSecret,
       allowedOrigin: 'https://jaleapp.ai',
       requiredTosVersion: 'v1.0',
     });

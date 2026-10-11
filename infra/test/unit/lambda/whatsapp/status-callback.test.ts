@@ -1,9 +1,19 @@
 import { createHmac } from 'node:crypto';
 
 const query = jest.fn();
+// The record call runs in a transaction that carries the change-record
+// context: the client answers transaction control itself and passes every
+// other statement to `query`, so the existing per-call answers still apply.
+const mockClientQuery = jest.fn((sql: string, values?: unknown[]) =>
+  (/^(BEGIN|COMMIT|ROLLBACK)$/.test(String(sql)) ? Promise.resolve({}) : query(sql, values)));
+const mockClientRelease = jest.fn();
 jest.mock('../../../../lambda/lib/db', () => ({
-  getDbPool: jest.fn(async () => ({ query })),
+  getDbPool: jest.fn(async () => ({
+    query,
+    connect: async () => ({ query: mockClientQuery, release: mockClientRelease }),
+  })),
 }));
+jest.mock('../../../../lambda/lib/audit/context');
 jest.mock('../../../../lambda/whatsapp/lib/twilio-secret', () => ({
   getTwilioSecret: jest.fn(async () => ({ authToken: 'auth-token' })),
   requireTwilioStatusCallbackUrl: jest.fn(() =>
@@ -11,6 +21,8 @@ jest.mock('../../../../lambda/whatsapp/lib/twilio-secret', () => ({
 }));
 
 import { handler } from '../../../../lambda/whatsapp/status-callback';
+import { setAuditContext } from '../../../../lambda/lib/audit/context';
+import { expectContextBeforeWrite, idlessCallerFor } from '../api/audit-expectations';
 import * as twilioSecretModule from '../../../../lambda/whatsapp/lib/twilio-secret';
 
 const SID = `SM${'a'.repeat(32)}`;
@@ -210,5 +222,26 @@ describe('WhatsApp status callback', () => {
     expect(result.statusCode).toBe(503);
     expect(query).not.toHaveBeenCalled();
     errorSpy.mockRestore();
+  });
+
+  describe('change context', () => {
+    it('states the platform on WhatsApp before the delivery status is recorded, and commits', async () => {
+      const result = await handler({ ...event({ MessageSid: SID, MessageStatus: 'delivered' }), requestContext: { requestId: 'fixture-request-0001' } });
+      expect(result.statusCode).toBe(200);
+      expect(setAuditContext).toHaveBeenCalledTimes(1);
+      expect(setAuditContext).toHaveBeenCalledWith(
+        expect.objectContaining({ query: mockClientQuery }), idlessCallerFor('platform', 'whatsapp'), 'whatsapp.status_callback');
+      expectContextBeforeWrite(mockClientQuery, setAuditContext as jest.Mock, /record_twilio_delivery_status/);
+      expect(mockClientQuery.mock.calls[mockClientQuery.mock.calls.length - 1][0]).toBe('COMMIT');
+      expect(mockClientRelease).toHaveBeenCalled();
+    });
+
+    it('rolls back and releases when the record call fails', async () => {
+      query.mockRejectedValueOnce(new Error('database unavailable'));
+      const result = await handler(event({ MessageSid: SID, MessageStatus: 'failed' }));
+      expect(result.statusCode).toBe(503);
+      expect(mockClientQuery.mock.calls.map(([sql]) => sql)).toContain('ROLLBACK');
+      expect(mockClientRelease).toHaveBeenCalled();
+    });
   });
 });

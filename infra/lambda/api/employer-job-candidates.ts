@@ -4,9 +4,12 @@ import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { listEmployerCandidates } from '../lib/employer-candidate-ranking';
 import { checkCompliance } from '../legal/check-compliance';
+import { auditCaller, type AuditCaller } from '../lib/audit/caller';
+import { recordAccess, recordAttempt, responseFieldNames, type AttemptEvent } from '../lib/audit/record';
 
 const CORS_HEADERS = corsHeaders();
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SURFACE = 'employer.job_candidates';
 
 function parseLimit(value: string | undefined): number {
   const parsed = Number(value);
@@ -35,6 +38,8 @@ async function enqueueRerank(jobId: string, requestedLimit: number, sourceHash: 
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   let client;
+  let caller: AuditCaller | undefined;
+  let attempt: Omit<AttemptEvent, 'outcome'> | undefined;
   let rerankRequest: { jobId: string; requestedLimit: number; sourceHash: string } | null = null;
 
   try {
@@ -79,10 +84,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_provisioned' }) };
     }
     await setInternalUserRlsContext(client, employerId);
+    caller = auditCaller(event, { kind: 'employer', id: employerId }, 'web');
+    const purpose = { kind: 'job', id: jobId } as const;
+    attempt = { surface: SURFACE, purpose };
 
     const jobCheck = await client.query('SELECT id FROM jobs WHERE id = $1 AND employer_id = $2', [jobId, employerId]);
     if (jobCheck.rowCount === 0) {
       await client.query('ROLLBACK');
+      // The denial rolls back, so its attempt is written after, on its own.
+      await recordAttempt(client, caller, { ...attempt, outcome: 'denied' });
       return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'forbidden' }) };
     }
 
@@ -91,6 +101,17 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       rerankRequest = { jobId, requestedLimit: limit, sourceHash: ranked.sourceHash };
     }
 
+    // A cached ranking is recorded like any other: the contact fields come
+    // from this transaction's read either way.
+    const candidates = ranked.response.candidates;
+    await recordAccess(client, caller, {
+      surface: SURFACE,
+      subjectUserIds: candidates.map((candidate) => candidate.worker_id),
+      recordIds: candidates.map((candidate) => candidate.worker_id),
+      resultCount: candidates.length,
+      fieldNames: responseFieldNames(candidates),
+      purpose,
+    });
     await client.query('COMMIT');
 
     if (rerankRequest) {
@@ -107,7 +128,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       body: JSON.stringify(ranked.response),
     };
   } catch (err) {
-    if (client) { try { await client.query('ROLLBACK'); } catch {} }
+    if (client) {
+      try { await client.query('ROLLBACK'); } catch {}
+      if (caller && attempt) await recordAttempt(client, caller, { ...attempt, outcome: 'failed' });
+    }
     console.error('employer-job-candidates error:', errorMessage(err));
     return { statusCode: 500, headers: CORS_HEADERS, body: JSON.stringify({ error: 'internal_error' }) };
   } finally {

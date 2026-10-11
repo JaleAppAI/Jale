@@ -15,7 +15,7 @@ import { mintUnsubscribeToken } from '../lib/unsubscribe-token';
 
 /**
  * Employer daily-digest producer. EventBridge, every 15 minutes,
- * reservedConcurrentExecutions: 1. Runs as jale_admin.
+ * reservedConcurrentExecutions: 1. Runs on its own job login, jale_job_digest.
  *
  * ── Who is due ───────────────────────────────────────────────────
  * Answered entirely by jale_digest_internal.due_digest_employers(now())
@@ -173,12 +173,12 @@ export const handler = async (): Promise<DigestRunSummary> => {
   const apiBaseUrl = requireAbsoluteBaseUrl(process.env.PUBLIC_API_BASE_URL) ?? `${baseUrl}/api`;
 
   // Warm the signing secret HERE, not lazily inside mintUnsubscribeToken.
-  // Fetched in the loop it would be a Secrets-Manager-over-VPC round trip
-  // INSIDE an open email_outbox-writing transaction on a cold container, and a
-  // failure would land in the per-employer catch below -- which returns
-  // normally, so metricErrors would not see it and the DLQ would stay empty.
-  // Up here a missing or unreadable secret fails the whole run loudly, before
-  // any connection is opened. The lib caches, so the in-loop calls are free.
+  // Fetched in the loop on a cold container, a failure would land in the
+  // per-employer catch below -- which returns normally, so metricErrors would
+  // not see it and the DLQ would stay empty. Up here a missing or unreadable
+  // secret fails the whole run loudly, before any connection is opened. The
+  // lib caches for five minutes; a longer run refreshes it from the loop, and
+  // the loop mints each token before that employer's transaction opens.
   await getUnsubscribeSecret();
 
   const pool = await getDbPool();
@@ -192,6 +192,19 @@ export const handler = async (): Promise<DigestRunSummary> => {
     summary.due = due.rows.length;
 
     for (const row of due.rows) {
+      // Minted BEFORE this employer's transaction opens. Minting reads the
+      // signing secret, and once the cache above is older than its TTL that is
+      // a Secrets Manager round trip -- which must never run inside an open
+      // transaction. A failure is held and raised where the token is needed,
+      // so an employer with nothing to send still counts as quiet (or
+      // skipped), exactly as when the token was minted in place.
+      let minted: { ok: true; token: string } | { ok: false; error: unknown };
+      try {
+        minted = { ok: true, token: await mintUnsubscribeToken(row.employer_id, row.unsubscribe_token_version) };
+      } catch (error) {
+        minted = { ok: false, error };
+      }
+
       try {
         await client.query('BEGIN');
         // Both GUCs, in this order, exactly as api/employer-job-candidates.ts
@@ -313,7 +326,8 @@ export const handler = async (): Promise<DigestRunSummary> => {
           continue;
         }
 
-        const token = await mintUnsubscribeToken(row.employer_id, row.unsubscribe_token_version);
+        if (!minted.ok) throw minted.error;
+        const token = minted.token;
         const oneClickUnsubscribeUrl =
           `${apiBaseUrl}/public/employer-digest/unsubscribe?token=${encodeURIComponent(token)}`;
         const rendered = renderEmployerDigest({

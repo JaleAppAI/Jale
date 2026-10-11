@@ -223,12 +223,12 @@ export default function EmployerProfilePage() {
                                                 </FactsCard.Tile>
                                                 {/* Never empty: the account IS an email address. */}
                                                 <FactsCard.Tile label={t('field_email')}>
-                                                    {profile.email}
+                                                    <span data-private>{profile.email}</span>
                                                 </FactsCard.Tile>
                                                 <FactsCard.Tile label={t('field_phone')} muted={!profile.phone}>
                                                     {/* `tabular-nums` only wraps an actual number. */}
                                                     {profile.phone ? (
-                                                        <span className="tabular-nums">{profile.phone}</span>
+                                                        <span data-private className="tabular-nums">{profile.phone}</span>
                                                     ) : (
                                                         t('empty_phone')
                                                     )}

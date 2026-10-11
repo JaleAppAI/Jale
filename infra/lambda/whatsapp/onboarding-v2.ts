@@ -71,6 +71,14 @@ import { handleVoiceChoiceStep, handleVoiceProcessingStep, handleVoiceIntakeResu
 import { sendStepPrompt } from './onboarding/delivery';
 import { isVoiceAcceptingStep } from './onboarding/constants';
 import { sendTemplateMessage, repeatCurrentPrompt } from './onboarding/delivery';
+import { parseTypedApplyToken } from './lib/flows';
+import {
+  findUnclaimedParkedJobId,
+  loadActiveJobLabel,
+  parkPendingClaim,
+  resolveApplyToken,
+} from './lib/referral-claims';
+import { recordReferredJob } from '../lib/referred-jobs';
 
 export type {
   OnboardingV2Session,
@@ -207,11 +215,95 @@ async function routeBoundStep(
   deps: OnboardingV2Deps,
   gate: WorkerGate,
   now: Date,
+  phoneHash: string,
 ): Promise<RouteResult> {
   await hydrateSessionFromRun(client, session, gate.runId!);
-  const result = await routeBoundStepHydrated(client, session, msg, deps, gate, now);
+  const result = await routeBoundStepHydrated(client, session, msg, deps, gate, now, phoneHash);
   await persistDurableStateContext(client, gate.runId!, session.state_context);
   return result;
+}
+
+/**
+ * Sprint 27: the "Apply" prefill from a worker who is bound but still
+ * onboarding. It used to land on whatever step the run was on -- stored as
+ * their NAME at profile.name, or as an answer further on. Returns null for
+ * any body that is not an apply token, which then routes exactly as before.
+ *
+ * The trigger is the strict grammar AND an existing token row
+ * (`resolveApplyToken`, read-only): a consumed or expired token still counts,
+ * because its row exists, while a name that merely parses ("Jale-Martinez")
+ * has no row and is saved as the name it is.
+ *
+ * Inside ONE savepoint:
+ *   1. an earlier UNCLAIMED parked claim for a different job is recorded
+ *      first -- parking the new token takes over that claim (the credit
+ *      follows the last code), and the claim records the earlier job only
+ *      at completion, so recording it now puts it on the list right away;
+ *   2. the new token is parked, so the referrer is still credited at
+ *      completion, exactly when they always were;
+ *   3. the token's job is recorded on the worker's list.
+ * Every write runs as jale_whatsapp under the internal setting
+ * `routeOnboardingV2` set for this worker (session.user_id === gate.userId).
+ * The job is named back only when it was recorded (active), and the current
+ * step is asked again through the ordinary reprompt path. The token text is
+ * never saved as an answer -- not even when the savepoint fails, which
+ * re-prompts only. Static metric only, never the token or the hash.
+ *
+ * WhatsApp-only by construction: the web door dispatches past this function
+ * (`dispatchBoundStepPostGate`), and a web form value is never a prefill.
+ */
+async function handleBoundApplyToken(
+  client: PoolClient,
+  session: OnboardingV2Session,
+  msg: OnboardingV2InboundMessage,
+  deps: OnboardingV2Deps,
+  gate: WorkerGate,
+  stepKey: WorkflowStepKey,
+  lang: Lang,
+  responseLang: Lang,
+  phoneHash: string,
+  now: Date,
+): Promise<RouteResult | null> {
+  const rawToken = parseTypedApplyToken(msg.body);
+  if (!rawToken) return null;
+
+  let label: { title: string; company: string } | null = null;
+  try {
+    await client.query('SAVEPOINT referral_bound_token');
+    const token = await resolveApplyToken(client, rawToken);
+    if (!token) {
+      await client.query('RELEASE SAVEPOINT referral_bound_token');
+      return null;
+    }
+    const parkedJobId = await findUnclaimedParkedJobId(client, phoneHash);
+    if (parkedJobId && parkedJobId !== token.job_id) {
+      // One millisecond earlier, so the token just sent stays the newest.
+      await recordReferredJob(client, {
+        workerId: gate.userId, jobId: parkedJobId, source: 'whatsapp_token', now: new Date(now.getTime() - 1),
+      });
+    }
+    await parkPendingClaim(client, phoneHash, rawToken, now);
+    const recorded = await recordReferredJob(client, {
+      workerId: gate.userId, jobId: token.job_id, source: 'whatsapp_token', now,
+    });
+    label = recorded ? await loadActiveJobLabel(client, token.job_id) : null;
+    await client.query('RELEASE SAVEPOINT referral_bound_token');
+  } catch {
+    label = null;
+    try {
+      await client.query('ROLLBACK TO SAVEPOINT referral_bound_token');
+    } catch {
+      // The transaction is already unusable; the caller's retry/DLQ handling
+      // takes over as it would for any other failed statement.
+    }
+    console.error(JSON.stringify({ metric: 'ReferralTokenBoundFailed', stepKey }));
+  }
+
+  if (label) {
+    await sendTemplateMessage(client, deps, gate.userId, stepKey, responseLang, 'v2_referral_ack_bound', label, now, gate.runId!, msg.messageSid, 'referral_ack_bound');
+  }
+  await repeatCurrentPrompt(client, session, deps, gate.userId, stepKey, lang, now, gate.runId!, msg.messageSid);
+  return { handled: true, workerId: gate.userId, stepKey };
 }
 
 async function routeBoundStepHydrated(
@@ -221,6 +313,7 @@ async function routeBoundStepHydrated(
   deps: OnboardingV2Deps,
   gate: WorkerGate,
   now: Date,
+  phoneHash: string,
 ): Promise<RouteResult> {
   const stepKey = gate.currentStepKey as WorkflowStepKey;
   const lang: Lang = boundStepLang(session, gate);
@@ -287,6 +380,13 @@ async function routeBoundStepHydrated(
     await repeatCurrentPrompt(client, session, deps, gate.userId, stepKey, lang, now, gate.runId!, msg.messageSid);
     return { handled: true, workerId: gate.userId, stepKey };
   }
+
+  // An apply token is a job, never an answer -- checked ahead
+  // of the command gate, which would otherwise read the prefill's prose.
+  const tokenResult = await handleBoundApplyToken(
+    client, session, msg, deps, gate, stepKey, lang, responseLang, phoneHash, now,
+  );
+  if (tokenResult) return tokenResult;
 
   const gateResult = await applyGate(client, session, msg, deps, {
     stepKey,
@@ -381,7 +481,7 @@ export async function routeOnboardingV2(
       && gate.currentStepKey
       && (gate.status === 'active' || (gate.status === 'declined' && gate.currentStepKey === 'legal.review'))
     ) {
-      return routeBoundStep(client, session, msg, deps, gate, now);
+      return routeBoundStep(client, session, msg, deps, gate, now, phoneHash);
     }
     throw new Error('onboarding_gate_inconsistent');
   }

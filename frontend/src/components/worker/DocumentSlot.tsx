@@ -8,6 +8,7 @@ import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { Spinner } from '@/components/ui/spinner';
 import { useToast } from '@/components/ui/toast';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
+import { useReportCategoryHint } from '@/components/report/report-problem-context';
 import { getAuthUploadUrl, confirmAuthUpload, deleteVaultDocument, uploadFileToS3 } from '@/lib/api/worker';
 import { formatLongDate } from '@/lib/date';
 import type { DocType, WorkerVaultDoc } from '@/lib/api/worker';
@@ -39,6 +40,8 @@ export function DocumentSlot(props: {
   const [busyAction, setBusyAction] = useState<'upload' | 'delete' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const busy = busyAction !== null;
+  // A report opened mid-upload, or after one failed, is about uploads.
+  useReportCategoryHint(busyAction === 'upload' || error ? 'uploads' : null);
 
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -96,7 +99,7 @@ export function DocumentSlot(props: {
           </div>
 
           {props.existing && (
-            <p className="mt-1 truncate text-xs text-[var(--jale-ink-2)]">
+            <p data-private className="mt-1 truncate text-xs text-[var(--jale-ink-2)]">
               {props.existing.file_name} · {formatLongDate(props.existing.uploaded_at, locale)}
             </p>
           )}

@@ -20,7 +20,7 @@ function job(over: Partial<JobDetail> = {}): JobDetail {
   return {
     id: 'job-1',
     title: 'Concrete Finisher',
-    company_name: 'Rucoba & Maya',
+    company_name: 'Northwind & Birch',
     location: 'Dallas, TX',
     job_type: 'full-time',
     required_docs: [],

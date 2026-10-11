@@ -26,6 +26,10 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { Client } from 'pg';
+import { describeInProfiles } from './helpers/login-pool';
+
+import { readExecuteGrants, restoreExecuteGrants, type ExecuteGrants } from './helpers/function-acls';
+import { reviewedPolicyCopies } from './helpers/policy-copies';
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
 
@@ -52,6 +56,9 @@ function urlForRole(baseUrl: string, user: string, password: string): string {
   return u.toString();
 }
 
+// These tests check row policies as the standard and request test beds apply
+// them, so they run in those profiles only. Without a database URL the suite
+// still skips.
 function maybeDescribe(name: string, fn: () => void): void {
   if (!databaseUrl) {
     describe.skip(name, fn);
@@ -61,7 +68,7 @@ function maybeDescribe(name: string, fn: () => void): void {
         `This is a DONE_WITH_CONCERNS gate: Docker/Postgres was unavailable at test time.`,
     );
   } else {
-    describe(name, fn);
+    describeInProfiles(['standard', 'request'], name, fn);
   }
 }
 
@@ -1123,6 +1130,22 @@ maybeDescribe('employer_digest_settings integration (migration 082)', () => {
       __dirname, '..', '..', '..', 'db', 'migrations', '082_employer_digest_settings.sql',
     );
 
+    // The replay drops and recreates 082's functions, which also drops the
+    // EXECUTE grants later migrations added to them, and the recreated
+    // functions follow today's default privileges. Every function's EXECUTE
+    // holders are saved first and put back afterwards, so the suites that run
+    // after this one see the bed the chain built.
+    let executeGrants: ExecuteGrants | undefined;
+    beforeAll(async () => {
+      if (!databaseUrl) return;
+      executeGrants = await withClient(superuserUrl, (client) => readExecuteGrants(client));
+    });
+    afterAll(async () => {
+      if (!databaseUrl || !executeGrants) return;
+      const saved = executeGrants;
+      await withClient(superuserUrl, (client) => restoreExecuteGrants(client, saved));
+    });
+
     it('re-executing the whole migration over a jale_admin connection succeeds', async () => {
       if (!databaseUrl) return;
       const sql = fs.readFileSync(migrationPath, 'utf8');
@@ -1188,22 +1211,25 @@ maybeDescribe('employer_digest_settings integration (migration 082)', () => {
           policies: policies.rows.map((r) => r.polname),
           triggers: triggers.rows.map((r) => r.tgname),
           functions: functions.rows,
+          copies: await reviewedPolicyCopies(client, 'public.employer_digest_settings'),
         };
       });
 
       // Exact, not a superset, on purpose: a stray permissive policy on this
       // table is a second way in that ORs with every other one. The two
       // delivery_feedback entries are migration 090's — the bounce handler's
-      // GUC-gated path, which exists because FORCE RLS means even jale_admin
-      // cannot run a service-wide UPDATE here. Adding a name to this list
-      // should always be a deliberate act.
-      expect(state.policies).toEqual([
+      // GUC-gated path for its service-wide UPDATE. Adding a name to this list
+      // should always be a deliberate act. The only names that come from
+      // elsewhere are the reviewed copies of these policies for a dedicated
+      // login, read from the one list migration 106 is generated from.
+      expect([...state.policies].sort()).toEqual([
         'employer_digest_settings_delivery_feedback_select',
         'employer_digest_settings_delivery_feedback_update',
         'employer_digest_settings_digest_enumerator_select',
         'employer_digest_settings_digest_enumerator_update',
         'employer_digest_settings_self',
-      ]);
+        ...state.copies.map((copy) => copy.policyname),
+      ].sort());
       expect(state.triggers).toEqual([
         'employer_digest_settings_timezone_iana',
         'employer_digest_settings_updated_at',
