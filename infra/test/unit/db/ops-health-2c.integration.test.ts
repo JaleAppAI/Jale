@@ -521,7 +521,7 @@ maybeDescribe('2c ops health (115)', () => {
       voiceRows.push({ at: plus(W2, 7 * HOUR), model: MODEL_A, cause: 'bad_shape', found: [], otherDue: false });
       // Good fields but scores that are not an object: bad_shape too.
       await v(MODEL_B, plus(W1, 8 * HOUR), 'completed', {
-        fields: { full_name: 'Luis', city: 'Rosarito' }, scores: [0.9, 0.9],
+        fields: { full_name: 'Mateo', city: 'Rosarito' }, scores: [0.9, 0.9],
       });
       voiceRows.push({ at: plus(W1, 8 * HOUR), model: MODEL_B, cause: 'bad_shape', found: [], otherDue: false });
       // Seed-script test profiles: never counted.
