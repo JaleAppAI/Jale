@@ -43,6 +43,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { Client } from 'pg';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { itInProfiles } from './helpers/login-pool';
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
 
@@ -737,7 +738,7 @@ maybeDescribe('2d admin queues (117)', () => {
         await timeline(ids.open, 'admin_reply_queued', at(6));
         await timeline(ids.resolvedWithInfo, 'admin_reply_queued', at(5));
 
-        // As the migration runs it: jale_admin, under FORCE RLS.
+        // As the migration runs it: as jale_admin.
         await su.query('SET LOCAL ROLE jale_admin');
         await su.query(backfill);
         await su.query('RESET ROLE');
@@ -1128,7 +1129,7 @@ maybeDescribe('2d admin queues (117)', () => {
 
   // ── Applicant digest ────────────────────────────────────────
 
-  it('counts digest adoption among real employers, and only through the new gate', async () => {
+  it('counts digest adoption among real employers', async () => {
     const [b] = before.adoption;
     const [a] = await call.adoption(consoleUrl);
     // E1-E6 and E9 count (E7, E8 are test accounts, W is a worker, E10 is
@@ -1138,7 +1139,11 @@ maybeDescribe('2d admin queues (117)', () => {
       digest_on: Number(a.digest_on) - Number(b.digest_on),
       digest_on_with_email: Number(a.digest_on_with_email) - Number(b.digest_on_with_email),
     }).toEqual({ employers: 7, digest_on: 5, digest_on_with_email: 1 });
+  });
 
+  // Checks row policies as the standard and request test beds apply them.
+  itInProfiles(['standard', 'request'], 'reads digest settings only through the new gate', async () => {
+    const [a] = await call.adoption(consoleUrl);
     // Without the new policy a definer reads no settings row at all (the
     // 088 defect): adoption would read zero.
     const withoutPolicy = await withClient(superUrl, async (su) => {

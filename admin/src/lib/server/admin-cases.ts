@@ -289,7 +289,7 @@ export async function countOpenCasesByWait(client: QueryClient): Promise<OpenCas
 }
 
 // Open cases in queue order. Queried directly so closed rows can never crowd
-// open ones out of a fixed-size page (roadmap audit finding 7).
+// open ones out of a fixed-size page.
 export async function listOpenAdminCaseRows(client: QueryClient, limit: number): Promise<AdminCaseRow[]> {
   const result = await client.query<AdminCaseRow>(
     `${CASE_LIST_SELECT}

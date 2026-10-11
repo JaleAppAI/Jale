@@ -46,6 +46,7 @@
 
 import { Client } from 'pg';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { itInProfiles } from './helpers/login-pool';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -914,7 +915,8 @@ maybeDescribe('2c ops health (115)', () => {
     }
   });
 
-  it('reads each FORCE-RLS table through its 115 policy, not by luck (the 088 defect)', async () => {
+  // Checks row policies as the standard and request test beds apply them.
+  itInProfiles(['standard', 'request'], 'reads each FORCE-RLS table through its 115 policy, not by luck (the 088 defect)', async () => {
     // Inside one rolled-back transaction per policy: drop it and call as the
     // console. The section it feeds reads exactly zero: no remaining policy
     // lets a definer see a row (each needs a per-user setting the definer
@@ -947,6 +949,9 @@ maybeDescribe('2c ops health (115)', () => {
       `SELECT (SELECT received FROM admin_analytics_billing_inbox(4) WHERE week_start IS NULL AND event_type IS NULL) AS received,
               n.stuck_received, n.failed_now, n.unresolved_older FROM admin_analytics_billing_inbox_now() n`);
     expect(billing).toEqual([{ received: '0', stuck_received: '0', failed_now: '0', unresolved_older: '0' }]);
+  });
+
+  it('reads each FORCE-RLS table\'s fixtures as the console', async () => {
     // With the policies in place, each section sees the fixtures.
     const failures = keyed(await call.failures(consoleUrl), 'lane', FAILURES);
     expect(failures.get(key(null, 'employer_invite'))!.created).toBeGreaterThanOrEqual(7);
@@ -1021,7 +1026,8 @@ maybeDescribe('2c ops health (115)', () => {
     ]);
   });
 
-  it('reads whatsapp_outbox as its owner, which FORCE row level security would silently break', async () => {
+  // Checks row policies as the standard and request test beds apply them.
+  itInProfiles(['standard', 'request'], 'reads whatsapp_outbox as its owner, which FORCE row level security would silently break', async () => {
     const replies = await withClient(superUrl, async (su) => {
       await su.query('BEGIN');
       try {

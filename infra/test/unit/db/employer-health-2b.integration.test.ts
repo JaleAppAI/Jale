@@ -41,6 +41,7 @@
 
 import { Client } from 'pg';
 import { randomBytes } from 'node:crypto';
+import { itInProfiles } from './helpers/login-pool';
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
 
@@ -827,7 +828,8 @@ maybeDescribe('2b employer health (114)', () => {
     // non-test fixtures exactly.
   });
 
-  it('reads job_conversations through the 114 policy, not by luck (the 088 defect)', async () => {
+  // Checks row policies as the standard and request test beds apply them.
+  itInProfiles(['standard', 'request'], 'reads job_conversations through the 114 policy, not by luck (the 088 defect)', async () => {
     // Inside one rolled-back transaction: drop the policy and call as the
     // console. Every conversation-based figure vanishes, so the policy is
     // what makes them readable. With the policy gone, the remaining
@@ -845,6 +847,9 @@ maybeDescribe('2b employer health (114)', () => {
       }
     });
     expect(Number(withoutPolicy.worker_turns)).toBe(0);
+  });
+
+  it('reads every conversation-based figure as the console', async () => {
     const after = await weekly(consoleUrl);
     expect(after.get(WINDOW)!.worker_turns - before.get(WINDOW)!.worker_turns).toBe(9);
   });
