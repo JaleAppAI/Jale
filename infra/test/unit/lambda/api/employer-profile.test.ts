@@ -2,10 +2,18 @@ import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { handler } from '../../../../lambda/api/employer-profile';
 import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
+import { setAuditContext } from '../../../../lambda/lib/audit/context';
+import { callerFor, expectContextBeforeWrite, withRequestId } from './audit-expectations';
 import { corsHeaders } from '../../../../lambda/lib/http';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
+jest.mock('../../../../lambda/lib/audit/record', () => ({
+  ...jest.requireActual('../../../../lambda/lib/audit/record'),
+  recordAccess: jest.fn(),
+  recordAttempt: jest.fn(),
+}));
+jest.mock('../../../../lambda/lib/audit/context');
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
@@ -168,6 +176,9 @@ describe('Employer Profile API Lambda', () => {
       if (queryText.includes('LEFT JOIN employer_profiles')) {
         return Promise.resolve({ rows: [updated] });
       }
+      if (queryText.includes('SELECT id FROM users WHERE cognito_sub')) {
+        return Promise.resolve({ rows: [{ id: 'usr-123' }] });
+      }
       return Promise.resolve({});
     });
 
@@ -250,5 +261,32 @@ describe('Employer Profile API Lambda', () => {
 
     expect(result.statusCode).toBe(401);
     expect(JSON.parse(result.body)).toEqual({ error: 'unauthorized' });
+  });
+
+  describe('change context', () => {
+    const patch = (body: object) => ({ ...mockEvent, httpMethod: 'PATCH', body: JSON.stringify(body) }) as unknown as APIGatewayProxyEvent;
+
+    beforeEach(() => {
+      mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+      mockQuery.mockImplementation((queryText: string) => {
+        if (queryText.includes('SELECT id FROM users WHERE cognito_sub')) return Promise.resolve({ rows: [{ id: 'usr-123' }] });
+        if (queryText.includes('LEFT JOIN employer_profiles')) return Promise.resolve({ rows: [{ id: 'usr-123' }] });
+        return Promise.resolve({});
+      });
+    });
+
+    it('states the employer before the profile writes', async () => {
+      const res = await handler(withRequestId(patch({ company_name: 'Fixture Co' })));
+      expect(res.statusCode).toBe(200);
+      expect(setAuditContext).toHaveBeenCalledTimes(1);
+      expect(setAuditContext).toHaveBeenCalledWith(
+        expect.objectContaining({ query: mockQuery }), callerFor('employer', 'usr-123'), 'employer.profile_update');
+      expectContextBeforeWrite(mockQuery, setAuditContext as jest.Mock, /^UPDATE users SET/);
+    });
+
+    it('states nothing on a read', async () => {
+      await handler(mockEvent);
+      expect(setAuditContext).not.toHaveBeenCalled();
+    });
   });
 });

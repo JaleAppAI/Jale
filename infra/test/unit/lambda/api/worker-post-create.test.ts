@@ -2,10 +2,18 @@ import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { handler } from '../../../../lambda/api/worker-post-create';
 import { getDbPool, setRlsContext, setInternalUserRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
+import { setAuditContext } from '../../../../lambda/lib/audit/context';
+import { callerFor, expectContextBeforeWrite, withRequestId } from './audit-expectations';
 import { moderateImage } from '../../../../lambda/lib/moderation';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
+jest.mock('../../../../lambda/lib/audit/record', () => ({
+  ...jest.requireActual('../../../../lambda/lib/audit/record'),
+  recordAccess: jest.fn(),
+  recordAttempt: jest.fn(),
+}));
+jest.mock('../../../../lambda/lib/audit/context');
 jest.mock('../../../../lambda/lib/moderation');
 
 // TDZ-safe: the mock factory below runs before `mockHeadSend` would be
@@ -256,5 +264,15 @@ describe('worker-post-create Lambda', () => {
     expect(insertIdx).toBeGreaterThanOrEqual(0);
     const rollbackIdx = calls.indexOf('ROLLBACK', insertIdx);
     expect(rollbackIdx).toBeGreaterThan(insertIdx);
+  });
+
+  describe('change context', () => {
+    it('states the worker before the post and its media are written', async () => {
+      const res = await handler(withRequestId(makeEvent({ post_id: POST_ID, items: [{ s3_key: KEY('a.jpg'), sort_order: 0 }] })));
+      expect(res.statusCode).toBeLessThan(300);
+      expect(setAuditContext).toHaveBeenCalledTimes(1);
+      expect(setAuditContext).toHaveBeenCalledWith(expect.objectContaining({ query: mockQuery }), callerFor('worker', 'worker-uuid'), 'worker.post_create');
+      expectContextBeforeWrite(mockQuery, setAuditContext as jest.Mock, /INSERT INTO worker_posts/);
+    });
   });
 });

@@ -1,0 +1,397 @@
+{
+  "version": 1,
+  "description": "The sensitive-write change log: every table whose writes leave a change record in jale_audit.changes, the columns whose changes are named, and every other column with the reason it is not. The change-record triggers are generated from this file, and the audit suites check it against the catalog.",
+  "tables": {
+    "public.admin_cases": {
+      "key": "id",
+      "match": [
+        "id"
+      ],
+      "subject": [
+        "user_id",
+        "employer_id"
+      ],
+      "columns": [
+        "case_type",
+        "status",
+        "priority",
+        "user_id",
+        "conversation_id",
+        "job_id",
+        "employer_id",
+        "assigned_admin_id",
+        "summary",
+        "details"
+      ],
+      "reason": "Support cases: who a case is about, what it says, and who handles it."
+    },
+    "public.admin_users": {
+      "key": "id",
+      "match": [
+        "id"
+      ],
+      "subject": [],
+      "columns": [
+        "cognito_sub",
+        "admin_email",
+        "role",
+        "active"
+      ],
+      "reason": "Admin accounts: sign-in identity, address, role and whether the account is active. Admins are not users, so a record names no subject."
+    },
+    "public.billing_customers": {
+      "key": "user_id",
+      "match": [
+        "user_id"
+      ],
+      "subject": [
+        "user_id"
+      ],
+      "columns": [
+        "provider",
+        "provider_customer_id",
+        "organization_id"
+      ],
+      "reason": "Billing details: the payment provider's customer link."
+    },
+    "public.document_upload_tokens": {
+      "key": null,
+      "match": [
+        "token_hash"
+      ],
+      "subject": [
+        "worker_id"
+      ],
+      "columns": [
+        "token_hash",
+        "job_id",
+        "used"
+      ],
+      "reason": "Document upload links: issued, used and removed. The hash is a credential, so it is never a record id; a record names the field only."
+    },
+    "public.employer_profiles": {
+      "key": "user_id",
+      "match": [
+        "user_id"
+      ],
+      "subject": [
+        "user_id"
+      ],
+      "columns": [
+        "company_name",
+        "contact_name",
+        "phone",
+        "city",
+        "service_area",
+        "hiring_trades",
+        "typical_job_types",
+        "company_size",
+        "company_description"
+      ],
+      "reason": "Employer profiles, including contact details."
+    },
+    "public.job_applications": {
+      "key": "id",
+      "match": [
+        "id"
+      ],
+      "subject": [
+        "worker_id"
+      ],
+      "columns": [
+        "application_answers",
+        "prompt_answers"
+      ],
+      "reason": "Application answers only (the application status has its own history)."
+    },
+    "public.subscriptions": {
+      "key": "id",
+      "match": [
+        "id"
+      ],
+      "subject": [
+        "user_id"
+      ],
+      "columns": [
+        "user_id",
+        "provider_subscription_id",
+        "organization_id"
+      ],
+      "reason": "Billing details of a subscription: whose it is, the provider's subscription link and the organization (status, plan and the cancel flag have their own history)."
+    },
+    "public.users": {
+      "key": "id",
+      "match": [
+        "id"
+      ],
+      "subject": [
+        "id"
+      ],
+      "columns": [
+        "cognito_sub",
+        "user_type",
+        "email",
+        "phone",
+        "full_name",
+        "whatsapp_number"
+      ],
+      "reason": "Contact and identity columns."
+    },
+    "public.worker_application_defaults": {
+      "key": "worker_id",
+      "match": [
+        "worker_id"
+      ],
+      "subject": [
+        "worker_id"
+      ],
+      "columns": [
+        "answers"
+      ],
+      "reason": "A worker's saved application answers."
+    },
+    "public.worker_documents": {
+      "key": "id",
+      "match": [
+        "id"
+      ],
+      "subject": [
+        "worker_id"
+      ],
+      "columns": [
+        "job_id",
+        "doc_type",
+        "s3_key",
+        "file_name",
+        "file_size",
+        "mime_type",
+        "s3_version_id",
+        "cert_name"
+      ],
+      "reason": "A worker's documents."
+    },
+    "public.worker_post_media": {
+      "key": "id",
+      "match": [
+        "id"
+      ],
+      "subject": [
+        "worker_id"
+      ],
+      "columns": [
+        "post_id",
+        "s3_key",
+        "s3_version_id",
+        "sort_order",
+        "content_type",
+        "file_size",
+        "moderation_status"
+      ],
+      "reason": "Media attached to a worker's posts."
+    },
+    "public.worker_posts": {
+      "key": "id",
+      "match": [
+        "id"
+      ],
+      "subject": [
+        "worker_id"
+      ],
+      "columns": [
+        "worker_id",
+        "caption",
+        "source",
+        "status"
+      ],
+      "reason": "A worker's posts."
+    },
+    "public.worker_preferred_cities": {
+      "key": null,
+      "match": [
+        "user_id",
+        "city_key"
+      ],
+      "subject": [
+        "user_id"
+      ],
+      "columns": [
+        "city_key",
+        "city",
+        "state",
+        "latitude",
+        "longitude"
+      ],
+      "reason": "Where a worker wants to work. The row has no single id, so a record names the worker only."
+    },
+    "public.worker_profile_media": {
+      "key": "id",
+      "match": [
+        "id"
+      ],
+      "subject": [
+        "user_id"
+      ],
+      "columns": [
+        "user_id",
+        "media_type",
+        "s3_key",
+        "twilio_media_sid",
+        "content_type"
+      ],
+      "reason": "Media on a worker's profile."
+    },
+    "public.worker_profiles": {
+      "key": "user_id",
+      "match": [
+        "user_id"
+      ],
+      "subject": [
+        "user_id"
+      ],
+      "columns": [
+        "full_name",
+        "phone",
+        "availability",
+        "years_experience",
+        "location",
+        "bio",
+        "latitude",
+        "longitude",
+        "location_source",
+        "location_confidence",
+        "experience_months",
+        "certifications"
+      ],
+      "reason": "Worker profiles, including contact and location."
+    },
+    "public.worker_skills": {
+      "key": null,
+      "match": [
+        "worker_id",
+        "skill"
+      ],
+      "subject": [
+        "worker_id"
+      ],
+      "columns": [
+        "skill"
+      ],
+      "reason": "A worker's skills. The row has no single id, so a record names the worker only."
+    }
+  },
+  "excluded_columns": {
+    "public.admin_cases": {
+      "id": "The record key, kept in record_ids.",
+      "created_at": "A timestamp.",
+      "updated_at": "A timestamp.",
+      "resolved_at": "A timestamp."
+    },
+    "public.admin_users": {
+      "id": "The record key, kept in record_ids.",
+      "created_at": "A timestamp.",
+      "updated_at": "A timestamp."
+    },
+    "public.billing_customers": {
+      "user_id": "The record key and subject, kept in record_ids and subject_user_ids.",
+      "created_at": "A timestamp.",
+      "updated_at": "A timestamp."
+    },
+    "public.document_upload_tokens": {
+      "worker_id": "The subject, kept in subject_user_ids.",
+      "created_at": "A timestamp.",
+      "expires_at": "A timestamp.",
+      "used_at": "A timestamp."
+    },
+    "public.employer_profiles": {
+      "user_id": "The record key and subject, kept in record_ids and subject_user_ids.",
+      "updated_at": "A timestamp."
+    },
+    "public.job_applications": {
+      "id": "The record key, kept in record_ids.",
+      "worker_id": "The subject, kept in subject_user_ids.",
+      "job_id": "A link, not an answer.",
+      "status": "Recorded with its actor by the application status history (job_application_status_events).",
+      "applied_at": "A timestamp.",
+      "created_at": "A timestamp.",
+      "updated_at": "A timestamp.",
+      "details_requested_at": "A timestamp.",
+      "details_completed_at": "A timestamp.",
+      "hired_at": "A timestamp.",
+      "hired_seen_at": "A timestamp.",
+      "hired_ack_at": "A timestamp."
+    },
+    "public.subscriptions": {
+      "id": "The record key, kept in record_ids.",
+      "plan_code": "Recorded by the subscription status history (subscription_status_history).",
+      "status": "Recorded by the subscription status history (subscription_status_history).",
+      "cancel_at_period_end": "Recorded by the subscription status history (subscription_status_history).",
+      "current_period_start": "A timestamp.",
+      "current_period_end": "A timestamp.",
+      "grace_ends_at": "A timestamp.",
+      "created_at": "A timestamp.",
+      "updated_at": "A timestamp."
+    },
+    "public.users": {
+      "id": "The record key and subject, kept in record_ids and subject_user_ids.",
+      "tenant_id": "A tenancy link, not contact or identity.",
+      "tos_version": "Consent: recorded with its acceptance time, not a contact or identity value.",
+      "tos_accepted_at": "A timestamp.",
+      "privacy_version": "Consent: recorded with its acceptance time, not a contact or identity value.",
+      "privacy_accepted_at": "A timestamp.",
+      "created_at": "A timestamp.",
+      "updated_at": "A timestamp.",
+      "whatsapp_linked_at": "A timestamp.",
+      "city": "A profile field; users is covered for contact and identity only.",
+      "main_trade": "A profile field; users is covered for contact and identity only.",
+      "main_trade_other": "A profile field; users is covered for contact and identity only.",
+      "years_experience": "A profile field; users is covered for contact and identity only.",
+      "has_transportation": "A profile field; users is covered for contact and identity only.",
+      "availability": "A profile field; users is covered for contact and identity only.",
+      "trade_competency_score": "A profile field; users is covered for contact and identity only."
+    },
+    "public.worker_application_defaults": {
+      "worker_id": "The record key and subject, kept in record_ids and subject_user_ids.",
+      "updated_at": "A timestamp."
+    },
+    "public.worker_documents": {
+      "id": "The record key, kept in record_ids.",
+      "worker_id": "The subject, kept in subject_user_ids.",
+      "uploaded_at": "A timestamp."
+    },
+    "public.worker_post_media": {
+      "id": "The record key, kept in record_ids.",
+      "worker_id": "The subject, kept in subject_user_ids.",
+      "created_at": "A timestamp."
+    },
+    "public.worker_posts": {
+      "id": "The record key, kept in record_ids.",
+      "created_at": "A timestamp."
+    },
+    "public.worker_preferred_cities": {
+      "user_id": "The subject, kept in subject_user_ids.",
+      "created_at": "A timestamp."
+    },
+    "public.worker_profile_media": {
+      "id": "The record key, kept in record_ids.",
+      "created_at": "A timestamp."
+    },
+    "public.worker_profiles": {
+      "user_id": "The record key and subject, kept in record_ids and subject_user_ids.",
+      "updated_at": "A timestamp.",
+      "location_updated_at": "A timestamp."
+    },
+    "public.worker_skills": {
+      "worker_id": "The subject, kept in subject_user_ids.",
+      "created_at": "A timestamp."
+    }
+  },
+  "excluded_tables": {
+    "public.billing_operations": "An operational ledger.",
+    "public.billing_webhook_events": "An operational ledger.",
+    "public.job_application_status_events": "A capture table that already records the application status with its actor.",
+    "public.legal_consent_log": "Consent records, already append-only.",
+    "public.subscription_status_history": "A capture table that already records the subscription status and plan.",
+    "public.worker_identity_challenge_events": "A capture table that already records identity challenges.",
+    "public.worker_identity_challenges": "Identity challenges; their capture table records them."
+  }
+}

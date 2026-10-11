@@ -1,6 +1,7 @@
 import { releaseWorkerReady } from '../../../../lambda/whatsapp/worker-ready-release';
 import type { ReleaseRenderRequest, ReleaseRenderedMessage } from '../../../../lambda/whatsapp/lib/onboarding-types';
 import { createReleaseRenderer } from '../../../../lambda/whatsapp/lib/onboarding-renderers';
+import { t } from '../../../../lambda/whatsapp/lib/templates';
 
 const WORKER_ID = 'aaaaaaaa-0000-0000-0000-000000000001';
 const EVENT_KEY = 'worker.ready:aaaaaaaa-0000-0000-0000-000000000001:1';
@@ -20,12 +21,13 @@ interface IntentRow {
 }
 
 // location/pay are optional so fixtures predating the referred-job message keep
-// passing unchanged; both are nullable on jobs (migration 003).
+// passing unchanged; both are nullable on jobs (migration 003), and so is
+// company -- the batch read COALESCEs it to 'Jale' (sprint 27).
 interface JobRow {
   id: string;
   status: string;
   title: string;
-  company: string;
+  company: string | null;
   location?: string | null;
   pay?: string | null;
 }
@@ -72,10 +74,15 @@ function scriptedClient(opts: {
   appliedJobIds?: string[];
   /** When true, the worker_onboarding_state lookup returns zero rows (loadWorkerGate resolves null). */
   noGateRow?: boolean;
-  /** Job id of a claimed referral for this worker; omit for "no referral". */
-  referredJobId?: string;
-  /** Referrer on that claim. Omit for an untagged arrival (nobody referred them). */
-  referrerWorkerId?: string;
+  /** The worker's open, unapplied referred jobs (worker_referred_jobs, migration
+   * 103), newest first -- what `listOpenReferredJobIds` returns. Omit for none. */
+  referredJobIds?: string[];
+  /** Makes that list read throw, as a lock timeout or a missing grant would. */
+  referredListFails?: boolean;
+  /** Whether the recipient's last inbound message is inside WhatsApp's 24h
+   * customer-service window. Defaults to INSIDE, so fixtures predating the
+   * window rule keep their free-form rows. */
+  withinWindow?: boolean;
 }) {
   const intents = new Map(opts.intents.map((i) => [i.id, { ...i }]));
   const jobsById = new Map((opts.jobs ?? []).map((j) => [j.id, j]));
@@ -138,12 +145,25 @@ function scriptedClient(opts: {
       return { rows: [], rowCount: 0 };
     }
 
-    // The referred-job claim the release reads to decide whether to synthesize
-    // a second group-1 intent. Absent option => no referral => no second message.
-    if (/FROM referral_pending_claims/.test(sql)) {
-      return opts.referredJobId
-        ? { rows: [{ job_id: opts.referredJobId, referrer_worker_id: opts.referrerWorkerId ?? null }] }
-        : { rows: [] };
+    // The referred-jobs list the release reads to synthesize one group-1
+    // intent per job (sprint 27). LIMIT is the second parameter; a NULL
+    // limit means all of them, exactly as in SQL.
+    if (/FROM worker_referred_jobs/.test(sql)) {
+      if (opts.referredListFails) throw new Error('simulated_referred_list_failure');
+      const limit = params[1] === null || params[1] === undefined ? Infinity : (params[1] as number);
+      return { rows: (opts.referredJobIds ?? []).slice(0, limit).map((job_id) => ({ job_id })) };
+    }
+
+    // "Linked" means users.whatsapp_number is non-empty -- written only
+    // when the worker binds WhatsApp with a code. users.phone does not count.
+    if (/AS linked/.test(sql) && /FROM users WHERE id = \$1/.test(sql)) {
+      const whatsapp = opts.whatsappNumber === undefined ? '+15125551234' : opts.whatsappNumber;
+      return { rows: [{ linked: Boolean(whatsapp && whatsapp !== '') }] };
+    }
+
+    // The 24h-window read (lib/session-window.ts), keyed by the resolved recipient.
+    if (/FROM whatsapp_processed_messages/.test(sql)) {
+      return { rows: [{ within_window: opts.withinWindow ?? true }] };
     }
 
     if (/FROM worker_message_intents/.test(sql) && /FOR UPDATE SKIP LOCKED/.test(sql)) {
@@ -193,7 +213,15 @@ function scriptedClient(opts: {
 
     if (/FROM jobs WHERE id = ANY/.test(sql)) {
       const ids = params[0] as string[];
-      return { rows: ids.map((id) => jobsById.get(id)).filter(Boolean) as JobRow[] };
+      // The COALESCE is the SQL's to apply; the fake applies it only when the
+      // statement asks for it, so a read that drops it is visible here.
+      const coalesce = /COALESCE\(company, 'Jale'\) AS company/.test(sql);
+      return {
+        rows: ids
+          .map((id) => jobsById.get(id))
+          .filter(Boolean)
+          .map((job) => (coalesce ? { ...(job as JobRow), company: (job as JobRow).company ?? 'Jale' } : job)) as JobRow[],
+      };
     }
 
     if (/FROM job_conversation_messages jcm/.test(sql)) {
@@ -360,6 +388,45 @@ describe('releaseWorkerReady', () => {
     expect((finalIntents.get('ec-expired') as any).decision_reason).toBe('intent_expired');
     expect(render).toHaveBeenCalledTimes(1);
     expect(render).toHaveBeenCalledWith(expect.objectContaining({ kind: 'onboarding_complete' }));
+  });
+
+  it("names the worker in every statement that changes or authorizes one of the worker's intents by id", async () => {
+    const intents = [
+      intentRow({ id: 'ja-closed', category: 'job_alert', source_id: 'job-closed', payload: { score: 5 } }),
+      intentRow({
+        id: 'ec-expired', category: 'employer_chat', owner_service: 'job-messaging',
+        source_type: 'job_conversation_message', source_id: 'msg-expired', priority: 40,
+        expires_at: new Date(NOW.getTime() - 1000),
+      }),
+    ];
+    const { client, calls } = scriptedClient({
+      eventStatus: 'processing',
+      intents,
+      jobs: [{ id: 'job-closed', status: 'closed', title: 'T', company: 'C' }],
+      chats: [{ message_id: 'msg-expired', conversation_id: 'conv-1', conversation_status: 'open', job_title: 'T', company_name: 'C' }],
+    });
+    const { render } = recordingRenderer();
+
+    await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+
+    // The lease, both discards, the release of the welcome, and the status
+    // read that authorizes its outbox row: each one by id, each one scoped to
+    // the worker in the statement itself.
+    const kindOf = (sql: string): string | null => {
+      if (/UPDATE worker_message_intents/.test(sql) && /status = 'leased'/.test(sql)) return 'lease';
+      if (/UPDATE worker_message_intents/.test(sql) && /SET status = \$1, decision_reason = \$2/.test(sql)) return 'discard';
+      if (/UPDATE worker_message_intents/.test(sql) && /status = 'released'/.test(sql)) return 'release';
+      if (/SELECT status FROM worker_message_intents WHERE id = \$1/.test(sql)) return 'authorize';
+      if (/UPDATE worker_message_intents/.test(sql)) return 'other update';
+      return null;
+    };
+    const byId = calls.filter((c) => kindOf(c.sql) !== null);
+    expect(byId.map((c) => kindOf(c.sql))).toEqual(['lease', 'discard', 'discard', 'authorize', 'release']);
+    for (const call of byId) {
+      const worker = /\buser_id = \$(\d+)/.exec(call.sql);
+      expect(worker).not.toBeNull();
+      expect(call.params[Number(worker![1]) - 1]).toBe(WORKER_ID);
+    }
   });
 
   it('collapses twelve valid job alerts into one job_alert_digest carrying exactly ten jobs, superseding two', async () => {
@@ -816,11 +883,23 @@ describe('releaseWorkerReady', () => {
   // such worker -- five retries, then WhatsAppReleaseFailures and
   // WhatsAppDomainEventsStuck paged. Every other worker-facing send path
   // already fell back to `phone`; this pins the release to the same rule.
+  //
+  // Sprint 27: such a worker no longer gets the WELCOME on WhatsApp at
+  // all -- see "a worker with no linked WhatsApp" below. The phone fallback
+  // still serves every other category, so these cases carry an account
+  // notice to exercise it.
   describe('recipient resolution', () => {
+    function accountIntent(): IntentRow {
+      return intentRow({
+        id: 'acct-recipient', category: 'account', owner_service: 'account',
+        source_type: 'trust_result', source_id: 'trust-1', priority: 20,
+      });
+    }
+
     it('releases to users.phone when whatsapp_number is NULL (web-only worker)', async () => {
       const { client, outboxRows, intents: finalIntents } = scriptedClient({
         eventStatus: 'processing',
-        intents: [],
+        intents: [accountIntent()],
         whatsappNumber: null,
         phone: '+15125550000',
       });
@@ -828,19 +907,19 @@ describe('releaseWorkerReady', () => {
 
       const result = await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
 
-      expect(result).toEqual({ released: 1, expired: 0, superseded: 0, failed: 0 });
-      expect(requests.map((r) => r.kind)).toEqual(['onboarding_complete']);
+      // The account notice goes out; the welcome is superseded (not linked).
+      expect(result).toEqual({ released: 1, expired: 0, superseded: 1, failed: 0 });
+      expect(requests.map((r) => r.kind)).toEqual(['account_notice']);
       expect(outboxRows).toHaveLength(1);
       // whatsapp_outbox.whatsapp_number is the FIRST insert param.
       expect(outboxRows[0].params[0]).toBe('+15125550000');
-      const onboardingIntents = [...finalIntents.values()].filter((i) => i.category === 'onboarding');
-      expect(onboardingIntents[0].status).toBe('released');
+      expect(finalIntents.get('acct-recipient')?.status).toBe('released');
     });
 
     it('treats an empty-string whatsapp_number like NULL and still falls back to phone', async () => {
       const { client, outboxRows } = scriptedClient({
         eventStatus: 'processing',
-        intents: [],
+        intents: [accountIntent()],
         whatsappNumber: '',
         phone: '+15125550000',
       });
@@ -870,7 +949,7 @@ describe('releaseWorkerReady', () => {
     it('throws worker_whatsapp_unavailable -- the exact string the drain treats as terminal -- only when BOTH columns are empty', async () => {
       const { client, outboxRows } = scriptedClient({
         eventStatus: 'processing',
-        intents: [],
+        intents: [accountIntent()],
         whatsappNumber: null,
         phone: null,
       });
@@ -885,79 +964,261 @@ describe('releaseWorkerReady', () => {
     });
   });
 
-  // ── O2: release-time eligibility reload ──────────────────────────
+  // ── Sprint 27: referred jobs at completion ────────────────────────
+  //
+  // One tappable job card per open, unapplied referred job -- at most three,
+  // newest first -- from the worker's referred-jobs list (migration 103),
+  // never a free-form row outside WhatsApp's 24h window, and nothing at all
+  // for a worker with no linked WhatsApp.
+  describe('referred jobs at completion', () => {
+    function activeJob(id: string, overrides: Partial<JobRow> = {}): JobRow {
+      return { id, status: 'active', title: `Job ${id}`, company: 'Acme', location: 'Austin, TX', pay: '$22-26/hr', ...overrides };
+    }
 
-  describe('referred job (migration 056)', () => {
-    it('sends a second message naming the referred job when it is still active', async () => {
-      const { client } = scriptedClient({
+    function referredIntents(finalIntents: Map<string, IntentRow>): IntentRow[] {
+      return [...finalIntents.values()].filter((i) => i.source_type === 'referred_job');
+    }
+
+    function variablesOf(row: { params: unknown[] }): Record<string, string> {
+      return JSON.parse(row.params[3] as string) as Record<string, string>;
+    }
+
+    it('reads the list for THIS worker, at most three, inside its savepoint -- and never the old claims table', async () => {
+      const { client, calls } = scriptedClient({ eventStatus: 'processing', intents: [], referredJobIds: [] });
+      const { render } = recordingRenderer();
+
+      await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+
+      const sql = calls.map((c) => c.sql);
+      const listIdx = sql.findIndex((q) => /FROM worker_referred_jobs/.test(q));
+      expect(calls[listIdx].params).toEqual([WORKER_ID, 3]);
+      expect(sql.indexOf('SAVEPOINT referral_job_intent')).toBeLessThan(listIdx);
+      expect(sql.indexOf('RELEASE SAVEPOINT referral_job_intent')).toBeGreaterThan(listIdx);
+      expect(sql.some((q) => /referral_pending_claims/.test(q))).toBe(false);
+    });
+
+    it('two referred jobs: two intents deduped PER JOB, then two job_alert cards with the fallback body -- a NULL company reads Jale', async () => {
+      const { client, calls, intents: finalIntents, outboxRows } = scriptedClient({
         eventStatus: 'processing',
         intents: [],
-        referredJobId: 'job-ref',
-        referrerWorkerId: 'maria-1',
-        jobs: [{ id: 'job-ref', status: 'active', title: 'Framer', company: 'Acme', location: 'Austin, TX', pay: '$22-26/hr' }],
+        referredJobIds: ['job-new', 'job-old'],
+        jobs: [
+          activeJob('job-new', { title: 'Framer', company: null }),
+          activeJob('job-old', { title: 'Roofer', company: 'NB Construction', location: null, pay: null }),
+        ],
+      });
+
+      const result = await releaseWorkerReady(client, EVENT_KEY, { renderer: createReleaseRenderer(), now: () => NOW });
+
+      const synthesized = calls.filter((c) => /INSERT INTO worker_message_intents/.test(c.sql) && /'referred_job'/.test(c.sql));
+      expect(synthesized.map((c) => c.params[1])).toEqual(['job-new', 'job-old']);
+      expect(synthesized.map((c) => c.params[2])).toEqual([
+        `referral-job:${WORKER_ID}:job-new`,
+        `referral-job:${WORKER_ID}:job-old`,
+      ]);
+      // No referral framing travels with the job any more.
+      expect(referredIntents(finalIntents).map((i) => i.payload)).toEqual([{ kind: 'referred_job' }, { kind: 'referred_job' }]);
+      expect(referredIntents(finalIntents).every((i) => i.priority === 2)).toBe(true);
+
+      expect(result).toEqual({ released: 3, expired: 0, superseded: 0, failed: 0 });
+      expect(outboxRows).toHaveLength(3);
+      const [welcome, first, second] = outboxRows;
+      // The welcome says jobs follow; the cards follow it, newest first.
+      expect(welcome.params[1]).toBe(t('v2_ready_jobs_many', 'es'));
+      expect(first.params[2]).toBe('job_alert_es');
+      expect(second.params[2]).toBe('job_alert_es');
+      expect(variablesOf(first)).toMatchObject({ '1': 'Framer', '2': 'Jale', '3': 'Austin, TX', '5': 'job-job-new' });
+      expect(variablesOf(second)).toMatchObject({ '1': 'Roofer', '2': 'NB Construction', '5': 'job-job-old' });
+      expect(typeof variablesOf(first).__fallback_body).toBe('string');
+      expect(variablesOf(first).__fallback_body.length).toBeGreaterThan(0);
+      // Each card is its own row for its own intent.
+      expect(new Set(outboxRows.map((r) => r.intentId)).size).toBe(3);
+    });
+
+    it('one referred job: the welcome says so in the singular', async () => {
+      const { client, outboxRows } = scriptedClient({
+        eventStatus: 'processing', intents: [], referredJobIds: ['job-1'], jobs: [activeJob('job-1')],
+      });
+
+      await releaseWorkerReady(client, EVENT_KEY, { renderer: createReleaseRenderer(), now: () => NOW });
+
+      expect(outboxRows.map((r) => r.params[1] ?? r.params[2])).toEqual([t('v2_ready_jobs_one', 'es'), 'job_alert_es']);
+    });
+
+    it('no referred job: the plain welcome, exactly as before', async () => {
+      const { client, outboxRows } = scriptedClient({ eventStatus: 'processing', intents: [] });
+
+      await releaseWorkerReady(client, EVENT_KEY, { renderer: createReleaseRenderer(), now: () => NOW });
+
+      expect(outboxRows.map((r) => r.params[1])).toEqual([t('v2_ready', 'es')]);
+    });
+
+    it('four referred jobs: three cards, the newest three', async () => {
+      const ids = ['job-1', 'job-2', 'job-3', 'job-4'];
+      const { client, intents: finalIntents, outboxRows } = scriptedClient({
+        eventStatus: 'processing', intents: [], referredJobIds: ids, jobs: ids.map((id) => activeJob(id)),
+      });
+
+      await releaseWorkerReady(client, EVENT_KEY, { renderer: createReleaseRenderer(), now: () => NOW });
+
+      expect(referredIntents(finalIntents).map((i) => i.source_id)).toEqual(['job-1', 'job-2', 'job-3']);
+      const cards = outboxRows.filter((r) => r.params[2] === 'job_alert_es');
+      expect(cards.map((r) => variablesOf(r)['5'])).toEqual(['job-job-1', 'job-job-2', 'job-job-3']);
+    });
+
+    it('a referred job also in the job-alert digest is NOT sent twice: its alert is superseded as covered_by_referred_card', async () => {
+      const intents = [
+        intentRow({ id: 'ja-ref', category: 'job_alert', source_id: 'job-ref', payload: { score: 9 } }),
+        intentRow({ id: 'ja-other', category: 'job_alert', source_id: 'job-other', payload: { score: 5 } }),
+      ];
+      const { client, intents: finalIntents } = scriptedClient({
+        eventStatus: 'processing',
+        intents,
+        referredJobIds: ['job-ref'],
+        jobs: [activeJob('job-ref'), activeJob('job-other')],
       });
       const { render, requests } = recordingRenderer();
+
+      await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+
+      expect(finalIntents.get('ja-ref')?.status).toBe('superseded');
+      expect((finalIntents.get('ja-ref') as any).decision_reason).toBe('covered_by_referred_card');
+      const digest = requests.find((r) => r.kind === 'job_alert_digest') as Extract<ReleaseRenderRequest, { kind: 'job_alert_digest' }>;
+      expect(digest.jobs.map((j) => j.jobId)).toEqual(['job-other']);
+      expect(finalIntents.get('ja-other')?.status).toBe('released');
+    });
+
+    it('OUTSIDE the 24h window: the free-form welcome is superseded as outside_session_window, and the cards are still written', async () => {
+      const { client, calls, intents: finalIntents, outboxRows } = scriptedClient({
+        eventStatus: 'processing',
+        intents: [],
+        referredJobIds: ['job-1', 'job-2'],
+        jobs: [activeJob('job-1'), activeJob('job-2')],
+        withinWindow: false,
+      });
+
+      const result = await releaseWorkerReady(client, EVENT_KEY, { renderer: createReleaseRenderer(), now: () => NOW });
+
+      const welcome = [...finalIntents.values()].find((i) => i.source_type === 'onboarding_complete')!;
+      expect(welcome.status).toBe('superseded');
+      expect((welcome as any).decision_reason).toBe('outside_session_window');
+      expect(outboxRows.map((r) => r.params[2])).toEqual(['job_alert_es', 'job_alert_es']);
+      expect(outboxRows.every((r) => r.params[1] === null)).toBe(true);
+      expect(result).toEqual({ released: 2, expired: 0, superseded: 1, failed: 0 });
+      // The window is the RECIPIENT's: the inbound log is keyed by number.
+      const windowRead = calls.find((c) => /FROM whatsapp_processed_messages/.test(c.sql))!;
+      expect(windowRead.params).toEqual(['+15125551234']);
+    });
+
+    it('OUTSIDE the window, a multi-job digest (free-form) is superseded too -- a single-job card is not', async () => {
+      const intents = [
+        intentRow({ id: 'ja-1', category: 'job_alert', source_id: 'job-1', payload: { score: 9 } }),
+        intentRow({ id: 'ja-2', category: 'job_alert', source_id: 'job-2', payload: { score: 5 } }),
+      ];
+      const { client, intents: finalIntents, outboxRows } = scriptedClient({
+        eventStatus: 'processing', intents, jobs: [activeJob('job-1'), activeJob('job-2')], withinWindow: false,
+      });
+
+      await releaseWorkerReady(client, EVENT_KEY, { renderer: createReleaseRenderer(), now: () => NOW });
+
+      expect(finalIntents.get('ja-1')?.status).toBe('superseded');
+      expect((finalIntents.get('ja-1') as any).decision_reason).toBe('outside_session_window');
+      expect(finalIntents.get('ja-2')?.status).toBe('superseded');
+      expect(outboxRows).toHaveLength(0);
+    });
+
+    it('a worker with NO linked WhatsApp (whatsapp_number NULL, phone set) gets nothing: the welcome and both referred intents are superseded as whatsapp_not_linked, with no recipient lookup and no error', async () => {
+      const { client, calls, intents: finalIntents, outboxRows } = scriptedClient({
+        eventStatus: 'processing',
+        intents: [],
+        whatsappNumber: null,
+        phone: '+15125550000',
+        referredJobIds: ['job-1', 'job-2'],
+        jobs: [activeJob('job-1'), activeJob('job-2')],
+      });
+      const { render } = recordingRenderer();
 
       const result = await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
 
-      // Group 1 must now carry BOTH: the welcome and the referred job. If the
-      // referred-job intent were superseded (the pre-change "at most one"
-      // behaviour) the worker would never hear about the job they came for.
-      expect(result.superseded).toBe(0);
-      expect(requests.map((r) => r.kind)).toEqual(['onboarding_complete', 'referred_job']);
-      const referred = requests.find((r) => r.kind === 'referred_job') as Extract<ReleaseRenderRequest, { kind: 'referred_job' }>;
-      expect(referred.job).toMatchObject({
-        jobId: 'job-ref', title: 'Framer', companyName: 'Acme', location: 'Austin, TX', pay: '$22-26/hr',
-      });
-      expect(referred.referred).toBe(true);
+      // The intents exist -- one per job -- so the decision is visible per job.
+      const referred = referredIntents(finalIntents);
+      expect(referred.map((i) => i.source_id)).toEqual(['job-1', 'job-2']);
+      for (const intent of [...finalIntents.values()]) {
+        expect(intent.status).toBe('superseded');
+        expect((intent as any).decision_reason).toBe('whatsapp_not_linked');
+      }
+      expect(result).toEqual({ released: 0, expired: 0, superseded: 3, failed: 0 });
+      expect(outboxRows).toHaveLength(0);
+      expect(render).not.toHaveBeenCalled();
+      // Returned before the recipient lookup and the window read.
+      expect(calls.some((c) => /COALESCE\(NULLIF\(whatsapp_number, ''\), NULLIF\(phone, ''\)\)/.test(c.sql))).toBe(false);
+      expect(calls.some((c) => /FROM whatsapp_processed_messages/.test(c.sql))).toBe(false);
     });
 
-    it('does not claim a friend referred them when the claim carries no referrer', async () => {
-      // A visitor can open the public page with no share tag and tap Apply
-      // themselves. The claim is real, the job is right, but nobody referred
-      // them -- "a friend referred you" would be a lie to that person.
-      const { client } = scriptedClient({
+    it('an EMPTY-string whatsapp_number is not linked either', async () => {
+      const { client, intents: finalIntents, outboxRows } = scriptedClient({
+        eventStatus: 'processing', intents: [], whatsappNumber: '', phone: '+15125550000',
+        referredJobIds: ['job-1'], jobs: [activeJob('job-1')],
+      });
+
+      await releaseWorkerReady(client, EVENT_KEY, { renderer: createReleaseRenderer(), now: () => NOW });
+
+      expect(outboxRows).toHaveLength(0);
+      expect([...finalIntents.values()].every((i) => (i as any).decision_reason === 'whatsapp_not_linked')).toBe(true);
+    });
+
+    it('the SAME fixture with a linked number writes the cards', async () => {
+      const { client, outboxRows } = scriptedClient({
         eventStatus: 'processing',
         intents: [],
-        referredJobId: 'job-organic',
-        // no referrerWorkerId
-        jobs: [{ id: 'job-organic', status: 'active', title: 'Framer', company: 'Acme' }],
+        whatsappNumber: '+15125551234',
+        phone: '+15125550000',
+        referredJobIds: ['job-1', 'job-2'],
+        jobs: [activeJob('job-1'), activeJob('job-2')],
+      });
+
+      await releaseWorkerReady(client, EVENT_KEY, { renderer: createReleaseRenderer(), now: () => NOW });
+
+      expect(outboxRows.map((r) => r.params[2])).toEqual([null, 'job_alert_es', 'job_alert_es']);
+      expect(outboxRows.every((r) => r.params[0] === '+15125551234')).toBe(true);
+    });
+
+    it('a referred intent whose job is no longer active is superseded as job_not_active, never rendered', async () => {
+      // Closed jobs never reach the list, but an intent left from before this
+      // release (the old one-per-worker key) can still point at one.
+      const intents = [
+        intentRow({
+          id: 'legacy-ref', category: 'onboarding', owner_service: 'onboarding-v2',
+          source_type: 'referred_job', source_id: 'job-filled', priority: 2,
+          payload: { kind: 'referred_job', referred: true },
+        }),
+      ];
+      const { client, intents: finalIntents } = scriptedClient({
+        eventStatus: 'processing', intents, jobs: [{ id: 'job-filled', status: 'filled', title: 'Framer', company: 'Acme' }],
       });
       const { render, requests } = recordingRenderer();
 
       await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
 
-      const referred = requests.find((r) => r.kind === 'referred_job') as Extract<ReleaseRenderRequest, { kind: 'referred_job' }>;
-      expect(referred).toBeDefined();
-      expect(referred.referred).toBe(false);
-      expect(referred.job).toMatchObject({ jobId: 'job-organic' });
-    });
-
-    it('sends the honest "already taken" variant when the referred job is no longer active', async () => {
-      const { client } = scriptedClient({
-        eventStatus: 'processing',
-        intents: [],
-        referredJobId: 'job-gone',
-        jobs: [{ id: 'job-gone', status: 'filled', title: 'Framer', company: 'Acme' }],
-      });
-      const { render, requests } = recordingRenderer();
-
-      await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
-
-      const referred = requests.find((r) => r.kind === 'referred_job') as Extract<ReleaseRenderRequest, { kind: 'referred_job' }>;
-      expect(referred).toBeDefined();
-      // job: null is what makes the renderer choose the "filled" copy. Sending
-      // nothing would leave the worker wondering what happened to the job.
-      expect(referred.job).toBeNull();
-    });
-
-    it('sends only the welcome when the worker has no referral claim', async () => {
-      const { client } = scriptedClient({ eventStatus: 'processing', intents: [] });
-      const { render, requests } = recordingRenderer();
-
-      await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
-
+      expect(finalIntents.get('legacy-ref')?.status).toBe('superseded');
+      expect((finalIntents.get('legacy-ref') as any).decision_reason).toBe('job_not_active');
       expect(requests.map((r) => r.kind)).toEqual(['onboarding_complete']);
+    });
+
+    it('a failing list read rolls back its savepoint, logs a static metric, and the welcome still goes out', async () => {
+      const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      try {
+        const { client, calls, outboxRows } = scriptedClient({ eventStatus: 'processing', intents: [], referredListFails: true });
+
+        await releaseWorkerReady(client, EVENT_KEY, { renderer: createReleaseRenderer(), now: () => NOW });
+
+        expect(calls.some((c) => c.sql === 'ROLLBACK TO SAVEPOINT referral_job_intent')).toBe(true);
+        expect(outboxRows.map((r) => r.params[1])).toEqual([t('v2_ready', 'es')]);
+        const logged = errorSpy.mock.calls.map((call) => call.map(String).join(' ')).join('\n');
+        expect(logged).toContain('ReferralJobIntentFailed');
+      } finally {
+        errorSpy.mockRestore();
+      }
     });
 
     it('still collapses two intents of the SAME source_type to one', async () => {
@@ -983,6 +1244,8 @@ describe('releaseWorkerReady', () => {
       expect([dup?.status, synthetic?.status].filter((s) => s === 'superseded')).toHaveLength(1);
     });
   });
+
+  // ── Release-time eligibility reload ──────────────────────────────
 
   describe('job_alert release-time eligibility', () => {
     it('discards a job_alert intent for a suspended worker with worker_not_ready, never rendering it', async () => {

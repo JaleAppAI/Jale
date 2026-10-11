@@ -2,7 +2,7 @@
 #
 # verify-testbed.sh — acceptance probes for the WhatsApp v2 PostgreSQL testbed.
 #
-# Tier A proves the chain applied under the production ownership model.
+# Tier A proves the chain applied under the bed's ownership model.
 # Tier B proves the environment can host the 042 suites that Codex C3 and C9 own
 # (whatsapp-onboarding-042.integration.test.ts and
 # whatsapp-onboarding-concurrency.integration.test.ts). It does not duplicate them.
@@ -58,7 +58,7 @@ probe() {
   fi
 }
 
-echo "-- Tier A: production ownership model --"
+echo "-- Tier A: the bed's ownership model --"
 
 probe "migration chain applied (users table present)" \
   "SELECT to_regclass('public.users') IS NOT NULL"

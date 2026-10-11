@@ -53,7 +53,6 @@ describe('WhatsAppStack', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
     });
     const ai = new AiStack(app, 'TestAiStack', {
       vpc: network.vpc,
@@ -68,7 +67,6 @@ describe('WhatsAppStack', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
       aliasGeneratorFn: ai.aliasGeneratorFn.function,
       whatsappStatusCallbackUrl: 'https://callbacks.example.test/prod/whatsapp/status-callback',
     });
@@ -80,7 +78,6 @@ describe('WhatsAppStack', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
       api: api.api,
       dualAuthorizer: api.dualAuthorizer,
     });
@@ -99,7 +96,6 @@ describe('WhatsAppStack', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
       workerPool: auth.workerPool,
       api: api.api,
       workerResource: api.workerResource,
@@ -1771,7 +1767,6 @@ describe('WhatsAppStack — v2 inbound transport enabled', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
     });
     const ai = new AiStack(app, 'TestAiStackV2Transport', {
       vpc: network.vpc,
@@ -1786,7 +1781,6 @@ describe('WhatsAppStack — v2 inbound transport enabled', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
       aliasGeneratorFn: ai.aliasGeneratorFn.function,
       whatsappStatusCallbackUrl: 'https://callbacks.example.test/prod/whatsapp/status-callback',
     });
@@ -1794,7 +1788,6 @@ describe('WhatsAppStack — v2 inbound transport enabled', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
       api: api.api,
       dualAuthorizer: api.dualAuthorizer,
     });
@@ -1808,7 +1801,6 @@ describe('WhatsAppStack — v2 inbound transport enabled', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
       workerPool: auth.workerPool,
       api: api.api,
       workerResource: api.workerResource,
@@ -1922,7 +1914,6 @@ describe('WhatsAppStack — publicSiteBaseUrl context override', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
     });
     const ai = new AiStack(app, 'TestAiStackPublicSite', {
       vpc: network.vpc,
@@ -1937,7 +1928,6 @@ describe('WhatsAppStack — publicSiteBaseUrl context override', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
       aliasGeneratorFn: ai.aliasGeneratorFn.function,
       whatsappStatusCallbackUrl: 'https://callbacks.example.test/prod/whatsapp/status-callback',
     });
@@ -1945,7 +1935,6 @@ describe('WhatsAppStack — publicSiteBaseUrl context override', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
       api: api.api,
       dualAuthorizer: api.dualAuthorizer,
     });
@@ -1959,7 +1948,6 @@ describe('WhatsAppStack — publicSiteBaseUrl context override', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
       workerPool: auth.workerPool,
       api: api.api,
       workerResource: api.workerResource,

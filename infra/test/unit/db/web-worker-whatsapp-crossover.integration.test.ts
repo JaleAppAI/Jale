@@ -1,10 +1,10 @@
 /**
  * web-worker-whatsapp-crossover.integration.test.ts
  *
- * Sprint 22 R2-C6/C4/087 gate against REAL PostgreSQL 16 with migrations
- * 001-087 applied. Group C REQUIRES 087: on a 001-086 database it fails
- * with two runs and lifecycle='onboarding', which is the exact regression
- * 087 removes.
+ * The web/WhatsApp crossover gate against REAL PostgreSQL 16 with every
+ * migration on disk applied. Group C REQUIRES 087: on a database stopped at
+ * 086 it fails with two runs and lifecycle='onboarding', which is the exact
+ * regression 087 removes.
  *
  * WHY THIS SUITE EXISTS
  *   Migration 053 added `bypass_onboarding_for_web_worker`, and
@@ -49,12 +49,13 @@
  *   (`lib/onboarding-adapters.ts:755`), so the OTP resolves to the same
  *   `sub`, and `reconcileUserRow`'s "Case B/C: real-sub row exists" branch
  *   returns the EXISTING web worker's internal id — never a placeholder.
- *   The fake returns exactly that id.
+ *   The fake returns exactly that id, and makes that branch's one write:
+ *   it links the row's `users.whatsapp_number` (read as "linked" since sprint 27).
  *
  * CONNECTION
  *   Set JALE_TEST_DATABASE_URL to a SUPERUSER connection string for a
- *   disposable PostgreSQL 16 database with 001-087 applied (see
- *   db/local/bootstrap-testbed.sh). Fixtures and verification reads use the
+ *   disposable PostgreSQL 16 database with every migration on disk applied
+ *   (see db/local/bootstrap-testbed.sh). Fixtures and verification reads use the
  *   superuser connection; every ENGINE call goes through a separate pool
  *   authenticated as `jale_whatsapp` (test-whatsapp-pw).
  */
@@ -94,6 +95,22 @@ import { recordCanonicalWhatsAppConsent } from '../../../lambda/whatsapp/lib/leg
 import { hashNormalizedPhone } from '../../../lambda/whatsapp/lib/runtime-controls';
 import { formatApplyToken, hashToken } from '../../../lambda/lib/referral-codes';
 import { setInternalUserRlsContext } from '../../../lambda/lib/db';
+import { recordReferredJob } from '../../../lambda/lib/referred-jobs';
+import {
+  claimPendingReferral,
+  findUnclaimedParkedJobId,
+  isOpenUnappliedJob,
+  loadActiveJobLabel,
+  parkPendingClaim,
+} from '../../../lambda/whatsapp/lib/referral-claims';
+import { isWithinSessionWindow } from '../../../lambda/whatsapp/lib/session-window';
+import { releaseWorkerReady } from '../../../lambda/whatsapp/worker-ready-release';
+import { createReleaseRenderer } from '../../../lambda/whatsapp/lib/onboarding-renderers';
+import { t } from '../../../lambda/whatsapp/lib/templates';
+// The processor's two sprint 27 steps, exported narrowly so this suite can
+// run them as the real jale_whatsapp role (the processor itself needs Twilio).
+import { queueReferredJobCard, recordTypedCodeReferredJob } from '../../../lambda/whatsapp/processor';
+import type { ConversationRow } from '../../../lambda/whatsapp/lib/conversation-router';
 import type {
   PreferredLanguage,
   WorkerMessageIntentInput,
@@ -177,13 +194,35 @@ maybeDescribe('R2-C6/087: a web-started worker continues on WhatsApp', () => {
   const phones: Record<string, string> = {};
   const convIds: Record<string, string> = {};
 
-  /** Worker fixtures. `signup` exercises group A only. */
-  const WORKER_KEYS = ['signup', 'resume', 'ready', 'referral', 'readyref', 'orphan'] as const;
+  /** Worker fixtures. `signup` exercises group A only; `tokenwa`, `bound`
+   * and `typed` belong to the sprint 27 groups F-K. */
+  const WORKER_KEYS = [
+    'signup', 'resume', 'ready', 'referral', 'readyref', 'orphan', 'tokenwa', 'bound', 'typed',
+    // Group L: two job links before sign-in.
+    'twootp', 'twostart',
+  ] as const;
 
   let employerId = '';
   let shareCode = '';
   let applyTokenRaw = '';
   let jobId = '';
+  // Sprint 27 fixtures (groups F-K).
+  let roofJobId = '';
+  let closedJobId = '';
+  let employerShareCode = '';
+  let employerTokenRaw = '';
+  let boundTokenRaw = '';
+  /** Group L: two tokens per worker. Each first token is for `jobId` through
+   * the worker's share link, each second one for `roofJobId` through the
+   * employer's, so the credit tells the two codes apart. */
+  const twoLinkTokens = {
+    otpFirst: 'NPQRSTVA',
+    otpSecond: 'PQRSTVWB',
+    startFirst: 'QRSTVWXC',
+    startSecond: 'RSTVWXYD',
+  } as const;
+  /** whatsapp_processed_messages rows this suite inserts, deleted in afterAll. */
+  const inboundSids: string[] = [];
 
   // ── deps assembly ──────────────────────────────────────────────────────
 
@@ -217,10 +256,21 @@ maybeDescribe('R2-C6/087: a web-started worker continues on WhatsApp', () => {
           expiresAt: new Date(Date.now() + 10 * 60_000),
         };
       },
-      async verifyChallenge() {
+      async verifyChallenge(client, { whatsappNumber }) {
         if (!identityScript.verifiedWorkerId) {
           throw new Error('identity adapter reached with no scripted verified worker');
         }
+        // reconcileUserRow's Case B/C write (processor.ts), in the same
+        // transaction and as the same role: the existing worker row is LINKED
+        // to the number the code was verified from. The release reads
+        // users.whatsapp_number as "linked", so the stand-in performs it too.
+        await client.query(
+          `UPDATE users
+              SET whatsapp_number = $1,
+                  whatsapp_linked_at = now()
+            WHERE id = $2 AND user_type = 'worker'`,
+          [whatsappNumber, identityScript.verifiedWorkerId],
+        );
         return { status: 'verified', workerId: identityScript.verifiedWorkerId };
       },
     };
@@ -312,10 +362,15 @@ maybeDescribe('R2-C6/087: a web-started worker continues on WhatsApp', () => {
     };
   }
 
-  /** One inbound value = one transaction, exactly as either Lambda runs it. */
+  /**
+   * One inbound value = one transaction, exactly as either Lambda runs it.
+   * `after` runs inside that same transaction once the router has returned
+   * -- where the processor's own post-routing steps run.
+   */
   async function turn(
     session: OnboardingV2Session,
     msg: OnboardingV2InboundMessage,
+    after?: (client: PoolClient, result: RouteResult) => Promise<void>,
   ): Promise<{
     result: RouteResult;
     sent: WorkerMessageIntentInput[];
@@ -327,6 +382,7 @@ maybeDescribe('R2-C6/087: a web-started worker continues on WhatsApp', () => {
     try {
       await client.query('BEGIN');
       const result = await routeOnboardingV2(client, session, msg, deps);
+      if (after) await after(client, result);
       await client.query('COMMIT');
       session.state_context = roundTrip(session.state_context);
       clockRef.now = new Date(clockRef.now.getTime() + 60_000);
@@ -409,7 +465,9 @@ maybeDescribe('R2-C6/087: a web-started worker continues on WhatsApp', () => {
     // referral code here, which is the only message `handleStartStep` ever
     // parks one from.
     firstBody = 'Hola',
-  ): Promise<{ result: RouteResult; sent: WorkerMessageIntentInput[] }> {
+    // Runs inside the code turn's transaction (see `turn`).
+    afterCode?: (client: PoolClient, result: RouteResult, msg: OnboardingV2InboundMessage) => Promise<void>,
+  ): Promise<{ result: RouteResult; sent: WorkerMessageIntentInput[]; preAuth: Array<{ kind: 'prompt' | 'text'; to: string; payload: unknown }>; firstPreAuth: Array<{ kind: 'prompt' | 'text'; to: string; payload: unknown }> }> {
     identityScript.verifiedWorkerId = ids[key];
     identityScript.session = `cognito-session-${key}-${randomUUID().slice(0, 8)}`;
 
@@ -423,7 +481,94 @@ maybeDescribe('R2-C6/087: a web-started worker continues on WhatsApp', () => {
       handled: true, workerId: null, stepKey: 'identity.verify_otp',
     });
 
-    return turn(session, msgFor(key, { body: '123456' }, 'wa'));
+    const code = msgFor(key, { body: '123456' }, 'wa');
+    const bound = await turn(session, code, afterCode ? (client, result) => afterCode(client, result, code) : undefined);
+    return { ...bound, firstPreAuth: hello.preAuth };
+  }
+
+  /**
+   * Drives a BOUND WhatsApp worker from legal.review to completion, one
+   * transaction per answer, exactly as group C does on the web.
+   */
+  async function whatsappOnboardToReady(key: string, session: OnboardingV2Session): Promise<void> {
+    expect((await turn(session, msgFor(key, { body: 'accept' }, 'wa'))).result.stepKey).toBe('profile.name');
+    expect((await turn(session, msgFor(key, { body: 'Rosa Medina' }, 'wa'))).result.stepKey).toBe('profile.location');
+    expect((await turn(session, msgFor(key, { body: 'El Paso, TX' }, 'wa'))).result.stepKey).toBe('profile.trade');
+    expect((await turn(session, msgFor(key, { interactivePayload: 'profile:main_trade:carpenter' }, 'wa'))).result.stepKey).toBe('profile.experience');
+    expect((await turn(session, msgFor(key, { interactivePayload: 'profile:years_experience:2-4' }, 'wa'))).result.stepKey).toBe('profile.transportation');
+    expect((await turn(session, msgFor(key, { interactivePayload: 'profile:has_transportation:true' }, 'wa'))).result.stepKey).toBe('profile.availability');
+    expect((await turn(session, msgFor(key, { interactivePayload: 'profile:availability:full_time' }, 'wa'))).result.stepKey).toBe('trust.question.1');
+    await turn(session, msgFor(key, { body: 'Roofing and framing, ten years.' }, 'wa'));
+    await turn(session, msgFor(key, { body: 'I check the pitch and the weather first.' }, 'wa'));
+    await turn(session, msgFor(key, { body: 'A leak once; I traced it to the flashing.' }, 'wa'));
+    expect(await lifecycleOf(ids[key])).toEqual({ lifecycle: 'ready', has_ready_at: true });
+  }
+
+  /** The worker's referred-jobs list, read past RLS. */
+  async function referredJobsOf(workerId: string): Promise<Array<{ job_id: string; source: string }>> {
+    const r = await su.query<{ job_id: string; source: string }>(
+      `SELECT job_id, source FROM worker_referred_jobs WHERE worker_id = $1 ORDER BY last_seen_at DESC, job_id`,
+      [workerId],
+    );
+    return r.rows;
+  }
+
+  /** An inbound message the worker sent, as the processor's claim logs it. */
+  async function logInbound(phone: string, sid = `r2c6-inbound-${randomUUID()}`): Promise<string> {
+    inboundSids.push(sid);
+    await su.query(
+      `INSERT INTO whatsapp_processed_messages (message_sid, whatsapp_number, status) VALUES ($1, $2, 'completed')`,
+      [sid, phone],
+    );
+    return sid;
+  }
+
+  /**
+   * Releases the worker.ready event `completeOnboarding` left PENDING, as
+   * the drain does: lease it (here, the lease function's end state set
+   * directly -- this suite runs no competing drain), then `releaseWorkerReady`
+   * as jale_whatsapp with the worker's internal setting.
+   */
+  async function releaseReady(workerId: string): Promise<{ released: number; expired: number; superseded: number; failed: number }> {
+    const event = await su.query<{ event_key: string }>(
+      `SELECT event_key FROM worker_domain_outbox
+        WHERE aggregate_id = $1 AND event_type = 'worker.ready' AND status = 'pending'`,
+      [workerId],
+    );
+    expect(event.rows).toHaveLength(1);
+    await su.query(
+      `UPDATE worker_domain_outbox
+          SET status = 'processing', leased_until = now() + interval '5 minutes', lease_token = gen_random_uuid()
+        WHERE event_key = $1`,
+      [event.rows[0].event_key],
+    );
+    return asWhatsapp(workerId, (client) => releaseWorkerReady(client, event.rows[0].event_key, {
+      renderer: createReleaseRenderer(),
+      now: () => clockRef.now,
+    }));
+  }
+
+  /** The release's intents and outbox rows for one worker, read past RLS. */
+  async function releaseStateOf(workerId: string): Promise<{
+    intents: Array<{ source_type: string; source_id: string; status: string; decision_reason: string | null }>;
+    outbox: Array<{ body: string | null; content_template: string | null; content_variables: Record<string, string> | null }>;
+  }> {
+    const intents = await su.query(
+      `SELECT source_type, source_id, status, decision_reason
+         FROM worker_message_intents
+        WHERE user_id = $1 AND category = 'onboarding'
+        ORDER BY priority, source_id`,
+      [workerId],
+    );
+    const outbox = await su.query(
+      `SELECT o.body, o.content_template, o.content_variables
+         FROM whatsapp_outbox o
+         JOIN worker_message_intents i ON i.outbox_id = o.id
+        WHERE i.user_id = $1
+        ORDER BY i.release_sequence`,
+      [workerId],
+    );
+    return { intents: intents.rows, outbox: outbox.rows };
   }
 
   // ── fixtures ───────────────────────────────────────────────────────────
@@ -460,7 +605,7 @@ maybeDescribe('R2-C6/087: a web-started worker continues on WhatsApp', () => {
     // One `whatsapp_conversations` row per crossover worker — what the
     // processor's `getOrCreateConversation` would have inserted on their
     // first inbound message. Deliberately UNBOUND (`user_id IS NULL`).
-    for (const key of ['resume', 'ready', 'referral', 'readyref', 'orphan'] as const) {
+    for (const key of ['resume', 'ready', 'referral', 'readyref', 'orphan', 'tokenwa', 'bound', 'twootp', 'twostart'] as const) {
       const r = await su.query<{ id: string }>(
         `INSERT INTO whatsapp_conversations (whatsapp_number, language, conversation_state)
          VALUES ($1, 'es', 'new') RETURNING id`,
@@ -500,6 +645,54 @@ maybeDescribe('R2-C6/087: a web-started worker continues on WhatsApp', () => {
       [hashToken(applyTokenRaw), jobId, shareCode],
     );
 
+    // Sprint 27 (groups F-K). A second job, shared by an EMPLOYER link
+    // (063): group F's token credits the employer referrer that the parked
+    // claim never carried. And a closed job, for the predicate checks.
+    const roof = await su.query<{ id: string }>(
+      `INSERT INTO jobs (employer_id, title, company, location, job_type, city, state)
+       VALUES ($1, 'Roofer', 'NB Construction', 'El Paso, TX', 'full-time', 'El Paso', 'TX')
+       RETURNING id`,
+      [employerId],
+    );
+    roofJobId = roof.rows[0].id;
+    const closed = await su.query<{ id: string }>(
+      `INSERT INTO jobs (employer_id, title, location, job_type, city, state, status)
+       VALUES ($1, 'Painter', 'El Paso, TX', 'full-time', 'El Paso', 'TX', 'closed')
+       RETURNING id`,
+      [employerId],
+    );
+    closedJobId = closed.rows[0].id;
+    employerShareCode = 'R2C6EMPW';
+    await su.query(
+      `INSERT INTO job_share_links (code, job_id, referrer_employer_id, channel)
+       VALUES ($1, $2, $3, 'whatsapp')`,
+      [employerShareCode, roofJobId, employerId],
+    );
+    employerTokenRaw = 'KMNPQRSV';
+    await su.query(
+      `INSERT INTO referral_apply_tokens (token_hash, job_id, share_code, expires_at)
+       VALUES ($1, $2, $3, now() + INTERVAL '1 day')`,
+      [hashToken(employerTokenRaw), roofJobId, employerShareCode],
+    );
+    boundTokenRaw = 'MNPQRSVW';
+    await su.query(
+      `INSERT INTO referral_apply_tokens (token_hash, job_id, share_code, expires_at)
+       VALUES ($1, $2, NULL, now() + INTERVAL '1 day')`,
+      [hashToken(boundTokenRaw), jobId],
+    );
+    for (const [token, job, code] of [
+      [twoLinkTokens.otpFirst, jobId, shareCode],
+      [twoLinkTokens.otpSecond, roofJobId, employerShareCode],
+      [twoLinkTokens.startFirst, jobId, shareCode],
+      [twoLinkTokens.startSecond, roofJobId, employerShareCode],
+    ]) {
+      await su.query(
+        `INSERT INTO referral_apply_tokens (token_hash, job_id, share_code, expires_at)
+         VALUES ($1, $2, $3, now() + INTERVAL '1 day')`,
+        [hashToken(token), job, code],
+      );
+    }
+
     deps = buildDeps();
   }, 90_000);
 
@@ -517,6 +710,17 @@ maybeDescribe('R2-C6/087: a web-started worker continues on WhatsApp', () => {
     // (no FK to users at all).
     const fixtureIds = Object.values(ids).filter(Boolean);
     const fixturePhoneHashes = Object.values(phones).filter(Boolean).map(hashNormalizedPhone);
+    // Sprint 27: the inbound-log rows this suite wrote (their inbound card
+    // rows go with them -- whatsapp_outbox.inbound_message_sid is ON DELETE
+    // CASCADE) and the release's authorized rows, which name the fixture
+    // phones and no fixture id.
+    if (inboundSids.length > 0) {
+      await su.query(`DELETE FROM whatsapp_processed_messages WHERE message_sid = ANY($1::text[])`, [inboundSids]);
+    }
+    const fixturePhones = Object.values(phones).filter(Boolean);
+    if (fixturePhones.length > 0) {
+      await su.query(`DELETE FROM whatsapp_outbox WHERE whatsapp_number = ANY($1::text[])`, [fixturePhones]);
+    }
     if (fixturePhoneHashes.length > 0) {
       await su.query(`DELETE FROM referral_pending_claims WHERE phone_hash = ANY($1::text[])`, [
         fixturePhoneHashes,
@@ -781,11 +985,13 @@ maybeDescribe('R2-C6/087: a web-started worker continues on WhatsApp', () => {
       // still HAS a `current_step_key`, and the check belongs in TypeScript.
       //
       // `handleOtpStep` now takes the SAME ready handoff the router takes for
-      // every later message (see the test below), so the OTP turn and the one
-      // after it are indistinguishable — which is the property worth pinning,
-      // not the two calls being spelled the same way.
+      // every later message (see the test below). Sprint 27 adds one
+      // marker the later turns never carry, `consumedAsOtp`: this body WAS
+      // the code, so the processor must not route it as a command (it used to
+      // reach idle_help, or an open employer chat). Nothing was parked for
+      // this phone, so there is no referred job to deliver.
       expect(bind.result).toEqual({
-        handled: false, handoff: 'ready', workerId: ids.ready, stepKey: 'ready',
+        handled: false, handoff: 'ready', workerId: ids.ready, stepKey: 'ready', consumedAsOtp: true,
       });
       expect(bind.sent).toHaveLength(0);
     });
@@ -946,17 +1152,67 @@ maybeDescribe('R2-C6/087: a web-started worker continues on WhatsApp', () => {
         `SELECT 1 FROM referral_pending_claims WHERE phone_hash = $1`, [phoneHash],
       )).rowCount).toBe(0);
 
-      // Now the first WhatsApp message, carrying the code.
+      // Now the first WhatsApp message, carrying the code. The code turn runs
+      // the processor's own job-card step in the same transaction, after routing:
+      // the referred job goes out as the tappable job card.
       const wa = waSession('readyref');
+      let cardSid = '';
+      let cardQueued = false;
       const bind = await whatsappOtpArrival(
         'readyref', wa, `Hola, quiero este trabajo ${formatApplyToken(applyTokenRaw)}`,
+        async (client, result, code) => {
+          if (result.handled || !result.consumedAsOtp || !result.referredJobId) return;
+          // The processor claimed this inbound message at the top of its turn.
+          cardSid = await logInbound(phones.readyref, code.messageSid);
+          cardQueued = await queueReferredJobCard(
+            client,
+            { id: convIds.readyref, language: wa.language, state_context: {} as ConversationRow['state_context'] },
+            { messageSid: code.messageSid, from: phones.readyref },
+            result.referredJobId,
+          );
+        },
       );
 
-      // Still the ready handoff, still silent.
+      // Still the ready handoff and still silent ON THE ROUTER: the code was
+      // consumed, and the claimed job -- open, not applied to -- rides on it.
       expect(bind.result).toEqual({
         handled: false, handoff: 'ready', workerId: ids.readyref, stepKey: 'ready',
+        consumedAsOtp: true, referredJobId: jobId,
       });
       expect(bind.sent).toHaveLength(0);
+
+      // The first reply named the job before the invitation.
+      expect(bind.firstPreAuth.map((s) => s.kind)).toEqual(['text', 'prompt']);
+      expect(bind.firstPreAuth[0].payload).toBe(t('v2_referral_ack', 'es', { title: 'Finish Carpenter', company: 'Jale' }));
+
+      // The claim recorded the job on the worker's list -- as
+      // jale_whatsapp, under the internal setting the OTP bind set for THIS
+      // worker. A missing setting would have been refused by migration 103's policy.
+      expect(await referredJobsOf(ids.readyref)).toEqual([{ job_id: jobId, source: 'whatsapp_token' }]);
+
+      // The card, as an inbound reply to the code message.
+      expect(cardQueued).toBe(true);
+      const card = await su.query<{
+        whatsapp_number: string; body: string | null; content_template: string | null;
+        content_variables: Record<string, string> | null;
+      }>(
+        `SELECT whatsapp_number, body, content_template, content_variables
+           FROM whatsapp_outbox WHERE inbound_message_sid = $1`,
+        [cardSid],
+      );
+      expect(card.rows).toHaveLength(1);
+      expect(card.rows[0].whatsapp_number).toBe(phones.readyref);
+      expect(card.rows[0].body).toBeNull();
+      expect(card.rows[0].content_template).toBe('job_alert_en');
+      expect(card.rows[0].content_variables).toMatchObject({
+        '1': 'Finish Carpenter', '2': 'Jale', '3': 'El Paso, TX', '5': `job-${jobId}`,
+      });
+      expect(card.rows[0].content_variables!.__fallback_body).toContain('Finish Carpenter');
+      // "1 interested" resolves against recent_jobs, so the job is there.
+      const conv = await su.query<{ state_context: { recent_jobs?: string[] } }>(
+        `SELECT state_context FROM whatsapp_conversations WHERE id = $1`, [convIds.readyref],
+      );
+      expect(conv.rows[0].state_context.recent_jobs).toEqual([jobId]);
 
       // Parked by the start step, then CLAIMED by the ready handoff.
       const claim = await su.query<{ claimed_worker_id: string | null; job_id: string }>(
@@ -977,5 +1233,522 @@ maybeDescribe('R2-C6/087: a web-started worker continues on WhatsApp', () => {
       expect(attribution.rows[0].first_job_id).toBe(jobId);
       expect(attribution.rows[0].first_channel).toBe('facebook');
     });
+  });
+
+  // =========================================================================
+  // F-K. The WhatsApp door names the job, keeps it, and
+  // delivers it as a card. Every write runs as the bed's jale_whatsapp role,
+  // with and without the worker's internal setting; migration 103's policy is
+  // keyed on that setting, which the original bug left unset.
+  // =========================================================================
+
+  describe('F. a token in the FIRST WhatsApp message, then onboarding finished on WhatsApp', () => {
+    test('completion records the job on the worker list and credits the EMPLOYER referrer', async () => {
+      const wa = waSession('tokenwa');
+      const bind = await whatsappOtpArrival(
+        'tokenwa', wa, `Quiero postularme a este trabajo: ${formatApplyToken(employerTokenRaw)}`,
+      );
+      // A WhatsApp-native worker: no web run, so the bind starts one.
+      expect(bind.result).toEqual({ handled: true, workerId: ids.tokenwa, stepKey: 'legal.review' });
+      // The first reply named the job.
+      expect(bind.firstPreAuth[0]).toMatchObject({
+        kind: 'text', payload: t('v2_referral_ack', 'es', { title: 'Roofer', company: 'NB Construction' }),
+      });
+
+      wa.user_id = ids.tokenwa;
+      wa.conversation_state = 'onboarding_v2';
+      await whatsappOnboardToReady('tokenwa', wa);
+
+      // The claim's own record, written at completion as jale_whatsapp.
+      expect(await referredJobsOf(ids.tokenwa)).toEqual([{ job_id: roofJobId, source: 'whatsapp_token' }]);
+
+      // ...and the referrer the link names. Before sprint 27 the employer was dropped
+      // (the parked claim only ever carried a worker referrer).
+      const attribution = await su.query(
+        `SELECT first_job_id, first_channel, first_share_code, first_referrer_worker_id, first_referrer_employer_id
+           FROM worker_attribution WHERE worker_id = $1`,
+        [ids.tokenwa],
+      );
+      expect(attribution.rows).toEqual([{
+        first_job_id: roofJobId,
+        first_channel: 'whatsapp',
+        first_share_code: employerShareCode,
+        first_referrer_worker_id: null,
+        first_referrer_employer_id: employerId,
+      }]);
+    });
+  });
+
+  describe('G. a token from a BOUND worker mid-onboarding', () => {
+    test('is recorded and parked, never stored as the name, and the question is asked again', async () => {
+      const wa = waSession('bound');
+      const bind = await whatsappOtpArrival('bound', wa);
+      expect(bind.result.stepKey).toBe('legal.review');
+      wa.user_id = ids.bound;
+      wa.conversation_state = 'onboarding_v2';
+      expect((await turn(wa, msgFor('bound', { body: 'accept' }, 'wa'))).result.stepKey).toBe('profile.name');
+
+      const token = await turn(wa, msgFor('bound', {
+        body: `Quiero postularme a este trabajo: ${formatApplyToken(boundTokenRaw)}`,
+      }, 'wa'));
+
+      expect(token.result).toEqual({ handled: true, workerId: ids.bound, stepKey: 'profile.name' });
+      const user = await su.query<{ full_name: string | null }>(`SELECT full_name FROM users WHERE id = $1`, [ids.bound]);
+      expect(user.rows[0].full_name).toBeNull();
+      // Recorded as jale_whatsapp under the setting the router set for this
+      // bound worker...
+      expect(await referredJobsOf(ids.bound)).toEqual([{ job_id: jobId, source: 'whatsapp_token' }]);
+      // ...and parked under this phone, for the referrer's credit at completion.
+      const claim = await su.query<{ job_id: string; claimed_at: Date | null }>(
+        `SELECT job_id, claimed_at FROM referral_pending_claims WHERE phone_hash = $1`,
+        [hashNormalizedPhone(phones.bound)],
+      );
+      expect(claim.rows).toEqual([{ job_id: jobId, claimed_at: null }]);
+      // The job named back, then the same question again.
+      expect(token.sent.map((m) => m.sourceType)).toEqual([
+        'onboarding_v2:v2_referral_ack_bound',
+        'onboarding_v2:profile.name',
+      ]);
+
+      // The NEXT message is still the name.
+      const name = await turn(wa, msgFor('bound', { body: 'Lupe Garza' }, 'wa'));
+      expect(name.result.stepKey).toBe('profile.location');
+    });
+  });
+
+  describe('H. a worker who finished on the WEB with no linked WhatsApp', () => {
+    test('the release writes NO outbox row; the welcome and the referred job carry whatsapp_not_linked', async () => {
+      // `referral` completed on the web in group D; its parked claim was
+      // claimed there and recorded on the list. It never bound
+      // WhatsApp, so users.whatsapp_number is empty while users.phone is set.
+      expect(await referredJobsOf(ids.referral)).toEqual([{ job_id: jobId, source: 'whatsapp_token' }]);
+      const user = await su.query<{ whatsapp_number: string | null; phone: string | null }>(
+        `SELECT whatsapp_number, phone FROM users WHERE id = $1`, [ids.referral],
+      );
+      expect(user.rows[0].whatsapp_number ?? '').toBe('');
+      expect(user.rows[0].phone).toBe(phones.referral);
+
+      const result = await releaseReady(ids.referral);
+
+      expect(result).toEqual({ released: 0, expired: 0, superseded: 2, failed: 0 });
+      const state = await releaseStateOf(ids.referral);
+      expect(state.outbox).toEqual([]);
+      expect(state.intents).toEqual([
+        { source_type: 'onboarding_complete', source_id: ids.referral, status: 'superseded', decision_reason: 'whatsapp_not_linked' },
+        { source_type: 'referred_job', source_id: jobId, status: 'superseded', decision_reason: 'whatsapp_not_linked' },
+      ]);
+    });
+  });
+
+  describe('I. the completion release inside and outside the 24h window', () => {
+    test('INSIDE: the welcome says a job follows, and the job follows as a card', async () => {
+      // `tokenwa` finished on WhatsApp in group F: its last answer is minutes old.
+      await logInbound(phones.tokenwa);
+
+      const result = await releaseReady(ids.tokenwa);
+
+      expect(result).toEqual({ released: 2, expired: 0, superseded: 0, failed: 0 });
+      const { outbox } = await releaseStateOf(ids.tokenwa);
+      expect(outbox).toHaveLength(2);
+      expect(outbox[0]).toMatchObject({ body: t('v2_ready_jobs_one', 'en'), content_template: null });
+      expect(outbox[1]).toMatchObject({ body: null, content_template: 'job_alert_en' });
+      expect(outbox[1].content_variables).toMatchObject({
+        '1': 'Roofer', '2': 'NB Construction', '5': `job-${roofJobId}`,
+      });
+    });
+
+    test('OUTSIDE: the free-form welcome is superseded, the card is still written -- and a bot-side # row does not count', async () => {
+      // `ready` finished on the web (group C) and bound WhatsApp, so it is
+      // linked -- but it has never written to us. A `#err` row on its number
+      // is OURS (a failure record), not the worker's.
+      await su.query(
+        `INSERT INTO worker_referred_jobs (worker_id, job_id, source) VALUES ($1, $2, 'job_page')`,
+        [ids.ready, roofJobId],
+      );
+      await logInbound(phones.ready, `r2c6-${randomUUID().slice(0, 8)}#err`);
+
+      const result = await releaseReady(ids.ready);
+
+      expect(result).toEqual({ released: 1, expired: 0, superseded: 1, failed: 0 });
+      const state = await releaseStateOf(ids.ready);
+      expect(state.intents.find((i) => i.source_type === 'onboarding_complete')).toMatchObject({
+        status: 'superseded', decision_reason: 'outside_session_window',
+      });
+      expect(state.outbox).toHaveLength(1);
+      expect(state.outbox[0]).toMatchObject({ body: null, content_template: 'job_alert_en' });
+    });
+  });
+
+  describe('K. a TYPED code from a ready worker', () => {
+    test('the processor records it as jale_whatsapp, setting the internal setting itself', async () => {
+      // No setting at all on this transaction: the step sets its own.
+      await asWhatsapp(null, (client) => recordTypedCodeReferredJob(client, ids.typed, roofJobId));
+      expect(await referredJobsOf(ids.typed)).toEqual([{ job_id: roofJobId, source: 'typed_code' }]);
+    });
+
+    test('CONTROL: the same write WITHOUT the setting is refused by the policy on worker_referred_jobs', async () => {
+      await expect(asWhatsapp(null, (client) => recordReferredJob(client, {
+        workerId: ids.typed, jobId, source: 'typed_code',
+      }))).rejects.toThrow(/row-level security/);
+      expect(await referredJobsOf(ids.typed)).toEqual([{ job_id: roofJobId, source: 'typed_code' }]);
+    });
+  });
+
+  describe('J. the new statements carry their own predicates (run as the superuser, whom RLS filters for nothing)', () => {
+    /** One superuser transaction, always rolled back. */
+    async function asSuperuser<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+      const client = new Client({ connectionString: databaseUrl });
+      await client.connect();
+      try {
+        await client.query('BEGIN');
+        return await fn(client as unknown as PoolClient);
+      } finally {
+        await client.query('ROLLBACK').catch(() => undefined);
+        await client.end();
+      }
+    }
+
+    test("loadActiveJobLabel: status = 'active' is in the statement, with the feed's company default", async () => {
+      const labels = await asSuperuser(async (c) => ({
+        open: await loadActiveJobLabel(c, jobId),
+        closed: await loadActiveJobLabel(c, closedJobId),
+      }));
+      expect(labels).toEqual({ open: { title: 'Finish Carpenter', company: 'Jale' }, closed: null });
+    });
+
+    test('findUnclaimedParkedJobId: keyed by THIS phone, and only while unclaimed', async () => {
+      // phone_hash carries a CHECK on its shape, so these are real hashes.
+      const mine = hashNormalizedPhone(`+1555${Math.floor(1000000 + Math.random() * 8999999)}`);
+      const theirs = hashNormalizedPhone(`+1555${Math.floor(1000000 + Math.random() * 8999999)}`);
+      const found = await asSuperuser(async (c) => {
+        await c.query(
+          `INSERT INTO referral_pending_claims (phone_hash, job_id, expires_at) VALUES ($1, $2, now() + interval '1 day')`,
+          [theirs, roofJobId],
+        );
+        const nothingYet = await findUnclaimedParkedJobId(c, mine);
+        await c.query(
+          `INSERT INTO referral_pending_claims (phone_hash, job_id, expires_at) VALUES ($1, $2, now() + interval '1 day')`,
+          [mine, jobId],
+        );
+        const parked = await findUnclaimedParkedJobId(c, mine);
+        await c.query(
+          `UPDATE referral_pending_claims SET claimed_at = now(), claimed_worker_id = $2 WHERE phone_hash = $1`,
+          [mine, ids.typed],
+        );
+        const claimed = await findUnclaimedParkedJobId(c, mine);
+        return { nothingYet, parked, claimed };
+      });
+      expect(found).toEqual({ nothingYet: null, parked: jobId, claimed: null });
+    });
+
+    test("isOpenUnappliedJob: another worker's application never hides the job; this worker's does; a closed job is never open", async () => {
+      const verdicts = await asSuperuser(async (c) => {
+        await c.query(`INSERT INTO job_applications (job_id, worker_id) VALUES ($1, $2)`, [roofJobId, ids.signup]);
+        const othersApplied = await isOpenUnappliedJob(c, roofJobId, ids.typed);
+        await c.query(`INSERT INTO job_applications (job_id, worker_id) VALUES ($1, $2)`, [roofJobId, ids.typed]);
+        const iApplied = await isOpenUnappliedJob(c, roofJobId, ids.typed);
+        const closed = await isOpenUnappliedJob(c, closedJobId, ids.typed);
+        return { othersApplied, iApplied, closed };
+      });
+      expect(verdicts).toEqual({ othersApplied: true, iApplied: false, closed: false });
+    });
+
+    test("isWithinSessionWindow: the recipient's own rows only, never a # row, on the database clock", async () => {
+      const number = `+1555${Math.floor(1000000 + Math.random() * 8999999)}`;
+      const other = `+1555${Math.floor(1000000 + Math.random() * 8999999)}`;
+      const windows = await asSuperuser(async (c) => {
+        await c.query(
+          `INSERT INTO whatsapp_processed_messages (message_sid, whatsapp_number, status) VALUES ($1, $2, 'completed')`,
+          [`r2c6-${randomUUID().slice(0, 8)}`, other],
+        );
+        await c.query(
+          `INSERT INTO whatsapp_processed_messages (message_sid, whatsapp_number, status) VALUES ($1, $2, 'failed')`,
+          [`r2c6-${randomUUID().slice(0, 8)}#err`, number],
+        );
+        const onlyNoise = await isWithinSessionWindow(c, number);
+        await c.query(
+          `INSERT INTO whatsapp_processed_messages (message_sid, whatsapp_number, status, first_seen_at)
+           VALUES ($1, $2, 'completed', now() - interval '2 days')`,
+          [`r2c6-${randomUUID().slice(0, 8)}`, number],
+        );
+        const stale = await isWithinSessionWindow(c, number);
+        await c.query(
+          `INSERT INTO whatsapp_processed_messages (message_sid, whatsapp_number, status) VALUES ($1, $2, 'completed')`,
+          [`r2c6-${randomUUID().slice(0, 8)}`, number],
+        );
+        const fresh = await isWithinSessionWindow(c, number);
+        return { onlyNoise, stale, fresh };
+      });
+      expect(windows).toEqual({ onlyNoise: false, stale: false, fresh: true });
+    });
+
+    test("claimPendingReferral: a REVOKED link credits nobody -- the statement's own revoked_at predicate", async () => {
+      const attribution = await asSuperuser(async (c) => {
+        const code = 'R2C6RVKD';
+        await c.query(
+          `INSERT INTO job_share_links (code, job_id, referrer_employer_id, channel, revoked_at)
+           VALUES ($1, $2, $3, 'sms', now())`,
+          [code, closedJobId, employerId],
+        );
+        const phoneHash = hashNormalizedPhone(`+1555${Math.floor(1000000 + Math.random() * 8999999)}`);
+        await c.query(
+          `INSERT INTO referral_pending_claims (phone_hash, job_id, share_code, expires_at)
+           VALUES ($1, $2, $3, now() + interval '1 day')`,
+          [phoneHash, closedJobId, code],
+        );
+        const claim = await claimPendingReferral(c, phoneHash, ids.typed, new Date());
+        const row = await c.query(
+          `SELECT first_channel, first_share_code, first_referrer_employer_id FROM worker_attribution WHERE worker_id = $1`,
+          [ids.typed],
+        );
+        return { claim, row: row.rows[0] };
+      });
+      expect(attribution.claim).toEqual({ claimed: true, jobId: closedJobId });
+      expect(attribution.row).toEqual({ first_channel: 'unknown', first_share_code: null, first_referrer_employer_id: null });
+    });
+  });
+
+  // =========================================================================
+  // L. Two job links before sign-in: every job parked on the phone is kept
+  // until the claim, and the credit stays with the last code
+  // =========================================================================
+
+  describe('L. two job links before sign-in', () => {
+    const FIRST_JOB = { title: 'Finish Carpenter', company: 'Jale' };
+    const SECOND_JOB = { title: 'Roofer', company: 'NB Construction' };
+    const prefill = (token: string, lang: 'es' | 'en' = 'es') => (lang === 'es'
+      ? `Quiero postularme a este trabajo: ${formatApplyToken(token)}`
+      : `I want to apply for this job: ${formatApplyToken(token)}`);
+
+    function scriptIdentity(key: 'twootp' | 'twostart'): void {
+      identityScript.verifiedWorkerId = ids[key];
+      identityScript.session = `cognito-session-${key}-${randomUUID().slice(0, 8)}`;
+    }
+
+    /** The code, the bind, then every onboarding answer up to ready. */
+    async function verifyAndComplete(key: 'twootp' | 'twostart', wa: OnboardingV2Session): Promise<void> {
+      const code = await turn(wa, msgFor(key, { body: '123456' }, 'wa'));
+      expect(code.result).toEqual({ handled: true, workerId: ids[key], stepKey: 'legal.review' });
+      wa.user_id = ids[key];
+      wa.conversation_state = 'onboarding_v2';
+      await whatsappOnboardToReady(key, wa);
+    }
+
+    /** Both jobs on the list, the last code's newest, and the last code's link credited. */
+    async function expectBothJobsAndLastCodeCredit(workerId: string): Promise<void> {
+      expect(await referredJobsOf(workerId)).toEqual([
+        { job_id: roofJobId, source: 'whatsapp_token' },
+        { job_id: jobId, source: 'whatsapp_token' },
+      ]);
+      const attribution = await su.query(
+        `SELECT first_job_id, first_share_code, first_referrer_worker_id, first_referrer_employer_id
+           FROM worker_attribution WHERE worker_id = $1`,
+        [workerId],
+      );
+      expect(attribution.rows).toEqual([{
+        first_job_id: roofJobId,
+        first_share_code: employerShareCode,
+        first_referrer_worker_id: null,
+        first_referrer_employer_id: employerId,
+      }]);
+    }
+
+    /** The completion release: the welcome, then one card per job, the last code's first. */
+    async function expectWelcomeAndTwoCards(workerId: string, phone: string): Promise<void> {
+      await logInbound(phone);
+      expect(await releaseReady(workerId)).toEqual({ released: 3, expired: 0, superseded: 0, failed: 0 });
+      const { outbox } = await releaseStateOf(workerId);
+      expect(outbox.map((row) => row.content_template)).toEqual([null, 'job_alert_en', 'job_alert_en']);
+      expect(outbox[0].body).toBe(t('v2_ready_jobs_many', 'en'));
+      expect(outbox.slice(1).map((row) => row.content_variables?.['5'])).toEqual([`job-${roofJobId}`, `job-${jobId}`]);
+    }
+
+    test('a token at the start, then another while the code is pending: both jobs are kept and both cards are sent', async () => {
+      const key = 'twootp';
+      const wa = waSession(key);
+      scriptIdentity(key);
+
+      const first = await turn(wa, msgFor(key, { body: prefill(twoLinkTokens.otpFirst) }, 'wa'));
+      expect(first.result).toEqual({ handled: true, workerId: null, stepKey: 'start.choose_language' });
+      expect(first.preAuth.map((s) => s.kind)).toEqual(['text', 'prompt']);
+      expect(first.preAuth[0].payload).toBe(t('v2_referral_ack', 'es', FIRST_JOB));
+
+      const chose = await turn(wa, msgFor(key, { interactivePayload: 'start:lang:en' }, 'wa'));
+      expect(chose.result).toEqual({ handled: true, workerId: null, stepKey: 'identity.verify_otp' });
+
+      // The second job's link while the code is pending: parked and named,
+      // never checked as a code.
+      const second = await turn(wa, msgFor(key, { body: prefill(twoLinkTokens.otpSecond, 'en') }, 'wa'));
+      expect(second.result).toEqual({ handled: true, workerId: null, stepKey: 'identity.verify_otp' });
+      expect(second.preAuth.map((s) => s.kind)).toEqual(['text']);
+      expect(second.preAuth[0].payload).toBe(t('v2_referral_ack_otp', 'en', SECOND_JOB));
+
+      await verifyAndComplete(key, wa);
+      await expectBothJobsAndLastCodeCredit(ids[key]);
+      await expectWelcomeAndTwoCards(ids[key], phones[key]);
+    });
+
+    test('two tokens at the start, the second inside the start cooldown: both jobs are kept and both cards are sent', async () => {
+      const key = 'twostart';
+      const wa = waSession(key);
+      scriptIdentity(key);
+
+      const first = await turn(wa, msgFor(key, { body: prefill(twoLinkTokens.startFirst) }, 'wa'));
+      expect(first.preAuth.map((s) => s.kind)).toEqual(['text', 'prompt']);
+      expect(first.preAuth[0].payload).toBe(t('v2_referral_ack', 'es', FIRST_JOB));
+
+      // A minute later: the cooldown holds the reply back, and the second job
+      // is parked all the same.
+      const second = await turn(wa, msgFor(key, { body: prefill(twoLinkTokens.startSecond) }, 'wa'));
+      expect(second.result).toEqual({ handled: true, workerId: null, stepKey: 'start.choose_language' });
+      expect(second.preAuth).toEqual([]);
+
+      const chose = await turn(wa, msgFor(key, { interactivePayload: 'start:lang:en' }, 'wa'));
+      expect(chose.result).toEqual({ handled: true, workerId: null, stepKey: 'identity.verify_otp' });
+
+      await verifyAndComplete(key, wa);
+      await expectBothJobsAndLastCodeCredit(ids[key]);
+      await expectWelcomeAndTwoCards(ids[key], phones[key]);
+    });
+
+    test('a replaced job is kept once and the current one never twice; a claimed phone starts a new set', async () => {
+      // Superuser, one transaction, rolled back: the park and claim statements
+      // themselves, with tokens for no share link.
+      const client = new Client({ connectionString: databaseUrl });
+      await client.connect();
+      const c = client as unknown as PoolClient;
+      const phoneHash = hashNormalizedPhone(`+1555${Math.floor(1000000 + Math.random() * 8999999)}`);
+      const start = Date.now();
+      let step = 0;
+      const at = () => new Date(start + 1000 * (step += 1));
+      const tokens = ['SVWXYZ0A', 'TVWXYZ0B', 'VWXYZ01C', 'WXYZ012D'];
+      try {
+        await c.query('BEGIN');
+        for (const [token, job] of [[tokens[0], jobId], [tokens[1], roofJobId], [tokens[2], jobId], [tokens[3], roofJobId]]) {
+          await c.query(
+            `INSERT INTO referral_apply_tokens (token_hash, job_id, expires_at) VALUES ($1, $2, now() + interval '1 day')`,
+            [hashToken(token), job],
+          );
+        }
+        const workers: string[] = [];
+        for (const label of ['first', 'second']) {
+          const w = await c.query<{ id: string }>(
+            `INSERT INTO users (cognito_sub, user_type) VALUES ($1, 'worker') RETURNING id`,
+            [`r2c6-parked-${label}-${randomUUID().slice(0, 8)}`],
+          );
+          workers.push(w.rows[0].id);
+        }
+        const listOf = async (workerId: string) => (await c.query<{ job_id: string }>(
+          `SELECT job_id FROM worker_referred_jobs WHERE worker_id = $1 ORDER BY last_seen_at DESC, job_id`,
+          [workerId],
+        )).rows.map((r) => r.job_id);
+
+        // The first job, the second, then the first again: the claim keeps
+        // both, once each, the current code's job newest.
+        await parkPendingClaim(c, phoneHash, tokens[0], at());
+        await parkPendingClaim(c, phoneHash, tokens[1], at());
+        await parkPendingClaim(c, phoneHash, tokens[2], at());
+        expect(await claimPendingReferral(c, phoneHash, workers[0], at())).toEqual({ claimed: true, jobId });
+        expect(await listOf(workers[0])).toEqual([jobId, roofJobId]);
+
+        // A new code on the claimed phone is a new pending claim: nothing
+        // from the claimed set comes back.
+        await parkPendingClaim(c, phoneHash, tokens[3], at());
+        expect(await claimPendingReferral(c, phoneHash, workers[1], at())).toEqual({ claimed: true, jobId: roofJobId });
+        expect(await listOf(workers[1])).toEqual([roofJobId]);
+      } finally {
+        await c.query('ROLLBACK').catch(() => undefined);
+        await client.end();
+      }
+    });
+
+    /** Resolves once `pid` waits on a lock that `blockerPid` holds; fails after `boundMs`. */
+    async function waitUntilBlockedBy(pid: number, blockerPid: number, boundMs = 15_000): Promise<void> {
+      const deadline = Date.now() + boundMs;
+      for (;;) {
+        const r = await su.query<{ blocked: boolean }>(
+          `SELECT $2::int = ANY(pg_blocking_pids($1::int)) AS blocked`,
+          [pid, blockerPid],
+        );
+        if (r.rows[0].blocked) return;
+        if (Date.now() > deadline) throw new Error('the claim never waited on the uncommitted delete');
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    }
+
+    test('an earlier job its employer deletes while the claim records it costs neither the claim nor the claimed job', async () => {
+      // Committed before either transaction below opens: a job of this test's
+      // own (the shared fixture jobs stay), a worker, and a phone with two
+      // parked claims, that job first and then the roofing job.
+      const phoneHash = hashNormalizedPhone(`+1555${Math.floor(1000000 + Math.random() * 8999999)}`);
+      const tokens = ['XYZ0123E', 'YZ01234F'];
+      const earlierJobId = (await su.query<{ id: string }>(
+        `INSERT INTO jobs (employer_id, title, location, job_type, city, state)
+         VALUES ($1, 'Drywall Hanger', 'El Paso, TX', 'full-time', 'El Paso', 'TX') RETURNING id`,
+        [employerId],
+      )).rows[0].id;
+      const workerId = (await su.query<{ id: string }>(
+        `INSERT INTO users (cognito_sub, user_type) VALUES ($1, 'worker') RETURNING id`,
+        [`r2c6-race-${randomUUID().slice(0, 8)}`],
+      )).rows[0].id;
+      const employer = new Client({ connectionString: databaseUrl });
+      let employerConnected = false;
+      const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      try {
+        for (const [token, job] of [[tokens[0], earlierJobId], [tokens[1], roofJobId]]) {
+          await su.query(
+            `INSERT INTO referral_apply_tokens (token_hash, job_id, expires_at) VALUES ($1, $2, now() + interval '1 day')`,
+            [hashToken(token), job],
+          );
+        }
+        await asWhatsapp(null, async (client) => {
+          await parkPendingClaim(client, phoneHash, tokens[0], new Date(Date.now() - 2000));
+          await parkPendingClaim(client, phoneHash, tokens[1], new Date(Date.now() - 1000));
+        });
+
+        // The employer deletes the earlier job, and has not committed yet.
+        await employer.connect();
+        employerConnected = true;
+        const employerPid = (await employer.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+        await employer.query('BEGIN');
+        await employer.query('DELETE FROM jobs WHERE id = $1', [earlierJobId]);
+
+        const result = await asWhatsapp(workerId, async (client) => {
+          const claimPid = (await client.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+          await client.query(`SET LOCAL lock_timeout = '20s'`);
+          const claiming = claimPendingReferral(client, phoneHash, workerId, new Date());
+          claiming.catch(() => undefined);
+          try {
+            // The claim's record of the earlier job waits on the employer's
+            // delete; then the delete commits under it.
+            await waitUntilBlockedBy(claimPid, employerPid);
+            await employer.query('COMMIT');
+          } catch (error) {
+            await employer.query('ROLLBACK').catch(() => undefined);
+            throw error;
+          }
+          return claiming;
+        });
+
+        expect(result).toEqual({ claimed: true, jobId: roofJobId });
+        // The race happened: the earlier job is gone, and its record failed.
+        expect((await su.query(`SELECT 1 FROM jobs WHERE id = $1`, [earlierJobId])).rowCount).toBe(0);
+        expect(errorSpy.mock.calls.map((call) => call.map(String).join(' ')).join('\n')).toContain('ReferredJobRecordFailed');
+        // The claimed job is still on the worker's list, and the claim is the worker's.
+        expect(await referredJobsOf(workerId)).toEqual([{ job_id: roofJobId, source: 'whatsapp_token' }]);
+        const claimRow = await su.query(`SELECT claimed_worker_id FROM referral_pending_claims WHERE phone_hash = $1`, [phoneHash]);
+        expect(claimRow.rows).toEqual([{ claimed_worker_id: workerId }]);
+      } finally {
+        errorSpy.mockRestore();
+        if (employerConnected) {
+          await employer.query('ROLLBACK').catch(() => undefined);
+          await employer.end().catch(() => undefined);
+        }
+        await su.query(`DELETE FROM referral_pending_claims WHERE phone_hash = $1`, [phoneHash]);
+        await su.query(`DELETE FROM referral_apply_tokens WHERE token_hash = ANY($1::text[])`, [tokens.map((token) => hashToken(token))]);
+        await su.query(`DELETE FROM users WHERE id = $1`, [workerId]);
+        await su.query(`DELETE FROM jobs WHERE id = $1`, [earlierJobId]);
+      }
+    }, 60_000);
   });
 });

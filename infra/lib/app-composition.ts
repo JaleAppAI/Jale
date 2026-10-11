@@ -1,8 +1,9 @@
 import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
 import { NetworkStack } from './stacks/network-stack';
-import { DatabaseStack } from './stacks/database-stack';
+import { DatabaseStack, engineDefaultLibraries } from './stacks/database-stack';
 import { AuthStack } from './stacks/auth-stack';
 import { ApiStack } from './stacks/api-stack';
 import { LegalStack } from './stacks/legal-stack';
@@ -18,6 +19,12 @@ import { BillingStack } from './stacks/billing-stack';
 import { ReferralsStack } from './stacks/referrals-stack';
 import { NotificationsStack } from './stacks/notifications-stack';
 import { FrontendStack } from './stacks/frontend-stack';
+import { ReportsStack } from './stacks/reports-stack';
+import { AuditArchiveStack } from './stacks/audit-archive-stack';
+import { AuditEdgeStack, EDGE_STACK_IDS, auditEdgeRegions } from './stacks/audit-edge-stack';
+import { AuditStack, grantAuditFallback, grantOpsCommandOutput, isDatabaseFunction } from './stacks/audit-stack';
+import { dbLoginSecretName, defaultAccessManifest, preparedSecretLogins, setAppAccessManifest } from './constructs/db-login-secrets';
+import type { AccessManifest } from '../db/access/access-manifest';
 import { resolveWhatsappStatusCallbackUrl } from './whatsapp-status-callback-url';
 import { resolveWhatsappBusinessNumber } from './whatsapp-business-number';
 
@@ -35,8 +42,23 @@ import { resolveWhatsappBusinessNumber } from './whatsapp-business-number';
  *
  * Everything is read off `app.node.tryGetContext(...)` and `process.env`, so
  * a caller configures it exactly as the CLI does: `new cdk.App({ context })`.
+ * The one exception is `options.accessManifest`, which only a test passes:
+ * the CLI always composes against the checked-in access manifest.
  */
-export function buildJaleApp(app: cdk.App): void {
+export interface JaleAppOptions {
+  /**
+   * The access manifest (`infra/db/access`) that the ops-host secret access,
+   * the posture check and every workload's login binding are derived from.
+   * Defaults to the checked-in one.
+   */
+  readonly accessManifest?: AccessManifest;
+}
+
+export function buildJaleApp(app: cdk.App, options: JaleAppOptions = {}): void {
+  const accessManifest = options.accessManifest ?? defaultAccessManifest();
+  // Before any stack: each `dedicatedDbLogin` in this app checks its login
+  // against this same manifest.
+  setAppAccessManifest(app, accessManifest);
   const deploymentEnvironment = app.node.tryGetContext('environment');
   if (deploymentEnvironment !== 'dev' && deploymentEnvironment !== 'production') {
     throw new Error(
@@ -91,7 +113,34 @@ export function buildJaleApp(app: cdk.App): void {
   const database = new DatabaseStack(app, 'JaleDatabaseStack', {
     env,
     network,
+    accessManifest,
+    // The same monitored ops topic the other stacks' alarms use.
+    alarmTopicArn: app.node.tryGetContext('whatsappAlarmTopicArn'),
+    // Required in production, where synth fails without the pre-check value.
+    auditPreloadDefault: engineDefaultLibraries(app),
   });
+
+  // The audit system. JaleAuditStack comes right after the
+  // database: it creates the fallback group every database Lambda writes
+  // attempt events to when the database write fails, so every stack holding
+  // such a Lambda deploys after it (the dependencies at the end of this
+  // function). It holds Lambdas, so `bastionOnly` leaves it out, like every
+  // other stack with bundling.
+  let audit: AuditStack | undefined;
+  if (!bastionOnly) {
+    const auditArchive = new AuditArchiveStack(app, 'JaleAuditArchiveStack', { env });
+    audit = new AuditStack(app, 'JaleAuditStack', {
+      env,
+      network,
+      auditKeyArn: auditArchive.key.keyArn,
+      // The sentinel's master-secret rule names the secret; it is granted nothing.
+      masterSecretArn: database.dbSecret.secretArn,
+      auditEngineWindow: database.auditEngineWindow,
+      // From window deploy 2 the engine log group is named after the
+      // instance, which makes this stack depend on the database stack.
+      dbInstanceIdentifier: database.auditEngineWindow >= 2 ? database.dbInstance.instanceIdentifier : undefined,
+    });
+  }
 
   // BastionStack - throwaway host for DB migrations & ad-hoc psql. It can be
   // synthesized alone with `-c bastionOnly=true` to avoid unrelated Lambda bundling.
@@ -109,6 +158,10 @@ export function buildJaleApp(app: cdk.App): void {
   // Grant the bastion's instance role read on the internal DB secrets.
   // grantRead adds IAM policy statements to the bastion role, referencing the
   // secret ARNs via cross-stack imports - no cycle: BastionStack -> DatabaseStack.
+  //
+  // The ops host is the ONLY principal that can read the master secret: no
+  // runtime workload connects as the master, so migrations and the posture
+  // control are its only uses.
   database.dbSecret.grantRead(bastion.bastionHost.instance.role);
   database.matchingDbSecret.grantRead(bastion.bastionHost.instance.role);
   database.aiDbSecret.grantRead(bastion.bastionHost.instance.role);
@@ -138,13 +191,45 @@ export function buildJaleApp(app: cdk.App): void {
     }),
   );
 
+  // The dedicated least-privilege logins' secrets are created by the ops
+  // host's credential preparation (`run-migrations.sh --prepare-logins`),
+  // which creates a missing secret, or re-reads an existing one to re-sync the
+  // login's password from it. It never overwrites a value, so there is no
+  // PutSecretValue here. The logins are the access manifest's prepared-secret
+  // set, the one the preparation reads too, and the names come from the same
+  // helper the stacks import them with, so none of the three can drift.
+  bastion.bastionHost.instance.role.addToPrincipalPolicy(
+    new iam.PolicyStatement({
+      actions: [
+        'secretsmanager:CreateSecret',
+        'secretsmanager:DescribeSecret',
+        'secretsmanager:GetSecretValue',
+        'secretsmanager:TagResource',
+      ],
+      resources: preparedSecretLogins(accessManifest).map((login) =>
+        `arn:aws:secretsmanager:${env.region ?? '*'}:${env.account ?? '*'}:secret:${dbLoginSecretName(login)}*`),
+    }),
+  );
+  // Run Command output from the ops host goes to the audit ops-command group,
+  // by its fixed name (the group lives in JaleAuditStack).
+  grantOpsCommandOutput(bastion.bastionHost.instance.role);
+
+  // Passwords are generated by AWS, on the ops host, and never seen. This
+  // action has no resource form, so '*' is the only expressible grant; it
+  // reads and writes nothing.
+  bastion.bastionHost.instance.role.addToPrincipalPolicy(
+    new iam.PolicyStatement({
+      actions: ['secretsmanager:GetRandomPassword'],
+      resources: ['*'],
+    }),
+  );
+
   if (!bastionOnly) {
   const auth = new AuthStack(app, 'JaleAuthStack', {
     env,
     vpc: network.vpc,
     privateSubnets: network.privateSubnets,
     lambdaSg: network.lambdaSg,
-    dbSecret: database.dbSecret,
   });
 
   const ai = new AiStack(app, 'JaleAiStack', {
@@ -163,8 +248,10 @@ export function buildJaleApp(app: cdk.App): void {
     vpc: network.vpc,
     privateSubnets: network.privateSubnets,
     lambdaSg: network.lambdaSg,
-    dbSecret: database.dbSecret,
     matchingDbSecret: database.matchingDbSecret,
+    dbEndpointAddress: database.dbEndpoint,
+    dbEndpointPort: database.dbPort,
+    dbName: database.dbName,
   });
 
   // Required in every environment that sends WhatsApp messages: Twilio signs
@@ -179,7 +266,6 @@ export function buildJaleApp(app: cdk.App): void {
     vpc: network.vpc,
     privateSubnets: network.privateSubnets,
     lambdaSg: network.lambdaSg,
-    dbSecret: database.dbSecret,
     workerPool: auth.workerPool,
     employerPool: auth.employerPool,
     candidateMaterializationQueue: matching.candidateMaterializationQueue,
@@ -197,7 +283,6 @@ export function buildJaleApp(app: cdk.App): void {
     privateSubnets: network.privateSubnets,
     billingLambdaSg: network.billingLambdaSg,
     billingDbSecret: database.billingDbSecret,
-    appDbSecret: database.dbSecret,
     api: api.api,
     employerAuthorizer: api.employerAuthorizer,
     employerResource: api.employerResource,
@@ -210,7 +295,6 @@ export function buildJaleApp(app: cdk.App): void {
     privateSubnets: network.privateSubnets,
     referralsLambdaSg: network.referralsLambdaSg,
     referralsDbSecret: database.referralsDbSecret,
-    appDbSecret: database.dbSecret,
     api: api.api,
     publicResource: api.publicResource,
     workerAuthorizer: api.workerAuthorizer,
@@ -229,14 +313,13 @@ export function buildJaleApp(app: cdk.App): void {
   // consumes api.publicResource, and its route's Method resource lands in the
   // ApiStack template (same relationship ReferralsStack has).
   //
-  // No dedicated security group or role secret: the producer is DB-only and runs
-  // as jale_admin, so it reuses network.lambdaSg and database.dbSecret exactly
-  // like Auth/Ai/Matching. See the stack header for why that is deliberate.
+  // No dedicated security group: it reuses network.lambdaSg like
+  // Auth/Ai/Matching. Its Lambdas import their own dedicated login secrets.
+  // See the stack header for why that is deliberate.
   const notifications = new NotificationsStack(app, 'JaleNotificationsStack', {
     env,
     vpc: network.vpc,
     lambdaSg: network.lambdaSg,
-    dbSecret: database.dbSecret,
     publicResource: api.publicResource,
     alarmTopicArn: app.node.tryGetContext('whatsappAlarmTopicArn'),
     emailConfigurationSetName: sesConfigurationSetName,
@@ -276,21 +359,19 @@ export function buildJaleApp(app: cdk.App): void {
     vpc: network.vpc,
     privateSubnets: network.privateSubnets,
     lambdaSg: network.lambdaSg,
-    dbSecret: database.dbSecret,
     api: api.api,
     dualAuthorizer: api.dualAuthorizer,
   });
 
   // DocumentsStack is instantiated before WhatsAppStack so the processor
   // lambda can be granted put access to the documents bucket (Task 12).
-  // DocumentsStack only depends on network/api/dbSecret (all already
-  // available above) — it does not consume anything from WhatsAppStack, so
-  // this ordering introduces no cycle.
+  // DocumentsStack only depends on network/api (both already available
+  // above) — it does not consume anything from WhatsAppStack, so this
+  // ordering introduces no cycle.
   const documents = new DocumentsStack(app, 'JaleDocumentsStack', {
     env,
     network,
     api,
-    dbSecret: database.dbSecret,
     allowedOrigin: app.node.tryGetContext('allowedOrigin') ?? 'https://jaleapp.ai',
     requiredTosVersion: app.node.tryGetContext('requiredTosVersion') ?? 'v1.0',
   });
@@ -303,7 +384,6 @@ export function buildJaleApp(app: cdk.App): void {
     vpc: network.vpc,
     privateSubnets: network.privateSubnets,
     lambdaSg: network.lambdaSg,
-    dbSecret: database.dbSecret,
     workerPool: auth.workerPool,
     api: api.api,
     // S22 R2-C23: the web onboarding door hangs `/worker/onboarding*` off
@@ -329,7 +409,6 @@ export function buildJaleApp(app: cdk.App): void {
     env,
     network,
     api,
-    dbSecret: database.dbSecret,
     mediaBucket: whatsapp.mediaBucket,
     // Both buckets: MediaBoardStack owns the employer-worker-detail dispatcher
     // (GET /employer/workers/{worker_id}/{profile|documents|posts}), whose one
@@ -345,6 +424,20 @@ export function buildJaleApp(app: cdk.App): void {
     // Same shared alarm topic as AiStack/WhatsAppStack/ReferralsStack so the
     // create-lambda's moderation fail-open alarm (I2, final-review) actually
     // pages someone.
+    alarmTopicArn: app.node.tryGetContext('whatsappAlarmTopicArn'),
+  });
+
+  // ReportsStack -- report a problem. After ApiStack: its routes hang off the
+  // shared RestApi, so their Methods land in the ApiStack template and ApiStack
+  // depends on this stack (the same relationship ReferralsStack has). Before
+  // AdminStack, whose Lambda reads the report images.
+  const reports = new ReportsStack(app, 'JaleReportsStack', {
+    env,
+    network,
+    api,
+    allowedOrigin: app.node.tryGetContext('allowedOrigin') ?? 'https://jaleapp.ai',
+    workerUserPoolId: auth.workerPool.userPool.userPoolId,
+    employerUserPoolId: auth.employerPool.userPool.userPoolId,
     alarmTopicArn: app.node.tryGetContext('whatsappAlarmTopicArn'),
   });
 
@@ -372,6 +465,8 @@ export function buildJaleApp(app: cdk.App): void {
     privateSubnets: network.privateSubnets,
     lambdaSg: network.lambdaSg,
     adminDbSecret: database.adminConsoleDbSecret,
+    reportImagesBucket: reports.imagesBucket,
+    reportImagesKey: reports.imagesKey,
     certificate: adminCert.certificate,
     webAclArn: adminCert.webAclArn,
   });
@@ -419,5 +514,50 @@ export function buildJaleApp(app: cdk.App): void {
       crossRegionReferences: true,
     });
   }
+
+  // Events the audit alerts need are also recorded outside the main region:
+  // IAM changes and global-endpoint sign-ins and role assumptions in
+  // us-east-1, root sign-ins in us-west-2 too. An edge stack in each forwards
+  // them to the main region's default bus.
+  for (const region of auditEdgeRegions(env.region ?? '')) {
+    new AuditEdgeStack(app, EDGE_STACK_IDS[region], {
+      env: { account: env.account, region },
+      mainRegion: env.region ?? '',
+    });
+  }
+
+  // The sentinel identifies the app's own roles and functions by the exact
+  // names of the app's stacks, which CloudFormation puts first in each.
+  audit?.sentinel.function.addEnvironment('AUDIT_APP_STACKS', app.node.children
+    .filter((child): child is cdk.Stack => cdk.Stack.isStack(child))
+    .map((stack) => stack.stackName)
+    .sort()
+    .join(','));
+  }
+
+  // Every database Lambda, and the admin Lambda, gets the audit fallback
+  // group, whichever stack it is in. Applied here, once every
+  // stack exists, so no stack has to remember it. The posture check's stack
+  // is the database stack itself, which the audit stack may depend on, so it
+  // takes no ordering edge.
+  const fallbackWriters = new Set<cdk.Stack>();
+  // Database functions with a fixed name: their role sessions carry that
+  // name instead of the stack's, so the sentinel knows them by it.
+  const fixedNameFunctions: string[] = [];
+  for (const construct of app.node.findAll()) {
+    if (!(construct instanceof lambda.Function) || !isDatabaseFunction(construct)) continue;
+    grantAuditFallback(construct);
+    fallbackWriters.add(cdk.Stack.of(construct));
+    const fixedName = (construct.node.defaultChild as lambda.CfnFunction).functionName;
+    if (typeof fixedName === 'string' && !cdk.Token.isUnresolved(fixedName)) {
+      fixedNameFunctions.push(`${cdk.Stack.of(construct).stackName}/${fixedName}`);
+    }
+  }
+  audit?.sentinel.function.addEnvironment('AUDIT_FIXED_FUNCTIONS', fixedNameFunctions.sort().join(','));
+  if (audit) {
+    for (const stack of fallbackWriters) {
+      if (stack === audit || stack === database) continue;
+      stack.addDependency(audit, 'its functions write attempt events to the audit fallback group');
+    }
   }
 }

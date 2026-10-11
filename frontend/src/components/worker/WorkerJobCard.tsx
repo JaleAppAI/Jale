@@ -27,7 +27,6 @@ import { formatPay } from '@/lib/pay';
  */
 
 const WORKER_REASON_KEYS = new Set([
-  'referred_job',
   'profession_exact_or_alias',
   'profession_partial',
   'distance_under_5_miles',
@@ -42,6 +41,16 @@ const WORKER_REASON_KEYS = new Set([
   'availability_adjacent',
   'fresh_posting',
 ]);
+
+/**
+ * The match reason the backend prepends to a job the worker came to Jale for
+ * (a shared link, the WhatsApp Apply token, a typed job code). Decided
+ * 2026-10-01: that job sits at the top of the feed with NO tag, so the code is
+ * dropped here -- before the three-reason cut, or it would still spend a slot,
+ * and rather than left out of `WORKER_REASON_KEYS` alone, which would only
+ * hand it to `humanizeReasonCode` to print as "Referred Job".
+ */
+const HIDDEN_REASON = 'referred_job';
 
 const KNOWN_JOB_TYPES = ['full-time', 'part-time', 'contract'];
 
@@ -81,7 +90,8 @@ export function WorkerJobCard({ job, href }: { job: Job; href: string }) {
   const matchScore = normalizeMatchScore(job.match_score);
   const scoreBand = matchScore === null ? null : scoreBandForScore(matchScore);
   const matchReasons = (job.match_reasons ?? [])
-    .filter((reason): reason is string => typeof reason === 'string' && reason.trim().length > 0)
+    .filter((reason): reason is string =>
+      typeof reason === 'string' && reason.trim().length > 0 && reason !== HIDDEN_REASON)
     .slice(0, 3)
     .map((reason) => truncateMatchReason(
       WORKER_REASON_KEYS.has(reason) ? tMatch(`reasons.${reason}`) : humanizeReasonCode(reason),

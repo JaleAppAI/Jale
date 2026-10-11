@@ -24,6 +24,16 @@ on:
         required: false
         type: string
         default: ''
+      posture-override:
+        description: Let the database posture gate pass whatever the check finds. Needs posture-override-reason.
+        required: false
+        type: boolean
+        default: false
+      posture-override-reason:
+        description: Why the database posture gate is overridden. Echoed into the run summary.
+        required: false
+        type: string
+        default: ''
     secrets:
       AWS_PLAN_ROLE_ARN:
         required: false
@@ -46,14 +56,18 @@ jobs:
       CDK_EXTRA_ARGS: ${{ inputs.cdk-extra-args }}
       CDK_DEFAULT_REGION: ${{ inputs.aws-region }}
       BILLING_EMAIL_FROM_ADDRESS: ${{ vars.EMAIL_FROM_ADDRESS }}
-      BILLING_SES_VERIFIED_IDENTITY_ARN: ${{ vars.SES_VERIFIED_IDENTITY_ARN }}
       # Cognito employer-pool sender (bare address; the display name is CDK's sesEmailFromName default 'Jale').
       # Distinct from EMAIL_FROM_ADDRESS, which is the billing/outbox sender.
       COGNITO_EMAIL_FROM_ADDRESS: ${{ vars.COGNITO_EMAIL_FROM_ADDRESS }}
-      # Monitored ops SNS topic. Shared alarm target for WhatsApp/AI/referrals
-      # AND billing (-c billingAlarmTopicArn=): BillingStack otherwise creates a
-      # bare jale-billing-alarms topic with no subscribers, so its alarms go nowhere.
-      WHATSAPP_ALARM_TOPIC_ARN: ${{ vars.WHATSAPP_ALARM_TOPIC_ARN }}
+      # The two ARN-valued variables are set on the steps that read them, all
+      # after the login, not here: an ARN carries the account id, a step's log
+      # header lists the job's env, and the login masks the account id from
+      # its own step on. They are BILLING_SES_VERIFIED_IDENTITY_ARN
+      # (vars.SES_VERIFIED_IDENTITY_ARN) and WHATSAPP_ALARM_TOPIC_ARN
+      # (vars.WHATSAPP_ALARM_TOPIC_ARN), the monitored ops SNS topic: the shared
+      # alarm target for WhatsApp/AI/referrals AND billing
+      # (-c billingAlarmTopicArn=). BillingStack otherwise creates a bare
+      # jale-billing-alarms topic with no subscribers, so its alarms go nowhere.
       JALE_WORKER_POOL_ID: ${{ vars.JALE_WORKER_POOL_ID }}
       JALE_WORKER_CLIENT_ID: ${{ vars.JALE_WORKER_CLIENT_ID }}
       JALE_EMPLOYER_POOL_ID: ${{ vars.JALE_EMPLOYER_POOL_ID }}
@@ -72,6 +86,15 @@ jobs:
       JALE_SES_CONFIGURATION_SET_NAME: ${{ vars.JALE_SES_CONFIGURATION_SET_NAME }}
       JALE_WHATSAPP_BUSINESS_NUMBER: ${{ vars.JALE_WHATSAPP_BUSINESS_NUMBER }}
       JALE_WORKER_JOBS_RENAME_PHASE1: ${{ vars.JALE_WORKER_JOBS_RENAME_PHASE1 }}
+      # The results of the audit system's pre-checks: the detection
+      # services' modes (create | existing | off) and the engine's default
+      # shared_preload_libraries for postgres16 (the list, or none). REQUIRED:
+      # an unset variable expands to '', and the production synth refuses it,
+      # so a missing pre-check never becomes a silent default.
+      AUDIT_GUARDDUTY_MODE: ${{ vars.AUDIT_GUARDDUTY_MODE }}
+      AUDIT_SECURITYHUB_MODE: ${{ vars.AUDIT_SECURITYHUB_MODE }}
+      AUDIT_CONFIG_MODE: ${{ vars.AUDIT_CONFIG_MODE }}
+      AUDIT_DB_SHARED_PRELOAD_LIBRARIES_DEFAULT: ${{ vars.AUDIT_DB_SHARED_PRELOAD_LIBRARIES_DEFAULT }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -96,15 +119,21 @@ jobs:
       - name: Resolve frontend configuration for plan
         if: env.AWS_PLAN_ROLE_ARN != ''
         shell: bash
+        env:
+          WHATSAPP_ALARM_TOPIC_ARN: ${{ vars.WHATSAPP_ALARM_TOPIC_ARN }}
         run: |
           set -euo pipefail
 
+          # The run log is public, and AWS error text names the account and
+          # the role, so each AWS call below keeps its stdout only and
+          # discards its stderr. A failed Cognito lookup comes back empty,
+          # and the check after the lookups reports it in a fixed sentence.
           resolve_pool_id() {
             local pool_name="$1"
             aws cognito-idp list-user-pools \
               --max-results 60 \
               --query "UserPools[?Name=='${pool_name}'].Id | [0]" \
-              --output text
+              --output text 2>/dev/null || true
           }
 
           resolve_client_id() {
@@ -113,14 +142,14 @@ jobs:
               --user-pool-id "$pool_id" \
               --max-results 60 \
               --query 'UserPoolClients[0].ClientId' \
-              --output text
+              --output text 2>/dev/null || true
           }
 
           resolve_api_url() {
             aws cloudformation describe-stacks \
               --stack-name JaleApiStack \
               --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue | [0]" \
-              --output text
+              --output text 2>/dev/null
           }
 
           worker_pool_id="${JALE_WORKER_POOL_ID:-$(resolve_pool_id jale-worker-pool)}"
@@ -135,8 +164,7 @@ jobs:
             fi
           done
 
-          if ! api_url="$(resolve_api_url 2>&1)"; then
-            echo "$api_url"
+          if ! api_url="$(resolve_api_url)"; then
             echo "::error::Unable to read JaleApiStack.ApiUrl. Grant cloudformation:DescribeStacks on JaleApiStack to AWS_PLAN_ROLE_ARN's role."
             exit 1
           fi
@@ -153,7 +181,7 @@ jobs:
           api_origin_domain="${api_without_scheme%%/*}"
           api_stage_name="${api_without_scheme#*/}"
           if [[ -z "$api_origin_domain" || -z "$api_stage_name" || "$api_stage_name" == "$api_without_scheme" ]]; then
-            echo "::error::Unexpected JaleApiStack ApiUrl format: $api_url"
+            echo "::error::Unexpected JaleApiStack ApiUrl format."
             exit 1
           fi
 
@@ -181,20 +209,79 @@ jobs:
         if: env.AWS_PLAN_ROLE_ARN != ''
         working-directory: infra
         shell: bash
+        env:
+          BILLING_SES_VERIFIED_IDENTITY_ARN: ${{ vars.SES_VERIFIED_IDENTITY_ARN }}
+          WHATSAPP_ALARM_TOPIC_ARN: ${{ vars.WHATSAPP_ALARM_TOPIC_ARN }}
         run: |
           set -euo pipefail
-          npx cdk synth $DEPLOY_STACKS -c environment=${{ inputs.cdk-environment }} -c deletionProtection=true -c emailFromAddress="$BILLING_EMAIL_FROM_ADDRESS" -c sesVerifiedIdentityArn="$BILLING_SES_VERIFIED_IDENTITY_ARN" -c sesEmailFromAddress="$COGNITO_EMAIL_FROM_ADDRESS" -c sesEmailRegion=us-east-1 -c whatsappStatusCallbackUrl="$JALE_WHATSAPP_STATUS_CALLBACK_URL" -c whatsappAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c billingAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c whatsappInboundV2TransportEnabled=true -c sesConfigurationSetName="$JALE_SES_CONFIGURATION_SET_NAME" --output "$RUNNER_TEMP/jale-cdk-synth-production"
-          npx cdk diff $DEPLOY_STACKS $CDK_EXTRA_ARGS --no-change-set -c environment=${{ inputs.cdk-environment }} -c deletionProtection=true -c emailFromAddress="$BILLING_EMAIL_FROM_ADDRESS" -c sesVerifiedIdentityArn="$BILLING_SES_VERIFIED_IDENTITY_ARN" -c sesEmailFromAddress="$COGNITO_EMAIL_FROM_ADDRESS" -c sesEmailRegion=us-east-1 -c whatsappStatusCallbackUrl="$JALE_WHATSAPP_STATUS_CALLBACK_URL" -c whatsappAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c billingAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c whatsappInboundV2TransportEnabled=true -c sesConfigurationSetName="$JALE_SES_CONFIGURATION_SET_NAME" | tee "$RUNNER_TEMP/jale-cdk-diff.txt"
+          npx cdk synth $DEPLOY_STACKS -c environment=${{ inputs.cdk-environment }} -c deletionProtection=true -c emailFromAddress="$BILLING_EMAIL_FROM_ADDRESS" -c sesVerifiedIdentityArn="$BILLING_SES_VERIFIED_IDENTITY_ARN" -c sesEmailFromAddress="$COGNITO_EMAIL_FROM_ADDRESS" -c sesEmailRegion=us-east-1 -c whatsappStatusCallbackUrl="$JALE_WHATSAPP_STATUS_CALLBACK_URL" -c whatsappAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c billingAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c whatsappInboundV2TransportEnabled=true -c sesConfigurationSetName="$JALE_SES_CONFIGURATION_SET_NAME" -c guardDutyMode="$AUDIT_GUARDDUTY_MODE" -c securityHubMode="$AUDIT_SECURITYHUB_MODE" -c configMode="$AUDIT_CONFIG_MODE" -c dbSharedPreloadLibrariesDefault="$AUDIT_DB_SHARED_PRELOAD_LIBRARIES_DEFAULT" --output "$RUNNER_TEMP/jale-cdk-synth-production"
+          npx cdk diff $DEPLOY_STACKS $CDK_EXTRA_ARGS --no-change-set -c environment=${{ inputs.cdk-environment }} -c deletionProtection=true -c emailFromAddress="$BILLING_EMAIL_FROM_ADDRESS" -c sesVerifiedIdentityArn="$BILLING_SES_VERIFIED_IDENTITY_ARN" -c sesEmailFromAddress="$COGNITO_EMAIL_FROM_ADDRESS" -c sesEmailRegion=us-east-1 -c whatsappStatusCallbackUrl="$JALE_WHATSAPP_STATUS_CALLBACK_URL" -c whatsappAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c billingAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c whatsappInboundV2TransportEnabled=true -c sesConfigurationSetName="$JALE_SES_CONFIGURATION_SET_NAME" -c guardDutyMode="$AUDIT_GUARDDUTY_MODE" -c securityHubMode="$AUDIT_SECURITYHUB_MODE" -c configMode="$AUDIT_CONFIG_MODE" -c dbSharedPreloadLibrariesDefault="$AUDIT_DB_SHARED_PRELOAD_LIBRARIES_DEFAULT" | tee "$RUNNER_TEMP/jale-cdk-diff.txt"
+
+      # The run's artifacts are public on this repository, and CDK's diff
+      # names the account id (in ARNs and bucket names). The scrub moves the
+      # file aside, so the upload path only ever holds nothing or a scrubbed
+      # copy; writes the copy with the account id replaced by <aws-account>;
+      # and checks that none is left. If anything fails, its EXIT trap
+      # deletes the file instead, so the upload below finds nothing and fails
+      # the plan visibly. It always exits 0 and prints one fixed line.
+      - name: Scrub production plan artifacts
+        if: env.AWS_PLAN_ROLE_ARN != ''
+        shell: bash
+        run: |
+          files=("$RUNNER_TEMP/jale-cdk-diff.txt")
+          scrubbed=0
+          finish() {
+            trap - EXIT
+            if [[ "$scrubbed" != 1 ]]; then
+              for file in "${files[@]}"; do
+                rm -rf -- "$file" "$file.unscrubbed" 2>/dev/null || true
+              done
+              echo "::warning::Plan artifacts withheld: the account id could not be removed from them."
+            fi
+            exit 0
+          }
+          trap finish EXIT
+          present=()
+          for file in "${files[@]}"; do
+            if [[ -e "$file" ]]; then
+              mv -f -- "$file" "$file.unscrubbed" 2>/dev/null || exit
+              present+=("$file")
+            fi
+          done
+          if [[ "${#present[@]}" -eq 0 ]]; then
+            scrubbed=1
+            echo "Plan artifacts: no files to scrub."
+            exit 0
+          fi
+          account="$(aws sts get-caller-identity --query Account --output text 2>/dev/null)" || exit
+          [[ "$account" =~ ^[0-9]{12}$ ]] || exit
+          count() { awk -v id="$account" '{ n += gsub(id, "") } END { print n + 0 }' "$1" 2>/dev/null; }
+          replaced=0
+          left=0
+          for file in "${present[@]}"; do
+            [[ -f "$file.unscrubbed" ]] || exit
+            found="$(count "$file.unscrubbed")" || exit
+            sed "s/${account}/<aws-account>/g" "$file.unscrubbed" > "$file" 2>/dev/null || exit
+            remaining="$(count "$file")" || exit
+            [[ "$found" =~ ^[0-9]+$ && "$remaining" =~ ^[0-9]+$ ]] || exit
+            replaced=$((replaced + found))
+            left=$((left + remaining))
+          done
+          [[ "$left" -eq 0 ]] || exit
+          for file in "${present[@]}"; do
+            rm -f -- "$file.unscrubbed" 2>/dev/null || exit
+          done
+          scrubbed=1
+          printf 'Plan artifacts scrubbed: files %d, account id occurrences replaced %d, left %d.\n' "${#present[@]}" "$replaced" "$left"
 
       - name: Upload production plan artifacts
         if: env.AWS_PLAN_ROLE_ARN != ''
         uses: actions/upload-artifact@v7
         with:
           name: production-cdk-plan
-          path: |
-            ${{ runner.temp }}/jale-cdk-synth-production
-            ${{ runner.temp }}/jale-cdk-diff.txt
+          path: ${{ runner.temp }}/jale-cdk-diff.txt
           if-no-files-found: error
+          retention-days: 14
 
   deploy:
     name: Production deploy
@@ -208,14 +295,18 @@ jobs:
       CDK_EXTRA_ARGS: ${{ inputs.cdk-extra-args }}
       CDK_DEFAULT_REGION: ${{ inputs.aws-region }}
       BILLING_EMAIL_FROM_ADDRESS: ${{ vars.EMAIL_FROM_ADDRESS }}
-      BILLING_SES_VERIFIED_IDENTITY_ARN: ${{ vars.SES_VERIFIED_IDENTITY_ARN }}
       # Cognito employer-pool sender (bare address; the display name is CDK's sesEmailFromName default 'Jale').
       # Distinct from EMAIL_FROM_ADDRESS, which is the billing/outbox sender.
       COGNITO_EMAIL_FROM_ADDRESS: ${{ vars.COGNITO_EMAIL_FROM_ADDRESS }}
-      # Monitored ops SNS topic. Shared alarm target for WhatsApp/AI/referrals
-      # AND billing (-c billingAlarmTopicArn=): BillingStack otherwise creates a
-      # bare jale-billing-alarms topic with no subscribers, so its alarms go nowhere.
-      WHATSAPP_ALARM_TOPIC_ARN: ${{ vars.WHATSAPP_ALARM_TOPIC_ARN }}
+      # The two ARN-valued variables are set on the steps that read them, all
+      # after the login, not here: an ARN carries the account id, a step's log
+      # header lists the job's env, and the login masks the account id from
+      # its own step on. They are BILLING_SES_VERIFIED_IDENTITY_ARN
+      # (vars.SES_VERIFIED_IDENTITY_ARN) and WHATSAPP_ALARM_TOPIC_ARN
+      # (vars.WHATSAPP_ALARM_TOPIC_ARN), the monitored ops SNS topic: the shared
+      # alarm target for WhatsApp/AI/referrals AND billing
+      # (-c billingAlarmTopicArn=). BillingStack otherwise creates a bare
+      # jale-billing-alarms topic with no subscribers, so its alarms go nowhere.
       JALE_WORKER_POOL_ID: ${{ vars.JALE_WORKER_POOL_ID }}
       JALE_WORKER_CLIENT_ID: ${{ vars.JALE_WORKER_CLIENT_ID }}
       JALE_EMPLOYER_POOL_ID: ${{ vars.JALE_EMPLOYER_POOL_ID }}
@@ -234,6 +325,15 @@ jobs:
       JALE_SES_CONFIGURATION_SET_NAME: ${{ vars.JALE_SES_CONFIGURATION_SET_NAME }}
       JALE_WHATSAPP_BUSINESS_NUMBER: ${{ vars.JALE_WHATSAPP_BUSINESS_NUMBER }}
       JALE_WORKER_JOBS_RENAME_PHASE1: ${{ vars.JALE_WORKER_JOBS_RENAME_PHASE1 }}
+      # The results of the audit system's pre-checks: the detection
+      # services' modes (create | existing | off) and the engine's default
+      # shared_preload_libraries for postgres16 (the list, or none). REQUIRED:
+      # an unset variable expands to '', and the production synth refuses it,
+      # so a missing pre-check never becomes a silent default.
+      AUDIT_GUARDDUTY_MODE: ${{ vars.AUDIT_GUARDDUTY_MODE }}
+      AUDIT_SECURITYHUB_MODE: ${{ vars.AUDIT_SECURITYHUB_MODE }}
+      AUDIT_CONFIG_MODE: ${{ vars.AUDIT_CONFIG_MODE }}
+      AUDIT_DB_SHARED_PRELOAD_LIBRARIES_DEFAULT: ${{ vars.AUDIT_DB_SHARED_PRELOAD_LIBRARIES_DEFAULT }}
     steps:
       - name: Require AWS deploy role
         shell: bash
@@ -260,15 +360,21 @@ jobs:
 
       - name: Resolve frontend configuration
         shell: bash
+        env:
+          WHATSAPP_ALARM_TOPIC_ARN: ${{ vars.WHATSAPP_ALARM_TOPIC_ARN }}
         run: |
           set -euo pipefail
 
+          # The run log is public, and AWS error text names the account and
+          # the role, so each AWS call below keeps its stdout only and
+          # discards its stderr. A failed Cognito lookup comes back empty,
+          # and the check after the lookups reports it in a fixed sentence.
           resolve_pool_id() {
             local pool_name="$1"
             aws cognito-idp list-user-pools \
               --max-results 60 \
               --query "UserPools[?Name=='${pool_name}'].Id | [0]" \
-              --output text
+              --output text 2>/dev/null || true
           }
 
           resolve_client_id() {
@@ -277,14 +383,14 @@ jobs:
               --user-pool-id "$pool_id" \
               --max-results 60 \
               --query 'UserPoolClients[0].ClientId' \
-              --output text
+              --output text 2>/dev/null || true
           }
 
           resolve_api_url() {
             aws cloudformation describe-stacks \
               --stack-name JaleApiStack \
               --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue | [0]" \
-              --output text
+              --output text 2>/dev/null
           }
 
           worker_pool_id="${JALE_WORKER_POOL_ID:-$(resolve_pool_id jale-worker-pool)}"
@@ -299,8 +405,7 @@ jobs:
             fi
           done
 
-          if ! api_url="$(resolve_api_url 2>&1)"; then
-            echo "$api_url"
+          if ! api_url="$(resolve_api_url)"; then
             echo "::error::Unable to read JaleApiStack.ApiUrl. Grant cloudformation:DescribeStacks on JaleApiStack to AWS_ROLE_ARN's role."
             exit 1
           fi
@@ -317,7 +422,7 @@ jobs:
           api_origin_domain="${api_without_scheme%%/*}"
           api_stage_name="${api_without_scheme#*/}"
           if [[ -z "$api_origin_domain" || -z "$api_stage_name" || "$api_stage_name" == "$api_without_scheme" ]]; then
-            echo "::error::Unexpected JaleApiStack ApiUrl format: $api_url"
+            echo "::error::Unexpected JaleApiStack ApiUrl format."
             exit 1
           fi
 
@@ -362,19 +467,116 @@ jobs:
             exit 1
           fi
 
+      # Every prepared login's secret must exist, and none may be scheduled
+      # for deletion, before anything deploys: the stacks import those
+      # secrets by name, which deploys green even when one is missing, and
+      # the workload then cannot connect. The script derives the names with
+      # the stacks' own helpers, prints counts only and fails closed. Its
+      # stderr is discarded, because AWS error text carries the account, the
+      # role and the secret name. The deploy role needs
+      # secretsmanager:DescribeSecret on those secrets.
+      - name: Check prepared-login secrets
+        working-directory: infra
+        shell: bash
+        run: npx --no-install tsx scripts/check-prepared-login-secrets.ts 2>/dev/null
+
       - name: Run CDK diff after approval
         working-directory: infra
         shell: bash
+        env:
+          BILLING_SES_VERIFIED_IDENTITY_ARN: ${{ vars.SES_VERIFIED_IDENTITY_ARN }}
+          WHATSAPP_ALARM_TOPIC_ARN: ${{ vars.WHATSAPP_ALARM_TOPIC_ARN }}
         run: |
           set -euo pipefail
-          npx cdk diff $DEPLOY_STACKS $CDK_EXTRA_ARGS -c environment=${{ inputs.cdk-environment }} -c deletionProtection=true -c emailFromAddress="$BILLING_EMAIL_FROM_ADDRESS" -c sesVerifiedIdentityArn="$BILLING_SES_VERIFIED_IDENTITY_ARN" -c sesEmailFromAddress="$COGNITO_EMAIL_FROM_ADDRESS" -c sesEmailRegion=us-east-1 -c whatsappStatusCallbackUrl="$JALE_WHATSAPP_STATUS_CALLBACK_URL" -c whatsappAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c billingAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c whatsappInboundV2TransportEnabled=true -c sesConfigurationSetName="$JALE_SES_CONFIGURATION_SET_NAME" | tee "$RUNNER_TEMP/jale-cdk-diff-approved.txt"
+          npx cdk diff $DEPLOY_STACKS $CDK_EXTRA_ARGS -c environment=${{ inputs.cdk-environment }} -c deletionProtection=true -c emailFromAddress="$BILLING_EMAIL_FROM_ADDRESS" -c sesVerifiedIdentityArn="$BILLING_SES_VERIFIED_IDENTITY_ARN" -c sesEmailFromAddress="$COGNITO_EMAIL_FROM_ADDRESS" -c sesEmailRegion=us-east-1 -c whatsappStatusCallbackUrl="$JALE_WHATSAPP_STATUS_CALLBACK_URL" -c whatsappAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c billingAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c whatsappInboundV2TransportEnabled=true -c sesConfigurationSetName="$JALE_SES_CONFIGURATION_SET_NAME" -c guardDutyMode="$AUDIT_GUARDDUTY_MODE" -c securityHubMode="$AUDIT_SECURITYHUB_MODE" -c configMode="$AUDIT_CONFIG_MODE" -c dbSharedPreloadLibrariesDefault="$AUDIT_DB_SHARED_PRELOAD_LIBRARIES_DEFAULT" | tee "$RUNNER_TEMP/jale-cdk-diff-approved.txt"
+
+      # Database posture, before and after the deploy (scripts/db-posture-gate.mjs).
+      # Report-only until the posture metrics show a qualifying clean history,
+      # then enforcing for good. The override and its reason reach the script
+      # through env only, never interpolated into the command.
+      - name: Database posture gate
+        working-directory: infra
+        shell: bash
+        env:
+          POSTURE_OVERRIDE: ${{ inputs.posture-override }}
+          POSTURE_OVERRIDE_REASON: ${{ inputs.posture-override-reason }}
+        run: node scripts/db-posture-gate.mjs --phase pre
 
       - name: Deploy CDK stacks
         working-directory: infra
         shell: bash
+        env:
+          BILLING_SES_VERIFIED_IDENTITY_ARN: ${{ vars.SES_VERIFIED_IDENTITY_ARN }}
+          WHATSAPP_ALARM_TOPIC_ARN: ${{ vars.WHATSAPP_ALARM_TOPIC_ARN }}
         run: |
           set -euo pipefail
-          npx cdk deploy $DEPLOY_STACKS $CDK_EXTRA_ARGS -c environment=${{ inputs.cdk-environment }} -c deletionProtection=true -c emailFromAddress="$BILLING_EMAIL_FROM_ADDRESS" -c sesVerifiedIdentityArn="$BILLING_SES_VERIFIED_IDENTITY_ARN" -c sesEmailFromAddress="$COGNITO_EMAIL_FROM_ADDRESS" -c sesEmailRegion=us-east-1 -c whatsappStatusCallbackUrl="$JALE_WHATSAPP_STATUS_CALLBACK_URL" -c whatsappAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c billingAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c whatsappInboundV2TransportEnabled=true -c sesConfigurationSetName="$JALE_SES_CONFIGURATION_SET_NAME" --require-approval never --outputs-file "$RUNNER_TEMP/jale-cdk-outputs.json" 2>&1 | tee "$RUNNER_TEMP/jale-cdk-deploy.log"
+          npx cdk deploy $DEPLOY_STACKS $CDK_EXTRA_ARGS -c environment=${{ inputs.cdk-environment }} -c deletionProtection=true -c emailFromAddress="$BILLING_EMAIL_FROM_ADDRESS" -c sesVerifiedIdentityArn="$BILLING_SES_VERIFIED_IDENTITY_ARN" -c sesEmailFromAddress="$COGNITO_EMAIL_FROM_ADDRESS" -c sesEmailRegion=us-east-1 -c whatsappStatusCallbackUrl="$JALE_WHATSAPP_STATUS_CALLBACK_URL" -c whatsappAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c billingAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c whatsappInboundV2TransportEnabled=true -c sesConfigurationSetName="$JALE_SES_CONFIGURATION_SET_NAME" -c guardDutyMode="$AUDIT_GUARDDUTY_MODE" -c securityHubMode="$AUDIT_SECURITYHUB_MODE" -c configMode="$AUDIT_CONFIG_MODE" -c dbSharedPreloadLibrariesDefault="$AUDIT_DB_SHARED_PRELOAD_LIBRARIES_DEFAULT" --require-approval never --outputs-file "$RUNNER_TEMP/jale-cdk-outputs.json" 2>&1 | tee "$RUNNER_TEMP/jale-cdk-deploy.log"
+
+      - name: Database posture verification
+        working-directory: infra
+        shell: bash
+        env:
+          POSTURE_OVERRIDE: ${{ inputs.posture-override }}
+          POSTURE_OVERRIDE_REASON: ${{ inputs.posture-override-reason }}
+        run: node scripts/db-posture-gate.mjs --phase post
+
+      # The run's artifacts are public on this repository, and CDK's diff,
+      # deploy log and outputs name the account id (in ARNs and bucket
+      # names). The scrub moves each file aside, so an upload path only ever
+      # holds nothing or a scrubbed copy; writes each copy with the account
+      # id replaced by <aws-account>; and checks that none is left. If
+      # anything fails, its EXIT trap deletes the files instead, so nothing
+      # unscrubbed is uploaded. It always exits 0, so the deploy's outcome
+      # never depends on it, and prints one fixed line.
+      - name: Scrub deployment artifacts
+        if: always()
+        shell: bash
+        run: |
+          files=("$RUNNER_TEMP/jale-cdk-diff-approved.txt" "$RUNNER_TEMP/jale-cdk-deploy.log" "$RUNNER_TEMP/jale-cdk-outputs.json")
+          scrubbed=0
+          finish() {
+            trap - EXIT
+            if [[ "$scrubbed" != 1 ]]; then
+              for file in "${files[@]}"; do
+                rm -rf -- "$file" "$file.unscrubbed" 2>/dev/null || true
+              done
+              echo "::warning::Deployment artifacts withheld: the account id could not be removed from them."
+            fi
+            exit 0
+          }
+          trap finish EXIT
+          present=()
+          for file in "${files[@]}"; do
+            if [[ -e "$file" ]]; then
+              mv -f -- "$file" "$file.unscrubbed" 2>/dev/null || exit
+              present+=("$file")
+            fi
+          done
+          if [[ "${#present[@]}" -eq 0 ]]; then
+            scrubbed=1
+            echo "Deployment artifacts: no files to scrub."
+            exit 0
+          fi
+          account="$(aws sts get-caller-identity --query Account --output text 2>/dev/null)" || exit
+          [[ "$account" =~ ^[0-9]{12}$ ]] || exit
+          count() { awk -v id="$account" '{ n += gsub(id, "") } END { print n + 0 }' "$1" 2>/dev/null; }
+          replaced=0
+          left=0
+          for file in "${present[@]}"; do
+            [[ -f "$file.unscrubbed" ]] || exit
+            found="$(count "$file.unscrubbed")" || exit
+            sed "s/${account}/<aws-account>/g" "$file.unscrubbed" > "$file" 2>/dev/null || exit
+            remaining="$(count "$file")" || exit
+            [[ "$found" =~ ^[0-9]+$ && "$remaining" =~ ^[0-9]+$ ]] || exit
+            replaced=$((replaced + found))
+            left=$((left + remaining))
+          done
+          [[ "$left" -eq 0 ]] || exit
+          for file in "${present[@]}"; do
+            rm -f -- "$file.unscrubbed" 2>/dev/null || exit
+          done
+          scrubbed=1
+          printf 'Deployment artifacts scrubbed: files %d, account id occurrences replaced %d, left %d.\n' "${#present[@]}" "$replaced" "$left"
 
       - name: Upload deployment artifacts
         if: always()
@@ -386,6 +588,7 @@ jobs:
             ${{ runner.temp }}/jale-cdk-deploy.log
             ${{ runner.temp }}/jale-cdk-outputs.json
           if-no-files-found: ignore
+          retention-days: 14
 
       - name: Deployment summary
         if: always()

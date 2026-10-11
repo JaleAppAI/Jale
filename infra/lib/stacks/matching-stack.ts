@@ -15,8 +15,19 @@ export interface MatchingStackProps extends cdk.StackProps {
   vpc: ec2.IVpc;
   privateSubnets: ec2.ISubnet[];
   lambdaSg: ec2.ISecurityGroup;
-  dbSecret: secretsmanager.ISecret;
+  /**
+   * The matching login's secret. It carries only the username and password:
+   * its generation template has never had the connection fields, and changing
+   * that template would regenerate the value and break the login's password.
+   * So the connection itself comes from the three endpoint props below.
+   */
   matchingDbSecret: secretsmanager.ISecret;
+  /** The instance endpoint's address. */
+  dbEndpointAddress: string;
+  /** The instance endpoint's port. */
+  dbEndpointPort: string;
+  /** The application database's name. */
+  dbName: string;
 }
 
 export interface MatchingStackOutputs {
@@ -83,12 +94,16 @@ export class MatchingStack extends cdk.Stack implements MatchingStackOutputs {
       securityGroups: [props.lambdaSg],
       timeout: 60,
       environment: {
-        DB_SECRET_ARN: props.dbSecret.secretArn,
+        // getMatchingDbPool() takes the connection from these three and only
+        // the username and password from the matching secret.
         MATCHING_DB_SECRET_ARN: props.matchingDbSecret.secretArn,
+        DB_EXPECTED_LOGIN: 'jale_matching',
+        DB_HOST: props.dbEndpointAddress,
+        DB_PORT: props.dbEndpointPort,
+        DB_NAME: props.dbName,
         BEDROCK_MODEL_ID,
       },
     });
-    props.dbSecret.grantRead(employerCandidateRerankLambda.function);
     props.matchingDbSecret.grantRead(employerCandidateRerankLambda.function);
     this.employerCandidateRerankQueue.grantConsumeMessages(employerCandidateRerankLambda.function);
     employerCandidateRerankLambda.function.addToRolePolicy(new iam.PolicyStatement({

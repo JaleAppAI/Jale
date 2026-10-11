@@ -6,7 +6,9 @@ import {
   SQSClient,
   SendMessageCommand,
 } from '@aws-sdk/client-sqs';
-import type { PostConfirmationTriggerEvent } from 'aws-lambda';
+import type { Context, PostConfirmationTriggerEvent } from 'aws-lambda';
+import { auditCallerFor } from '../lib/audit/caller';
+import { setAuditContext } from '../lib/audit/context';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { errorMessage } from '../lib/http';
 
@@ -16,7 +18,10 @@ const VALID_USER_TYPES = ['worker', 'employer'];
 const cognitoClient = new CognitoIdentityProviderClient({});
 const sqsClient = new SQSClient({});
 
-export const handler = async (event: PostConfirmationTriggerEvent): Promise<PostConfirmationTriggerEvent> => {
+export const handler = async (
+  event: PostConfirmationTriggerEvent,
+  context?: Pick<Context, 'awsRequestId'>,
+): Promise<PostConfirmationTriggerEvent> => {
   // Only act on sign-up confirmation events
   if (event.triggerSource !== 'PostConfirmation_ConfirmSignUp') {
     return event;
@@ -87,6 +92,13 @@ export const handler = async (event: PostConfirmationTriggerEvent): Promise<Post
     // RLS requires SET LOCAL before INSERT — see 002_rls_policies.sql
     await client.query('BEGIN');
     await setRlsContext(client, cognitoSub);
+    // The person has only just confirmed a sign-up code: an anonymous actor,
+    // named by this invocation.
+    await setAuditContext(
+      client,
+      auditCallerFor(context?.awsRequestId ?? '', { kind: 'anonymous' }, 'web'),
+      'auth.post_confirmation',
+    );
     await client.query(
       `INSERT INTO users (cognito_sub, user_type, email, phone, full_name)
        VALUES ($1, $2, $3, $4, $5)

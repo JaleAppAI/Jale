@@ -56,6 +56,7 @@ export function LandingNav() {
             <div className="flex items-center justify-between gap-4">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
+                    data-capture-safe
                     src="/brand/wordmark-white.png"
                     alt="Jale"
                     className="h-10 w-auto"

@@ -25,10 +25,11 @@ const state = {
     params: '',
 };
 
-const { assignReturnPath, replace, push } = vi.hoisted(() => ({
+const { assignReturnPath, replace, push, claimReferral } = vi.hoisted(() => ({
     assignReturnPath: vi.fn(),
     replace: vi.fn(),
     push: vi.fn(),
+    claimReferral: vi.fn(),
 }));
 
 vi.mock('next-intl', () => ({
@@ -41,7 +42,12 @@ vi.mock('next/navigation', () => ({
 vi.mock('@/i18n/navigation', () => ({
     useRouter: () => ({ replace, push }),
     usePathname: () => '/auth/worker',
-    Link: ({ children }: { children?: React.ReactNode }) => children,
+    // A real anchor, so the language toggle's href can be read back. `locale`
+    // is next-intl's own prop; it is surfaced as a data attribute rather than
+    // passed to the DOM.
+    Link: ({ children, href, locale, ...rest }: { children?: React.ReactNode; href: string; locale?: string }) => (
+        <a href={href} data-locale={locale} {...rest}>{children}</a>
+    ),
 }));
 vi.mock('@/contexts/AuthContext', () => ({
     useAuth: () => ({
@@ -51,7 +57,7 @@ vi.mock('@/contexts/AuthContext', () => ({
         idToken: 'id-token',
     }),
 }));
-vi.mock('@/lib/api/worker', () => ({ claimReferral: vi.fn() }));
+vi.mock('@/lib/api/worker', () => ({ claimReferral }));
 vi.mock('@/lib/login-url', async (importOriginal) => ({
     ...(await importOriginal<typeof import('@/lib/login-url')>()),
     assignReturnPath,
@@ -69,6 +75,8 @@ vi.mock('@/components/auth/EmployerAuthForm', () => ({
 import WorkerAuthPage from '@/app/[locale]/auth/worker/page';
 import EmployerAuthPage from '@/app/[locale]/auth/employer/page';
 
+const JOB_ID = '8f3a2c1d-4b5e-4f60-9a71-2c3d4e5f6071';
+
 beforeEach(() => {
     vi.clearAllMocks();
     state.isAuthenticated = true;
@@ -76,6 +84,8 @@ beforeEach(() => {
     state.userType = 'worker';
     state.params = '';
     sessionStorage.clear();
+    // A real promise: the page chains `.catch` onto it.
+    claimReferral.mockResolvedValue({ claimed: false, recorded: [] });
 });
 
 describe('worker auth page', () => {
@@ -173,5 +183,98 @@ describe('employer auth page', () => {
         expect(screen.getByTestId('employer-form')).toBeInTheDocument();
         expect(replace).not.toHaveBeenCalled();
         expect(assignReturnPath).not.toHaveBeenCalled();
+    });
+});
+
+/**
+ * "A signed-in worker opening a job link" is one of the doors that fills
+ * the referred-jobs list. That worker never mounts `WorkerAuthForm`, so this
+ * page's effect is the only place that can tell the server -- and it used to
+ * do so only when the link carried a share code.
+ */
+describe('worker auth page — a signed-in worker opening a job link', () => {
+    it('records the job even when the link has no share code', () => {
+        state.params = `job=${JOB_ID}`;
+
+        render(<WorkerAuthPage />);
+
+        expect(claimReferral).toHaveBeenCalledWith('id-token', { jobId: JOB_ID, shareCode: null });
+        expect(replace).toHaveBeenCalledWith(`/worker/jobs/${JOB_ID}`);
+    });
+
+    it('sends the share code the way the backend will read it', () => {
+        state.params = `job=${JOB_ID}&share=jale-7k3m-9qx2`;
+
+        render(<WorkerAuthPage />);
+
+        expect(claimReferral).toHaveBeenCalledWith('id-token', { jobId: JOB_ID, shareCode: '7K3M9QX2' });
+    });
+
+    it('records nothing for a visit that names no job and no code', () => {
+        state.params = 'returnUrl=%2Fes%2Fworker%2Fhome';
+
+        render(<WorkerAuthPage />);
+
+        expect(claimReferral).not.toHaveBeenCalled();
+        expect(assignReturnPath).toHaveBeenCalledWith('/es/worker/home');
+    });
+
+    it('stands down while the form is finishing its own sign-in', () => {
+        // The form owns the claim and the redirect for a sign-in it is in the
+        // middle of; doing either here would do them twice.
+        sessionStorage.setItem('authFlowCompleting', '1');
+        state.params = `job=${JOB_ID}`;
+
+        render(<WorkerAuthPage />);
+
+        expect(claimReferral).not.toHaveBeenCalled();
+        expect(replace).not.toHaveBeenCalled();
+    });
+});
+
+/**
+ * The toggle used to link to the bare path, so switching language dropped
+ * `job`, `share`, `step` and `returnUrl` -- and with them the stash, the
+ * sign-up step and the way back. `lib/locale-switch.ts` is the rule the public
+ * job page's toggle already follows.
+ */
+describe('auth shell — the language toggle', () => {
+    it('keeps the whole query string when it switches language', () => {
+        state.isAuthenticated = false;
+        state.userType = null;
+        state.params = `step=signup&job=${JOB_ID}&share=7K3M9QX2&returnUrl=%2Fes%2Fworker%2Fhome`;
+
+        render(<WorkerAuthPage />);
+
+        const toggle = screen.getByRole('link', { name: 'language_toggle' });
+        expect(toggle).toHaveAttribute(
+            'href',
+            `/auth/worker?step=signup&job=${JOB_ID}&share=7K3M9QX2&returnUrl=%2Fes%2Fworker%2Fhome`,
+        );
+        // `useLocale` says `es` here, so the toggle offers English.
+        expect(toggle).toHaveAttribute('data-locale', 'en');
+    });
+
+    it('links to the bare path when there is no query to keep', () => {
+        state.isAuthenticated = false;
+        state.userType = null;
+
+        render(<WorkerAuthPage />);
+
+        expect(screen.getByRole('link', { name: 'language_toggle' })).toHaveAttribute('href', '/auth/worker');
+    });
+
+    it('keeps the query on the employer door too', () => {
+        state.isAuthenticated = false;
+        state.userType = null;
+        state.params = 'returnUrl=%2Fes%2Femployer%2Fdashboard';
+
+        render(<EmployerAuthPage />);
+
+        // The employer variant draws the shell actions twice (desktop aside and
+        // phone band); both must carry it.
+        for (const toggle of screen.getAllByRole('link', { name: 'language_toggle' })) {
+            expect(toggle).toHaveAttribute('href', '/auth/worker?returnUrl=%2Fes%2Femployer%2Fdashboard');
+        }
     });
 });

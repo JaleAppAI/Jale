@@ -2,13 +2,17 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { AdminActionsPanel } from '@/components/AdminActionsPanel';
 import { getCaseActions } from '@/lib/action-policy';
-import { getAdminCase } from '@/lib/server/admin-cases';
+import { accessHistoryHref } from '@/lib/access-history';
+import { loadCaseDetail } from '@/lib/server/admin-cases';
+import { isUuid } from '@/lib/server/audit/codes';
 import { requireAdminSession } from '@/lib/server/session';
 
 export default async function CaseDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const session = await requireAdminSession();
   const { id } = await params;
-  const item = await getAdminCase(id);
+  // Records the case, its subjects and the timeline shown before rendering;
+  // an unknown case records a not_found attempt.
+  const item = await loadCaseDetail(session, id);
   const role = session.role;
 
   if (!item) {
@@ -92,7 +96,16 @@ export default async function CaseDetailPage({ params }: { params: Promise<{ id:
               ))}
             </ul>
           </div>
-          <Link className="button" href="/cases">Back to queue</Link>
+          {role === 'admin_superadmin' && isUuid(item.workerId) ? (
+            <Link
+              className="button secondary"
+              href={accessHistoryHref({ subjectUserId: item.workerId })}
+              prefetch={false}
+            >
+              Access history for this person
+            </Link>
+          ) : null}
+          <Link className="button" href="/cases" prefetch={false}>Back to queue</Link>
         </aside>
       </section>
     </main>

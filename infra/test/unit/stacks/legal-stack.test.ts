@@ -23,7 +23,6 @@ describe('LegalStack', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
     });
     const ai = new AiStack(app, 'TestAiStack', {
       vpc: network.vpc,
@@ -38,7 +37,6 @@ describe('LegalStack', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
       aliasGeneratorFn: ai.aliasGeneratorFn.function,
       whatsappStatusCallbackUrl: 'https://api.example.com/whatsapp/status-callback',
     });
@@ -46,7 +44,6 @@ describe('LegalStack', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
       api: api.api,
       dualAuthorizer: api.dualAuthorizer,
     });
@@ -99,7 +96,6 @@ describe('LegalStack', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
     });
     const ai = new AiStack(app, 'OriginAiStack', {
       vpc: network.vpc,
@@ -114,7 +110,6 @@ describe('LegalStack', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
       aliasGeneratorFn: ai.aliasGeneratorFn.function,
       whatsappStatusCallbackUrl: 'https://api.example.com/whatsapp/status-callback',
     });
@@ -122,7 +117,6 @@ describe('LegalStack', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
       api: api.api,
       dualAuthorizer: api.dualAuthorizer,
     });

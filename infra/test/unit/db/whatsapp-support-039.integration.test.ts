@@ -26,46 +26,6 @@ function maybeDescribe(name: string, fn: () => void): void {
   else describe.skip(name, fn);
 }
 
-/**
- * The immutable migration-020 policy recursively re-enters users through
- * jobs/job_applications for jale_admin. Mirror the established
- * billing-rls.integration testbed repair so this suite reaches migration
- * 039's behavior. This mutates only the disposable local database.
- */
-async function applyLocalRlsRecursionWorkaround(client: Client): Promise<void> {
-  await client.query(`
-    CREATE OR REPLACE FUNCTION employer_has_applicant_relationship(
-      p_employer_internal_id text,
-      p_worker_id uuid
-    ) RETURNS boolean
-    LANGUAGE sql
-    STABLE
-    SECURITY DEFINER
-    SET search_path = public
-    AS $fn$
-      SELECT EXISTS (
-        SELECT 1
-          FROM job_applications ja
-          JOIN jobs j ON j.id = ja.job_id
-         WHERE ja.worker_id = p_worker_id
-           AND j.employer_id::text = p_employer_internal_id
-      );
-    $fn$;
-  `);
-  await client.query('DROP POLICY IF EXISTS users_employer_applicant_read ON users');
-  await client.query(`
-    CREATE POLICY users_employer_applicant_read
-      ON users FOR SELECT TO jale_admin
-      USING (
-        user_type = 'worker'
-        AND employer_has_applicant_relationship(
-          current_setting('app.current_internal_user_id', true),
-          id
-        )
-      )
-  `);
-}
-
 async function queryAsWhatsapp<T extends QueryResultRow = QueryResultRow>(
   sql: string,
   params: unknown[] = [],
@@ -102,7 +62,6 @@ maybeDescribe('migration 039 WhatsApp support cases', () => {
     const client = new Client({ connectionString: databaseUrl });
     await client.connect();
     try {
-      await applyLocalRlsRecursionWorkaround(client);
       const worker = await client.query<{ id: string }>(
         `INSERT INTO users (cognito_sub, user_type, whatsapp_number, phone)
          VALUES ('w1-support-035', 'worker', '+15550000351', '+15550000353')

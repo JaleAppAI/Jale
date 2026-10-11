@@ -4,17 +4,14 @@
 # the WhatsApp onboarding flow for that phone number.
 #
 # Usage:
-#   cd infra
-#   npx cdk deploy JaleBastionStack
-#   cd ..
+#   .\scripts\deploy-bastion.ps1           # or: bash scripts/deploy-bastion.sh
 #   .\scripts\cleanup-whatsapp-rds-user.ps1
 #   # Prompts for the phone number to delete.
 #   # Or run non-interactively:
 #   .\scripts\cleanup-whatsapp-rds-user.ps1 -Phone '+15551234567'
 #   # If pool lookup by name is unavailable, pass it explicitly:
 #   .\scripts\cleanup-whatsapp-rds-user.ps1 -Phone '+15551234567' -WorkerPoolId 'us-east-2_abc123'
-#   cd infra
-#   npx cdk destroy JaleBastionStack
+#   .\scripts\deploy-bastion.ps1 -Destroy  # or: bash scripts/deploy-bastion.sh --destroy
 
 [CmdletBinding()]
 param(
@@ -33,13 +30,13 @@ $BastionStack = 'JaleBastionStack'
 $DatabaseStack = 'JaleDatabaseStack'
 
 if ([string]::IsNullOrWhiteSpace($Phone)) {
-  $Phone = Read-Host 'Enter worker phone number to delete from RDS (E.164, example +19152272188)'
+  $Phone = Read-Host 'Enter worker phone number to delete from RDS (E.164, example +15551234567)'
 }
 
 $Phone = $Phone.Trim()
 
 if ($Phone -notmatch '^\+\d{8,15}$') {
-  throw "Phone must be E.164 format, for example +19152272188."
+  throw "Phone must be E.164 format, for example +15551234567."
 }
 
 $PhoneSql = $Phone.Replace("'", "''")
@@ -111,7 +108,7 @@ $bastionId = (aws cloudformation describe-stacks `
 
 if ([string]::IsNullOrEmpty($bastionId) -or $bastionId -eq 'None') {
   Write-Host "!! Could not find BastionInstanceId output on $BastionStack." -ForegroundColor Red
-  Write-Host "   Deploy it first: cd infra; npx cdk deploy $BastionStack"
+  Write-Host "   Deploy it first: .\scripts\deploy-bastion.ps1 (or: bash scripts/deploy-bastion.sh)"
   exit 1
 }
 Write-Host "   bastion: $bastionId"

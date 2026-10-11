@@ -70,6 +70,7 @@ import {
   attentionApplicationsSql,
   listApplicationsSql,
 } from '../../../lambda/api/worker-applications-list';
+import { itInProfiles } from './helpers/login-pool';
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
 
@@ -333,7 +334,8 @@ maybeDescribe('sprint 24: migration 095 stamps and grants the hire acknowledgeme
   });
 
   // ── 1. the connection the migration runs on ────────────────────
-  it('1. applies as the real jale_admin, which under FORCE sees NONE of the rows it must stamp', async () => {
+  // Checks row policies as the standard and request test beds apply them.
+  itInProfiles(['standard', 'request'], '1. on the bed\'s migration connection, the rows it must stamp stay hidden until the un-force window', async () => {
     const who = await admin.query<{ user: string; super: boolean }>(
       `SELECT current_user AS user, (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) AS super`,
     );

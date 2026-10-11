@@ -4,9 +4,18 @@ import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../../../..
 import { listEmployerInbox } from '../../../../lambda/lib/employer-inbox';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
 
+import { recordAccess, recordAttempt } from '../../../../lambda/lib/audit/record';
+import { callerFor, expectAttemptAfter, expectRecordedInsideTransaction, withRequestId } from './audit-expectations';
+
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/lib/employer-inbox');
 jest.mock('../../../../lambda/legal/check-compliance');
+jest.mock('../../../../lambda/lib/audit/record', () => ({
+  ...jest.requireActual('../../../../lambda/lib/audit/record'),
+  recordAccess: jest.fn(),
+  recordAttempt: jest.fn(),
+}));
+jest.mock('../../../../lambda/lib/audit/context');
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
@@ -117,5 +126,50 @@ describe('employer-inbox handler', () => {
     expect(res.statusCode).toBe(500);
     expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
     expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
+  });
+
+  describe('access record', () => {
+    const mockRecordAccess = recordAccess as jest.Mock;
+    const mockRecordAttempt = recordAttempt as jest.Mock;
+    const employer = callerFor('employer', EMPLOYER_ID);
+    const client = expect.objectContaining({ query: mockQuery });
+    const inbox = {
+      items: [
+        { application_id: 'a1', worker_id: 'w1', worker_name: 'Fixture Name', conversation_id: 'c1', last_message_preview: 'fixture text', tab: 'active', unread: true },
+        { application_id: 'a2', worker_id: 'w2', worker_name: 'Fixture Name', conversation_id: null, last_message_preview: null, tab: 'active', unread: false },
+      ],
+      jobs: [],
+      unread_count: 1,
+    };
+
+    beforeEach(() => {
+      mockRecordAccess.mockResolvedValue(undefined);
+      mockRecordAttempt.mockResolvedValue(undefined);
+    });
+
+    it('records every worker listed and every thread previewed, before COMMIT', async () => {
+      mockListEmployerInbox.mockResolvedValue(inbox);
+      const res = await handler(withRequestId(makeEvent()));
+      expect(res.statusCode).toBe(200);
+      expect(mockRecordAccess).toHaveBeenCalledWith(client, employer, {
+        surface: 'employer.inbox',
+        subjectUserIds: ['w1', 'w2'],
+        recordIds: ['c1'],
+        resultCount: 2,
+        fieldNames: Object.keys(inbox.items[0]).sort(),
+      });
+      expectRecordedInsideTransaction(mockQuery, mockRecordAccess);
+    });
+
+    it('answers 500 with no inbox when the record cannot be written', async () => {
+      mockListEmployerInbox.mockResolvedValue(inbox);
+      mockRecordAccess.mockRejectedValue(new Error('audit'));
+      const res = await handler(withRequestId(makeEvent()));
+      expect(res.statusCode).toBe(500);
+      expect(JSON.parse(res.body)).toEqual({ error: 'internal_error' });
+      expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
+      expectAttemptAfter(mockQuery, mockRecordAttempt, 'ROLLBACK');
+      expect(mockRecordAttempt).toHaveBeenCalledWith(client, employer, { surface: 'employer.inbox', outcome: 'failed' });
+    });
   });
 });

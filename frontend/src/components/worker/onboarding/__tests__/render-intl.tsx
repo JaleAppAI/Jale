@@ -87,6 +87,7 @@ export function onboardingState(overrides: Partial<OnboardingState> = {}): Onboa
         trust: { questions: [], answers: [] },
         pendingLocationConfirm: null,
         extraction: null,
+        referredJob: null,
         ...overrides,
     };
 }

@@ -5,6 +5,7 @@ import * as logs from 'aws-cdk-lib/aws-logs';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import { Construct } from 'constructs';
+import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
@@ -44,7 +45,16 @@ export interface JaleLambdaFunctionProps {
    *  instead of relying on an invocation-frequency assumption). Omit for the
    *  AWS default (unreserved, shared account concurrency pool). */
   reservedConcurrentExecutions?: number;
+  /** Extra files copied into the bundle, next to the handler, after esbuild
+   *  runs: file name in the bundle -> absolute path of the source file. For
+   *  data the handler reads at runtime that esbuild cannot inline. The RDS CA
+   *  bundle is always copied and needs no entry here. */
+  bundledFiles?: Readonly<Record<string, string>>;
 }
+
+/** A plain file name: no directory part, and not the handler or the CA bundle. */
+const BUNDLED_FILE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const RESERVED_BUNDLE_NAMES = new Set(['index.js', 'rds-ca-bundle.pem']);
 
 export class JaleLambdaFunction extends Construct {
   public readonly function: NodejsFunction;
@@ -63,6 +73,16 @@ export class JaleLambdaFunction extends Construct {
     super(scope, id);
 
     this.entry = props.entry;
+
+    const bundledFiles = Object.entries(props.bundledFiles ?? {});
+    for (const [name, source] of bundledFiles) {
+      if (!BUNDLED_FILE_NAME.test(name) || RESERVED_BUNDLE_NAMES.has(name)) {
+        throw new Error(`BUNDLED_FILE_NAME_INVALID: ${JSON.stringify(name)} is not a plain file name this bundle can take`);
+      }
+      if (!path.isAbsolute(source) || !fs.existsSync(source)) {
+        throw new Error(`BUNDLED_FILE_MISSING: the source for ${JSON.stringify(name)} must be an existing absolute path`);
+      }
+    }
 
     this.logGroup = new logs.LogGroup(this, 'LogGroup', {
       retention: logs.RetentionDays.ONE_MONTH,
@@ -121,12 +141,11 @@ export class JaleLambdaFunction extends Construct {
         externalModules: ['pg-native'],
         commandHooks: {
           afterBundling: (inputDir: string, outputDir: string) => {
-            const src = path.join(inputDir, 'lambda', 'lib', 'rds-ca-bundle.pem');
-            const dst = path.join(outputDir, 'rds-ca-bundle.pem');
-            if (os.platform() === 'win32') {
-              return [`copy "${src}" "${dst}"`];
-            }
-            return [`cp "${src}" "${dst}"`];
+            const copies: Array<[string, string]> = [
+              [path.join(inputDir, 'lambda', 'lib', 'rds-ca-bundle.pem'), path.join(outputDir, 'rds-ca-bundle.pem')],
+              ...bundledFiles.map(([name, source]): [string, string] => [source, path.join(outputDir, name)]),
+            ];
+            return copies.map(([src, dst]) => (os.platform() === 'win32' ? `copy "${src}" "${dst}"` : `cp "${src}" "${dst}"`));
           },
           beforeBundling: () => [],
           beforeInstall: () => [],

@@ -27,8 +27,8 @@ import { verifyUnsubscribeToken } from '../lib/unsubscribe-token';
  * again. That also makes a double-click, an email-client prefetch, and a retry
  * all safely idempotent.
  *
- * Runs as jale_admin, which holds EXECUTE on the definer function and nothing
- * else it needs here. No RLS GUC is set: the function is SECURITY DEFINER and
+ * Runs on the unauthenticated request login, jale_api_public, which holds
+ * EXECUTE on the definer function and nothing else. No RLS GUC is set: the function is SECURITY DEFINER and
  * is documented as callable with no `app.*` setting, and there is no employer
  * session to impersonate on an unauthenticated route.
  *

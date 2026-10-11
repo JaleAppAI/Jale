@@ -16,6 +16,7 @@
 
 import { Client } from 'pg';
 import { randomBytes } from 'node:crypto';
+import { describeInProfiles } from './helpers/login-pool';
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
 
@@ -79,7 +80,11 @@ function freshPhoneHash(): string {
   return randomBytes(32).toString('hex');
 }
 
-const maybeDescribe = databaseUrl ? describe : describe.skip;
+// These tests check row policies as the standard and request test beds apply
+// them, so they run in those profiles only. Without a database URL the suite
+// still skips.
+const maybeDescribe = (name: string, fn: () => void): void =>
+  describeInProfiles(['standard', 'request'], name, fn);
 if (!databaseUrl) {
   // eslint-disable-next-line no-console
   console.warn('JALE_TEST_DATABASE_URL not set — skipping 1d history capture integration tests');

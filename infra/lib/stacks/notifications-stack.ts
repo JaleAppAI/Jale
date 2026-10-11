@@ -14,6 +14,7 @@ import * as sns from 'aws-cdk-lib/aws-sns';
 import * as snsSubscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
+import { dedicatedDbLogin } from '../constructs/db-login-secrets';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
 import { lambdaIntegration, addPathOnlyResource } from '../api-integration';
 
@@ -23,20 +24,13 @@ export interface NotificationsStackProps extends cdk.StackProps {
    * Shared `network.lambdaSg` — the SAME security group AuthStack, AiStack and
    * MatchingStack use, deliberately NOT a dedicated one.
    *
-   * ReferralsStack and BillingStack each got their own SG because each of them
-   * connects as its own least-privilege database role (jale_public_jobs,
-   * jale_billing) and the SG is part of keeping those lanes separable. This
-   * stack has no such role: both Lambdas connect as jale_admin using the
-   * shared `dbSecret`, exactly like every ApiStack Lambda, because the tables
-   * they touch (employer_digest_settings, jobs, job_applications, email_outbox)
-   * carry RLS policies written TO jale_admin, and the one cross-tenant read
-   * they need is fenced behind migration 082's SECURITY DEFINER functions
-   * rather than behind a role of their own. A dedicated SG would suggest an
-   * isolation boundary that does not exist here.
+   * Security groups do not separate database logins here or anywhere else in
+   * the app: every Lambda security group can reach the instance, and what a
+   * Lambda may do there is decided by the login its secret names. This
+   * stack's three Lambdas each connect as their own dedicated login (see
+   * below), so a dedicated SG would suggest a boundary that does not exist.
    */
   readonly lambdaSg: ec2.ISecurityGroup;
-  /** App DB credential (jale_admin) — the same secret ApiStack Lambdas use. */
-  readonly dbSecret: secretsmanager.ISecret;
   /**
    * ApiStack's exported `/public` resource. Reused, never re-declared: two
    * stacks calling `addResource('public')` on the same RestApi is a
@@ -75,12 +69,12 @@ export interface NotificationsStackProps extends cdk.StackProps {
  * NotificationsStack — the employer daily-digest lane.
  *
  * Resources:
- *   EmployerDigestProducerLambda    EventBridge every 15 min, DB-only, jale_admin
- *   DigestUnsubscribeLambda         POST /public/employer-digest/unsubscribe (UNAUTHENTICATED)
+ *   EmployerDigestProducerLambda    EventBridge every 15 min, DB-only, the digest job login
+ *   DigestUnsubscribeLambda         POST /public/employer-digest/unsubscribe (UNAUTHENTICATED), the public login
  *   DigestUnsubscribeSecret         HMAC signing key for the unsubscribe links
  *   EmployerEmailConfigurationSet   SES configuration set (only with emailConfigurationSetName)
  *   EmployerEmailFeedbackTopic      SNS topic for its BOUNCE/COMPLAINT events
- *   SesFeedbackHandlerLambda        applies those events, jale_admin
+ *   SesFeedbackHandlerLambda        applies those events, the SES-feedback job login
  *
  * The producer writes rows into `email_outbox` (migration 037) and the
  * EXISTING BillingStack EmailOutboxSweeperLambda drains them via SES,
@@ -158,6 +152,15 @@ export class NotificationsStack extends cdk.Stack {
       securityGroups: [props.lambdaSg],
     };
 
+    // ── Database logins ──
+    // A dedicated login per workload. The producer's can enumerate due
+    // employers and read what a digest shows. The unauthenticated unsubscribe
+    // route connects as the public login, which holds no table rights and
+    // executes only a few named functions. The feedback handler's login (below)
+    // can only apply one delivery-feedback event.
+    const digestDb = dedicatedDbLogin(this, 'jale_job_digest');
+    const apiPublicDb = dedicatedDbLogin(this, 'jale_api_public');
+
     // ── DLQ for the producer's ASYNC invocations ───────────────────
     // EventBridge invokes the producer asynchronously, so a failure is retried
     // by the Lambda service and then silently discarded unless there is a DLQ.
@@ -175,7 +178,7 @@ export class NotificationsStack extends cdk.Stack {
       entry: path.join(__dirname, '../../lambda/notifications/employer-digest-producer.ts'),
       description: 'Employer daily digest producer',
       environment: {
-        DB_SECRET_ARN: props.dbSecret.secretArn,
+        ...digestDb.environment,
         UNSUBSCRIBE_SECRET_ARN: unsubscribeSecret.secretArn,
         PUBLIC_SITE_BASE_URL: publicSiteBaseUrl,
       },
@@ -197,7 +200,7 @@ export class NotificationsStack extends cdk.Stack {
       maxEventAge: cdk.Duration.hours(1),
       ...lambdaProps,
     });
-    props.dbSecret.grantRead(producerLambda.function);
+    digestDb.grantRead(producerLambda.function);
     unsubscribeSecret.grantRead(producerLambda.function);
     producerDlq.grantSendMessages(producerLambda.function);
 
@@ -215,13 +218,13 @@ export class NotificationsStack extends cdk.Stack {
       entry: path.join(__dirname, '../../lambda/notifications/unsubscribe.ts'),
       description: 'Employer digest unsubscribe endpoint (unauthenticated)',
       environment: {
-        DB_SECRET_ARN: props.dbSecret.secretArn,
+        ...apiPublicDb.environment,
         UNSUBSCRIBE_SECRET_ARN: unsubscribeSecret.secretArn,
         ALLOWED_ORIGIN: allowedOrigin,
       },
       ...lambdaProps,
     });
-    props.dbSecret.grantRead(unsubscribeLambda.function);
+    apiPublicDb.grantRead(unsubscribeLambda.function);
     unsubscribeSecret.grantRead(unsubscribeLambda.function);
 
     // ── Alarms ────────────────────────────────────────────────────
@@ -454,15 +457,14 @@ export class NotificationsStack extends cdk.Stack {
         retentionPeriod: cdk.Duration.days(14),
       });
 
+      // Its own job login, which can execute one narrow feedback function and
+      // nothing else.
+      const sesFeedbackDb = dedicatedDbLogin(this, 'jale_job_ses_feedback');
       const feedbackLambda = new JaleLambdaFunction(this, 'SesFeedbackHandlerLambda', {
         entry: path.join(__dirname, '../../lambda/notifications/ses-feedback-handler.ts'),
         description: 'SES bounce/complaint handler — switches the employer digest off',
         environment: {
-          // The SAME jale_admin secret the digest settings API uses: the
-          // handler reads email_outbox under 037's admin policy and calls
-          // 090's definer, both of which are granted to jale_admin and to
-          // nothing else.
-          DB_SECRET_ARN: props.dbSecret.secretArn,
+          ...sesFeedbackDb.environment,
         },
         // One SNS record per invocation, two short queries. 30s is the default
         // and is generous; the point of naming it is that a hung DB connection
@@ -472,7 +474,7 @@ export class NotificationsStack extends cdk.Stack {
         retryAttempts: 2,
         ...lambdaProps,
       });
-      props.dbSecret.grantRead(feedbackLambda.function);
+      sesFeedbackDb.grantRead(feedbackLambda.function);
       feedbackDlq.grantSendMessages(feedbackLambda.function);
       feedbackTopic.addSubscription(new snsSubscriptions.LambdaSubscription(feedbackLambda.function));
 

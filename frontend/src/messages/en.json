@@ -86,7 +86,6 @@
       "fair": "Fair match"
     },
     "reasons": {
-      "referred_job": "A friend referred you to this job",
       "profession_exact_or_alias": "Trade matches",
       "profession_partial": "Related trade",
       "distance_under_5_miles": "Within 5 miles",
@@ -127,6 +126,16 @@
     "my_applications": "My Applications",
     "employer_jobs": "Jobs",
     "messages": "Messages"
+  },
+  "seo": {
+    "landing": {
+      "title": "Jale — Find hourly work fast",
+      "description": "No resume, no forms. Apply on WhatsApp or the web."
+    },
+    "worker_signup": {
+      "title": "Create your Jale profile",
+      "description": "Set up your worker profile in a few minutes and see jobs near you."
+    }
   },
   "landing": {
     "nav": {
@@ -271,8 +280,10 @@
       "signup_subtitle": "Enter your phone number. We'll text you a code, then set up your profile together.",
       "signup_prompt": "New to Jale?",
       "signup_link": "Create an account",
+      "signup_nudge": "Create my account with this number",
       "confirm_title": "Confirm your account",
       "otp_title": "Enter the 6-digit code",
+      "otp_digit": "Digit {n} of {total}",
       "code_sent": "SMS sent to {phone}",
       "resend_prompt": "Didn't get the code?",
       "resend_code": "Send it again",
@@ -2022,6 +2033,10 @@
       "finish": "Finish",
       "skip": "Skip for now"
     },
+    "referred_job": {
+      "strip": "Applying to: <b>{title}</b> · {company}",
+      "strip_closed": "Applying to: <b>{title}</b> <muted>(no longer open)</muted> · {company}"
+    },
     "done": {
       "title": "You're all set",
       "subtitle": "Employers can now find you. Here's what they'll see.",
@@ -2032,7 +2047,11 @@
       "extracted": "We extracted these skills from your answers. You're good to go on Jale.",
       "failed": "We couldn't read your answers this time. Employers still see them in your own words.",
       "stalled": "We couldn't finish reading your answers yet — you're good to go on Jale.",
-      "cta": "Go to my profile",
+      "job_heading": "The job you came for",
+      "apply": "Apply",
+      "see_all_jobs": "See all jobs",
+      "job_closed": "“{title}” is no longer taking applications.",
+      "see_jobs": "See jobs for you",
       "cta_job": "Continue to the job"
     },
     "summary": {
@@ -2065,5 +2084,203 @@
       "not_onboardable": "We cannot set up this account right now. Reply to any Jale message and we will help."
     },
     "stuck": "Finish this step on WhatsApp, or come back later."
+  },
+  "report_common": {
+    "title": "Report a problem",
+    "entry_short": "Report",
+    "entry_link_lead": "Having trouble?",
+    "error_action": "Report this problem",
+    "close": "Close",
+    "loading": "Opening the form…",
+    "next": "Next",
+    "change": "Change",
+    "send": "Send report",
+    "sending": "Sending…",
+    "try_again": "Try again",
+    "done": "Done",
+    "back": "Back",
+    "category_legend": "What is it about?",
+    "description_label": "What happened?",
+    "character_count": "{count} of {max} characters",
+    "screenshot_heading": "Screenshot",
+    "capture_pending": "Taking a picture of the screen…",
+    "capture_failed_title": "We couldn't capture this screen",
+    "attach_photo": "Attach a photo",
+    "attach_photo_instead": "Attach a photo instead",
+    "continue_without_image": "Continue without an image",
+    "no_image": "No image will be sent.",
+    "photo_preparing": "Preparing the photo…",
+    "editor": {
+      "hide_area": "Hide an area",
+      "done": "Done",
+      "undo": "Undo",
+      "remove": "Remove",
+      "box_label": "Hidden area {n}",
+      "keyboard_hint": "Arrow keys move the selected area. Shift and an arrow key resize it. Delete removes it.",
+      "delete_box": "Remove this area"
+    },
+    "what_we_send": {
+      "toggle": "What we'll send",
+      "screen": "This screen: {pattern}",
+      "app": "App version {build} · {language}",
+      "device": "Device: {kind} · {browser} · {os} · {width} × {height}",
+      "requests": "{count, plural, =0 {No recent requests to Jale} one {The last request to Jale, without its content} other {The last # requests to Jale, without their content}}",
+      "errors": "{count, plural, =0 {No recent errors in the app} one {# recent error in the app} other {# recent errors in the app}}",
+      "technical_label": "Include technical details",
+      "technical_hint": "Off: only the screen, the app version and the language are sent.",
+      "technical_off": "Technical details are off: the device details, the requests and the errors are not sent.",
+      "never_heading": "Never sent",
+      "never_codes": "Passwords and codes, also in links",
+      "never_content": "The content of any request or answer",
+      "kept": "Kept for a limited time.",
+      "in_app_browser": "In-app browser",
+      "other_family": "Other"
+    },
+    "privacy_link": "Privacy policy",
+    "new_tab": "(opens in a new tab)",
+    "language": {
+      "en": "English",
+      "es": "Spanish"
+    },
+    "device_kind": {
+      "phone": "Phone",
+      "tablet": "Tablet",
+      "desktop": "Computer"
+    },
+    "image_sending": "Sending the image…",
+    "image_sent": "The image was sent.",
+    "paused_title": "Reporting is paused right now",
+    "signed_out_paused_title": "Reporting without signing in is paused right now",
+    "contact_email_label": "Email",
+    "contact_whatsapp_label": "WhatsApp",
+    "load_failed": "The form didn't load."
+  },
+  "report_worker": {
+    "categories": {
+      "sign_in": "I can't sign in / the code didn't arrive",
+      "finding_jobs": "Finding jobs",
+      "applying": "Applying to a job",
+      "uploads": "Uploading documents or photos",
+      "profile": "My profile",
+      "whatsapp": "WhatsApp messages",
+      "other": "Something else"
+    },
+    "category_hint": "Chosen from the screen you were on.",
+    "description_hint": "What were you trying to do, and what happened instead?",
+    "description_error": "Tell us what happened. A few words are enough.",
+    "capture_failed_body": "You can attach a photo, or a screenshot you took yourself.",
+    "masked_note": "Your personal details are already hidden.",
+    "photo_error": "We couldn't use that photo. Try another one.",
+    "editor": {
+      "preview_alt": "Screenshot of the screen you were on",
+      "masked_note": "Grey areas are hidden for you. Drag or tap to hide anything else."
+    },
+    "what_we_send": {
+      "with_heading": "With your report",
+      "account": "Your account, verified by your sign-in",
+      "contact": "Only the contact you type, if any",
+      "image": "The image you chose",
+      "never_typed": "What you typed in forms",
+      "never_files": "Files, except the image you chose"
+    },
+    "notice": "We send what you write, the image and the details listed above so we can fix the problem, and we keep them for a limited time.",
+    "contact_label": "Your phone or email (optional)",
+    "contact_hint": "So we can reach you if we need to.",
+    "unverified": "You're not signed in, so we can't confirm who you are.",
+    "session_switched": "Your sign-in has ended, so this report will be sent without it. Check the form, then tap Send report again.",
+    "errors": {
+      "rate_limited": "You've sent several reports in a short time. Wait a while before sending another.",
+      "reporting_paused": "Reporting is paused right now.",
+      "signed_out_paused": "Reporting without signing in is paused right now.",
+      "invalid_request": "Part of the report couldn't be accepted. Check what you wrote and try again.",
+      "too_large": "The report is too large to send. Turn off technical details or shorten the text, then try again.",
+      "offline": "You seem to be offline. Your text is still here: check your connection and try again.",
+      "timeout": "This is taking too long. Your text is still here: try again.",
+      "server": "We couldn't send your report. Your text is still here: try again."
+    },
+    "fallback_contacts": "You can also email <mail>{email}</mail> or send “{keyword}” to Jale on WhatsApp.",
+    "fallback": {
+      "body": "You can still tell us what happened:",
+      "whatsapp": "Send “{keyword}” to Jale",
+      "sign_in": "If you can sign in, you can also report from inside Jale."
+    },
+    "sent": {
+      "title": "Thanks, we got your report",
+      "title_unverified": "We got your report",
+      "number_label": "Your report number",
+      "body": "We'll look at it soon. If you contact us, mention this number.",
+      "body_unverified": "Because you weren't signed in, we can't confirm who you are. If you left a phone or email, we may use it to reach you.",
+      "whatsapp": "You can also send “{keyword}” to Jale on WhatsApp.",
+      "image_failed": "The image didn't send. Your report is saved.",
+      "image_failed_final": "The image didn't send and can't be sent again. Your report is saved.",
+      "image_paused": "Images are paused right now, so only your report was sent."
+    }
+  },
+  "report_employer": {
+    "categories": {
+      "account": "Sign-in, account or verification email",
+      "job_posting": "Posting or editing a job",
+      "applicants": "Applicants and hiring",
+      "messages": "Messages to workers",
+      "billing": "Billing and plan",
+      "emails": "Emails and daily summary",
+      "company_profile": "Company profile and settings",
+      "other": "Something else"
+    },
+    "stops_work": {
+      "legend": "Does this stop your work?",
+      "yes": "Yes, I can't continue",
+      "no": "No, I can keep working"
+    },
+    "category_hint": "Chosen from the screen you were on.",
+    "description_hint": "What were you trying to do, and what happened instead?",
+    "description_error": "Tell us what happened. A few words are enough.",
+    "capture_failed_body": "You can attach a photo, or a screenshot you took yourself.",
+    "masked_note": "Your personal details are already hidden.",
+    "photo_error": "We couldn't use that photo. Try another one.",
+    "editor": {
+      "preview_alt": "Screenshot of the screen you were on",
+      "masked_note": "Grey areas are hidden for you. Drag or tap to hide anything else."
+    },
+    "what_we_send": {
+      "with_heading": "With your report",
+      "account": "Your account, verified by your sign-in",
+      "contact": "Only the contact you type, if any",
+      "image": "The image you chose",
+      "never_typed": "What you typed in forms",
+      "never_files": "Files, except the image you chose"
+    },
+    "notice": "We send what you write, the image and the details listed above so we can fix the problem, and we keep them for a limited time.",
+    "contact_label": "Your phone or email (optional)",
+    "contact_hint": "So we can reach you if we need to.",
+    "unverified": "You're not signed in, so we can't confirm who you are.",
+    "session_switched": "Your sign-in has ended, so this report will be sent without it. Check the form, then tap Send report again.",
+    "errors": {
+      "rate_limited": "You've sent several reports in a short time. Wait a while before sending another.",
+      "reporting_paused": "Reporting is paused right now.",
+      "signed_out_paused": "Reporting without signing in is paused right now.",
+      "invalid_request": "Part of the report couldn't be accepted. Check what you wrote and try again.",
+      "too_large": "The report is too large to send. Turn off technical details or shorten the text, then try again.",
+      "offline": "You seem to be offline. Your text is still here: check your connection and try again.",
+      "timeout": "This is taking too long. Your text is still here: try again.",
+      "server": "We couldn't send your report. Your text is still here: try again."
+    },
+    "fallback_contacts": "You can also email <mail>{email}</mail> or send “{keyword}” to Jale on WhatsApp.",
+    "fallback": {
+      "body": "You can still tell us what happened:",
+      "whatsapp": "Send “{keyword}” to Jale",
+      "sign_in": "If you can sign in, you can also report from inside Jale."
+    },
+    "sent": {
+      "title": "Thanks, we got your report",
+      "title_unverified": "We got your report",
+      "number_label": "Your report number",
+      "body": "We'll look at it soon. If you contact us, mention this number.",
+      "body_unverified": "Because you weren't signed in, we can't confirm who you are. If you left a phone or email, we may use it to reach you.",
+      "whatsapp": "You can also send “{keyword}” to Jale on WhatsApp.",
+      "image_failed": "The image didn't send. Your report is saved.",
+      "image_failed_final": "The image didn't send and can't be sent again. Your report is saved.",
+      "image_paused": "Images are paused right now, so only your report was sent."
+    }
   }
 }

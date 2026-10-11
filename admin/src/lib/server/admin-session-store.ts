@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { AdminRole } from '../types';
-import type { AdminSession } from './session-claims';
+import type { AdminIdentity } from './session-claims';
 
 type QueryResult<Row> = {
   rows: Row[];
@@ -10,9 +10,27 @@ export type AdminSessionDb = {
   query<Row>(sql: string, params?: unknown[]): Promise<QueryResult<Row>>;
 };
 
+/** The admin and session an expiry or a sign-out applied to. */
+export type EndedAdminSession = {
+  sessionId: string;
+  adminUserId: string;
+  role: AdminRole;
+};
+
+/**
+ * A session ended at sign-out, and whether it was still live then. A session
+ * already past its expiry ended by expiring, and is marked expired.
+ */
+export type RevokedAdminSession = EndedAdminSession & { live: boolean };
+
 type SessionStoreOptions = {
   now?: () => Date;
   randomToken?: () => string;
+  /**
+   * Called by the one resolve that marks an expired session revoked. Parallel
+   * resolves of the same expired session never call it twice.
+   */
+  onExpired?: (expired: EndedAdminSession) => Promise<void>;
 };
 
 type SessionRow = {
@@ -22,15 +40,18 @@ type SessionRow = {
   admin_email: string;
   role: AdminRole;
   expires_at: Date;
+  active: boolean;
 };
 
-export type ActiveAdminSession = AdminSession & {
+export type ActiveAdminSession = AdminIdentity & {
   sessionId: string;
   adminUserId: string;
   expiresAt: Date;
 };
 
-const SESSION_TTL_MS = 60 * 60 * 1000;
+/** How long a session lasts from sign-in. The server refuses it afterwards. */
+export const ADMIN_SESSION_TTL_SECONDS = 60 * 60;
+const SESSION_TTL_MS = ADMIN_SESSION_TTL_SECONDS * 1000;
 
 export function hashAdminSessionToken(rawToken: string): string {
   return createHash('sha256').update(rawToken).digest('hex');
@@ -44,6 +65,7 @@ function hashUserAgent(userAgent: string | undefined): string | null {
 export class AdminSessionStore {
   private readonly now: () => Date;
   private readonly randomToken: () => string;
+  private readonly onExpired?: (expired: EndedAdminSession) => Promise<void>;
 
   constructor(
     private readonly db: AdminSessionDb,
@@ -51,10 +73,11 @@ export class AdminSessionStore {
   ) {
     this.now = options.now ?? (() => new Date());
     this.randomToken = options.randomToken ?? (() => randomBytes(32).toString('base64url'));
+    this.onExpired = options.onExpired;
   }
 
   async create(
-    identity: AdminSession,
+    identity: AdminIdentity,
     metadata: { userAgent?: string } = {},
   ): Promise<{ rawToken: string; expiresAt: Date }> {
     const rawToken = this.randomToken();
@@ -91,6 +114,8 @@ export class AdminSessionStore {
       return undefined;
     }
 
+    // Expiry is computed rather than filtered, so that an expired session is
+    // seen once more: the resolve that marks it revoked records the expiry.
     const result = await this.db.query<SessionRow>(
       `SELECT
          s.id AS session_id,
@@ -98,12 +123,12 @@ export class AdminSessionStore {
          u.cognito_sub,
          u.admin_email,
          u.role,
-         s.expires_at
+         s.expires_at,
+         s.expires_at > $2 AS active
        FROM admin_sessions s
        JOIN admin_users u ON u.id = s.admin_user_id
       WHERE s.token_hash = $1
         AND s.revoked_at IS NULL
-        AND s.expires_at > $2
         AND u.active = true
         AND u.cognito_sub IS NOT NULL
         AND u.role IN ('admin_readonly', 'admin_ops', 'admin_superadmin')
@@ -113,6 +138,11 @@ export class AdminSessionStore {
 
     const row = result.rows[0];
     if (!row) {
+      return undefined;
+    }
+
+    if (row.active !== true) {
+      await this.expire(row);
       return undefined;
     }
 
@@ -127,18 +157,57 @@ export class AdminSessionStore {
     };
   }
 
-  async revoke(rawToken: string, reason: string): Promise<void> {
-    if (!rawToken) {
+  // One conditional UPDATE: of any number of parallel resolves, only the one
+  // that gets the row back reports the expiry.
+  private async expire(row: SessionRow): Promise<void> {
+    const marked = await this.db.query<{ id: string }>(
+      `UPDATE admin_sessions
+          SET revoked_at = NOW(), revoke_reason = 'expired'
+        WHERE id = $1 AND revoked_at IS NULL
+       RETURNING id`,
+      [row.session_id],
+    );
+
+    if (marked.rows.length !== 1 || !this.onExpired) {
       return;
     }
 
-    await this.db.query(
-      `UPDATE admin_sessions
-          SET revoked_at = COALESCE(revoked_at, NOW()),
-              revoke_reason = COALESCE(revoke_reason, $2)
-        WHERE token_hash = $1`,
-      [hashAdminSessionToken(rawToken), reason],
+    try {
+      await this.onExpired({ sessionId: row.session_id, adminUserId: row.admin_user_id, role: row.role });
+    } catch {
+      // Recording never turns a session lookup into an error.
+    }
+  }
+
+  /**
+   * Ends a session at sign-out and says whose it was, or undefined when it had
+   * already ended. A live session takes `reason`. One already past its expiry
+   * (on the clock resolve uses) ended by expiring: it is marked expired, and
+   * the result says it was not live. The one conditional UPDATE also decides
+   * between a sign-out and a parallel resolve of the same session: only one
+   * of them gets the row back, so the ending is reported once.
+   */
+  async revoke(rawToken: string, reason: string): Promise<RevokedAdminSession | undefined> {
+    if (!rawToken) {
+      return undefined;
+    }
+
+    const result = await this.db.query<{ session_id: string; admin_user_id: string; role: AdminRole; live: boolean }>(
+      `UPDATE admin_sessions s
+          SET revoked_at = NOW(),
+              revoke_reason = CASE WHEN s.expires_at > $3 THEN $2::text ELSE 'expired' END
+         FROM admin_users u
+        WHERE s.token_hash = $1
+          AND s.revoked_at IS NULL
+          AND u.id = s.admin_user_id
+       RETURNING s.id AS session_id, u.id AS admin_user_id, u.role, s.expires_at > $3 AS live`,
+      [hashAdminSessionToken(rawToken), reason, this.now()],
     );
+
+    const row = result.rows[0];
+    return row
+      ? { sessionId: row.session_id, adminUserId: row.admin_user_id, role: row.role, live: row.live === true }
+      : undefined;
   }
 
   async revokeAllForAdmin(adminUserId: string, reason: string): Promise<number> {

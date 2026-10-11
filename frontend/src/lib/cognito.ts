@@ -2,6 +2,7 @@ import {
     CognitoUserPool, CognitoUser, CognitoUserAttribute, AuthenticationDetails,
     CognitoUserSession
 } from 'amazon-cognito-identity-js';
+import { recordFetch } from './report/context';
 
 export type AuthTokens = {
     accessToken: string;
@@ -215,11 +216,12 @@ export function employerConfirmNewPassword(
 }
 
 async function workerWebSignUp(input: { phone: string }): Promise<void> {
-    const res = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/auth/worker/signup`, {
+    const url = `${process.env.NEXT_PUBLIC_API_BASE_URL}/auth/worker/signup`;
+    const res = await recordFetch({ method: 'POST', url }, () => fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phone: input.phone.trim() }),
-    });
+    }));
 
     if (res.ok) return;
 

@@ -9,6 +9,7 @@ import {
     postOnboardingAnswers,
     postOnboardingBack,
     type OnboardingState,
+    type ReferredJobSummary,
 } from '@/lib/api/worker';
 import {
     currentScreen,
@@ -35,7 +36,8 @@ import { WorkStep } from './WorkStep';
 import { transcribeVoiceAnswer } from '@/lib/onboarding-voice';
 import { TrustQuestionStep } from './TrustQuestionStep';
 import { PhotoStep } from './PhotoStep';
-import { DoneStep } from './DoneStep';
+import { DoneStep, type DoneAction, type DoneNext } from './DoneStep';
+import { ReferredJobStrip } from './ReferredJobStrip';
 
 /**
  * The one stateful component in the flow: it owns the reducer and every
@@ -104,6 +106,19 @@ export function OnboardingFlow({
     const pollsRef = useRef(0);
     const [pollsSpent, setPollsSpent] = useState(false);
 
+    // The job the worker came for, as the server last named it. HELD across
+    // responses rather than read raw: the server turns a failed read of it
+    // into `referredJob: null` instead of failing the step, and one such
+    // response must not pull the strip -- or the summary's ticket -- out from
+    // under the screen and put it back on the next. A response that names a
+    // job always wins, so a job recorded late, or the next one after an apply
+    // on another tab, still shows. `?? null`: an older API sends no field at
+    // all.
+    const serverJob = flow.server.referredJob ?? null;
+    const [heldJob, setHeldJob] = useState<ReferredJobSummary | null>(serverJob);
+    if (serverJob !== null && serverJob !== heldJob) setHeldJob(serverJob);
+    const referredJob = serverJob ?? heldJob;
+
     const screen = currentScreen(flow);
     // Parked on a step with no screen behind it (see the header comment).
     // `!== 'ready'` rather than `=== 'onboarding'` so a lifecycle added to the
@@ -153,9 +168,9 @@ export function OnboardingFlow({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    // A referred stranger who signed up from a shared job link still has that
-    // job waiting: `WorkerAuthForm` deliberately leaves the stash in place and
-    // this flow finishes the journey. Read in an effect, never during render --
+    // The fallback for a claim that never landed: `WorkerAuthForm` leaves the
+    // stash in place, so when the server has no job on file this tab can still
+    // finish the journey the old way. Read in an effect, never during render --
     // `sessionStorage` does not exist while this renders on the server.
     useEffect(() => {
         setHandoffJobId(validateJobId(readPendingReferral()?.jobId));
@@ -302,14 +317,30 @@ export function OnboardingFlow({
         }
     }
 
-    function finish() {
-        // The job the worker was applying for when they signed up, if any.
-        if (handoffJobId) {
-            clearPendingReferral();
+    // The summary's way on. The server's job wins: it is the record, and it
+    // knows whether the job is still open. The stash only steps in when the
+    // server has none on file, so a failed claim is never worse than before.
+    const doneNext: DoneNext = referredJob
+        ? (referredJob.open ? { kind: 'apply', job: referredJob } : { kind: 'closed', job: referredJob })
+        : (handoffJobId ? { kind: 'handoff' } : { kind: 'feed' });
+
+    function finish(action: DoneAction) {
+        // Done is where the stash's job is used up, whichever way the worker
+        // goes. (The mid-flow exits below leave it alone on purpose.)
+        clearPendingReferral();
+        const applyTo = action === 'apply' && referredJob?.open ? validateJobId(referredJob.id) : null;
+        if (applyTo) {
+            // Straight into the apply flow: the job page opens it from `apply=1`
+            // through its own Apply path, profile check included.
+            router.push(`/worker/jobs/${applyTo}?apply=1`);
+            return;
+        }
+        if (action === 'handoff' && handoffJobId) {
             router.replace(`/worker/jobs/${handoffJobId}`);
             return;
         }
-        router.replace('/worker/profile');
+        // The feed, not the profile: it is the page with the jobs on it.
+        router.replace('/worker/home');
     }
 
     const onDraftChange = (patch: Partial<OnboardingDraft>) => dispatch({ type: 'set_draft', patch });
@@ -332,7 +363,15 @@ export function OnboardingFlow({
         <OnboardingShell
             onSelectLanguage={selectLanguage}
             languageBusy={languageBusy}
-            progress={<ProgressSegments current={screen} />}
+            progress={(
+                <>
+                    <ProgressSegments current={screen} />
+                    {/* Under the rail, so every screen -- the exit panels and
+                        the summary included -- carries it without each one
+                        having to remember to. */}
+                    {referredJob ? <ReferredJobStrip job={referredJob} /> : null}
+                </>
+            )}
         >
             {flow.blocked ? exitPanel(tBlocked(flow.blocked))
                 : stuck ? exitPanel(tOnboarding('stuck'))
@@ -445,7 +484,7 @@ export function OnboardingFlow({
                 return (
                     <DoneStep
                         state={flow.server}
-                        hasJobHandoff={handoffJobId !== null}
+                        next={doneNext}
                         extractionStalled={pollsSpent}
                         onFinish={finish}
                     />

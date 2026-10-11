@@ -92,6 +92,12 @@ export type ReleaseRenderRequest =
       kind: 'onboarding_complete';
       workerId: string;
       language: PreferredLanguage;
+      /**
+       * How many referred job cards follow this welcome in the same release,
+       * so the welcome can say a job follows instead of "we
+       * will let you know". Absent or 0: the plain welcome.
+       */
+      referredJobCount?: number;
     }
   | {
       kind: 'account_notice';
@@ -112,23 +118,15 @@ export type ReleaseRenderRequest =
     }
   | {
       /**
-       * The job a worker was referred to, sent right after the welcome. Job
-       * referrals, migration 056.
+       * One open, unapplied job from the worker's referred-jobs list
+       * (migration 103), sent after the welcome as its own tappable card --
+       * the same message as a one-job alert. A job that closed
+       * or was applied to never reaches a request: the release supersedes
+       * its intent first, so there is no "filled" variant.
        */
       kind: 'referred_job';
       workerId: string;
       language: PreferredLanguage;
-      /**
-       * False when the claim carries no referrer — the visitor reached the
-       * public job page with no share tag and tapped Apply themselves. The copy
-       * must not claim a friend referred them when nobody did.
-       */
-      referred: boolean;
-      /**
-       * null when the referred job is no longer accepting applications. A
-       * worker may take days to finish onboarding, so this is resolved at send
-       * time rather than when the referral was claimed.
-       */
       job: {
         jobId: string;
         title: string;
@@ -141,7 +139,7 @@ export type ReleaseRenderRequest =
         payMin?: number | null;
         payMax?: number | null;
         payInterval?: string | null;
-      } | null;
+      };
     }
   | {
       kind: 'job_alert_digest';

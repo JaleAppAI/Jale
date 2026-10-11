@@ -3,11 +3,19 @@ import { handler } from '../../../../lambda/api/worker-profile-update';
 import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
 import { setWorkerCoordinates } from '../../../../lambda/lib/location';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
+import { setAuditContext } from '../../../../lambda/lib/audit/context';
+import { callerFor, expectContextBeforeWrite, withRequestId } from './audit-expectations';
 import { requestTradeAliasGeneration } from '../../../../lambda/lib/trade-alias-request';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/lib/location');
 jest.mock('../../../../lambda/legal/check-compliance');
+jest.mock('../../../../lambda/lib/audit/record', () => ({
+  ...jest.requireActual('../../../../lambda/lib/audit/record'),
+  recordAccess: jest.fn(),
+  recordAttempt: jest.fn(),
+}));
+jest.mock('../../../../lambda/lib/audit/context');
 jest.mock('../../../../lambda/lib/trade-alias-request');
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
@@ -28,7 +36,12 @@ describe('worker-profile-update', () => {
   beforeEach(() => {
     jest.resetAllMocks();
     process.env = { ...env, REQUIRED_TOS_VERSION: 'v1.0' };
-    mockGetDbPool.mockResolvedValue({ connect: jest.fn().mockResolvedValue({ query: mockQuery, release: mockRelease }) });
+    // The worker's users.id, which the change-record context names, is looked
+    // up before any write; every other statement goes to mockQuery as before.
+    const query = (text: string, values?: unknown[]) => (/^SELECT id FROM users WHERE cognito_sub = \$1$/.test(String(text))
+      ? Promise.resolve({ rows: [{ id: 'worker-1' }] })
+      : mockQuery(text, values));
+    mockGetDbPool.mockResolvedValue({ connect: jest.fn().mockResolvedValue({ query, release: mockRelease }) });
     mockSetWorkerCoordinates.mockResolvedValue(undefined);
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
     mockRequestTradeAliasGeneration.mockResolvedValue(undefined);
@@ -724,6 +737,25 @@ describe('worker-profile-update', () => {
         expect(res.statusCode).toBe(200);
         expect(usersUpdateCall()![1][3]).toBe('Soldador');
       });
+    });
+  });
+
+  describe('change context', () => {
+    it('states the worker before the first profile write', async () => {
+      mockQuery.mockImplementation((q: string) => (q.includes('INSERT INTO worker_profiles')
+        ? Promise.resolve({ rows: [{ user_id: 'u', skills: [], availability: 'full_time', years_experience: 7, location: 'Austin', bio: null }] })
+        : Promise.resolve({})));
+      const res = await handler(withRequestId(mkEv({ full_name: 'Fixture Name', availability: 'full_time' })));
+      expect(res.statusCode).toBe(200);
+      expect(setAuditContext).toHaveBeenCalledTimes(1);
+      expect(setAuditContext).toHaveBeenCalledWith(expect.anything(), callerFor('worker', 'worker-1'), 'worker.profile_update');
+      expectContextBeforeWrite(mockQuery, setAuditContext as jest.Mock, /UPDATE users SET/);
+    });
+
+    it('states nothing for a request refused before any write', async () => {
+      const res = await handler(mkEv({ availability: 'sometimes' }));
+      expect(res.statusCode).toBe(400);
+      expect(setAuditContext).not.toHaveBeenCalled();
     });
   });
 });

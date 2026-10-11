@@ -47,7 +47,10 @@ jest.mock('../../../../lambda/lib/employer-candidate-ranking', () => ({
   listEmployerCandidates: (...args: unknown[]) => mockListEmployerCandidates(...args),
 }));
 jest.mock('../../../../lambda/lib/unsubscribe-token', () => ({
-  mintUnsubscribeToken: (...args: unknown[]) => mockMintUnsubscribeToken(...args),
+  mintUnsubscribeToken: (...args: unknown[]) => {
+    sequence.push('mint');
+    return mockMintUnsubscribeToken(...args);
+  },
 }));
 jest.mock('../../../../lambda/lib/unsubscribe-secret', () => ({
   getUnsubscribeSecret: (...args: unknown[]) => {
@@ -230,6 +233,44 @@ describe('employer-digest-producer', () => {
     expect(warm).toBeGreaterThanOrEqual(0);
     expect(begin).toBeGreaterThanOrEqual(0);
     expect(warm).toBeLessThan(begin);
+  });
+
+  /** Every mint or secret read that happened while a transaction was open. */
+  function networkStepsInsideTransactions(): string[] {
+    const inside: string[] = [];
+    let open = false;
+    for (const step of sequence) {
+      if (step === 'BEGIN') open = true;
+      else if (step === 'COMMIT' || step === 'ROLLBACK') open = false;
+      else if (open && (step === 'mint' || step === 'getUnsubscribeSecret')) inside.push(step);
+    }
+    return inside;
+  }
+
+  it('mints every employer’s unsubscribe token before that employer’s BEGIN, never inside a transaction', async () => {
+    configureDb({
+      due: [dueRow(), dueRow({ employer_id: EMPLOYER_B, cognito_sub: 'sub-b' })],
+      jobs: { [EMPLOYER_A]: [{ id: JOB_1, title: 'Electrician' }], [EMPLOYER_B]: [{ id: JOB_2, title: 'Plumber' }] },
+    });
+    mockListEmployerCandidates.mockResolvedValue(rankingResult([candidate()]));
+    const result = await handler();
+    expect(result).toMatchObject({ due: 2, queued: 2, failed: 0 });
+    expect(sequence.filter((step) => step === 'mint')).toHaveLength(2);
+    expect(networkStepsInsideTransactions()).toEqual([]);
+  });
+
+  it('a mint failure still fails only an employer that has something to send; a quiet one stays quiet', async () => {
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    configureDb({
+      due: [dueRow(), dueRow({ employer_id: EMPLOYER_B, cognito_sub: 'sub-b' })],
+      jobs: { [EMPLOYER_A]: [], [EMPLOYER_B]: [{ id: JOB_2, title: 'Plumber' }] },
+    });
+    mockListEmployerCandidates.mockResolvedValue(rankingResult([candidate()]));
+    mockMintUnsubscribeToken.mockRejectedValue(new Error('unsubscribe_secret_throttled'));
+    const result = await handler();
+    expect(result).toMatchObject({ due: 2, quiet: 1, failed: 1, queued: 0 });
+    expect(mockQueueEmail).not.toHaveBeenCalled();
+    expect(networkStepsInsideTransactions()).toEqual([]);
   });
 
   // ── Due-selection delegation ───────────────────────────────────────────────

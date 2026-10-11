@@ -1,4 +1,7 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
+import type { PoolClient } from 'pg';
+import { auditCaller } from '../lib/audit/caller';
+import { setAuditContext } from '../lib/audit/context';
 import { getDbPool } from '../lib/db';
 import { isTwilioMessageSid, parseFormBody, validateTwilioSignature } from './lib/twilio';
 import { getTwilioSecret, requireTwilioStatusCallbackUrl } from './lib/twilio-secret';
@@ -66,13 +69,23 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     return response(400, 'malformed body');
   }
 
+  let client: PoolClient | undefined;
+  let transactionOpen = false;
   try {
     const pool = await getDbPool();
-    const result = await pool.query<{ matched: boolean; changed: boolean; source: string | null }>(
+    client = await pool.connect();
+    // Recording a delivery can update the support case the message belongs
+    // to, which the change log covers; the platform is named as its actor.
+    await client.query('BEGIN');
+    transactionOpen = true;
+    await setAuditContext(client, auditCaller(event, { kind: 'platform' }, 'whatsapp'), 'whatsapp.status_callback');
+    const result = await client.query<{ matched: boolean; changed: boolean; source: string | null }>(
       `SELECT matched, changed, source
          FROM jale_twilio_callback.record_twilio_delivery_status($1, $2, $3, $4)`,
       [sid, status, errorCode, errorMessage],
     );
+    await client.query('COMMIT');
+    transactionOpen = false;
     const outcome = result.rows[0] ?? { matched: false, changed: false, source: null };
     if (!outcome.matched) {
       console.warn(JSON.stringify({ metric: 'WhatsAppStatusCallbackUnknownSid', status }));
@@ -83,6 +96,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       console.log(JSON.stringify({ metric: 'WhatsAppDeliveryStatus', status, source: outcome.source }));
     }
   } catch (error) {
+    if (client && transactionOpen) await client.query('ROLLBACK').catch(() => undefined);
     // Internal persistence failures are retryable. The structured log makes the
     // failure observable without exposing message or phone identifiers.
     console.error(JSON.stringify({
@@ -90,6 +104,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       errorType: error instanceof Error ? error.name : 'UnknownError',
     }));
     return response(503, 'retry');
+  } finally {
+    client?.release();
   }
   return response(200, 'ok');
 };

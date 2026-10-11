@@ -1,72 +1,18 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import ts from 'typescript';
+import { compileAdminSources } from './lib/check-harness.mjs';
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const outDir = resolve(root, '.test-artifacts/action-dispatch');
-const sourceFiles = [
-  'src/lib/action-policy.ts',
-  'src/lib/action-requests.ts',
-  'src/lib/audit-contract.ts',
-  'src/lib/server/db-secret.ts',
-  'src/lib/server/db.ts',
-  'src/lib/server/session-claims.ts',
-  'src/lib/server/admin-cases.ts',
-  'src/lib/server/admin-action-dispatch.ts',
-].map((relativePath) => resolve(root, relativePath));
-
-for (const sourcePath of sourceFiles) {
-  assert.equal(existsSync(sourcePath), true, `${sourcePath} should exist`);
-}
-
-mkdirSync(outDir, { recursive: true });
-
-const program = ts.createProgram(sourceFiles, {
-  module: ts.ModuleKind.ES2022,
-  target: ts.ScriptTarget.ES2022,
-  moduleResolution: ts.ModuleResolutionKind.Bundler,
-  strict: true,
-  skipLibCheck: true,
-  noEmitOnError: true,
-  outDir,
+// Structure-preserving compile: the dispatch reaches the audit helpers in
+// src/lib/server/audit/, which a flattened emit cannot resolve.
+const { load } = compileAdminSources({
+  name: 'action-dispatch',
+  sources: ['src/lib/server/admin-action-dispatch.ts'],
+  fakes: {
+    'src/lib/server/db.ts': 'scripts/fakes/db.mjs',
+    '@aws-sdk/client-cloudwatch-logs': 'scripts/fakes/cloudwatch-logs.mjs',
+  },
 });
 
-const diagnostics = ts.getPreEmitDiagnostics(program);
-assert.deepEqual(
-  diagnostics.map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')),
-  [],
-  'admin action dispatch module should typecheck without diagnostics',
-);
-
-program.emit(undefined, (fileName, data) => {
-  if (fileName.endsWith('.js')) {
-    const moduleName = fileName.slice(fileName.lastIndexOf('/') + 1, -3);
-    writeFileSync(
-      resolve(outDir, `${moduleName}.mjs`),
-      data
-        .replaceAll('"../action-requests"', '"./action-requests.mjs"')
-        .replaceAll("'../action-requests'", "'./action-requests.mjs'")
-        .replaceAll('"../audit-contract"', '"./audit-contract.mjs"')
-        .replaceAll("'../audit-contract'", "'./audit-contract.mjs'")
-        .replaceAll('"../action-policy"', '"./action-policy.mjs"')
-        .replaceAll("'../action-policy'", "'./action-policy.mjs'")
-        .replaceAll('"./action-policy"', '"./action-policy.mjs"')
-        .replaceAll("'./action-policy'", "'./action-policy.mjs'")
-        .replaceAll('"./audit-contract"', '"./audit-contract.mjs"')
-        .replaceAll("'./audit-contract'", "'./audit-contract.mjs'")
-        .replaceAll('"./db-secret"', '"./db-secret.mjs"')
-        .replaceAll("'./db-secret'", "'./db-secret.mjs'")
-        .replaceAll('"./admin-cases"', '"./admin-cases.mjs"')
-        .replaceAll("'./admin-cases'", "'./admin-cases.mjs'")
-        .replaceAll('"./db"', '"./db.mjs"')
-        .replaceAll("'./db'", "'./db.mjs'"),
-    );
-  }
-});
-
-const dispatch = await import(pathToFileURL(resolve(outDir, 'admin-action-dispatch.mjs')));
+const dispatch = await load('src/lib/server/admin-action-dispatch.ts');
 
 assert.deepEqual(dispatch.buildAdminReplyOutboxInsert({
   targetId: 'case-1',

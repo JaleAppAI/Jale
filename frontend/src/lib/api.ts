@@ -1,5 +1,6 @@
 import { ApiError } from './api/errors';
 import { getAuthBridge } from './auth-bridge';
+import { recordApiError, recordApiErrorResponse, recordFetch } from './report/context';
 
 export class LegalWallError extends Error {
     constructor() {
@@ -57,7 +58,34 @@ function appLocaleHeader(): Record<string, string> {
     return match ? { 'Accept-Language': match[1] } : {};
 }
 
+/**
+ * Every API call. Each underlying request, retries and the replay after a
+ * refresh included, is recorded for problem reports as a path pattern with
+ * its status and duration, and a call that ends in failure is recorded as
+ * "<status> <code>". Recording only observes: the caller gets exactly the
+ * response or the error that `sendApiRequest` produced.
+ */
 export async function apiFetch(
+    path: string,
+    options?: RequestInit,
+    token?: string,
+    opts?: ApiFetchOptions,
+): Promise<Response> {
+    let res: Response;
+    try {
+        res = await sendApiRequest(path, options, token, opts);
+    } catch (err) {
+        if (err instanceof ApiError) recordApiError(err.status, err.code);
+        else if (isLegalWallError(err)) recordApiError(403, 'legal_required');
+        // A caller that aborted on purpose has not met a failure.
+        else if (!options?.signal?.aborted) recordApiError(0);
+        throw err;
+    }
+    if (res.status >= 400) recordApiErrorResponse(res);
+    return res;
+}
+
+async function sendApiRequest(
     path: string,
     options?: RequestInit,
     token?: string,
@@ -83,8 +111,9 @@ export async function apiFetch(
             else callerSignal.addEventListener('abort', forwardAbort);
         }
 
+        const url = `${process.env.NEXT_PUBLIC_API_BASE_URL}${path}`;
         try {
-            return await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}${path}`, {
+            return await recordFetch({ method: options?.method ?? 'GET', url }, () => fetch(url, {
                 ...options,
                 signal: controller.signal,
                 headers: {
@@ -93,7 +122,7 @@ export async function apiFetch(
                     ...(authToken ? { Authorization: authToken } : {}),
                     ...options?.headers,
                 },
-            });
+            }));
         } catch (err) {
             if (timedOut) throw new ApiError(0, 'timeout');
             // A caller who aborted deliberately (effect cleanup, navigation)

@@ -25,6 +25,14 @@
 # never touches JaleNetworkStack or JaleDatabaseStack even though both are
 # synthesized to resolve the cross-stack secret-read grants.
 #
+# AUDIT_DB_SHARED_PRELOAD_LIBRARIES_DEFAULT (required) is the engine's default
+# shared_preload_libraries from the pre-check (`none` when it is empty): the
+# same variable the deploy workflow passes as `-c dbSharedPreloadLibrariesDefault`.
+# The CDK app will not synthesize production without it, and `cdk destroy`
+# synthesizes the app too, so both directions pass it, and the script refuses
+# to call CDK at all without it. The refusal names the variable; the value is
+# never printed.
+#
 # WHATSAPP_ALARM_TOPIC_ARN (optional) wires the TTL auto-teardown alarms to a
 # real destination. This is the SAME environment variable the deploy workflow
 # already feeds `-c whatsappAlarmTopicArn` from (vars.WHATSAPP_ALARM_TOPIC_ARN,
@@ -71,13 +79,41 @@ if [ "$DEPLOYMENT_ENVIRONMENT" != "dev" ] && [ "$DEPLOYMENT_ENVIRONMENT" != "pro
   exit 1
 fi
 
+# The preload default (see the header): checked before anything else runs.
+PRELOAD_DEFAULT="${AUDIT_DB_SHARED_PRELOAD_LIBRARIES_DEFAULT:-}"
+if [ -z "${PRELOAD_DEFAULT//[[:space:]]/}" ]; then
+  echo "!! AUDIT_DB_SHARED_PRELOAD_LIBRARIES_DEFAULT is not set (or is empty)." >&2
+  echo "   Export the engine's default preload list from the pre-check (or none), then" >&2
+  echo "   re-run. The CDK app needs it to synthesize, for deploy and destroy alike." >&2
+  exit 1
+fi
+PRELOAD_CONTEXT=(-c "dbSharedPreloadLibrariesDefault=$PRELOAD_DEFAULT")
+
+# Everything CDK prints goes through redact_ids, so the bastion session's
+# terminal output carries no resource identifiers: ARNs (the stack ARN, the
+# alarm topic), account ids, instance and other resource ids, IP addresses.
+# The masking is for display only; nothing parses CDK's output, and
+# scripts/run-migrations.sh finds the bastion through CloudFormation itself.
+# Each numeric rule runs twice, because a match consumes the character that
+# separates it from an adjacent one.
+redact_ids() {
+  sed -E \
+    -e "s#arn:aws[A-Za-z0-9-]*:[^[:space:]\"',)]*#<arn>#g" \
+    -e 's#i-[0-9a-f]{8,17}#<instance-id>#g' \
+    -e 's#(sg|subnet|vpc|eni|vol|ami|igw|nat|rtb|acl|snap|eipalloc|lt)-[0-9a-f]{8,17}#<resource-id>#g' \
+    -e 's#(^|[^0-9])[0-9]{12}([^0-9]|$)#\1<account-id>\2#g' \
+    -e 's#(^|[^0-9])[0-9]{12}([^0-9]|$)#\1<account-id>\2#g' \
+    -e 's#(^|[^0-9.])([0-9]{1,3}\.){3}[0-9]{1,3}([^0-9.]|$)#\1<ip>\3#g' \
+    -e 's#(^|[^0-9.])([0-9]{1,3}\.){3}[0-9]{1,3}([^0-9.]|$)#\1<ip>\3#g'
+}
+
 OUT_DIR="$(cd "$(dirname "$0")/.." && pwd)/.tmp/jale-cdk-out-bastion"
 mkdir -p "$OUT_DIR"
 cd "$(dirname "$0")/../infra"
 
 if [ "$DESTROY" -eq 1 ]; then
   echo ">> Destroying JaleBastionStack (environment=$DEPLOYMENT_ENVIRONMENT)..."
-  npx cdk -c bastionOnly=true -c "environment=$DEPLOYMENT_ENVIRONMENT" destroy JaleBastionStack --exclusively -o "$OUT_DIR" --force
+  npx cdk -c bastionOnly=true -c "environment=$DEPLOYMENT_ENVIRONMENT" "${PRELOAD_CONTEXT[@]}" destroy JaleBastionStack --exclusively -o "$OUT_DIR" --force 2>&1 | redact_ids
   echo ">> Bastion destroyed."
 else
   # Passed as a context flag only when set: `-c whatsappAlarmTopicArn=` with an
@@ -86,7 +122,7 @@ else
   ALARM_CONTEXT=()
   if [ -n "${WHATSAPP_ALARM_TOPIC_ARN:-}" ]; then
     ALARM_CONTEXT=(-c "whatsappAlarmTopicArn=$WHATSAPP_ALARM_TOPIC_ARN")
-    echo ">> TTL alarms will notify: $WHATSAPP_ALARM_TOPIC_ARN"
+    echo ">> TTL alarms will notify the topic in WHATSAPP_ALARM_TOPIC_ARN."
   else
     echo ">> WHATSAPP_ALARM_TOPIC_ARN is not set -- the bastion TTL alarms will"
     echo "   be created with NO notification action. The sweeper still stops the"
@@ -94,7 +130,7 @@ else
   fi
 
   echo ">> Deploying JaleBastionStack (environment=$DEPLOYMENT_ENVIRONMENT)..."
-  npx cdk -c bastionOnly=true -c "environment=$DEPLOYMENT_ENVIRONMENT" "${ALARM_CONTEXT[@]}" deploy JaleBastionStack --exclusively -o "$OUT_DIR" --require-approval never
+  npx cdk -c bastionOnly=true -c "environment=$DEPLOYMENT_ENVIRONMENT" "${PRELOAD_CONTEXT[@]}" "${ALARM_CONTEXT[@]}" deploy JaleBastionStack --exclusively -o "$OUT_DIR" --require-approval never 2>&1 | redact_ids
   echo ""
   echo ">> Bastion up. Remember to tear it down when finished:"
   echo "     scripts/deploy-bastion.sh --destroy"

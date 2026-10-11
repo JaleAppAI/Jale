@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
 import { screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import {
   expectNoRawMessageKeys,
   message,
@@ -8,7 +9,7 @@ import {
   type TestLocale,
 } from '@/components/worker/onboarding/__tests__/render-intl';
 import { emptyAnswerDraft } from '@/lib/application-answers-form';
-import { QuestionFieldRow } from '../FieldControls';
+import { QuestionFieldRow, UploadButton } from '../FieldControls';
 
 /**
  * Prod report 2026-09-08: a prefilled field on the web details step showed the
@@ -50,5 +51,39 @@ describe('QuestionFieldRow — prefilled hint', () => {
       screen.queryByText(message('worker_application_details.prefilled_hint', 'es')),
     ).not.toBeInTheDocument();
     expectNoRawMessageKeys(container);
+  });
+});
+
+/**
+ * The apply flow's document picker. Its file input used to be `hidden`
+ * (display: none), which cannot take focus, so the control could not be
+ * reached by keyboard at all.
+ */
+describe('UploadButton', () => {
+  it('is reached by Tab, named by its label', async () => {
+    const user = userEvent.setup();
+    renderIntl(
+      <>
+        <button type="button">before</button>
+        <UploadButton label="Upload a fake document" onFile={vi.fn()} />
+      </>,
+    );
+    screen.getByRole('button', { name: 'before' }).focus();
+    await user.tab();
+    expect(screen.getByLabelText('Upload a fake document')).toHaveFocus();
+  });
+
+  it('is skipped by Tab while disabled', async () => {
+    const user = userEvent.setup();
+    renderIntl(
+      <>
+        <button type="button">before</button>
+        <UploadButton disabled label="Upload a fake document" onFile={vi.fn()} />
+        <button type="button">after</button>
+      </>,
+    );
+    screen.getByRole('button', { name: 'before' }).focus();
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'after' })).toHaveFocus();
   });
 });

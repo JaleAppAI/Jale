@@ -1,0 +1,134 @@
+// Guard tests for scripts/validate-github-workflows.mjs. Run with: node --test scripts/validate-github-workflows.test.mjs
+//
+// The validator runs over a copy of every file it reads, once as the
+// repository holds them (it must pass, silently) and once per mutation of the
+// deploy workflow (it must fail, with the pin that catches that mutation). The
+// mutations are the ways a later edit could let a deploy past a failed
+// database posture gate, or ignore the verification after it.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
+const VALIDATOR = join(repoRoot, 'scripts', 'validate-github-workflows.mjs');
+const DEPLOY = '.github/workflows/_reusable-deploy.yml';
+// Every file the validator reads.
+const FILES = [
+  '.github/CODEOWNERS',
+  '.github/actions/setup-node-cache/action.yml',
+  '.github/actions/aws-oidc-login/action.yml',
+  '.github/workflows/pr-validate.yml',
+  '.github/workflows/deploy-production.yml',
+  '.github/workflows/_reusable-validate.yml',
+  DEPLOY,
+  'scripts/run-admin-migration.ps1',
+  'scripts/bootstrap-admin-user.ps1',
+  'scripts/deploy-bastion.ps1',
+  'scripts/deploy-bastion.sh',
+  'scripts/run-production-upgrade-020b-040.sh',
+  'docs/production-upgrade-020b-040.md',
+  'infra/scripts/check-prepared-login-secrets.ts',
+  'frontend/package.json',
+];
+
+/** Runs the validator over a copy of the files, the deploy workflow first passed through `mutate`. */
+function validate(mutate) {
+  const dir = mkdtempSync(join(tmpdir(), 'validate-workflows-'));
+  try {
+    for (const file of FILES) {
+      mkdirSync(dirname(join(dir, file)), { recursive: true });
+      cpSync(join(repoRoot, file), join(dir, file));
+    }
+    if (mutate) {
+      const before = readFileSync(join(dir, DEPLOY), 'utf8');
+      const after = mutate(before);
+      assert.notEqual(after, before, 'the mutation must change the workflow');
+      writeFileSync(join(dir, DEPLOY), after);
+    }
+    const run = spawnSync(process.execPath, [VALIDATOR], { cwd: dir, encoding: 'utf8' });
+    return { status: run.status, stdout: run.stdout, stderr: run.stderr };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** Adds a line to a step, right under its `- name:` line. The step must exist once. */
+function addToStep(step, line) {
+  return (text) => {
+    const at = `\n      - name: ${step}\n`;
+    assert.equal(text.split(at).length, 2, `one step named ${step}`);
+    return text.replace(at, `${at}        ${line}\n`);
+  };
+}
+
+/** Replaces exactly one occurrence of `from`. */
+function replaceOnce(from, to) {
+  return (text) => {
+    assert.equal(text.split(from).length, 2, `one occurrence of ${from}`);
+    return text.replace(from, to);
+  };
+}
+
+const GATE_PIN = '(deploy job, Database posture gate) must be exactly the pinned step';
+const VERIFICATION_PIN = '(deploy job, Database posture verification) must be exactly the pinned step';
+const DEPLOY_PIN = '(deploy job, Deploy CDK stacks) must set only working-directory, shell, env and run';
+const ORDER_PIN = 'must run these steps back to back, in this order';
+const ONCE_PIN = '(deploy job) must have exactly one step named Database posture gate';
+
+const GATE_STEP = [
+  '      - name: Database posture gate',
+  '        working-directory: infra',
+  '        shell: bash',
+  '        env:',
+  '          POSTURE_OVERRIDE: ${{ inputs.posture-override }}',
+  '          POSTURE_OVERRIDE_REASON: ${{ inputs.posture-override-reason }}',
+  '        run: node scripts/db-posture-gate.mjs --phase pre',
+  '',
+].join('\n');
+
+test('the repository files pass, with no output', () => {
+  const run = validate();
+  assert.equal(run.stderr, '');
+  assert.equal(run.stdout, '');
+  assert.equal(run.status, 0);
+});
+
+const MUTATIONS = [
+  ['a condition that skips the gate', addToStep('Database posture gate', 'if: false'), GATE_PIN],
+  ['a condition on the verification', addToStep('Database posture verification', 'if: always()'), VERIFICATION_PIN],
+  ['continue-on-error on the gate', addToStep('Database posture gate', 'continue-on-error: true'), GATE_PIN],
+  ['continue-on-error on the verification', addToStep('Database posture verification', 'continue-on-error: true'), VERIFICATION_PIN],
+  ['a quoted continue-on-error key on the gate', addToStep('Database posture gate', '"continue-on-error": true'), GATE_PIN],
+  ['an expression for continue-on-error on the gate', addToStep('Database posture gate', 'continue-on-error: ${{ true }}'), GATE_PIN],
+  ['the gate\'s failure swallowed by its command',
+    replaceOnce('run: node scripts/db-posture-gate.mjs --phase pre\n', 'run: node scripts/db-posture-gate.mjs --phase pre || true\n'), GATE_PIN],
+  ['the verification\'s failure swallowed by its command',
+    replaceOnce('run: node scripts/db-posture-gate.mjs --phase post\n', 'run: node scripts/db-posture-gate.mjs --phase post; exit 0\n'), VERIFICATION_PIN],
+  ['a third environment variable on the gate',
+    replaceOnce('          POSTURE_OVERRIDE_REASON: ${{ inputs.posture-override-reason }}\n        run: node scripts/db-posture-gate.mjs --phase pre\n',
+      '          POSTURE_OVERRIDE_REASON: ${{ inputs.posture-override-reason }}\n          NODE_OPTIONS: --require ./skip.js\n        run: node scripts/db-posture-gate.mjs --phase pre\n'), GATE_PIN],
+  ['a condition that deploys after a failed gate', addToStep('Deploy CDK stacks', 'if: always()'), DEPLOY_PIN],
+  ['a quoted condition on the deploy', addToStep('Deploy CDK stacks', '\'if\': ${{ !cancelled() }}'), DEPLOY_PIN],
+  ['continue-on-error on the deploy', addToStep('Deploy CDK stacks', 'continue-on-error: true'), DEPLOY_PIN],
+  ['the gate after the deploy',
+    (text) => replaceOnce(GATE_STEP, '')(text).replace('      - name: Database posture verification\n', `${GATE_STEP}      - name: Database posture verification\n`),
+    ORDER_PIN],
+  ['a second gate step, later in the job',
+    replaceOnce('      - name: Deployment summary\n', `${GATE_STEP}\n      - name: Deployment summary\n`), ONCE_PIN],
+];
+
+for (const [what, mutate, pin] of MUTATIONS) {
+  test(`fails on ${what}, with the pin that catches it`, () => {
+    const run = validate(mutate);
+    assert.equal(run.status, 1, `exit status for ${what}`);
+    const failures = run.stderr.split('\n').filter(Boolean);
+    assert.ok(failures.length > 0, 'at least one failure line');
+    for (const line of failures) {
+      assert.ok(line.includes(pin), `every failure line names the pin "${pin}"; got: ${line}`);
+    }
+  });
+}

@@ -93,6 +93,13 @@ export type TemplateKey =
   | 'v2_restarted'
   | 'v2_language_changed'
   | 'v2_ready'
+  // ── V2 WhatsApp door (sprint 27): the job a referral link was opened for ──
+  | 'v2_referral_ack'
+  | 'v2_referral_ack_otp'
+  | 'v2_otp_enter_code'
+  | 'v2_referral_ack_bound'
+  | 'v2_ready_jobs_one'
+  | 'v2_ready_jobs_many'
   | 'v2_options_footer'
   // ── V2 voice (trust-question voice notes; Task 6 graceful-fallback copy) ──
   | 'v2_voice_ack'
@@ -435,6 +442,36 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
   v2_ready: {
     es: 'Tu perfil esta listo. Te avisaremos cuando haya trabajo para ti.',
     en: 'Your profile is ready. We will let you know when there is work for you.',
+  },
+  // Sprint 27: the WhatsApp door names the job a referral link was opened
+  // for. {{title}} and {{company}} are employer free text, rendered as
+  // stored. The first three are PRE-AUTH: they go to a phone whose account
+  // status is unknown, so none of them may imply that an account exists.
+  v2_referral_ack: {
+    es: 'Recibimos tu solicitud para: {{title}} - {{company}}. Sigue los pasos y te enviamos el trabajo para postularte.',
+    en: 'Got it: {{title}} - {{company}}. Follow the steps and we will send you the job so you can apply.',
+  },
+  v2_referral_ack_otp: {
+    es: 'Recibimos tu solicitud para: {{title}} - {{company}}. Escribe el codigo que te enviamos para continuar.',
+    en: 'Got it: {{title}} - {{company}}. Enter the code we sent you to continue.',
+  },
+  // Not v2_otp_sent ("we sent you a code"): no new code was sent.
+  v2_otp_enter_code: {
+    es: 'Escribe el codigo que te enviamos para continuar.',
+    en: 'Enter the code we sent you to continue.',
+  },
+  v2_referral_ack_bound: {
+    es: 'Guardamos este trabajo para ti: {{title}} - {{company}}. Termina tu perfil y te lo enviamos.',
+    en: 'We saved this job for you: {{title}} - {{company}}. Finish your profile and we will send it to you.',
+  },
+  // The welcome when referred job cards follow it (the cards carry the jobs).
+  v2_ready_jobs_one: {
+    es: 'Tu perfil esta listo. Aqui tienes el trabajo que te interesa.',
+    en: 'Your profile is ready. Here is the job you were interested in.',
+  },
+  v2_ready_jobs_many: {
+    es: 'Tu perfil esta listo. Aqui tienes los trabajos que te interesan.',
+    en: 'Your profile is ready. Here are the jobs you were interested in.',
   },
   v2_options_footer: {
     es: 'Responde con el numero.',

@@ -1,13 +1,22 @@
 import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { handler } from '../../../../lambda/api/employer-jobs-delete';
-import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
+import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
+import { setAuditContext } from '../../../../lambda/lib/audit/context';
+import { callerFor, expectContextBeforeWrite, withRequestId } from './audit-expectations';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
+jest.mock('../../../../lambda/lib/audit/record', () => ({
+  ...jest.requireActual('../../../../lambda/lib/audit/record'),
+  recordAccess: jest.fn(),
+  recordAttempt: jest.fn(),
+}));
+jest.mock('../../../../lambda/lib/audit/context');
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
+const mockSetInternalUserRlsContext = setInternalUserRlsContext as jest.Mock;
 const mockCheckCompliance = checkCompliance as jest.Mock;
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
@@ -68,27 +77,57 @@ describe('employer-jobs-delete', () => {
     expect(mockQuery).not.toHaveBeenCalledWith(expect.stringMatching(/DELETE FROM jobs/i), expect.anything());
   });
 
-  it('returns 200, deletes dependents in order, and commits', async () => {
+  it('returns 200, deletes the conversations then the job, leaves documents and tokens to the cascades, and commits', async () => {
     const calls: string[] = [];
     mockQuery.mockImplementation((sql: string) => {
       calls.push(sql.replace(/\s+/g, ' ').trim());
-      if (/FROM jobs\s+JOIN users/i.test(sql)) return { rowCount: 1, rows: [{ id: JOB_ID, hired_count: 0 }] };
+      if (/FROM jobs\s+JOIN users/i.test(sql)) return { rowCount: 1, rows: [{ id: JOB_ID, hired_count: 0, employer_user_id: 'employer-user-id' }] };
       return { rowCount: 1, rows: [] };
     });
     const res = await handler(makeEvent());
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toEqual({ deleted: true, id: JOB_ID });
     const deletes = calls.filter((c) => c.startsWith('DELETE'));
+    expect(deletes).toHaveLength(2);
     expect(deletes[0]).toMatch(/DELETE FROM job_conversations/i);
-    expect(deletes[1]).toMatch(/DELETE FROM worker_documents/i);
-    expect(deletes[2]).toMatch(/DELETE FROM document_upload_tokens/i);
-    expect(deletes[3]).toMatch(/DELETE FROM jobs/i);
+    expect(deletes[1]).toMatch(/DELETE FROM jobs/i);
+    expect(calls.some((c) => /worker_documents|document_upload_tokens/i.test(c))).toBe(false);
     expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+  });
+
+  it("sets the employer's internal id from the ownership row before any delete", async () => {
+    const order: string[] = [];
+    mockQuery.mockImplementation((sql: string) => {
+      order.push(sql.replace(/\s+/g, ' ').trim());
+      if (/FROM jobs\s+JOIN users/i.test(sql)) return { rowCount: 1, rows: [{ id: JOB_ID, hired_count: 0, employer_user_id: 'employer-user-id' }] };
+      return { rowCount: 1, rows: [] };
+    });
+    mockSetInternalUserRlsContext.mockImplementation(async () => { order.push('SET INTERNAL'); });
+    const res = await handler(makeEvent());
+    expect(res.statusCode).toBe(200);
+    expect(mockSetInternalUserRlsContext).toHaveBeenCalledWith(expect.anything(), 'employer-user-id');
+    const ownership = order.findIndex((sql) => /FROM jobs JOIN users/i.test(sql));
+    expect(order[ownership]).toMatch(/u\.id AS employer_user_id/);
+    expect(order.indexOf('SET INTERNAL')).toBeGreaterThan(ownership);
+    expect(order.indexOf('SET INTERNAL')).toBeLessThan(order.findIndex((sql) => sql.startsWith('DELETE')));
+  });
+
+  it('returns 500, rolls back and never deletes the job when a conversation survives the delete', async () => {
+    mockQuery.mockImplementation((sql: string) => {
+      if (/FROM jobs\s+JOIN users/i.test(sql)) return { rowCount: 1, rows: [{ id: JOB_ID, hired_count: 0, employer_user_id: 'employer-user-id' }] };
+      if (/SELECT EXISTS \(SELECT 1 FROM job_conversations/i.test(sql)) return { rowCount: 1, rows: [{ remaining: true }] };
+      return { rowCount: 1, rows: [] };
+    });
+    const res = await handler(makeEvent());
+    expect(res.statusCode).toBe(500);
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
+    expect(mockQuery).not.toHaveBeenCalledWith(expect.stringMatching(/DELETE FROM jobs/i), expect.anything());
   });
 
   it('returns 500 and rolls back when the final job delete affects 0 rows', async () => {
     mockQuery.mockImplementation((sql: string) => {
-      if (/FROM jobs\s+JOIN users/i.test(sql)) return { rowCount: 1, rows: [{ id: JOB_ID, hired_count: 0 }] };
+      if (/FROM jobs\s+JOIN users/i.test(sql)) return { rowCount: 1, rows: [{ id: JOB_ID, hired_count: 0, employer_user_id: 'employer-user-id' }] };
       if (/DELETE FROM jobs/i.test(sql)) return { rowCount: 0, rows: [] };
       return { rowCount: 1, rows: [] };
     });
@@ -103,7 +142,7 @@ describe('employer-jobs-delete', () => {
     mockQuery.mockImplementation((sql: string, params?: unknown[]) => {
       calls.push([sql.replace(/\s+/g, ' ').trim(), params]);
       if (/FROM jobs\s+JOIN users/i.test(sql)) {
-        return { rowCount: 1, rows: [{ id: JOB_ID, hired_count: 0, status: 'active', public_listing_enabled: true, public_code: 'ABC123' }] };
+        return { rowCount: 1, rows: [{ id: JOB_ID, hired_count: 0, status: 'active', public_listing_enabled: true, public_code: 'ABC123', employer_user_id: 'employer-user-id' }] };
       }
       return { rowCount: 1, rows: [] };
     });
@@ -123,12 +162,35 @@ describe('employer-jobs-delete', () => {
   it('does NOT enqueue a visibility event for a paused (non-active) job even if listed', async () => {
     mockQuery.mockImplementation((sql: string) => {
       if (/FROM jobs\s+JOIN users/i.test(sql)) {
-        return { rowCount: 1, rows: [{ id: JOB_ID, hired_count: 0, status: 'paused', public_listing_enabled: true, public_code: 'ABC123' }] };
+        return { rowCount: 1, rows: [{ id: JOB_ID, hired_count: 0, status: 'paused', public_listing_enabled: true, public_code: 'ABC123', employer_user_id: 'employer-user-id' }] };
       }
       return { rowCount: 1, rows: [] };
     });
     await handler(makeEvent());
     const enqueued = mockQuery.mock.calls.some((c) => typeof c[0] === 'string' && c[0].includes('enqueue_job_visibility_event'));
     expect(enqueued).toBe(false);
+  });
+
+  describe('change context', () => {
+    it('states the employer before the deletes, whose cascades reach covered tables', async () => {
+      mockQuery.mockImplementation((sql: string) => {
+        if (/FROM jobs\s+JOIN users/i.test(sql)) return { rowCount: 1, rows: [{ id: JOB_ID, hired_count: 0, employer_user_id: 'employer-user-id' }] };
+        return { rowCount: 1, rows: [] };
+      });
+      const res = await handler(withRequestId(makeEvent()));
+      expect(res.statusCode).toBe(200);
+      expect(setAuditContext).toHaveBeenCalledTimes(1);
+      expect(setAuditContext).toHaveBeenCalledWith(
+        expect.objectContaining({ query: mockQuery }), callerFor('employer', 'employer-user-id'), 'employer.job_delete');
+      expectContextBeforeWrite(mockQuery, setAuditContext as jest.Mock, /DELETE FROM job_conversations/);
+      expect((setAuditContext as jest.Mock).mock.invocationCallOrder[0])
+        .toBeGreaterThan(mockSetInternalUserRlsContext.mock.invocationCallOrder[0]);
+    });
+
+    it('states nothing when the job is not the caller\'s', async () => {
+      mockQuery.mockImplementation(() => ({ rowCount: 0, rows: [] }));
+      expect((await handler(makeEvent())).statusCode).toBe(403);
+      expect(setAuditContext).not.toHaveBeenCalled();
+    });
   });
 });

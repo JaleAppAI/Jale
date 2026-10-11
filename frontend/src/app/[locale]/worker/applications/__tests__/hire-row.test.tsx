@@ -271,7 +271,7 @@ describe('worker applications -- the hired row', () => {
         application_id: 'bbbbbbbb-1111-4222-8333-444444444444',
         job_id: 'job-2',
         job_title: 'Concrete Finisher',
-        company_name: 'RM Construction',
+        company_name: 'NB Construction',
         hire: hire({ location: 'El Paso, TX', pay: null, start_date: null }),
       }),
     ]);

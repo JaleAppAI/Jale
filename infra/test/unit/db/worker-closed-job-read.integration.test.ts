@@ -1,4 +1,5 @@
 import { Client } from 'pg';
+import { describeInProfiles } from './helpers/login-pool';
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
 if (!databaseUrl) {
@@ -7,7 +8,11 @@ if (!databaseUrl) {
     expect(databaseUrl).toBeUndefined();
   });
 }
-const maybeDescribe = databaseUrl ? describe : describe.skip;
+// These tests check row policies as the standard and request test beds apply
+// them, so they run in those profiles only. Without a database URL the suite
+// still skips.
+const maybeDescribe = (name: string, fn: () => void): void =>
+  describeInProfiles(['standard', 'request'], name, fn);
 
 function roleUrl(base: string, role: string, password: string): string {
   const url = new URL(base);

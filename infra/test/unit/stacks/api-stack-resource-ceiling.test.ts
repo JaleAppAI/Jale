@@ -45,6 +45,12 @@ const CI_PRODUCTION_CONTEXT: Record<string, unknown> = {
   // test does not depend on the developer's environment.
   publicSiteBaseUrl: 'https://jaleapp.ai',
   whatsappBusinessNumber: '15551234567',
+  // The audit stacks' required production context. Placeholder
+  // values: the pre-checks decide the real ones.
+  guardDutyMode: 'create',
+  securityHubMode: 'create',
+  configMode: 'create',
+  dbSharedPreloadLibrariesDefault: 'pg_stat_statements',
 };
 
 // `lib/app-composition.ts` reads these for every stack's `env`, exactly as the
@@ -89,6 +95,10 @@ const EXPECTED_STACKS = [
   'JaleAdminStack',
   'JaleAiStack',
   'JaleApiStack',
+  'JaleAuditArchiveStack',
+  'JaleAuditEdgeStack',
+  'JaleAuditEdgeUsWest2Stack',
+  'JaleAuditStack',
   'JaleAuthStack',
   'JaleBastionStack',
   'JaleBillingStack',
@@ -101,6 +111,7 @@ const EXPECTED_STACKS = [
   'JaleNetworkStack',
   'JaleNotificationsStack',
   'JaleReferralsStack',
+  'JaleReportsStack',
   'JaleWhatsAppStack',
 ];
 
@@ -142,7 +153,13 @@ const CEILING = 470;
 // the stack reached 501 in the first place.
 // → 417 once roadmap 1c (2026-10-01) added the two JobMessageOutboxSendFailed
 // MetricFilters on the employer conversations create/send Lambdas.
-const MEASURED_RESOURCES = 417;
+// → 429 once sprint 27's report-a-problem routes (ReportsStack) added the
+// path-only `/reports` and `/public/reports` (one Resource each), their two
+// `{action}` Resources with their OPTIONS preflights, three Methods
+// (POST /reports/{action}, POST and GET /public/reports/{action}) and their
+// three Lambda::Permissions: 12 resources, leaving 41 of headroom against
+// the 470 gate.
+const MEASURED_RESOURCES = 429;
 
 /**
  * Every `AWS::ApiGateway::Method` in the template, grouped by the resource it
@@ -450,7 +467,7 @@ describe('JaleApiStack resource ceiling (real bin/jale-app.ts composition)', () 
   // alongside the merged ones: a fumbled consolidation is likelier to break
   // `DELETE /worker/vault/{doc_type}` or `GET /worker/posts` than to lose the
   // route it was aimed at.
-  type Auth = 'WorkerAuthorizer' | 'EmployerAuthorizer' | 'NONE';
+  type Auth = 'WorkerAuthorizer' | 'EmployerAuthorizer' | 'DualAuthorizer' | 'NONE';
   const RESOLVES_TO: Array<[method: string, url: string, auth: Auth]> = [
     // Consolidation 1 — /employer/workers/{worker_id}/{action}
     ['GET', '/employer/workers/{worker_id}/profile', 'EmployerAuthorizer'],
@@ -475,6 +492,14 @@ describe('JaleApiStack resource ceiling (real bin/jale-app.ts composition)', () 
     ['DELETE', '/worker/posts/{post_id}', 'WorkerAuthorizer'],
     // L1.3 — the child that keeps /worker/referrals alive as a path-only node
     ['POST', '/worker/referrals/claim', 'WorkerAuthorizer'],
+    // Report a problem: one `{action}` node per door (ReportsStack).
+    ['POST', '/reports/create', 'DualAuthorizer'],
+    ['POST', '/reports/upload', 'DualAuthorizer'],
+    ['POST', '/reports/attach', 'DualAuthorizer'],
+    ['POST', '/public/reports/create', 'NONE'],
+    ['POST', '/public/reports/upload', 'NONE'],
+    ['POST', '/public/reports/attach', 'NONE'],
+    ['GET', '/public/reports/config', 'NONE'],
   ];
 
   /**

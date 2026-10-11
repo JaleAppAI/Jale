@@ -22,6 +22,7 @@
  */
 
 import { Client } from 'pg';
+import { describeInProfiles } from './helpers/login-pool';
 
 // ---------------------------------------------------------------------------
 // Harness helpers
@@ -114,6 +115,9 @@ async function asBilling<T>(
 // maybeIt: skip with loud console.warn when DB is unavailable (Rule 11)
 // ---------------------------------------------------------------------------
 
+// These tests check row policies as the standard and request test beds apply
+// them, so they run in those profiles only. Without a database URL the suite
+// still skips.
 function maybeDescribe(
   name: string,
   fn: () => void,
@@ -127,7 +131,7 @@ function maybeDescribe(
         `This is a DONE_WITH_CONCERNS gate: Docker/Postgres was unavailable at test time.`,
     );
   } else {
-    describe(name, fn);
+    describeInProfiles(['standard', 'request'], name, fn);
   }
 }
 

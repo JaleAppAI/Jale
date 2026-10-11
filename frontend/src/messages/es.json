@@ -86,7 +86,6 @@
       "fair": "Match posible"
     },
     "reasons": {
-      "referred_job": "Un amigo te recomendó este trabajo",
       "profession_exact_or_alias": "Oficio coincide",
       "profession_partial": "Oficio relacionado",
       "distance_under_5_miles": "A menos de 5 millas",
@@ -127,6 +126,16 @@
     "my_applications": "Mis aplicaciones",
     "employer_jobs": "Trabajos",
     "messages": "Mensajes"
+  },
+  "seo": {
+    "landing": {
+      "title": "Jale — Encuentra trabajo por hora rápido",
+      "description": "Sin currículum, sin formularios. Postúlate por WhatsApp o en la web."
+    },
+    "worker_signup": {
+      "title": "Crea tu perfil en Jale",
+      "description": "Arma tu perfil de trabajador en unos minutos y mira trabajos cerca de ti."
+    }
   },
   "landing": {
     "nav": {
@@ -275,8 +284,10 @@
       "signup_subtitle": "Escribe tu número de teléfono. Te enviamos un código y luego creamos tu perfil juntos.",
       "signup_prompt": "¿Nuevo en Jale?",
       "signup_link": "Crea una cuenta",
+      "signup_nudge": "Crear mi cuenta con este número",
       "confirm_title": "Confirma tu cuenta",
       "otp_title": "Ingresa el código de 6 dígitos",
+      "otp_digit": "Dígito {n} de {total}",
       "code_sent": "SMS enviado a {phone}",
       "resend_prompt": "¿No recibiste el código?",
       "resend_code": "Enviarlo de nuevo",
@@ -2022,6 +2033,10 @@
       "finish": "Terminar",
       "skip": "Por ahora no"
     },
+    "referred_job": {
+      "strip": "Postulándote a: <b>{title}</b> · {company}",
+      "strip_closed": "Postulándote a: <b>{title}</b> <muted>(ya no está disponible)</muted> · {company}"
+    },
     "done": {
       "title": "Todo listo",
       "subtitle": "Los empleadores ya pueden encontrarte. Esto es lo que verán.",
@@ -2032,7 +2047,11 @@
       "extracted": "Extrajimos estas habilidades de tus respuestas. Ya puedes empezar en Jale.",
       "failed": "Esta vez no pudimos leer tus respuestas. Los empleadores igual las ven con tus propias palabras.",
       "stalled": "Todavía no terminamos de leer tus respuestas — ya puedes empezar en Jale.",
-      "cta": "Ir a mi perfil",
+      "job_heading": "El trabajo que buscabas",
+      "apply": "Postularme",
+      "see_all_jobs": "Ver todos los trabajos",
+      "job_closed": "“{title}” ya no recibe postulaciones.",
+      "see_jobs": "Ver trabajos para ti",
       "cta_job": "Continuar al trabajo"
     },
     "summary": {
@@ -2065,5 +2084,203 @@
       "not_onboardable": "No podemos configurar esta cuenta ahora mismo. Responde a cualquier mensaje de Jale y te ayudamos."
     },
     "stuck": "Termina este paso en WhatsApp o vuelve más tarde."
+  },
+  "report_common": {
+    "title": "Reportar un problema",
+    "entry_short": "Reportar",
+    "entry_link_lead": "¿Problemas?",
+    "error_action": "Reportar este problema",
+    "close": "Cerrar",
+    "loading": "Abriendo el formulario…",
+    "next": "Siguiente",
+    "change": "Cambiar",
+    "send": "Enviar reporte",
+    "sending": "Enviando…",
+    "try_again": "Intentar de nuevo",
+    "done": "Listo",
+    "back": "Volver",
+    "category_legend": "¿De qué se trata?",
+    "description_label": "¿Qué pasó?",
+    "character_count": "{count} de {max} caracteres",
+    "screenshot_heading": "Captura de pantalla",
+    "capture_pending": "Tomando una imagen de la pantalla…",
+    "capture_failed_title": "No pudimos capturar esta pantalla",
+    "attach_photo": "Adjuntar una foto",
+    "attach_photo_instead": "Adjuntar una foto en su lugar",
+    "continue_without_image": "Continuar sin imagen",
+    "no_image": "No se enviará ninguna imagen.",
+    "photo_preparing": "Preparando la foto…",
+    "editor": {
+      "hide_area": "Ocultar un área",
+      "done": "Listo",
+      "undo": "Deshacer",
+      "remove": "Quitar",
+      "box_label": "Área oculta {n}",
+      "keyboard_hint": "Las flechas mueven el área seleccionada. Mayús y una flecha cambian su tamaño. Suprimir la quita.",
+      "delete_box": "Quitar esta área"
+    },
+    "what_we_send": {
+      "toggle": "Lo que enviaremos",
+      "screen": "Esta pantalla: {pattern}",
+      "app": "Versión de la app {build} · {language}",
+      "device": "Dispositivo: {kind} · {browser} · {os} · {width} × {height}",
+      "requests": "{count, plural, =0 {Ninguna solicitud reciente a Jale} one {La última solicitud a Jale, sin su contenido} other {Las últimas # solicitudes a Jale, sin su contenido}}",
+      "errors": "{count, plural, =0 {Ningún error reciente en la app} one {# error reciente en la app} other {# errores recientes en la app}}",
+      "technical_label": "Incluir detalles técnicos",
+      "technical_hint": "Desactivado: solo se envían la pantalla, la versión de la app y el idioma.",
+      "technical_off": "Los detalles técnicos están desactivados: los datos del dispositivo, las solicitudes y los errores no se envían.",
+      "never_heading": "Nunca se envía",
+      "never_codes": "Contraseñas y códigos, también en enlaces",
+      "never_content": "El contenido de las solicitudes y respuestas",
+      "kept": "Se guarda por un tiempo limitado.",
+      "in_app_browser": "Navegador de una app",
+      "other_family": "Otro"
+    },
+    "privacy_link": "Política de privacidad",
+    "new_tab": "(se abre en una pestaña nueva)",
+    "language": {
+      "en": "inglés",
+      "es": "español"
+    },
+    "device_kind": {
+      "phone": "Teléfono",
+      "tablet": "Tableta",
+      "desktop": "Computadora"
+    },
+    "image_sending": "Enviando la imagen…",
+    "image_sent": "La imagen se envió.",
+    "paused_title": "Los reportes están en pausa por ahora",
+    "signed_out_paused_title": "Los reportes sin iniciar sesión están en pausa por ahora",
+    "contact_email_label": "Correo",
+    "contact_whatsapp_label": "WhatsApp",
+    "load_failed": "El formulario no se cargó."
+  },
+  "report_worker": {
+    "categories": {
+      "sign_in": "No puedo entrar / no me llegó el código",
+      "finding_jobs": "Buscar trabajos",
+      "applying": "Aplicar a un trabajo",
+      "uploads": "Subir documentos o fotos",
+      "profile": "Mi perfil",
+      "whatsapp": "Mensajes de WhatsApp",
+      "other": "Otra cosa"
+    },
+    "category_hint": "Lo elegimos según la pantalla donde estabas.",
+    "description_hint": "¿Qué intentabas hacer y qué pasó?",
+    "description_error": "Cuéntanos qué pasó. Bastan unas palabras.",
+    "capture_failed_body": "Puedes adjuntar una foto o una captura que hayas tomado.",
+    "masked_note": "Tus datos personales ya están ocultos.",
+    "photo_error": "No pudimos usar esa foto. Prueba con otra.",
+    "editor": {
+      "preview_alt": "Captura de la pantalla donde estabas",
+      "masked_note": "Las áreas grises ya están ocultas. Arrastra o toca para ocultar algo más."
+    },
+    "what_we_send": {
+      "with_heading": "Con tu reporte",
+      "account": "Tu cuenta, verificada por tu inicio de sesión",
+      "contact": "Solo el contacto que escribas, si escribes uno",
+      "image": "La imagen que elegiste",
+      "never_typed": "Lo que escribiste en formularios",
+      "never_files": "Archivos, excepto la imagen que elegiste"
+    },
+    "notice": "Enviamos lo que escribes, la imagen y los detalles de arriba para arreglar el problema, y los guardamos por un tiempo limitado.",
+    "contact_label": "Tu teléfono o correo (opcional)",
+    "contact_hint": "Para poder contactarte.",
+    "unverified": "No has iniciado sesión, así que no podemos confirmar quién eres.",
+    "session_switched": "Tu sesión terminó, así que este reporte se enviará sin ella. Revisa el formulario y toca Enviar reporte de nuevo.",
+    "errors": {
+      "rate_limited": "Enviaste varios reportes en poco tiempo. Espera un rato antes de enviar otro.",
+      "reporting_paused": "Los reportes están en pausa por ahora.",
+      "signed_out_paused": "Los reportes sin iniciar sesión están en pausa por ahora.",
+      "invalid_request": "No pudimos aceptar parte del reporte. Revisa lo que escribiste e inténtalo de nuevo.",
+      "too_large": "El reporte es demasiado grande. Desactiva los detalles técnicos o acorta el texto e inténtalo de nuevo.",
+      "offline": "Parece que no tienes conexión. Tu texto sigue aquí: revisa la conexión e inténtalo de nuevo.",
+      "timeout": "Esto está tardando demasiado. Tu texto sigue aquí: inténtalo de nuevo.",
+      "server": "No pudimos enviar tu reporte. Tu texto sigue aquí: inténtalo de nuevo."
+    },
+    "fallback_contacts": "También puedes escribir a <mail>{email}</mail> o enviar «{keyword}» a Jale por WhatsApp.",
+    "fallback": {
+      "body": "Igual puedes contarnos qué pasó:",
+      "whatsapp": "Envía «{keyword}» a Jale",
+      "sign_in": "Si puedes iniciar sesión, también puedes reportar desde Jale."
+    },
+    "sent": {
+      "title": "¡Gracias! Recibimos tu reporte",
+      "title_unverified": "Recibimos tu reporte",
+      "number_label": "Tu número de reporte",
+      "body": "Lo revisaremos pronto. Si nos escribes, menciona este número.",
+      "body_unverified": "Como no iniciaste sesión, no podemos confirmar quién eres. Si dejaste un teléfono o correo, podríamos usarlo para contactarte.",
+      "whatsapp": "También puedes escribir «{keyword}» a Jale por WhatsApp.",
+      "image_failed": "La imagen no se envió. Tu reporte ya está guardado.",
+      "image_failed_final": "La imagen no se envió y no se puede volver a enviar. Tu reporte ya está guardado.",
+      "image_paused": "Las imágenes están en pausa por ahora, así que solo se envió tu reporte."
+    }
+  },
+  "report_employer": {
+    "categories": {
+      "account": "Inicio de sesión, cuenta o correo de verificación",
+      "job_posting": "Publicar o editar un empleo",
+      "applicants": "Candidatos y contratación",
+      "messages": "Mensajes a trabajadores",
+      "billing": "Facturación y plan",
+      "emails": "Correos y resumen diario",
+      "company_profile": "Perfil de la empresa y configuración",
+      "other": "Otra cosa"
+    },
+    "stops_work": {
+      "legend": "¿Esto le impide trabajar?",
+      "yes": "Sí, no puedo continuar",
+      "no": "No, puedo seguir trabajando"
+    },
+    "category_hint": "Lo elegimos según la pantalla donde estaba.",
+    "description_hint": "¿Qué intentaba hacer y qué pasó?",
+    "description_error": "Cuéntenos qué pasó. Bastan unas palabras.",
+    "capture_failed_body": "Puede adjuntar una foto o una captura que haya tomado.",
+    "masked_note": "Sus datos personales ya están ocultos.",
+    "photo_error": "No pudimos usar esa foto. Pruebe con otra.",
+    "editor": {
+      "preview_alt": "Captura de la pantalla donde estaba",
+      "masked_note": "Las áreas grises ya están ocultas. Arrastre o toque para ocultar algo más."
+    },
+    "what_we_send": {
+      "with_heading": "Con su reporte",
+      "account": "Su cuenta, verificada por su inicio de sesión",
+      "contact": "Solo el contacto que escriba, si escribe uno",
+      "image": "La imagen que eligió",
+      "never_typed": "Lo que escribió en formularios",
+      "never_files": "Archivos, excepto la imagen que eligió"
+    },
+    "notice": "Enviamos lo que escribe, la imagen y los detalles de arriba para arreglar el problema, y los guardamos por un tiempo limitado.",
+    "contact_label": "Su teléfono o correo (opcional)",
+    "contact_hint": "Para poder contactarle.",
+    "unverified": "No ha iniciado sesión, así que no podemos confirmar quién es.",
+    "session_switched": "Su sesión terminó, así que este reporte se enviará sin ella. Revise el formulario y toque Enviar reporte de nuevo.",
+    "errors": {
+      "rate_limited": "Envió varios reportes en poco tiempo. Espere un rato antes de enviar otro.",
+      "reporting_paused": "Los reportes están en pausa por ahora.",
+      "signed_out_paused": "Los reportes sin iniciar sesión están en pausa por ahora.",
+      "invalid_request": "No pudimos aceptar parte del reporte. Revise lo que escribió e inténtelo de nuevo.",
+      "too_large": "El reporte es demasiado grande. Desactive los detalles técnicos o acorte el texto e inténtelo de nuevo.",
+      "offline": "Parece que no tiene conexión. Su texto sigue aquí: revise la conexión e inténtelo de nuevo.",
+      "timeout": "Esto está tardando demasiado. Su texto sigue aquí: inténtelo de nuevo.",
+      "server": "No pudimos enviar su reporte. Su texto sigue aquí: inténtelo de nuevo."
+    },
+    "fallback_contacts": "También puede escribir a <mail>{email}</mail> o enviar «{keyword}» a Jale por WhatsApp.",
+    "fallback": {
+      "body": "Igual puede contarnos qué pasó:",
+      "whatsapp": "Envíe «{keyword}» a Jale",
+      "sign_in": "Si puede iniciar sesión, también puede reportar desde Jale."
+    },
+    "sent": {
+      "title": "Gracias. Recibimos su reporte",
+      "title_unverified": "Recibimos su reporte",
+      "number_label": "Su número de reporte",
+      "body": "Lo revisaremos pronto. Si nos escribe, mencione este número.",
+      "body_unverified": "Como no inició sesión, no podemos confirmar quién es. Si dejó un teléfono o correo, podríamos usarlo para contactarle.",
+      "whatsapp": "También puede escribir «{keyword}» a Jale por WhatsApp.",
+      "image_failed": "La imagen no se envió. Su reporte ya está guardado.",
+      "image_failed_final": "La imagen no se envió y no se puede volver a enviar. Su reporte ya está guardado.",
+      "image_paused": "Las imágenes están en pausa por ahora, así que solo se envió su reporte."
+    }
   }
 }

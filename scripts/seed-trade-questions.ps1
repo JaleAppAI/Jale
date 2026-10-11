@@ -18,8 +18,7 @@
 #
 # Requires: JaleBastionStack deployed, JaleDatabaseStack outputs accessible.
 # Usage:
-#   cd infra; npx cdk deploy JaleBastionStack
-#   cd ..
+#   .\scripts\deploy-bastion.ps1           # or: bash scripts/deploy-bastion.sh
 #   .\scripts\seed-trade-questions.ps1
 
 [CmdletBinding()]
@@ -49,7 +48,7 @@ $bastionId = (aws cloudformation describe-stacks `
 
 if ([string]::IsNullOrEmpty($bastionId) -or $bastionId -eq 'None') {
     Write-Host "!! Could not find BastionInstanceId on $BastionStack." -ForegroundColor Red
-    Write-Host "   Deploy first: cd infra; npx cdk deploy $BastionStack"
+    Write-Host "   Deploy first: .\scripts\deploy-bastion.ps1 (or: bash scripts/deploy-bastion.sh)"
     exit 1
 }
 Write-Host "   bastion: $bastionId"

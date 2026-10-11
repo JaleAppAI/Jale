@@ -68,7 +68,7 @@ function serverState(over: {
     job: {
       id: 'job-1',
       title: 'Concrete Finisher',
-      company_name: 'Rucoba & Maya',
+      company_name: 'Northwind & Birch',
       status: 'active',
       required_fields: [],
       optional_fields: [],

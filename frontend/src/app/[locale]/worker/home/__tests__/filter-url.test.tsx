@@ -82,7 +82,7 @@ const job = {
   title: 'Drywall Finisher',
   location: 'El Paso, TX',
   job_type: 'full-time',
-  company_name: 'RM Construction',
+  company_name: 'NB Construction',
   required_docs: [],
   match_reasons: [],
 };

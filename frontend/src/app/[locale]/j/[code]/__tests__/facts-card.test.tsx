@@ -88,7 +88,7 @@ function fullJob(over: Partial<PublicJobActive> = {}): PublicJobActive {
         code: 'ABC123',
         id: 'job-1',
         title: 'Drywall Finisher',
-        company: 'RM Construction',
+        company: 'NB Construction',
         location: 'Austin, TX',
         city: 'Austin',
         state_region: 'TX',
@@ -126,7 +126,7 @@ function sparseJob(over: Partial<PublicJobActive> = {}): PublicJobActive {
     return {
         code: 'ABC123',
         title: 'Helper',
-        company: 'RM Construction',
+        company: 'NB Construction',
         location: 'Austin, TX',
         job_type: 'full-time',
         description: null,
@@ -172,7 +172,7 @@ describe('public job page — the facts card', () => {
 
         expect(screen.getByText(t('eyebrow'))).toBeInTheDocument();
         expect(screen.getByRole('heading', { level: 1, name: 'Drywall Finisher' })).toBeInTheDocument();
-        expect(screen.getByText('RM Construction · Austin, TX · Austin, TX')).toBeInTheDocument();
+        expect(screen.getByText('NB Construction · Austin, TX · Austin, TX')).toBeInTheDocument();
     });
 
     it('sets pay as the one headline figure inside the card, not a hero strip', async () => {
@@ -313,7 +313,7 @@ describe('public job page - generateMetadata', () => {
             params: Promise.resolve({ locale: 'en', code: 'ABC123' }),
         });
 
-        expect(meta.title).toBe('Drywall Finisher at RM Construction - Jale');
+        expect(meta.title).toBe('Drywall Finisher at NB Construction - Jale');
         expect(meta.alternates?.canonical).toBe('https://jaleapp.ai/en/j/ABC123');
         expect(meta.alternates?.languages).toEqual({
             en: 'https://jaleapp.ai/en/j/ABC123',

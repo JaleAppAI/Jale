@@ -108,7 +108,6 @@ function buildStacks(): Record<string, cdk.Stack> {
     vpc: network.vpc,
     privateSubnets: network.privateSubnets,
     lambdaSg: network.lambdaSg,
-    dbSecret: database.dbSecret,
   });
   const ai = new AiStack(app, 'TestAiStack', {
     vpc: network.vpc,
@@ -123,7 +122,6 @@ function buildStacks(): Record<string, cdk.Stack> {
     vpc: network.vpc,
     privateSubnets: network.privateSubnets,
     lambdaSg: network.lambdaSg,
-    dbSecret: database.dbSecret,
     aliasGeneratorFn: ai.aliasGeneratorFn.function,
     whatsappStatusCallbackUrl: STATUS_CALLBACK_URL,
   });
@@ -133,7 +131,6 @@ function buildStacks(): Record<string, cdk.Stack> {
     vpc: network.vpc,
     privateSubnets: network.privateSubnets,
     lambdaSg: network.lambdaSg,
-    dbSecret: database.dbSecret,
     api: api.api,
     dualAuthorizer: api.dualAuthorizer,
   });
@@ -144,7 +141,6 @@ function buildStacks(): Record<string, cdk.Stack> {
   const documents = new DocumentsStack(app, 'TestDocumentsStack', {
     network,
     api,
-    dbSecret: database.dbSecret,
     allowedOrigin: 'https://jaleapp.ai',
     requiredTosVersion: 'v1.0',
   });
@@ -153,7 +149,6 @@ function buildStacks(): Record<string, cdk.Stack> {
     vpc: network.vpc,
     privateSubnets: network.privateSubnets,
     lambdaSg: network.lambdaSg,
-    dbSecret: database.dbSecret,
     workerPool: auth.workerPool,
     api: api.api,
     // S22 R2-C23: the web onboarding door hangs /worker/onboarding* off the
@@ -173,7 +168,6 @@ function buildStacks(): Record<string, cdk.Stack> {
   const mediaBoard = new MediaBoardStack(app, 'TestMediaBoardStack', {
     network,
     api,
-    dbSecret: database.dbSecret,
     mediaBucket: whatsapp.mediaBucket,
     documentsBucket: documents.bucket,
     allowedOrigin: 'https://jaleapp.ai',
@@ -186,7 +180,6 @@ function buildStacks(): Record<string, cdk.Stack> {
     privateSubnets: network.privateSubnets,
     billingLambdaSg: network.billingLambdaSg,
     billingDbSecret: database.billingDbSecret,
-    appDbSecret: database.dbSecret,
     api: api.api,
     employerAuthorizer: api.employerAuthorizer,
     employerResource: api.employerResource,
@@ -197,7 +190,6 @@ function buildStacks(): Record<string, cdk.Stack> {
     privateSubnets: network.privateSubnets,
     referralsLambdaSg: network.referralsLambdaSg,
     referralsDbSecret: database.referralsDbSecret,
-    appDbSecret: database.dbSecret,
     api: api.api,
     publicResource: api.publicResource,
     workerAuthorizer: api.workerAuthorizer,
@@ -211,7 +203,6 @@ function buildStacks(): Record<string, cdk.Stack> {
   const notifications = new NotificationsStack(app, 'TestNotificationsStack', {
     vpc: network.vpc,
     lambdaSg: network.lambdaSg,
-    dbSecret: database.dbSecret,
     publicResource: api.publicResource,
     alarmTopicArn: ALARM_TOPIC_ARN,
   });
@@ -358,6 +349,11 @@ describe('CloudWatch MetricFilter patterns', () => {
     const stacksDir = path.join(__dirname, '../../../lib/stacks');
     const withFilters = fs.readdirSync(stacksDir)
       .filter((name) => name.endsWith('-stack.ts'))
+      // Out of this audit's scope: audit-stack.ts's filters are regex value
+      // scans on the audit log groups, which no Lambda's console output
+      // feeds. audit-stack.test.ts checks every one against the shared value
+      // sample table.
+      .filter((name) => name !== 'audit-stack.ts')
       .filter((name) => fs.readFileSync(path.join(stacksDir, name), 'utf8')
         .includes('new logs.MetricFilter'))
       .sort();

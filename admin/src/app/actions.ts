@@ -9,7 +9,7 @@ import { requireAdminSession } from '@/lib/server/session';
 function revalidateAdminRoutes(targetId: string): void {
   revalidatePath('/');
   revalidatePath('/cases');
-  revalidatePath('/audit');
+  revalidatePath('/access-history');
   revalidatePath(`/cases/${targetId}`);
 }
 

@@ -28,7 +28,7 @@ import { interpolate, message, renderIntl } from '@/components/employer/__tests_
 import { Sidebar } from '../Sidebar';
 import { BottomTabBar } from '../BottomTabBar';
 
-const chip = { status: 'loaded', name: 'RM Construction', meta: 'Austin', initials: 'RC' } as const;
+const chip = { status: 'loaded', name: 'NB Construction', meta: 'Austin', initials: 'RC' } as const;
 
 function unreadLabel(count: number): string {
     // The catalogue entry is an ICU plural; `interpolate` only does `{name}`,

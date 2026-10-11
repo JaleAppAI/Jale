@@ -81,6 +81,14 @@ param(
     [switch]$VerifyOnly
 )
 
+# Retired: this runner refuses to run. It keeps no migration ledger, and
+# most of these runners reset role passwords unconditionally, so a re-run
+# could replay applied migrations or break live logins. Use
+# scripts/run-migrations.sh, which keeps the ledger, verifies checksums and
+# changes a password only when asked to. There is no override.
+[Console]::Error.WriteLine('!! scripts/run-migration-055.ps1 is retired and refuses to run: it keeps no migration ledger, so nothing records what it applied. Use: bash scripts/run-migrations.sh (see --help).')
+exit 1
+
 $ErrorActionPreference = 'Stop'
 
 $BastionStack = 'JaleBastionStack'
@@ -113,7 +121,7 @@ if ($bastionId) { $bastionId = $bastionId.Trim() }
 
 if ([string]::IsNullOrEmpty($bastionId) -or $bastionId -eq 'None') {
     Write-Host "!! Could not find BastionInstanceId output on $BastionStack." -ForegroundColor Red
-    Write-Host "   Deploy the stack first: cd infra; npx cdk deploy $BastionStack"
+    Write-Host "   Deploy the stack first: .\scripts\deploy-bastion.ps1 (or: bash scripts/deploy-bastion.sh)"
     exit 1
 }
 Write-Host "   bastion: $bastionId"
@@ -470,7 +478,7 @@ if ($VerifyOnly) {
     Write-Host "     .\scripts\run-migration-055.ps1"
 } else {
     Write-Host ">> All done. Next:"
-    Write-Host "   cd infra; npx cdk destroy JaleBastionStack    # cost hygiene"
+    Write-Host "   .\scripts\deploy-bastion.ps1 -Destroy    # cost hygiene; or: bash scripts/deploy-bastion.sh --destroy"
     Write-Host "   cd infra; npx cdk deploy JaleApiStack         # carries the GET /employer/inbox Lambda + route"
 }
 Write-Host ""

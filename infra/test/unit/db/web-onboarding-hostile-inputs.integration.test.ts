@@ -47,7 +47,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Client, Pool } from 'pg';
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 
-import { TRUST_EXTRACTION_SQL } from '../../../lambda/api/employer-worker-profile';
+import { TRUST_ASSESSMENT_SQL, TRUST_EXTRACTION_SQL } from '../../../lambda/api/employer-worker-profile';
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
 
@@ -1461,11 +1461,8 @@ maybeDescribe('R2: the web onboarding door under hostile input', () => {
       // The two queries `lambda/api/employer-worker-profile.ts` actually runs.
       // `SET LOCAL ROLE jale_admin` is what subjects this superuser session to
       // policy — a bare superuser SELECT bypasses RLS and would prove nothing.
-      const ASSESSMENT_SQL = `SELECT id, profession_key, status, competency_score, score_components,
-                answers, scored_at, rubric_version
-           FROM worker_trust_assessments
-          WHERE user_id = $1
-          ORDER BY (status = 'scored') DESC, created_at DESC LIMIT 1`;
+      // The handler's own exported text, not a copy that can drift from it.
+      const ASSESSMENT_SQL = TRUST_ASSESSMENT_SQL;
 
       const employerA = `r2hostile-empA-${tag}`;
       const employerB = `r2hostile-empB-${tag}`;

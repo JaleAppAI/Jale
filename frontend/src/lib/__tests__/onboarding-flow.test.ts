@@ -54,6 +54,7 @@ function state(overrides: Partial<OnboardingState> = {}): OnboardingState {
     trust: { questions: [], answers: [] },
     pendingLocationConfirm: null,
     extraction: null,
+    referredJob: null,
     ...overrides,
   };
 }
@@ -155,13 +156,13 @@ describe('step key → screen mapping', () => {
 
 describe('name join/split', () => {
   it('joins with exactly one space and trims', () => {
-    expect(joinName('  David ', ' Castellanos ')).toBe('David Castellanos');
-    expect(joinName('David', '')).toBe('David');
+    expect(joinName('  Alex ', ' Rivera ')).toBe('Alex Rivera');
+    expect(joinName('Alex', '')).toBe('Alex');
   });
 
   it('splits at the FIRST space so a compound surname survives a round trip', () => {
     expect(splitFullName('Ana Maria de la Cruz')).toEqual({ firstName: 'Ana', lastName: 'Maria de la Cruz' });
-    expect(splitFullName('David')).toEqual({ firstName: 'David', lastName: '' });
+    expect(splitFullName('Alex')).toEqual({ firstName: 'Alex', lastName: '' });
     expect(splitFullName(null)).toEqual({ firstName: '', lastName: '' });
     expect(splitFullName('   ')).toEqual({ firstName: '', lastName: '' });
   });
@@ -194,12 +195,12 @@ describe('what each screen posts', () => {
   it('about posts name and location as ONE batch', () => {
     const draft = {
       ...emptyDraft,
-      firstName: 'David',
-      lastName: 'Castellanos',
+      firstName: 'Alex',
+      lastName: 'Rivera',
       location: { text: 'San Antonio, Texas', city: 'San Antonio', state: 'Texas', zip: null },
     };
     expect(answersForScreen('about', draft, 'profile.name')).toEqual([
-      { stepKey: 'profile.name', value: 'David Castellanos' },
+      { stepKey: 'profile.name', value: 'Alex Rivera' },
       { stepKey: 'profile.location', value: { kind: 'city_state', city: 'San Antonio', state: 'Texas' } },
     ]);
   });
@@ -248,8 +249,8 @@ describe('a batch never reaches back behind the engine', () => {
 
   const filled = {
     ...emptyDraft,
-    firstName: 'David',
-    lastName: 'Castellanos',
+    firstName: 'Alex',
+    lastName: 'Rivera',
     location: { text: '79901', city: null, state: null, zip: null },
     trade: 'carpenter' as const,
     experience: '2-4' as const,
@@ -292,7 +293,7 @@ describe('a batch never reaches back behind the engine', () => {
     // Nothing should reach here -- `isAnswerableStepKey` has already sent that
     // run to the exit panel -- but silently emptying the batch would turn a
     // bug into a button that does nothing.
-    const items = [{ stepKey: 'profile.name', value: 'David' }];
+    const items = [{ stepKey: 'profile.name', value: 'Alex' }];
     expect(itemsFromCursor(items, 'profile.some_new_step')).toEqual(items);
   });
 
@@ -305,9 +306,9 @@ describe('a batch never reaches back behind the engine', () => {
 describe('when Next is allowed', () => {
   it('gates About on both names and a resolved location', () => {
     expect(canContinue('about', emptyDraft, 'profile.name')).toBe(false);
-    expect(canContinue('about', { ...emptyDraft, firstName: 'David', lastName: 'C' }, 'profile.name')).toBe(false);
+    expect(canContinue('about', { ...emptyDraft, firstName: 'Alex', lastName: 'R' }, 'profile.name')).toBe(false);
     expect(canContinue('about', {
-      ...emptyDraft, firstName: 'David', lastName: 'C',
+      ...emptyDraft, firstName: 'Alex', lastName: 'R',
       location: { text: '79901', city: null, state: null, zip: null },
     }, 'profile.name')).toBe(true);
   });
@@ -383,7 +384,7 @@ describe('draft hydration from the server', () => {
   it('rebuilds every field a resumed run already knows', () => {
     const draft = draftFromState(state({
       profile: {
-        fullName: 'David Castellanos',
+        fullName: 'Alex Rivera',
         location: { city: 'San Antonio', state: 'Texas', zip: null },
         trade: { key: 'carpenter', other: null },
         yearsExperience: '2-4',
@@ -395,8 +396,8 @@ describe('draft hydration from the server', () => {
         answers: [{ index: 1, text: 'I frame houses all day', source: 'voice' }],
       },
     }));
-    expect(draft.firstName).toBe('David');
-    expect(draft.lastName).toBe('Castellanos');
+    expect(draft.firstName).toBe('Alex');
+    expect(draft.lastName).toBe('Rivera');
     expect(draft.location.text).toBe('San Antonio, Texas');
     expect(draft.trade).toBe('carpenter');
     expect(draft.experience).toBe('2-4');
@@ -441,24 +442,24 @@ describe('reducer', () => {
       type: 'hydrate',
       server: state({
         run: { ...state().run, stepKey: 'profile.trade', lockVersion: 4 },
-        profile: { ...state().profile, fullName: 'David Castellanos' },
+        profile: { ...state().profile, fullName: 'Alex Rivera' },
       }),
     });
     expect(currentScreen(flow)).toBe('trade');
     expect(flow.server.run.lockVersion).toBe(4);
-    expect(flow.draft.firstName).toBe('David');
+    expect(flow.draft.firstName).toBe('Alex');
   });
 
   it('sync_server refreshes the lock WITHOUT wiping what the worker is typing', () => {
     let flow = initFlowState(state({ run: { ...state().run, stepKey: 'profile.name' } }));
-    flow = onboardingFlowReducer(flow, { type: 'set_draft', patch: { firstName: 'David', lastName: 'C' } });
+    flow = onboardingFlowReducer(flow, { type: 'set_draft', patch: { firstName: 'Alex', lastName: 'R' } });
     flow = onboardingFlowReducer(flow, {
       type: 'sync_server',
       server: state({ run: { ...state().run, stepKey: 'profile.name', lockVersion: 9 } }),
     });
     expect(flow.server.run.lockVersion).toBe(9);
-    expect(flow.draft.firstName).toBe('David');
-    expect(flow.draft.lastName).toBe('C');
+    expect(flow.draft.firstName).toBe('Alex');
+    expect(flow.draft.lastName).toBe('R');
   });
 
   it('carries a notice on a sync, and typing does not dismiss it', () => {
@@ -466,16 +467,16 @@ describe('reducer', () => {
     // typing in it, so an edit must not wipe the explanation for why the
     // screen changed under them.
     let flow = initFlowState(state({ run: { ...state().run, stepKey: 'profile.name' } }));
-    flow = onboardingFlowReducer(flow, { type: 'set_draft', patch: { firstName: 'David' } });
+    flow = onboardingFlowReducer(flow, { type: 'set_draft', patch: { firstName: 'Alex' } });
     flow = onboardingFlowReducer(flow, {
       type: 'step_mismatch', server: state(), sameScreen: true,
     });
     expect(flow.notice).toBe('step_mismatch');
-    expect(flow.draft.firstName).toBe('David');
+    expect(flow.draft.firstName).toBe('Alex');
     // And the save is OVER: the button must not stay in its loading state.
     expect(flow.saving).toBe(false);
 
-    flow = onboardingFlowReducer(flow, { type: 'set_draft', patch: { lastName: 'C' } });
+    flow = onboardingFlowReducer(flow, { type: 'set_draft', patch: { lastName: 'R' } });
     expect(flow.notice).toBe('step_mismatch');
 
     // The next save is the worker responding to it: from there it is stale.
@@ -492,7 +493,7 @@ describe('reducer', () => {
 
   it('rebuilds the draft on a mismatch that moved the worker to another screen', () => {
     let flow = initFlowState(state({ run: { ...state().run, stepKey: 'profile.name' } }));
-    flow = onboardingFlowReducer(flow, { type: 'set_draft', patch: { firstName: 'David' } });
+    flow = onboardingFlowReducer(flow, { type: 'set_draft', patch: { firstName: 'Alex' } });
     flow = onboardingFlowReducer(flow, {
       type: 'step_mismatch',
       server: state({ run: { ...state().run, stepKey: 'profile.trade' } }),

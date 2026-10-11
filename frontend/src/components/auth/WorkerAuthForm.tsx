@@ -1,5 +1,5 @@
 'use client';
-import { useState, useRef, useEffect, type FormEvent, type MutableRefObject, type ReactNode } from 'react';
+import { useState, useRef, useEffect, useId, type FormEvent, type MutableRefObject, type ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
 import { useSearchParams } from 'next/navigation';
 import { useRouter } from '@/i18n/navigation';
@@ -9,22 +9,75 @@ import { authErrorKey } from '@/lib/auth-errors';
 import { formatPhoneNumber, type PhoneCountryCode } from '@/lib/phone';
 import type { CognitoUser } from 'amazon-cognito-identity-js';
 import { claimReferral, getWorkerOnboarding } from '@/lib/api/worker';
+import { assignReturnPath, sanitizeReturnPath } from '@/lib/login-url';
+import { normalizeShareCode } from '@/lib/share-code';
 import { Button } from '@/components/ui/button';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { PhoneNumberField } from '@/components/auth/PhoneNumberField';
 import {
+    CLAIM_WAIT_MS,
     stashPendingReferral,
     readPendingReferral,
     clearPendingReferral,
     validateJobId,
+    jobIdFromReturnPath,
+    settleWithin,
     markAuthFlowCompleting,
     clearAuthFlowCompleting,
+    type PendingReferral,
 } from '@/lib/referral-return';
 
 const OTP_LENGTH = 6;
 const RESEND_CODE_COOLDOWN_SECONDS = 60;
 
+/**
+ * The sign-in answer the "create my account with this number" nudge follows.
+ * Cognito gives it for an unknown number AND for a known one alike, so the
+ * nudge reveals nothing about whether a number has an account.
+ */
+const UNRECOGNISED_NUMBER = 'errors.invalid_credentials';
+
 type Step = 'login' | 'signup' | 'otp';
+
+/** Where the job a sign-in is about came from. */
+type ReferralSource = 'visit' | 'returnUrl' | 'stash';
+
+const hasReferral = (referral: PendingReferral | null): referral is PendingReferral =>
+    referral !== null && (referral.jobId !== null || referral.shareCode !== null);
+
+/**
+ * The referrals a sign-in records, in the order it sends them, and the one it
+ * is about.
+ *
+ * The job opened last wins: this visit's own link, else the job page a login
+ * bounce came from, else what an earlier visit in this tab left in the stash.
+ * The server shows the NEWEST unapplied referred job on the onboarding strip
+ * and the summary, so the job in context is always claimed last. A leftover
+ * referral for anything else is claimed too -- first, and on its own -- so its
+ * referrer keeps the credit and its job stays pinned. Never in one claim with
+ * the job in context: the server records a claim's job before the job its
+ * share code names, which would make the leftover job the newest.
+ *
+ * A visit with its own link left nothing behind to keep: the mount replaced
+ * the stash with that link.
+ */
+function signInReferrals(
+    visit: PendingReferral,
+    returnJobId: string | null,
+    stash: PendingReferral | null,
+): { claims: PendingReferral[]; current: PendingReferral | null; source: ReferralSource | null } {
+    if (hasReferral(visit)) return { claims: [visit], current: visit, source: 'visit' };
+    const leftover = hasReferral(stash) ? stash : null;
+    if (returnJobId) {
+        if (leftover?.jobId === returnJobId) {
+            const current = { jobId: returnJobId, shareCode: leftover.shareCode };
+            return { claims: [current], current, source: 'returnUrl' };
+        }
+        const current = { jobId: returnJobId, shareCode: null };
+        return { claims: leftover ? [leftover, current] : [current], current, source: 'returnUrl' };
+    }
+    return leftover ? { claims: [leftover], current: leftover, source: 'stash' } : { claims: [], current: null, source: null };
+}
 
 export default function WorkerAuthForm() {
     const router = useRouter();
@@ -36,21 +89,23 @@ export default function WorkerAuthForm() {
     // Referred-stranger web-apply carry-through: stash job/share as soon as
     // they show up on the URL so they survive the multi-step OTP flow
     // (including a page reload mid-flow).
+    //
+    // A visit WITHOUT them never clears the stash. Those visits are exactly
+    // what it exists for -- a `?returnUrl=` login bounce, a reload of the bare
+    // page -- and the server holds the job now anyway, so the stash is only a
+    // fallback that a finished sign-in or the summary screen clears. Malformed
+    // values count as absent, so a broken link cannot overwrite a good stash.
     useEffect(() => {
-        const jobId = searchParams.get('job');
-        const shareCode = searchParams.get('share');
-        if (jobId || shareCode) {
-            stashPendingReferral({ jobId, shareCode });
-        } else {
-            // A plain, param-free visit to this page (e.g. an existing
-            // worker logging in directly) must not resurrect a stale
-            // referral left over from an earlier, abandoned attempt.
-            clearPendingReferral();
-        }
+        const jobId = validateJobId(searchParams.get('job'));
+        const shareCode = normalizeShareCode(searchParams.get('share'));
+        if (jobId || shareCode) stashPendingReferral({ jobId, shareCode });
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    const [step, setStep] = useState<Step>('login');
+    // `?step=signup` -- the `jaleapp.ai/app` link -- opens on sign-up: someone
+    // who tapped "get the app" is new by definition. Anything else, including
+    // `?step=otp` (there is no code to enter yet), opens on sign-in.
+    const [step, setStep] = useState<Step>(() => (searchParams.get('step') === 'signup' ? 'signup' : 'login'));
     // Which door this OTP screen was reached through. `step` cannot answer it
     // -- both doors set it to 'otp' -- and the two want different fallbacks
     // once the code is accepted (see `handleVerifyOtp`).
@@ -59,7 +114,10 @@ export default function WorkerAuthForm() {
     const [phoneLocalNumber, setPhoneLocalNumber] = useState('');
     const [digits, setDigits] = useState<string[]>(Array(OTP_LENGTH).fill(''));
     const [user, setUser] = useState<CognitoUser | null>(null);
-    const [error, setError] = useState<string | null>(null);
+    // The KEY, not the sentence: the nudge below has to know which error it
+    // is looking at, and a translated string is no way to ask.
+    const [errorKey, setErrorKey] = useState<string | null>(null);
+    const error = errorKey ? t(errorKey) : null;
     const [isLoading, setIsLoading] = useState(false);
     const [isResendingCode, setIsResendingCode] = useState(false);
     const [resendSuccess, setResendSuccess] = useState(false);
@@ -100,7 +158,7 @@ export default function WorkerAuthForm() {
     }, [step]);
 
     const handleSendOtp = async () => {
-        setError(null);
+        setErrorKey(null);
         setResendSuccess(false);
         setIsLoading(true);
         try {
@@ -114,14 +172,14 @@ export default function WorkerAuthForm() {
             // `setTimeout(..., 50)` here could fire mid-keystroke and yank the
             // cursor back to box one, losing a digit.
         } catch (err) {
-            setError(t(authErrorKey(err)));
+            setErrorKey(authErrorKey(err));
         } finally {
             setIsLoading(false);
         }
     };
 
     const handleCreateAccount = async () => {
-        setError(null);
+        setErrorKey(null);
         setResendSuccess(false);
         setIsLoading(true);
         try {
@@ -133,7 +191,7 @@ export default function WorkerAuthForm() {
             setStep('otp');
             // Same as `handleSendOtp`: the step's own `autoFocus` does this.
         } catch (err) {
-            setError(t(authErrorKey(err)));
+            setErrorKey(authErrorKey(err));
         } finally {
             setIsLoading(false);
         }
@@ -141,7 +199,7 @@ export default function WorkerAuthForm() {
 
     const handleResendOtp = async () => {
         if (resendCooldownSeconds > 0) return;
-        setError(null);
+        setErrorKey(null);
         setResendSuccess(false);
         setIsResendingCode(true);
         try {
@@ -154,7 +212,7 @@ export default function WorkerAuthForm() {
             // no timer: the boxes are the same DOM nodes across this re-render.
             inputRefs.current[0]?.focus();
         } catch (err) {
-            setError(t(authErrorKey(err)));
+            setErrorKey(authErrorKey(err));
         } finally {
             setIsResendingCode(false);
         }
@@ -162,78 +220,117 @@ export default function WorkerAuthForm() {
 
     const handleVerifyOtp = async () => {
         if (!user) return;
-        setError(null);
+        setErrorKey(null);
         setResendSuccess(false);
         setIsLoading(true);
         try {
             const tokens = await workerVerifyOtp(user, code);
 
+            // The job this sign-in is about, decided ONCE so the claims and the
+            // redirect below cannot disagree (see `signInReferrals`). This
+            // visit's own link is read from the address itself, so a stash the
+            // browser refused to write loses nothing. A `returnUrl` of
+            // `/{locale}/worker/jobs/<uuid>` is that job just as surely as a
+            // `?job=` is.
+            const returnPath = sanitizeReturnPath(searchParams.get('returnUrl'));
+            const stash = readPendingReferral();
+            const { claims, current, source } = signInReferrals(
+                {
+                    jobId: validateJobId(searchParams.get('job')),
+                    shareCode: normalizeShareCode(searchParams.get('share')),
+                },
+                jobIdFromReturnPath(returnPath),
+                stash ? { jobId: validateJobId(stash.jobId), shareCode: normalizeShareCode(stash.shareCode) } : null,
+            );
+            const jobId = current?.jobId ?? null;
+            // The summary screen's way back to the job should no claim land:
+            // it must name the job in context, not a leftover.
+            if (current && source === 'returnUrl') stashPendingReferral(current);
+
+            // Record them server-side NOW, while this form is still mounted:
+            // `setTokens` below makes the auth page swap it for a skeleton, and
+            // nothing after that can show anything. One after the other, so
+            // the job in context is recorded last; a failed claim does not
+            // stop the next. The wait is bounded and the outcome ignored -- a
+            // claim never blocks or redirects a sign-in -- and nothing is
+            // cancelled when the wait ends: a slow claim still lands, the ones
+            // after it follow, and onboarding reads the job back on a later
+            // response. No retry here either: `apiFetch` already retries the
+            // `user_not_provisioned` 409 a brand-new account can hit.
+            if (claims.length > 0) {
+                await settleWithin(async () => {
+                    for (const claim of claims) {
+                        await claimReferral(tokens.idToken, claim).catch(() => undefined);
+                    }
+                }, CLAIM_WAIT_MS);
+            }
+
             // Claim single ownership of this authenticated transition BEFORE
             // setTokens flips isAuthenticated -- otherwise auth/worker/page's
             // own already-authenticated effect fires on the same tick and
-            // both sides claim the referral and race on the redirect.
+            // both sides race on the redirect. Released in `finally`, so
+            // nothing below can leave it set: it lives in sessionStorage, and
+            // a stuck flag would make that page stand down on every later
+            // visit in this tab.
             markAuthFlowCompleting();
-            setTokens(tokens, 'worker');
-
-            const stash = readPendingReferral();
-            if (stash?.shareCode) {
-                // Fire-and-forget: the claim result is never surfaced to the
-                // user, so don't make them wait on it, and a bad/expired
-                // code must never break signup.
-                claimReferral(tokens.idToken, stash.shareCode).catch(() => {});
-            }
-
-            // Signup and login take the SAME next hop now, and the run itself
-            // decides it: anyone the engine still considers `onboarding` --
-            // a fresh signup, or a returning worker who abandoned the flow
-            // half-way (on either door) -- goes to /worker/onboarding.
-            //
-            // The referral stash is deliberately LEFT in place on that path:
-            // the flow's summary screen reads it and hands the worker on to
-            // the job they were applying for once onboarding is done.
-            //
-            // A read that fails (offline, or the endpoint down) must never
-            // strand a worker who has just proved their phone number, so it
-            // falls back to the destination this form used before.
-            let lifecycle: string | null = null;
             try {
-                lifecycle = (await getWorkerOnboarding(tokens.idToken)).lifecycle;
-            } catch {
-                lifecycle = null;
-            }
+                setTokens(tokens, 'worker');
 
-            // A read that failed tells us nothing, so the two doors part ways
-            // here. After a SIGNUP there is no profile worth showing and the
-            // run is certainly unfinished, so send them to the flow and let it
-            // do the error handling it already has (retry, and a way out).
-            // After a LOGIN the finished-worker destination is still the better
-            // guess: most workers signing in are done onboarding, and dropping
-            // them into a flow they completed months ago would be worse than
-            // the app they came back to use.
-            //
-            // That destination is /worker/home, NOT the profile page. A
-            // returning worker signs in to find out whether anything happened
-            // -- and the home feed is the only screen that answers: it carries
-            // the hire celebration and the details-requested notice, either of
-            // which may be the whole reason they opened the app. A profile
-            // page answers a question nobody asks at login, and it left a
-            // worker whose employer was waiting on them with no sign of it.
-            // The already-authenticated effect in auth/worker/page.tsx has
-            // always landed on /worker/home; this makes the two doors agree.
-            //
-            // The referral branch still outranks it: a worker who arrived from
-            // a link about one specific job goes to that job.
-            const unread = lifecycle === null;
-            if ((lifecycle && lifecycle !== 'ready') || (unread && isSignup)) {
-                router.replace('/worker/onboarding');
-            } else {
-                const jobId = validateJobId(stash?.jobId);
-                router.push(jobId ? `/worker/jobs/${jobId}` : '/worker/home');
-                clearPendingReferral();
+                // Signup and login take the SAME next hop now, and the run
+                // itself decides it: anyone the engine still considers
+                // `onboarding` -- a fresh signup, or a returning worker who
+                // abandoned the flow half-way (on either door) -- goes to
+                // /worker/onboarding.
+                //
+                // The referral stash is deliberately LEFT in place on that
+                // path: if the claims above never landed, it is the summary
+                // screen's only way back to the job.
+                //
+                // A read that fails (offline, or the endpoint down) must never
+                // strand a worker who has just proved their phone number, so
+                // it falls back to the destination this form used before.
+                let lifecycle: string | null = null;
+                try {
+                    lifecycle = (await getWorkerOnboarding(tokens.idToken)).lifecycle;
+                } catch {
+                    lifecycle = null;
+                }
+
+                // A read that failed tells us nothing, so the two doors part
+                // ways here. After a SIGNUP there is no profile worth showing
+                // and the run is certainly unfinished, so send them to the flow
+                // and let it do the error handling it already has (retry, and a
+                // way out). After a LOGIN the finished-worker destination is
+                // still the better guess: most workers signing in are done
+                // onboarding, and dropping them into a flow they completed
+                // months ago would be worse than the app they came back to use.
+                //
+                // That destination is, in order -- the same order the
+                // already-signed-in branch of auth/worker/page.tsx follows:
+                //   1. the job in context: a worker who arrived about one
+                //      specific job goes to that job -- at the returnUrl
+                //      itself when that is where the job came from;
+                //   2. a safe `returnUrl`: where the sign-in bounce came from.
+                //      Already locale-prefixed, so it is ASSIGNED -- the
+                //      next-intl router would add a second locale on top;
+                //   3. /worker/home, NOT the profile page. A returning worker
+                //      signs in to find out whether anything happened, and the
+                //      home feed is the only screen that answers: it carries
+                //      the hire celebration and the details-requested notice.
+                const unread = lifecycle === null;
+                if ((lifecycle && lifecycle !== 'ready') || (unread && isSignup)) {
+                    router.replace('/worker/onboarding');
+                } else {
+                    if (jobId && source !== 'returnUrl') router.push(`/worker/jobs/${jobId}`);
+                    else if (returnPath) assignReturnPath(returnPath);
+                    else router.push('/worker/home');
+                    clearPendingReferral();
+                }
+            } finally {
+                clearAuthFlowCompleting();
             }
-            clearAuthFlowCompleting();
         } catch (err) {
-            setError(t(authErrorKey(err)));
+            setErrorKey(authErrorKey(err));
         } finally {
             setIsLoading(false);
         }
@@ -320,11 +417,33 @@ export default function WorkerAuthForm() {
                             onLocalNumberChange={setPhoneLocalNumber}
                         />
                     </Field>
-                    {error && <FormError>{error}</FormError>}
+                    {error ? (
+                        <div className="flex flex-col gap-2.5">
+                            <FormError>{error}</FormError>
+                            {/* Decided 2026-10-01: a number sign-in does not
+                                recognise gets a NEUTRAL way to sign up instead.
+                                Same sentence above it for everyone, so nothing
+                                here says whether the number has an account.
+                                `type="button"`: inside this form a bare button
+                                would submit it and text another code. The
+                                number is shared state, so sign-up opens with it
+                                already in the field. */}
+                            {errorKey === UNRECOGNISED_NUMBER ? (
+                                <Button
+                                    type="button"
+                                    variant="secondary"
+                                    className="w-full"
+                                    onClick={() => { setErrorKey(null); setStep('signup'); }}
+                                >
+                                    {t('signup_nudge')}
+                                </Button>
+                            ) : null}
+                        </div>
+                    ) : null}
                     <Button type="submit" className="w-full" size="lg" disabled={!phoneReady} loading={isLoading} loadingLabel={tCommon('loading')}>
                         {t('send_otp')}
                     </Button>
-                    <SwitchPrompt text={t('signup_prompt')} action={t('signup_link')} onClick={() => { setError(null); setStep('signup'); }} />
+                    <SwitchPrompt text={t('signup_prompt')} action={t('signup_link')} onClick={() => { setErrorKey(null); setStep('signup'); }} />
                 </form>
             )}
 
@@ -335,7 +454,7 @@ export default function WorkerAuthForm() {
                     noValidate
                     className="anim-fade-in flex flex-col gap-4"
                 >
-                    <BackButton onClick={() => { setError(null); setStep('login'); }} label={t('back')} />
+                    <BackButton onClick={() => { setErrorKey(null); setStep('login'); }} label={t('back')} />
                     <AuthHeading title={t('signup_title')} subtitle={t('signup_subtitle')} />
                     <p className="text-xs leading-relaxed text-[var(--jale-ink-2)]">{t('password_note')}</p>
                     <Field label={t('fields.phone')}>
@@ -357,9 +476,10 @@ export default function WorkerAuthForm() {
                 <OtpStep
                     title={t('otp_title')}
                     subtitle={t('code_sent', { phone })}
+                    digitLabel={(n) => t('otp_digit', { n, total: OTP_LENGTH })}
                     backLabel={t('back')}
                     onBack={() => {
-                        setError(null);
+                        setErrorKey(null);
                         setResendSuccess(false);
                         setResendCooldownSeconds(0);
                         resetDigits();
@@ -390,10 +510,10 @@ export default function WorkerAuthForm() {
     );
 }
 
-function AuthHeading({ title, subtitle }: { title: string; subtitle: string }) {
+function AuthHeading({ title, subtitle, id }: { title: string; subtitle: string; id?: string }) {
     return (
         <div>
-            <h1 className="mb-2 text-[1.4rem] font-extrabold leading-tight tracking-[-0.03em] text-[var(--jale-ink)]">{title}</h1>
+            <h1 id={id} className="mb-2 text-[1.4rem] font-extrabold leading-tight tracking-[-0.03em] text-[var(--jale-ink)]">{title}</h1>
             <p className="text-sm leading-relaxed text-[var(--jale-ink-2)]">{subtitle}</p>
         </div>
     );
@@ -453,6 +573,8 @@ function BackButton({ label, onClick }: { label: string; onClick: () => void }) 
 function OtpStep(props: {
     title: string;
     subtitle: string;
+    /** The name of box `n` (1-based) for a screen reader: "Digit n of 6". */
+    digitLabel: (n: number) => string;
     backLabel: string;
     onBack: () => void;
     digits: string[];
@@ -476,6 +598,7 @@ function OtpStep(props: {
     /** The step's `<form onSubmit>`; it carries the same guard as `disabled`. */
     onFormSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
+    const titleId = useId();
     return (
         /* A real `<form>`, so Enter verifies from ANY box once all six digits
            are in — the keystroke a worker reaches for the instant the last
@@ -485,14 +608,22 @@ function OtpStep(props: {
            never spend an OTP attempt the button would have refused. */
         <form onSubmit={props.onFormSubmit} noValidate className="anim-fade-in flex flex-col gap-5">
             <BackButton onClick={props.onBack} label={props.backLabel} />
-            <AuthHeading title={props.title} subtitle={props.subtitle} />
-            <div className="grid gap-1.5" style={{ gridTemplateColumns: `repeat(${OTP_LENGTH}, 1fr)` }}>
+            <AuthHeading id={titleId} title={props.title} subtitle={props.subtitle} />
+            {/* One group named by the step's title, and a name per box, so a
+                screen reader says which digit each box is for. */}
+            <div
+                role="group"
+                aria-labelledby={titleId}
+                className="grid gap-1.5"
+                style={{ gridTemplateColumns: `repeat(${OTP_LENGTH}, 1fr)` }}
+            >
                 {props.digits.map((d, i) => (
                     <input
                         key={i}
                         ref={(el) => { props.inputRefs.current[i] = el; }}
                         type="text"
                         inputMode="numeric"
+                        aria-label={props.digitLabel(i + 1)}
                         // React applies this on mount, synchronously — which is
                         // why the deferred focus timers this step used to rely
                         // on are gone.

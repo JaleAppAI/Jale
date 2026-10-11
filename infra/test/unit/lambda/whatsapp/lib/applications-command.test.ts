@@ -40,7 +40,7 @@ function row(overrides: Partial<{
     title: 'Painter',
     status: 'pending',
     needs_details: false,
-    company_name: 'RM Construction',
+    company_name: 'NB Construction',
     ...overrides,
   };
 }
@@ -49,7 +49,7 @@ function summary(overrides: Partial<ApplicationSummary> = {}): ApplicationSummar
   return {
     applicationId: APP_A,
     jobTitle: 'Painter',
-    companyName: 'RM Construction',
+    companyName: 'NB Construction',
     status: 'pending',
     needsDetails: false,
     ...overrides,
@@ -136,8 +136,8 @@ describe('buildApplicationsList', () => {
     ]);
 
     expect(body).toContain(t('applications_header', 'es'));
-    expect(body).toContain('1) Painter - RM Construction - En revision - Faltan datos');
-    expect(body).toContain('2) Concrete - RM Construction - Enviada');
+    expect(body).toContain('1) Painter - NB Construction - En revision - Faltan datos');
+    expect(body).toContain('2) Concrete - NB Construction - Enviada');
   });
 
   it('appends the footer ONLY when at least one row is selectable', () => {
@@ -150,13 +150,13 @@ describe('buildApplicationsList', () => {
 
   it('renders English status words for an en conversation', () => {
     const body = buildApplicationsList('en', [summary({ status: 'talking', needsDetails: true })]);
-    expect(body).toContain('1) Painter - RM Construction - In conversation - Details needed');
+    expect(body).toContain('1) Painter - NB Construction - In conversation - Details needed');
     expect(body).toContain(t('applications_footer', 'en'));
   });
 
   it('passes an unknown status through untranslated rather than dropping the row', () => {
     const body = buildApplicationsList('es', [summary({ status: 'some_future_status' })]);
-    expect(body).toContain('1) Painter - RM Construction - some_future_status');
+    expect(body).toContain('1) Painter - NB Construction - some_future_status');
   });
 });
 

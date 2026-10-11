@@ -82,13 +82,13 @@ function DocFileRow({ doc }: { doc: WorkerDocument }) {
             `cert_name`). Without it a slot holding four certificates is four
             indistinguishable PDF names. */}
         {doc.cert_name ? (
-          <p className="truncate text-sm font-semibold text-[var(--jale-ink)]">{doc.cert_name}</p>
+          <p data-private className="truncate text-sm font-semibold text-[var(--jale-ink)]">{doc.cert_name}</p>
         ) : null}
         {/* The size never gets truncated away: it is the one part of this line
             a reader scans for, and a long filename would otherwise eat it
             whole in the narrow column. */}
         <p className="mt-0.5 flex items-baseline gap-1 text-xs text-[var(--jale-ink-2)]">
-          <span className="truncate">{doc.file_name}</span>
+          <span data-private className="truncate">{doc.file_name}</span>
           <span className="shrink-0 tabular-nums">
             {' - '}
             {Math.round(doc.file_size / 1024)} KB

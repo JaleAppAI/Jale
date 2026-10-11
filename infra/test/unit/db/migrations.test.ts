@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { renderTriggers } from './helpers/audit-change-log';
 
 const migrationsDir = path.join(__dirname, '..', '..', '..', 'db', 'migrations');
 
@@ -134,6 +135,16 @@ describe('database migrations', () => {
       '100',
       '101',
       '102',
+      '103',
+      '104',
+      '105',
+      '106',
+      '107',
+      '108',
+      '109',
+      '110',
+      '111',
+      '112',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -2134,6 +2145,1196 @@ describe('database migrations', () => {
       expect(text).toContain('information_schema.column_privileges');
       expect(text).toMatch(/proconfig @> ARRAY\['search_path=pg_catalog, pg_temp'\]/);
       expect(text).toMatch(/prosecdef/);
+    });
+  });
+
+  // 103 is sprint 27's referred-jobs list: one row per (worker, job) the
+  // worker came to Jale for, read by the feed pin and the web Done screen.
+  // Like 094-096 it backfills from FORCE RLS tables, so the
+  // un-force bracket and where each self-check sits are pinned here; the
+  // worker-referred-jobs-103 DB suite proves them on real PostgreSQL.
+  describe('103 creates worker_referred_jobs and backfills it under FORCE RLS', () => {
+    const sql = () => fs.readFileSync(
+      path.join(migrationsDir, '103_worker_referred_jobs.sql'), 'utf8',
+    );
+    // The header names tables, roles and DELETE in prose; statement
+    // assertions read the SQL only (the 071 approach).
+    const statements = () => sql().replace(/--.*$/gm, '');
+
+    it('runs as jale_admin in ONE transaction', () => {
+      const text = sql();
+      expect(text).toMatch(/Run manually AFTER 102_admin_identity_lockouts\.sql/);
+      expect(text).toContain('connected as jale_admin.');
+      expect(text).toContain('Forward-only (ADR-005)');
+      expect(text.match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(text.match(/^COMMIT;$/gm)).toHaveLength(1);
+    });
+
+    it('creates the table replay-safely, with CASCADE foreign keys and the recency index', () => {
+      const text = statements();
+      expect(text).toContain('CREATE TABLE IF NOT EXISTS worker_referred_jobs (');
+      expect(text).toMatch(/worker_id\s+UUID NOT NULL REFERENCES users\(id\) ON DELETE CASCADE,/);
+      expect(text).toMatch(/job_id\s+UUID NOT NULL REFERENCES jobs\(id\) ON DELETE CASCADE,/);
+      expect(text).toContain("('share_link', 'job_page', 'whatsapp_token', 'typed_code', 'backfill')");
+      expect(text).toContain('PRIMARY KEY (worker_id, job_id)');
+      expect(text).toMatch(
+        /CREATE INDEX IF NOT EXISTS \w+\s+ON worker_referred_jobs \(worker_id, last_seen_at DESC\);/,
+      );
+      // Employers hard-delete jobs: RESTRICT would turn every delete into an error.
+      expect(text).not.toMatch(/RESTRICT/);
+      // The table has no share-code column.
+      const table = text.slice(
+        text.indexOf('CREATE TABLE IF NOT EXISTS worker_referred_jobs ('),
+        text.indexOf('CREATE INDEX IF NOT EXISTS'),
+      );
+      expect(table).toContain('PRIMARY KEY (worker_id, job_id)');
+      expect(table).not.toMatch(/share_code/);
+    });
+
+    // Decided 2026-10-01: two referral-schema bugs found while building 103 are
+    // folded into it. (1) 056's first-touch trigger rejected the UPDATE that
+    // first_job_id's ON DELETE SET NULL performs, so no employer could
+    // hard-delete a job that was any worker's first-touch referral. (2)
+    // claimed_worker_id's SET NULL left claimed_at behind, which the coherence
+    // CHECK rejects, so no worker who had claimed a referral could be deleted.
+    // The DB suite proves both through the real delete paths.
+    it('lets a deleted job leave first_job_id, and only that first-touch change', () => {
+      const text = statements();
+      expect(text).toContain(
+        'CREATE OR REPLACE FUNCTION worker_attribution_reject_first_touch_change()',
+      );
+      // CREATE OR REPLACE keeps 056's trigger binding: the trigger itself is
+      // never dropped or re-created here.
+      expect(text).not.toMatch(/(DROP|CREATE) TRIGGER/);
+      const body = text.slice(
+        text.indexOf('CREATE OR REPLACE FUNCTION worker_attribution_reject_first_touch_change()'),
+      ).replace(/\s+/g, ' ');
+      expect(body).toContain(
+        'OR (NEW.first_job_id IS DISTINCT FROM OLD.first_job_id '
+        + 'AND NOT (OLD.first_job_id IS NOT NULL AND NEW.first_job_id IS NULL))',
+      );
+      // 063's unconditional first_job_id comparison is gone...
+      expect(body).not.toMatch(/OR NEW\.first_job_id\s+IS DISTINCT FROM OLD\.first_job_id OR/);
+      // ...and every other first_* column is still compared as 063 did.
+      for (const column of [
+        'first_share_code', 'first_channel', 'first_referrer_worker_id',
+        'first_referrer_employer_id', 'first_seen_at',
+      ]) {
+        expect(body).toContain(`NEW.${column} IS DISTINCT FROM OLD.${column}`);
+      }
+      expect(body).toContain("USING ERRCODE = 'restrict_violation'");
+    });
+
+    it("re-creates claimed_worker_id's foreign key as ON DELETE CASCADE, by its catalog name, keeping the CHECK", () => {
+      const text = statements();
+      const drop = text.indexOf(
+        'ALTER TABLE referral_pending_claims\n'
+        + '    DROP CONSTRAINT IF EXISTS referral_pending_claims_claimed_worker_id_fkey;',
+      );
+      const add = text.indexOf(
+        'ALTER TABLE referral_pending_claims\n'
+        + '    ADD CONSTRAINT referral_pending_claims_claimed_worker_id_fkey\n'
+        + '    FOREIGN KEY (claimed_worker_id) REFERENCES users(id) ON DELETE CASCADE;',
+      );
+      expect(drop).toBeGreaterThan(-1);
+      expect(add).toBeGreaterThan(drop);
+      // The swap takes ACCESS EXCLUSIVE on users (the FK's RI triggers live
+      // there), so it comes first: users is never lock-upgraded mid-transaction.
+      expect(drop).toBeLessThan(text.indexOf('CREATE TABLE IF NOT EXISTS worker_referred_jobs ('));
+      // The coherence CHECK is what made SET NULL fail; it stays.
+      expect(text).not.toMatch(/DROP CONSTRAINT[^;]*claimed_coherent/);
+      expect(text.match(/DROP CONSTRAINT/g)).toHaveLength(1);
+    });
+
+    it('fails closed if either repair is missing or drifts', () => {
+      const text = sql();
+      expect(text).toContain(
+        'migration 103: worker_attribution_reject_first_touch_change must allow only first_job_id -> NULL',
+      );
+      expect(text).toContain('migration 103: worker_attribution_first_touch_immutable trigger is not bound as BEFORE UPDATE FOR EACH ROW');
+      expect(text).toContain(
+        'migration 103: referral_pending_claims.claimed_worker_id must have exactly one foreign key, to users ON DELETE CASCADE',
+      );
+      expect(text).toContain('migration 103: referral_pending_claims_claimed_coherent is missing');
+      expect(text).toContain("confdeltype = 'c'");
+    });
+
+    // Every job parked on a phone before sign-in is kept until the claim: the
+    // jobs a later code replaced ride on the claim row, beside the current job.
+    it('adds the parked-job set to referral_pending_claims replay-safely, after the claim key swap, and checks it', () => {
+      const text = statements();
+      const add = text.indexOf(
+        'ALTER TABLE referral_pending_claims\n'
+        + "    ADD COLUMN IF NOT EXISTS earlier_job_ids UUID[] NOT NULL DEFAULT '{}'::uuid[];",
+      );
+      expect(add).toBeGreaterThan(-1);
+      // Same lock as the swap before it, so referral_pending_claims is never
+      // lock-upgraded later in the transaction.
+      expect(add).toBeGreaterThan(text.indexOf('FOREIGN KEY (claimed_worker_id) REFERENCES users(id) ON DELETE CASCADE;'));
+      expect(add).toBeLessThan(text.indexOf('CREATE TABLE IF NOT EXISTS worker_referred_jobs ('));
+      expect(text.match(/ADD COLUMN/g)).toHaveLength(1);
+      // The backfill never reads the set: it names jobs only, with no key to jobs.
+      const backfill = text.slice(text.indexOf('INSERT INTO worker_referred_jobs'), text.indexOf('GET DIAGNOSTICS'));
+      expect(backfill).not.toContain('earlier_job_ids');
+      expect(sql()).toContain('migration 103: referral_pending_claims.earlier_job_ids must be a NOT NULL uuid[] defaulting to empty');
+    });
+
+    it('grants SELECT, INSERT, UPDATE to both roles and DELETE to nobody', () => {
+      const text = statements();
+      expect(text.match(/^GRANT /gm)).toHaveLength(1);
+      expect(text).toContain(
+        'GRANT SELECT, INSERT, UPDATE ON worker_referred_jobs TO jale_admin, jale_whatsapp;',
+      );
+      expect(text).not.toMatch(/GRANT[^;]*\b(DELETE|TRUNCATE|ALL)\b/);
+      // ...and does not take the OWNER's DELETE away either: an ON DELETE
+      // CASCADE runs as the referencing table's owner, so that revoke would
+      // make every job hard-delete and every account delete a 42501.
+      expect(text).not.toMatch(/REVOKE/);
+    });
+
+    it('names its role with TO on both policies and reads neither jobs nor job_applications in them', () => {
+      const text = statements();
+      expect(text).toContain('ALTER TABLE worker_referred_jobs ENABLE ROW LEVEL SECURITY;');
+      expect(text.match(/DROP POLICY IF EXISTS \w+ ON worker_referred_jobs;/g)).toHaveLength(2);
+
+      const policies = text.match(/CREATE POLICY[\s\S]*?;/g) ?? [];
+      expect(policies).toHaveLength(2);
+      for (const policy of policies) {
+        expect(policy).toMatch(/\bFOR ALL TO (jale_admin|jale_whatsapp)\b/);
+        // The 038 recursion class.
+        expect(policy).not.toMatch(/\bjobs\b|\bjob_applications\b/);
+      }
+
+      const admin = policies.find((policy) => /TO jale_admin\b/.test(policy))!;
+      expect(admin).toMatch(/^CREATE POLICY worker_referred_jobs_owner ON worker_referred_jobs\b/);
+      expect(admin.match(
+        /worker_id = \(SELECT id FROM users\s+WHERE cognito_sub = current_setting\('app\.current_user_id', true\)\)/g,
+      )).toHaveLength(2);
+
+      const whatsapp = policies.find((policy) => /TO jale_whatsapp\b/.test(policy))!;
+      expect(whatsapp).toMatch(/^CREATE POLICY worker_referred_jobs_whatsapp ON worker_referred_jobs\b/);
+      // ::text, so the empty string a warm pooled connection carries is a
+      // non-match rather than a 22P02.
+      expect(whatsapp.match(
+        /worker_id::text = current_setting\('app\.current_internal_user_id', true\)/g,
+      )).toHaveLength(2);
+    });
+
+    it('un-forces, backfills and re-forces both sources and the new table (096 pattern)', () => {
+      const text = statements();
+      const insert = text.indexOf('INSERT INTO worker_referred_jobs');
+      expect(insert).toBeGreaterThan(-1);
+      for (const table of ['worker_attribution', 'referral_pending_claims', 'worker_referred_jobs']) {
+        const noForce = text.indexOf(`ALTER TABLE ${table} NO FORCE ROW LEVEL SECURITY;`);
+        const reForce = text.indexOf(`ALTER TABLE ${table} FORCE ROW LEVEL SECURITY;`);
+        expect(noForce).toBeGreaterThan(-1);
+        expect(insert).toBeGreaterThan(noForce);
+        expect(reForce).toBeGreaterThan(insert);
+      }
+      // Exactly those three, each once.
+      expect(text.match(/NO FORCE ROW LEVEL SECURITY/g)).toHaveLength(3);
+      expect(text.match(/ALTER TABLE \w+ FORCE ROW LEVEL SECURITY/g)).toHaveLength(3);
+      // `row_security = off` lifts no policy; it makes an affected query fail.
+      expect(text).not.toMatch(/row_security/);
+    });
+
+    it('backfills from both sources without reading jobs, one row per pair', () => {
+      const text = statements();
+      // The foreign keys guarantee existence.
+      expect(text).not.toMatch(/\b(FROM|JOIN)\s+(public\.)?jobs\b/);
+      expect(text).toMatch(/FROM worker_attribution wa\s+WHERE wa\.first_job_id IS NOT NULL/);
+      expect(text).toMatch(/FROM worker_attribution wa\s+WHERE wa\.latest_job_id IS NOT NULL/);
+      expect(text).toMatch(/FROM referral_pending_claims rpc\s+WHERE rpc\.claimed_worker_id IS NOT NULL/);
+      expect(text).toMatch(/SELECT src\.worker_id, src\.job_id, 'backfill', min\(src\.seen_at\), max\(src\.seen_at\)/);
+      // One INSERT ... ON CONFLICT DO UPDATE cannot touch a row twice (21000),
+      // and first_job_id = latest_job_id is the common case.
+      expect(text).toContain('GROUP BY src.worker_id, src.job_id');
+      expect(text).toContain('ON CONFLICT (worker_id, job_id) DO UPDATE');
+      expect(text).toContain(
+        'SET first_seen_at = LEAST(worker_referred_jobs.first_seen_at, EXCLUDED.first_seen_at)',
+      );
+      expect(text).toContain(
+        'last_seen_at  = GREATEST(worker_referred_jobs.last_seen_at, EXCLUDED.last_seen_at)',
+      );
+      // A conflict widens the window and nothing else: the source a door
+      // recorded is never rewritten to 'backfill'.
+      const doUpdate = text.slice(text.indexOf('DO UPDATE'), text.indexOf('GET DIAGNOSTICS'));
+      expect(doUpdate).not.toMatch(/\bsource\b/);
+      expect(text).toMatch(/GET DIAGNOSTICS v_rows = ROW_COUNT;/);
+      expect(text).toMatch(/RAISE NOTICE 'migration 103: /);
+    });
+
+    // 094's lesson: on the bed, once FORCE is back on, the migration
+    // connection's reads come back empty, so a data check after the re-force
+    // could never fail.
+    it('asserts its DATA inside the un-forced window and its CATALOG state after it', () => {
+      const text = sql();
+      const window = text.slice(
+        text.indexOf('ALTER TABLE worker_attribution NO FORCE ROW LEVEL SECURITY;'),
+        text.indexOf('ALTER TABLE worker_attribution FORCE ROW LEVEL SECURITY;'),
+      );
+      const after = text.slice(text.indexOf('ALTER TABLE worker_attribution FORCE ROW LEVEL SECURITY;'));
+
+      expect(window).toContain('migration 103: % is still FORCE RLS');
+      expect(window).toContain('migration 103: % referred (worker, job) pair(s) are missing');
+      expect(window.indexOf('migration 103: % is still FORCE RLS'))
+        .toBeLessThan(window.indexOf('INSERT INTO worker_referred_jobs'));
+      expect(after).toContain('migration 103: % lost RLS ENABLE + FORCE');
+      expect(after).not.toContain('pair(s) are missing');
+    });
+
+    it('fails closed on RLS, privilege, ownership and policy drift', () => {
+      const text = sql();
+      expect(text).toContain("ARRAY['worker_attribution', 'referral_pending_claims', 'worker_referred_jobs']");
+      expect(text).toContain('relrowsecurity AND rel.relforcerowsecurity');
+      expect(text).toContain("ARRAY['jale_admin', 'jale_whatsapp']");
+      expect(text).toContain("ARRAY['SELECT', 'INSERT', 'UPDATE']");
+      expect(text).toContain('migration 103: % lacks % on worker_referred_jobs');
+      expect(text).toContain('migration 103: worker_referred_jobs must be owned by jale_admin');
+      expect(text).toContain("has_table_privilege('jale_whatsapp', 'public.worker_referred_jobs', 'DELETE')");
+      expect(text).toContain('aclexplode');
+      expect(text).toContain('migration 103: a role other than the owner holds DELETE or TRUNCATE');
+      expect(text).toContain('migration 103: worker_referred_jobs must carry both of its policies');
+      expect(text).toContain('migration 103: worker_referred_jobs carries a policy other than its two and their reviewed copies');
+      // A later migration's reviewed copies of the two policies are accepted
+      // by exact name only, never by a pattern on the name.
+      for (const copy of ['worker_referred_jobs_owner__api', 'worker_referred_jobs_owner__dg',
+                          'worker_referred_jobs_whatsapp__api', 'worker_referred_jobs_whatsapp__dg']) {
+        expect(text).toContain(`'${copy}'`);
+      }
+      expect(text).not.toMatch(/polname\s+(NOT\s+)?(I?LIKE|SIMILAR\s+TO|~)/i);
+      expect(text).toContain('migration 103: worker_referred_jobs_owner must be FOR ALL TO jale_admin');
+      expect(text).toContain('migration 103: worker_referred_jobs_whatsapp must be FOR ALL TO jale_whatsapp');
+      expect(text).toMatch(/polroles = ARRAY\[\(SELECT oid FROM pg_catalog\.pg_roles WHERE rolname = 'jale_admin'\)\]/);
+      expect(text).toMatch(/polroles = ARRAY\[\(SELECT oid FROM pg_catalog\.pg_roles WHERE rolname = 'jale_whatsapp'\)\]/);
+    });
+
+    it('documents its deploy order, its lock window and why the new table is un-forced too', () => {
+      const text = sql();
+      expect(text).toMatch(/DEPLOY ORDER: apply this migration BEFORE the code deploy/);
+      expect(text).toMatch(/bastion runbook/);
+      expect(text).toMatch(/ACCESS EXCLUSIVE/);
+      expect(text).toMatch(/SHARE ROW EXCLUSIVE/);
+      // A replay finds the new table FORCEd by the first apply.
+      expect(text).toMatch(/replay finds it FORCEd/);
+      expect(text).toMatch(/21000/);
+      // Dropping the claim FK locks users itself, reads included.
+      expect(text).toMatch(/ACCESS EXCLUSIVE on users/);
+      // The first-touch credit outlives the job.
+      expect(text).toMatch(/credit survives/i);
+    });
+  });
+
+  // 104-106 are sprint 27's least-privilege database access: dedicated
+  // logins (104), capability functions (105) and the manifest-generated
+  // access rights (106). The manifest (infra/db/access/manifest.json) is the
+  // reviewed source of truth for the logins, owners and functions, so these
+  // text checks read their expectations from it rather than restating them.
+  describe('104-105 least-privilege logins and capability functions', () => {
+    const manifest = () => JSON.parse(fs.readFileSync(
+      path.join(__dirname, '..', '..', '..', 'db', 'access', 'manifest.json'), 'utf8',
+    )) as {
+      master: string;
+      logins: Record<string, { kind: string; connection_limit: number; created_by: string; settings?: Record<string, string> }>;
+      capability_owners: Record<string, { reason: string }>;
+      groups: Record<string, { reason: string }>;
+      functions: Record<string, { owner: string; security: string; execute: string[]; created_by?: string }>;
+    };
+    const read = (name: string) => fs.readFileSync(path.join(migrationsDir, name), 'utf8');
+    // Statement assertions read the SQL only: the headers explain roles,
+    // passwords and SET ROLE in prose.
+    const sqlOnly = (text: string) => text.replace(/--.*$/gm, '');
+    const newLogins = () => Object.entries(manifest().logins).filter(([, l]) => l.created_by === '104');
+    const capFunctions = () => Object.entries(manifest().functions).filter(([, f]) => f.created_by === '105');
+
+    describe('104_least_privilege_logins.sql', () => {
+      const text = () => read('104_least_privilege_logins.sql');
+
+      it('runs after 103 as jale_admin in ONE transaction with a lock timeout', () => {
+        const t = text();
+        expect(t).toMatch(/Run manually AFTER 103_worker_referred_jobs\.sql/);
+        expect(t).toContain('connected as jale_admin.');
+        expect(t).toContain('Forward-only (ADR-005)');
+        expect(t.match(/^BEGIN;$/gm)).toHaveLength(1);
+        expect(t.match(/^COMMIT;$/gm)).toHaveLength(1);
+        expect(t.indexOf("SET LOCAL lock_timeout = '5s';")).toBeGreaterThan(t.indexOf('BEGIN;'));
+      });
+
+      it('describes in its header the logins it creates, and the deploy order', () => {
+        const t = text();
+        expect(t).toContain("The logins this file creates are the workloads' own; none owns a table.");
+        expect(t).not.toContain('NOT the RDS master user');
+        expect(t).toMatch(/DEPLOY ORDER: apply this migration BEFORE the release deploy/);
+      });
+
+      it('creates every new login with the least-privilege attributes, its connection limit and no password', () => {
+        const t = sqlOnly(text());
+        const logins = newLogins();
+        expect(logins.map(([name]) => name).sort()).toEqual([
+          'jale_api', 'jale_api_public', 'jale_job_digest', 'jale_job_email_sender',
+          'jale_job_retention', 'jale_job_ses_feedback', 'jale_job_visibility_drain', 'jale_posture',
+        ]);
+        expect(t).toContain('LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT CONNECTION LIMIT');
+        for (const [name, login] of logins) {
+          expect(t).toMatch(new RegExp(`\\('${name}',\\s*${login.connection_limit}\\)`));
+        }
+        // No password ever reaches a migration: logins cannot sign in until
+        // credential preparation sets a SCRAM verifier out of band.
+        expect(t).not.toMatch(/PASSWORD/i);
+        // Upper-case keyword only: rolbypassrls/rolinherit are catalog columns.
+        expect(t).not.toMatch(/(?<!NO)BYPASSRLS/);
+        // Existing roles are validated and refused, never altered: the only
+        // ALTER ROLE statements set the idle-transaction timeout.
+        expect(t.replace(/^ALTER ROLE \w+ SET idle_in_transaction_session_timeout = '60s';$/gm, ''))
+          .not.toMatch(/\bALTER\s+ROLE\b/i);
+        expect(t).toContain('migration 104: existing login % has unexpected attributes');
+        expect(t).toContain('migration 104: login % must not be a member of any role');
+      });
+
+      it('ends idle-in-transaction sessions after 60s on every login the manifest marks, and on no other', () => {
+        const t = sqlOnly(text());
+        const marked = newLogins()
+          .filter(([, login]) => login.settings?.idle_in_transaction_session_timeout === '60s')
+          .map(([name]) => name)
+          .sort();
+        expect(marked).toEqual([
+          'jale_api', 'jale_api_public', 'jale_job_digest', 'jale_job_email_sender',
+          'jale_job_retention', 'jale_job_ses_feedback', 'jale_job_visibility_drain',
+        ]);
+        for (const name of marked) {
+          expect(t).toContain(`ALTER ROLE ${name} SET idle_in_transaction_session_timeout = '60s';`);
+        }
+        expect(t.match(/^ALTER ROLE \w+ SET /gm)).toHaveLength(marked.length);
+        expect(t).toContain('migration 104: login % does not carry its role settings');
+      });
+
+      it('creates the capability owners and the operator group as NOLOGIN roles', () => {
+        const t = sqlOnly(text());
+        const owners = Object.keys(manifest().capability_owners).sort();
+        expect(owners).toEqual([
+          'jale_cap_hired_counts', 'jale_cap_job_messaging', 'jale_cap_retention', 'jale_cap_ses_feedback',
+          'jale_cap_share_links', 'jale_cap_stale_outbox', 'jale_cap_upload_tokens', 'jale_cap_worker_lane',
+        ]);
+        expect(Object.keys(manifest().groups)).toEqual(['jale_ops_readonly']);
+        expect(t).toContain('NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS');
+        for (const role of [...owners, 'jale_ops_readonly']) expect(t).toContain(`'${role}'`);
+        expect(t).toContain('migration 104: existing role % has unsafe attributes');
+        expect(t).toContain('migration 104: role % has unsafe memberships');
+      });
+
+      it('creates jale_cap owned by jale_admin, closed to PUBLIC, and grants CONNECT by database name lookup', () => {
+        const t = sqlOnly(text());
+        expect(t).toContain('CREATE SCHEMA jale_cap AUTHORIZATION jale_admin');
+        expect(t).toContain('REVOKE ALL ON SCHEMA jale_cap FROM PUBLIC;');
+        expect(t).toContain("GRANT CONNECT ON DATABASE %I TO %I', current_database()");
+        expect(t).not.toMatch(/ON DATABASE jale\b/);
+        expect(t).toContain('migration 104: jale_cap must be owned by jale_admin and closed to PUBLIC');
+      });
+
+      it('pins the eight unpinned definers, revokes the trigger function from PUBLIC and drops the SET membership', () => {
+        const t = sqlOnly(text());
+        for (const fn of [
+          'assign_worker_thread_number(uuid)', 'enqueue_job_visibility_event(uuid, text, text)',
+          'list_jobs_missing_geo()', 'list_stale_job_outbox_workers(interval)', 'public_job_company(uuid)',
+          'public_referrer_context(text, text)', 'set_job_geo(uuid, text, text)', 'sync_job_hired_counts()',
+        ]) expect(t).toContain(`'public.${fn}'`);
+        expect(t).toContain("SET search_path = pg_catalog, public, pg_temp");
+        expect(t).toContain('REVOKE EXECUTE ON FUNCTION public.sync_job_hired_counts() FROM PUBLIC');
+        expect(t).toContain('REVOKE jale_location_backfill FROM %I GRANTED BY %I');
+        expect(t).toContain('ALTER DEFAULT PRIVILEGES FOR ROLE jale_admin REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;');
+        expect(t).toContain('migration 104: definer % still lacks a search_path ending in pg_temp');
+        expect(t).toContain('migration 104: jale_admin still holds a SET membership in jale_location_backfill');
+        expect(t).toContain('migration 104: new functions would still be executable by PUBLIC');
+      });
+
+      it('revokes TEMPORARY on the database from PUBLIC, and proves no new login keeps it', () => {
+        const t = sqlOnly(text());
+        expect(t).toContain("EXECUTE format('REVOKE TEMPORARY ON DATABASE %I FROM PUBLIC', current_database());");
+        expect(t).not.toMatch(/GRANT\s+(TEMP|TEMPORARY|ALL)\b[^;]*ON DATABASE/i);
+        expect(t).toContain('migration 104: PUBLIC still holds TEMPORARY on the database');
+        expect(t).toContain('migration 104: login % holds TEMPORARY on the database');
+        expect(text()).toContain('The master keeps TEMPORARY as the database owner');
+      });
+
+      it('never switches role', () => {
+        const t = sqlOnly(text());
+        expect(t).not.toMatch(/\bSET\s+(LOCAL\s+|SESSION\s+)?ROLE\b/i);
+        expect(t).not.toMatch(/\bRESET\s+ROLE\b/i);
+      });
+    });
+
+    describe('106_least_privilege_access_rights.sql', () => {
+      const text = () => read('106_least_privilege_access_rights.sql');
+      const createPolicies = () => sqlOnly(text()).split('CREATE POLICY ').slice(1)
+        .map((block) => block.slice(0, block.indexOf(';')));
+
+      it('runs after 105 as jale_admin in ONE transaction, generated from the manifest', () => {
+        const t = text();
+        expect(t).toMatch(/Run manually AFTER 105_least_privilege_capability_functions\.sql/);
+        expect(t).toContain('connected as jale_admin.');
+        expect(t).toContain('GENERATED by infra/db/access/generate.ts');
+        expect(t.match(/^BEGIN;$/gm)).toHaveLength(1);
+        expect(t.match(/^COMMIT;$/gm)).toHaveLength(1);
+        expect(t.indexOf("SET LOCAL lock_timeout = '5s';")).toBeGreaterThan(t.indexOf('BEGIN;'));
+        expect(t).toContain('migration 106: apply 105 first');
+        expect(t).toContain('migration 106: apply 104 first');
+      });
+
+      it('has no unrestricted policy outside the reference-data allow-list and the job logins\' drains', () => {
+        const open = createPolicies().filter((block) => /USING \(true\)|WITH CHECK \(true\)/.test(block));
+        expect(open.map((block) => block.split(' ')[0]).sort()).toEqual([
+          'billing_plans_read_all__api',
+          'city_cbsa_crosswalk_read_all__api',
+          'email_outbox_sender_select',
+          'email_outbox_sender_update',
+          'job_visibility_events_drain_job_select',
+          'job_visibility_events_drain_job_update',
+          'wage_references_read_all__api',
+        ]);
+        for (const block of open.filter((b) => !b.split(' ')[0].endsWith('__api'))) {
+          expect(block).toMatch(/ TO jale_job_(email_sender|visibility_drain)\n/);
+        }
+      });
+
+      it('names every copy <source>__api or <source>__dg and applies it to that one login', () => {
+        for (const block of createPolicies()) {
+          const name = block.split(' ')[0];
+          if (name.endsWith('__api')) expect(block).toMatch(/ TO jale_api\n/);
+          if (name.endsWith('__dg')) expect(block).toMatch(/ TO jale_job_digest\n/);
+          expect(Buffer.byteLength(name, 'utf8')).toBeLessThanOrEqual(63);
+        }
+      });
+
+      it('grants no TRUNCATE, REFERENCES, TRIGGER or CREATE, and never switches role', () => {
+        const t = sqlOnly(text());
+        expect(t).not.toMatch(/GRANT[^;]*\b(TRUNCATE|REFERENCES|TRIGGER|CREATE)\b/);
+        expect(t).not.toMatch(/\bSET\s+(LOCAL\s+|SESSION\s+)?ROLE\b/i);
+        expect(t).not.toMatch(/\bRESET\s+ROLE\b/i);
+      });
+
+      it('opens each helper window INHERIT-only and closes it before the audit', () => {
+        const t = sqlOnly(text());
+        const opens = t.match(/WITH INHERIT TRUE, SET FALSE', '([a-z_]+)'/g) ?? [];
+        const closes = t.match(/REVOKE %I FROM %I GRANTED BY %I', '([a-z_]+)'/g) ?? [];
+        expect(opens.length).toBeGreaterThan(0);
+        expect(closes).toHaveLength(opens.length);
+        expect(t).toContain('migration 106: a membership window on a helper owner is still open');
+      });
+
+      it('audits per-login counts and copy fidelity, and refuses a source that changed since the snapshot', () => {
+        const t = text();
+        expect(t).toContain('migration 106: % holds % policies, % table, % column, % sequence, % EXECUTE and % schema privileges');
+        expect(t).toContain('migration 106: copy % on % differs from its source %');
+        expect(t).toContain('migration 106: source policy % on % changed since the catalog snapshot; regenerate');
+      });
+    });
+
+    describe('105_least_privilege_capability_functions.sql', () => {
+      const text = () => read('105_least_privilege_capability_functions.sql');
+
+      it('makes job-scoped documents and upload tokens cascade from their job, NOT VALID then validated', () => {
+        const t = sqlOnly(read('105_least_privilege_capability_functions.sql'));
+        for (const [table, constraint] of [
+          ['worker_documents', 'worker_documents_job_id_fkey'],
+          ['document_upload_tokens', 'document_upload_tokens_job_id_fkey'],
+        ]) {
+          expect(t).toContain(
+            `ALTER TABLE public.${table}\n  DROP CONSTRAINT ${constraint},\n  ADD CONSTRAINT ${constraint}\n`
+            + '    FOREIGN KEY (job_id) REFERENCES public.jobs (id) ON DELETE CASCADE NOT VALID;',
+          );
+          expect(t).toContain(`ALTER TABLE public.${table} VALIDATE CONSTRAINT ${constraint};`);
+        }
+        expect(t).toContain('migration 105: the job-scoped document foreign keys must be validated and cascade on delete');
+      });
+
+      it('runs after 104 as jale_admin in ONE transaction and refuses a replay', () => {
+        const t = text();
+        expect(t).toMatch(/Run manually AFTER 104_least_privilege_logins\.sql/);
+        expect(t).toContain('connected as jale_admin.');
+        expect(t.match(/^BEGIN;$/gm)).toHaveLength(1);
+        expect(t.match(/^COMMIT;$/gm)).toHaveLength(1);
+        expect(t.indexOf("SET LOCAL lock_timeout = '5s';")).toBeGreaterThan(t.indexOf('BEGIN;'));
+        expect(t).toContain('migration 105: already applied');
+        expect(t).toContain('migration 105: apply 104 first');
+      });
+
+      it('creates every capability function as a hardened definer, closed to PUBLIC, executable by its caller only', () => {
+        const t = sqlOnly(text());
+        const fns = capFunctions();
+        expect(fns.length).toBeGreaterThan(0);
+        for (const [signature, fn] of fns) {
+          const name = signature.slice(0, signature.indexOf('('));
+          expect(fn.security).toBe('definer');
+          // The re-owned trigger function is moved into jale_cap and replaced
+          // there (its trigger is bound by OID); every other one is created.
+          expect(t).toMatch(new RegExp(`CREATE (OR REPLACE )?FUNCTION ${name.replace('.', '\\.')}\\(`));
+          expect(t).toContain(`REVOKE ALL ON FUNCTION ${signature} FROM PUBLIC;`);
+          for (const caller of fn.execute) expect(t).toContain(`GRANT EXECUTE ON FUNCTION ${signature} TO ${caller};`);
+          expect(t).toContain(`ALTER FUNCTION ${signature} OWNER TO ${fn.owner};`);
+        }
+        // Every function the file creates revokes PUBLIC, whatever the manifest says.
+        const created = [...t.matchAll(/CREATE (?:OR REPLACE )?FUNCTION (jale_cap\.\w+)\(/g)].map((m) => m[1]);
+        expect(created.length).toBe(fns.length);
+        for (const name of created) {
+          expect(t).toMatch(new RegExp(`REVOKE ALL ON FUNCTION ${name.replace('.', '\\.')}\\([^)]*\\) FROM PUBLIC;`));
+        }
+        expect(t.match(/SECURITY DEFINER/g)?.length).toBe(fns.length);
+        expect(t.match(/SET search_path = pg_catalog, pg_temp/g)?.length).toBe(fns.length);
+      });
+
+      it('transfers ownership inside a SET-only window that it closes again', () => {
+        const t = sqlOnly(text());
+        const open = t.indexOf("GRANT %I TO %I WITH SET TRUE, INHERIT FALSE");
+        const transfer = t.indexOf('OWNER TO jale_cap_');
+        const close = t.indexOf("GRANT %I TO %I WITH SET FALSE, INHERIT FALSE");
+        const revoke = t.indexOf('REVOKE %I FROM %I GRANTED BY %I');
+        expect(open).toBeGreaterThan(-1);
+        expect(transfer).toBeGreaterThan(open);
+        expect(close).toBeGreaterThan(transfer);
+        expect(revoke).toBeGreaterThan(close);
+        expect(t).toContain('migration 105: a role still holds SET or INHERIT on capability owner %');
+      });
+
+      it('re-owns the two master-owned definers: a public invoker wrapper and a moved trigger function', () => {
+        const t = sqlOnly(text());
+        expect(t).toContain('CREATE FUNCTION jale_cap.list_stale_job_outbox_workers(');
+        expect(t).toMatch(/CREATE OR REPLACE FUNCTION public\.list_stale_job_outbox_workers\(\s*p_min_age INTERVAL DEFAULT INTERVAL '5 minutes'\s*\)[\s\S]*?SECURITY INVOKER\s*AS/);
+        expect(t).toContain('GRANT EXECUTE ON FUNCTION public.list_stale_job_outbox_workers(interval) TO jale_whatsapp;');
+        expect(t).toContain('ALTER FUNCTION public.sync_job_hired_counts() SET SCHEMA jale_cap;');
+        expect(t.indexOf('ALTER FUNCTION public.sync_job_hired_counts() SET SCHEMA jale_cap;'))
+          .toBeLessThan(t.indexOf('CREATE OR REPLACE FUNCTION jale_cap.sync_job_hired_counts()'));
+        expect(t).toContain('migration 105: the hired-count trigger must fire jale_cap.sync_job_hired_counts()');
+        expect(t).toContain("ALTER FUNCTION public.enforce_certification_document_limit() SET search_path = pg_catalog, public, pg_temp;");
+      });
+
+      it('gives each capability owner policies TO that owner only, and the manifest records every one', () => {
+        const t = sqlOnly(text());
+        const owners = Object.keys(manifest().capability_owners);
+        const created = [...t.matchAll(/CREATE POLICY (\w+) ON (public\.\w+)\s+AS PERMISSIVE FOR (\w+) TO (\w+)/g)]
+          .map(([, name, table, command, role]) => ({ key: `${table}.${name}`, command, role }));
+        expect(created.length).toBeGreaterThan(0);
+        // Every CREATE POLICY in the file has the explicit shape matched above.
+        expect(created).toHaveLength((t.match(/CREATE POLICY /g) ?? []).length);
+        const policies = (manifest() as unknown as { policies: Record<string, { command: string; to: string[] }> }).policies;
+        for (const { key, command, role } of created) {
+          expect(owners).toContain(role);
+          expect([key, policies[key]?.command, policies[key]?.to]).toEqual([key, command, [role]]);
+        }
+        const recorded = Object.entries(policies).filter(([, p]) => p.to.every((r) => owners.includes(r))).map(([k]) => k).sort();
+        expect(recorded).toEqual(created.map((c) => c.key).sort());
+        expect(t).toContain('migration 105: capability owner % does not hold exactly its % policies');
+        expect(t).toContain('migration 105: capability owner % must not hold CREATE on public');
+      });
+
+      it('gives jale_cap USAGE to the callers and fails closed on ACL drift', () => {
+        const t = sqlOnly(text());
+        const callers = [...new Set(capFunctions().flatMap(([, fn]) => fn.execute))].sort();
+        for (const caller of callers) expect(t).toContain(`GRANT USAGE ON SCHEMA jale_cap TO ${caller};`);
+        expect(t).toContain('migration 105: % has the wrong owner, security, search_path or language');
+        expect(t).toContain('migration 105: % is executable by a role other than its owner and callers');
+      });
+
+      it('never switches role', () => {
+        const t = sqlOnly(text());
+        expect(t).not.toMatch(/\bSET\s+(LOCAL\s+|SESSION\s+)?ROLE\b/i);
+        expect(t).not.toMatch(/\bRESET\s+ROLE\b/i);
+      });
+    });
+  });
+
+  // 107-108 are sprint 27's report-a-problem storage: the report tables, the
+  // two dedicated logins and the three capability owners (107), and the
+  // jale_cap functions that are the only way to read or write a report (108).
+  // Every object is listed in the access manifest fragment
+  // infra/db/access/manifest.d/reports.json, so these text checks read their
+  // expectations from it rather than restating them.
+  describe('107-108 problem reports', () => {
+    interface ReportsFragment {
+      logins: Record<string, {
+        kind: string; connection_limit: number; created_by: string; prepare_secret?: boolean; settings?: Record<string, string>;
+      }>;
+      capability_owners: Record<string, { created_by: string; reason: string }>;
+      tables: Record<string, { classification: string; rls: { enabled: boolean; forced: boolean }; created_by?: string }>;
+      functions: Record<string, {
+        owner: string; security: string; search_path: string | null; execute: string[]; created_by?: string;
+      }>;
+      policies: Record<string, { command: string; permissive: boolean; to: string[]; origin: string }>;
+      table_additions: Record<string, { policies?: Record<string, { command: string; to: string[]; origin: string }> }>;
+    }
+    const fragment = () => JSON.parse(fs.readFileSync(
+      path.join(__dirname, '..', '..', '..', 'db', 'access', 'manifest.d', 'reports.json'), 'utf8',
+    )) as ReportsFragment;
+    const read = (name: string) => fs.readFileSync(path.join(migrationsDir, name), 'utf8');
+    // Statement assertions read the SQL only: the headers explain roles,
+    // passwords and policies in prose.
+    const sqlOnly = (text: string) => text.replace(/--.*$/gm, '');
+    const SCHEMA = '107_problem_reports_schema.sql';
+    const FUNCTIONS = '108_problem_reports_functions.sql';
+    const OWNERS = ['jale_cap_problem_reports', 'jale_cap_problem_reports_admin', 'jale_cap_report_cleanup'];
+    const fnName = (signature: string) => signature.slice(0, signature.indexOf('('));
+
+    describe.each([SCHEMA, FUNCTIONS])('%s', (file) => {
+      it('runs right after its predecessor, as jale_admin, in ONE transaction with a lock timeout', () => {
+        const t = read(file);
+        const files = migrationFiles();
+        expect(files).toContain(file);
+        expect(t).toContain(`Run manually AFTER ${files[files.indexOf(file) - 1]},`);
+        expect(t).toContain('connected as jale_admin.');
+        expect(t).toContain('Forward-only (ADR-005)');
+        expect(t.match(/^BEGIN;$/gm)).toHaveLength(1);
+        expect(t.match(/^COMMIT;$/gm)).toHaveLength(1);
+        expect(t.indexOf("SET LOCAL lock_timeout = '5s';")).toBeGreaterThan(t.indexOf('BEGIN;'));
+      });
+
+      it('sets no password, never switches role and writes no unrestricted policy', () => {
+        const t = sqlOnly(read(file));
+        expect(t).not.toMatch(/PASSWORD/i);
+        expect(t).not.toMatch(/\bSET\s+(LOCAL\s+|SESSION\s+)?ROLE\b/i);
+        expect(t).not.toMatch(/\bRESET\s+ROLE\b/i);
+        // The only ALTER ROLE statements set the idle-transaction timeout.
+        expect(t.replace(/^ALTER ROLE \w+ SET idle_in_transaction_session_timeout = '60s';$/gm, ''))
+          .not.toMatch(/\bALTER\s+ROLE\b/i);
+        // Upper-case keyword only: rolbypassrls is a catalog column.
+        expect(t).not.toMatch(/(?<!NO)BYPASSRLS/);
+        expect(t).not.toMatch(/USING\s*\(\s*true\s*\)/i);
+        expect(t).not.toMatch(/WITH\s+CHECK\s*\(\s*true\s*\)/i);
+      });
+
+      it('scopes every policy it creates TO exactly one capability owner', () => {
+        const t = sqlOnly(read(file));
+        for (const [, name, body] of t.matchAll(/CREATE POLICY\s+(\w+)\s+ON\s+[\w.]+([\s\S]*?);/g)) {
+          const to = body.match(/\bTO\s+([\w, ]+?)\s+(?:USING|WITH)\b/);
+          expect({ name, to: to?.[1] }).toEqual({ name, to: expect.stringMatching(/^jale_cap_\w+$/) });
+          expect(OWNERS).toContain(to?.[1]);
+          expect(Buffer.byteLength(name)).toBeLessThanOrEqual(63);
+        }
+      });
+
+      it('revokes PUBLIC from every function it creates, and creates functions only in jale_cap', () => {
+        const t = sqlOnly(read(file));
+        const created = [...t.matchAll(/CREATE (?:OR REPLACE )?FUNCTION ([\w.]+)\(/g)].map((m) => m[1]);
+        for (const name of created) {
+          expect(name).toMatch(/^jale_cap\.problem_report_\w+$/);
+          expect(t).toMatch(new RegExp(`REVOKE ALL ON FUNCTION ${name.replace('.', '\\.')}\\([^)]*\\) FROM PUBLIC;`));
+        }
+      });
+
+      it('carries no address, hostname or URL literal', () => {
+        const t = sqlOnly(read(file));
+        expect(t).not.toMatch(/[a-z0-9._%+-]+@[a-z0-9-]+\.[a-z]{2,}/i);
+        expect(t).not.toMatch(/https?:\/\/[a-z0-9]/i);
+      });
+    });
+
+    describe(SCHEMA, () => {
+      it('creates the four report tables, excluded from every runtime login, with row-level security enabled and forced', () => {
+        const t = sqlOnly(read(SCHEMA));
+        const tables = Object.keys(fragment().tables).sort();
+        expect(tables).toEqual([
+          'public.problem_report_contents', 'public.problem_report_rate_buckets',
+          'public.problem_report_settings', 'public.problem_reports',
+        ]);
+        for (const table of tables) {
+          expect(fragment().tables[table]).toMatchObject({ classification: 'excluded', rls: { enabled: true, forced: true } });
+          expect(t).toMatch(new RegExp(`CREATE TABLE ${table.replace('.', '\\.')}\\s*\\(`));
+          expect(t).toContain(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY;`);
+          expect(t).toContain(`ALTER TABLE ${table} FORCE ROW LEVEL SECURITY;`);
+        }
+        expect(t).toMatch(/CREATE SEQUENCE public\.problem_report_number_seq\b[^;]*\bSTART WITH 1000\b/);
+        expect(t).toMatch(/DEFAULT nextval\('public\.problem_report_number_seq'\)/);
+        // Personal content leaves with its report, and with its account.
+        expect(t).toMatch(/REFERENCES public\.problem_reports \(id\) ON DELETE CASCADE/);
+        expect(t).toMatch(/REFERENCES public\.users \(id\) ON DELETE CASCADE/);
+      });
+
+      it('seeds the settings row with no recipient and no dashboard address', () => {
+        const t = sqlOnly(read(SCHEMA));
+        expect(t).toContain('INSERT INTO public.problem_report_settings (id) VALUES (true);');
+        expect(t).toMatch(/team_recipient\s+TEXT\s+CHECK/);
+        expect(t).toMatch(/admin_base_url\s+TEXT\s+CHECK/);
+        // The seed runs before row-level security is switched on.
+        expect(t.indexOf('INSERT INTO public.problem_report_settings')).toBeLessThan(
+          t.indexOf('ALTER TABLE public.problem_report_settings ENABLE ROW LEVEL SECURITY;'),
+        );
+      });
+
+      it('creates both logins with the least-privilege attributes and their connection limits', () => {
+        const t = sqlOnly(read(SCHEMA));
+        const logins = fragment().logins;
+        expect(Object.keys(logins).sort()).toEqual(['jale_api_public_reports', 'jale_job_report_cleanup']);
+        expect(logins.jale_api_public_reports).toMatchObject({ kind: 'public', connection_limit: 10, created_by: '107', prepare_secret: true });
+        expect(logins.jale_job_report_cleanup).toMatchObject({ kind: 'job', connection_limit: 5, created_by: '107', prepare_secret: true });
+        expect(t).toContain('LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT CONNECTION LIMIT');
+        for (const [name, login] of Object.entries(logins)) {
+          expect(t).toMatch(new RegExp(`\\('${name}',\\s*${login.connection_limit}\\)`));
+        }
+        expect(t).toContain("GRANT CONNECT ON DATABASE %I TO %I', current_database()");
+        expect(t).not.toMatch(/ON DATABASE jale\b/);
+        expect(t).not.toMatch(/GRANT USAGE ON SCHEMA public TO jale_(?:api_public_reports|job_report_cleanup)/);
+      });
+
+      it('creates the three capability owners as NOLOGIN roles with CREATE on jale_cap and none on public', () => {
+        const t = sqlOnly(read(SCHEMA));
+        expect(Object.keys(fragment().capability_owners).sort()).toEqual(OWNERS);
+        for (const owner of OWNERS) {
+          expect(fragment().capability_owners[owner].created_by).toBe('107');
+          expect(t).toContain(`'${owner}'`);
+        }
+        expect(t).toContain('NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS');
+        expect(t).toContain(`GRANT CREATE ON SCHEMA jale_cap TO ${OWNERS.join(', ')};`);
+        expect(t).not.toMatch(/GRANT CREATE ON SCHEMA public/i);
+      });
+
+      it('ends an idle transaction after 60 seconds on both logins, as the fragment records', () => {
+        const t = sqlOnly(read(SCHEMA));
+        for (const [name, login] of Object.entries(fragment().logins)) {
+          expect(t).toContain(`ALTER ROLE ${name} SET idle_in_transaction_session_timeout = '60s';`);
+          expect(login.settings).toEqual({ idle_in_transaction_session_timeout: '60s' });
+        }
+        expect(t.match(/^ALTER ROLE /gm)).toHaveLength(2);
+      });
+
+      it('gives the owners no read right on the words, the typed contact, the context or the note', () => {
+        const t = sqlOnly(read(SCHEMA)).replace(/\s+/g, ' ');
+        const selectLists = [...t.matchAll(/GRANT SELECT \(([^)]*)\) ON public\.problem_report_contents TO (\w+);/g)];
+        expect(selectLists.map((m) => m[2]).sort()).toEqual(['jale_cap_problem_reports', 'jale_cap_report_cleanup']);
+        for (const [, columns] of selectLists) {
+          for (const content of ['description', 'typed_contact', 'context', 'internal_note']) {
+            expect(columns.split(',').map((c) => c.trim())).not.toContain(content);
+          }
+        }
+        // The clean-up owner reads keys and dates only, and no mail content.
+        expect(t).toContain('GRANT SELECT (report_id, created_at, image_key, pending_upload_key, upload_issued_at) ON public.problem_report_contents TO jale_cap_report_cleanup;');
+        expect(t).toContain('GRANT SELECT (id, source_type, status, attempt_count, created_at) ON public.email_outbox TO jale_cap_report_cleanup;');
+        // The console owner never reads users.full_name.
+        expect(t).toContain('GRANT SELECT (id, cognito_sub, user_type, email, phone) ON public.users TO jale_cap_problem_reports_admin;');
+        expect(t).toContain('GRANT EXECUTE ON FUNCTION public.admin_mask_phone(text) TO jale_cap_problem_reports_admin;');
+        expect(t).toContain('GRANT USAGE ON SCHEMA jale_cap TO jale_cap_problem_reports, jale_cap_problem_reports_admin;');
+        expect(t).toContain('GRANT USAGE ON SEQUENCE public.problem_report_number_seq TO jale_cap_problem_reports;');
+        // Nothing for a runtime login.
+        expect(t).not.toMatch(/GRANT [^;]* TO jale_(?:api|api_public|api_public_reports|job_report_cleanup|admin_console)\b[^;]*;/);
+      });
+
+      it('gives every upload its own image key: images/<report>/<upload>.<ext>', () => {
+        const t = sqlOnly(read(SCHEMA));
+        expect(t).toContain("image_key            TEXT        CHECK (image_key ~ '^images/[0-9a-f-]{36}/[0-9a-f-]{36}\\.(jpg|png|webp)$')");
+      });
+
+      it('creates exactly the policies the fragment lists, 23 on its own tables and 5 on users and email_outbox', () => {
+        const t = sqlOnly(read(SCHEMA));
+        const created = [...t.matchAll(/CREATE POLICY (\w+) ON public\.(\w+)\s+FOR (\w+) TO (\w+)/g)]
+          .map(([, name, table, command, role]) => `public.${table}.${name} ${command} ${role}`).sort();
+        const own = Object.entries(fragment().policies).map(([key, p]) => {
+          expect(p).toMatchObject({ permissive: true, origin: 'existing' });
+          return `${key} ${p.command} ${p.to.join(',')}`;
+        });
+        const added = Object.entries(fragment().table_additions).flatMap(([table, addition]) =>
+          Object.entries(addition.policies ?? {}).map(([name, p]) => `${table}.${name} ${p.command} ${p.to.join(',')}`));
+        expect(own).toHaveLength(23);
+        expect(added.sort()).toEqual([
+          'public.email_outbox.email_outbox_problem_report_cleanup_delete DELETE jale_cap_report_cleanup',
+          'public.email_outbox.email_outbox_problem_report_cleanup_read SELECT jale_cap_report_cleanup',
+          'public.email_outbox.email_outbox_problem_report_insert INSERT jale_cap_problem_reports',
+          'public.users.users_problem_reports_admin_read SELECT jale_cap_problem_reports_admin',
+          'public.users.users_problem_reports_intake_read SELECT jale_cap_problem_reports',
+        ]);
+        expect(created).toEqual([...own, ...added].sort());
+        // The intake owner's working window, and the sender's retry rule kept.
+        expect(t.match(/created_at > now\(\) - interval '24 hours'/g)).toHaveLength(6);
+        expect(t.match(/NOT \(status IN \('pending', 'failed'\) AND attempt_count < 5\)/g)).toHaveLength(2);
+      });
+
+      it('refuses a replay and self-audits its tables, logins, owners, rights and policies', () => {
+        const t = read(SCHEMA);
+        for (const message of [
+          'migration 107: already applied',
+          'migration 107: apply the least-privilege migrations first',
+          'migration 107: % is missing, or its row-level security is not enabled and forced',
+          'migration 107: the settings row is missing or carries a recipient or dashboard address',
+          'migration 107: existing login % has unexpected attributes; refusing to adopt it',
+          'migration 107: role % has unsafe memberships',
+          'migration 107: capability owner % must hold CREATE on jale_cap and not on public',
+          'migration 107: login % does not carry its role settings',
+          'migration 107: % does not hold exactly its reviewed rights on %',
+          'migration 107: the report policies differ from the reviewed set (%)',
+        ]) expect(t).toContain(message);
+      });
+    });
+
+    describe(FUNCTIONS, () => {
+      it('creates every report function as a hardened definer, executable by its listed callers only', () => {
+        const t = sqlOnly(read(FUNCTIONS));
+        const fns = Object.entries(fragment().functions);
+        expect(fns).toHaveLength(18);
+        for (const [signature, fn] of fns) {
+          const name = fnName(signature);
+          expect(fn).toMatchObject({ security: 'definer', search_path: 'pg_catalog, pg_temp', created_by: '108' });
+          expect(OWNERS).toContain(fn.owner);
+          expect(t).toContain(`CREATE FUNCTION ${name}(`);
+          expect(t).toContain(`REVOKE ALL ON FUNCTION ${signature} FROM PUBLIC;`);
+          for (const caller of fn.execute) expect(t).toContain(`GRANT EXECUTE ON FUNCTION ${signature} TO ${caller};`);
+          expect(t).toContain(`ALTER FUNCTION ${signature} OWNER TO ${fn.owner};`);
+        }
+        const created = [...t.matchAll(/CREATE (?:OR REPLACE )?FUNCTION (jale_cap\.\w+)\(/g)].map((m) => m[1]);
+        expect(created.sort()).toEqual(fns.map(([signature]) => fnName(signature)).sort());
+        expect(t.match(/SECURITY DEFINER/g)?.length).toBe(fns.length);
+        expect(t.match(/SET search_path = pg_catalog, pg_temp/g)?.length).toBe(fns.length);
+        expect(t.match(/GRANT EXECUTE ON FUNCTION/g)?.length).toBe(fns.reduce((n, [, fn]) => n + fn.execute.length, 0));
+      });
+
+      it('gives each caller exactly its expected functions, and the two helpers to nobody', () => {
+        const fns = Object.entries(fragment().functions);
+        const reachable = (login: string) => fns
+          .filter(([, fn]) => fn.execute.includes(login))
+          .map(([signature]) => fnName(signature).replace('jale_cap.', ''))
+          .sort();
+        expect(reachable('jale_api_public_reports')).toEqual([
+          'problem_report_attach', 'problem_report_config', 'problem_report_create_unverified',
+          'problem_report_pending_upload', 'problem_report_upload_grant',
+        ]);
+        expect(reachable('jale_api')).toEqual([
+          'problem_report_attach', 'problem_report_create_verified', 'problem_report_pending_upload',
+          'problem_report_upload_grant',
+        ]);
+        expect(reachable('jale_admin_console')).toEqual([
+          'problem_report_counts', 'problem_report_detail', 'problem_report_image', 'problem_report_inbox',
+          'problem_report_reveal_contact', 'problem_report_set_note', 'problem_report_set_status',
+          'problem_report_settings_get', 'problem_report_settings_set',
+        ]);
+        expect(reachable('jale_job_report_cleanup')).toEqual(['problem_report_cleanup']);
+        expect(fns.filter(([, fn]) => fn.execute.length === 0).map(([signature]) => fnName(signature)).sort()).toEqual([
+          'jale_cap.problem_report_enqueue_team_email', 'jale_cap.problem_report_mask_email',
+        ]);
+        const callers = [...new Set(fns.flatMap(([, fn]) => fn.execute))].sort();
+        expect(callers).toEqual(['jale_admin_console', 'jale_api', 'jale_api_public_reports', 'jale_job_report_cleanup']);
+        const t = sqlOnly(read(FUNCTIONS));
+        for (const caller of callers) expect(t).toContain(`GRANT USAGE ON SCHEMA jale_cap TO ${caller};`);
+      });
+
+      it('transfers ownership inside a SET-only window that it closes again', () => {
+        const t = sqlOnly(read(FUNCTIONS));
+        const open = t.indexOf('GRANT %I TO %I WITH SET TRUE, INHERIT FALSE');
+        const transfer = t.indexOf('OWNER TO jale_cap_');
+        const close = t.indexOf('GRANT %I TO %I WITH SET FALSE, INHERIT FALSE');
+        const revoke = t.indexOf('REVOKE %I FROM %I GRANTED BY %I');
+        expect(open).toBeGreaterThan(-1);
+        expect(transfer).toBeGreaterThan(open);
+        expect(close).toBeGreaterThan(transfer);
+        expect(revoke).toBeGreaterThan(close);
+      });
+
+      it('refuses a replay and self-audits its functions and the report tables', () => {
+        const t = read(FUNCTIONS);
+        for (const message of [
+          'migration 108: already applied',
+          'migration 108: apply 107 first',
+          'migration 108: % has the wrong owner, security, search_path or language',
+          'migration 108: % is executable by a role other than its owner and callers',
+          'migration 108: % is not executable by %',
+          'migration 108: % lacks USAGE on jale_cap',
+          'migration 108: a role still holds SET or INHERIT on capability owner %',
+          'migration 108: a login holds a privilege on report object %',
+        ]) expect(t).toContain(message);
+      });
+    });
+  });
+
+  // 109-112 are sprint 27's audit storage: append-only access and change
+  // records owned by a NOLOGIN role (109), the freeze of the dashboard's
+  // action records (110), the change-log triggers (111) and the operator
+  // functions (112). The
+  // access-manifest fragment (infra/db/access/manifest.d/audit.json) is the
+  // reviewed list of what they create; the audit-* DB suites prove it.
+  describe('109 audit storage', () => {
+    const text = () => fs.readFileSync(path.join(migrationsDir, '109_audit_storage.sql'), 'utf8');
+    // Statement assertions read the SQL only: the header explains roles and
+    // the ownership window in prose.
+    const sqlOnly = (t: string) => t.replace(/--.*$/gm, '');
+
+    it('runs after the least-privilege migrations as jale_admin, in ONE transaction with a lock timeout', () => {
+      const t = text();
+      expect(t).toMatch(/Run manually AFTER 108_problem_reports_functions\.sql/);
+      expect(t).toContain('connected as jale_admin.');
+      expect(t).toContain('Forward-only (ADR-005)');
+      expect(t.match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(t.match(/^COMMIT;$/gm)).toHaveLength(1);
+      expect(t).toContain("SET LOCAL lock_timeout = '5s';");
+    });
+
+    it('describes the work neutrally', () => {
+      // Role attribute names (NOBYPASSRLS, rolbypassrls) are not prose.
+      expect(text()).not.toMatch(/\b(bypass|exempt)\w*/i);
+    });
+
+    it('creates the owners without LOGIN or a password, and never an extension', () => {
+      const t = sqlOnly(text());
+      expect(t).toContain("'CREATE ROLE %I NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS'");
+      expect(t).not.toMatch(/\bPASSWORD\b/i);
+      expect(t).not.toMatch(/CREATE\s+EXTENSION/i);
+    });
+
+    it('creates objects as the owner inside a SET window that it closes again', () => {
+      const t = sqlOnly(text());
+      const open = t.indexOf('GRANT %I TO %I WITH SET TRUE, INHERIT FALSE');
+      const switchRole = t.indexOf('SET LOCAL ROLE jale_audit_owner;');
+      const reset = t.lastIndexOf('RESET ROLE;');
+      const close = t.indexOf('GRANT %I TO %I WITH SET FALSE, INHERIT FALSE');
+      const revoke = t.indexOf('REVOKE %I FROM %I GRANTED BY %I');
+      expect(open).toBeGreaterThan(-1);
+      expect(switchRole).toBeGreaterThan(open);
+      expect(reset).toBeGreaterThan(switchRole);
+      expect(close).toBeGreaterThan(reset);
+      expect(revoke).toBeGreaterThan(close);
+      expect(t).toContain('migration 109: a role still holds SET or INHERIT on owner %');
+    });
+
+    it('grants nothing on any jale_audit table and declares no foreign key', () => {
+      const t = sqlOnly(text());
+      expect(t).not.toMatch(/GRANT[^;]*\bON\s+(TABLE\s+)?jale_audit\./i);
+      expect(t).not.toMatch(/GRANT[^;]*\bON\s+ALL\s+TABLES/i);
+      expect(t).not.toMatch(/\bREFERENCES\s+[a-z_.]+\s*\(/i);
+      expect(t).not.toMatch(/\bFOREIGN\s+KEY\s*\(/i);
+      expect(t).not.toMatch(/ROW\s+LEVEL\s+SECURITY/i);
+    });
+
+    it('closes every function it creates to PUBLIC', () => {
+      const t = sqlOnly(text());
+      const created = [...t.matchAll(/CREATE FUNCTION (jale_audit\.[a-z_]+)\(/g)].map((m) => m[1]);
+      expect(created.length).toBeGreaterThan(0);
+      for (const fn of created) {
+        expect(t).toMatch(new RegExp(`REVOKE ALL ON FUNCTION ${fn.replace('.', '\\.')}\\([^)]*\\) FROM PUBLIC;`));
+      }
+    });
+
+    it('fails closed when an object drifts from its expected owner, attributes or grants', () => {
+      const t = text();
+      expect(t).toContain('migration 109: apply the least-privilege logins (104) first');
+      expect(t).toContain('migration 109: existing role % has unsafe attributes');
+      expect(t).toContain('migration 109: % must be owned by its owner role and closed to PUBLIC');
+      expect(t).toContain('migration 109: a role other than the owner holds a privilege on %');
+      expect(t).toContain('migration 109: % has the wrong owner, security or search_path');
+      expect(t).toContain('migration 109: % is executable by a role outside its callers');
+    });
+  });
+
+  describe('110 dashboard action records', () => {
+    const text = () => fs.readFileSync(path.join(migrationsDir, '110_admin_audit_log_freeze.sql'), 'utf8');
+    const sqlOnly = (t: string) => t.replace(/--.*$/gm, '');
+
+    it('runs after 109 as jale_admin, in ONE transaction with a lock timeout', () => {
+      const t = text();
+      expect(t).toMatch(/Run manually AFTER 109_audit_storage\.sql/);
+      expect(t).toContain('connected as jale_admin.');
+      expect(t).toContain('Forward-only (ADR-005)');
+      expect(t.match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(t.match(/^COMMIT;$/gm)).toHaveLength(1);
+      expect(t).toContain("SET LOCAL lock_timeout = '5s';");
+      expect(t).toContain('migration 110: apply the audit storage (109) first');
+      expect(t).toContain('migration 110: already applied (admin_audit_log.xact exists); it is not re-runnable');
+    });
+
+    it('describes the work neutrally', () => {
+      expect(text()).not.toMatch(/\b(bypass|exempt)\w*/i);
+    });
+
+    it('scrubs once and on every insert through the same transform, before binding the guard', () => {
+      const t = sqlOnly(text());
+      const update = t.indexOf('SET metadata = jale_audit.scrub_legacy_metadata(l.metadata, l.actor_role, l.action, l.target_type)');
+      const trigger = t.indexOf('NEW.metadata := jale_audit.scrub_legacy_metadata(NEW.metadata, NEW.actor_role, NEW.action, NEW.target_type)');
+      const guard = t.indexOf('EXECUTE FUNCTION jale_audit.reject_change()');
+      expect(update).toBeGreaterThan(-1);
+      expect(trigger).toBeGreaterThan(-1);
+      expect(guard).toBeGreaterThan(update);
+      expect(t).toContain('BEFORE INSERT ON public.admin_audit_log');
+    });
+
+    it('re-owns inside a window it closes, and gives back CREATE on public', () => {
+      const t = sqlOnly(text());
+      const open = t.indexOf("GRANT jale_audit_owner TO %I WITH SET TRUE, INHERIT FALSE");
+      const create = t.indexOf('GRANT CREATE ON SCHEMA public TO jale_audit_owner;');
+      const reown = t.indexOf('ALTER TABLE public.admin_audit_log OWNER TO jale_audit_owner;');
+      const revokeCreate = t.indexOf('REVOKE CREATE ON SCHEMA public FROM jale_audit_owner;');
+      const close = t.indexOf("REVOKE jale_audit_owner FROM %I GRANTED BY %I");
+      expect(open).toBeGreaterThan(-1);
+      expect(create).toBeGreaterThan(open);
+      expect(reown).toBeGreaterThan(create);
+      expect(revokeCreate).toBeGreaterThan(reown);
+      expect(close).toBeGreaterThan(revokeCreate);
+      expect(t).not.toMatch(/GRANT[^;]*ON\s+public\.admin_audit_log\s+TO\s+jale_admin\s*;/i);
+      expect(t).not.toMatch(/\bPASSWORD\b/i);
+      expect(t).not.toMatch(/GRANT[^;]*\b(UPDATE|DELETE|TRUNCATE)\b[^;]*ON\s+public\.admin_audit_log/i);
+    });
+
+    it('prints counts only', () => {
+      const notices = [...sqlOnly(text()).matchAll(/RAISE NOTICE '([^']*)'/g)].map((m) => m[1]);
+      expect(notices).toHaveLength(2);
+      expect(notices[0]).toMatch(/^migration 110: % dashboard action records; /);
+      expect(notices[1]).toBe('migration 110: % admin ids filled from a unique email match; % records left without an admin id');
+    });
+
+    it('closes every function it creates to PUBLIC', () => {
+      const t = sqlOnly(text());
+      const created = [...t.matchAll(/CREATE FUNCTION (jale_audit\.[a-z_]+)\(/g)].map((m) => m[1]);
+      expect(created).toHaveLength(6);
+      for (const fn of created) {
+        expect(t).toMatch(new RegExp(`REVOKE ALL ON FUNCTION ${fn.replace('.', '\\.')}\\([^)]*\\) FROM PUBLIC;`));
+      }
+    });
+  });
+
+  describe('111 change records', () => {
+    const text = () => fs.readFileSync(path.join(migrationsDir, '111_audit_change_log.sql'), 'utf8');
+    const sqlOnly = (t: string) => t.replace(/--.*$/gm, '');
+    const BEGIN_MARK = '-- BEGIN GENERATED: change-record triggers (infra/db/access/audit-change-log.json)\n';
+    const END_MARK = '\n-- END GENERATED: change-record triggers';
+
+    it('runs after 110 as jale_admin, in ONE transaction with a lock timeout', () => {
+      const t = text();
+      expect(t).toMatch(/Run manually AFTER 110_admin_audit_log_freeze\.sql/);
+      expect(t).toContain('connected as jale_admin.');
+      expect(t).toContain('Forward-only (ADR-005)');
+      expect(t.match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(t.match(/^COMMIT;$/gm)).toHaveLength(1);
+      expect(t).toContain("SET LOCAL lock_timeout = '5s';");
+      expect(sqlOnly(t).indexOf("SET LOCAL lock_timeout = '5s';")).toBeLessThan(sqlOnly(t).indexOf('CREATE TRIGGER '));
+      expect(t).toContain('migration 111: apply the audit storage (109) first');
+      expect(t).toContain('migration 111: already applied (jale_audit.capture_change exists); it is not re-runnable');
+    });
+
+    it('describes the work neutrally', () => {
+      expect(text()).not.toMatch(/\b(bypass|exempt)\w*/i);
+    });
+
+    it('carries exactly the triggers audit-change-log.json implies, between its GENERATED markers', () => {
+      const t = text();
+      const start = t.indexOf(BEGIN_MARK);
+      const end = t.indexOf(END_MARK);
+      expect(start).toBeGreaterThan(-1);
+      expect(end).toBeGreaterThan(start);
+      expect(t.slice(start + BEGIN_MARK.length, end)).toBe(renderTriggers());
+      // No change-record trigger outside the block.
+      const outside = sqlOnly(t.slice(0, start) + t.slice(end));
+      expect(outside).not.toMatch(/CREATE TRIGGER/);
+    });
+
+    it('creates one definer closed to PUBLIC, lends EXECUTE to the migration login only while the triggers are created', () => {
+      const t = sqlOnly(text());
+      expect([...t.matchAll(/CREATE FUNCTION (jale_audit\.[a-z_]+)\(/g)].map((m) => m[1])).toEqual(['jale_audit.capture_change']);
+      expect(t).toContain('SECURITY DEFINER');
+      expect(t).toContain('SET search_path = pg_catalog, pg_temp');
+      expect(t).toContain('REVOKE ALL ON FUNCTION jale_audit.capture_change() FROM PUBLIC;');
+      const lend = t.indexOf("GRANT EXECUTE ON FUNCTION jale_audit.capture_change() TO %I', session_user");
+      const firstTrigger = t.indexOf('CREATE TRIGGER ');
+      const takeBack = t.indexOf("REVOKE EXECUTE ON FUNCTION jale_audit.capture_change() FROM %I', session_user");
+      const close = t.indexOf('REVOKE jale_audit_owner FROM %I GRANTED BY %I');
+      expect(lend).toBeGreaterThan(-1);
+      expect(firstTrigger).toBeGreaterThan(lend);
+      expect(takeBack).toBeGreaterThan(t.lastIndexOf('CREATE TRIGGER '));
+      expect(close).toBeGreaterThan(takeBack);
+      expect(t).not.toMatch(/GRANT[^;]*\bON\s+(TABLE\s+)?jale_audit\./i);
+      expect(t).not.toMatch(/\bPASSWORD\b/i);
+    });
+
+    it('records the login and never fails a write on the audit context', () => {
+      const t = sqlOnly(text());
+      // db_login, db_pid, xact and occurred_at come from the column defaults (session_user, ...).
+      const insert = t.slice(t.indexOf('INSERT INTO jale_audit.changes'));
+      expect(insert.slice(0, insert.indexOf(';'))).not.toMatch(/db_login|db_pid|xact|occurred_at/);
+      expect(t).toMatch(/EXCEPTION WHEN OTHERS THEN\s+v_status := 'invalid';/);
+      for (const name of ['app.audit_actor_kind', 'app.audit_actor_id', 'app.audit_channel', 'app.audit_surface', 'app.audit_request_id']) {
+        expect(t).toContain(`current_setting('${name}', true)`);
+      }
+    });
+
+    it('fails closed when the result drifts', () => {
+      const t = text();
+      expect(t).toContain('migration 111: capture_change has the wrong owner, security, search_path or grants');
+      expect(t).toContain('migration 111: the ownership window is still open');
+      expect(t).toContain('migration 111: change-record triggers with the wrong shape: %');
+      expect(t).toContain('migration 111: tables without exactly one change-record trigger per event: %');
+    });
+  });
+
+  describe('112 operator functions', () => {
+    const text = () => fs.readFileSync(path.join(migrationsDir, '112_audit_operator_functions.sql'), 'utf8');
+    const sqlOnly = (t: string) => t.replace(/--.*$/gm, '');
+    const PERSON_START = '-- ── 5. Personal operator logins';
+    const PERSON_END = '-- ── 6. Close the SET window';
+
+    it('runs after 111 as jale_admin, in ONE transaction with a lock timeout', () => {
+      const t = text();
+      expect(t).toMatch(/Run manually AFTER 111_audit_change_log\.sql/);
+      expect(t).toContain('connected as jale_admin.');
+      expect(t).toContain('Forward-only (ADR-005)');
+      expect(t.match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(t.match(/^COMMIT;$/gm)).toHaveLength(1);
+      expect(t).toContain("SET LOCAL lock_timeout = '5s';");
+      expect(sqlOnly(t).indexOf("SET LOCAL lock_timeout = '5s';")).toBeLessThan(sqlOnly(t).indexOf('CREATE POLICY '));
+      expect(t).toContain('migration 112: apply the audit storage (109) first');
+      expect(t).toContain('migration 112: apply the change records (111) first');
+      expect(t).toContain('migration 112: already applied (jale_ops holds functions); it is not re-runnable');
+    });
+
+    it('describes the work neutrally', () => {
+      expect(text()).not.toMatch(/\b(bypass|exempt)\w*/i);
+    });
+
+    it('creates the nine operator functions, the two audit counts and the held-row listing as definers closed to PUBLIC', () => {
+      const t = sqlOnly(text());
+      expect([...t.matchAll(/CREATE FUNCTION ([a-z_]+\.[a-z_]+)\(/g)].map((m) => m[1]).sort()).toEqual([
+        'jale_audit.event_counts', 'jale_audit.export_status', 'jale_audit.list_holds', 'jale_audit.value_span_kind',
+        'jale_ops.audit_event_counts', 'jale_ops.audit_export_status', 'jale_ops.delivery_status', 'jale_ops.find_user',
+        'jale_ops.migration_ledger', 'jale_ops.onboarding_status', 'jale_ops.outbox_status',
+        'jale_ops.trust_assessment_status', 'jale_ops.user_status',
+      ]);
+      expect(t.match(/SECURITY DEFINER/g)).toHaveLength(12);
+      expect(t.match(/SET search_path = pg_catalog, pg_temp/g)).toHaveLength(16);
+      expect(t).toContain('GRANT EXECUTE ON FUNCTION jale_audit.list_holds() TO jale_admin;');
+      expect(t).not.toMatch(/GRANT[^;]*\bON\s+(TABLE\s+)?jale_audit\./i);
+      // The ledger grant is conditional on the ledger existing.
+      expect(t).toMatch(/IF pg_catalog\.to_regclass\('public\.schema_migrations'\) IS NOT NULL THEN\s+GRANT SELECT \(filename, applied_at, checksum, applied_by\) ON public\.schema_migrations TO jale_ops_owner;/);
+    });
+
+    it('names value kinds with exactly the value-span patterns of migration 110', () => {
+      // Each pattern and its flags, as the regexp_replace calls carry them.
+      const pairs = (body: string) => [...body.matchAll(/'((?:[^']|'')*)',\s*'\[removed\]',\s*'(g|gi)'/g)]
+        .map((m) => `${m[2]} ${m[1]}`).sort();
+      const fnBody = (sql: string, name: string) => {
+        const start = sql.indexOf(`CREATE FUNCTION ${name}(`);
+        expect(start).toBeGreaterThan(-1);
+        return sql.slice(start, sql.indexOf('$fn$;', start));
+      };
+      const redaction = pairs(fnBody(fs.readFileSync(path.join(migrationsDir, '110_admin_audit_log_freeze.sql'), 'utf8'), 'jale_audit.redact_value_spans'));
+      expect(redaction).toHaveLength(5);
+      expect(pairs(fnBody(text(), 'jale_audit.value_span_kind'))).toEqual(redaction);
+    });
+
+    it('keeps the personal-login procedures in their own section, which nothing else uses', () => {
+      const t = text();
+      const start = t.indexOf(PERSON_START);
+      const end = t.indexOf(PERSON_END);
+      expect(start).toBeGreaterThan(-1);
+      expect(end).toBeGreaterThan(start);
+      const inside = sqlOnly(t.slice(start, end));
+      const outside = sqlOnly(t.slice(0, start) + t.slice(end));
+      expect([...inside.matchAll(/CREATE PROCEDURE (jale_ops\.[a-z_]+)\(/g)].map((m) => m[1]))
+        .toEqual(['jale_ops.provision_person', 'jale_ops.renew_person', 'jale_ops.remove_person']);
+      expect(inside).not.toMatch(/SECURITY DEFINER/);
+      expect(inside.match(/SECURITY INVOKER/g)).toHaveLength(3);
+      // Outside the section only its own self-audit names the procedures.
+      const selfAudit = outside.slice(outside.indexOf("('jale_ops.provision_person(text, text, integer)')"));
+      expect(outside.slice(0, outside.length - selfAudit.length)).not.toMatch(/provision_person|renew_person|remove_person|CREATE ROLE|PASSWORD/);
+      // The procedures never print the verifier.
+      expect(inside).not.toMatch(/RAISE[^;]*p_verifier/);
+    });
+
+    it('fails closed when the result drifts', () => {
+      const t = text();
+      expect(t).toContain('migration 112: the ownership window is still open');
+      expect(t).toContain('migration 112: % has the wrong owner, security, search_path or grants');
+      expect(t).toContain('migration 112: % has the wrong owner, kind, security, search_path or grants');
+      expect(t).toContain('migration 112: jale_ops grants are % instead of USAGE for the operator group and jale_admin');
+      expect(t).toContain('migration 112: tables the operator owner reads without exactly one read policy: %');
     });
   });
 });
