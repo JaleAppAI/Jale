@@ -1137,6 +1137,23 @@ describe('JaleAuditStack', () => {
       expect(configBucket.Properties.ObjectLockEnabled).toBeUndefined();
     });
 
+    it('creates the recorder and the delivery channel side by side, each after the bucket policy only', () => {
+      // The recorder's create starts recording, which needs a delivery channel;
+      // the channel's create needs a recorder. Either one waiting on the other
+      // deadlocks: the create failed with NotStabilized (no channel to start).
+      const ids = (type: string) => Object.keys(template.Resources).filter((id) => template.Resources[id].Type === type);
+      const [recorderId] = ids('AWS::Config::ConfigurationRecorder');
+      const [channelId] = ids('AWS::Config::DeliveryChannel');
+      const bucketId = Object.keys(template.Resources).find((id) => /^ConfigBucket[0-9A-F]{8}$/.test(id))!;
+      const policyId = ids('AWS::S3::BucketPolicy').find((id) => JSON.stringify(template.Resources[id].Properties.Bucket).includes(bucketId))!;
+      const dependsOn = (id: string) => [template.Resources[id].DependsOn ?? []].flat();
+      expect(dependsOn(recorderId)).not.toContain(channelId);
+      expect(dependsOn(channelId)).not.toContain(recorderId);
+      expect(dependsOn(recorderId)).toContain(policyId);
+      expect(dependsOn(channelId)).toContain(policyId);
+      expect(JSON.stringify(template.Resources[channelId].Properties)).not.toContain(recorderId);
+    });
+
     it("gives the recorder's own role the documented delivery rights, which same-account delivery uses", () => {
       const recorder = onlyResource(template, 'AWS::Config::ConfigurationRecorder');
       const roleId = /^\$\{(.+)\.Arn\}$/.exec(recorder.Properties.RoleARN)![1];
