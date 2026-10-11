@@ -650,8 +650,11 @@ describe('run-migrations.sh: credential preparation and the posture control (sta
     expect(script).not.toMatch(/--secret-string\s+"\\?\$/);
     expect(script).not.toMatch(/--arg\s+password\b/);
     expect(script).not.toMatch(/--master-user-password/);
-    // Values reach the AWS CLI on stdin instead.
-    expect(script).toMatch(/create-secret --region "\$REGION" --cli-input-json file:\/\/\/dev\/stdin/);
+    // Values reach the AWS CLI on stdin instead, as a string parameter's file.
+    // Never --cli-input-json from a pipe: the AWS CLI reads that file twice,
+    // so a pipe arrives empty and the create fails before any request.
+    expect(script).not.toMatch(/--cli-input-json\s+"?file:\/\/\/(dev\/stdin|dev\/fd\/0|proc\/self\/fd\/0)/);
+    expect(script).toMatch(/create-secret --region "\$REGION" --name "\$2"/);
     expect(script).toMatch(/--secret-string file:\/\/\/dev\/stdin/);
   });
 
@@ -1079,6 +1082,15 @@ def param(value):
         return sys.stdin.read() if p == "/dev/stdin" else pathlib.Path(p).read_text()
     return value
 
+def input_json(value):
+    # AWS CLI v2 (seen on 2.36) reads --cli-input-json's file twice, so a pipe
+    # (/dev/stdin, /dev/fd/0) is empty on the second read and the call fails
+    # before any request, with no AWS error code. Only a regular file works.
+    if value is not None and value.startswith("file://") and value[len("file://"):] in ("/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"):
+        sys.stderr.write("\naws: [ERROR]: An error occurred (ParamValidation): Error parsing parameter 'cli-input-json': Invalid JSON received.\n")
+        sys.exit(252)
+    return json.loads(param(value))
+
 def secret_file(sid):
     return STATE / "secrets" / (sid.replace("/", "__") + ".json")
 
@@ -1109,7 +1121,7 @@ elif service == "cloudformation" and command == "describe-stack-resources":
     prefix = m.group(1) if m else "Unknown"
     print("None" if prefix in os.environ.get("FAKE_MISSING_STACK_SECRETS", "").split(",") else "test-secret-" + prefix)
 elif service == "ssm" and command == "send-command":
-    req = json.loads(param(opt("--cli-input-json")))
+    req = input_json(opt("--cli-input-json"))
     n = bump("ssm")
     d = STATE / "ssm"
     d.mkdir(exist_ok=True)
@@ -1162,9 +1174,11 @@ elif service == "secretsmanager":
         print(head + "x" * (40 - len(head) - 3) + "-pw")
     elif command == "create-secret":
         if opt("--cli-input-json"):
-            req = json.loads(param(opt("--cli-input-json")))
+            req = input_json(opt("--cli-input-json"))
         else:
             req = {"Name": opt("--name"), "Description": opt("--description"), "SecretString": param(opt("--secret-string"))}
+            if opt("--tags") is not None:
+                req["Tags"] = json.loads(opt("--tags"))
         p = secret_file(req["Name"])
         if p.exists():
             fail("ResourceExistsException", op)
@@ -1760,10 +1774,11 @@ describe('run-migrations.sh against a fake AWS CLI and a fake ops host', () => {
         const meta = secretMeta(h, ruleSecretName(login))!;
         expect(meta.Tags).toEqual(expect.arrayContaining([{ Key: 'db-login', Value: login }]));
       }
-      // Every create went through stdin: the request never rode on argv.
+      // Every create sent its value through stdin: the secret never rode on argv.
       for (const a of awsCalls(h).filter((c) => c[1] === 'create-secret')) {
-        expect(a).toEqual(expect.arrayContaining(['--cli-input-json', 'file:///dev/stdin']));
-        expect(a).not.toContain('--secret-string');
+        expect(a).toEqual(expect.arrayContaining(['--secret-string', 'file:///dev/stdin']));
+        expect(a).not.toContain('--cli-input-json');
+        expect(a.join(' ')).not.toMatch(/test-generated-/);
       }
 
       // Each login's database password is the verifier of its secret's password,
