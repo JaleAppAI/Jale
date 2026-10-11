@@ -71,6 +71,8 @@ export const ADMIN_SURFACES = [
   'admin.case_detail',
   'admin.lockouts',
   'admin.analytics_paying_employers',
+  'admin.analytics_slowest_employers',
+  'admin.analytics_stale_jobs',
   'admin.access_history',
   // Case actions.
   'admin.case_detail.reveal',

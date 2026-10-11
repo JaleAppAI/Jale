@@ -72,6 +72,7 @@ function caseRow(id, overrides = {}) {
     details: {},
     created_at: new Date('2026-10-01T12:00:00Z'),
     updated_at: new Date('2026-10-01T12:30:00Z'),
+    status_changed_at: new Date('2026-10-01T12:00:00Z'),
     assigned_admin_email: null,
     user_name: 'Test Worker',
     user_phone: '+12025550123',
@@ -123,6 +124,10 @@ function assertStatements(log, expected) {
 }
 
 const RECORD = `1: ${RECORD_EVENT_SQL}`;
+// The queue order the cases list and the dashboard preview share (roadmap 2d).
+const QUEUE_ORDER = normalizeSql(cases.CASE_QUEUE_ORDER);
+const escapeRe = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const BY_WAIT_SQL = normalizeSql(cases.OPEN_CASES_BY_WAIT_SQL);
 const OPEN = ['1: <connect>', '1: BEGIN'];
 const CLOSE = ['1: COMMIT', '1: <commit_completed>', '1: <release>', '-: <returned>'];
 
@@ -143,7 +148,7 @@ async function run(loader) {
   const list = await run(() => cases.loadCasesList(session));
   assertStatements(log, [
     ...OPEN,
-    /^1: SELECT c\.id, .* FROM admin_cases c .* ORDER BY c\.status, c\.priority DESC, c\.created_at DESC LIMIT \$1$/,
+    new RegExp(`^1: SELECT c\\.id, .* FROM admin_cases c .* ${escapeRe(QUEUE_ORDER)} LIMIT \\$1$`),
     '1: SELECT COUNT(*) AS count FROM admin_cases',
     RECORD,
     ...CLOSE,
@@ -183,7 +188,7 @@ async function run(loader) {
   assertStatements(log, [
     ...OPEN,
     /^1: SELECT c\.id, .* FROM admin_cases c .* WHERE c\.id = \$1 LIMIT 1$/,
-    /^1: SELECT id, case_id, event_type, actor_type, payload, created_at FROM admin_case_events WHERE case_id = \$1 ORDER BY created_at DESC$/,
+    /^1: SELECT id, case_id, event_type, actor_type, payload, created_at FROM admin_case_events WHERE case_id = \$1 ORDER BY created_at DESC, \(event_type = 'status_changed'\) DESC, id$/,
     RECORD,
     ...CLOSE,
   ]);
@@ -289,7 +294,11 @@ async function run(loader) {
     lockoutRow(4, 'lockout'), lockoutRow(5, 'lockout'),
   ];
   const { pool, log } = database([
-    [/^SELECT COUNT\(\*\) AS count FROM admin_cases c WHERE c\.status NOT IN/, [{ count: '7' }]],
+    [/^SELECT CASE WHEN c\.status = 'pending_worker' THEN 'worker' ELSE 'us' END AS waiting_on/, [
+      { waiting_on: 'us', bucket: 'under_1d', count: '4' },
+      { waiting_on: 'us', bucket: 'over_7d', count: '1' },
+      { waiting_on: 'worker', bucket: 'days_1_3', count: '2' },
+    ]],
     [/FROM admin_cases c .* WHERE c\.status NOT IN .* LIMIT \$1$/, [caseRow(CASE_1, { employer_id: EMPLOYER_1 }), caseRow(CASE_2, { user_id: null, employer_id: null })]],
     [/jale_audit\.reveal_count/, [{ count: '4' }]],
     [/admin_identity_lockouts/, lockoutRows],
@@ -299,8 +308,8 @@ async function run(loader) {
   const dashboard = await run(() => cases.loadAdminDashboard(session));
   assertStatements(log, [
     ...OPEN,
-    "1: SELECT COUNT(*) AS count FROM admin_cases c WHERE c.status NOT IN ('resolved', 'dismissed')",
-    /^1: SELECT c\.id, .* WHERE c\.status NOT IN \('resolved', 'dismissed'\) ORDER BY c\.priority DESC, c\.created_at DESC LIMIT \$1$/,
+    `1: ${BY_WAIT_SQL}`,
+    new RegExp(`^1: SELECT c\\.id, .* WHERE c\\.status NOT IN \\('resolved', 'dismissed'\\) ${escapeRe(QUEUE_ORDER)} LIMIT \\$1$`),
     '1: SELECT jale_audit.reveal_count($1) AS count',
     '1: SELECT * FROM admin_identity_lockouts($1)',
     RECORD,
@@ -339,7 +348,11 @@ async function run(loader) {
   });
   assert.deepEqual(dashboard.recentLockouts.map((item) => item.challengeId), lockoutEvent.record_ids,
     'the recorded lockouts are exactly the rendered ones');
-  assert.equal(dashboard.openCaseCount, 7);
+  // The by-wait counts are aggregates: zero-filled, and never recorded.
+  assert.deepEqual(dashboard.openByWait, {
+    us: { under_1d: 4, days_1_3: 0, days_3_7: 0, over_7d: 1 },
+    worker: { under_1d: 0, days_1_3: 2, days_3_7: 0, over_7d: 0 },
+  });
   assert.equal(dashboard.revealCount, 4);
   assert.equal(dashboard.lockedOutCount, 4);
   assert.equal(dashboard.stuckCount, 1);
@@ -396,6 +409,76 @@ async function run(loader) {
     request_id: REQUEST_ID,
   }]);
   assert.deepEqual(rows.map((row) => row.employerId), [EMPLOYER_1, fakeUuid(0xe2)]);
+}
+
+// --- The Employers page: each list that names employers records them ---------
+function slowestRow(n) {
+  return {
+    employer_id: fakeUuid(0xe00 + n), display_name: `Synthetic Co ${n}`, applications: '5',
+    unanswered_7d: '2', first_response_p50_hours: '30.5', active_jobs: '1',
+  };
+}
+function staleRow(n, employer) {
+  return {
+    job_id: fakeUuid(0xb00 + n), title: `Synthetic job ${n}`, employer_id: employer, display_name: 'Synthetic Co',
+    posted_at: new Date('2026-09-01T12:00:00Z'), last_employer_action_at: new Date('2026-09-02T12:00:00Z'),
+    days_idle: 20, waiting_applicants: '1', last_application_at: null,
+  };
+}
+{
+  const { pool, log } = database([[/admin_analytics_slowest_employers/, [slowestRow(1), slowestRow(2), slowestRow(3)]]]);
+  check.pool = pool;
+  check.log = log;
+  const rows = await run(() => analytics.loadSlowestEmployers(session, 4));
+  assertStatements(log, [...OPEN, '1: SELECT * FROM admin_analytics_slowest_employers($1, $2)', RECORD, ...CLOSE]);
+  assert.deepEqual(log[2].params, [4, 10]);
+  assert.deepEqual(recordedEvents(log), [{
+    kind: 'read',
+    outcome: 'allowed',
+    ...actor,
+    surface: 'admin.analytics_slowest_employers',
+    categories: ['analytics'],
+    subject_user_ids: [fakeUuid(0xe01), fakeUuid(0xe02), fakeUuid(0xe03)],
+    record_ids: [],
+    result_count: 3,
+    field_names: [],
+    request_id: REQUEST_ID,
+  }]);
+  assert.deepEqual(rows.map((row) => row.employerId), [fakeUuid(0xe01), fakeUuid(0xe02), fakeUuid(0xe03)]);
+}
+{
+  // 30 stale jobs: the tile counts all 30; the list shows the first 25, and
+  // exactly those are recorded. Jobs 26-30 belong to an employer no shown
+  // job has, so that employer is not recorded.
+  const hidden = fakeUuid(0xe99);
+  const jobs = Array.from({ length: 30 }, (_, i) => staleRow(i + 1, i < 25 ? (i % 2 === 0 ? EMPLOYER_1 : fakeUuid(0xe2)) : hidden));
+  const { pool, log } = database([[/admin_analytics_stale_jobs/, jobs]]);
+  check.pool = pool;
+  check.log = log;
+  const rows = await run(() => analytics.loadStaleJobs(session));
+  assertStatements(log, [...OPEN, '1: SELECT * FROM admin_analytics_stale_jobs($1)', RECORD, ...CLOSE]);
+  assert.deepEqual(log[2].params, [14]);
+  assert.deepEqual(recordedEvents(log), [{
+    kind: 'read',
+    outcome: 'allowed',
+    ...actor,
+    surface: 'admin.analytics_stale_jobs',
+    categories: ['analytics'],
+    subject_user_ids: [EMPLOYER_1, fakeUuid(0xe2)],
+    record_ids: [],
+    result_count: 25,
+    field_names: [],
+    request_id: REQUEST_ID,
+  }]);
+  assert.equal(rows.length, 30, 'every stale job comes back, for the tile');
+}
+{
+  // An empty list is still a recorded view.
+  const { pool, log } = database([[/admin_analytics_stale_jobs/, []]]);
+  check.pool = pool;
+  check.log = log;
+  assert.deepEqual(await run(() => analytics.loadStaleJobs(session)), []);
+  assert.deepEqual(recordedEvents(log).map((e) => [e.surface, e.subject_user_ids, e.result_count]), [['admin.analytics_stale_jobs', [], 0]]);
 }
 
 // --- The access history ------------------------------------------------------
@@ -612,7 +695,7 @@ const FAILED_READS = [
     name: 'the dashboard',
     loader: () => cases.loadAdminDashboard(session),
     answers: [
-      [/^SELECT COUNT\(\*\) AS count FROM admin_cases c WHERE/, [{ count: '1' }]],
+      [/^SELECT CASE WHEN c\.status = 'pending_worker' THEN 'worker' ELSE 'us' END AS waiting_on/, [{ waiting_on: 'us', bucket: 'under_1d', count: '1' }]],
       [/FROM admin_cases c .* LIMIT \$1$/, [caseRow(CASE_1)]],
       [/jale_audit\.reveal_count/, [{ count: '0' }]],
       [/admin_identity_lockouts/, [lockoutRow(1, 'lockout')]],
@@ -633,6 +716,18 @@ const FAILED_READS = [
       current_period_end: null, cancel_at_period_end: false,
     }]]],
     attempt: { ...actor, surface: 'admin.analytics_paying_employers', categories: ['analytics', 'billing'], record_ids: [] },
+  },
+  {
+    name: 'the slowest employers list',
+    loader: () => analytics.loadSlowestEmployers(session, 8),
+    answers: [[/admin_analytics_slowest_employers/, [slowestRow(1)]]],
+    attempt: { ...actor, surface: 'admin.analytics_slowest_employers', categories: ['analytics'], record_ids: [] },
+  },
+  {
+    name: 'the stale jobs list',
+    loader: () => analytics.loadStaleJobs(session),
+    answers: [[/admin_analytics_stale_jobs/, [staleRow(1, EMPLOYER_1)]]],
+    attempt: { ...actor, surface: 'admin.analytics_stale_jobs', categories: ['analytics'], record_ids: [] },
   },
   {
     name: 'an access history search',

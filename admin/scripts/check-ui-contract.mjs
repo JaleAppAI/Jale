@@ -515,14 +515,33 @@ const analyticsReadModel = read('src/lib/server/admin-analytics.ts');
 
 assert.match(
   employersPage,
-  /\) \{\n  await requireAdminSession\(\);\n  const \{ weeks: weeksParam \} = await searchParams;/,
+  /\) \{\n  const session = await requireAdminSession\(\);\n  const \{ weeks: weeksParam \} = await searchParams;/,
   'the employers page gates on an admin session before reading anything',
 );
+// Access records: the two lists name employers, so each loads through its
+// recorded loader, as the paying-employers list does; the weekly figures, the
+// tiles and the digest counts are aggregates and are not recorded.
+assert.match(employersPage, /loadSlowestEmployers\(session, weeks\)/, 'the slowest employers list loads through its recorded loader');
+assert.match(employersPage, /loadStaleJobs\(session\)/, 'the stale jobs list loads through its recorded loader');
+assert.doesNotMatch(employersPage, /getSlowestEmployers\(|getStaleJobs\(/, 'neither list is ever read unrecorded');
+assert.doesNotMatch(employersPage, /getAdminDbPool|@\/lib\/server\/db['"]/, 'the employers page must not read the pool directly');
+for (const [loader, surface] of [
+  ['loadSlowestEmployers', 'admin.analytics_slowest_employers'],
+  ['loadStaleJobs', 'admin.analytics_stale_jobs'],
+]) {
+  const body = analyticsReadModel.match(new RegExp(`export async function ${loader}\\([\\s\\S]*?\\n}\\n`))?.[0] ?? '';
+  assert.match(body, /withAdminReadTransaction\(session, async \(client\) =>/, `${loader} reads in one recorded transaction`);
+  assert.match(body, new RegExp(`recordAdminAccess\\(session, \\{\\s*surface: '${surface.replace('.', '\\.')}'`), `${loader} records ${surface} before COMMIT`);
+  assert.match(body, new RegExp(`recordAdminAttempt\\(session, \\{\\s*surface: '${surface.replace('.', '\\.')}'`), `a failed ${loader} records a failed attempt`);
+}
+// The stale jobs record names exactly the rows the list renders: the same
+// helper and limit as StaleJobsList.
+assert.match(analyticsReadModel, /const \{ shown \} = firstWithRest\(rows, STALE_JOBS_SHOWN\);/, 'the loader records the rendered slice');
 assert.match(employersPage, /searchParams\??:\s*Promise</, 'the employers page types searchParams as a Promise (Next 16)');
 assert.match(employersPage, /const weeks = parseFunnelWeeks\(weeksParam\);/, 'the weeks param is parsed like Funnels (4 / 8 / 12, default 8)');
 assert.match(
   employersPage,
-  /Promise\.all\(\[\s*getEmployerWeekly\(weeks\),\s*getSlowestEmployers\(weeks\),\s*getStaleJobs\(\),?\s*\]\)/,
+  /Promise\.all\(\[\s*getEmployerWeekly\(weeks\),\s*loadSlowestEmployers\(session, weeks\),\s*loadStaleJobs\(session\),?\s*\]\)/,
   'the employers page runs its three queries in one wave (pool cap of 5)',
 );
 assert.match(
@@ -747,6 +766,7 @@ assert.match(
     'key={value}',
     'className="button"',
     'href={opsHref(value)}',
+    'prefetch={false}',
     "aria-current={value === weeks ? 'page' : undefined}",
     '>',
     '{value} weeks',
@@ -980,24 +1000,22 @@ for (const [pattern, point] of [
 
 // --- Roadmap 2d: case aging (/cases, the case page, Home) ------------------
 // Markup pins reuse 2c's opsSeq (literal pieces, `\s*` between them).
-const casesPage = read('src/app/cases/page.tsx');
+// casesPage is read above, with the access-record checks.
 
 assert.match(
   dashboardPage,
-  /AdminDashboardPage\(\) \{\n  await requireAdminSession\(\);\n/,
+  /AdminDashboardPage\(\) \{\n  const session = await requireAdminSession\(\);\n/,
   'Home gates on an admin session before any query',
 );
 assert.match(
   dashboardPage,
-  opsSeq(
-    'const [openByWait, openCases, piiRevealCount, lockouts] = await Promise.all([',
-    'countOpenCasesByWait(),',
-    'listOpenAdminCases(3),',
-    'countPiiRevealEvents(),',
-    'listIdentityLockouts(),',
-    ']);',
-  ),
-  'Home still runs its four queries in one wave (pool cap of 5)',
+  opsSeq('const {', 'openByWait,', 'openCases,', 'revealCount,', 'lockedOutCount,', 'stuckCount,', 'recentLockouts,', '} = await loadAdminDashboard(session);'),
+  'Home reads the by-wait counts through its one recorded loader',
+);
+assert.match(
+  casesModule,
+  /const openByWait = await countOpenCasesByWait\(client\);/,
+  'the dashboard loader reads the by-wait counts on its transaction client',
 );
 assert.match(
   dashboardPage,
@@ -1047,8 +1065,8 @@ assert.match(
 assert.match(dashboardPage, /\{casePreviewWait\(item, now\)\}/, 'each open-queue preview row says how long it has waited');
 assert.match(
   casesPage,
-  /await requireAdminSession\(\);\n  const \{ rows: adminCases, totalCount \} = await listAdminCases\(\);\n  const now = new Date\(\);/,
-  '/cases gates on the session, then reads the queue',
+  /const session = await requireAdminSession\(\);\n  \/\/ Records the cases on this page and their subjects before rendering\.\n  const \{ rows: adminCases, totalCount \} = await loadCasesList\(session\);\n  const now = new Date\(\);/,
+  '/cases gates on the session, then reads the queue through its recorded loader',
 );
 assert.match(casesPage, /\{caseOpenedLine\(item, now\)\}/, 'each /cases row says when it was opened');
 assert.match(casesPage, /\{caseWaitLine\(item, now\)\}/, 'each /cases row says who it waits on and for how long, or when it closed');
@@ -1090,14 +1108,16 @@ assert.match(
   'below the cohort table: start over and back (follows the door), then operator resets (no door)',
 );
 
-// Employers: the existing wave of three, then adoption + sends.
+// Employers: the existing wave of three, then adoption + sends. The two
+// lists that name employers load through their recorded loaders.
 assert.match(
   employersPage,
-  /const \[weeklyRows, slowest, staleJobs\] = await Promise\.all\(\[\s*getEmployerWeekly\(weeks\),\s*getSlowestEmployers\(weeks\),\s*getStaleJobs\(\),?\s*\]\);\n  const \[adoption, digestRows\] = await Promise\.all\(\[getDigestAdoption\(\), getDigestSends\(weeks\)\]\);/,
+  /const \[weeklyRows, slowest, staleJobs\] = await Promise\.all\(\[\s*getEmployerWeekly\(weeks\),\s*loadSlowestEmployers\(session, weeks\),\s*loadStaleJobs\(session\),?\s*\]\);\n  const \[adoption, digestRows\] = await Promise\.all\(\[getDigestAdoption\(\), getDigestSends\(weeks\)\]\);/,
   'five queries in two waves: the existing three, then adoption + sends (pool cap of 5)',
 );
 assert.equal((employersPage.match(/Promise\.all\(/g) ?? []).length, 2, 'the employers page has exactly two query waves');
-assert.equal((employersPage.match(/\bget[A-Z]\w*\(/g) ?? []).length, 5, 'the employers page issues exactly the five queries');
+assert.equal((employersPage.match(/\bget[A-Z]\w*\(/g) ?? []).length, 3, 'the employers page issues exactly three unrecorded aggregate queries');
+assert.equal((employersPage.match(/\bload[A-Z]\w*\(session/g) ?? []).length, 2, 'and exactly two recorded list loads');
 assert.match(employersPage, /const digest = splitDigestSends\(digestRows\);/, 'the digest total row is the SQL window row');
 assert.match(
   employersPage,

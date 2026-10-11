@@ -5,8 +5,8 @@ import {
   getDigestAdoption,
   getDigestSends,
   getEmployerWeekly,
-  getSlowestEmployers,
-  getStaleJobs,
+  loadSlowestEmployers,
+  loadStaleJobs,
   parseFunnelWeeks,
 } from '@/lib/server/admin-analytics';
 import { bucketLabel } from '@/lib/analytics-format';
@@ -44,16 +44,18 @@ export default async function EmployersPage({
 }: {
   searchParams: Promise<{ weeks?: string | string[] }>;
 }) {
-  await requireAdminSession();
+  const session = await requireAdminSession();
   const { weeks: weeksParam } = await searchParams;
   const weeks = parseFunnelWeeks(weeksParam);
   const now = new Date();
 
   // Two waves, the second after the first: db.ts caps the shared pool at max: 5.
+  // The two lists name employers, so each loads in its own recorded
+  // transaction (one connection) and is recorded before render.
   const [weeklyRows, slowest, staleJobs] = await Promise.all([
     getEmployerWeekly(weeks),
-    getSlowestEmployers(weeks),
-    getStaleJobs(),
+    loadSlowestEmployers(session, weeks),
+    loadStaleJobs(session),
   ]);
   const [adoption, digestRows] = await Promise.all([getDigestAdoption(), getDigestSends(weeks)]);
 
@@ -79,6 +81,7 @@ export default async function EmployersPage({
               key={value}
               className="button"
               href={employersHref(value)}
+              prefetch={false}
               aria-current={value === weeks ? 'page' : undefined}
             >
               {value} weeks

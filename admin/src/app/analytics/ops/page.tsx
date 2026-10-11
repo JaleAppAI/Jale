@@ -80,6 +80,7 @@ export default async function OpsPage({
                 key={value}
                 className="button"
                 href={opsHref(value)}
+                prefetch={false}
                 aria-current={value === weeks ? 'page' : undefined}
               >
                 {value} weeks

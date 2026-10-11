@@ -81,6 +81,7 @@ export default async function FunnelsPage({
                 key={value}
                 className="button"
                 href={funnelsHref(value, door)}
+                prefetch={false}
                 aria-current={value === weeks ? 'page' : undefined}
               >
                 {value} weeks
@@ -93,6 +94,7 @@ export default async function FunnelsPage({
                 key={value}
                 className="button"
                 href={funnelsHref(weeks, value)}
+                prefetch={false}
                 aria-current={value === door ? 'page' : undefined}
               >
                 {label}

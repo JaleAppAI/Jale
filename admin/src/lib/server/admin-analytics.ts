@@ -26,6 +26,7 @@ import type {
   TrustExtractionWeekly,
   VoiceExtractionWeekly,
 } from '../types';
+import { STALE_JOBS_SHOWN, firstWithRest } from '../employer-health';
 import { isMessageLane } from '../ops-health';
 import {
   recordAdminAccess,
@@ -481,9 +482,8 @@ export async function getEmployerWeekly(weeks: FunnelWeeks): Promise<EmployerWee
   return result.rows.map(mapEmployerWeeklyRow);
 }
 
-export async function getSlowestEmployers(weeks: FunnelWeeks): Promise<SlowestEmployer[]> {
-  const pool = await getAdminDbPool();
-  const result = await pool.query<SlowestEmployerRow>(
+export async function getSlowestEmployers(client: AuditQueryClient, weeks: FunnelWeeks): Promise<SlowestEmployer[]> {
+  const result = await client.query<SlowestEmployerRow>(
     'SELECT * FROM admin_analytics_slowest_employers($1, $2)',
     [weeks, SLOWEST_EMPLOYERS_LIMIT],
   );
@@ -491,13 +491,69 @@ export async function getSlowestEmployers(weeks: FunnelWeeks): Promise<SlowestEm
 }
 
 // Every stale active job, most idle first; the page shows the first 25.
-export async function getStaleJobs(): Promise<StaleJob[]> {
-  const pool = await getAdminDbPool();
-  const result = await pool.query<StaleJobRow>(
+export async function getStaleJobs(client: AuditQueryClient): Promise<StaleJob[]> {
+  const result = await client.query<StaleJobRow>(
     'SELECT * FROM admin_analytics_stale_jobs($1)',
     [STALE_JOB_DAYS],
   );
   return result.rows.map(mapStaleJobRow);
+}
+
+/**
+ * Of the Employers page, only the two lists name anyone (employers), so each
+ * is read in a recorded transaction, as the paying-employers list is. The
+ * weekly figures, the tiles and the digest counts are aggregates and are not
+ * recorded. A read that fails records a failed attempt once its client is
+ * released.
+ */
+export async function loadSlowestEmployers(session: AdminSession, weeks: FunnelWeeks): Promise<SlowestEmployer[]> {
+  try {
+    return await withAdminReadTransaction(session, async (client) => {
+      const rows = await getSlowestEmployers(client, weeks);
+      await recordAdminAccess(session, {
+        surface: 'admin.analytics_slowest_employers',
+        categories: ['analytics'],
+        subjectUserIds: rows.map((row) => row.employerId),
+        resultCount: rows.length,
+      }, client);
+      return rows;
+    });
+  } catch (error) {
+    await recordAdminAttempt(session, {
+      surface: 'admin.analytics_slowest_employers',
+      categories: ['analytics'],
+      outcome: 'failed',
+    });
+    throw error;
+  }
+}
+
+/**
+ * Every stale job, for the tile's count; the list renders the first
+ * STALE_JOBS_SHOWN through the same firstWithRest, and exactly those are
+ * recorded: their employers and their number.
+ */
+export async function loadStaleJobs(session: AdminSession): Promise<StaleJob[]> {
+  try {
+    return await withAdminReadTransaction(session, async (client) => {
+      const rows = await getStaleJobs(client);
+      const { shown } = firstWithRest(rows, STALE_JOBS_SHOWN);
+      await recordAdminAccess(session, {
+        surface: 'admin.analytics_stale_jobs',
+        categories: ['analytics'],
+        subjectUserIds: shown.map((job) => job.employerId),
+        resultCount: shown.length,
+      }, client);
+      return rows;
+    });
+  } catch (error) {
+    await recordAdminAttempt(session, {
+      surface: 'admin.analytics_stale_jobs',
+      categories: ['analytics'],
+      outcome: 'failed',
+    });
+    throw error;
+  }
 }
 
 // ---- 2c: ops health (migration 115) ----

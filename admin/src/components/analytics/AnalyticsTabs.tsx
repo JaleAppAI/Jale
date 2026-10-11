@@ -17,6 +17,7 @@ export function AnalyticsTabs({ active }: { active: AnalyticsTab }) {
           key={tab.key}
           className="button"
           href={tab.href}
+          prefetch={false}
           aria-current={tab.key === active ? 'page' : undefined}
         >
           {tab.label}
