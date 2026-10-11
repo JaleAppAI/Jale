@@ -768,6 +768,36 @@ describe('JaleAuditStack', () => {
       expect(rules.every((r) => r.Properties.Name.startsWith('jale-audit-'))).toBe(true);
     });
 
+    it("admits every rule that dead-letters to the sentinel's queue in one statement, within SQS's policy size limit", () => {
+      // SQS refuses a queue policy over 8,192 bytes. One statement per rule
+      // (CDK's default for an event target's dead-letter queue) went over it
+      // at 26 statements and failed the stack's create.
+      const queueId = Object.keys(template.Resources).find((id) => template.Resources[id].Type === 'AWS::SQS::Queue' && id.startsWith('SentinelDeadLetters'))!;
+      const queueArn = `\${${queueId}.Arn}`;
+      const policies = Object.values(resourcesOf(template, 'AWS::SQS::QueuePolicy'))
+        .filter((p) => JSON.stringify(p.Properties.Queues).includes(queueId));
+      expect(policies).toHaveLength(1);
+      const document = policies[0].Properties.PolicyDocument;
+      const sends = statements(document).filter((st) => st.Effect === 'Allow' && [st.Action].flat().includes('sqs:SendMessage'));
+      expect(sends).toHaveLength(1);
+      expect(sends[0].Principal).toEqual({ Service: 'events.amazonaws.com' });
+      expect(sends[0].Resource).toBe(queueArn);
+      const deadLettering = Object.entries(resourcesOf(template, 'AWS::Events::Rule'))
+        .filter(([, r]) => (r.Properties.Targets ?? []).some((t: any) => t.DeadLetterConfig?.Arn === queueArn));
+      expect(deadLettering.length).toBeGreaterThan(20);
+      expect([sends[0].Condition.ArnEquals['aws:SourceArn']].flat().sort())
+        .toEqual(deadLettering.map(([id]) => `\${${id}.Arn}`).sort());
+      // Rendered with real-length values: each rule's ARN, a long queue ARN, and
+      // a 64-character stand-in for anything else, compact as SQS stores it.
+      const names = Object.fromEntries(deadLettering.map(([id, r]) => [id, r.Properties.Name as string]));
+      const rendered = JSON.stringify(document).replace(/\$\{([A-Za-z0-9:]+)(\.Arn)?\}/g, (_m, id: string, arn?: string) => {
+        if (arn && names[id]) return `arn:aws:events:us-west-2:123456789012:rule/${names[id]}`;
+        if (arn && id === queueId) return `arn:aws:sqs:us-west-2:123456789012:${'q'.repeat(80)}`;
+        return 'x'.repeat(64);
+      });
+      expect(Buffer.byteLength(rendered)).toBeLessThan(6000);
+    });
+
     it('matches read-only events where it routes reads: secret reads, root use, audit-role assumptions', () => {
       const all = rules.filter((r) => r.Properties.State === 'ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS').map((r) => r.Properties.Name).sort();
       expect(all).toEqual(['jale-audit-admin-sign-in-failures', 'jale-audit-role-assumptions', 'jale-audit-root', 'jale-audit-secret-reads']);
