@@ -76,6 +76,14 @@ SUITES=(
   #    lease returns exactly its own row, so it runs before any other suite
   #    can leave a leasable row behind.
   test/unit/db/whatsapp-worker-intent-043.integration.test.ts
+  # 2b. The admin analytics suites check whole-database figures (every row in
+  #    a window, not only their own), so they run before any suite after 043
+  #    writes a fixture; 043 removes the rows they count. Each removes its own
+  #    fixtures afterwards, so the next one also starts from an unwritten bed.
+  test/unit/db/onboarding-funnel-2a.integration.test.ts
+  test/unit/db/employer-health-2b.integration.test.ts
+  test/unit/db/ops-health-2c.integration.test.ts
+  test/unit/db/admin-queues-2d.integration.test.ts
   # 3. The body. These suites key every assertion on their own fixtures (or
   #    measure deltas), so they tolerate each other's leftover rows. A new
   #    suite goes here unless it belongs in the tail; one that leaves
@@ -115,10 +123,6 @@ SUITES=(
   test/unit/db/media-board-rls.integration.test.ts
   test/unit/db/rls-trust-assessment-employer-read.integration.test.ts
   test/unit/db/admin-analytics.integration.test.ts
-  test/unit/db/onboarding-funnel-2a.integration.test.ts
-  test/unit/db/employer-health-2b.integration.test.ts
-  test/unit/db/ops-health-2c.integration.test.ts
-  test/unit/db/admin-queues-2d.integration.test.ts
   test/unit/db/email-outbox-090.integration.test.ts
   test/unit/db/whatsapp-delivery-retrigger.integration.test.ts
   test/unit/db/twilio-callback-job-outbox-097.integration.test.ts

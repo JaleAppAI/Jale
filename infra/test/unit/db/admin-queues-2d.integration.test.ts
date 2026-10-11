@@ -61,7 +61,9 @@ const migrationSql = fs.readFileSync(
  * module that runs it) and never copied: its template literals, with their
  * ${NAME} references resolved. Read lazily by the tests that use it, so a
  * refactor of that module fails those tests with a clear message and nothing
- * else. `list` and `openList` take the LIMIT as $1, as the console passes it.
+ * else. `list` and `openList` take the LIMIT as $1, as the console passes it;
+ * `timeline` takes one case id as $1. The console runs them on its pool or,
+ * inside a recorded read transaction, on that transaction's client.
  */
 function consoleCaseSql(): { list: string; openList: string; buckets: string; timeline: string } {
   const source = fs.readFileSync(
@@ -77,8 +79,8 @@ function consoleCaseSql(): { list: string; openList: string; buckets: string; ti
     if (!m) throw new Error(`admin-cases.ts: template const ${name} not found`);
     scope[name] = resolve(m[1]);
   }
-  // The statements passed to pool.query as a template literal.
-  const statements = [...source.matchAll(/pool\.query<[^(]*>\(\s*`([^`]*)`/g)].map((m) => m[1]);
+  // The statements passed to pool.query or client.query as a template literal.
+  const statements = [...source.matchAll(/(?:pool|client)\.query<[^(]*>\(\s*`([^`]*)`/g)].map((m) => m[1]);
   const only = (what: string, pick: (t: string) => boolean): string => {
     const found = statements.filter(pick);
     if (found.length !== 1) throw new Error(`admin-cases.ts: expected one ${what}, found ${found.length}`);
@@ -871,9 +873,10 @@ maybeDescribe('2d admin queues (117)', () => {
         await c.query('COMMIT');
       });
     }
-    const rows = await rowsOf(consoleUrl, sql.timeline, [cases]);
     for (const id of cases) {
-      const events = rows.filter((r) => r.case_id === id);
+      // The case page reads one case's timeline at a time.
+      const events = await rowsOf(consoleUrl, sql.timeline, [id]);
+      expect(events.every((e) => e.case_id === id)).toBe(true);
       // Newest first; the two events of the transaction share their time.
       expect(events.map((e) => e.event_type)).toEqual(['status_changed', 'admin_reply_queued', 'case_opened']);
       expect(iso(events[0].created_at)).toBe(iso(events[1].created_at));
