@@ -1,10 +1,9 @@
 -- ============================================================
 -- 114_admin_employer_health.sql
--- Run manually AFTER 102_admin_identity_lockouts.sql, connected as
--- jale_admin (NOT the RDS master user). Forward-only (ADR-005).
--- Numbered 114 to leave 104-112 for migrations written in parallel; it
--- depends on nothing after 102 (and not on 113), so it may be applied before
--- or after them.
+-- Run manually AFTER 113_admin_onboarding_funnel.sql,
+-- connected as jale_admin. Forward-only (ADR-005).
+-- It reads nothing created after 102 (and not 113's functions); the runner
+-- applies it after 113.
 --
 -- Roadmap sub-project 2b
 -- (docs/superpowers/specs/2026-10-08-admin-analytics-2b-employer-health-design.md).

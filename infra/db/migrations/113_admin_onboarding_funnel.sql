@@ -1,9 +1,8 @@
 -- ============================================================
 -- 113_admin_onboarding_funnel.sql
--- Run manually AFTER 102_admin_identity_lockouts.sql, connected as
--- jale_admin (NOT the RDS master user). Forward-only (ADR-005).
--- Numbered 113 to leave 104-112 for migrations written in parallel; it
--- depends on nothing after 102, so it may be applied before or after them.
+-- Run manually AFTER 112_audit_operator_functions.sql,
+-- connected as jale_admin. Forward-only (ADR-005).
+-- It reads nothing created after 102; the runner applies it after 112.
 --
 -- Roadmap sub-project 2a
 -- (docs/superpowers/specs/2026-10-08-admin-analytics-2a-funnels-design.md).

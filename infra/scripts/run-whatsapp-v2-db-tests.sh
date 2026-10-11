@@ -115,6 +115,10 @@ SUITES=(
   test/unit/db/media-board-rls.integration.test.ts
   test/unit/db/rls-trust-assessment-employer-read.integration.test.ts
   test/unit/db/admin-analytics.integration.test.ts
+  test/unit/db/onboarding-funnel-2a.integration.test.ts
+  test/unit/db/employer-health-2b.integration.test.ts
+  test/unit/db/ops-health-2c.integration.test.ts
+  test/unit/db/admin-queues-2d.integration.test.ts
   test/unit/db/email-outbox-090.integration.test.ts
   test/unit/db/whatsapp-delivery-retrigger.integration.test.ts
   test/unit/db/twilio-callback-job-outbox-097.integration.test.ts

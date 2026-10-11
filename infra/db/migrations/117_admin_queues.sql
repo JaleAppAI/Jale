@@ -1,10 +1,10 @@
 -- ============================================================
 -- 117_admin_queues.sql
--- Run manually AFTER 102_admin_identity_lockouts.sql, connected as
--- jale_admin (NOT the RDS master user). Forward-only (ADR-005).
--- Numbered 117 to leave 104-112 for migrations written in parallel and 116
--- for the job-message sweeper repair; it depends on nothing after 102 (not on
--- 113-116), so it may be applied before or after them.
+-- Run manually AFTER 115_admin_ops_health.sql,
+-- connected as jale_admin. Forward-only (ADR-005).
+-- 116 is left free for the job-message sweeper repair. It reads nothing
+-- created after 102 (and not 113-115's functions); the runner applies it
+-- after 115.
 --
 -- Roadmap sub-project 2d
 -- (docs/superpowers/specs/2026-10-09-admin-analytics-2d-admin-queues-design.md).
@@ -23,10 +23,13 @@
 --     event that cannot be written rolls the status change back.
 --     Existing cases are backfilled once, never earlier than created_at:
 --     resolved / dismissed at resolved_at; pending_worker at the earliest
---     audit row that moves a case there (request_more_info, reply_whatsapp,
---     reset_verification_step; target_type admin_case or the retired
---     verification); everything else, and anything without that evidence,
---     at created_at. Past status changes get no invented timeline events.
+--     reply the case's own timeline records as queued (admin_reply_queued,
+--     written in the same transaction that moves the case there); everything
+--     else, and anything without that evidence, at created_at. The dashboard
+--     action records are append-only audit storage this migration does not
+--     read, so a move by request_more_info or by the retired verification
+--     reset counts from created_at. Past status changes get no invented
+--     timeline events.
 -- (2) admin_analytics_onboarding_restarts(p_weeks): per week (Monday 00:00
 --     UTC), door and onboarding step, the workers who reached the step, and
 --     the workers and presses that started over (worker_restart) or went
@@ -162,18 +165,8 @@ BEGIN
     END IF;
   END LOOP;
 
-  -- The backfill reads the audit trail as jale_admin (026's shared read).
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policy p
-     WHERE p.polrelid = 'public.admin_audit_log'::regclass
-       AND p.polname = 'admin_audit_log_select'
-       AND p.polcmd = 'r'
-       AND p.polpermissive
-       AND 'jale_admin'::regrole::oid = ANY (p.polroles)
-       AND pg_get_expr(p.polqual, p.polrelid) = 'true'
-  ) THEN
-    RAISE EXCEPTION 'migration 117: policy admin_audit_log_select missing or drifted; the backfill would read no audit rows';
-  END IF;
+  -- The backfill reads the case timeline as jale_admin, through
+  -- admin_case_events_service_all (checked above).
 
   -- The timeline trigger runs as jale_admin; a failed insert would roll back
   -- every status change.
@@ -196,8 +189,7 @@ BEGIN
      WHERE ((p.polrelid IN ('public.users'::regclass, 'public.worker_workflow_runs'::regclass,
                             'public.worker_workflow_transitions'::regclass,
                             'public.worker_reset_audit'::regclass, 'public.email_outbox'::regclass,
-                            'public.employer_digest_settings'::regclass, 'public.admin_cases'::regclass,
-                            'public.admin_audit_log'::regclass)
+                            'public.employer_digest_settings'::regclass, 'public.admin_cases'::regclass)
              AND p.polcmd IN ('r', '*'))
             OR (p.polrelid = 'public.admin_case_events'::regclass AND p.polcmd IN ('r', 'a', '*')))
        AND NOT p.polpermissive
@@ -219,11 +211,10 @@ UPDATE public.admin_cases c
    SET status_changed_at = greatest(c.created_at, CASE
          WHEN c.status IN ('resolved', 'dismissed') THEN COALESCE(c.resolved_at, c.created_at)
          WHEN c.status = 'pending_worker' THEN COALESCE((
-           SELECT min(a.created_at)
-             FROM public.admin_audit_log a
-            WHERE a.target_type IN ('admin_case', 'verification')
-              AND a.target_id = c.id::text
-              AND a.action IN ('request_more_info', 'reply_whatsapp', 'reset_verification_step')
+           SELECT min(e.created_at)
+             FROM public.admin_case_events e
+            WHERE e.case_id = c.id
+              AND e.event_type = 'admin_reply_queued'
          ), c.created_at)
          ELSE c.created_at
        END);

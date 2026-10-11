@@ -699,10 +699,17 @@ maybeDescribe('2d admin queues (117)', () => {
             `INSERT INTO admin_cases (case_type, status, summary, created_at, updated_at, resolved_at)
              VALUES ('help_request', $1, $2, $3, $3, $4) RETURNING id`, [status, MARK, created, resolvedAt])).rows[0].id;
         };
-        const audit = async (targetType: string, targetId: string, action: string, when: Date): Promise<void> => {
+        const timeline = async (caseId: string, eventType: string, when: Date): Promise<void> => {
+          await su.query(
+            `INSERT INTO admin_case_events (case_id, event_type, actor_type, actor_id, payload, created_at)
+             VALUES ($1, $2, 'admin', NULL, '{}'::jsonb, $3)`, [caseId, eventType, when]);
+        };
+        // A dashboard action record the backfill must not read: it is
+        // append-only audit storage, out of the migration login's reach.
+        const audit = async (targetId: string, action: string, when: Date): Promise<void> => {
           await su.query(
             `INSERT INTO admin_audit_log (actor_role, action, target_type, target_id, created_at)
-             VALUES ('admin_ops', $1, $2, $3, $4)`, [action, targetType, targetId, when]);
+             VALUES ('admin_ops', $1, 'admin_case', $2, $3)`, [action, targetId, when]);
         };
         await add('open', 'open', at(10));
         await add('pendingAdmin', 'pending_admin', at(9));
@@ -712,22 +719,21 @@ maybeDescribe('2d admin queues (117)', () => {
         await add('resolvedEarly', 'resolved', at(8), at(9));
         await add('resolvedWithInfo', 'resolved', at(8), at(1));
         await add('worker', 'pending_worker', at(7));
-        await add('verification', 'pending_worker', at(7));
-        await add('workerNoAudit', 'pending_worker', at(7));
-        await add('workerEarlyAudit', 'pending_worker', at(7));
+        await add('workerAuditOnly', 'pending_worker', at(7));
+        await add('workerNoEvidence', 'pending_worker', at(7));
+        await add('workerEarlyReply', 'pending_worker', at(7));
         await add('workerOtherCase', 'pending_worker', at(7));
-        // The earliest move to pending_worker wins; other actions, other
-        // target types and other cases do not count.
-        await audit('admin_case', ids.worker, 'reply_whatsapp', at(5));
-        await audit('admin_case', ids.worker, 'request_more_info', at(6));
-        await audit('admin_case', ids.worker, 'reveal_pii', at(6.5));
-        await audit('verification', ids.verification, 'reset_verification_step', at(4));
-        await audit('verification', ids.verification, 'approve_verification', at(6));
-        await audit('worker', ids.verification, 'request_more_info', at(6.5));
-        await audit('admin_case', ids.workerEarlyAudit, 'request_more_info', at(8));
-        await audit('admin_case', randomUUID(), 'request_more_info', at(6));
-        await audit('admin_case', ids.workerOtherCase.toUpperCase(), 'request_more_info', at(6));
-        await audit('admin_case', ids.resolvedWithInfo, 'request_more_info', at(5));
+        // The earliest queued reply on the case's own timeline wins; other
+        // event types, other cases and the audit storage do not count.
+        await timeline(ids.worker, 'admin_reply_queued', at(5));
+        await timeline(ids.worker, 'admin_reply_queued', at(6));
+        await timeline(ids.worker, 'admin_reply_sent', at(6.5));
+        await timeline(ids.worker, 'help_keyword', at(6.8));
+        await audit(ids.worker, 'request_more_info', at(6.9));
+        await audit(ids.workerAuditOnly, 'request_more_info', at(4));
+        await timeline(ids.workerEarlyReply, 'admin_reply_queued', at(8));
+        await timeline(ids.open, 'admin_reply_queued', at(6));
+        await timeline(ids.resolvedWithInfo, 'admin_reply_queued', at(5));
 
         // As the migration runs it: jale_admin, under FORCE RLS.
         await su.query('SET LOCAL ROLE jale_admin');
@@ -739,7 +745,8 @@ maybeDescribe('2d admin queues (117)', () => {
         }
         // The backfill names status_changed_at only: no status trigger fired.
         out.events = String((await su.query(
-          `SELECT count(*) AS n FROM admin_case_events WHERE case_id = ANY($1::uuid[])`, [Object.values(ids)])).rows[0].n);
+          `SELECT count(*) AS n FROM admin_case_events WHERE case_id = ANY($1::uuid[]) AND event_type = 'status_changed'`,
+          [Object.values(ids)])).rows[0].n);
         return out;
       } finally {
         await su.query('ROLLBACK');
@@ -755,9 +762,9 @@ maybeDescribe('2d admin queues (117)', () => {
       resolvedEarly: d(8),
       resolvedWithInfo: d(1),
       worker: d(6),
-      verification: d(4),
-      workerNoAudit: d(7),
-      workerEarlyAudit: d(7),
+      workerAuditOnly: d(7),
+      workerNoEvidence: d(7),
+      workerEarlyReply: d(7),
       workerOtherCase: d(7),
       events: '0',
     });

@@ -1745,18 +1745,19 @@ describe('database migrations', () => {
       + '  ALTER COLUMN status_changed_at SET NOT NULL;\n',
     );
     // The backfill: one statement between the markers (the integration suite
-    // runs exactly this text), never earlier than created_at.
+    // runs exactly this text), never earlier than created_at. Its evidence is
+    // the case's own timeline: the dashboard action records are append-only
+    // audit storage the migration login does not read.
     const backfill = sql.match(/\n-- BEGIN status_changed_at backfill\n([\s\S]*?)-- END status_changed_at backfill\n/)?.[1];
     expect(backfill).toBe(
       'UPDATE public.admin_cases c\n'
       + '   SET status_changed_at = greatest(c.created_at, CASE\n'
       + "         WHEN c.status IN ('resolved', 'dismissed') THEN COALESCE(c.resolved_at, c.created_at)\n"
       + "         WHEN c.status = 'pending_worker' THEN COALESCE((\n"
-      + '           SELECT min(a.created_at)\n'
-      + '             FROM public.admin_audit_log a\n'
-      + "            WHERE a.target_type IN ('admin_case', 'verification')\n"
-      + '              AND a.target_id = c.id::text\n'
-      + "              AND a.action IN ('request_more_info', 'reply_whatsapp', 'reset_verification_step')\n"
+      + '           SELECT min(e.created_at)\n'
+      + '             FROM public.admin_case_events e\n'
+      + '            WHERE e.case_id = c.id\n'
+      + "              AND e.event_type = 'admin_reply_queued'\n"
       + '         ), c.created_at)\n'
       + '         ELSE c.created_at\n'
       + '       END);\n',
@@ -1990,8 +1991,8 @@ describe('database migrations', () => {
     expect(code).toContain('GROUP BY GROUPING SETS ((f.wk), ())');
 
     // Preconditions: 042's definer and admin-read policies, 037's admin
-    // select, 089's users gate, 026's admin_cases / admin_case_events /
-    // audit-log access; jale_admin may insert events; no restrictive policy
+    // select, 089's users gate, 026's admin_cases / admin_case_events
+    // access; jale_admin may insert events; no restrictive policy
     // that applies to jale_admin hides a read (or fails the event insert).
     for (const row of [
       "('public.worker_workflow_runs', 'worker_workflow_runs_definer', '*', 'true', 'true')",
@@ -2005,10 +2006,11 @@ describe('database migrations', () => {
       expect(code).toContain(row);
     }
     expect(code).toContain('AND pg_get_expr(p.polwithcheck, p.polrelid) IS NOT DISTINCT FROM pol.chk');
-    expect(code).toContain("AND p.polname = 'admin_audit_log_select'");
+    // The audit storage is neither read nor checked.
+    expect(code).not.toContain('admin_audit_log');
     expect(code).toContain("IF NOT has_table_privilege('jale_admin', 'public.admin_case_events', 'INSERT') THEN");
     for (const table of ['users', 'worker_workflow_runs', 'worker_workflow_transitions', 'worker_reset_audit',
-      'email_outbox', 'employer_digest_settings', 'admin_cases', 'admin_audit_log']) {
+      'email_outbox', 'employer_digest_settings', 'admin_cases']) {
       expect(code).toContain(`'public.${table}'::regclass`);
     }
     expect(code).toContain("AND p.polcmd IN ('r', '*'))\n            OR (p.polrelid = 'public.admin_case_events'::regclass AND p.polcmd IN ('r', 'a', '*')))");
