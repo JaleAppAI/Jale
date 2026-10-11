@@ -174,6 +174,7 @@ $MigrationFiles = @(
     '114_admin_employer_health.sql'
     '115_admin_ops_health.sql'
     '117_admin_queues.sql'
+    '118_access_manifest_alignment.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path
