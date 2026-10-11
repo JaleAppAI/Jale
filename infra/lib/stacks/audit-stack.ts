@@ -336,6 +336,24 @@ export class AuditStack extends cdk.Stack {
       enforceSSL: true,
       retentionPeriod: cdk.Duration.days(14),
     });
+    // Every rule that targets the sentinel dead-letters here. CDK's event
+    // targets add one queue-policy statement per rule, and SQS refuses a queue
+    // policy over 8,192 bytes: at 26 statements the stack's create failed. So
+    // the rules name the queue directly (deadLetterTo) and one statement admits
+    // them all, each by its exact ARN.
+    const deadLetteredRules: events.Rule[] = [];
+    const deadLetterTo = (rule: events.Rule): events.Rule => {
+      (rule.node.defaultChild as events.CfnRule).addPropertyOverride('Targets.0.DeadLetterConfig.Arn', deadLetters.queueArn);
+      deadLetteredRules.push(rule);
+      return rule;
+    };
+    deadLetters.addToResourcePolicy(new iam.PolicyStatement({
+      sid: 'AuditRulesSendUndeliveredEvents',
+      principals: [new iam.ServicePrincipal('events.amazonaws.com')],
+      actions: ['sqs:SendMessage'],
+      resources: [deadLetters.queueArn],
+      conditions: { ArnEquals: { 'aws:SourceArn': cdk.Lazy.list({ produce: () => deadLetteredRules.map((r) => r.ruleArn) }) } },
+    }));
 
     this.exportJob = new JaleLambdaFunction(this, 'AuditExport', {
       entry: path.join(__dirname, '../../lambda/ops/audit-export.ts'),
@@ -603,16 +621,16 @@ export class AuditStack extends cdk.Stack {
     });
 
     // ── Routing to the sentinel ─────────────────────────────────────────
-    const toSentinel = new eventTargets.LambdaFunction(sentinelFn, { deadLetterQueue: deadLetters, retryAttempts: 4 });
+    const toSentinel = new eventTargets.LambdaFunction(sentinelFn, { retryAttempts: 4 });
     // The routes come from one table (`lambda/ops/audit-sentinel-routes.ts`),
     // which the sentinel's daily check reads each deployed route against.
     for (const spec of mainRoutes(AUDIT_ROUTE_NAMES, routedFindings)) {
-      const rule = new events.Rule(this, spec.id, {
+      const rule = deadLetterTo(new events.Rule(this, spec.id, {
         ruleName: spec.name,
         description: spec.description,
         eventPattern: cdkEventPattern(spec.pattern),
         targets: [toSentinel],
-      });
+      }));
       // A rule in the default ENABLED state never matches read-only
       // management events; these rules route reads.
       if (spec.allManagementEvents) (rule.node.defaultChild as events.CfnRule).state = ruleState(true);
@@ -806,16 +824,15 @@ export class AuditStack extends cdk.Stack {
       'A reveal reason looked like it carries a value; the record is held, not exported (holds runbook).');
     anyAbove0('ContextInvalidAlarm', 'JaleAuditContextInvalid', 'AuditContextInvalid', cdk.Duration.hours(1),
       'A change record was written with a malformed audit context.');
-    new events.Rule(this, 'EdgeCheckSchedule', {
+    deadLetterTo(new events.Rule(this, 'EdgeCheckSchedule', {
       ruleName: `${AUDIT_NAMES.rulePrefix}edge-check`,
       description: "Daily check of the audit rules: the main region's routes, and the edge regions' forwarding rules and dead letters",
       schedule: events.Schedule.cron({ minute: '0', hour: '4' }),
       targets: [new eventTargets.LambdaFunction(sentinelFn, {
         event: events.RuleTargetInput.fromObject({ check: 'edge' }),
         retryAttempts: 2,
-        deadLetterQueue: deadLetters,
       })],
-    });
+    }));
     anyAbove0('EdgeCheckFailedAlarm', 'JaleAuditEdgeCheckFailed', 'AuditEdgeCheckFailed', cdk.Duration.hours(1),
       'An audit rule is not as configured, in the main region or an edge region (missing, changed or failing), or an edge region holds events it could not forward.');
     alarm('EdgeCheckMissingAlarm', {

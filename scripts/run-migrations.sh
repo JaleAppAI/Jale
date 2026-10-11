@@ -886,19 +886,23 @@ psql_error_kind() {
   fi
 }
 
-# stdin: the new password. Wraps it in the create-secret request and hands
-# that to the AWS CLI on stdin.
+# stdin: the new password. Wraps it in the secret's value and hands that to
+# the AWS CLI on stdin, as --secret-string's file. The name, description and
+# tags hold no secret and go on argv. Never --cli-input-json from a pipe: the
+# AWS CLI reads that file twice, so a pipe arrives empty and the create fails
+# before any request is sent.
 create_login_secret() {   # $1 login, $2 secret name
-  jq -Rs --arg name "$2" --arg login "$1" --arg host "$DB_HOST" --arg port "$DB_PORT" --arg dbname "$DB_NAME" '{
-      Name: $name,
-      Description: ("Database credentials for the " + $login + " login, created by scripts/run-migrations.sh --prepare-logins"),
-      SecretString: ({host: $host, port: ($port | tonumber), dbname: $dbname, username: $login, password: .} | tojson),
-      Tags: [
-        {Key: "project", Value: "jale"},
-        {Key: "db-login", Value: $login},
-        {Key: "managed-by", Value: "scripts/run-migrations.sh"}
-      ]
-    }' | aws secretsmanager create-secret --region "$REGION" --cli-input-json file:///dev/stdin
+  local tags
+  tags=$(jq -nc --arg login "$1" '[
+      {Key: "project", Value: "jale"},
+      {Key: "db-login", Value: $login},
+      {Key: "managed-by", Value: "scripts/run-migrations.sh"}
+    ]') || return 1
+  jq -Rsjc --arg login "$1" --arg host "$DB_HOST" --arg port "$DB_PORT" --arg dbname "$DB_NAME" \
+      '{host: $host, port: ($port | tonumber), dbname: $dbname, username: $login, password: .}' \
+    | aws secretsmanager create-secret --region "$REGION" --name "$2" \
+        --description "Database credentials for the $1 login, created by scripts/run-migrations.sh --prepare-logins" \
+        --tags "$tags" --secret-string file:///dev/stdin
 }
 
 # Signs in as the login with the password in LOGIN_PW (a variable, so the
