@@ -55,46 +55,6 @@ function maybeDescribe(name: string, fn: () => void): void {
   else describe.skip(name, fn);
 }
 
-/**
- * The immutable migration-020 policy recursively re-enters users through
- * jobs/job_applications for jale_admin. Mirror the established
- * billing-rls.integration / whatsapp-support-039 testbed repair, in case any
- * scenario here trips it. This mutates only the disposable local database.
- */
-async function applyLocalRlsRecursionWorkaround(client: Client): Promise<void> {
-  await client.query(`
-    CREATE OR REPLACE FUNCTION employer_has_applicant_relationship(
-      p_employer_internal_id text,
-      p_worker_id uuid
-    ) RETURNS boolean
-    LANGUAGE sql
-    STABLE
-    SECURITY DEFINER
-    SET search_path = public
-    AS $fn$
-      SELECT EXISTS (
-        SELECT 1
-          FROM job_applications ja
-          JOIN jobs j ON j.id = ja.job_id
-         WHERE ja.worker_id = p_worker_id
-           AND j.employer_id::text = p_employer_internal_id
-      );
-    $fn$;
-  `);
-  await client.query('DROP POLICY IF EXISTS users_employer_applicant_read ON users');
-  await client.query(`
-    CREATE POLICY users_employer_applicant_read
-      ON users FOR SELECT TO jale_admin
-      USING (
-        user_type = 'worker'
-        AND employer_has_applicant_relationship(
-          current_setting('app.current_internal_user_id', true),
-          id
-        )
-      )
-  `);
-}
-
 function hex64(seed: string): string {
   return createHash('sha256').update(seed).digest('hex');
 }
@@ -171,7 +131,6 @@ maybeDescribe('WhatsApp v2 RLS / idempotency / lease / concurrency gate (C9)', (
 
   beforeAll(async () => {
     await withSuperuser(async (c) => {
-      await applyLocalRlsRecursionWorkaround(c);
       const snapshot = await c.query<RuntimeControlSnapshot>(`
         SELECT control_key, enabled, phone_hashes, global_enabled, updated_by,
                updated_at::text AS updated_at
@@ -545,6 +504,7 @@ maybeDescribe('WhatsApp v2 RLS / idempotency / lease / concurrency gate (C9)', (
   // ── Scenario 4: Release lease ──────────────────────────────────────────
   describe('scenario 4: release lease', () => {
     const workerId = randomUUID();
+    const inboundSid = `c9-inbound-${randomUUID()}`;
     let runId: string;
     let eventKey: string;
 
@@ -554,6 +514,11 @@ maybeDescribe('WhatsApp v2 RLS / idempotency / lease / concurrency gate (C9)', (
         await c.query(
           `INSERT INTO users (id, cognito_sub, user_type, whatsapp_number) VALUES ($1, $2, 'worker', $3)`,
           [workerId, `c9-s4-${workerId}`, '+15550004001'],
+        );
+        // The 24-hour window precondition (sprint 27), now explicit: the worker messaged us recently, so free-form release entries are deliverable.
+        await c.query(
+          `INSERT INTO whatsapp_processed_messages (message_sid, whatsapp_number, status) VALUES ($1, $2, 'completed')`,
+          [inboundSid, '+15550004001'],
         );
         await c.query(`INSERT INTO worker_onboarding_state (user_id, lifecycle) VALUES ($1, 'onboarding')`, [
           workerId,
@@ -580,6 +545,7 @@ maybeDescribe('WhatsApp v2 RLS / idempotency / lease / concurrency gate (C9)', (
 
     afterAll(async () => {
       await withSuperuser(async (c) => {
+        await c.query('DELETE FROM whatsapp_processed_messages WHERE message_sid = $1', [inboundSid]);
         await c.query('DELETE FROM worker_domain_outbox WHERE aggregate_id = $1', [workerId]);
         await c.query('DELETE FROM users WHERE id = $1', [workerId]);
       });
@@ -661,6 +627,7 @@ maybeDescribe('WhatsApp v2 RLS / idempotency / lease / concurrency gate (C9)', (
   // ── Scenario 5: Outbound sequence ──────────────────────────────────────
   describe('scenario 5: outbound sequence ordering', () => {
     const workerId = randomUUID();
+    const inboundSid = `c9-inbound-${randomUUID()}`;
     const employerId = randomUUID();
     let runId: string;
     let jobId: string;
@@ -685,6 +652,11 @@ maybeDescribe('WhatsApp v2 RLS / idempotency / lease / concurrency gate (C9)', (
         await c.query(
           `INSERT INTO users (id, cognito_sub, user_type, whatsapp_number) VALUES ($1, $2, 'worker', $3)`,
           [workerId, `c9-s5-worker-${workerId}`, '+15550005001'],
+        );
+        // The 24-hour window precondition (sprint 27), now explicit: the worker messaged us recently, so free-form release entries are deliverable.
+        await c.query(
+          `INSERT INTO whatsapp_processed_messages (message_sid, whatsapp_number, status) VALUES ($1, $2, 'completed')`,
+          [inboundSid, '+15550005001'],
         );
         await c.query(`INSERT INTO users (id, cognito_sub, user_type) VALUES ($1, $2, 'employer')`, [
           employerId,
@@ -764,6 +736,7 @@ maybeDescribe('WhatsApp v2 RLS / idempotency / lease / concurrency gate (C9)', (
 
     afterAll(async () => {
       await withSuperuser(async (c) => {
+        await c.query('DELETE FROM whatsapp_processed_messages WHERE message_sid = $1', [inboundSid]);
         await c.query('DELETE FROM worker_domain_outbox WHERE aggregate_id = $1', [workerId]);
         await c.query('DELETE FROM job_conversation_messages WHERE conversation_id = $1', [conversationId]);
         await c.query('DELETE FROM job_conversations WHERE id = $1', [conversationId]);
@@ -1073,7 +1046,7 @@ maybeDescribe('WhatsApp v2 RLS / idempotency / lease / concurrency gate (C9)', (
         expect(decision.action).toBe('defer'); // lifecycle 'onboarding' (no gate row) -> deferred, not authorized
 
         await expect(
-          insertAuthorizedIntentOutbox(pc(client), intentId, {
+          insertAuthorizedIntentOutbox(pc(client), { workerId, intentId }, {
             whatsappNumber: '+15550008001',
             body: 'unauthorized direct send',
             contentTemplate: null,

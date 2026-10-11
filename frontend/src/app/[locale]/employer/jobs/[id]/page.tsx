@@ -1396,7 +1396,7 @@ function ApplicantRow({
                                                 dropped or filed under a neighbour. */}
                                             {entry.question ?? t('applicants.own_words.question_removed')}
                                         </p>
-                                        <p className="mt-0.5 whitespace-pre-wrap text-sm text-[var(--jale-ink-2)]">
+                                        <p data-private className="mt-0.5 whitespace-pre-wrap text-sm text-[var(--jale-ink-2)]">
                                             {entry.text}
                                         </p>
                                     </li>
@@ -1406,7 +1406,7 @@ function ApplicantRow({
                     ) : null}
 
                     {(answers.length > 0 || notProvided.length > 0) ? (
-                        <div className="mt-3 rounded-[10px] border border-[var(--jale-divider)] p-3">
+                        <div data-private className="mt-3 rounded-[10px] border border-[var(--jale-divider)] p-3">
                             {answers.length > 0 ? (
                                 <>
                                     <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">

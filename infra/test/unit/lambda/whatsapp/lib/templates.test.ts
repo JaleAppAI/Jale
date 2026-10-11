@@ -467,3 +467,95 @@ describe('sprint 24: typed-code not-found copy', () => {
     expect(t('application_ref_not_found', 'en').toLowerCase()).toContain('applications');
   });
 });
+
+// ── Sprint 27: the WhatsApp door names the job it was opened for ──
+//
+// The approved copy, verbatim. `{{title}}` and `{{company}}` are employer
+// free text, rendered as stored.
+describe('sprint 27: referred-job copy', () => {
+  const VARS = { title: 'Finish Carpenter', company: 'Acme Builders' };
+  const APPROVED: Array<[TemplateKey, string, string]> = [
+    [
+      'v2_referral_ack',
+      'Recibimos tu solicitud para: Finish Carpenter - Acme Builders. Sigue los pasos y te enviamos el trabajo para postularte.',
+      'Got it: Finish Carpenter - Acme Builders. Follow the steps and we will send you the job so you can apply.',
+    ],
+    [
+      'v2_referral_ack_otp',
+      'Recibimos tu solicitud para: Finish Carpenter - Acme Builders. Escribe el codigo que te enviamos para continuar.',
+      'Got it: Finish Carpenter - Acme Builders. Enter the code we sent you to continue.',
+    ],
+    [
+      'v2_otp_enter_code',
+      'Escribe el codigo que te enviamos para continuar.',
+      'Enter the code we sent you to continue.',
+    ],
+    [
+      'v2_referral_ack_bound',
+      'Guardamos este trabajo para ti: Finish Carpenter - Acme Builders. Termina tu perfil y te lo enviamos.',
+      'We saved this job for you: Finish Carpenter - Acme Builders. Finish your profile and we will send it to you.',
+    ],
+    [
+      'v2_ready_jobs_one',
+      'Tu perfil esta listo. Aqui tienes el trabajo que te interesa.',
+      'Your profile is ready. Here is the job you were interested in.',
+    ],
+    [
+      'v2_ready_jobs_many',
+      'Tu perfil esta listo. Aqui tienes los trabajos que te interesan.',
+      'Your profile is ready. Here are the jobs you were interested in.',
+    ],
+  ];
+  const KEYS = APPROVED.map(([key]) => key);
+  /** Sent before the sender is known to have an account -- or not. */
+  const PRE_AUTH_KEYS: TemplateKey[] = ['v2_referral_ack', 'v2_referral_ack_otp', 'v2_otp_enter_code'];
+
+  it.each(APPROVED)('%s renders the approved copy in both languages', (key, es, en) => {
+    expect(t(key, 'es', VARS)).toBe(es);
+    expect(t(key, 'en', VARS)).toBe(en);
+  });
+
+  it.each(KEYS)('%s leaves no unsubstituted {{placeholder}} once given the job', (key) => {
+    expect(t(key, 'es', VARS)).not.toContain('{{');
+    expect(t(key, 'en', VARS)).not.toContain('{{');
+  });
+
+  it.each(KEYS)('%s is unaccented plain ASCII in both languages', (key) => {
+    // A non-ASCII byte reaches Twilio as a GSM-7 escape and silently
+    // re-segments the message -- every other string in this module is ASCII.
+    expect(t(key, 'es')).toMatch(/^[\x00-\x7F]*$/);
+    expect(t(key, 'en')).toMatch(/^[\x00-\x7F]*$/);
+  });
+
+  it.each(KEYS)('%s: the ES slot reads as Spanish and the EN slot as English', (key) => {
+    expectDistinctLanguages(t(key, 'en', VARS), t(key, 'es', VARS));
+  });
+
+  it.each(PRE_AUTH_KEYS)('%s never implies that an account exists', (key) => {
+    expect(t(key, 'es', VARS)).not.toMatch(ACCOUNT_EXISTENCE_LEAK_PATTERN);
+    expect(t(key, 'en', VARS)).not.toMatch(ACCOUNT_EXISTENCE_LEAK_PATTERN);
+  });
+
+  // Keywords in copy must be ones the parsers accept. None of these names a
+  // command at all -- the next step is the card's own button, or the code the
+  // worker is already holding -- so there is no keyword to get wrong.
+  it.each(KEYS)('%s names no command keyword', (key) => {
+    for (const lang of ['es', 'en'] as Lang[]) {
+      expect(t(key, lang)).not.toMatch(/\b[A-Z]{4,}\b/);
+    }
+  });
+
+  it('lists es before en for every new key, like the rest of the module', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const src: string = fs.readFileSync(
+      path.join(__dirname, '../../../../../lambda/whatsapp/lib/templates.ts'),
+      'utf8',
+    );
+    for (const key of KEYS) {
+      const entry = src.match(new RegExp(`\\n  ${key}: \\{\\n    (es|en):[^\\n]*\\n    (es|en):`));
+      expect(entry).not.toBeNull();
+      expect([entry![1], entry![2]]).toEqual(['es', 'en']);
+    }
+  });
+});

@@ -133,7 +133,7 @@ describe('AuthProvider — signing out', () => {
         localStorage.setItem(EMPLOYER_SLOT, 'rt-employer');
         sessionStorage.setItem(
             'jale.sidebar_chip.employer',
-            JSON.stringify({ name: 'RM Construction', meta: null, initials: 'RC', locale: 'es' }),
+            JSON.stringify({ name: 'NB Construction', meta: null, initials: 'RC', locale: 'es' }),
         );
         // Both billing banners: the free one lives in localStorage, the lapsed
         // one in sessionStorage, and a sign-out has to reach both stores.

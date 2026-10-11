@@ -4,17 +4,56 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { getDbPool, setRlsContext, setInternalUserRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
+import { auditCaller, type AuditCaller } from '../lib/audit/caller';
+import { recordAccess, recordAttempt, responseFieldNames, type AttemptEvent } from '../lib/audit/record';
 
 const CORS_HEADERS = corsHeaders();
 const s3 = new S3Client({});
 const DEFAULT_LIMIT = 24;
 const MAX_LIMIT = 50;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SURFACE = 'employer.worker_posts';
+/** How long a media link lives. The access record states the same expiry. */
+export const MEDIA_LINK_TTL_SECONDS = 900;
+
+/**
+ * The posts read, exported so a database test runs this exact statement.
+ * The statement names the caller itself: a post comes back only while the
+ * worker has an application to one of the employer's jobs, read in the same
+ * statement as the posts. The relationship and the posts therefore come from
+ * one snapshot, even when the relationship ends after the handler's check.
+ */
+export function employerWorkerPostsQuery(input: {
+  workerId: string;
+  employerId: string;
+  before: string | null;
+  beforeId: string | null;
+  limit: number;
+}): { text: string; values: unknown[] } {
+  return {
+    text: `SELECT id, caption, source, created_at
+       FROM worker_posts p
+       WHERE p.worker_id = $1 AND p.status = 'published'
+         AND EXISTS (SELECT 1 FROM worker_post_media m
+                     WHERE m.post_id = p.id AND m.moderation_status = 'approved')
+         AND EXISTS (SELECT 1
+                       FROM job_applications ja
+                       JOIN jobs j ON j.id = ja.job_id
+                      WHERE ja.worker_id = p.worker_id
+                        AND j.employer_id = $5)
+         AND ($2::timestamptz IS NULL OR (p.created_at, p.id) < ($2::timestamptz, $3::uuid))
+       ORDER BY p.created_at DESC, p.id DESC
+       LIMIT $4`,
+    values: [input.workerId, input.before, input.beforeId, input.limit, input.employerId],
+  };
+}
 
 export const handler = async (
   event: APIGatewayProxyEvent,
 ): Promise<APIGatewayProxyResult> => {
   let client;
+  let caller: AuditCaller | undefined;
+  let attempt: Omit<AttemptEvent, 'outcome'> | undefined;
   try {
     const cognitoSub: string | undefined = event.requestContext?.authorizer?.claims?.sub;
     if (!cognitoSub) {
@@ -75,10 +114,8 @@ export const handler = async (
       };
     }
 
-    // Resolve the employer's own internal id — the DEFINER-based RLS
-    // policies key on app.current_internal_user_id, and this must be the
-    // employer's id, never the worker's (setting it to the worker's id
-    // would satisfy the worker self-access policies instead).
+    // Resolve the employer's own internal id: the caller context is the
+    // employer's own id, never the worker's.
     const employerRes = await client.query(`SELECT id FROM users WHERE cognito_sub = $1`, [cognitoSub]);
     const employerId: string | undefined = employerRes.rows[0]?.id;
     if (!employerId) {
@@ -86,6 +123,8 @@ export const handler = async (
       return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_provisioned' }) };
     }
     await setInternalUserRlsContext(client, employerId);
+    caller = auditCaller(event, { kind: 'employer', id: employerId }, 'web');
+    attempt = { surface: SURFACE, subjectUserIds: [workerId] };
 
     // Relationship check: any application from this worker to any of the
     // employer's jobs unlocks the board (relationship-scoped, not job-scoped).
@@ -102,6 +141,7 @@ export const handler = async (
     );
     if (relationship.rows.length === 0) {
       await client.query('COMMIT');
+      await recordAttempt(client, caller, { ...attempt, outcome: 'denied' });
       return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'forbidden' }) };
     }
 
@@ -109,18 +149,8 @@ export const handler = async (
     // employers — filtered in SQL so next_before/next_before_id (computed
     // below from this same result set) never skew against a client-side
     // filter removing rows after the page boundary was fixed.
-    const params: unknown[] = [workerId, before, beforeId, limit];
-    const postsRes = await client.query(
-      `SELECT id, caption, source, created_at
-       FROM worker_posts p
-       WHERE p.worker_id = $1 AND p.status = 'published'
-         AND EXISTS (SELECT 1 FROM worker_post_media m
-                     WHERE m.post_id = p.id AND m.moderation_status = 'approved')
-         AND ($2::timestamptz IS NULL OR (p.created_at, p.id) < ($2::timestamptz, $3::uuid))
-       ORDER BY p.created_at DESC, p.id DESC
-       LIMIT $4`,
-      params,
-    );
+    const postsQuery = employerWorkerPostsQuery({ workerId, employerId, before, beforeId, limit });
+    const postsRes = await client.query(postsQuery.text, postsQuery.values);
 
     let mediaRows: { id: string; post_id: string; s3_key: string; s3_version_id: string | null; sort_order: number; moderation_status: string }[] = [];
     if (postsRes.rows.length > 0) {
@@ -133,6 +163,17 @@ export const handler = async (
       );
       mediaRows = mediaRes.rows;
     }
+
+    // The posts and the media links they grant are recorded before COMMIT;
+    // the links are minted after it, with the lifetime recorded here.
+    await recordAccess(client, caller, {
+      surface: SURFACE,
+      subjectUserIds: [workerId],
+      recordIds: postsRes.rows.map((post: { id: string }) => post.id),
+      resultCount: postsRes.rows.length,
+      fieldNames: responseFieldNames(postsRes.rows.map((post: object) => ({ ...post, media: [] }))),
+      linkExpiresAt: mediaRows.length > 0 ? new Date(Date.now() + MEDIA_LINK_TTL_SECONDS * 1000) : null,
+    });
     await client.query('COMMIT');
 
     const mediaByPost = new Map<string, typeof mediaRows>();
@@ -156,7 +197,7 @@ export const handler = async (
                 Key: m.s3_key,
                 ...(m.s3_version_id ? { VersionId: m.s3_version_id } : {}),
               }),
-              { expiresIn: 900 },
+              { expiresIn: MEDIA_LINK_TTL_SECONDS },
             ),
           })),
         ),
@@ -182,6 +223,7 @@ export const handler = async (
       } catch {
         // ignore rollback errors
       }
+      if (caller && attempt) await recordAttempt(client, caller, { ...attempt, outcome: 'failed' });
     }
     console.error('employer-worker-posts error:', errorMessage(err));
     return { statusCode: 500, headers: CORS_HEADERS, body: JSON.stringify({ error: 'internal_error' }) };

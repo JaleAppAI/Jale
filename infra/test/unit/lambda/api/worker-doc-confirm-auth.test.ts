@@ -1,6 +1,12 @@
 import type { APIGatewayProxyEvent } from 'aws-lambda';
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
+jest.mock('../../../../lambda/lib/audit/record', () => ({
+  ...jest.requireActual('../../../../lambda/lib/audit/record'),
+  recordAccess: jest.fn(),
+  recordAttempt: jest.fn(),
+}));
+jest.mock('../../../../lambda/lib/audit/context');
 jest.mock('@aws-sdk/client-s3', () => ({
   S3Client: jest.fn().mockImplementation(() => ({ send: jest.fn() })),
   HeadObjectCommand: jest.fn().mockImplementation((input) => ({ input })),
@@ -8,6 +14,8 @@ jest.mock('@aws-sdk/client-s3', () => ({
 import { handler } from '../../../../lambda/api/worker-doc-confirm-auth';
 import { getDbPool, setInternalUserRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
+import { setAuditContext } from '../../../../lambda/lib/audit/context';
+import { callerFor, expectContextBeforeWrite, withRequestId } from './audit-expectations';
 import { S3Client } from '@aws-sdk/client-s3';
 import { MAX_CERTIFICATION_FILES, MAX_CERTIFICATION_FILES_PER_NAME } from '../../../../lambda/lib/job-fields';
 
@@ -89,9 +97,12 @@ describe('worker-doc-confirm-auth', () => {
 
     expect(res.statusCode).toBe(500);
     const calls = mockQuery.mock.calls.map(c => c[0]);
-    expect(calls.some((c: string) => c.includes('DELETE FROM worker_documents'))).toBe(true);
-    expect(calls).toContain('ROLLBACK');
-    expect(calls).not.toContain('COMMIT');
+    const deleteAt = calls.findIndex((c: string) => c.includes('DELETE FROM worker_documents'));
+    expect(deleteAt).toBeGreaterThan(-1);
+    // The write transaction (the one holding the DELETE) rolls back; only the
+    // earlier read-only caller check committed.
+    expect(calls.slice(deleteAt)).toContain('ROLLBACK');
+    expect(calls.slice(deleteAt)).not.toContain('COMMIT');
   });
 
   it("rejects an s3_key outside the caller's own vault prefix as forbidden, without touching S3 or inserting", async () => {
@@ -326,5 +337,94 @@ describe('worker-doc-confirm-auth', () => {
 
     expect(res.statusCode).toBe(409);
     expect(JSON.parse(res.body).error).toBe('certification_document_name_limit');
+  });
+
+  // ---------------------------------------------------------------------------
+  // No transaction is held open across the S3 object check
+  // ---------------------------------------------------------------------------
+
+  describe('no transaction is open while S3 is called', () => {
+    /** Records transaction control and the S3 call in the order they happen. */
+    function recordTimeline(head: 'valid' | 'wrong_type' | 'missing'): string[] {
+      const timeline: string[] = [];
+      mockQuery.mockImplementation((q: string) => {
+        const statement = q.trim().toUpperCase();
+        if (statement === 'BEGIN' || statement === 'COMMIT' || statement === 'ROLLBACK') timeline.push(statement);
+        if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'u1' }] });
+        if (q.includes('INSERT INTO worker_documents')) return Promise.resolve({ rows: [{ id: 'd1', doc_type: 'resume' }] });
+        return Promise.resolve({});
+      });
+      mockS3Send.mockImplementationOnce(async () => {
+        timeline.push('S3');
+        if (head === 'missing') throw Object.assign(new Error('NotFound'), { name: 'NotFound' });
+        return head === 'valid' ? validHead : { ...validHead, ContentType: 'image/png' };
+      });
+      return timeline;
+    }
+
+    function transactionOpenAtS3(timeline: string[]): boolean {
+      let open = false;
+      for (const step of timeline) {
+        if (step === 'S3') return open;
+        open = step === 'BEGIN' ? true : (step === 'COMMIT' || step === 'ROLLBACK') ? false : open;
+      }
+      throw new Error('S3 was never called');
+    }
+
+    const body = { doc_type: 'resume', s3_key: OWN_KEY, file_name: 'f', file_size: 1, mime_type: 'application/pdf' };
+
+    it('on a successful confirm: the caller check commits before S3, and the write runs in a new transaction after it', async () => {
+      const timeline = recordTimeline('valid');
+      const res = await handler(mkEv(body));
+      expect(res.statusCode).toBe(201);
+      expect(transactionOpenAtS3(timeline)).toBe(false);
+      expect(timeline).toEqual(['BEGIN', 'COMMIT', 'S3', 'BEGIN', 'COMMIT']);
+      // The write transaction carries the worker's internal id.
+      expect(mockSetInternalUserRlsContext).toHaveBeenCalledWith(expect.anything(), 'u1');
+    });
+
+    it('when the object does not match (400 invalid_upload), with nothing left open', async () => {
+      const timeline = recordTimeline('wrong_type');
+      const res = await handler(mkEv(body));
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body)).toEqual({ error: 'invalid_upload' });
+      expect(transactionOpenAtS3(timeline)).toBe(false);
+      expect(timeline).toEqual(['BEGIN', 'COMMIT', 'S3']);
+    });
+
+    it('when the object is missing (400 uploaded_object_not_found), with nothing left open', async () => {
+      jest.spyOn(console, 'error').mockImplementation(() => {});
+      const timeline = recordTimeline('missing');
+      const res = await handler(mkEv(body));
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body)).toEqual({ error: 'uploaded_object_not_found' });
+      expect(transactionOpenAtS3(timeline)).toBe(false);
+      expect(timeline).toEqual(['BEGIN', 'COMMIT', 'S3']);
+    });
+
+    it('a key outside the caller\'s prefix is still refused (403) before any S3 call', async () => {
+      const timeline = recordTimeline('valid');
+      const res = await handler(mkEv({ ...body, s3_key: 'documents/vault/someone-else/resume/uuid.pdf' }));
+      expect(res.statusCode).toBe(403);
+      expect(timeline).toEqual(['BEGIN', 'COMMIT']);
+      expect(mockS3Send).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('change context', () => {
+    it('states the worker in the transaction that replaces the vault row', async () => {
+      mockS3Send.mockResolvedValueOnce(validHead);
+      mockQuery.mockImplementation((q: string) => {
+        if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'u1' }] });
+        if (q.includes('DELETE FROM worker_documents')) return Promise.resolve({ rowCount: 1 });
+        if (q.includes('INSERT INTO worker_documents')) return Promise.resolve({ rows: [{ id: 'd1', doc_type: 'resume' }] });
+        return Promise.resolve({});
+      });
+      const res = await handler(withRequestId(mkEv({ doc_type: 'resume', s3_key: OWN_KEY, file_name: 'f', file_size: 1, mime_type: 'application/pdf' })));
+      expect(res.statusCode).toBe(201);
+      expect(setAuditContext).toHaveBeenCalledTimes(1);
+      expect(setAuditContext).toHaveBeenCalledWith(expect.objectContaining({ query: mockQuery }), callerFor('worker', 'u1'), 'worker.document_confirm');
+      expectContextBeforeWrite(mockQuery, setAuditContext as jest.Mock, /DELETE FROM worker_documents/);
+    });
   });
 });

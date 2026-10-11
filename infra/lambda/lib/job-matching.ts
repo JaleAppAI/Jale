@@ -1,6 +1,10 @@
 import type { PoolClient } from 'pg';
 import { normalizeProfession } from './profession';
+import { listOpenReferredJobIds } from './referred-jobs';
 
+/** The worker as the feed scores them. Referrals are not part of it: the
+ * pinned jobs come from the worker's referred-jobs list (`worker_referred_jobs`,
+ * migration 103), read by `referredJobPins` only when the list is unfiltered. */
 export interface WorkerMatchProfile {
   id: string;
   main_trade: string | null;
@@ -14,10 +18,6 @@ export interface WorkerMatchProfile {
   /** Loaded alongside the profile row (single-query consolidation) so
    * scoring/alias-lookup never needs a second round trip. */
   worker_skills?: string[] | null;
-  /** `COALESCE(latest_job_id, first_job_id)` from `worker_attribution`,
-   * loaded via LEFT JOIN on the same query. Null when the worker has no
-   * referral attribution on record. */
-  attributed_job_id?: string | null;
 }
 
 export interface MatchableJobRow {
@@ -53,7 +53,7 @@ export interface MatchableJobRow {
   trade_category?: string | null;
   /** Free text (migration 077), only meaningful when trade_category = 'other'.
    * Read by `scoreProfession` so a custom trade ("Welder") is still
-   * matchable -- see the comment there and on `matchableJobColumns`. */
+   * matchable -- see the comment there and on `MATCHABLE_JOB_COLUMNS`. */
   trade_category_other?: string | null;
   required_experience_years?: string | number | null;
   certifications?: string[] | null;
@@ -551,29 +551,6 @@ function workerHasProfessionData(worker: WorkerMatchProfile): boolean {
   );
 }
 
-type CoordinateTable = 'worker_profiles' | 'jobs' | 'worker_preferred_cities';
-
-async function coordinateSelects(
-  client: PoolClient,
-  tableName: CoordinateTable,
-  tableAlias: string,
-): Promise<{ latitude: string; longitude: string }> {
-  const result = await client.query<{ column_name: string }>(
-    `SELECT column_name
-       FROM information_schema.columns
-      WHERE table_schema = current_schema()
-        AND table_name = $1
-        AND column_name = ANY($2::text[])`,
-    [tableName, ['latitude', 'longitude']],
-  );
-  const columns = new Set(result.rows.map((row) => row.column_name));
-
-  return {
-    latitude: columns.has('latitude') ? `${tableAlias}.latitude` : 'NULL::numeric',
-    longitude: columns.has('longitude') ? `${tableAlias}.longitude` : 'NULL::numeric',
-  };
-}
-
 /** Builds the normalized key set used to probe `trade_aliases`: the
  * worker's own stated trade (main_trade, or main_trade_other when 'other')
  * PLUS every worker_skills entry -- any of these may independently resolve
@@ -623,8 +600,8 @@ async function lookupTradeAliases(client: PoolClient, worker: WorkerMatchProfile
 }
 
 // Shared eligibility predicate fragment: used by BOTH the main candidate
-// listing query and the referral-pin fallback fetch below so they can never
-// diverge (a prior version hand-copied this into the pin fetch).
+// listing query and the referral-pin fetch below so they can never diverge
+// (a prior version hand-copied this into the pin fetch).
 const JOB_ELIGIBLE_STATUS = `j.status = 'active'`;
 
 function jobNotAppliedPredicate(workerIdParam: string): string {
@@ -648,19 +625,17 @@ export interface CityAnchor {
 }
 
 /** The worker's chosen feed cities (migration 065), oldest pick first, with
- * their centroids (migration 068; NULL before it applies -- the coordinate
- * columns are probed like worker_profiles/jobs coordinates are). Callers
+ * their centroids (migration 068; NULL for a city without one). Callers
  * derive `cityKeys` for filtering and `cityAnchors` (via cityAnchorsFrom)
  * for distance scoring. Empty result = no preference = unfiltered. */
 export async function loadWorkerPreferredCities(
   client: PoolClient,
   workerId: string,
 ): Promise<PreferredCityRow[]> {
-  const coordinates = await coordinateSelects(client, 'worker_preferred_cities', 'wpc');
   const result = await client.query<PreferredCityRow>(
     `SELECT wpc.city_key,
-            ${coordinates.latitude} AS latitude,
-            ${coordinates.longitude} AS longitude
+            wpc.latitude,
+            wpc.longitude
        FROM worker_preferred_cities wpc
       WHERE wpc.user_id = $1
       ORDER BY wpc.created_at`,
@@ -682,7 +657,6 @@ export async function listMatchedJobsForWorker(
   workerId: string,
   options: ListMatchedJobsOptions,
 ): Promise<MatchedJob[]> {
-  const workerCoordinates = await coordinateSelects(client, 'worker_profiles', 'wp');
   const workerResult = await client.query<WorkerMatchProfile>(
     `SELECT u.id,
             u.main_trade,
@@ -691,15 +665,13 @@ export async function listMatchedJobsForWorker(
             u.availability,
             u.city,
             wp.location AS profile_location,
-            ${workerCoordinates.latitude} AS latitude,
-            ${workerCoordinates.longitude} AS longitude,
+            wp.latitude,
+            wp.longitude,
             (SELECT COALESCE(array_agg(ws.skill), '{}'::text[])
                FROM worker_skills ws
-              WHERE ws.worker_id = u.id) AS worker_skills,
-            COALESCE(wa.latest_job_id, wa.first_job_id) AS attributed_job_id
+              WHERE ws.worker_id = u.id) AS worker_skills
        FROM users u
        LEFT JOIN worker_profiles wp ON wp.user_id = u.id
-       LEFT JOIN worker_attribution wa ON wa.worker_id = u.id
       WHERE u.id = $1
         AND u.user_type = 'worker'`,
     [workerId],
@@ -717,7 +689,7 @@ export async function listMatchedJobsForWorker(
   const filters = [JOB_ELIGIBLE_STATUS, jobNotAppliedPredicate('$1')];
 
   // Single source of truth for "is this list filtered" (= suppress the
-  // referral pin): set exactly where each filter clause is added, instead of
+  // referral pins): set exactly where each filter clause is added, instead of
   // re-deriving the same condition separately below (a prior version could
   // silently drift from this). One deliberate exception -- `cityKeys` adds a
   // clause without setting this; see the comment at that branch.
@@ -736,8 +708,8 @@ export async function listMatchedJobsForWorker(
   }
 
   // Deliberately does NOT set `isFiltered`: a referral is a stronger signal
-  // than a city preference, so a worker referred to a job outside their
-  // preferred cities must still see it pinned.
+  // than a city preference, so a worker referred to jobs outside their
+  // preferred cities must still see them pinned.
   if (options.cityKeys?.length) {
     params.push(options.cityKeys);
     filters.push(`j.city_key = ANY($${params.length}::text[])`);
@@ -745,8 +717,8 @@ export async function listMatchedJobsForWorker(
 
   if (options.excludeCityKeys?.length) {
     // The exclude form is only ever the "jobs elsewhere" fallback, which runs
-    // beside a primary query that already pinned the referral -- pinning again
-    // here would surface the same job in both lists.
+    // beside a primary query that already pinned the referrals -- pinning
+    // again here would surface the same jobs in both lists.
     isFiltered = true;
     params.push(options.excludeCityKeys);
     filters.push(`(j.city_key IS NULL OR NOT (j.city_key = ANY($${params.length}::text[])))`);
@@ -756,9 +728,8 @@ export async function listMatchedJobsForWorker(
   const candidateLimit = Math.max(requestedLimit, Math.min(requestedLimit * 10, 100));
   params.push(candidateLimit);
 
-  const jobCoordinates = await coordinateSelects(client, 'jobs', 'j');
   const jobsResult = await client.query<MatchableJobRow>(
-    `SELECT ${matchableJobColumns(jobCoordinates)}
+    `SELECT ${MATCHABLE_JOB_COLUMNS}
        FROM jobs j
       WHERE ${filters.join(' AND ')}
       ORDER BY j.created_at DESC, j.id DESC
@@ -771,26 +742,23 @@ export async function listMatchedJobsForWorker(
     .filter((job) => !workerHasProfessionData(worker) || job.match_components.profession > 0)
     .sort((a, b) => b.match_score - a.match_score || new Date(b.created_at).getTime() - new Date(a.created_at).getTime() || b.id.localeCompare(a.id));
 
-  const pinned = isFiltered ? null : await referredJobPin(client, worker, ranked, jobCoordinates, professionContext, anchors);
-  const listed = pinned ? [pinned, ...ranked.filter((job) => job.id !== pinned.id)] : ranked;
+  const pins = isFiltered
+    ? []
+    : await referredJobPins(client, worker, ranked, professionContext, anchors, requestedLimit);
+  const pinnedIds = new Set(pins.map((job) => job.id));
+  const listed = [...pins, ...ranked.filter((job) => !pinnedIds.has(job.id))];
 
   return listed
     .slice(0, requestedLimit)
     .map(({ score, components, reasons, ...job }) => job);
 }
 
-// trade_category_other (077) -- the first column from that migration this
-// file reads -- is selected unconditionally (like pay_interval/033 and
-// certifications) rather than through the coordinateSelects()
-// information_schema probe: that probe exists only for the coordinate
-// columns' pre-064/068 rollout gap. 077 ships in this sprint's base
-// (a550a40) and migrations run before the Lambda deploys, so an
-// unconditional SELECT is safe here, same as the other post-023 columns
-// already listed below. Per 077's own header: "jale_matching (010) and
-// jale_whatsapp (004) both hold TABLE-level SELECT on jobs already, so no
-// grant change is needed for either" -- this SELECT needs no new grant.
-function matchableJobColumns(jobCoordinates: { latitude: string; longitude: string }): string {
-  return `j.id,
+// Every column is selected directly, the coordinates included. They used to
+// go through an information_schema probe that substituted NULL for a column
+// the login could not see, which silently switched distance scoring off; a
+// login without SELECT on them now fails loudly instead. The same holds for
+// worker_profiles and worker_preferred_cities above.
+const MATCHABLE_JOB_COLUMNS = `j.id,
             j.title,
             COALESCE(j.company, 'Jale') AS company,
             j.location,
@@ -815,9 +783,8 @@ function matchableJobColumns(jobCoordinates: { latitude: string; longitude: stri
             j.required_experience_years,
             j.certifications,
             j.pre_application_prompts,
-            ${jobCoordinates.latitude} AS latitude,
-            ${jobCoordinates.longitude} AS longitude`;
-}
+            j.latitude,
+            j.longitude`;
 
 /** Explicitly rewrites BOTH `match_reasons` and `reasons` (rather than
  * mutating one and relying on `scoreJobCandidate` having handed back a
@@ -830,55 +797,66 @@ function withReferredReason(job: ScoredJobCandidate): ScoredJobCandidate {
 }
 
 /**
- * The job a worker was referred to must never be hidden by match scoring: a
- * referred worker arrived FOR that job, but the profession filter above knows
+ * The jobs a worker was referred to must never be hidden by match scoring: a
+ * referred worker arrived FOR them, but the profession filter above knows
  * nothing about referrals (a "Soldador" never saw the "Welder" job their
- * friend sent them). Pins the attributed job to the top of an unfiltered
- * list while it is still active and unapplied; any miss falls through to the
- * ranked list unchanged.
+ * friend sent them). Pins every job on the worker's referred-jobs list that
+ * is still active and unapplied to the top of an unfiltered list, newest
+ * first, at most a page of them.
  *
- * `worker.attributed_job_id` is already loaded (single consolidated worker
- * query) -- this function makes AT MOST one more query, and only when the
- * referred job isn't already present in `ranked`. Guarded end-to-end: any
- * failure here degrades to "no pin", never breaks the jobs list.
+ * Two more queries at most: the list itself, then ONE fetch for the referred
+ * jobs `ranked` does not already hold. Both run inside a SAVEPOINT because
+ * both callers hold a transaction, where a bare try/catch is not enough (a
+ * failed statement aborts the whole transaction, 25P02, and with it the rest
+ * of the request). Any failure rolls back to it and degrades to "no pins",
+ * never breaks the jobs list.
  */
-async function referredJobPin(
+async function referredJobPins(
   client: PoolClient,
   worker: WorkerMatchProfile,
   ranked: ScoredJobCandidate[],
-  jobCoordinates: { latitude: string; longitude: string },
   professionContext: WorkerProfessionContext,
-  anchors: CityAnchor[] = [],
-): Promise<ScoredJobCandidate | null> {
-  const referredJobId = worker.attributed_job_id;
-  if (!referredJobId) {
-    return null;
-  }
-
+  anchors: CityAnchor[],
+  limit: number,
+): Promise<ScoredJobCandidate[]> {
   try {
-    const alreadyRanked = ranked.find((job) => job.id === referredJobId);
-    if (alreadyRanked) {
-      return withReferredReason(alreadyRanked);
-    }
+    await client.query('SAVEPOINT referred_job_pins');
+    const ids = await listOpenReferredJobIds(client, worker.id, { limit });
 
-    const jobResult = await client.query<MatchableJobRow>(
-      `SELECT ${matchableJobColumns(jobCoordinates)}
-         FROM jobs j
-        WHERE j.id = $2
-          AND ${JOB_ELIGIBLE_STATUS}
-          AND ${jobNotAppliedPredicate('$1')}`,
-      [worker.id, referredJobId],
-    );
-    if (jobResult.rows.length === 0) {
-      return null;
+    const byId = new Map<string, ScoredJobCandidate>();
+    for (const job of ranked) {
+      if (ids.includes(job.id)) byId.set(job.id, job);
     }
+    const missing = ids.filter((id) => !byId.has(id));
+    if (missing.length > 0) {
+      const jobResult = await client.query<MatchableJobRow>(
+        `SELECT ${MATCHABLE_JOB_COLUMNS}
+           FROM jobs j
+          WHERE j.id = ANY($2::uuid[])
+            AND ${JOB_ELIGIBLE_STATUS}
+            AND ${jobNotAppliedPredicate('$1')}`,
+        [worker.id, missing],
+      );
+      for (const row of jobResult.rows) {
+        byId.set(row.id, scoreJobCandidate(worker, row, undefined, professionContext, anchors));
+      }
+    }
+    await client.query('RELEASE SAVEPOINT referred_job_pins');
 
-    return withReferredReason(scoreJobCandidate(worker, jobResult.rows[0], undefined, professionContext, anchors));
+    return ids.flatMap((id) => {
+      const job = byId.get(id);
+      return job ? [withReferredReason(job)] : [];
+    });
   } catch (err) {
+    try {
+      await client.query('ROLLBACK TO SAVEPOINT referred_job_pins');
+    } catch {
+      // Transaction already unusable; the caller's next statement reports it.
+    }
     console.warn(JSON.stringify({
       metric: 'ReferredJobPinFailed',
       reason: (err as { name?: string })?.name ?? 'unknown_error',
     }));
-    return null;
+    return [];
   }
 }

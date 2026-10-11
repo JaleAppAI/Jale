@@ -4,12 +4,19 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
+import { auditCaller, type AuditCaller } from '../lib/audit/caller';
+import { recordAccess, recordAttempt, responseFieldNames, type AttemptEvent } from '../lib/audit/record';
 
 const CORS_HEADERS = corsHeaders();
 const s3 = new S3Client({});
+const SURFACE = 'worker.vault';
+/** How long a document link lives. The access record states the same expiry. */
+export const DOCUMENT_LINK_TTL_SECONDS = 900;
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   let client;
+  let caller: AuditCaller | undefined;
+  let attempt: Omit<AttemptEvent, 'outcome'> | undefined;
   try {
     const cognitoSub: string | undefined = event.requestContext?.authorizer?.claims?.sub;
     if (!cognitoSub) {
@@ -33,6 +40,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const workerId: string = userRes.rows[0].id;
 
     await setInternalUserRlsContext(client, workerId);
+    caller = auditCaller(event, { kind: 'worker', id: workerId }, 'web');
+    const purpose = { kind: 'self' } as const;
+    attempt = { surface: SURFACE, subjectUserIds: [workerId], purpose };
 
     // `id` and `cert_name` were added together (BE-T3): the frontend's
     // WorkerVaultDoc.id is required and cert-proof matching keys off
@@ -45,6 +55,19 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
        WHERE worker_id = $1 AND job_id IS NULL`,
       [workerId],
     );
+
+    // The worker's own documents and the links they get, recorded before
+    // COMMIT; the links are minted after it, with the lifetime recorded here.
+    const items = docsRes.rows.map(({ s3_key: _key, ...doc }: any) => ({ ...doc, url: '' }));
+    await recordAccess(client, caller, {
+      surface: SURFACE,
+      subjectUserIds: [workerId],
+      recordIds: docsRes.rows.map((doc: { id: string }) => doc.id),
+      resultCount: docsRes.rows.length,
+      fieldNames: responseFieldNames(items),
+      purpose,
+      linkExpiresAt: docsRes.rows.length > 0 ? new Date(Date.now() + DOCUMENT_LINK_TTL_SECONDS * 1000) : null,
+    });
     await client.query('COMMIT');
 
     // `s3_key` is selected but deliberately does NOT travel: it is the only
@@ -54,13 +77,16 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const documents = await Promise.all(
       docsRes.rows.map(async ({ s3_key, ...doc }: any) => ({
         ...doc,
-        url: await getSignedUrl(s3, new GetObjectCommand({ Bucket: process.env.DOCUMENTS_BUCKET!, Key: s3_key }), { expiresIn: 900 }),
+        url: await getSignedUrl(s3, new GetObjectCommand({ Bucket: process.env.DOCUMENTS_BUCKET!, Key: s3_key }), { expiresIn: DOCUMENT_LINK_TTL_SECONDS }),
       })),
     );
 
     return { statusCode: 200, headers: CORS_HEADERS, body: JSON.stringify({ documents }) };
   } catch (err) {
-    if (client) { try { await client.query('ROLLBACK'); } catch {} }
+    if (client) {
+      try { await client.query('ROLLBACK'); } catch {}
+      if (caller && attempt) await recordAttempt(client, caller, { ...attempt, outcome: 'failed' });
+    }
     console.error('worker-documents-list error:', errorMessage(err));
     return { statusCode: 500, headers: CORS_HEADERS, body: JSON.stringify({ error: 'internal_error' }) };
   } finally {

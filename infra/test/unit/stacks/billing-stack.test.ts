@@ -7,6 +7,7 @@ import { ApiStack } from '../../../lib/stacks/api-stack';
 import { AiStack } from '../../../lib/stacks/ai-stack';
 import { LegalStack } from '../../../lib/stacks/legal-stack';
 import { BillingStack, validateBillingEmailConfiguration } from '../../../lib/stacks/billing-stack';
+import { dbLoginSecretName } from '../../../lib/constructs/db-login-secrets';
 
 describe('billing email configuration', () => {
   test('requires both sender values and rejects missing or partial configuration', () => {
@@ -43,7 +44,6 @@ describe('BillingStack', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
     });
     const ai = new AiStack(app, 'TestAiStack', {
       vpc: network.vpc,
@@ -58,7 +58,6 @@ describe('BillingStack', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
       aliasGeneratorFn: ai.aliasGeneratorFn.function,
       whatsappStatusCallbackUrl: 'https://api.example.com/whatsapp/status-callback',
     });
@@ -68,7 +67,6 @@ describe('BillingStack', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
       api: api.api,
       dualAuthorizer: api.dualAuthorizer,
     });
@@ -78,7 +76,6 @@ describe('BillingStack', () => {
       privateSubnets: network.privateSubnets,
       billingLambdaSg: network.billingLambdaSg,
       billingDbSecret: database.billingDbSecret,
-      appDbSecret: database.dbSecret,
       api: api.api,
       employerAuthorizer: api.employerAuthorizer,
       employerResource: api.employerResource,
@@ -88,12 +85,11 @@ describe('BillingStack', () => {
   });
 
   /**
-   * DB_SECRET_ARN for a Lambda is a CFN intrinsic (Fn::ImportValue or Fn::Sub)
-   * referencing the exported secret ARN from TestDatabaseStack. jale_admin
-   * (appDbSecret) and jale_billing (billingDbSecret) are distinct Secrets
-   * Manager resources with distinct logical ids/export names, so a deep-equal
-   * comparison of the two Lambdas' DB_SECRET_ARN intrinsics tells us which
-   * secret each one actually points at.
+   * DB_SECRET_ARN for a Lambda is either a CFN intrinsic (Fn::ImportValue)
+   * referencing a secret TestDatabaseStack exports — the billing service
+   * login's — or the plain name of a dedicated login's secret, imported by name.
+   * Distinct secrets therefore have distinct values, so a deep-equal
+   * comparison of two Lambdas' DB_SECRET_ARN tells us whether they share one.
    */
   function dbSecretArnFor(description: string): unknown {
     const resources = template.findResources('AWS::Lambda::Function', {
@@ -169,17 +165,21 @@ describe('BillingStack', () => {
     });
   });
 
-  test('email outbox sweeper uses jale_admin DB, configured sender, and a five-minute schedule', () => {
+  test('email outbox sweeper connects as its own job login, with the configured sender and a five-minute schedule', () => {
     template.hasResourceProperties('AWS::Lambda::Function', {
       Description: 'Sends durable billing email outbox messages through SES',
       Environment: { Variables: Match.objectLike({
-        DB_SECRET_ARN: dbSecretArnFor('Sends durable billing email outbox messages through SES'),
+        DB_SECRET_ARN: dbLoginSecretName('jale_job_email_sender'),
+        DB_EXPECTED_LOGIN: 'jale_job_email_sender',
         EMAIL_FROM_ADDRESS: 'billing@jaleapp.ai',
         ALLOWED_ORIGIN: 'https://jaleapp.ai',
       }) },
     });
+    // One sender drains both producers' rows, and its login can only claim and
+    // mark outbox rows — so it must not share the request login employer
+    // routes use.
     expect(dbSecretArnFor('Sends durable billing email outbox messages through SES'))
-      .toEqual(dbSecretArnFor('Returns employer billing status and plan entitlements'));
+      .not.toEqual(dbSecretArnFor('Returns employer billing status and plan entitlements'));
     template.hasResourceProperties('AWS::Events::Rule', {
       ScheduleExpression: 'rate(5 minutes)',
     });
@@ -373,18 +373,21 @@ describe('BillingStack', () => {
     expect(env).not.toHaveProperty('QUEUE_URL');
   });
 
-  // ── DB role wiring (migration 034 fix) ────────────────────────────────────
-  // jale_billing (jale/billing/db) is processor-only: no billing_operations
-  // grant, no users access; owner RLS policies on the owned tables are TO
-  // jale_admin. The three user-facing Lambdas must use the app DB credential
-  // (jale_admin / database.dbSecret), the same one ApiStack Lambdas use.
+  // ── DB login wiring (migration 034 fix) ───────────────────────────────────
+  // jale_billing is processor-only: no billing_operations grant, no users
+  // access. The three user-facing Lambdas connect as the request login, the
+  // same one every employer route in ApiStack uses.
 
-  test('processor Lambda references the jale/billing/db (jale_billing) secret', () => {
+  test("processor Lambda references the billing service login's secret and expects that login", () => {
     const processorArn = dbSecretArnFor('Processes verified Stripe webhook events from SQS');
     expect(processorArn).toBeDefined();
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Processes verified Stripe webhook events from SQS',
+      Environment: { Variables: Match.objectLike({ DB_EXPECTED_LOGIN: 'jale_billing' }) },
+    });
   });
 
-  test('get-billing, checkout, and portal Lambdas reference the app DB secret, NOT jale/billing/db', () => {
+  test("get-billing, checkout, and portal Lambdas reference the request login's secret, not the billing service login's", () => {
     const processorArn = dbSecretArnFor('Processes verified Stripe webhook events from SQS');
     const getBillingArn = dbSecretArnFor('Returns employer billing status and plan entitlements');
     const checkoutArn = dbSecretArnFor('Creates Stripe Checkout session for employer subscription');
@@ -393,9 +396,10 @@ describe('BillingStack', () => {
     expect(getBillingArn).toBeDefined();
     expect(checkoutArn).toBeDefined();
     expect(portalArn).toBeDefined();
+    expect(getBillingArn).toEqual(dbLoginSecretName('jale_api'));
 
-    // Each user-facing Lambda's DB_SECRET_ARN intrinsic must be identical to
-    // the others (all point at the same app DB secret)...
+    // Each user-facing Lambda's DB_SECRET_ARN must be identical to the others
+    // (all point at the request login's secret)...
     expect(getBillingArn).toEqual(checkoutArn);
     expect(checkoutArn).toEqual(portalArn);
 
@@ -719,7 +723,6 @@ describe('BillingStack — alarm email subscription', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
     });
     const ai = new AiStack(app, 'TestAiStackEmail', {
       vpc: network.vpc,
@@ -734,7 +737,6 @@ describe('BillingStack — alarm email subscription', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
       aliasGeneratorFn: ai.aliasGeneratorFn.function,
       whatsappStatusCallbackUrl: 'https://api.example.com/whatsapp/status-callback',
     });
@@ -742,7 +744,6 @@ describe('BillingStack — alarm email subscription', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
       api: api.api,
       dualAuthorizer: api.dualAuthorizer,
     });
@@ -752,7 +753,6 @@ describe('BillingStack — alarm email subscription', () => {
       privateSubnets: network.privateSubnets,
       billingLambdaSg: network.billingLambdaSg,
       billingDbSecret: database.billingDbSecret,
-      appDbSecret: database.dbSecret,
       api: api.api,
       employerAuthorizer: api.employerAuthorizer,
       employerResource: api.employerResource,
@@ -787,7 +787,6 @@ describe('BillingStack — imported alarm topic', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
     });
     const ai = new AiStack(app, 'TestAiStackImportedTopic', {
       vpc: network.vpc,
@@ -802,7 +801,6 @@ describe('BillingStack — imported alarm topic', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
       aliasGeneratorFn: ai.aliasGeneratorFn.function,
       whatsappStatusCallbackUrl: 'https://api.example.com/whatsapp/status-callback',
     });
@@ -810,7 +808,6 @@ describe('BillingStack — imported alarm topic', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
       api: api.api,
       dualAuthorizer: api.dualAuthorizer,
     });
@@ -820,7 +817,6 @@ describe('BillingStack — imported alarm topic', () => {
       privateSubnets: network.privateSubnets,
       billingLambdaSg: network.billingLambdaSg,
       billingDbSecret: database.billingDbSecret,
-      appDbSecret: database.dbSecret,
       api: api.api,
       employerAuthorizer: api.employerAuthorizer,
       employerResource: api.employerResource,
@@ -874,7 +870,6 @@ describe('BillingStack — SES configuration set threaded in', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
     });
     const ai = new AiStack(app, 'TestAiStackConfigSet', {
       vpc: network.vpc,
@@ -889,7 +884,6 @@ describe('BillingStack — SES configuration set threaded in', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
       aliasGeneratorFn: ai.aliasGeneratorFn.function,
       whatsappStatusCallbackUrl: 'https://api.example.com/whatsapp/status-callback',
     });
@@ -897,7 +891,6 @@ describe('BillingStack — SES configuration set threaded in', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
       api: api.api,
       dualAuthorizer: api.dualAuthorizer,
     });
@@ -907,7 +900,6 @@ describe('BillingStack — SES configuration set threaded in', () => {
       privateSubnets: network.privateSubnets,
       billingLambdaSg: network.billingLambdaSg,
       billingDbSecret: database.billingDbSecret,
-      appDbSecret: database.dbSecret,
       api: api.api,
       employerAuthorizer: api.employerAuthorizer,
       employerResource: api.employerResource,

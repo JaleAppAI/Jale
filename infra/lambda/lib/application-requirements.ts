@@ -18,20 +18,17 @@
  * their pre-existing return shapes so the WhatsApp lane swaps only an
  * import path.
  *
- * ── RLS CONTRACT (binding) ───────────────────────────────────────
- * `job_applications` is FORCE RLS and the only worker-side UPDATE policy is
- * `jobapp_whatsapp_update` (028:30-33) -- jale_whatsapp, keyed on
- * `worker_id = app.current_internal_user_id`. There is NO worker UPDATE
- * policy for jale_admin. So the stage-2 worker API runs as jale_whatsapp
- * (the `whatsapp/web/worker-onboarding.ts:13-23` shape), while employer
- * reads run as jale_admin. This module must be identical under both roles:
+ * ── CALLER CONTRACT (binding) ────────────────────────────────────
+ * The stage-2 worker API runs as jale_whatsapp (the
+ * `whatsapp/web/worker-onboarding.ts:13-23` shape), while employer reads run
+ * on the request login. This module must be identical under both roles:
  *
  *   1. It takes an EXPLICIT `workerId` and never derives identity from a
  *      GUC or a session.
  *   2. The CALLER sets `app.current_internal_user_id`
  *      (`setInternalUserRlsContext`, lib/db.ts:72) for the request/turn.
  *      The ONE exception is the `syncDocumentSnapshots` path below, which
- *      must set it itself because it WRITES to worker_documents (FORCE RLS)
+ *      must set it itself because it WRITES to worker_documents
  *      -- exactly as the pre-existing `computeNextStep` did
  *      (application-fill.ts:121) before this lift. Every pure function here
  *      sets nothing.
@@ -39,12 +36,12 @@
  *      transaction. The only exception is the internal SAVEPOINT used to
  *      bound the post-merge answers size (see `withSizeGuard`), which is
  *      transaction-local and always released or rolled back.
- *   4. `jobapp_whatsapp_select` is `USING (true)` (028:26-27), so anything
- *      that must be worker-scoped filters `WHERE id = $1 AND worker_id = $2`
- *      in SQL. The engine's own snapshot SELECT is keyed on the application
- *      id alone (matching the pre-existing `computeNextStep`); the CALLING
- *      door is responsible for having already proven ownership. Every WRITE
- *      here is additionally protected by the policy predicate itself.
+ *   4. Anything that must be worker-scoped filters
+ *      `WHERE id = $1 AND worker_id = $2` in SQL. The engine's own snapshot
+ *      SELECT is keyed on the application id alone (matching the
+ *      pre-existing `computeNextStep`); the CALLING door is responsible for
+ *      having already proven ownership with an explicit `worker_id`
+ *      predicate.
  *
  * ── DOCUMENT SNAPSHOTS ───────────────────────────────────────────
  * Employer sessions can only read job-scoped `worker_documents` rows (018),
@@ -1119,11 +1116,8 @@ export async function seedAnswersFromDefaults(
  * whether a row was actually changed, so a caller that raced a completion
  * can re-derive instead of claiming a correction that did not happen.
  *
- * RLS: `job_applications` is FORCE RLS and the only worker-side UPDATE
- * policy is `jobapp_whatsapp_update`, keyed on
- * `worker_id = app.current_internal_user_id` -- so the CALLER must have set
- * that GUC (module header, contract 2). Without it this is a silent
- * zero-row UPDATE, which is exactly what the returned boolean surfaces.
+ * The CALLER must have set `app.current_internal_user_id` (module header,
+ * item 2); the returned boolean reports whether a row changed.
  */
 export async function clearFieldAnswer(
   client: PoolClient,

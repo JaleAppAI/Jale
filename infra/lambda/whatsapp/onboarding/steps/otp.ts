@@ -14,7 +14,13 @@ import {
   appendSendTimestamp,
 } from '../../lib/onboarding-language';
 import type { OnboardingV2Deps, OnboardingV2InboundMessage, OnboardingV2Session, RouteResult } from '../types';
-import { claimPendingReferral } from '../../lib/referral-claims';
+import {
+  claimPendingReferral,
+  isOpenUnappliedJob,
+  loadActiveJobLabel,
+  parkPendingClaim,
+} from '../../lib/referral-claims';
+import { parseTypedApplyToken } from '../../lib/flows';
 import { maybeSkipLegalReview } from '../transitions';
 import { sendPreAuthPrompt, sendPreAuthText, sendStepPrompt, readHistory } from '../delivery';
 
@@ -84,6 +90,42 @@ export async function handleOtpStep(
     return { handled: true, workerId: null, stepKey: 'identity.verify_otp' };
   }
 
+  // Sprint 27: the "Apply" prefill sent while a code is pending is a
+  // JOB, not a guess at the code. It used to go to the identity adapter like
+  // any other body and burn one of the three attempts (the third earns a
+  // 15-minute lock). It never reaches the adapter now: the attempt counter
+  // and the lock are untouched, no new challenge is issued, and the "we sent
+  // you a code" prompt is not re-sent -- the reply only says to enter the
+  // code, naming the job when the token parks for an active one.
+  // Strict grammar (`JALE` + punctuation + 8 characters): a 6-digit code can
+  // never match it. Parked behind its own SAVEPOINT for the reason the start
+  // step's park is (see steps/start.ts). Static metric only.
+  const applyToken = parseTypedApplyToken(msg.body);
+  if (applyToken) {
+    let label: { title: string; company: string } | null = null;
+    try {
+      await client.query('SAVEPOINT referral_park');
+      const park = await parkPendingClaim(client, phoneHash, applyToken, now);
+      label = park.parked && park.jobId ? await loadActiveJobLabel(client, park.jobId) : null;
+      await client.query('RELEASE SAVEPOINT referral_park');
+    } catch {
+      label = null;
+      try {
+        await client.query('ROLLBACK TO SAVEPOINT referral_park');
+      } catch {
+        // The transaction is already unusable; the caller's retry/DLQ
+        // handling takes over as it would for any other failed statement.
+      }
+      console.error(JSON.stringify({ metric: 'ReferralParkFailed', stepKey: 'identity.verify_otp' }));
+    }
+    if (label) {
+      await sendPreAuthText(client, deps, msg, responseLang, 'v2_referral_ack_otp', label);
+    } else {
+      await sendPreAuthText(client, deps, msg, responseLang, 'v2_otp_enter_code');
+    }
+    return { handled: true, workerId: null, stepKey: 'identity.verify_otp' };
+  }
+
   const result = await deps.adapters.identity.verifyChallenge(client, {
     challengeId: preAuth.providerChallengeId ?? preAuth.challengeId,
     whatsappNumber: msg.from,
@@ -117,12 +159,14 @@ export async function handleOtpStep(
     // off before ever reaching a step handler. That is a one-message defect,
     // and one message is the whole first impression of the channel.
     //
-    // The handoff is BYTE-FOR-BYTE the one `routeOnboardingV2` performs for a
-    // ready worker's message (onboarding-v2.ts: `gate.lifecycle === 'ready'
-    // && gate.status === 'completed' && gate.runId`), including the
+    // The handoff is the one `routeOnboardingV2` performs for a ready
+    // worker's message (onboarding-v2.ts: `gate.lifecycle === 'ready' &&
+    // gate.status === 'completed' && gate.runId`), including the
     // `session.language` write, so the OTP turn and every turn after it are
-    // handled identically. `handled: false` hands this inbound message to the
-    // processor's normal post-onboarding path rather than swallowing it.
+    // handled identically -- except that this turn's body was the code
+    // (`consumedAsOtp`), which the processor must never route
+    // as a command. `handled: false` hands the turn to the processor's
+    // post-onboarding path rather than swallowing it.
     if (gate.lifecycle === 'ready' && gate.status === 'completed' && gate.runId) {
       session.language = gate.preferredLanguage;
       // A referral code in this worker's FIRST WhatsApp message was parked by
@@ -142,12 +186,25 @@ export async function handleOtpStep(
       // runs inside the processor's open transaction, and an unguarded
       // failure here would abort the whole turn and cost the worker their
       // welcome message over a referral bookkeeping error. Static metric
-      // only — never the token, the number, or the hash.
+      // only — never the token, the number, or the hash. The claim records
+      // the job on the worker's list as jale_whatsapp under the
+      // internal setting set for `result.workerId` above -- the same worker
+      // the bind returns as `gate.userId`.
+      //
+      // The claimed job rides on the handoff when it is still
+      // open and this worker has not applied to it, and the processor sends
+      // it as the tappable job card -- this step stays silent. A failure
+      // here hands off with no job at all.
+      let referredJobId: string | null = null;
       try {
         await client.query('SAVEPOINT referral_ready_bind');
-        await claimPendingReferral(client, phoneHash, gate.userId, now);
+        const claim = await claimPendingReferral(client, phoneHash, gate.userId, now);
+        if (claim.jobId && await isOpenUnappliedJob(client, claim.jobId, gate.userId)) {
+          referredJobId = claim.jobId;
+        }
         await client.query('RELEASE SAVEPOINT referral_ready_bind');
       } catch {
+        referredJobId = null;
         try {
           await client.query('ROLLBACK TO SAVEPOINT referral_ready_bind');
         } catch {
@@ -161,7 +218,18 @@ export async function handleOtpStep(
         runId: gate.runId,
         currentStepKey: gate.currentStepKey,
       }));
-      return { handled: false, handoff: 'ready', workerId: gate.userId, stepKey: 'ready' };
+      // `consumedAsOtp`: this body WAS the code. Without the marker the
+      // processor routes it like any ready worker's message, and the idle
+      // router answers a 6-digit code with idle_help -- or relays it into an
+      // open employer chat.
+      return {
+        handled: false,
+        handoff: 'ready',
+        workerId: gate.userId,
+        stepKey: 'ready',
+        consumedAsOtp: true,
+        ...(referredJobId ? { referredJobId } : {}),
+      };
     }
 
     // L7: a worker who accepted these exact Terms on the WEB (or on WhatsApp

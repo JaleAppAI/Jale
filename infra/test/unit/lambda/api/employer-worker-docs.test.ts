@@ -1,12 +1,23 @@
 import type { APIGatewayProxyEvent } from 'aws-lambda';
-import { handler } from '../../../../lambda/api/employer-worker-docs';
+import { DOCUMENT_LINK_TTL_SECONDS, handler } from '../../../../lambda/api/employer-worker-docs';
 import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
+import { recordAccess, recordAttempt } from '../../../../lambda/lib/audit/record';
+import {
+  callerFor, expectAttemptAfter, expectRecordedInsideTransaction, queryOrder, withRequestId,
+} from './audit-expectations';
+
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
+jest.mock('../../../../lambda/lib/audit/record', () => ({
+  ...jest.requireActual('../../../../lambda/lib/audit/record'),
+  recordAccess: jest.fn(),
+  recordAttempt: jest.fn(),
+}));
+jest.mock('../../../../lambda/lib/audit/context');
 jest.mock('@aws-sdk/client-s3', () => ({
   S3Client: jest.fn().mockImplementation(() => ({})),
   GetObjectCommand: jest.fn().mockImplementation((input) => ({ input })),
@@ -20,6 +31,8 @@ const mockSetRlsContext = setRlsContext as jest.Mock;
 const mockSetInternalUserRlsContext = setInternalUserRlsContext as jest.Mock;
 const mockCheckCompliance = checkCompliance as jest.Mock;
 const mockGetSignedUrl = getSignedUrl as jest.Mock;
+const mockRecordAccess = recordAccess as jest.Mock;
+const mockRecordAttempt = recordAttempt as jest.Mock;
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
 const workerId = '11111111-1111-4111-8111-111111111111';
@@ -238,5 +251,93 @@ describe('employer-worker-docs Lambda', () => {
     expect(res.body).not.toContain('social-security-card.pdf');
     expect(mockGetSignedUrl).toHaveBeenCalledTimes(1);
     expect(GetObjectCommand).toHaveBeenCalledTimes(1);
+  });
+
+  describe('access record', () => {
+    const employer = callerFor('employer', 'employer-id');
+    const client = expect.objectContaining({ query: mockQuery });
+    const event = () => withRequestId({
+      requestContext: { authorizer: { claims: { sub: 'employer-sub' } } },
+      pathParameters: { worker_id: workerId },
+      queryStringParameters: { job_id: jobId },
+    } as unknown as APIGatewayProxyEvent);
+    const ssnRow = { ...resumeRow, id: 'doc-ssn', doc_type: 'ssn', s3_key: 'documents/j1/w1/ssn/uuid.pdf' };
+    const now = Date.parse('2026-10-05T12:00:00.000Z');
+    let nowSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      mockRecordAccess.mockResolvedValue(undefined);
+      mockRecordAttempt.mockResolvedValue(undefined);
+      mockGetSignedUrl.mockResolvedValue('https://s3.example.com/presigned-get');
+      nowSpy = jest.spyOn(Date, 'now').mockReturnValue(now);
+    });
+    afterEach(() => nowSpy.mockRestore());
+
+    it('records the documents it will sign, after the legacy-slot filter and before COMMIT', async () => {
+      setupMockQuery({ documents: { rows: [resumeRow, ssnRow] } });
+      const res = await handler(event());
+      expect(res.statusCode).toBe(200);
+      const { documents } = JSON.parse(res.body);
+      expect(documents.map((d: { id: string }) => d.id)).toEqual(['doc-1']);
+      expect(mockRecordAccess).toHaveBeenCalledTimes(1);
+      expect(mockRecordAccess).toHaveBeenCalledWith(client, employer, {
+        surface: 'employer.worker_documents',
+        subjectUserIds: [workerId],
+        recordIds: ['doc-1'],
+        resultCount: 1,
+        fieldNames: Object.keys(documents[0]).sort(),
+        purpose: { kind: 'job', id: jobId },
+        linkExpiresAt: new Date(now + DOCUMENT_LINK_TTL_SECONDS * 1000),
+      });
+      expectRecordedInsideTransaction(mockQuery, mockRecordAccess, /FROM worker_documents wd/);
+    });
+
+    it('signs after COMMIT, with the same lifetime the record states', async () => {
+      setupMockQuery({ documents: { rows: [resumeRow] } });
+      await handler(event());
+      expect(DOCUMENT_LINK_TTL_SECONDS).toBe(900);
+      expect(mockGetSignedUrl).toHaveBeenCalledWith(expect.anything(), expect.anything(), { expiresIn: DOCUMENT_LINK_TTL_SECONDS });
+      expect(mockGetSignedUrl.mock.invocationCallOrder[0]).toBeGreaterThan(queryOrder(mockQuery, 'COMMIT'));
+    });
+
+    it('answers 500 with no documents and signs nothing when the record cannot be written', async () => {
+      setupMockQuery({ documents: { rows: [resumeRow] } });
+      mockRecordAccess.mockRejectedValue(new Error('audit: the access record could not be written'));
+      const res = await handler(event());
+      expect(res.statusCode).toBe(500);
+      expect(JSON.parse(res.body)).toEqual({ error: 'internal_error' });
+      expect(mockGetSignedUrl).not.toHaveBeenCalled();
+      expect(mockQuery.mock.calls.some(([q]) => q === 'COMMIT')).toBe(false);
+      expectAttemptAfter(mockQuery, mockRecordAttempt, 'ROLLBACK');
+      expect(mockRecordAttempt.mock.calls[0][2]).toEqual({
+        surface: 'employer.worker_documents',
+        outcome: 'failed',
+        subjectUserIds: [workerId],
+        purpose: { kind: 'job', id: jobId },
+      });
+    });
+
+    it('records a denied attempt after the 403 commits', async () => {
+      setupMockQuery({ applicant: { rows: [] } });
+      const res = await handler(event());
+      expect(res.statusCode).toBe(403);
+      expect(mockRecordAccess).not.toHaveBeenCalled();
+      expectAttemptAfter(mockQuery, mockRecordAttempt, 'COMMIT');
+      expect(mockRecordAttempt).toHaveBeenCalledWith(client, employer, {
+        surface: 'employer.worker_documents',
+        outcome: 'denied',
+        subjectUserIds: [workerId],
+        purpose: { kind: 'job', id: jobId },
+      });
+    });
+
+    it('records a failed attempt when signing fails after the read committed', async () => {
+      setupMockQuery({ documents: { rows: [resumeRow] } });
+      mockGetSignedUrl.mockRejectedValue(new Error('signing failed'));
+      const res = await handler(event());
+      expect(res.statusCode).toBe(500);
+      expect(mockRecordAccess).toHaveBeenCalledTimes(1);
+      expect(mockRecordAttempt.mock.calls[0][2]).toMatchObject({ outcome: 'failed' });
+    });
   });
 });

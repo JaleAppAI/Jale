@@ -15,7 +15,7 @@ import {
 
 const MESSAGE_SID = `SM${'a'.repeat(32)}`;
 const OTHER_SID = `MM${'b'.repeat(32)}`;
-const PHONE = 'whatsapp:+19152272188';
+const PHONE = 'whatsapp:+19155550123';
 const OTP = '482913';
 const TEXT = 'Your private message';
 const DLQ_URL = 'https://sqs.us-east-1.amazonaws.com/123/inbound-dlq.fifo';

@@ -159,6 +159,25 @@ describe('enqueueWorkerMessage', () => {
     expect(outboxInserts[0].params[outboxInserts[0].params.length - 1]).toBe('intent-1');
   });
 
+  it("authorizes the outbox row with a status read that names the worker, not the intent id alone", async () => {
+    const { client, calls } = scriptedClient({
+      gateRow: readyGateRow,
+      deferredDeliveryEnabled: true,
+    });
+    registerCategoryRenderer('job_alert', jest.fn(async () => ({
+      whatsappNumber: '+15125551234',
+      body: 'A new job is available',
+      contentTemplate: null,
+      contentVariables: null,
+    })));
+
+    await enqueueWorkerMessage(client, baseInput());
+
+    const statusRead = calls.find((c) => /SELECT status FROM worker_message_intents/.test(c.sql));
+    expect(statusRead?.sql).toMatch(/WHERE id = \$1\s+AND user_id = \$2/);
+    expect(statusRead?.params).toEqual(['intent-1', WORKER_ID]);
+  });
+
   it('rejects and throws when an allowed category has no registered renderer', async () => {
     const { client, calls } = scriptedClient({
       gateRow: readyGateRow,

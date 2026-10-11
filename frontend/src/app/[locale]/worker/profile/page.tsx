@@ -241,7 +241,7 @@ export default function WorkerProfilePage() {
                                                     {profile.full_name || t('empty_name')}
                                                 </FactsCard.Tile>
                                                 <FactsCard.Tile label={t('field_phone')}>
-                                                    <span className="tabular-nums">{profile.phone}</span>
+                                                    <span data-private className="tabular-nums">{profile.phone}</span>
                                                 </FactsCard.Tile>
                                                 <FactsCard.Tile label={t('field_location')} muted={!profile.location}>
                                                     {profile.location || t('empty_location')}

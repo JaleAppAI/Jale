@@ -1,5 +1,6 @@
 import { apiFetch } from '../api';
 import { ApiError, parseApiError } from './errors';
+import { recordFetch } from '../report/context';
 import type {
   ApplicationDetailsStatus,
   ApplicationStage,
@@ -49,24 +50,26 @@ export async function getUploadUrl(
   doc_type: DocType,
   mime_type: string,
 ): Promise<UploadUrlResponse> {
-  const res = await fetch(
-    `${process.env.NEXT_PUBLIC_API_BASE_URL}/worker/documents/upload-url`,
+  const url = `${process.env.NEXT_PUBLIC_API_BASE_URL}/worker/documents/upload-url`;
+  const res = await recordFetch({ method: 'POST', url }, () => fetch(
+    url,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token, doc_type, mime_type }),
     },
-  );
+  ));
   if (!res.ok) throw await parseApiError(res, 'upload_url_failed');
   return res.json();
 }
 
 export async function uploadFileToS3(presignedUrl: string, file: File): Promise<void> {
-  const res = await fetch(presignedUrl, {
+  // Recorded as `s3:upload`: the presigned address carries a signature.
+  const res = await recordFetch({ method: 'PUT', url: 's3:upload' }, () => fetch(presignedUrl, {
     method: 'PUT',
     body: file,
     headers: { 'Content-Type': file.type },
-  });
+  }));
   // S3 answers with an XML error document, never our JSON error envelope, so
   // there is no code to read out of the body -- only the status is meaningful.
   if (!res.ok) throw new ApiError(res.status, 's3_upload_failed');
@@ -78,8 +81,9 @@ export async function confirmUpload(
   doc_type: DocType,
   file: File,
 ): Promise<void> {
-  const res = await fetch(
-    `${process.env.NEXT_PUBLIC_API_BASE_URL}/worker/documents/confirm`,
+  const url = `${process.env.NEXT_PUBLIC_API_BASE_URL}/worker/documents/confirm`;
+  const res = await recordFetch({ method: 'POST', url }, () => fetch(
+    url,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -92,19 +96,20 @@ export async function confirmUpload(
         mime_type: file.type,
       }),
     },
-  );
+  ));
   if (!res.ok) throw await parseApiError(res, 'confirm_failed');
 }
 
 export async function submitUpload(token: string): Promise<void> {
-  const res = await fetch(
-    `${process.env.NEXT_PUBLIC_API_BASE_URL}/worker/documents/submit`,
+  const url = `${process.env.NEXT_PUBLIC_API_BASE_URL}/worker/documents/submit`;
+  const res = await recordFetch({ method: 'POST', url }, () => fetch(
+    url,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token }),
     },
-  );
+  ));
   if (!res.ok) throw await parseApiError(res, 'submit_failed');
 }
 
@@ -1104,18 +1109,50 @@ export async function shareJob(
   return res.json();
 }
 
+/**
+ * What a claim can carry. Both halves are optional and the server validates
+ * each on its own: a UUID `jobId` is recorded as a job the
+ * worker came for, and a share code writes first-touch attribution and
+ * records the job its link points at. `null` is accepted here so a caller can
+ * pass what it read straight through; it never reaches the wire.
+ */
+export interface ClaimReferralRequest {
+  jobId?: string | null;
+  shareCode?: string | null;
+}
+
 export interface ClaimReferralResponse {
+  /** Whether referral attribution was written (first touch only). */
   claimed: boolean;
+  /** The job ids this call recorded, deduped. Empty for an unknown or closed job -- never a 404. */
+  recorded: string[];
 }
 
 /**
- * Claims a referral share code for the just-authenticated worker. Called
- * best-effort right after OTP verification in the web-apply carry-through --
- * a bad/expired code must never break signup, so callers should wrap this in
- * their own try/catch and swallow failures.
+ * Records the job(s) a worker came for, and claims a share code's referral
+ * credit, for the worker this token belongs to.
+ *
+ * Best-effort by contract: callers ignore the outcome, and a bad, expired or
+ * revoked code must never break sign-in. Only the fields the caller actually
+ * has are sent.
+ *
+ * `retryOn401: false`, deliberately. The sign-in form calls this with the
+ * tokens it was JUST handed, before `setTokens` -- there is no stored session
+ * yet. A 401 sent down `apiFetch`'s refresh path would find nothing to refresh
+ * with, declare the session expired and `location.assign` the login page,
+ * moving a worker who has just proved their number. A claim must never move
+ * anyone, so a 401 is simply an error the caller ignores like any other.
  */
-export async function claimReferral(token: string, shareCode: string): Promise<ClaimReferralResponse> {
-  const res = await apiFetch('/worker/referrals/claim', { method: 'POST', body: JSON.stringify({ shareCode }) }, token);
+export async function claimReferral(token: string, request: ClaimReferralRequest): Promise<ClaimReferralResponse> {
+  const body: { jobId?: string; shareCode?: string } = {};
+  if (request.jobId) body.jobId = request.jobId;
+  if (request.shareCode) body.shareCode = request.shareCode;
+  const res = await apiFetch(
+    '/worker/referrals/claim',
+    { method: 'POST', body: JSON.stringify(body) },
+    token,
+    { retryOn401: false },
+  );
   if (!res.ok) throw await parseApiError(res, 'claim_failed');
   return res.json();
 }
@@ -1235,6 +1272,29 @@ export type OnboardingExtraction = {
   summary_es: string | null;
 };
 
+/**
+ * The one referred job the onboarding screens show -- the job strip on every
+ * step and the ticket on the summary. A mirror of `ReferredJobSummary` in
+ * `infra/lambda/lib/referred-jobs.ts`; keep the two in step.
+ *
+ * It is the newest job the worker came to Jale for and has NOT applied to,
+ * open ones first, so a closed one only appears when nothing open is left.
+ */
+export interface ReferredJobSummary {
+  id: string;
+  title: string;
+  /** `COALESCE(company, 'Jale')` -- the feed's own expression, never null. */
+  company: string;
+  location: string;
+  payMin: number | null;
+  payMax: number | null;
+  payInterval: string | null;
+  /** The legacy free-text `jobs.pay`, for a job with no structured pay. */
+  payRaw: string | null;
+  /** `jobs.status = 'active'`. */
+  open: boolean;
+}
+
 export type OnboardingState = {
   lifecycle: OnboardingLifecycle;
   run: OnboardingRun;
@@ -1242,6 +1302,13 @@ export type OnboardingState = {
   trust: { questions: OnboardingQuestion[]; answers: OnboardingAnswer[] };
   pendingLocationConfirm: { city: string; state: string } | null;
   extraction: OnboardingExtraction | null;
+  /**
+   * On every response that carries state. `null` when there is
+   * no referred job -- and also when the server's read of it failed, which it
+   * degrades to rather than failing the step. A reader should also tolerate it
+   * missing altogether: a response from an older API has none.
+   */
+  referredJob: ReferredJobSummary | null;
 };
 
 /** One engine step and the value it is being answered with. */
@@ -1446,14 +1513,15 @@ export async function putVoiceRecording(
   signal?: AbortSignal,
 ): Promise<{ kind: 'uploaded' } | { kind: 'failed' }> {
   try {
-    const res = await fetch(url, {
+    // Recorded as `s3:upload`: the presigned address carries a signature.
+    const res = await recordFetch({ method: 'PUT', url: 's3:upload' }, () => fetch(url, {
       method: 'PUT',
       body: blob,
       // Must match the type that was SIGNED, not `blob.type` (which carries
       // codec parameters MediaRecorder added).
       headers: { 'Content-Type': contentType },
       signal,
-    });
+    }));
     return res.ok ? { kind: 'uploaded' } : { kind: 'failed' };
   } catch {
     return { kind: 'failed' };

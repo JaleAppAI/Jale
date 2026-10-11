@@ -45,3 +45,6 @@ jobs:
     with:
       cdk-environment: ${{ vars.CDK_CONTEXT_ENVIRONMENT || 'dev' }}
       aws-region: ${{ vars.AWS_REGION || 'us-east-2' }}
+      # A second synth with environment=production, from fixed dummy context
+      # only, so the production-only refusals are met before a merge.
+      production-synth: true

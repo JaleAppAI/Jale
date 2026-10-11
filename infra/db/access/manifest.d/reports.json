@@ -1,0 +1,802 @@
+{
+  "logins": {
+    "jale_api_public_reports": {
+      "kind": "public",
+      "created_by": "107",
+      "connection_limit": 10,
+      "prepare_secret": true,
+      "settings": {
+        "idle_in_transaction_session_timeout": "60s"
+      },
+      "workloads": "The signed-out report intake endpoint.",
+      "reason": "EXECUTE-only login with no table rights: config, signed-out create, upload grant, pending upload and attach."
+    },
+    "jale_job_report_cleanup": {
+      "kind": "job",
+      "created_by": "107",
+      "connection_limit": 5,
+      "prepare_secret": true,
+      "settings": {
+        "idle_in_transaction_session_timeout": "60s"
+      },
+      "workloads": "The daily report clean-up job.",
+      "reason": "EXECUTE on one capability function only; erasure and deletion run inside it."
+    }
+  },
+  "capability_owners": {
+    "jale_cap_problem_reports": {
+      "created_by": "107",
+      "reason": "Owns the report intake functions and the team email helper; it writes reports but holds no read right on their words, contact, context or note."
+    },
+    "jale_cap_problem_reports_admin": {
+      "created_by": "107",
+      "reason": "Owns the admin console report functions: reads reports, masks contact, and updates status, note and settings."
+    },
+    "jale_cap_report_cleanup": {
+      "created_by": "107",
+      "reason": "Owns the report clean-up function; erases and deletes by age without any read right on content columns."
+    }
+  },
+  "tables": {
+    "public.problem_reports": {
+      "classification": "excluded",
+      "rls": {
+        "enabled": true,
+        "forced": true
+      },
+      "reason": "Report headers, kept for counting; reached only through the report capability functions.",
+      "access": {
+        "jale_cap_problem_reports": {
+          "select": "*",
+          "insert": "*",
+          "update": [
+            "has_image",
+            "updated_at"
+          ],
+          "reason": "Creates headers and marks an attached image, within its 24-hour window."
+        },
+        "jale_cap_problem_reports_admin": {
+          "select": "*",
+          "update": [
+            "status",
+            "status_changed_at",
+            "updated_at"
+          ],
+          "reason": "The console lists and reads headers and sets the status."
+        },
+        "jale_cap_report_cleanup": {
+          "select": [
+            "id",
+            "content_erased_at",
+            "image_deleted_at"
+          ],
+          "update": [
+            "content_erased_at",
+            "image_deleted_at"
+          ],
+          "reason": "Dates the erasure of content and images; keys and dates only."
+        }
+      }
+    },
+    "public.problem_report_contents": {
+      "classification": "excluded",
+      "rls": {
+        "enabled": true,
+        "forced": true
+      },
+      "reason": "Reports' personal content, erased at 12 months; reached only through the report capability functions.",
+      "access": {
+        "jale_cap_problem_reports": {
+          "select": [
+            "report_id",
+            "created_at",
+            "reporter_user_id",
+            "reporter_sub",
+            "attach_token_hash",
+            "pending_upload_key",
+            "pending_content_type",
+            "upload_issued_at",
+            "image_key"
+          ],
+          "insert": "*",
+          "update": [
+            "attach_token_hash",
+            "pending_upload_key",
+            "pending_content_type",
+            "upload_issued_at",
+            "image_key"
+          ],
+          "reason": "Writes the content and handles uploads; never reads the words, contact, context or note."
+        },
+        "jale_cap_problem_reports_admin": {
+          "select": "*",
+          "update": [
+            "internal_note"
+          ],
+          "reason": "The console reads a report and keeps the team note; contact is masked in SQL."
+        },
+        "jale_cap_report_cleanup": {
+          "select": [
+            "report_id",
+            "created_at",
+            "image_key",
+            "pending_upload_key",
+            "upload_issued_at"
+          ],
+          "update": [
+            "image_key",
+            "pending_upload_key",
+            "pending_content_type",
+            "upload_issued_at"
+          ],
+          "delete": true,
+          "reason": "Expires images and uploads and erases content past 12 months; keys and dates only."
+        }
+      }
+    },
+    "public.problem_report_rate_buckets": {
+      "classification": "excluded",
+      "rls": {
+        "enabled": true,
+        "forced": true
+      },
+      "reason": "Per-address request counts for signed-out reports; reached only through the intake and clean-up functions.",
+      "access": {
+        "jale_cap_problem_reports": {
+          "select": "*",
+          "insert": "*",
+          "update": "*",
+          "reason": "Counts signed-out reports per address, hour and day."
+        },
+        "jale_cap_report_cleanup": {
+          "select": [
+            "address_hash",
+            "window_kind",
+            "bucket_start"
+          ],
+          "delete": true,
+          "reason": "Deletes buckets older than 2 days."
+        }
+      }
+    },
+    "public.problem_report_settings": {
+      "classification": "excluded",
+      "rls": {
+        "enabled": true,
+        "forced": true
+      },
+      "reason": "The single report settings row; read by the intake functions, read and written by the console functions.",
+      "access": {
+        "jale_cap_problem_reports": {
+          "select": "*",
+          "reason": "Reads the pause switches, the daily limit and the team email settings."
+        },
+        "jale_cap_problem_reports_admin": {
+          "select": "*",
+          "update": "*",
+          "reason": "The console reads and changes the settings."
+        }
+      }
+    }
+  },
+  "policies": {
+    "public.problem_reports.problem_reports_intake_read": {
+      "command": "SELECT",
+      "permissive": true,
+      "to": [
+        "jale_cap_problem_reports"
+      ],
+      "origin": "existing",
+      "using": "(created_at > (now() - '24:00:00'::interval))",
+      "with_check": null,
+      "reason": "The intake functions: rows from the last 24 hours, their whole working window."
+    },
+    "public.problem_reports.problem_reports_intake_insert": {
+      "command": "INSERT",
+      "permissive": true,
+      "to": [
+        "jale_cap_problem_reports"
+      ],
+      "origin": "existing",
+      "using": null,
+      "with_check": "(created_at > (now() - '24:00:00'::interval))",
+      "reason": "The intake functions: rows from the last 24 hours, their whole working window."
+    },
+    "public.problem_reports.problem_reports_intake_update": {
+      "command": "UPDATE",
+      "permissive": true,
+      "to": [
+        "jale_cap_problem_reports"
+      ],
+      "origin": "existing",
+      "using": "(created_at > (now() - '24:00:00'::interval))",
+      "with_check": null,
+      "reason": "The intake functions: rows from the last 24 hours, their whole working window."
+    },
+    "public.problem_reports.problem_reports_console_read": {
+      "command": "SELECT",
+      "permissive": true,
+      "to": [
+        "jale_cap_problem_reports_admin"
+      ],
+      "origin": "existing",
+      "using": "(current_setting('app.problem_report_console'::text, true) = 'on'::text)",
+      "with_check": null,
+      "reason": "The console functions: visible only while one of them runs."
+    },
+    "public.problem_reports.problem_reports_console_update": {
+      "command": "UPDATE",
+      "permissive": true,
+      "to": [
+        "jale_cap_problem_reports_admin"
+      ],
+      "origin": "existing",
+      "using": "(current_setting('app.problem_report_console'::text, true) = 'on'::text)",
+      "with_check": null,
+      "reason": "The console functions: visible only while one of them runs."
+    },
+    "public.problem_report_contents.problem_report_contents_intake_read": {
+      "command": "SELECT",
+      "permissive": true,
+      "to": [
+        "jale_cap_problem_reports"
+      ],
+      "origin": "existing",
+      "using": "(created_at > (now() - '24:00:00'::interval))",
+      "with_check": null,
+      "reason": "The intake functions: rows from the last 24 hours, their whole working window."
+    },
+    "public.problem_report_contents.problem_report_contents_intake_insert": {
+      "command": "INSERT",
+      "permissive": true,
+      "to": [
+        "jale_cap_problem_reports"
+      ],
+      "origin": "existing",
+      "using": null,
+      "with_check": "(created_at > (now() - '24:00:00'::interval))",
+      "reason": "The intake functions: rows from the last 24 hours, their whole working window."
+    },
+    "public.problem_report_contents.problem_report_contents_intake_update": {
+      "command": "UPDATE",
+      "permissive": true,
+      "to": [
+        "jale_cap_problem_reports"
+      ],
+      "origin": "existing",
+      "using": "(created_at > (now() - '24:00:00'::interval))",
+      "with_check": null,
+      "reason": "The intake functions: rows from the last 24 hours, their whole working window."
+    },
+    "public.problem_report_contents.problem_report_contents_console_read": {
+      "command": "SELECT",
+      "permissive": true,
+      "to": [
+        "jale_cap_problem_reports_admin"
+      ],
+      "origin": "existing",
+      "using": "(current_setting('app.problem_report_console'::text, true) = 'on'::text)",
+      "with_check": null,
+      "reason": "The console functions: visible only while one of them runs."
+    },
+    "public.problem_report_contents.problem_report_contents_console_update": {
+      "command": "UPDATE",
+      "permissive": true,
+      "to": [
+        "jale_cap_problem_reports_admin"
+      ],
+      "origin": "existing",
+      "using": "(current_setting('app.problem_report_console'::text, true) = 'on'::text)",
+      "with_check": null,
+      "reason": "The console functions: visible only while one of them runs."
+    },
+    "public.problem_reports.problem_reports_cleanup_read": {
+      "command": "SELECT",
+      "permissive": true,
+      "to": [
+        "jale_cap_report_cleanup"
+      ],
+      "origin": "existing",
+      "using": "(created_at < (now() - '90 days'::interval))",
+      "with_check": null,
+      "reason": "The clean-up: headers past 90 days, to date erasures."
+    },
+    "public.problem_reports.problem_reports_cleanup_update": {
+      "command": "UPDATE",
+      "permissive": true,
+      "to": [
+        "jale_cap_report_cleanup"
+      ],
+      "origin": "existing",
+      "using": "(created_at < (now() - '90 days'::interval))",
+      "with_check": null,
+      "reason": "The clean-up: headers past 90 days, to date erasures."
+    },
+    "public.problem_report_contents.problem_report_contents_cleanup_read": {
+      "command": "SELECT",
+      "permissive": true,
+      "to": [
+        "jale_cap_report_cleanup"
+      ],
+      "origin": "existing",
+      "using": "(created_at < (now() - '1 day'::interval))",
+      "with_check": null,
+      "reason": "The clean-up: content older than a day (expired uploads and images)."
+    },
+    "public.problem_report_contents.problem_report_contents_cleanup_update": {
+      "command": "UPDATE",
+      "permissive": true,
+      "to": [
+        "jale_cap_report_cleanup"
+      ],
+      "origin": "existing",
+      "using": "(created_at < (now() - '1 day'::interval))",
+      "with_check": null,
+      "reason": "The clean-up: content older than a day (expired uploads and images)."
+    },
+    "public.problem_report_contents.problem_report_contents_cleanup_delete": {
+      "command": "DELETE",
+      "permissive": true,
+      "to": [
+        "jale_cap_report_cleanup"
+      ],
+      "origin": "existing",
+      "using": "(created_at < (now() - '1 year'::interval))",
+      "with_check": null,
+      "reason": "The clean-up: content past 12 months is erased."
+    },
+    "public.problem_report_rate_buckets.problem_report_rate_buckets_intake_read": {
+      "command": "SELECT",
+      "permissive": true,
+      "to": [
+        "jale_cap_problem_reports"
+      ],
+      "origin": "existing",
+      "using": "(bucket_start > (now() - '2 days'::interval))",
+      "with_check": null,
+      "reason": "The signed-out create: the current buckets."
+    },
+    "public.problem_report_rate_buckets.problem_report_rate_buckets_intake_insert": {
+      "command": "INSERT",
+      "permissive": true,
+      "to": [
+        "jale_cap_problem_reports"
+      ],
+      "origin": "existing",
+      "using": null,
+      "with_check": "(bucket_start > (now() - '2 days'::interval))",
+      "reason": "The signed-out create: the current buckets."
+    },
+    "public.problem_report_rate_buckets.problem_report_rate_buckets_intake_update": {
+      "command": "UPDATE",
+      "permissive": true,
+      "to": [
+        "jale_cap_problem_reports"
+      ],
+      "origin": "existing",
+      "using": "(bucket_start > (now() - '2 days'::interval))",
+      "with_check": null,
+      "reason": "The signed-out create: the current buckets."
+    },
+    "public.problem_report_rate_buckets.problem_report_rate_buckets_cleanup_read": {
+      "command": "SELECT",
+      "permissive": true,
+      "to": [
+        "jale_cap_report_cleanup"
+      ],
+      "origin": "existing",
+      "using": "(bucket_start < (now() - '2 days'::interval))",
+      "with_check": null,
+      "reason": "The clean-up: buckets older than 2 days."
+    },
+    "public.problem_report_rate_buckets.problem_report_rate_buckets_cleanup_delete": {
+      "command": "DELETE",
+      "permissive": true,
+      "to": [
+        "jale_cap_report_cleanup"
+      ],
+      "origin": "existing",
+      "using": "(bucket_start < (now() - '2 days'::interval))",
+      "with_check": null,
+      "reason": "The clean-up: buckets older than 2 days."
+    },
+    "public.problem_report_settings.problem_report_settings_intake_read": {
+      "command": "SELECT",
+      "permissive": true,
+      "to": [
+        "jale_cap_problem_reports"
+      ],
+      "origin": "existing",
+      "using": "id",
+      "with_check": null,
+      "reason": "The intake functions read the settings row."
+    },
+    "public.problem_report_settings.problem_report_settings_console_read": {
+      "command": "SELECT",
+      "permissive": true,
+      "to": [
+        "jale_cap_problem_reports_admin"
+      ],
+      "origin": "existing",
+      "using": "(current_setting('app.problem_report_console'::text, true) = 'on'::text)",
+      "with_check": null,
+      "reason": "The console functions: visible only while one of them runs."
+    },
+    "public.problem_report_settings.problem_report_settings_console_update": {
+      "command": "UPDATE",
+      "permissive": true,
+      "to": [
+        "jale_cap_problem_reports_admin"
+      ],
+      "origin": "existing",
+      "using": "(current_setting('app.problem_report_console'::text, true) = 'on'::text)",
+      "with_check": null,
+      "reason": "The console functions: visible only while one of them runs."
+    }
+  },
+  "sequences": {
+    "public.problem_report_number_seq": {
+      "owner": "jale_admin",
+      "usage": [
+        "jale_cap_problem_reports"
+      ],
+      "select": [],
+      "update": [],
+      "reason": "Report numbers; drawn only by the intake owner through the header column default."
+    }
+  },
+  "functions": {
+    "jale_cap.problem_report_config()": {
+      "owner": "jale_cap_problem_reports",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "",
+      "returns": "TABLE(reporting boolean, signed_out boolean, screenshots boolean)",
+      "execute": [
+        "jale_api_public_reports"
+      ],
+      "created_by": "108",
+      "reason": "The pause switches the web form reads before it opens."
+    },
+    "jale_cap.problem_report_create_verified(uuid, text, text, text, boolean, text, boolean, jsonb, text)": {
+      "owner": "jale_cap_problem_reports",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_client_key uuid, p_role_hint text, p_category text, p_description text, p_stops_work boolean, p_locale text, p_include_technical boolean, p_context jsonb, p_attach_token_hash text",
+      "returns": "TABLE(outcome text, report_id uuid, report_number bigint, replayed boolean, email_queued boolean)",
+      "execute": [
+        "jale_api"
+      ],
+      "created_by": "108",
+      "reason": "Creates a signed-in report for the caller in app.current_user_id, with its per-account limit, replay by client key and the team email in the same transaction."
+    },
+    "jale_cap.problem_report_create_unverified(uuid, text, text, text, boolean, text, text, boolean, jsonb, text, text)": {
+      "owner": "jale_cap_problem_reports",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_client_key uuid, p_role_claimed text, p_category text, p_description text, p_stops_work boolean, p_locale text, p_contact text, p_include_technical boolean, p_context jsonb, p_attach_token_hash text, p_address_hash text",
+      "returns": "TABLE(outcome text, report_id uuid, report_number bigint, replayed boolean, email_queued boolean)",
+      "execute": [
+        "jale_api_public_reports"
+      ],
+      "created_by": "108",
+      "reason": "Creates a signed-out report, labelled unverified, with the per-address and daily limits, replay by client key and the team email in the same transaction."
+    },
+    "jale_cap.problem_report_upload_grant(uuid, text, text)": {
+      "owner": "jale_cap_problem_reports",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_report_id uuid, p_attach_token_hash text, p_content_type text",
+      "returns": "TABLE(outcome text, upload_key text)",
+      "execute": [
+        "jale_api",
+        "jale_api_public_reports"
+      ],
+      "created_by": "108",
+      "reason": "Issues the one image upload key for a report whose attach token the caller holds; the key is generated in the database."
+    },
+    "jale_cap.problem_report_pending_upload(uuid, text)": {
+      "owner": "jale_cap_problem_reports",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_report_id uuid, p_attach_token_hash text",
+      "returns": "TABLE(outcome text, pending_key text, content_type text)",
+      "execute": [
+        "jale_api",
+        "jale_api_public_reports"
+      ],
+      "created_by": "108",
+      "reason": "Read-only pre-check of an issued upload, before the object is inspected."
+    },
+    "jale_cap.problem_report_attach(uuid, text, text, text, text, integer)": {
+      "owner": "jale_cap_problem_reports",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_report_id uuid, p_attach_token_hash text, p_pending_key text, p_final_key text, p_content_type text, p_byte_size integer",
+      "returns": "TABLE(outcome text)",
+      "execute": [
+        "jale_api",
+        "jale_api_public_reports"
+      ],
+      "created_by": "108",
+      "reason": "Attaches the checked image once and retires the attach token."
+    },
+    "jale_cap.problem_report_enqueue_team_email(uuid)": {
+      "owner": "jale_cap_problem_reports",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_report_id uuid",
+      "returns": "boolean",
+      "execute": [],
+      "created_by": "108",
+      "reason": "Internal: queues the fixed-template team email for a new report; called only by the two create functions."
+    },
+    "jale_cap.problem_report_inbox(text, text, text, boolean, bigint, integer, timestamp with time zone)": {
+      "owner": "jale_cap_problem_reports_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_status text, p_role text, p_category text, p_verified boolean, p_number bigint, p_limit integer, p_before timestamp with time zone",
+      "returns": "TABLE(report_id uuid, report_number bigint, role text, verified boolean, category text, stops_work boolean, status text, has_image boolean, created_at timestamp with time zone, content_erased boolean)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "108",
+      "reason": "The admin Reports inbox: headers only, newest first, no words and no contact."
+    },
+    "jale_cap.problem_report_counts()": {
+      "owner": "jale_cap_problem_reports_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "",
+      "returns": "TABLE(new_count integer, open_count integer)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "108",
+      "reason": "Counts for the admin navigation badge."
+    },
+    "jale_cap.problem_report_detail(uuid)": {
+      "owner": "jale_cap_problem_reports_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_report_id uuid",
+      "returns": "TABLE(report_id uuid, report_number bigint, role text, verified boolean, category text, stops_work boolean, locale text, include_technical boolean, status text, has_image boolean, created_at timestamp with time zone, updated_at timestamp with time zone, status_changed_at timestamp with time zone, content_erased boolean, description text, context jsonb, internal_note text, contact_kind text, contact_masked text, account_user_id uuid, account_exists boolean, image_available boolean)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "108",
+      "reason": "One report for the admin dashboard, with its contact masked in SQL."
+    },
+    "jale_cap.problem_report_reveal_contact(uuid)": {
+      "owner": "jale_cap_problem_reports_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_report_id uuid",
+      "returns": "TABLE(outcome text, contact_kind text, contact text, account_user_id uuid)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "108",
+      "reason": "The raw contact of one report; the console records the reveal first."
+    },
+    "jale_cap.problem_report_image(uuid)": {
+      "owner": "jale_cap_problem_reports_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_report_id uuid",
+      "returns": "TABLE(outcome text, image_key text, content_type text, account_user_id uuid)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "108",
+      "reason": "The image key of one report, for a short-lived link the console records first."
+    },
+    "jale_cap.problem_report_set_status(uuid, text)": {
+      "owner": "jale_cap_problem_reports_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_report_id uuid, p_status text",
+      "returns": "TABLE(outcome text, status text)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "108",
+      "reason": "Moves one report to a new status."
+    },
+    "jale_cap.problem_report_set_note(uuid, text)": {
+      "owner": "jale_cap_problem_reports_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_report_id uuid, p_note text",
+      "returns": "TABLE(outcome text)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "108",
+      "reason": "Sets the team's internal note on one report, until its content is erased."
+    },
+    "jale_cap.problem_report_settings_get()": {
+      "owner": "jale_cap_problem_reports_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "",
+      "returns": "TABLE(reporting_enabled boolean, signed_out_enabled boolean, screenshots_enabled boolean, team_email_enabled boolean, signed_out_daily_cap integer, team_recipient text, admin_base_url text, updated_at timestamp with time zone, updated_by_admin uuid)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "108",
+      "reason": "The report settings row, for the admin settings page."
+    },
+    "jale_cap.problem_report_settings_set(uuid, boolean, boolean, boolean, boolean, text, text, integer)": {
+      "owner": "jale_cap_problem_reports_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_admin_user_id uuid, p_reporting boolean, p_signed_out boolean, p_screenshots boolean, p_team_email boolean, p_team_recipient text, p_admin_base_url text, p_signed_out_daily_cap integer",
+      "returns": "TABLE(outcome text)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "108",
+      "reason": "Validates and saves the report settings; NULL leaves a setting unchanged."
+    },
+    "jale_cap.problem_report_mask_email(text)": {
+      "owner": "jale_cap_problem_reports_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_value text",
+      "returns": "text",
+      "execute": [],
+      "created_by": "108",
+      "reason": "Internal: masks an email-shaped value for the report detail; called only by its owner's functions."
+    },
+    "jale_cap.problem_report_cleanup(integer)": {
+      "owner": "jale_cap_report_cleanup",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_batch integer",
+      "returns": "TABLE(contents_erased integer, images_expired integer, pending_cleared integer, notifications_deleted integer, buckets_deleted integer, delete_keys text[])",
+      "execute": [
+        "jale_job_report_cleanup"
+      ],
+      "created_by": "108",
+      "reason": "One bounded batch of the report retention rules; returns only counts and the image keys to delete."
+    }
+  },
+  "table_additions": {
+    "public.users": {
+      "access": {
+        "jale_cap_problem_reports": {
+          "select": [
+            "id",
+            "cognito_sub",
+            "user_type"
+          ],
+          "reason": "The verified create resolves the caller's own account and role."
+        },
+        "jale_cap_problem_reports_admin": {
+          "select": [
+            "id",
+            "cognito_sub",
+            "user_type",
+            "email",
+            "phone"
+          ],
+          "reason": "The console resolves a reporter's account and masks its contact; never the name."
+        }
+      },
+      "policies": {
+        "users_problem_reports_intake_read": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_cap_problem_reports"
+          ],
+          "origin": "existing",
+          "using": "(cognito_sub = current_setting('app.current_user_id'::text, true))",
+          "with_check": null,
+          "reason": "The caller's own row, by the verified sign-in."
+        },
+        "users_problem_reports_admin_read": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_cap_problem_reports_admin"
+          ],
+          "origin": "existing",
+          "using": "(EXISTS ( SELECT 1\n   FROM problem_report_contents c\n  WHERE ((c.reporter_user_id = users.id) OR (c.reporter_sub = users.cognito_sub))))",
+          "with_check": null,
+          "reason": "Only the accounts that have a report."
+        }
+      },
+      "reason": "Report a problem: the intake reads the caller; the console reads reporters."
+    },
+    "public.email_outbox": {
+      "access": {
+        "jale_cap_problem_reports": {
+          "insert": [
+            "recipient_email",
+            "subject",
+            "body_text",
+            "body_html",
+            "source_type",
+            "source_id",
+            "idempotency_key"
+          ],
+          "reason": "Queues the team email for a new report, in the same transaction."
+        },
+        "jale_cap_report_cleanup": {
+          "select": [
+            "id",
+            "source_type",
+            "status",
+            "attempt_count",
+            "created_at"
+          ],
+          "delete": true,
+          "reason": "Deletes report mail the sender will no longer retry; no mail content."
+        }
+      },
+      "policies": {
+        "email_outbox_problem_report_insert": {
+          "command": "INSERT",
+          "permissive": true,
+          "to": [
+            "jale_cap_problem_reports"
+          ],
+          "origin": "existing",
+          "using": null,
+          "with_check": "(source_type = 'problem_report'::text)",
+          "reason": "Report mail only."
+        },
+        "email_outbox_problem_report_cleanup_read": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_cap_report_cleanup"
+          ],
+          "origin": "existing",
+          "using": "((source_type = 'problem_report'::text) AND (created_at < (now() - '1 day'::interval)) AND (NOT ((status = ANY (ARRAY['pending'::text, 'failed'::text])) AND (attempt_count < 5))))",
+          "with_check": null,
+          "reason": "Report mail over a day old that the sender will not retry."
+        },
+        "email_outbox_problem_report_cleanup_delete": {
+          "command": "DELETE",
+          "permissive": true,
+          "to": [
+            "jale_cap_report_cleanup"
+          ],
+          "origin": "existing",
+          "using": "((source_type = 'problem_report'::text) AND (created_at < (now() - '1 day'::interval)) AND (NOT ((status = ANY (ARRAY['pending'::text, 'failed'::text])) AND (attempt_count < 5))))",
+          "with_check": null,
+          "reason": "Report mail over a day old that the sender will not retry."
+        }
+      },
+      "reason": "Report a problem: the team email is queued and later removed."
+    }
+  },
+  "function_additions": {
+    "public.admin_mask_phone(text)": {
+      "execute": [
+        "jale_cap_problem_reports_admin"
+      ],
+      "reason": "The report detail masks phone contact in SQL."
+    }
+  },
+  "schema_additions": {
+    "jale_cap": {
+      "reason": "The report functions live in jale_cap: their caller logins get USAGE, their owners CREATE (to own them); the intake and console owners also USAGE, to call their helpers.",
+      "usage": [
+        "jale_api_public_reports",
+        "jale_job_report_cleanup",
+        "jale_admin_console",
+        "jale_cap_problem_reports",
+        "jale_cap_problem_reports_admin"
+      ],
+      "create": [
+        "jale_cap_problem_reports",
+        "jale_cap_problem_reports_admin",
+        "jale_cap_report_cleanup"
+      ]
+    }
+  }
+}

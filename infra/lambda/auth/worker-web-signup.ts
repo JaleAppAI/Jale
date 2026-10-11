@@ -7,6 +7,8 @@ import {
 } from '@aws-sdk/client-cognito-identity-provider';
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { randomInt } from 'node:crypto';
+import { auditCaller, type AuditCaller } from '../lib/audit/caller';
+import { setAuditContext } from '../lib/audit/context';
 import { getDbPool } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { reconcileWorkerCognitoAccount } from './lib/worker-cognito-reconciliation';
@@ -86,7 +88,7 @@ export const handler = async (
       // '' is a safe no-op through reconcile_worker_signup's NULLIF/COALESCE:
       // it never clobbers an existing users.full_name and leaves a new row's
       // name NULL for `profile.name` to fill.
-      await seedWorkerUser(repaired.cognitoSub, phone, '');
+      await seedWorkerUser(repaired.cognitoSub, phone, '', auditCaller(event, { kind: 'anonymous' }, 'web'));
       return json(200, { ok: true });
     }
 
@@ -104,7 +106,7 @@ export const handler = async (
     // `cognito_sub` + `phone` and no name. `resolve_worker_internal_id`
     // (086) resolves that row for the onboarding engine on the very next
     // request.
-    await seedWorkerUser(cognitoSub, phone, '');
+    await seedWorkerUser(cognitoSub, phone, '', auditCaller(event, { kind: 'anonymous' }, 'web'));
     await ensureWorkerGroup(userPoolId, phone);
 
     await cognito.send(new AdminSetUserPasswordCommand({
@@ -142,12 +144,17 @@ async function ensureWorkerGroup(userPoolId: string, username: string): Promise<
   }));
 }
 
-async function seedWorkerUser(cognitoSub: string, phone: string, fullName: string): Promise<void> {
+/**
+ * Seeds the worker's users row. The person signing up is not verified yet,
+ * so the change records name an anonymous actor, never the phone.
+ */
+async function seedWorkerUser(cognitoSub: string, phone: string, fullName: string, caller: AuditCaller): Promise<void> {
   const pool = await getDbPool();
   const client = await pool.connect();
 
   try {
     await client.query('BEGIN');
+    await setAuditContext(client, caller, 'auth.worker_web_signup');
     await client.query(
       'SELECT reconcile_worker_signup($1, $2, $3)',
       [cognitoSub, phone, fullName],

@@ -150,7 +150,7 @@ const ROW_BODY = (company: string) => interpolate(
 
 describe('worker applications -- the top-of-page details notice', () => {
   it('speaks up at the top for a SINGLE waiting application', () => {
-    seed = pageOf([requested({ company_name: 'Rucoba & Maya', remaining_count: 3 })]);
+    seed = pageOf([requested({ company_name: 'Northwind & Birch', remaining_count: 3 })]);
     renderIntl(<WorkerApplicationsPage />);
 
     const head = screen.getByText(ONE_HEAD);
@@ -161,17 +161,17 @@ describe('worker applications -- the top-of-page details notice', () => {
   });
 
   it('keeps the row banner as well -- the top notice does not replace it', () => {
-    seed = pageOf([requested({ company_name: 'Rucoba & Maya', remaining_count: 3 })]);
+    seed = pageOf([requested({ company_name: 'Northwind & Birch', remaining_count: 3 })]);
     renderIntl(<WorkerApplicationsPage />);
 
     // Twice: once at the top of the page, once under the row it belongs to.
-    expect(screen.getAllByText(ROW_BODY('Rucoba & Maya'))).toHaveLength(2);
+    expect(screen.getAllByText(ROW_BODY('Northwind & Birch'))).toHaveLength(2);
     const [row] = screen.getAllByRole('listitem');
-    expect(within(row).getByText(ROW_BODY('Rucoba & Maya'))).toBeInTheDocument();
+    expect(within(row).getByText(ROW_BODY('Northwind & Birch'))).toBeInTheDocument();
   });
 
   it('names one employer only once at the top', () => {
-    seed = pageOf([requested({ company_name: 'Rucoba & Maya' })]);
+    seed = pageOf([requested({ company_name: 'Northwind & Birch' })]);
     renderIntl(<WorkerApplicationsPage />);
 
     expect(screen.getAllByText(ONE_HEAD)).toHaveLength(1);
@@ -179,12 +179,12 @@ describe('worker applications -- the top-of-page details notice', () => {
 
   it('switches to the counted banner when TWO applications are waiting', () => {
     seed = pageOf([
-      requested({ company_name: 'Rucoba & Maya' }),
+      requested({ company_name: 'Northwind & Birch' }),
       requested({
         application_id: 'bbbbbbbb-1111-4222-8333-444444444444',
         job_id: 'job-2',
         job_title: 'Concrete Finisher',
-        company_name: 'RM Construction',
+        company_name: 'NB Construction',
       }),
     ]);
     renderIntl(<WorkerApplicationsPage />);

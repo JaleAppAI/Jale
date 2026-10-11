@@ -17,7 +17,19 @@ runs:
       with:
         role-to-assume: ${{ inputs.role-to-assume }}
         aws-region: ${{ inputs.aws-region }}
+        # The run logs are public: the account id is masked in every log
+        # line from here on.
+        mask-aws-account-id: true
 
+    # Proves the credentials work without printing whose they are: the call
+    # is projected to a length, its output goes to /dev/null, and its stderr
+    # is discarded, because AWS error text names the account and the role.
+    # The step prints one fixed line, or fails.
     - name: Confirm AWS identity
       shell: bash
-      run: aws sts get-caller-identity
+      run: |
+        if ! aws sts get-caller-identity --query 'length(Account)' --output text > /dev/null 2>&1; then
+          echo "::error::The AWS credentials could not be confirmed."
+          exit 1
+        fi
+        echo "AWS identity: confirmed"

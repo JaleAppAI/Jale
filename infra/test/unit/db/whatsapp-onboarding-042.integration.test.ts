@@ -12,32 +12,6 @@ if (!databaseUrl) {
 }
 const maybeDescribe = databaseUrl ? describe : describe.skip;
 
-async function applyLocalRlsRecursionWorkaround(client: Client): Promise<void> {
-  await client.query(`
-    CREATE OR REPLACE FUNCTION employer_has_applicant_relationship(
-      p_employer_internal_id text,
-      p_worker_id uuid
-    ) RETURNS boolean
-    LANGUAGE sql
-    STABLE
-    SECURITY DEFINER
-    SET search_path = public
-    AS $fn$
-      SELECT EXISTS (
-        SELECT 1
-          FROM job_applications ja
-          JOIN jobs j ON j.id = ja.job_id
-         WHERE ja.worker_id = p_worker_id
-           AND j.employer_id::text = p_employer_internal_id
-      );
-    $fn$;
-  `);
-  await client.query('DROP POLICY IF EXISTS users_employer_applicant_read ON users');
-  await client.query(`CREATE POLICY users_employer_applicant_read ON users FOR SELECT TO jale_admin
-    USING (user_type = 'worker' AND employer_has_applicant_relationship(
-      current_setting('app.current_internal_user_id', true), id))`);
-}
-
 async function asWhatsapp<T extends QueryResultRow = QueryResultRow>(
   sql: string, params: unknown[] = [], userId?: string,
 ): Promise<{ rows: T[]; rowCount: number | null }> {
@@ -84,7 +58,6 @@ maybeDescribe('migration 042 WhatsApp onboarding gate', () => {
   beforeAll(async () => {
     setup = new Client({ connectionString: databaseUrl });
     await setup.connect();
-    await applyLocalRlsRecursionWorkaround(setup);
     await setup.query(`INSERT INTO users (id, cognito_sub, user_type) VALUES
       ($1, $2, 'worker'), ($3, $4, 'worker'), ($5, $6, 'worker')`,
     [

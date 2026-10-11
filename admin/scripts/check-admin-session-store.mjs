@@ -59,12 +59,17 @@ const db = {
           admin_email: 'ops@jaleapp.ai',
           role: 'admin_readonly',
           expires_at: new Date('2026-06-15T18:00:00.000Z'),
+          active: true,
         }],
       };
     }
 
     if (sql.includes('WITH revoked AS')) {
       return { rows: [{ revoked_count: 3 }] };
+    }
+
+    if (sql.includes('UPDATE admin_sessions')) {
+      return { rows: [{ session_id: 'session-id', admin_user_id: 'admin-id', role: 'admin_readonly', live: true }] };
     }
 
     return { rows: [] };
@@ -86,6 +91,9 @@ const created = await store.create({
 assert.equal(created.rawToken, 'raw-session-token');
 assert.equal(calls[0].params.includes('raw-session-token'), false, 'raw session token must never be stored');
 assert.equal(calls[0].params[0], sessionStore.hashAdminSessionToken('raw-session-token'));
+// A session lasts one hour from sign-in, and the store says so to the cookie.
+assert.equal(sessionStore.ADMIN_SESSION_TTL_SECONDS, 60 * 60);
+assert.deepEqual(calls[0].params[2], new Date('2026-06-15T18:00:00.000Z'));
 
 const resolved = await store.resolve('raw-session-token');
 assert.deepEqual(resolved, {
@@ -99,14 +107,43 @@ assert.deepEqual(resolved, {
 });
 assert.match(calls[1].sql, /u\.active = true/);
 assert.match(calls[1].sql, /s\.revoked_at IS NULL/);
-assert.match(calls[1].sql, /s\.expires_at > \$2/);
+// Expiry is computed, not filtered: an expired session must be seen so that
+// exactly one resolve can mark it and record the expiry.
+assert.match(calls[1].sql, /s\.expires_at > \$2 AS active/);
+assert.doesNotMatch(calls[1].sql.slice(calls[1].sql.indexOf('WHERE')), /expires_at/);
 
-await store.revoke('raw-session-token', 'user_logout');
-assert.match(calls[2].sql, /UPDATE admin_sessions/);
+// Sign-out ends a session that has not ended yet, says whose it was, and
+// whether it was still live. One conditional UPDATE decides how it ended, on
+// the clock resolve uses: a live session takes the sign-out reason, one past
+// its expiry is marked expired.
+assert.deepEqual(await store.revoke('raw-session-token', 'user_logout'), {
+  sessionId: 'session-id',
+  adminUserId: 'admin-id',
+  role: 'admin_readonly',
+  live: true,
+});
+const revokeSql = calls[2].sql.replace(/\s+/g, ' ').trim();
+assert.match(revokeSql, /^UPDATE admin_sessions s SET revoked_at = NOW\(\), revoke_reason = CASE WHEN s\.expires_at > \$3 THEN \$2::text ELSE 'expired' END /);
+assert.match(revokeSql, / WHERE s\.token_hash = \$1 AND s\.revoked_at IS NULL AND u\.id = s\.admin_user_id /);
+assert.match(revokeSql, / RETURNING s\.id AS session_id, u\.id AS admin_user_id, u\.role, s\.expires_at > \$3 AS live$/);
 assert.deepEqual(calls[2].params, [
   sessionStore.hashAdminSessionToken('raw-session-token'),
   'user_logout',
+  new Date('2026-06-15T17:00:00.000Z'),
 ]);
+
+// A session past its expiry ends as expired: the row says it was not live.
+const expiredSignOut = new sessionStore.AdminSessionStore({
+  async query() {
+    return { rows: [{ session_id: 'expired-session-id', admin_user_id: 'admin-id', role: 'admin_ops', live: false }] };
+  },
+});
+assert.deepEqual(await expiredSignOut.revoke('raw-session-token', 'user_logout'), {
+  sessionId: 'expired-session-id',
+  adminUserId: 'admin-id',
+  role: 'admin_ops',
+  live: false,
+});
 
 assert.equal(await store.revokeAllForAdmin('admin-id', 'security_reset'), 3);
 assert.match(calls[3].sql, /admin_user_id = \$1/);
@@ -119,5 +156,63 @@ const missingStore = new sessionStore.AdminSessionStore({
   },
 });
 assert.equal(await missingStore.resolve('unknown-token'), undefined);
+assert.equal(await missingStore.revoke('unknown-token', 'user_logout'), undefined, 'an already-revoked session signs out nobody');
+
+// An expired, unrevoked session: one conditional UPDATE ... RETURNING marks it,
+// and only the resolve that gets the row back reports the expiry.
+function expiringDb({ wins }) {
+  const seen = [];
+  return {
+    seen,
+    async query(sql, params = []) {
+      seen.push({ sql, params });
+      if (sql.includes('FROM admin_sessions s')) {
+        return {
+          rows: [{
+            session_id: 'expired-session-id',
+            admin_user_id: 'admin-id',
+            cognito_sub: 'admin-sub',
+            admin_email: 'ops@jaleapp.ai',
+            role: 'admin_superadmin',
+            expires_at: new Date('2026-06-15T16:00:00.000Z'),
+            active: false,
+          }],
+        };
+      }
+      if (sql.includes('UPDATE admin_sessions')) {
+        return { rows: wins ? [{ id: 'expired-session-id' }] : [] };
+      }
+      return { rows: [] };
+    },
+  };
+}
+
+const expiredReports = [];
+const winnerDb = expiringDb({ wins: true });
+const winner = new sessionStore.AdminSessionStore(winnerDb, {
+  now: () => new Date('2026-06-15T17:00:00.000Z'),
+  onExpired: async (expired) => { expiredReports.push(expired); },
+});
+assert.equal(await winner.resolve('raw-session-token'), undefined, 'an expired session never resolves');
+assert.equal(winnerDb.seen.length, 2);
+assert.equal(
+  winnerDb.seen[1].sql.replace(/\s+/g, ' ').trim(),
+  "UPDATE admin_sessions SET revoked_at = NOW(), revoke_reason = 'expired' WHERE id = $1 AND revoked_at IS NULL RETURNING id",
+);
+assert.deepEqual(winnerDb.seen[1].params, ['expired-session-id']);
+assert.deepEqual(expiredReports, [{ sessionId: 'expired-session-id', adminUserId: 'admin-id', role: 'admin_superadmin' }]);
+
+const loserDb = expiringDb({ wins: false });
+const loser = new sessionStore.AdminSessionStore(loserDb, {
+  onExpired: async (expired) => { expiredReports.push(expired); },
+});
+assert.equal(await loser.resolve('raw-session-token'), undefined);
+assert.equal(expiredReports.length, 1, 'a resolve that lost the race reports nothing');
+
+// A failing reporter never turns a resolve into an error.
+const noisy = new sessionStore.AdminSessionStore(expiringDb({ wins: true }), {
+  onExpired: async () => { throw new Error('reporter failed'); },
+});
+assert.equal(await noisy.resolve('raw-session-token'), undefined);
 
 console.log('admin session store checks passed');

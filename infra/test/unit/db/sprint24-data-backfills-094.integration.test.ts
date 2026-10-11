@@ -77,6 +77,7 @@ import {
 import { normalizeProfession } from '../../../lambda/lib/profession';
 import { FIELD_REUSE_POLICY } from '../../../lambda/lib/job-fields';
 import { setInternalUserRlsContext } from '../../../lambda/lib/db';
+import { itInProfiles } from './helpers/login-pool';
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
 
@@ -284,7 +285,8 @@ maybeDescribe('P4: migration 094 backfills data under FORCE RLS', () => {
   // If this suite applied 094 as the superuser, a 094 that dropped its
   // `NO FORCE` would still pass -- so this case pins the separation, and
   // measures the zero-row no-op that makes the migration necessary.
-  it('1. applies as the real jale_admin, which under FORCE sees NONE of the rows it must rewrite', async () => {
+  // Checks row policies as the standard and request test beds apply them.
+  itInProfiles(['standard', 'request'], '1. on the bed\'s migration connection, the rows it must rewrite stay hidden until the un-force window', async () => {
     const who = await admin.query<{ user: string; super: boolean }>(
       `SELECT current_user AS user, (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) AS super`,
     );

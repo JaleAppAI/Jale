@@ -4,10 +4,15 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
+import { auditCaller, type AuditCaller } from '../lib/audit/caller';
+import { recordAccess, recordAttempt, responseFieldNames, type AttemptEvent } from '../lib/audit/record';
 
 const CORS_HEADERS = corsHeaders();
 const s3 = new S3Client({});
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SURFACE = 'employer.worker_documents';
+/** How long a document link lives. The access record states the same expiry. */
+export const DOCUMENT_LINK_TTL_SECONDS = 900;
 
 /**
  * The applicant's documents for one job. Exported so the real-PostgreSQL gate
@@ -41,6 +46,8 @@ export const handler = async (
   event: APIGatewayProxyEvent,
 ): Promise<APIGatewayProxyResult> => {
   let client;
+  let caller: AuditCaller | undefined;
+  let attempt: Omit<AttemptEvent, 'outcome'> | undefined;
   try {
     const cognitoSub: string | undefined = event.requestContext?.authorizer?.claims?.sub;
     if (!cognitoSub) {
@@ -100,12 +107,9 @@ export const handler = async (
     }
 
     // Same two-lane bind as the sibling employer reads
-    // (`employer-worker-profile`, `employer-worker-posts`): `setRlsContext`
-    // above stays bound because `worker_documents_employer_select` (018)
-    // resolves the employer through `app.current_user_id`, and
-    // `setInternalUserRlsContext` writes a SEPARATE GUC that the newer
-    // internal-id policies key on. It must carry the EMPLOYER's id -- the
-    // worker's would satisfy the worker-self policies instead.
+    // (`employer-worker-profile`, `employer-worker-posts`): both caller
+    // settings are bound, `setRlsContext` above and `setInternalUserRlsContext`
+    // here, and the internal id is the EMPLOYER's, never the worker's.
     const employerRes = await client.query(
       `SELECT id FROM users WHERE cognito_sub = $1`,
       [cognitoSub],
@@ -120,6 +124,9 @@ export const handler = async (
       };
     }
     await setInternalUserRlsContext(client, employerId);
+    caller = auditCaller(event, { kind: 'employer', id: employerId }, 'web');
+    const purpose = { kind: 'job', id: jobId } as const;
+    attempt = { surface: SURFACE, subjectUserIds: [workerId], purpose };
 
     const applicantCheck = await client.query(
       `SELECT 1
@@ -134,6 +141,7 @@ export const handler = async (
     );
     if (applicantCheck.rows.length === 0) {
       await client.query('COMMIT');
+      await recordAttempt(client, caller, { ...attempt, outcome: 'denied' });
       return {
         statusCode: 403,
         headers: CORS_HEADERS,
@@ -143,8 +151,6 @@ export const handler = async (
 
     const docsResult = await client.query(EMPLOYER_WORKER_DOCS_SQL, [workerId, jobId, cognitoSub]);
 
-    await client.query('COMMIT');
-
     // `s3_key`/`s3_version_id` are destructured OUT rather than spread
     // through: the bucket is private, every read the browser makes is this
     // server-minted presigned URL, and the key is an internal storage address
@@ -152,29 +158,43 @@ export const handler = async (
     // SELECTed -- they are what the presigner signs, including the version pin
     // that keeps an employer looking at the exact bytes that were uploaded.
     //
-    // The `ssn` filter runs BEFORE the presigner, not after. No employer
-    // surface renders that slot any more, so a legacy row reaching this point
-    // would have a live 15-minute presigned GET for a social-security card
-    // minted for it and shipped in a payload nothing displays -- strictly
-    // worse than the `s3_key` removed above, which was inert against a
-    // private bucket. Filtering here rather than in the SQL keeps the row
-    // visible to the query the RLS policy governs and makes "never signed"
-    // the assertable behaviour.
+    // The `ssn` filter runs BEFORE the access record and the presigner. No
+    // employer surface renders that slot any more, so a legacy row reaching
+    // the presigner would have a live 15-minute presigned GET for a
+    // social-security card minted for it and shipped in a payload nothing
+    // displays -- strictly worse than the `s3_key` removed above, which was
+    // inert against a private bucket. Filtering here makes "never signed"
+    // assertable; filtering before the record makes it name exactly the
+    // documents that are returned.
+    const shown = docsResult.rows.filter((doc) => doc.doc_type !== 'ssn');
+    const items = shown.map(({ s3_key: _key, s3_version_id: _version, ...doc }) => ({ ...doc, url: '' }));
+
+    // The grant is recorded when it is decided, in the read's transaction;
+    // the links are minted after COMMIT with the lifetime recorded here.
+    await recordAccess(client, caller, {
+      surface: SURFACE,
+      subjectUserIds: [workerId],
+      recordIds: shown.map((doc) => doc.id),
+      resultCount: shown.length,
+      fieldNames: responseFieldNames(items),
+      purpose,
+      linkExpiresAt: shown.length > 0 ? new Date(Date.now() + DOCUMENT_LINK_TTL_SECONDS * 1000) : null,
+    });
+    await client.query('COMMIT');
+
     const documents = await Promise.all(
-      docsResult.rows
-        .filter((doc) => doc.doc_type !== 'ssn')
-        .map(async ({ s3_key, s3_version_id, ...doc }) => {
-          const url = await getSignedUrl(
-            s3,
-            new GetObjectCommand({
-              Bucket: process.env.DOCUMENTS_BUCKET!,
-              Key: s3_key,
-              ...(s3_version_id ? { VersionId: s3_version_id } : {}),
-            }),
-            { expiresIn: 900 },
-          );
-          return { ...doc, url };
-        }),
+      shown.map(async ({ s3_key, s3_version_id, ...doc }) => {
+        const url = await getSignedUrl(
+          s3,
+          new GetObjectCommand({
+            Bucket: process.env.DOCUMENTS_BUCKET!,
+            Key: s3_key,
+            ...(s3_version_id ? { VersionId: s3_version_id } : {}),
+          }),
+          { expiresIn: DOCUMENT_LINK_TTL_SECONDS },
+        );
+        return { ...doc, url };
+      }),
     );
 
     return {
@@ -189,6 +209,7 @@ export const handler = async (
       } catch {
         // ignore rollback errors
       }
+      if (caller && attempt) await recordAttempt(client, caller, { ...attempt, outcome: 'failed' });
     }
     console.error('employer-worker-docs error:', errorMessage(err));
     return {

@@ -3,9 +3,7 @@ import * as path from 'node:path';
 import { Client } from 'pg';
 
 const infraRoot = path.join(__dirname, '..', '..', '..', '..');
-const repoRoot = path.join(infraRoot, '..');
 const migrationsDir = path.join(infraRoot, 'db', 'migrations');
-const architecturePath = path.join(repoRoot, 'docs', 'ARCHITECTURE.md');
 
 const expectedBaselineMigrations = [
   '001_initial_schema.sql',
@@ -111,6 +109,16 @@ const expectedBaselineMigrations = [
   '100_subscription_status_history.sql',
   '101_worker_identity_challenge_events.sql',
   '102_admin_identity_lockouts.sql',
+  '103_worker_referred_jobs.sql',
+  '104_least_privilege_logins.sql',
+  '105_least_privilege_capability_functions.sql',
+  '106_least_privilege_access_rights.sql',
+  '107_problem_reports_schema.sql',
+  '108_problem_reports_functions.sql',
+  '109_audit_storage.sql',
+  '110_admin_audit_log_freeze.sql',
+  '111_audit_change_log.sql',
+  '112_audit_operator_functions.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -365,31 +373,6 @@ describe('migration apply order baseline', () => {
     expect(migration).toContain('PRIMARY KEY (token_hash, doc_type)');
     expect(migration).toContain('UNIQUE (issued_s3_key)');
     expect(migration).toContain('worker_documents_worker_update');
-  });
-
-  // docs/ is local-only (untracked since "stop tracking docs/"), so the
-  // architecture guide is absent on fresh checkouts including CI. Run the
-  // doc-content check only where the file exists; skip loudly otherwise.
-  const architectureExists = fs.existsSync(architecturePath);
-  if (!architectureExists) {
-    // eslint-disable-next-line no-console
-    console.warn(
-      '[apply-order] SKIPPED: docs/ARCHITECTURE.md is absent (docs/ is local-only, untracked). ' +
-        'Architecture-guide content assertions only run on machines that have the local doc.',
-    );
-  }
-  const maybeItArchitecture = architectureExists ? it : it.skip;
-
-  maybeItArchitecture('documents canonical matching source fields in the architecture guide', () => {
-    const architecture = fs.readFileSync(architecturePath, 'utf8');
-
-    expect(architecture).toContain('### Canonical Matching Inputs');
-    expect(architecture).toContain('worker_skills');
-    expect(architecture).toContain('users.trust_signals JSONB');
-    expect(architecture).toContain('worker_profiles.years_experience INTEGER');
-    expect(architecture).toContain('jobs.required_docs TEXT[]');
-    expect(architecture).toContain('worker_profiles.availability is the canonical matching source');
-    expect(architecture).toContain('users.availability is legacy/display data');
   });
 
   const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
@@ -765,6 +748,20 @@ describe('migration apply order baseline', () => {
       expect(columns.get('job_applications')?.get(col)).toBe('timestamp with time zone');
     }
     expect(columns.get('job_message_outbox')?.get('send_kind')).toBe('text');
+    // 103's referred-jobs list, read back off the WHOLE chain. The file
+    // creates the table and then backfills it inside a NO FORCE / FORCE
+    // window that ends in a self-audit, so a file that rolled back on its own
+    // checks shows up here as a missing table rather than as a green run.
+    // Exactly the table's five columns, in order; there is no share_code column.
+    expect([...(columns.get('worker_referred_jobs')?.entries() ?? [])]).toEqual([
+      ['worker_id', 'uuid'],
+      ['job_id', 'uuid'],
+      ['source', 'text'],
+      ['first_seen_at', 'timestamp with time zone'],
+      ['last_seen_at', 'timestamp with time zone'],
+    ]);
+    // ...and the jobs parked on a phone before the current one, on the claim row.
+    expect(columns.get('referral_pending_claims')?.get('earlier_job_ids')).toBe('_uuid');
     // Billing tables (migration 034)
     expect(columns.get('billing_plans')?.get('code')).toBe('text');
     expect(columns.get('billing_customers')?.get('provider_customer_id')).toBe('text');

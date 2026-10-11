@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import { Template, Match } from 'aws-cdk-lib/assertions';
+import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import { FrontendStack } from '../../../lib/stacks/frontend-stack';
 
 // CDK builds the Docker image during synth (DockerImageFunction.fromImageAsset).
@@ -137,6 +138,146 @@ describeIfDocker('FrontendStack (Lambda + CloudFront)', () => {
         }),
       }),
     );
+  });
+
+  // ── The viewer-address header on /api/* ──
+
+  /** The deployed body of the /api/* viewer-request function, as a callable. */
+  function apiViewerRequestHandler(): (event: unknown) => any {
+    const functions = template.findResources('AWS::CloudFront::Function', {
+      Properties: { Name: 'jale-rewrite-api-prefix' },
+    });
+    const bodies = Object.values(functions).map((f: any) => f.Properties.FunctionCode as string);
+    expect(bodies).toHaveLength(1);
+    // CloudFront Functions are plain JavaScript with a top-level `handler`.
+    return new Function(`${bodies[0]}\nreturn handler;`)() as (event: unknown) => any;
+  }
+
+  function viewerEvent(uri: string, headers: Record<string, unknown>, ip = '203.0.113.7') {
+    return {
+      version: '1.0',
+      context: { eventType: 'viewer-request' },
+      viewer: { ip },
+      request: { method: 'POST', uri, querystring: {}, headers, cookies: {} },
+    };
+  }
+
+  test('the /api/* viewer-request function sets x-jale-viewer-address from event.viewer.ip', () => {
+    template.hasResourceProperties('AWS::CloudFront::Function', {
+      Name: 'jale-rewrite-api-prefix',
+      FunctionCode: Match.stringLikeRegexp(
+        "request\\.headers\\['x-jale-viewer-address'\\] = \\{ value: event\\.viewer\\.ip \\}",
+      ),
+    });
+  });
+
+  test('the /api/* viewer-request function adds the viewer address and still strips the /api prefix', () => {
+    const handler = apiViewerRequestHandler();
+    const request = handler(viewerEvent('/api/public/reports/create', { host: { value: 'example.com' } }));
+    expect(request.uri).toBe('/public/reports/create');
+    expect(request.headers['x-jale-viewer-address']).toEqual({ value: '203.0.113.7' });
+    expect(request.headers.host).toEqual({ value: 'example.com' });
+
+    expect(handler(viewerEvent('/api', {})).uri).toBe('/');
+    expect(handler(viewerEvent('/apiary/x', {})).uri).toBe('/apiary/x');
+  });
+
+  test('the /api/* viewer-request function replaces a client-sent viewer-address header', () => {
+    const handler = apiViewerRequestHandler();
+    // CloudFront hands the function lowercase header names, so this is the
+    // shape any spelling of a forged header arrives in, multi-valued or not.
+    const forged = {
+      'x-jale-viewer-address': {
+        value: '198.51.100.1',
+        multiValue: [{ value: '198.51.100.1' }, { value: '198.51.100.2' }],
+      },
+    };
+    const request = handler(viewerEvent('/api/public/reports/create', forged, '2001:db8::5'));
+    expect(request.headers['x-jale-viewer-address']).toEqual({ value: '2001:db8::5' });
+  });
+
+  test('forwards every viewer header on /api/*, so the API receives the viewer-address header', () => {
+    // A header a viewer-request function sets is a viewer header to the
+    // origin request policy. The managed all-viewer-except-host policy
+    // forwards all of them; a policy that LISTED headers would have to name
+    // x-jale-viewer-address.
+    template.hasResourceProperties(
+      'AWS::CloudFront::Distribution',
+      Match.objectLike({
+        DistributionConfig: Match.objectLike({
+          CacheBehaviors: Match.arrayWith([
+            Match.objectLike({
+              PathPattern: '/api/*',
+              OriginRequestPolicyId: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER.originRequestPolicyId,
+            }),
+          ]),
+        }),
+      }),
+    );
+  });
+
+  // ── Edge rate rule for the signed-out report route ──
+
+  test('creates one CLOUDFRONT-scope web ACL that allows by default, with metrics and no sampled requests', () => {
+    template.resourceCountIs('AWS::WAFv2::WebACL', 1);
+    template.hasResourceProperties('AWS::WAFv2::WebACL', {
+      Scope: 'CLOUDFRONT',
+      DefaultAction: { Allow: {} },
+      VisibilityConfig: {
+        CloudWatchMetricsEnabled: true,
+        SampledRequestsEnabled: false,
+        MetricName: Match.anyValue(),
+      },
+    });
+  });
+
+  test('its only rule blocks more than 10 signed-out report POSTs per address in 10 minutes', () => {
+    const acl = Object.values(template.findResources('AWS::WAFv2::WebACL'))[0] as any;
+    const rules: any[] = acl.Properties.Rules;
+    expect(rules).toHaveLength(1);
+    const [rule] = rules;
+    expect(rule.Action).toEqual({ Block: {} });
+    expect(rule.OverrideAction).toBeUndefined();
+    expect(rule.VisibilityConfig).toEqual(expect.objectContaining({
+      CloudWatchMetricsEnabled: true,
+      SampledRequestsEnabled: false,
+    }));
+
+    const rate = rule.Statement.RateBasedStatement;
+    expect(rate.AggregateKeyType).toBe('IP');
+    // 10 is the smallest limit WAF accepts, and 600 seconds its longest window.
+    expect(rate.Limit).toBe(10);
+    expect(rate.EvaluationWindowSec).toBe(600);
+
+    const scope: any[] = rate.ScopeDownStatement.AndStatement.Statements;
+    expect(scope).toHaveLength(2);
+    const byField = (field: string) => scope.find((s) => s.ByteMatchStatement.FieldToMatch[field]);
+    expect(byField('Method').ByteMatchStatement).toEqual(expect.objectContaining({
+      SearchString: 'POST',
+      PositionalConstraint: 'EXACTLY',
+    }));
+    expect(byField('UriPath').ByteMatchStatement).toEqual(expect.objectContaining({
+      SearchString: '/api/public/reports/',
+      PositionalConstraint: 'STARTS_WITH',
+    }));
+    // Equivalent spellings of the path are decoded and normalized before the match.
+    expect(byField('UriPath').ByteMatchStatement.TextTransformations).toEqual([
+      { Priority: 0, Type: 'URL_DECODE' },
+      { Priority: 1, Type: 'NORMALIZE_PATH' },
+    ]);
+  });
+
+  test('uses no managed rule group', () => {
+    expect(JSON.stringify(template.findResources('AWS::WAFv2::WebACL'))).not.toContain('ManagedRuleGroupStatement');
+  });
+
+  test('attaches the web ACL to the web distribution', () => {
+    const aclId = Object.keys(template.findResources('AWS::WAFv2::WebACL'))[0];
+    template.hasResourceProperties('AWS::CloudFront::Distribution', {
+      DistributionConfig: Match.objectLike({
+        WebACLId: { 'Fn::GetAtt': [aclId, 'Arn'] },
+      }),
+    });
   });
 
   test('CloudFront has survey behaviors when surveyOriginDomain provided', () => {

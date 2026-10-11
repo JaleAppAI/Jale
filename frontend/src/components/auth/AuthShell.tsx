@@ -1,7 +1,10 @@
 'use client';
 import type { CSSProperties, ReactNode } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
+import { useSearchParams } from 'next/navigation';
 import { usePathname, Link } from '@/i18n/navigation';
+import { localeSwitchHref } from '@/lib/locale-switch';
+import { ReportEntryLink } from '@/components/report/ReportEntryLink';
 
 type AuthShellProps = {
     variant: 'worker' | 'employer';
@@ -58,14 +61,22 @@ const LINK_CSS = '.jale-auth-link{color:rgba(255,255,255,.72);transition:color .
  */
 const SURFACE = 'border-[var(--jale-divider)] bg-[var(--jale-card)]';
 
+/**
+ * Switches language WITHOUT dropping the query. On these pages the query is
+ * the whole visit: `job` and `share` are the referral being carried to
+ * sign-up, `step=signup` is the door the `/app` link opened, and `returnUrl`
+ * is the way back. A bare-path href lost all four. Same rule, and the same
+ * helper, as the public job page's toggle (`lib/locale-switch.ts`).
+ */
 function LanguageToggle() {
     const locale = useLocale();
     const pathname = usePathname();
+    const searchParams = useSearchParams();
     const t = useTranslations('auth.shell');
     const otherLocale = locale === 'en' ? 'es' : 'en';
     return (
         <Link
-            href={pathname}
+            href={localeSwitchHref(pathname, searchParams.toString())}
             locale={otherLocale}
             className="jale-auth-link inline-flex min-h-[40px] items-center justify-center rounded-full border border-white/20 px-3 py-1.5 text-sm font-semibold"
         >
@@ -99,8 +110,9 @@ function ShellActions() {
 function Wordmark({ className = 'h-9' }: { className?: string }) {
     return (
         <Link href="/" className="inline-flex min-h-[44px] items-center" aria-label="Jale">
+            {/* A brand asset, so a report screenshot may show it (data-capture-safe). */}
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/brand/wordmark-white.png" alt="Jale" className={`${className} w-auto`} style={WORDMARK_SHADOW} />
+            <img src="/brand/wordmark-white.png" alt="Jale" data-capture-safe="" className={`${className} w-auto`} style={WORDMARK_SHADOW} />
         </Link>
     );
 }
@@ -120,6 +132,11 @@ export function AuthShell({ variant, brand, children }: AuthShellProps) {
                 <div className="flex flex-1 flex-col items-center justify-center px-4 py-8 md:py-12">
                     <div className={`w-full max-w-md rounded-[var(--radius-card)] border ${SURFACE} p-6 shadow-[var(--shadow-modal)] md:p-8`}>
                         {children}
+                    </div>
+                    {/* Below the card, on the brand ground: someone who cannot
+                        get past this screen can still tell us why. */}
+                    <div className="mt-4">
+                        <ReportEntryLink role="worker" tone="brand" />
                     </div>
                 </div>
             </div>
@@ -156,7 +173,12 @@ export function AuthShell({ variant, brand, children }: AuthShellProps) {
                 split goes side-by-side. */}
             <div className={`flex flex-1 flex-col overflow-y-auto border-t lg:border-t-0 lg:border-l ${SURFACE}`}>
                 <div className="flex flex-1 flex-col justify-center px-8 py-10 md:px-12">
-                    <div className="w-full max-w-lg">{children}</div>
+                    <div className="w-full max-w-lg">
+                        {children}
+                        <div className="mt-8">
+                            <ReportEntryLink role="employer" />
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>

@@ -11,6 +11,7 @@ import { ConversationDrawerProvider } from "@/contexts/ConversationDrawerContext
 import { ToastProvider } from "@/components/ui/toast";
 import { PostJobProvider } from "@/contexts/PostJobContext";
 import { UnreadMessagesProvider } from "@/contexts/UnreadMessagesContext";
+import { ReportProblemProvider } from "@/contexts/ReportProblemContext";
 
 const lexend = Lexend({
   subsets: ["latin"],
@@ -75,34 +76,41 @@ export default async function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
         <NextIntlClientProvider locale={locale} messages={messages}>
           <AuthProvider locale={locale}>
-            {/* One profile load for the whole session. Every page mounts its
-                own AppShell, so a chip fetch owned by the shell ran again on
-                every navigation -- see SidebarProfileContext. */}
-            <SidebarProfileProvider>
-              <ToastProvider>
-                {/* One inbox read for the whole session, above the router.
-                    The nav badge, the drawer and the dashboard panel all
-                    render the same unread count, and a hook per surface would
-                    be four pollers on one endpoint -- see
-                    UnreadMessagesContext. Above PostJobProvider so the drawer
-                    (mounted below it) can consume it. */}
-                <UnreadMessagesProvider>
-                  {/* Inside ToastProvider (it toasts a posted job) and outside
-                      the pages, so "Post a job" is reachable from every employer
-                      surface rather than only from the dashboard. */}
-                  <PostJobProvider>
-                    {/* Mounts the drawer itself, the way PostJobProvider
-                        mounts the wizard, so any surface can open a thread
-                        for one applicant instead of only the drawer's own
-                        floating button being able to. */}
-                    <ConversationDrawerProvider>
-                      <Header />
-                      {children}
-                    </ConversationDrawerProvider>
-                  </PostJobProvider>
-                </UnreadMessagesProvider>
-              </ToastProvider>
-            </SidebarProfileProvider>
+            {/* "Report a problem" from anywhere: inside AuthProvider (the
+                form needs the session) and above everything else, so every
+                header, sign-in screen and error state below can open it. It
+                mounts its own sheet, and records the screens visited and
+                uncaught errors for the report's context. */}
+            <ReportProblemProvider>
+              {/* One profile load for the whole session. Every page mounts its
+                  own AppShell, so a chip fetch owned by the shell ran again on
+                  every navigation -- see SidebarProfileContext. */}
+              <SidebarProfileProvider>
+                <ToastProvider>
+                  {/* One inbox read for the whole session, above the router.
+                      The nav badge, the drawer and the dashboard panel all
+                      render the same unread count, and a hook per surface would
+                      be four pollers on one endpoint -- see
+                      UnreadMessagesContext. Above PostJobProvider so the drawer
+                      (mounted below it) can consume it. */}
+                  <UnreadMessagesProvider>
+                    {/* Inside ToastProvider (it toasts a posted job) and outside
+                        the pages, so "Post a job" is reachable from every employer
+                        surface rather than only from the dashboard. */}
+                    <PostJobProvider>
+                      {/* Mounts the drawer itself, the way PostJobProvider
+                          mounts the wizard, so any surface can open a thread
+                          for one applicant instead of only the drawer's own
+                          floating button being able to. */}
+                      <ConversationDrawerProvider>
+                        <Header />
+                        {children}
+                      </ConversationDrawerProvider>
+                    </PostJobProvider>
+                  </UnreadMessagesProvider>
+                </ToastProvider>
+              </SidebarProfileProvider>
+            </ReportProblemProvider>
           </AuthProvider>
         </NextIntlClientProvider>
       </body>

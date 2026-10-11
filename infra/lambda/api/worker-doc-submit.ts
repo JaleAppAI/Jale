@@ -1,5 +1,7 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { createHash } from 'crypto';
+import { auditCaller } from '../lib/audit/caller';
+import { setAuditContext } from '../lib/audit/context';
 import { getDbPool } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 
@@ -9,6 +11,7 @@ export const handler = async (
   event: APIGatewayProxyEvent,
 ): Promise<APIGatewayProxyResult> => {
   let client;
+  let transactionOpen = false;
   try {
     let body: { token?: string };
     try {
@@ -34,45 +37,45 @@ export const handler = async (
     const pool = await getDbPool();
     client = await pool.connect();
 
-    const result = await client.query(
-      `UPDATE document_upload_tokens token
-          SET used = true, used_at = COALESCE(used_at, now())
-        WHERE token.token_hash = $1
-          AND token.expires_at > now()
-          AND EXISTS (
-            SELECT 1 FROM document_upload_token_slots slots
-            WHERE slots.token_hash = token.token_hash
-              AND slots.confirmed_at IS NOT NULL
-          )
-        RETURNING token.used`,
+    // One capability call: marks the token used once at least one slot is
+    // confirmed. A repeat submit is still ok; an unknown or expired token is
+    // invalid_token; a live token with nothing confirmed is confirm_required.
+    // It runs in a transaction of its own so that whoever holds the link is
+    // named as the actor of what it writes.
+    await client.query('BEGIN');
+    transactionOpen = true;
+    await setAuditContext(client, auditCaller(event, { kind: 'token_holder' }, 'web'), 'token_holder.document_submit');
+    const result = await client.query<{ outcome: string }>(
+      `SELECT outcome FROM jale_cap.upload_token_submit($1)`,
       [tokenHash],
     );
-    if (result.rowCount === 1) {
+    await client.query('COMMIT');
+    transactionOpen = false;
+    const outcome = result.rows[0]?.outcome;
+    if (outcome === 'ok') {
       return {
         statusCode: 200,
         headers: CORS_HEADERS,
         body: JSON.stringify({ success: true }),
       };
     }
-
-    const exists = await client.query(
-      `SELECT (expires_at > now()) AS unexpired FROM document_upload_tokens WHERE token_hash = $1`,
-      [tokenHash],
-    );
-    if (exists.rows.length === 0 || exists.rows[0].unexpired !== true) {
+    if (outcome === 'invalid_token') {
       return {
         statusCode: 401,
         headers: CORS_HEADERS,
         body: JSON.stringify({ error: 'invalid_token' }),
       };
     }
-
-    return {
-      statusCode: 409,
-      headers: CORS_HEADERS,
-      body: JSON.stringify({ error: 'confirm_required' }),
-    };
+    if (outcome === 'confirm_required') {
+      return {
+        statusCode: 409,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({ error: 'confirm_required' }),
+      };
+    }
+    throw new Error(`upload_token_submit_unexpected_outcome:${String(outcome)}`);
   } catch (err) {
+    if (client && transactionOpen) await client.query('ROLLBACK').catch(() => undefined);
     console.error('worker-doc-submit error:', errorMessage(err));
     return {
       statusCode: 500,

@@ -5,9 +5,9 @@
 # Apply the migration against the Jale RDS via the ephemeral BastionStack.
 # Usage:
 #
-#   1. Deploy the bastion: `npx cdk deploy JaleBastionStack` (from infra/)
+#   1. Deploy the bastion: `pwsh scripts/deploy-bastion.ps1` (or `bash scripts/deploy-bastion.sh`)
 #   2. Run this script:    `pwsh scripts/run-migration-022.ps1`
-#   3. Destroy the bastion: `npx cdk destroy JaleBastionStack`
+#   3. Destroy the bastion: `pwsh scripts/deploy-bastion.ps1 -Destroy` (or `bash scripts/deploy-bastion.sh --destroy`)
 #
 # What this does:
 #   - Resolves the bastion instance ID from CloudFormation output
@@ -38,6 +38,14 @@ param(
     )
 )
 
+# Retired: this runner refuses to run. It keeps no migration ledger, and
+# most of these runners reset role passwords unconditionally, so a re-run
+# could replay applied migrations or break live logins. Use
+# scripts/run-migrations.sh, which keeps the ledger, verifies checksums and
+# changes a password only when asked to. There is no override.
+[Console]::Error.WriteLine('!! scripts/run-migration-022.ps1 is retired and refuses to run: it keeps no migration ledger, and it resets the jale_matching password and mints a new WhatsApp login password on every run. Use: bash scripts/run-migrations.sh (see --help).')
+exit 1
+
 $ErrorActionPreference = 'Stop'
 
 $BastionStack = 'JaleBastionStack'
@@ -66,7 +74,7 @@ if ($bastionId) { $bastionId = $bastionId.Trim() }
 
 if ([string]::IsNullOrEmpty($bastionId) -or $bastionId -eq 'None') {
     Write-Host "!! Could not find BastionInstanceId output on $BastionStack." -ForegroundColor Red
-    Write-Host "   Deploy the stack first: cd infra; npx cdk deploy $BastionStack"
+    Write-Host "   Deploy the stack first: .\scripts\deploy-bastion.ps1 (or: bash scripts/deploy-bastion.sh)"
     exit 1
 }
 Write-Host "   bastion: $bastionId"
@@ -321,7 +329,7 @@ aws ssm list-command-invocations `
 
 Write-Host ""
 Write-Host ">> All done. Next:"
-Write-Host "   cd infra; npx cdk destroy JaleBastionStack    # cost hygiene"
+Write-Host "   .\scripts\deploy-bastion.ps1 -Destroy    # cost hygiene; or: bash scripts/deploy-bastion.sh --destroy"
 Write-Host ""
 Write-Host ">> Deploy through the GitHub workflow (.github/workflows/deploy-production.yml)."
 Write-Host "   A hand-run 'cdk deploy' sends CloudFormation only the context you type, and"

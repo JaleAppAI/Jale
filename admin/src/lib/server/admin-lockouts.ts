@@ -1,5 +1,11 @@
-import { getAdminDbPool } from './db';
 import type { IdentityLockout, IdentityLockoutKind, IdentityLockoutOutcome } from '../types';
+import {
+  recordAdminAccess,
+  recordAdminAttempt,
+  withAdminReadTransaction,
+  type AuditQueryClient,
+} from './audit/record';
+import type { AdminSession } from './session-claims';
 
 // The list's fixed window. admin_identity_lockouts() accepts 1–30 days.
 export const LOCKOUT_WINDOW_DAYS = 7;
@@ -79,11 +85,37 @@ export function lockoutOutcomeText(item: Pick<IdentityLockout, 'outcome' | 'lock
   return OUTCOME_LABELS[item.outcome];
 }
 
-export async function listIdentityLockouts(days: number = LOCKOUT_WINDOW_DAYS): Promise<IdentityLockout[]> {
-  const pool = await getAdminDbPool();
-  const result = await pool.query<IdentityLockoutRow>(
+export async function listIdentityLockouts(
+  client: AuditQueryClient,
+  days: number = LOCKOUT_WINDOW_DAYS,
+): Promise<IdentityLockout[]> {
+  const result = await client.query<IdentityLockoutRow>(
     'SELECT * FROM admin_identity_lockouts($1)',
     [days],
   );
   return result.rows.map(mapIdentityLockoutRow);
+}
+
+/**
+ * The lockout list. Records every challenge id shown. The function
+ * returns no user id (migration 102), so the record names no subject. A
+ * read that fails records a failed attempt once its client is released.
+ */
+export async function loadLockouts(session: AdminSession): Promise<IdentityLockout[]> {
+  try {
+    return await withAdminReadTransaction(session, async (client) => {
+      const lockouts = await listIdentityLockouts(client);
+      await recordAdminAccess(session, {
+        surface: 'admin.lockouts',
+        categories: ['verifications'],
+        recordType: 'identity_challenge',
+        recordIds: lockouts.map((item) => item.challengeId),
+        purpose: { kind: 'verification' },
+      }, client);
+      return lockouts;
+    });
+  } catch (error) {
+    await recordAdminAttempt(session, { surface: 'admin.lockouts', categories: ['verifications'], outcome: 'failed' });
+    throw error;
+  }
 }

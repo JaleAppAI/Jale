@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { listAdminCases } from '@/lib/server/admin-cases';
+import { loadCasesList } from '@/lib/server/admin-cases';
 import { requireAdminSession } from '@/lib/server/session';
 
 const statusTone: Record<string, string> = {
@@ -11,8 +11,9 @@ const statusTone: Record<string, string> = {
 };
 
 export default async function CasesPage() {
-  await requireAdminSession();
-  const { rows: adminCases, totalCount } = await listAdminCases();
+  const session = await requireAdminSession();
+  // Records the cases on this page and their subjects before rendering.
+  const { rows: adminCases, totalCount } = await loadCasesList(session);
 
   return (
     <main className="stack-gap">
@@ -44,7 +45,7 @@ export default async function CasesPage() {
               <span>{item.lastMessage}</span>
               <span className="muted">{item.maskedPhone}</span>
             </div>
-            <Link className="button" href={`/cases/${item.id}`}>Open case</Link>
+            <Link className="button" href={`/cases/${item.id}`} prefetch={false}>Open case</Link>
           </div>
         ))}
         {adminCases.length === 0 ? <p className="muted">No admin cases found.</p> : null}

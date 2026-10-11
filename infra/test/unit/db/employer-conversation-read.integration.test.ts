@@ -78,6 +78,7 @@ import { randomUUID } from 'node:crypto';
 import { Client, type PoolClient } from 'pg';
 
 import { listEmployerInbox } from '../../../lambda/lib/employer-inbox';
+import { itInProfiles } from './helpers/login-pool';
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
 
@@ -329,7 +330,8 @@ maybeDescribe('employer conversation mark-read against real PostgreSQL', () => {
   });
 
   // ── Case 3 — RLS scoping, checklist item 1: the WHERE clause removed ─────
-  it("confines an UNQUALIFIED blanket UPDATE to the calling employer's own rows", async () => {
+  // Checks row policies as the standard and request test beds apply them.
+  itInProfiles(['standard', 'request'], "confines an UNQUALIFIED blanket UPDATE to the calling employer's own rows", async () => {
     const employerA = await newEmployer();
     const employerB = await newEmployer();
     const ownFirst = await newConversation(employerA.id, '2026-09-10T12:00:00Z');
@@ -349,7 +351,8 @@ maybeDescribe('employer conversation mark-read against real PostgreSQL', () => {
   });
 
   // ── Case 4 — the trap: a missing internal-user GUC is a SILENT no-op ─────
-  it("touches ZERO rows on the employer's OWN conversation when the internal-user GUC is unset", async () => {
+  // Checks row policies as the standard and request test beds apply them.
+  itInProfiles(['standard', 'request'], "touches ZERO rows on the employer's OWN conversation when the internal-user GUC is unset", async () => {
     const employer = await newEmployer();
     const conversation = await newConversation(employer.id, '2026-09-10T12:00:00Z');
 
@@ -793,7 +796,7 @@ maybeDescribe('migration 096 backfills the employer read stamp', () => {
   // CASES ARE ORDERED AND STATEFUL: each reads the end state the previous one
   // produced. Do not reorder them.
 
-  it('1. applies as the real jale_admin, non-superuser and table owner -- which is what makes FORCE bind', async () => {
+  it('1. on the bed, the migration connection is a non-superuser that owns the table', async () => {
     const who = await admin.query<{ user: string; super: boolean }>(
       `SELECT current_user AS user,
               (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) AS super`,

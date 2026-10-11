@@ -1,5 +1,7 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { applyWorkerToJob } from '../lib/applications';
+import { auditCaller } from '../lib/audit/caller';
+import { setAuditContext } from '../lib/audit/context';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
@@ -71,6 +73,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_provisioned' }) };
     }
     const workerId: string = workerRes.rows[0].id;
+    await setAuditContext(client, auditCaller(event, { kind: 'worker', id: workerId }, 'web'), 'worker.job_apply');
 
     const applyResult = await applyWorkerToJob(client, {
       workerId,

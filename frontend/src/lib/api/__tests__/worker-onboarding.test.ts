@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../errors';
+import { registerAuthBridge } from '../../auth-bridge';
 import {
+    claimReferral,
     getWorkerOnboarding,
     patchOnboardingLanguage,
     postOnboardingAnswers,
@@ -45,10 +47,11 @@ const STATE = {
     trust: { questions: [], answers: [] },
     pendingLocationConfirm: null,
     extraction: null,
+    referredJob: null,
 } as unknown as OnboardingState;
 
 const TOKEN = 'id-token';
-const BODY = { lockVersion: 3, answers: [{ stepKey: 'profile.name', value: 'David C' }] };
+const BODY = { lockVersion: 3, answers: [{ stepKey: 'profile.name', value: 'Alex R' }] };
 
 let fetchMock: ReturnType<typeof vi.fn>;
 
@@ -197,5 +200,74 @@ describe('postOnboardingBack and patchOnboardingLanguage', () => {
         const pending = postOnboardingBack(TOKEN, { lockVersion: 3 }, controller.signal);
         controller.abort();
         await expect(pending).rejects.toThrow(/aborted/i);
+    });
+});
+
+/**
+ * `POST /worker/referrals/claim` takes `{ jobId?, shareCode? }` and answers
+ * `{ claimed, recorded }`. Each field is validated on its own server-side, so
+ * the client sends only the ones it actually has -- a `null` on the wire is a
+ * field the server has to decide how to read, and it should never have to.
+ */
+describe('claimReferral', () => {
+    const JOB_ID = '8f3a2c1d-4b5e-4f60-9a71-2c3d4e5f6071';
+
+    afterEach(() => {
+        registerAuthBridge(null);
+    });
+
+    it('posts the job alone when there is no share code, and returns { claimed, recorded }', async () => {
+        fetchMock.mockResolvedValue(json(200, { claimed: false, recorded: [JOB_ID] }));
+
+        await expect(claimReferral(TOKEN, { jobId: JOB_ID, shareCode: null }))
+            .resolves.toEqual({ claimed: false, recorded: [JOB_ID] });
+
+        const [url, init] = fetchMock.mock.calls[0];
+        expect(url).toContain('/worker/referrals/claim');
+        expect(init.method).toBe('POST');
+        expect(init.headers.Authorization).toBe(TOKEN);
+        expect(JSON.parse(init.body)).toEqual({ jobId: JOB_ID });
+    });
+
+    it('posts both when it has both', async () => {
+        fetchMock.mockResolvedValue(json(200, { claimed: true, recorded: [JOB_ID] }));
+
+        await claimReferral(TOKEN, { jobId: JOB_ID, shareCode: '7K3M9QX2' });
+
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ jobId: JOB_ID, shareCode: '7K3M9QX2' });
+    });
+
+    it('posts the share code alone when there is no job', async () => {
+        fetchMock.mockResolvedValue(json(200, { claimed: true, recorded: [] }));
+
+        await claimReferral(TOKEN, { shareCode: '7K3M9QX2' });
+
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ shareCode: '7K3M9QX2' });
+    });
+
+    it('throws the backend code on a refusal, so a caller can ignore it knowingly', async () => {
+        fetchMock.mockResolvedValue(json(400, { error: 'invalid_request' }));
+
+        await expect(claimReferral(TOKEN, { jobId: JOB_ID })).rejects.toMatchObject({
+            status: 400,
+            code: 'invalid_request',
+        });
+    });
+
+    it('never turns a 401 into a session refresh or a trip to the login page', async () => {
+        // The sign-in form claims BEFORE `setTokens`, while there is no stored
+        // session at all: the refresh path would find nothing, declare the
+        // session expired and `location.assign` the login page out from under
+        // a worker who has just proved their number. A claim must never move
+        // anyone anywhere.
+        const refreshIdToken = vi.fn(async () => 'fresh-token');
+        const onSessionExpired = vi.fn();
+        registerAuthBridge({ refreshIdToken, onSessionExpired });
+        fetchMock.mockResolvedValue(json(401, { message: 'Unauthorized' }));
+
+        await expect(claimReferral(TOKEN, { jobId: JOB_ID })).rejects.toMatchObject({ status: 401 });
+        expect(refreshIdToken).not.toHaveBeenCalled();
+        expect(onSessionExpired).not.toHaveBeenCalled();
+        expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 });

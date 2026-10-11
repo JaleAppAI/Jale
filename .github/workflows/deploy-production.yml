@@ -19,6 +19,16 @@ on:
           - referrals
           - notifications
           - all
+      posture_override:
+        description: Let the database posture gate pass whatever the check finds. Needs a reason below.
+        required: false
+        type: boolean
+        default: false
+      posture_override_reason:
+        description: Why the database posture gate is overridden. Shown in the run summary.
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -79,14 +89,23 @@ jobs:
         run: |
           set -euo pipefail
 
-          full_stack_list="JaleNetworkStack JaleDatabaseStack JaleAuthStack JaleAiStack JaleMatchingStack JaleApiStack JaleReferralsStack JaleNotificationsStack JaleBillingStack JaleLegalStack JaleWhatsAppStack JaleDocumentsStack JaleMediaBoardStack JaleAdminCertStack JaleAdminStack JaleFrontendStack"
+          # The audit stacks come right after the database: JaleAuditStack
+          # creates the fallback group every database Lambda writes to, and
+          # the stacks holding those Lambdas depend on it.
+          full_stack_list="JaleNetworkStack JaleDatabaseStack JaleAuditArchiveStack JaleAuditStack JaleAuditEdgeStack JaleAuditEdgeUsWest2Stack JaleAuthStack JaleAiStack JaleMatchingStack JaleReportsStack JaleApiStack JaleReferralsStack JaleNotificationsStack JaleBillingStack JaleLegalStack JaleWhatsAppStack JaleDocumentsStack JaleMediaBoardStack JaleAdminCertStack JaleAdminStack JaleFrontendStack"
           frontend_stack_list="JaleFrontendStack"
           admin_prerequisites_stack_list="JaleDatabaseStack JaleAdminCertStack"
           # JaleDocumentsStack precedes JaleWhatsAppStack: the WhatsApp
           # processor imports the documents bucket/key exports (application-
           # fill doc uploads), and --exclusively deploys only the stacks
-          # named here.
-          admin_stack_list="JaleDatabaseStack JaleDocumentsStack JaleWhatsAppStack JaleAdminStack"
+          # named here. JaleReportsStack precedes JaleAdminStack for the same
+          # reason: the admin Lambda imports the report images bucket/key.
+          # The admin scope deploys these --exclusively, so it never walks
+          # JaleAdminStack's dependency on JaleAuditStack: it relies on the
+          # audit stack's fallback log group (fixed name, no export) already
+          # existing from the full release deploy. A first deploy of a release
+          # that adds the audit stacks must be the full scope (all).
+          admin_stack_list="JaleDatabaseStack JaleDocumentsStack JaleWhatsAppStack JaleReportsStack JaleAdminStack"
           billing_prerequisites_stack_list="JaleNetworkStack JaleDatabaseStack"
 
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
@@ -117,6 +136,8 @@ jobs:
                 # (the bastion password sync needs them to exist); ApiStack and
                 # ReferralsStack must deploy together because the referral routes'
                 # Methods land in the ApiStack template. No --exclusively.
+                # The report routes' Methods land there too, so JaleApiStack
+                # depends on JaleReportsStack and cdk deploys that stack first.
                 echo "deploy-stacks=JaleDatabaseStack JaleApiStack JaleReferralsStack" >> "$GITHUB_OUTPUT"
                 echo "cdk-extra-args=" >> "$GITHUB_OUTPUT"
                 ;;
@@ -141,7 +162,8 @@ jobs:
                 # backend. That is inherited from the `referrals` scope above,
                 # not introduced here, and it is the price of the Methods living
                 # in the ApiStack template. Expect a full-backend changeset diff
-                # and review it before confirming.
+                # and review it before confirming. That walk includes
+                # JaleReportsStack, whose report routes also land in ApiStack.
                 echo "deploy-stacks=JaleDatabaseStack JaleApiStack JaleNotificationsStack" >> "$GITHUB_OUTPUT"
                 echo "cdk-extra-args=" >> "$GITHUB_OUTPUT"
                 ;;
@@ -205,3 +227,6 @@ jobs:
       cdk-environment: ${{ vars.CDK_CONTEXT_ENVIRONMENT || 'production' }}
       deploy-stacks: ${{ needs.detect-changes.outputs.deploy-stacks }}
       cdk-extra-args: ${{ needs.detect-changes.outputs.cdk-extra-args }}
+      # false and empty on a push to prod: the override is a dispatch-only choice.
+      posture-override: ${{ inputs.posture_override == true }}
+      posture-override-reason: ${{ inputs.posture_override_reason || '' }}

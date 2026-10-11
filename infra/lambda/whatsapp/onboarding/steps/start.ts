@@ -13,7 +13,7 @@ import {
   appendSendTimestamp,
 } from '../../lib/onboarding-language';
 import { parseApplyToken } from '../../../lib/referral-codes';
-import { parkPendingClaim } from '../../lib/referral-claims';
+import { loadActiveJobLabel, parkPendingClaim } from '../../lib/referral-claims';
 import type { OnboardingV2Deps, OnboardingV2InboundMessage, OnboardingV2Session, RouteResult } from '../types';
 import { sendPreAuthPrompt, sendPreAuthText, readHistory } from '../delivery';
 
@@ -26,18 +26,22 @@ export async function handleStartStep(
   phoneHash: string,
   now: Date,
 ): Promise<RouteResult> {
-  const lang: Lang = preAuth?.preferredLanguage ?? session.language ?? 'es';
   const candidateUserId = preAuth?.candidateUserId ?? session.user_id ?? null;
 
   // Job referrals (migration 056): a referral code is a side effect on
-  // arrival, not a workflow step — it creates no `users` row, sends no OTP,
-  // and never changes what gets sent back below. Whether the token is
-  // valid, unknown, expired, or already consumed, `parkPendingClaim`
-  // resolves to a plain boolean this handler never inspects: the reply
-  // must be byte-identical either way, so nothing here ever branches on the
-  // result. Checked ahead of `parseLanguageChoice` per spec, but a
+  // arrival, not a workflow step — it creates no `users` row and sends no
+  // OTP. Checked ahead of `parseLanguageChoice` deliberately, but a
   // `JALE-XXXXXXXX` code never matches START/EMPEZAR anyway, so normal
   // language-choice handling always falls through unaffected.
+  //
+  // Sprint 27 deliberately ENDS the old "byte-identical reply either way"
+  // rule: a token that parks, for a job that is still active, is now
+  // acknowledged by name ahead of the invitation, so the first reply is
+  // about the job the person tapped Apply on. What the reply must still
+  // never depend on is whether an ACCOUNT exists -- no-account, candidate
+  // and bound-session senders get the same bytes -- and an unknown, expired
+  // or consumed token still gets exactly the no-code reply: `jobId` and
+  // `locale` come back only for a token that parked.
   //
   // Isolated behind SAVEPOINT/RELEASE: this call runs inside the caller's
   // already-open transaction, and a referral side effect must never be able
@@ -47,14 +51,18 @@ export async function handleStartStep(
   // send itself) fails with 25P02 even if the error is swallowed here. A
   // SAVEPOINT gives the failure a boundary: on error, rolling back to it
   // discards only the referral statements, leaving the rest of this turn —
-  // and the sender's Start invitation — unaffected. Never logs the token or
-  // phone hash, only a static error code.
+  // and the sender's Start invitation — unaffected; nothing is acknowledged
+  // for a park that was rolled back. Never logs the token or phone hash,
+  // only a static error code.
+  let referral: { label: { title: string; company: string }; locale: string | null } | null = null;
   const applyToken = parseApplyToken(msg.body);
   if (applyToken) {
     try {
       await client.query('SAVEPOINT referral_park');
-      await parkPendingClaim(client, phoneHash, applyToken, now);
+      const park = await parkPendingClaim(client, phoneHash, applyToken, now);
+      const label = park.parked && park.jobId ? await loadActiveJobLabel(client, park.jobId) : null;
       await client.query('RELEASE SAVEPOINT referral_park');
+      if (label) referral = { label, locale: park.locale };
     } catch {
       try {
         await client.query('ROLLBACK TO SAVEPOINT referral_park');
@@ -67,6 +75,14 @@ export async function handleStartStep(
       console.error(JSON.stringify({ metric: 'ReferralParkFailed' }));
     }
   }
+
+  // The reply's language: the phone's pre-auth choice, else the language of
+  // the page the link was opened on (the token row's locale, en/es only),
+  // else the conversation's. The English prefill is not hello/hi/hey, so a
+  // brand-new conversation reads it as Spanish -- the locale is the only
+  // signal that this person was on the English page.
+  const tokenLocale: Lang | null = referral?.locale === 'en' || referral?.locale === 'es' ? referral.locale : null;
+  const lang: Lang = preAuth?.preferredLanguage ?? tokenLocale ?? session.language ?? 'es';
 
   const choice = parseLanguageChoice(msg.body, msg.interactivePayload);
   if (choice) {
@@ -133,6 +149,11 @@ export async function handleStartStep(
   }
 
   const newHistory = appendSendTimestamp(history, now);
+  // The ack is part of this same reply, so the cooldown above blocks it too;
+  // the claim stays parked either way.
+  if (referral) {
+    await sendPreAuthText(client, deps, msg, lang, 'v2_referral_ack', referral.label);
+  }
   await sendPreAuthPrompt(client, deps, msg, 'start.choose_language', lang);
   await deps.repo.savePreAuthState(client, phoneHash, {
     candidateUserId,

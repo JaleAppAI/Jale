@@ -63,15 +63,50 @@ export type IdentityLockout = {
   startedAt: string;
 };
 
-export type AuditEvent = {
-  id: string;
-  at: string;
-  actor: string;
-  action: string;
-  targetType: string;
-  targetId: string;
+// One row of the access history (jale_audit.history_search): an access event,
+// a data change, or a record from the earlier action log. Optional fields are
+// absent when the source does not have them.
+export type AccessHistorySource = 'event' | 'change' | 'legacy';
+
+export type AccessHistoryEntry = {
+  /** `${source}:${entry id}`, unique across sources. */
+  key: string;
+  source: AccessHistorySource;
+  /** UTC, ISO 8601. */
+  occurredAt: string;
+  kind?: string;
+  outcome?: string;
+  actorKind?: string;
+  actorId?: string;
+  actorRole?: string;
+  actorSession?: string;
+  actorEmail?: string;
+  channel?: string;
+  surface?: string;
+  categories: string[];
+  subjectUserIds: string[];
+  recordType?: string;
+  recordIds: string[];
+  resultCount?: number;
+  fieldNames: string[];
+  purposeKind?: string;
+  purposeId?: string;
+  /** A reveal's reason, or a legacy record's justification as the freeze left it. */
+  reason?: string;
+  linkExpiresAt?: string;
+  part?: number;
+  parts?: number;
+  tableName?: string;
+  operation?: string;
+  rowCount?: number;
+  changedFields: string[];
+  contextStatus?: string;
+  action?: string;
+  targetType?: string;
+  targetId?: string;
+  summary?: string;
   piiReveal: boolean;
-  summary: string;
+  requestId?: string;
 };
 
 export type AnalyticsRange = '7d' | '30d' | '90d';

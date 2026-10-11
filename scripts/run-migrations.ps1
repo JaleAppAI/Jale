@@ -3,9 +3,9 @@
 # Apply DB migrations against the Jale RDS via the ephemeral BastionStack.
 # Usage:
 #
-#   1. Deploy the bastion: `pwsh scripts/deploy-bastion.ps1` (or `npx cdk -c bastionOnly=true deploy JaleBastionStack --exclusively` from infra/)
+#   1. Deploy the bastion: `pwsh scripts/deploy-bastion.ps1` (or `bash scripts/deploy-bastion.sh`)
 #   2. Run this script:    `pwsh scripts/run-migrations.ps1`  (or .\scripts\run-migrations.ps1 from repo root)
-#   3. Destroy the bastion: `npx cdk destroy JaleBastionStack`
+#   3. Destroy the bastion: `pwsh scripts/deploy-bastion.ps1 -Destroy` (or `bash scripts/deploy-bastion.sh --destroy`)
 #
 # What this does:
 #   - Resolves the bastion instance ID from CloudFormation output
@@ -37,6 +37,14 @@ param(
         else { 'us-east-2' }
     )
 )
+
+# Retired: this runner refuses to run. It keeps no migration ledger, and
+# most of these runners reset role passwords unconditionally, so a re-run
+# could replay applied migrations or break live logins. Use
+# scripts/run-migrations.sh, which keeps the ledger, verifies checksums and
+# changes a password only when asked to. There is no override.
+[Console]::Error.WriteLine('!! scripts/run-migrations.ps1 is retired and refuses to run: it keeps no migration ledger, so every run replays the chain, and it resets five role passwords (minting a new WhatsApp login password) on every run. Use: bash scripts/run-migrations.sh (see --help).')
+exit 1
 
 $ErrorActionPreference = 'Stop'
 
@@ -152,6 +160,16 @@ $MigrationFiles = @(
     '100_subscription_status_history.sql'
     '101_worker_identity_challenge_events.sql'
     '102_admin_identity_lockouts.sql'
+    '103_worker_referred_jobs.sql'
+    '104_least_privilege_logins.sql'
+    '105_least_privilege_capability_functions.sql'
+    '106_least_privilege_access_rights.sql'
+    '107_problem_reports_schema.sql'
+    '108_problem_reports_functions.sql'
+    '109_audit_storage.sql'
+    '110_admin_audit_log_freeze.sql'
+    '111_audit_change_log.sql'
+    '112_audit_operator_functions.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path
@@ -519,7 +537,7 @@ aws ssm list-command-invocations `
 
 Write-Host ""
 Write-Host ">> All done. Next:"
-Write-Host "   cd infra; npx cdk destroy JaleBastionStack    # cost hygiene"
+Write-Host "   .\scripts\deploy-bastion.ps1 -Destroy    # cost hygiene; or: bash scripts/deploy-bastion.sh --destroy"
 Write-Host ""
 Write-Host ">> Deploy through the GitHub workflow (.github/workflows/deploy-production.yml)."
 Write-Host "   A hand-run 'cdk deploy' sends CloudFormation only the context you type, and"

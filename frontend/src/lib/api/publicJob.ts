@@ -7,6 +7,8 @@
 // and infra/lambda/api/public-job-apply-intent.ts's response body exactly --
 // do not add fields the API cannot return (e.g. employer contact details).
 
+import { recordFetch, recordRequest } from '../report/context';
+
 export type JobLanguagePreference = 'any' | 'en' | 'es';
 export type PublicJobDocType = 'resume' | 'driver_license' | 'ssn';
 
@@ -107,10 +109,11 @@ export class PublicJobNotFoundError extends Error {
  * differing options object between those two call sites.
  */
 export async function getPublicJob(code: string): Promise<PublicJob> {
-  const res = await fetch(
-    `${process.env.NEXT_PUBLIC_API_BASE_URL}/public/jobs/${encodeURIComponent(code)}`,
+  const url = `${process.env.NEXT_PUBLIC_API_BASE_URL}/public/jobs/${encodeURIComponent(code)}`;
+  const res = await recordFetch({ method: 'GET', url }, () => fetch(
+    url,
     { next: { revalidate: 60 } },
-  );
+  ));
   if (res.status === 404) throw new PublicJobNotFoundError();
   if (!res.ok) throw new Error('public_job_fetch_failed');
   return res.json();
@@ -134,9 +137,10 @@ export async function getReferrerContext(
   shareCode: string,
 ): Promise<PublicJobReferrerContext | null> {
   try {
-    const res = await fetch(
-      `${process.env.NEXT_PUBLIC_API_BASE_URL}/public/jobs/${encodeURIComponent(code)}/referrer?r=${encodeURIComponent(shareCode)}`,
-    );
+    const url = `${process.env.NEXT_PUBLIC_API_BASE_URL}/public/jobs/${encodeURIComponent(code)}/referrer?r=${encodeURIComponent(shareCode)}`;
+    const res = await recordFetch({ method: 'GET', url }, () => fetch(
+      url,
+    ));
     if (!res.ok) return null;
     const data = await res.json();
     if (data?.kind !== 'worker' && data?.kind !== 'employer') return null;
@@ -152,14 +156,16 @@ export async function getReferrerContext(
  * environments without it (e.g. older browsers, some in-app webviews). */
 function defaultSend(url: string, body: string): boolean | Promise<unknown> {
   if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+    // A beacon never shows its response: recorded with status 0.
+    recordRequest({ method: 'POST', url, status: 0, ms: 0 });
     return navigator.sendBeacon(url, new Blob([body], { type: 'application/json' }));
   }
-  return fetch(url, {
+  return recordFetch({ method: 'POST', url }, () => fetch(url, {
     method: 'POST',
     body,
     keepalive: true,
     headers: { 'Content-Type': 'application/json' },
-  }).catch(() => {});
+  })).catch(() => {});
 }
 
 /**
@@ -193,10 +199,11 @@ export interface ApplyIntentResponse {
 
 export async function applyIntent(code: string, shareCode?: string | null): Promise<ApplyIntentResponse> {
   const qs = shareCode ? `?r=${encodeURIComponent(shareCode)}` : '';
-  const res = await fetch(
-    `${process.env.NEXT_PUBLIC_API_BASE_URL}/public/jobs/${encodeURIComponent(code)}/apply-intent${qs}`,
+  const url = `${process.env.NEXT_PUBLIC_API_BASE_URL}/public/jobs/${encodeURIComponent(code)}/apply-intent${qs}`;
+  const res = await recordFetch({ method: 'POST', url }, () => fetch(
+    url,
     { method: 'POST', cache: 'no-store' },
-  );
+  ));
   if (!res.ok) throw new Error('apply_intent_failed');
   return res.json();
 }
@@ -294,10 +301,10 @@ export async function getPublicJobsList(
       if (cursor) qs.set('cursor', cursor);
       const url = `${base}/public/jobs?${qs.toString()}`;
 
-      let res: Response = await fetch(url, { cache: 'no-store' });
+      let res: Response = await recordFetch({ method: 'GET', url }, () => fetch(url, { cache: 'no-store' }));
       for (let retry = 0; res.status === 429 && retry < MAX_PAGE_RETRIES; retry += 1) {
         await delayFn(RETRY_DELAY_MS);
-        res = await fetch(url, { cache: 'no-store' });
+        res = await recordFetch({ method: 'GET', url }, () => fetch(url, { cache: 'no-store' }));
       }
 
       if (!res.ok) {

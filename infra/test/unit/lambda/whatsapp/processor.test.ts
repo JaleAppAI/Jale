@@ -127,6 +127,10 @@ jest.mock('../../../../lambda/whatsapp/onboarding-v2', () => ({
     mockRouteOnboardingV2(client, session, msg, deps),
 }));
 
+// The change-record context is asserted by its own describe below;
+// mocked here so no other test sees its statement.
+jest.mock('../../../../lambda/lib/audit/context');
+
 const mockCreateOnboardingV2Adapters = jest.fn();
 jest.mock('../../../../lambda/whatsapp/lib/onboarding-adapters', () => ({
   createOnboardingV2Adapters: (deps: unknown) => mockCreateOnboardingV2Adapters(deps),
@@ -168,7 +172,10 @@ const mockFetch = jest.fn();
 (global as any).fetch = mockFetch;
 
 import { handler } from '../../../../lambda/whatsapp/processor';
+import { setAuditContext } from '../../../../lambda/lib/audit/context';
+import { setInternalUserRlsContext } from '../../../../lambda/lib/db';
 import { t } from '../../../../lambda/whatsapp/lib/templates';
+import { FALLBACK_BODY_KEY } from '../../../../lambda/whatsapp/lib/outbox';
 import { parseApplyToken } from '../../../../lambda/lib/referral-codes';
 import { parseTypedApplyToken } from '../../../../lambda/whatsapp/lib/flows';
 import { fillMessage, fieldQuestion, docPrompt } from '../../../../lambda/whatsapp/lib/application-fill-prompts';
@@ -1872,21 +1879,27 @@ describe('Processor Lambda', () => {
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending whatsapp_outbox rows
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set job outbox actor
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN (job outbox read)
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set job outbox actor (transaction-local)
         .mockResolvedValueOnce({
           rowCount: 1,
           rows: [{
             id: 'job-outbox-1',
+            conversation_id: conversationId,
             message_id: 'msg-1',
             whatsapp_number: '+15125551234',
             body: '🏢 ACME — Plomero (#1)\nEmployer says hello',
             content_template: null,
             content_variables: null,
+            send_kind: 'freeform',
           }],
         }) // pending job outbox
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN (mark sent)
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set job outbox actor (transaction-local)
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // mark job outbox sent
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // mark message sent
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // clear job outbox actor
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
 
       await handler(
@@ -1961,21 +1974,27 @@ describe('Processor Lambda', () => {
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending whatsapp_outbox rows
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set job outbox actor
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN (job outbox read)
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set job outbox actor (transaction-local)
         .mockResolvedValueOnce({
           rowCount: 1,
           rows: [{
             id: 'job-outbox-1',
+            conversation_id: conversationId,
             message_id: 'msg-1',
             whatsapp_number: '+15125551234',
             body: '🏢 ACME — Plomero (#1)\nEmployer says hello',
             content_template: null,
             content_variables: null,
+            send_kind: 'freeform',
           }],
         }) // pending job outbox
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN (mark sent)
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set job outbox actor (transaction-local)
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // mark job outbox sent
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // mark message sent
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // clear job outbox actor
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
 
       await handler(
@@ -2462,7 +2481,7 @@ describe('Processor Lambda', () => {
           rowCount: 1,
           rows: [{
             id: 'app-9', title: 'Painter', status: 'contacted',
-            needs_details: true, company_name: 'RM Construction',
+            needs_details: true, company_name: 'NB Construction',
           }],
         }); // the one applications SELECT
         mockStateContextUpdate(); // applications_menu armed
@@ -2481,7 +2500,7 @@ describe('Processor Lambda', () => {
 
         const body = outboxBodies()[0];
         expect(body).toContain(t('applications_header', 'en'));
-        expect(body).toContain('1) Painter - RM Construction - Under review - Details needed');
+        expect(body).toContain('1) Painter - NB Construction - Under review - Details needed');
         expect(body).toContain(t('applications_footer', 'en'));
         // The armed fill never saw the word: no field question, no re-derive
         // beyond the list's own SELECT.
@@ -2506,7 +2525,7 @@ describe('Processor Lambda', () => {
           rowCount: 1,
           rows: [{
             id: 'app-9', title: 'Painter', status: 'contacted',
-            needs_details: true, company_name: 'RM Construction',
+            needs_details: true, company_name: 'NB Construction',
           }],
         }); // idle fallback: the applications SELECT
         mockStateContextUpdate(); // applications_menu armed
@@ -2541,7 +2560,7 @@ describe('Processor Lambda', () => {
           rowCount: 1,
           rows: [{
             id: 'app-9', title: 'Painter', status: 'pending',
-            needs_details: false, company_name: 'RM Construction',
+            needs_details: false, company_name: 'NB Construction',
           }],
         }); // nothing outstanding
         mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox idle_help
@@ -2627,7 +2646,7 @@ describe('Processor Lambda', () => {
           return {
             id: 'job-referred',
             title: 'Roofer',
-            company: 'RM Construction',
+            company: 'NB Construction',
             location: 'El Paso, TX',
             pay_min: null,
             pay_max: null,
@@ -2638,11 +2657,23 @@ describe('Processor Lambda', () => {
           };
         }
 
+        /** Sprint 27: the typed code also lands on the worker's
+         *  referred-jobs list, in its OWN savepoint, with the internal-user
+         *  setting set right before the write (migration 103's jale_whatsapp policy keys
+         *  on it). Runs after the referral credit, before the reply is composed. */
+        function mockTypedCodeRecord(): void {
+          mockQuery.mockResolvedValueOnce(ok()); // SAVEPOINT typed_code_record
+          mockQuery.mockResolvedValueOnce(ok()); // setInternalUserRlsContext
+          mockQuery.mockResolvedValueOnce(ok()); // INSERT INTO worker_referred_jobs
+          mockQuery.mockResolvedValueOnce(ok()); // RELEASE SAVEPOINT typed_code_record
+        }
+
         it('a typed JALE- code answers with that job, exactly like the info action, and arms the number the reply names', async () => {
           mockConvTurn('SM-code-info');
           mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [{ job_id: 'job-referred' }] }); // apply-token -> job
           mockQuery.mockResolvedValueOnce(ok()); // SAVEPOINT typed_code_referral
           mockQuery.mockResolvedValueOnce(ok()); // RELEASE (no share_code: nothing to credit)
+          mockTypedCodeRecord();
           mockStateContextUpdate(); // recent_jobs arm
           mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [referredJobRow()] }); // handleJobAction's job load
           mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox job details
@@ -2662,7 +2693,7 @@ describe('Processor Lambda', () => {
           expect(bodies).toHaveLength(1);
           expect(bodies[0]).toContain('Job details');
           expect(bodies[0]).toContain('Roofer');
-          expect(bodies[0]).toContain('RM Construction');
+          expect(bodies[0]).toContain('NB Construction');
           // Owner ruling: this surface never says accept/decline.
           expect(bodies[0]).toContain('Reply "1 interested" to apply.');
           expect(bodies[0]).not.toContain('accept');
@@ -2694,6 +2725,7 @@ describe('Processor Lambda', () => {
           mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [{ job_id: 'job-referred' }] });
           mockQuery.mockResolvedValueOnce(ok()); // SAVEPOINT typed_code_referral
           mockQuery.mockResolvedValueOnce(ok()); // RELEASE (no share_code: nothing to credit)
+          mockTypedCodeRecord();
           mockStateContextUpdate();
           mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [referredJobRow()] });
           mockQuery.mockResolvedValueOnce(ok());
@@ -2776,6 +2808,7 @@ describe('Processor Lambda', () => {
            *  savepoint was rolled back instead of released. */
           function mockJobAnswerTail({ released = true }: { released?: boolean } = {}): void {
             if (released) mockQuery.mockResolvedValueOnce(ok()); // RELEASE SAVEPOINT
+            mockTypedCodeRecord();
             mockStateContextUpdate(); // recent_jobs arm
             mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [referredJobRow()] });
             mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox job details
@@ -2840,7 +2873,9 @@ describe('Processor Lambda', () => {
             // the trigger rejects, and not latest_* either: this lane decided
             // the touch does not count.
             expect(countQueryByPattern(/UPDATE worker_attribution/i)).toBe(0);
-            expect(countQueryByPattern(/DO UPDATE/i)).toBe(0);
+            // Scoped to the attribution table: sprint 27's referred-jobs
+            // record (worker_referred_jobs) is an upsert by design.
+            expect(countQueryByPattern(/worker_attribution[\s\S]*DO UPDATE/i)).toBe(0);
             // Still answered with the job.
             expect(outboxBodies()[0]).toContain('Roofer');
           });
@@ -2950,6 +2985,93 @@ describe('Processor Lambda', () => {
           });
         });
 
+        // ── Sprint 27: the typed code is KEPT, not only answered ────────────
+        //
+        // The job a worker typed the code for goes onto their referred-jobs
+        // list (worker_referred_jobs, migration 103), so it is pinned to the
+        // top of TRABAJOS and the web feed until they apply or it closes.
+        describe('the typed job lands on the worker referred-jobs list', () => {
+          it('records the job for this worker, in its own savepoint, with the internal setting set first -- and the reply is unchanged', async () => {
+            mockConvTurn('SM-code-record');
+            mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [{ job_id: 'job-referred' }] }); // apply-token -> job
+            mockQuery.mockResolvedValueOnce(ok()); // SAVEPOINT typed_code_referral
+            mockQuery.mockResolvedValueOnce(ok()); // RELEASE (no share_code)
+            mockTypedCodeRecord();
+            mockStateContextUpdate(); // recent_jobs arm
+            mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [referredJobRow()] }); // handleJobAction's job load
+            mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox job details
+            mockBoundWorkerTail();
+
+            await handler(
+              makeSqsEvent({ MessageSid: 'SM-code-record', From: 'whatsapp:+15125551234', Body: 'JALE-ABCD1234' }),
+              {} as any,
+              {} as any,
+            );
+
+            const sql = mockQuery.mock.calls.map(([q]) => String(q));
+            const savepointIdx = sql.indexOf('SAVEPOINT typed_code_record');
+            const recordIdx = sql.findIndex((q) => /INSERT INTO worker_referred_jobs/.test(q));
+            const releaseIdx = sql.indexOf('RELEASE SAVEPOINT typed_code_record');
+            expect(savepointIdx).toBeGreaterThan(sql.indexOf('RELEASE SAVEPOINT typed_code_referral'));
+            expect(recordIdx).toBeGreaterThan(savepointIdx);
+            expect(releaseIdx).toBeGreaterThan(recordIdx);
+            // The setting migration 103's jale_whatsapp policy keys on, for THIS worker,
+            // inside the savepoint and before the write.
+            const settingIdx = sql.findIndex(
+              (q, i) => i > savepointIdx && /set_config\('app\.current_internal_user_id'/.test(q),
+            );
+            expect(settingIdx).toBeGreaterThan(savepointIdx);
+            expect(settingIdx).toBeLessThan(recordIdx);
+            expect(mockQuery.mock.calls[settingIdx][1]).toEqual(['user-1']);
+
+            const recordParams = mockQuery.mock.calls[recordIdx][1] as unknown[];
+            expect(recordParams.slice(0, 3)).toEqual(['user-1', 'job-referred', 'typed_code']);
+
+            // What the worker sees is exactly what they saw before.
+            const bodies = outboxBodies();
+            expect(bodies).toHaveLength(1);
+            expect(bodies[0]).toContain('Job details');
+            expect(bodies[0]).toContain('Reply "1 interested" to apply.');
+          });
+
+          it('a failing record rolls back its own savepoint, logs a static metric, and never costs the reply', async () => {
+            const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+            try {
+              mockConvTurn('SM-code-record-fails');
+              mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [{ job_id: 'job-referred' }] });
+              mockQuery.mockResolvedValueOnce(ok()); // SAVEPOINT typed_code_referral
+              mockQuery.mockResolvedValueOnce(ok()); // RELEASE (no share_code)
+              mockQuery.mockResolvedValueOnce(ok()); // SAVEPOINT typed_code_record
+              mockQuery.mockResolvedValueOnce(ok()); // setInternalUserRlsContext
+              const deadlock: any = new Error('deadlock detected');
+              deadlock.code = '40P01';
+              mockQuery.mockImplementationOnce(() => Promise.reject(deadlock)); // INSERT worker_referred_jobs
+              mockQuery.mockResolvedValueOnce(ok()); // ROLLBACK TO SAVEPOINT typed_code_record
+              mockStateContextUpdate(); // recent_jobs arm
+              mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [referredJobRow()] });
+              mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox job details
+              mockBoundWorkerTail();
+
+              await expect(handler(
+                makeSqsEvent({ MessageSid: 'SM-code-record-fails', From: 'whatsapp:+15125551234', Body: 'JALE-ABCD1234' }),
+                {} as any,
+                {} as any,
+              )).resolves.toBeUndefined();
+
+              const sql = mockQuery.mock.calls.map(([q]) => String(q));
+              expect(sql).toContain('ROLLBACK TO SAVEPOINT typed_code_record');
+              expect(sql).not.toContain('RELEASE SAVEPOINT typed_code_record');
+              expect(outboxBodies()[0]).toContain('Roofer');
+              const logged = errorSpy.mock.calls.map((call) => call.map(String).join(' ')).join('\n');
+              expect(logged).toContain('TypedCodeRecordFailed');
+              expect(logged).not.toContain('ABCD1234');
+              expect(logged).not.toContain('job-referred');
+            } finally {
+              errorSpy.mockRestore();
+            }
+          });
+        });
+
         it('prose that trips the LOOSE token parser still reaches the employer', async () => {
           // The pre-auth parser requires the JALE prefix but no trailing
           // boundary, so any eight Crockford-mappable characters after the
@@ -3036,7 +3158,9 @@ describe('Processor Lambda', () => {
             .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
             .mockResolvedValueOnce({ rowCount: 1, rows: [{ job_id: 'job-referred' }] }) // apply-token -> job
             .mockResolvedValueOnce(ok()) // SAVEPOINT typed_code_referral (R2)
-            .mockResolvedValueOnce(ok()) // RELEASE (no share_code: nothing to credit)
+            .mockResolvedValueOnce(ok()); // RELEASE (no share_code: nothing to credit)
+          mockTypedCodeRecord();
+          mockQuery
             .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // recent_jobs arm
             .mockResolvedValueOnce({ rowCount: 1, rows: [referredJobRow()] }) // handleJobAction's job load
             .mockResolvedValueOnce(ok()); // INSERT outbox job details
@@ -3064,7 +3188,7 @@ describe('Processor Lambda', () => {
             rowCount: 1,
             rows: [{
               id: APP_ID, title: 'Painter', status: 'details_requested',
-              needs_details: true, company_name: 'RM Construction',
+              needs_details: true, company_name: 'NB Construction',
             }],
           }); // the by-id lookup for this worker
           mockFillSnapshotRow({ application_status: 'details_requested', required_fields: ['work_authorization'] });
@@ -3072,7 +3196,7 @@ describe('Processor Lambda', () => {
           mockSeedNoDefaults();
           mockStateContextUpdate(); // arm write
           mockFillSnapshotRow({ application_status: 'details_requested', required_fields: ['work_authorization'] });
-          mockCompanyLookup('RM Construction');
+          mockCompanyLookup('NB Construction');
           mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox intro
           mockFillSnapshotRow({ application_status: 'details_requested', required_fields: ['work_authorization'] });
           mockStateContextUpdate(); // fill_last_prompt_at stamp
@@ -3109,7 +3233,7 @@ describe('Processor Lambda', () => {
             rowCount: 1,
             rows: [{
               id: APP_ID, title: 'Painter', status: 'hired',
-              needs_details: false, company_name: 'RM Construction',
+              needs_details: false, company_name: 'NB Construction',
             }],
           });
           mockStateContextUpdate(); // applications_menu armed
@@ -3127,7 +3251,7 @@ describe('Processor Lambda', () => {
           );
 
           const body = outboxBodies()[0];
-          expect(body).toContain('1) Painter - RM Construction - Hired');
+          expect(body).toContain('1) Painter - NB Construction - Hired');
           // Nothing is being asked of this worker, so no footer invitation.
           expect(body).not.toContain(t('applications_footer', 'en'));
           // The number the line prints resolves: the one-shot menu carries
@@ -3175,7 +3299,7 @@ describe('Processor Lambda', () => {
             rowCount: 1,
             rows: [{
               id: APP_ID, title: 'Painter', status: 'hired',
-              needs_details: false, company_name: 'RM Construction',
+              needs_details: false, company_name: 'NB Construction',
             }],
           }); // the by-id lookup -- an application no ten-row page would carry
           mockStateContextUpdate(); // applications_menu armed
@@ -3192,7 +3316,7 @@ describe('Processor Lambda', () => {
             {} as any,
           );
 
-          expect(outboxBodies()[0]).toContain('1) Painter - RM Construction - Hired');
+          expect(outboxBodies()[0]).toContain('1) Painter - NB Construction - Hired');
           // Scoped by BOTH id and worker, in the query itself.
           expect(findQueryByPattern(/WHERE ja\.id = \$1 AND ja\.worker_id = \$2/i)).toEqual([APP_ID, 'user-1']);
           // ...and never through the capped list loader, whose
@@ -4797,6 +4921,141 @@ describe('v2 routing branch', () => {
     });
   });
 
+  // ── Sprint 27: the OTP turn of a worker who already finished on the web ──
+  //
+  // `handleOtpStep` binds a READY worker and hands the turn off with
+  // `consumedAsOtp` -- the body was the code they typed. Before this, the
+  // processor routed that code like any ready worker's message: the idle
+  // router answered it with `idle_help`, or relayed it into an open employer
+  // chat. A referred job the bind claimed rides on the handoff and is sent as
+  // the tappable job card instead.
+  describe('a ready handoff that consumed the OTP', () => {
+    const JOB_ID = 'bbbbbbbb-0000-4000-8000-0000000000aa';
+    const THREAD_ID = '22222222-3333-4444-5555-666666666666';
+
+    function handoff(extra: Record<string, unknown>): void {
+      mockRouteOnboardingV2.mockImplementation(async (_client: unknown, session: any) => {
+        session.language = 'es';
+        return {
+          handled: false, handoff: 'ready', workerId: 'worker-ready-1', stepKey: 'ready',
+          consumedAsOtp: true, ...extra,
+        };
+      });
+    }
+
+    /** SQL dispatch: the claim, the conversation row, and whatever the case
+     *  scripts; everything else is an empty result. */
+    function routeQueries(sid: string, conv: Record<string, unknown>, extra: (sql: string) => unknown = () => undefined): void {
+      mockQuery.mockImplementation((sql: string) => {
+        if (/INSERT INTO whatsapp_processed_messages/i.test(sql)) {
+          return Promise.resolve({ rowCount: 1, rows: [{ message_sid: sid }] });
+        }
+        if (/FROM whatsapp_conversations/i.test(sql) && /SELECT/i.test(sql)) {
+          return Promise.resolve({ rowCount: 1, rows: [convRow(conv)] });
+        }
+        const scripted = extra(sql);
+        if (scripted) return Promise.resolve(scripted);
+        return Promise.resolve({ rowCount: 0, rows: [] });
+      });
+    }
+
+    function writtenStateContexts(): Record<string, unknown>[] {
+      return mockQuery.mock.calls
+        .filter(([sql]) => /UPDATE whatsapp_conversations/i.test(sql as string) && /state_context\s*=/.test(sql as string))
+        .map(([, params]) => JSON.parse((params as unknown[])[1] as string) as Record<string, unknown>);
+    }
+
+    it('sends the referred job as the job_alert card -- five variables plus the fallback body -- arms recent_jobs, and stops there', async () => {
+      handoff({ referredJobId: JOB_ID });
+      routeQueries('SM-otp-card', { conversation_state: 'new', user_id: null, language: 'es' }, (sql) => {
+        if (/FROM jobs/i.test(sql) && /status = 'active'/i.test(sql)) {
+          return {
+            rowCount: 1,
+            rows: [{
+              id: JOB_ID, title: 'Finish Carpenter', company: 'Jale', location: 'El Paso, TX',
+              pay_min: null, pay_max: null, pay_interval: null, pay_raw: '$25/hr',
+            }],
+          };
+        }
+        return undefined;
+      });
+
+      await handler(makeSqsEvent({ MessageSid: 'SM-otp-card', From: FROM, Body: '123456' }), {} as any, {} as any);
+
+      // The company falls back to 'Jale' in the read itself, like the feed.
+      const jobRead = mockQuery.mock.calls.find(([sql]) => /FROM jobs/i.test(sql as string));
+      expect(jobRead![0]).toMatch(/COALESCE\(company, 'Jale'\) AS company/);
+      expect(jobRead![1]).toEqual([JOB_ID]);
+
+      expect(outboxTemplates()).toEqual(['job_alert_es']);
+      const cardInsert = mockQuery.mock.calls.find(
+        ([sql]) => /INSERT INTO whatsapp_outbox/i.test(sql as string) && /content_template/i.test(sql as string),
+      )!;
+      const params = cardInsert[1] as unknown[];
+      expect(params[0]).toBe('SM-otp-card');
+      expect(params[1]).toBe(PHONE);
+      expect(params[3]).toEqual({
+        '1': 'Finish Carpenter',
+        '2': 'Jale',
+        '3': 'El Paso, TX',
+        '4': '$25/hr',
+        '5': `job-${JOB_ID}`,
+        // Without a registered ContentSid the send degrades to this text
+        // instead of failing -- and it names the number recent_jobs holds.
+        [FALLBACK_BODY_KEY]: 'Detalles del trabajo\n\nFinish Carpenter\nJale\nEl Paso, TX\n$25/hr\n\nResponde "1 me interesa" para aplicar.',
+      });
+
+      // "1 me interesa" resolves against recent_jobs, so the job is there.
+      const armed = writtenStateContexts().filter((sc) => Array.isArray(sc.recent_jobs)).pop();
+      expect(armed?.recent_jobs).toEqual([JOB_ID]);
+
+      // Nothing else: no text reply, no relay, no job listing.
+      expect(outboxBodies()).toEqual([]);
+      expect(countQueryByPattern(/SELECT tos_version FROM users/i)).toBe(0);
+      expect(mockListMatchedJobsForWorker).not.toHaveBeenCalled();
+    });
+
+    it('with no referred job the code turn sends NOTHING -- not the idle help', async () => {
+      // TOS accepted, no employer thread, nothing waiting on the worker: the
+      // shape that used to fall all the way through to idle_help.
+      handoff({});
+      routeQueries('SM-otp-silent', { conversation_state: 'new', user_id: null, language: 'es' }, (sql) => {
+        if (/SELECT tos_version FROM users/i.test(sql)) return { rowCount: 1, rows: [{ tos_version: '1.0' }] };
+        return undefined;
+      });
+
+      await handler(makeSqsEvent({ MessageSid: 'SM-otp-silent', From: FROM, Body: '123456' }), {} as any, {} as any);
+
+      expect(outboxBodies()).toEqual([]);
+      expect(outboxTemplates()).toEqual([]);
+      expect(countQueryByPattern(/INSERT INTO whatsapp_outbox/i)).toBe(0);
+      // The ready state is still persisted for the next turn.
+      const readyWrite = mockQuery.mock.calls.find(([sql]) =>
+        /UPDATE whatsapp_conversations SET/i.test(sql as string) && /conversation_state\s*=/.test(sql as string));
+      expect(readyWrite).toBeDefined();
+    });
+
+    it('with no referred job the code is never relayed into an open employer chat', async () => {
+      handoff({});
+      routeQueries('SM-otp-relay', {
+        conversation_state: 'new', user_id: null, language: 'es',
+        focused_job_conversation_id: THREAD_ID,
+      }, (sql) => {
+        if (/SELECT tos_version FROM users/i.test(sql)) return { rowCount: 1, rows: [{ tos_version: '1.0' }] };
+        if (/jc\.id = \$1 AND jc\.worker_id = \$2/i.test(sql)) {
+          return { rowCount: 1, rows: [{ id: THREAD_ID, application_id: 'app-1' }] };
+        }
+        return undefined;
+      });
+
+      await handler(makeSqsEvent({ MessageSid: 'SM-otp-relay', From: FROM, Body: '123456' }), {} as any, {} as any);
+
+      // The code is not a message to a person.
+      expect(countQueryByPattern(/INSERT INTO job_conversation_messages/i)).toBe(0);
+      expect(countQueryByPattern(/INSERT INTO whatsapp_outbox/i)).toBe(0);
+    });
+  });
+
   it('skips the legacy idle-language-detection write for a v2-routed idle phone', async () => {
     // Guards placement: the v2 branch must sit above routeMessage's
     // idle-language-detection block (its own legacy UPDATE), not just above
@@ -5432,5 +5691,97 @@ describe('voice-note transcription kickoff (languageCode removed)', () => {
     expect(sentInput.mediaBucketName).toBe('jale-worker-media-test');
     expect(sentInput.transcriptOutputKey).toEqual(expect.stringContaining('/transcripts/'));
     expect(sentInput.language).toBe('en');
+  });
+});
+
+describe('change context', () => {
+  const originalEnv = process.env;
+  const FROM = 'whatsapp:fixture-number';
+  const WORKER = '00000000-0000-4000-8000-0000000000a1';
+  const mockSetAuditContext = setAuditContext as jest.Mock;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockQuery.mockReset();
+    mockConnect.mockReset();
+    process.env = { ...originalEnv, DB_SECRET_ARN: 'arn:db', REQUIRED_TOS_VERSION: '1.0' };
+    mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });
+    mockLoadRuntimeControls.mockResolvedValue({ disabled: true });
+    mockCreateOnboardingV2Adapters.mockReturnValue({});
+    mockPublishOutboxWakes.mockResolvedValue({ sent: 0, failed: 0 });
+    mockRouteOnboardingV2.mockReset();
+    mockRouteOnboardingV2.mockResolvedValue({ handled: true, workerId: null });
+  });
+
+  afterAll(() => {
+    process.env = originalEnv;
+  });
+
+  function answer(userId: string | null): void {
+    mockQuery.mockImplementation((sql: string) => {
+      if (/INSERT INTO whatsapp_processed_messages/.test(sql)) return Promise.resolve({ rowCount: 1, rows: [{ message_sid: 'SM-ctx' }] });
+      if (/FROM whatsapp_conversations[\s\S]*FOR UPDATE/.test(sql)) {
+        return Promise.resolve({ rowCount: 1, rows: [convRow({ user_id: userId, conversation_state: 'onboarding_v2' })] });
+      }
+      return Promise.resolve({ rowCount: 0, rows: [] });
+    });
+  }
+
+  function lockOrder(): number {
+    const index = mockQuery.mock.calls.findIndex(([sql]) => /FROM whatsapp_conversations[\s\S]*FOR UPDATE/.test(sql as string));
+    expect(index).toBeGreaterThanOrEqual(0);
+    return mockQuery.mock.invocationCallOrder[index];
+  }
+
+  it('names an anonymous actor for an unbound number, after the conversation lock and before routing', async () => {
+    answer(null);
+    await handler(makeSqsEvent({ MessageSid: 'SM-ctx', From: FROM, Body: 'hola' }), { awsRequestId: 'fixture-invocation-0004' } as any, {} as any);
+    expect(mockSetAuditContext).toHaveBeenCalledTimes(1);
+    expect(mockSetAuditContext).toHaveBeenCalledWith(
+      expect.objectContaining({ query: mockQuery }),
+      { actorKind: 'anonymous', actorId: null, channel: 'whatsapp', requestId: 'fixture-invocation-0004' },
+      'whatsapp.inbound',
+    );
+    const stated = mockSetAuditContext.mock.invocationCallOrder[0];
+    expect(stated).toBeGreaterThan(lockOrder());
+    expect(stated).toBeLessThan(mockRouteOnboardingV2.mock.invocationCallOrder[0]);
+  });
+
+  it('names the worker a bound number belongs to', async () => {
+    answer(WORKER);
+    await handler(makeSqsEvent({ MessageSid: 'SM-ctx', From: FROM, Body: 'hola' }), { awsRequestId: 'fixture-invocation-0005' } as any, {} as any);
+    expect(mockSetAuditContext).toHaveBeenCalledWith(
+      expect.objectContaining({ query: mockQuery }),
+      { actorKind: 'worker', actorId: WORKER, channel: 'whatsapp', requestId: 'fixture-invocation-0005' },
+      'whatsapp.inbound',
+    );
+    expect(mockSetAuditContext.mock.invocationCallOrder[0]).toBeGreaterThan(lockOrder());
+  });
+
+  it('switches to the worker when the engine names the worker the message just bound', async () => {
+    answer(null);
+    mockRouteOnboardingV2.mockImplementation(async (client: unknown, _session: unknown, _msg: unknown, deps: any) => {
+      await deps.repo.setInternalUserRlsContext(client, WORKER);
+      return { handled: true, workerId: WORKER };
+    });
+    await handler(makeSqsEvent({ MessageSid: 'SM-ctx', From: FROM, Body: '123456' }), { awsRequestId: 'fixture-invocation-0006' } as any, {} as any);
+    expect(mockSetAuditContext.mock.calls.map(([, caller, surface]) => [caller.actorKind, caller.actorId, caller.requestId, surface])).toEqual([
+      ['anonymous', null, 'fixture-invocation-0006', 'whatsapp.inbound'],
+      ['worker', WORKER, 'fixture-invocation-0006', 'whatsapp.inbound'],
+    ]);
+    // The engine's call for the newly bound worker is the first one made.
+    expect((setInternalUserRlsContext as jest.Mock).mock.calls[0][1]).toBe(WORKER);
+    expect(mockSetAuditContext.mock.invocationCallOrder[1])
+      .toBeGreaterThan((setInternalUserRlsContext as jest.Mock).mock.invocationCallOrder[0]);
+  });
+
+  it('names nobody for a message it has already handled', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ status: 'completed' }] })
+      .mockResolvedValue({ rowCount: 0, rows: [] });
+    await handler(makeSqsEvent({ MessageSid: 'SM-ctx', From: FROM, Body: 'hola' }), { awsRequestId: 'fixture-invocation-0007' } as any, {} as any);
+    expect(mockSetAuditContext).not.toHaveBeenCalled();
   });
 });

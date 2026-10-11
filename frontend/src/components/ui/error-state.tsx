@@ -2,6 +2,8 @@
 
 import { useTranslations } from 'next-intl';
 import type { ErrorKind } from '@/lib/api/errors';
+import { useOptionalReportProblem } from '@/components/report/report-problem-context';
+import { ReportProblemAction } from '@/components/report/ReportProblemAction';
 import { Button } from './button';
 import { Icon, type IconName } from './icon';
 import { StateAction } from './empty-state';
@@ -14,6 +16,13 @@ import { StateAction } from './empty-state';
  * locales, and so a new call site cannot invent its own wording. `title` and
  * `body` overrides exist for the rare surface that needs domain-specific
  * phrasing.
+ *
+ * "Report this problem" sits next to "Try again" -- wherever "Try again"
+ * shows, except `offline`, where a report could not be sent either. It opens
+ * the report form through the report provider when there is one, carrying the
+ * error's kind; `onReport` replaces that, for a boundary that reports its own
+ * way. Outside the provider and without `onReport` the state renders exactly
+ * as it did before reporting existed.
  */
 
 /**
@@ -51,6 +60,7 @@ export function ErrorState({
     title,
     body,
     compact = false,
+    onReport,
 }: {
     kind: ErrorKind;
     onRetry?: () => void;
@@ -58,8 +68,11 @@ export function ErrorState({
     title?: string;
     body?: string;
     compact?: boolean;
+    /** Replaces the provider's report action. Shown under the same rule. */
+    onReport?: () => void;
 }) {
     const t = useTranslations('common');
+    const reporting = useOptionalReportProblem();
 
     const resolvedTitle =
         title ??
@@ -80,6 +93,9 @@ export function ErrorState({
     // — had to mislabel the kind as `not_found` just to get the button, which
     // buries the real kind from anyone reading the call site later.
     const showBack = Boolean(backHref);
+
+    const report = onReport ?? (reporting ? () => reporting.openReport({ error: { kind } }) : undefined);
+    const showReport = showRetry && kind !== 'offline' && report !== undefined;
 
     const warning = WARNING_KINDS.has(kind);
     const tileClasses = warning
@@ -109,6 +125,9 @@ export function ErrorState({
                         <Button variant="primary" onClick={onRetry}>
                             {t('retry')}
                         </Button>
+                    ) : null}
+                    {showReport && report ? (
+                        <ReportProblemAction onReport={report} />
                     ) : null}
                     {showBack && backHref ? (
                         <StateAction

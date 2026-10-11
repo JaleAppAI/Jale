@@ -3,11 +3,15 @@ import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { listEmployerApplicantsOverview } from '../lib/employer-applicants-overview';
 import { checkCompliance } from '../legal/check-compliance';
+import { auditCaller, type AuditCaller } from '../lib/audit/caller';
+import { recordAccess, recordAttempt, responseFieldNames } from '../lib/audit/record';
 
 
 const CORS_HEADERS = corsHeaders();
+const SURFACE = 'employer.applicants_overview';
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   let client;
+  let caller: AuditCaller | undefined;
 
   try {
     const cognitoSub: string | undefined = event.requestContext.authorizer?.claims?.sub;
@@ -41,8 +45,17 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_provisioned' }) };
     }
     await setInternalUserRlsContext(client, employerId);
+    caller = auditCaller(event, { kind: 'employer', id: employerId }, 'web');
 
     const overview = await listEmployerApplicantsOverview(client, employerId);
+    const items = overview.applicants;
+    await recordAccess(client, caller, {
+      surface: SURFACE,
+      subjectUserIds: items.map((item) => item.worker_id),
+      recordIds: items.map((item) => item.application_id),
+      resultCount: items.length,
+      fieldNames: responseFieldNames(items),
+    });
     await client.query('COMMIT');
 
     return {
@@ -51,7 +64,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       body: JSON.stringify(overview),
     };
   } catch (err) {
-    if (client) { try { await client.query('ROLLBACK'); } catch {} }
+    if (client) {
+      try { await client.query('ROLLBACK'); } catch {}
+      if (caller) await recordAttempt(client, caller, { surface: SURFACE, outcome: 'failed' });
+    }
     console.error('employer-applicants-overview error:', errorMessage(err));
     return { statusCode: 500, headers: CORS_HEADERS, body: JSON.stringify({ error: 'internal_error' }) };
   } finally {

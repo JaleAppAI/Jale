@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useEffectEvent, useReducer, useRef, useState } from 'react';
 import type { MouseEvent } from 'react';
 import { useParams } from 'next/navigation';
 import { useLocale, useTranslations } from 'next-intl';
@@ -223,6 +223,40 @@ export default function WorkerJobDetailPage() {
     applyDispatch({ type: 'reset' });
     setSubmitError(null);
     setViewMode('details');
+  }, [job]);
+
+  /*
+   * `?apply=1`: the onboarding summary's Apply button lands here with it,
+   * because the worker has already said which job they want. On the FIRST load
+   * of a job the page takes the Apply button's own path -- `handleApplyClick`,
+   * so the profile gate still stands in front of the flow -- exactly once, and
+   * the param leaves the address bar straight away, so a reload, a share or a
+   * back-and-forward cannot reopen it. A job that cannot take an application
+   * (closed, already applied) ignores the param without a word.
+   *
+   * Read from `window.location`, not `useSearchParams` (the `useRequireAuth`
+   * precedent): it is a one-shot instruction about this arrival, not state the
+   * page renders from. It runs after the reset effect above, which has already
+   * set `details` for this job by then -- and `handleApplyClick` only switches
+   * the view once its profile check answers, well after that. The ref is keyed
+   * by job id, so a refreshed copy of the same job is never a "first load".
+   *
+   * `replaceState(null, ...)`, not the current state object: Next's history
+   * patch copies its own router state over and syncs the router to the new
+   * URL only when it is handed a state that is not already its own.
+   */
+  const applyParamHandledForRef = useRef<string | null>(null);
+  const applyFromLink = useEffectEvent(() => {
+    void handleApplyClick();
+  });
+  useEffect(() => {
+    if (!job || applyParamHandledForRef.current === job.id) return;
+    applyParamHandledForRef.current = job.id;
+    const url = new URL(window.location.href);
+    if (url.searchParams.get('apply') !== '1') return;
+    url.searchParams.delete('apply');
+    window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+    if (!job.already_applied && (job.status ?? 'active') === 'active') applyFromLink();
   }, [job]);
 
   // One shared vault fetch, refetched on demand via `onVaultChanged` (after a
