@@ -170,6 +170,7 @@ $MigrationFiles = @(
     '110_admin_audit_log_freeze.sql'
     '111_audit_change_log.sql'
     '112_audit_operator_functions.sql'
+    '113_admin_onboarding_funnel.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path

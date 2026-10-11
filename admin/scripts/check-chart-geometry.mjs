@@ -127,4 +127,10 @@ assert.deepEqual(fmtLib.cumulativeSeries([], 4), [], 'no buckets → no points')
 assert.equal(fmtLib.analyticsHref('30d', 'total'), '/analytics?range=30d', 'the default view is omitted from the URL');
 assert.equal(fmtLib.analyticsHref('90d', 'new'), '/analytics?range=90d&signups=new');
 
+// 2a: end labels of lines that finish close together are spread apart,
+// never reordered, and never pushed below the zero baseline.
+assert.deepEqual(geo.spreadLabels([100, 104, 200], 14, 244), [100, 114, 200]);
+assert.deepEqual(geo.spreadLabels([200, 104, 100], 14, 244), [200, 114, 100]);
+assert.deepEqual(geo.spreadLabels([244, 244, 244], 14, 244), [216, 230, 244], 'flat zero lines stack upward');
+
 console.log('check-chart-geometry: all assertions passed');

@@ -93,3 +93,18 @@ export function labelIndices(count: number, target = 5): number[] {
   }
   return [...indices].sort((a, b) => a - b);
 }
+
+// Baselines for end-of-line labels: keep neighbours at least `minGap` apart
+// without reordering, and never below `maxY` (the zero baseline).
+export function spreadLabels(ys: number[], minGap: number, maxY: number): number[] {
+  const order = ys.map((_, i) => i).sort((a, b) => ys[a] - ys[b] || a - b);
+  const out = [...ys];
+  for (let k = 1; k < order.length; k += 1) {
+    out[order[k]] = Math.max(out[order[k]], out[order[k - 1]] + minGap);
+  }
+  for (let k = order.length - 1; k >= 0; k -= 1) {
+    const limit = k === order.length - 1 ? maxY : out[order[k + 1]] - minGap;
+    out[order[k]] = Math.min(out[order[k]], limit);
+  }
+  return out;
+}
