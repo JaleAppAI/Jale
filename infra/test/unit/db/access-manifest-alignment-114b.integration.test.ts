@@ -1,20 +1,20 @@
 /**
- * access-manifest-alignment-118.integration.test.ts -- migration 118 on a real bed.
+ * access-manifest-alignment-114b.integration.test.ts -- migration 114b on a real bed.
  *
- * 118 aligns two catalog settings with the reviewed access manifest
+ * 114b aligns two catalog settings with the reviewed access manifest
  * (infra/db/access/manifest.json and manifest.d): FORCE ROW LEVEL SECURITY is
  * removed from the five tables the manifest lists as not forced, where a table
  * carries it, and schema public is owned by jale_admin. Where the catalog
  * already matches, it changes nothing.
  *
- *   1. The migrated bed: the ledger records 118 with the file's checksum, the
+ *   1. The migrated bed: the ledger records 114b with the file's checksum, the
  *      five tables are not forced, jale_admin owns public, and the posture
  *      check is complete and clean.
  *   2. The drift recreated (the five tables forced; public handed to
  *      pg_database_owner, the default owner of that schema since PostgreSQL
  *      15): the posture check names exactly those six differences, and
  *      nothing else in the catalog moved.
- *   3. 118 re-applied as the bed's jale_admin: the catalog is exactly as it
+ *   3. 114b re-applied as the bed's jale_admin: the catalog is exactly as it
  *      was before the drift (owners, flags and grants of every relation and
  *      schema), and the posture check is clean again.
  *   4. On an aligned catalog, two more runs raise nothing and write no
@@ -41,17 +41,17 @@ import { withLoginClient } from './helpers/login-pool';
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
 if (!databaseUrl) {
-  test('CONCERN: the migration-118 access-manifest alignment PostgreSQL gate was not run', () => {
-    console.warn('[access-manifest-alignment-118] JALE_TEST_DATABASE_URL not set; disposable PostgreSQL gate skipped');
+  test('CONCERN: the migration-114b access-manifest alignment PostgreSQL gate was not run', () => {
+    console.warn('[access-manifest-alignment-114b] JALE_TEST_DATABASE_URL not set; disposable PostgreSQL gate skipped');
     expect(databaseUrl).toBeUndefined();
   });
 }
 const maybeDescribe = databaseUrl ? describe : describe.skip;
 
-const MIGRATION = '118_access_manifest_alignment.sql';
+const MIGRATION = '114b_access_manifest_alignment.sql';
 const MIGRATION_PATH = path.join(__dirname, '..', '..', '..', 'db', 'migrations', MIGRATION);
 
-/** The five tables 118 aligns. */
+/** The five tables 114b aligns. */
 const TABLES = [
   'public.document_upload_tokens',
   'public.whatsapp_conversations',
@@ -114,7 +114,7 @@ const CATALOG_STATE_SQL = `
   ) s
   ORDER BY key`;
 
-/** The catalog rows 118 may write: the five tables and schema public, with their xmin. */
+/** The catalog rows 114b may write: the five tables and schema public, with their xmin. */
 const ALIGNED_ROWS_SQL = `
   SELECT n.nspname || '.' || c.relname AS name, c.relforcerowsecurity::TEXT AS value, c.xmin::TEXT AS xmin
     FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
@@ -124,7 +124,7 @@ const ALIGNED_ROWS_SQL = `
     FROM pg_catalog.pg_namespace n WHERE n.nspname = 'public'
   ORDER BY 1`;
 
-maybeDescribe('migration 118: catalog aligned with the access manifest', () => {
+maybeDescribe('migration 114b: catalog aligned with the access manifest', () => {
   const manifest = loadManifest();
   let su: Client;
   /** The catalog as the migrated bed carries it, before any test changes it. */
@@ -133,7 +133,7 @@ maybeDescribe('migration 118: catalog aligned with the access manifest', () => {
   /** The file exactly as the runner applies it: read at use, so a missing file fails the test that needs it. */
   const migrationSql = () => fs.readFileSync(MIGRATION_PATH, 'utf8');
 
-  /** Applies 118 the way run-migrations.sh does: the whole file in one simple
+  /** Applies 114b the way run-migrations.sh does: the whole file in one simple
    * query. A failing statement leaves the file's own BEGIN open and aborted,
    * so it is rolled back here (psql would end the session). */
   async function apply118(client: Client): Promise<void> {
@@ -201,7 +201,7 @@ maybeDescribe('migration 118: catalog aligned with the access manifest', () => {
     await su?.end();
   });
 
-  it('1. the ledger records 118, the five tables are not forced, jale_admin owns public, and the posture check is clean', async () => {
+  it('1. the ledger records 114b, the five tables are not forced, jale_admin owns public, and the posture check is clean', async () => {
     const { rows } = await su.query<{ checksum: string }>(
       'SELECT checksum FROM public.schema_migrations WHERE filename = $1',
       [MIGRATION],
@@ -213,7 +213,7 @@ maybeDescribe('migration 118: catalog aligned with the access manifest', () => {
     expect({ complete: result.complete, violations: result.violations }).toEqual({ complete: true, violations: [] });
   }, 60_000);
 
-  it('2-3. names exactly the six differences while the drift is in place, and 118 puts the catalog back as it was', async () => {
+  it('2-3. names exactly the six differences while the drift is in place, and 114b puts the catalog back as it was', async () => {
     await recreateDrift();
 
     const drifted = await catalogState();
@@ -258,7 +258,7 @@ maybeDescribe('migration 118: catalog aligned with the access manifest', () => {
     await recreateDrift();
     const drifted = await catalogState();
 
-    await expect(apply118(su)).rejects.toThrow('migration 118: connect as jale_admin');
+    await expect(apply118(su)).rejects.toThrow('migration 114b: connect as jale_admin');
 
     expect(changedKeys(drifted, await catalogState())).toEqual([]);
   }, 60_000);
@@ -270,7 +270,7 @@ maybeDescribe('migration 118: catalog aligned with the access manifest', () => {
     const drifted = await catalogState();
 
     await expect(apply118AsAdmin()).rejects.toThrow(
-      `migration 118: ${FIXTURE_TABLE} is forced, and jale_admin cannot act as its owner ${FIXTURE_OWNER}`,
+      `migration 114b: ${FIXTURE_TABLE} is forced, and jale_admin cannot act as its owner ${FIXTURE_OWNER}`,
     );
 
     expect(changedKeys(drifted, await catalogState())).toEqual([]);
