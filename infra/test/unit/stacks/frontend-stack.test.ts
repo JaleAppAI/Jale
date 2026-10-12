@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import { Template, Match } from 'aws-cdk-lib/assertions';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import { FrontendStack } from '../../../lib/stacks/frontend-stack';
+import { flatten } from './audit-template-helpers';
 
 // CDK builds the Docker image during synth (DockerImageFunction.fromImageAsset).
 // Skip this suite in environments without Docker (set SKIP_DOCKER_TESTS=1).
@@ -585,24 +586,87 @@ describeIfDocker('FrontendStack (Lambda + CloudFront)', () => {
     }
   });
 
-  test('the us-east-1 SES alarms carry no action, and the names say which region they watch', () => {
-    // Deliberate, and the reason the names are suffixed: this stack takes no
-    // alarm-topic prop and the shared ops topic is in us-east-2, where a
-    // us-east-1 alarm cannot publish. Console-visible beats absent — the same
-    // trade auth-stack.ts's CustomMessage alarms make. A us-east-1 topic (or a
-    // cross-region forwarder) is the follow-up.
+  // ── The us-east-1 alarm topic ─────────────────────────────────────────────
+  //
+  // An alarm can only notify a topic in its own region, and the shared ops
+  // topic is in us-east-2, so this stack owns a topic of its own for the two
+  // alarms above. It has no subscriptions in code: they are added outside the
+  // repository.
+
+  function onlyResourceOf(type: string): [string, any] {
+    const found = Object.entries(template.findResources(type));
+    expect(found).toHaveLength(1);
+    return found[0] as [string, any];
+  }
+
+  test('the us-east-1 SES alarms notify the us-east-1 alarm topic, and the names say which region they watch', () => {
+    const [topicId] = onlyResourceOf('AWS::SNS::Topic');
     for (const alarmName of ['SesBounceCountUsEast1', 'SesReputationBounceRateUsEast1']) {
       const alarms = template.findResources('AWS::CloudWatch::Alarm', {
         Properties: { AlarmName: alarmName },
       });
       expect(Object.keys(alarms)).toHaveLength(1);
       const alarm = Object.values(alarms)[0] as any;
-      expect(alarm.Properties.AlarmActions).toBeUndefined();
+      expect(alarm.Properties.AlarmActions).toEqual([{ Ref: topicId }]);
       expect(alarm.Properties.OKActions).toBeUndefined();
       // The suffix is what keeps these distinguishable from
       // NotificationsStack's us-east-2 pair in a single alarm list.
       expect(alarm.Properties.AlarmName).toMatch(/UsEast1$/);
     }
+  });
+
+  test('creates one alarm topic, encrypted with its own rotating key, with no subscriptions', () => {
+    const [, topic] = onlyResourceOf('AWS::SNS::Topic');
+    const [keyId, key] = onlyResourceOf('AWS::KMS::Key');
+    expect(topic.Properties.TopicName).toBe('jale-alarms-us-east-1');
+    expect(topic.Properties.KmsMasterKeyId).toEqual({ 'Fn::GetAtt': [keyId, 'Arn'] });
+    expect(key.Properties.EnableKeyRotation).toBe(true);
+    template.resourceCountIs('AWS::SNS::Subscription', 0);
+    expect(topic.Properties.Subscription).toBeUndefined();
+  });
+
+  test("lets this account's alarms in this region use the topic key, and nothing else new", () => {
+    const [, key] = onlyResourceOf('AWS::KMS::Key');
+    const statements: any[] = key.Properties.KeyPolicy.Statement;
+    const forAlarms = statements.filter((st) => st.Principal?.Service === 'cloudwatch.amazonaws.com');
+    expect(forAlarms).toHaveLength(1);
+    expect(forAlarms[0].Effect).toBe('Allow');
+    expect([forAlarms[0].Action].flat().sort()).toEqual(['kms:Decrypt', 'kms:GenerateDataKey*']);
+    expect(flatten(forAlarms[0].Condition)).toEqual({
+      StringEquals: { 'aws:SourceAccount': '${AWS::AccountId}' },
+      ArnLike: { 'aws:SourceArn': 'arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:*' },
+    });
+    // The only other principal is the account itself, as every key has.
+    const others = statements.filter((st) => st !== forAlarms[0]);
+    for (const st of others) {
+      expect(st.Principal?.Service).toBeUndefined();
+    }
+  });
+
+  test("the topic policy refuses plain transport and allows this account's alarms in this region to publish", () => {
+    const [topicId] = onlyResourceOf('AWS::SNS::Topic');
+    const [, policy] = onlyResourceOf('AWS::SNS::TopicPolicy');
+    expect(policy.Properties.Topics).toEqual([{ Ref: topicId }]);
+    const statements: any[] = policy.Properties.PolicyDocument.Statement;
+    const denyPlain = statements.filter((st) => st.Effect === 'Deny');
+    expect(denyPlain).toHaveLength(1);
+    expect(denyPlain[0].Condition).toEqual({ Bool: { 'aws:SecureTransport': 'false' } });
+    const publish = statements.filter((st) => st.Effect === 'Allow');
+    expect(publish).toHaveLength(1);
+    expect(publish[0].Principal).toEqual({ Service: 'cloudwatch.amazonaws.com' });
+    expect(publish[0].Action).toBe('sns:Publish');
+    expect(publish[0].Resource).toEqual({ Ref: topicId });
+    expect(flatten(publish[0].Condition)).toEqual({
+      StringEquals: { 'aws:SourceAccount': '${AWS::AccountId}' },
+      ArnLike: { 'aws:SourceArn': 'arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:*' },
+    });
+  });
+
+  test('outputs the alarm topic name, so subscriptions can be added outside the repository', () => {
+    const [topicId] = onlyResourceOf('AWS::SNS::Topic');
+    template.hasOutput('AlarmTopicName', {
+      Value: { 'Fn::GetAtt': [topicId, 'TopicName'] },
+    });
   });
 });
 

@@ -2,6 +2,7 @@ import * as path from 'node:path';
 import * as cdk from 'aws-cdk-lib';
 import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as cloudwatchActions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
@@ -14,6 +15,7 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as route53 from 'aws-cdk-lib/aws-route53';
 import * as route53targets from 'aws-cdk-lib/aws-route53-targets';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as sns from 'aws-cdk-lib/aws-sns';
 import { Platform } from 'aws-cdk-lib/aws-ecr-assets';
 import { Construct } from 'constructs';
 import { resolveCognitoDeletionProtection } from '../constructs/cognito-pool';
@@ -38,6 +40,12 @@ export interface AdminStackProps extends cdk.StackProps {
   readonly certificate: acm.ICertificate;
   /** CloudFront-scoped WAF web ACL created in us-east-1. */
   readonly webAclArn: string;
+  /**
+   * The existing monitored ops topic (the shared `whatsappAlarmTopicArn`
+   * context). Optional, like ReportsStack's: without it the alarms still
+   * exist and are visible in the console, with no action.
+   */
+  readonly alarmTopicArn?: string;
 }
 
 export function getAdminDurability(environment: string) {
@@ -285,7 +293,15 @@ function handler(event) {
       target: route53.RecordTarget.fromAlias(new route53targets.CloudFrontTarget(this.distribution)),
     });
 
-    new cloudwatch.Alarm(this, 'AdminLambdaErrorsAlarm', {
+    // The ops topic, when given, is every alarm's ALARM-state action.
+    const alarmAction = props.alarmTopicArn
+      ? new cloudwatchActions.SnsAction(sns.Topic.fromTopicArn(this, 'AdminAlarmTopic', props.alarmTopicArn))
+      : undefined;
+    const notify = (alarm: cloudwatch.Alarm): void => {
+      if (alarmAction) alarm.addAlarmAction(alarmAction);
+    };
+
+    notify(new cloudwatch.Alarm(this, 'AdminLambdaErrorsAlarm', {
       alarmName: 'jale-admin-lambda-errors',
       metric: adminFunction.metricErrors({
         period: cdk.Duration.minutes(5),
@@ -294,9 +310,9 @@ function handler(event) {
       threshold: 1,
       evaluationPeriods: 1,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
+    }));
 
-    new cloudwatch.Alarm(this, 'AdminLambdaThrottlesAlarm', {
+    notify(new cloudwatch.Alarm(this, 'AdminLambdaThrottlesAlarm', {
       alarmName: 'jale-admin-lambda-throttles',
       metric: adminFunction.metricThrottles({
         period: cdk.Duration.minutes(5),
@@ -305,9 +321,9 @@ function handler(event) {
       threshold: 1,
       evaluationPeriods: 1,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
+    }));
 
-    new cloudwatch.Alarm(this, 'AdminCloudFront5xxAlarm', {
+    notify(new cloudwatch.Alarm(this, 'AdminCloudFront5xxAlarm', {
       alarmName: 'jale-admin-cloudfront-5xx',
       metric: this.distribution.metric5xxErrorRate({
         period: cdk.Duration.minutes(5),
@@ -316,7 +332,7 @@ function handler(event) {
       threshold: 5,
       evaluationPeriods: 2,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
+    }));
 
     new cdk.CfnOutput(this, 'AdminUrl', {
       value: `https://${adminDomain}`,

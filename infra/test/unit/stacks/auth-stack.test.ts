@@ -4,6 +4,8 @@ import { NetworkStack } from '../../../lib/stacks/network-stack';
 import { DatabaseStack } from '../../../lib/stacks/database-stack';
 import { AuthStack } from '../../../lib/stacks/auth-stack';
 
+const ALARM_TOPIC_ARN = 'arn:aws:sns:us-east-2:111122223333:jale-alarms';
+
 describe('AuthStack', () => {
   let template: Template;
 
@@ -24,6 +26,7 @@ describe('AuthStack', () => {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
+      alarmTopicArn: ALARM_TOPIC_ARN,
     });
     template = Template.fromStack(auth);
   });
@@ -208,10 +211,9 @@ describe('AuthStack', () => {
     );
   });
 
-  test('Employer CustomMessage errors raise a CloudWatch alarm with no actions', () => {
+  test('Employer CustomMessage errors raise a CloudWatch alarm that notifies the ops topic', () => {
     // The handler fails open, so an error here is invisible to the employer —
     // they just get Cognito's plain default copy. The alarm is the only signal.
-    // No AlarmActions: this stack wires none (see the Worker OTP alarms).
     template.hasResourceProperties('AWS::CloudWatch::Alarm', {
       AlarmName: 'EmployerCustomMessageErrors',
       Namespace: 'AWS/Lambda',
@@ -219,8 +221,22 @@ describe('AuthStack', () => {
       Threshold: 1,
       EvaluationPeriods: 1,
       TreatMissingData: 'notBreaching',
-      AlarmActions: Match.absent(),
+      AlarmActions: [ALARM_TOPIC_ARN],
     });
+  });
+
+  test('sends all four alarms to the ops topic, and only their ALARM state', () => {
+    const alarms = Object.values(template.findResources('AWS::CloudWatch::Alarm')) as any[];
+    expect(alarms.map((a) => a.Properties.AlarmName).sort()).toEqual([
+      'EmployerCustomMessageErrors',
+      'WorkerOtpSendErrors',
+      'WorkerOtpSendThrottled',
+      'WorkerOtpTwilioFailures',
+    ]);
+    for (const alarm of alarms) {
+      expect(alarm.Properties.AlarmActions).toEqual([ALARM_TOPIC_ARN]);
+      expect(alarm.Properties.OKActions).toBeUndefined();
+    }
   });
 
   test('CreateAuthChallenge Lambda has TWILIO_SECRET_ARN env var pointing at Secrets Manager', () => {
@@ -491,6 +507,32 @@ describe('AuthStack', () => {
 });
 
 // ── Employer pool: SES developer email configuration ──────────────────────────
+// The ops topic arrives as the optional `whatsappAlarmTopicArn` context, which
+// a dev synth may not pass. Without it the alarms still exist, with no action,
+// and the stack still synthesizes.
+describe('AuthStack without an alarm topic', () => {
+  test('keeps all four alarms, with no action', () => {
+    const app = new cdk.App({
+      context: {
+        environment: 'production',
+        otpSmsFromNumber: '+15125550123',
+        'aws:cdk:bundling-stacks': [],
+      },
+    });
+    const network = new NetworkStack(app, 'NoTopicNetworkStack');
+    const auth = new AuthStack(app, 'NoTopicAuthStack', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+    });
+    const alarms = Object.values(Template.fromStack(auth).findResources('AWS::CloudWatch::Alarm')) as any[];
+    expect(alarms).toHaveLength(4);
+    for (const alarm of alarms) {
+      expect(alarm.Properties.AlarmActions).toBeUndefined();
+    }
+  });
+});
+
 describe('AuthStack — employer SES email', () => {
   let sesTemplate: Template;
 
