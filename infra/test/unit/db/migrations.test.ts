@@ -24,7 +24,13 @@ describe('database migrations', () => {
   // bare three-digit slot of its own without colliding with 020 or 023. This
   // allowlist keeps the invariant meaningful (still catches any *other*
   // numbering mistake) while permitting exactly this one insertion.
-  const INSERTED_NON_CONTIGUOUS_FILES = ['020b_rls_relationship_recursion_prevention.sql'];
+  // 114b_access_manifest_alignment.sql is the second: it must run before 115,
+  // whose checks refuse a forced public.whatsapp_outbox, and 113-114 were
+  // applied before that ordering need was found, so it takes 114's b slot.
+  const INSERTED_NON_CONTIGUOUS_FILES = [
+    '020b_rls_relationship_recursion_prevention.sql',
+    '114b_access_manifest_alignment.sql',
+  ];
 
   it('use one contiguous lexical sequence (plus the one documented insertion)', () => {
     const files = migrationFiles().filter((name) => !INSERTED_NON_CONTIGUOUS_FILES.includes(name));
@@ -149,7 +155,6 @@ describe('database migrations', () => {
       '114',
       '115',
       '117',
-      '118',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -2070,15 +2075,28 @@ describe('database migrations', () => {
     expect(sql).toContain('migration 117: the trigger smoke test did not run or left rows behind');
   });
 
-  // 118 aligns the catalog with the reviewed access manifest. Where there is
+  // A catalog may carry FORCE ROW LEVEL SECURITY on the five tables 114b
+  // aligns, set outside the migrations. 115 refuses a forced
+  // public.whatsapp_outbox, so 114b must run first wherever both are pending.
+  it('runs 114b right after 114 and before 115, whose checks need those tables unforced', () => {
+    const script = fs.readFileSync(path.join(__dirname, '../../../../scripts/run-migrations.sh'), 'utf8');
+    const order = [...script.matchAll(/^\s+"(\d{3}b?_[a-z0-9_]+\.sql)"$/gm)].map((m) => m[1]);
+    const at = (name: string) => order.indexOf(name);
+    expect(at('114b_access_manifest_alignment.sql')).toBe(at('114_admin_employer_health.sql') + 1);
+    expect(at('115_admin_ops_health.sql')).toBe(at('114b_access_manifest_alignment.sql') + 1);
+    const ops = fs.readFileSync(path.join(migrationsDir, '115_admin_ops_health.sql'), 'utf8');
+    expect(ops).toContain('whatsapp_outbox is FORCE ROW LEVEL SECURITY or not owned by jale_admin');
+  });
+
+  // 114b aligns the catalog with the reviewed access manifest. Where there is
   // no Jest, its own DO blocks are the only check, so these literals pin that
   // they stay strict, and that the file changes nothing but the five tables'
   // FORCE flag and the owner of schema public.
-  it('118 aligns five tables\' FORCE flag and the owner of schema public with the access manifest, and nothing else', () => {
-    const sql = fs.readFileSync(path.join(migrationsDir, '118_access_manifest_alignment.sql'), 'utf8');
+  it('114b aligns five tables\' FORCE flag and the owner of schema public with the access manifest, and nothing else', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '114b_access_manifest_alignment.sql'), 'utf8');
     const code = sql.replace(/--[^\n]*/g, '');
 
-    expect(sql).toContain('-- Run manually AFTER 117_admin_queues.sql,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n');
+    expect(sql).toContain('-- Run manually AFTER 114_admin_employer_health.sql,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n');
     expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
     expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
     expect(code).toMatch(/^[\x00-\x7F]*$/);
@@ -2105,13 +2123,13 @@ describe('database migrations', () => {
 
     // Preconditions refuse before anything changes; the closing check refuses to commit.
     for (const message of [
-      'migration 118: connect as jale_admin (this session runs as %)',
-      'migration 118: public.% is missing',
-      'migration 118: public.% is forced, and jale_admin cannot act as its owner %',
-      'migration 118: schema public is owned by %, and jale_admin cannot act as that role',
-      'migration 118: schema public cannot change owner: jale_admin lacks CREATE on the database',
-      'migration 118: still forced or missing: %',
-      'migration 118: schema public is owned by %, not jale_admin',
+      'migration 114b: connect as jale_admin (this session runs as %)',
+      'migration 114b: public.% is missing',
+      'migration 114b: public.% is forced, and jale_admin cannot act as its owner %',
+      'migration 114b: schema public is owned by %, and jale_admin cannot act as that role',
+      'migration 114b: schema public cannot change owner: jale_admin lacks CREATE on the database',
+      'migration 114b: still forced or missing: %',
+      'migration 114b: schema public is owned by %, not jale_admin',
     ]) {
       expect(sql).toContain(message);
     }

@@ -1,8 +1,8 @@
 -- ============================================================
--- 118_access_manifest_alignment.sql
--- Run manually AFTER 117_admin_queues.sql,
+-- 114b_access_manifest_alignment.sql
+-- Run manually AFTER 114_admin_employer_health.sql,
 -- connected as jale_admin. Forward-only (ADR-005). ONE transaction.
--- 116 is left free (see 117); this file does not depend on it.
+-- It runs before 115, whose checks refuse a forced public.whatsapp_outbox.
 --
 -- Aligns two catalog settings with the reviewed access manifest
 -- (infra/db/access/manifest.json), which the posture check compares the
@@ -54,7 +54,7 @@ DECLARE
   t RECORD;
 BEGIN
   IF current_user <> 'jale_admin' THEN
-    RAISE EXCEPTION 'migration 118: connect as jale_admin (this session runs as %)', current_user;
+    RAISE EXCEPTION 'migration 114b: connect as jale_admin (this session runs as %)', current_user;
   END IF;
 
   FOR t IN
@@ -67,11 +67,11 @@ BEGIN
      ORDER BY want.relname
   LOOP
     IF t.oid IS NULL THEN
-      RAISE EXCEPTION 'migration 118: public.% is missing', t.relname;
+      RAISE EXCEPTION 'migration 114b: public.% is missing', t.relname;
     END IF;
     IF t.relforcerowsecurity THEN
       IF NOT pg_catalog.pg_has_role(current_user, t.relowner, 'USAGE') THEN
-        RAISE EXCEPTION 'migration 118: public.% is forced, and jale_admin cannot act as its owner %',
+        RAISE EXCEPTION 'migration 114b: public.% is forced, and jale_admin cannot act as its owner %',
           t.relname, pg_catalog.pg_get_userbyid(t.relowner);
       END IF;
       v_forced := v_forced || t.relname::TEXT;
@@ -80,15 +80,15 @@ BEGIN
 
   SELECT n.nspowner INTO v_owner FROM pg_catalog.pg_namespace n WHERE n.nspname = 'public';
   IF v_owner IS NULL THEN
-    RAISE EXCEPTION 'migration 118: schema public is missing';
+    RAISE EXCEPTION 'migration 114b: schema public is missing';
   END IF;
   IF v_owner <> 'jale_admin'::regrole THEN
     IF NOT pg_catalog.pg_has_role(current_user, v_owner, 'USAGE') THEN
-      RAISE EXCEPTION 'migration 118: schema public is owned by %, and jale_admin cannot act as that role',
+      RAISE EXCEPTION 'migration 114b: schema public is owned by %, and jale_admin cannot act as that role',
         pg_catalog.pg_get_userbyid(v_owner);
     END IF;
     IF NOT pg_catalog.has_database_privilege(current_database(), 'CREATE') THEN
-      RAISE EXCEPTION 'migration 118: schema public cannot change owner: jale_admin lacks CREATE on the database';
+      RAISE EXCEPTION 'migration 114b: schema public cannot change owner: jale_admin lacks CREATE on the database';
     END IF;
   END IF;
 
@@ -100,7 +100,7 @@ BEGIN
     ALTER SCHEMA public OWNER TO jale_admin;
   END IF;
 
-  RAISE NOTICE 'migration 118: % of 5 tables changed to NO FORCE; schema public changed owner: %',
+  RAISE NOTICE 'migration 114b: % of 5 tables changed to NO FORCE; schema public changed owner: %',
     cardinality(v_forced), CASE WHEN v_owner <> 'jale_admin'::regrole THEN 'yes' ELSE 'no' END;
 END;
 $$;
@@ -121,12 +121,12 @@ BEGIN
      AND c.relkind IN ('r', 'p')
    WHERE c.oid IS NULL OR c.relforcerowsecurity;
   IF offender IS NOT NULL THEN
-    RAISE EXCEPTION 'migration 118: still forced or missing: %', offender;
+    RAISE EXCEPTION 'migration 114b: still forced or missing: %', offender;
   END IF;
 
   SELECT pg_catalog.pg_get_userbyid(n.nspowner) INTO v_owner FROM pg_catalog.pg_namespace n WHERE n.nspname = 'public';
   IF v_owner IS DISTINCT FROM 'jale_admin' THEN
-    RAISE EXCEPTION 'migration 118: schema public is owned by %, not jale_admin', v_owner;
+    RAISE EXCEPTION 'migration 114b: schema public is owned by %, not jale_admin', v_owner;
   END IF;
 END;
 $$;
