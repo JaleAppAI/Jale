@@ -1,0 +1,302 @@
+{
+  "functions": {
+    "public.admin_analytics_billing_inbox(integer)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_weeks integer",
+      "returns": "TABLE(week_start timestamp with time zone, event_type text, received bigint, processed bigint, skipped bigint, failed bigint, retried bigint, payment_failed_invoices bigint)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "115",
+      "reason": "Admin console read: billing webhook events per week and event type, by outcome, counts only."
+    },
+    "public.admin_analytics_billing_inbox_now()": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "",
+      "returns": "TABLE(stuck_received bigint, failed_now bigint, unresolved_older bigint, oldest_stuck_at timestamp with time zone)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "115",
+      "reason": "Admin console read: billing webhook events stuck or failed right now, counts and the oldest time only."
+    },
+    "public.admin_analytics_digest_adoption()": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "",
+      "returns": "TABLE(employers bigint, digest_on bigint, digest_on_with_email bigint)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "117",
+      "reason": "Admin console read: how many employers have the applicant digest on, counts only."
+    },
+    "public.admin_analytics_digest_sends(integer)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_weeks integer",
+      "returns": "TABLE(week_start timestamp with time zone, emailed bigint, sent bigint, failed bigint, unknown bigint, in_progress bigint, employers_reached bigint)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "117",
+      "reason": "Admin console read: applicant digest emails per week by outcome, counts only."
+    },
+    "public.admin_analytics_employer_weekly(integer)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_weeks integer",
+      "returns": "TABLE(week_start timestamp with time zone, applications bigint, answered bigint, answered_untimed bigint, unanswered_7d bigint, applications_due bigint, first_response_p50_hours numeric, first_response_p75_hours numeric, worker_turns bigint, turns_unanswered_7d bigint, turns_due bigint, reply_p50_hours numeric, reply_p75_hours numeric, hires bigint, hires_approximate bigint, time_to_hire_p50_days numeric, time_to_hire_p75_days numeric, active_jobs bigint)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "114",
+      "reason": "Admin console read: weekly employer response, reply and hire figures, counts and medians only."
+    },
+    "public.admin_analytics_message_backlog()": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "",
+      "returns": "TABLE(lane text, open_under_1h bigint, open_1_24h bigint, open_24_48h bigint, stuck bigint, oldest_stuck_at timestamp with time zone)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "115",
+      "reason": "Admin console read: open and stuck messages per lane, counts and times only."
+    },
+    "public.admin_analytics_message_failures(integer)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_weeks integer",
+      "returns": "TABLE(week_start timestamp with time zone, lane text, created bigint, gave_up bigint, delivery_failed bigint)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "115",
+      "reason": "Admin console read: messages created, given up and failed per week and lane, counts only."
+    },
+    "public.admin_analytics_onboarding_cohorts(integer)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_weeks integer",
+      "returns": "TABLE(cohort_week timestamp with time zone, door text, started bigint, code_requested bigint, verified bigint, accepted_terms bigint, finished_profile bigint, ready bigint, declined bigint, in_progress bigint, abandoned bigint)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "113",
+      "reason": "Admin console read: weekly onboarding cohorts per door, counts only."
+    },
+    "public.admin_analytics_onboarding_restarts(integer)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_weeks integer",
+      "returns": "TABLE(week_start timestamp with time zone, door text, step_key text, reached bigint, restart_workers bigint, restart_presses bigint, back_workers bigint, back_presses bigint)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "117",
+      "reason": "Admin console read: onboarding start-overs and step-backs per week, door and step, counts only."
+    },
+    "public.admin_analytics_onboarding_stalled(integer)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_days integer",
+      "returns": "TABLE(door text, step_key text, workers bigint)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "113",
+      "reason": "Admin console read: workers stalled at each onboarding step, counted per door and step."
+    },
+    "public.admin_analytics_operator_resets(integer)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_weeks integer",
+      "returns": "TABLE(week_start timestamp with time zone, reason text, workers bigint, resets bigint, bulk boolean, run_started_at timestamp with time zone)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "117",
+      "reason": "Admin console read: operator onboarding resets per week and masked reason, counts only; never the operator or the worker."
+    },
+    "public.admin_analytics_slowest_employers(integer, integer)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_weeks integer, p_limit integer",
+      "returns": "TABLE(employer_id uuid, display_name text, applications bigint, unanswered_7d bigint, first_response_p50_hours numeric, active_jobs bigint)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "114",
+      "reason": "Admin console read: the slowest-answering employers, by id and display name; the console records every view of the list."
+    },
+    "public.admin_analytics_stale_jobs(integer)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_days integer",
+      "returns": "TABLE(job_id uuid, title text, employer_id uuid, display_name text, posted_at timestamp with time zone, last_employer_action_at timestamp with time zone, days_idle integer, waiting_applicants bigint, last_application_at timestamp with time zone)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "114",
+      "reason": "Admin console read: active jobs without employer action, with their employer; the console records every view of the list."
+    },
+    "public.admin_analytics_trust_extraction(integer)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_weeks integer",
+      "returns": "TABLE(week_start timestamp with time zone, extractor_version text, extractions bigint, failed bigint, not_enough_detail bigint, avg_sections numeric)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "115",
+      "reason": "Admin console read: trust extractions per week and extractor version, counts and averages only."
+    },
+    "public.admin_analytics_voice_extraction(integer)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_weeks integer",
+      "returns": "TABLE(week_start timestamp with time zone, model text, processed bigint, failed bigint, failed_transcribe bigint, failed_empty_transcript bigint, failed_audio_read bigint, failed_model_call bigint, failed_bad_json bigint, failed_bad_shape bigint, failed_pipeline_error bigint, failed_unrecorded bigint, usable bigint, full_name_found bigint, city_found bigint, main_trade_found bigint, main_trade_other_due bigint, main_trade_other_found bigint, years_experience_found bigint, has_transportation_found bigint, availability_found bigint)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "115",
+      "reason": "Admin console read: voice extractions per week and model, by outcome and failure cause, counts only."
+    },
+    "public.admin_cases_record_status_change()": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "",
+      "returns": "trigger",
+      "execute": [],
+      "created_by": "117",
+      "reason": "Trigger function: writes a case's status-change timeline event as the table owner. Firing a trigger checks no EXECUTE right, and no role holds one."
+    },
+    "public.admin_cases_stamp_status_change()": {
+      "owner": "jale_admin",
+      "security": "invoker",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "",
+      "returns": "trigger",
+      "execute": [],
+      "created_by": "117",
+      "reason": "Trigger function: stamps the time a case entered its status, as the writer. Firing a trigger checks no EXECUTE right, and no role holds one."
+    }
+  },
+  "table_additions": {
+    "public.billing_webhook_events": {
+      "policies": {
+        "billing_webhook_events_admin_analytics_read": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_admin"
+          ],
+          "origin": "existing",
+          "using": "(current_setting('app.admin_analytics_read'::text, true) = 'on'::text)",
+          "with_check": null,
+          "reason": "Gated read for the admin analytics definers (migration 115), which run as the master login: SELECT only, and only while a definer has set the transaction-local read flag. Never copied to a runtime login."
+        }
+      },
+      "reason": "Read by the ops health definers (migration 115) through their gated policy."
+    },
+    "public.employer_digest_settings": {
+      "policies": {
+        "employer_digest_settings_admin_analytics_read": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_admin"
+          ],
+          "origin": "existing",
+          "using": "(current_setting('app.admin_analytics_read'::text, true) = 'on'::text)",
+          "with_check": null,
+          "reason": "Gated read for the admin analytics definers (migration 117), which run as the master login: SELECT only, and only while a definer has set the transaction-local read flag. Never copied to a runtime login."
+        }
+      },
+      "reason": "Read by the admin queue definers (migration 117) through their gated policy."
+    },
+    "public.job_conversations": {
+      "policies": {
+        "job_conversations_admin_analytics_read": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_admin"
+          ],
+          "origin": "existing",
+          "using": "(current_setting('app.admin_analytics_read'::text, true) = 'on'::text)",
+          "with_check": null,
+          "reason": "Gated read for the admin analytics definers (migration 114), which run as the master login: SELECT only, and only while a definer has set the transaction-local read flag. Never copied to a runtime login."
+        }
+      },
+      "reason": "Read by the employer health definers (migration 114) through their gated policy."
+    },
+    "public.job_message_outbox": {
+      "policies": {
+        "job_message_outbox_admin_analytics_read": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_admin"
+          ],
+          "origin": "existing",
+          "using": "(current_setting('app.admin_analytics_read'::text, true) = 'on'::text)",
+          "with_check": null,
+          "reason": "Gated read for the admin analytics definers (migration 115), which run as the master login: SELECT only, and only while a definer has set the transaction-local read flag. Never copied to a runtime login."
+        }
+      },
+      "reason": "Read by the ops health definers (migration 115) through their gated policy."
+    },
+    "public.worker_profile_ai_extractions": {
+      "policies": {
+        "worker_profile_ai_extractions_admin_analytics_read": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_admin"
+          ],
+          "origin": "existing",
+          "using": "(current_setting('app.admin_analytics_read'::text, true) = 'on'::text)",
+          "with_check": null,
+          "reason": "Gated read for the admin analytics definers (migration 115), which run as the master login: SELECT only, and only while a definer has set the transaction-local read flag. Never copied to a runtime login."
+        }
+      },
+      "reason": "Read by the ops health definers (migration 115) through their gated policy."
+    },
+    "public.worker_trust_extractions": {
+      "policies": {
+        "worker_trust_extractions_admin_analytics_read": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_admin"
+          ],
+          "origin": "existing",
+          "using": "(current_setting('app.admin_analytics_read'::text, true) = 'on'::text)",
+          "with_check": null,
+          "reason": "Gated read for the admin analytics definers (migration 115), which run as the master login: SELECT only, and only while a definer has set the transaction-local read flag. Never copied to a runtime login."
+        }
+      },
+      "reason": "Read by the ops health definers (migration 115) through their gated policy."
+    }
+  }
+}

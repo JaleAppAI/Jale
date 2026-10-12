@@ -119,6 +119,11 @@ const expectedBaselineMigrations = [
   '110_admin_audit_log_freeze.sql',
   '111_audit_change_log.sql',
   '112_audit_operator_functions.sql',
+  '113_admin_onboarding_funnel.sql',
+  '114_admin_employer_health.sql',
+  '115_admin_ops_health.sql',
+  '117_admin_queues.sql',
+  '118_access_manifest_alignment.sql',
 ];
 
 function migrationFiles(): string[] {

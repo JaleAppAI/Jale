@@ -76,6 +76,14 @@ SUITES=(
   #    lease returns exactly its own row, so it runs before any other suite
   #    can leave a leasable row behind.
   test/unit/db/whatsapp-worker-intent-043.integration.test.ts
+  # 2b. The admin analytics suites check whole-database figures (every row in
+  #    a window, not only their own), so they run before any suite after 043
+  #    writes a fixture; 043 removes the rows they count. Each removes its own
+  #    fixtures afterwards, so the next one also starts from an unwritten bed.
+  test/unit/db/onboarding-funnel-2a.integration.test.ts
+  test/unit/db/employer-health-2b.integration.test.ts
+  test/unit/db/ops-health-2c.integration.test.ts
+  test/unit/db/admin-queues-2d.integration.test.ts
   # 3. The body. These suites key every assertion on their own fixtures (or
   #    measure deltas), so they tolerate each other's leftover rows. A new
   #    suite goes here unless it belongs in the tail; one that leaves
@@ -166,6 +174,7 @@ SUITES=(
   test/unit/db/application-hire-ack-095.integration.test.ts
   test/unit/db/employer-conversation-read.integration.test.ts
   test/unit/db/worker-referred-jobs-103.integration.test.ts
+  test/unit/db/access-manifest-alignment-118.integration.test.ts
 )
 
 usage() {

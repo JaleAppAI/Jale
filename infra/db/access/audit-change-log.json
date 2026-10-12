@@ -284,7 +284,8 @@
       "id": "The record key, kept in record_ids.",
       "created_at": "A timestamp.",
       "updated_at": "A timestamp.",
-      "resolved_at": "A timestamp."
+      "resolved_at": "A timestamp.",
+      "status_changed_at": "A timestamp: when the case entered its status (migration 117)."
     },
     "public.admin_users": {
       "id": "The record key, kept in record_ids.",

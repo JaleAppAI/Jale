@@ -101,7 +101,7 @@ export class VoiceTranscriptionPipeline extends Construct {
     });
 
     // Any task-level failure — Transcribe API errors, IAM, or the completion
-    // handler itself throwing (e.g. a Bedrock outage) — must still reach
+    // handler itself throwing (e.g. a database error or a Lambda timeout) — must still reach
     // InvokeOnFailed: its status:'FAILED' payload drives the worker-facing
     // text fallback. Without these catches the execution dies silently and
     // the worker is stranded on "estamos armando tu perfil".

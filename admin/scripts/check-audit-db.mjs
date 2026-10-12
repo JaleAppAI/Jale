@@ -411,6 +411,62 @@ try {
     assert.equal(payingEvent.result_count, paying.length);
   });
 
+  // --- The analytics pages' reads, on the console's own login ----------------
+  await step('every analytics read runs as the console; only the two employer lists are recorded', async () => {
+    const { viewer } = await signedIn('admin_readonly');
+    // A stale active job: posted 20 days ago, with no employer action since.
+    const employer = await createUser('employer');
+    const posted = new Date(Date.now() - 20 * 86_400_000);
+    const { rows: [job] } = await su.query(
+      `INSERT INTO jobs (employer_id, title, location, job_type, status, created_at, updated_at)
+       VALUES ($1, 'Synthetic stale job', 'Tijuana', 'full-time', 'active', $2, $2) RETURNING id::text`,
+      [employer, posted],
+    );
+
+    // The aggregates: every definer the Growth, Funnels, Employers and Ops
+    // pages call, through the page code, as jale_admin_console. None records.
+    const eventCount = async () => (await su.query('SELECT count(*)::int AS n FROM jale_audit.events')).rows[0].n;
+    const before = await eventCount();
+    await analytics.getAnalyticsTotals();
+    await analytics.getSignups('30d');
+    await analytics.getOnboardingCohorts(8);
+    await analytics.getOnboardingStalled();
+    await analytics.getEmployerWeekly(8);
+    await analytics.getDigestAdoption();
+    await analytics.getDigestSends(8);
+    await analytics.getMessageBacklog();
+    await analytics.getMessageFailures(8);
+    await analytics.getVoiceExtraction(8);
+    await analytics.getTrustExtraction(8);
+    await analytics.getBillingInbox(8);
+    await analytics.getBillingInboxNow();
+    await analytics.getOnboardingRestarts(8);
+    await analytics.getOperatorResets(8);
+    assert.equal(await eventCount(), before, 'the aggregates record nothing');
+
+    const slowest = await analytics.loadSlowestEmployers(viewer, 8);
+    const [slowestEvent] = await eventsFor('request_id', viewer.requestId);
+    assert.deepEqual(
+      [slowestEvent.kind, slowestEvent.outcome, slowestEvent.surface, slowestEvent.categories, slowestEvent.db_login],
+      ['read', 'allowed', 'admin.analytics_slowest_employers', ['analytics'], 'jale_admin_console'],
+    );
+    assert.deepEqual(slowestEvent.subject_user_ids, slowest.map((row) => row.employerId));
+    assert.equal(slowestEvent.result_count, slowest.length);
+
+    const staleViewer = await session.getCurrentAdminSession();
+    const stale = await analytics.loadStaleJobs(staleViewer);
+    assert.ok(stale.some((row) => row.jobId === job.id && row.employerId === employer), 'the stale job is listed');
+    const shown = stale.slice(0, 25);
+    const [staleEvent] = await eventsFor('request_id', staleViewer.requestId);
+    assert.deepEqual(
+      [staleEvent.kind, staleEvent.outcome, staleEvent.surface, staleEvent.categories, staleEvent.db_login],
+      ['read', 'allowed', 'admin.analytics_stale_jobs', ['analytics'], 'jale_admin_console'],
+    );
+    assert.deepEqual(staleEvent.subject_user_ids, [...new Set(shown.map((row) => row.employerId))]);
+    assert.ok(staleEvent.subject_user_ids.includes(employer));
+    assert.equal(staleEvent.result_count, shown.length);
+  });
+
   // --- A reveal is one read event with its reason -----------------------------
   const REASON = 'Synthetic callback reason for the access-record check.';
   const legacyRows = async () => (await su.query('SELECT count(*)::int AS n FROM admin_audit_log')).rows[0].n;

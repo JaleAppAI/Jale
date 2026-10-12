@@ -234,6 +234,8 @@ maybeDescribe('migration 086: trust extractions and the web onboarding door', ()
     // migration adds for a dedicated login (none on a bed without it).
     const copies = await reviewedPolicyCopies(setup, 'public.worker_trust_extractions');
     expect(result.rows.map((r) => r.policyname).sort()).toEqual([
+      // 115: the admin console's gated, SELECT-only analytics read.
+      'worker_trust_extractions_admin_analytics_read',
       'wte_ai_service_rows',
       'wte_employer_applicant_read',
       'wte_worker_own_internal',
@@ -249,6 +251,7 @@ maybeDescribe('migration 086: trust extractions and the web onboarding door', ()
     expect(byName.get('wte_worker_own_internal')).toMatchObject({ cmd: 'SELECT', roles: ['jale_admin', 'jale_whatsapp'] });
     expect(byName.get('wte_employer_applicant_read')).toMatchObject({ cmd: 'SELECT', roles: ['jale_admin'] });
     expect(byName.get('wte_worker_own_sub')).toMatchObject({ cmd: 'SELECT', roles: ['jale_admin'] });
+    expect(byName.get('worker_trust_extractions_admin_analytics_read')).toMatchObject({ cmd: 'SELECT', roles: ['jale_admin'] });
     for (const copy of copies) {
       expect(byName.get(copy.policyname)).toMatchObject({ cmd: copy.cmd, roles: copy.roles });
     }
