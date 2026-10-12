@@ -1,6 +1,7 @@
 import * as path from 'node:path';
 import * as cdk from 'aws-cdk-lib';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as cloudwatchActions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
@@ -8,7 +9,9 @@ import * as route53 from 'aws-cdk-lib/aws-route53';
 import * as route53targets from 'aws-cdk-lib/aws-route53-targets';
 import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as kms from 'aws-cdk-lib/aws-kms';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as sns from 'aws-cdk-lib/aws-sns';
 import * as wafv2 from 'aws-cdk-lib/aws-wafv2';
 import { Platform } from 'aws-cdk-lib/aws-ecr-assets';
 import { Construct } from 'constructs';
@@ -566,13 +569,48 @@ function handler(event) {
     // bounced, nothing reported it) with the blast radius pointed at the login
     // door instead of the digest.
     //
-    // NO ALARM ACTION: this stack takes no alarm-topic prop and the shared ops
-    // topic lives in us-east-2, where a CloudWatch alarm in us-east-1 cannot
-    // publish. Console-visible and dashboard-able is strictly better than
-    // absent, and it is the same trade auth-stack.ts's CustomMessage error
-    // alarms already make. Wiring a us-east-1 SNS topic (or a cross-region
-    // forwarder) is the follow-up, not this change.
+    // Both notify the us-east-1 alarm topic below: the shared ops topic lives
+    // in us-east-2, and a CloudWatch alarm can only notify a topic in its own
+    // region.
     //
+    // The topic is encrypted with a key of its own, as the audit alert topic
+    // is: CloudWatch cannot use the AWS managed SNS key, so a topic under that
+    // key would drop every alarm notification. The key and the topic each
+    // allow this account's alarms in this region, and nothing else is
+    // granted. No subscriptions here: they are added outside the repository,
+    // which is why the topic name is an output.
+    const alarmsFromThisAccountAndRegion = () => ({
+      StringEquals: { 'aws:SourceAccount': cdk.Aws.ACCOUNT_ID },
+      ArnLike: { 'aws:SourceArn': `arn:${cdk.Aws.PARTITION}:cloudwatch:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:alarm:*` },
+    });
+    const alarmTopicKey = new kms.Key(this, 'AlarmTopicKey', {
+      description: 'Alarm notifications topic, us-east-1',
+      enableKeyRotation: true,
+    });
+    alarmTopicKey.addToResourcePolicy(new iam.PolicyStatement({
+      sid: 'AlarmsPublishToTheAlarmTopic',
+      principals: [new iam.ServicePrincipal('cloudwatch.amazonaws.com')],
+      actions: ['kms:Decrypt', 'kms:GenerateDataKey*'],
+      resources: ['*'],
+      conditions: alarmsFromThisAccountAndRegion(),
+    }));
+    const alarmTopic = new sns.Topic(this, 'AlarmTopic', {
+      topicName: 'jale-alarms-us-east-1',
+      displayName: 'Jale alarms (us-east-1)',
+      masterKey: alarmTopicKey,
+      enforceSSL: true,
+    });
+    // The topic's own policy replaces the default one, so the alarms'
+    // publishing is allowed explicitly.
+    alarmTopic.addToResourcePolicy(new iam.PolicyStatement({
+      sid: 'AlarmsPublish',
+      principals: [new iam.ServicePrincipal('cloudwatch.amazonaws.com')],
+      actions: ['sns:Publish'],
+      resources: [alarmTopic.topicArn],
+      conditions: alarmsFromThisAccountAndRegion(),
+    }));
+    const alarmActions = [new cloudwatchActions.SnsAction(alarmTopic)];
+
     // No dimensions on either metric — `AWS/SES` publishes Bounce and
     // Reputation.* at the account level, and any dimension yields a metric that
     // never reports, i.e. an alarm that cannot fire.
@@ -589,6 +627,7 @@ function handler(event) {
         statistic: 'Sum',
       }),
       threshold: 1,
+      actions: alarmActions,
     });
 
     jaleAlarm(this, 'SesReputationBounceRateUsEast1Alarm', {
@@ -605,6 +644,7 @@ function handler(event) {
         statistic: 'Maximum',
       }),
       threshold: 0.05,
+      actions: alarmActions,
     });
 
     // ── Outputs ─────────────────────────────────────────────────────
@@ -627,6 +667,10 @@ function handler(event) {
     new cdk.CfnOutput(this, 'FrontendUrl', {
       value: `https://${props.domainName}`,
       description: 'Public frontend URL',
+    });
+    new cdk.CfnOutput(this, 'AlarmTopicName', {
+      value: alarmTopic.topicName,
+      description: 'SNS topic the us-east-1 alarms notify (subscriptions are added outside the repository)',
     });
   }
 }

@@ -9,6 +9,49 @@ import { AdminStack, getAdminDurability } from '../../../lib/stacks/admin-stack'
 
 const describeIfDocker = process.env.SKIP_DOCKER_TESTS ? describe.skip : describe;
 
+const ALARM_TOPIC_ARN = 'arn:aws:sns:us-east-1:111111111111:jale-alarms';
+
+interface BuiltAdmin {
+  template: Template;
+  stack: AdminStack;
+  reportImagesBucket: s3.Bucket;
+  reportImagesKey: kms.Key;
+}
+
+function buildAdmin(alarmTopicArn?: string): BuiltAdmin {
+  const app = new cdk.App({ context: { environment: 'prod' } });
+  const support = new cdk.Stack(app, 'AdminSupportStack', {
+    env: { account: '111111111111', region: 'us-east-1' },
+  });
+  const vpc = new ec2.Vpc(support, 'Vpc', { maxAzs: 2 });
+  const lambdaSg = new ec2.SecurityGroup(support, 'LambdaSg', { vpc });
+  const adminDbSecret = new secretsmanager.Secret(support, 'AdminDbSecret');
+  const reportImagesKey = new kms.Key(support, 'ReportImagesKey');
+  const reportImagesBucket = new s3.Bucket(support, 'ReportImagesBucket', { encryptionKey: reportImagesKey });
+  const certificate = acm.Certificate.fromCertificateArn(
+    support,
+    'AdminCert',
+    'arn:aws:acm:us-east-1:111111111111:certificate/00000000-0000-0000-0000-000000000000',
+  );
+
+  const stack = new AdminStack(app, 'TestAdminStack', {
+    env: { account: '111111111111', region: 'us-east-1' },
+    domainName: 'example.com',
+    hostedZoneId: 'Z1234567890ABC',
+    vpc,
+    privateSubnets: vpc.selectSubnets({ subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS }).subnets,
+    lambdaSg,
+    adminDbSecret,
+    reportImagesBucket,
+    reportImagesKey,
+    certificate,
+    webAclArn: 'arn:aws:wafv2:us-east-1:111111111111:global/webacl/admin/00000000-0000-0000-0000-000000000000',
+    alarmTopicArn,
+  });
+
+  return { template: Template.fromStack(stack), stack, reportImagesBucket, reportImagesKey };
+}
+
 describeIfDocker('AdminStack', () => {
   let template: Template;
   let stack: AdminStack;
@@ -16,36 +59,7 @@ describeIfDocker('AdminStack', () => {
   let reportImagesKey: kms.Key;
 
   beforeAll(() => {
-    const app = new cdk.App({ context: { environment: 'prod' } });
-    const support = new cdk.Stack(app, 'AdminSupportStack', {
-      env: { account: '111111111111', region: 'us-east-1' },
-    });
-    const vpc = new ec2.Vpc(support, 'Vpc', { maxAzs: 2 });
-    const lambdaSg = new ec2.SecurityGroup(support, 'LambdaSg', { vpc });
-    const adminDbSecret = new secretsmanager.Secret(support, 'AdminDbSecret');
-    reportImagesKey = new kms.Key(support, 'ReportImagesKey');
-    reportImagesBucket = new s3.Bucket(support, 'ReportImagesBucket', { encryptionKey: reportImagesKey });
-    const certificate = acm.Certificate.fromCertificateArn(
-      support,
-      'AdminCert',
-      'arn:aws:acm:us-east-1:111111111111:certificate/00000000-0000-0000-0000-000000000000',
-    );
-
-    stack = new AdminStack(app, 'TestAdminStack', {
-      env: { account: '111111111111', region: 'us-east-1' },
-      domainName: 'example.com',
-      hostedZoneId: 'Z1234567890ABC',
-      vpc,
-      privateSubnets: vpc.selectSubnets({ subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS }).subnets,
-      lambdaSg,
-      adminDbSecret,
-      reportImagesBucket,
-      reportImagesKey,
-      certificate,
-      webAclArn: 'arn:aws:wafv2:us-east-1:111111111111:global/webacl/admin/00000000-0000-0000-0000-000000000000',
-    });
-
-    template = Template.fromStack(stack);
+    ({ template, stack, reportImagesBucket, reportImagesKey } = buildAdmin(ALARM_TOPIC_ARN));
   });
 
   test('creates a dedicated admin Cognito user pool and client', () => {
@@ -125,6 +139,29 @@ describeIfDocker('AdminStack', () => {
       LifecycleConfiguration: Match.anyValue(),
     });
     template.resourceCountIs('AWS::CloudWatch::Alarm', 3);
+  });
+
+  test('sends its three alarms to the ops topic, and only their ALARM state', () => {
+    const alarms = Object.values(template.findResources('AWS::CloudWatch::Alarm')) as any[];
+    expect(alarms.map((a) => a.Properties.AlarmName).sort()).toEqual([
+      'jale-admin-cloudfront-5xx',
+      'jale-admin-lambda-errors',
+      'jale-admin-lambda-throttles',
+    ]);
+    for (const alarm of alarms) {
+      expect(alarm.Properties.AlarmActions).toEqual([ALARM_TOPIC_ARN]);
+      expect(alarm.Properties.OKActions).toBeUndefined();
+    }
+  });
+
+  // The ops topic arrives as the optional `whatsappAlarmTopicArn` context,
+  // which a dev synth may not pass: the alarms still exist, with no action.
+  test('keeps its three alarms without an action when no alarm topic is given', () => {
+    const alarms = Object.values(buildAdmin().template.findResources('AWS::CloudWatch::Alarm')) as any[];
+    expect(alarms).toHaveLength(3);
+    for (const alarm of alarms) {
+      expect(alarm.Properties.AlarmActions).toBeUndefined();
+    }
   });
 
   test('retains production identity, logs, and access-log storage for 90 days', () => {

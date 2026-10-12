@@ -1,9 +1,11 @@
 import * as cdk from 'aws-cdk-lib';
+import * as cloudwatchActions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as sns from 'aws-cdk-lib/aws-sns';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as path from 'node:path';
 import { Construct } from 'constructs';
@@ -28,6 +30,12 @@ export interface MatchingStackProps extends cdk.StackProps {
   dbEndpointPort: string;
   /** The application database's name. */
   dbName: string;
+  /**
+   * The existing monitored ops topic (the shared `whatsappAlarmTopicArn`
+   * context). Optional, like ReportsStack's: without it the DLQ alarms still
+   * exist and are visible in the console, with no action.
+   */
+  alarmTopicArn?: string;
 }
 
 export interface MatchingStackOutputs {
@@ -143,11 +151,19 @@ export class MatchingStack extends cdk.Stack implements MatchingStackOutputs {
     // ">= 1 message", and `> 1` would quietly mean one dead-lettered message
     // no longer alarms. And no `alarmName`: CloudFormation generates the
     // physical name for these, and introducing one would REPLACE a live alarm.
+    //
+    // The ops topic, when given, is each alarm's ALARM-state action. Adding an
+    // action updates a live alarm in place.
+    const alarmActions = props.alarmTopicArn
+      ? [new cloudwatchActions.SnsAction(sns.Topic.fromTopicArn(this, 'MatchingAlarmTopic', props.alarmTopicArn))]
+      : [];
+
     jaleAlarm(this, 'CandidateMaterializationDlqAlarm', {
       metric: materializationDlq.metricApproximateNumberOfMessagesVisible(),
       threshold: 1,
       evaluationPeriods: 1,
       alarmDescription: 'Candidate materialization DLQ has messages',
+      actions: alarmActions,
     });
 
     jaleAlarm(this, 'WorkerRerankDlqAlarm', {
@@ -155,6 +171,7 @@ export class MatchingStack extends cdk.Stack implements MatchingStackOutputs {
       threshold: 1,
       evaluationPeriods: 1,
       alarmDescription: 'Worker rerank DLQ has messages',
+      actions: alarmActions,
     });
 
     jaleAlarm(this, 'EmployerCandidateRerankDlqAlarm', {
@@ -162,6 +179,7 @@ export class MatchingStack extends cdk.Stack implements MatchingStackOutputs {
       threshold: 1,
       evaluationPeriods: 1,
       alarmDescription: 'Employer candidate rerank DLQ has messages',
+      actions: alarmActions,
     });
   }
 }

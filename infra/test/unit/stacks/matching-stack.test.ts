@@ -4,27 +4,34 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { Template, Match } from 'aws-cdk-lib/assertions';
 import { MatchingStack } from '../../../lib/stacks/matching-stack';
 
+const ALARM_TOPIC_ARN = 'arn:aws:sns:us-east-2:111122223333:jale-alarms';
+
+function buildTemplate(alarmTopicArn?: string, context: Record<string, unknown> = {}): Template {
+  const app = new cdk.App({ context });
+  const harness = new cdk.Stack(app, 'MatchingHarness');
+  const vpc = new ec2.Vpc(harness, 'Vpc', { maxAzs: 2 });
+  const lambdaSg = new ec2.SecurityGroup(harness, 'LambdaSg', { vpc });
+  const matchingDbSecret = new secretsmanager.Secret(harness, 'MatchingDbSecret');
+
+  const stack = new MatchingStack(app, 'TestMatchingStack', {
+    vpc,
+    privateSubnets: vpc.privateSubnets,
+    lambdaSg,
+    matchingDbSecret,
+    dbEndpointAddress: 'db.example.internal',
+    dbEndpointPort: '5432',
+    dbName: 'jale',
+    alarmTopicArn,
+  });
+
+  return Template.fromStack(stack);
+}
+
 describe('MatchingStack', () => {
   let template: Template;
 
   beforeAll(() => {
-    const app = new cdk.App();
-    const harness = new cdk.Stack(app, 'MatchingHarness');
-    const vpc = new ec2.Vpc(harness, 'Vpc', { maxAzs: 2 });
-    const lambdaSg = new ec2.SecurityGroup(harness, 'LambdaSg', { vpc });
-    const matchingDbSecret = new secretsmanager.Secret(harness, 'MatchingDbSecret');
-
-    const stack = new MatchingStack(app, 'TestMatchingStack', {
-      vpc,
-      privateSubnets: vpc.privateSubnets,
-      lambdaSg,
-      matchingDbSecret,
-      dbEndpointAddress: 'db.example.internal',
-      dbEndpointPort: '5432',
-      dbName: 'jale',
-    });
-
-    template = Template.fromStack(stack);
+    template = buildTemplate(ALARM_TOPIC_ARN);
   });
 
   it('creates materialization, worker rerank, and employer candidate rerank queues plus DLQs', () => {
@@ -157,9 +164,9 @@ describe('MatchingStack', () => {
       // new physical name, and CloudFormation REPLACES an alarm to set one.
       expect(alarm.Properties.AlarmName).toBeUndefined();
       expect(alarm.Properties.DatapointsToAlarm).toBeUndefined();
-      // No SNS action today, exactly as before. MatchingStack takes no alarm
-      // topic prop, and inventing one is not this change.
-      expect(alarm.Properties.AlarmActions).toBeUndefined();
+      // A dead-lettered message notifies the ops topic, and only on ALARM.
+      expect(alarm.Properties.AlarmActions).toEqual([ALARM_TOPIC_ARN]);
+      expect(alarm.Properties.OKActions).toBeUndefined();
 
       // Logical id: pinned to `<constructId><8 hex>` so migrating these to
       // `jaleAlarm()` cannot rename — or re-parent — a live alarm.
@@ -167,4 +174,15 @@ describe('MatchingStack', () => {
       expect(logicalId).toMatch(new RegExp(`^${constructId}[0-9A-F]{8}$`));
     },
   );
+
+  // The ops topic arrives as the optional `whatsappAlarmTopicArn` context,
+  // which a dev synth may not pass: the alarms still exist, with no action.
+  it('keeps the three DLQ alarms without an action when no alarm topic is given', () => {
+    const bare = buildTemplate(undefined, { 'aws:cdk:bundling-stacks': [] });
+    const alarms = Object.values(bare.findResources('AWS::CloudWatch::Alarm')) as any[];
+    expect(alarms).toHaveLength(3);
+    for (const alarm of alarms) {
+      expect(alarm.Properties.AlarmActions).toBeUndefined();
+    }
+  });
 });

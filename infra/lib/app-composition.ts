@@ -230,6 +230,8 @@ export function buildJaleApp(app: cdk.App, options: JaleAppOptions = {}): void {
     vpc: network.vpc,
     privateSubnets: network.privateSubnets,
     lambdaSg: network.lambdaSg,
+    // The same monitored ops topic the other stacks' alarms use.
+    alarmTopicArn: app.node.tryGetContext('whatsappAlarmTopicArn'),
   });
 
   const ai = new AiStack(app, 'JaleAiStack', {
@@ -252,6 +254,8 @@ export function buildJaleApp(app: cdk.App, options: JaleAppOptions = {}): void {
     dbEndpointAddress: database.dbEndpoint,
     dbEndpointPort: database.dbPort,
     dbName: database.dbName,
+    // The same monitored ops topic the other stacks' alarms use.
+    alarmTopicArn: app.node.tryGetContext('whatsappAlarmTopicArn'),
   });
 
   // Required in every environment that sends WhatsApp messages: Twilio signs
@@ -469,6 +473,8 @@ export function buildJaleApp(app: cdk.App, options: JaleAppOptions = {}): void {
     reportImagesKey: reports.imagesKey,
     certificate: adminCert.certificate,
     webAclArn: adminCert.webAclArn,
+    // The same monitored ops topic the other stacks' alarms use.
+    alarmTopicArn: app.node.tryGetContext('whatsappAlarmTopicArn'),
   });
 
   // FrontendStack — Lambda + CloudFront + Route 53 for jaleapp.ai
