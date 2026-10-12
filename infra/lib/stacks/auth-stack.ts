@@ -2,12 +2,14 @@ import * as path from 'node:path';
 import * as cdk from 'aws-cdk-lib';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as cloudwatchActions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as sns from 'aws-cdk-lib/aws-sns';
 import { Construct } from 'constructs';
 import {
   JaleCognitoPool,
@@ -21,6 +23,12 @@ export interface AuthStackProps extends cdk.StackProps {
   readonly vpc: ec2.IVpc;
   readonly privateSubnets: ec2.ISubnet[];
   readonly lambdaSg: ec2.ISecurityGroup;
+  /**
+   * The existing monitored ops topic (the shared `whatsappAlarmTopicArn`
+   * context). Optional, like ReportsStack's: without it the alarms still
+   * exist and are visible in the console, with no action.
+   */
+  readonly alarmTopicArn?: string;
 }
 
 export class AuthStack extends cdk.Stack {
@@ -174,7 +182,14 @@ export class AuthStack extends cdk.Stack {
       actions: ['secretsmanager:GetSecretValue', 'secretsmanager:DescribeSecret'],
       resources: [otpTwilioSecret.secretArn],
     }));
-    new cloudwatch.Alarm(this, 'WorkerOtpSendErrorAlarm', {
+    // The ops topic, when given, is every alarm's ALARM-state action.
+    const alarmAction = props.alarmTopicArn
+      ? new cloudwatchActions.SnsAction(sns.Topic.fromTopicArn(this, 'AuthAlarmTopic', props.alarmTopicArn))
+      : undefined;
+    const notify = (alarm: cloudwatch.Alarm): void => {
+      if (alarmAction) alarm.addAlarmAction(alarmAction);
+    };
+    notify(new cloudwatch.Alarm(this, 'WorkerOtpSendErrorAlarm', {
       alarmName: 'WorkerOtpSendErrors',
       alarmDescription: 'Worker OTP CreateAuthChallenge Lambda reported an error',
       metric: createAuthChallengeLambda.function.metricErrors({
@@ -184,8 +199,8 @@ export class AuthStack extends cdk.Stack {
       evaluationPeriods: 1,
       datapointsToAlarm: 1,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
-    new cloudwatch.Alarm(this, 'WorkerOtpThrottleAlarm', {
+    }));
+    notify(new cloudwatch.Alarm(this, 'WorkerOtpThrottleAlarm', {
       alarmName: 'WorkerOtpSendThrottled',
       metric: new cloudwatch.Metric({
         namespace: 'Jale/OTP',
@@ -196,8 +211,8 @@ export class AuthStack extends cdk.Stack {
       threshold: 20,
       evaluationPeriods: 1,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
-    new cloudwatch.Alarm(this, 'WorkerOtpTwilioFailureAlarm', {
+    }));
+    notify(new cloudwatch.Alarm(this, 'WorkerOtpTwilioFailureAlarm', {
       alarmName: 'WorkerOtpTwilioFailures',
       metric: new cloudwatch.Metric({
         namespace: 'Jale/OTP',
@@ -208,7 +223,7 @@ export class AuthStack extends cdk.Stack {
       threshold: 1,
       evaluationPeriods: 1,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
+    }));
 
     // VerifyAuthChallenge: a pure Cognito trigger — it compares the user's
     // answer to the stored OTP and, on a correct one, flips
@@ -371,8 +386,9 @@ export class AuthStack extends cdk.Stack {
 
     // Fail-open means an employer never sees this break: they just receive the
     // plain Cognito email. This alarm is the only signal that the branded
-    // template stopped rendering. No actions, matching the OTP alarms above.
-    new cloudwatch.Alarm(this, 'EmployerCustomMessageErrorAlarm', {
+    // template stopped rendering, so it notifies the ops topic like the OTP
+    // alarms above.
+    notify(new cloudwatch.Alarm(this, 'EmployerCustomMessageErrorAlarm', {
       alarmName: 'EmployerCustomMessageErrors',
       alarmDescription:
         'Employer CustomMessage trigger threw — Cognito default email is being sent (fail-open); check the Lambda logs',
@@ -385,7 +401,7 @@ export class AuthStack extends cdk.Stack {
       datapointsToAlarm: 1,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
+    }));
 
     // ── Employer Cognito Pool ──
     this.employerPool = new JaleCognitoPool(this, 'EmployerPool', {
