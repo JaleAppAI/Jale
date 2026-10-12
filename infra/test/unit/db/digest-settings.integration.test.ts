@@ -1223,6 +1223,9 @@ maybeDescribe('employer_digest_settings integration (migration 082)', () => {
       // elsewhere are the reviewed copies of these policies for a dedicated
       // login, read from the one list migration 106 is generated from.
       expect([...state.policies].sort()).toEqual([
+        // 117: the admin console's gated, SELECT-only analytics read (only
+        // while an admin_analytics_* definer has opened the flag).
+        'employer_digest_settings_admin_analytics_read',
         'employer_digest_settings_delivery_feedback_select',
         'employer_digest_settings_delivery_feedback_update',
         'employer_digest_settings_digest_enumerator_select',

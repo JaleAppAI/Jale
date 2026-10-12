@@ -5402,7 +5402,7 @@
       "security": "definer",
       "search_path": "pg_catalog, pg_temp",
       "arguments": "p_from timestamp with time zone, p_bucket text",
-      "returns": "TABLE(bucket_start timestamp with time zone, worker_signups bigint, employer_signups bigint)",
+      "returns": "TABLE(bucket_start timestamp with time zone, worker_signups bigint, employer_signups bigint, worker_signups_verified bigint)",
       "execute": [
         "jale_admin_console"
       ],
@@ -5413,7 +5413,7 @@
       "security": "definer",
       "search_path": "pg_catalog, pg_temp",
       "arguments": "",
-      "returns": "TABLE(total_workers bigint, total_employers bigint, paying_employers bigint, jobs_active bigint, jobs_paused bigint, jobs_filled bigint, jobs_closed bigint, hires_total bigint, jobs_with_hire bigint)",
+      "returns": "TABLE(total_workers bigint, total_employers bigint, paying_employers bigint, jobs_active bigint, jobs_paused bigint, jobs_filled bigint, jobs_closed bigint, hires_total bigint, jobs_with_hire bigint, total_verified_workers bigint)",
       "execute": [
         "jale_admin_console"
       ],

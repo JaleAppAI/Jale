@@ -83,6 +83,8 @@ for (const surface of codes.ADMIN_SURFACES) {
 for (const surface of [
   'admin.dashboard', 'admin.cases_list', 'admin.case_detail', 'admin.case_detail.reveal', 'admin.lockouts',
   'admin.analytics_paying_employers', 'admin.access_history', 'admin.session', 'admin.sessions_revoke',
+  // The Employers analytics lists that name employers.
+  'admin.analytics_slowest_employers', 'admin.analytics_stale_jobs',
   // The problem-report inbox's surfaces, registered with the audit codes.
   'admin.reports_list', 'admin.report_detail', 'admin.report_contact_reveal', 'admin.report_screenshot',
   'admin.report_status', 'admin.report_note', 'admin.report_settings',
