@@ -244,6 +244,22 @@ RETURNING id
 
 INSERT INTO _employer(id) VALUES (:'seed_employer_id');
 
+-- Migration 118: every employer login belongs to a company. The sign-up
+-- bootstrap finds the employer through app.current_user_id. psql runs each
+-- statement of this file in its own transaction, so the transaction-local
+-- setting and the call share one DO block. Row security is turned back on
+-- for that block only: the bootstrap reads users and writes organizations
+-- through their policies, and this session runs with row_security = off,
+-- which makes any policy-filtered statement fail for jale_admin
+-- (NOBYPASSRLS, 020b). Idempotent: a re-run gets back the same company.
+DO `$`$
+BEGIN
+  PERFORM set_config('row_security', 'on', true);
+  PERFORM set_config('app.current_user_id', 'seed-employer-profile-match', true);
+  PERFORM public.employer_ensure_organization('Jale Profile Match Fixtures');
+END;
+`$`$;
+
 CREATE TEMP TABLE _seed_jobs(
   fixture_key text PRIMARY KEY,
   title text NOT NULL,

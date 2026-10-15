@@ -83,6 +83,7 @@ export const handler = async (
   const email: string | null = attrs.email || null;
   const phone: string | null = attrs.phone_number || null;
   const fullName: string | null = attrs.name || null;
+  const companyName: string | null = attrs['custom:company_name'] || attrs.name || null;
 
   let client;
   try {
@@ -105,6 +106,12 @@ export const handler = async (
        ON CONFLICT (cognito_sub) DO NOTHING`,
       [cognitoSub, userType, email, phone, fullName],
     );
+    // An employer login always belongs to a company. Same transaction as the
+    // users row: both exist or neither does (the DLQ path below covers a
+    // failure exactly as before). Idempotent, so a Cognito retry is safe.
+    if (userType === 'employer') {
+      await client.query('SELECT public.employer_ensure_organization($1) AS org', [companyName]);
+    }
     await client.query('COMMIT');
   } catch (err) {
     // ROLLBACK the DB transaction if it was started

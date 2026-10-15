@@ -40,4 +40,13 @@ describe('seed-whatsapp-ranked-jobs.ps1', () => {
     expect(script).toContain('IF $AlsoSeedJobCandidatesSql THEN');
     expect(script).toContain('job_candidates');
   });
+
+  it('gives the seeded employer a company through the sign-up bootstrap, after the users row', () => {
+    const script = readScript();
+
+    expect(script).toContain("PERFORM set_config('app.current_user_id', 'seed-employer-profile-match', true);");
+    expect(script).toContain("PERFORM public.employer_ensure_organization('Jale Profile Match Fixtures');");
+    expect(script.indexOf('employer_ensure_organization'))
+      .toBeGreaterThan(script.indexOf("INSERT INTO _employer(id) VALUES (:'seed_employer_id');"));
+  });
 });

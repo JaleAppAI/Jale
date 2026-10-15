@@ -214,6 +214,16 @@ async function upsertEmployer(client: Client): Promise<string> {
   return r.rows[0].id;
 }
 
+async function ensureEmployerCompany(client: Client): Promise<void> {
+  // Migration 118: every employer login belongs to a company. The sign-up
+  // bootstrap finds the employer through app.current_user_id, so name the
+  // seeded employer for this one call (transaction-local), then clear it.
+  // Idempotent: a re-run gets back the company the first run made.
+  await client.query(`SELECT set_config('app.current_user_id', $1, true)`, [EMPLOYER_SUB]);
+  await client.query(`SELECT public.employer_ensure_organization($1)`, [EMPLOYER_NAME]);
+  await client.query(`SELECT set_config('app.current_user_id', '', true)`);
+}
+
 async function upsertJob(client: Client, employerId: string, job: SeedJob): Promise<string> {
   const existing = await client.query<{ id: string }>(
     `SELECT id
@@ -312,6 +322,7 @@ async function main(): Promise<void> {
     await client.query('BEGIN');
     const worker = await findWorkerProfile(client);
     const employerId = await upsertEmployer(client);
+    await ensureEmployerCompany(client);
     const jobs = buildJobs(worker);
     const seedCandidates = process.env.SEED_JOB_CANDIDATES === 'true';
 

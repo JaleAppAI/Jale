@@ -175,6 +175,58 @@ describe('Post-confirmation trigger Lambda', () => {
     }));
   });
 
+  it('creates the company for an employer in the same transaction as the users row', async () => {
+    mockQuery.mockResolvedValue({ rows: [{ org: 'org-1' }] });
+    const event = createEvent('employer');
+    (event.request.userAttributes as Record<string, string>)['custom:company_name'] = 'ACME Roofing';
+
+    await handler(event);
+
+    const sqls = mockQuery.mock.calls.map(([sql]) => String(sql));
+    const insertAt = sqls.findIndex((s) => s.includes('INSERT INTO users'));
+    const ensureAt = sqls.findIndex((s) => s.includes('public.employer_ensure_organization($1)'));
+    const commitAt = sqls.lastIndexOf('COMMIT');
+    expect(insertAt).toBeGreaterThan(-1);
+    expect(ensureAt).toBeGreaterThan(insertAt);
+    expect(commitAt).toBeGreaterThan(ensureAt);
+    expect(mockQuery.mock.calls[ensureAt][1]).toEqual(['ACME Roofing']);
+    // The change context is stated inside the transaction, before the company is created.
+    expectContextBeforeWrite(mockQuery, setAuditContext as jest.Mock, /employer_ensure_organization/);
+  });
+
+  it('falls back to the name attribute when there is no company_name', async () => {
+    mockQuery.mockResolvedValue({ rows: [{ org: 'org-1' }] });
+    await handler(createEvent('employer'));
+    const call = mockQuery.mock.calls.find(([sql]) => String(sql).includes('employer_ensure_organization'));
+    expect(call?.[1]).toEqual(['Test Setup User']);
+  });
+
+  it('never creates a company for a worker', async () => {
+    mockQuery.mockResolvedValue({ rows: [] });
+    await handler(createEvent('worker'));
+    expect(mockQuery.mock.calls.some(([sql]) => String(sql).includes('employer_ensure_organization'))).toBe(false);
+  });
+
+  it('rolls back the users row too when the company cannot be created, and sends the event to the DLQ', async () => {
+    mockQuery.mockImplementation((sql: string) => {
+      if (sql.includes('employer_ensure_organization')) return Promise.reject(new Error('boom'));
+      return Promise.resolve({ rows: [] });
+    });
+    const event = createEvent('employer');
+    const result = await handler(event);
+
+    const sqls = mockQuery.mock.calls.map(([sql]) => String(sql));
+    expect(sqls).toContain('ROLLBACK');
+    expect(sqls).not.toContain('COMMIT');
+    // The handler's SQS client is built once at import, so assert the command
+    // it sends, as the file's other DLQ tests do (lines 111, 151, 170).
+    expect(SendMessageCommand).toHaveBeenCalledWith(expect.objectContaining({
+      QueueUrl: 'https://sqs.dlq.url',
+      MessageBody: expect.stringContaining('boom'),
+    }));
+    expect(result).toBe(event); // sign-up is never blocked
+  });
+
   describe('change context', () => {
     it('states an anonymous actor, with no id, before the users row is created', async () => {
       mockCognitoSend.mockResolvedValue({});
