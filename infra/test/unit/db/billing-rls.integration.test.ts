@@ -267,12 +267,13 @@ maybeDescribe('billing RLS integration (migration 034)', () => {
         expect(forceResult.rows[0].relrowsecurity).toBe(true);
         expect(forceResult.rows[0].relforcerowsecurity).toBe(true);
 
-        // No app policies (locked by default — no policies = no rows visible to any app role)
-        const policyResult = await client.query<{ policyname: string }>(
-          `SELECT policyname FROM pg_policies
-           WHERE tablename = 'organizations'`,
+        // No app policies: the only policy is 118's sign-up bootstrap gate, for
+        // jale_admin alone, so no app role sees a row.
+        const policyResult = await client.query<{ policyname: string; roles: string[] }>(
+          `SELECT policyname, roles::text[] AS roles FROM pg_policies
+           WHERE schemaname = 'public' AND tablename = 'organizations'`,
         );
-        expect(policyResult.rows).toHaveLength(0);
+        expect(policyResult.rows).toEqual([{ policyname: 'organizations_org_bootstrap', roles: ['jale_admin'] }]);
       } finally {
         await client.end();
       }

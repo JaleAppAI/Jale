@@ -155,6 +155,7 @@ describe('database migrations', () => {
       '114',
       '115',
       '117',
+      '118',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -2073,6 +2074,35 @@ describe('database migrations', () => {
       + '  END;\n',
     );
     expect(sql).toContain('migration 117: the trigger smoke test did not run or left rows behind');
+  });
+
+  it('118 adds employer organizations in one transaction, forward-only', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '118_employer_organizations.sql'), 'utf8');
+    expect(sql).toContain('-- Run manually AFTER 117_admin_queues.sql,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n');
+    expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+    expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+    expect(sql).toContain("SET LOCAL lock_timeout = '5s';");
+    expect(sql).toContain('CREATE TABLE public.organization_members (');
+    expect(sql).toContain('CREATE TABLE public.organization_invites (');
+    expect(sql).toContain('CREATE FUNCTION jale_internal.is_org_owner_of(p_caller_id TEXT, p_member_id UUID)');
+    expect(sql).toContain('CREATE FUNCTION jale_internal.shares_org_with(p_caller_id TEXT, p_member_id UUID)');
+    expect(sql).toContain('CREATE FUNCTION jale_internal.org_owner_scope(p_caller_id TEXT, p_active_only BOOLEAN)');
+    expect(sql).toContain('CREATE FUNCTION jale_internal.org_member_scope(p_caller_id TEXT)');
+    expect(sql).toContain('CREATE FUNCTION public.employer_ensure_organization(p_company_name TEXT)');
+    expect(sql).toContain('CREATE FUNCTION public.job_messages_stamp_sender()');
+    // Every helper refuses a caller that is not a uuid, and never casts the column.
+    expect(sql.match(/IF p_caller_id IS NULL OR p_caller_id !~\* '\^\[0-9a-f\]\{8\}-/g)).toHaveLength(4);
+    expect(sql).not.toMatch(/user_id::text = p_caller_id/);
+    // Seven policies created; the back-fill's users read is dropped again.
+    expect(sql.match(/^CREATE POLICY /gm)).toHaveLength(7);
+    expect(sql.match(/^DROP POLICY .*$/gm)).toEqual(['DROP POLICY users_org_bootstrap_read ON public.users;']);
+    expect(sql).toContain('CREATE OR REPLACE FUNCTION employer_display_name(p_employer_id UUID)');
+    // The SET window on the relationship reader opens once and closes once.
+    expect(sql.match(/WITH SET TRUE, INHERIT FALSE/g)).toHaveLength(1);
+    expect(sql).toContain("EXECUTE format('REVOKE %I FROM %I GRANTED BY %I', 'jale_rls_relationship_reader', current_user, current_user);");
+    // No mass UPDATE of jobs: created_by is filled by the trigger, and has no FK.
+    expect(sql).not.toMatch(/UPDATE\s+public\.jobs\s+SET/i);
+    expect(sql).toContain('ALTER TABLE public.jobs ADD COLUMN created_by_user_id UUID;');
   });
 
   // A catalog may carry FORCE ROW LEVEL SECURITY on the five tables 114b
