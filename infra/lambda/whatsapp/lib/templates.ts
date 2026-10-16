@@ -66,10 +66,10 @@ export type TemplateKey =
   | 'ai_processing_wait'
   | 'ai_extraction_summary'
   | 'ai_extraction_failed'
-  // Support command
-  | 'support_ack'
-  | 'support_ack_existing'
-  | 'support_needs_signup'
+  // Support mode (sprint 28): the entry acknowledgement and the one notice
+  // the bot sends while it is quiet.
+  | 'support_mode_entered'
+  | 'support_media_unsupported'
   // ── V2 workflow (additive; legacy keys above are unchanged) ──
   | 'v2_start_invitation'
   | 'v2_start_cooldown_note'
@@ -336,17 +336,15 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
     es: 'No pudimos procesar tu mensaje de voz. Continuemos con algunas preguntas rapidas.',
     en: 'We could not process your voice message. Let\'s continue with a few quick questions.',
   },
-  support_ack: {
-    es: 'Recibido. Nuestro equipo te contactara pronto por WhatsApp.',
-    en: 'Got it. Our team will contact you soon on WhatsApp.',
+  // Approved wording (2026-10-14). The exit keyword must satisfy
+  // isMenuCommand (flows.ts).
+  support_mode_entered: {
+    es: 'Ahora estás hablando con el equipo de Jale. Envía tu pregunta y fotos aquí. Escribe MENÚ para volver.',
+    en: "You're now chatting with the Jale team. Send your question and any photos here. Type MENU to go back.",
   },
-  support_ack_existing: {
-    es: 'Ya tenemos tu solicitud de ayuda. Te contactaremos pronto.',
-    en: 'We already have your help request. We will contact you soon.',
-  },
-  support_needs_signup: {
-    es: 'Para pedir ayuda, primero termina tu registro. Envia "Hola" para empezar.',
-    en: 'To request help, please finish signing up first. Send "Hello" to get started.',
+  support_media_unsupported: {
+    es: 'Aquí solo podemos recibir fotos, notas de voz y archivos PDF.',
+    en: 'We can only receive photos, voice notes and PDFs here.',
   },
 
   v2_start_invitation: {

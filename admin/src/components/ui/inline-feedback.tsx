@@ -1,0 +1,86 @@
+'use client';
+
+import * as React from 'react';
+import { Icon } from './icon';
+
+/**
+ * Inline feedback banner — result of an action, shown in place (next to the
+ * form or panel it belongs to) rather than floating over the page like a toast.
+ *
+ * Use this when the message must stay on screen and stay attached to its
+ * context ("Saved", "3 fields need attention"). Use `useToast` when the message
+ * is ambient and can disappear on its own.
+ */
+
+export type FeedbackTone = 'success' | 'warning' | 'danger' | 'info';
+
+/**
+ * Each tone pairs a tinted background with its dedicated *-text token. The base
+ * `--jale-success/-warning/-danger` colours are tuned for white; the -text
+ * variants are the ones that stay AA-legible on these tints.
+ */
+export const feedbackToneClasses: Record<FeedbackTone, string> = {
+    success: 'bg-[var(--jale-success-bg)] text-[var(--jale-success-text)]',
+    warning: 'bg-[var(--jale-warning-bg)] text-[var(--jale-warning-text)]',
+    danger: 'bg-[var(--jale-danger-bg)] text-[var(--jale-danger-text)]',
+    info: 'bg-[var(--jale-blue-50)] text-[var(--jale-blue-700)]',
+};
+
+/**
+ * Problems interrupt (`alert`); confirmations wait their turn (`status`).
+ * Announcing a "Saved" banner assertively would talk over whatever the user is
+ * doing next.
+ */
+export function feedbackRole(tone: FeedbackTone): 'alert' | 'status' {
+    return tone === 'danger' || tone === 'warning' ? 'alert' : 'status';
+}
+
+export function InlineFeedback({
+    tone,
+    onDismiss,
+    dismissLabel,
+    className = '',
+    children,
+}: {
+    tone: FeedbackTone;
+    onDismiss?: () => void;
+    /**
+     * Overrides the × button's accessible name. Almost nothing needs this --
+     * `common.feedback.dismiss` is the right label for a banner whose subject
+     * is obvious from the sentence next to it.
+     *
+     * It exists because a banner can outlive its context: the hire
+     * celebration's × is reachable from a list of several banners, so its own
+     * namespace owns the label rather than borrowing the generic one and
+     * leaving a screen-reader user with N identical "Dismiss" buttons.
+     */
+    dismissLabel?: string;
+    className?: string;
+    children: React.ReactNode;
+}) {
+
+    return (
+        <div
+            role={feedbackRole(tone)}
+            className={[
+                'flex items-start gap-2 rounded-[var(--radius-input)] px-3.5 py-2.5 text-sm font-medium',
+                feedbackToneClasses[tone],
+                className,
+            ].join(' ')}
+        >
+            {/* A <div>, not a <span>: callers put block content (lists, paragraphs) in here. */}
+            <div className="min-w-0 flex-1">{children}</div>
+
+            {onDismiss ? (
+                <button
+                    type="button"
+                    onClick={onDismiss}
+                    aria-label={dismissLabel ?? 'Dismiss'}
+                    className="-mr-1 -mt-0.5 shrink-0 cursor-pointer rounded p-1 leading-none opacity-70 transition-opacity hover:opacity-100 focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
+                >
+                    <Icon name="x" />
+                </button>
+            ) : null}
+        </div>
+    );
+}

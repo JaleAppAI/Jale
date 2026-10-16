@@ -3,10 +3,14 @@ import { Template, Match } from 'aws-cdk-lib/assertions';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import { FrontendStack } from '../../../lib/stacks/frontend-stack';
 import { flatten } from './audit-template-helpers';
+import { BOUNCE_SHARE, BOUNCE_SHARE_EXPRESSION, sesBounceAlarmBreaches } from '../../../lib/constructs/ses-bounce-alarm';
 
 // CDK builds the Docker image during synth (DockerImageFunction.fromImageAsset).
 // Skip this suite in environments without Docker (set SKIP_DOCKER_TESTS=1).
 const describeIfDocker = process.env.SKIP_DOCKER_TESTS ? describe.skip : describe;
+
+/** The admin console's distribution, as the composition passes its id. */
+const ADMIN_DISTRIBUTION_ID = 'EDFDVBD6EXAMPLE';
 
 describeIfDocker('FrontendStack (Lambda + CloudFront)', () => {
   let template: Template;
@@ -14,7 +18,7 @@ describeIfDocker('FrontendStack (Lambda + CloudFront)', () => {
   beforeAll(() => {
     const app = new cdk.App();
 
-    const stack = new FrontendStack(app, 'TestFrontendStack', {
+    const props = {
       env: { account: '111111111111', region: 'us-east-1' },
       apiOriginDomainName: 'abc123.execute-api.us-east-2.amazonaws.com',
       apiStageName: 'production',
@@ -26,7 +30,9 @@ describeIfDocker('FrontendStack (Lambda + CloudFront)', () => {
       employerPoolId: 'us-east-1_EMPL',
       employerClientId: 'test-employer-client',
       whatsappBusinessNumber: '15551234567',
-    });
+      adminDistributionId: ADMIN_DISTRIBUTION_ID,
+    };
+    const stack = new FrontendStack(app, 'TestFrontendStack', props);
 
     template = Template.fromStack(stack);
   });
@@ -547,17 +553,33 @@ describeIfDocker('FrontendStack (Lambda + CloudFront)', () => {
   // confirmation and password reset while every dashboard stays green. That is
   // the 2026-08-28 silent-bounce failure aimed at the login door.
 
-  test('alarms on any SES bounce in us-east-1', () => {
-    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
-      AlarmName: 'SesBounceCountUsEast1',
-      Namespace: 'AWS/SES',
-      MetricName: 'Bounce',
-      Statistic: 'Sum',
-      Period: 3600,
-      Threshold: 1,
+  test("alarms on the us-east-1 hour's bounce share above a count floor: one stray bounce is quiet, an all-bounce burst pages", () => {
+    const alarms = template.findResources('AWS::CloudWatch::Alarm', { Properties: { AlarmName: 'SesBounceCountUsEast1' } });
+    expect(Object.keys(alarms)).toEqual([expect.stringMatching(/^SesBounceCountUsEast1Alarm[0-9A-F]{8}$/)]);
+    const props = (Object.values(alarms)[0] as any).Properties;
+    // Metric math, not the plain Bounce sum at a threshold of one.
+    expect(props.MetricName).toBeUndefined();
+    expect(props.Namespace).toBeUndefined();
+    expect(props).toMatchObject({
+      Threshold: BOUNCE_SHARE,
       ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      EvaluationPeriods: 1,
       TreatMissingData: 'notBreaching',
     });
+    const expression = (props.Metrics as any[]).find((m) => m.Expression !== undefined);
+    expect(expression).toMatchObject({ Expression: BOUNCE_SHARE_EXPRESSION, ReturnData: true });
+    const inputs = Object.fromEntries((props.Metrics as any[]).filter((m) => m.MetricStat).map((m) => [m.Id, m.MetricStat]));
+    expect(inputs).toEqual({
+      m1: { Metric: { Namespace: 'AWS/SES', MetricName: 'Bounce' }, Period: 3600, Stat: 'Sum' },
+      m2: { Metric: { Namespace: 'AWS/SES', MetricName: 'Send' }, Period: 3600, Stat: 'Sum' },
+    });
+    // The deployed expression and threshold, hour by hour.
+    const breaches = (hour: { bounces?: number; sends?: number }) => sesBounceAlarmBreaches(hour, expression.Expression, props.Threshold);
+    expect(breaches({ bounces: 1, sends: 50 })).toBe(false);
+    expect(breaches({ bounces: 6, sends: 6 })).toBe(true);
+    expect(breaches({ bounces: 2, sends: 4 })).toBe(true);
+    expect(breaches({ bounces: 3 })).toBe(true);
+    expect(breaches({})).toBe(false);
   });
 
   test('alarms on the us-east-1 SES bounce RATE at or above 5%', () => {
@@ -577,12 +599,14 @@ describeIfDocker('FrontendStack (Lambda + CloudFront)', () => {
     // Any dimension on an account-level `AWS/SES` metric yields a metric that
     // never reports a datapoint — an alarm that cannot fire.
     const alarms = template.findResources('AWS::CloudWatch::Alarm');
-    const sesAlarms = Object.values(alarms).filter(
-      (a: any) => a.Properties.Namespace === 'AWS/SES',
-    );
-    expect(sesAlarms).toHaveLength(2);
+    const sesAlarms = Object.values(alarms).filter((a: any) => a.Properties.Namespace === 'AWS/SES'
+      || (a.Properties.Metrics ?? []).some((m: any) => m.MetricStat?.Metric?.Namespace === 'AWS/SES'));
+    expect(sesAlarms.map((a: any) => a.Properties.AlarmName).sort()).toEqual(['SesBounceCountUsEast1', 'SesReputationBounceRateUsEast1']);
     for (const alarm of sesAlarms as any[]) {
       expect(alarm.Properties.Dimensions).toBeUndefined();
+      for (const input of (alarm.Properties.Metrics ?? []) as any[]) {
+        if (input.MetricStat) expect(input.MetricStat.Metric.Dimensions).toBeUndefined();
+      }
     }
   });
 
@@ -662,6 +686,36 @@ describeIfDocker('FrontendStack (Lambda + CloudFront)', () => {
     });
   });
 
+  // ── The admin console's CDN ──────────────────────────────────────────────
+  //
+  // CloudFront publishes its metrics in us-east-1 only, so the admin
+  // distribution's error alarm lives here, though the admin stack does not.
+
+  test("alarms on the admin distribution's 5xx rate, on CloudFront's global metric, to the us-east-1 topic", () => {
+    const alarms = template.findResources('AWS::CloudWatch::Alarm', {
+      Properties: { AlarmName: 'jale-admin-cloudfront-5xx' },
+    });
+    expect(Object.keys(alarms)).toEqual([expect.stringMatching(/^AdminCloudFront5xxAlarm[0-9A-F]{8}$/)]);
+    const alarm = Object.values(alarms)[0] as any;
+    expect(alarm.Properties).toMatchObject({
+      Namespace: 'AWS/CloudFront',
+      MetricName: '5xxErrorRate',
+      Statistic: 'Average',
+      Period: 300,
+      Threshold: 5,
+      EvaluationPeriods: 2,
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      TreatMissingData: 'notBreaching',
+    });
+    expect([...alarm.Properties.Dimensions].sort((a: any, b: any) => a.Name.localeCompare(b.Name))).toEqual([
+      { Name: 'DistributionId', Value: ADMIN_DISTRIBUTION_ID },
+      { Name: 'Region', Value: 'Global' },
+    ]);
+    const [topicId] = onlyResourceOf('AWS::SNS::Topic');
+    expect(alarm.Properties.AlarmActions).toEqual([{ Ref: topicId }]);
+    expect(alarm.Properties.OKActions).toBeUndefined();
+  });
+
   test('outputs the alarm topic name, so subscriptions can be added outside the repository', () => {
     const [topicId] = onlyResourceOf('AWS::SNS::Topic');
     template.hasOutput('AlarmTopicName', {
@@ -688,6 +742,11 @@ describeIfDocker('FrontendStack without survey origin', () => {
     });
 
     const tpl = Template.fromStack(stack);
+
+    // Without the admin distribution's id there is no admin CDN alarm.
+    expect(Object.keys(tpl.findResources('AWS::CloudWatch::Alarm', {
+      Properties: { AlarmName: 'jale-admin-cloudfront-5xx' },
+    }))).toEqual([]);
 
     // CacheBehaviors should not contain survey routing when no origin is configured.
     const distros = tpl.findResources('AWS::CloudFront::Distribution');

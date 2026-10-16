@@ -205,6 +205,46 @@ describe('loadRequirementSnapshot', () => {
       .toEqual([]);
   });
 
+  // Sprint 28: what the worker SENT is what the employer reads. Once the
+  // details stage is completed, or the application is over (hired, not
+  // interested, or its job filled or closed), a later vault change must not
+  // reach the job-scoped copies.
+  it.each([
+    ['details completed', { details_requested_at: 'req-ts', details_completed_at: 'done-ts', application_status: 'details_requested' }],
+    ['hired', { application_status: 'hired' }],
+    ['not interested', { application_status: 'not_interested' }],
+    ['job filled', { job_status: 'filled' }],
+    ['job closed', { job_status: 'closed' }],
+  ])('with syncDocumentSnapshots on a %s application, copies nothing and keeps the stored have_docs', async (_label, overrides) => {
+    // Any statement after the SELECT answers empty, so an old-style sync
+    // shows up as extra calls rather than as a crash.
+    const query = jest.fn().mockResolvedValue({ rows: [], rowCount: 0 }).mockResolvedValueOnce({
+      rows: [dbRow({ required_docs: ['resume'], optional_docs: ['certification_doc'], have_docs: ['resume'], ...overrides })],
+    });
+
+    const snap = await loadRequirementSnapshot(makeClient(query), APP_ID, { syncDocumentSnapshots: true });
+
+    // One SELECT: no GUC, no copy, no re-read.
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(snap!.haveDocs).toEqual(['resume']);
+    expect(snap!.copiedDocuments).toEqual([]);
+  });
+
+  it('still syncs an open details-stage application that has not been sent', async () => {
+    const query = jest.fn()
+      .mockResolvedValueOnce({ rows: [dbRow({
+        application_status: 'details_requested', details_requested_at: 'req-ts', required_docs: ['resume'], have_docs: [],
+      })] })
+      .mockResolvedValueOnce({ rows: [] })  // GUC
+      .mockResolvedValueOnce({ rows: [{ doc_type: 'resume' }] }) // copy
+      .mockResolvedValueOnce({ rows: [{ doc_type: 'resume' }] }); // re-read
+
+    const snap = await loadRequirementSnapshot(makeClient(query), APP_ID, { syncDocumentSnapshots: true });
+
+    expect(query).toHaveBeenCalledTimes(4);
+    expect(snap!.copiedDocuments).toEqual(['resume']);
+  });
+
   it('never sets a GUC when sync is off (employer sessions read through computeRemaining with their own GUC)', async () => {
     const query = jest.fn().mockResolvedValueOnce({ rows: [dbRow({ required_docs: ['resume'] })] });
     await loadRequirementSnapshot(makeClient(query), APP_ID);

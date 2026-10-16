@@ -7,7 +7,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import {
-  ApiError, createJob, getBilling, listJobTemplates, saveJobTemplate,
+  ApiError, createJob, getBilling, listJobTemplates, saveJobTemplate, withTemplateId,
   type Job, type JobCreatedOutcome, type JobTemplate,
 } from '@/lib/api/employer';
 import { planLimitModel, type PlanLimitModel } from '@/lib/plan-limit';
@@ -165,6 +165,12 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
   // (e.g. after a failed job post) carry this id so the backend overwrites
   // that template instead of 409ing against our own first save.
   const savedTemplateIdRef = useRef<string | null>(null);
+  /**
+   * The saved template this run started from (analytics #18). Kept when the
+   * employer edits the prefilled fields; replaced by a later apply; cleared
+   * with the wizard. Sent with the job, never inside a template payload.
+   */
+  const [appliedTemplateId, setAppliedTemplateId] = useState<string | null>(null);
 
   // Silent background load whenever the modal opens -- the wizard must work
   // exactly the same with zero templates, so any failure here is swallowed.
@@ -247,12 +253,14 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     setTemplateLimit(null);
     setDescriptionGenerating(false);
     savedTemplateIdRef.current = null;
+    setAppliedTemplateId(null);
     onClose();
   };
 
   const applyTemplate = (template: JobTemplate) => {
     const { form: prefilled, cityPrefilled } = jobFormFromTemplatePayload(template.payload);
     setForm(prefilled);
+    setAppliedTemplateId(template.id);
     setCheckCity(cityPrefilled);
     // Asked of the VALIDATOR rather than of `!cityPrefilled`, so the two can
     // never disagree about what step 1 will accept: it also answers "no" when
@@ -483,7 +491,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     }
 
     try {
-      const job = await createJob(idToken!, jobFormToCreatePayload(form));
+      const job = await createJob(idToken!, withTemplateId(jobFormToCreatePayload(form), appliedTemplateId));
       const outcome: JobCreatedOutcome = {};
       if (templateShortfall) outcome.templateNotSaved = templateShortfall;
       if (templateSavedNew) outcome.templateSaved = true;

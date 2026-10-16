@@ -1,10 +1,12 @@
 import { formatCount, percentOf } from '@/lib/analytics-format';
+import { AnalyticsPanel } from './AnalyticsPanel';
 
 export type DeliveryChannel = { name: string; out: number; in: number; failed: number };
 
+// The failure line carries an icon and words, never colour alone.
 function FailIcon() {
   return (
-    <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#d4313c" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <circle cx={12} cy={12} r={9} />
       <path d="M12 8v4" />
       <path d="M12 16h.01" />
@@ -14,37 +16,29 @@ function FailIcon() {
 
 export function DeliveryHealth({ channels }: { channels: DeliveryChannel[] }) {
   return (
-    <article className="card">
-      <div className="chart-head" style={{ marginBottom: 14 }}>
-        <div>
-          <h2>Message delivery</h2>
-          <p>Sent this period, and how many failed or went unconfirmed</p>
-        </div>
-      </div>
-      <div className="delivery-rows">
+    <AnalyticsPanel title="Message delivery" subtitle="Sent this period, and how many failed or went unconfirmed">
+      <div className="flex flex-col gap-4">
         {channels.map((channel) => {
           const total = channel.out + channel.in;
-          // The bar is outbound-only: failures are outbound rows, so weighing
-          // the delivered segment against total (out + in) understates the
-          // failed share. delivered = out − failed; the `|| 1` guard below
-          // still renders a full, non-failed bar when both are zero.
+          // The bar is outbound-only: failures are outbound rows. delivered =
+          // out − failed; with nothing sent the bar is one empty segment.
           const delivered = Math.max(0, channel.out - channel.failed);
-          // Failures are outbound rows, so the rate is over outbound, not all traffic.
           const rate = percentOf(channel.failed, channel.out, 1);
           return (
-            <div key={channel.name} className="delivery-row">
-              <div className="delivery-meta">
-                <span style={{ fontWeight: 650 }}>{channel.name}</span>
-                <span className="muted">
-                  <strong style={{ color: 'var(--jale-ink)', fontWeight: 650 }}>{formatCount(total)}</strong>
-                  {' messages · '}{formatCount(channel.out)} out / {formatCount(channel.in)} in
+            <div key={channel.name} className="flex flex-col gap-1.5">
+              <div className="flex flex-wrap items-baseline justify-between gap-2 text-sm">
+                <span className="font-semibold">{channel.name}</span>
+                <span className="text-[var(--jale-ink-2)]">
+                  <strong className="font-semibold text-[var(--jale-ink)]">{formatCount(total)}</strong>
+                  {' messages · '}
+                  {formatCount(channel.out)} out / {formatCount(channel.in)} in
                 </span>
               </div>
-              <div className="delivery-bar" aria-hidden="true">
-                <div className="delivered" style={{ flexGrow: delivered || 1 }} />
-                {channel.failed > 0 ? <div className="failed" style={{ flexGrow: channel.failed }} /> : null}
+              <div aria-hidden="true" className="flex h-2 overflow-hidden rounded-full bg-[var(--chart-grid)]">
+                <div style={{ flexGrow: delivered || 1, background: delivered ? 'var(--chart-1)' : 'transparent' }} />
+                {channel.failed > 0 ? <div style={{ flexGrow: channel.failed, background: 'var(--jale-danger)' }} /> : null}
               </div>
-              <div className="delivery-fail">
+              <div data-delivery-fail="" className="inline-flex items-center gap-1.5 text-xs text-[var(--jale-danger-text)]">
                 <FailIcon />
                 {channel.failed > 0
                   ? `${formatCount(channel.failed)} failed or unconfirmed${rate ? ` · ${rate} of outbound` : ''}`
@@ -54,6 +48,6 @@ export function DeliveryHealth({ channels }: { channels: DeliveryChannel[] }) {
           );
         })}
       </div>
-    </article>
+    </AnalyticsPanel>
   );
 }

@@ -1,132 +1,61 @@
-import type { AdminCaseStatus, AdminCaseType, AdminRole } from './types';
+// Sprint 28 contract K2.7: which Inbox actions an admin may take on a case
+// or a lockout. Server-computed and shown as they are: an action that cannot
+// be taken is disabled with its reason, never hidden. The route repeats the
+// role check (lib/server/inbox-actions.ts), so this list is never the only
+// guard.
+import type { AdminCaseStatus, AdminRole } from './types';
+import type { CaseAction, CaseActionId } from './server/inbox-actions';
+import type { LockoutDetail } from './server/admin-lockouts';
 
-export type CaseActionId =
-  | 'reply_whatsapp'
-  | 'request_more_info'
-  | 'resend_outbound'
-  | 'reveal_pii'
-  | 'resolve_case';
+/** The reason every action shows to a read-only admin. */
+export const READ_ONLY_REASON = 'Requires Ops or Superadmin.';
+export const CLOSED_CASE_REASON = 'This case is closed.';
+export const NO_CONVERSATION_REASON = 'This case has no WhatsApp conversation.';
+export const NOT_LOCKED_REASON = 'Only a locked or stuck verification can be reset.';
 
-// The four verification actions (approve, reject, request more info, reset
-// step) were retired in roadmap 1b: they only edited demo admin_cases rows and
-// never touched worker_identity_challenges. /verifications is now read-only.
-export type AdminActionId = CaseActionId;
+const MUTATING_ROLES: ReadonlySet<AdminRole> = new Set<AdminRole>(['admin_ops', 'admin_superadmin']);
+const CLOSED_STATUSES: ReadonlySet<AdminCaseStatus> = new Set<AdminCaseStatus>(['resolved', 'dismissed']);
+const RESETTABLE_STATES: ReadonlySet<LockoutDetail['state']> = new Set<LockoutDetail['state']>(['locked', 'stuck_at_code']);
 
-export type AdminAction = {
-  id: AdminActionId;
-  label: string;
-  description: string;
-  disabled: boolean;
-  reason?: string;
-  dangerous?: boolean;
-  piiReveal?: boolean;
-};
+/** Every Inbox mutation, and a phone reveal, needs Ops or Superadmin. */
+export function canActOnInbox(role: AdminRole): boolean {
+  return MUTATING_ROLES.has(role);
+}
 
-type CaseActionContext = {
+function action(id: CaseActionId, role: AdminRole, blockedReason?: string): CaseAction {
+  const reason = canActOnInbox(role) ? blockedReason : READ_ONLY_REASON;
+  return reason ? { id, enabled: false, reason } : { id, enabled: true };
+}
+
+export type SupportActionContext = {
   status: AdminCaseStatus;
-  type: AdminCaseType;
+  /** The case has a WhatsApp conversation, so a message can reach the worker. */
+  hasConversation: boolean;
 };
 
-const MUTATING_ROLES = new Set<AdminRole>(['admin_ops', 'admin_superadmin']);
-const CLOSED_CASE_STATUSES = new Set<AdminCaseStatus>(['resolved', 'dismissed']);
-const AUDITED_ACTIONS = new Set<AdminActionId>([
-  'reply_whatsapp',
-  'request_more_info',
-  'resend_outbound',
-  'reveal_pii',
-  'resolve_case',
-]);
+/**
+ * reply, request_info, resolve and reveal_phone, in that order. A closed case
+ * takes no message and cannot be resolved again; a case without a
+ * conversation can be resolved (no message is sent) but not answered.
+ */
+export function getSupportActions(context: SupportActionContext, role: AdminRole): CaseAction[] {
+  const closed = CLOSED_STATUSES.has(context.status) ? CLOSED_CASE_REASON : undefined;
+  const noTarget = context.hasConversation ? undefined : NO_CONVERSATION_REASON;
 
-function action(
-  id: AdminActionId,
-  label: string,
-  description: string,
-  role: AdminRole,
-  blockedReason?: string,
-  options: Pick<AdminAction, 'dangerous' | 'piiReveal'> = {},
-): AdminAction {
-  const roleBlocked = !MUTATING_ROLES.has(role);
-  const reason = roleBlocked ? 'Requires admin_ops or admin_superadmin role.' : blockedReason;
-
-  return {
-    id,
-    label,
-    description,
-    disabled: Boolean(reason),
-    reason,
-    ...options,
-  };
+  return [
+    action('reply', role, closed ?? noTarget),
+    action('request_info', role, closed ?? noTarget),
+    action('resolve', role, closed),
+    action('reveal_phone', role, noTarget),
+  ];
 }
 
-export function getCaseActions(context: CaseActionContext, role: AdminRole): AdminAction[] {
-  const closedReason = CLOSED_CASE_STATUSES.has(context.status)
-    ? `Case is ${context.status.replace(/_/g, ' ')}.`
-    : undefined;
+export type LockoutActionContext = Pick<LockoutDetail, 'state'>;
 
-  const actions: AdminAction[] = [];
-
-  if (context.type === 'outbound_failure') {
-    const resendUnavailableReason =
-      closedReason ?? 'Resend outbound message is not available yet; use manual follow-up and record the resolution.';
-    actions.push(
-      action(
-        'resend_outbound',
-        'Resend outbound message',
-        'Queue a safe resend for a previously failed WhatsApp delivery.',
-        role,
-        resendUnavailableReason,
-      ),
-    );
-  } else {
-    actions.push(
-      action(
-        'reply_whatsapp',
-        'Reply in WhatsApp',
-        'Send a bounded support reply through the existing WhatsApp conversation.',
-        role,
-        closedReason,
-      ),
-    );
-
-    actions.push(
-      action(
-        'request_more_info',
-        'Request more info',
-        'Ask the worker or employer for the next specific missing item.',
-        role,
-        closedReason,
-      ),
-    );
-  }
-
-  actions.push(
-    action(
-      'reveal_pii',
-      'Reveal PII',
-      'Temporarily reveal masked contact data after entering a support justification.',
-      role,
-      closedReason,
-      { dangerous: true, piiReveal: true },
-    ),
-  );
-
-  actions.push(
-    action(
-      'resolve_case',
-      'Resolve case',
-      'Close the case after the blocking issue has been handled.',
-      role,
-      closedReason,
-    ),
-  );
-
-  return actions;
-}
-
-export function requiresAuditLog(actionId: AdminActionId): boolean {
-  return AUDITED_ACTIONS.has(actionId);
-}
-
-export function requiresPiiJustification(actionId: AdminActionId): boolean {
-  return actionId === 'reveal_pii';
+/** reset_lockout (a locked or stuck challenge only) and open_support_from_lockout. */
+export function getLockoutActions(context: LockoutActionContext, role: AdminRole): CaseAction[] {
+  return [
+    action('reset_lockout', role, RESETTABLE_STATES.has(context.state) ? undefined : NOT_LOCKED_REASON),
+    action('open_support_from_lockout', role),
+  ];
 }

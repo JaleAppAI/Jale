@@ -121,7 +121,7 @@ describe('createSignedInReport', () => {
     });
 
     it('never refreshes, retries or navigates on a 401', async () => {
-        const bridge = { refreshIdToken: vi.fn(async () => 'fresh-token'), onSessionExpired: vi.fn() };
+        const bridge = { refreshIdToken: vi.fn(async () => ({ status: 'ok' as const, token: 'fresh-token' })), onSessionExpired: vi.fn() };
         registerAuthBridge(bridge);
         fetchMock.mockResolvedValue(json(401, { message: 'Unauthorized' }));
 

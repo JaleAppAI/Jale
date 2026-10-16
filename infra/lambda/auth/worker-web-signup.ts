@@ -7,10 +7,12 @@ import {
 } from '@aws-sdk/client-cognito-identity-provider';
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { randomInt } from 'node:crypto';
+import { recordSignupSource } from '../lib/analytics-capture';
 import { auditCaller, type AuditCaller } from '../lib/audit/caller';
 import { setAuditContext } from '../lib/audit/context';
 import { getDbPool } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
+import { parseSignupSource, type SignupSource } from '../lib/signup-source';
 import { reconcileWorkerCognitoAccount } from './lib/worker-cognito-reconciliation';
 
 const cognito = new CognitoIdentityProviderClient({});
@@ -27,6 +29,13 @@ interface SignupBody {
    * `promote_worker_pending_name` (migration 052) have no caller left.
    */
   fullName?: string;
+  /**
+   * Where the signup started (contract K3.6): `{ src, entry }`, stashed by
+   * the frontend on the first auth-page load. Validated against the
+   * first-party allow-list; an invalid one is dropped (or stored with no
+   * code) and never fails the signup.
+   */
+  signup_source?: unknown;
 }
 
 export const handler = async (
@@ -40,6 +49,7 @@ export const handler = async (
   }
 
   const phone = body.phone?.trim() ?? '';
+  const signupSource = parseSignupSource(body.signup_source);
 
   if (!/^\+\d{8,15}$/.test(phone)) {
     return json(400, { error: 'invalid_phone', message: 'Phone must be in E.164 format.' });
@@ -88,7 +98,7 @@ export const handler = async (
       // '' is a safe no-op through reconcile_worker_signup's NULLIF/COALESCE:
       // it never clobbers an existing users.full_name and leaves a new row's
       // name NULL for `profile.name` to fill.
-      await seedWorkerUser(repaired.cognitoSub, phone, '', auditCaller(event, { kind: 'anonymous' }, 'web'));
+      await seedWorkerUser(repaired.cognitoSub, phone, '', auditCaller(event, { kind: 'anonymous' }, 'web'), signupSource);
       return json(200, { ok: true });
     }
 
@@ -106,7 +116,7 @@ export const handler = async (
     // `cognito_sub` + `phone` and no name. `resolve_worker_internal_id`
     // (086) resolves that row for the onboarding engine on the very next
     // request.
-    await seedWorkerUser(cognitoSub, phone, '', auditCaller(event, { kind: 'anonymous' }, 'web'));
+    await seedWorkerUser(cognitoSub, phone, '', auditCaller(event, { kind: 'anonymous' }, 'web'), signupSource);
     await ensureWorkerGroup(userPoolId, phone);
 
     await cognito.send(new AdminSetUserPasswordCommand({
@@ -147,18 +157,33 @@ async function ensureWorkerGroup(userPoolId: string, username: string): Promise<
 /**
  * Seeds the worker's users row. The person signing up is not verified yet,
  * so the change records name an anonymous actor, never the phone.
+ *
+ * The signup source, when there is one, is recorded in the same transaction
+ * once the row exists, best-effort: jale_cap.record_signup_source keeps the
+ * first write and only for an account created in the last 24 hours, and a
+ * failure there rolls back to its own savepoint without touching the row.
  */
-async function seedWorkerUser(cognitoSub: string, phone: string, fullName: string, caller: AuditCaller): Promise<void> {
+async function seedWorkerUser(
+  cognitoSub: string,
+  phone: string,
+  fullName: string,
+  caller: AuditCaller,
+  signupSource: SignupSource | null,
+): Promise<void> {
   const pool = await getDbPool();
   const client = await pool.connect();
 
   try {
     await client.query('BEGIN');
     await setAuditContext(client, caller, 'auth.worker_web_signup');
-    await client.query(
+    const seeded = await client.query<{ reconcile_worker_signup: string | null }>(
       'SELECT reconcile_worker_signup($1, $2, $3)',
       [cognitoSub, phone, fullName],
     );
+    const userId = seeded?.rows?.[0]?.reconcile_worker_signup;
+    if (signupSource && typeof userId === 'string') {
+      await recordSignupSource(client, userId, signupSource);
+    }
     await client.query('COMMIT');
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch (_) {}

@@ -1,5 +1,6 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { getDbPool, setRlsContext } from '../lib/db';
+import { recordFeedImpressions } from '../lib/analytics-capture';
+import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { cityAnchorsFrom, listMatchedJobsForWorker, loadWorkerPreferredCities } from '../lib/job-matching';
 import { parsePreApplicationPromptList } from '../lib/pre-application-prompts';
@@ -82,6 +83,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       const seen = new Set(jobs.map((job) => job.id));
       otherJobs = fallback.filter((job) => !seen.has(job.id)).slice(0, OTHER_JOBS_CAP);
     }
+
+    // Analytics item 20 (sprint 28): the jobs this feed shows the worker,
+    // one row per job and UTC day. Best-effort under its own savepoint; the
+    // capture function takes the worker from this transaction's context.
+    await setInternalUserRlsContext(client, workerId);
+    await recordFeedImpressions(client, [...jobs, ...otherJobs].map((job) => job.id));
     await client.query('COMMIT');
 
     const shape = (list: typeof jobs) =>

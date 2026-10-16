@@ -691,7 +691,7 @@ maybeDescribe('2c ops health (115)', () => {
     expect(before.backlog.map((r) => ({ ...r }))).toEqual(ACTIVE_LANES.map((lane) => ({
       lane, open_under_1h: '0', open_1_24h: '0', open_24_48h: '0', stuck: '0', oldest_stuck_at: null,
     })));
-    expect(before.billingNow).toEqual([{ stuck_received: '0', failed_now: '0', unresolved_older: '0', oldest_stuck_at: null }]);
+    expect(before.billingNow).toEqual([{ stuck_received: '0', failed_now: '0', failed_last_24h: '0', unresolved_older: '0', oldest_stuck_at: null }]);
   });
 
   it('counts created, gave up and delivery failures per week and lane, and over the window', async () => {
@@ -868,6 +868,8 @@ maybeDescribe('2c ops health (115)', () => {
     // three.
     expect(Number(now.stuck_received) - Number(base.stuck_received)).toBe(2);
     expect(Number(now.failed_now) - Number(base.failed_now)).toBe(1);
+    // Failed in the last 24 hours (123): the 45 min and 90 min failures.
+    expect(Number(now.failed_last_24h) - Number(base.failed_last_24h)).toBe(2);
     expect(Number(now.unresolved_older) - Number(base.unresolved_older)).toBe(4);
     requireFreshTestbed();
     // The failed event (45 min) is older than both stuck ones; the in-flight
@@ -876,7 +878,7 @@ maybeDescribe('2c ops health (115)', () => {
     // now.
     expect(iso(now.oldest_stuck_at)).toBe(oldestBilling.toISOString());
     expect(now).toEqual({
-      stuck_received: '2', failed_now: '1', unresolved_older: '4', oldest_stuck_at: oldestBilling,
+      stuck_received: '2', failed_now: '1', failed_last_24h: '2', unresolved_older: '4', oldest_stuck_at: oldestBilling,
     });
   });
 
@@ -947,8 +949,8 @@ maybeDescribe('2c ops health (115)', () => {
     expect(trust).toEqual([{ extractions: '0' }]);
     const billing = await without('billing_webhook_events', 'billing_webhook_events_admin_analytics_read',
       `SELECT (SELECT received FROM admin_analytics_billing_inbox(4) WHERE week_start IS NULL AND event_type IS NULL) AS received,
-              n.stuck_received, n.failed_now, n.unresolved_older FROM admin_analytics_billing_inbox_now() n`);
-    expect(billing).toEqual([{ received: '0', stuck_received: '0', failed_now: '0', unresolved_older: '0' }]);
+              n.stuck_received, n.failed_now, n.failed_last_24h, n.unresolved_older FROM admin_analytics_billing_inbox_now() n`);
+    expect(billing).toEqual([{ received: '0', stuck_received: '0', failed_now: '0', failed_last_24h: '0', unresolved_older: '0' }]);
   });
 
   it('reads each FORCE-RLS table\'s fixtures as the console', async () => {
@@ -1167,7 +1169,7 @@ maybeDescribe('2c ops health (115)', () => {
     expect(await cols('SELECT * FROM admin_analytics_voice_extraction(1)')).toEqual(['week_start', 'model', ...VOICE]);
     expect(await cols('SELECT * FROM admin_analytics_trust_extraction(1)')).toEqual(['week_start', 'extractor_version', ...TRUST, 'avg_sections']);
     expect(await cols('SELECT * FROM admin_analytics_billing_inbox(1)')).toEqual(['week_start', 'event_type', ...BILLING]);
-    expect(await cols('SELECT * FROM admin_analytics_billing_inbox_now()')).toEqual(['stuck_received', 'failed_now', 'unresolved_older', 'oldest_stuck_at']);
+    expect(await cols('SELECT * FROM admin_analytics_billing_inbox_now()')).toEqual(['stuck_received', 'failed_now', 'failed_last_24h', 'unresolved_older', 'oldest_stuck_at']);
   });
 
   it('rejects out-of-range weeks', async () => {

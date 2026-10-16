@@ -4,6 +4,7 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import { Template, Match } from 'aws-cdk-lib/assertions';
 import { NotificationsStack } from '../../../lib/stacks/notifications-stack';
 import { dbLoginSecretName } from '../../../lib/constructs/db-login-secrets';
+import { BOUNCE_SHARE, BOUNCE_SHARE_EXPRESSION, sesBounceAlarmBreaches } from '../../../lib/constructs/ses-bounce-alarm';
 
 const PRODUCER_DESCRIPTION = 'Employer daily digest producer';
 const UNSUBSCRIBE_DESCRIPTION = 'Employer digest unsubscribe endpoint (unauthenticated)';
@@ -220,11 +221,11 @@ describe('NotificationsStack', () => {
       expect(alarm.Properties.TreatMissingData).toBe('notBreaching');
       expect(alarm.Properties.ComparisonOperator).toBe('GreaterThanOrEqualToThreshold');
       expect(alarm.Properties.EvaluationPeriods).toBe(1);
-      // Every alarm here counts events — one is too many — except the SES
-      // bounce RATE, which is a ratio and carries AWS's own 5% review line.
-      const expectedThreshold =
-        alarm.Properties.AlarmName === 'SesReputationBounceRate' ? 0.05 : 1;
-      expect(alarm.Properties.Threshold).toBe(expectedThreshold);
+      // Every alarm here counts events — one is too many — except the two
+      // SES ratios: the bounce RATE, with AWS's own 5% review line, and the
+      // bounce share of the hour's sends, above its count floor.
+      const expectedThreshold: Record<string, number> = { SesReputationBounceRate: 0.05, SesBounceCount: BOUNCE_SHARE };
+      expect(alarm.Properties.Threshold).toBe(expectedThreshold[alarm.Properties.AlarmName] ?? 1);
     }
   });
 
@@ -293,16 +294,33 @@ describe('NotificationsStack', () => {
   // SUCCESSFUL SendEmail (SES did accept the messages), the producer returned
   // normally, and the bounces went to a feedback lane that did not exist yet.
 
-  it('alarms on any SES bounce in the last hour', () => {
-    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
-      AlarmName: 'SesBounceCount',
-      Namespace: 'AWS/SES',
-      MetricName: 'Bounce',
-      Statistic: 'Sum',
-      Period: 3600,
-      Threshold: 1,
+  it("alarms on the hour's bounce share above a count floor: one stray bounce is quiet, an all-bounce burst pages", () => {
+    const alarms = template.findResources('AWS::CloudWatch::Alarm', { Properties: { AlarmName: 'SesBounceCount' } });
+    expect(Object.keys(alarms)).toEqual([expect.stringMatching(/^SesBounceCountAlarm[0-9A-F]{8}$/)]);
+    const props = (Object.values(alarms)[0] as any).Properties;
+    // Metric math, not the plain Bounce sum at a threshold of one.
+    expect(props.MetricName).toBeUndefined();
+    expect(props.Namespace).toBeUndefined();
+    expect(props).toMatchObject({
+      Threshold: BOUNCE_SHARE,
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      EvaluationPeriods: 1,
       TreatMissingData: 'notBreaching',
     });
+    const expression = (props.Metrics as any[]).find((m) => m.Expression !== undefined);
+    expect(expression).toMatchObject({ Expression: BOUNCE_SHARE_EXPRESSION, ReturnData: true });
+    const inputs = Object.fromEntries((props.Metrics as any[]).filter((m) => m.MetricStat).map((m) => [m.Id, m.MetricStat]));
+    expect(inputs).toEqual({
+      m1: { Metric: { Namespace: 'AWS/SES', MetricName: 'Bounce' }, Period: 3600, Stat: 'Sum' },
+      m2: { Metric: { Namespace: 'AWS/SES', MetricName: 'Send' }, Period: 3600, Stat: 'Sum' },
+    });
+    // The deployed expression and threshold, hour by hour.
+    const breaches = (hour: { bounces?: number; sends?: number }) => sesBounceAlarmBreaches(hour, expression.Expression, props.Threshold);
+    expect(breaches({ bounces: 1, sends: 50 })).toBe(false);
+    expect(breaches({ bounces: 6, sends: 6 })).toBe(true);
+    expect(breaches({ bounces: 2, sends: 4 })).toBe(true);
+    expect(breaches({ bounces: 3 })).toBe(true);
+    expect(breaches({})).toBe(false);
   });
 
   it('alarms on an SES bounce RATE at or above 5%', () => {
@@ -328,7 +346,11 @@ describe('NotificationsStack', () => {
         Properties: { AlarmName: alarmName },
       });
       expect(Object.keys(alarms)).toHaveLength(1);
-      expect((Object.values(alarms)[0] as any).Properties.Dimensions).toBeUndefined();
+      const props = (Object.values(alarms)[0] as any).Properties;
+      expect(props.Dimensions).toBeUndefined();
+      for (const input of (props.Metrics ?? []) as any[]) {
+        if (input.MetricStat) expect(input.MetricStat.Metric.Dimensions).toBeUndefined();
+      }
     }
   });
 

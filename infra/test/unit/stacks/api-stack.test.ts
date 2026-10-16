@@ -829,15 +829,41 @@ describe('ApiStack', () => {
     const shareChildren = childrenOf(workerJobLogicalId, 'share');
     expect(shareChildren).toHaveLength(1);
 
-    // {jobId}'s only children should be 'apply' (pre-existing) and 'share'
-    // (ReferralsStack) — nothing else, and in particular no second variable
-    // resource.
+    // {jobId}'s only children should be 'apply' (pre-existing), 'share'
+    // (ReferralsStack) and 'view' (sprint 28 job view capture) — nothing
+    // else, and in particular no second variable resource.
     const allChildren = Object.entries(allResources()).filter(([, res]) => {
       const parentRef = res.Properties?.ParentId?.['Fn::GetAtt']?.[0] ?? res.Properties?.ParentId?.Ref;
       return parentRef === workerJobLogicalId;
     });
     const pathParts = allChildren.map(([, res]) => res.Properties.PathPart).sort();
-    expect(pathParts).toEqual(['apply', 'share']);
+    expect(pathParts).toEqual(['apply', 'share', 'view']);
+  });
+
+  test('POST /worker/jobs/{jobId}/view is served by the job detail Lambda, behind the worker authorizer', () => {
+    const rootId = restApiRootLogicalId();
+    const [workerLogicalId] = childrenOf(rootId, 'worker')[0];
+    const [workerJobsLogicalId] = childrenOf(workerLogicalId, 'jobs')[0];
+    const [workerJobLogicalId] = childrenOf(workerJobsLogicalId, '{jobId}')[0];
+    const viewChildren = childrenOf(workerJobLogicalId, 'view');
+    expect(viewChildren).toHaveLength(1);
+    const [viewLogicalId] = viewChildren[0];
+
+    const methodOn = (resourceLogicalId: string, httpMethod: string): any => {
+      const found = Object.values(template.findResources('AWS::ApiGateway::Method', {
+        Properties: { HttpMethod: httpMethod },
+      })).filter((m: any) => m.Properties?.ResourceId?.Ref === resourceLogicalId);
+      expect(found).toHaveLength(1);
+      return found[0];
+    };
+    const view = methodOn(viewLogicalId, 'POST');
+    const detail = methodOn(workerJobLogicalId, 'GET');
+    expect(view.Properties.AuthorizationType).toBe('COGNITO_USER_POOLS');
+    expect(view.Properties.AuthorizerId.Ref).toMatch(/WorkerAuthorizer/);
+    expect(view.Properties.Integration.Type).toBe('AWS_PROXY');
+    // Same function as the detail GET: no new Lambda for the view.
+    expect(JSON.stringify(view.Properties.Integration.Uri)).toContain('WorkerJobsDetailLambda');
+    expect(view.Properties.Integration.Uri).toEqual(detail.Properties.Integration.Uri);
   });
 
   // ── Referrals: public routes and worker routes exist and are auth-gated as expected ──

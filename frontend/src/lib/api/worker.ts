@@ -290,6 +290,12 @@ export type JobDetail = Job & {
  * `pay_interval` and the legacy column is only the fallback.
  */
 export type ApplicationHire = {
+  /**
+   * When any device last reminded the employer for this hire (contract K4.4),
+   * or null. The Remind button reads its wait from the later of this and the
+   * marker kept on the current device.
+   */
+  employer_reminded_at: string | null;
   hired_at: string;
   seen_at: string | null;
   acknowledged_at: string | null;
@@ -341,7 +347,28 @@ export type ApplicationHire = {
    * Optional for the same reason `trade` is.
    */
   company?: string | null;
+  /**
+   * F19 (sprint 28, contract K4.2): the start details the employer added
+   * after the hire, or null when they have not added any yet. Required by
+   * the contract: every `hire` the API returns carries it.
+   */
+  details: HireDetails | null;
 };
+
+/**
+ * F19 (sprint 28, contract K4.2): the start details an employer writes for a
+ * hired worker (`PUT /employer/jobs/{jobId}/applicants/{workerId}/hire-details`).
+ * Every field may be null: the employer fills in what they know.
+ */
+export type HireDetailsInput = {
+  start_date: string | null;        // YYYY-MM-DD
+  report_location: string | null;   // ≤ 200
+  contact_name: string | null;      // ≤ 80
+  contact_phone: string | null;     // ≤ 32, digits, spaces, + ( ) - only
+  notes: string | null;             // ≤ 1000
+};
+
+export type HireDetails = HireDetailsInput & { updated_at: string };
 
 export type Application = {
   application_id: string;
@@ -483,6 +510,24 @@ export async function getJob(token: string, id: string, signal?: AbortSignal): P
   return res.json();
 }
 
+/** Where a job detail view came from (contract K3.6 #17). `whatsapp` is the server's word; the web never sends it. */
+export type JobViewSource = 'feed' | 'public_link' | 'whatsapp' | 'direct';
+
+/**
+ * Records one view of a job detail (analytics #17). Fire-and-forget: the
+ * server always answers 204 and dedupes per worker, job and hour; nothing here
+ * waits, retries or surfaces. `retryOn401: false`, because a beacon must never
+ * renew a token or send anyone to sign in.
+ */
+export function recordJobView(token: string, jobId: string, source: JobViewSource): void {
+  void apiFetch(
+    `/worker/jobs/${jobId}/view`,
+    { method: 'POST', body: JSON.stringify({ source }) },
+    token,
+    { retryOn401: false },
+  ).catch(() => undefined);
+}
+
 /** One certification-requirement claim submitted alongside an application. */
 export type CertificationClaim = { name: string; has: boolean; doc_ids?: string[] };
 
@@ -581,6 +626,19 @@ export type ApplicationRequirementsState = {
   documents: Array<{ doc_type: string; present: boolean }>;
   remaining: ApplicationRequirementsRemaining;
   next_step: { kind: string; [key: string]: unknown };
+  /**
+   * The hire, with the employer's start details in `details` (contract K4.2;
+   * BE-4a's state handler sends it at the top level, `null` while the
+   * application is not hired). The page shows the hired card from it; a
+   * response without the key (a backend older than the frontend) falls back
+   * to the requirements flow's own hired panel.
+   */
+  hire: ApplicationHire | null;
+  /**
+   * What this worker sent from the web on this application (contract K4.3),
+   * oldest first, at most 20.
+   */
+  sent_messages: Array<{ message_id: string; body: string; sent_at: string }>;
 };
 
 /**
@@ -896,19 +954,19 @@ export async function getApplications(
 }
 
 /**
- * ONLY what needs the worker -- the home page's question, which is not a list.
+ * ONLY what needs the worker -- the summary the nav badge and the home page
+ * read, which is not a list.
  *
- * The home page shows no applications; it shows the banners and the hire
- * celebration. It asks for a page anyway because that is the endpoint, and for
- * a hundred rows rather than one ONLY so the fallback above still has
- * something to read on a server that has not shipped `attention` yet. Once
- * that is everywhere, this can ask for a single row.
+ * The server computes `attention` over the worker's WHOLE list whatever page
+ * size is asked for (`worker-applications-list.ts`, live since sprint 27), so
+ * one row is enough. The row fallback (`attentionFromRows`) only matters for a
+ * server older than that, which no environment runs any more.
  */
 export async function getApplicationsAttention(
   token: string,
   signal?: AbortSignal,
 ): Promise<ApplicationsAttention> {
-  const page = await getApplications(token, signal, { limit: 100 });
+  const page = await getApplications(token, signal, { limit: 1 });
   return page.attention;
 }
 
@@ -950,6 +1008,52 @@ export async function acknowledgeHire(
   );
   if (!res.ok) throw await parseApiError(res, 'hire_ack_failed');
   return res.json();
+}
+
+/**
+ * F19 (sprint 28, contract K4.3): a hired worker messages the employer
+ * (`POST /worker/applications/{applicationId}/message`). The body is 1–2000
+ * characters after trim. 201 answers the result below; 400 `invalid_message`,
+ * 404 `not_found`, 409 `not_hired`, 429 `rate_limited` (with
+ * `retry_after_seconds`).
+ */
+export type WorkerMessageInput = { body: string };
+
+export type WorkerMessageResult = { conversation_id: string; message_id: string; sent_at: string };
+
+/**
+ * K4.3: a hired worker writes to the employer from the web. The message lands
+ * in the employer's conversations inbox; replies reach the worker on WhatsApp.
+ * A MUTATION, so no AbortSignal (see the note above `getJobs`). Throws
+ * `ApiError`: 400 `invalid_message`, 404 `not_found`, 409 `not_hired`,
+ * 429 `rate_limited` (with `payload.retry_after_seconds`).
+ */
+export async function sendApplicationMessage(
+  token: string,
+  applicationId: string,
+  input: WorkerMessageInput,
+): Promise<WorkerMessageResult> {
+  const res = await apiFetch(
+    `/worker/applications/${applicationId}/message`,
+    { method: 'POST', body: JSON.stringify({ body: input.body }) },
+    token,
+  );
+  if (!res.ok) throw await parseApiError(res, 'message_failed');
+  return res.json();
+}
+
+/**
+ * F19 (sprint 28, contract K4.4): "Remind my employer"
+ * (`POST /worker/applications/{applicationId}/remind-employer`). 202 when
+ * sent; 429 at most once per 24 hours per application.
+ */
+export async function remindEmployer(token: string, applicationId: string): Promise<void> {
+  const res = await apiFetch(
+    `/worker/applications/${applicationId}/remind-employer`,
+    { method: 'POST', body: '{}' },
+    token,
+  );
+  if (!res.ok) throw await parseApiError(res, 'remind_failed');
 }
 
 /**

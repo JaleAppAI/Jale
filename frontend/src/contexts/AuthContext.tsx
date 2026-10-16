@@ -2,7 +2,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { apiFetch } from '@/lib/api';
-import { getAuthBridge, registerAuthBridge } from '@/lib/auth-bridge';
+import { getAuthBridge, registerAuthBridge, type RefreshOutcome } from '@/lib/auth-bridge';
 import { buildLoginUrl } from '@/lib/login-url';
 import { clearReportBuffers } from '@/lib/report/context';
 import {
@@ -37,12 +37,13 @@ interface AuthState {
     setTokens: (tokens: { accessToken: string; idToken: string; refreshToken: string }, userType: 'worker' | 'employer') => void;
     logout: () => Promise<void>;
     /**
-     * Exchanges the stored refresh token for a fresh id token, which it
-     * resolves. Resolves null (and clears the session) when the refresh token
-     * is gone or rejected. Single-flight: concurrent callers share one
-     * in-flight /auth/refresh POST.
+     * Exchanges the stored refresh token for a fresh id token and reports what
+     * happened (`RefreshOutcome`, contract K4.1). `refused` clears this role's
+     * session; `unavailable` (a 5xx, an unreadable body) leaves it alone; a
+     * request that got no answer at all REJECTS and also leaves it alone.
+     * Single-flight: concurrent callers share one in-flight /auth/refresh POST.
      */
-    refreshIdToken: () => Promise<string | null>;
+    refreshIdToken: () => Promise<RefreshOutcome>;
     /**
      * The id token for a request that must not move the page (the report
      * form): the current one, renewed first when it is about to expire.
@@ -91,13 +92,21 @@ const AuthContext = createContext<AuthState | null>(null);
  * everywhere. A session that is genuinely gone costs one more round trip to
  * discover; a session thrown away is a sign-in the user has to redo.
  *
- * NOTE: `/auth/refresh` itself answers 401 for ANY Cognito failure, throttling
- * and outages included (infra/lambda/auth/token-refresh.ts), so this guard is
- * only as sharp as that lambda's status codes. Narrowing them is a backend
- * change and is reported rather than made here.
+ * `/auth/refresh` (infra/lambda/auth/token-refresh.ts) answers 401 for a
+ * refusal and 503 for an outage, and 400 for a request that can never succeed
+ * (missing params, bad user type, bad JSON). So a refusal is any 4xx EXCEPT
+ * 408 (request timeout) and 429 (throttled), which say "try again later" and
+ * stay unavailable along with every 5xx. Treating a 400 as an outage would
+ * keep a dead session for ever, with every 401 reporting a connection problem.
  */
 function isTokenRefusal(res: { status?: number }): boolean {
-    return res.status === 401 || res.status === 403;
+    const status = res.status;
+    return typeof status === 'number' && status >= 400 && status < 500 && status !== 408 && status !== 429;
+}
+
+/** The token a renewal produced, or null for every other answer. */
+function tokenOf(outcome: RefreshOutcome): string | null {
+    return outcome.status === 'ok' ? outcome.token : null;
 }
 
 /** The role a path belongs to, or null for one that names none. */
@@ -141,7 +150,7 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
     const [userType, setUserType] = useState<'worker' | 'employer' | null>(null);
     const [isLoading, setIsLoading] = useState(true);
     const [sessionCleared, setSessionCleared] = useState<SessionCleared>({ epoch: 0, role: null });
-    const refreshInFlight = useRef<Promise<string | null> | null>(null);
+    const refreshInFlight = useRef<Promise<RefreshOutcome> | null>(null);
     /**
      * The role this provider is signed in as, readable from callbacks that
      * were registered once and would otherwise close over stale state (the
@@ -352,23 +361,21 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
         window.location.href = `/${locale}/`;
     };
 
-    const refreshIdToken = useCallback(async (): Promise<string | null> => {
+    const refreshIdToken = useCallback(async (): Promise<RefreshOutcome> => {
         // Single-flight: a burst of 401s (a page that fires five requests on
         // mount) must produce ONE /auth/refresh POST, not five -- Cognito
         // rotates on refresh, so parallel refreshes race each other's tokens.
         if (refreshInFlight.current) return refreshInFlight.current;
 
-        const run = (async (): Promise<string | null> => {
+        const run = (async (): Promise<RefreshOutcome> => {
             // Storage, not component state, is the source of truth for the
             // TOKEN: the bridge is registered once and must never close over a
             // stale one, and re-reading also picks up a rotation done by
-            // another tab, which is only possible now the session is shared.
+            // another tab.
             //
-            // The ROLE comes from this provider (via a ref, for the same
-            // stale-closure reason) and the token is read from that role's slot
-            // ONLY. Taking "whatever is stored" would, in a browser signed in
-            // as both, refresh the other role's token and hand this tab an id
-            // token for the wrong pool.
+            // The ROLE comes from this provider (via a ref) and the token is
+            // read from that role's slot ONLY, so a browser signed in as both
+            // never refreshes the other role's token.
             const role = userTypeRef.current;
             const stored = role
                 ? { refreshToken: readRoleToken(role), userType: role as UserType | null }
@@ -380,44 +387,48 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
             const ut = stored?.userType ?? null;
             if (!rt) {
                 // Never unscoped: `clearSession(undefined)` wipes BOTH role
-                // slots, and since a role route with only the OTHER role
-                // signed in now resolves to no session at all, an unscoped
-                // clear here would sign that other role out too.
+                // slots, which would sign the other role out too.
                 clearSession(ut ?? inferUserTypeFromPath() ?? undefined);
-                return null;
+                return { status: 'refused' };
             }
-            try {
-                // Deliberately token-less, so apiFetch's own 401 refresh path
-                // never intercepts it (that would recurse).
-                const res = await apiFetch('/auth/refresh', {
-                    method: 'POST',
-                    body: JSON.stringify({ refreshToken: rt, userType: ut }),
-                });
-                if (!res.ok) {
-                    // Only a refusal ends the session; an outage leaves it
-                    // stored and in memory for the next attempt. See
-                    // `isTokenRefusal` -- and note that clearing here removes
-                    // the shared slot, which signs every OTHER TAB out too.
-                    if (isTokenRefusal(res)) clearSession(ut ?? undefined);
-                    return null;
-                }
-                const data = await res.json();
-                const nextIdToken = typeof data?.idToken === 'string' && data.idToken.length > 0
-                    ? data.idToken
-                    : null;
-                if (!nextIdToken) {
+
+            // Deliberately NOT wrapped in try: a request that never reached the
+            // server rejects (`ApiError(0, 'offline' | 'timeout')`, lib/api.ts),
+            // and a rejection is how this renewal says "no answer" -- the
+            // stored session is not this request's to throw away.
+            // Token-less, so apiFetch's own 401 refresh path never intercepts
+            // it (that would recurse).
+            const res = await apiFetch('/auth/refresh', {
+                method: 'POST',
+                body: JSON.stringify({ refreshToken: rt, userType: ut }),
+            });
+            if (!res.ok) {
+                // Only a refusal ends the session (see `isTokenRefusal`);
+                // clearing removes the shared slot, which signs every OTHER
+                // TAB out too.
+                if (isTokenRefusal(res)) {
                     clearSession(ut ?? undefined);
-                    return null;
+                    return { status: 'refused' };
                 }
-                setAccessToken(typeof data.accessToken === 'string' ? data.accessToken : null);
-                setIdToken(nextIdToken);
-                return nextIdToken;
-            } catch {
-                // Never reached the server (timeout, offline, DNS): the caller
-                // gets no token and will surface its own error, but the stored
-                // session is not this request's to throw away.
-                return null;
+                return { status: 'unavailable' };
             }
+            const data: unknown = await res.json().catch(() => undefined);
+            // An unreadable success body is the server having a bad day, not
+            // a verdict on the token.
+            if (data === undefined) return { status: 'unavailable' };
+            const body = data as { idToken?: unknown; accessToken?: unknown } | null;
+            const nextIdToken = typeof body?.idToken === 'string' && body.idToken.length > 0
+                ? body.idToken
+                : null;
+            if (!nextIdToken) {
+                // Unchanged behaviour: a success that names no token cannot
+                // be used, and the session it came from is ended.
+                clearSession(ut ?? undefined);
+                return { status: 'refused' };
+            }
+            setAccessToken(typeof body?.accessToken === 'string' ? body.accessToken : null);
+            setIdToken(nextIdToken);
+            return { status: 'ok', token: nextIdToken };
         })();
 
         refreshInFlight.current = run;
@@ -479,36 +490,42 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
         const current = serving ? idToken : null;
         if (!current) return null;
         if (!idTokenExpiresWithin(current, ID_TOKEN_RENEW_MARGIN_MS)) return current;
-        if (refreshInFlight.current) return refreshInFlight.current;
+        // Joins whichever renewal is already running. A rejection there is
+        // "no answer", which for this caller is simply null.
+        if (refreshInFlight.current) return refreshInFlight.current.then(tokenOf, () => null);
 
         const role = userTypeRef.current;
         const rt = role ? readRoleToken(role) : null;
         if (!role || !rt) return null;
 
-        const run = (async (): Promise<string | null> => {
-            try {
-                // Token-less, so apiFetch's own 401 path never sees it.
-                const res = await apiFetch('/auth/refresh', {
-                    method: 'POST',
-                    body: JSON.stringify({ refreshToken: rt, userType: role }),
-                });
-                if (!res.ok) return null;
-                const data = await res.json();
-                const next = typeof data?.idToken === 'string' && data.idToken.length > 0 ? data.idToken : null;
-                // Only land it if this provider still serves the role it was for.
-                if (next && userTypeRef.current === role) {
-                    setAccessToken(typeof data.accessToken === 'string' ? data.accessToken : null);
-                    setIdToken(next);
-                }
-                return next;
-            } catch {
-                return null;
+        const run = (async (): Promise<RefreshOutcome> => {
+            // Token-less, so apiFetch's own 401 path never sees it. It speaks
+            // the same RefreshOutcome as `refreshIdToken`, because a 401 that
+            // arrives while this is in flight joins THIS promise -- but unlike
+            // `refreshIdToken` it never clears anything (see the doc above).
+            const res = await apiFetch('/auth/refresh', {
+                method: 'POST',
+                body: JSON.stringify({ refreshToken: rt, userType: role }),
+            });
+            if (!res.ok) return isTokenRefusal(res) ? { status: 'refused' } : { status: 'unavailable' };
+            const data: unknown = await res.json().catch(() => undefined);
+            if (data === undefined) return { status: 'unavailable' };
+            const body = data as { idToken?: unknown; accessToken?: unknown } | null;
+            const next = typeof body?.idToken === 'string' && body.idToken.length > 0 ? body.idToken : null;
+            if (!next) return { status: 'refused' };
+            // Only land it if this provider still serves the role it was for.
+            if (userTypeRef.current === role) {
+                setAccessToken(typeof body?.accessToken === 'string' ? body.accessToken : null);
+                setIdToken(next);
             }
+            return { status: 'ok', token: next };
         })();
 
         refreshInFlight.current = run;
         try {
-            return await run;
+            return tokenOf(await run);
+        } catch {
+            return null;
         } finally {
             if (refreshInFlight.current === run) refreshInFlight.current = null;
         }

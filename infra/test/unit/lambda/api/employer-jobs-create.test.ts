@@ -718,4 +718,62 @@ describe('employer-jobs-create', () => {
       expect(JSON.parse(res.body).pre_application_prompts).toEqual([{ id: 'p1', text: 'A' }]);
     });
   });
+
+  // Sprint 28 (K3.6, item 18): the saved template the job started from.
+  describe('template_id', () => {
+    const TEMPLATE = '66666666-6666-4666-8666-666666666666';
+    const CHECK = 'SELECT 1 FROM employer_job_templates WHERE id = $1 AND employer_id = $2';
+    const insertCall = () => mockQuery.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO jobs'))!;
+    const statements = () => mockQuery.mock.calls.map(([sql]) => String(sql).replace(/\s+/g, ' ').trim());
+    const answerCheck = (answer: (sql: string) => Promise<unknown> | undefined) => {
+      const base = mockQuery.getMockImplementation()!;
+      mockQuery.mockImplementation((sql: string, params?: unknown[]) => answer(sql) ?? base(sql, params));
+    };
+
+    it('stores the id of a template the employer can see as its own, checked in the create transaction', async () => {
+      answerCheck((sql) => (sql === CHECK ? Promise.resolve({ rows: [{ '?column?': 1 }], rowCount: 1 }) : undefined));
+      const res = await handler(makeEvent({ template_id: TEMPLATE }));
+
+      expect(res.statusCode).toBe(201);
+      expect(mockQuery).toHaveBeenCalledWith(CHECK, [TEMPLATE, 'user-uuid-1']);
+      const sql = String(insertCall()[0]);
+      expect(sql).toMatch(/pre_application_prompts,\s+created_from_template_id\s+\)/);
+      expect(sql).toMatch(/\$35::jsonb, \$36\s+\)/);
+      expect(insertCall()[1][35]).toBe(TEMPLATE);
+      const s = statements();
+      expect(s.indexOf(CHECK)).toBeLessThan(s.findIndex((q) => q.startsWith('INSERT INTO jobs')));
+    });
+
+    it('stores no template for an id the employer cannot see (another employer\'s, or none), and still creates the job', async () => {
+      answerCheck((sql) => (sql === CHECK ? Promise.resolve({ rows: [], rowCount: 0 }) : undefined));
+      const res = await handler(makeEvent({ template_id: TEMPLATE }));
+
+      expect(res.statusCode).toBe(201);
+      expect(insertCall()[1][35]).toBeNull();
+      expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+    });
+
+    it('stores no template, and runs no check, for a missing or malformed id', async () => {
+      for (const template_id of [undefined, null, 'not-a-uuid', 42, { id: TEMPLATE }]) {
+        mockQuery.mockClear();
+        const res = await handler(makeEvent({ template_id }));
+        expect(res.statusCode).toBe(201);
+        expect(insertCall()[1][35]).toBeNull();
+        expect(statements()).not.toContain(CHECK);
+      }
+    });
+
+    it('a failing check never fails the post: it rolls back to its savepoint and stores no template', async () => {
+      answerCheck((sql) => (sql === CHECK ? Promise.reject(Object.assign(new Error('boom'), { code: '57014' })) : undefined));
+      const res = await handler(makeEvent({ template_id: TEMPLATE }));
+
+      expect(res.statusCode).toBe(201);
+      expect(insertCall()[1][35]).toBeNull();
+      const s = statements();
+      expect(s.slice(s.indexOf(CHECK) - 1, s.indexOf(CHECK) + 3)).toEqual([
+        'SAVEPOINT template_check', CHECK, 'ROLLBACK TO SAVEPOINT template_check', 'RELEASE SAVEPOINT template_check',
+      ]);
+      expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+    });
+  });
 });

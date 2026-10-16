@@ -173,6 +173,50 @@ describe('worker-doc-delete', () => {
     expect(deleteParams).toEqual(['u1', 'resume']);
   });
 
+  // Sprint 28: an application's documents are job-scoped copies that share
+  // the vault row's s3_key. The object stays while any row still names it.
+  describe('shared S3 object', () => {
+    const REFERENCE = /SELECT EXISTS \(SELECT 1 FROM worker_documents WHERE worker_id = \$1 AND s3_key = \$2\)/;
+
+    function stub(referenced: boolean) {
+      mockQuery.mockImplementation((q: string) => {
+        if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'u1' }] });
+        if (q.includes('DELETE FROM worker_documents')) return Promise.resolve({ rowCount: 1, rows: [{ s3_key: 'k-shared' }] });
+        if (REFERENCE.test(q)) return Promise.resolve({ rows: [{ referenced }] });
+        return Promise.resolve({});
+      });
+    }
+
+    it('keeps the object while another row (an application\'s copy) still references the key', async () => {
+      stub(true);
+      const res = await handler(mkEv('certification_doc', DOC_ID));
+      expect(res.statusCode).toBe(204);
+      expect(mockS3Send).not.toHaveBeenCalled();
+      const check = mockQuery.mock.calls.find(([q]) => REFERENCE.test(String(q)));
+      expect(check?.[1]).toEqual(['u1', 'k-shared']);
+    });
+
+    it('deletes the object once no row references the key', async () => {
+      stub(false);
+      const res = await handler(mkEv('resume'));
+      expect(res.statusCode).toBe(204);
+      expect(mockS3Send).toHaveBeenCalledTimes(1);
+      expect(mockS3Send.mock.calls[0][0]).toEqual({ Bucket: 'b', Key: 'k-shared' });
+    });
+
+    it('checks the references inside the transaction, after the row is deleted and before COMMIT', async () => {
+      stub(true);
+      await handler(mkEv('resume'));
+      const sql = mockQuery.mock.calls.map(([q]) => String(q));
+      const iDelete = sql.findIndex((q) => q.includes('DELETE FROM worker_documents'));
+      const iCheck = sql.findIndex((q) => REFERENCE.test(q));
+      const iCommit = sql.lastIndexOf('COMMIT');
+      expect(iDelete).toBeGreaterThan(-1);
+      expect(iCheck).toBeGreaterThan(iDelete);
+      expect(iCommit).toBeGreaterThan(iCheck);
+    });
+  });
+
   describe('change context', () => {
     it('states the worker before the vault row is deleted', async () => {
       mockQuery.mockImplementation((q: string) => {

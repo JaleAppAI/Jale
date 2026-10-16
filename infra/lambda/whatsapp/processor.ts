@@ -29,7 +29,6 @@ import { parseFormBody, type TwilioSecret } from './lib/twilio';
 import { sendPendingOutbox, queueOutboxText, FALLBACK_BODY_KEY } from './lib/outbox';
 import {
   isLikelyOtpCode,
-  resolveWorkerIdForWhatsappNumber,
   parseEmployerConversationTextAction,
   handleEmployerConversationButton,
   handleEmployerConversationTextAction,
@@ -58,7 +57,6 @@ import {
   detectCommandLanguage,
   isJobsKeyword,
   isHelpCommand,
-  isSupportCommand,
   isProfileCommand,
   isApplicationsCommand,
   parseApplicationButtonPayload,
@@ -78,9 +76,11 @@ import {
   downloadTwilioMedia,
   downloadTwilioMediaBounded,
   uploadMediaToS3,
+  uploadSupportMediaToS3,
   MAX_VOICE_BYTES,
   MAX_DOCUMENT_BYTES,
 } from './lib/media';
+import { routeSupportMode, type SupportModeDeps } from './lib/support-mode';
 import {
   armFill,
   promptNextStep,
@@ -110,6 +110,7 @@ import { loadRequirementSnapshot } from '../lib/application-requirements';
 import { parsePreApplicationPromptList } from '../lib/pre-application-prompts';
 import { writeFirstTouchAttribution } from '../lib/referral-attribution';
 import { recordReferredJob } from '../lib/referred-jobs';
+import { recordWhatsAppImpressions } from '../lib/analytics-capture';
 import { resolveApplyToken, type ApplyTokenRow } from './lib/referral-claims';
 import {
   handlePostLaneMessage,
@@ -460,7 +461,8 @@ async function getOrCreateConversation(
   const existing = await client.query<ConversationRow>(
     `SELECT id, user_id, whatsapp_number, language,
             conversation_state, state_context, otp_attempts,
-            otp_expires_at, last_processed_message_sid
+            otp_expires_at, last_processed_message_sid,
+            support_case_id, support_last_activity_at
        FROM whatsapp_conversations
       WHERE whatsapp_number = $1`,
     [whatsappNumber],
@@ -472,7 +474,8 @@ async function getOrCreateConversation(
      VALUES ($1, $2)
      RETURNING id, user_id, whatsapp_number, language,
                conversation_state, state_context, otp_attempts,
-               otp_expires_at, last_processed_message_sid`,
+               otp_expires_at, last_processed_message_sid,
+               support_case_id, support_last_activity_at`,
     [whatsappNumber, defaultLang],
   );
   return created.rows[0];
@@ -499,7 +502,8 @@ async function getOrCreateConversationForUpdate(
     `SELECT id, user_id, whatsapp_number, language,
             conversation_state, state_context, otp_attempts,
             otp_expires_at, last_processed_message_sid,
-            focused_job_conversation_id
+            focused_job_conversation_id,
+            support_case_id, support_last_activity_at
        FROM whatsapp_conversations
       WHERE whatsapp_number = $1
       FOR UPDATE`,
@@ -513,7 +517,8 @@ async function getOrCreateConversationForUpdate(
      RETURNING id, user_id, whatsapp_number, language,
                conversation_state, state_context, otp_attempts,
                otp_expires_at, last_processed_message_sid,
-               focused_job_conversation_id`,
+               focused_job_conversation_id,
+               support_case_id, support_last_activity_at`,
     [whatsappNumber, defaultLang],
   );
   return created.rows[0];
@@ -530,6 +535,8 @@ async function updateConversation(
     otp_attempts: number;
     otp_expires_at: Date | null;
     last_processed_message_sid: string;
+    support_case_id: string | null;
+    support_last_activity_at: Date | null;
   }>,
 ): Promise<void> {
   const entries = Object.entries(patch).filter(([, v]) => v !== undefined);
@@ -960,39 +967,31 @@ async function ingestProfileVoiceNote(
   return { started: true, executionArn };
 }
 
-async function handleSupportCommand(
-  client: PoolClient,
-  conv: ConversationRow,
-  msg: IncomingMessage,
-): Promise<void> {
-  // Prefer the OTP-linked identity, then allow the existing verified-phone
-  // resolver. The database function independently checks the exact
-  // worker/conversation relationship and never binds conversation identity.
-  const workerId = conv.user_id ?? await resolveWorkerIdForWhatsappNumber(client, msg.from);
-  if (!workerId) {
-    await queueReply(client, msg.messageSid, msg.from, 'support_needs_signup', conv.language);
-    return;
-  }
-
-  await setWorkerRlsContextByUserId(client, workerId);
-
-  const result = await client.query<{ case_id: string; created: boolean }>(
-    `SELECT case_id, created
-       FROM create_admin_support_case($1, $2, $3, $4)`,
-    [workerId, conv.id, 'Worker requested WhatsApp support', msg.body],
-  );
-  const supportCase = result.rows[0];
-  if (!supportCase) {
-    throw new Error('create_admin_support_case returned no row');
-  }
-
-  await queueReply(
-    client,
-    msg.messageSid,
-    msg.from,
-    supportCase.created ? 'support_ack' : 'support_ack_existing',
-    conv.language,
-  );
+/**
+ * What support mode (lib/support-mode.ts) needs from this processor: the
+ * reply queue for this inbound message, the pre-verification state of an
+ * unregistered number, Twilio media download and the support-media bucket.
+ */
+function buildSupportDeps(client: PoolClient, conv: ConversationRow, msg: IncomingMessage): SupportModeDeps {
+  const adminBaseUrl = (process.env.ADMIN_BASE_URL ?? '').trim().replace(/\/+$/, '');
+  return {
+    queueReply: (key, lang) => queueReply(client, msg.messageSid, msg.from, key, lang),
+    loadPreAuth: async () => {
+      const preAuth = await loadPreAuthStateForUpdate(client, hashNormalizedPhone(conv.whatsapp_number));
+      return preAuth ? { stepKey: preAuth.currentStepKey, language: preAuth.preferredLanguage } : null;
+    },
+    downloadMedia: async (mediaUrl, maxBytes) => {
+      const twilio = await getTwilioSecret();
+      return downloadTwilioMediaBounded(mediaUrl, twilio.accountSid, twilio.authToken, maxBytes);
+    },
+    uploadMedia: async (key, body, contentType) => {
+      const bucket = process.env.SUPPORT_MEDIA_BUCKET;
+      if (!bucket) throw new Error('SUPPORT_MEDIA_BUCKET not set');
+      await uploadSupportMediaToS3(bucket, key, body, contentType);
+    },
+    adminBaseUrl: adminBaseUrl === '' ? null : adminBaseUrl,
+    newId: randomUUID,
+  };
 }
 
 async function routeMessage(
@@ -1003,6 +1002,26 @@ async function routeMessage(
   voiceEvent: VoiceEventV2 | null,
   audit: InboundAudit,
 ): Promise<string | null> {
+  // Support mode (sprint 28) answers first, before the onboarding engine
+  // below can consume the message, so SOPORTE / SUPPORT reaches the team
+  // from any number at any step (lib/support-mode.ts). A synthetic
+  // voice-pipeline event always goes to the engine. While the mode holds,
+  // the application fill and prompt lanes further down stay armed but
+  // silent: they never see the worker's messages to the team, and resume on
+  // the first turn after the mode ends.
+  if (!voiceEvent) {
+    const support = await routeSupportMode(client, conv, msg, buildSupportDeps(client, conv, msg));
+    // Support mode queues no job-thread message, so there is nothing for the
+    // job-message drain after commit.
+    if (support.kind === 'handled') return null;
+    if (support.kind === 'continue_as_help') {
+      // MENU ended the mode: the turn continues as the help command, in the
+      // conversation's language, so a ready worker gets the help menu and a
+      // worker still onboarding gets their current step again.
+      msg = { ...msg, body: conv.language === 'en' ? 'help' : 'ayuda' };
+    }
+  }
+
   // v2 is now the only onboarding lane — the legacy state machine has been
   // deleted. `runtimeControls`/`phoneHash` are still needed for the
   // voice_intake runtime control below (a live, independently-gated
@@ -1306,7 +1325,7 @@ async function routeMessage(
   const readyResult = await routeReadyWorkerCommands(client, conv, msg);
 
   // Dispatch tail (Task 10): an escape above (picker resolution, help,
-  // support, profile, a CHATS/CERRAR relay, the jobs listing, a typed job
+  // profile, a CHATS/CERRAR relay, the jobs listing, a typed job
   // action, or the relay-override's one free-text pass-through) already
   // queued its OWN, unrelated reply by the time control reaches here. If the
   // fill is STILL armed, the worker's pending question would otherwise go
@@ -1331,7 +1350,7 @@ async function routeMessage(
 }
 
 /**
- * Task 10: the picker/help/support/profile/relay/jobs router a ready
+ * Task 10: the picker/help/profile/relay/jobs router a ready
  * worker's message falls into once button-payload routing, legal-prompt
  * replies, and the command-payload unwrap (all self-identifying and
  * unrelated to the fill lane) have already had their turn. Extracted from
@@ -1362,12 +1381,6 @@ async function routeReadyWorkerCommands(
     return null;
   }
 
-  if (isSupportCommand(msg.body)) {
-    await discardStalePostDraft(client, conv, msg);
-    await handleSupportCommand(client, conv, msg);
-    return null;
-  }
-
   if (isProfileCommand(msg.body)) {
     await discardStalePostDraft(client, conv, msg);
     await handleProfileCommand(client, conv, msg);
@@ -1384,7 +1397,7 @@ async function routeReadyWorkerCommands(
   // reported exactly that.
   //
   // Placed here deliberately:
-  //   - AFTER the exact-match help/support/profile commands, which no code
+  //   - AFTER the exact-match help/profile commands, which no code
   //     can collide with;
   //   - BEFORE `parseEmployerConversationTextAction` / `tryConversationRelay`,
   //     so a code typed while an employer thread is open is ANSWERED rather
@@ -1974,6 +1987,9 @@ async function handleIdle(
     for (const job of jobs) {
       await queueJobTemplate(client, msg.messageSid, msg.from, conv.language, job);
     }
+    // Admin analytics (#20): the list counts as one showing of each job
+    // today; best-effort, it never fails the reply.
+    await recordWhatsAppImpressions(client, recentJobs, null);
     return null;
   }
 

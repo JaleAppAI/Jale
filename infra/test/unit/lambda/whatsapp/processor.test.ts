@@ -101,6 +101,14 @@ jest.mock('../../../../lambda/lib/job-matching', () => ({
       .map((r) => ({ latitude: Number(r.latitude), longitude: Number(r.longitude) })),
 }));
 
+// Sprint 28: the jobs-list showing capture (analytics item 20) is mocked so
+// its savepoint statements never shift a strict `mockResolvedValueOnce`
+// chain here; analytics-capture.test.ts covers the savepoint itself.
+const mockRecordWhatsAppImpressions = jest.fn(async () => true);
+jest.mock('../../../../lambda/lib/analytics-capture', () => ({
+  recordWhatsAppImpressions: (...args: unknown[]) => mockRecordWhatsAppImpressions(...(args as [])),
+}));
+
 // ── v2 routing branch mocks ──────────────────────────────────────────────
 //
 // v2 is the only onboarding lane now. loadRuntimeControls/hashNormalizedPhone
@@ -119,6 +127,18 @@ jest.mock('../../../../lambda/whatsapp/lib/runtime-controls', () => ({
   loadRuntimeControls: (client: unknown) => mockLoadRuntimeControls(client),
   isVoiceIntakeEnabled: (controls: unknown, phoneHash: unknown) => mockIsVoiceIntakeEnabled(controls, phoneHash),
   hashNormalizedPhone: (phone: unknown) => mockHashNormalizedPhone(phone),
+}));
+
+// Sprint 28 support mode: decided before the onboarding router, and mocked
+// here for the same reason the router is (its own queries would shift every
+// strict chain in this file). No answer means "not support mode's message",
+// so describe blocks that reset every mock still route as before.
+// processor-support-mode.test.ts drives the real module through the real
+// router.
+const mockRouteSupportMode = jest.fn();
+jest.mock('../../../../lambda/whatsapp/lib/support-mode', () => ({
+  routeSupportMode: async (client: unknown, conv: unknown, msg: unknown, deps: unknown) =>
+    (await mockRouteSupportMode(client, conv, msg, deps)) ?? { kind: 'pass' },
 }));
 
 const mockRouteOnboardingV2 = jest.fn();
@@ -288,6 +308,7 @@ describe('Processor Lambda', () => {
       TWILIO_STATUS_CALLBACK_URL: 'https://callbacks.example.test/prod/whatsapp/status-callback',
       DB_SECRET_ARN: 'arn:db',
       REQUIRED_TOS_VERSION: '1.0',
+      ADMIN_BASE_URL: 'https://admin.example.test',
     };
 
     mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });
@@ -316,6 +337,7 @@ describe('Processor Lambda', () => {
     mockRouteOnboardingV2.mockReset();
     mockRouteOnboardingV2.mockImplementation((_client: unknown, session: any) =>
       Promise.resolve({ handled: false, workerId: session?.user_id ?? null }));
+    mockRouteSupportMode.mockReset();
     mockCreateOnboardingV2Adapters.mockReset();
     mockCreateOnboardingV2Adapters.mockReturnValue({});
     mockEnqueueWorkerMessage.mockReset();
@@ -751,153 +773,93 @@ describe('Processor Lambda', () => {
       expect(outboxTemplates()).not.toContain('help_menu_list_es');
     });
 
-    it('creates a support case for a linked worker before focused-thread relay', async () => {
+    // Sprint 28: SOPORTE / SUPPORT, MENU and everything a worker sends while
+    // talking to the team are decided by lib/support-mode.ts, which is mocked
+    // in this file (its own queries would shift every chain here) and driven
+    // through the real onboarding router in processor-support-mode.test.ts.
+    // These tests pin only the processor's side of the seam.
+    it('asks support mode first, and stops there when it takes the message', async () => {
+      mockRouteSupportMode.mockResolvedValueOnce({ kind: 'handled' });
       mockQuery
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-support' }] }) // claim
         .mockResolvedValueOnce({
           rowCount: 1,
-          rows: [convRow({
-            conversation_state: 'idle',
-            language: 'en',
-            user_id: 'user-1',
-            focused_job_conversation_id: 'job-conv-1',
-          })],
+          rows: [convRow({ conversation_state: 'idle', language: 'en', user_id: 'user-1' })],
         })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ cognito_sub: 'worker-sub-1' }] })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ case_id: 'case-1', created: true }] })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT support_ack outbox
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
 
       await handler(
-        makeSqsEvent({
-          MessageSid: 'SM-support',
-          From: 'whatsapp:+15125551234',
-          Body: 'Support',
-        }),
+        makeSqsEvent({ MessageSid: 'SM-support', From: 'whatsapp:+15550100002', Body: 'Support' }),
         {} as any,
         {} as any,
       );
 
-      expect(findQueryByPattern(/FROM create_admin_support_case/i)).toEqual([
-        'user-1',
-        'conv-1',
-        'Worker requested WhatsApp support',
-        'Support',
-      ]);
-      expect(outboxBodies()).toContain(t('support_ack', 'en'));
-      expect(countQueryByPattern(/INSERT INTO job_conversation_messages/i)).toBe(0);
+      expect(mockRouteSupportMode).toHaveBeenCalledTimes(1);
+      const [, conv, msg, deps] = mockRouteSupportMode.mock.calls[0];
+      expect(conv).toMatchObject({ id: 'conv-1', user_id: 'user-1' });
+      expect(msg).toMatchObject({ body: 'Support', messageSid: 'SM-support', from: 'whatsapp:+15550100002' });
+      expect(deps).toMatchObject({ adminBaseUrl: 'https://admin.example.test' });
+      expect(mockRouteOnboardingV2).not.toHaveBeenCalled();
+      expect(countQueryByPattern(/INSERT INTO whatsapp_outbox/i)).toBe(0);
+      expect(countQueryByPattern(/create_admin_support_case/i)).toBe(0);
     });
 
-    it('acknowledges an existing open support case without creating another', async () => {
+    it('routes the turn as the help command in the conversation language once MENU ends the mode', async () => {
+      mockRouteSupportMode.mockResolvedValueOnce({ kind: 'continue_as_help' });
       mockQuery
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-support-existing' }] })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-menu' }] }) // claim
         .mockResolvedValueOnce({
           rowCount: 1,
           rows: [convRow({ conversation_state: 'idle', language: 'es', user_id: 'user-1' })],
         })
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ cognito_sub: 'worker-sub-1' }] })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ case_id: 'case-1', created: false }] })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT support_ack_existing outbox
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox help_menu_list_es
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
 
       await handler(
-        makeSqsEvent({
-          MessageSid: 'SM-support-existing',
-          From: 'whatsapp:+15125551234',
-          Body: 'soporte',
-        }),
+        makeSqsEvent({ MessageSid: 'SM-menu', From: 'whatsapp:+15550100002', Body: 'MENU' }),
         {} as any,
         {} as any,
       );
 
-      expect(countQueryByPattern(/FROM create_admin_support_case/i)).toBe(1);
-      expect(outboxBodies()).toContain(t('support_ack_existing', 'es'));
+      expect(mockRouteOnboardingV2).toHaveBeenCalledTimes(1);
+      expect((mockRouteOnboardingV2.mock.calls[0][2] as { body: string }).body).toBe('ayuda');
+      expect(outboxTemplates()).toEqual(['help_menu_list_es']);
     });
 
-    it('requires signup for a pre-OTP support command and does not create a case', async () => {
+    it('routes normally when support mode passes, and the old support command handler is gone', async () => {
       mockQuery
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-support-pre-otp' }] })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-support-pass' }] }) // claim
         .mockResolvedValueOnce({
           rowCount: 1,
-          rows: [convRow({ conversation_state: 'awaiting_otp', language: 'en', user_id: null })],
+          rows: [convRow({ conversation_state: 'idle', language: 'en', user_id: 'user-1' })],
         })
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // verified-phone worker resolution
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT support_needs_signup outbox
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox help_menu_list_en
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
 
       await handler(
-        makeSqsEvent({
-          MessageSid: 'SM-support-pre-otp',
-          From: 'whatsapp:+15125551234',
-          Body: 'support',
-        }),
+        makeSqsEvent({ MessageSid: 'SM-support-pass', From: 'whatsapp:+15550100002', Body: 'help' }),
         {} as any,
         {} as any,
       );
 
-      expect(findQueryByPattern(/create_admin_support_case/i)).toBeUndefined();
-      expect(outboxBodies()).toContain(t('support_needs_signup', 'en'));
-    });
-
-    it('creates a support case for an unlinked conversation resolved by verified phone without binding it', async () => {
-      mockQuery
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-support-phone' }] })
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [convRow({ conversation_state: 'awaiting_otp', language: 'en', user_id: null })],
-        })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'phone-worker-1' }] })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ cognito_sub: 'phone-worker-sub-1' }] })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ case_id: 'case-phone-1', created: true }] })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT support_ack outbox
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
-
-      await handler(
-        makeSqsEvent({
-          MessageSid: 'SM-support-phone',
-          From: 'whatsapp:+15125551234',
-          Body: 'support',
-        }),
-        {} as any,
-        {} as any,
-      );
-
-      expect(findQueryByPattern(/FROM create_admin_support_case/i)).toEqual([
-        'phone-worker-1',
-        'conv-1',
-        'Worker requested WhatsApp support',
-        'support',
-      ]);
-      expect(outboxBodies()).toContain(t('support_ack', 'en'));
-      // The support case uses the phone-resolved worker id, but the
-      // conversation row itself is never bound to it — only the v2 forced
-      // idle writeback (unconditional on every turn) touches this row, and
-      // its user_id stays whatever the (unhandled) v2 session carried, never
-      // the phone-worker-1 support lookup result.
-      const conversationWrites = mockQuery.mock.calls.filter(([sql]) =>
-        /UPDATE whatsapp_conversations SET/i.test(sql as string));
-      expect(conversationWrites.every(([, params]) =>
-        !(params as unknown[])?.includes('phone-worker-1'))).toBe(true);
+      expect(mockRouteSupportMode).toHaveBeenCalledTimes(1);
+      expect(mockRouteOnboardingV2).toHaveBeenCalledTimes(1);
+      expect(outboxTemplates()).toEqual(['help_menu_list_en']);
+      expect(countQueryByPattern(/create_admin_support_case/i)).toBe(0);
     });
 
     // R2-C8: `users.trust_signals` / `trust_signals_completed_at` (the v1
@@ -1241,6 +1203,40 @@ describe('Processor Lambda', () => {
         limit: 5,
         channel: 'whatsapp',
       });
+    });
+
+    it('records the sent list as a WhatsApp showing of each job, after the job templates are queued', async () => {
+      mockListMatchedJobsForWorker.mockResolvedValue([
+        { id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr' },
+        { id: 'job-2', title: 'Plumber', company: 'XYZ', location: 'El Paso', pay: '$22/hr' },
+      ]);
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-jobs-seen' }] }) // claim
+        .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'idle', user_id: 'user-1' })] })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation recent_jobs
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT template outbox job 1
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT template outbox job 2
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({ MessageSid: 'SM-jobs-seen', From: 'whatsapp:+15125551234', Body: 'Trabajos' }),
+        {} as any,
+        {} as any,
+      );
+
+      expect(mockRecordWhatsAppImpressions).toHaveBeenCalledTimes(1);
+      expect(mockRecordWhatsAppImpressions).toHaveBeenCalledWith(expect.objectContaining({ query: mockQuery }), ['job-1', 'job-2'], null);
+      const lastTemplateInsert = Math.max(...mockQuery.mock.calls
+        .map(([sql], i) => (/INSERT INTO whatsapp_outbox/i.test(String(sql)) ? mockQuery.mock.invocationCallOrder[i] : -1)));
+      const commit = mockQuery.mock.invocationCallOrder[mockQuery.mock.calls.findIndex(([sql]) => sql === 'COMMIT')];
+      const recorded = mockRecordWhatsAppImpressions.mock.invocationCallOrder[0];
+      expect(recorded).toBeGreaterThan(lastTemplateInsert);
+      expect(recorded).toBeLessThan(commit);
     });
 
     it('filters the jobs list to the worker preferred cities', async () => {
@@ -4567,6 +4563,7 @@ describe('v2 routing branch', () => {
       TWILIO_STATUS_CALLBACK_URL: 'https://callbacks.example.test/prod/whatsapp/status-callback',
       DB_SECRET_ARN: 'arn:db',
       REQUIRED_TOS_VERSION: '1.0',
+      ADMIN_BASE_URL: 'https://admin.example.test',
     };
 
     mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });

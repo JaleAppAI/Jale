@@ -1,8 +1,23 @@
 // Verifies every Content Template SID in the jale/whatsapp/twilio secret
-// against Twilio's Content API. Employer-message templates (the only ones
-// with NO freeform fallback — outbox.ts throws instead) must exist AND be
-// WhatsApp-approved; everything else is reported informationally. This is
-// step 0/5 of the employer-messaging runbook.
+// against Twilio's Content API. Three groups must exist AND be WhatsApp-approved:
+//   - the employer-message templates, which have NO freeform fallback
+//     (outbox.ts throws instead);
+//   - the v2 admin support-reply templates, the only way an admin reply
+//     reaches a worker outside the 24-hour window (the admin dispatcher holds
+//     the reply until the worker writes or the template is approved);
+//   - since sprint 28, the web completion pair, the only way that line
+//     reaches a worker outside the 24-hour window.
+// The v2 support replies and the web completion pair must also be filed by
+// WhatsApp under the UTILITY category: they carry transactional messages, and
+// a template filed as MARKETING is not one. For the employer templates a
+// category other than UTILITY is a notice rather than a failure.
+// The unversioned admin_support_reply_<lang> keys must not be mapped. The
+// one exception is `beforeDeploy` (`--verify-templates --before-deploy`): the
+// release before the window-aware dispatcher still sends them, so until that
+// deploy a mapped one is a notice rather than a failure, and after it they are
+// removed with `seed-whatsapp-twilio-templates.mjs --unset-template <key>`.
+// Everything else is reported informationally. This is step 0/5 of the
+// employer-messaging runbook.
 import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 
 export interface TemplateVerification {
@@ -28,6 +43,11 @@ export interface TemplateVerification {
 export interface VerifyTemplatesResult {
   rows: TemplateVerification[];
   failures: string[];
+  /**
+   * Reported but not failing: a retired key still mapped (under
+   * `beforeDeploy`), and an employer template whose category is not UTILITY.
+   */
+  notices: string[];
 }
 
 const EMPLOYER_PREFIX = 'employer_message_';
@@ -37,12 +57,45 @@ const REQUIRED_EMPLOYER_KEYS = [
   'employer_message_resume_es',
   'employer_message_resume_en',
 ] as const;
+const REQUIRED_SUPPORT_REPLY_KEYS = [
+  'admin_support_reply_v2_es',
+  'admin_support_reply_v2_en',
+] as const;
+/** Sprint 28 (F28): the web completion line outside the 24-hour window. */
+const REQUIRED_WEB_COMPLETION_KEYS = [
+  'application_web_completed_es',
+  'application_web_completed_en',
+] as const;
+const REQUIRED_KEYS: ReadonlySet<string> = new Set([
+  ...REQUIRED_EMPLOYER_KEYS,
+  ...REQUIRED_SUPPORT_REPLY_KEYS,
+  ...REQUIRED_WEB_COMPLETION_KEYS,
+]);
+/** Must be filed as UTILITY: a non-UTILITY category, or none, fails the run. */
+const UTILITY_REQUIRED_KEYS: ReadonlySet<string> = new Set([
+  ...REQUIRED_SUPPORT_REPLY_KEYS,
+  ...REQUIRED_WEB_COMPLETION_KEYS,
+]);
+const UTILITY_CATEGORY = 'UTILITY';
+/** Superseded by the v2 pair; never to be mapped. */
+const RETIRED_SUPPORT_REPLY_KEYS = ['admin_support_reply_es', 'admin_support_reply_en'] as const;
+
+/** Must exist and be approved: the employer templates, the v2 support replies and the web completion pair. */
+function mustBeApproved(key: string): boolean {
+  return key.startsWith(EMPLOYER_PREFIX) || REQUIRED_KEYS.has(key);
+}
 
 export async function verifyTwilioTemplates(deps: {
   fetchImpl?: typeof fetch;
   client?: SecretsManagerClient;
   secretId?: string;
   region?: string;
+  /**
+   * Run before the deploy that retires RETIRED_SUPPORT_REPLY_KEYS: a mapped
+   * retired key becomes a notice instead of a failure. Every other rule is
+   * unchanged.
+   */
+  beforeDeploy?: boolean;
 } = {}): Promise<VerifyTemplatesResult> {
   const fetchImpl = deps.fetchImpl ?? fetch;
   const region = deps.region ?? process.env.AWS_REGION ?? 'us-east-2';
@@ -64,16 +117,28 @@ export async function verifyTwilioTemplates(deps: {
 
   const rows: TemplateVerification[] = [];
   const failures: string[] = [];
+  const notices: string[] = [];
 
-  for (const required of REQUIRED_EMPLOYER_KEYS) {
+  for (const required of REQUIRED_KEYS) {
     if (!templates[required]) failures.push(`${required}: missing from the secret templates map`);
+  }
+  for (const retired of RETIRED_SUPPORT_REPLY_KEYS) {
+    if (!templates[retired]) continue;
+    if (deps.beforeDeploy) {
+      notices.push(
+        `${retired}: still mapped, which the current release needs; remove after the deploy with `
+        + `seed-whatsapp-twilio-templates.mjs --unset-template ${retired}`,
+      );
+    } else {
+      failures.push(`${retired}: must not be mapped (admin replies use admin_support_reply_v2_<lang>)`);
+    }
   }
 
   for (const [key, sid] of Object.entries(templates)) {
     const contentRes = await fetchImpl(`https://content.twilio.com/v1/Content/${sid}`, { headers });
     if (!contentRes.ok) {
       rows.push({ key, sid, exists: false, whatsappStatus: null, whatsappCategory: null });
-      if (key.startsWith(EMPLOYER_PREFIX)) {
+      if (mustBeApproved(key)) {
         failures.push(`${key}: Content SID not found (HTTP ${contentRes.status})`);
       }
       continue;
@@ -89,10 +154,18 @@ export async function verifyTwilioTemplates(deps: {
       whatsappCategory = body?.whatsapp?.category ?? null;
     }
     rows.push({ key, sid, exists: true, whatsappStatus, whatsappCategory });
-    if (key.startsWith(EMPLOYER_PREFIX) && whatsappStatus !== 'approved') {
+    if (mustBeApproved(key) && whatsappStatus !== 'approved') {
       failures.push(`${key}: WhatsApp approval status is '${whatsappStatus ?? 'unknown'}' (must be 'approved')`);
+    }
+    if (whatsappCategory !== UTILITY_CATEGORY) {
+      const category = whatsappCategory ?? 'unknown';
+      if (UTILITY_REQUIRED_KEYS.has(key)) {
+        failures.push(`${key}: WhatsApp category is '${category}' (must be '${UTILITY_CATEGORY}')`);
+      } else if (key.startsWith(EMPLOYER_PREFIX)) {
+        notices.push(`${key}: WhatsApp category is '${category}', not '${UTILITY_CATEGORY}'`);
+      }
     }
   }
 
-  return { rows, failures };
+  return { rows, failures, notices };
 }

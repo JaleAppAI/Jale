@@ -243,6 +243,14 @@ jobs:
           JALE_DB_TEST_PR_HEAD: ${{ github.event.pull_request.head.sha }}
         run: bash infra/db/local/bootstrap-testbed.sh --ephemeral --ref none --bare --url-var JALE_TEST_UPGRADE_DATABASE_URL -- bash infra/scripts/run-whatsapp-v2-db-tests.sh --suite test/unit/db/migrations/billing-034-upgrade.test.ts
 
+      - name: Run employer organizations upgrade suite (bare cluster)
+        if: ${{ !cancelled() && matrix.profile == 'standard' }}
+        shell: bash
+        env:
+          JALE_DB_TEST_RESULTS: ${{ runner.temp }}/db-results/employer-organizations-118-upgrade.json
+          JALE_DB_TEST_PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: bash infra/db/local/bootstrap-testbed.sh --ephemeral --ref none --bare --url-var JALE_TEST_UPGRADE_DATABASE_URL -- bash infra/scripts/run-whatsapp-v2-db-tests.sh --suite test/unit/db/migrations/employer-organizations-118-upgrade.test.ts
+
       - name: Setup admin dependencies
         if: ${{ !cancelled() && matrix.profile == 'standard' }}
         uses: ./.github/actions/setup-node-cache

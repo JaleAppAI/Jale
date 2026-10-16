@@ -15,8 +15,8 @@ let poolPromise: Promise<Pool> | undefined;
 
 function readRdsCaBundle(): string | undefined {
   const candidates = [
-    path.join(process.cwd(), 'rds-ca-bundle.pem'),
-    path.join(process.cwd(), 'infra', 'lambda', 'lib', 'rds-ca-bundle.pem'),
+    path.join(/*turbopackIgnore: true*/ process.cwd(), 'rds-ca-bundle.pem'),
+    path.join(/*turbopackIgnore: true*/ process.cwd(), 'infra', 'lambda', 'lib', 'rds-ca-bundle.pem'),
   ];
 
   for (const candidate of candidates) {

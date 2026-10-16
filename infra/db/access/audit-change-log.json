@@ -285,7 +285,8 @@
       "created_at": "A timestamp.",
       "updated_at": "A timestamp.",
       "resolved_at": "A timestamp.",
-      "status_changed_at": "A timestamp: when the case entered its status (migration 117)."
+      "status_changed_at": "A timestamp: when the case entered its status (migration 117).",
+      "case_number": "The case's display number, assigned once when the case is created (migration 122); no personal data."
     },
     "public.admin_users": {
       "id": "The record key, kept in record_ids.",
@@ -319,7 +320,15 @@
       "details_completed_at": "A timestamp.",
       "hired_at": "A timestamp.",
       "hired_seen_at": "A timestamp.",
-      "hired_ack_at": "A timestamp."
+      "hired_ack_at": "A timestamp.",
+      "hire_start_date": "Start details the employer gives a hired worker, shown to that worker; not an answer.",
+      "hire_report_location": "Start details the employer gives a hired worker, shown to that worker; not an answer.",
+      "hire_contact_name": "Start details the employer gives a hired worker, shown to that worker; not an answer.",
+      "hire_contact_phone": "Start details the employer gives a hired worker, shown to that worker; not an answer.",
+      "hire_notes": "Start details the employer gives a hired worker, shown to that worker; not an answer.",
+      "hire_details_updated_at": "A timestamp.",
+      "hire_details_nudged_at": "A timestamp.",
+      "hire_details_reminded_at": "A timestamp."
     },
     "public.subscriptions": {
       "id": "The record key, kept in record_ids.",
@@ -393,6 +402,14 @@
     "public.legal_consent_log": "Consent records, already append-only.",
     "public.subscription_status_history": "A capture table that already records the subscription status and plan.",
     "public.worker_identity_challenge_events": "A capture table that already records identity challenges.",
-    "public.worker_identity_challenges": "Identity challenges; their capture table records them."
+    "public.worker_identity_challenges": "Identity challenges; their capture table records them.",
+    "public.job_status_events": "A capture table that already records the job status changes billing makes.",
+    "public.admin_trusted_devices": "Trusted-browser windows, kept as device key hashes; the sign-in record names a sign-in that used one.",
+    "public.support_case_media": "Support-case attachments, written only by the WhatsApp bot through a definer; the case's timeline event records each one, and the files expire after 90 days.",
+    "public.admin_inbox_requests": "Retry keys for the Inbox actions, written only through a definer; the Inbox action record records each action.",
+    "public.identity_lockout_resets": "Lockout resets; the Inbox action record and the case's lockout_reset event record each one.",
+    "public.signup_attribution": "A capture table that already records where each account's signup started.",
+    "public.worker_job_views": "A capture table that already records the job pages signed-in workers open.",
+    "public.referral_funnel_daily": "A capture table that already records daily referral counts; it names no account."
   }
 }

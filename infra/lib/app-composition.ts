@@ -460,7 +460,7 @@ export function buildJaleApp(app: cdk.App, options: JaleAppOptions = {}): void {
     hostedZoneId: adminHostedZoneId,
   });
 
-  new AdminStack(app, 'JaleAdminStack', {
+  const adminStack = new AdminStack(app, 'JaleAdminStack', {
     env,
     crossRegionReferences: true,
     domainName: adminDomainName,
@@ -471,6 +471,9 @@ export function buildJaleApp(app: cdk.App, options: JaleAppOptions = {}): void {
     adminDbSecret: database.adminConsoleDbSecret,
     reportImagesBucket: reports.imagesBucket,
     reportImagesKey: reports.imagesKey,
+    // Attachments workers send in WhatsApp support mode; the console reads them.
+    supportMediaBucket: whatsapp.supportMediaBucket,
+    supportMediaKey: whatsapp.supportMediaKey,
     certificate: adminCert.certificate,
     webAclArn: adminCert.webAclArn,
     // The same monitored ops topic the other stacks' alarms use.
@@ -517,6 +520,10 @@ export function buildJaleApp(app: cdk.App, options: JaleAppOptions = {}): void {
       employerPoolId: ctx('employerPoolId', 'JALE_EMPLOYER_POOL_ID'),
       employerClientId: ctx('employerClientId', 'JALE_EMPLOYER_CLIENT_ID'),
       whatsappBusinessNumber,
+      // The admin distribution's 5xx alarm lives in this us-east-1 stack, where
+      // CloudFront publishes its metrics. With skipFrontend there is no such
+      // alarm.
+      adminDistributionId: adminStack.distribution.distributionId,
       crossRegionReferences: true,
     });
   }

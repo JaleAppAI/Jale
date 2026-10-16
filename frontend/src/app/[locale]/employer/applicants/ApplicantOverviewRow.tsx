@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useFormatter, useTranslations } from 'next-intl';
+import { useFormatter, useLocale, useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useConversationDrawer } from '@/contexts/ConversationDrawerContext';
@@ -12,11 +12,15 @@ import { MatchScoreBadge } from '@/components/ui/match-signals';
 import { Select } from '@/components/ui/select';
 import { useToast } from '@/components/ui/toast';
 import { initialsFor } from '@/components/employer/ConversationThread';
+import { HireDetailsForm } from '@/components/employer/HireDetailsForm';
 import { TrustScorePill } from '@/app/[locale]/employer/jobs/[id]/TrustScorePill';
+import { formatStartDateWeekdayShort } from '@/lib/date';
 import { statusSelectOptions } from '@/lib/hire-gate';
+import { hasHireDetails } from '@/lib/hire-details';
 import { ApiError } from '@/lib/api/errors';
 import { updateApplicantStatus } from '@/lib/api/employer';
 import type { ApplicantOverviewItem } from '@/lib/api/employer';
+import type { HireDetails } from '@/lib/api/worker';
 import type { ApplicationStatus } from '@/lib/status';
 
 const MAX_SKILL_BADGES = 4;
@@ -64,7 +68,14 @@ function normalizeAvailabilityKey(value: string): string | null {
  * catalogues — so the two surfaces cannot describe a worker differently.
  * Everything deeper still lives on the profile page this row links to.
  */
-export function ApplicantOverviewRow({ item }: { item: ApplicantOverviewItem }) {
+export function ApplicantOverviewRow({
+  item,
+  onHireDetailsSaved,
+}: {
+  item: ApplicantOverviewItem;
+  /** Tells the list a hire's start details were saved (the page's banner count). */
+  onHireDetailsSaved?: (applicationId: string, details: HireDetails | null) => void;
+}) {
   const t = useTranslations('employer_applicants');
   const tShared = useTranslations('employer_dashboard');
   const tListing = useTranslations('employer_job_listing');
@@ -158,6 +169,28 @@ export function ApplicantOverviewRow({ item }: { item: ApplicantOverviewItem }) 
   // count the toggle names, so it is measured against the CAP either way.
   const hiddenSkills = Math.max(item.skills.length - MAX_SKILL_BADGES, 0);
   const shownSkills = skillsExpanded ? item.skills : item.skills.slice(0, MAX_SKILL_BADGES);
+
+  const tHire = useTranslations('employer_applicants.hire_details');
+  const locale = useLocale();
+  /**
+   * Details this row SAVED, while the list still holds the old value.
+   * `undefined` = nothing saved in this row yet (fall back to the list's
+   * value); `null` = saved as empty, which hides the list's old value.
+   */
+  const [savedDetails, setSavedDetails] = useState<HireDetails | null | undefined>(undefined);
+  const [hireFormOpen, setHireFormOpen] = useState(false);
+  // The type requires the K4.2 fields; this is for a frontend deployed ahead
+  // of the handler, whose save would fail (Review Focus 4).
+  const hireDetailsSupported = 'hire_details' in item || 'hire_details_needed' in item;
+  const hireDetails = savedDetails !== undefined ? savedDetails : item.hire_details ?? null;
+  const showsDetails = hasHireDetails(hireDetails);
+  const startsOn = showsDetails ? formatStartDateWeekdayShort(hireDetails?.start_date ?? null, locale) : null;
+  const detailsSummary = showsDetails
+    ? [
+      startsOn ? tHire('summary_starts', { date: startsOn }) : null,
+      hireDetails?.report_location ? tHire('summary_location', { location: hireDetails.report_location }) : null,
+    ].filter((part): part is string => part !== null).join(' · ') || tHire('summary_saved')
+    : null;
 
   return (
     <div className="flex flex-wrap items-center gap-3 px-4 py-3">
@@ -284,6 +317,40 @@ export function ApplicantOverviewRow({ item }: { item: ApplicantOverviewItem }) 
           {tShared('applicants.view_profile')}
         </Link>
       </div>
+
+      {status === 'hired' && hireDetailsSupported ? (
+        <div className="flex basis-full flex-wrap items-center gap-2 border-t border-dashed border-[var(--jale-divider)] pt-2">
+          <p
+            className={[
+              'min-w-0 flex-1 text-xs font-semibold [overflow-wrap:anywhere]',
+              showsDetails ? 'text-[var(--jale-ink)]' : 'text-[var(--jale-warning-text)]',
+            ].join(' ')}
+          >
+            {showsDetails ? detailsSummary : tHire('needed', { name })}
+          </p>
+          <Button
+            type="button"
+            variant={showsDetails ? 'ghost' : 'outline'}
+            onClick={() => setHireFormOpen(true)}
+          >
+            {showsDetails ? tHire('edit') : tHire('add')}
+          </Button>
+        </div>
+      ) : null}
+      {hireFormOpen ? (
+        <HireDetailsForm
+          open
+          jobId={item.job_id}
+          workerId={item.worker_id}
+          workerName={name}
+          initial={hireDetails}
+          onClose={() => setHireFormOpen(false)}
+          onSaved={(details) => {
+            setSavedDetails(details);
+            onHireDetailsSaved?.(item.application_id, details);
+          }}
+        />
+      ) : null}
     </div>
   );
 }

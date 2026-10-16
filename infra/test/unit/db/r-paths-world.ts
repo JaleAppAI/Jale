@@ -96,6 +96,21 @@ export class World {
         [id, opts.companyName],
       );
     }
+    // Like a real sign-up (post-confirmation -> employer_ensure_organization):
+    // every employer is the active owner of a one-person company.
+    const org = (await this.su.query<{ id: string }>(
+      `INSERT INTO organizations (name) VALUES ($1) RETURNING id`,
+      [opts.companyName ?? opts.fullName ?? 'Fixture Employer'],
+    )).rows[0].id;
+    await this.su.query(
+      `INSERT INTO organization_members (user_id, organization_id, role, status) VALUES ($1, $2, 'owner', 'active')`,
+      [id, org],
+    );
+    // Extra cleanups run before the users are deleted, so remove the members first.
+    this.onCleanup(async () => {
+      await this.su.query(`DELETE FROM organization_members WHERE organization_id = $1`, [org]);
+      await this.su.query(`DELETE FROM organizations WHERE id = $1`, [org]);
+    });
     return { id, sub };
   }
 

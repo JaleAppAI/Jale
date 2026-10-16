@@ -29,8 +29,10 @@ export async function handler(_event: ScheduledEvent): Promise<void> {
   // `fail_worker_intent_outbox` and never lands in `result.failed` -- and with
   // `result.failed > 0` as the condition, an application notification that
   // aged out was the one terminal outcome that emitted no failure metric at
-  // all and left WhatsAppWorkerIntentFailures silent. `deferred` stays out of
-  // this sum: a parked row is still going to be delivered.
+  // all and left WhatsAppWorkerIntentFailures silent. `expired` also carries
+  // the rows migration 126's expiry pass ended before the lease (their
+  // intent's expires_at passed before they were sent). `deferred` stays out
+  // of this sum: a parked row is still going to be delivered.
   const terminal = result.failed + result.expired;
   if (terminal > 0) {
     console.log(JSON.stringify({ metric: 'WorkerIntentOutboxFailure', count: terminal }));

@@ -23,7 +23,7 @@ describe('support contact', () => {
 
     it('names a keyword the WhatsApp support flow matches', () => {
         const flows = source('../../../../infra/lambda/whatsapp/lib/flows.ts');
-        const matcher = flows.match(/return (\/\^\((?:[a-z|]+)\)\$\/)\.test\(n\)/);
+        const matcher = flows.match(/return (\/\^\((?:[a-z|]+)\)\$\/)\.test\(/);
         expect(matcher).not.toBeNull();
         const pattern = new RegExp(matcher![1].slice(1, -1));
         expect(pattern.test(SUPPORT_CONTACT.whatsappKeyword)).toBe(true);

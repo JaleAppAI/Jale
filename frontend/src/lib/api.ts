@@ -1,5 +1,5 @@
-import { ApiError } from './api/errors';
-import { getAuthBridge } from './auth-bridge';
+import { ApiError, SESSION_REFRESH_UNAVAILABLE } from './api/errors';
+import { getAuthBridge, type RefreshOutcome } from './auth-bridge';
 import { recordApiError, recordApiErrorResponse, recordFetch } from './report/context';
 
 export class LegalWallError extends Error {
@@ -162,21 +162,33 @@ async function sendApiRequest(
     // failures would recurse.
     if (res.status === 401 && token && retryOn401) {
         const bridge = getAuthBridge();
-        let refreshedToken: string | null = null;
+        // No bridge means there is no way to renew: a plain expiry, which is
+        // the pre-bridge behaviour.
+        let outcome: RefreshOutcome | null = { status: 'refused' };
         if (bridge) {
             try {
-                refreshedToken = await bridge.refreshIdToken();
+                outcome = await bridge.refreshIdToken();
             } catch {
-                refreshedToken = null;
+                // The renewal got no answer (offline, timeout). Whether the
+                // session is still good is unknown, so it is kept, and the
+                // caller gets the ordinary retryable transport error.
+                throw new ApiError(0, 'offline');
             }
         }
 
-        if (typeof refreshedToken === 'string' && refreshedToken.length > 0) {
-            res = await requestWithProvisioningRetry(refreshedToken);
+        // The refresh endpoint answered without a verdict on the token (5xx,
+        // unreadable body). Same rule: keep the session and let the page show
+        // its retry state.
+        if (outcome?.status === 'unavailable') {
+            throw new ApiError(503, SESSION_REFRESH_UNAVAILABLE);
         }
 
-        // Still 401 after the replay (or no refresh was possible): the session
-        // is genuinely gone. Never refresh a second time.
+        if (outcome?.status === 'ok' && typeof outcome.token === 'string' && outcome.token.length > 0) {
+            res = await requestWithProvisioningRetry(outcome.token);
+        }
+
+        // Refused, an answer this layer cannot read, or still 401 after the
+        // replay: the session is genuinely gone. Never refresh a second time.
         if (res.status === 401) {
             try {
                 bridge?.onSessionExpired();

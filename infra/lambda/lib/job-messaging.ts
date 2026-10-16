@@ -529,7 +529,11 @@ export async function queueConversationMessageFromEmployer(
   } else {
     // R7 dedupe: one un-actioned invite/resume template at a time. A new
     // template is queued only when none has been sent since the worker's
-    // last action (acceptance or last reply) on this conversation.
+    // last action on this conversation: acceptance, last WhatsApp reply, or
+    // the newest inbound message of any kind. The last counts a hired
+    // worker's web message (F19), which opens no WhatsApp window and so
+    // never moves last_worker_message_at; without it an employer reply after
+    // a web message would never be announced.
     // Permanently-failed templates (attempt cap reached, never delivered)
     // are excluded — a dead invite must not suppress new ones forever.
     const pendingInvite = await client.query<{ exists: boolean }>(
@@ -539,7 +543,9 @@ export async function queueConversationMessageFromEmployer(
             AND send_kind = 'template'
             AND NOT (status = 'failed' AND attempt_count >= ${MAX_SEND_ATTEMPTS})
             AND created_at > COALESCE(
-                  (SELECT GREATEST(jc.accepted_at, jc.last_worker_message_at)
+                  (SELECT GREATEST(jc.accepted_at, jc.last_worker_message_at,
+                                   (SELECT max(m.created_at) FROM job_conversation_messages m
+                                     WHERE m.conversation_id = jc.id AND m.direction = 'inbound'))
                      FROM job_conversations jc WHERE jc.id = $1),
                   '-infinity'::timestamptz)
        ) AS exists`,

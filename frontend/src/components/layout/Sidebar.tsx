@@ -53,6 +53,12 @@ type SidebarProps = {
      * Employer-only by construction -- no worker nav item carries the badge.
      */
     unreadCount?: number;
+    /**
+     * Applications that need the worker (F27), badged on the worker
+     * Applications item. Worker-only by construction, as `unreadCount` is
+     * employer-only.
+     */
+    attentionCount?: number;
 };
 
 /**
@@ -61,7 +67,7 @@ type SidebarProps = {
  * rather than a literal so the dark theme can deepen it; the white-on-navy
  * foreground is correct in both themes and stays literal.
  */
-export function Sidebar({ role, homeHref, chip, unreadCount = 0 }: SidebarProps) {
+export function Sidebar({ role, homeHref, chip, unreadCount = 0, attentionCount = 0 }: SidebarProps) {
     const t = useTranslations('employer_dashboard');
     const tShell = useTranslations('app_shell');
     const pathname = usePathname();
@@ -85,7 +91,7 @@ export function Sidebar({ role, homeHref, chip, unreadCount = 0 }: SidebarProps)
                 {role === 'employer' ? (
                     <EmployerNav t={t} pathname={pathname} unreadCount={unreadCount} />
                 ) : (
-                    <WorkerNav navLabel={tShell('worker_nav_main')} pathname={pathname} />
+                    <WorkerNav navLabel={tShell('worker_nav_main')} pathname={pathname} attentionCount={attentionCount} />
                 )}
             </nav>
         </aside>
@@ -184,12 +190,15 @@ function NavLink({
     active,
     label,
     badgeCount = 0,
+    badgeLabel,
 }: {
     item: NavItem;
     active: boolean;
     label: string;
     /** Rendered as a pill after the label. Zero renders nothing at all. */
     badgeCount?: number;
+    /** What a screen reader hears for the pill; see `UnreadBadge`. */
+    badgeLabel?: string;
 }) {
     return (
         <Link
@@ -210,7 +219,7 @@ function NavLink({
             {/* `min-w-0 flex-1` so a long label truncates against the badge
                 rather than pushing it off the 280px rail. */}
             <span className="min-w-0 flex-1 truncate">{label}</span>
-            <UnreadBadge count={badgeCount} tone="rail" />
+            <UnreadBadge count={badgeCount} tone="rail" srLabel={badgeLabel} />
         </Link>
     );
 }
@@ -223,15 +232,26 @@ function NavSectionLabel({ children }: { children: string }) {
     );
 }
 
-function WorkerNav({ navLabel, pathname }: { navLabel: string; pathname: string }) {
+function WorkerNav({ navLabel, pathname, attentionCount }: { navLabel: string; pathname: string; attentionCount: number }) {
     const tHeader = useTranslations('header');
+    const tShell = useTranslations('app_shell');
     return (
         <>
             <NavSectionLabel>{navLabel}</NavSectionLabel>
             <div className="space-y-1">
-                {workerPrimaryNav.map((item) => (
-                    <NavLink key={item.key} item={item} active={isNavItemActive(item, pathname)} label={tHeader(item.labelKey)} />
-                ))}
+                {workerPrimaryNav.map((item) => {
+                    const badged = item.key === 'applications';
+                    return (
+                        <NavLink
+                            key={item.key}
+                            item={item}
+                            active={isNavItemActive(item, pathname)}
+                            label={tHeader(item.labelKey)}
+                            badgeCount={badged ? attentionCount : 0}
+                            badgeLabel={badged ? tShell('applications_attention_badge', { count: attentionCount }) : undefined}
+                        />
+                    );
+                })}
             </div>
         </>
     );

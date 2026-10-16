@@ -106,12 +106,13 @@ export function confirmErrorKey(err: unknown): string {
  * valid phone number" — on a step whose only field is an email address, about
  * a password the employer was trying to reset.
  *
- * The refusal is not an unlucky wording either: it is the whole story. The
- * employer pool recovers phone-first, and an UNCONFIRMED employer has no
- * verified email, so a reset can never succeed for them no matter how many
- * times they ask. The recovery that DOES work is the confirmation-code flow
- * `EmployerAuthForm` already runs for `UserNotConfirmedException`, which is
- * why this maps to the same key: the form intercepts it and starts that flow.
+ * The refusal means "no verified contact", and two different accounts give it:
+ * an UNCONFIRMED employer (no verified email yet), and a CONFIRMED one whose
+ * email was never verified. The recovery that works for the first is the
+ * confirmation-code flow `EmployerAuthForm` already runs for
+ * `UserNotConfirmedException`, which is why this maps to the same key; the
+ * form tells the second apart by the resend answering "already confirmed",
+ * and then says `errors.reset_unavailable` instead of offering the reset again.
  *
  * Only the code decides. Nothing sent to `ForgotPassword` but the address can
  * be an invalid parameter (a malformed one comes back as

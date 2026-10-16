@@ -8,6 +8,7 @@ import { Icon } from '@/components/ui/icon';
 import { Modal } from '@/components/ui/modal';
 import { ConfettiBurst } from '@/components/worker/ConfettiBurst';
 import { formatStartDateWeekday } from '@/lib/date';
+import { hasHireDetails } from '@/lib/hire-details';
 import { hireTradePhrase, type Translator } from '@/lib/job-detail-display';
 import { formatPay } from '@/lib/pay';
 import type { ApplicationHire } from '@/lib/api/worker';
@@ -110,7 +111,9 @@ export function HiredCelebrationModal({
 
   // Date-only value (`YYYY-MM-DD`), so the UTC-pinned formatter -- an instant
   // formatter would tell a worker in Mexico their first day is the day before.
-  const startDate = formatStartDateWeekday(hire.start_date, locale);
+  const details = hasHireDetails(hire.details) ? hire.details : null;
+  const startDate = formatStartDateWeekday(details?.start_date ?? hire.start_date, locale);
+  const location = details?.report_location ?? hire.location;
   // Localized from the structured columns, NOT `hire.pay` verbatim: that one
   // is English free text and may be the "Pay not specified" sentinel. Null
   // means there is genuinely no rate to state, and the fact is dropped.
@@ -216,7 +219,7 @@ export function HiredCelebrationModal({
           <Fact label={t('modal.start_date')} muted={startDate === null}>
             {startDate ?? t('modal.start_date_tbc')}
           </Fact>
-          {hire.location ? <Fact label={t('modal.location')}>{hire.location}</Fact> : null}
+          {location ? <Fact label={t('modal.location')}>{location}</Fact> : null}
           {pay ? <Fact label={t('modal.pay')}>{pay}</Fact> : null}
           {hire.shift_schedule ? (
             <Fact label={t('modal.schedule')}>{hire.shift_schedule}</Fact>
@@ -225,7 +228,7 @@ export function HiredCelebrationModal({
 
         {/* Says what happens next AND what to do if it does not, because the
             most common failure of a hire is silence afterwards. */}
-        <p className="text-[13px] text-[var(--jale-ink)]">{t('modal.body')}</p>
+        <p className="text-[13px] text-[var(--jale-ink)]">{details ? t('modal.body_details') : t('modal.body')}</p>
 
         {/* Eight characters, not the whole uuid: enough for a worker to quote
             it over WhatsApp, short enough to read aloud. */}

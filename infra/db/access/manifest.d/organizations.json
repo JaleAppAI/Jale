@@ -1,0 +1,117 @@
+{
+  "tables": {
+    "public.organization_members": {
+      "classification": "access",
+      "rls": { "enabled": true, "forced": true },
+      "reason": "Which company each employer login belongs to, and as what (migration 118). The helper role jale_rls_relationship_reader also holds SELECT on four columns (user_id, organization_id, role, status) for the jale_internal org helpers; helper roles are not listed under access.",
+      "access": {
+        "jale_api": {
+          "select": ["user_id", "organization_id", "role", "status", "joined_at"],
+          "reason": "resolveEmployerActor reads the caller's membership and, for an owner, the company's member ids."
+        }
+      }
+    },
+    "public.organization_invites": {
+      "classification": "excluded",
+      "rls": { "enabled": true, "forced": true },
+      "reason": "Foreman invites; created empty in migration 118, readers and writers arrive with Phase 3.",
+      "access": {}
+    }
+  },
+  "policies": {
+    "public.organization_members.organization_members_self_read": {
+      "command": "SELECT", "permissive": true, "to": ["jale_api"], "origin": "existing",
+      "using": "(user_id = ( SELECT users.id\n   FROM users\n  WHERE (users.cognito_sub = current_setting('app.current_user_id'::text, true))))",
+      "with_check": null,
+      "reason": "A login reads its own membership row."
+    },
+    "public.organization_members.organization_members_owner_read": {
+      "command": "SELECT", "permissive": true, "to": ["jale_api"], "origin": "existing",
+      "using": "(user_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))",
+      "with_check": null,
+      "reason": "An active owner reads every member row of their company."
+    },
+    "public.organization_members.organization_members_relationship_reader": {
+      "command": "SELECT", "permissive": true, "to": ["jale_rls_relationship_reader"], "origin": "existing",
+      "using": "true",
+      "with_check": null,
+      "reason": "The org helpers read every membership row (four columns)."
+    },
+    "public.organization_members.organization_members_name_lookup": {
+      "command": "SELECT", "permissive": true, "to": ["jale_admin"], "origin": "existing",
+      "using": "(current_setting('app.employer_name_lookup'::text, true) = 'on'::text)",
+      "with_check": null,
+      "reason": "employer_display_name finds a member's company owner behind the 031 name-lookup gate."
+    },
+    "public.organization_members.organization_members_org_bootstrap": {
+      "command": "ALL", "permissive": true, "to": ["jale_admin"], "origin": "existing",
+      "using": "(current_setting('app.org_bootstrap'::text, true) = 'on'::text)",
+      "with_check": "(current_setting('app.org_bootstrap'::text, true) = 'on'::text)",
+      "reason": "Gate opened only inside employer_ensure_organization, the 118 back-fill and the 119 catch-up back-fill."
+    }
+  },
+  "functions": {
+    "jale_internal.is_org_owner_of(text, uuid)": {
+      "owner": "jale_rls_relationship_reader", "security": "definer", "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_caller_id text, p_member_id uuid", "returns": "boolean",
+      "execute": ["jale_admin", "jale_api"],
+      "created_by": "118",
+      "reason": "Single-row owner predicate: is the caller the active owner of this member's company."
+    },
+    "jale_internal.shares_org_with(text, uuid)": {
+      "owner": "jale_rls_relationship_reader", "security": "definer", "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_caller_id text, p_member_id uuid", "returns": "boolean",
+      "execute": ["jale_admin", "jale_api"],
+      "created_by": "118",
+      "reason": "Single-row same-company predicate: is the caller an active member of this member's company."
+    },
+    "jale_internal.org_owner_scope(text, boolean)": {
+      "owner": "jale_rls_relationship_reader", "security": "definer", "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_caller_id text, p_active_only boolean", "returns": "uuid[]",
+      "execute": ["jale_admin", "jale_api"],
+      "created_by": "118",
+      "reason": "The active owner's company as member ids, evaluated once per statement by the owner row policies."
+    },
+    "jale_internal.org_member_scope(text)": {
+      "owner": "jale_rls_relationship_reader", "security": "definer", "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_caller_id text", "returns": "uuid[]",
+      "execute": ["jale_admin", "jale_api"],
+      "created_by": "118",
+      "reason": "An active member's company as member ids, for company-shared reads (templates, 119)."
+    },
+    "public.employer_ensure_organization(text)": {
+      "owner": "jale_admin", "security": "definer", "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_company_name text", "returns": "uuid",
+      "execute": ["jale_api"],
+      "created_by": "118",
+      "reason": "Post-confirmation creates the new employer's company and owner membership."
+    },
+    "public.jobs_stamp_created_by()": {
+      "owner": "jale_admin", "security": "invoker", "search_path": "pg_catalog, pg_temp",
+      "arguments": "", "returns": "trigger",
+      "execute": [],
+      "created_by": "118",
+      "reason": "Trigger function keeping jobs.created_by_user_id the original poster; firing a trigger checks no EXECUTE right."
+    },
+    "public.job_messages_stamp_sender()": {
+      "owner": "jale_admin", "security": "invoker", "search_path": "pg_catalog, pg_temp",
+      "arguments": "", "returns": "trigger",
+      "execute": [],
+      "created_by": "118",
+      "reason": "Trigger function stamping job_conversation_messages.sender_user_id from the session caller on employer messages, and keeping it on UPDATE; firing a trigger checks no EXECUTE right."
+    }
+  },
+  "table_additions": {
+    "public.organizations": {
+      "policies": {
+        "organizations_org_bootstrap": {
+          "command": "ALL", "permissive": true, "to": ["jale_admin"], "origin": "existing",
+          "using": "(current_setting('app.org_bootstrap'::text, true) = 'on'::text)",
+          "with_check": "(current_setting('app.org_bootstrap'::text, true) = 'on'::text)",
+          "reason": "Gate opened only inside employer_ensure_organization, the 118 back-fill and the 119 catch-up back-fill."
+        }
+      },
+      "reason": "Companies are created by the sign-up bootstrap and the 118 / 119 back-fills."
+    }
+  }
+}

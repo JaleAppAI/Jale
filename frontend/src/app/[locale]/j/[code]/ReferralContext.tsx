@@ -6,6 +6,7 @@ import { useTranslations } from 'next-intl';
 import { Skeleton } from '@/components/ui/skeleton';
 import { getReferrerContext, sendOpenBeacon } from '@/lib/api/publicJob';
 import type { PublicJobReferrerContext } from '@/lib/api/publicJob';
+import { captureSignupSource } from '@/lib/signup-source';
 
 interface ReferralContextProps {
   code: string;
@@ -68,6 +69,7 @@ export function ReferralContext({ code }: ReferralContextProps) {
   const t = useTranslations('public_job');
   const searchParams = useSearchParams();
   const r = searchParams.get('r');
+  const src = searchParams.get('src');
   const [ctx, setCtx] = useState<PublicJobReferrerContext | null>(null);
   const [resolved, setResolved] = useState(false);
   const firedRef = useRef(false);
@@ -78,6 +80,11 @@ export function ReferralContext({ code }: ReferralContextProps) {
     let ignore = false;
 
     sendOpenBeacon(code, r ?? null);
+
+    // Analytics #16 (K3.6): a visitor who signs up after this page is a
+    // shared-link signup. Read HERE, in the client island, so the page itself
+    // never reads searchParams and stays static (ISR). First touch only.
+    captureSignupSource({ src, entry: 'job_link' });
 
     if (r) {
       getReferrerContext(code, r).then((result) => {
@@ -90,7 +97,7 @@ export function ReferralContext({ code }: ReferralContextProps) {
     return () => {
       ignore = true;
     };
-  }, [code, r]);
+  }, [code, r, src]);
 
   if (!ctx) {
     // Only a visit that carries a share tag can ever produce a ribbon, so only

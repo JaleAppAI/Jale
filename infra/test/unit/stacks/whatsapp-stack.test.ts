@@ -10,7 +10,7 @@ import { AuthStack } from '../../../lib/stacks/auth-stack';
 import { ApiStack } from '../../../lib/stacks/api-stack';
 import { LegalStack } from '../../../lib/stacks/legal-stack';
 import { AiStack } from '../../../lib/stacks/ai-stack';
-import { WhatsAppStack } from '../../../lib/stacks/whatsapp-stack';
+import { WhatsAppStack, supportMediaBucketName } from '../../../lib/stacks/whatsapp-stack';
 
 describe('WhatsAppStack', () => {
   let template: Template;
@@ -1048,7 +1048,8 @@ describe('event-driven outbox wake queues', () => {
       // BucketName is a Fn::Join token at synth time (account/region are unresolved),
       // so we assert on Block Public Access as the bucket identity signal instead.
       // The name prefix 'jale-worker-media' is validated by the encryption test below.
-      template.resourceCountIs('AWS::S3::Bucket', 1);
+      // Two since sprint 28: the worker media bucket and the support-media bucket.
+      template.resourceCountIs('AWS::S3::Bucket', 2);
     });
 
     test('Media bucket has Block Public Access enabled', () => {
@@ -1741,6 +1742,155 @@ describe('event-driven outbox wake queues', () => {
       expect(children.map((c: any) => c.Properties.PathPart)).toEqual(['{action}']);
     });
   });
+  // ── Sprint 28: WhatsApp support mode ────────────────────────────
+  describe('support-media bucket', () => {
+    const resourcesOf = (type: string) => template.findResources(type) as Record<string, any>;
+    const supportBucketEntry = () => Object.entries(resourcesOf('AWS::S3::Bucket')).find(([, r]) =>
+      JSON.stringify(r.Properties.BucketName ?? '').includes('jale-support-media-'))!;
+    const processorRoleId = () => {
+      const [, processorFn] = Object.entries(resourcesOf('AWS::Lambda::Function')).find(([, r]) =>
+        /SQS processor/.test(r.Properties?.Description ?? ''))!;
+      return processorFn.Properties.Role['Fn::GetAtt'][0] as string;
+    };
+    const keyIdOf = (bucket: any) =>
+      bucket.Properties.BucketEncryption.ServerSideEncryptionConfiguration[0]
+        .ServerSideEncryptionByDefault.KMSMasterKeyID['Fn::GetAtt'][0] as string;
+    /** Every IAM statement in the stack that names `logicalId`, with the roles it is attached to. */
+    const statementsNaming = (logicalId: string) => Object.values(resourcesOf('AWS::IAM::Policy')).flatMap((p) =>
+      (p.Properties.PolicyDocument.Statement as any[])
+        .filter((st) => JSON.stringify(st.Resource).includes(logicalId))
+        .map((st) => ({
+          roles: (p.Properties.Roles as any[]).map((r) => r.Ref),
+          actions: [st.Action].flat().sort(),
+          resource: st.Resource,
+        })));
+
+    test('supportMediaBucketName() is the account-and-region name the bucket uses', () => {
+      const [, bucket] = supportBucketEntry();
+      expect(bucket).toBeDefined();
+      const stack = new cdk.Stack(new cdk.App(), 'NameProbe');
+      expect(stack.resolve(supportMediaBucketName())).toEqual(bucket.Properties.BucketName);
+      expect(JSON.stringify(bucket.Properties.BucketName)).toContain('AWS::AccountId');
+      expect(JSON.stringify(bucket.Properties.BucketName)).toContain('AWS::Region');
+    });
+
+    test('is KMS-encrypted with a bucket key, unversioned, private, owner-enforced and retained', () => {
+      const [, bucket] = supportBucketEntry();
+      const sse = bucket.Properties.BucketEncryption.ServerSideEncryptionConfiguration[0];
+      expect(sse.ServerSideEncryptionByDefault.SSEAlgorithm).toBe('aws:kms');
+      expect(sse.BucketKeyEnabled).toBe(true);
+      expect(bucket.Properties.VersioningConfiguration).toBeUndefined();
+      expect(bucket.Properties.PublicAccessBlockConfiguration).toEqual({
+        BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true,
+      });
+      expect(bucket.Properties.OwnershipControls).toEqual({ Rules: [{ ObjectOwnership: 'BucketOwnerEnforced' }] });
+      expect(bucket.DeletionPolicy).toBe('Retain');
+      expect(bucket.Properties.CorsConfiguration).toBeUndefined();
+    });
+
+    test('its key rotates and is retained', () => {
+      const [, bucket] = supportBucketEntry();
+      const key = resourcesOf('AWS::KMS::Key')[keyIdOf(bucket)];
+      expect(key.Properties.EnableKeyRotation).toBe(true);
+      expect(key.DeletionPolicy).toBe('Retain');
+    });
+
+    test('refuses plain-HTTP requests', () => {
+      const [bucketId] = supportBucketEntry();
+      const policy = Object.values(resourcesOf('AWS::S3::BucketPolicy'))
+        .find((p) => p.Properties.Bucket.Ref === bucketId);
+      expect(policy.Properties.PolicyDocument.Statement).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          Effect: 'Deny',
+          Action: 's3:*',
+          Condition: { Bool: { 'aws:SecureTransport': 'false' } },
+        }),
+      ]));
+    });
+
+    test('expires support/ objects after 90 days and abandoned multipart uploads after 1 day', () => {
+      const [, bucket] = supportBucketEntry();
+      expect(bucket.Properties.LifecycleConfiguration.Rules).toEqual(expect.arrayContaining([
+        expect.objectContaining({ Prefix: 'support/', ExpirationInDays: 90, Status: 'Enabled' }),
+        expect.objectContaining({ AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 }, Status: 'Enabled' }),
+      ]));
+    });
+
+    test('only the processor may write, only under support/, and it may not read, list or delete', () => {
+      const [bucketId] = supportBucketEntry();
+      const grants = statementsNaming(bucketId);
+      expect(grants).toEqual([{
+        roles: [processorRoleId()],
+        actions: ['s3:PutObject'],
+        resource: { 'Fn::Join': ['', [{ 'Fn::GetAtt': [bucketId, 'Arn'] }, '/support/*']] },
+      }]);
+    });
+
+    // A single-part PutObject under SSE-KMS needs GenerateDataKey and nothing
+    // else; the processor never decrypts or encrypts directly.
+    test('only the processor may use the key, to generate data keys only', () => {
+      const [, bucket] = supportBucketEntry();
+      const keyId = keyIdOf(bucket);
+      expect(statementsNaming(keyId)).toEqual([{
+        roles: [processorRoleId()],
+        actions: ['kms:GenerateDataKey'],
+        resource: { 'Fn::GetAtt': [keyId, 'Arn'] },
+      }]);
+    });
+
+    test('the processor is told the bucket and the admin console origin', () => {
+      const [bucketId] = supportBucketEntry();
+      const [, processorFn] = Object.entries(resourcesOf('AWS::Lambda::Function')).find(([, r]) =>
+        /SQS processor/.test(r.Properties?.Description ?? ''))!;
+      const vars = processorFn.Properties.Environment.Variables;
+      expect(vars.SUPPORT_MEDIA_BUCKET).toEqual({ Ref: bucketId });
+      // No domainName context in this app: the production domain.
+      expect(vars.ADMIN_BASE_URL).toBe('https://admin.jaleapp.ai');
+    });
+  });
+
+  describe('admin reply dispatcher failures', () => {
+    test('a literal filter on the dispatcher log group feeds one alarm on the ops topic', () => {
+      const resources = template.findResources('AWS::Lambda::Function') as Record<string, any>;
+      const [dispatcherId] = Object.entries(resources).find(([, r]) =>
+        /admin outbox dispatcher/.test(r.Properties?.Description ?? ''))!;
+      const logGroupId = (resources[dispatcherId].Properties.LoggingConfig?.LogGroup?.Ref) as string | undefined;
+      const filters = Object.values(template.findResources('AWS::Logs::MetricFilter', {
+        Properties: { FilterPattern: '"AdminOutboxDispatchFailure"' },
+      })) as any[];
+      expect(filters).toHaveLength(1);
+      expect(logGroupId).toBeDefined();
+      expect(filters[0].Properties.LogGroupName).toEqual({ Ref: logGroupId });
+      expect(filters[0].Properties.MetricTransformations).toEqual([
+        expect.objectContaining({ MetricNamespace: 'Jale/WhatsApp', MetricName: 'AdminOutboxDispatchFailures', MetricValue: '1' }),
+      ]);
+      template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+        AlarmName: 'WhatsAppAdminOutboxDispatchFailures',
+        Namespace: 'Jale/WhatsApp',
+        MetricName: 'AdminOutboxDispatchFailures',
+        Statistic: 'Sum',
+        Period: 300,
+        Threshold: 1,
+        EvaluationPeriods: 1,
+        ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+        TreatMissingData: 'notBreaching',
+        AlarmActions: ['arn:aws:sns:us-east-2:123456789012:jale-whatsapp-alarms-test'],
+      });
+    });
+
+    // Only final outcomes page: an attempt that will be retried, and a reply
+    // waiting for a usable template, log their own terms, which nothing
+    // filters (a quoted term matches anywhere in a line, so the terms must
+    // not contain the alarmed one either).
+    test('retries and template waits are never counted', () => {
+      for (const term of ['AdminOutboxDispatchRetry', 'AdminOutboxTemplateUnavailable']) {
+        expect(term).not.toContain('AdminOutboxDispatchFailure');
+        expect(Object.keys(template.findResources('AWS::Logs::MetricFilter', {
+          Properties: { FilterPattern: `"${term}"` },
+        }))).toHaveLength(0);
+      }
+    });
+  });
 });
 
 // ── Task 5: voice-trust-receiver v2 re-entry (transport flag ON) ─────────
@@ -1906,6 +2056,7 @@ describe('WhatsAppStack — publicSiteBaseUrl context override', () => {
         whatsappStatusCallbackUrl:
           'https://callbacks.example.test/prod/whatsapp/status-callback',
         publicSiteBaseUrl: 'https://staging.jaleapp.ai/',
+        domainName: 'example.test',
       },
     });
     const network = new NetworkStack(app, 'TestNetworkStackPublicSite');
@@ -1970,5 +2121,12 @@ describe('WhatsAppStack — publicSiteBaseUrl context override', () => {
       /SQS processor/.test(resource.Properties?.Description ?? '')) as any;
     expect(processor.Properties.Environment.Variables.PUBLIC_SITE_BASE_URL)
       .toBe('https://staging.jaleapp.ai');
+  });
+
+  test('the processor links new support cases to the admin console of -c domainName', () => {
+    const functions = template.findResources('AWS::Lambda::Function');
+    const processor = Object.values(functions).find((resource: any) =>
+      /SQS processor/.test(resource.Properties?.Description ?? '')) as any;
+    expect(processor.Properties.Environment.Variables.ADMIN_BASE_URL).toBe('https://admin.example.test');
   });
 });

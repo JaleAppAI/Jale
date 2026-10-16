@@ -7,7 +7,9 @@ import { AppShell } from '@/components/layout/AppShell';
 import { DashboardPanel } from '@/components/ui/dashboard-panel';
 import { ErrorState } from '@/components/ui/error-state';
 import { DetailPageSkeleton } from '@/components/ui/page-skeletons';
+import { HiredCard } from '@/components/worker/HiredCard';
 import { ApplicationRequirementsFlow } from '@/components/worker/application-requirements/ApplicationRequirementsFlow';
+import { realCompanyName } from '@/lib/employer-name';
 import { getApplicationRequirements, type ApplicationRequirementsState } from '@/lib/api/worker';
 
 export const dynamic = 'force-dynamic';
@@ -70,6 +72,20 @@ export default function WorkerApplicationDetailsPage() {
           <DashboardPanel>
             <ErrorState kind="not_found" backHref={APPLICATIONS_HREF} />
           </DashboardPanel>
+        ) : data.application.status === 'hired' && data.hire ? (
+          /* A hire with its hire block: details, Remind and the message box
+             (F19). Without the block -- a backend that predates it -- the
+             flow below still shows today's "You got this job!" panel. */
+          <div className="anim-fade-in">
+            <HiredCard
+              key={id}
+              applicationId={id}
+              jobTitle={data.job.title}
+              companyName={realCompanyName(data.job.company_name)}
+              hire={data.hire}
+              sentMessages={data.sent_messages ?? []}
+            />
+          </div>
         ) : (
           <div className="anim-fade-in">
             <ApplicationRequirementsFlow key={id} token={idToken} initialState={data} />

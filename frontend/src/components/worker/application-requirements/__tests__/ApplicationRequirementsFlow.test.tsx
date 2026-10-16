@@ -95,6 +95,8 @@ function serverState(over: {
     documents: [],
     remaining: over.remaining ?? remaining(),
     next_step: { kind: 'complete' },
+    hire: null,
+    sent_messages: [],
   };
 }
 

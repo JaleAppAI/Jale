@@ -218,6 +218,14 @@ describe('worker-applications-list', () => {
       job_shift_schedule: 'Lunes a viernes, 7am-3pm',
       job_trade_category: 'electrician',
       job_trade_category_other: null,
+      // 125 (F19): the start details the employer adds after the hire.
+      hire_start_date: null,
+      hire_report_location: null,
+      hire_contact_name: null,
+      hire_contact_phone: null,
+      hire_notes: null,
+      hire_details_updated_at: null,
+      hire_details_reminded_at: null,
     };
     const BASE = {
       application_id: 'a1', job_id: 'j1', job_title: 'T', company_name: 'Acme',
@@ -294,9 +302,38 @@ describe('worker-applications-list', () => {
         trade: { category: 'electrician', other: null, canonical_en: null, canonical_es: null },
         // employer_display_name returned a real name.
         company: 'Acme',
+        // No start details yet.
+        details: null,
+        employer_reminded_at: null,
       });
       // No free text, so the 060 cache was never touched.
       expect(mockResolveTradeAlias).not.toHaveBeenCalled();
+    });
+
+    it('carries the start details the employer added (F19), dated as the calendar day they picked', async () => {
+      const r = await row({
+        status: 'hired',
+        hire_start_date: '2026-10-20',
+        hire_report_location: 'Gate 3, North lot',
+        hire_contact_name: 'Site lead',
+        hire_contact_phone: '+1 555 0100',
+        hire_notes: null,
+        hire_details_updated_at: new Date('2026-10-14T12:00:00.000Z'),
+      });
+      expect(r.hire.details).toEqual({
+        start_date: '2026-10-20',
+        report_location: 'Gate 3, North lot',
+        contact_name: 'Site lead',
+        contact_phone: '+1 555 0100',
+        notes: null,
+        updated_at: '2026-10-14T12:00:00.000Z',
+      });
+      // a.hire_start_date is a DATE: to_char, for the same reason as the job's.
+      expect(listSql()).toContain("to_char(a.hire_start_date, 'YYYY-MM-DD') AS hire_start_date");
+      for (const column of ['a.hire_report_location', 'a.hire_contact_name', 'a.hire_contact_phone', 'a.hire_notes',
+        'a.hire_details_updated_at', 'a.hire_details_reminded_at']) {
+        expect(listSql()).toContain(column);
+      }
     });
 
     it('reports seen and acknowledged from the row, so the modal cannot re-fire on another device', async () => {
@@ -362,6 +399,8 @@ describe('worker-applications-list', () => {
         // A job with no trade, and the 031 sentinel screened off.
         trade: { category: null, other: null, canonical_en: null, canonical_es: null },
         company: null,
+        details: null,
+        employer_reminded_at: null,
       });
       // The list's OWN top-level field keeps the legacy 031 fallback: every
       // other consumer of this endpoint still reads it.

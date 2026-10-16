@@ -90,6 +90,25 @@ export const ADMIN_SURFACES = [
   'admin.report_status',
   'admin.report_note',
   'admin.report_settings',
+  // The Admins page and its actions (sprint 28, K1).
+  'admin.admins_list',
+  'admin.admin_invite',
+  'admin.admin_resend_invite',
+  'admin.admin_role_change',
+  'admin.admin_deactivate',
+  'admin.admin_reactivate',
+  // The Inbox, the support conversation, lockout detail, and their actions
+  // (sprint 28, K2).
+  'admin.inbox',
+  'admin.support_conversation',
+  'admin.lockout_detail',
+  'admin.inbox.reply',
+  'admin.inbox.request_info',
+  'admin.inbox.resolve',
+  'admin.inbox.reveal_phone',
+  'admin.inbox.open_media',
+  'admin.inbox.reset_lockout',
+  'admin.inbox.open_support',
 ] as const;
 export type AdminSurface = (typeof ADMIN_SURFACES)[number];
 

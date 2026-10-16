@@ -1,0 +1,529 @@
+{
+  "capability_owners": {
+    "jale_cap_analytics_capture": {
+      "created_by": "124",
+      "reason": "Owns the four analytics capture functions; inserts into the capture tables only, and reads job ids to leave out a job removed meanwhile."
+    },
+    "jale_cap_referral_snapshot": {
+      "created_by": "124",
+      "reason": "Owns the daily referral snapshot; reads tagged referral events, rewrites today and the six days before in the snapshot table."
+    }
+  },
+  "tables": {
+    "public.signup_attribution": {
+      "classification": "excluded",
+      "rls": {
+        "enabled": true,
+        "forced": true
+      },
+      "reason": "Where an account's signup started (door, entry page, first-party code), one row per account; written only through jale_cap.record_signup_source, read only by the console definers.",
+      "access": {
+        "jale_cap_analytics_capture": {
+          "insert": [
+            "user_id",
+            "door",
+            "entry",
+            "src"
+          ],
+          "reason": "Writes one row per new account, first write wins."
+        }
+      }
+    },
+    "public.worker_job_views": {
+      "classification": "excluded",
+      "rls": {
+        "enabled": true,
+        "forced": true
+      },
+      "reason": "A signed-in worker opened a job page, one row per worker, job and hour; written only through jale_cap.record_job_view, read only by the console definers.",
+      "access": {
+        "jale_cap_analytics_capture": {
+          "insert": [
+            "worker_id",
+            "job_id",
+            "source",
+            "viewed_hour"
+          ],
+          "reason": "Writes the current hour's view for the calling worker."
+        }
+      }
+    },
+    "public.referral_funnel_daily": {
+      "classification": "excluded",
+      "rls": {
+        "enabled": true,
+        "forced": true
+      },
+      "reason": "Daily referral counts kept past the apply-token purge; written only by jale_cap.referral_funnel_snapshot, read only by the console definers.",
+      "access": {
+        "jale_cap_referral_snapshot": {
+          "select": "*",
+          "insert": "*",
+          "delete": true,
+          "reason": "Recomputes the last three days, and after missed runs the last day written (while its rows still exist) and every day after it."
+        }
+      }
+    }
+  },
+  "policies": {
+    "public.signup_attribution.signup_attribution_admin_analytics_read": {
+      "command": "SELECT",
+      "permissive": true,
+      "to": [
+        "jale_admin"
+      ],
+      "origin": "existing",
+      "using": "(current_setting('app.admin_analytics_read'::text, true) = 'on'::text)",
+      "with_check": null,
+      "reason": "Gated read for the admin analytics definers (migration 124), which run as the master login: SELECT only, and only while a definer has set the transaction-local read flag. Never copied to a runtime login."
+    },
+    "public.signup_attribution.signup_attribution_cap_capture_insert": {
+      "command": "INSERT",
+      "permissive": true,
+      "to": [
+        "jale_cap_analytics_capture"
+      ],
+      "origin": "existing",
+      "using": null,
+      "with_check": "(created_at > (now() - '01:00:00'::interval))",
+      "reason": "The capture function inserts rows stamped now; nothing else."
+    },
+    "public.worker_job_views.worker_job_views_admin_analytics_read": {
+      "command": "SELECT",
+      "permissive": true,
+      "to": [
+        "jale_admin"
+      ],
+      "origin": "existing",
+      "using": "(current_setting('app.admin_analytics_read'::text, true) = 'on'::text)",
+      "with_check": null,
+      "reason": "Gated read for the admin analytics definers (migration 124), which run as the master login: SELECT only, and only while a definer has set the transaction-local read flag. Never copied to a runtime login."
+    },
+    "public.worker_job_views.worker_job_views_cap_capture_insert": {
+      "command": "INSERT",
+      "permissive": true,
+      "to": [
+        "jale_cap_analytics_capture"
+      ],
+      "origin": "existing",
+      "using": null,
+      "with_check": "(viewed_hour >= (now() - '01:00:00'::interval))",
+      "reason": "The capture function inserts the current hour's view only."
+    },
+    "public.referral_funnel_daily.referral_funnel_daily_admin_analytics_read": {
+      "command": "SELECT",
+      "permissive": true,
+      "to": [
+        "jale_admin"
+      ],
+      "origin": "existing",
+      "using": "(current_setting('app.admin_analytics_read'::text, true) = 'on'::text)",
+      "with_check": null,
+      "reason": "Gated read for the admin analytics definers (migration 124), which run as the master login: SELECT only, and only while a definer has set the transaction-local read flag. Never copied to a runtime login."
+    },
+    "public.referral_funnel_daily.referral_funnel_daily_cap_snapshot_select": {
+      "command": "SELECT",
+      "permissive": true,
+      "to": [
+        "jale_cap_referral_snapshot"
+      ],
+      "origin": "existing",
+      "using": "true",
+      "with_check": null,
+      "reason": "The snapshot reads the last day written to find missed runs.",
+      "open": true
+    },
+    "public.referral_funnel_daily.referral_funnel_daily_cap_snapshot_insert": {
+      "command": "INSERT",
+      "permissive": true,
+      "to": [
+        "jale_cap_referral_snapshot"
+      ],
+      "origin": "existing",
+      "using": null,
+      "with_check": "true",
+      "reason": "The snapshot writes recomputed days.",
+      "open": true
+    },
+    "public.referral_funnel_daily.referral_funnel_daily_cap_snapshot_delete": {
+      "command": "DELETE",
+      "permissive": true,
+      "to": [
+        "jale_cap_referral_snapshot"
+      ],
+      "origin": "existing",
+      "using": "(day >= (((now() AT TIME ZONE 'UTC'::text))::date - 6))",
+      "with_check": null,
+      "reason": "The snapshot rewrites only today and the six days before, while every row a day counts still exists; older days are never rewritten."
+    }
+  },
+  "functions": {
+    "jale_cap.record_signup_source(uuid, text, text, text)": {
+      "owner": "jale_cap_analytics_capture",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_user uuid, p_door text, p_entry text, p_src text",
+      "returns": "boolean",
+      "execute": [
+        "jale_api",
+        "jale_api_public"
+      ],
+      "created_by": "124",
+      "reason": "Records where a new account's signup started, once per account and only within 24 hours of its creation: the worker web signup (jale_api_public) and the employer's first profile save (jale_api)."
+    },
+    "jale_cap.record_job_view(uuid, text)": {
+      "owner": "jale_cap_analytics_capture",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_job_id uuid, p_source text",
+      "returns": "boolean",
+      "execute": [
+        "jale_api"
+      ],
+      "created_by": "124",
+      "reason": "Records that the calling worker (app.current_internal_user_id) opened a job page, once per job and hour."
+    },
+    "jale_cap.record_feed_impressions(uuid[])": {
+      "owner": "jale_cap_analytics_capture",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_job_ids uuid[]",
+      "returns": "integer",
+      "execute": [
+        "jale_api"
+      ],
+      "created_by": "124",
+      "reason": "Records the jobs the web feed showed the calling worker, once per job and UTC day."
+    },
+    "jale_cap.record_whatsapp_impressions(uuid[], uuid)": {
+      "owner": "jale_cap_analytics_capture",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_job_ids uuid[], p_alert_intent_id uuid",
+      "returns": "integer",
+      "execute": [
+        "jale_whatsapp"
+      ],
+      "created_by": "124",
+      "reason": "Records the jobs a WhatsApp job alert or job list showed the calling worker."
+    },
+    "jale_cap.referral_funnel_snapshot()": {
+      "owner": "jale_cap_referral_snapshot",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "",
+      "returns": "TABLE(days_covered integer, rows_written integer)",
+      "execute": [
+        "jale_job_retention"
+      ],
+      "created_by": "124",
+      "reason": "Daily referral counts, run by the retention sweeper before its purge; counts only."
+    },
+    "public.admin_analytics_acquisition(integer)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_weeks integer",
+      "returns": "TABLE(week_start timestamp with time zone, partial boolean, from_shared_link bigint, from_campaign_tag bigint, from_referral bigint, from_direct bigint, from_whatsapp_entry bigint, from_unknown bigint, total bigint, collecting_since timestamp with time zone)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "124",
+      "reason": "Admin console read: accounts created per week by where the signup started, counts only (#16)."
+    },
+    "public.admin_analytics_job_views(integer)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_weeks integer",
+      "returns": "TABLE(week_start timestamp with time zone, partial boolean, public_opens bigint, public_applications bigint, worker_views bigint, worker_view_applications bigint, collecting_since timestamp with time zone)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "124",
+      "reason": "Admin console read: public job page opens and signed-in job views per week, with the applications that followed, counts only (#17)."
+    },
+    "public.admin_analytics_template_reuse(integer)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_weeks integer",
+      "returns": "TABLE(week_start timestamp with time zone, partial boolean, jobs bigint, from_template bigint, employers_using_templates bigint, templates_saved bigint, collecting_since timestamp with time zone)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "124",
+      "reason": "Admin console read: jobs posted per week and how many started from a saved template, counts only (#18)."
+    },
+    "public.admin_analytics_match_to_apply(integer)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_weeks integer",
+      "returns": "TABLE(week_start timestamp with time zone, partial boolean, channel text, shown bigint, applied_within_7d bigint, collecting_since timestamp with time zone)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "124",
+      "reason": "Admin console read: jobs shown to workers per week and channel, and those applied to within 7 days, counts only (#20)."
+    },
+    "public.admin_analytics_referral_funnel(integer)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_weeks integer",
+      "returns": "TABLE(week_start timestamp with time zone, partial boolean, opens bigint, apply_intents bigint, claims bigint, applications bigint, hires bigint, snapshots_since timestamp with time zone)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "124",
+      "reason": "Admin console read: the referral funnel per week from live opens and the daily snapshots, counts only (#21)."
+    }
+  },
+  "table_additions": {
+    "public.users": {
+      "access": {
+        "jale_cap_analytics_capture": {
+          "select": [
+            "id",
+            "created_at"
+          ],
+          "reason": "The signup-source age rule: id and creation time of accounts made in the last 24 hours."
+        }
+      },
+      "policies": {
+        "users_cap_capture_recent_read": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_cap_analytics_capture"
+          ],
+          "origin": "existing",
+          "using": "(created_at > (now() - '24:00:00'::interval))",
+          "with_check": null,
+          "reason": "Accounts created in the last 24 hours only."
+        }
+      },
+      "reason": "The capture owner checks that an account is new before recording its signup source."
+    },
+    "public.jobs": {
+      "access": {
+        "jale_cap_analytics_capture": {
+          "select": [
+            "id"
+          ],
+          "reason": "A batch of showings records only the jobs that still exist."
+        }
+      },
+      "policies": {
+        "jobs_cap_analytics_capture_select": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_cap_analytics_capture"
+          ],
+          "origin": "existing",
+          "using": "true",
+          "with_check": null,
+          "reason": "Job ids only, every job: a showing names any job the worker was shown.",
+          "open": true
+        }
+      },
+      "reason": "The capture owner leaves out of a batch of showings a job removed meanwhile."
+    },
+    "public.worker_job_impressions": {
+      "access": {
+        "jale_cap_analytics_capture": {
+          "insert": [
+            "worker_id",
+            "job_id",
+            "channel",
+            "impression_window_key"
+          ],
+          "reason": "Records feed, job alert and job list showings."
+        }
+      },
+      "policies": {
+        "worker_job_impressions_cap_capture_insert": {
+          "command": "INSERT",
+          "permissive": true,
+          "to": [
+            "jale_cap_analytics_capture"
+          ],
+          "origin": "existing",
+          "using": null,
+          "with_check": "(delivered_at > (now() - '01:00:00'::interval))",
+          "reason": "The capture functions insert showings stamped now."
+        },
+        "worker_job_impressions_admin_analytics_read": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_admin"
+          ],
+          "origin": "existing",
+          "using": "(current_setting('app.admin_analytics_read'::text, true) = 'on'::text)",
+          "with_check": null,
+          "reason": "Gated read for the admin analytics definers (migration 124), which run as the master login: SELECT only, and only while a definer has set the transaction-local read flag. Never copied to a runtime login."
+        }
+      },
+      "reason": "Written by the capture functions, read by the match-to-application definer (migration 124)."
+    },
+    "public.employer_job_templates": {
+      "policies": {
+        "employer_job_templates_admin_analytics_read": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_admin"
+          ],
+          "origin": "existing",
+          "using": "(current_setting('app.admin_analytics_read'::text, true) = 'on'::text)",
+          "with_check": null,
+          "reason": "Gated read for the admin analytics definers (migration 124), which run as the master login: SELECT only, and only while a definer has set the transaction-local read flag. Never copied to a runtime login."
+        }
+      },
+      "reason": "Read by the template reuse definer (migration 124) through its gated policy."
+    },
+    "public.job_share_opens": {
+      "access": {
+        "jale_cap_referral_snapshot": {
+          "select": [
+            "share_code",
+            "opened_at"
+          ],
+          "reason": "Counts tagged opens per day."
+        }
+      },
+      "policies": {
+        "job_share_opens_cap_snapshot_select": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_cap_referral_snapshot"
+          ],
+          "origin": "existing",
+          "using": "(share_code IS NOT NULL)",
+          "with_check": null,
+          "reason": "Tagged opens only."
+        },
+        "job_share_opens_admin_analytics_read": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_admin"
+          ],
+          "origin": "existing",
+          "using": "(current_setting('app.admin_analytics_read'::text, true) = 'on'::text)",
+          "with_check": null,
+          "reason": "Gated read for the admin analytics definers (migration 124), which run as the master login: SELECT only, and only while a definer has set the transaction-local read flag. Never copied to a runtime login."
+        }
+      },
+      "reason": "Counted by the referral snapshot and read by the job view and referral definers (migration 124)."
+    },
+    "public.referral_apply_tokens": {
+      "access": {
+        "jale_cap_referral_snapshot": {
+          "select": [
+            "share_code",
+            "created_at",
+            "consumed_at"
+          ],
+          "reason": "Counts tagged apply intents and their use per day; never the token hash or phone hash."
+        }
+      },
+      "policies": {
+        "referral_apply_tokens_cap_snapshot_select": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_cap_referral_snapshot"
+          ],
+          "origin": "existing",
+          "using": "(share_code IS NOT NULL)",
+          "with_check": null,
+          "reason": "Tagged tokens only."
+        }
+      },
+      "reason": "Counted by the referral snapshot before the retention purge removes the rows."
+    },
+    "public.referral_pending_claims": {
+      "access": {
+        "jale_cap_referral_snapshot": {
+          "select": [
+            "share_code",
+            "created_at",
+            "claimed_at"
+          ],
+          "reason": "Counts tagged claims parked and claimed per day; never the phone hash or worker."
+        }
+      },
+      "policies": {
+        "referral_pending_claims_cap_snapshot_select": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_cap_referral_snapshot"
+          ],
+          "origin": "existing",
+          "using": "(share_code IS NOT NULL)",
+          "with_check": null,
+          "reason": "Tagged claims only."
+        }
+      },
+      "reason": "Counted by the referral snapshot before the retention purge removes the rows."
+    },
+    "public.job_share_links": {
+      "access": {
+        "jale_cap_referral_snapshot": {
+          "select": [
+            "code",
+            "referrer_worker_id",
+            "channel"
+          ],
+          "reason": "The link kind and channel of each counted event."
+        }
+      },
+      "policies": {
+        "job_share_links_cap_snapshot_select": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_cap_referral_snapshot"
+          ],
+          "origin": "existing",
+          "using": "true",
+          "with_check": null,
+          "reason": "Every link, revoked ones included: past events keep their link's kind and channel.",
+          "open": true
+        }
+      },
+      "reason": "Read by the referral snapshot for each event's link kind and channel."
+    },
+    "public.worker_attribution": {
+      "policies": {
+        "worker_attribution_admin_analytics_read": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_admin"
+          ],
+          "origin": "existing",
+          "using": "(current_setting('app.admin_analytics_read'::text, true) = 'on'::text)",
+          "with_check": null,
+          "reason": "Gated read for the admin analytics definers (migration 124), which run as the master login: SELECT only, and only while a definer has set the transaction-local read flag. Never copied to a runtime login."
+        }
+      },
+      "reason": "Read by the acquisition, job view and referral definers (migration 124) through their gated policy."
+    }
+  },
+  "schema_additions": {
+    "jale_cap": {
+      "create": [
+        "jale_cap_analytics_capture",
+        "jale_cap_referral_snapshot"
+      ],
+      "reason": "The capture and snapshot functions live in jale_cap; their owners get CREATE (to own them). Their callers already hold USAGE."
+    }
+  }
+}

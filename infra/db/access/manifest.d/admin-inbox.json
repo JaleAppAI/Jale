@@ -1,0 +1,231 @@
+{
+  "tables": {
+    "public.identity_lockout_resets": {
+      "classification": "excluded",
+      "rls": {
+        "enabled": true,
+        "forced": true
+      },
+      "reason": "Lockouts an admin reset, with the reason code (migration 122); written and read only through the Inbox definers. The phone hash is cleared with its challenge.",
+      "access": {}
+    },
+    "public.admin_inbox_requests": {
+      "classification": "excluded",
+      "rls": {
+        "enabled": true,
+        "forced": true
+      },
+      "reason": "Each admin's Inbox request ids for 24 hours with a payload fingerprint and the result (migration 122), so a repeated request never runs twice; reached only through the Inbox definers.",
+      "access": {}
+    }
+  },
+  "sequences": {
+    "public.admin_cases_case_number_seq": {
+      "owner": "jale_admin",
+      "usage": [],
+      "select": [],
+      "update": [],
+      "reason": "Identity sequence of admin_cases.case_number; an insert takes the next number without a privilege on the sequence."
+    }
+  },
+  "policies": {
+    "public.identity_lockout_resets.identity_lockout_resets_definer_access": {
+      "command": "ALL",
+      "permissive": true,
+      "to": [
+        "jale_admin"
+      ],
+      "origin": "existing",
+      "using": "(current_setting('app.identity_lockout_resets'::text, true) = 'on'::text)",
+      "with_check": "(current_setting('app.identity_lockout_resets'::text, true) = 'on'::text)",
+      "reason": "The Inbox definers (migration 122), which run as the master login: only while one of them has opened the transaction-local flag."
+    },
+    "public.admin_inbox_requests.admin_inbox_requests_definer_access": {
+      "command": "ALL",
+      "permissive": true,
+      "to": [
+        "jale_admin"
+      ],
+      "origin": "existing",
+      "using": "(current_setting('app.admin_inbox_requests'::text, true) = 'on'::text)",
+      "with_check": "(current_setting('app.admin_inbox_requests'::text, true) = 'on'::text)",
+      "reason": "The Inbox request ledger definers (migration 122), which run as the master login: only while one of them has opened the transaction-local flag."
+    }
+  },
+  "functions": {
+    "public.identity_lockout_resets_forget_phone()": {
+      "owner": "jale_admin",
+      "security": "invoker",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "",
+      "returns": "trigger",
+      "execute": [],
+      "created_by": "122",
+      "reason": "Trigger: clears a reset row's phone hash when its challenge is deleted."
+    },
+    "public.admin_inbox_actor_role(uuid)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_actor uuid",
+      "returns": "text",
+      "execute": [],
+      "created_by": "122",
+      "reason": "The acting admin's role label, refused unless an active Ops or Superadmin admin. Called only by the Inbox definers."
+    },
+    "public.admin_support_last_inbound(text)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_number text",
+      "returns": "timestamp with time zone",
+      "execute": [],
+      "created_by": "122",
+      "reason": "When a number last wrote (the chat window). Called only by the Inbox definers."
+    },
+    "public.admin_identity_challenge_state(text, text, timestamp with time zone, timestamp with time zone, timestamp with time zone, uuid)": {
+      "owner": "jale_admin",
+      "security": "invoker",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_status text, p_step text, p_locked_until timestamp with time zone, p_expires_at timestamp with time zone, p_updated_at timestamp with time zone, p_verified_user uuid",
+      "returns": "text",
+      "execute": [],
+      "created_by": "122",
+      "reason": "Where a verification challenge stands; reads nothing. Called only by the Inbox definers."
+    },
+    "public.admin_support_one_line(text)": {
+      "owner": "jale_admin",
+      "security": "invoker",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_text text",
+      "returns": "text",
+      "execute": [],
+      "created_by": "122",
+      "reason": "A reply as the support template carries it; reads nothing. Called only by the Inbox definers."
+    },
+    "public.admin_support_utf16_length(text)": {
+      "owner": "jale_admin",
+      "security": "invoker",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_text text",
+      "returns": "integer",
+      "execute": [],
+      "created_by": "122",
+      "reason": "A text's length in UTF-16 code units, as the console counts it; reads nothing. Called only by the Inbox definers."
+    },
+    "public.admin_inbox_request_seen(uuid, uuid, text, text)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_actor uuid, p_request_id uuid, p_action text, p_fingerprint text",
+      "returns": "TABLE(seen boolean, result_id uuid)",
+      "execute": [],
+      "created_by": "122",
+      "reason": "Whether an admin already ran an Inbox request, and its result. Called only by the Inbox definers."
+    },
+    "public.admin_inbox_request_remember(uuid, uuid, text, text, uuid)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_actor uuid, p_request_id uuid, p_action text, p_fingerprint text, p_result_id uuid",
+      "returns": "void",
+      "execute": [],
+      "created_by": "122",
+      "reason": "Records an Inbox request's result. Called only by the Inbox definers."
+    },
+    "public.admin_support_enqueue(uuid, text, uuid, text, text, text, uuid, text)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_case_id uuid, p_number text, p_request_id uuid, p_kind text, p_text text, p_language text, p_actor uuid, p_role text",
+      "returns": "uuid",
+      "execute": [],
+      "created_by": "122",
+      "reason": "Queues one support message for a case's worker and its timeline event. Called only by the Inbox definers."
+    },
+    "public.admin_support_case_view(uuid)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_case_id uuid",
+      "returns": "TABLE(case_id uuid, has_conversation boolean, language text, window_open boolean, window_closes_at timestamp with time zone, window_closed_at timestamp with time zone, registered boolean, onboarding_step_key text, failed_codes_today integer, joined_at timestamp with time zone, masked_phone text)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "122",
+      "reason": "Admin console read: a case's chat window, language, the worker's progress and a masked number; never the number."
+    },
+    "public.admin_support_media_link(uuid, uuid)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_case_id uuid, p_media_id uuid",
+      "returns": "TABLE(outcome text, s3_key text, content_type text)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "122",
+      "reason": "Admin console read: the stored key and type of one attachment of one case, for a short-lived link the console records."
+    },
+    "public.admin_support_reveal_phone(uuid)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_case_id uuid",
+      "returns": "text",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "122",
+      "reason": "Admin console read: a case's number, for a reveal the console records with the admin's reason."
+    },
+    "public.admin_queue_support_message(uuid, uuid, uuid, text, text)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_actor uuid, p_case_id uuid, p_request_id uuid, p_kind text, p_text text",
+      "returns": "TABLE(result_id uuid, replayed boolean)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "122",
+      "reason": "Admin console action: a reply, a request for more information or the closing message, to the number of the case's conversation."
+    },
+    "public.admin_identity_challenge_detail(uuid)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_challenge_id uuid",
+      "returns": "TABLE(challenge_id uuid, state text, language text, masked_phone text, attempts integer, locked_until timestamp with time zone, started_at timestamp with time zone, earlier_resets integer, typical_minutes_to_verify integer, support_case_id uuid, timeline jsonb)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "122",
+      "reason": "Admin console read: a lockout's history and state, a masked number, no phone hash and no user id."
+    },
+    "public.admin_reset_identity_lockout(uuid, uuid, text, text, uuid)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_actor uuid, p_challenge_id uuid, p_reason text, p_note text, p_request_id uuid",
+      "returns": "TABLE(result_id uuid, replayed boolean)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "122",
+      "reason": "Admin console action: resets a locked or stuck verification, records the reason and tells the worker."
+    },
+    "public.admin_open_support_from_lockout(uuid, uuid, uuid)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_actor uuid, p_challenge_id uuid, p_request_id uuid",
+      "returns": "TABLE(result_id uuid, replayed boolean)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "122",
+      "reason": "Admin console action: opens or reuses the support case of a lockout's number; sends nothing."
+    }
+  }
+}

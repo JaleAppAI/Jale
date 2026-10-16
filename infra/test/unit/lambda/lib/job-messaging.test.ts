@@ -695,6 +695,18 @@ describe('queueConversationMessageFromEmployer: gate and languages through the d
     expect(indexOf(calls, /employer_worker_delivery_context/)).toBeLessThan(indexOf(calls, /INSERT INTO job_conversation_messages/));
   });
 
+  it('leaves sender_user_id to the database', async () => {
+    // Migration 118's trigger job_messages_stamp_sender stamps sender_user_id
+    // from app.current_internal_user_id; the INSERT must not name it.
+    const { client: c, calls } = employerClient({ lifecycle: 'ready' });
+    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'hola');
+    const insert = calls.find((call) => /INSERT INTO job_conversation_messages/.test(call.sql));
+    expect(insert).toBeDefined();
+    expect(insert!.sql).toMatch(/\(conversation_id, sender_type, direction, body, status\)/);
+    expect(insert!.sql).not.toMatch(/sender_user_id/);
+    expect(insert!.params).toHaveLength(3);
+  });
+
   it('an English worker outside the reply window gets the English resume template and fallback copy', async () => {
     const { client: c, calls } = employerClient({ lifecycle: 'ready', whatsappLanguage: 'en' });
     await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'hello');
@@ -731,6 +743,19 @@ describe('queueConversationMessageFromEmployer template dedupe (R7)', () => {
     const { client: c, calls } = employerClient({ pendingTemplate: false });
     await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'first overnight msg');
     expect(outboxInserts(calls).some((call) => /'template'/.test(call.sql))).toBe(true);
+  });
+
+  // F19 (sprint 28): a hired worker can now write from the web. That message
+  // is an inbound row, but it opens no WhatsApp window, so it never moves
+  // last_worker_message_at. The dedupe must still count it as the worker's
+  // latest action, or an employer reply after it is never announced.
+  it('counts the newest inbound message, web ones included, as the worker\'s last action', async () => {
+    const { client: c, calls } = employerClient({ pendingTemplate: false });
+    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'reply after a web message');
+    const dedupeSql = calls.map((call) => call.sql).find((sql) => /send_kind = 'template'/.test(sql) && /SELECT EXISTS/.test(sql))!;
+    const flat = dedupeSql.replace(/\s+/g, ' ');
+    expect(flat).toContain('GREATEST(jc.accepted_at, jc.last_worker_message_at, '
+      + "(SELECT max(m.created_at) FROM job_conversation_messages m WHERE m.conversation_id = jc.id AND m.direction = 'inbound'))");
   });
 
   it('ignores permanently-failed templates in the dedupe check (dead invites must not suppress new ones)', async () => {

@@ -14,9 +14,12 @@ import {
   nextStep,
 } from '../../../../lambda/lib/application-requirements';
 import {
+  releaseFillLaneForApplication,
   releasePromptLaneForApplication,
   releaseWhatsAppLanesForApplication,
 } from '../../../../lambda/lib/application-web-completion';
+
+import { messageHandler, remindHandler } from '../../../../lambda/api/worker-application-hired-actions';
 
 import { recordAccess, recordAttempt } from '../../../../lambda/lib/audit/record';
 import { setAuditContext } from '../../../../lambda/lib/audit/context';
@@ -31,6 +34,13 @@ jest.mock('../../../../lambda/lib/audit/record', () => ({
   recordAttempt: jest.fn(),
 }));
 jest.mock('../../../../lambda/lib/audit/context');
+jest.mock('../../../../lambda/api/worker-application-hired-actions', () => ({
+  ...jest.requireActual('../../../../lambda/api/worker-application-hired-actions'),
+  messageHandler: jest.fn(),
+  remindHandler: jest.fn(),
+}));
+const mockMessageHandler = messageHandler as jest.Mock;
+const mockRemindHandler = remindHandler as jest.Mock;
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetInternalUserRlsContext = setInternalUserRlsContext as jest.Mock;
@@ -52,6 +62,7 @@ const mockMergeCertificationClaims = mergeCertificationClaims as jest.Mock;
 const mockMergePromptAnswers = mergePromptAnswers as jest.Mock;
 const mockReleaseLanes = releaseWhatsAppLanesForApplication as jest.Mock;
 const mockReleasePromptLane = releasePromptLaneForApplication as jest.Mock;
+const mockReleaseFillLane = releaseFillLaneForApplication as jest.Mock;
 
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
@@ -159,6 +170,8 @@ function statementStep(sql: string): string {
   if (/^UPDATE job_applications\s+SET hired_/.test(sql)) return 'hire-ack update';
   if (/^SELECT employer_id FROM jobs WHERE id = \$1$/.test(sql)) return 'employer id';
   if (/^SELECT employer_display_name\(\$1\) AS company_name$/.test(sql)) return 'employer name';
+  if (/FROM job_applications a\s+JOIN jobs j/.test(sql)) return 'hire';
+  if (/jale_cap\.worker_application_sent_messages/.test(sql)) return 'sent messages';
   return sql;
 }
 
@@ -178,6 +191,7 @@ function timeline(): string[] {
     ['mark complete', mockMarkComplete],
     ['release lanes', mockReleaseLanes],
     ['release prompt lane', mockReleasePromptLane],
+    ['release fill lane', mockReleaseFillLane],
     ['record', recordAccess as jest.Mock],
     ['attempt', recordAttempt as jest.Mock],
   ];
@@ -211,6 +225,7 @@ describe('worker-application-details', () => {
     mockDetailsStatusFor.mockReturnValue('complete');
     mockReleaseLanes.mockResolvedValue({ armed: true, scrubbed: 1, closingLineQueued: true });
     mockReleasePromptLane.mockResolvedValue({ armed: true, scrubbed: 1, closingLineQueued: false });
+    mockReleaseFillLane.mockResolvedValue({ armed: true, scrubbed: 1, closingLineQueued: false });
   });
 
   afterAll(() => { process.env = env; });
@@ -909,6 +924,90 @@ describe('worker-application-details', () => {
     expect(sqlCalls()).toContain('ROLLBACK');
   });
 
+  // ── F19: the hired worker's actions and the hire in the state ──────
+
+  describe('F19 (sprint 28): hired actions and the hire in the state', () => {
+    it.each([
+      ['message', mockMessageHandler],
+      ['remind-employer', mockRemindHandler],
+    ])('forwards %s to its own handler before any database work', async (action, delegate) => {
+      delegate.mockResolvedValue({ statusCode: 202, headers: {}, body: '{}' });
+      const event = post(action, { body: 'Hi' });
+
+      const res = await handler(event);
+
+      expect(res).toEqual({ statusCode: 202, headers: {}, body: '{}' });
+      expect(delegate.mock.calls[0][0]).toBe(event);
+      expect(mockGetDbPool).not.toHaveBeenCalled();
+    });
+
+    const HIRE_ROW = {
+      hired_at: new Date('2026-10-01T15:00:00.000Z'),
+      hired_seen_at: null,
+      hired_ack_at: null,
+      job_start_date: '2026-10-20',
+      job_location: 'El Paso, TX',
+      job_city: null,
+      job_state: null,
+      job_pay: null,
+      job_pay_min: 22,
+      job_pay_max: 26,
+      job_pay_interval: 'hourly',
+      job_shift_schedule: null,
+      job_trade_category: 'concrete',
+      job_trade_category_other: null,
+      hire_start_date: '2026-10-21',
+      hire_report_location: 'Gate 3',
+      hire_contact_name: null,
+      hire_contact_phone: null,
+      hire_notes: null,
+      hire_details_updated_at: new Date('2026-10-14T12:00:00.000Z'),
+      hire_details_reminded_at: new Date('2026-10-13T08:00:00.000Z'),
+    };
+    const SENT = [{ message_id: 'm1', body: 'On my way', sent_at: new Date('2026-10-14T13:00:00.000Z') }];
+
+    function hiredQueries(sql: string) {
+      if (/FROM job_applications a\s+JOIN jobs j/.test(sql)) return { rows: [HIRE_ROW] };
+      if (/worker_application_sent_messages/.test(sql)) return { rows: SENT };
+      return defaultQuery(sql);
+    }
+
+    it('adds the hire, with its details and last reminder, and the worker\'s own sent messages', async () => {
+      mockLoad.mockResolvedValue(snapshot({ applicationStatus: 'hired' }));
+      mockQuery.mockImplementation((sql: string) => Promise.resolve(hiredQueries(sql)));
+
+      const body = JSON.parse((await handler(makeEvent())).body);
+
+      expect(body.hire).toMatchObject({
+        hired_at: '2026-10-01T15:00:00.000Z',
+        start_date: '2026-10-20',
+        company: 'NB Construction',
+        details: {
+          start_date: '2026-10-21', report_location: 'Gate 3', contact_name: null, contact_phone: null, notes: null,
+          updated_at: '2026-10-14T12:00:00.000Z',
+        },
+        employer_reminded_at: '2026-10-13T08:00:00.000Z',
+      });
+      expect(body.sent_messages).toEqual([{ message_id: 'm1', body: 'On my way', sent_at: '2026-10-14T13:00:00.000Z' }]);
+      // Both reads are the caller's own: the hire row by worker id, the
+      // messages through the caller-scoped definer.
+      const hireCall = mockQuery.mock.calls.find(([sql]) => /FROM job_applications a\s+JOIN jobs j/.test(String(sql)));
+      expect(String(hireCall?.[0])).toMatch(/a\.worker_id = \$2/);
+      expect(hireCall?.[1]).toEqual([APP_ID, WORKER_ID]);
+      // Before the record and the two employer queries, so 031 stays last.
+      expect(timeline().slice(-6)).toEqual(['hire', 'sent messages', ...STATE_STEPS]);
+    });
+
+    it('answers hire null and no sent messages, with no extra query, when the application is not hired', async () => {
+      const body = JSON.parse((await handler(makeEvent())).body);
+
+      expect(body.hire).toBeNull();
+      expect(body.sent_messages).toEqual([]);
+      expect(timeline()).not.toContain('hire');
+      expect(timeline()).not.toContain('sent messages');
+    });
+  });
+
   // ── Failure ─────────────────────────────────────────────────────────
 
   it('rolls back, releases and 500s on an unexpected failure', async () => {
@@ -943,7 +1042,8 @@ describe('worker-application-details', () => {
   // The bot re-sends its pending fill/prompt step after ANY inbound message
   // while `state_context.fill_application_id` (or `prompt_application_id`)
   // is set, and only the bot ever cleared it. These tests pin WHEN this door
-  // clears it: on a details-stage COMPLETION, and never otherwise.
+  // clears it: on a details-stage COMPLETION (with the closing line), and,
+  // since sprint 28 (F29), on the first successful web write (scrub only).
 
   describe('WhatsApp lane release', () => {
     it('releases the lanes when POST answers completes the details stage', async () => {
@@ -962,6 +1062,9 @@ describe('worker-application-details', () => {
         lang: 'es',
       });
       expect(mockReleasePromptLane).not.toHaveBeenCalled();
+      // The completing write sends the closing line; a scrub-only release
+      // first would leave it nothing to find.
+      expect(mockReleaseFillLane).not.toHaveBeenCalled();
     });
 
     it('releases the lanes BEFORE buildState flips the 031 GUC, and before COMMIT', async () => {
@@ -995,15 +1098,56 @@ describe('worker-application-details', () => {
       expect(mockReleaseLanes).toHaveBeenCalledTimes(1);
     });
 
-    it('does NOT release when the merge succeeded but the stage is not complete', async () => {
+    // Sprint 28 (F29, owner decision D-P4): a worker who answers on the web
+    // is finishing there, so the bot stands down on the FIRST web write
+    // rather than prompting on until completion. Scrub only: nothing is
+    // finished, so no closing line.
+    it('stands the bot down (fill lane, scrub only) on a successful answers write that does not complete the stage', async () => {
       mockMergeFieldAnswers.mockResolvedValue({
         ok: true, keys: ['years_experience'], detailsCompleted: false,
       });
 
-      await handler(post('answers', { answers: { years_experience: 5 } }));
+      const res = await handler(post('answers', { answers: { years_experience: 5 } }));
 
+      expect(res.statusCode).toBe(200);
+      expect(mockReleaseFillLane).toHaveBeenCalledTimes(1);
+      expect(mockReleaseFillLane).toHaveBeenCalledWith(expect.anything(), {
+        workerId: WORKER_ID,
+        applicationId: APP_ID,
+      });
       expect(mockReleaseLanes).not.toHaveBeenCalled();
       expect(mockReleasePromptLane).not.toHaveBeenCalled();
+    });
+
+    it('stands the bot down on a successful certifications write that does not complete the stage', async () => {
+      mockMergeCertificationClaims.mockResolvedValue({
+        ok: true, certifications: [], detailsCompleted: false,
+      });
+
+      await handler(post('certifications', { claims: [{ name: 'OSHA 10' }] }));
+
+      expect(mockReleaseFillLane).toHaveBeenCalledTimes(1);
+      expect(mockReleaseLanes).not.toHaveBeenCalled();
+    });
+
+    it('stands the bot down BEFORE buildState flips the 031 GUC, and before COMMIT', async () => {
+      mockMergeFieldAnswers.mockResolvedValue({
+        ok: true, keys: ['years_experience'], detailsCompleted: false,
+      });
+      const order: string[] = [];
+      mockReleaseFillLane.mockImplementation(async () => {
+        order.push('release fill');
+        return { armed: true, scrubbed: 1, closingLineQueued: false };
+      });
+      mockQuery.mockImplementation((sql: string) => {
+        if (/employer_display_name/.test(sql)) order.push('employer_display_name');
+        if (/^COMMIT$/.test(sql)) order.push('COMMIT');
+        return Promise.resolve(defaultQuery(sql));
+      });
+
+      await handler(post('answers', { answers: { years_experience: 5 } }));
+
+      expect(order).toEqual(['release fill', 'employer_display_name', 'COMMIT']);
     });
 
     it('does NOT release when the merge failed', async () => {
@@ -1012,6 +1156,8 @@ describe('worker-application-details', () => {
       await handler(post('answers', { answers: { years_experience: 5 } }));
 
       expect(mockReleaseLanes).not.toHaveBeenCalled();
+      expect(mockReleaseFillLane).not.toHaveBeenCalled();
+      expect(mockReleasePromptLane).not.toHaveBeenCalled();
     });
 
     it('does NOT release on hire-ack', async () => {
@@ -1027,6 +1173,7 @@ describe('worker-application-details', () => {
       expect(res.statusCode).toBe(200);
       expect(mockReleaseLanes).not.toHaveBeenCalled();
       expect(mockReleasePromptLane).not.toHaveBeenCalled();
+      expect(mockReleaseFillLane).not.toHaveBeenCalled();
     });
 
     it('DOES release on the explicit completion POST when it flips details_completed_at', async () => {
@@ -1093,14 +1240,22 @@ describe('worker-application-details', () => {
       expect(mockReleaseLanes).not.toHaveBeenCalled();
     });
 
-    it('leaves the prompt lane armed while a prompt is still outstanding', async () => {
+    // D-P4: the prompt lane is released on the FIRST web prompt answer, not
+    // only once the last one is in. The fill lane is left alone: a prompt is
+    // an apply-stage answer and says nothing about a details-stage question.
+    it('releases the prompt lane on the first web prompt answer, even with a prompt still outstanding', async () => {
       mockMergePromptAnswers.mockResolvedValue({ ok: true, keys: ['p1'] });
       mockComputeRemaining.mockReturnValue({ ...REMAINING, prompts: ['p2'] });
 
       await handler(post('prompt-answers', { answers: { p1: 'yes' } }));
 
-      expect(mockReleasePromptLane).not.toHaveBeenCalled();
+      expect(mockReleasePromptLane).toHaveBeenCalledTimes(1);
+      expect(mockReleasePromptLane).toHaveBeenCalledWith(expect.anything(), {
+        workerId: WORKER_ID,
+        applicationId: APP_ID,
+      });
       expect(mockReleaseLanes).not.toHaveBeenCalled();
+      expect(mockReleaseFillLane).not.toHaveBeenCalled();
     });
 
     it('does not change the response shape when the release runs', async () => {
@@ -1150,7 +1305,8 @@ describe('worker-application-details', () => {
     const mockSetAuditContext = setAuditContext as jest.Mock;
     const worker = callerFor('worker', WORKER_ID);
     const client = expect.objectContaining({ query: mockQuery });
-    const stateFields = ['answers', 'application', 'certifications', 'documents', 'job', 'next_step', 'prompt_answers', 'remaining'];
+    const stateFields = ['answers', 'application', 'certifications', 'documents', 'hire', 'job', 'next_step', 'prompt_answers',
+      'remaining', 'sent_messages'];
     const readEvent = {
       surface: 'worker.application_details',
       subjectUserIds: [WORKER_ID],
@@ -1386,7 +1542,7 @@ describe('worker-application-details', () => {
       ['a merged answer',
         () => { mockMergeFieldAnswers.mockResolvedValue({ ok: true, keys: ['years_experience'], detailsCompleted: false }); },
         () => post('answers', writeBodies.answers), 200,
-        [...ENTRY_STEPS, SAVEPOINT, 'load', 'merge', RELEASE, 'load', ...STATE_STEPS]],
+        [...ENTRY_STEPS, SAVEPOINT, 'load', 'merge', RELEASE, 'load', 'release fill lane', ...STATE_STEPS]],
       ['a merged answer that completes the details stage',
         () => { mockMergeFieldAnswers.mockResolvedValue({ ok: true, keys: ['years_experience'], detailsCompleted: true }); },
         () => post('answers', writeBodies.answers), 200,
@@ -1394,7 +1550,7 @@ describe('worker-application-details', () => {
       ['a merged certification claim',
         () => { mockMergeCertificationClaims.mockResolvedValue({ ok: true, certifications: [], detailsCompleted: false }); },
         () => post('certifications', writeBodies.certifications), 200,
-        [...ENTRY_STEPS, SAVEPOINT, 'load', 'merge', RELEASE, 'load', ...STATE_STEPS]],
+        [...ENTRY_STEPS, SAVEPOINT, 'load', 'merge', RELEASE, 'load', 'release fill lane', ...STATE_STEPS]],
       ['a merged prompt answer, the last one outstanding',
         () => { mockMergePromptAnswers.mockResolvedValue({ ok: true, keys: ['p1'] }); },
         () => post('prompt-answers', writeBodies['prompt-answers']), 200,
