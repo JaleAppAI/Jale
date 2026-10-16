@@ -741,7 +741,7 @@ describe('JaleAuditStack', () => {
       });
     });
 
-    it('records object reads, and only GetObject, on the documents, report-images and archive buckets', () => {
+    it('records object reads, and only GetObject, on the documents, report-images, support-media and archive buckets', () => {
       const [management, data] = trail.Properties.AdvancedEventSelectors;
       expect(management.FieldSelectors).toEqual([{ Field: 'eventCategory', Equals: ['Management'] }]);
       expect(data.FieldSelectors).toEqual([
@@ -753,6 +753,7 @@ describe('JaleAuditStack', () => {
           StartsWith: [
             'arn:${AWS::Partition}:s3:::jale-worker-documents-${AWS::AccountId}/',
             'arn:${AWS::Partition}:s3:::jale-report-images-${AWS::AccountId}-${AWS::Region}/',
+            'arn:${AWS::Partition}:s3:::jale-support-media-${AWS::AccountId}-${AWS::Region}/',
             'arn:${AWS::Partition}:s3:::jale-audit-archive-${AWS::AccountId}-${AWS::Region}/',
           ],
         },
@@ -879,10 +880,18 @@ describe('JaleAuditStack', () => {
       });
     });
 
-    it('lets the sentinel list user pools, which has no resource form, and nothing else in Cognito', () => {
+    it("lets the sentinel list user pools, which has no resource form, and a pool's app clients, and nothing else in Cognito", () => {
       const [, fn] = lambdaByEntry(template, /^Archives the audit log groups/);
       const cognito = roleStatements(template, roleOf(fn)).filter((s) => [s.Action].flat().some((a: string) => a.startsWith('cognito')));
-      expect(cognito).toEqual([{ Sid: 'FindTheAdminPool', Action: 'cognito-idp:ListUserPools', Effect: 'Allow', Resource: '*' }]);
+      expect(cognito).toEqual([
+        { Sid: 'FindTheAdminPool', Action: 'cognito-idp:ListUserPools', Effect: 'Allow', Resource: '*' },
+        {
+          Sid: 'ListTheAdminPoolClients',
+          Action: 'cognito-idp:ListUserPoolClients',
+          Effect: 'Allow',
+          Resource: 'arn:${AWS::Partition}:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/*',
+        },
+      ]);
       expect(fn.Properties.Environment.Variables.AUDIT_ADMIN_POOL_NAME).toBe('jale-admin-pool');
     });
 
@@ -1154,27 +1163,67 @@ describe('JaleAuditStack', () => {
       expect(JSON.stringify(template.Resources[channelId].Properties)).not.toContain(recorderId);
     });
 
-    it("gives the recorder's own role the documented delivery rights, which same-account delivery uses", () => {
-      const recorder = onlyResource(template, 'AWS::Config::ConfigurationRecorder');
-      const roleId = /^\$\{(.+)\.Arn\}$/.exec(recorder.Properties.RoleARN)![1];
-      const role = template.Resources[roleId];
-      expect(statements(flatten(role.Properties.AssumeRolePolicyDocument))).toEqual([{
-        Action: 'sts:AssumeRole',
-        Condition: { StringEquals: { 'AWS:SourceAccount': '${AWS::AccountId}' } },
-        Effect: 'Allow',
-        Principal: { Service: 'config.amazonaws.com' },
-      }]);
-      const bucketId = Object.keys(template.Resources).find((id) => /^ConfigBucket[0-9A-F]{8}$/.test(id))!;
-      const s3 = roleStatements(template, roleId).filter((s) => [s.Action].flat().some((a: string) => a.startsWith('s3:')));
-      expect(s3.map(({ Sid: _s, ...rest }: any) => rest)).toEqual([
-        {
-          Action: ['s3:PutObject', 's3:PutObjectAcl'],
-          Condition: { StringLike: { 's3:x-amz-acl': 'bucket-owner-full-control' } },
+    describe("the recorder on Config's service-linked role", () => {
+      const SERVICE_LINKED_ROLE = 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/config.amazonaws.com/AWSServiceRoleForConfig';
+      const ids = (type: string) => Object.keys(template.Resources).filter((id) => template.Resources[id].Type === type);
+      const dependsOn = (id: string) => [template.Resources[id].DependsOn ?? []].flat() as string[];
+      const roleResourceId = (): string => {
+        const found = ids('Custom::AWS').filter((id) => /^ConfigServiceLinkedRole[0-9A-F]{8}$/.test(id));
+        expect(found).toHaveLength(1);
+        return found[0];
+      };
+
+      it('records with the service-linked role', () => {
+        expect(onlyResource(template, 'AWS::Config::ConfigurationRecorder').Properties.RoleARN).toBe(SERVICE_LINKED_ROLE);
+      });
+
+      it('gives Config no role of its own to assume', () => {
+        const trusting = Object.entries(resourcesOf(template, 'AWS::IAM::Role'))
+          .filter(([, role]) => JSON.stringify(role.Properties.AssumeRolePolicyDocument).includes('config.amazonaws.com'))
+          .map(([id]) => id);
+        expect(trusting).toEqual([]);
+      });
+
+      it('has the recorder wait for the service-linked role, and the delivery channel not', () => {
+        const role = roleResourceId();
+        const [recorderId] = ids('AWS::Config::ConfigurationRecorder');
+        const [channelId] = ids('AWS::Config::DeliveryChannel');
+        expect(dependsOn(recorderId)).toContain(role);
+        expect(dependsOn(channelId).filter((id) => id.startsWith('ConfigServiceLinkedRole'))).toEqual([]);
+      });
+
+      it('creates the role through IAM, accepts one that already exists, and never deletes it', () => {
+        const props = resourcesOf(template, 'Custom::AWS')[roleResourceId()].Properties;
+        expect(JSON.parse(props.Create)).toEqual({
+          service: 'IAM',
+          action: 'createServiceLinkedRole',
+          parameters: { AWSServiceName: 'config.amazonaws.com' },
+          physicalResourceId: { id: 'config-slr' },
+          ignoreErrorCodesMatching: 'InvalidInput.*',
+        });
+        expect(props.InstallLatestAwsSdk).toBe(false);
+        expect(props.Update).toBeUndefined();
+        expect(props.Delete).toBeUndefined();
+      });
+
+      it('may create that one role, for Config only, and nothing else', () => {
+        const policyId = Object.keys(template.Resources).find((id) => /^ConfigServiceLinkedRoleCustomResourcePolicy[0-9A-F]{8}$/.test(id));
+        expect(policyId).toBeDefined();
+        expect(statements(flatten(template.Resources[policyId!].Properties.PolicyDocument))).toEqual([{
+          Action: 'iam:CreateServiceLinkedRole',
+          Condition: { StringEquals: { 'iam:AWSServiceName': 'config.amazonaws.com' } },
           Effect: 'Allow',
-          Resource: `\${${bucketId}.Arn}/config/AWSLogs/\${AWS::AccountId}/*`,
-        },
-        { Action: ['s3:GetBucketAcl', 's3:ListBucket'], Effect: 'Allow', Resource: `\${${bucketId}.Arn}` },
-      ]);
+          Resource: SERVICE_LINKED_ROLE,
+        }]);
+      });
+
+      it('keeps the bucket policy the service-linked role delivers through', () => {
+        const bucketId = Object.keys(template.Resources).find((id) => /^ConfigBucket[0-9A-F]{8}$/.test(id))!;
+        const policy = Object.values(resourcesOf(template, 'AWS::S3::BucketPolicy'))
+          .find((p) => JSON.stringify(p.Properties.Bucket).includes(bucketId));
+        const sids = statements(policy.Properties.PolicyDocument).map((st: any) => st.Sid);
+        expect(sids).toEqual(expect.arrayContaining(['ConfigBucketPermissionsCheck', 'ConfigBucketDelivery']));
+      });
     });
 
     it('creates none of them on existing, and still routes their findings', () => {
@@ -1196,6 +1245,52 @@ describe('JaleAuditStack', () => {
     it('treats an unset flag as off outside production', () => {
       const t = synth({ environment: 'dev', modes: { guardDutyMode: undefined, securityHubMode: undefined, configMode: undefined } });
       expect(Object.keys(resourcesOf(t, 'AWS::GuardDuty::Detector'))).toEqual([]);
+    });
+  });
+
+  describe('public sharing of Systems Manager documents', () => {
+    const SETTING = 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:servicesetting/ssm/documents/console/public-sharing-permission';
+    const blockerIn = (t: any): [string, any] => {
+      const found = Object.entries(resourcesOf(t, 'Custom::AWS')).filter(([id]) => /^BlockPublicSsmDocumentSharing[0-9A-F]{8}$/.test(id));
+      expect(found).toHaveLength(1);
+      return found[0] as [string, any];
+    };
+
+    it('is turned off on create and again on every update, and left off when the resource is removed', () => {
+      const [, blocker] = blockerIn(template);
+      const call = {
+        service: 'SSM',
+        action: 'updateServiceSetting',
+        parameters: { SettingId: SETTING, SettingValue: 'Disable' },
+        physicalResourceId: { id: 'ssm-public-sharing-disabled' },
+      };
+      expect(blocker.Properties.Create).toBeDefined();
+      expect(JSON.parse(blocker.Properties.Create)).toEqual(call);
+      expect(blocker.Properties.Update).toBeDefined();
+      expect(JSON.parse(blocker.Properties.Update)).toEqual(call);
+      expect('Delete' in blocker.Properties).toBe(false);
+      expect(blocker.Properties.InstallLatestAwsSdk).toBe(false);
+    });
+
+    it('may read and change that one setting, and nothing else', () => {
+      const [id] = blockerIn(template);
+      const policyId = Object.keys(template.Resources).find((key) => key.startsWith(`${id.slice(0, -8)}CustomResourcePolicy`));
+      expect(policyId).toBeDefined();
+      expect(statements(flatten(template.Resources[policyId!].Properties.PolicyDocument))).toEqual([{
+        Action: ['ssm:UpdateServiceSetting', 'ssm:GetServiceSetting'],
+        Effect: 'Allow',
+        Resource: SETTING,
+      }]);
+    });
+
+    it('is turned off whatever the detection services are set to', () => {
+      blockerIn(synth({ modes: { guardDutyMode: 'off', securityHubMode: 'off', configMode: 'off' } }));
+    });
+
+    it('runs the call in a provider function on Node 24', () => {
+      const [, blocker] = blockerIn(template);
+      const providerId = /^\$\{(.+)\.Arn\}$/.exec(blocker.Properties.ServiceToken)![1];
+      expect(template.Resources[providerId]).toMatchObject({ Type: 'AWS::Lambda::Function', Properties: { Runtime: 'nodejs24.x' } });
     });
   });
 

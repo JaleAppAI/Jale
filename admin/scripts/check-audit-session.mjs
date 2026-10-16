@@ -19,6 +19,7 @@ const { load } = compileAdminSources({
   fakes: {
     'src/lib/server/db.ts': 'scripts/fakes/db.mjs',
     '@aws-sdk/client-cloudwatch-logs': 'scripts/fakes/cloudwatch-logs.mjs',
+    '@aws-sdk/client-cognito-identity-provider': 'scripts/fakes/cognito-idp.mjs',
     'next/headers': 'scripts/fakes/next-headers.mjs',
     'next/server': 'scripts/fakes/next-server.mjs',
     'next/navigation': 'scripts/fakes/next-navigation.mjs',
@@ -53,6 +54,11 @@ function sessionRow(overrides = {}) {
   };
 }
 
+// Both tokens, as the sign-in form posts them (contract K1.2). The fake
+// verifier answers both with the same claims: the same subject, and no
+// device key, so these sign-ins never reach the device rules.
+const SIGN_IN = { idToken: 'token-value', accessToken: 'access-token-value', trustDevice: false };
+
 function signInRequest(body) {
   return new Request('https://admin.example.test/api/session', {
     method: 'POST',
@@ -64,6 +70,9 @@ function signInRequest(body) {
 function sessionDb({ adminProvisioned = true, row = sessionRow(), revokeRows, expireRows } = {}) {
   return createFakePool({
     respond: ({ sql }) => {
+      if (sql.startsWith('SELECT id, role FROM admin_users')) {
+        return { rows: adminProvisioned ? [{ id: ADMIN_ID, role: 'admin_ops' }] : [] };
+      }
       if (sql.startsWith('INSERT INTO admin_sessions')) {
         return { rows: adminProvisioned ? [{ expires_at: new Date(Date.now() + 3600 * 1000) }] : [] };
       }
@@ -94,7 +103,7 @@ const eventStatements = (connection) => [
   const { pool, log } = sessionDb();
   check.pool = pool;
   check.verifyToken = async () => { throw new Error('Token expired'); };
-  const response = await route.POST(signInRequest({ idToken: 'token-value' }));
+  const response = await route.POST(signInRequest(SIGN_IN));
   assert.equal(response.status, 401);
   assert.deepEqual(response.body, { error: 'invalid_admin_token' });
   assert.deepEqual(response.cookieSets, []);
@@ -114,9 +123,13 @@ const eventStatements = (connection) => [
   const { pool, log } = sessionDb({ adminProvisioned: false });
   check.pool = pool;
   check.verifyToken = async () => ({ sub: VERIFIED_SUB, email: 'someone@example.test', 'cognito:groups': ['admin_ops'] });
-  const response = await route.POST(signInRequest({ idToken: 'token-value' }));
+  const response = await route.POST(signInRequest(SIGN_IN));
   assert.equal(response.status, 401);
-  assert.deepEqual(statements(log).slice(0, 1), ['pool: INSERT INTO admin_sessions (token_hash, admin_user_id, cognito_jti, expires_at, user_agent_hash) SELECT $1, id, NULL, $3, $4 FROM admin_users WHERE cognito_sub = $2 AND active = true AND role IN (\'admin_readonly\', \'admin_ops\', \'admin_superadmin\') RETURNING expires_at']);
+  // The active-admin lookup finds nobody, so no session is ever inserted.
+  assert.deepEqual(statements(log), [
+    'pool: SELECT id, role FROM admin_users WHERE cognito_sub = $1 AND active = true AND role IN (\'admin_readonly\', \'admin_ops\', \'admin_superadmin\')',
+    ...eventStatements(1),
+  ]);
   const events = recordedEvents(log);
   assert.equal(events.length, 1);
   assert.equal(events[0].outcome, 'sign_in_rejected');
@@ -138,15 +151,16 @@ const eventStatements = (connection) => [
   const { pool, log } = sessionDb();
   check.pool = pool;
   check.verifyToken = async () => ({ sub: 'check-admin-sub', email: 'ops-admin@example.test', 'cognito:groups': ['admin_ops'] });
-  const response = await route.POST(signInRequest({ idToken: 'token-value' }));
+  const response = await route.POST(signInRequest(SIGN_IN));
   assert.equal(response.status, 200);
   assert.deepEqual(response.body, { ok: true, role: 'admin_ops', email: 'ops-admin@example.test' });
   assert.equal(response.cookieSets.length, 1);
   assert.equal(response.cookieSets[0].name, COOKIE);
   const lines = statements(log);
-  assert.match(lines[0], /^pool: INSERT INTO admin_sessions/);
-  assert.match(lines[1], /^pool: SELECT s\.id AS session_id/);
-  assert.deepEqual(lines.slice(2), eventStatements(1));
+  assert.match(lines[0], /^pool: SELECT id, role FROM admin_users/);
+  assert.match(lines[1], /^pool: INSERT INTO admin_sessions/);
+  assert.match(lines[2], /^pool: SELECT s\.id AS session_id/);
+  assert.deepEqual(lines.slice(3), eventStatements(1));
   const [event] = recordedEvents(log);
   assert.deepEqual(event, {
     kind: 'session',
@@ -237,7 +251,7 @@ const eventStatements = (connection) => [
   check.pool = pool;
   check.verifyToken = async () => ({ sub: 'check-admin-sub', email: 'ops-admin@example.test', 'cognito:groups': ['admin_ops'] });
   const signedInAt = Date.now();
-  const response = await route.POST(signInRequest({ idToken: 'token-value' }));
+  const response = await route.POST(signInRequest(SIGN_IN));
   assert.equal(response.status, 200);
   const [cookie] = response.cookieSets;
   const insert = log.find((entry) => entry.sql?.startsWith('INSERT INTO admin_sessions'));
@@ -307,6 +321,57 @@ const eventStatements = (connection) => [
   assert.equal(recordedEvents(log).length, 0);
 }
 
+// --- K1.3: requireAdminSession sends an ended session back with next --------
+// The proxy forwards the requested path and query as x-admin-next. A cookie
+// whose session has ended (expired, revoked or deactivated) adds
+// reason=expired; no cookie at all does not.
+{
+  const redirectOf = async () => {
+    try {
+      await session.requireAdminSession();
+    } catch (error) {
+      if (error?.redirectTo) return error.redirectTo;
+      throw error;
+    }
+    return undefined;
+  };
+  const params = (target) => {
+    const url = new URL(target, 'https://admin.example.test');
+    assert.equal(url.pathname, '/login');
+    return Object.fromEntries(url.searchParams.entries());
+  };
+
+  // A stale cookie: the session ended at its idle hour.
+  check.cookies = new Map([[COOKIE, 'raw-session-token']]);
+  check.headers = { 'x-admin-next': '/cases?status=open&page=2' };
+  check.pool = sessionDb({ row: sessionRow({ active: false, expires_at: new Date(Date.now() - 1000) }), expireRows: () => [{ id: SESSION_ID }] }).pool;
+  assert.deepEqual(params(await redirectOf()), { next: '/cases?status=open&page=2', reason: 'expired' });
+
+  // A deactivated admin's session no longer resolves: the same redirect.
+  check.pool = sessionDb({ row: null }).pool;
+  assert.deepEqual(params(await redirectOf()), { next: '/cases?status=open&page=2', reason: 'expired' });
+
+  // No cookie: sign in, then back to the page; no expiry notice.
+  check.cookies = new Map();
+  check.pool = sessionDb().pool;
+  assert.deepEqual(params(await redirectOf()), { next: '/cases?status=open&page=2' });
+
+  // The header goes through safeNextPath; without one, next is '/'.
+  check.cookies = new Map([[COOKIE, 'raw-session-token']]);
+  check.pool = sessionDb({ row: null }).pool;
+  check.headers = { 'x-admin-next': '//evil.example/x' };
+  assert.deepEqual(params(await redirectOf()), { next: '/', reason: 'expired' });
+  check.headers = {};
+  assert.deepEqual(params(await redirectOf()), { next: '/', reason: 'expired' });
+
+  // A live session is returned, with no redirect.
+  check.headers = { 'x-admin-next': '/cases' };
+  check.pool = sessionDb().pool;
+  const live = await session.requireAdminSession();
+  assert.equal(live.sessionId, SESSION_ID);
+  check.headers = undefined;
+}
+
 // --- The local preview session is marked and has no ids ----------------------
 {
   const original = { ...process.env };
@@ -332,7 +397,7 @@ const eventStatements = (connection) => [
   check.pool = new Error('pool unavailable');
   check.cloudwatch = { clients: [], sent: [], behavior: undefined };
   check.verifyToken = async () => { throw new Error('Token expired'); };
-  const { result, lines } = await captureConsole(() => route.POST(signInRequest({ idToken: 'token-value' })));
+  const { result, lines } = await captureConsole(() => route.POST(signInRequest(SIGN_IN)));
   assert.equal(result.status, 401);
   const put = check.cloudwatch.sent.find((command) => command.name === 'PutLogEvents');
   assert.ok(put, 'the rejection goes to the fallback log');

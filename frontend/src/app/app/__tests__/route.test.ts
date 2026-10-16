@@ -182,3 +182,25 @@ describe('GET /app', () => {
     });
   });
 });
+
+describe('GET /app src (first-party signup source, K3.6)', () => {
+  it('passes an allow-listed code through to the sign-up page', async () => {
+    expect(await locationFor('/app?src=flyer')).toBe('/es/auth/worker?step=signup&src=flyer');
+  });
+
+  it('keeps it after the job and the share code', async () => {
+    expect(await locationFor(`/app?job=${JOB_ID}&share=abcd-efgh&src=qr`)).toBe(
+      `/es/auth/worker?step=signup&job=${JOB_ID}&share=ABCDEFGH&src=qr`,
+    );
+  });
+
+  it("drops anything that is not one of Jale's own codes", async () => {
+    for (const bad of ['Flyer', 'unknown-code', 'f', 'a'.repeat(33), '', 'qr%20']) {
+      expect(await locationFor(`/app?src=${bad}`)).toBe('/es/auth/worker?step=signup');
+    }
+  });
+
+  it('never turns utm tags into a source', async () => {
+    expect(await locationFor('/app?utm_source=flyer&utm_campaign=qr')).toBe('/es/auth/worker?step=signup');
+  });
+});

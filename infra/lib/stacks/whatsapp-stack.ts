@@ -4,6 +4,7 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as eventTargets from 'aws-cdk-lib/aws-events-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as kms from 'aws-cdk-lib/aws-kms';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
@@ -86,6 +87,16 @@ export interface WhatsAppStackProps extends cdk.StackProps {
 }
 
 /**
+ * The support-media bucket's fixed name in the calling stack's region, built
+ * from account and region tokens only. The one place it is spelled: this
+ * stack names its bucket with it, and the audit stack calls it to log object
+ * reads on the bucket without a cross-stack export.
+ */
+export function supportMediaBucketName(): string {
+  return `jale-support-media-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}`;
+}
+
+/**
  * WhatsAppStack — V1 WhatsApp integration infrastructure.
  *
  * Creates 3 Lambdas (webhook, processor, job-alert), an SQS queue + DLQ,
@@ -106,6 +117,10 @@ export class WhatsAppStack extends cdk.Stack {
   public readonly adminOutboxDispatcherLambda: JaleLambdaFunction;
   /** Shared worker media bucket — MediaBoardStack consumes this (Task 7). */
   public readonly mediaBucket: s3.Bucket;
+  /** Attachments workers send in WhatsApp support mode; AdminStack reads them. */
+  public readonly supportMediaBucket: s3.Bucket;
+  /** The support-media bucket's key. */
+  public readonly supportMediaKey: kms.Key;
 
   constructor(scope: Construct, id: string, props: WhatsAppStackProps) {
     super(scope, id, props);
@@ -739,6 +754,60 @@ export class WhatsAppStack extends cdk.Stack {
     );
     props.documentsBucket.grantPut(this.processorLambda.function);
 
+    // ── Support-media bucket (sprint 28) ─────────────────────────
+    // Photos, voice notes and PDFs a worker sends in WhatsApp support mode,
+    // under support/<case id>/<uuid>.<ext>. The processor writes them and
+    // nothing else; the admin console reads them (AdminStack, through these
+    // two public fields). Retained outside dev, with its key: an attachment
+    // must outlive a stack replacement for as long as the 90-day promise.
+    // Not versioned: an object the lifecycle rule expires is really gone.
+    const supportRemovalPolicy = this.node.tryGetContext('environment') === 'dev'
+      ? cdk.RemovalPolicy.DESTROY
+      : cdk.RemovalPolicy.RETAIN;
+    const supportMediaKey = new kms.Key(this, 'SupportMediaKey', {
+      enableKeyRotation: true,
+      description: 'Key for WhatsApp support-case attachments',
+      removalPolicy: supportRemovalPolicy,
+    });
+    // The name comes from supportMediaBucketName(), tokens only, which the
+    // audit stack calls too, so it logs object reads without an export.
+    const supportMediaBucket = new s3.Bucket(this, 'SupportMediaBucket', {
+      bucketName: supportMediaBucketName(),
+      encryption: s3.BucketEncryption.KMS,
+      encryptionKey: supportMediaKey,
+      bucketKeyEnabled: true,
+      versioned: false,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      enforceSSL: true,
+      objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
+      removalPolicy: supportRemovalPolicy,
+      lifecycleRules: [
+        // The table rows expire with the objects (support_case_media.expires_at).
+        { id: 'expire-support', prefix: 'support/', expiration: cdk.Duration.days(90) },
+        { id: 'abort-incomplete-multipart', abortIncompleteMultipartUploadAfter: cdk.Duration.days(1) },
+      ],
+    });
+    this.supportMediaBucket = supportMediaBucket;
+    this.supportMediaKey = supportMediaKey;
+
+    // Put-only under support/, and the one key action a single-part
+    // KMS-encrypted put needs (lib/media.ts uploads at most 10 MiB in one
+    // PutObject): no read, list or delete, no decrypt, no direct encrypt.
+    this.processorLambda.function.addEnvironment('SUPPORT_MEDIA_BUCKET', supportMediaBucket.bucketName);
+    this.processorLambda.function.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['s3:PutObject'],
+      resources: [supportMediaBucket.arnForObjects('support/*')],
+    }));
+    this.processorLambda.function.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['kms:GenerateDataKey'],
+      resources: [supportMediaKey.keyArn],
+    }));
+    // The new-case email links each admin to the case in the console.
+    this.processorLambda.function.addEnvironment(
+      'ADMIN_BASE_URL',
+      `https://admin.${this.node.tryGetContext('domainName') ?? 'jaleapp.ai'}`,
+    );
+
     // Task 15 (controller-discovered gap): bedrock:InvokeModel grant for the
     // processor's ConverseCommand calls (application-fill extraction).
     // Reuses the same bedrockHaiku45Arns list as the ai-profile-writer
@@ -1123,6 +1192,24 @@ export class WhatsAppStack extends cdk.Stack {
     alarm(
       'WhatsAppReplySendFailuresAlarm', 'WhatsAppReplySendFailures',
       replySendFailureMetric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+    ).addAlarmAction(alarmAction);
+
+    // An admin reply that ended badly: failed for good, of unknown state,
+    // or given up after waiting 7 days for the worker's window (lib/outbox.ts
+    // sendPendingAdminOutbox). Only final outcomes log this term: an attempt
+    // that will be retried logs AdminOutboxDispatchRetry and a reply waiting
+    // for a usable template logs AdminOutboxTemplateUnavailable, neither
+    // filtered, so one passing error pages once at most.
+    const adminOutboxDispatchFailureMetric = new logs.MetricFilter(this, 'AdminOutboxDispatchFailureMetric', {
+      logGroup: this.adminOutboxDispatcherLambda.logGroup,
+      filterPattern: logs.FilterPattern.literal('"AdminOutboxDispatchFailure"'),
+      metricNamespace: 'Jale/WhatsApp',
+      metricName: 'AdminOutboxDispatchFailures',
+      metricValue: '1',
+    });
+    alarm(
+      'WhatsAppAdminOutboxDispatchFailuresAlarm', 'WhatsAppAdminOutboxDispatchFailures',
+      adminOutboxDispatchFailureMetric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
     ).addAlarmAction(alarmAction);
 
     // JobMessageOutboxSendFailed is logged by lib/job-messaging.ts in every

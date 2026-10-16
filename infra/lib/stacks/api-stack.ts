@@ -409,9 +409,11 @@ export class ApiStack extends cdk.Stack {
     });
     apiDb.grantRead(employerJobApplicantsLambda.function);
 
-    // Employer application status update — employer auth, DB access
+    // Employer applicant routes — employer auth, DB access. The entry
+    // dispatches the bare `{workerId}` PATCH (status update) and the
+    // `{workerId}/{action}` child (F19 hire details) to their handlers.
     const employerApplicationStatusUpdateLambda = new JaleLambdaFunction(this, 'EmployerApplicationStatusUpdateLambda', {
-      entry: path.join(__dirname, '../../lambda/api/employer-application-status-update.ts'),
+      entry: path.join(__dirname, '../../lambda/api/employer-applicant-dispatch.ts'),
       description: 'Employer application status update endpoint',
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
@@ -655,9 +657,11 @@ export class ApiStack extends cdk.Stack {
     });
     apiDb.grantRead(workerJobsListLambda.function);
 
-    // Worker job detail — worker auth, DB access
+    // Worker job detail — worker auth, DB access. Since sprint 28 the same
+    // Lambda also serves POST /worker/jobs/{jobId}/view (the job view
+    // capture); worker-job-dispatch.ts picks the handler.
     const workerJobsDetailLambda = new JaleLambdaFunction(this, 'WorkerJobsDetailLambda', {
-      entry: path.join(__dirname, '../../lambda/api/worker-jobs-detail.ts'),
+      entry: path.join(__dirname, '../../lambda/api/worker-job-dispatch.ts'),
       description: 'Worker job detail endpoint',
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
@@ -883,6 +887,12 @@ export class ApiStack extends cdk.Stack {
         authorizer: workerAuthorizer,
         authorizationType: apigateway.AuthorizationType.COGNITO,
       });
+      // POST /worker/jobs/{jobId}/view — admin analytics job view (#17),
+      // served by the detail Lambda (no new function).
+      workerJobResource.addResource('view').addMethod('POST', lambdaIntegration(workerJobsDetailLambda.function), {
+        authorizer: workerAuthorizer,
+        authorizationType: apigateway.AuthorizationType.COGNITO,
+      });
     }
 
     // GET /worker/applications — list worker's own applications
@@ -977,6 +987,15 @@ export class ApiStack extends cdk.Stack {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
+    // PUT /employer/jobs/{jobId}/applicants/{workerId}/hire-details (F19):
+    // a variable `{action}` child on the same Lambda (lib/path-dispatch.ts),
+    // so a later applicant action costs no new Resource or Function.
+    employerJobApplicantResource
+      .addResource('{action}')
+      .addMethod('PUT', lambdaIntegration(employerApplicationStatusUpdateLambda.function), {
+        authorizer: employerAuthorizer,
+        authorizationType: apigateway.AuthorizationType.COGNITO,
+      });
 
     const employerJobCandidatesResource = employerJobResource.addResource('candidates');
     employerJobCandidatesResource.addMethod('GET', lambdaIntegration(employerJobCandidatesLambda.function), {

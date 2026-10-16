@@ -347,8 +347,11 @@ export async function handleRerankMessage(message: EmployerCandidateRerankMessag
     }
 
     // Persisting under the current sourceHash is what ends the retry storm:
-    // the next read finds a fresh cache, so a fallback serves a degraded
-    // ranking for the 24h cache window instead of re-attempting per request.
+    // the next read finds a fresh cache, so a fallback serves its
+    // deterministic ranking instead of re-attempting per request. It stays
+    // fresh for 15 minutes, not the 24 hours an LLM ranking does
+    // (readFreshEmployerCandidateCache in lib/employer-candidate-ranking.ts),
+    // so the ranking is retried soon after a passing failure.
     await writeCache(
       client,
       message.jobId,

@@ -73,7 +73,20 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           SELECT COUNT(*)::int
           FROM job_applications ja
           WHERE ja.job_id = j.id
-        ) AS applicant_count
+        ) AS applicant_count,
+        -- F19 (K4 CCR-3): hires on this job with no start details yet, for
+        -- the dashboard's "Add start details" prompt; 0 when none.
+        (
+          SELECT COUNT(*)::int
+          FROM job_applications ja
+          WHERE ja.job_id = j.id
+            AND ja.status = 'hired'
+            AND ja.hire_start_date IS NULL
+            AND ja.hire_report_location IS NULL
+            AND ja.hire_contact_name IS NULL
+            AND ja.hire_contact_phone IS NULL
+            AND ja.hire_notes IS NULL
+        ) AS hire_details_needed_count
       FROM jobs j
       WHERE j.employer_id = ANY($1::uuid[])
       ORDER BY j.created_at DESC

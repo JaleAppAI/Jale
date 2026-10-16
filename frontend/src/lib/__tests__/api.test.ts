@@ -266,7 +266,7 @@ describe('apiFetch 401 refresh-and-retry', () => {
 
   beforeEach(() => {
     fetchMock = vi.fn();
-    refreshIdToken = vi.fn(async () => 'tok-2');
+    refreshIdToken = vi.fn(async () => ({ status: 'ok' as const, token: 'tok-2' }));
     onSessionExpired = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     vi.stubEnv('NEXT_PUBLIC_API_BASE_URL', 'https://api.example.test');
@@ -301,20 +301,20 @@ describe('apiFetch 401 refresh-and-retry', () => {
     // contract under test is: apiFetch asks once per 401'd request, waits for
     // the shared answer, and replays that request a single time.
     let refreshRuns = 0;
-    let inFlight: Promise<string | null> | null = null;
+    let inFlight: Promise<unknown> | null = null;
     let releaseRefresh!: (token: string) => void;
     const refreshGate = new Promise<string>((resolve) => { releaseRefresh = resolve; });
 
-    const singleFlightRefresh = vi.fn((): Promise<string | null> => {
+    const singleFlightRefresh = vi.fn((): Promise<unknown> => {
       if (inFlight) return inFlight;
-      const run = (async (): Promise<string | null> => {
+      const run = (async () => {
         refreshRuns++;
-        return await refreshGate;
+        return { status: 'ok' as const, token: await refreshGate };
       })();
       inFlight = run;
       return run.finally(() => { inFlight = null; });
     });
-    installBridge({ refreshIdToken: singleFlightRefresh });
+    installBridge({ refreshIdToken: singleFlightRefresh as unknown as AuthBridge['refreshIdToken'] });
 
     fetchMock.mockImplementation(async (_url: string, init: RequestInit & { headers: Record<string, string> }) =>
       init.headers.Authorization === 'tok-2'
@@ -355,8 +355,8 @@ describe('apiFetch 401 refresh-and-retry', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it('expires the session without replaying when the refresh resolves null', async () => {
-    installBridge({ refreshIdToken: vi.fn(async () => null) });
+  it('expires the session without replaying when the refresh is refused', async () => {
+    installBridge({ refreshIdToken: vi.fn(async () => ({ status: 'refused' as const })) as unknown as AuthBridge['refreshIdToken'] });
     fetchMock.mockResolvedValue(mockResponse(401, { error: 'unauthorized' }));
 
     await expect(apiFetch('/worker/profile', {}, 'tok-1')).rejects.toMatchObject({
@@ -367,16 +367,63 @@ describe('apiFetch 401 refresh-and-retry', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('expires the session when the refresh itself throws', async () => {
-    installBridge({ refreshIdToken: vi.fn(async () => { throw new Error('network down'); }) });
+  it('expires the session when the bridge answers with something it cannot read', async () => {
+    installBridge({ refreshIdToken: vi.fn(async () => null) as unknown as AuthBridge['refreshIdToken'] });
     fetchMock.mockResolvedValue(mockResponse(401, { error: 'unauthorized' }));
 
-    await expect(apiFetch('/worker/profile', {}, 'tok-1')).rejects.toMatchObject({
-      status: 401,
-      code: 'session_expired',
-    });
+    await expect(apiFetch('/worker/profile', {}, 'tok-1')).rejects.toMatchObject({ code: 'session_expired' });
     expect(onSessionExpired).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the session and reports offline when the refresh gets no answer', async () => {
+    installBridge({
+      refreshIdToken: vi.fn(async () => { throw new ApiError(0, 'offline'); }) as unknown as AuthBridge['refreshIdToken'],
+    });
+    fetchMock.mockResolvedValue(mockResponse(401, { error: 'unauthorized' }));
+
+    const err = await apiFetch('/worker/profile', {}, 'tok-1').catch((e) => e);
+
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err).toMatchObject({ status: 0, code: 'offline' });
+    expect(onSessionExpired).not.toHaveBeenCalled();
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the session when the refresh endpoint is unavailable', async () => {
+    installBridge({
+      refreshIdToken: vi.fn(async () => ({ status: 'unavailable' as const })) as unknown as AuthBridge['refreshIdToken'],
+    });
+    fetchMock.mockResolvedValue(mockResponse(401, { error: 'unauthorized' }));
+
+    const err = await apiFetch('/worker/profile', {}, 'tok-1').catch((e) => e);
+
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err).toMatchObject({ status: 503, code: 'session_refresh_unavailable' });
+    expect(onSessionExpired).not.toHaveBeenCalled();
+    // No replay: there is no new token to replay with.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('N concurrent 401s during an outage: one refresh, N retryable errors, no sign-out', async () => {
+    let runs = 0;
+    let inFlight: Promise<unknown> | null = null;
+    const outage = vi.fn((): Promise<unknown> => {
+      if (inFlight) return inFlight;
+      inFlight = (async () => { runs++; return { status: 'unavailable' as const }; })()
+        .finally(() => { inFlight = null; });
+      return inFlight;
+    });
+    installBridge({ refreshIdToken: outage as unknown as AuthBridge['refreshIdToken'] });
+    fetchMock.mockResolvedValue(mockResponse(401, { error: 'unauthorized' }));
+
+    const results = await Promise.all(
+      ['/worker/profile', '/worker/jobs', '/worker/applications'].map((p) => apiFetch(p, {}, 'tok-1').catch((e) => e)),
+    );
+
+    expect(runs).toBe(1);
+    expect(results.every((e) => e instanceof ApiError && e.code === 'session_refresh_unavailable')).toBe(true);
+    expect(onSessionExpired).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it('still throws session_expired when no bridge is registered', async () => {

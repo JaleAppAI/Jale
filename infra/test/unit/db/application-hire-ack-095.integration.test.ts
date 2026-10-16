@@ -720,6 +720,10 @@ maybeDescribe('sprint 24: migration 095 stamps and grants the hire acknowledgeme
         // returned its 031 sentinel -- which the hire object reports as null
         // rather than as a company literally named "Empleador".
         company: null,
+        // 125 (F19): the list's own statement selects the start details; none
+        // are saved on this historical hire.
+        details: null,
+        employer_reminded_at: null,
       });
       // Pre-acknowledged, so the web shows NOTHING for this historical hire --
       // the entire point of the backfill.

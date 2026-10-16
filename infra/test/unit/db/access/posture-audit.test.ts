@@ -101,6 +101,70 @@ describe('the change-log file', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // Every table a migration creates is either covered or left out with a
+  // reason. The tables below were created before the file had to name every
+  // table (migration 120 on) and are listed in neither part; the list only
+  // shrinks: a new table goes in `tables` or `excluded_tables`. The two
+  // organization_* tables come from 118, which runs before 120; they stay here
+  // until the change log classifies them.
+  const UNLISTED_BEFORE_120 = [
+    'jale_audit.changes', 'jale_audit.events', 'jale_audit.export_batches', 'jale_audit.export_holds',
+    'jale_audit.export_state', 'public.admin_audit_log', 'public.admin_case_events', 'public.admin_sessions',
+    'public.billing_plans', 'public.city_cbsa_crosswalk', 'public.document_upload_token_slots', 'public.email_outbox',
+    'public.employer_candidate_rankings', 'public.employer_digest_settings', 'public.employer_job_templates',
+    'public.job_candidates', 'public.job_conversation_messages', 'public.job_conversations', 'public.job_message_outbox',
+    'public.job_share_links', 'public.job_share_opens', 'public.job_visibility_events', 'public.jobs',
+    'public.organization_invites', 'public.organization_members',
+    'public.organizations', 'public.problem_report_contents', 'public.problem_report_rate_buckets',
+    'public.problem_report_settings', 'public.problem_reports', 'public.referral_apply_tokens',
+    'public.referral_pending_claims', 'public.trade_aliases', 'public.trade_questions', 'public.wage_references',
+    'public.whatsapp_conversations', 'public.whatsapp_outbox', 'public.whatsapp_processed_messages',
+    'public.whatsapp_runtime_controls', 'public.worker_attribution', 'public.worker_domain_outbox',
+    'public.worker_job_impressions', 'public.worker_match_log', 'public.worker_message_intents',
+    'public.worker_onboarding_state', 'public.worker_profile_ai_extractions', 'public.worker_referred_jobs',
+    'public.worker_reset_audit', 'public.worker_thread_counters', 'public.worker_trust_assessments',
+    'public.worker_trust_extractions', 'public.worker_workflow_runs', 'public.worker_workflow_transitions',
+  ];
+
+  /** The tables the migrations leave behind, in apply order, comments stripped. */
+  function migrationTables(): Set<string> {
+    const dir = path.join(__dirname, '..', '..', '..', '..', 'db', 'migrations');
+    const name = String.raw`(?:"?[a-z_][a-z0-9_]*"?\.)?"?[a-z_][a-z0-9_]*"?`;
+    const statement = new RegExp(
+      String.raw`\b(?:(CREATE)\s+(?:UNLOGGED\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(${name})`
+      + String.raw`|(DROP)\s+TABLE\s+(?:IF\s+EXISTS\s+)?(${name})`
+      + String.raw`|ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?(${name})\s+RENAME\s+TO\s+("?[a-z_][a-z0-9_]*"?))`,
+      'gi',
+    );
+    const qualify = (raw: string, schema = 'public') => {
+      const bare = raw.replace(/"/g, '').toLowerCase();
+      return bare.includes('.') ? bare : `${schema}.${bare}`;
+    };
+    const tables = new Set<string>();
+    for (const file of fs.readdirSync(dir).filter((f) => f.endsWith('.sql')).sort()) {
+      const code = fs.readFileSync(path.join(dir, file), 'utf8').replace(/--[^\n]*/g, '');
+      for (const m of code.matchAll(statement)) {
+        if (m[1]) tables.add(qualify(m[2]));
+        else if (m[3]) tables.delete(qualify(m[4]));
+        else {
+          const from = qualify(m[5]);
+          tables.delete(from);
+          tables.add(qualify(m[6], from.split('.')[0]));
+        }
+      }
+    }
+    return tables;
+  }
+
+  it('names every table a migration creates, covered or left out with a reason', () => {
+    const created = migrationTables();
+    const listed = new Set([...Object.keys(changeLog.tables), ...Object.keys(changeLog.excluded_tables)]);
+    // The scan is not empty-handed: every listed table is one a migration creates.
+    expect([...listed].filter((t) => !created.has(t))).toEqual([]);
+    expect(UNLISTED_BEFORE_120.filter((t) => !created.has(t) || listed.has(t))).toEqual([]);
+    expect([...created].filter((t) => !listed.has(t) && !UNLISTED_BEFORE_120.includes(t)).sort()).toEqual([]);
+  });
 });
 
 describe('evaluateAuditPosture', () => {

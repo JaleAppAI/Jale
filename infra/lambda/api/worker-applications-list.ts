@@ -137,6 +137,16 @@ const APPLICATION_COLUMNS = `a.id AS application_id, a.job_id,
         COALESCE(a.hired_at, a.updated_at) AS hired_at,
         a.hired_seen_at,
         a.hired_ack_at,
+        -- 125 (F19): the start details the employer added and the worker's
+        -- last reminder. Stripped below and published only through hire;
+        -- to_char for the same DATE reason as job_start_date.
+        to_char(a.hire_start_date, 'YYYY-MM-DD') AS hire_start_date,
+        a.hire_report_location,
+        a.hire_contact_name,
+        a.hire_contact_phone,
+        a.hire_notes,
+        a.hire_details_updated_at,
+        a.hire_details_reminded_at,
         j.title AS job_title,
         employer_display_name(j.employer_id) AS company_name,
         CASE WHEN j.status = 'paused' THEN 'closed' ELSE j.status END AS job_status,
@@ -375,6 +385,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         job_shift_schedule: _jobShiftSchedule,
         job_trade_category: _jobTradeCategory,
         job_trade_category_other: _jobTradeCategoryOther,
+        // 125: published only through hire (details, employer_reminded_at).
+        hire_start_date: _hireStartDate,
+        hire_report_location: _hireReportLocation,
+        hire_contact_name: _hireContactName,
+        hire_contact_phone: _hireContactPhone,
+        hire_notes: _hireNotes,
+        hire_details_updated_at: _hireDetailsUpdatedAt,
+        hire_details_reminded_at: _hireDetailsRemindedAt,
         ...application
       } = row;
       const remaining = computeRemaining(snapshotFromRow(row));

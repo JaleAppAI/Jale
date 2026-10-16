@@ -1,51 +1,51 @@
+import { TableScroll } from '@/components/ui/table-scroll';
 import { formatCount } from '@/lib/analytics-format';
 import { bulkRunsNote, resetTableRows } from '@/lib/restarts';
 import type { OperatorReset } from '@/lib/types';
+import { AnalyticsPanel } from './AnalyticsPanel';
+import { TABLE, TD, TD_NUM, TD_WRAP, TH, TH_NUM } from './table-styles';
 
 export function OperatorResets({ rows, now }: { rows: OperatorReset[]; now: Date }) {
   const tableRows = resetTableRows(rows, now);
   const bulkNote = bulkRunsNote(rows, now);
   return (
-    <article className="card cohort-card">
-      <div className="chart-head" style={{ marginBottom: 8 }}>
-        <div>
-          <h2>Operator resets</h2>
-          <p>Newest first · workers an operator sent back to the start of onboarding, by week and reason</p>
-          <p>Operator resets have no door, so this table shows every door.</p>
-        </div>
-      </div>
+    <AnalyticsPanel
+      title="Operator resets"
+      subtitle="Newest first · workers an operator sent back to the start of onboarding, by week and reason. Operator resets have no door, so this table shows every door."
+      howCounted="Operator resets count every reset an operator ran; a reason used for 10 or more workers within an hour is a bulk run, left out of the counts and listed under the table. Reasons are typed by operators; long numbers, emails and IDs are hidden."
+    >
       {tableRows.length === 0 ? (
-        <p className="muted">
+        <p className="m-0 text-sm text-[var(--jale-ink-2)]">
           {bulkNote === null ? 'No operator resets in these weeks.' : 'No other operator resets in these weeks.'}
         </p>
       ) : (
-        <div className="table-scroll" role="region" aria-label="Operator resets table" tabIndex={0}>
-          <table className="data-table cohort-table">
+        <TableScroll label="Operator resets table">
+          <table className={TABLE}>
             <thead>
               <tr>
-                <th>Week</th>
-                <th>Reason</th>
-                <th className="num">Workers</th>
-                <th className="num">Resets</th>
+                <th className={TH}>Week</th>
+                <th className={TH}>Reason</th>
+                <th className={TH_NUM}>Workers</th>
+                <th className={TH_NUM}>Resets</th>
               </tr>
             </thead>
             <tbody>
               {tableRows.map((row) => (
                 <tr key={`${row.weekStart}:${row.reason}`}>
-                  <td>
+                  <td className={TD}>
                     {row.label}
-                    {row.current ? <span className="cohort-settling" title="This week is still in progress">so far</span> : null}
+                    {row.current ? <span className="ml-2 text-xs text-[var(--jale-ink-2)]" title="This week is still in progress">so far</span> : null}
                   </td>
-                  <td className="wrap restarts-reason">{row.reason}</td>
-                  <td className="num">{formatCount(row.workers)}</td>
-                  <td className="num">{formatCount(row.resets)}</td>
+                  <td className={TD_WRAP}>{row.reason}</td>
+                  <td className={TD_NUM}>{formatCount(row.workers)}</td>
+                  <td className={TD_NUM}>{formatCount(row.resets)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
-        </div>
+        </TableScroll>
       )}
-      {bulkNote === null ? null : <p className="muted restarts-note">{bulkNote}</p>}
-    </article>
+      {bulkNote === null ? null : <p className="m-0 text-sm text-[var(--jale-ink-2)] [overflow-wrap:anywhere]">{bulkNote}</p>}
+    </AnalyticsPanel>
   );
 }

@@ -7,10 +7,45 @@ import { resolveJobLocationFields } from '../lib/job-location-parse';
 import { parsePreApplicationPrompts } from '../lib/pre-application-prompts';
 import { setJobCoordinates } from '../lib/location';
 import { parseCityFields, parseCityFromLocation } from '../lib/city-fields';
+import { isUuid } from '../lib/uuid';
 import { checkCompliance } from '../legal/check-compliance';
 import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
+import type { PoolClient } from 'pg';
 
 const CORS_HEADERS = corsHeaders();
+
+/**
+ * The saved template the job started from (contract K3.6, analytics item
+ * 18), kept only when it is one of the caller's company's templates (the
+ * set GET /employer/templates lists: the same jale_internal.org_member_scope
+ * array as 119's employer_job_templates_org_read policy), checked inside the
+ * caller's own RLS context; anything else is stored as no template. The
+ * check runs under its own savepoint, so it can never fail the post.
+ */
+async function ownTemplateId(client: PoolClient, value: unknown, callerId: string | undefined): Promise<string | null> {
+  if (typeof value !== 'string' || !isUuid(value) || !callerId) return null;
+  try {
+    await client.query('SAVEPOINT template_check');
+  } catch {
+    return null;
+  }
+  try {
+    const found = await client.query(
+      'SELECT 1 FROM employer_job_templates WHERE id = $1 AND employer_id = ANY ((SELECT jale_internal.org_member_scope($2::text))::uuid[])',
+      [value, callerId],
+    );
+    await client.query('RELEASE SAVEPOINT template_check');
+    return (found?.rowCount ?? 0) > 0 ? value : null;
+  } catch {
+    try {
+      await client.query('ROLLBACK TO SAVEPOINT template_check');
+      await client.query('RELEASE SAVEPOINT template_check');
+    } catch {
+      // The INSERT below reports a broken transaction.
+    }
+    return null;
+  }
+}
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   let client;
@@ -58,6 +93,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       city?: string | null;
       state?: string;
       state_region?: string | null;
+      /** The saved template the employer applied (K3.6); stored only if it is the caller's own. */
+      template_id?: unknown;
     };
     try {
       body = JSON.parse(event.body ?? '{}');
@@ -262,6 +299,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       ? null
       : JSON.stringify(jobFields.value.certification_requirements);
 
+    // Sprint 28: appended last ($36), for the same positional reason as 077's.
+    const templateId = await ownTemplateId(client, body.template_id, userId);
+
     const result = await client.query(
       `INSERT INTO jobs (
          employer_id,
@@ -298,11 +338,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          shift_start,
          shift_end,
          certification_requirements,
-         pre_application_prompts
+         pre_application_prompts,
+         created_from_template_id
        )
        VALUES (
          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::date, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
-         $29, $30, $31, $32::time, $33::time, $34::jsonb, $35::jsonb
+         $29, $30, $31, $32::time, $33::time, $34::jsonb, $35::jsonb, $36
        )
        RETURNING id, title, location, pay, job_type, status, required_docs, optional_docs, required_fields, optional_fields, created_at,
          pay_min, pay_max, pay_interval, start_date, expected_duration, shift_schedule,
@@ -354,6 +395,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         // `JSON.stringify(null) -> jsonb scalar null` trap that
         // certification_requirements has to dodge above cannot arise here.
         JSON.stringify(pre_application_prompts),
+        templateId,
       ],
     );
     const job = result.rows[0];

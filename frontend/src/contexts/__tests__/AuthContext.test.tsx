@@ -29,6 +29,7 @@ vi.mock('@/lib/api', () => ({ apiFetch }));
 vi.mock('@/lib/auth-bridge', () => ({ registerAuthBridge, getAuthBridge }));
 
 import { AuthProvider, useAuth } from '@/contexts/AuthContext';
+import { ApiError } from '@/lib/api/errors';
 
 const WORKER_SLOT = 'jale.session.worker';
 const EMPLOYER_SLOT = 'jale.session.employer';
@@ -264,5 +265,154 @@ describe('AuthProvider — a session from an older build', () => {
 
         await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('ready:none'));
         expect(refreshCalls()).toEqual([]);
+    });
+});
+
+/*
+ * What a renewal REPORTS. The transport (`lib/api.ts`) decides from this
+ * whether a 401 ends the session, so "refused", "the server had a bad day"
+ * and "no answer at all" must arrive as three different things.
+ */
+describe('AuthProvider — what a renewal reports', () => {
+    const results: unknown[] = [];
+
+    function RenewProbe() {
+        const { refreshIdToken, getValidIdTokenOrNull, isLoading, idToken } = useAuth();
+        return (
+            <div>
+                <span data-testid="state">{isLoading ? 'loading' : `ready:${idToken ?? 'none'}`}</span>
+                <button
+                    type="button"
+                    onClick={() => {
+                        refreshIdToken().then((r) => results.push(r), (err: unknown) => results.push({ rejected: err }));
+                    }}
+                >
+                    renew
+                </button>
+                <button
+                    type="button"
+                    onClick={() => {
+                        getValidIdTokenOrNull().then((r) => results.push(r));
+                    }}
+                >
+                    read token
+                </button>
+            </div>
+        );
+    }
+
+    /** A JWT-shaped token whose `exp` is `secondsFromNow` away. */
+    function tokenExpiringIn(secondsFromNow: number): string {
+        const payload = btoa(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + secondsFromNow })).replace(/=+$/, '');
+        return `header.${payload}.signature`;
+    }
+
+    beforeEach(() => {
+        results.length = 0;
+        localStorage.setItem(WORKER_SLOT, 'rt-worker');
+        window.history.replaceState(null, '', '/es/worker/home');
+        apiFetch.mockReset();
+        // The mount restore lands a session first; each test queues the
+        // renewal's own answer behind it.
+        apiFetch.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ accessToken: 'a-1', idToken: 'id-1' }) });
+    });
+
+    async function renewWith(answer: unknown) {
+        const user = userEvent.setup();
+        render(<AuthProvider locale="es"><RenewProbe /></AuthProvider>);
+        await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('ready:id-1'));
+        if (answer instanceof Error) apiFetch.mockRejectedValueOnce(answer);
+        else apiFetch.mockResolvedValueOnce(answer);
+        await user.click(screen.getByRole('button', { name: 'renew' }));
+        await waitFor(() => expect(results).toHaveLength(1));
+        return results[0];
+    }
+
+    it('reports an outage as unavailable and keeps the session and the token', async () => {
+        const result = await renewWith({ ok: false, status: 503, json: async () => ({}) });
+
+        expect(result).toEqual({ status: 'unavailable' });
+        expect(localStorage.getItem(WORKER_SLOT)).toBe('rt-worker');
+        expect(screen.getByTestId('state')).toHaveTextContent('ready:id-1');
+    });
+
+    it('reports a refused token as refused and drops that role only', async () => {
+        localStorage.setItem(EMPLOYER_SLOT, 'rt-employer');
+        const result = await renewWith({ ok: false, status: 401, json: async () => ({}) });
+
+        expect(result).toEqual({ status: 'refused' });
+        await waitFor(() => expect(localStorage.getItem(WORKER_SLOT)).toBeNull());
+        expect(localStorage.getItem(EMPLOYER_SLOT)).toBe('rt-employer');
+    });
+
+    it('hands back the new token', async () => {
+        const result = await renewWith({ ok: true, status: 200, json: async () => ({ accessToken: 'a-2', idToken: 'id-2' }) });
+
+        expect(result).toEqual({ status: 'ok', token: 'id-2' });
+        await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('ready:id-2'));
+    });
+
+    it('rejects when the renewal got no answer, and keeps the session', async () => {
+        const result = await renewWith(new ApiError(0, 'offline')) as { rejected: unknown };
+
+        expect(result.rejected).toMatchObject({ status: 0, code: 'offline' });
+        expect(localStorage.getItem(WORKER_SLOT)).toBe('rt-worker');
+        expect(screen.getByTestId('state')).toHaveTextContent('ready:id-1');
+    });
+
+    it('reports a request fault (400) as refused and drops that role only', async () => {
+        localStorage.setItem(EMPLOYER_SLOT, 'rt-employer');
+        const result = await renewWith({ ok: false, status: 400, json: async () => ({}) });
+
+        expect(result).toEqual({ status: 'refused' });
+        await waitFor(() => expect(localStorage.getItem(WORKER_SLOT)).toBeNull());
+        expect(localStorage.getItem(EMPLOYER_SLOT)).toBe('rt-employer');
+    });
+
+    it('reports a throttled renewal (429) as unavailable and keeps the session', async () => {
+        const result = await renewWith({ ok: false, status: 429, json: async () => ({}) });
+
+        expect(result).toEqual({ status: 'unavailable' });
+        expect(localStorage.getItem(WORKER_SLOT)).toBe('rt-worker');
+    });
+
+    it('reports a forbidden renewal (403) as refused', async () => {
+        const result = await renewWith({ ok: false, status: 403, json: async () => ({}) });
+
+        expect(result).toEqual({ status: 'refused' });
+        await waitFor(() => expect(localStorage.getItem(WORKER_SLOT)).toBeNull());
+    });
+
+    it('reports an unreadable success body as unavailable', async () => {
+        const result = await renewWith({ ok: true, status: 200, json: async () => { throw new SyntaxError('not json'); } });
+
+        expect(result).toEqual({ status: 'unavailable' });
+        expect(localStorage.getItem(WORKER_SLOT)).toBe('rt-worker');
+    });
+
+    it('treats a success without an id token as refused, as before', async () => {
+        const result = await renewWith({ ok: true, status: 200, json: async () => ({ accessToken: 'a-2' }) });
+
+        expect(result).toEqual({ status: 'refused' });
+        await waitFor(() => expect(localStorage.getItem(WORKER_SLOT)).toBeNull());
+    });
+
+    it('lets a token read join a renewal already running, with one request between them', async () => {
+        apiFetch.mockReset();
+        apiFetch.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ accessToken: 'a-1', idToken: tokenExpiringIn(10) }) });
+        let release!: (value: unknown) => void;
+        apiFetch.mockReturnValueOnce(new Promise((resolve) => { release = resolve; }));
+        const user = userEvent.setup();
+        render(<AuthProvider locale="es"><RenewProbe /></AuthProvider>);
+        await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('ready:header.'));
+
+        await user.click(screen.getByRole('button', { name: 'renew' }));
+        await user.click(screen.getByRole('button', { name: 'read token' }));
+        release({ ok: true, status: 200, json: async () => ({ accessToken: 'a-2', idToken: 'id-2' }) });
+
+        await waitFor(() => expect(results).toHaveLength(2));
+        expect(results).toEqual(expect.arrayContaining([{ status: 'ok', token: 'id-2' }, 'id-2']));
+        // The mount restore, then ONE renewal shared by both callers.
+        expect(refreshCalls()).toHaveLength(2);
     });
 });

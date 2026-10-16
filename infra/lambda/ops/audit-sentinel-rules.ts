@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 /**
  * The audit sentinel's classification rules: pure
  * functions from one EventBridge event to what the sentinel does with it.
@@ -19,8 +21,11 @@
  *
  * WHAT IS ARCHIVED under `findings/`: for a CloudTrail event, the alert record
  * only (the full event is already in the trail's own archive, and the eventId
- * finds it); for a GuardDuty or Security Hub finding, the classification and
- * the finding, which exist nowhere else.
+ * finds it); for a GuardDuty finding, the classification and the finding,
+ * which exist nowhere else; for a Security Hub finding that alerts, the alert
+ * record only, keyed by the finding's state (the finding stays in Security
+ * Hub, and its Id, an ARN, is kept out of the archive); for any other Security
+ * Hub finding, the classification and the findings.
  */
 
 export interface SentinelConfig {
@@ -93,6 +98,9 @@ export interface AlertRecord {
   target?: string;
   findingType?: string;
   severity?: string;
+  /** A failed sign-in's auth flow and challenge: one of Cognito's own codes, or `other`. */
+  authFlow?: string;
+  challengeName?: string;
   poolMatch?: true;
 }
 
@@ -100,7 +108,12 @@ export type ArchiveCategory = 'cloudtrail' | 'guardduty' | 'securityhub' | 'cogn
 
 export interface ArchiveRecord {
   category: ArchiveCategory;
-  /** `findings/<category>/dt=<UTC day>/<id>.json.gz`; one key per source event, so a repeat is a no-op. */
+  /**
+   * `findings/<category>/dt=<UTC day>/<id>.json.gz`: one key per source event,
+   * so a repeat is a no-op. A Security Hub alert's record is keyed by its
+   * finding's state instead, `findings/securityhub-state/<sha256 hex>.json.gz`,
+   * so a re-import of the same state is a no-op too.
+   */
   key: string;
   body: Record<string, unknown>;
 }
@@ -110,7 +123,7 @@ export type Classification =
   | { action: 'archive'; archive: ArchiveRecord }
   | { action: 'expected'; reason: string }
   | { action: 'ignore'; reason: string }
-  /** A failed user-pool sign-in: the handler resolves the admin pool, then calls classifyCognitoFailure. */
+  /** A failed user-pool sign-in: the handler resolves the admin pool and its app clients, then calls classifyCognitoFailure. */
   | { action: 'cognito' };
 
 type Json = Record<string, any>;
@@ -722,27 +735,76 @@ function classifyGuardDuty(event: Json): Classification {
   return { action: 'alert', alert, archive: { ...archive, body: { ...archive.body, alert } } };
 }
 
+/**
+ * Whether a Security Hub finding alerts: CRITICAL, still active and not
+ * suppressed, and a control that FAILED or no compliance status at all (a
+ * finding that is not a control's). A CRITICAL control that PASSED, or
+ * reports WARNING or NOT_AVAILABLE, does not; nor does a finding whose record
+ * state is ARCHIVED or whose workflow status is SUPPRESSED.
+ */
+function securityHubFindingAlerts(finding: Json): boolean {
+  if (finding?.Severity?.Label !== 'CRITICAL') return false;
+  if (finding?.RecordState === 'ARCHIVED' || finding?.Workflow?.Status === 'SUPPRESSED') return false;
+  const status = str(finding?.Compliance?.Status);
+  return status === undefined || status === 'FAILED';
+}
+
+/**
+ * Where a finding's alert is recorded: the SHA-256 of its Id, compliance
+ * status and severity label (`NONE` for an absent one), so every import of the
+ * same state finds the same record, and the key never carries the Id itself.
+ * Undefined for a finding with no Id.
+ */
+function securityHubStateKey(finding: Json): string | undefined {
+  const id = str(finding?.Id);
+  if (!id) return undefined;
+  const state = [id, str(finding?.Compliance?.Status) ?? 'NONE', str(finding?.Severity?.Label) ?? 'NONE'].join('|');
+  return `findings/securityhub-state/${createHash('sha256').update(state, 'utf8').digest('hex')}.json.gz`;
+}
+
+/**
+ * Security Hub re-imports an active finding at every evaluation, each time in
+ * a new event, so an alerting finding (securityHubFindingAlerts: CRITICAL,
+ * active, not suppressed, FAILED or with no compliance status) is recorded by
+ * its state, not its event: an alert per (Id, compliance status, severity). A
+ * re-import of a state finds its record and stops; a new status or severity
+ * alerts once. A state already recorded never alerts again, so a control that
+ * fails again after passing finds its earlier FAILED record and stays quiet:
+ * the records are written once and cannot hold a latest state. An event
+ * carrying several alerting findings alerts on the first of them only; an
+ * import event normally carries one finding. The alert names the EventBridge
+ * event, never the finding's Id. A finding that does not alert, an archived or
+ * suppressed one included, is archived under its event with the findings.
+ */
 function classifySecurityHub(event: Json): Classification {
   const findings: Json[] = Array.isArray(event.detail?.findings) ? event.detail.findings : [];
-  const critical = findings.find((f) => f?.Severity?.Label === 'CRITICAL');
-  const archive: ArchiveRecord = {
-    category: 'securityhub',
-    key: archiveKey('securityhub', event.time, event.id),
-    body: { classification: critical ? 'alert' : 'archive', findings },
-  };
-  if (!critical) return { action: 'archive', archive };
+  const alerting = findings.find(securityHubFindingAlerts);
+  if (!alerting) {
+    return {
+      action: 'archive',
+      archive: { category: 'securityhub', key: archiveKey('securityhub', event.time, event.id), body: { classification: 'archive', findings } },
+    };
+  }
   const alert = compact({
     rule: 'securityhub_finding',
     summary: SUMMARIES.securityhub_finding,
     eventTime: safe(event.time),
     awsRegion: safe(event.region),
-    eventId: safe(critical.Id),
+    eventId: safe(event.id),
     principalType: 'finding',
-    findingType: safe(critical.Title),
+    findingType: safe(alerting.Title),
     severity: 'CRITICAL',
-    target: safe(critical.Resources?.[0]?.Type),
+    target: safe(alerting.Resources?.[0]?.Type),
   });
-  return { action: 'alert', alert, archive: { ...archive, body: { ...archive.body, alert } } };
+  return {
+    action: 'alert',
+    alert,
+    archive: {
+      category: 'securityhub',
+      key: securityHubStateKey(alerting) ?? archiveKey('securityhub', event.time, event.id),
+      body: { classification: 'alert', alert },
+    },
+  };
 }
 
 /** What the sentinel does with one EventBridge event. */
@@ -760,14 +822,48 @@ export function classifyEvent(event: Json, config: SentinelConfig): Classificati
 // ── Admin sign-in failures ──────────────────────────────────────────────
 //
 // Admins' failed passwords and second factors happen between the browser and
-// Cognito, so CloudTrail is their only record. The admin pool's failures
-// alert; nothing of another pool's is kept (personal data). A failure that
-// names no pool is counted by the handler (AuditCognitoEventUnattributed).
+// Cognito, so CloudTrail is their only record. A failure is the admin pool's
+// when the event names that pool, or, when it names no pool, when it names one
+// of that pool's app clients: a browser's sign-in calls name their app client
+// (`requestParameters.clientId`) and no pool, a remembered browser's device
+// step included. The admin pool's failures alert with codes only (the error,
+// and the auth flow and challenge as Cognito's own codes), never the client
+// id, the user's sub, the session or a device key; nothing of another pool's
+// is kept (personal data). A failure that names neither a pool nor a
+// client is counted by the handler (AuditCognitoEventUnattributed).
 
 const USER_POOL_ARN = /:userpool\/([\w-]+_[0-9A-Za-z]+)$/;
 const USER_POOL_ID = /^[\w-]+_[0-9A-Za-z]+$/;
+/** Cognito app client ids are lowercase letters and digits. */
+const APP_CLIENT_ID = /^[0-9a-z]{1,128}$/;
 
-/** The user pool a Cognito event names, or null when it names none. */
+/** Cognito's auth flows (AuthFlowType), the only values an alert's `authFlow` takes besides `other`. */
+export const COGNITO_AUTH_FLOWS = [
+  'ADMIN_NO_SRP_AUTH', 'ADMIN_USER_PASSWORD_AUTH', 'CUSTOM_AUTH', 'REFRESH_TOKEN', 'REFRESH_TOKEN_AUTH', 'USER_AUTH',
+  'USER_PASSWORD_AUTH', 'USER_SRP_AUTH',
+] as const;
+
+/** Cognito's challenges (ChallengeNameType), the only values an alert's `challengeName` takes besides `other`. */
+export const COGNITO_CHALLENGE_NAMES = [
+  'ADMIN_NO_SRP_AUTH', 'CUSTOM_CHALLENGE', 'DEVICE_PASSWORD_VERIFIER', 'DEVICE_SRP_AUTH', 'EMAIL_OTP', 'MFA_SETUP',
+  'NEW_PASSWORD_REQUIRED', 'PASSWORD', 'PASSWORD_SRP', 'PASSWORD_VERIFIER', 'SELECT_CHALLENGE', 'SELECT_MFA_TYPE', 'SMS_MFA',
+  'SMS_OTP', 'SOFTWARE_TOKEN_MFA', 'WEB_AUTHN',
+] as const;
+
+/**
+ * A request value as a code from a fixed list: the value when the list holds
+ * it exactly, `other` for anything else, and undefined when the request has
+ * no such value. Never the value itself when it is not in the list.
+ */
+function codeFrom(list: readonly string[], value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  return typeof value === 'string' && list.includes(value) ? value : 'other';
+}
+
+/**
+ * The user pool a Cognito event names, or null when it names none. A
+ * browser's sign-in calls name their app client instead (cognitoClientIdOf).
+ */
 export function cognitoPoolIdOf(detail: Json): string | null {
   const candidates = [detail?.additionalEventData?.userPoolId, detail?.requestParameters?.userPoolId];
   for (const candidate of candidates) {
@@ -781,17 +877,32 @@ export function cognitoPoolIdOf(detail: Json): string | null {
   return null;
 }
 
+/** The app client a Cognito event names (`requestParameters.clientId`), or null when it names none in Cognito's form. */
+export function cognitoClientIdOf(detail: Json): string | null {
+  const candidate = detail?.requestParameters?.clientId;
+  return typeof candidate === 'string' && APP_CLIENT_ID.test(candidate) ? candidate : null;
+}
+
 /**
- * A failed sign-in, given the admin pool's id: an alert carrying codes only
- * (no subject, no address, no request), or a drop.
+ * A failed sign-in, given the admin pool's id and its app clients: an alert
+ * carrying codes only (no subject, no client, no address, no request), or a
+ * drop. Its auth flow and challenge are named by Cognito's own codes, so a
+ * refused refresh token reads apart from a wrong password (both fail with
+ * NotAuthorizedException). An event that names a pool is the admin pool's only when that pool is
+ * the admin pool, whatever client it names; an event that names no pool is
+ * the admin pool's when its app client is one of the admin pool's.
  */
 export function classifyCognitoFailure(
   event: Json,
   adminPoolId: string,
+  adminClientIds: ReadonlySet<string>,
 ): { action: 'alert'; alert: AlertRecord; archive: ArchiveRecord } | { action: 'drop' } {
   const detail: Json = event?.detail && typeof event.detail === 'object' ? event.detail : {};
   if (!has(COGNITO_SIGN_IN_EVENTS, detail.eventName) || !str(detail.errorCode)) return { action: 'drop' };
-  if (cognitoPoolIdOf(detail) !== adminPoolId) return { action: 'drop' };
+  const poolId = cognitoPoolIdOf(detail);
+  const clientId = cognitoClientIdOf(detail);
+  const inAdminPool = poolId !== null ? poolId === adminPoolId : clientId !== null && adminClientIds.has(clientId);
+  if (!inAdminPool) return { action: 'drop' };
   const alert = compact({
     rule: 'admin_sign_in_failed',
     summary: SUMMARIES.admin_sign_in_failed,
@@ -802,6 +913,8 @@ export function classifyCognitoFailure(
     eventId: safe(detail.eventID),
     principalType: principalType(detail),
     errorCode: safe(detail.errorCode),
+    authFlow: codeFrom(COGNITO_AUTH_FLOWS, params(detail).authFlow),
+    challengeName: codeFrom(COGNITO_CHALLENGE_NAMES, params(detail).challengeName),
     poolMatch: true,
   });
   return {

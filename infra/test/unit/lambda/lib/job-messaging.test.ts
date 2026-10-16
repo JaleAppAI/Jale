@@ -769,6 +769,19 @@ describe('queueConversationMessageFromEmployer template dedupe (R7)', () => {
     expect(outboxInserts(calls).some((call) => /'template'/.test(call.sql))).toBe(true);
   });
 
+  // F19 (sprint 28): a hired worker can now write from the web. That message
+  // is an inbound row, but it opens no WhatsApp window, so it never moves
+  // last_worker_message_at. The dedupe must still count it as the worker's
+  // latest action, or an employer reply after it is never announced.
+  it('counts the newest inbound message, web ones included, as the worker\'s last action', async () => {
+    const { client: c, calls } = employerClient({ pendingTemplate: false });
+    await queueConversationMessageFromEmployer(c, CONV_A, ACTOR, 'reply after a web message');
+    const dedupeSql = calls.map((call) => call.sql).find((sql) => /send_kind = 'template'/.test(sql) && /SELECT EXISTS/.test(sql))!;
+    const flat = dedupeSql.replace(/\s+/g, ' ');
+    expect(flat).toContain('GREATEST(jc.accepted_at, jc.last_worker_message_at, '
+      + "(SELECT max(m.created_at) FROM job_conversation_messages m WHERE m.conversation_id = jc.id AND m.direction = 'inbound'))");
+  });
+
   it('ignores permanently-failed templates in the dedupe check (dead invites must not suppress new ones)', async () => {
     const { client: c, calls } = employerClient({ pendingTemplate: false });
     await queueConversationMessageFromEmployer(c, CONV_A, ACTOR, 'msg after dead template');

@@ -4,6 +4,7 @@ import { useTranslations } from 'next-intl';
 import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { employerConfirmSignUp, employerSignIn, employerSignUp, employerForgotPassword, employerConfirmNewPassword, employerResendConfirmationCode } from '@/lib/cognito';
+import { captureSignupSource } from '@/lib/signup-source';
 import { authErrorKey, confirmErrorKey, forgotErrorKey, resendErrorKey } from '@/lib/auth-errors';
 import { formatPhoneNumber, type PhoneCountryCode } from '@/lib/phone';
 import type { CompanySize, EmployerJobType, EmployerProfilePatch, EmployerTrade } from '@/lib/api/employer';
@@ -16,6 +17,7 @@ import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { CheckboxCard } from '@/components/ui/checkbox-card';
 import { PhoneNumberField } from '@/components/auth/PhoneNumberField';
+import { SUPPORT_CONTACT } from '@/lib/support-contact';
 
 const TRADES: EmployerTrade[] = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting', 'other'];
 const JOB_TYPES: EmployerJobType[] = ['full-time', 'part-time', 'contract'];
@@ -91,6 +93,13 @@ export default function EmployerAuthForm() {
     const [error, setError] = useState<string | null>(null);
     const [missingFields, setMissingFields] = useState<EmployerSignupField[]>([]);
     const [isLoading, setIsLoading] = useState(false);
+    // The employer sign-up page is a first-party entry (analytics #16, K3.6).
+    // Read from the address on arrival, once -- the `?apply=1` precedent in
+    // the worker job page -- rather than through `useSearchParams`, which this
+    // form does not otherwise need.
+    useEffect(() => {
+        captureSignupSource({ src: new URLSearchParams(window.location.search).get('src'), entry: 'signup_page' });
+    }, []);
     const [resetSuccess, setResetSuccess] = useState(false);
     const [forgotEmail, setForgotEmail] = useState('');
     const [resetCode, setResetCode] = useState('');
@@ -99,6 +108,13 @@ export default function EmployerAuthForm() {
     const [showNewPassword, setShowNewPassword] = useState(false);
     const [showNewPasswordConfirm, setShowNewPasswordConfirm] = useState(false);
     const [confirmOrigin, setConfirmOrigin] = useState<ConfirmOrigin>('signup');
+    /**
+     * The confirm step was reached from "Forgot password?" (F4). There, an
+     * account that turns out to be CONFIRMED is one whose email was never
+     * verified: no reset code can reach it, so the forgot flow must not be
+     * offered back to it as the way out.
+     */
+    const [recoveryFromForgot, setRecoveryFromForgot] = useState(false);
     const [isResending, setIsResending] = useState(false);
     const [resendCooldown, setResendCooldown] = useState(0);
     const [resendSuccess, setResendSuccess] = useState(false);
@@ -183,14 +199,24 @@ export default function EmployerAuthForm() {
         targetEmail: string,
         outcome: ResendOutcome,
         notice: 'code_sent' | 'not_confirmed' = 'code_sent',
+        from: 'signin' | 'forgot' = 'signin',
     ) => {
         setEmail(targetEmail);
         setResetSuccess(false);
         if (outcome.status === 'failed' && outcome.key === 'errors.already_confirmed') {
+            if (from === 'forgot') {
+                // Confirmed, yet ForgotPassword found no verified contact: the
+                // email was never verified, so neither a reset code nor a
+                // confirmation code can reach it. Stay on this step with a
+                // sentence that does not send them back into the same flow.
+                setError(t('errors.reset_unavailable', { email: SUPPORT_CONTACT.email }));
+                return;
+            }
             goToStep('login');
             setError(t(outcome.key));
             return;
         }
+        setRecoveryFromForgot(from === 'forgot');
         setConfirmationCode('');
         setConfirmOrigin('signin');
         goToStep('confirm');
@@ -316,6 +342,7 @@ export default function EmployerAuthForm() {
             await employerSignUp({ email, password, companyName, contactName, phone });
             setConfirmationCode('');
             setConfirmOrigin('signup');
+            setRecoveryFromForgot(false);
             setResendSuccess(false);
             // Sign-up itself just sent a code, so it counts as the first send:
             // start the cooldown now rather than letting an immediate resend
@@ -374,7 +401,11 @@ export default function EmployerAuthForm() {
                 savePendingSignupProfile();
                 goToStep('login');
                 setResetSuccess(false);
-                setError(t(key));
+                // From the forgot flow, "confirmed" means the email was never
+                // verified: the usual "use Forgot password?" advice is the loop.
+                setError(recoveryFromForgot
+                    ? t('errors.reset_unavailable', { email: SUPPORT_CONTACT.email })
+                    : t(key));
             } else {
                 setError(t(key));
             }
@@ -444,7 +475,7 @@ export default function EmployerAuthForm() {
                 // address is promoted onto the confirm step (`handleConfirm`
                 // reads `email`, not `forgotEmail`) and the code is on its way
                 // before the user sees the step.
-                enterRecoveryConfirm(forgotEmail, await requestNewCode(forgotEmail), 'not_confirmed');
+                enterRecoveryConfirm(forgotEmail, await requestNewCode(forgotEmail), 'not_confirmed', 'forgot');
                 return;
             }
             setError(t(key));

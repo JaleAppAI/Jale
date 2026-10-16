@@ -64,6 +64,14 @@ vi.mock('@/lib/api/worker', async (importOriginal) => ({
   acknowledgeHire: vi.fn(),
 }));
 
+// The attention summary is the session context's (F27); this suite is about
+// the feed filters, so the context is served empty.
+vi.mock('@/contexts/WorkerAttentionContext', () => ({
+  useWorkerAttention: () => ({
+    attention: null, count: 0, loading: true, errorKind: null, refresh: async () => {}, forgetHire: () => {},
+  }),
+}));
+
 import { message, renderIntl } from '@/components/worker/onboarding/__tests__/render-intl';
 import WorkerHomePage from '../page';
 

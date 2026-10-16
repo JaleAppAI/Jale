@@ -6,6 +6,7 @@ import {
   isDefinitiveError,
   markConversationRead,
   updateApplicantStatus,
+  withTemplateId,
 } from '../employer';
 import { ApiError as SharedApiError } from '../errors';
 
@@ -310,5 +311,22 @@ describe('markConversationRead', () => {
 
     expect(err).toBeInstanceOf(ApiError);
     expect(err).toMatchObject({ code: 'conversation_not_found', status: 404 });
+  });
+});
+
+describe('withTemplateId (K3.6 #18)', () => {
+  const payload = { title: 'Roofer', location: 'El Paso, TX', job_type: 'full-time', trade_category: 'concrete' };
+
+  it('adds the id of the template the job started from', () => {
+    expect(withTemplateId(payload, 'tpl-1')).toEqual({ ...payload, template_id: 'tpl-1' });
+  });
+
+  it('adds no key at all when no template was applied', () => {
+    expect(withTemplateId(payload, null)).not.toHaveProperty('template_id');
+  });
+
+  it('never changes the payload it was given (it is also a template payload)', () => {
+    withTemplateId(payload, 'tpl-1');
+    expect(payload).not.toHaveProperty('template_id');
   });
 });

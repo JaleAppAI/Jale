@@ -11,6 +11,7 @@ import {
 } from '../lib/employer-digest-template';
 import { errorMessage, requireAbsoluteBaseUrl } from '../lib/http';
 import { getUnsubscribeSecret } from '../lib/unsubscribe-secret';
+import { renderHireDetailsNudgeEmail } from '../lib/hire-details-nudge-template';
 import { mintUnsubscribeToken } from '../lib/unsubscribe-token';
 
 /**
@@ -144,7 +145,118 @@ function scoreBand(value: unknown): DigestScoreBand {
   return value === 'strong' || value === 'good' || value === 'fair' ? value : 'fair';
 }
 
-export const handler = async (): Promise<DigestRunSummary> => {
+/** Claims per sweep; a sweep runs every 15 minutes. */
+const HIRE_NUDGE_BATCH = 25;
+/**
+ * The sweep starts, and starts each row, only while at least this much of the
+ * function's time is left: the digest loop runs first on the same 120 s
+ * budget, and a row cut off mid-way would roll back with the batch anyway.
+ */
+const HIRE_NUDGE_MIN_REMAINING_MS = 20_000;
+const HIRE_NUDGE_SAVEPOINT = 'hire_details_nudge';
+
+interface HireNudgeRow {
+  application_id: string;
+  employer_email: string | null;
+  worker_name: string | null;
+  job_title: string;
+  kind: string;
+  requested_at: string | Date | null;
+}
+
+/**
+ * F19 (sprint 28, K4.4): the hire-details nudge, on the same sweep.
+ *
+ * AT LEAST ONCE. `jale_cap.claim_hire_details_nudges` returns the due hires
+ * and locks them; it stamps nothing. Each row is rendered, queued and only
+ * then stamped (`jale_cap.mark_hire_details_nudged`), inside ONE transaction
+ * with a savepoint per row. A row that fails rolls back to its savepoint and
+ * stays unstamped; a timeout or a lost connection rolls the whole batch back.
+ * Either way the next sweep claims those rows again, which is safe because
+ * `queueEmail` dedupes on the idempotency key (stable per application, and
+ * per reminder time for a reminder).
+ *
+ * A row whose address cannot be sent to is skipped and NOT stamped, as the
+ * digest loop leaves its watermark: it is claimed again once the address is
+ * fixed. The sweep runs after the digest loop, outside its transactions, and
+ * never throws.
+ */
+async function sweepHireDetailsNudges(
+  client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: any[] }> },
+  baseUrl: string,
+  remainingMs: () => number,
+): Promise<void> {
+  const counts = { claimed: 0, queued: 0, skipped: 0, failed: 0, deferred: 0 };
+  if (remainingMs() < HIRE_NUDGE_MIN_REMAINING_MS) {
+    console.info(JSON.stringify({ metric: 'hire_details_nudge_run', ...counts, outOfTime: true }));
+    return;
+  }
+  try {
+    await client.query('BEGIN');
+    const claimed = await client.query(
+      'SELECT application_id, employer_email, worker_name, job_title, kind, requested_at FROM jale_cap.claim_hire_details_nudges($1)',
+      [HIRE_NUDGE_BATCH],
+    );
+    const rows = claimed.rows as HireNudgeRow[];
+    counts.claimed = rows.length;
+    for (const [index, row] of rows.entries()) {
+      if (remainingMs() < HIRE_NUDGE_MIN_REMAINING_MS) {
+        counts.deferred = rows.length - index;
+        break;
+      }
+      if (!isSendableEmail(row.employer_email)) {
+        counts.skipped += 1;
+        console.warn(JSON.stringify({ metric: 'hire_details_nudge_skipped_invalid_email', applicationId: row.application_id }));
+        continue;
+      }
+      await client.query(`SAVEPOINT ${HIRE_NUDGE_SAVEPOINT}`);
+      try {
+        const remind = row.kind === 'remind';
+        const rendered = renderHireDetailsNudgeEmail({
+          kind: remind ? 'remind' : 'auto',
+          workerName: row.worker_name,
+          jobTitle: row.job_title,
+          englishUrl: `${baseUrl}/en/employer/applicants`,
+          spanishUrl: `${baseUrl}/es/employer/applicants`,
+        });
+        const requestedMs = toEpochMs(row.requested_at);
+        await queueEmail(client as never, {
+          recipientEmail: row.employer_email,
+          subject: rendered.subject,
+          bodyText: rendered.bodyText,
+          bodyHtml: rendered.bodyHtml,
+          sourceType: 'hire_details_nudge',
+          sourceId: row.application_id,
+          idempotencyKey: remind
+            ? `hire-details-remind:${row.application_id}:${requestedMs ?? 0}`
+            : `hire-details-nudge:${row.application_id}`,
+        });
+        await client.query('SELECT jale_cap.mark_hire_details_nudged($1) AS marked', [row.application_id]);
+        await client.query(`RELEASE SAVEPOINT ${HIRE_NUDGE_SAVEPOINT}`);
+        counts.queued += 1;
+      } catch (error) {
+        await client.query(`ROLLBACK TO SAVEPOINT ${HIRE_NUDGE_SAVEPOINT}`);
+        counts.failed += 1;
+        console.error(JSON.stringify({
+          metric: 'hire_details_nudge_failed', applicationId: row.application_id, error: errorMessage(error),
+        }));
+      }
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    try { await client.query('ROLLBACK'); } catch { /* connection already unusable */ }
+    console.error(JSON.stringify({ metric: 'hire_details_nudge_run_failed', error: errorMessage(error) }));
+  }
+  console.info(JSON.stringify({ metric: 'hire_details_nudge_run', ...counts }));
+}
+
+/** The part of the Lambda context the sweep reads; absent in tests and local runs. */
+interface RemainingTime {
+  getRemainingTimeInMillis?: () => number;
+}
+
+export const handler = async (_event?: unknown, context?: RemainingTime): Promise<DigestRunSummary> => {
+  const remainingMs = (): number => context?.getRemainingTimeInMillis?.() ?? Number.POSITIVE_INFINITY;
   // Fail closed before opening a connection: an unsubscribe or dashboard link
   // without an origin is dead the moment it lands in an inbox.
   const baseUrl = requireAbsoluteBaseUrl(process.env.PUBLIC_SITE_BASE_URL);
@@ -410,6 +522,8 @@ export const handler = async (): Promise<DigestRunSummary> => {
         });
       }
     }
+
+    await sweepHireDetailsNudges(client, baseUrl, remainingMs);
   } finally {
     client.release();
   }

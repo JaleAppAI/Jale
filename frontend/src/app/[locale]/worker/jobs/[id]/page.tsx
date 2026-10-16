@@ -30,6 +30,8 @@ import { ApplyFlow, type ApplyFlowSubmitError } from '@/components/worker/apply-
 import { DetailsRequestedBanner } from '@/components/worker/DetailsRequestedBanner';
 import { apiFetch, isLegalWallError } from '@/lib/api';
 import { consumeFeedOrigin, opensInThisTab, readFeedReturn } from '@/lib/worker-feed-return';
+import { jobViewSource, type JobViewArrival } from '@/lib/job-view-source';
+import { readPendingReferral } from '@/lib/referral-return';
 import { ApiError, classifyError, parseApiError, type ErrorKind } from '@/lib/api/errors';
 import { applyFlowReducer, initialApplyFlowState, flowHasProgress, promptAnswersPayload } from '@/lib/apply-flow-view';
 import { missingPromptAnswers } from '@/lib/application-requirements-flow';
@@ -44,7 +46,7 @@ import {
 } from '@/lib/job-detail-display';
 import { formatPay } from '@/lib/pay';
 import {
-  getJob, applyToJob, updateWorkerProfile, getVaultDocuments,
+  getJob, applyToJob, updateWorkerProfile, getVaultDocuments, recordJobView,
   type JobDetail, type WorkerApiError, type WorkerVaultDoc,
 } from '@/lib/api/worker';
 import { visibleJobStatusBadge } from '@/lib/jobStatusDisplay';
@@ -90,6 +92,16 @@ export default function WorkerJobDetailPage() {
    */
   const [feedReturn] = useState(readFeedReturn);
   useEffect(() => { consumeFeedOrigin(); }, []);
+
+  /**
+   * How this page was arrived at, for the view event (analytics #17). Read
+   * once, at mount, from `feedReturn` (captured before the marker is spent)
+   * and the referral stash. Never re-read: it describes the arrival.
+   */
+  const [viewArrival] = useState<JobViewArrival>(() => ({
+    fromFeed: feedReturn.canGoBack,
+    referralJobId: readPendingReferral()?.jobId ?? null,
+  }));
 
   /**
    * Back to the feed, by HISTORY when this page was opened from it.
@@ -224,6 +236,20 @@ export default function WorkerJobDetailPage() {
     setSubmitError(null);
     setViewMode('details');
   }, [job]);
+
+  /*
+   * One view event per page visit (K3.6 #17): after the FIRST successful load
+   * of a job id, never on a refetch, a poll, a token rotation or StrictMode's
+   * second effect run -- the ref is keyed by job id, so only navigating to a
+   * different job is a new visit. Fire-and-forget; a failure changes nothing.
+   */
+  const viewRecordedForRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!job || !idToken) return;
+    if (viewRecordedForRef.current === job.id) return;
+    viewRecordedForRef.current = job.id;
+    recordJobView(idToken, job.id, jobViewSource(viewArrival, job.id));
+  }, [job, idToken, viewArrival]);
 
   /*
    * `?apply=1`: the onboarding summary's Apply button lands here with it,

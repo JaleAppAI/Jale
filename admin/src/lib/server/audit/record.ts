@@ -357,12 +357,22 @@ export async function recordAdminAttempt(session: AdminSession | null, e: AdminA
   await writeOutsideRequest(payloads);
 }
 
+/** What a session event may add: field names (codes, never values). */
+export type AdminSessionEventDetail = {
+  /** e.g. ['trusted_device'] for a sign-in that used a trusted browser. */
+  fieldNames?: readonly string[];
+};
+
 /**
  * Records a session event through the attempt channel: signed_in,
  * sign_in_rejected (actor null: the caller is not a known admin), signed_out,
  * expired or revoked. Never throws.
  */
-export async function recordAdminSession(outcome: SessionOutcome, actor: AdminSessionActor | null): Promise<void> {
+export async function recordAdminSession(
+  outcome: SessionOutcome,
+  actor: AdminSessionActor | null,
+  detail: AdminSessionEventDetail = {},
+): Promise<void> {
   let payloads: AuditEventPayload[];
   try {
     if (!includes(SESSION_OUTCOMES, outcome)) throw invalid('outcome');
@@ -381,7 +391,12 @@ export async function recordAdminSession(outcome: SessionOutcome, actor: AdminSe
       kind: 'session',
       outcome,
       actor: auditActor,
-      event: { surface: 'admin.session', categories: ['admin_access'], resultCount: 0 },
+      event: {
+        surface: 'admin.session',
+        categories: ['admin_access'],
+        resultCount: 0,
+        ...(detail?.fieldNames ? { fieldNames: detail.fieldNames } : {}),
+      },
       requestId: requestIdFor(actor?.requestId),
     });
   } catch {

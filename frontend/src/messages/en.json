@@ -8,7 +8,7 @@
     "city_multi_max": "You can add up to {max} cities",
     "city_multi_remove": "Remove {city}, {state}",
     "errors": {
-      "offline": "You appear to be offline. Check your connection and try again.",
+      "offline": "We couldn't reach Jale. Check your connection and try again.",
       "timeout": "This is taking longer than expected. Please try again.",
       "unauthorized": "Your session expired. Please sign in again.",
       "forbidden": "You don't have access to this.",
@@ -394,6 +394,7 @@
         "invalid_credentials": "The email or password is incorrect.",
         "account_not_confirmed": "Your account isn't confirmed yet. We sent a new code to your email — check your inbox and spam folder.",
         "already_confirmed": "This account is already confirmed — sign in with your password or use “Forgot password?”.",
+        "reset_unavailable": "We can't send a reset code to this email. Contact support at {email} and we'll help you get back in.",
         "confirmed_sign_in_failed": "Account confirmed — the password was incorrect.",
         "resend_limit": "Too many code requests. Try again later — you may need to wait up to an hour.",
         "code_delivery_failed": "We could not send a code to that email address. Check the address, or contact support.",
@@ -510,13 +511,43 @@
     "skills_show_fewer": "Show fewer skills",
     "message_action": "Message",
     "status_label": "Application status",
-    "hire_blocked": "This applicant can\u2019t be marked hired until their details are complete. Open their profile to request them."
+    "hire_blocked": "This applicant can\u2019t be marked hired until their details are complete. Open their profile to request them.",
+    "hire_details": {
+      "add": "Add Start Details",
+      "edit": "Edit Start Details",
+      "needed": "Add start details so {name} knows when and where to show up.",
+      "summary_starts": "Starts {date}",
+      "summary_location": "Report to {location}",
+      "summary_saved": "Start details saved",
+      "title": "Start details for {name}",
+      "intro": "{name} sees these on their application in Jale.",
+      "start_date": "Start date",
+      "report_location": "Where to report",
+      "report_location_placeholder": "Site address or meeting point…",
+      "contact_name": "Contact name",
+      "contact_phone": "Contact phone",
+      "contact_phone_hint": "Digits, spaces and + ( ) - only.",
+      "notes": "Notes (optional)",
+      "notes_placeholder": "What to bring, parking, first-day instructions…",
+      "save": "Save Start Details",
+      "cancel": "Cancel",
+      "saved": "Start details saved.",
+      "error_date": "Enter a valid date.",
+      "error_too_long": "Use {max} characters or fewer.",
+      "error_phone": "Use digits, spaces and + ( ) - only.",
+      "error_field": "Check this field and try again.",
+      "error_not_hired": "Only hired applicants can get start details. Refresh the list and try again.",
+      "error_not_found": "This applicant is no longer available. Refresh the list.",
+      "banner": "{count, plural, one {Add start details for # new hire} other {Add start details for # new hires}}",
+      "banner_cta": "Go to Applicants"
+    }
   },
   "employer_messages": {
     "title": "Messages",
     "subtitle": "Message applicants through WhatsApp while keeping the conversation tied to the job.",
     "threads": "Conversations",
     "drawer_button": "Messages",
+    "drawer_new_conversation": "New conversation",
     "drawer_close": "Close",
     "hide": "Hide",
     "empty": "No open conversations yet.",
@@ -1070,7 +1101,8 @@
         "body": "The employer will send you more details soon (where to report, documents, contact). If nothing arrives in the next few days, don't hesitate to reach out to them.",
         "reference": "Application reference: {ref}",
         "cta": "Great!",
-        "link": "View my application"
+        "link": "View my application",
+        "body_details": "Your employer sent your start details. Open your application to see where to report and who to contact."
       },
       "banner": {
         "title": "You're hired: {title} at {company}",
@@ -1080,10 +1112,13 @@
         "body_dated": "Starts {date} · The employer will send more details; if none arrive, reach out to them.",
         "body_undated": "Start date to be confirmed · The employer will send more details; if none arrive, reach out to them.",
         "cta": "View application",
-        "dismiss": "Dismiss the hire notice for {title}"
+        "dismiss": "Dismiss the hire notice for {title}",
+        "body_details_dated": "Starts {date} · Your employer sent your start details.",
+        "body_details_undated": "Your employer sent your start details."
       },
       "row": {
-        "body": "Congratulations! The employer will send more details. If none arrive, reach out to them."
+        "body": "Congratulations! The employer will send more details. If none arrive, reach out to them.",
+        "body_details": "Congratulations! Your employer sent your start details."
       }
     },
     "stats": {
@@ -1196,7 +1231,31 @@
       "certification_document_limit": "You’ve reached the file limit for this certification. Remove one in your profile first.",
       "not_found": "We can’t find this application any more."
     },
-    "cert_have_question": "Do you have this certification?"
+    "cert_have_question": "Do you have this certification?",
+    "hired_card": {
+      "details_intro": "{company} sent your start details.",
+      "details_intro_no_company": "Your employer sent your start details.",
+      "start_date": "Start date",
+      "start_date_tbc": "To be confirmed",
+      "report_location": "Where to report",
+      "contact": "Contact",
+      "notes": "Notes from your employer",
+      "remind": "Remind my employer",
+      "remind_sent": "We reminded your employer to send your start details.",
+      "remind_recent": "You already reminded your employer.",
+      "remind_wait": "{hours, plural, one {You can remind them again in # hour.} other {You can remind them again in # hours.}}",
+      "message_label": "Message your employer",
+      "message_hint": "Your employer gets it in their Jale inbox. Their reply comes to you on WhatsApp.",
+      "message_placeholder": "Write your message…",
+      "message_count": "{count}/{max}",
+      "message_send": "Send Message",
+      "message_sent_at": "Message sent · {time}",
+      "message_empty": "Write a message first.",
+      "message_too_long": "Messages can be up to 2,000 characters.",
+      "message_invalid": "We couldn't send that message. Check it and try again.",
+      "message_rate_limited": "{minutes, plural, one {You've sent several messages this hour. You can send another in # minute.} other {You've sent several messages this hour. You can send another in # minutes.}}",
+      "not_hired": "This application is no longer marked as hired, so messages can't be sent from here."
+    }
   },
   "worker_home": {
     "title": "Find jobs",
@@ -1863,6 +1922,7 @@
     }
   },
   "app_shell": {
+    "applications_attention_badge": "{count, plural, one {# application needs your attention} other {# applications need your attention}}",
     "worker_workspace": "Worker workspace",
     "worker_role": "Worker",
     "employer_role": "Employer",

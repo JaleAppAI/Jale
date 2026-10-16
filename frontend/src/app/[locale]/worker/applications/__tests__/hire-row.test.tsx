@@ -131,6 +131,9 @@ function hire(overrides: Partial<ApplicationHire> = {}): ApplicationHire {
     // a job-title line here would now be caught.
     trade: { category: 'electrician', other: null, canonical_en: null, canonical_es: null },
     company: 'Construcciones Bravo LLC',
+    // K4.2: no start details from the employer yet.
+    details: null,
+    employer_reminded_at: null,
     ...overrides,
   };
 }

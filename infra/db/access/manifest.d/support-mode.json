@@ -1,0 +1,128 @@
+{
+  "tables": {
+    "public.support_case_media": {
+      "classification": "excluded",
+      "rls": {
+        "enabled": true,
+        "forced": true
+      },
+      "reason": "Keys, types and sizes of the attachments a worker sent in WhatsApp support mode, kept 90 days; written and read only through support definers.",
+      "access": {}
+    }
+  },
+  "policies": {
+    "public.support_case_media.support_case_media_definer_access": {
+      "command": "ALL",
+      "permissive": true,
+      "to": [
+        "jale_admin"
+      ],
+      "origin": "existing",
+      "using": "(current_setting('app.support_case_media'::text, true) = 'on'::text)",
+      "with_check": "(current_setting('app.support_case_media'::text, true) = 'on'::text)",
+      "reason": "The support definers (migrations 121 and 122), which run as the master login: only while one of them has opened the transaction-local flag."
+    }
+  },
+  "functions": {
+    "public.support_notify_admins(uuid, text)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_case_id uuid, p_admin_base_url text",
+      "returns": "integer",
+      "execute": [],
+      "created_by": "121",
+      "reason": "Queues one email per active admin for a newly created support case: a fixed text and the case link, nothing about the worker. Called only by support_open_case."
+    },
+    "public.support_open_case(uuid, uuid, text, text, text)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_conversation_id uuid, p_user_id uuid, p_language text, p_first_message text, p_admin_base_url text",
+      "returns": "TABLE(case_id uuid, created boolean)",
+      "execute": [
+        "jale_whatsapp"
+      ],
+      "created_by": "121",
+      "reason": "The bot opens or reuses the conversation's support case for a registered or unregistered number, records the message and, on creation, emails the admins."
+    },
+    "public.support_append_message(uuid, uuid, text, text, jsonb, text)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_case_id uuid, p_conversation_id uuid, p_kind text, p_text text, p_media jsonb, p_language text",
+      "returns": "TABLE(appended boolean, status_changed boolean, media_id uuid)",
+      "execute": [
+        "jale_whatsapp"
+      ],
+      "created_by": "121",
+      "reason": "The bot adds a worker's text or stored attachment to the conversation's own open support case."
+    },
+    "public.support_mode_state(uuid, uuid)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_case_id uuid, p_conversation_id uuid",
+      "returns": "TABLE(open boolean, last_admin_message_at timestamp with time zone)",
+      "execute": [
+        "jale_whatsapp"
+      ],
+      "created_by": "121",
+      "reason": "The bot reads whether the conversation's support case is still open, and when an admin reply was last sent; nothing else."
+    },
+    "public.support_reentry_case(uuid)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_conversation_id uuid",
+      "returns": "uuid",
+      "execute": [
+        "jale_whatsapp"
+      ],
+      "created_by": "121",
+      "reason": "The bot finds the open support case a free-text answer to a recent admin reply goes back into; the case id only."
+    },
+    "public.support_record_mode_change(uuid, uuid, boolean, text)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_case_id uuid, p_conversation_id uuid, p_entered boolean, p_reason text",
+      "returns": "void",
+      "execute": [
+        "jale_whatsapp"
+      ],
+      "created_by": "121",
+      "reason": "The bot records support mode entered or exited on the conversation's own case timeline."
+    },
+    "public.support_record_admin_delivery(uuid, text, text, text, text)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_outbox_id uuid, p_outcome text, p_via text, p_twilio_message_sid text, p_error text",
+      "returns": "void",
+      "execute": [
+        "jale_whatsapp"
+      ],
+      "created_by": "121",
+      "reason": "The admin dispatcher records each reply's outcome, and how it was sent, on the reply's own case."
+    }
+  },
+  "table_additions": {
+    "public.email_outbox": {
+      "policies": {
+        "email_outbox_admin_support_insert": {
+          "command": "INSERT",
+          "permissive": true,
+          "to": [
+            "jale_admin"
+          ],
+          "origin": "existing",
+          "using": null,
+          "with_check": "(source_type = 'admin_support_case'::text)",
+          "reason": "The support-case notice definer (migration 121), which runs as the master login: support-case mail only."
+        }
+      },
+      "reason": "WhatsApp support mode: one notice per active admin for each new support case."
+    }
+  }
+}

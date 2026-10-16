@@ -2,10 +2,13 @@ import type { DocTypeKey } from '@/lib/doc-types';
 import { apiFetch } from '../api';
 import { ApiError, parseApiError } from './errors';
 import type { ScoreBand } from '../match';
+import type { SignupSourceBody } from '../signup-source';
 import type { ApplicationStatus, JobStatus, WritableJobStatus } from '../status';
 import type {
   ApplicationDetailsStatus,
   ApplicationStage,
+  HireDetails,
+  HireDetailsInput,
   PreApplicationPrompt,
   RequirementsRemaining,
   WorkerPost,
@@ -20,6 +23,8 @@ export type { ApplicationStatus } from '../status';
 export type {
   ApplicationDetailsStatus,
   ApplicationStage,
+  HireDetails,
+  HireDetailsInput,
   PreApplicationPrompt,
   RequirementsRemaining,
 } from './worker';
@@ -179,6 +184,11 @@ export type Job = {
   applicant_count: number;
   hired_count: number;
   open_count: number;
+  /**
+   * Hired applications of this job whose start details are still empty
+   * (contract K4.4). Always sent; 0 means nothing is owed.
+   */
+  hire_details_needed_count: number;
   pay_min: number | null;
   pay_max: number | null;
   pay_interval: string | null;
@@ -307,6 +317,13 @@ export type Applicant = {
    * has since deleted -- render it as orphaned, never under a neighbour.
    */
   prompt_answers?: EmployerPromptAnswer[];
+  /**
+   * F19 (sprint 28, contract K4.2): the start details the employer added
+   * after hiring this applicant, or null when there are none.
+   */
+  hire_details: HireDetails | null;
+  /** K4.2: hired with no start details yet. Drives the "Add start details" prompt. */
+  hire_details_needed: boolean;
 };
 
 export type ApplicantFilters = {
@@ -367,6 +384,13 @@ export type ApplicantOverviewItem = {
    * absent value must render nothing rather than a zero.
    */
   trust_score?: number | null;
+  /**
+   * F19 (sprint 28, contract K4.2): the start details the employer added
+   * after hiring this applicant, or null when there are none.
+   */
+  hire_details: HireDetails | null;
+  /** K4.2: hired with no start details yet. Drives the "Add start details" prompt. */
+  hire_details_needed: boolean;
 };
 
 export type ApplicantsOverviewResponse = {
@@ -487,6 +511,12 @@ export type EmployerProfilePatch = Partial<Pick<EmployerProfileData,
 >>;
 
 /**
+ * The first profile save after sign-up also carries where the employer came
+ * from (contract K3.6). The server stores it once and ignores it afterwards.
+ */
+export type EmployerProfileFlush = EmployerProfilePatch & { signup_source?: SignupSourceBody };
+
+/**
  * The READ helpers in this module take an optional trailing `AbortSignal`,
  * forwarded to `apiFetch` (which chains it into the per-attempt controller).
  * `usePageData` hands its fetcher a signal that aborts on unmount and on a deps
@@ -510,7 +540,7 @@ export async function getEmployerProfile(
 
 export async function updateEmployerProfile(
   token: string,
-  patch: EmployerProfilePatch,
+  patch: EmployerProfileFlush,
 ): Promise<EmployerProfileData> {
   const res = await apiFetch(
     '/employer/profile',
@@ -638,7 +668,20 @@ export type JobWritePayload = {
   pre_application_prompts?: Array<{ id?: string; text: string }>;
 };
 
-export async function createJob(token: string, data: JobWritePayload): Promise<Job> {
+/**
+ * The create body: the job, plus the saved template it started from (contract
+ * K3.6 #18), kept even when the employer edited the prefilled fields. Separate
+ * from `JobWritePayload` because that shape is ALSO a template's stored
+ * payload, and a template must never reference another template.
+ */
+export type JobCreatePayload = JobWritePayload & { template_id?: string };
+
+/** The create body for a job started from `templateId` (or from scratch, when null). Never mutates `payload`. */
+export function withTemplateId(payload: JobWritePayload, templateId: string | null): JobCreatePayload {
+  return templateId ? { ...payload, template_id: templateId } : { ...payload };
+}
+
+export async function createJob(token: string, data: JobCreatePayload): Promise<Job> {
   const res = await apiFetch('/employer/jobs', {
     method: 'POST',
     body: JSON.stringify(data),
@@ -1175,6 +1218,30 @@ export async function updateApplicantStatus(
   );
   if (!res.ok) throw await parseApiError(res, 'status_update_failed');
   return res.json();
+}
+
+/**
+ * F19 (sprint 28, contract K4.2): the employer adds or changes a hired
+ * worker's start details
+ * (`PUT /employer/jobs/{jobId}/applicants/{workerId}/hire-details`).
+ * 200 answers `{ hire_details }`, which is `null` when the save left every
+ * field empty (reads publish `null` in that case too); 400 `invalid_hire_details` (with `fields`),
+ * 404 `not_found`, 409 `not_hired`.
+ */
+export async function updateHireDetails(
+  token: string,
+  jobId: string,
+  workerId: string,
+  details: HireDetailsInput,
+): Promise<HireDetails | null> {
+  const res = await apiFetch(
+    `/employer/jobs/${jobId}/applicants/${workerId}/hire-details`,
+    { method: 'PUT', body: JSON.stringify(details) },
+    token,
+  );
+  if (!res.ok) throw await parseApiError(res, 'hire_details_failed');
+  const body = await res.json() as { hire_details: HireDetails | null };
+  return body.hire_details;
 }
 
 export async function getWorkerDocuments(

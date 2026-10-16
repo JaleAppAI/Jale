@@ -161,6 +161,18 @@ describe('employer-jobs-update', () => {
     expect(mockRelease).toHaveBeenCalled();
   });
 
+  it("clears billing's pause mark on the employer's own status change, so a later resume leaves the job alone", async () => {
+    mockQuery.mockImplementation((q: string) => (q.includes('UPDATE jobs')
+      ? Promise.resolve({ rowCount: 1, rows: [{ id: 'job-1', status: 'paused', hired_count: 0, open_count: 1 }] })
+      : Promise.resolve({})));
+
+    const res = await handler(makeEvent());
+
+    expect(res.statusCode).toBe(200);
+    const statusUpdateCall = mockQuery.mock.calls.find(([q]) => typeof q === 'string' && q.includes('UPDATE jobs SET status'));
+    expect(statusUpdateCall[0]).toMatch(/UPDATE jobs SET status = \$1, billing_paused_at = NULL\b/);
+  });
+
   it('rolls back instead of committing when legal acceptance is missing', async () => {
     mockCheckCompliance.mockResolvedValue({ compliant: false, userExists: true });
     mockQuery.mockResolvedValue({});

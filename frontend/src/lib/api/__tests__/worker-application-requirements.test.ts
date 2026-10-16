@@ -76,6 +76,7 @@ const STATE = {
         complete: false,
     },
     next_step: { kind: 'field', key: 'date_available' },
+    hire: null,
 } as unknown as ApplicationRequirementsState;
 
 let fetchMock: ReturnType<typeof vi.fn>;

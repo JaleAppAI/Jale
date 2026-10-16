@@ -449,5 +449,32 @@ describe('employer candidate ranking', () => {
       expect(result.response.ranking_version).toBe('sql-v1');
       expect(result.response.candidates).toHaveLength(2);
     });
+
+    // Sprint 28 (F3): one Bedrock failure used to pin the fallback ranking
+    // for the full 24 hours. A fallback row is now fresh for 15 minutes, so
+    // the next read after that re-enqueues a rerank; an LLM row keeps 24h.
+    // Freshness is decided in SQL, on the database clock that wrote
+    // computed_at, so the cache read is where it is pinned.
+    it('keeps a fallback (sql-v1) cache row fresh for 15 minutes and an llm row for 24 hours', async () => {
+      const { client, query } = clientFor([]);
+
+      await listEmployerCandidates(client, 'job-1', { limit: 10 });
+
+      const cacheSql = String(query.mock.calls[3][0]).replace(/\s+/g, ' ');
+      expect(cacheSql).toContain(
+        "AND computed_at > now() - CASE WHEN ranking_version = 'sql-v1' THEN interval '15 minutes' ELSE interval '24 hours' END",
+      );
+      expect(cacheSql).not.toContain("computed_at > now() - interval '24 hours'");
+    });
+
+    it('serves the deterministic order and re-enqueues once no cache row is fresh', async () => {
+      const { client } = clientFor([]);
+
+      const result = await listEmployerCandidates(client, 'job-1', { limit: 10 });
+
+      expect(result.response.ranking_status).toBe('deterministic');
+      expect(result.response.candidates.map((candidate) => candidate.worker_id)).toEqual(['worker-1', 'worker-2']);
+      expect(result.shouldEnqueueRerank).toBe(true);
+    });
   });
 });

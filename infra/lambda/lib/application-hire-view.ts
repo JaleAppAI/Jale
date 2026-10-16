@@ -57,7 +57,9 @@
  * cosmetic: it keeps these out of the response by making them explicit keys
  * to strip, and it removes any doubt about which table a value came from.
  */
-export interface HireRow {
+export interface HireRow extends HireDetailsRow {
+  /** 125 job_applications.hire_details_reminded_at: the worker's last "Remind my employer". */
+  hire_details_reminded_at?: unknown;
   /** COALESCE(job_applications.hired_at, job_applications.updated_at). */
   hired_at?: unknown;
   hired_seen_at?: unknown;
@@ -84,6 +86,37 @@ export interface HireRow {
    * screen the 031 sentinel out of the celebration; see the header.
    */
   company_name?: unknown;
+}
+
+/**
+ * The 125 start-details columns, as `job_applications` holds them. Not
+ * prefixed: they are the application's own columns, and every caller that
+ * selects them strips them by these names.
+ */
+export interface HireDetailsRow {
+  /** to_char(job_applications.hire_start_date, 'YYYY-MM-DD'); a pg-parsed DATE is accepted too. */
+  hire_start_date?: unknown;
+  hire_report_location?: unknown;
+  hire_contact_name?: unknown;
+  hire_contact_phone?: unknown;
+  hire_notes?: unknown;
+  hire_details_updated_at?: unknown;
+}
+
+/**
+ * F19 (sprint 28, contract K4.2): the start details the employer added after
+ * the hire. ONE shape for the worker's `hire.details` and the employer's
+ * `hire_details`, built here so the two sides cannot disagree.
+ */
+export interface HireDetails {
+  /** YYYY-MM-DD, the calendar day the employer picked. */
+  start_date: string | null;
+  report_location: string | null;
+  contact_name: string | null;
+  contact_phone: string | null;
+  notes: string | null;
+  /** ISO timestamp of the last save. Never null on a published object. */
+  updated_at: string;
 }
 
 /**
@@ -171,6 +204,13 @@ export interface HireSummary {
    * sentinel is reported as absence rather than as a name. See the header.
    */
   company: string | null;
+  /** The start details the employer added, or null while there are none. */
+  details: HireDetails | null;
+  /**
+   * K4 CCR-4: when the worker last pressed "Remind my employer", or null.
+   * The 24-hour remind window counts from it.
+   */
+  employer_reminded_at: string | null;
 }
 
 /** A trimmed non-blank string, or null. The shape every text field takes. */
@@ -275,5 +315,53 @@ export function buildHireSummary(row: HireRow): HireSummary | null {
     shift_schedule: text(row.job_shift_schedule),
     trade: hireTrade(row),
     company: hireCompany(row),
+    details: buildHireDetails(row),
+    employer_reminded_at: isoTimestamp(row.hire_details_reminded_at),
   };
+}
+
+/**
+ * A YYYY-MM-DD string from the to_char the callers select, or from a DATE
+ * that `pg` parsed into a JS Date at LOCAL midnight (read back in local time,
+ * so the day is the one stored, in every timezone).
+ */
+function calendarDay(value: unknown): string | null {
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) return null;
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`;
+  }
+  const day = text(value);
+  return day && /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : null;
+}
+
+/**
+ * The start details, or null while the employer has given none.
+ *
+ * Null, not an object of five nulls, when every field is empty -- including
+ * after a save that cleared them all -- so `details === null` is the one test
+ * for "nothing to show" on both sides. Also null without a save time: every
+ * published object carries `updated_at`, and the save definer always stamps
+ * it, so a row without one has nothing the client could date.
+ */
+export function buildHireDetails(row: HireDetailsRow): HireDetails | null {
+  const details = {
+    start_date: calendarDay(row.hire_start_date),
+    report_location: text(row.hire_report_location),
+    contact_name: text(row.hire_contact_name),
+    contact_phone: text(row.hire_contact_phone),
+    notes: text(row.hire_notes),
+  };
+  const updatedAt = isoTimestamp(row.hire_details_updated_at);
+  if (!updatedAt || Object.values(details).every((value) => value === null)) return null;
+  return { ...details, updated_at: updatedAt };
+}
+
+/**
+ * K4.2's `hire_details_needed`: a hired application with no start details.
+ * Drives the employer's "Add start details" prompt; never true for any
+ * other status.
+ */
+export function hireDetailsNeeded(status: unknown, details: HireDetails | null): boolean {
+  return status === 'hired' && details === null;
 }

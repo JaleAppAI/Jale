@@ -18,7 +18,7 @@ import {
   classifyBlockedCommand,
   classifyBlockedCommandExact,
 } from '../lib/onboarding-language';
-import { isExactGreetingKeyword, isSupportCommand } from '../lib/flows';
+import { isExactGreetingKeyword } from '../lib/flows';
 import type { OnboardingV2Deps, OnboardingV2InboundMessage, OnboardingV2Session, RouteResult } from './types';
 import { sendTemplateMessage, sendStepPrompt, repeatCurrentPrompt } from './delivery';
 
@@ -286,17 +286,19 @@ export async function applyGate(
   }
 
   if (!isInteractive && FREE_TEXT_STEPS.has(stepKey)) {
-    // A greeting ("Hola") or the SUPPORT/SOPORTE escape hatch typed at a
-    // free-text answer step (name, custom trade, trust answers) must never
-    // be saved verbatim as the answer — this is the exact production defect
-    // that named a worker "Hola". Both checks are exact-normalized (trim +
-    // lowercase, the same normalization the underlying v1 helpers use)
-    // rather than the fuzzy/prefix matching `isGreetingKeyword` itself uses
-    // elsewhere: "Hola Maria" contains a greeting but IS a genuine name, and
-    // must still be accepted and saved.
-    const isGreeting = isExactGreetingKeyword(body);
-    const command = isGreeting ? 'greeting' : (isSupportCommand(body) ? 'support' : null);
-    if (command) {
+    // A greeting ("Hola") typed at a free-text answer step (name, custom
+    // trade, trust answers) must never be saved verbatim as the answer —
+    // this is the exact production defect that named a worker "Hola". The
+    // check is exact-normalized (trim + lowercase, the same normalization the
+    // underlying v1 helpers use) rather than the fuzzy/prefix matching
+    // `isGreetingKeyword` itself uses elsewhere: "Hola Maria" contains a
+    // greeting but IS a genuine name, and must still be accepted and saved.
+    //
+    // SUPPORT / SOPORTE never reaches this gate on WhatsApp: support mode
+    // (lib/support-mode.ts) takes it, at any step, before the processor
+    // calls the onboarding router; and the web door skips this gate.
+    if (isExactGreetingKeyword(body)) {
+      const command = 'greeting';
       console.warn(JSON.stringify({ metric: 'OnboardingGateBlocked', command, stepKey }));
       await sendTemplateMessage(client, deps, workerId, stepKey, responseLang, 'v2_gate_blocked', {}, now, workflowRunId, msg.messageSid, command);
       await repeatCurrentPrompt(client, session, deps, workerId, stepKey, lang, now, workflowRunId, msg.messageSid);

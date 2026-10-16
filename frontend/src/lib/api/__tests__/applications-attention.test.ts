@@ -17,7 +17,7 @@ vi.mock('@/lib/api', async (importOriginal) => ({
     apiFetch: (...args: unknown[]) => apiFetch(...args),
 }));
 
-const { getApplications } = await import('@/lib/api/worker');
+const { getApplications, getApplicationsAttention } = await import('@/lib/api/worker');
 
 const hire = {
     hired_at: '2026-09-02T00:00:00.000Z',
@@ -32,6 +32,7 @@ const hire = {
     shift_schedule: null,
     trade: { category: 'drywall', other: null, canonical_en: null, canonical_es: null },
     company: 'Hiring Co',
+    details: null,
 };
 
 function row(over: Record<string, unknown> = {}) {
@@ -128,5 +129,15 @@ describe('getApplications — the attention summary', () => {
         const page = await getApplications('token');
 
         expect(page.attention.details_requested).toHaveLength(1);
+    });
+});
+
+describe('getApplicationsAttention', () => {
+    it('asks for one row: the summary spans the whole list on its own', async () => {
+        answer({ applications: [], next_cursor: null, attention: { details_requested: [], unacknowledged_hires: [] } });
+
+        await getApplicationsAttention('token');
+
+        expect(apiFetch.mock.calls[0][0]).toBe('/worker/applications?limit=1');
     });
 });

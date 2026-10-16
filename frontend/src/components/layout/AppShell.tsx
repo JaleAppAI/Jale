@@ -7,6 +7,7 @@ import { Link, usePathname } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useSidebarProfile } from '@/contexts/SidebarProfileContext';
 import { useUnreadCount } from '@/contexts/UnreadMessagesContext';
+import { useWorkerAttentionCount } from '@/contexts/WorkerAttentionContext';
 import { Button } from '@/components/ui/button';
 import { ThemeToggle } from '@/components/ui/theme-toggle';
 import { ReportEntryButton } from '@/components/report/ReportEntryButton';
@@ -52,6 +53,7 @@ export function AppShell({ role, title, subtitle, actions, children }: AppShellP
      * composed outside the session tree still renders.
      */
     const unreadCount = useUnreadCount();
+    const attentionCount = useWorkerAttentionCount();
     const [signingOut, setSigningOut] = useState(false);
 
     const homeHref = role === 'worker' ? '/worker/home' : '/employer/dashboard';
@@ -68,7 +70,13 @@ export function AppShell({ role, title, subtitle, actions, children }: AppShellP
     return (
         <div className="min-h-screen bg-[var(--jale-shell)] text-[var(--jale-ink)]">
             <div className="grid min-h-screen lg:grid-cols-[280px_minmax(0,1fr)]">
-                <Sidebar role={role} homeHref={homeHref} chip={chip} unreadCount={unreadCount} />
+                <Sidebar
+                    role={role}
+                    homeHref={homeHref}
+                    chip={chip}
+                    unreadCount={unreadCount}
+                    attentionCount={role === 'worker' ? attentionCount : 0}
+                />
 
                 <section className="min-w-0">
                     <header className="sticky top-0 z-10 border-b border-[var(--jale-divider)] bg-[color-mix(in_srgb,var(--jale-card)_92%,transparent)] px-4 py-4 backdrop-blur md:px-6 lg:px-8">
@@ -117,7 +125,11 @@ export function AppShell({ role, title, subtitle, actions, children }: AppShellP
                 </section>
             </div>
 
-            <BottomTabBar role={role} unreadCount={unreadCount} />
+            <BottomTabBar
+                role={role}
+                unreadCount={unreadCount}
+                attentionCount={role === 'worker' ? attentionCount : 0}
+            />
         </div>
     );
 }

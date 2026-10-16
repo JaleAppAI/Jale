@@ -84,6 +84,16 @@ SUITES=(
   test/unit/db/employer-health-2b.integration.test.ts
   test/unit/db/ops-health-2c.integration.test.ts
   test/unit/db/admin-queues-2d.integration.test.ts
+  #    120's superadmin guard counts every active superadmin in the database,
+  #    so its suite also runs here, before a later suite leaves an admin
+  #    behind; it parks the active superadmins it finds and restores them.
+  test/unit/db/admin-access-120.integration.test.ts
+  test/unit/db/support-mode-121.integration.test.ts
+  test/unit/db/admin-inbox-122.integration.test.ts
+  test/unit/db/admin-analytics-s28.integration.test.ts
+  #    124's capture suite asserts its whole-database figures inside rolled-back
+  #    transactions, and its committed fixtures leave with their accounts.
+  test/unit/db/analytics-capture-124.integration.test.ts
   # 3. The body. These suites key every assertion on their own fixtures (or
   #    measure deltas), so they tolerate each other's leftover rows. A new
   #    suite goes here unless it belongs in the tail; one that leaves
@@ -166,6 +176,7 @@ SUITES=(
   test/unit/db/least-privilege-seeded-definers.integration.test.ts
   test/unit/db/least-privilege-denials.integration.test.ts
   test/unit/db/least-privilege-query-plans.integration.test.ts
+  test/unit/db/hire-and-resume-125.integration.test.ts
   # 4. The tail, in this order. 093 leases worker_intent rows globally and
   #    advances the attempt count of every row it leases, so it follows every
   #    suite that could own one. Then each suite that re-applies its migration

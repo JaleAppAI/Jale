@@ -13,6 +13,7 @@ import {
   downloadTwilioMediaBounded,
   MediaTooLargeError,
 } from '../../../../../lambda/whatsapp/lib/media';
+import * as mediaModule from '../../../../../lambda/whatsapp/lib/media';
 
 // Manual mock (aws-sdk-client-mock is not a dependency) — mirrors the shape
 // used in test/unit/lambda/api/worker-doc-confirm.test.ts. media.ts
@@ -136,6 +137,72 @@ describe('uploadDocumentToS3', () => {
     const res = await uploadDocumentToS3('bkt', 'k', Buffer.from('%PDF-'), 'application/pdf');
 
     expect(res.versionId).toBeNull();
+  });
+});
+
+// Sprint 28 support mode. Read through the module object so the file
+// compiles where a helper is missing.
+const supportMedia = mediaModule as unknown as {
+  sniffSupportMedia?: (buf: Buffer) => unknown;
+  uploadSupportMediaToS3?: (bucket: string, key: string, body: Buffer, contentType: string) => Promise<unknown>;
+  MAX_SUPPORT_MEDIA_BYTES?: number;
+};
+
+function bytes(prefix: number[] | string, total = 32): Buffer {
+  const head = typeof prefix === 'string' ? Buffer.from(prefix, 'latin1') : Buffer.from(prefix);
+  return Buffer.concat([head, Buffer.alloc(Math.max(0, total - head.length))]);
+}
+
+describe('sniffSupportMedia', () => {
+  it.each([
+    ['jpeg', bytes([0xff, 0xd8, 0xff, 0xe0]), { mediaType: 'image', contentType: 'image/jpeg', ext: 'jpg' }],
+    ['png', bytes([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), { mediaType: 'image', contentType: 'image/png', ext: 'png' }],
+    ['webp', Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('WEBP'), Buffer.alloc(8)]),
+      { mediaType: 'image', contentType: 'image/webp', ext: 'webp' }],
+    ['ogg/opus voice note', bytes('OggS'), { mediaType: 'audio', contentType: 'audio/ogg', ext: 'ogg' }],
+    ['mp3 with an ID3 tag', bytes('ID3'), { mediaType: 'audio', contentType: 'audio/mpeg', ext: 'mp3' }],
+    ['mp3 frame sync', bytes([0xff, 0xfb, 0x90, 0x00]), { mediaType: 'audio', contentType: 'audio/mpeg', ext: 'mp3' }],
+    ['m4a', Buffer.concat([Buffer.from([0, 0, 0, 0x20]), Buffer.from('ftypM4A '), Buffer.alloc(20)]),
+      { mediaType: 'audio', contentType: 'audio/mp4', ext: 'm4a' }],
+    ['pdf', bytes('%PDF-1.7'), { mediaType: 'document', contentType: 'application/pdf', ext: 'pdf' }],
+  ])('recognises %s by its bytes', (_label, buf, expected) => {
+    expect(supportMedia.sniffSupportMedia?.(buf)).toEqual(expected);
+  });
+
+  it.each([
+    ['gif', bytes('GIF89a')],
+    ['an mp4 video', Buffer.concat([Buffer.from([0, 0, 0, 0x20]), Buffer.from('ftypisom'), Buffer.alloc(20)])],
+    ['an ADTS AAC stream', bytes([0xff, 0xf1, 0x50, 0x80])],
+    ['html', bytes('<!doctype html>')],
+    ['an empty buffer', Buffer.alloc(0)],
+  ])('refuses %s', (_label, buf) => {
+    expect(supportMedia.sniffSupportMedia?.(buf)).toBeNull();
+  });
+
+  it('caps a support attachment at 10 MiB', () => {
+    expect(supportMedia.MAX_SUPPORT_MEDIA_BYTES).toBe(10 * 1024 * 1024);
+  });
+});
+
+describe('uploadSupportMediaToS3', () => {
+  beforeEach(() => {
+    sendMock.mockReset();
+  });
+
+  it('puts the object with its content type and NO ServerSideEncryption header (the bucket key applies)', async () => {
+    sendMock.mockResolvedValueOnce({});
+
+    await supportMedia.uploadSupportMediaToS3?.('support-bkt', 'support/case/obj.jpg', Buffer.from([0xff, 0xd8, 0xff]), 'image/jpeg');
+
+    expect(sendMock).toHaveBeenCalledTimes(1);
+    const input = sendMock.mock.calls[0][0].input;
+    expect(input).toEqual({
+      Bucket: 'support-bkt',
+      Key: 'support/case/obj.jpg',
+      Body: Buffer.from([0xff, 0xd8, 0xff]),
+      ContentType: 'image/jpeg',
+    });
+    expect(input.ServerSideEncryption).toBeUndefined();
   });
 });
 

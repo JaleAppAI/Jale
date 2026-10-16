@@ -275,6 +275,60 @@ describe('Employer Profile API Lambda', () => {
     expect(JSON.parse(result.body)).toEqual({ error: 'unauthorized' });
   });
 
+  // ── Sprint 28 (K3.6): where the employer's signup started ──────────────
+  describe('signup_source on the first profile save', () => {
+    const RECORD = 'SELECT jale_cap.record_signup_source($1, $2, $3, $4)';
+    const patch = (body: object) => ({ ...mockEvent, httpMethod: 'PATCH', body: JSON.stringify(body) }) as unknown as APIGatewayProxyEvent;
+    const statements = () => mockQuery.mock.calls.map(([sql]) => String(sql).replace(/\s+/g, ' ').trim());
+
+    beforeEach(() => {
+      mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+      mockQuery.mockImplementation((queryText: string) => {
+        if (queryText.includes('LEFT JOIN employer_profiles')) return Promise.resolve({ rows: [{ id: 'usr-123', company_name: 'Fixture Co' }] });
+        return Promise.resolve({});
+      });
+    });
+
+    it('records the source once with door web, after the profile write and before the commit', async () => {
+      const res = await handler(patch({ company_name: 'Fixture Co', signup_source: { src: 'flyer', entry: 'signup_page' } }));
+
+      expect(res.statusCode).toBe(200);
+      expect(mockQuery).toHaveBeenCalledWith(RECORD, ['usr-123', 'web', 'signup_page', 'flyer']);
+      const s = statements();
+      const iProfile = s.findIndex((q) => q.startsWith('INSERT INTO employer_profiles'));
+      const iRecord = s.indexOf(RECORD);
+      expect(iProfile).toBeGreaterThan(-1);
+      expect(s.slice(iRecord - 1, iRecord + 2)).toEqual(['SAVEPOINT analytics_capture', RECORD, 'RELEASE SAVEPOINT analytics_capture']);
+      expect(iRecord).toBeGreaterThan(iProfile);
+      expect(s.lastIndexOf('COMMIT')).toBeGreaterThan(iRecord);
+    });
+
+    it('records nothing when the request carries no valid source', async () => {
+      await handler(patch({ company_name: 'Fixture Co' }));
+      await handler(patch({ company_name: 'Fixture Co', signup_source: { src: 'flyer', entry: 'whatsapp' } }));
+      await handler(patch({ company_name: 'Fixture Co', signup_source: 'flyer' }));
+      expect(statements().filter((q) => q.includes('record_signup_source'))).toEqual([]);
+    });
+
+    it('a failing record never fails the save: the profile is returned and the transaction commits', async () => {
+      mockQuery.mockImplementation((queryText: string) => {
+        if (queryText.includes('LEFT JOIN employer_profiles')) return Promise.resolve({ rows: [{ id: 'usr-123', company_name: 'Fixture Co' }] });
+        if (queryText === RECORD) return Promise.reject(Object.assign(new Error('no such function'), { code: '42883' }));
+        return Promise.resolve({});
+      });
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const res = await handler(patch({ company_name: 'Fixture Co', signup_source: { src: null, entry: 'signup_page' } }));
+      warnSpy.mockRestore();
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ id: 'usr-123', company_name: 'Fixture Co' });
+      const s = statements();
+      expect(s).toContain('ROLLBACK TO SAVEPOINT analytics_capture');
+      expect(s[s.length - 1]).toBe('COMMIT');
+      expect(s).not.toContain('ROLLBACK');
+    });
+  });
+
   describe('change context', () => {
     const patch = (body: object) => ({ ...mockEvent, httpMethod: 'PATCH', body: JSON.stringify(body) }) as unknown as APIGatewayProxyEvent;
 

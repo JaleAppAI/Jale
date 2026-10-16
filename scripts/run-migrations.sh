@@ -581,6 +581,13 @@ MIGRATIONS=(
   "117_admin_queues.sql"
   "118_employer_organizations.sql"
   "119_employer_org_owner_access.sql"
+  "120_admin_access.sql"
+  "121_whatsapp_support_mode.sql"
+  "122_admin_inbox.sql"
+  "123_admin_analytics_s28.sql"
+  "124_analytics_capture.sql"
+  "125_hire_details_and_billing_resume.sql"
+  "126_job_conversations_whatsapp_update_columns.sql"
 )
 
 WORKDIR="$(mktemp -d)"

@@ -11,6 +11,7 @@ import { ConversationDrawerProvider } from "@/contexts/ConversationDrawerContext
 import { ToastProvider } from "@/components/ui/toast";
 import { PostJobProvider } from "@/contexts/PostJobContext";
 import { UnreadMessagesProvider } from "@/contexts/UnreadMessagesContext";
+import { WorkerAttentionProvider } from "@/contexts/WorkerAttentionContext";
 import { ReportProblemProvider } from "@/contexts/ReportProblemContext";
 
 const lexend = Lexend({
@@ -94,19 +95,26 @@ export default async function RootLayout({
                       UnreadMessagesContext. Above PostJobProvider so the drawer
                       (mounted below it) can consume it. */}
                   <UnreadMessagesProvider>
-                    {/* Inside ToastProvider (it toasts a posted job) and outside
-                        the pages, so "Post a job" is reachable from every employer
-                        surface rather than only from the dashboard. */}
-                    <PostJobProvider>
-                      {/* Mounts the drawer itself, the way PostJobProvider
-                          mounts the wizard, so any surface can open a thread
-                          for one applicant instead of only the drawer's own
-                          floating button being able to. */}
-                      <ConversationDrawerProvider>
-                        <Header />
-                        {children}
-                      </ConversationDrawerProvider>
-                    </PostJobProvider>
+                    {/* The worker's "needs your attention" summary, once for
+                        the session: the nav badge on both rails and the home
+                        page's banners read the same answer -- see
+                        WorkerAttentionContext. It asks nothing for an
+                        employer or a visitor. */}
+                    <WorkerAttentionProvider>
+                      {/* Inside ToastProvider (it toasts a posted job) and outside
+                          the pages, so "Post a job" is reachable from every employer
+                          surface rather than only from the dashboard. */}
+                      <PostJobProvider>
+                        {/* Mounts the drawer itself, the way PostJobProvider
+                            mounts the wizard, so any surface can open a thread
+                            for one applicant instead of only the drawer's own
+                            floating button being able to. */}
+                        <ConversationDrawerProvider>
+                          <Header />
+                          {children}
+                        </ConversationDrawerProvider>
+                      </PostJobProvider>
+                    </WorkerAttentionProvider>
                   </UnreadMessagesProvider>
                 </ToastProvider>
               </SidebarProfileProvider>

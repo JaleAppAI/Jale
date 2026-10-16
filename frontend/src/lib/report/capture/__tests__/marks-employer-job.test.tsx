@@ -86,6 +86,7 @@ const JOB = {
     applicant_count: 1,
     hired_count: 0,
     open_count: 1,
+    hire_details_needed_count: 0,
     pay_min: null,
     pay_max: null,
     pay_interval: null,
@@ -124,6 +125,8 @@ const APPLICANT = {
         desired_pay: { amount: 99, interval: 'hourly' },
     },
     prompt_answers: [{ prompt_id: 'p1', question: 'Fake question for applicants?', text: 'Fake applicant answer words' }],
+    hire_details: null,
+    hire_details_needed: false,
 } as unknown as Applicant;
 
 describe('employer job page applicants: capture marks', () => {

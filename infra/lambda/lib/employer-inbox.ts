@@ -98,8 +98,10 @@ const INBOX_QUERY = `
   -- Those are different rows whenever the employer has replied last, so one
   -- join cannot serve both. Filtered on direction rather than on
   -- sender_type = 'worker' on purpose: "arrived from outside" is what the
-  -- badge means. The two are equivalent today (job-messaging.ts:692 is the
-  -- only writer of an inbound row) -- do not "tighten" this to sender_type,
+  -- badge means. The two are equivalent today: the inbound rows are written
+  -- by job-messaging.ts (WhatsApp replies) and by 125's
+  -- jale_cap.worker_post_application_message (a hired worker's web message),
+  -- both as sender_type 'worker' -- do not "tighten" this to sender_type,
   -- which would change what the badge counts the day a system-inbound path
   -- appears. Expected to be served by idx_job_messages_conversation_created
   -- (025:44-45) with direction as a filter; not measured with EXPLAIN.

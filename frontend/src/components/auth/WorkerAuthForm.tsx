@@ -6,6 +6,7 @@ import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { workerSignIn, workerSignUp, workerVerifyOtp } from '@/lib/cognito';
 import { authErrorKey } from '@/lib/auth-errors';
+import { captureSignupSource, clearSignupSource, signupSourceBody } from '@/lib/signup-source';
 import { formatPhoneNumber, type PhoneCountryCode } from '@/lib/phone';
 import type { CognitoUser } from 'amazon-cognito-identity-js';
 import { claimReferral, getWorkerOnboarding } from '@/lib/api/worker';
@@ -99,6 +100,12 @@ export default function WorkerAuthForm() {
         const jobId = validateJobId(searchParams.get('job'));
         const shareCode = normalizeShareCode(searchParams.get('share'));
         if (jobId || shareCode) stashPendingReferral({ jobId, shareCode });
+        // Where this visitor came from (analytics #16, K3.6), first touch
+        // only. `step=signup` is the /app link's door (see `step` below).
+        captureSignupSource({
+            src: searchParams.get('src'),
+            entry: searchParams.get('step') === 'signup' ? 'app' : 'signup_page',
+        });
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
@@ -183,7 +190,9 @@ export default function WorkerAuthForm() {
         setResendSuccess(false);
         setIsLoading(true);
         try {
-            await workerSignUp({ phone });
+            await workerSignUp({ phone, signupSource: signupSourceBody() });
+            // Sent once: the server keeps the first one per user.
+            clearSignupSource();
             setUser(await workerSignIn(phone));
             resetDigits();
             setResendCooldownSeconds(RESEND_CODE_COOLDOWN_SECONDS);

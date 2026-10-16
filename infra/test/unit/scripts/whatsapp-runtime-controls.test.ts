@@ -4,8 +4,10 @@ import {
   formatTemplateVerificationRow,
   parseControlsArgs,
   runControlsAction,
+  runVerifyTemplates,
   type Queryable,
 } from '../../../scripts/whatsapp-runtime-controls';
+import type { VerifyTemplatesResult } from '../../../scripts/lib/verify-twilio-templates';
 
 const PHONE = '+19155550123';
 
@@ -98,6 +100,66 @@ describe('formatTemplateVerificationRow (--verify-templates)', () => {
     expect(line).toBe('job_alert_es\tHXghi\tMISSING\t-\t-');
     expect(line).not.toContain('undefined');
     expect(line).not.toContain('null');
+  });
+});
+
+describe('runVerifyTemplates (--verify-templates)', () => {
+  const ROW = { key: 'job_alert_es', sid: 'HXabc', exists: true, whatsappStatus: 'approved', whatsappCategory: 'UTILITY' };
+
+  function harness(result: Partial<VerifyTemplatesResult> = {}) {
+    const verify = jest.fn(async (_options: { beforeDeploy: boolean }): Promise<VerifyTemplatesResult> => ({
+      rows: [ROW], failures: [], notices: [], ...result,
+    }));
+    const logs: string[] = [];
+    const errors: string[] = [];
+    const out = { log: (line: string) => { logs.push(line); }, error: (line: string) => { errors.push(line); } };
+    return { verify, logs, errors, out };
+  }
+
+  it('runs the strict check when no option is given', async () => {
+    const h = harness();
+    const code = await runVerifyTemplates(['--verify-templates'], h.verify, h.out);
+    expect(code).toBe(0);
+    expect(h.verify).toHaveBeenCalledWith({ beforeDeploy: false });
+    expect(h.logs).toEqual(['job_alert_es\tHXabc\texists\tapproved\tUTILITY']);
+    expect(h.errors).toEqual([]);
+  });
+
+  it('passes --before-deploy through to the check', async () => {
+    const h = harness();
+    await runVerifyTemplates(['--verify-templates', '--before-deploy'], h.verify, h.out);
+    expect(h.verify).toHaveBeenCalledWith({ beforeDeploy: true });
+  });
+
+  it('prints notices after the rows and still exits 0', async () => {
+    const h = harness({ notices: ['admin_support_reply_es: mapped; remove after the deploy'] });
+    const code = await runVerifyTemplates(['--verify-templates', '--before-deploy'], h.verify, h.out);
+    expect(code).toBe(0);
+    expect(h.logs).toEqual([
+      'job_alert_es\tHXabc\texists\tapproved\tUTILITY',
+      'NOTICE: admin_support_reply_es: mapped; remove after the deploy',
+    ]);
+    expect(h.errors).toEqual([]);
+  });
+
+  it('prints each failure and exits 1', async () => {
+    const h = harness({ failures: ['admin_support_reply_v2_es: missing from the secret templates map'] });
+    const code = await runVerifyTemplates(['--verify-templates', '--before-deploy'], h.verify, h.out);
+    expect(code).toBe(1);
+    expect(h.errors).toEqual(['FAIL: admin_support_reply_v2_es: missing from the secret templates map']);
+  });
+
+  it.each([
+    [['--verify-templates', '--before-deplyo'], 'Unrecognized flag for --verify-templates: --before-deplyo'],
+    [['--verify-templates', '--show'], 'Unrecognized flag for --verify-templates: --show'],
+    [['--verify-templates', PHONE], 'Unrecognized argument (redacted)'],
+  ])('rejects %j before reading anything', async (argv, message) => {
+    const h = harness();
+    const code = await runVerifyTemplates(argv, h.verify, h.out);
+    expect(code).toBe(1);
+    expect(h.verify).not.toHaveBeenCalled();
+    expect(h.errors).toEqual([message]);
+    expect(h.logs).toEqual([]);
   });
 });
 

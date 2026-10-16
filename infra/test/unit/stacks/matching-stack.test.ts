@@ -118,7 +118,8 @@ describe('MatchingStack', () => {
   });
 
   it('alarms when either DLQ has visible messages', () => {
-    template.resourceCountIs('AWS::CloudWatch::Alarm', 3);
+    // Three DLQ alarms plus the rerank fallback alarm (sprint 28).
+    template.resourceCountIs('AWS::CloudWatch::Alarm', 4);
     template.hasResourceProperties('AWS::CloudWatch::Alarm', {
       Threshold: 1,
       EvaluationPeriods: 1,
@@ -177,12 +178,55 @@ describe('MatchingStack', () => {
 
   // The ops topic arrives as the optional `whatsappAlarmTopicArn` context,
   // which a dev synth may not pass: the alarms still exist, with no action.
-  it('keeps the three DLQ alarms without an action when no alarm topic is given', () => {
+  it('keeps the three DLQ alarms and the fallback alarm without an action when no alarm topic is given', () => {
     const bare = buildTemplate(undefined, { 'aws:cdk:bundling-stacks': [] });
     const alarms = Object.values(bare.findResources('AWS::CloudWatch::Alarm')) as any[];
-    expect(alarms).toHaveLength(3);
+    expect(alarms).toHaveLength(4);
     for (const alarm of alarms) {
       expect(alarm.Properties.AlarmActions).toBeUndefined();
     }
+  });
+
+  // ── Rerank fallback (sprint 28, F3) ───────────────────────────────────────
+  //
+  // The rerank worker logs `{"metric":"EmployerCandidateRerankFallback",...}`
+  // whenever Bedrock fails or answers nothing and it caches the deterministic
+  // order instead. Nothing counted those lines. A LITERAL term pattern, not a
+  // `$.metric` selector: the Node runtime prefixes each line, so a JSON
+  // selector would match nothing (see metric-filter-patterns.test.ts).
+  it('counts rerank fallbacks from the rerank worker\'s own log group', () => {
+    const lambdas = template.findResources('AWS::Lambda::Function', {
+      Properties: { Description: 'Async employer candidate Bedrock reranker' },
+    });
+    expect(Object.keys(lambdas)).toHaveLength(1);
+    const logGroups = template.findResources('AWS::Logs::LogGroup');
+    const filters = template.findResources('AWS::Logs::MetricFilter', {
+      Properties: { FilterPattern: '"EmployerCandidateRerankFallback"' },
+    });
+    expect(Object.keys(filters)).toHaveLength(1);
+    const filter = Object.values(filters)[0] as any;
+    expect(Object.keys(logGroups)).toContain(filter.Properties.LogGroupName.Ref);
+    expect(filter.Properties.MetricTransformations).toEqual([{
+      MetricNamespace: 'Jale/Matching',
+      MetricName: 'EmployerCandidateRerankFallback',
+      MetricValue: '1',
+    }]);
+  });
+
+  it('alarms on a rerank fallback and notifies the ops topic', () => {
+    const alarms = template.findResources('AWS::CloudWatch::Alarm', {
+      Properties: { Namespace: 'Jale/Matching', MetricName: 'EmployerCandidateRerankFallback' },
+    });
+    expect(Object.keys(alarms)).toHaveLength(1);
+    const alarm = Object.values(alarms)[0] as any;
+    expect(alarm.Properties).toMatchObject({
+      Statistic: 'Sum',
+      Period: 300,
+      Threshold: 1,
+      EvaluationPeriods: 1,
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      TreatMissingData: 'notBreaching',
+      AlarmActions: [ALARM_TOPIC_ARN],
+    });
   });
 });

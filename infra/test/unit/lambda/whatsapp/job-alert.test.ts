@@ -222,6 +222,8 @@ describe('Job Alert Sender Lambda — intent fanout', () => {
   function scriptedClient(opts: {
     workers?: Array<{ id: string; whatsapp_number: string; main_trade: null }>;
     failWorkerIds?: readonly string[];
+    /** The status the intent claim returns (default: a fresh, deferred intent). */
+    intentStatus?: string;
   }) {
     const calls: Array<{ sql: string; params: unknown[] }> = [];
     const query = jest.fn(async (sql: string, params: unknown[] = []) => {
@@ -244,7 +246,7 @@ describe('Job Alert Sender Lambda — intent fanout', () => {
       if (/INSERT INTO worker_message_intents/.test(sql)) {
         const workerId = params[0] as string;
         if (opts.failWorkerIds?.includes(workerId)) throw new Error(`intent failure ${workerId}`);
-        return { rows: [{ id: `intent-${workerId}`, outbox_id: null, status: 'deferred' }] };
+        return { rows: [{ id: `intent-${workerId}`, outbox_id: null, status: opts.intentStatus ?? 'deferred' }] };
       }
       if (/UPDATE worker_message_intents/.test(sql)) {
         return { rowCount: 1, rows: [] };
@@ -340,6 +342,60 @@ describe('Job Alert Sender Lambda — intent fanout', () => {
     expect(intentInserts).toHaveLength(2);
     expect(intentInserts[0].params[5]).toBe(intentInserts[1].params[5]);
   });
+  // Sprint 28 (analytics item 20): the job each alert shows, recorded as a
+  // WhatsApp showing under alert:<intent>, best-effort.
+  it('records the alert as a showing of the job under its intent, inside the worker\'s transaction', async () => {
+    const { query, calls } = scriptedClient({});
+    mockConnect.mockResolvedValue({ query, release: mockRelease });
+
+    await handler({ jobId: 'job-1' });
+
+    const RECORD = 'SELECT jale_cap.record_whatsapp_impressions($1::uuid[], $2::uuid)';
+    const records = calls.filter((c) => c.sql === RECORD);
+    expect(records).toEqual([{ sql: RECORD, params: [['job-1'], `intent-${V2_WORKER}`] }]);
+    const sqls = calls.map((c) => c.sql);
+    const iIntent = sqls.findIndex((sql) => /INSERT INTO worker_message_intents/.test(sql));
+    const iRecord = sqls.indexOf(RECORD);
+    expect(iRecord).toBeGreaterThan(iIntent);
+    expect(sqls.slice(iRecord - 1, iRecord + 3)).toEqual(['SAVEPOINT analytics_capture', RECORD, 'RELEASE SAVEPOINT analytics_capture', 'COMMIT']);
+  });
+
+  // A rejected or expired intent never reaches the worker, so it is not a
+  // showing; an allowed or deferred one is queued for delivery and is.
+  it.each([['rejected'], ['expired']])('an alert whose intent comes back %s is not recorded as a showing', async (intentStatus) => {
+    const { query, calls } = scriptedClient({ intentStatus });
+    mockConnect.mockResolvedValue({ query, release: mockRelease });
+
+    await handler({ jobId: 'job-1' });
+
+    const sqls = calls.map((c) => c.sql);
+    expect(sqls.some((sql) => sql.includes('record_whatsapp_impressions'))).toBe(false);
+    expect(sqls).not.toContain('SAVEPOINT analytics_capture');
+    expect(sqls[sqls.length - 1]).toBe('COMMIT');
+  });
+
+  it('a failing showing record never fails the alert: the intent is still committed', async () => {
+    const { query, calls } = scriptedClient({});
+    const failing = jest.fn(async (sql: string, params: unknown[] = []) => {
+      if (sql.includes('record_whatsapp_impressions')) {
+        calls.push({ sql, params });
+        throw Object.assign(new Error('permission denied'), { code: '42501' });
+      }
+      return query(sql, params);
+    });
+    mockConnect.mockResolvedValue({ query: failing, release: mockRelease });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await handler({ jobId: 'job-1' });
+    warn.mockRestore();
+
+    expect(result).toEqual({ queued: 1, skipped: 0 });
+    const sqls = calls.map((c) => c.sql);
+    expect(sqls).toContain('ROLLBACK TO SAVEPOINT analytics_capture');
+    expect(sqls[sqls.length - 1]).toBe('COMMIT');
+    expect(sqls).not.toContain('ROLLBACK');
+  });
+
   it('attempts every matched worker, then rejects with a stable aggregate when any enqueue fails', async () => {
     const workers = [
       { id: 'worker-c', whatsapp_number: '+15125550003', main_trade: null },

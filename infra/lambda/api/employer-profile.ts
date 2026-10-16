@@ -1,10 +1,12 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
+import { recordSignupSource } from '../lib/analytics-capture';
 import { auditCaller } from '../lib/audit/caller';
 import { setAuditContext } from '../lib/audit/context';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
 import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
+import { parseSignupSource } from '../lib/signup-source';
 import { TRADE_KEYS } from '../lib/worker-vocab';
 
 const CORS_HEADERS = corsHeaders();
@@ -170,6 +172,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           jobTypesProvided,
         ],
       );
+
+      // Where the signup started (contract K3.6), carried by the first save
+      // after sign-in. Best-effort under its own savepoint; the function keeps
+      // the first write, only for an account created in the last 24 hours,
+      // so a later save never changes it.
+      const signupSource = parseSignupSource(body.signup_source);
+      if (signupSource) {
+        await recordSignupSource(client, actor.userId, signupSource);
+      }
 
       result = await client.query(
         `SELECT

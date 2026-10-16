@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { buildApplicationStageMessage } from '../../../lambda/lib/application-stage-notify';
+import { buildWebCompletionPayloadMessage } from '../../../lambda/lib/application-web-completion-copy';
 import { FALLBACK_BODY_KEY } from '../../../lambda/whatsapp/lib/outbox';
 import type { PreferredLanguage } from '../../../lambda/whatsapp/lib/onboarding-types';
 
@@ -49,10 +50,19 @@ const APPLICATION_TEMPLATES: ReadonlyArray<[string, PreferredLanguage, 'details_
   ['application_hired_en', 'en', 'hired'],
 ];
 
+// Sprint 28: the support-reply and web-completion templates. Not rendered by
+// buildApplicationStageMessage, so they are pinned on their own below.
+const SPRINT28_TEMPLATES: ReadonlyArray<[string, PreferredLanguage, number]> = [
+  ['admin_support_reply_v2_es', 'es', 1],
+  ['admin_support_reply_v2_en', 'en', 1],
+  ['application_web_completed_es', 'es', 2],
+  ['application_web_completed_en', 'en', 2],
+];
+
 describe('seed-whatsapp-twilio-templates.mjs — sprint 23 application templates', () => {
-  it('defines exactly the four application_* templates', () => {
+  it('defines exactly the four application_* stage templates and the four sprint 28 templates', () => {
     expect(Object.keys(QUICK_REPLY_DEFINITIONS).sort()).toEqual(
-      APPLICATION_TEMPLATES.map(([name]) => name).sort(),
+      [...APPLICATION_TEMPLATES, ...SPRINT28_TEMPLATES].map(([name]) => name).sort(),
     );
   });
 
@@ -248,6 +258,210 @@ describe('seed-whatsapp-twilio-templates.mjs — sprint 23 application templates
   });
 });
 
+describe('seed-whatsapp-twilio-templates.mjs — sprint 28 support-reply and web-completion templates', () => {
+  // The wording approved on 2026-10-14 (the en support reply revised on
+  // 2026-10-16), written with \u escapes so the expected text names every
+  // non-ASCII code point: curly quotes (en), guillemets (es), and the accented
+  // vowels. A body that an editor or a formatter "straightens" no longer
+  // matches.
+  const APPROVED_BODIES: Record<string, string> = {
+    admin_support_reply_v2_en:
+      'Jale Support replied to your help request: \u201c{{1}}\u201d. Reply to this message if you need more help.',
+    admin_support_reply_v2_es:
+      'Jale Soporte: \u00ab{{1}}\u00bb. Responde a este mensaje si necesitas m\u00e1s ayuda.',
+    application_web_completed_en:
+      "You completed your application for the {{1}} job on the web. See its status at {{2}} and we'll let you know here when the employer responds.",
+    application_web_completed_es:
+      'Completaste tu solicitud para el trabajo de {{1}} en la web. Revisa su estado en {{2}} y te avisamos por aqu\u00ed cuando el empleador responda.',
+  };
+
+  it.each(SPRINT28_TEMPLATES)('%s body is byte-identical to the approved wording', (name) => {
+    const body = QUICK_REPLY_DEFINITIONS[name].body;
+    expect(body).toBe(APPROVED_BODIES[name]);
+    expect(Buffer.from(body, 'utf8').equals(Buffer.from(APPROVED_BODIES[name], 'utf8'))).toBe(true);
+  });
+
+  it.each(SPRINT28_TEMPLATES)('%s declares the language it is seeded under', (name, lang) => {
+    expect(QUICK_REPLY_DEFINITIONS[name].language).toBe(lang);
+  });
+
+  it.each(SPRINT28_TEMPLATES)(
+    '%s uses exactly {{1}}..{{n}} once each, with one approval sample per variable',
+    (name, _lang, count) => {
+      const definition = QUICK_REPLY_DEFINITIONS[name];
+      const referenced = [...definition.body.matchAll(/\{\{(\d+)\}\}/g)].map((match) => match[1]);
+      const expected = Array.from({ length: count }, (_, i) => String(i + 1));
+      expect(referenced).toEqual(expected);
+      expect(definition.example).toHaveLength(count);
+      for (const sample of definition.example) expect(sample.trim().length).toBeGreaterThan(0);
+    },
+  );
+
+  it.each(SPRINT28_TEMPLATES)('%s never starts or ends with a variable', (name) => {
+    const body = QUICK_REPLY_DEFINITIONS[name].body;
+    expect(body).not.toMatch(/^\s*\{\{\d+\}\}/);
+    expect(body).not.toMatch(/\{\{\d+\}\}\s*$/);
+    // Fixed text on both sides of every variable, not just at the ends.
+    expect(body.indexOf('{{')).toBeGreaterThan(0);
+    expect(body.length - body.lastIndexOf('}}') - 2).toBeGreaterThan(0);
+  });
+
+  it.each(SPRINT28_TEMPLATES)('%s carries no buttons (created as twilio/text)', (name) => {
+    expect(QUICK_REPLY_DEFINITIONS[name].actions).toEqual([]);
+  });
+
+  it.each(SPRINT28_TEMPLATES)('%s is a valid WhatsApp template name (lowercase, digits, underscores)', (name) => {
+    expect(name).toMatch(/^[a-z0-9_]+$/);
+  });
+
+  it.each(['application_web_completed_es', 'application_web_completed_en'] as const)(
+    '%s samples a trade for {{1}} and an application link in its own language for {{2}}',
+    (name) => {
+      const lang = QUICK_REPLY_DEFINITIONS[name].language;
+      const [trade, link] = QUICK_REPLY_DEFINITIONS[name].example;
+      expect(trade).not.toContain('://');
+      expect(link).toMatch(/^https:\/\//);
+      expect(link).toContain(`/${lang}/worker/applications/`);
+    },
+  );
+
+  it.each(['admin_support_reply_v2_es', 'admin_support_reply_v2_en'] as const)(
+    '%s samples a one-line reply within the 250-character template cap',
+    (name) => {
+      const [reply] = QUICK_REPLY_DEFINITIONS[name].example;
+      expect(reply).not.toMatch(/\n/);
+      expect(reply.length).toBeLessThanOrEqual(250);
+    },
+  );
+
+  // The current admin reply path queues `admin_support_reply_<lang>` and the
+  // sender uses whatever ContentSid is mapped under that key. The seed must
+  // therefore never create or map the unversioned pair; the support-reply
+  // template it seeds lives under the v2 keys the new dispatcher reads.
+  const UNVERSIONED_SUPPORT_KEYS = ['admin_support_reply_es', 'admin_support_reply_en'];
+
+  it('defines no unversioned admin_support_reply_* template', () => {
+    for (const key of UNVERSIONED_SUPPORT_KEYS) {
+      expect(Object.keys(QUICK_REPLY_DEFINITIONS)).not.toContain(key);
+    }
+    expect(QUICK_REPLY_DEFINITIONS.admin_support_reply_v2_es).toBeDefined();
+    expect(QUICK_REPLY_DEFINITIONS.admin_support_reply_v2_en).toBeDefined();
+  });
+
+  it('keeps the unversioned keys settable, next to the v2 keys', () => {
+    // The runtime still declares them, and --set-template mirrors that
+    // interface; only the default seed is barred from writing them.
+    const settable = literal<Set<string>>('SETTABLE_TEMPLATE_KEYS');
+    for (const key of [...UNVERSIONED_SUPPORT_KEYS, 'admin_support_reply_v2_es', 'admin_support_reply_v2_en']) {
+      expect(settable.has(key)).toBe(true);
+    }
+  });
+
+  describe('the default run', () => {
+    const originalExitCode = process.exitCode;
+    afterEach(() => { process.exitCode = originalExitCode; });
+
+    // The support reply and web completion lines are transactional. Meta may
+    // refile a template under another category while it is pending unless the
+    // submission forbids it, and a MARKETING template is not a transactional
+    // message. Pinned on the requests the run actually sends.
+    it('submits every template, the sprint 28 four included, as UTILITY with no category change allowed', async () => {
+      const harness = loadScript({ argv: [], fetchHandler: creatingContentFetch() });
+      await harness.runCli();
+      expect(harness.errors).toEqual([]);
+
+      const requests = harness.fetchMock.mock.calls
+        .filter(([url, init]: any[]) => String(url).endsWith('/ApprovalRequests/whatsapp') && init?.method === 'POST')
+        .map(([, init]: any[]) => JSON.parse(init.body));
+      expect(requests.map((request) => request.name)).toEqual(expect.arrayContaining(SPRINT28_TEMPLATES.map(([name]) => name)));
+      for (const request of requests) {
+        expect(request.category).toBe('UTILITY');
+        expect(request.allow_category_change).toBe(false);
+      }
+    });
+
+    it('creates and maps the v2 support-reply keys and never the unversioned ones', async () => {
+      const harness = loadScript({ argv: [], fetchHandler: creatingContentFetch() });
+      await harness.runCli();
+
+      expect(harness.errors).toEqual([]);
+      expect(process.exitCode).toBeFalsy();
+
+      const created = createdFriendlyNames(harness);
+      expect(created).toEqual(expect.arrayContaining(['admin_support_reply_v2_es', 'admin_support_reply_v2_en']));
+      const templates = harness.storedSecret().templates;
+      expect(templates.admin_support_reply_v2_es).toMatch(/^HX[0-9a-f]{32}$/);
+      expect(templates.admin_support_reply_v2_en).toMatch(/^HX[0-9a-f]{32}$/);
+      for (const key of UNVERSIONED_SUPPORT_KEYS) {
+        expect(created).not.toContain(key);
+        expect(templates).not.toHaveProperty(key);
+      }
+    });
+  });
+});
+
+describe('seed-whatsapp-twilio-templates.mjs — web completion template and its sender', () => {
+  // Outside the 24h window the web completion line is sent as this template;
+  // `__fallback_body` is what the sender transmits while no ContentSid is
+  // mapped (and what a worker inside the window would read). The expected
+  // string is DERIVED from the renderer, so the seeded copy and the sent
+  // copy cannot drift apart.
+  const WEB_COMPLETION_TEMPLATES: ReadonlyArray<[string, PreferredLanguage]> = [
+    ['application_web_completed_es', 'es'],
+    ['application_web_completed_en', 'en'],
+  ];
+  const APPLICATION_ID = '11111111-2222-4333-8444-555555555555';
+
+  function rendered(lang: PreferredLanguage) {
+    return buildWebCompletionPayloadMessage(lang, {
+      kind: 'application_web_completion',
+      applicationId: APPLICATION_ID,
+      conversationId: '99999999-8888-4777-8666-555555555555',
+      jobTitle: 'Electricista Comercial',
+      lang,
+      shape: 'template',
+      trade: lang === 'es' ? 'Electricista' : 'Electrician',
+      url: `https://jaleapp.ai/${lang}/worker/applications/${APPLICATION_ID}`,
+    });
+  }
+
+  // One completion message: inside the window the same words go free-form.
+  it.each(WEB_COMPLETION_TEMPLATES)('%s body is also the free-form line sent inside the window', (name, lang) => {
+    const trade = lang === 'es' ? 'Electricista' : 'Electrician';
+    const url = `https://jaleapp.ai/${lang}/worker/applications/${APPLICATION_ID}`;
+    const inside = buildWebCompletionPayloadMessage(lang, {
+      kind: 'application_web_completion',
+      applicationId: APPLICATION_ID,
+      conversationId: '99999999-8888-4777-8666-555555555555',
+      jobTitle: 'Electricista Comercial',
+      lang,
+      trade,
+      url,
+    });
+    expect(inside?.contentTemplate).toBeNull();
+    expect(inside?.body).toBe(QUICK_REPLY_DEFINITIONS[name].body
+      .replace(/\{\{1\}\}/g, trade)
+      .replace(/\{\{2\}\}/g, url));
+  });
+
+  it.each(WEB_COMPLETION_TEMPLATES)('%s is the template the web completion renderer asks the sender for', (name, lang) => {
+    expect(rendered(lang)?.contentTemplate).toBe(name);
+  });
+
+  it.each(WEB_COMPLETION_TEMPLATES)(
+    '%s body is byte-identical to the fallback body once {{1}} and {{2}} are substituted',
+    (name, lang) => {
+      const variables = (rendered(lang)?.contentVariables ?? {}) as Record<string, string>;
+      const substituted = QUICK_REPLY_DEFINITIONS[name].body
+        .replace(/\{\{1\}\}/g, variables['1'])
+        .replace(/\{\{2\}\}/g, variables['2']);
+      expect(variables[FALLBACK_BODY_KEY]).toBe(substituted);
+      expect(variables['1']).toBe(lang === 'es' ? 'Electricista' : 'Electrician');
+      expect(variables['2']).toBe(`https://jaleapp.ai/${lang}/worker/applications/${APPLICATION_ID}`);
+    },
+  );
+});
+
 describe('seed-whatsapp-twilio-templates.mjs — help menu recreation', () => {
   // A Twilio Content resource is IMMUTABLE, so the skip-if-present rule the
   // other definitions use would keep serving the pre-sprint-23 menu forever
@@ -334,9 +548,25 @@ describe('seed-whatsapp-twilio-templates.mjs — WhatsApp approval submission', 
     expect(name).toMatch(/^[a-z0-9_]+$/);
   });
 
-  it('never submits the help-menu list pickers (session messages need no approval)', () => {
-    expect(SOURCE).toMatch(/for \(const name of Object\.keys\(QUICK_REPLY_DEFINITIONS\)\)[\s\S]*?whatsappApprovalStatus/);
-    expect(SOURCE).not.toMatch(/HELP_MENU_LIST_DEFINITIONS[\s\S]{0,200}ApprovalRequests/);
+  describe('driven through the default run', () => {
+    const originalExitCode = process.exitCode;
+    afterEach(() => { process.exitCode = originalExitCode; });
+
+    it('never submits the help-menu list pickers (session messages need no approval)', async () => {
+      const harness = loadScript({ argv: [], fetchHandler: creatingContentFetch() });
+      await harness.runCli();
+
+      expect(harness.errors).toEqual([]);
+      // Both list pickers are created (FORCE_RECREATE) but never submitted.
+      expect(createdFriendlyNames(harness)).toEqual(
+        expect.arrayContaining(['help_menu_list_es', 'help_menu_list_en']),
+      );
+      const submitted = submittedApprovalNames(harness);
+      expect(submitted.filter((name) => name.startsWith('help_menu_list_'))).toEqual([]);
+      // Every quick-reply template is submitted once, and nothing else is.
+      expect([...submitted].sort()).toEqual(Object.keys(QUICK_REPLY_DEFINITIONS).sort());
+      expect(SOURCE).not.toMatch(/HELP_MENU_LIST_DEFINITIONS[\s\S]{0,200}ApprovalRequests/);
+    });
   });
 });
 
@@ -351,18 +581,73 @@ describe('seed-whatsapp-twilio-templates.mjs — --recreate-application-template
     expect(SOURCE).toMatch(/process\.argv/);
   });
 
-  it('creates NEW resources for exactly the four application_* names and submits them', () => {
-    const block = /async function recreateApplicationTemplates\(([\s\S]*?)\n\}/.exec(SOURCE)?.[1];
-    expect(block).toBeDefined();
-    // Creates through the same quick-reply/text builder the default path uses,
-    // so the twilio/text fallback for the button-less pair still applies.
-    expect(block!).toContain('createQuickReplyContent');
-    expect(block!).toContain('QUICK_REPLY_DEFINITIONS');
-    // A new resource that is never submitted is a new resource that can never
-    // be sent outside the session window -- the whole point of the exercise.
-    expect(block!).toContain('ensureWhatsAppApprovals');
-    // The secret is the only place the sender reads SIDs from.
-    expect(block!).toMatch(/UpdateSecretCommand|persistTemplates/);
+  describe('driven through the CLI', () => {
+    const originalExitCode = process.exitCode;
+    afterEach(() => { process.exitCode = originalExitCode; });
+
+    // Every quick-reply name already holds a SID, so the run has a stored
+    // value to replace for the four and to leave alone for the rest.
+    const STORED_QUICK_REPLY_SIDS: Record<string, string> = Object.fromEntries(
+      Object.keys(QUICK_REPLY_DEFINITIONS).map((name, index) => [name, `HX${'e'.repeat(31)}${index}`]),
+    );
+    const STAGE_NAMES = APPLICATION_TEMPLATES.map(([name]) => name).sort();
+
+    async function runRecreate() {
+      const harness = loadScript({
+        argv: ['--recreate-application-templates'],
+        secret: { ...FAKE_SECRET, templates: { ...STORED_TEMPLATES, ...STORED_QUICK_REPLY_SIDS } },
+        fetchHandler: creatingContentFetch(),
+      });
+      await harness.runCli();
+      expect(harness.errors).toEqual([]);
+      expect(process.exitCode).toBeFalsy();
+      return harness;
+    }
+
+    it('creates NEW resources for exactly the four application stage names', async () => {
+      const harness = await runRecreate();
+      const created = createdFriendlyNames(harness);
+      // Counted from the Content API calls the run actually made: a fifth
+      // name, or a loop over every QUICK_REPLY_DEFINITIONS entry, fails here.
+      expect(created).toHaveLength(4);
+      expect([...created].sort()).toEqual(STAGE_NAMES);
+      expect(created).not.toContain('application_web_completed_es');
+      expect(created).not.toContain('application_web_completed_en');
+      expect(created).not.toContain('admin_support_reply_v2_es');
+      expect(created).not.toContain('admin_support_reply_v2_en');
+
+      // Each one through the same quick-reply/text builder the default path
+      // uses, with the definition's own body.
+      const bodies = harness.fetchMock.mock.calls
+        .filter(([url, init]: any[]) => url === CONTENT_CREATE_URL && init?.method === 'POST')
+        .map(([, init]: any[]) => JSON.parse(init.body));
+      for (const request of bodies) {
+        const definition = QUICK_REPLY_DEFINITIONS[request.friendly_name];
+        const type = definition.actions.length > 0 ? 'twilio/quick-reply' : 'twilio/text';
+        expect(request.types[type].body).toBe(definition.body);
+      }
+      expect(harness.logs.at(-1)).toMatch(/^Recreated 4 application stage templates /);
+    });
+
+    it('maps the four new SIDs and leaves every other quick-reply SID as stored', async () => {
+      const harness = await runRecreate();
+      const templates = harness.storedSecret().templates;
+      for (const name of Object.keys(QUICK_REPLY_DEFINITIONS)) {
+        if (STAGE_NAMES.includes(name)) {
+          expect(templates[name]).toMatch(/^HX[0-9a-f]{32}$/);
+          expect(templates[name]).not.toBe(STORED_QUICK_REPLY_SIDS[name]);
+        } else {
+          expect(templates[name]).toBe(STORED_QUICK_REPLY_SIDS[name]);
+        }
+      }
+    });
+
+    it('submits only the four new resources for approval', async () => {
+      // A new resource that is never submitted can never be sent outside the
+      // session window -- the whole point of the exercise.
+      const harness = await runRecreate();
+      expect([...submittedApprovalNames(harness)].sort()).toEqual(STAGE_NAMES);
+    });
   });
 
   it('prints names, SIDs and statuses only -- never the secret', () => {
@@ -554,6 +839,8 @@ function loadScript(opts: {
   argv?: string[];
   secret?: object;
   fetchHandler?: (url: string) => FetchSpec;
+  /** Record UpdateSecret calls but keep serving the old value, so the read-back check can be driven. */
+  dropWrites?: boolean;
 }): Harness {
   // A silent no-match here would evaluate code that never runs and let every
   // assertion below pass against nothing.
@@ -579,7 +866,7 @@ function loadScript(opts: {
   const send = jest.fn(async (command: any) => {
     if (command.__kind === 'UpdateSecret') {
       updateCalls.push(command.input);
-      stored = command.input.SecretString;
+      if (!opts.dropWrites) stored = command.input.SecretString;
       return {};
     }
     return { SecretString: stored };
@@ -655,6 +942,46 @@ const BOTH_APPROVED = contentFetch({
   [JOB_ALERT_ES_V2]: { friendlyName: 'job_alert_es_v2' },
   [JOB_ALERT_EN_V2]: { friendlyName: 'job_alert_en_v2' },
 });
+
+const CONTENT_CREATE_URL = 'https://content.twilio.com/v1/Content';
+
+/**
+ * A Content API that accepts every create: `POST /v1/Content` answers a fresh
+ * HX-shaped SID, every resource reads as never submitted, and an approval
+ * request is received. Lets a test drive the default run or
+ * `--recreate-application-templates` end to end and read back what it made.
+ */
+function creatingContentFetch(): (url: string) => FetchSpec {
+  let created = 0;
+  return (url: string): FetchSpec => {
+    if (url === CONTENT_CREATE_URL) {
+      created += 1;
+      return { ok: true, body: { sid: `HX${created.toString(16).padStart(32, '0')}` } };
+    }
+    if (url.endsWith('/ApprovalRequests')) {
+      return { ok: true, body: { whatsapp: { status: 'unsubmitted' } } };
+    }
+    if (url.endsWith('/ApprovalRequests/whatsapp')) {
+      return { ok: true, body: { status: 'received' } };
+    }
+    return { ok: false, status: 404 };
+  };
+}
+
+/** The friendly names of every Content resource a run created, in order. */
+function createdFriendlyNames(harness: Harness): string[] {
+  return harness.fetchMock.mock.calls
+    .filter(([url, init]: any[]) => url === CONTENT_CREATE_URL && init?.method === 'POST')
+    .map(([, init]: any[]) => JSON.parse(init.body).friendly_name as string);
+}
+
+/** The friendly names a run submitted for WhatsApp approval, in order. */
+function submittedApprovalNames(harness: Harness): string[] {
+  return harness.fetchMock.mock.calls
+    .filter(([url, init]: any[]) => String(url).endsWith('/ApprovalRequests/whatsapp') && init?.method === 'POST')
+    .map(([, init]: any[]) => JSON.parse(init.body).name as string);
+}
+
 
 describe('seed-whatsapp-twilio-templates.mjs — --set-template', () => {
   // A test that leaves process.exitCode at 1 makes the whole jest run exit
@@ -957,5 +1284,266 @@ describe('seed-whatsapp-twilio-templates.mjs — --set-template', () => {
     expect(settable.has('job_alert_en')).toBe(true);
     // Created by this script, absent from the runtime interface, not settable.
     expect(settable.has('help_menu_list_es')).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sprint 28: `--unset-template <name>`
+//
+// The unversioned admin_support_reply_<lang> keys are superseded by the v2
+// pair. They stay mapped until the deploy that stops reading them, and are
+// removed after it. `--set-template` can only add or replace a mapping, so
+// this flag is the removal half: allowlisted to exactly the retired keys,
+// written through the same read-modify-write and read-back check.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('seed-whatsapp-twilio-templates.mjs — --unset-template', () => {
+  const originalExitCode = process.exitCode;
+  afterEach(() => { process.exitCode = originalExitCode; });
+
+  const RETIRED_ES = 'admin_support_reply_es';
+  const RETIRED_EN = 'admin_support_reply_en';
+  // Obviously fake ContentSids for the retired pair and for a set pair.
+  const RETIRED_ES_SID = 'HX2222222222222222222222222222aaaa';
+  const RETIRED_EN_SID = 'HX2222222222222222222222222222bbbb';
+  const FAKE_SET_SID = 'HX3333333333333333333333333333cccc';
+
+  const TEMPLATES_WITH_RETIRED = {
+    ...STORED_TEMPLATES,
+    [RETIRED_ES]: RETIRED_ES_SID,
+    [RETIRED_EN]: RETIRED_EN_SID,
+  };
+  const SECRET_WITH_RETIRED = { ...FAKE_SECRET, templates: TEMPLATES_WITH_RETIRED };
+
+  async function expectUnsetRefusal(opts: Parameters<typeof loadScript>[0], match: RegExp) {
+    const harness = loadScript({ secret: SECRET_WITH_RETIRED, ...opts });
+    await harness.runCli();
+    expect(harness.errors).toHaveLength(1);
+    expect(harness.errors[0]).toMatch(match);
+    expect(process.exitCode).toBe(1);
+    expect(harness.updateCalls()).toEqual([]);
+    expect(harness.storedSecret().templates).toEqual(TEMPLATES_WITH_RETIRED);
+    return harness;
+  }
+
+  it('allowlists exactly the two retired support-reply keys', () => {
+    const retired = literal<Set<string>>('RETIRED_TEMPLATE_KEYS');
+    expect([...retired].sort()).toEqual([RETIRED_EN, RETIRED_ES]);
+    // Neither is a definition the default seed creates or a hardcoded SID it
+    // re-imposes, so a later default run cannot put them back.
+    for (const key of retired) {
+      expect(QUICK_REPLY_DEFINITIONS[key]).toBeUndefined();
+      expect(literal<Record<string, string>>('NEW_TEMPLATES')[key]).toBeUndefined();
+    }
+  });
+
+  it('removes one allowlisted key and keeps every other key and field', async () => {
+    const harness = loadScript({ argv: ['--unset-template', RETIRED_ES], secret: SECRET_WITH_RETIRED });
+    await harness.runCli();
+
+    expect(harness.errors).toEqual([]);
+    expect(process.exitCode).toBeFalsy();
+    expect(harness.logs).toEqual([`removed templates.${RETIRED_ES}`]);
+
+    const { [RETIRED_ES]: _removed, ...rest } = TEMPLATES_WITH_RETIRED;
+    expect(harness.storedSecret().templates).toEqual(rest);
+    expect(harness.storedSecret().authToken).toBe(FAKE_AUTH_TOKEN);
+    expect(harness.storedSecret().messagingServiceSid).toBe(FAKE_SECRET.messagingServiceSid);
+
+    // Read, one write, then the read-back. No Twilio call at all.
+    expect(harness.sendKinds()).toEqual(['GetSecretValue', 'UpdateSecret', 'GetSecretValue']);
+    expect(harness.fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts both spellings and removes the pair in one write', async () => {
+    const harness = loadScript({
+      argv: [`--unset-template=${RETIRED_ES}`, '--unset-template', RETIRED_EN],
+      secret: SECRET_WITH_RETIRED,
+    });
+    await harness.runCli();
+
+    expect(harness.errors).toEqual([]);
+    expect(harness.logs).toEqual([
+      `removed templates.${RETIRED_ES}`,
+      `removed templates.${RETIRED_EN}`,
+    ]);
+    expect(harness.updateCalls()).toHaveLength(1);
+    expect(harness.storedSecret().templates).toEqual(STORED_TEMPLATES);
+  });
+
+  it('treats a key that is already absent as a no-op, not an error', async () => {
+    const harness = loadScript({ argv: ['--unset-template', RETIRED_ES, '--unset-template', RETIRED_EN] });
+    await harness.runCli();
+
+    expect(harness.errors).toEqual([]);
+    expect(process.exitCode).toBeFalsy();
+    expect(harness.logs).toEqual([
+      `templates.${RETIRED_ES} already absent`,
+      `templates.${RETIRED_EN} already absent`,
+    ]);
+    expect(harness.updateCalls()).toEqual([]);
+    expect(harness.storedSecret().templates).toEqual(STORED_TEMPLATES);
+  });
+
+  it('reports a removed key and an absent key in the same run', async () => {
+    const harness = loadScript({
+      argv: ['--unset-template', RETIRED_ES, '--unset-template', RETIRED_EN],
+      secret: { ...FAKE_SECRET, templates: { ...STORED_TEMPLATES, [RETIRED_EN]: RETIRED_EN_SID } },
+    });
+    await harness.runCli();
+
+    expect(harness.errors).toEqual([]);
+    expect(harness.logs).toEqual([
+      `templates.${RETIRED_ES} already absent`,
+      `removed templates.${RETIRED_EN}`,
+    ]);
+    expect(harness.storedSecret().templates).toEqual(STORED_TEMPLATES);
+  });
+
+  it('combines with --set-template: one inspection per set pair, one write for both edits', async () => {
+    const harness = loadScript({
+      argv: [
+        '--set-template', `job_alert_es=${FAKE_SET_SID}`,
+        '--unset-template', RETIRED_ES,
+        '--unset-template', RETIRED_EN,
+      ],
+      secret: SECRET_WITH_RETIRED,
+      fetchHandler: contentFetch({ [FAKE_SET_SID]: { friendlyName: 'job_alert_es_next' } }),
+    });
+    await harness.runCli();
+
+    expect(harness.errors).toEqual([]);
+    expect(process.exitCode).toBeFalsy();
+    expect(harness.logs).toEqual([
+      `job_alert_es\t${FAKE_SET_SID}\tjob_alert_es_next\tapproved\tUTILITY`,
+      'updated templates.job_alert_es',
+      `removed templates.${RETIRED_ES}`,
+      `removed templates.${RETIRED_EN}`,
+    ]);
+    expect(harness.updateCalls()).toHaveLength(1);
+    expect(harness.storedSecret().templates).toEqual({ ...STORED_TEMPLATES, job_alert_es: FAKE_SET_SID });
+    // Only the set pair is looked up; removal needs no Twilio call.
+    expect(harness.fetchMethods()).toEqual(['GET', 'GET']);
+  });
+
+  it('removes nothing when a set pair in the same run is refused', async () => {
+    const harness = await expectUnsetRefusal(
+      {
+        argv: ['--set-template', `job_alert_es=${FAKE_SET_SID}`, '--unset-template', RETIRED_ES],
+        fetchHandler: contentFetch({ [FAKE_SET_SID]: { status: 'pending' } }),
+      },
+      /pending/,
+    );
+    expect(harness.logs.some((line) => line.startsWith('removed'))).toBe(false);
+  });
+
+  it.each([
+    'admin_support_reply_v2_es',
+    'admin_support_reply_v2_en',
+    'employer_message_invite_en',
+    'job_alert_es',
+    'help_menu_list_es',
+    'Admin_Support_Reply_ES',
+    'admin_support_reply_fr',
+  ])('refuses to unset %s, which is not a retired key', async (name) => {
+    const harness = await expectUnsetRefusal(
+      { argv: ['--unset-template', name] },
+      /is not a retired template key/,
+    );
+    expect(harness.errors[0]).toContain(`'${name}'`);
+    expect(harness.errors[0]).toContain(RETIRED_ES);
+    expect(harness.fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses the whole run when any one name is not allowlisted', async () => {
+    await expectUnsetRefusal(
+      { argv: ['--unset-template', RETIRED_ES, '--unset-template', 'admin_support_reply_v2_es'] },
+      /'admin_support_reply_v2_es' is not a retired template key/,
+    );
+  });
+
+  it('rejects --unset-template with no name', async () => {
+    await expectUnsetRefusal({ argv: ['--unset-template'] }, /--unset-template needs/);
+    await expectUnsetRefusal({ argv: ['--unset-template', '--purge-stale'] }, /--unset-template needs/);
+    await expectUnsetRefusal({ argv: ['--unset-template='] }, /--unset-template needs/);
+  });
+
+  it('rejects a name given more than once', async () => {
+    await expectUnsetRefusal(
+      { argv: ['--unset-template', RETIRED_ES, `--unset-template=${RETIRED_ES}`] },
+      /more than once/,
+    );
+  });
+
+  it('rejects a key named by both --set-template and --unset-template', async () => {
+    await expectUnsetRefusal(
+      { argv: ['--set-template', `${RETIRED_ES}=${FAKE_SET_SID}`, '--unset-template', RETIRED_ES] },
+      /both --set-template and --unset-template/,
+    );
+  });
+
+  it.each(['--purge-stale', '--recreate-application-templates'])(
+    'refuses to combine --unset-template with %s',
+    async (flag) => {
+      await expectUnsetRefusal(
+        { argv: ['--unset-template', RETIRED_ES, flag] },
+        new RegExp(`--unset-template cannot be combined with ${flag}`),
+      );
+    },
+  );
+
+  it('rejects --allow-pending without a --set-template pair', async () => {
+    await expectUnsetRefusal({ argv: ['--unset-template', RETIRED_ES, '--allow-pending'] }, /--allow-pending/);
+  });
+
+  it('still rejects an unknown flag alongside --unset-template', async () => {
+    await expectUnsetRefusal(
+      { argv: ['--unset-template', RETIRED_ES, '--bogus'] },
+      /unrecognized flag\(s\): --bogus/,
+    );
+  });
+
+  it('fails when the read-back still holds a removed key', async () => {
+    const harness = loadScript({
+      argv: ['--unset-template', RETIRED_ES],
+      secret: SECRET_WITH_RETIRED,
+      dropWrites: true,
+    });
+    await harness.runCli();
+
+    expect(harness.updateCalls()).toHaveLength(1);
+    expect(harness.errors).toEqual([`Secret update did not remove these template keys: ${RETIRED_ES}`]);
+    expect(process.exitCode).toBe(1);
+    expect(harness.logs).toEqual([]);
+  });
+
+  it('never prints a template SID, the account SID or the auth token', async () => {
+    const scenarios: Array<Parameters<typeof loadScript>[0]> = [
+      { argv: ['--unset-template', RETIRED_ES, '--unset-template', RETIRED_EN], secret: SECRET_WITH_RETIRED },
+      { argv: ['--unset-template', RETIRED_ES] },
+      { argv: ['--unset-template', 'admin_support_reply_v2_es'], secret: SECRET_WITH_RETIRED },
+      { argv: ['--unset-template', RETIRED_ES], secret: SECRET_WITH_RETIRED, dropWrites: true },
+      {
+        argv: ['--set-template', `job_alert_es=${FAKE_SET_SID}`, '--unset-template', RETIRED_ES],
+        secret: SECRET_WITH_RETIRED,
+        fetchHandler: contentFetch({ [FAKE_SET_SID]: { status: 'pending' } }),
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      const harness = loadScript(scenario);
+      await harness.runCli();
+      process.exitCode = originalExitCode;
+      const printed = [...harness.logs, ...harness.errors].join('\n');
+      expect(printed.length).toBeGreaterThan(0);
+      expect(printed).not.toContain(RETIRED_ES_SID);
+      expect(printed).not.toContain(RETIRED_EN_SID);
+      for (const sid of Object.values(STORED_TEMPLATES)) expect(printed).not.toContain(sid);
+      expect(printed).not.toContain(FAKE_AUTH_TOKEN);
+      expect(printed).not.toContain(FAKE_ACCOUNT_SID);
+      expect(printed).not.toContain(
+        Buffer.from(`${FAKE_ACCOUNT_SID}:${FAKE_AUTH_TOKEN}`).toString('base64'),
+      );
+    }
   });
 });

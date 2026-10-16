@@ -1,3 +1,5 @@
+import { AuthFlowType, ChallengeNameType } from '@aws-sdk/client-cognito-identity-provider';
+import * as sentinelRules from '../../../../lambda/ops/audit-sentinel-rules';
 import {
   AUDIT_SYSTEM_EVENTS,
   FUNCTION_ROLE_EVENTS,
@@ -10,6 +12,7 @@ import {
 } from '../../../../lambda/ops/audit-sentinel-rules';
 import {
   ACCOUNT,
+  ADMIN_CLIENT_ID,
   ADMIN_POOL_ID,
   ALERT_KEY_ALIAS,
   ALERT_KEY_ARN,
@@ -32,6 +35,10 @@ import {
   SENTINEL_DEAD_LETTER_ARN,
   SENTINEL_DEAD_LETTER_NAME,
   SENTINEL_DEAD_LETTER_URL,
+  SECURITY_HUB_FINDING_ID,
+  SIGN_IN_SUB,
+  WORKER_CLIENT_ID,
+  WORKER_POOL_ID,
   apiCall,
   assumedRole,
   AUDIT_KEY_ARN,
@@ -656,6 +663,90 @@ describe('audit sentinel rules', () => {
       expect(alertOf('securityHubCritical').alert).toMatchObject({ rule: 'securityhub_finding' });
     });
 
+    describe('Security Hub: one alert per finding state', () => {
+      const STATE_KEY = /^findings\/securityhub-state\/[0-9a-f]{64}\.json\.gz$/;
+      /** The critical fixture with its one finding changed. */
+      const withFinding = (change: (finding: Record<string, any>) => Record<string, any>) => {
+        const base = EVENTS.securityHubCritical;
+        return { ...base, detail: { findings: [change({ ...base.detail.findings[0] })] } } as unknown as Record<string, unknown>;
+      };
+      const alertFor = (event: Record<string, unknown>) => {
+        const result = classifyEvent(event, CONFIG);
+        if (result.action !== 'alert') throw new Error(`expected an alert, got ${result.action}`);
+        return result;
+      };
+
+      it("keys a failed critical finding's alert by its state, the same for every import of it", () => {
+        const first = alertOf('securityHubCritical');
+        const later = alertOf('securityHubCriticalLater');
+        expect(first.archive.key).toMatch(STATE_KEY);
+        expect(EVENTS.securityHubCriticalLater.id).not.toBe(EVENTS.securityHubCritical.id);
+        expect(later.archive.key).toBe(first.archive.key);
+      });
+
+      it('keys another finding, another status or another severity apart', () => {
+        const key = alertOf('securityHubCritical').archive.key;
+        expect(alertOf('securityHubCriticalOther').archive.key).not.toBe(key);
+        const noStatus = alertFor(withFinding(({ Compliance: _c, ...rest }) => rest));
+        expect(noStatus.archive.key).toMatch(STATE_KEY);
+        expect(noStatus.archive.key).not.toBe(key);
+      });
+
+      it('archives a critical finding that passed, without an alert, under its event', () => {
+        expect(classify('securityHubCriticalPassed')).toMatchObject({
+          action: 'archive',
+          archive: { category: 'securityhub', key: expect.stringMatching(/^findings\/securityhub\/dt=2026-10-06\//), body: { classification: 'archive' } },
+        });
+        for (const status of ['WARNING', 'NOT_AVAILABLE']) {
+          expect(classifyEvent(withFinding((f) => ({ ...f, Compliance: { Status: status } })), CONFIG)).toMatchObject({ action: 'archive' });
+        }
+      });
+
+      it.each([
+        ['archived', (f: Record<string, any>) => ({ ...f, RecordState: 'ARCHIVED' })],
+        ['suppressed', (f: Record<string, any>) => ({ ...f, Workflow: { Status: 'SUPPRESSED' } })],
+      ])('archives a failed critical finding that is %s under its event, without an alert', (_label, change) => {
+        expect(classifyEvent(withFinding(change), CONFIG)).toMatchObject({
+          action: 'archive',
+          archive: { category: 'securityhub', key: expect.stringMatching(/^findings\/securityhub\/dt=2026-10-04\//), body: { classification: 'archive' } },
+        });
+      });
+
+      it('alerts on the active, unsuppressed finding of an event whose first critical finding is suppressed', () => {
+        const base = EVENTS.securityHubCritical;
+        const suppressed = { ...base.detail.findings[0], Workflow: { Status: 'SUPPRESSED' } };
+        const other = EVENTS.securityHubCriticalOther.detail.findings[0];
+        const event = { ...base, detail: { findings: [suppressed, other] } } as unknown as Record<string, unknown>;
+        expect(alertFor(event).archive.key).toBe(alertOf('securityHubCriticalOther').archive.key);
+      });
+
+      it('alerts on a critical finding with no compliance status, which is not a control finding', () => {
+        expect(alertFor(withFinding(({ Compliance: _c, ...rest }) => rest)).alert).toMatchObject({ rule: 'securityhub_finding', severity: 'CRITICAL' });
+      });
+
+      it("never names the finding's Id: not in the key, the alert or its record", () => {
+        const { alert, archive } = alertOf('securityHubCritical');
+        const text = JSON.stringify({ key: archive.key, alert, body: archive.body });
+        expect(text).not.toContain(SECURITY_HUB_FINDING_ID);
+        expect(text).not.toContain(ACCOUNT);
+        expect(alert).toMatchObject({ eventId: EVENTS.securityHubCritical.id, principalType: 'finding', target: 'AwsS3Bucket' });
+        expect(archive.body).toEqual({ classification: 'alert', alert });
+      });
+
+      it('alerts on the first alerting finding of an event that carries several', () => {
+        const base = EVENTS.securityHubCritical;
+        const passed = { ...base.detail.findings[0], Compliance: { Status: 'PASSED' } };
+        const other = EVENTS.securityHubCriticalOther.detail.findings[0];
+        const several = { ...base, detail: { findings: [passed, other, base.detail.findings[0]] } } as unknown as Record<string, unknown>;
+        expect(alertFor(several).archive.key).toBe(alertOf('securityHubCriticalOther').archive.key);
+      });
+
+      it("keys a finding with no Id by its event, so it never shares another finding's record", () => {
+        const noId = alertFor(withFinding(({ Id: _id, ...rest }) => rest));
+        expect(noId.archive.key).toMatch(/^findings\/securityhub\/dt=2026-10-04\//);
+      });
+    });
+
     it('a high Security Hub finding is archived without an alert', () => {
       expect(classify('securityHubHigh')).toMatchObject({ action: 'archive', archive: { category: 'securityhub' } });
     });
@@ -692,6 +783,19 @@ describe('audit sentinel rules', () => {
   });
 
   describe('admin sign-in failures', () => {
+    /** The rules module's client-id reader, read through the module object. */
+    const cognitoClientIdOf = (sentinelRules as Record<string, unknown>).cognitoClientIdOf as (detail: unknown) => string | null;
+    /** classifyCognitoFailure with the admin pool's app clients. */
+    const classifyFailure = classifyCognitoFailure as unknown as (
+      event: Record<string, unknown>,
+      adminPoolId: string,
+      adminClientIds: ReadonlySet<string>,
+    ) => ReturnType<typeof classifyCognitoFailure>;
+    const ADMIN_CLIENTS: ReadonlySet<string> = new Set([ADMIN_CLIENT_ID]);
+    const NO_CLIENTS: ReadonlySet<string> = new Set();
+    const REAL_SHAPE_ADMIN_FAILURES = ['adminSrpPasswordVerifierFailed', 'adminMfaCodeFailedRealShape', 'adminDeviceSrpFailedRealShape'] as const;
+    const event = (name: Name) => EVENTS[name] as unknown as Record<string, unknown>;
+
     it('finds the pool id where CloudTrail puts it', () => {
       expect(cognitoPoolIdOf(EVENTS.adminSignInFailed.detail)).toBe(ADMIN_POOL_ID);
       expect(cognitoPoolIdOf(EVENTS.adminSecondFactorFailed.detail)).toBe(ADMIN_POOL_ID);
@@ -700,11 +804,30 @@ describe('audit sentinel rules', () => {
         .toBe(ADMIN_POOL_ID);
     });
 
+    it('finds no pool id in a browser sign-in call, which names its app client instead', () => {
+      for (const name of [...REAL_SHAPE_ADMIN_FAILURES, 'workerSrpFailedRealShape'] as const) {
+        expect(cognitoPoolIdOf(EVENTS[name].detail)).toBeNull();
+      }
+    });
+
+    it('reads the app client a sign-in call names, in the form Cognito gives client ids, and nothing else', () => {
+      expect(typeof cognitoClientIdOf).toBe('function');
+      for (const name of REAL_SHAPE_ADMIN_FAILURES) expect(cognitoClientIdOf(EVENTS[name].detail)).toBe(ADMIN_CLIENT_ID);
+      expect(cognitoClientIdOf(EVENTS.workerSrpFailedRealShape.detail)).toBe(WORKER_CLIENT_ID);
+      expect(cognitoClientIdOf(EVENTS.unattributedSignInFailed.detail)).toBeNull();
+      for (const clientId of ['', 'Exampleclient', 'example-client', 'example client', 'a'.repeat(129), 42, null, ['x']]) {
+        expect(cognitoClientIdOf({ requestParameters: { clientId } })).toBeNull();
+      }
+      expect(cognitoClientIdOf({})).toBeNull();
+      expect(cognitoClientIdOf(null)).toBeNull();
+    });
+
     it('routes a failed sign-in to the pool check', () => {
       expect(classify('adminSignInFailed')).toEqual({ action: 'cognito' });
       expect(classify('adminSecondFactorFailed')).toEqual({ action: 'cognito' });
       expect(classify('workerSignInFailed')).toEqual({ action: 'cognito' });
       expect(classify('unattributedSignInFailed')).toEqual({ action: 'cognito' });
+      for (const name of [...REAL_SHAPE_ADMIN_FAILURES, 'workerSrpFailedRealShape'] as const) expect(classify(name)).toEqual({ action: 'cognito' });
     });
 
     it('ignores a sign-in call that succeeded, and every other user-pool call', () => {
@@ -712,10 +835,11 @@ describe('audit sentinel rules', () => {
       expect(classifyEvent(ok as unknown as Record<string, unknown>, CONFIG)).toMatchObject({ action: 'ignore' });
       const other = { ...EVENTS.adminSignInFailed, detail: { ...EVENTS.adminSignInFailed.detail, eventName: 'AdminGetUser' } };
       expect(classifyEvent(other as unknown as Record<string, unknown>, CONFIG)).toMatchObject({ action: 'ignore' });
+      expect(classify('adminDeviceIssued')).toMatchObject({ action: 'ignore' });
     });
 
     it('alerts on a failure in the admin pool, with codes only', () => {
-      const result = classifyCognitoFailure(EVENTS.adminSignInFailed as unknown as Record<string, unknown>, ADMIN_POOL_ID);
+      const result = classifyFailure(event('adminSignInFailed'), ADMIN_POOL_ID, NO_CLIENTS);
       expect(result).toMatchObject({ action: 'alert' });
       if (result.action !== 'alert') throw new Error('unreachable');
       expect(result.alert).toEqual({
@@ -728,6 +852,7 @@ describe('audit sentinel rules', () => {
         eventId: expect.any(String),
         principalType: 'Unknown',
         errorCode: 'NotAuthorizedException',
+        authFlow: 'USER_SRP_AUTH',
         poolMatch: true,
       });
       const text = JSON.stringify(result);
@@ -738,14 +863,90 @@ describe('audit sentinel rules', () => {
       expect(result.archive).toEqual({ category: 'cognito', key: expect.any(String), body: { alert: result.alert } });
     });
 
+    it.each(REAL_SHAPE_ADMIN_FAILURES.map((name) => [name]))(
+      '%s: alerts when the event names no pool and names an admin app client, with codes only',
+      (name) => {
+        const result = classifyFailure(event(name), ADMIN_POOL_ID, ADMIN_CLIENTS);
+        expect(result).toMatchObject({
+          action: 'alert',
+          alert: { rule: 'admin_sign_in_failed', eventName: 'RespondToAuthChallenge', principalType: 'Unknown', poolMatch: true },
+          archive: { category: 'cognito', key: expect.stringMatching(/^findings\/cognito\/dt=2026-10-04\/[A-Za-z0-9-]+\.json\.gz$/) },
+        });
+        if (result.action !== 'alert') throw new Error('unreachable');
+        expect(result.alert.errorCode).toBe(EVENTS[name].detail.errorCode);
+        // The challenge, as Cognito's own code; never any other request value.
+        expect(result.alert).toMatchObject({ challengeName: EVENTS[name].detail.requestParameters.challengeName });
+        expect(Object.keys(result.alert)).not.toContain('authFlow');
+        expect(result.archive.body).toEqual({ alert: result.alert });
+        const text = JSON.stringify(result);
+        for (const value of [ADMIN_CLIENT_ID, SIGN_IN_SUB, 'HIDDEN_DUE_TO_SECURITY_REASONS', '198.51.100.', 'Incorrect', 'Invalid code']) {
+          expect(text).not.toContain(value);
+        }
+      },
+    );
+
+    it('names the auth flow and the challenge as codes, so a refused refresh reads apart from a wrong password', () => {
+      const refresh = classifyFailure(event('adminRefreshRevokedRealShape'), ADMIN_POOL_ID, ADMIN_CLIENTS);
+      expect(refresh).toMatchObject({ action: 'alert', alert: { eventName: 'InitiateAuth', errorCode: 'NotAuthorizedException', authFlow: 'REFRESH_TOKEN_AUTH' } });
+      if (refresh.action !== 'alert') throw new Error('unreachable');
+      expect(Object.keys(refresh.alert)).not.toContain('challengeName');
+      expect(JSON.stringify(refresh)).not.toMatch(/Refresh Token has been revoked|HIDDEN_DUE_TO_SECURITY_REASONS/);
+      const password = classifyFailure(event('adminSrpPasswordVerifierFailed'), ADMIN_POOL_ID, ADMIN_CLIENTS);
+      expect(password).toMatchObject({ action: 'alert', alert: { errorCode: 'NotAuthorizedException', challengeName: 'PASSWORD_VERIFIER' } });
+      const device = classifyFailure(event('adminDeviceSrpFailedRealShape'), ADMIN_POOL_ID, ADMIN_CLIENTS);
+      expect(device).toMatchObject({ action: 'alert', alert: { errorCode: 'NotAuthorizedException', challengeName: 'DEVICE_PASSWORD_VERIFIER' } });
+    });
+
+    it("reports any flow or challenge outside Cognito's own codes as other, and omits an absent one", () => {
+      const base = EVENTS.adminSrpPasswordVerifierFailed;
+      const odd = (requestParameters: Record<string, unknown>) => classifyFailure(
+        { ...base, detail: { ...base.detail, requestParameters: { clientId: ADMIN_CLIENT_ID, ...requestParameters } } } as unknown as Record<string, unknown>,
+        ADMIN_POOL_ID,
+        ADMIN_CLIENTS,
+      );
+      for (const value of ['SOMETHING_NEW', 'password_verifier', 'PASSWORD_VERIFIER ', 'HIDDEN_DUE_TO_SECURITY_REASONS', '', 42, { nested: 'x' }]) {
+        const result = odd({ authFlow: value, challengeName: value });
+        expect(result).toMatchObject({ action: 'alert', alert: { authFlow: 'other', challengeName: 'other' } });
+        if (typeof value === 'string' && value.length > 0) expect(JSON.stringify(result)).not.toContain(value);
+      }
+      const bare = odd({});
+      expect(bare).toMatchObject({ action: 'alert' });
+      if (bare.action !== 'alert') throw new Error('unreachable');
+      expect(Object.keys(bare.alert).filter((key) => key === 'authFlow' || key === 'challengeName')).toEqual([]);
+    });
+
+    it("allows exactly Cognito's documented flows and challenges", () => {
+      const lists = sentinelRules as Record<string, unknown>;
+      expect(lists.COGNITO_AUTH_FLOWS).toBeDefined();
+      expect(lists.COGNITO_CHALLENGE_NAMES).toBeDefined();
+      expect([...(lists.COGNITO_AUTH_FLOWS as string[])].sort()).toEqual(Object.values(AuthFlowType).sort());
+      expect([...(lists.COGNITO_CHALLENGE_NAMES as string[])].sort()).toEqual(Object.values(ChallengeNameType).sort());
+    });
+
+    it("drops another app client's failure", () => {
+      expect(classifyFailure(event('workerSrpFailedRealShape'), ADMIN_POOL_ID, ADMIN_CLIENTS)).toEqual({ action: 'drop' });
+    });
+
+    it('drops a failure in another pool, even when it names an admin app client', () => {
+      const named = EVENTS.workerSignInFailed;
+      const withAdminClient = { ...named, detail: { ...named.detail, requestParameters: { clientId: ADMIN_CLIENT_ID, challengeName: 'PASSWORD_VERIFIER' } } };
+      expect(cognitoPoolIdOf(withAdminClient.detail)).toBe(WORKER_POOL_ID);
+      expect(classifyFailure(withAdminClient as unknown as Record<string, unknown>, ADMIN_POOL_ID, ADMIN_CLIENTS)).toEqual({ action: 'drop' });
+    });
+
+    it('drops a failure that names neither a pool nor a client', () => {
+      expect(classifyFailure(event('unattributedSignInFailed'), ADMIN_POOL_ID, ADMIN_CLIENTS)).toEqual({ action: 'drop' });
+    });
+
     it('drops a failure in another pool silently', () => {
-      expect(classifyCognitoFailure(EVENTS.workerSignInFailed as unknown as Record<string, unknown>, ADMIN_POOL_ID))
-        .toEqual({ action: 'drop' });
+      expect(classifyFailure(event('workerSignInFailed'), ADMIN_POOL_ID, NO_CLIENTS)).toEqual({ action: 'drop' });
     });
 
     it('a call that did not fail is not a failure', () => {
       const ok = { ...EVENTS.adminSignInFailed, detail: { ...EVENTS.adminSignInFailed.detail, errorCode: undefined } };
-      expect(classifyCognitoFailure(ok as unknown as Record<string, unknown>, ADMIN_POOL_ID)).toEqual({ action: 'drop' });
+      expect(classifyFailure(ok as unknown as Record<string, unknown>, ADMIN_POOL_ID, NO_CLIENTS)).toEqual({ action: 'drop' });
+      const okByClient = { ...EVENTS.adminSrpPasswordVerifierFailed, detail: { ...EVENTS.adminSrpPasswordVerifierFailed.detail, errorCode: undefined } };
+      expect(classifyFailure(okByClient as unknown as Record<string, unknown>, ADMIN_POOL_ID, ADMIN_CLIENTS)).toEqual({ action: 'drop' });
     });
   });
 });

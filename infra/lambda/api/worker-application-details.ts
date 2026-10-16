@@ -7,6 +7,12 @@
  *   POST /worker/applications/{applicationId}/certifications    -> cert claims
  *   POST /worker/applications/{applicationId}/prompt-answers    -> prompt answers
  *   POST /worker/applications/{applicationId}/hire-ack          -> celebration state
+ *   POST /worker/applications/{applicationId}/message           -> F19, forwarded
+ *   POST /worker/applications/{applicationId}/remind-employer   -> F19, forwarded
+ *
+ * The two F19 actions (sprint 28) live in `worker-application-hired-actions.ts`
+ * and are forwarded before anything here runs: they share only this door's
+ * route and login, not its transaction or its state document.
  *
  * ONE Lambda, five routes, the `whatsapp/web/worker-onboarding.ts` shape:
  * they share a connection, a transaction, an entry sequence and an error
@@ -75,12 +81,15 @@ import {
   type RequirementSnapshot,
 } from '../lib/application-requirements';
 import {
+  releaseFillLaneForApplication,
   releasePromptLaneForApplication,
   releaseWhatsAppLanesForApplication,
 } from '../lib/application-web-completion';
 import { auditCaller, type AuditCaller } from '../lib/audit/caller';
 import { setAuditContext } from '../lib/audit/context';
 import { recordAccess, recordAttempt, responseFieldNames, type AttemptEvent } from '../lib/audit/record';
+import { buildHireSummary, type HireSummary } from '../lib/application-hire-view';
+import { MESSAGE_ACTION, REMIND_ACTION, messageHandler, remindHandler } from './worker-application-hired-actions';
 
 const CORS_HEADERS = corsHeaders();
 /** The access surface, and the change-record surface for this door's writes. */
@@ -193,7 +202,28 @@ interface StateDoc {
   documents: { doc_type: string; present: boolean }[];
   remaining: ReturnType<typeof computeRemaining>;
   next_step: ReturnType<typeof nextStep>;
+  /** F19: the hire, as the applications list shapes it, or null when not hired. */
+  hire: HireSummary | null;
+  /** F19 (K4 CCR-5): the worker's own web-sent messages, latest 20, oldest first. */
+  sent_messages: { message_id: string; body: string; sent_at: string }[];
 }
+
+/**
+ * The hire row a hired state needs: the 095 receipt, the job facts the hire
+ * card repeats and the 125 details and reminder, under the same aliases
+ * `worker-applications-list.ts` uses so one view shapes both. Scoped to the
+ * caller by `a.worker_id = $2`, like every application query here.
+ */
+const HIRE_STATE_SQL = `SELECT COALESCE(a.hired_at, a.updated_at) AS hired_at, a.hired_seen_at, a.hired_ack_at,
+        to_char(a.hire_start_date, 'YYYY-MM-DD') AS hire_start_date, a.hire_report_location, a.hire_contact_name,
+        a.hire_contact_phone, a.hire_notes, a.hire_details_updated_at, a.hire_details_reminded_at,
+        to_char(j.start_date, 'YYYY-MM-DD') AS job_start_date, j.location AS job_location, j.city AS job_city,
+        j.state AS job_state, j.pay AS job_pay, j.pay_min AS job_pay_min, j.pay_max AS job_pay_max,
+        j.pay_interval AS job_pay_interval, j.shift_schedule AS job_shift_schedule,
+        j.trade_category AS job_trade_category, j.trade_category_other AS job_trade_category_other
+   FROM job_applications a
+   JOIN jobs j ON j.id = a.job_id
+  WHERE a.id = $1 AND a.worker_id = $2`;
 
 /**
  * The one and only place a state document is built, and the LAST thing any
@@ -206,6 +236,7 @@ interface StateDoc {
 async function buildState(
   client: PoolClient,
   snapshot: RequirementSnapshot,
+  workerId: string,
   record?: (state: StateDoc) => Promise<void>,
 ): Promise<StateDoc> {
   const remaining = computeRemaining(snapshot);
@@ -265,7 +296,30 @@ async function buildState(
     documents: docTypes.map((docType) => ({ doc_type: docType, present: haveDocs.has(docType) })),
     remaining,
     next_step: nextStep(snapshot),
+    hire: null,
+    sent_messages: [],
   };
+
+  // F19: a hired application carries its hire (details and last reminder
+  // included) and the worker's own web-sent messages. Only hired: no other
+  // status can message from the web, and the GET for every other status
+  // stays exactly the statements it was. The trade's canonical labels stay
+  // null here (the list fills them; the client falls back to the token).
+  let hireRow: Record<string, unknown> | null = null;
+  if (state.application.status === 'hired') {
+    const hireRes = await client.query(HIRE_STATE_SQL, [snapshot.applicationId, workerId]);
+    hireRow = hireRes.rows[0] ?? null;
+    state.hire = hireRow ? buildHireSummary(hireRow) : null;
+    const sentRes = await client.query<{ message_id: string; body: string; sent_at: Date | string }>(
+      `SELECT message_id, body, sent_at FROM jale_cap.worker_application_sent_messages($1)`,
+      [snapshot.applicationId],
+    );
+    state.sent_messages = sentRes.rows.map((row) => ({
+      message_id: row.message_id,
+      body: row.body,
+      sent_at: row.sent_at instanceof Date ? row.sent_at.toISOString() : row.sent_at,
+    }));
+  }
 
   // The access record names the state about to be returned, so it is written
   // here, before the job's employer queries: employer_display_name() must stay
@@ -289,6 +343,8 @@ async function buildState(
   }
 
   state.job.company_name = companyName;
+  // The hire's company follows the same 031 screening as the list's.
+  if (hireRow) state.hire = buildHireSummary({ ...hireRow, company_name: companyName });
   return state;
 }
 
@@ -351,6 +407,11 @@ function mapFailure(result: MergeFailure): { status: number; error: string; with
 }
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+  // F19: the hired worker's two actions answer for themselves (see the header).
+  const forwarded = routeAction(event);
+  if (forwarded === MESSAGE_ACTION) return messageHandler(event);
+  if (forwarded === REMIND_ACTION) return remindHandler(event);
+
   const cognitoSub: string | undefined = event.requestContext?.authorizer?.claims?.sub;
   if (typeof cognitoSub !== 'string' || cognitoSub.trim() === '') return fail(401, 'unauthorized');
 
@@ -558,7 +619,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // Completion is an explicit act now: `POST {id}/complete` below, or
     // LISTO on WhatsApp. The read is a read.
     if (action === '') {
-      const state = await buildState(client, snapshot, recordRead);
+      const state = await buildState(client, snapshot, workerId, recordRead);
       await commit();
       return json(200, state);
     }
@@ -605,7 +666,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       // Still-outstanding returns the state rather than an error, so the
       // review step re-renders its own "still missing" line instead of the
       // worker being told only that something went wrong.
-      const state = await buildState(client, snapshot, recordRead);
+      const state = await buildState(client, snapshot, workerId, recordRead);
       await commit();
       return json(200, state);
     }
@@ -691,18 +752,19 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       //
       // BEFORE `buildState`, which must stay the last query of the
       // transaction (the 031 GUC trap in the file header).
+      //
+      // Sprint 28 (F29, owner decision D-P4): a worker answering here is
+      // finishing here, so the bot stands down on the FIRST successful web
+      // write, not only at completion. Each release reads the arm first, so a
+      // write that finds nothing armed (every write after the first) changes
+      // nothing.
       if (action === 'prompt-answers') {
         // `mergePromptAnswers` reports no `detailsCompleted` -- prompts are
-        // an APPLY-stage requirement, and answering the last one is not the
-        // end of anything. So there is no closing line here, only a stale
-        // prompt turn to stand down, and only once none is left.
-        //
-        // `computeRemaining` is pure, and `buildState` calls it again a few
-        // lines down; two calls on this one path is cheaper than reshaping
-        // `buildState` to hand its `remaining` back.
-        if (computeRemaining(fresh).prompts.length === 0) {
-          await releasePromptLaneForApplication(client, { workerId, applicationId });
-        }
+        // an APPLY-stage requirement, and answering one is not the end of
+        // anything. So there is no closing line here, only the bot's prompt
+        // turn to stand down. Prompt keys only: a prompt answer says nothing
+        // about a details-stage question the bot may still be owed.
+        await releasePromptLaneForApplication(client, { workerId, applicationId });
       } else if ('detailsCompleted' in result && result.detailsCompleted) {
         await releaseWhatsAppLanesForApplication(client, {
           workerId,
@@ -713,9 +775,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           // for a row carrying something neither renderer knows.
           lang: 'es',
         });
+      } else {
+        // A details-stage answer or certificate that does not finish the
+        // stage: clear the arm, send nothing, and leave the marker that lets
+        // the completion release above still send its one closing line.
+        await releaseFillLaneForApplication(client, { workerId, applicationId });
       }
 
-      const state = await buildState(client, fresh, recordRead);
+      const state = await buildState(client, fresh, workerId, recordRead);
       await commit();
       return json(200, state);
     }
@@ -734,7 +801,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // same transaction, and leaves only once that COMMIT has succeeded.
     // `buildState` stays the last thing before it (the 031 note above).
     await client.query(`ROLLBACK TO SAVEPOINT ${WRITE_SAVEPOINT}`);
-    const state = await buildState(client, snapshot, recordRead);
+    const state = await buildState(client, snapshot, workerId, recordRead);
     await commit();
     return fail(mapped.status, mapped.error, { ...(mapped.extra ?? {}), state });
   } catch (err) {

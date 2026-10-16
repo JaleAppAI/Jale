@@ -148,6 +148,9 @@ interface DbFixture {
   watermarkRowCount?: number;
   /** Set to true to have the clock query come back with no row at all. */
   clockReturnsNoRow?: boolean;
+  /** F19: what the hire-details nudge claim hands back. */
+  nudges?: Array<Record<string, unknown>>;
+  nudgeClaimError?: Error;
 }
 
 function configureDb(fixture: DbFixture): Date {
@@ -158,6 +161,16 @@ function configureDb(fixture: DbFixture): Date {
     if (text === 'BEGIN' || text === 'COMMIT' || text === 'ROLLBACK') {
       sequence.push(text);
       return Promise.resolve({ rows: [], rowCount: 0 });
+    }
+    // The nudge sweep's per-row savepoint, by statement kind.
+    const savepoint = /^(SAVEPOINT|RELEASE SAVEPOINT|ROLLBACK TO SAVEPOINT) /.exec(text);
+    if (savepoint) {
+      sequence.push(savepoint[1] === 'RELEASE SAVEPOINT' ? 'RELEASE' : savepoint[1]);
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    }
+    if (text.includes('mark_hire_details_nudged')) {
+      sequence.push('mark');
+      return Promise.resolve({ rows: [{ marked: true }], rowCount: 1 });
     }
     if (text.includes('due_digest_employers')) {
       sequence.push('due');
@@ -178,6 +191,12 @@ function configureDb(fixture: DbFixture): Date {
       const rows = fixture.jobs[employerId] ?? [];
       return Promise.resolve({ rows, rowCount: rows.length });
     }
+    if (text.includes('claim_hire_details_nudges')) {
+      sequence.push('claim nudges');
+      if (fixture.nudgeClaimError) return Promise.reject(fixture.nudgeClaimError);
+      const rows = fixture.nudges ?? [];
+      return Promise.resolve({ rows, rowCount: rows.length });
+    }
     if (text.includes('UPDATE employer_digest_settings')) {
       sequence.push('watermark');
       return Promise.resolve({ rows: [], rowCount: fixture.watermarkRowCount ?? 1 });
@@ -186,6 +205,15 @@ function configureDb(fixture: DbFixture): Date {
     return Promise.resolve({ rows: [], rowCount: 0 });
   });
   return dbCutoff;
+}
+
+/**
+ * The digest's own steps: everything before the hire-details nudge sweep,
+ * which opens its own transaction after the digest loop (F19).
+ */
+function digestSequence(): string[] {
+  const claimAt = sequence.indexOf('claim nudges');
+  return claimAt < 0 ? [...sequence] : sequence.slice(0, sequence.lastIndexOf('BEGIN', claimAt));
 }
 
 describe('employer-digest-producer', () => {
@@ -385,8 +413,8 @@ describe('employer-digest-producer', () => {
     // A missing cutoff must NOT silently degrade into "nobody is new" — that
     // would look exactly like a quiet day and commit.
     expect(mockQueueEmail).not.toHaveBeenCalled();
-    expect(sequence).toContain('ROLLBACK');
-    expect(sequence).not.toContain('COMMIT');
+    expect(digestSequence()).toContain('ROLLBACK');
+    expect(digestSequence()).not.toContain('COMMIT');
     expect(result).toMatchObject({ due: 1, queued: 0, quiet: 0, failed: 1 });
     errorLog.mockRestore();
   });
@@ -499,16 +527,16 @@ describe('employer-digest-producer', () => {
     configureDb({ due: [dueRow()], jobs: { [EMPLOYER_A]: [{ id: JOB_1, title: 'Electrician' }] } });
     mockListEmployerCandidates.mockResolvedValue(rankingResult([candidate()]));
     await handler();
-    const begin = sequence.indexOf('BEGIN');
-    const queue = sequence.indexOf('queueEmail');
-    const watermark = sequence.indexOf('watermark');
-    const commit = sequence.indexOf('COMMIT');
+    const begin = digestSequence().indexOf('BEGIN');
+    const queue = digestSequence().indexOf('queueEmail');
+    const watermark = digestSequence().indexOf('watermark');
+    const commit = digestSequence().indexOf('COMMIT');
     expect(begin).toBeGreaterThanOrEqual(0);
     expect(begin).toBeLessThan(queue);
     expect(queue).toBeLessThan(watermark);
     expect(watermark).toBeLessThan(commit);
     // Exactly one transaction, and no COMMIT between the queue and the update.
-    expect(sequence.filter((s) => s === 'COMMIT')).toHaveLength(1);
+    expect(digestSequence().filter((s) => s === 'COMMIT')).toHaveLength(1);
     const watermarkCall = mockQuery.mock.calls.find((c) => String(c[0]).includes('UPDATE employer_digest_settings'));
     expect(String(watermarkCall![0])).toContain('last_sent_at');
     expect(watermarkCall![1]![0]).toBe(EMPLOYER_A);
@@ -528,10 +556,10 @@ describe('employer-digest-producer', () => {
     const errorLog = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     const result = await handler();
     // The email was queued inside the transaction, so the ROLLBACK unqueues it.
-    expect(sequence).toContain('queueEmail');
-    expect(sequence).toContain('watermark');
-    expect(sequence).toContain('ROLLBACK');
-    expect(sequence).not.toContain('COMMIT');
+    expect(digestSequence()).toContain('queueEmail');
+    expect(digestSequence()).toContain('watermark');
+    expect(digestSequence()).toContain('ROLLBACK');
+    expect(digestSequence()).not.toContain('COMMIT');
     expect(result).toMatchObject({ due: 1, queued: 0, failed: 1 });
     errorLog.mockRestore();
   });
@@ -866,5 +894,131 @@ describe('employer-digest-producer', () => {
 
     expect(mockQueueEmail.mock.calls[0][1].headers.unsubscribe_url)
       .toBe(`${BASE_URL}/api/public/employer-digest/unsubscribe?token=payload.sig%2Bwith%2Fchars%3D`);
+  });
+
+  // ── F19: the hire-details nudge (sprint 28, K4.4) ─────────────────────────
+
+  describe('hire-details nudge', () => {
+    const APP = 'eeeeeeee-ffff-4000-8111-222222222222';
+    const APP_2 = 'ffffffff-0000-4111-8222-333333333333';
+    const APP_3 = 'aaaaaaaa-0000-4111-8222-444444444444';
+    const REMINDED_AT = new Date('2026-10-14T09:00:00.000Z');
+    const nudge = (overrides: Record<string, unknown> = {}) => ({
+      application_id: APP, job_id: JOB_1, employer_id: EMPLOYER_A, employer_email: 'a@example.com',
+      worker_name: 'Ana Maria Ruiz', job_title: 'Glazier', kind: 'auto', requested_at: null, ...overrides,
+    });
+    const nudgeCalls = () => mockQueueEmail.mock.calls.filter(([, input]) => input.sourceType === 'hire_details_nudge');
+    /** The applications the sweep stamped, in order. */
+    const marked = () => mockQuery.mock.calls
+      .filter(([sql]) => String(sql).includes('mark_hire_details_nudged'))
+      .map(([, params]) => (params as unknown[])[0]);
+    /** Everything from the sweep's own BEGIN on. */
+    const sweep = () => sequence.slice(sequence.lastIndexOf('BEGIN', sequence.indexOf('claim nudges')));
+
+    it('claims, queues and stamps in ONE transaction, one savepoint per row', async () => {
+      configureDb({ due: [], jobs: {}, nudges: [nudge(), nudge({ application_id: APP_2, kind: 'remind', requested_at: REMINDED_AT })] });
+
+      const result = await handler();
+
+      expect(result).toEqual({ due: 0, queued: 0, quiet: 0, skipped: 0, failed: 0 });
+      const claim = mockQuery.mock.calls.find(([sql]) => String(sql).includes('claim_hire_details_nudges'));
+      expect(claim?.[1]).toEqual([25]);
+      expect(sweep()).toEqual([
+        'BEGIN', 'claim nudges',
+        'SAVEPOINT', 'queueEmail', 'mark', 'RELEASE',
+        'SAVEPOINT', 'queueEmail', 'mark', 'RELEASE',
+        'COMMIT',
+      ]);
+      expect(marked()).toEqual([APP, APP_2]);
+      expect(nudgeCalls().map(([, input]) => [input.idempotencyKey, input.sourceId, input.recipientEmail])).toEqual([
+        [`hire-details-nudge:${APP}`, APP, 'a@example.com'],
+        [`hire-details-remind:${APP_2}:${REMINDED_AT.getTime()}`, APP_2, 'a@example.com'],
+      ]);
+      const [, first] = nudgeCalls()[0];
+      expect(first.subject).toBe('Add start details for Ana · Agregue los detalles de inicio para Ana');
+      expect(first.bodyText).toContain('Ana is hired for Glazier. Add a start date and where to report.');
+      expect(first.bodyText).toContain('Contrató a Ana para Glazier. Agregue una fecha de inicio y el lugar donde debe presentarse.');
+      expect(first.bodyText).toContain(`${BASE_URL}/en/employer/applicants`);
+      expect(first.bodyText).toContain(`${BASE_URL}/es/employer/applicants`);
+      expect(nudgeCalls()[1][1].bodyText).toContain('Ana asked for their start details for Glazier.');
+    });
+
+    it('a throw mid-batch rolls back only that row, which stays unstamped and claimable', async () => {
+      const error = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      configureDb({ due: [], jobs: {}, nudges: [nudge(), nudge({ application_id: APP_2 }), nudge({ application_id: APP_3 })] });
+      mockQueueEmail.mockImplementation((_client: unknown, input: { sourceId: string }) => (
+        input.sourceId === APP_2 ? Promise.reject(new Error('boom')) : Promise.resolve('outbox-id')));
+
+      await handler();
+
+      expect(marked()).toEqual([APP, APP_3]);
+      expect(sweep()).toEqual([
+        'BEGIN', 'claim nudges',
+        'SAVEPOINT', 'queueEmail', 'mark', 'RELEASE',
+        'SAVEPOINT', 'queueEmail', 'ROLLBACK TO SAVEPOINT',
+        'SAVEPOINT', 'queueEmail', 'mark', 'RELEASE',
+        'COMMIT',
+      ]);
+      expect(error.mock.calls.map(([line]) => String(line)).some((line) => line.includes('hire_details_nudge_failed'))).toBe(true);
+      error.mockRestore();
+    });
+
+    it('a render failure is caught by the same per-row guard', async () => {
+      const error = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      configureDb({ due: [], jobs: {}, nudges: [nudge({ job_title: null }), nudge({ application_id: APP_2 })] });
+
+      await handler();
+
+      expect(marked()).toEqual([APP_2]);
+      expect(sweep()).toContain('ROLLBACK TO SAVEPOINT');
+      error.mockRestore();
+    });
+
+    it('never stamps a row whose address cannot be sent to, so it stays claimable', async () => {
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+      configureDb({ due: [], jobs: {}, nudges: [nudge({ employer_email: '@bad' }), nudge({ application_id: APP_2 })] });
+
+      await handler();
+
+      expect(marked()).toEqual([APP_2]);
+      expect(nudgeCalls().map(([, input]) => input.sourceId)).toEqual([APP_2]);
+      expect(warn.mock.calls.map(([line]) => String(line)).some((line) => line.includes('hire_details_nudge_skipped_invalid_email'))).toBe(true);
+      warn.mockRestore();
+    });
+
+    it('stops before the function runs out of time, leaving the rest unstamped', async () => {
+      configureDb({ due: [], jobs: {}, nudges: [nudge(), nudge({ application_id: APP_2 }), nudge({ application_id: APP_3 })] });
+      let remaining = 60_000;
+      mockQueueEmail.mockImplementation(() => { remaining -= 25_000; return Promise.resolve('outbox-id'); });
+
+      await handler(undefined, { getRemainingTimeInMillis: () => remaining });
+
+      expect(marked()).toEqual([APP, APP_2]);
+      expect(sweep()[sweep().length - 1]).toBe('COMMIT');
+    });
+
+    it('skips the sweep entirely when the digest left too little time', async () => {
+      configureDb({ due: [], jobs: {}, nudges: [nudge()] });
+      await handler(undefined, { getRemainingTimeInMillis: () => 5_000 });
+      expect(sequence).not.toContain('claim nudges');
+    });
+
+    it('runs after the digest\'s last transaction', async () => {
+      configureDb({ due: [dueRow()], jobs: { [EMPLOYER_A]: [{ id: JOB_1, title: 'Electrician' }] }, nudges: [nudge()] });
+      mockListEmployerCandidates.mockResolvedValue(rankingResult([candidate()]));
+
+      await handler();
+
+      expect(sequence.indexOf('watermark')).toBeLessThan(sequence.indexOf('claim nudges'));
+    });
+
+    it('a failing claim rolls the sweep back and never fails the digest run', async () => {
+      const error = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      configureDb({ due: [], jobs: {}, nudgeClaimError: new Error('claim down') });
+      await expect(handler()).resolves.toEqual({ due: 0, queued: 0, quiet: 0, skipped: 0, failed: 0 });
+      expect(sweep()).toEqual(['BEGIN', 'claim nudges', 'ROLLBACK']);
+      expect(error.mock.calls.map(([line]) => String(line)).some((line) => line.includes('hire_details_nudge_run_failed'))).toBe(true);
+      error.mockRestore();
+    });
   });
 });

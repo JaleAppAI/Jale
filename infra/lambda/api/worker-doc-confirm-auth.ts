@@ -87,12 +87,18 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
     await client.query('COMMIT');
 
+    // The version this upload created in the (versioned) documents bucket.
+    // Application snapshots copy this row's s3_version_id, and the employer's
+    // link is pinned to it, so the copy keeps naming these exact bytes. NULL
+    // only when the bucket reports none, as the tokenized door records it.
+    let s3VersionId: string | null = null;
     try {
       const head = await s3.send(new HeadObjectCommand({ Bucket: process.env.DOCUMENTS_BUCKET!, Key: s3_key }));
       if (head.ContentType !== mime_type || !head.ServerSideEncryption
           || head.ContentLength == null || head.ContentLength <= 0) {
         return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_upload' }) };
       }
+      s3VersionId = head.VersionId ?? null;
     } catch (headErr) {
       // Log the real S3 failure. NoSuchKey (the object genuinely is not there)
       // and AccessDenied (this Lambda lacks s3:GetObject on the bucket) are
@@ -166,10 +172,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (isCertification) {
       try {
         insertRes = await client.query(
-          `INSERT INTO worker_documents (worker_id, job_id, doc_type, s3_key, file_name, file_size, mime_type, cert_name)
-           VALUES ($1, NULL, $2, $3, $4, $5, $6, $7)
+          `INSERT INTO worker_documents (worker_id, job_id, doc_type, s3_key, file_name, file_size, mime_type, cert_name, s3_version_id)
+           VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8)
            RETURNING id, doc_type, s3_key, file_name, file_size, uploaded_at, cert_name`,
-          [workerId, doc_type, s3_key, file_name, file_size, mime_type, certName],
+          [workerId, doc_type, s3_key, file_name, file_size, mime_type, certName, s3VersionId],
         );
       } catch (insertErr) {
         const pgErr = insertErr as { code?: string; constraint?: string };
@@ -197,10 +203,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       // value on a non-certification_doc, above) -- included for column
       // symmetry with the cert-path INSERT, not because it's ever non-NULL.
       insertRes = await client.query(
-        `INSERT INTO worker_documents (worker_id, job_id, doc_type, s3_key, file_name, file_size, mime_type, cert_name)
-         VALUES ($1, NULL, $2, $3, $4, $5, $6, $7)
+        `INSERT INTO worker_documents (worker_id, job_id, doc_type, s3_key, file_name, file_size, mime_type, cert_name, s3_version_id)
+         VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8)
          RETURNING id, doc_type, s3_key, file_name, file_size, uploaded_at, cert_name`,
-        [workerId, doc_type, s3_key, file_name, file_size, mime_type, certName],
+        [workerId, doc_type, s3_key, file_name, file_size, mime_type, certName, s3VersionId],
       );
     }
 

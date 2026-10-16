@@ -1,12 +1,10 @@
-import Link from 'next/link';
+import { NotFoundCard } from '@/components/shell/NotFoundCard';
 
+/** Unmatched URLs: rendered in the root layout only, so it has its own main. */
 export default function NotFound() {
   return (
-    <main className="hero stack-gap">
-      <span className="badge dismissed">404</span>
-      <h1>That admin page does not exist.</h1>
-      <p className="muted">Check the queue, go back to the dashboard, or open a valid case ID.</p>
-      <Link className="button" href="/" prefetch={false}>Back to dashboard</Link>
+    <main id="main" className="flex min-h-screen items-center justify-center bg-[var(--jale-shell)] px-4 py-12 text-[var(--jale-ink)]">
+      <NotFoundCard />
     </main>
   );
 }

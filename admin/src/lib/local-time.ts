@@ -39,3 +39,52 @@ export function localInputToIso(value: string): string | undefined {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
+
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
+
+/** "2026-10-02 UTC": the server's and the first client render's date-only text. */
+export function utcDateText(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return `${date.toISOString().slice(0, 10)} UTC`;
+}
+
+/** "14:30 UTC": the server's and the first client render's time-only text (FE-2 message times). */
+export function utcTimeText(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return `${date.toISOString().slice(11, 16)} UTC`;
+}
+
+/**
+ * A length of time: "45m", "3h 12m", "1d 4h". Negative or invalid input reads
+ * "0m" (a clock a little ahead of the server must not print a negative wait).
+ */
+export function durationText(ms: number): string {
+  const safe = Number.isFinite(ms) && ms > 0 ? ms : 0;
+  const totalMinutes = Math.floor(safe / MINUTE_MS);
+  const days = Math.floor(totalMinutes / (24 * 60));
+  const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+  const minutes = totalMinutes % 60;
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
+/**
+ * An instant relative to `nowMs`: "just now" (under a minute either way),
+ * "5m ago", "3h ago", "2d ago", or "in 3h 12m" for a future instant.
+ * Deterministic, so the server and the first client render agree.
+ */
+export function relativeText(iso: string, nowMs: number): string {
+  const at = Date.parse(iso);
+  if (Number.isNaN(at) || !Number.isFinite(nowMs)) return iso;
+  const diff = nowMs - at;
+  if (Math.abs(diff) < MINUTE_MS) return 'just now';
+  if (diff < 0) return `in ${durationText(-diff)}`;
+  if (diff < HOUR_MS) return `${Math.floor(diff / MINUTE_MS)}m ago`;
+  if (diff < DAY_MS) return `${Math.floor(diff / HOUR_MS)}h ago`;
+  return `${Math.floor(diff / DAY_MS)}d ago`;
+}

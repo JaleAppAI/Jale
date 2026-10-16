@@ -19,6 +19,8 @@ import * as sns from 'aws-cdk-lib/aws-sns';
 import { Platform } from 'aws-cdk-lib/aws-ecr-assets';
 import { Construct } from 'constructs';
 import { resolveCognitoDeletionProtection } from '../constructs/cognito-pool';
+import { resolveCognitoSesEmail } from '../constructs/cognito-ses-email';
+import { ADMIN_INVITE_VALID_DAYS, renderAdminInviteEmail } from '../../lambda/lib/admin-invite-email-template';
 
 export interface AdminStackProps extends cdk.StackProps {
   readonly domainName: string;
@@ -36,6 +38,10 @@ export interface AdminStackProps extends cdk.StackProps {
   readonly reportImagesBucket: s3.IBucket;
   /** The report images bucket's key. */
   readonly reportImagesKey: kms.IKey;
+  /** WhatsApp support media (WhatsAppStack). The console opens a case's attachments, and only those. */
+  readonly supportMediaBucket: s3.IBucket;
+  /** The support media bucket's key. */
+  readonly supportMediaKey: kms.IKey;
   /** CloudFront certificate for admin.<domain>, created in us-east-1. */
   readonly certificate: acm.ICertificate;
   /** CloudFront-scoped WAF web ACL created in us-east-1. */
@@ -47,6 +53,26 @@ export interface AdminStackProps extends cdk.StackProps {
    */
   readonly alarmTopicArn?: string;
 }
+
+/**
+ * The dead-letter queues whose depth the Ops page shows (contract K3.3 #11),
+ * by queue name, with the plain label the page prints. Only queues with a
+ * producer: the candidate materialization and worker rerank queues have
+ * none. The SES feedback queue (its name comes from deploy context) and the
+ * audit edge queues (other regions) are not listed.
+ */
+export const ADMIN_DLQ_QUEUES: ReadonlyArray<{ name: string; label: string }> = [
+  { name: 'whatsapp-inbound-v2-dlq.fifo', label: 'WhatsApp inbound' },
+  { name: 'whatsapp-inbound-dlq', label: 'WhatsApp inbound (first version)' },
+  { name: 'whatsapp-worker-intent-wake-dlq', label: 'Worker notifications' },
+  { name: 'whatsapp-domain-outbox-wake-dlq', label: 'WhatsApp outbox' },
+  { name: 'billing-webhook-dlq', label: 'Billing webhooks' },
+  { name: 'jale-post-confirmation-dlq', label: 'Sign-up confirmations' },
+  { name: 'jale-employer-candidate-rerank-dlq', label: 'Candidate ranking' },
+  { name: 'trust-extraction-dlq', label: 'Trust answers' },
+  { name: 'trust-assessment-dlq', label: 'Trust scores' },
+  { name: 'jale-employer-digest-producer-dlq', label: 'Employer digest' },
+];
 
 export function getAdminDurability(environment: string) {
   const isDevelopment = environment === 'dev';
@@ -90,6 +116,13 @@ export class AdminStack extends cdk.Stack {
     // the stack in UPDATE_ROLLBACK_FAILED / UPDATE_ROLLBACK_COMPLETE, which the
     // deploy workflow refuses to deploy over. Changing any of those three means
     // deploying with protection off first, on purpose.
+    //
+    // Sprint 28 (contract K1) adds only properties CloudFormation updates in
+    // place: EmailConfiguration (the shared SES sender), DeviceConfiguration
+    // (trusted browsers), AdminCreateUserConfig.InviteMessageTemplate (the
+    // branded invitation, rendered at synth) and the temporary password's
+    // validity, which the invitation's copy states.
+    const invitation = renderAdminInviteEmail(`https://${adminDomain}`);
     this.adminPool = new cognito.UserPool(this, 'AdminUserPool', {
       userPoolName: 'jale-admin-pool',
       deletionProtection: resolveCognitoDeletionProtection(this),
@@ -105,6 +138,20 @@ export class AdminStack extends cdk.Stack {
         requireUppercase: true,
         requireDigits: true,
         requireSymbols: true,
+        tempPasswordValidity: cdk.Duration.days(ADMIN_INVITE_VALID_DAYS),
+      },
+      // Absent SES context (dev, CI) keeps Cognito's default sender.
+      email: resolveCognitoSesEmail(this),
+      // "Trust this browser for 7 days": a device is remembered only when the
+      // server says so (the console's /api/session), and a remembered device
+      // stands in for the authenticator code. The 7-day limit is the console's.
+      deviceTracking: {
+        challengeRequiredOnNewDevice: true,
+        deviceOnlyRememberedOnUserPrompt: true,
+      },
+      userInvitation: {
+        emailSubject: invitation.subject,
+        emailBody: invitation.html,
       },
       removalPolicy: durability.removalPolicy,
     });
@@ -185,6 +232,14 @@ export class AdminStack extends cdk.Stack {
         NEXT_PUBLIC_ADMIN_REGION: cdk.Stack.of(this).region,
         NEXT_PUBLIC_ADMIN_HOSTED_DOMAIN: adminDomain,
         REPORT_IMAGES_BUCKET: props.reportImagesBucket.bucketName,
+        SUPPORT_MEDIA_BUCKET: props.supportMediaBucket.bucketName,
+        // The dead-letter queues the Ops page reads, by label and address.
+        // Built from the queue names in this region, so no other stack
+        // exports anything to this one.
+        ADMIN_DLQ_QUEUES: cdk.Stack.of(this).toJsonString(ADMIN_DLQ_QUEUES.map(({ name, label }) => ({
+          label,
+          url: `https://sqs.${cdk.Stack.of(this).region}.amazonaws.com/${cdk.Stack.of(this).account}/${name}`,
+        }))),
       },
     });
 
@@ -201,6 +256,54 @@ export class AdminStack extends cdk.Stack {
     adminFunction.addToRolePolicy(new iam.PolicyStatement({
       actions: ['kms:Decrypt'],
       resources: [props.reportImagesKey.keyArn],
+    }));
+    // Support media: the console presigns a short-lived GET for a support
+    // case's attachment, so it needs read on `support/*` and decrypt on the
+    // bucket's key. Nothing else: no listing and no writes.
+    adminFunction.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['s3:GetObject'],
+      resources: [props.supportMediaBucket.arnForObjects('support/*')],
+    }));
+    adminFunction.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['kms:Decrypt'],
+      resources: [props.supportMediaKey.keyArn],
+    }));
+
+    // Admins page (contract K1.5) and trusted browsers (K1.2): the console
+    // manages admin accounts, their groups and their remembered devices in
+    // this pool, and only this pool (its own ARN, never userpool/*).
+    adminFunction.addToRolePolicy(new iam.PolicyStatement({
+      sid: 'AdminPoolDirectory',
+      actions: [
+        'cognito-idp:AdminCreateUser',
+        'cognito-idp:AdminGetUser',
+        'cognito-idp:AdminAddUserToGroup',
+        'cognito-idp:AdminRemoveUserFromGroup',
+        'cognito-idp:AdminListGroupsForUser',
+        'cognito-idp:AdminDisableUser',
+        'cognito-idp:AdminEnableUser',
+        'cognito-idp:AdminUserGlobalSignOut',
+        'cognito-idp:AdminListDevices',
+        'cognito-idp:AdminGetDevice',
+        'cognito-idp:AdminUpdateDeviceStatus',
+        'cognito-idp:AdminForgetDevice',
+      ],
+      resources: [this.adminPool.userPoolArn],
+    }));
+
+    // Ops health (contract K3.3 #11): the depth of the listed dead-letter
+    // queues, and nothing else on them. Reading queue attributes needs no
+    // key, whatever the queue's encryption.
+    adminFunction.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['sqs:GetQueueAttributes'],
+      resources: ADMIN_DLQ_QUEUES.map(({ name }) => cdk.Stack.of(this).formatArn({ service: 'sqs', resource: name })),
+    }));
+    // Home health (contract K3.4): email bounces from the account-level SES
+    // metric. GetMetricData has no resource-level permission, so it can only
+    // be granted on every resource.
+    adminFunction.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['cloudwatch:GetMetricData'],
+      resources: ['*'],
     }));
 
     const functionUrl = adminFunction.addFunctionUrl({
@@ -323,16 +426,8 @@ function handler(event) {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     }));
 
-    notify(new cloudwatch.Alarm(this, 'AdminCloudFront5xxAlarm', {
-      alarmName: 'jale-admin-cloudfront-5xx',
-      metric: this.distribution.metric5xxErrorRate({
-        period: cdk.Duration.minutes(5),
-        statistic: 'average',
-      }),
-      threshold: 5,
-      evaluationPeriods: 2,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    }));
+    // The distribution's 5xx alarm is FrontendStack's: CloudFront publishes
+    // its metrics in us-east-1 only, and an alarm reads its own region's.
 
     new cdk.CfnOutput(this, 'AdminUrl', {
       value: `https://${adminDomain}`,

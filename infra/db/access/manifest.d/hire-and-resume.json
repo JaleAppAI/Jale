@@ -1,0 +1,592 @@
+{
+  "capability_owners": {
+    "jale_cap_hire_details": {
+      "created_by": "125",
+      "reason": "Owns the employer's hire-details write: reads and writes the start details of a hired applicant on the caller's own jobs, and nothing else on the row."
+    },
+    "jale_cap_worker_messages": {
+      "created_by": "125",
+      "reason": "Owns the hired worker's web message: opens the conversation, adds one inbound message on the caller's own application and reads back the caller's own web-sent messages; no right on the employer's read stamp or the WhatsApp reply window."
+    },
+    "jale_cap_hire_nudges": {
+      "created_by": "125",
+      "reason": "Owns the hire-details nudge claim and stamp: reads hired applications with no details and the two names and the address a nudge needs, and stamps a hire once its nudge is queued."
+    }
+  },
+  "tables": {
+    "public.job_status_events": {
+      "classification": "excluded",
+      "rls": {
+        "enabled": true,
+        "forced": true
+      },
+      "reason": "Job status changes made by billing (append-only); written by the billing resume definer, read only through admin definers behind the analytics flag.",
+      "access": {}
+    }
+  },
+  "policies": {
+    "public.job_status_events.job_status_events_billing_insert": {
+      "command": "INSERT",
+      "permissive": true,
+      "to": [
+        "jale_billing_job_enforcer"
+      ],
+      "origin": "existing",
+      "using": null,
+      "with_check": "(actor = 'billing'::text)",
+      "reason": "The billing enforcer records the jobs its resume definer reactivates."
+    },
+    "public.job_status_events.job_status_events_admin_analytics_read": {
+      "command": "SELECT",
+      "permissive": true,
+      "to": [
+        "jale_admin"
+      ],
+      "origin": "existing",
+      "using": "(current_setting('app.admin_analytics_read'::text, true) = 'on'::text)",
+      "with_check": null,
+      "reason": "Gated read for admin definers, which run as the master login: SELECT only, and only while a definer has set the transaction-local read flag. Never copied to a runtime login."
+    }
+  },
+  "functions": {
+    "jale_cap.employer_save_hire_details(uuid, uuid, date, text, text, text, text)": {
+      "owner": "jale_cap_hire_details",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_job_id uuid, p_worker_id uuid, p_start_date date, p_report_location text, p_contact_name text, p_contact_phone text, p_notes text",
+      "returns": "TABLE(outcome text, application_id uuid, changed boolean, start_date text, report_location text, contact_name text, contact_phone text, notes text, updated_at timestamp with time zone)",
+      "execute": [
+        "jale_api"
+      ],
+      "created_by": "125",
+      "reason": "The employer saves a hired applicant's start details; answers not_found or not_hired otherwise."
+    },
+    "jale_cap.employer_hire_details_notice(uuid, text)": {
+      "owner": "jale_cap_worker_lane",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_application_id uuid, p_body text",
+      "returns": "TABLE(outcome text, intent_id uuid, outbox_id uuid)",
+      "execute": [
+        "jale_api"
+      ],
+      "created_by": "125",
+      "reason": "One free-text WhatsApp line per saved version of the details, only inside the worker's 24-hour window; otherwise nothing is written."
+    },
+    "jale_cap.worker_post_application_message(uuid, text)": {
+      "owner": "jale_cap_worker_messages",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_application_id uuid, p_body text",
+      "returns": "TABLE(outcome text, conversation_id uuid, message_id uuid, sent_at timestamp with time zone, retry_after_seconds integer)",
+      "execute": [
+        "jale_whatsapp"
+      ],
+      "created_by": "125",
+      "reason": "A hired worker's web message to the employer, at most 10 an hour per application."
+    },
+    "jale_cap.claim_hire_details_nudges(integer)": {
+      "owner": "jale_cap_hire_nudges",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_limit integer",
+      "returns": "TABLE(application_id uuid, job_id uuid, employer_id uuid, employer_email text, worker_name text, job_title text, kind text, requested_at timestamp with time zone)",
+      "execute": [
+        "jale_job_digest"
+      ],
+      "created_by": "125",
+      "reason": "The nudge sweep finds and locks hires that still have no details, once a day after the hire and once per worker reminder; it stamps nothing."
+    },
+    "jale_billing_internal.billing_resume_paused_jobs(uuid, integer)": {
+      "owner": "jale_billing_job_enforcer",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_user_id uuid, p_active_job_limit integer",
+      "returns": "TABLE(resumed_count integer, employer_email text, resumed_titles text[])",
+      "execute": [
+        "jale_billing"
+      ],
+      "created_by": "125",
+      "reason": "Resumes the jobs billing paused, oldest first, up to the limit, when the subscription is entitled again."
+    },
+    "public.admin_recent_job_resumes(integer)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_limit integer",
+      "returns": "TABLE(event_id uuid, job_id uuid, changed_at timestamp with time zone)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "125",
+      "reason": "Admin console read: the jobs billing resumed, newest first, ids and times only (Home activity)."
+    },
+    "jale_cap.worker_application_sent_messages(uuid)": {
+      "owner": "jale_cap_worker_messages",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_application_id uuid",
+      "returns": "TABLE(message_id uuid, body text, sent_at timestamp with time zone)",
+      "execute": [
+        "jale_whatsapp"
+      ],
+      "created_by": "125",
+      "reason": "The worker's own web-sent messages on one of their applications, latest 20, oldest first; never an employer message or a WhatsApp reply."
+    },
+    "jale_cap.mark_hire_details_nudged(uuid)": {
+      "owner": "jale_cap_hire_nudges",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_application_id uuid",
+      "returns": "boolean",
+      "execute": [
+        "jale_job_digest"
+      ],
+      "created_by": "125",
+      "reason": "The nudge sweep stamps one claimed hire once its email is queued, in the same transaction."
+    }
+  },
+  "schema_additions": {
+    "jale_cap": {
+      "usage": [
+        "jale_job_digest"
+      ],
+      "create": [
+        "jale_cap_hire_details",
+        "jale_cap_worker_messages",
+        "jale_cap_hire_nudges"
+      ],
+      "reason": "The sweep login calls its claim in jale_cap; the three new owners hold CREATE to own their functions."
+    }
+  },
+  "function_additions": {
+    "public.enqueue_job_visibility_event(uuid, text, text)": {
+      "execute": [
+        "jale_billing_job_enforcer"
+      ],
+      "reason": "The resume definer announces a resumed public job to the visibility drain."
+    },
+    "public.assign_worker_thread_number(uuid)": {
+      "execute": [
+        "jale_cap_worker_messages"
+      ],
+      "reason": "A conversation the worker opens from the web is numbered like one the employer opens."
+    }
+  },
+  "table_additions": {
+    "public.job_applications": {
+      "access": {
+        "jale_cap_hire_details": {
+          "select": [
+            "id",
+            "job_id",
+            "worker_id",
+            "status",
+            "hire_start_date",
+            "hire_report_location",
+            "hire_contact_name",
+            "hire_contact_phone",
+            "hire_notes",
+            "hire_details_updated_at"
+          ],
+          "update": [
+            "hire_start_date",
+            "hire_report_location",
+            "hire_contact_name",
+            "hire_contact_phone",
+            "hire_notes",
+            "hire_details_updated_at"
+          ],
+          "reason": "Reads and writes the start details of a hired applicant on the caller's own jobs."
+        },
+        "jale_cap_worker_messages": {
+          "select": [
+            "id",
+            "job_id",
+            "worker_id",
+            "status"
+          ],
+          "reason": "Checks that the application is the caller's and is hired."
+        },
+        "jale_cap_hire_nudges": {
+          "select": [
+            "id",
+            "job_id",
+            "worker_id",
+            "status",
+            "hired_at",
+            "hire_start_date",
+            "hire_report_location",
+            "hire_contact_name",
+            "hire_contact_phone",
+            "hire_notes",
+            "hire_details_nudged_at",
+            "hire_details_reminded_at"
+          ],
+          "update": [
+            "hire_details_nudged_at"
+          ],
+          "reason": "Finds hired applications with no details and stamps each claim."
+        }
+      },
+      "policies": {
+        "job_applications_cap_hire_details_select": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_cap_hire_details"
+          ],
+          "origin": "existing",
+          "using": "(job_id IN ( SELECT j.id\n   FROM jobs j\n  WHERE ((j.employer_id)::text = current_setting('app.current_internal_user_id'::text, true))))",
+          "with_check": null,
+          "reason": "Applications on the caller's own jobs."
+        },
+        "job_applications_cap_hire_details_update": {
+          "command": "UPDATE",
+          "permissive": true,
+          "to": [
+            "jale_cap_hire_details"
+          ],
+          "origin": "existing",
+          "using": "(job_id IN ( SELECT j.id\n   FROM jobs j\n  WHERE ((j.employer_id)::text = current_setting('app.current_internal_user_id'::text, true))))",
+          "with_check": "(job_id IN ( SELECT j.id\n   FROM jobs j\n  WHERE ((j.employer_id)::text = current_setting('app.current_internal_user_id'::text, true))))",
+          "reason": "Applications on the caller's own jobs."
+        },
+        "job_applications_cap_worker_messages_select": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_cap_worker_messages"
+          ],
+          "origin": "existing",
+          "using": "((worker_id)::text = current_setting('app.current_internal_user_id'::text, true))",
+          "with_check": null,
+          "reason": "The caller's own applications."
+        },
+        "job_applications_cap_hire_nudges_select": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_cap_hire_nudges"
+          ],
+          "origin": "existing",
+          "using": "(status = 'hired'::text)",
+          "with_check": null,
+          "reason": "Hired applications only."
+        },
+        "job_applications_cap_hire_nudges_update": {
+          "command": "UPDATE",
+          "permissive": true,
+          "to": [
+            "jale_cap_hire_nudges"
+          ],
+          "origin": "existing",
+          "using": "(status = 'hired'::text)",
+          "with_check": "(status = 'hired'::text)",
+          "reason": "Hired applications only."
+        }
+      },
+      "reason": "Hire details: the employer's write, the worker's message check and the nudge claim."
+    },
+    "public.jobs": {
+      "access": {
+        "jale_cap_hire_details": {
+          "select": [
+            "id",
+            "employer_id"
+          ],
+          "reason": "Checks that the job is the caller's."
+        },
+        "jale_cap_worker_messages": {
+          "select": [
+            "id",
+            "employer_id"
+          ],
+          "reason": "Names the employer the worker's message goes to."
+        },
+        "jale_cap_hire_nudges": {
+          "select": [
+            "id",
+            "employer_id",
+            "title"
+          ],
+          "reason": "Names the job and its employer in the nudge."
+        }
+      },
+      "policies": {
+        "jobs_cap_hire_details_select": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_cap_hire_details"
+          ],
+          "origin": "existing",
+          "using": "((employer_id)::text = current_setting('app.current_internal_user_id'::text, true))",
+          "with_check": null,
+          "reason": "The caller's own jobs."
+        },
+        "jobs_cap_worker_messages_select": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_cap_worker_messages"
+          ],
+          "origin": "existing",
+          "using": "(id IN ( SELECT ja.job_id\n   FROM job_applications ja\n  WHERE ((ja.worker_id)::text = current_setting('app.current_internal_user_id'::text, true))))",
+          "with_check": null,
+          "reason": "Jobs the caller applied to."
+        },
+        "jobs_cap_hire_nudges_select": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_cap_hire_nudges"
+          ],
+          "origin": "existing",
+          "using": "(id IN ( SELECT ja.job_id\n   FROM job_applications ja\n  WHERE (ja.status = 'hired'::text)))",
+          "with_check": null,
+          "reason": "Jobs with a hired application."
+        }
+      },
+      "reason": "Hire details: the job behind an application."
+    },
+    "public.job_conversations": {
+      "access": {
+        "jale_cap_worker_messages": {
+          "select": [
+            "id",
+            "job_id",
+            "employer_id",
+            "worker_id",
+            "application_id",
+            "status"
+          ],
+          "insert": [
+            "job_id",
+            "employer_id",
+            "worker_id",
+            "application_id",
+            "last_message_at",
+            "worker_thread_number"
+          ],
+          "update": [
+            "last_message_at"
+          ],
+          "reason": "Opens the caller's conversation when none is open and moves its last message time; never the read stamp or the reply window."
+        }
+      },
+      "policies": {
+        "job_conversations_cap_worker_messages_select": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_cap_worker_messages"
+          ],
+          "origin": "existing",
+          "using": "((worker_id)::text = current_setting('app.current_internal_user_id'::text, true))",
+          "with_check": null,
+          "reason": "The caller's own conversations."
+        },
+        "job_conversations_cap_worker_messages_insert": {
+          "command": "INSERT",
+          "permissive": true,
+          "to": [
+            "jale_cap_worker_messages"
+          ],
+          "origin": "existing",
+          "using": null,
+          "with_check": "((worker_id)::text = current_setting('app.current_internal_user_id'::text, true))",
+          "reason": "The caller's own conversations."
+        },
+        "job_conversations_cap_worker_messages_update": {
+          "command": "UPDATE",
+          "permissive": true,
+          "to": [
+            "jale_cap_worker_messages"
+          ],
+          "origin": "existing",
+          "using": "((worker_id)::text = current_setting('app.current_internal_user_id'::text, true))",
+          "with_check": "((worker_id)::text = current_setting('app.current_internal_user_id'::text, true))",
+          "reason": "The caller's own conversations."
+        }
+      },
+      "reason": "The hired worker's web message."
+    },
+    "public.job_conversation_messages": {
+      "access": {
+        "jale_cap_worker_messages": {
+          "select": [
+            "id",
+            "conversation_id",
+            "sender_type",
+            "direction",
+            "twilio_message_sid",
+            "created_at",
+            "body"
+          ],
+          "insert": [
+            "conversation_id",
+            "sender_type",
+            "direction",
+            "body",
+            "status"
+          ],
+          "reason": "Adds the worker's inbound message, counts the hour's web messages, and reads back the worker's own web-sent messages for their page."
+        }
+      },
+      "policies": {
+        "job_conversation_messages_cap_worker_messages_select": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_cap_worker_messages"
+          ],
+          "origin": "existing",
+          "using": "(conversation_id IN ( SELECT jc.id\n   FROM job_conversations jc\n  WHERE ((jc.worker_id)::text = current_setting('app.current_internal_user_id'::text, true))))",
+          "with_check": null,
+          "reason": "Messages in the caller's own conversations."
+        },
+        "job_conversation_messages_cap_worker_messages_insert": {
+          "command": "INSERT",
+          "permissive": true,
+          "to": [
+            "jale_cap_worker_messages"
+          ],
+          "origin": "existing",
+          "using": null,
+          "with_check": "((sender_type = 'worker'::text) AND (direction = 'inbound'::text) AND (conversation_id IN ( SELECT jc.id\n   FROM job_conversations jc\n  WHERE ((jc.worker_id)::text = current_setting('app.current_internal_user_id'::text, true)))))",
+          "reason": "Inbound worker messages in the caller's own conversations."
+        }
+      },
+      "reason": "The hired worker's web message."
+    },
+    "public.users": {
+      "access": {
+        "jale_cap_hire_nudges": {
+          "select": [
+            "id",
+            "user_type",
+            "email",
+            "full_name",
+            "cognito_sub"
+          ],
+          "reason": "The employer's address and the hired worker's name, for the nudge; no phone. cognito_sub only for the shared worker_profiles_self policy, which every reader evaluates."
+        }
+      },
+      "policies": {
+        "users_cap_hire_nudges_select": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_cap_hire_nudges"
+          ],
+          "origin": "existing",
+          "using": "((id IN ( SELECT ja.worker_id\n   FROM job_applications ja\n  WHERE (ja.status = 'hired'::text))) OR (id IN ( SELECT j.employer_id\n   FROM jobs j)))",
+          "with_check": null,
+          "reason": "Hired workers and the employers of jobs with a hire."
+        }
+      },
+      "reason": "The hire-details nudge."
+    },
+    "public.worker_profiles": {
+      "access": {
+        "jale_cap_hire_nudges": {
+          "select": [
+            "user_id",
+            "full_name"
+          ],
+          "reason": "The hired worker's profile name, for the nudge."
+        }
+      },
+      "policies": {
+        "worker_profiles_cap_hire_nudges_select": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_cap_hire_nudges"
+          ],
+          "origin": "existing",
+          "using": "(user_id IN ( SELECT ja.worker_id\n   FROM job_applications ja\n  WHERE (ja.status = 'hired'::text)))",
+          "with_check": null,
+          "reason": "Hired workers only."
+        }
+      },
+      "reason": "The hire-details nudge."
+    },
+    "public.whatsapp_processed_messages": {
+      "access": {
+        "jale_cap_worker_lane": {
+          "select": [
+            "whatsapp_number",
+            "message_sid",
+            "first_seen_at"
+          ],
+          "reason": "The details-added line checks the worker's 24-hour window from their own last inbound message."
+        }
+      },
+      "policies": {
+        "whatsapp_processed_messages_cap_worker_lane_select": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_cap_worker_lane"
+          ],
+          "origin": "existing",
+          "using": "(EXISTS ( SELECT 1\n   FROM users u\n  WHERE ((((u.whatsapp_number)::text = (whatsapp_processed_messages.whatsapp_number)::text) OR (u.phone = (whatsapp_processed_messages.whatsapp_number)::text)) AND jale_internal.employer_has_applicant_relationship(current_setting('app.current_internal_user_id'::text, true), u.id))))",
+          "with_check": null,
+          "reason": "Inbound messages from the numbers of the caller's own applicants."
+        }
+      },
+      "reason": "The details-added line's window check."
+    },
+    "public.email_outbox": {
+      "policies": {
+        "email_outbox_billing_resume_select": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_billing"
+          ],
+          "origin": "existing",
+          "using": "(source_type = 'billing_resume'::text)",
+          "with_check": null,
+          "reason": "The billing login reads back its resume mail only."
+        },
+        "email_outbox_billing_resume_insert": {
+          "command": "INSERT",
+          "permissive": true,
+          "to": [
+            "jale_billing"
+          ],
+          "origin": "existing",
+          "using": null,
+          "with_check": "(source_type = 'billing_resume'::text)",
+          "reason": "The billing login queues its resume mail only."
+        },
+        "email_outbox_hire_nudge_select": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_job_digest"
+          ],
+          "origin": "existing",
+          "using": "(source_type = 'hire_details_nudge'::text)",
+          "with_check": null,
+          "reason": "The sweep reads back its nudge mail only."
+        },
+        "email_outbox_hire_nudge_insert": {
+          "command": "INSERT",
+          "permissive": true,
+          "to": [
+            "jale_job_digest"
+          ],
+          "origin": "existing",
+          "using": null,
+          "with_check": "(source_type = 'hire_details_nudge'::text)",
+          "reason": "The sweep queues its nudge mail only."
+        }
+      },
+      "reason": "Billing resume mail and hire-details nudge mail, each producer its own kind."
+    }
+  }
+}

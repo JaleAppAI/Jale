@@ -182,3 +182,72 @@ export async function downloadTwilioMediaBounded(
   }
   return Buffer.from(arrayBuffer);
 }
+
+// ── Support mode (sprint 28): what a worker may send the team ─────────────
+
+/** A support attachment's cap, enforced while downloading (`downloadTwilioMediaBounded`). */
+export const MAX_SUPPORT_MEDIA_BYTES = 10 * 1024 * 1024;
+
+export interface SupportMediaKind {
+  mediaType: 'image' | 'audio' | 'document';
+  contentType: 'image/jpeg' | 'image/png' | 'image/webp' | 'audio/ogg' | 'audio/mpeg' | 'audio/mp4' | 'application/pdf';
+  ext: 'jpg' | 'png' | 'webp' | 'ogg' | 'mp3' | 'm4a' | 'pdf';
+}
+
+/**
+ * What a support attachment really is, from its magic bytes -- never from
+ * Twilio's MediaContentType. Photos (JPEG, PNG, WebP), voice notes (Ogg, which
+ * is what WhatsApp records; MP3 and M4A when their bytes say so) and PDFs.
+ * Anything else is null, including an MP4 video (only the M4A/M4B brands
+ * count as audio) and an AAC stream without a container.
+ */
+export function sniffSupportMedia(buf: Buffer): SupportMediaKind | null {
+  const photo = sniffPhotoType(buf);
+  if (photo === 'image/jpeg') return { mediaType: 'image', contentType: photo, ext: 'jpg' };
+  if (photo === 'image/png') return { mediaType: 'image', contentType: photo, ext: 'png' };
+  if (photo === 'image/webp') return { mediaType: 'image', contentType: photo, ext: 'webp' };
+  if (buf.length >= 5 && buf.subarray(0, 5).toString('latin1') === '%PDF-') {
+    return { mediaType: 'document', contentType: 'application/pdf', ext: 'pdf' };
+  }
+  if (buf.length >= 4 && buf.subarray(0, 4).toString('latin1') === 'OggS') {
+    return { mediaType: 'audio', contentType: 'audio/ogg', ext: 'ogg' };
+  }
+  if (buf.length >= 3 && buf.subarray(0, 3).toString('latin1') === 'ID3') {
+    return { mediaType: 'audio', contentType: 'audio/mpeg', ext: 'mp3' };
+  }
+  // An MPEG audio frame header: 11 sync bits, a real version (not 01) and a
+  // real layer (not 00, which is how an ADTS AAC header reads).
+  if (buf.length >= 2 && buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0
+      && ((buf[1] >> 3) & 0x03) !== 0x01 && ((buf[1] >> 1) & 0x03) !== 0x00) {
+    return { mediaType: 'audio', contentType: 'audio/mpeg', ext: 'mp3' };
+  }
+  if (buf.length >= 12 && buf.subarray(4, 8).toString('latin1') === 'ftyp') {
+    const brand = buf.subarray(8, 12).toString('latin1');
+    if (brand === 'M4A ' || brand === 'M4B ') {
+      return { mediaType: 'audio', contentType: 'audio/mp4', ext: 'm4a' };
+    }
+  }
+  return null;
+}
+
+/**
+ * Puts a support attachment in the support-media bucket. Sends NO
+ * ServerSideEncryption header: the bucket encrypts with its own KMS key by
+ * default, and an explicit AES256 header (as uploadMediaToS3 sends for the
+ * worker media bucket) would override it. Same rule as uploadDocumentToS3.
+ */
+export async function uploadSupportMediaToS3(
+  bucketName: string,
+  key: string,
+  body: Buffer,
+  contentType: SupportMediaKind['contentType'],
+): Promise<void> {
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: bucketName,
+      Key: key,
+      Body: body,
+      ContentType: contentType,
+    }),
+  );
+}

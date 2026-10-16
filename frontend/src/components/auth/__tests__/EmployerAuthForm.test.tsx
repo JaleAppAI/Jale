@@ -82,6 +82,7 @@ vi.mock('@/lib/cognito', () => cognito);
 vi.mock('@/lib/location-search', () => ({ queryLocations: vi.fn().mockResolvedValue([]) }));
 
 import EmployerAuthForm from '@/components/auth/EmployerAuthForm';
+import { SUPPORT_CONTACT } from '@/lib/support-contact';
 
 const NEVER_RECEIVED = message('auth.employer.never_received_code');
 const LOGIN_MARKER = message('auth.employer.title');
@@ -523,5 +524,95 @@ describe('EmployerAuthForm — sign-in call', () => {
         expect(
             await screen.findByText(translate('auth.employer', 'confirm_subtitle', { email: 'foo@example.com' })),
         ).toBeInTheDocument();
+    });
+});
+
+/*
+ * F4. `InvalidParameterException` on ForgotPassword means "no verified
+ * contact", which is true for an UNCONFIRMED employer AND for a CONFIRMED one
+ * whose email was never verified. The second got "already confirmed — use
+ * 'Forgot password?'" on the login screen: the exact flow they had just
+ * failed. The form now tells the two apart by what the code resend answers.
+ */
+describe('EmployerAuthForm — a reset that cannot be sent', () => {
+    /** The catalogue sentence with the one support address filled in. */
+    const resetUnavailableSentence = () =>
+        message('auth.employer.errors.reset_unavailable').replace('{email}', SUPPORT_CONTACT.email);
+
+    const noVerifiedContactError = {
+        code: 'InvalidParameterException',
+        name: 'InvalidParameterException',
+        message: 'Cannot reset password for the user as there is no registered/verified email or phone_number',
+    };
+    const alreadyConfirmed = { code: 'NotAuthorizedException', name: 'NotAuthorizedException' };
+
+    async function requestResetFor(user: ReturnType<typeof userEvent.setup>, address: string) {
+        await user.click(screen.getByRole('button', { name: message('auth.employer.forgot_link') }));
+        expect(await screen.findByText(FORGOT_MARKER)).toBeInTheDocument();
+        await user.type(screen.getByRole('textbox'), address);
+        await user.click(screen.getByRole('button', { name: new RegExp(`^${message('auth.employer.send_code')}`) }));
+    }
+
+    it('says the reset cannot be sent, stays on the step, and never points back to "Forgot password?"', async () => {
+        const user = userEvent.setup();
+        cognito.employerForgotPassword.mockRejectedValueOnce(noVerifiedContactError);
+        cognito.employerResendConfirmationCode.mockRejectedValueOnce(alreadyConfirmed);
+        render(<EmployerAuthForm />);
+
+        await requestResetFor(user, 'employer@example.com');
+
+        const sentence = await screen.findByText(resetUnavailableSentence());
+        expect(sentence).toBeInTheDocument();
+        expect(sentence.textContent).toContain(SUPPORT_CONTACT.email);
+        expect(screen.queryByText(message('auth.employer.errors.already_confirmed'))).not.toBeInTheDocument();
+        expect(screen.getByText(FORGOT_MARKER)).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: message('auth.employer.forgot_link') })).not.toBeInTheDocument();
+    });
+
+    it('says the same if the account turns out to be confirmed at the code step', async () => {
+        const user = userEvent.setup();
+        cognito.employerForgotPassword.mockRejectedValueOnce(noVerifiedContactError);
+        cognito.employerResendConfirmationCode.mockResolvedValueOnce(undefined);
+        cognito.employerConfirmSignUp.mockRejectedValueOnce(alreadyConfirmed);
+        render(<EmployerAuthForm />);
+
+        await requestResetFor(user, 'employer@example.com');
+        expect(await screen.findByText(RECOVERY_MARKER)).toBeInTheDocument();
+        await user.type(screen.getByRole('textbox'), '123456');
+        await user.click(screen.getByRole('button', { name: new RegExp(`^${message('auth.employer.confirm_account')}`) }));
+
+        expect(await screen.findByText(resetUnavailableSentence())).toBeInTheDocument();
+        expect(screen.queryByText(message('auth.employer.errors.already_confirmed'))).not.toBeInTheDocument();
+    });
+
+    it('still sends a signed-in confirm that finds the account confirmed to login with the usual sentence', async () => {
+        // The sign-in path is not the forgot path: its own copy stays.
+        const user = userEvent.setup();
+        cognito.employerSignIn.mockRejectedValueOnce({ code: 'UserNotConfirmedException', name: 'UserNotConfirmedException' });
+        cognito.employerResendConfirmationCode.mockRejectedValueOnce(alreadyConfirmed);
+        render(<EmployerAuthForm />);
+
+        await user.type(screen.getByPlaceholderText(message('auth.employer.email_label')), 'employer@example.com');
+        await user.type(screen.getByPlaceholderText(message('auth.employer.password_label')), 'WrongPass1!');
+        await user.click(screen.getByRole('button', { name: new RegExp(`^${message('auth.employer.sign_in')}`) }));
+
+        expect(await screen.findByText(message('auth.employer.errors.already_confirmed'))).toBeInTheDocument();
+    });
+});
+
+describe('EmployerAuthForm — where the signup came from (K3.6, T-c)', () => {
+    beforeEach(() => sessionStorage.clear());
+    afterEach(() => window.history.replaceState(null, '', '/'));
+
+    it('stashes the sign-up page\'s code on arrival', () => {
+        window.history.replaceState(null, '', '/en/auth/employer?src=partner');
+        render(<EmployerAuthForm />);
+        expect(JSON.parse(sessionStorage.getItem('jale.signup-source') as string)).toMatchObject({ src: 'partner', entry: 'signup_page' });
+    });
+
+    it('records the entry even without a code', () => {
+        window.history.replaceState(null, '', '/en/auth/employer');
+        render(<EmployerAuthForm />);
+        expect(JSON.parse(sessionStorage.getItem('jale.signup-source') as string)).toMatchObject({ src: null, entry: 'signup_page' });
     });
 });

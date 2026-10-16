@@ -52,6 +52,19 @@ assert.equal(safeNextPath('/\\evil.com'), '/');
 assert.equal(safeNextPath('evil.com'), '/');
 assert.equal(safeNextPath('\\\\evil.com'), '/');
 
+// ASCII control characters (C0 and DEL) are refused anywhere in the path,
+// query or fragment: a header-split or a tab/newline some browsers strip
+// before resolving the URL.
+for (const code of [0x00, 0x09, 0x0a, 0x0d, 0x1b, 0x1f, 0x7f]) {
+  const char = String.fromCharCode(code);
+  assert.equal(safeNextPath(`/cases${char}`), '/', `control 0x${code.toString(16)} at the end`);
+  assert.equal(safeNextPath(`/${char}/evil.com`), '/', `control 0x${code.toString(16)} after the slash`);
+  assert.equal(safeNextPath(`/cases?q=a${char}b`), '/', `control 0x${code.toString(16)} in the query`);
+}
+// Printable characters and percent-encoded controls stay as they are.
+assert.equal(safeNextPath('/cases?q=a%0Ab&x=%20'), '/cases?q=a%0Ab&x=%20');
+assert.equal(safeNextPath('/security?actor=00000000-0000-4000-8000-000000000001'), '/security?actor=00000000-0000-4000-8000-000000000001');
+
 // Empty / missing defaults to '/'.
 assert.equal(safeNextPath(undefined), '/');
 assert.equal(safeNextPath(null), '/');

@@ -1,27 +1,66 @@
 import { NextResponse } from 'next/server';
 import {
   getAdminSessionCookieOptions,
+  verifyAdminAccessToken,
   verifyAdminIdToken,
 } from '@/lib/server/session';
 import { ADMIN_SESSION_COOKIE } from '@/lib/session-cookie';
 import { AdminSessionStore, type ActiveAdminSession } from '@/lib/server/admin-session-store';
 import { recordAdminSession } from '@/lib/server/audit/record';
+import { getAdminDirectory } from '@/lib/server/cognito-admin';
 import { getAdminDbPool } from '@/lib/server/db';
+import { applyDeviceTrust } from '@/lib/server/device-trust';
 import { cookies } from 'next/headers';
 
+// Sign-in (contract K1.2): { idToken, accessToken, trustDevice }. Both tokens
+// are verified (same pool, client and subject); the access token's device key
+// decides trusted-browser sign-in through device-trust.ts.
 export async function POST(request: Request) {
   const body = await request.json().catch(() => undefined);
   const idToken = typeof body?.idToken === 'string' ? body.idToken.trim() : '';
+  const accessToken = typeof body?.accessToken === 'string' ? body.accessToken.trim() : '';
+  const trustDevice = body?.trustDevice === true;
 
   if (!idToken) {
     return NextResponse.json({ error: 'id_token_required' }, { status: 400 });
   }
+  if (!accessToken) {
+    return NextResponse.json({ error: 'access_token_required' }, { status: 400 });
+  }
 
   let created: { rawToken: string };
   let session: ActiveAdminSession | undefined;
+  let trustedDevice = false;
   try {
     const identity = await verifyAdminIdToken(idToken);
-    const store = new AdminSessionStore(await getAdminDbPool());
+    const access = await verifyAdminAccessToken(accessToken);
+    if (access.sub !== identity.sub) {
+      throw new Error('The ID and access tokens name different users');
+    }
+    const pool = await getAdminDbPool();
+    const store = new AdminSessionStore(pool);
+    const admin = await store.findActiveAdmin(identity.sub);
+    if (!admin) {
+      throw new Error('Admin account is inactive or not provisioned');
+    }
+
+    // A Cognito or database error here fails the sign-in closed (below).
+    const trust = await applyDeviceTrust({
+      db: pool,
+      directory: getAdminDirectory(),
+      adminUserId: admin.id,
+      username: access.username,
+      deviceKey: access.deviceKey,
+      trustDevice,
+    });
+    if (trust.outcome === 'trust_expired') {
+      // The browser's trust has passed 7 days: the device is no longer
+      // remembered, and the admin signs in again with a code.
+      await recordAdminSession('sign_in_rejected', { adminUserId: admin.id, role: admin.role });
+      return NextResponse.json({ error: 'device_trust_expired' }, { status: 401 });
+    }
+    trustedDevice = trust.outcome === 'trusted_device';
+
     created = await store.create(identity, {
       userAgent: request.headers.get('user-agent') ?? undefined,
     });
@@ -36,7 +75,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'invalid_admin_token' }, { status: 401 });
   }
 
-  await recordAdminSession('signed_in', session);
+  await recordAdminSession('signed_in', session, trustedDevice ? { fieldNames: ['trusted_device'] } : {});
   const response = NextResponse.json({
     ok: true,
     role: session.role,

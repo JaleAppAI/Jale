@@ -1,11 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
 import { usePageData } from '@/hooks/usePageData';
 import { useJobCreated } from '@/contexts/PostJobContext';
 import { AppShell } from '@/components/layout/AppShell';
+import { HireDetailsNeededBanner } from '@/components/employer/HireDetailsNeededBanner';
 import { PostJobButton } from '@/components/employer/PostJobButton';
 import { EmptyState } from '@/components/ui/empty-state';
 import { ErrorState } from '@/components/ui/error-state';
@@ -13,6 +14,8 @@ import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { Skeleton } from '@/components/ui/skeleton';
 import { getApplicantsOverview } from '@/lib/api/employer';
 import type { ApplicantsOverviewResponse } from '@/lib/api/employer';
+import type { HireDetails } from '@/lib/api/worker';
+import { hasHireDetails } from '@/lib/hire-details';
 import { ApplicantOverviewRow } from './ApplicantOverviewRow';
 
 export const dynamic = 'force-dynamic';
@@ -36,6 +39,20 @@ export default function EmployerApplicantsPage() {
 
   const applicants = page.data?.applicants ?? [];
   const jobs = page.data?.jobs ?? [];
+  const { setData } = page;
+  // K4.4: hired applicants whose start details are still empty.
+  const hiresNeedingDetails = applicants.filter((a) => a.hire_details_needed === true).length;
+  // A save in a row patches that row here too, so the banner count drops at once.
+  const markHireDetailsSaved = useCallback((applicationId: string, details: HireDetails | null) => {
+    setData((prev) => ({
+      ...prev,
+      applicants: prev.applicants.map((a) => (
+        a.application_id === applicationId
+          ? { ...a, hire_details: details, hire_details_needed: !hasHireDetails(details) }
+          : a
+      )),
+    }));
+  }, [setData]);
   const visible = jobFilter
     ? applicants.filter((a) => a.job_id === jobFilter)
     : applicants;
@@ -63,6 +80,7 @@ export default function EmployerApplicantsPage() {
           <EmptyState icon="user" title={t('empty_title')} body={t('empty_body')} />
         ) : (
           <>
+            <HireDetailsNeededBanner count={hiresNeedingDetails} />
             {jobs.length > 1 ? (
               <div className="mb-3 flex gap-1.5 overflow-x-auto pb-1">
                 <JobChip active={jobFilter === null} onClick={() => setJobFilter(null)}>
@@ -82,7 +100,7 @@ export default function EmployerApplicantsPage() {
 
             <div className="divide-y divide-[var(--jale-divider)] rounded-[var(--radius-input)] border border-[var(--jale-divider)] bg-[var(--jale-card)]">
               {visible.map((item) => (
-                <ApplicantOverviewRow key={item.application_id} item={item} />
+                <ApplicantOverviewRow key={item.application_id} item={item} onHireDetailsSaved={markHireDetailsSaved} />
               ))}
             </div>
           </>

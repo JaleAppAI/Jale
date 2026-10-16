@@ -1,7 +1,12 @@
 -- ============================================================
 -- 119_employer_org_owner_access.sql
--- Run manually AFTER 118_employer_organizations.sql,
+-- Run manually AFTER 126_job_conversations_whatsapp_update_columns.sql,
 -- connected as jale_admin. Forward-only (ADR-005). ONE transaction.
+-- Numbered after 118, which it needs. Production applies it after sprint 28's
+-- 120-126 (the runner applies a pending file even when higher numbers are
+-- already recorded); a fresh bed applies it in number order, before them. It
+-- reads nothing 120-126 create, and they replace none of its functions or
+-- policies, so either order ends in the same state.
 --
 -- Employer organizations, Phase 1 milestone B
 -- (docs/superpowers/specs/2026-10-15-employer-organizations-design.md).

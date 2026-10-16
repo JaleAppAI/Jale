@@ -301,10 +301,11 @@ describe('access manifest reviewed expressions', () => {
 
   it('records the USING and WITH CHECK of every copy source and every capability owner\'s policy, fragments included', () => {
     expect(reviewed.filter(([, p]) => p.using === undefined || p.with_check === undefined).map(([key]) => key)).toEqual([]);
-    // 38 copy sources; 36 capability-owner policies in manifest.json, 28 in the report fragment
-    // and 5 in the organizations fragment (119).
+    // 38 copy sources; 36 capability-owner policies in manifest.json, 28 in the report fragment,
+    // 12 in the analytics capture fragment, 16 in the hire-and-resume fragment and 5 in the
+    // organizations fragment (119; 118's go to jale_api, jale_admin and the relationship reader).
     expect(reviewed.filter(([key]) => sources.has(key))).toHaveLength(38);
-    expect(reviewed.filter(([, p]) => p.to.some((role) => owners.has(role)))).toHaveLength(69);
+    expect(reviewed.filter(([, p]) => p.to.some((role) => owners.has(role)))).toHaveLength(97);
   });
 
   it('refuses a copy source that does not record its expressions', () => {

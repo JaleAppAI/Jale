@@ -502,11 +502,11 @@ describe('ReferralsStack', () => {
     const [workerJobLogicalId, workerJobResourceProps] = variableChildren[0];
     expect(workerJobResourceProps.Properties.PathPart).toBe('{jobId}');
 
-    // {jobId}'s children are exactly 'apply' (pre-existing) and 'share'
-    // (this stack) — nothing else.
+    // {jobId}'s children are exactly 'apply' (pre-existing), 'share' (this
+    // stack) and 'view' (ApiStack, sprint 28 job view capture) — nothing else.
     const jobIdChildren = childrenOf(workerJobLogicalId);
     const pathParts = jobIdChildren.map(([, res]) => res.Properties.PathPart).sort();
-    expect(pathParts).toEqual(['apply', 'share']);
+    expect(pathParts).toEqual(['apply', 'share', 'view']);
   });
 
   // ── Security group: no allow-all egress ──────────────────────────────────
