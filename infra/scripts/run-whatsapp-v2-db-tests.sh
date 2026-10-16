@@ -114,6 +114,7 @@ SUITES=(
   test/unit/db/billing-current-subscription.integration.test.ts
   test/unit/db/rls-relationship-repair.integration.test.ts
   test/unit/db/employer-organizations-118.integration.test.ts
+  test/unit/db/employer-org-owner-access-119.integration.test.ts
   test/unit/db/whatsapp-support-039.integration.test.ts
   test/unit/db/whatsapp-delivery-040.integration.test.ts
   test/unit/db/referrals-rls.integration.test.ts

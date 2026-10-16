@@ -156,6 +156,7 @@ describe('database migrations', () => {
       '115',
       '117',
       '118',
+      '119',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -2112,6 +2113,40 @@ describe('database migrations', () => {
     expect(backfillAt).toBeGreaterThan(sql.indexOf('CREATE TRIGGER job_messages_stamp_sender'));
     expect(backfillAt).toBeGreaterThan(sql.indexOf('CREATE OR REPLACE FUNCTION public.capture_job_application_status_event()'));
     expect(sql.indexOf('DROP POLICY users_org_bootstrap_read ON public.users;')).toBeLessThan(sql.indexOf('-- ── Self-check'));
+  });
+
+  it('119 adds owner access beside the per-person policies, in one transaction', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '119_employer_org_owner_access.sql'), 'utf8');
+    expect(sql).toContain('-- Run manually AFTER 118_employer_organizations.sql,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n');
+    expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+    expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+    expect(sql).toContain("SET LOCAL lock_timeout = '5s';");
+    // 22 owner policies, plus the catch-up's temporary users read, which is
+    // the only policy dropped again.
+    expect(sql.match(/^CREATE POLICY /gm)).toHaveLength(23);
+    expect(sql.match(/^CREATE POLICY \S+_org_owner_\S+ /gm)).toHaveLength(21);
+    expect(sql).toContain('CREATE POLICY employer_job_templates_org_read ON public.employer_job_templates');
+    expect(sql).toContain('CREATE POLICY job_visibility_events_org_owner_read ON public.job_visibility_events');
+    expect(sql.match(/^DROP POLICY .*$/gm)).toEqual(['DROP POLICY users_org_bootstrap_read ON public.users;']);
+    expect(sql).not.toMatch(/^ALTER POLICY/m);
+    // The catch-up back-fill (and its ACCESS EXCLUSIVE lock on users) comes
+    // after every other change, as in 118.
+    const catchupAt = sql.indexOf('CREATE POLICY users_org_bootstrap_read ON public.users');
+    expect(catchupAt).toBeGreaterThan(sql.indexOf('CREATE POLICY jobs_org_owner_select'));
+    expect(catchupAt).toBeGreaterThan(sql.indexOf('CREATE OR REPLACE FUNCTION jale_cap.employer_claim_worker_intent('));
+    expect(catchupAt).toBeLessThan(sql.indexOf('CREATE TEMP TABLE org_catchup ON COMMIT DROP AS'));
+    expect(sql.indexOf('DROP POLICY users_org_bootstrap_read ON public.users;')).toBeLessThan(sql.indexOf('-- ── Self-check'));
+    // Row policies use the array helpers, cast to uuid[] (without the cast,
+    // ANY ((SELECT ...)) is the subquery form); reassignment checks active members only.
+    expect(sql).toContain("WITH CHECK (employer_id = ANY ((SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id', true), true))::uuid[]));");
+    const code = sql.replace(/--.*$/gm, '');
+    expect(code.match(/= ANY \(\(SELECT jale_internal\.org_(owner|member)_scope\(/g)).toHaveLength(28);
+    expect(code.match(/= ANY \(\(SELECT jale_internal\.org_(owner|member)_scope\(current_setting\('app\.current_internal_user_id', true\)(, (true|false))?\)\)::uuid\[\]\)/g)).toHaveLength(28);
+    expect(sql).not.toMatch(/^\s*(USING|WITH CHECK) \(jale_internal\.is_org_owner_of\(/m);
+    // The capability owners' EXECUTE is granted by the helpers' owner, not as jale_admin.
+    expect(sql).toContain('SET LOCAL ROLE jale_rls_relationship_reader;\nGRANT EXECUTE ON FUNCTION jale_internal.is_org_owner_of(TEXT, UUID) TO jale_cap_upload_tokens, jale_cap_worker_lane;\nGRANT EXECUTE ON FUNCTION jale_internal.org_owner_scope(TEXT, BOOLEAN) TO jale_cap_upload_tokens, jale_cap_worker_lane;\n');
+    expect(sql.match(/-- 119$/gm)!.length).toBeGreaterThanOrEqual(6);
+    expect(sql).toContain('CREATE OR REPLACE FUNCTION jale_cap.employer_claim_worker_intent(');
   });
 
   // A catalog may carry FORCE ROW LEVEL SECURITY on the five tables 114b

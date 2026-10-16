@@ -580,6 +580,7 @@ MIGRATIONS=(
   "115_admin_ops_health.sql"
   "117_admin_queues.sql"
   "118_employer_organizations.sql"
+  "119_employer_org_owner_access.sql"
 )
 
 WORKDIR="$(mktemp -d)"
