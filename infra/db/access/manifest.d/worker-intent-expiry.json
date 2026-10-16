@@ -1,0 +1,16 @@
+{
+  "functions": {
+    "public.expire_worker_intent_outbox()": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "",
+      "returns": "TABLE(id uuid)",
+      "execute": [
+        "jale_whatsapp"
+      ],
+      "created_by": "126",
+      "reason": "The worker-intent drain's expiry pass: ends pending worker_intent outbox rows whose intent has expired, before the lease."
+    }
+  }
+}

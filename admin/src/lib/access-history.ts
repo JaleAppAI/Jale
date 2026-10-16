@@ -15,7 +15,9 @@ import {
 import { localInputToIso } from './local-time';
 import type { AccessHistoryEntry } from './types';
 
-export const ACCESS_HISTORY_PATH = '/access-history';
+// The Security page (contract K1.6) holds the access history. The old
+// /access-history and /audit URLs redirect here with their query kept.
+export const ACCESS_HISTORY_PATH = '/security';
 
 /** A page's awaited searchParams. */
 export type AccessHistorySearchParams = Readonly<Record<string, string | string[] | undefined>>;

@@ -81,7 +81,7 @@ describe('apiFetch records every underlying request', () => {
   });
 
   it('records both requests of a 401 replay', async () => {
-    registerAuthBridge({ refreshIdToken: async () => 'tok-2', onSessionExpired: () => {} });
+    registerAuthBridge({ refreshIdToken: async () => ({ status: 'ok' as const, token: 'tok-2' }), onSessionExpired: () => {} });
     vi.stubGlobal('fetch', answers({ status: 401, body: { error: 'unauthorized' } }, { status: 200 }));
 
     const res = await apiFetch('/worker/profile', { method: 'PATCH', body: '{}' }, 'tok-1');
@@ -177,10 +177,17 @@ describe('apiFetch records API failures as errors', () => {
   });
 
   it('records an expired session as "401 session_expired"', async () => {
-    registerAuthBridge({ refreshIdToken: async () => null, onSessionExpired: () => {} });
+    registerAuthBridge({ refreshIdToken: async () => ({ status: 'refused' as const }), onSessionExpired: () => {} });
     vi.stubGlobal('fetch', answers({ status: 401, body: { error: 'unauthorized' } }));
     await expect(apiFetch('/worker/profile', undefined, 'tok')).rejects.toMatchObject({ code: 'session_expired' });
     expect(context().errors.map((e) => e.msg)).toEqual(['401 session_expired']);
+  });
+
+  it('records a refresh outage as "503 session_refresh_unavailable"', async () => {
+    registerAuthBridge({ refreshIdToken: async () => ({ status: 'unavailable' as const }), onSessionExpired: () => {} });
+    vi.stubGlobal('fetch', answers({ status: 401, body: { error: 'unauthorized' } }));
+    await expect(apiFetch('/worker/profile', undefined, 'tok')).rejects.toMatchObject({ code: 'session_refresh_unavailable' });
+    expect(context().errors.map((e) => e.msg)).toEqual(['503 session_refresh_unavailable']);
   });
 
   it('records the legal wall as "403 legal_required"', async () => {

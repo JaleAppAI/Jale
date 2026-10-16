@@ -126,6 +126,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       }
     }
 
+    // The employer's own status change takes the job out of billing's hands:
+    // clearing billing_paused_at keeps the resume after an upgrade off it.
     const result = await client.query(
       `WITH employer_job AS (
          SELECT jobs.id
@@ -133,7 +135,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          JOIN users u ON u.id = jobs.employer_id
          WHERE jobs.id = $2 AND u.cognito_sub = $3
        )
-       UPDATE jobs SET status = $1
+       UPDATE jobs SET status = $1, billing_paused_at = NULL
        FROM employer_job
        WHERE jobs.id = employer_job.id
        RETURNING jobs.id, jobs.title, jobs.location, jobs.pay, jobs.job_type, jobs.status, jobs.created_at,

@@ -953,7 +953,12 @@ describe('Stream B: command gate at voice steps', () => {
 
 // ── Task 9: answer-integrity + RESTART/BACK ──────────────────────────────
 
-describe('answer-integrity: greetings and SUPPORT/SOPORTE at free-text steps are never saved', () => {
+// SUPPORT / SOPORTE at a free-text step used to be blocked here, by the
+// engine's own gate. Sprint 28 support mode takes it before the processor
+// calls the engine at all, at every step; processor-support-mode.test.ts
+// ("a worker mid-onboarding typing SOPORTE at a free-text step ...") pins
+// that, through the real router.
+describe('answer-integrity: greetings at free-text steps are never saved', () => {
   it('a greeting typed at profile.name is blocked and reprompted, not saved as the name', async () => {
     const h = createWhatsAppV2Harness({ phone: '+15551110600' });
     await h.driveToStep('legal.review', { lang: 'en' });
@@ -982,25 +987,6 @@ describe('answer-integrity: greetings and SUPPORT/SOPORTE at free-text steps are
 
     expect(h.getState().gate?.currentStepKey).toBe('profile.location'); // advanced normally
     expect(h.getWorkerProfile()?.name).toBe('Hola Maria');
-  });
-
-  it('SUPPORT/SOPORTE at a trust question is blocked and not saved as an answer', async () => {
-    const h = createWhatsAppV2Harness({ phone: '+15551110602' });
-    await h.driveToStep('trust.question.2');
-    const answersBefore = h.getWorkerProfile()?.trustAnswers.length ?? 0;
-
-    await h.sendText('Soporte');
-
-    expect(h.getState().gate?.currentStepKey).toBe('trust.question.2'); // blocked, no advance
-    expect(h.getWorkerProfile()?.trustAnswers.length).toBe(answersBefore);
-    const blockedReply = h.getSentMessages().find((m) => (m.sourceType ?? '').includes('v2_gate_blocked'));
-    expect(blockedReply).toBeDefined();
-
-    // A genuine answer typed right after still works normally (this is a
-    // standard-trade, option-based question set — '1' is a valid choice).
-    await h.sendText('1');
-    expect(h.getState().gate?.currentStepKey).toBe('trust.question.3');
-    expect(h.getWorkerProfile()?.trustAnswers.length).toBe(answersBefore + 1);
   });
 });
 

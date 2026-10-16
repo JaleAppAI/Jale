@@ -267,6 +267,20 @@ function applyCacheRows(candidates: EmployerCandidate[], cacheRows: CacheRow[]):
     .filter((candidate): candidate is EmployerCandidate => candidate !== null);
 }
 
+/**
+ * The cached ranking for this job and source hash, if still fresh.
+ *
+ * Freshness depends on what the row holds. An LLM ranking ('llm-v1') stays
+ * fresh for 24 hours. A rerank FALLBACK ('sql-v1', written when Bedrock
+ * failed or answered nothing) stays fresh for 15 minutes only: long enough
+ * that a burst of reads does not re-enqueue on every request, short enough
+ * that one transient failure is retried soon instead of being served for a
+ * day. Once it lapses `listEmployerCandidates` serves the deterministic order
+ * and asks for a rerank again. The rerank worker writes every row of a job
+ * in one transaction with one version, so the rows age together.
+ *
+ * Compared in SQL, on the clock that wrote `computed_at`.
+ */
 export async function readFreshEmployerCandidateCache(
   client: PoolClient,
   jobId: string,
@@ -278,7 +292,7 @@ export async function readFreshEmployerCandidateCache(
       WHERE job_id = $1
         AND source_hash = $2
         AND status = 'ready'
-        AND computed_at > now() - interval '24 hours'
+        AND computed_at > now() - CASE WHEN ranking_version = '${SQL_RANKING_VERSION}' THEN interval '15 minutes' ELSE interval '24 hours' END
       ORDER BY rank ASC`,
     [jobId, sourceHash],
   );

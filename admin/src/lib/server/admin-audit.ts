@@ -202,7 +202,7 @@ export async function searchAccessHistory(
 }
 
 /**
- * The access history page (/access-history), superadmins only.
+ * The access history (the Security page, /security; ACCESS_HISTORY_PATH), superadmins only.
  *   - Another role is refused, and the refusal is recorded as a denied
  *     attempt that names no search input.
  *   - The local preview has no admin id to search as.

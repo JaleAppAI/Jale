@@ -23,6 +23,7 @@ import {
 } from '@/components/employer/ConversationThread';
 import { EmptyThreadComposer } from '@/components/employer/EmptyThreadComposer';
 import type { ComposerSubject } from '@/components/employer/EmptyThreadComposer';
+import { describedRows, forgetThreadedTargets, rememberDescribedTarget, type DescribedTargets } from '@/components/employer/described-targets';
 import { isLegalWallError } from '@/lib/api';
 import { ApiError } from '@/lib/api/errors';
 import { formatTimeOfDay } from '@/lib/date';
@@ -112,6 +113,14 @@ export function ConversationDrawer() {
    */
   const [startedThreads, setStartedThreads] = useState<Record<string, string>>({});
 
+  /**
+   * Every applicant a caller has DESCRIBED, by application id (item 6). The
+   * single `openRequest` slot is the latest request only, and the inbox does
+   * not list every applicant the board does -- so this is what keeps an
+   * earlier off-inbox applicant reachable once a second one is opened.
+   */
+  const [describedTargets, setDescribedTargets] = useState<DescribedTargets>(() => new Map());
+
   const isEmployer = userType === 'employer';
   const canFetch = open && isEmployer;
 
@@ -124,6 +133,7 @@ export function ConversationDrawer() {
   useEffect(() => {
     if (!openRequest || openRequest.token === appliedRequestRef.current) return;
     appliedRequestRef.current = openRequest.token;
+    setDescribedTargets((prev) => rememberDescribedTarget(prev, openRequest.target));
     setSelectedKey(openRequest.target.application_id);
     setOpen(true);
     // The applicant may have applied since the last poll, or been messaged
@@ -142,12 +152,14 @@ export function ConversationDrawer() {
   );
 
   /**
-   * The request currently on screen, when the employer has not since picked a
-   * different row. It is the ONLY description of an applicant the inbox does
-   * not list, so it is what the composer falls back to below.
+   * The caller's description of the selected applicant, if any caller gave
+   * one. It is the ONLY description of an applicant the inbox does not list,
+   * so it is what the composer falls back to below and what the vanish guard
+   * treats as "listed elsewhere".
    */
-  const pendingTarget: ConversationTarget | null =
-    openRequest && openRequest.target.application_id === selectedKey ? openRequest.target : null;
+  const pendingTarget: ConversationTarget | null = selectedKey
+    ? describedTargets.get(selectedKey) ?? null
+    : null;
 
   /*
    * A thread started here is keyed by APPLICATION, which is why this survives
@@ -198,6 +210,19 @@ export function ConversationDrawer() {
       return next;
     });
   }, [inboxErrorKind, inboxLoading, items, pendingTarget, selectedKey]);
+
+  /*
+   * A description stops being needed once the inbox carries that applicant
+   * WITH a thread: the inbox row draws them from then on, and the vanish guard
+   * above must be free to drop them if they are later dismissed. Only on a
+   * settled read -- a loading or failed inbox says nothing.
+   */
+  useEffect(() => {
+    if (inboxLoading || inboxErrorKind) return;
+    setDescribedTargets((prev) => forgetThreadedTargets(prev, items));
+  }, [inboxErrorKind, inboxLoading, items]);
+
+  const newConversations = useMemo(() => describedRows(describedTargets, threads), [describedTargets, threads]);
 
   const routeLegalWall = useCallback(
     (err: unknown): boolean => {
@@ -387,10 +412,21 @@ export function ConversationDrawer() {
                 <ConversationListSkeleton label={tCommon('loading')} />
               ) : inboxErrorKind ? (
                 <ErrorState kind={inboxErrorKind} onRetry={retryInbox} compact />
-              ) : threads.length === 0 ? (
+              ) : threads.length === 0 && newConversations.length === 0 ? (
                 <EmptyState icon="message" variant="filtered" title={t('empty')} body={t('empty_drawer_body')} />
               ) : (
                 <ul className="divide-y divide-[var(--jale-divider)]">
+                  {newConversations.map((target) => (
+                    <li key={`new-${target.application_id}`}>
+                      <DescribedRow
+                        target={target}
+                        selected={selectedKey === target.application_id}
+                        unknownWorkerLabel={t('unknown_worker')}
+                        newConversationLabel={t('drawer_new_conversation')}
+                        onSelect={() => setSelectedKey(target.application_id)}
+                      />
+                    </li>
+                  ))}
                   {threads.map((item) => (
                     <li key={item.application_id}>
                       <DrawerThreadRow
@@ -592,6 +628,50 @@ function DrawerThreadRow({
           >
             {item.last_message_preview ?? noMessagesLabel}
           </span>
+        </span>
+      </span>
+    </button>
+  );
+}
+
+/**
+ * A row for an applicant a caller described but who has no thread here yet.
+ * Same geometry as `DrawerThreadRow`, so the list does not change rhythm; the
+ * third line says what choosing it opens.
+ */
+function DescribedRow({
+  target,
+  selected,
+  unknownWorkerLabel,
+  newConversationLabel,
+  onSelect,
+}: {
+  target: ConversationTarget;
+  selected: boolean;
+  unknownWorkerLabel: string;
+  newConversationLabel: string;
+  onSelect: () => void;
+}) {
+  const name = target.worker_name ?? unknownWorkerLabel;
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-current={selected ? 'true' : undefined}
+      className={[
+        'flex w-full cursor-pointer gap-2 p-3 text-left transition-colors',
+        'focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]',
+        selected ? 'bg-[var(--jale-blue-50)]' : 'hover:bg-[var(--jale-card)]',
+      ].join(' ')}
+    >
+      <span className="avatar-initials h-8 w-8 shrink-0 text-[10px]">{initialsFor(name)}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-bold text-[var(--jale-ink)]">{name}</span>
+        <span className="block truncate text-xs text-[var(--jale-ink-2)]">
+          {target.job_city ? `${target.job_title} · ${target.job_city}` : target.job_title}
+        </span>
+        <span className="mt-1 block truncate text-[11px] font-semibold text-[var(--jale-ink-2)]">
+          {newConversationLabel}
         </span>
       </span>
     </button>

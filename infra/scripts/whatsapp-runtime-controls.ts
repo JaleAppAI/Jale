@@ -27,9 +27,17 @@
  *   npx tsx scripts/whatsapp-runtime-controls.ts --allow-phone +19155550123 --control voice_intake
  *   npx tsx scripts/whatsapp-runtime-controls.ts --go-global --control voice_intake
  *
- *   # Verify Twilio Content Template SIDs against approval state — needs only
- *   # AWS credentials (reads the jale/whatsapp/twilio secret), no DB env:
+ *   # Verify Twilio Content Template SIDs against approval state and WhatsApp
+ *   # category — needs only AWS credentials (reads the jale/whatsapp/twilio
+ *   # secret), no DB env:
  *   npx tsx scripts/whatsapp-runtime-controls.ts --verify-templates
+ *
+ *   # Before the deploy that retires the unversioned admin_support_reply_<lang>
+ *   # keys: a retired key that is still mapped prints as a NOTICE instead of a
+ *   # failure; every other rule still fails the run. After the deploy, remove
+ *   # the pair with `node scripts/seed-whatsapp-twilio-templates.mjs
+ *   # --unset-template <key>` and run the plain --verify-templates above.
+ *   npx tsx scripts/whatsapp-runtime-controls.ts --verify-templates --before-deploy
  */
 
 import { Client } from 'pg';
@@ -38,6 +46,7 @@ import * as path from 'path';
 
 import { hashNormalizedPhone } from '../lambda/whatsapp/lib/runtime-controls';
 import { retriggerDeferredReadyWorkers } from '../lambda/whatsapp/lib/delivery-retrigger-sweep';
+import type { VerifyTemplatesResult } from './lib/verify-twilio-templates';
 
 export interface Queryable {
   query(
@@ -370,17 +379,56 @@ export function formatTemplateVerificationRow(row: {
   ].join('\t');
 }
 
+/**
+ * `--verify-templates [--before-deploy]`. Reads the options after the
+ * subcommand, runs the check, and prints one line per template, then each
+ * notice (stdout, `NOTICE:`), then each failure (stderr, `FAIL:`). Returns the
+ * exit code: 1 for an unknown option or any failure, otherwise 0. A notice
+ * never fails the run.
+ *
+ * `--before-deploy` passes `beforeDeploy` to the check: a retired template key
+ * that is still mapped is a notice instead of a failure. Every other rule is
+ * unchanged. Notices also report an employer template whose WhatsApp category
+ * is not UTILITY, with or without the option.
+ *
+ * Exported with the check injected so the parsing and the pass-through are
+ * testable without AWS or Twilio; `main()` supplies verifyTwilioTemplates.
+ */
+export async function runVerifyTemplates(
+  argv: string[],
+  verify: (options: { beforeDeploy: boolean }) => Promise<VerifyTemplatesResult>,
+  out: { log: (line: string) => void; error: (line: string) => void } = console,
+): Promise<number> {
+  let beforeDeploy = false;
+  for (const arg of argv.slice(1)) {
+    if (arg === '--before-deploy') {
+      beforeDeploy = true;
+      continue;
+    }
+    // Never echo a bare (non `--`) argument: it could be a misplaced raw phone.
+    out.error(
+      arg.startsWith('--')
+        ? `Unrecognized flag for --verify-templates: ${arg}`
+        : 'Unrecognized argument (redacted)',
+    );
+    return 1;
+  }
+
+  const result = await verify({ beforeDeploy });
+  for (const row of result.rows) out.log(formatTemplateVerificationRow(row));
+  for (const notice of result.notices) out.log(`NOTICE: ${notice}`);
+  for (const failure of result.failures) out.error(`FAIL: ${failure}`);
+  return result.failures.length > 0 ? 1 : 0;
+}
+
 async function main(): Promise<void> {
   if (process.argv[2] === '--verify-templates') {
     const { verifyTwilioTemplates } = await import('./lib/verify-twilio-templates');
-    const result = await verifyTwilioTemplates();
-    for (const row of result.rows) {
-      console.log(formatTemplateVerificationRow(row));
-    }
-    if (result.failures.length > 0) {
-      for (const failure of result.failures) console.error(`FAIL: ${failure}`);
-      process.exitCode = 1;
-    }
+    const code = await runVerifyTemplates(
+      process.argv.slice(2),
+      (options) => verifyTwilioTemplates(options),
+    );
+    if (code !== 0) process.exitCode = code;
     return;
   }
 

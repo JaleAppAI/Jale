@@ -31,13 +31,7 @@ vi.mock('@/i18n/navigation', () => ({
   usePathname: () => '/worker/home',
 }));
 
-/**
- * Mutable, because an id-token ROTATION is a real event on this page: the
- * silent 401 refresh in `apiFetch` hands the context a new token, `idToken` is
- * the applications effect's only dep, and the effect therefore re-runs and
- * refetches. A constant token can never exercise that second run, which is
- * exactly where the dismissed-notice bug lived.
- */
+/** The page still reads the id token for the hire receipts it writes. */
 const authToken = { current: 'test-token' };
 vi.mock('@/contexts/AuthContext', () => ({
   useAuth: () => ({ idToken: authToken.current }),
@@ -64,14 +58,12 @@ vi.mock('@/lib/api', async (importOriginal) => ({
 }));
 
 const getApplications = vi.fn();
-const getApplicationsAttention = vi.fn();
 const acknowledgeHire = vi.fn();
 vi.mock('@/lib/api/worker', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api/worker')>()),
   getJobs: vi.fn().mockResolvedValue({ jobs: [], other_jobs: [] }),
   updateWorkerProfile: vi.fn(),
   getApplications: (...args: unknown[]) => getApplications(...args),
-  getApplicationsAttention: (...args: unknown[]) => getApplicationsAttention(...args),
   acknowledgeHire: (...args: unknown[]) => acknowledgeHire(...args),
 }));
 
@@ -90,6 +82,43 @@ vi.mock('@/hooks/usePageData', () => ({
     setData: vi.fn(),
   }),
 }));
+
+import type { ErrorKind } from '@/lib/api/errors';
+
+type AttentionState = {
+  attention: ReturnType<typeof attentionFor> | null;
+  count: number;
+  loading: boolean;
+  errorKind: ErrorKind | null;
+  refresh: () => Promise<void>;
+  forgetHire: (applicationId: string) => void;
+};
+
+const forgetHire = vi.fn();
+/** What the session-wide attention context is serving; each test sets it. */
+const attentionState: { current: AttentionState } = {
+  current: { attention: null, count: 0, loading: true, errorKind: null, refresh: async () => {}, forgetHire },
+};
+vi.mock('@/contexts/WorkerAttentionContext', () => ({
+  useWorkerAttention: () => attentionState.current,
+}));
+
+function loadingAttention(): AttentionState {
+  return { attention: null, count: 0, loading: true, errorKind: null, refresh: async () => {}, forgetHire };
+}
+function readyAttention(attention: ReturnType<typeof attentionFor>): AttentionState {
+  return {
+    attention,
+    count: attention.details_requested.length + attention.unacknowledged_hires.length,
+    loading: false,
+    errorKind: null,
+    refresh: async () => {},
+    forgetHire,
+  };
+}
+function failedAttention(kind: ErrorKind = 'offline'): AttentionState {
+  return { attention: null, count: 0, loading: false, errorKind: kind, refresh: async () => {}, forgetHire };
+}
 
 import { interpolate, message, renderIntl } from '@/components/worker/onboarding/__tests__/render-intl';
 import WorkerHomePage from '../page';
@@ -121,6 +150,9 @@ function hire(overrides: Partial<ApplicationHire> = {}): ApplicationHire {
     // shape.
     trade: { category: 'electrician', other: null, canonical_en: null, canonical_es: null },
     company: DEFAULT_COMPANY,
+    // K4.2: no start details from the employer yet.
+    details: null,
+    employer_reminded_at: null,
     ...overrides,
   };
 }
@@ -194,12 +226,13 @@ function attentionFor(applications: Application[]) {
 }
 
 function seed(applications: Application[]) {
-  getApplicationsAttention.mockResolvedValue(attentionFor(applications));
+  attentionState.current = readyAttention(attentionFor(applications));
 }
 
 beforeEach(() => {
   getApplications.mockReset();
-  getApplicationsAttention.mockReset();
+  attentionState.current = loadingAttention();
+  forgetHire.mockReset();
   acknowledgeHire.mockReset();
   acknowledgeHire.mockResolvedValue({ seen_at: null, acknowledged_at: null });
   authToken.current = 'test-token';
@@ -210,7 +243,7 @@ describe('worker home -- the hire celebration', () => {
     // The row is application 137. Nothing this page fetches contains it, and
     // before the summary existed the celebration was computed from the rows
     // the page happened to hold -- so the worker was simply never told.
-    getApplicationsAttention.mockResolvedValue({
+    attentionState.current = readyAttention({
       details_requested: [],
       unacknowledged_hires: [{
         application_id: 'app-137',
@@ -268,6 +301,8 @@ describe('worker home -- the hire celebration', () => {
 
     expect(acknowledgeHire).toHaveBeenCalledWith('test-token', APPLICATION_ID, 'dismissed');
     expect(screen.queryByText(BANNER_TITLE)).not.toBeInTheDocument();
+    // The nav badge drops in the same frame.
+    expect(forgetHire).toHaveBeenCalledWith(APPLICATION_ID);
   });
 
   it('walks the whole arc in one visit: modal -> banner -> gone', async () => {
@@ -296,7 +331,7 @@ describe('worker home -- the hire celebration', () => {
     })]);
     renderIntl(<WorkerHomePage />);
 
-    await waitFor(() => expect(getApplicationsAttention).toHaveBeenCalled());
+    await screen.findByRole('searchbox');
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(screen.queryByText(BANNER_TITLE)).not.toBeInTheDocument();
   });
@@ -307,7 +342,7 @@ describe('worker home -- the hire celebration', () => {
     seed([application({ status: 'talking' })]);
     renderIntl(<WorkerHomePage />);
 
-    await waitFor(() => expect(getApplicationsAttention).toHaveBeenCalled());
+    await screen.findByRole('searchbox');
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(screen.queryByText(BANNER_TITLE)).not.toBeInTheDocument();
   });
@@ -317,7 +352,7 @@ describe('worker home -- the hire celebration', () => {
     seed([application({ hire: undefined })]);
     renderIntl(<WorkerHomePage />);
 
-    await waitFor(() => expect(getApplicationsAttention).toHaveBeenCalled());
+    await screen.findByRole('searchbox');
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(screen.queryByText(BANNER_TITLE)).not.toBeInTheDocument();
   });
@@ -367,10 +402,10 @@ describe('worker home -- the hire celebration', () => {
   });
 
   it('survives the applications call failing -- the job feed is not taken with it', async () => {
-    getApplicationsAttention.mockRejectedValue(new Error('offline'));
+    attentionState.current = failedAttention();
     renderIntl(<WorkerHomePage />);
 
-    await waitFor(() => expect(getApplicationsAttention).toHaveBeenCalled());
+    await screen.findByRole('searchbox');
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     // The page itself still rendered.
     expect(screen.getByRole('searchbox')).toBeInTheDocument();
@@ -435,24 +470,49 @@ describe('worker home -- the hire celebration', () => {
   });
 
   it('does not open the modal over a worker who is already typing; the banner still shows', async () => {
-    let resolveApplications!: (value: ReturnType<typeof attentionFor>) => void;
-    getApplicationsAttention.mockReturnValue(new Promise((resolve) => { resolveApplications = resolve; }));
-    renderIntl(<WorkerHomePage />);
+    attentionState.current = loadingAttention();
+    const { rerender } = renderIntl(<WorkerHomePage />);
 
-    // The worker reaches a text box before the applications call lands.
     const box = document.createElement('input');
     document.body.appendChild(box);
     box.focus();
     expect(document.activeElement).toBe(box);
 
-    resolveApplications(attentionFor([application()]));
+    attentionState.current = readyAttention(attentionFor([application()]));
+    rerender(<WorkerHomePage />);
 
     await waitFor(() => expect(screen.getByText(BANNER_TITLE)).toBeInTheDocument());
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(document.activeElement).toBe(box);
-    // Not "seen": the modal is owed on the next visit.
     expect(acknowledgeHire).not.toHaveBeenCalled();
     box.remove();
+  });
+
+  it('a hire that arrives on a later refresh while the worker is typing gets the banner, not the modal', async () => {
+    seed([]);
+    const { rerender } = renderIntl(<WorkerHomePage />);
+    await screen.findByRole('searchbox');
+    const box = document.createElement('input');
+    document.body.appendChild(box);
+    box.focus();
+
+    seed([application()]);
+    rerender(<WorkerHomePage />);
+
+    await waitFor(() => expect(screen.getByText(BANNER_TITLE)).toBeInTheDocument());
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    box.remove();
+  });
+
+  it('a hire that arrives on a later refresh while the worker is not typing is celebrated', async () => {
+    seed([]);
+    const { rerender } = renderIntl(<WorkerHomePage />);
+    await screen.findByRole('searchbox');
+
+    seed([application()]);
+    rerender(<WorkerHomePage />);
+
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
   });
 });
 
@@ -472,14 +532,14 @@ describe('worker home -- the hire celebration', () => {
  */
 describe('worker home -- a failed applications fetch is visible', () => {
   it('says so when the call fails', async () => {
-    getApplicationsAttention.mockRejectedValue(new Error('offline'));
+    attentionState.current = failedAttention();
     renderIntl(<WorkerHomePage />);
 
     expect(await screen.findByText(message('worker_home.applications_error'))).toBeInTheDocument();
   });
 
   it('says it in Spanish too', async () => {
-    getApplicationsAttention.mockRejectedValue(new Error('offline'));
+    attentionState.current = failedAttention();
     renderIntl(<WorkerHomePage />, 'es');
 
     expect(await screen.findByText(message('worker_home.applications_error', 'es')))
@@ -487,28 +547,12 @@ describe('worker home -- a failed applications fetch is visible', () => {
   });
 
   it('can be dismissed', async () => {
-    getApplicationsAttention.mockRejectedValue(new Error('offline'));
+    attentionState.current = failedAttention();
     renderIntl(<WorkerHomePage />);
     await screen.findByText(message('worker_home.applications_error'));
 
     fireEvent.click(screen.getByRole('button', { name: message('common.feedback.dismiss') }));
 
-    expect(screen.queryByText(message('worker_home.applications_error'))).not.toBeInTheDocument();
-  });
-
-  it('stays quiet about a request the page itself aborted', async () => {
-    // The effect aborts on unmount and on an id-token rotation. That is this
-    // page cancelling its own work, not a failure, and a notice about it would
-    // be a lie told to a worker whose applications loaded fine.
-    //
-    // A real `DOMException`, which is what a fetch abort actually rejects
-    // with -- not an `Error` with its `name` reassigned. The two are only
-    // interchangeable if the guard happens to accept both, which is the thing
-    // under test.
-    getApplicationsAttention.mockRejectedValue(new DOMException('The operation was aborted.', 'AbortError'));
-    renderIntl(<WorkerHomePage />);
-
-    await waitFor(() => expect(getApplicationsAttention).toHaveBeenCalled());
     expect(screen.queryByText(message('worker_home.applications_error'))).not.toBeInTheDocument();
   });
 
@@ -516,46 +560,35 @@ describe('worker home -- a failed applications fetch is visible', () => {
     seed([]);
     renderIntl(<WorkerHomePage />);
 
-    await waitFor(() => expect(getApplicationsAttention).toHaveBeenCalled());
+    await screen.findByRole('searchbox');
     expect(screen.queryByText(message('worker_home.applications_error'))).not.toBeInTheDocument();
   });
 
   /*
    * A dismissal is about a CONFIRMED failure, so the reset that re-arms it has
-   * to travel with the next confirmed failure -- not with the next attempt.
-   *
-   * The two are easy to confuse and the difference is visible: `idToken` is
-   * this effect's only dep, `apiFetch`'s silent 401 refresh rotates it, and
-   * nothing about that rotation is a worker action. Re-arming on the attempt
-   * edge therefore put a notice the worker had already waved away back on
-   * screen the instant an unrelated token refresh fired -- while the new
-   * request was still in flight, on no evidence at all -- and then flashed it
-   * off again a moment later if that request succeeded.
+   * to travel with the next confirmed failure -- not with every render. The
+   * attention context re-renders this page on its own cadence (polls, token
+   * refreshes), and none of that is a worker action: the same failure showing
+   * up again must not put back a notice the worker already waved away.
    */
-  it('does not resurrect a dismissed notice when the id token rotates', async () => {
-    getApplicationsAttention.mockRejectedValue(new Error('offline'));
+  it('does not resurrect a dismissed notice when the same failure renders again, and a success clears it', async () => {
+    attentionState.current = failedAttention();
     const { rerender } = renderIntl(<WorkerHomePage />);
     await screen.findByText(message('worker_home.applications_error'));
 
     fireEvent.click(screen.getByRole('button', { name: message('common.feedback.dismiss') }));
     expect(screen.queryByText(message('worker_home.applications_error'))).not.toBeInTheDocument();
 
-    // The refresh rotates the token and the effect refetches. Held pending on
-    // purpose: this is the window in which the old code re-showed the notice.
-    let resolveRetry!: (value: ReturnType<typeof attentionFor>) => void;
-    getApplicationsAttention.mockReturnValue(new Promise((resolve) => { resolveRetry = resolve; }));
-    authToken.current = 'rotated-token';
+    // A re-render with the SAME failure (an unrelated token refresh, a parent
+    // update) is not a new failure.
+    attentionState.current = failedAttention();
     rerender(<WorkerHomePage />);
-
-    await waitFor(() => expect(getApplicationsAttention).toHaveBeenCalledTimes(2));
-    // What this line is about is the ROTATED token being used.
-    expect(getApplicationsAttention).toHaveBeenLastCalledWith('rotated-token', expect.anything());
     expect(screen.queryByText(message('worker_home.applications_error'))).not.toBeInTheDocument();
 
-    // ...and the retry SUCCEEDS. The details banner arriving proves the
-    // success path ran, so the absent notice below is a real observation
-    // rather than an assertion made before anything happened.
-    resolveRetry(attentionFor([application({
+    // The context's retry succeeds.
+    attentionState.current = loadingAttention();
+    rerender(<WorkerHomePage />);
+    seed([application({
       application_id: 'app-details',
       job_id: 'job-2',
       job_title: 'Finish Carpenter',
@@ -563,7 +596,8 @@ describe('worker home -- a failed applications fetch is visible', () => {
       status: 'details_requested',
       details_status: 'requested',
       hire: undefined,
-    })]));
+    })]);
+    rerender(<WorkerHomePage />);
 
     await waitFor(() => expect(screen.getByText(interpolate(
       message('worker_applications.details_banner.row_body'),
@@ -572,21 +606,17 @@ describe('worker home -- a failed applications fetch is visible', () => {
     expect(screen.queryByText(message('worker_home.applications_error'))).not.toBeInTheDocument();
   });
 
-  it('speaks up again when the retry fails too', async () => {
-    // The other side of the same rule: re-arming on a confirmed failure must
-    // still re-arm. A dismissal is not a standing agreement never to hear
-    // about the next one.
-    getApplicationsAttention.mockRejectedValue(new Error('offline'));
+  it('speaks up again when a later load fails too', async () => {
+    attentionState.current = failedAttention();
     const { rerender } = renderIntl(<WorkerHomePage />);
     await screen.findByText(message('worker_home.applications_error'));
-
     fireEvent.click(screen.getByRole('button', { name: message('common.feedback.dismiss') }));
-    expect(screen.queryByText(message('worker_home.applications_error'))).not.toBeInTheDocument();
 
-    authToken.current = 'rotated-token';
+    attentionState.current = loadingAttention();
+    rerender(<WorkerHomePage />);
+    attentionState.current = failedAttention();
     rerender(<WorkerHomePage />);
 
-    expect(await screen.findByText(message('worker_home.applications_error')))
-      .toBeInTheDocument();
+    expect(await screen.findByText(message('worker_home.applications_error'))).toBeInTheDocument();
   });
 });

@@ -3,6 +3,7 @@ import { Client } from 'pg';
 import type { PoolClient } from 'pg';
 
 import {
+  releaseFillLaneForApplication,
   releasePromptLaneForApplication,
   releaseWhatsAppLanesForApplication,
 } from '../../../lambda/lib/application-web-completion';
@@ -62,6 +63,12 @@ import { _clearCategoryRenderersForTests } from '../../../lambda/whatsapp/lib/wo
  *   another suite left behind (the reason the 093 entry runs last in
  *   `run-whatsapp-v2-db-tests.sh`). The outbox row itself is asserted instead.
  *
+ * SPRINT 28
+ *   Outside the 24h window the line is no longer skipped: cases (c) and (d)
+ *   now assert the `application_web_completed_<lang>` TEMPLATE row (F28).
+ *   Case (i) covers the first-web-write release and the marker it leaves,
+ *   which the completion release still finds (F29).
+ *
  * CONNECTION
  *   `JALE_TEST_DATABASE_URL` must be a SUPERUSER connection string for a
  *   disposable PostgreSQL 16 database with 001-095 applied (see
@@ -116,12 +123,21 @@ maybeDescribe('web completion releases the WhatsApp lanes', () => {
   const promptOnly = mkCase(5);
   // (f) the savepoint: a real 42501 must leave the transaction usable.
   const denied = mkCase(6);
+  // (i) sprint 28 F29: the first web write stands the bot down, the web
+  //     completes later, and the closing line still goes out.
+  const takenOver = mkCase(7);
+  // (j) two web applications on one conversation, plus a third the bot is
+  //     still collecting: each application keeps its own marker.
+  const twoApps = mkCase(8);
+  const secondApp = { applicationId: randomUUID(), jobId: randomUUID() };
+  const botApp = { applicationId: randomUUID(), jobId: randomUUID() };
 
-  const cases = [fresh, bystander, stale, bumped, promptOnly, denied];
+  const cases = [fresh, bystander, stale, bumped, promptOnly, denied, takenOver, twoApps];
   const workerIds = cases.map((c) => c.workerId);
   const conversationIds = cases.map((c) => c.conversationId);
-  const applicationIds = cases.map((c) => c.applicationId);
-  const jobIds = cases.map((c) => c.jobId);
+  const applicationIds = [...cases.map((c) => c.applicationId), secondApp.applicationId, botApp.applicationId];
+  const jobIds = [...cases.map((c) => c.jobId), secondApp.jobId, botApp.jobId];
+  const applicationWorkerIds = [...workerIds, twoApps.workerId, twoApps.workerId];
 
   /**
    * The session shape `api/worker-application-details.ts` produces: role
@@ -167,6 +183,19 @@ maybeDescribe('web completion releases the WhatsApp lanes', () => {
     return res.rows[0];
   }
 
+  /** Whether any key or value of the row's state_context names the application. */
+  async function namesApplication(conversationId: string, applicationId: string): Promise<boolean> {
+    const res = await setup.query<{ named: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM jsonb_each_text(COALESCE(state_context, '{}'::jsonb)) e
+          WHERE strpos(e.key, $2) > 0 OR e.value = $2
+       ) AS named
+         FROM whatsapp_conversations WHERE id = $1`,
+      [conversationId, applicationId],
+    );
+    return res.rows[0].named;
+  }
+
   async function readOutbox(applicationId: string) {
     const res = await setup.query(
       `SELECT o.whatsapp_number, o.body, o.content_template, o.content_variables,
@@ -208,7 +237,7 @@ maybeDescribe('web completion releases the WhatsApp lanes', () => {
       `INSERT INTO job_applications (id, job_id, worker_id, status)
        SELECT id, job_id, worker_id, 'details_requested'
          FROM unnest($1::uuid[], $2::uuid[], $3::uuid[]) AS t(id, job_id, worker_id)`,
-      [applicationIds, jobIds, workerIds],
+      [applicationIds, jobIds, applicationWorkerIds],
     );
     await setup.query(
       `INSERT INTO worker_onboarding_state (user_id, lifecycle)
@@ -239,6 +268,8 @@ maybeDescribe('web completion releases the WhatsApp lanes', () => {
       [bumped, '30 hours'],
       [promptOnly, '1 hour'],
       [denied, '1 hour'],
+      [takenOver, '1 hour'],
+      [twoApps, '1 hour'],
     ];
     for (const [c, ago] of inbound) {
       await setup.query(
@@ -347,9 +378,13 @@ maybeDescribe('web completion releases the WhatsApp lanes', () => {
     // projects `body` for it to use.
     expect(rows[0].content_template).toBeNull();
     expect(rows[0].content_variables).toBeNull();
-    expect(rows[0].body).toBe(
-      'Completaste tu solicitud para Concrete Finisher en la web. Te avisamos por aqui cuando el empleador responda.',
-    );
+    // The same words the template carries outside the window (D-W7). The
+    // fixture job states no trade, so it is named by its title.
+    expect(rows[0].body).toMatch(new RegExp(
+      '^Completaste tu solicitud para el trabajo de Concrete Finisher en la web\\. '
+      + `Revisa su estado en https://[^ ]+/es/worker/applications/${fresh.applicationId} `
+      + 'y te avisamos por aqu\u00ed cuando el empleador responda\\.$',
+    ));
   });
 
   it("(b) leaves another worker's identically armed row untouched", async () => {
@@ -362,7 +397,7 @@ maybeDescribe('web completion releases the WhatsApp lanes', () => {
     expect(keys.has_pending).toBe(true);
   });
 
-  it('(c) scrubs but sends nothing when the last inbound message is 30h old', async () => {
+  it('(c) scrubs and queues the template, not a free-form body, when the last inbound message is 30h old', async () => {
     const client = await openWorkerDoor(stale.workerId);
     let result;
     try {
@@ -377,12 +412,26 @@ maybeDescribe('web completion releases the WhatsApp lanes', () => {
       await client.end();
     }
 
-    expect(result).toEqual({ armed: true, scrubbed: 1, closingLineQueued: false });
+    expect(result).toEqual({ armed: true, scrubbed: 1, closingLineQueued: true });
     expect((await readArmKeys(stale.conversationId)).has_fill).toBe(false);
-    // A free-form body outside the window is a Twilio 63016, and because this
-    // send carries no content template `isTemplatePendingRejection` is false
-    // for it -- the row would burn five attempts as an ordinary failure.
-    expect(await readOutbox(stale.applicationId)).toHaveLength(0);
+    // A free-form body outside the window is a Twilio 63016 that burns five
+    // attempts. Sprint 28 (F28) sends the template instead: the sender uses
+    // its ContentSid once mapped, and until then the 63016 on the fallback is
+    // parked by `isTemplatePendingRejection` (the `application_` prefix).
+    const rows = await readOutbox(stale.applicationId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      intent_status: 'eligible',
+      source_type: 'worker_intent',
+      status: 'pending',
+      whatsapp_number: stale.number,
+      content_template: 'application_web_completed_es',
+    });
+    expect(rows[0].body).toBeNull();
+    // The fixture job states no trade, so the template names it by title.
+    expect(rows[0].content_variables['1']).toBe('Concrete Finisher');
+    expect(rows[0].content_variables['2']).toMatch(new RegExp(`^https://[^/]+/es/worker/applications/${stale.applicationId}$`));
+    expect(rows[0].content_variables.__fallback_body).toContain('Completaste tu solicitud para el trabajo de Concrete Finisher');
   });
 
   it('(d) ignores a freshened conversation updated_at when the inbound clock is stale', async () => {
@@ -395,7 +444,7 @@ maybeDescribe('web completion releases the WhatsApp lanes', () => {
       [bumped.conversationId],
     );
     // The fixture really is the ambiguous shape: a mock keyed on `updated_at`
-    // would send here, and the send would fail 63016.
+    // would send the free-form line here, and the send would fail 63016.
     expect(before.rows[0]).toEqual({ updated_recent: true, inbound_stale: true });
 
     const client = await openWorkerDoor(bumped.workerId);
@@ -412,8 +461,12 @@ maybeDescribe('web completion releases the WhatsApp lanes', () => {
       await client.end();
     }
 
-    expect(result.closingLineQueued).toBe(false);
-    expect(await readOutbox(bumped.applicationId)).toHaveLength(0);
+    // The inbound clock alone decides: the template, never the free-form body.
+    expect(result.closingLineQueued).toBe(true);
+    const rows = await readOutbox(bumped.applicationId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].content_template).toBe('application_web_completed_es');
+    expect(rows[0].body).toBeNull();
   });
 
   it('(e) the prompt-lane release clears only the prompt keys and sends nothing', async () => {
@@ -526,6 +579,105 @@ maybeDescribe('web completion releases the WhatsApp lanes', () => {
     const rows = await readOutbox(fresh.applicationId);
     expect(rows).toHaveLength(1);
     expect(rows[0].dedupe_key).toBe(`application-web-completion:${fresh.applicationId}`);
+  });
+
+  it('(i) the first web write clears the arm and marks the row; the later web completion still finds it and sends one line', async () => {
+    const first = await openWorkerDoor(takenOver.workerId);
+    let released;
+    try {
+      released = await releaseFillLaneForApplication(first as unknown as PoolClient, {
+        workerId: takenOver.workerId,
+        applicationId: takenOver.applicationId,
+      });
+      await first.query('COMMIT');
+    } finally {
+      await first.end();
+    }
+
+    expect(released).toEqual({ armed: true, scrubbed: 1, closingLineQueued: false });
+    const keys = await readArmKeys(takenOver.conversationId);
+    expect(keys).toMatchObject({ has_fill: false, has_prompt: false, has_pending: false, has_menu: false, kept: 'es' });
+    expect(await namesApplication(takenOver.conversationId, takenOver.applicationId)).toBe(true);
+    expect(await readOutbox(takenOver.applicationId)).toHaveLength(0);
+
+    const done = await openWorkerDoor(takenOver.workerId);
+    let completed;
+    try {
+      completed = await releaseWhatsAppLanesForApplication(done as unknown as PoolClient, {
+        workerId: takenOver.workerId,
+        applicationId: takenOver.applicationId,
+        jobTitle: 'Concrete Finisher',
+        lang: 'es',
+      });
+      await done.query('COMMIT');
+    } finally {
+      await done.end();
+    }
+
+    expect(completed).toEqual({ armed: true, scrubbed: 1, closingLineQueued: true });
+    expect(await namesApplication(takenOver.conversationId, takenOver.applicationId)).toBe(false);
+    expect((await readArmKeys(takenOver.conversationId)).kept).toBe('es');
+    expect(await readOutbox(takenOver.applicationId)).toHaveLength(1);
+  });
+
+  it('(j) two applications released to the web keep separate markers, and finishing one leaves the other and the bot arm alone', async () => {
+    const A = twoApps.applicationId;
+    const B = secondApp.applicationId;
+    const C = botApp.applicationId;
+    const asWorker = async <T>(run: (client: PoolClient) => Promise<T>): Promise<T> => {
+      const client = await openWorkerDoor(twoApps.workerId);
+      try {
+        const result = await run(client as unknown as PoolClient);
+        await client.query('COMMIT');
+        return result;
+      } finally {
+        await client.end();
+      }
+    };
+    /** The bot arming a new application on the same row (armFill's keys). */
+    const botArms = async (applicationId: string, pending: string) => {
+      await setup.query(
+        `UPDATE whatsapp_conversations
+            SET state_context = state_context || jsonb_build_object('fill_application_id', $2::text, 'fill_pending', $3::text)
+          WHERE id = $1`,
+        [twoApps.conversationId, applicationId, pending],
+      );
+    };
+
+    // A goes to the web first, then the bot arms B and B goes to the web too.
+    expect(await asWorker((c) => releaseFillLaneForApplication(c, { workerId: twoApps.workerId, applicationId: A })))
+      .toMatchObject({ armed: true, scrubbed: 1 });
+    await botArms(B, 'work_authorization');
+    expect(await asWorker((c) => releaseFillLaneForApplication(c, { workerId: twoApps.workerId, applicationId: B })))
+      .toMatchObject({ armed: true, scrubbed: 1 });
+    expect(await namesApplication(twoApps.conversationId, A)).toBe(true);
+    expect(await namesApplication(twoApps.conversationId, B)).toBe(true);
+
+    // The worker starts C on WhatsApp; the bot is collecting it.
+    await botArms(C, 'certifications');
+
+    // Finishing A on the web: A's line, and C's arm untouched.
+    expect(await asWorker((c) => releaseWhatsAppLanesForApplication(c, {
+      workerId: twoApps.workerId, applicationId: A, jobTitle: 'Concrete Finisher', lang: 'es',
+    }))).toEqual({ armed: true, scrubbed: 1, closingLineQueued: true });
+    expect(await namesApplication(twoApps.conversationId, A)).toBe(false);
+    expect(await namesApplication(twoApps.conversationId, B)).toBe(true);
+    const armC = await setup.query<{ fill: string | null; pending: string | null }>(
+      `SELECT state_context->>'fill_application_id' AS fill, state_context->>'fill_pending' AS pending
+         FROM whatsapp_conversations WHERE id = $1`,
+      [twoApps.conversationId],
+    );
+    expect(armC.rows[0]).toEqual({ fill: C, pending: 'certifications' });
+
+    // Finishing B on the web: B's line too.
+    expect(await asWorker((c) => releaseWhatsAppLanesForApplication(c, {
+      workerId: twoApps.workerId, applicationId: B, jobTitle: 'Concrete Finisher', lang: 'es',
+    }))).toEqual({ armed: true, scrubbed: 1, closingLineQueued: true });
+    expect(await namesApplication(twoApps.conversationId, B)).toBe(false);
+    expect((await readArmKeys(twoApps.conversationId)).has_fill).toBe(true);
+    expect(await readOutbox(A)).toHaveLength(1);
+    expect(await readOutbox(B)).toHaveLength(1);
+    expect(await readOutbox(C)).toHaveLength(0);
   });
 
   it('exports key sets that actually cover the guards the bot reads', () => {

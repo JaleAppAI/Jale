@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { Button } from '@/components/ui/button';
 
 type CopyState = 'idle' | 'copied' | 'failed';
 
@@ -35,16 +36,11 @@ export function CopyButton({ value, label, accessibleLabel }: CopyButtonProps) {
   }
 
   return (
-    <span className="copy-control">
-      <button
-        aria-label={accessibleLabel}
-        className="button secondary copy-button"
-        onClick={() => { void copy(); }}
-        type="button"
-      >
+    <span className="inline-flex items-center">
+      <Button aria-label={accessibleLabel} onClick={() => { void copy(); }} size="sm" type="button" variant="outline">
         {state === 'copied' ? 'Copied' : state === 'failed' ? 'Copy failed' : label}
-      </button>
-      <span aria-live="polite" className="visually-hidden">
+      </Button>
+      <span aria-live="polite" className="sr-only">
         {state === 'copied' ? 'Copied to the clipboard.' : state === 'failed' ? 'Could not copy. Select the text and copy it by hand.' : ''}
       </span>
     </span>

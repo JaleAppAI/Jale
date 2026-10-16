@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { compileAdminSources } from './lib/check-harness.mjs';
+import { captureConsole, compileAdminSources } from './lib/check-harness.mjs';
 
 // Date helpers must print UTC whatever the host zone; CI runs in UTC, where a
 // helper that forgot timeZone: 'UTC' would still pass.
@@ -20,11 +20,14 @@ const { load } = compileAdminSources({
   fakes: {
     'src/lib/server/db.ts': 'scripts/fakes/db.mjs',
     '@aws-sdk/client-cloudwatch-logs': 'scripts/fakes/cloudwatch-logs.mjs',
+    '@aws-sdk/client-sqs': 'scripts/fakes/sqs.mjs',
+    '@aws-sdk/client-cloudwatch': 'scripts/fakes/cloudwatch.mjs',
   },
 });
 
 const analytics = await load('src/lib/server/admin-analytics.ts');
 const funnel = await load('src/lib/funnel.ts');
+const analyticsFormat = await load('src/lib/analytics-format.ts');
 const health = await load('src/lib/employer-health.ts');
 const ops = await load('src/lib/ops-health.ts');
 const restarts = await load('src/lib/restarts.ts');
@@ -62,6 +65,14 @@ assert.equal(ninety.bucket, 'week');
 // 89 days before now is Tue 2026-06-02; its ISO week starts Mon 2026-06-01.
 assert.equal(ninety.from.toISOString(), '2026-06-01T00:00:00.000Z', '90d starts at ISO-week boundary');
 assert.equal(ninety.from.getUTCDay(), 1, 'weekly buckets start on Monday');
+// K3.0: a number of weeks is this ISO week and the weeks - 1 before it.
+const eightWeeks = analytics.resolveRange(8, now);
+assert.equal(eightWeeks.bucket, 'week');
+assert.equal(eightWeeks.from.toISOString(), '2026-07-06T00:00:00.000Z', '8 weeks: this ISO week and the 7 before it');
+assert.equal(analytics.bucketStarts(eightWeeks.from, eightWeeks.bucket, now).length, 8, 'exactly 8 weekly buckets, the last one partial');
+const twentySixWeeks = analytics.resolveRange(26, now);
+assert.equal(twentySixWeeks.from.toISOString(), '2026-03-02T00:00:00.000Z');
+assert.equal(analytics.bucketStarts(twentySixWeeks.from, twentySixWeeks.bucket, now).length, 26);
 
 // ---- bucketStarts ----
 const dayStarts = analytics.bucketStarts(seven.from, 'day', now);
@@ -143,12 +154,13 @@ assert.equal(
 );
 
 // ---- 2a: onboarding funnel ----
-assert.equal(analytics.parseFunnelWeeks('4'), 4);
-assert.equal(analytics.parseFunnelWeeks('12'), 12);
+assert.equal(analytics.parseFunnelWeeks('13'), 13);
+assert.equal(analytics.parseFunnelWeeks('26'), 26);
 assert.equal(analytics.parseFunnelWeeks('8'), 8);
-assert.equal(analytics.parseFunnelWeeks('26'), 8, 'only 4/8/12 are offered');
+assert.equal(analytics.parseFunnelWeeks('4'), 8, 'only 8/13/26 are offered (K3.0); old 4/12 links fall back');
+assert.equal(analytics.parseFunnelWeeks('12'), 8);
 assert.equal(analytics.parseFunnelWeeks(undefined), 8);
-assert.equal(analytics.parseFunnelWeeks(['4']), 8, 'array (repeated param) falls back');
+assert.equal(analytics.parseFunnelWeeks(['13']), 8, 'array (repeated param) falls back');
 assert.equal(analytics.parseFunnelDoor('whatsapp'), 'whatsapp');
 assert.equal(analytics.parseFunnelDoor('web'), 'web');
 assert.equal(analytics.parseFunnelDoor('junk'), 'all');
@@ -243,8 +255,8 @@ assert.deepEqual(funnel.stalledForDoor(stalledRows, 'all'), [
 assert.deepEqual(funnel.stalledForDoor(stalledRows, 'web'), [{ stepKey: 'profile.location', label: 'Location', workers: 3 }]);
 
 assert.equal(funnel.shareShade(0, 0), undefined);
-assert.equal(funnel.shareShade(0, 10), 'rgba(1, 121, 255, 0.06)');
-assert.equal(funnel.shareShade(10, 10), 'rgba(1, 121, 255, 0.36)');
+assert.equal(funnel.shareShade(0, 10), 'color-mix(in srgb, var(--chart-1) 6%, transparent)', 'the cohort wash is a token, so it works in dark mode');
+assert.equal(funnel.shareShade(10, 10), 'color-mix(in srgb, var(--chart-1) 36%, transparent)');
 assert.equal(funnel.funnelsHref(8, 'all'), '/analytics/funnels?weeks=8');
 assert.equal(funnel.funnelsHref(4, 'web'), '/analytics/funnels?weeks=4&door=web');
 
@@ -814,13 +826,15 @@ assert.deepEqual(
   analytics.mapBillingInboxRow({ week_start: new Date(opsW1), event_type: 'invoice.payment_failed', received: '4', processed: '3', skipped: '0', failed: '1', retried: '2', payment_failed_invoices: '4' }),
   { weekStart: opsW1, eventType: 'invoice.payment_failed', received: 4, processed: 3, skipped: 0, failed: 1, retried: 2, paymentFailedInvoices: 4 },
 );
+// K3.1 #9 (CR-3): failed_last_24h is a pg BIGINT string, mapped like failed_now.
 assert.deepEqual(
-  analytics.mapBillingInboxNowRow({ stuck_received: '2', failed_now: '1', unresolved_older: '3', oldest_stuck_at: new Date('2026-10-08T14:48:00.000Z') }),
-  { stuckReceived: 2, failedNow: 1, unresolvedOlder: 3, oldestStuckAt: '2026-10-08T14:48:00.000Z' },
+  analytics.mapBillingInboxNowRow({ stuck_received: '2', failed_now: '1', failed_last_24h: '5', unresolved_older: '3', oldest_stuck_at: new Date('2026-10-08T14:48:00.000Z') }),
+  { stuckReceived: 2, failedNow: 1, failedLast24h: 5, unresolvedOlder: 3, oldestStuckAt: '2026-10-08T14:48:00.000Z' },
 );
-const opsInboxIdle = analytics.mapBillingInboxNowRow({ stuck_received: '0', failed_now: '0', unresolved_older: '0', oldest_stuck_at: null });
+const opsInboxIdle = analytics.mapBillingInboxNowRow({ stuck_received: '0', failed_now: '0', failed_last_24h: '0', unresolved_older: '0', oldest_stuck_at: null });
 assert.equal(opsInboxIdle.oldestStuckAt, null);
 assert.equal(opsInboxIdle.unresolvedOlder, 0);
+assert.equal(opsInboxIdle.failedLast24h, 0, 'a zero count is 0, never undefined');
 const opsBillingZero = { received: 0, processed: 0, skipped: 0, failed: 0, retried: 0, paymentFailedInvoices: 0 };
 const opsBilling = ops.splitBillingInbox([
   { ...opsBillingZero, weekStart: null, eventType: 'customer.created', received: 1, skipped: 1 },
@@ -844,7 +858,7 @@ assert.deepEqual(
   'skipped types only, most first, then by name',
 );
 assert.equal(ops.splitBillingInbox([]).window.received, 0);
-const opsInbox = { stuckReceived: 2, failedNow: 1, unresolvedOlder: 3, oldestStuckAt: '2026-10-08T14:48:00.000Z' };
+const opsInbox = { stuckReceived: 2, failedNow: 1, failedLast24h: 4, unresolvedOlder: 3, oldestStuckAt: '2026-10-08T14:48:00.000Z' };
 assert.equal(ops.billingStuck(opsInbox), 3, 'stuck + failed within the last hour; the older unresolved ones are not in the tile value');
 assert.equal(ops.billingStuckNote({ ...opsInbox, unresolvedOlder: 0 }, opsNow), 'oldest 12 min', 'something stuck, nothing dead-lettered');
 assert.equal(
@@ -1143,5 +1157,760 @@ assert.deepEqual(
 );
 assert.equal(digest.digestEmpty(dgSplit), false);
 assert.equal(digest.digestEmpty(digest.splitDigestSends([{ weekStart: rsW3, ...dgFig(0, 0, 0, 0, 0, 0) }, { weekStart: null, ...dgFig(0, 0, 0, 0, 0, 0) }])), true, 'nothing emailed: the empty state');
+
+// ==== S28 FE-4: view helpers for the K3.3 panels (FE-owned section) ====
+// Fixed clock: Wednesday 2026-10-14 12:00 UTC; the current week starts Monday 2026-10-12.
+const fe4Now = new Date('2026-10-14T12:00:00.000Z');
+const fe4W = ['2026-09-28T00:00:00.000Z', '2026-10-05T00:00:00.000Z', '2026-10-12T00:00:00.000Z'];
+
+// #14: starters, then steps in onboarding order; a branch step says so and is never a drop.
+const fe4Steps = funnel.onboardingStepStages({
+  started: 1000,
+  steps: [
+    { stepKey: 'identity.verify_otp', label: 'Phone code', order: 2, branch: false, reached: 700, ofStarted: 70, ofPrevious: 74.5 },
+    { stepKey: 'start.choose_language', label: 'Language', order: 1, branch: false, reached: 940, ofStarted: 94, ofPrevious: 94 },
+    { stepKey: 'profile.custom_trade', label: 'Custom trade', order: 3, branch: true, reached: 40, ofStarted: 4, ofPrevious: null },
+    { stepKey: 'profile.experience', label: 'Experience', order: 4, branch: false, reached: 650, ofStarted: 65, ofPrevious: null },
+  ],
+});
+assert.deepEqual(fe4Steps.map((s) => [s.label, s.count]), [
+  ['Started', 1000], ['Language', 940], ['Phone code', 700], ['Custom trade (some workers only)', 40], ['Experience', 650],
+]);
+assert.equal(funnel.onboardingCaption(fe4Steps), '1,000 workers started in the range. Biggest drop: Phone code (−24 points).', 'the custom-trade branch (−66) is not a drop');
+assert.equal(funnel.onboardingCaption([{ key: 'started', label: 'Started', count: 0 }]), '0 workers started in the range.');
+assert.equal(funnel.onboardingCaption([{ key: 'started', label: 'Started', count: 1 }, { key: 'a', label: 'A', count: 1 }]), '1 worker started in the range.', 'no drop: no claim');
+
+// #15
+const fe4Identity = {
+  challenges: 500, reachedCode: 480, verified: 320, lockedOnce: 12, expiredUnused: 0,
+  attempts: { zero: 300, one: 120, two: 50, threePlus: 30 },
+  medianMinutesToVerify: 4.2, p75MinutesToVerify: 120, timingsSince: '2026-10-05T00:00:00.000Z',
+};
+assert.deepEqual(funnel.identityStages(fe4Identity).map((s) => s.count), [500, 480, 320]);
+assert.deepEqual(funnel.identityAttemptValues(fe4Identity), [300, 120, 50, 30]);
+assert.deepEqual(funnel.identityOutcomes(fe4Identity), [
+  { label: 'Locked at least once', value: '12 · 2%' },
+  { label: 'Expired unused', value: '0 · 0%' },
+]);
+assert.equal(funnel.identityTimingText(fe4Identity), 'Median 4 min to verify · 75% within 2.0 h · timings since Oct 5');
+assert.equal(funnel.identityTimingText({ ...fe4Identity, medianMinutesToVerify: null }), 'No verification timings in these weeks.');
+
+// #12: the WhatsApp door's cohort funnel, whatever door the page shows.
+const fe4Cohorts = [
+  { cohortWeek: fe4W[2], door: 'whatsapp', started: 10, codeRequested: 9, verified: 7, acceptedTerms: 6, finishedProfile: 5, ready: 4, declined: 0, inProgress: 1, abandoned: 0 },
+  { cohortWeek: fe4W[2], door: 'web', started: 99, codeRequested: 99, verified: 99, acceptedTerms: 99, finishedProfile: 99, ready: 99, declined: 0, inProgress: 0, abandoned: 0 },
+];
+assert.deepEqual(funnel.whatsappStages(fe4Cohorts, 8, fe4Now).map((s) => [s.label, s.count]), [
+  ['Started', 10], ['Requested a code', 9], ['Verified', 7], ['Accepted terms', 6], ['Finished profile', 5], ['Ready', 4],
+]);
+
+// #21
+const fe4Ref = [
+  { weekStart: fe4W[1], partial: false, opens: 50, applyIntents: 20, claims: 10, applications: 6, hires: 1 },
+  { weekStart: fe4W[2], partial: true, opens: 19, applyIntents: 5, claims: 2, applications: 1, hires: 0 },
+];
+assert.deepEqual(funnel.referralStages(fe4Ref).map((s) => s.count), [69, 25, 12, 7, 1]);
+assert.deepEqual(funnel.referralStages([]).map((s) => s.count), [0, 0, 0, 0, 0]);
+assert.equal(funnel.referralNote(null), `Kept as daily snapshots, so history survives link expiry. Snapshots start with ${analyticsFormat.ANALYTICS_RELEASE_LABEL}.`);
+assert.equal(funnel.referralNote(fe4W[0]), 'Kept as daily snapshots, so history survives link expiry. Snapshots since Sep 28.');
+
+// #17: public opens have history; signed-in views only once collecting.
+const fe4Views = [
+  { weekStart: fe4W[2], partial: true, publicOpens: 0, publicApplications: 0, workerViews: 3, workerViewApplications: 1 },
+  { weekStart: fe4W[1], partial: false, publicOpens: 200, publicApplications: 1, workerViews: 0, workerViewApplications: 0 },
+];
+const fe4ViewChart = funnel.jobViewChart({ weeks: fe4Views, collectingSince: null });
+assert.deepEqual(fe4ViewChart.labels, ['Oct 5', 'Oct 12'], 'oldest first');
+assert.equal(fe4ViewChart.partialLast, true);
+assert.deepEqual(fe4ViewChart.series[0].values, [0.5, null], 'no public opens: a gap, never 0%');
+assert.deepEqual(fe4ViewChart.series[1].values, [null, null], 'signed-in views are not shown before they are collected');
+assert.equal(fe4ViewChart.empty, false);
+assert.deepEqual(funnel.jobViewChart({ weeks: fe4Views, collectingSince: fe4W[2] }).series[1].values, [null, 33.3]);
+assert.equal(funnel.jobViewChart({ weeks: [], collectingSince: null }).empty, true, 'nothing at all: the collecting-since panel');
+
+// #20
+const fe4Match = funnel.matchChart({
+  weeks: [
+    { weekStart: fe4W[2], partial: true, channel: 'whatsapp', shown: 10, appliedWithin7d: 0 },
+    { weekStart: fe4W[1], partial: false, channel: 'web', shown: 3, appliedWithin7d: 1 },
+  ],
+  collectingSince: fe4W[1],
+});
+assert.deepEqual(fe4Match.labels, ['Oct 5', 'Oct 12']);
+assert.deepEqual(fe4Match.series.map((s) => s.values), [[33.3, null], [null, 0]]);
+assert.equal(fe4Match.partialLast, true);
+assert.equal(funnel.matchChart({ weeks: [], collectingSince: null }).empty, true);
+
+// #16: six sources, fixed order and colours.
+const fe4Acq = funnel.acquisitionChart({
+  weeks: [{ weekStart: fe4W[2], partial: true, total: 3, bySource: { shared_link: 1, campaign_tag: 0, referral: 2, direct: 0, whatsapp_entry: 0, unknown: 0 } }],
+  collectingSince: fe4W[2],
+});
+assert.deepEqual(fe4Acq.series.map((s) => [s.key, s.color, s.values[0]]), [
+  ['shared_link', 'chart-1', 1], ['campaign_tag', 'chart-2', 0], ['referral', 'chart-3', 2],
+  ['direct', 'chart-4', 0], ['whatsapp_entry', 'chart-5', 0], ['unknown', 'chart-6', 0],
+]);
+assert.equal(funnel.acquisitionChart({ weeks: [], collectingSince: null }).empty, true);
+
+// The cohort-table wash is a token mix now (no raw colour).
+assert.equal(funnel.shareShade(0, 0), undefined);
+assert.equal(funnel.shareShade(0, 10), 'color-mix(in srgb, var(--chart-1) 6%, transparent)');
+assert.equal(funnel.shareShade(10, 10), 'color-mix(in srgb, var(--chart-1) 36%, transparent)');
+assert.equal(funnel.funnelsHref(13, 'web'), '/analytics/funnels?weeks=13&door=web');
+
+// #2
+const fe4Paying = [
+  { weekStart: fe4W[2], partial: true, employers: 210, paying: 20, newPaying: 2, churned: 0 },
+  { weekStart: fe4W[1], partial: false, employers: 200, paying: 19, newPaying: 3, churned: 1 },
+];
+assert.deepEqual(health.payingChart({ weeks: fe4Paying, approximateBefore: null }), {
+  labels: ['Oct 5', 'Oct 12'], partialLast: true,
+  series: [{ key: 'newPaying', label: 'New paying employers', color: 'chart-1', values: [3, 2] }],
+});
+assert.deepEqual(health.payingHeadline(fe4Paying), { value: '10%', note: 'of employers are paying (20 of 210)' });
+assert.deepEqual(health.payingHeadline([]), { value: '—', note: 'of employers are paying' });
+assert.equal(health.approximateNote(null), null);
+assert.equal(health.approximateNote(fe4W[0]), 'Weeks before Sep 28 are approximate: subscription history starts then, so earlier churn is under-counted.');
+
+// #18, #3, #8, #4
+const fe4Tpl = health.templateReuseChart({ weeks: [{ weekStart: fe4W[2], partial: true, jobs: 0, fromTemplate: 0, employersUsingTemplates: 0, templatesSaved: 0 }], collectingSince: fe4W[2] });
+assert.deepEqual(fe4Tpl.series[0].values, [null], 'no jobs: no share');
+assert.equal(fe4Tpl.empty, false);
+assert.equal(health.templateReuseChart({ weeks: [], collectingSince: null }).empty, true);
+const fe4Weekly = [fe4W[2], fe4W[1]].map((weekStart, i) => ({
+  weekStart, applications: 0, answered: 0, answeredUntimed: 0, unanswered7d: 0, applicationsDue: 0,
+  firstResponseP50Hours: i === 0 ? null : 19.04, firstResponseP75Hours: null, workerTurns: 0, turnsUnanswered7d: 0, turnsDue: 0,
+  replyP50Hours: 2.5, replyP75Hours: null, hires: i + 1, hiresApproximate: 0, timeToHireP50Days: null, timeToHireP75Days: null,
+}));
+assert.deepEqual(health.hiresChart(fe4Weekly, fe4Now), {
+  labels: ['Oct 5', 'Oct 12'], partialLast: true, series: [{ key: 'hires', label: 'Hires', color: 'chart-1', values: [2, 1] }],
+});
+assert.deepEqual(health.responseChart(fe4Weekly, fe4Now).series.map((s) => s.values), [[19.04, null], [2.5, 2.5]], 'no median: a gap, never 0');
+assert.equal(health.staleNote(1), 'open job with no employer action');
+assert.equal(health.staleNote(6), 'open jobs with no employer action');
+assert.equal(health.employersHref(13), '/analytics/employers?weeks=13', 'the default stale window stays out of the link');
+assert.equal(health.employersHref(26, 30), '/analytics/employers?weeks=26&stale=30');
+
+// Ops: lanes keep one chart token each, in LANES order.
+assert.deepEqual(ops.LANES.map((lane) => ops.LANE_CHART_COLORS[lane.id]), ['chart-1', 'chart-2', 'chart-3', 'chart-4', 'chart-5', 'chart-6']);
+assert.equal(ops.wholePercent(1, 1000), '<1%', 'wholePercent is still exported from ops-health');
+
+// #6
+const fe4Ages = ops.caseAgeChart([
+  { label: '>3d', waitingOnUs: 1, waitingOnWorker: 2 },
+  { label: '<1h', waitingOnUs: 3, waitingOnWorker: 0 },
+]);
+assert.deepEqual(fe4Ages.labels, ['Under 1 hour', '1 to 4 hours', '4 to 24 hours', '1 to 3 days', 'Over 3 days']);
+assert.deepEqual(fe4Ages.series.map((s) => s.values), [[3, 0, 0, 0, 1], [0, 0, 0, 0, 2]], 'a missing bucket is an empty bucket');
+assert.equal(fe4Ages.total, 6);
+const fe4Res = ops.resolutionChart([
+  { weekStart: fe4W[2], partial: true, resolved: 0, medianHours: null, p75Hours: null },
+  { weekStart: fe4W[1], partial: false, resolved: 4, medianHours: 3.5, p75Hours: 9 },
+]);
+assert.deepEqual(fe4Res.series.map((s) => s.values), [[3.5, null], [9, null]]);
+assert.deepEqual(fe4Res.resolved, [4, 0]);
+assert.equal(fe4Res.partialLast, true);
+
+// #5
+const fe4Resets = ops.resetReasonChart([
+  { source: 'operator_reset', reasonLabel: 'Operator reset', count: 5 },
+  { source: 'lockout_reset', reasonLabel: 'Codes not arriving', count: 11 },
+  { source: 'lockout_reset', reasonLabel: 'Typo in details', count: 5 },
+]);
+assert.deepEqual(fe4Resets, { labels: ['Codes not arriving', 'Operator reset', 'Typo in details'], values: [11, 5, 5], total: 21 });
+assert.equal(ops.resetValueText(21)(11), '11 · 52%');
+assert.equal(ops.resetValueText(0)(0), '0 · —');
+
+// #10
+assert.equal(ops.extractionAxisMin([94, null, 80]), 80);
+assert.equal(ops.extractionAxisMin([94, 79.9]), 0, 'a week below 80% keeps the axis at 0');
+assert.equal(ops.extractionAxisMin([null]), 0);
+const fe4ZeroVoice = {
+  processed: 0, failed: 0, failedTranscribe: 0, failedEmptyTranscript: 0, failedAudioRead: 0, failedModelCall: 0,
+  failedBadJson: 0, failedBadShape: 0, failedPipelineError: 0, failedUnrecorded: 0, usable: 0, fullNameFound: 0,
+  cityFound: 0, mainTradeFound: 0, mainTradeOtherDue: 0, mainTradeOtherFound: 0, yearsExperienceFound: 0,
+  hasTransportationFound: 0, availabilityFound: 0,
+};
+const fe4Voice = { weekly: [{ ...fe4ZeroVoice, weekStart: fe4W[2], processed: 3, usable: 3 }], window: fe4ZeroVoice, models: [] };
+assert.deepEqual(ops.extractionChart(fe4Voice, fe4Now), { labels: ['Oct 12'], partialLast: true, values: [100], yMin: 80 });
+
+// Pipelines strip (#9, #11, #19)
+assert.deepEqual(ops.billingTile({ stuckReceived: 1, failedNow: 2, failedLast24h: 5, unresolvedOlder: 4, oldestStuckAt: null }), { value: '5', hint: '4 dead-lettered in the last 14 days' });
+const fe4Backlog = [{ lane: 'reply', openUnder1h: 2, open1To24h: 1, open24To48h: 0, stuck: 0, oldestStuckAt: null }];
+assert.deepEqual(
+  ops.queueTile(fe4Backlog, { queues: [{ label: 'WhatsApp inbound', visible: null, inFlight: null, unavailable: true }], totalVisible: null }),
+  { value: '3 · —', hint: "Dead-letter queues: Couldn't read right now" },
+  'an unreadable queue never reads as zero',
+);
+assert.deepEqual(
+  ops.queueTile(fe4Backlog, {
+    queues: [{ label: 'WhatsApp inbound', visible: 2, inFlight: 0, unavailable: false }, { label: 'Billing webhooks', visible: null, inFlight: null, unavailable: true }],
+    totalVisible: 2,
+  }).hint,
+  "Couldn't read right now: Billing webhooks",
+);
+assert.deepEqual(ops.queueTile([], { queues: [{ label: 'A', visible: 0, inFlight: 0, unavailable: false }], totalVisible: 0 }), { value: '0 · 0', hint: '1 dead-letter queue checked' });
+assert.deepEqual(
+  ops.rankingTile({ buckets: [], jobsOlderThan24h: 3, fallbackShare: 0.25, fallbackJobs: 1, rankedJobs: 4, jobsWithApplicationsButNoRanking: 2 }),
+  { value: '3 jobs', hint: 'of 4 ranked · 25% by the fallback · 2 with applicants but no ranking' },
+);
+assert.equal(ops.rankingTile({ buckets: [], jobsOlderThan24h: 1, fallbackShare: null, fallbackJobs: 0, rankedJobs: 0, jobsWithApplicationsButNoRanking: 0 }).value, '1 job');
+
+// #13
+assert.deepEqual(digest.digestHeadline({ employers: 280, digestOn: 34, digestOnWithEmail: 29 }), { value: '10%', note: 'of employers get the digest (29 of 280)' });
+assert.deepEqual(digest.digestHeadline({ employers: 0, digestOn: 0, digestOnWithEmail: 0 }).value, '—');
+const fe4Sends = digest.splitDigestSends([
+  { weekStart: fe4W[2], emailed: 1, sent: 1, failed: 0, unknown: 0, inProgress: 0, employersReached: 1 },
+  { weekStart: fe4W[1], emailed: 5, sent: 4, failed: 1, unknown: 0, inProgress: 0, employersReached: 3 },
+  { weekStart: null, emailed: 6, sent: 5, failed: 1, unknown: 0, inProgress: 0, employersReached: 3 },
+]);
+assert.deepEqual(digest.digestSendChart(fe4Sends, fe4Now), { labels: ['Oct 5', 'Oct 12'], partialLast: true, values: [4, 1] });
+
+// The FunnelWeeks-typed helpers take the K3.0 range (8 / 13 / 26 weeks).
+assert.equal(funnel.cohortWeekStarts(26, fe4Now).length, 26);
+assert.equal(funnel.cohortWeekStarts(13, fe4Now).at(-1), fe4W[2]);
+assert.equal(ops.opsHref(26), '/analytics/ops?weeks=26');
+assert.equal(restarts.restartWeeks([], 'all', 13, fe4Now).length, 13);
+// ==== end S28 FE-4 ====
+
+// ==== Sprint 28, BE-3a: loader and mapper sections (K3.3 / K3.4) ====
+
+// ---- #11 live dead-letter depth (getDlqDepth) ----
+// The queues come from ADMIN_DLQ_QUEUES (labels and URLs, set by AdminStack);
+// each is read in parallel with its own 1.5 s limit, and one failing queue is
+// unavailable on its own, never a thrown page.
+{
+  const check = (globalThis.__adminCheck ??= {});
+  const dlq = [
+    { label: 'WhatsApp inbound', url: 'https://sqs.example.test/queue-a' },
+    { label: 'Billing webhooks', url: 'https://sqs.example.test/queue-b' },
+    { label: 'Trust extraction', url: 'https://sqs.example.test/queue-c' },
+  ];
+  const ATTRIBUTES = ['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible'];
+  const answer = (visible, inFlight) => ({
+    Attributes: { ApproximateNumberOfMessages: String(visible), ApproximateNumberOfMessagesNotVisible: String(inFlight) },
+  });
+  process.env.ADMIN_DLQ_QUEUES = JSON.stringify(dlq);
+
+  // One queue refuses: that queue alone is unavailable; the total is unknown.
+  check.sqs = {
+    clients: [],
+    sent: [],
+    behavior: (command) => {
+      if (command.input.QueueUrl.endsWith('queue-b')) {
+        return Object.assign(new Error('not authorized on <queue-arn>'), { name: 'AccessDenied' });
+      }
+      return command.input.QueueUrl.endsWith('queue-a') ? answer(3, 1) : answer(0, 2);
+    },
+  };
+  const { result: oneDown, lines } = await captureConsole(() => analytics.getDlqDepth());
+  assert.deepEqual(oneDown, {
+    queues: [
+      { label: 'WhatsApp inbound', visible: 3, inFlight: 1, unavailable: false },
+      { label: 'Billing webhooks', visible: null, inFlight: null, unavailable: true },
+      { label: 'Trust extraction', visible: 0, inFlight: 2, unavailable: false },
+    ],
+    totalVisible: null,
+  }, 'a refused queue is unavailable on its own and the total is unknown');
+  assert.deepEqual(
+    check.sqs.sent.map((sent) => sent.input),
+    dlq.map((queue) => ({ QueueUrl: queue.url, AttributeNames: ATTRIBUTES })),
+    'one read per listed queue, in order, for the two depth attributes only',
+  );
+  assert.ok(check.sqs.sent.every((sent) => sent.options?.abortSignal instanceof AbortSignal), 'every read carries an abort signal');
+  const logged = JSON.stringify(lines.error);
+  assert.match(logged, /AccessDenied/, 'the failure is logged by its error name');
+  assert.doesNotMatch(logged, /queue-arn|example\.test/, 'never the error message or the queue address');
+
+  // Every queue answers: the total is the sum of the visible messages.
+  check.sqs = { clients: [], sent: [], behavior: (command) => (command.input.QueueUrl.endsWith('queue-b') ? answer(4, 0) : answer(1, 0)) };
+  const allUp = await analytics.getDlqDepth();
+  assert.deepEqual(allUp.queues.map((queue) => [queue.label, queue.visible, queue.unavailable]), [
+    ['WhatsApp inbound', 1, false], ['Billing webhooks', 4, false], ['Trust extraction', 1, false],
+  ]);
+  assert.equal(allUp.totalVisible, 6);
+
+  // An answer without the attributes is unavailable, never zero.
+  check.sqs = { clients: [], sent: [], behavior: () => ({ Attributes: {} }) };
+  const blank = await captureConsole(() => analytics.getDlqDepth());
+  assert.deepEqual(blank.result.queues.map((queue) => queue.unavailable), [true, true, true]);
+  assert.equal(blank.result.totalVisible, null);
+
+  // Hanging queues give up after 1.5 s each, in parallel.
+  check.sqs = { clients: [], sent: [], behavior: (command) => (command.input.QueueUrl.endsWith('queue-c') ? answer(2, 0) : 'hang') };
+  const started = Date.now();
+  const hung = await captureConsole(() => analytics.getDlqDepth());
+  const elapsed = Date.now() - started;
+  assert.deepEqual(hung.result.queues.map((queue) => [queue.label, queue.unavailable]), [
+    ['WhatsApp inbound', true], ['Billing webhooks', true], ['Trust extraction', false],
+  ]);
+  assert.ok(elapsed >= 1400 && elapsed < 2800, `two hanging reads time out together after about 1.5 s (took ${elapsed} ms)`);
+
+  // No list (local preview) or a malformed one: nothing to measure, no read.
+  for (const value of [undefined, 'not json', '{"label":"x"}', '[{"label":"WhatsApp inbound"}]']) {
+    if (value === undefined) delete process.env.ADMIN_DLQ_QUEUES;
+    else process.env.ADMIN_DLQ_QUEUES = value;
+    check.sqs = { clients: [], sent: [], behavior: () => answer(1, 1) };
+    assert.deepEqual(await analytics.getDlqDepth(), { queues: [], totalVisible: null }, `ADMIN_DLQ_QUEUES=${value}`);
+    assert.equal(check.sqs.sent.length, 0);
+  }
+  delete process.env.ADMIN_DLQ_QUEUES;
+}
+
+// ---- K3.4 system health (getSystemHealth) ----
+// One statement (the 24 h / 7 day figures, the message backlog and the billing
+// inbox), the dead-letter depth and SES bounces; each item's state follows the
+// rules table, and any source that cannot be read makes its item unknown.
+{
+  const check = (globalThis.__adminCheck ??= {});
+  // The Lambda runs in the main region; SES also sends from us-east-1.
+  const savedRegion = process.env.AWS_REGION;
+  process.env.AWS_REGION = 'us-east-2';
+  const healthStatements = [];
+  const healthRow = (o = {}) => ({
+    whatsapp_failed_24h: '0', ai_finished_7d: '100', ai_usable_7d: '100',
+    queued_over_1h: '0', stuck_messages: '0', billing_failed_24h: '0', ...o,
+  });
+  const healthPool = (row) => ({
+    query: async (sql, params) => {
+      healthStatements.push({ sql: sql.replace(/\s+/g, ' ').trim(), params });
+      if (row instanceof Error) throw row;
+      return { rows: [row] };
+    },
+  });
+  const bounces = (values) => ({ MetricDataResults: [{ Id: 'bounces', Values: values }] });
+  // Sets every source, runs getSystemHealth, returns key -> [state, value].
+  async function healthOf({ row = healthRow(), dlq = [0, 0], cw = () => bounces([]) } = {}) {
+    check.pool = healthPool(row);
+    process.env.ADMIN_DLQ_QUEUES = JSON.stringify(dlq.map((_, i) => ({ label: `Queue ${i}`, url: `https://sqs.example.test/q${i}` })));
+    check.sqs = {
+      clients: [], sent: [],
+      behavior: (command) => {
+        const visible = dlq[Number(command.input.QueueUrl.slice(-1))];
+        return visible instanceof Error ? visible
+          : { Attributes: { ApproximateNumberOfMessages: String(visible), ApproximateNumberOfMessagesNotVisible: '0' } };
+      },
+    };
+    check.metrics = { clients: [], sent: [], behavior: cw };
+    const { result } = await captureConsole(() => analytics.getSystemHealth());
+    delete process.env.ADMIN_DLQ_QUEUES;
+    assert.equal(result.windowLabel, 'last 24 hours');
+    return Object.fromEntries(result.items.map((item) => [item.key, [item.state, item.value]]));
+  }
+
+  // Everything quiet: the five items, in order, with their labels.
+  check.pool = healthPool(healthRow());
+  check.metrics = { clients: [], sent: [], behavior: () => bounces([]) };
+  const quiet = await captureConsole(() => analytics.getSystemHealth());
+  assert.deepEqual(quiet.result.items.map((item) => [item.key, item.label]), [
+    ['whatsapp_delivery', 'WhatsApp delivery'],
+    ['message_backlog', 'Message backlog'],
+    ['billing_webhooks', 'Billing webhooks'],
+    ['email_bounces', 'Email bounces'],
+    ['ai_extraction', 'AI extraction'],
+  ]);
+  assert.equal(healthStatements.length, 1, 'one statement for every database figure');
+  assert.match(healthStatements[0].sql, /FROM admin_analytics_system_health\(\) h/);
+  assert.match(healthStatements[0].sql, /FROM admin_analytics_message_backlog\(\) m/);
+  assert.match(healthStatements[0].sql, /CROSS JOIN admin_analytics_billing_inbox_now\(\) n/);
+  assert.equal(healthStatements[0].params, undefined);
+
+  const quietAll = await healthOf();
+  assert.deepEqual(quietAll, {
+    whatsapp_delivery: ['healthy', '0 failed sends'],
+    message_backlog: ['healthy', '0 stuck · 0 queued over 1 h · 0 dead-lettered'],
+    billing_webhooks: ['healthy', '0 failed events'],
+    email_bounces: ['healthy', '0 bounces'],
+    ai_extraction: ['healthy', '100% usable (7 days)'],
+  });
+
+  // WhatsApp delivery: 0 healthy, 1-4 watch, 5+ problem.
+  for (const [failed, state, value] of [
+    ['0', 'healthy', '0 failed sends'], ['1', 'watch', '1 failed send'], ['4', 'watch', '4 failed sends'],
+    ['5', 'problem', '5 failed sends'], ['1200', 'problem', '1,200 failed sends'],
+  ]) {
+    assert.deepEqual((await healthOf({ row: healthRow({ whatsapp_failed_24h: failed }) })).whatsapp_delivery, [state, value], `failed ${failed}`);
+  }
+
+  // Message backlog: stuck or dead-lettered is a problem; only queued over an
+  // hour is worth watching; nothing at all is healthy.
+  assert.deepEqual((await healthOf({ row: healthRow({ queued_over_1h: '2' }) })).message_backlog,
+    ['watch', '0 stuck · 2 queued over 1 h · 0 dead-lettered']);
+  assert.deepEqual((await healthOf({ row: healthRow({ stuck_messages: '1' }) })).message_backlog,
+    ['problem', '1 stuck · 0 queued over 1 h · 0 dead-lettered']);
+  assert.deepEqual((await healthOf({ dlq: [0, 3] })).message_backlog,
+    ['problem', '0 stuck · 0 queued over 1 h · 3 dead-lettered']);
+  assert.deepEqual((await healthOf({ row: healthRow({ queued_over_1h: '5' }), dlq: [1, 0] })).message_backlog,
+    ['problem', '0 stuck · 5 queued over 1 h · 1 dead-lettered'], 'dead-lettered outranks queued');
+  assert.deepEqual((await healthOf({ dlq: [0, new Error('refused')] })).message_backlog,
+    ['unknown', '0 stuck · 0 queued over 1 h · — dead-lettered'], 'a queue that cannot be read: unknown');
+
+  // Billing webhooks: 0 healthy, 1+ problem.
+  assert.deepEqual((await healthOf({ row: healthRow({ billing_failed_24h: '1' }) })).billing_webhooks, ['problem', '1 failed event']);
+  assert.deepEqual((await healthOf({ row: healthRow({ billing_failed_24h: '3' }) })).billing_webhooks, ['problem', '3 failed events']);
+
+  // Email bounces: 0 healthy, 1-2 watch, 3+ problem, summed over both regions;
+  // a region with no datapoint counts 0; a region that cannot be read: unknown.
+  for (const [values, state, value] of [
+    [[], 'healthy', '0 bounces'], [[1], 'watch', '1 bounce'], [[1, 1], 'watch', '2 bounces'], [[2, 1], 'problem', '3 bounces'],
+  ]) {
+    assert.deepEqual((await healthOf({ cw: (command, region) => (region === 'us-east-1' ? bounces(values) : { MetricDataResults: [] }) })).email_bounces,
+      [state, value], `bounces ${values}`);
+  }
+  assert.deepEqual((await healthOf({ cw: () => bounces([1]) })).email_bounces, ['watch', '2 bounces'], 'one bounce in each region');
+  assert.deepEqual((await healthOf({ cw: (command, region) => (region === 'us-east-1' ? new Error('throttled') : bounces([])) })).email_bounces,
+    ['unknown', 'unavailable']);
+  const metricReads = check.metrics.sent;
+  assert.deepEqual([...new Set(metricReads.map((sent) => sent.region))].sort(), ['us-east-1', 'us-east-2'], 'both SES regions are read');
+  for (const sent of metricReads) {
+    assert.deepEqual(sent.input.MetricDataQueries.map((q) => [q.MetricStat.Metric.Namespace, q.MetricStat.Metric.MetricName, q.MetricStat.Stat]),
+      [['AWS/SES', 'Bounce', 'Sum']]);
+    assert.equal(sent.input.EndTime.getTime() - sent.input.StartTime.getTime(), 24 * 60 * 60 * 1000, 'the last 24 hours');
+    assert.ok(sent.options?.abortSignal instanceof AbortSignal);
+  }
+
+  // AI extraction: usable share over 7 days; 95% and up healthy, 85% up to 95%
+  // watch, under 85% a problem. The value never rounds up into a better band.
+  for (const [usable, finished, state, value] of [
+    ['95', '100', 'healthy', '95% usable (7 days)'],
+    ['949', '1000', 'watch', '94% usable (7 days)'],
+    ['85', '100', 'watch', '85% usable (7 days)'],
+    ['849', '1000', 'problem', '84% usable (7 days)'],
+    ['0', '3', 'problem', '0% usable (7 days)'],
+    ['0', '0', 'healthy', 'no voice notes in 7 days'],
+  ]) {
+    assert.deepEqual((await healthOf({ row: healthRow({ ai_usable_7d: usable, ai_finished_7d: finished }) })).ai_extraction,
+      [state, value], `${usable} of ${finished}`);
+  }
+
+  // The database cannot be read: its four items are unknown, the AWS ones stand.
+  const dbDown = await healthOf({ row: new Error('connection refused') });
+  assert.deepEqual(dbDown, {
+    whatsapp_delivery: ['unknown', 'unavailable'],
+    message_backlog: ['unknown', '— stuck · — queued over 1 h · 0 dead-lettered'],
+    billing_webhooks: ['unknown', 'unavailable'],
+    email_bounces: ['healthy', '0 bounces'],
+    ai_extraction: ['unknown', 'unavailable'],
+  });
+  if (savedRegion === undefined) delete process.env.AWS_REGION;
+  else process.env.AWS_REGION = savedRegion;
+}
+
+// ---- K3.3 #16, #17, #18, #20, #21 (migration 124's definers, BE-3b) ----
+// Each loader runs `SELECT * FROM <fn>($1)` once with the weeks. The rows are
+// the pg shapes BE-3b posted: BIGINT counts as strings, timestamps as Dates,
+// partial as a boolean, the "since" column repeated on every row.
+{
+  const check = (globalThis.__adminCheck ??= {});
+  // A pool that answers every statement with `rows` and records it.
+  function capturePool(rows) {
+    const sent = [];
+    check.pool = {
+      query: async (sql, params) => {
+        sent.push({ sql: sql.replace(/\s+/g, ' ').trim(), params });
+        return { rows };
+      },
+    };
+    return sent;
+  }
+  const d = (iso) => new Date(iso);
+
+  // #16 acquisition: every source mapped; collectingSince from the first row.
+  const acquisitionRows = [
+    { week_start: d('2026-10-05T00:00:00.000Z'), partial: false,
+      from_shared_link: '0', from_campaign_tag: '0', from_referral: '0', from_direct: '0',
+      from_whatsapp_entry: '0', from_unknown: '0', total: '0', collecting_since: d('2026-10-13T15:04:05.123Z') },
+    { week_start: d('2026-10-12T00:00:00.000Z'), partial: true,
+      from_shared_link: '4', from_campaign_tag: '1', from_referral: '5', from_direct: '2',
+      from_whatsapp_entry: '3', from_unknown: '6', total: '21', collecting_since: d('2026-10-13T15:04:05.123Z') },
+  ];
+  let sent = capturePool(acquisitionRows);
+  assert.deepEqual(await analytics.getAcquisition(2), {
+    weeks: [
+      { weekStart: '2026-10-05T00:00:00.000Z', partial: false, total: 0,
+        bySource: { shared_link: 0, campaign_tag: 0, referral: 0, direct: 0, whatsapp_entry: 0, unknown: 0 } },
+      { weekStart: '2026-10-12T00:00:00.000Z', partial: true, total: 21,
+        bySource: { shared_link: 4, campaign_tag: 1, referral: 5, direct: 2, whatsapp_entry: 3, unknown: 6 } },
+    ],
+    collectingSince: '2026-10-13T15:04:05.123Z',
+  });
+  assert.deepEqual(sent, [{ sql: 'SELECT * FROM admin_analytics_acquisition($1)', params: [2] }]);
+  capturePool(acquisitionRows.map((row) => ({ ...row, collecting_since: null })));
+  assert.equal((await analytics.getAcquisition(2)).collectingSince, null, 'no signup source stored yet');
+  capturePool([]);
+  assert.deepEqual(await analytics.getAcquisition(8), { weeks: [], collectingSince: null });
+
+  // #17 job views.
+  sent = capturePool([{ week_start: d('2026-10-12T00:00:00.000Z'), partial: true,
+    public_opens: '40', public_applications: '3', worker_views: '12', worker_view_applications: '2',
+    collecting_since: d('2026-10-13T15:00:00.000Z') }]);
+  assert.deepEqual(await analytics.getJobViewFunnel(1), {
+    weeks: [{ weekStart: '2026-10-12T00:00:00.000Z', partial: true, publicOpens: 40, publicApplications: 3, workerViews: 12, workerViewApplications: 2 }],
+    collectingSince: '2026-10-13T15:00:00.000Z',
+  });
+  assert.deepEqual(sent, [{ sql: 'SELECT * FROM admin_analytics_job_views($1)', params: [1] }]);
+
+  // #18 template reuse, no template use yet.
+  sent = capturePool([{ week_start: d('2026-10-12T00:00:00.000Z'), partial: true,
+    jobs: '5', from_template: '0', employers_using_templates: '0', templates_saved: '1', collecting_since: null }]);
+  assert.deepEqual(await analytics.getTemplateReuse(13), {
+    weeks: [{ weekStart: '2026-10-12T00:00:00.000Z', partial: true, jobs: 5, fromTemplate: 0, employersUsingTemplates: 0, templatesSaved: 1 }],
+    collectingSince: null,
+  });
+  assert.deepEqual(sent, [{ sql: 'SELECT * FROM admin_analytics_template_reuse($1)', params: [13] }]);
+
+  // #20 match to apply: two channels per week, as returned.
+  const matchRows = [
+    { week_start: d('2026-10-12T00:00:00.000Z'), partial: true, channel: 'web',
+      shown: '30', applied_within_7d: '4', collecting_since: d('2026-10-13T15:04:05.123Z') },
+    { week_start: d('2026-10-12T00:00:00.000Z'), partial: true, channel: 'whatsapp',
+      shown: '0', applied_within_7d: '0', collecting_since: d('2026-10-13T15:04:05.123Z') },
+  ];
+  sent = capturePool(matchRows);
+  assert.deepEqual(await analytics.getMatchToApply(26), {
+    weeks: [
+      { weekStart: '2026-10-12T00:00:00.000Z', partial: true, channel: 'web', shown: 30, appliedWithin7d: 4 },
+      { weekStart: '2026-10-12T00:00:00.000Z', partial: true, channel: 'whatsapp', shown: 0, appliedWithin7d: 0 },
+    ],
+    collectingSince: '2026-10-13T15:04:05.123Z',
+  });
+  assert.deepEqual(sent, [{ sql: 'SELECT * FROM admin_analytics_match_to_apply($1)', params: [26] }]);
+  capturePool([{ ...matchRows[0], channel: 'sms' }]);
+  await assert.rejects(analytics.getMatchToApply(1), /Unexpected match channel: sms/, 'an unknown channel is an error, never a mislabelled row');
+
+  // #21 referral funnel.
+  sent = capturePool([{ week_start: d('2026-10-12T00:00:00.000Z'), partial: true,
+    opens: '9', apply_intents: '2', claims: '1', applications: '1', hires: '0',
+    snapshots_since: d('2026-10-06T00:00:00.000Z') }]);
+  assert.deepEqual(await analytics.getReferralFunnel(8), {
+    weeks: [{ weekStart: '2026-10-12T00:00:00.000Z', partial: true, opens: 9, applyIntents: 2, claims: 1, applications: 1, hires: 0 }],
+    snapshotsSince: '2026-10-06T00:00:00.000Z',
+  });
+  assert.deepEqual(sent, [{ sql: 'SELECT * FROM admin_analytics_referral_funnel($1)', params: [8] }]);
+  capturePool([]);
+  assert.deepEqual(await analytics.getReferralFunnel(8), { weeks: [], snapshotsSince: null });
+}
+
+// ---- K3.3 #2, #5, #6, #14, #15, #19 (migration 123's definers) ----
+// pg shapes: BIGINT counts and NUMERIC medians as strings, timestamps as
+// Dates, NULL where there is nothing to measure. Shares are percents 0-100,
+// unrounded, null on a zero denominator.
+{
+  const check = (globalThis.__adminCheck ??= {});
+  function capturePool(rows) {
+    const sent = [];
+    check.pool = {
+      query: async (sql, params) => {
+        sent.push({ sql: sql.replace(/\s+/g, ' ').trim(), params });
+        return { rows };
+      },
+    };
+    return sent;
+  }
+  const d = (iso) => new Date(iso);
+
+  // #2 paying employers by week; approximateBefore from the first row.
+  let sent = capturePool([
+    { week_start: d('2026-10-05T00:00:00.000Z'), partial: false, employers: '40', paying: '6', new_paying: '2', churned: '1',
+      approximate_before: d('2026-10-02T09:30:00.000Z') },
+    { week_start: d('2026-10-12T00:00:00.000Z'), partial: true, employers: '42', paying: '7', new_paying: '1', churned: '0',
+      approximate_before: d('2026-10-02T09:30:00.000Z') },
+  ]);
+  assert.deepEqual(await analytics.getPayingWeekly(2), {
+    weeks: [
+      { weekStart: '2026-10-05T00:00:00.000Z', partial: false, employers: 40, paying: 6, newPaying: 2, churned: 1 },
+      { weekStart: '2026-10-12T00:00:00.000Z', partial: true, employers: 42, paying: 7, newPaying: 1, churned: 0 },
+    ],
+    approximateBefore: '2026-10-02T09:30:00.000Z',
+  });
+  assert.deepEqual(sent, [{ sql: 'SELECT * FROM admin_analytics_paying_weekly($1)', params: [2] }]);
+  capturePool([{ week_start: d('2026-10-12T00:00:00.000Z'), partial: true, employers: '0', paying: '0', new_paying: '0', churned: '0', approximate_before: null }]);
+  assert.equal((await analytics.getPayingWeekly(1)).approximateBefore, null, 'no live status change yet');
+
+  // #5 resets by reason: the reset form's labels (without its hint), then operator resets.
+  sent = capturePool([
+    { source: 'lockout_reset', reason_code: 'codes_not_arriving', resets: '3' },
+    { source: 'lockout_reset', reason_code: 'worker_confused', resets: '0' },
+    { source: 'lockout_reset', reason_code: 'typo_in_details', resets: '1' },
+    { source: 'lockout_reset', reason_code: 'identity_confirmed_elsewhere', resets: '0' },
+    { source: 'lockout_reset', reason_code: 'other', resets: '2' },
+    { source: 'operator_reset', reason_code: null, resets: '5' },
+  ]);
+  assert.deepEqual(await analytics.getResetReasons(30), [
+    { source: 'lockout_reset', reasonLabel: 'Codes not arriving', count: 3 },
+    { source: 'lockout_reset', reasonLabel: 'Worker confused by the steps', count: 0 },
+    { source: 'lockout_reset', reasonLabel: 'Typo in their details', count: 1 },
+    { source: 'lockout_reset', reasonLabel: 'Confirmed identity another way', count: 0 },
+    { source: 'lockout_reset', reasonLabel: 'Other', count: 2 },
+    { source: 'operator_reset', reasonLabel: 'Operator reset', count: 5 },
+  ]);
+  assert.deepEqual(sent, [{ sql: 'SELECT * FROM admin_analytics_reset_reasons($1)', params: [30] }]);
+  capturePool([{ source: 'lockout_reset', reason_code: 'made_up', resets: '1' }]);
+  await assert.rejects(analytics.getResetReasons(30), /Unexpected reset reason: made_up/);
+  capturePool([{ source: 'sms_reset', reason_code: null, resets: '1' }]);
+  await assert.rejects(analytics.getResetReasons(30), /Unexpected reset source: sms_reset/);
+
+  // #6 open cases by age: the contract's labels, in order.
+  sent = capturePool([
+    { bucket: 'under_1h', waiting_on_us: '2', waiting_on_worker: '0' },
+    { bucket: '1_4h', waiting_on_us: '1', waiting_on_worker: '1' },
+    { bucket: '4_24h', waiting_on_us: '0', waiting_on_worker: '3' },
+    { bucket: '1_3d', waiting_on_us: '4', waiting_on_worker: '0' },
+    { bucket: 'over_3d', waiting_on_us: '0', waiting_on_worker: '6' },
+  ]);
+  assert.deepEqual(await analytics.getCaseAging(), [
+    { label: '<1h', waitingOnUs: 2, waitingOnWorker: 0 },
+    { label: '1–4h', waitingOnUs: 1, waitingOnWorker: 1 },
+    { label: '4–24h', waitingOnUs: 0, waitingOnWorker: 3 },
+    { label: '1–3d', waitingOnUs: 4, waitingOnWorker: 0 },
+    { label: '>3d', waitingOnUs: 0, waitingOnWorker: 6 },
+  ]);
+  assert.deepEqual(sent, [{ sql: 'SELECT * FROM admin_analytics_case_aging()', params: undefined }]);
+  capturePool([{ bucket: 'yesterday', waiting_on_us: '1', waiting_on_worker: '0' }]);
+  await assert.rejects(analytics.getCaseAging(), /Unexpected case age bucket: yesterday/);
+
+  // #6 resolutions: NUMERIC medians as strings, NULL when nothing was resolved.
+  sent = capturePool([
+    { week_start: d('2026-10-05T00:00:00.000Z'), partial: false, resolved: '3', median_hours: '20.0', p75_hours: '25.5' },
+    { week_start: d('2026-10-12T00:00:00.000Z'), partial: true, resolved: '0', median_hours: null, p75_hours: null },
+  ]);
+  assert.deepEqual(await analytics.getCaseResolution(2), [
+    { weekStart: '2026-10-05T00:00:00.000Z', partial: false, resolved: 3, medianHours: 20, p75Hours: 25.5 },
+    { weekStart: '2026-10-12T00:00:00.000Z', partial: true, resolved: 0, medianHours: null, p75Hours: null },
+  ]);
+  assert.deepEqual(sent, [{ sql: 'SELECT * FROM admin_analytics_case_resolution($1)', params: [2] }]);
+
+  // #14 onboarding steps: funnel.ts labels; of started and of the previous
+  // main-line step (a branch step is against its fork; the step after a
+  // branch skips it); the first step has no previous.
+  const stepRow = (step_key, step_order, branch, reached, started = '10') => ({ step_key, step_order, branch, reached, started });
+  sent = capturePool([
+    stepRow('start.choose_language', 1, false, '10'),
+    stepRow('identity.verify_otp', 2, false, '8'),
+    stepRow('legal.review', 3, false, '6'),
+    stepRow('profile.voice_choice', 4, false, '6'),
+    stepRow('profile.voice_processing', 5, true, '2'),
+    stepRow('profile.name', 6, false, '3'),
+  ]);
+  const steps = await analytics.getOnboardingSteps(8, 'whatsapp');
+  assert.deepEqual(sent, [{ sql: 'SELECT * FROM admin_analytics_onboarding_steps($1, $2)', params: [8, 'whatsapp'] }]);
+  assert.equal(steps.started, 10);
+  assert.deepEqual(steps.steps.map((step) => [step.stepKey, step.label, step.order, step.branch, step.reached, step.ofStarted, step.ofPrevious]), [
+    ['start.choose_language', 'Language', 1, false, 10, 100, null],
+    ['identity.verify_otp', 'Phone code', 2, false, 8, 80, 80],
+    ['legal.review', 'Terms', 3, false, 6, 60, 75],
+    ['profile.voice_choice', 'Voice note', 4, false, 6, 60, 100],
+    ['profile.voice_processing', 'Voice note processing', 5, true, 2, 20, (2 / 6) * 100],
+    ['profile.name', 'Name', 6, false, 3, 30, 50],
+  ]);
+  capturePool([stepRow('legal.review', 3, false, '0', '0'), stepRow('profile.voice_choice', 4, false, '0', '0')]);
+  const emptySteps = await analytics.getOnboardingSteps(8, 'web');
+  assert.equal(emptySteps.started, 0);
+  assert.deepEqual(emptySteps.steps.map((step) => [step.stepKey, step.ofStarted, step.ofPrevious]),
+    [['legal.review', null, null], ['profile.voice_choice', null, null]], 'nothing started: no shares');
+  capturePool([]);
+  assert.deepEqual(await analytics.getOnboardingSteps(8, 'all'), { started: 0, steps: [] });
+
+  // #15 identity funnel: exactly one row; a missing row is an error.
+  sent = capturePool([{
+    challenges: '20', reached_code: '15', verified: '11', locked_once: '2', expired_unused: '1',
+    attempts_zero: '9', attempts_one: '3', attempts_two: '2', attempts_three_plus: '1',
+    median_minutes_to_verify: '4.5', p75_minutes_to_verify: '9.0', timings_since: d('2026-10-02T09:30:00.000Z'),
+  }]);
+  assert.deepEqual(await analytics.getIdentityFunnel(8), {
+    challenges: 20, reachedCode: 15, verified: 11, lockedOnce: 2, expiredUnused: 1,
+    attempts: { zero: 9, one: 3, two: 2, threePlus: 1 },
+    medianMinutesToVerify: 4.5, p75MinutesToVerify: 9, timingsSince: '2026-10-02T09:30:00.000Z',
+  });
+  assert.deepEqual(sent, [{ sql: 'SELECT * FROM admin_analytics_identity_funnel($1)', params: [8] }]);
+  capturePool([{
+    challenges: '0', reached_code: '0', verified: '0', locked_once: '0', expired_unused: '0',
+    attempts_zero: '0', attempts_one: '0', attempts_two: '0', attempts_three_plus: '0',
+    median_minutes_to_verify: null, p75_minutes_to_verify: null, timings_since: null,
+  }]);
+  const noTimings = await analytics.getIdentityFunnel(8);
+  assert.deepEqual([noTimings.medianMinutesToVerify, noTimings.p75MinutesToVerify, noTimings.timingsSince], [null, null, null]);
+  capturePool([]);
+  await assert.rejects(analytics.getIdentityFunnel(8), /admin_analytics_identity_funnel\(\) returned no row/);
+
+  // #19 ranking freshness: the contract's bucket labels; older than 24 h is
+  // the last two buckets; the fallback share is of the ranked jobs.
+  sent = capturePool([{
+    under_1h: '3', from_1h_to_6h: '2', from_6h_to_24h: '1', from_1d_to_3d: '4', over_3d: '2',
+    ranked_jobs: '12', fallback_jobs: '3', jobs_with_applications_no_ranking: '5',
+  }]);
+  assert.deepEqual(await analytics.getRankingFreshness(), {
+    buckets: [
+      { label: '<1h', jobs: 3 }, { label: '1–6h', jobs: 2 }, { label: '6–24h', jobs: 1 },
+      { label: '1–3d', jobs: 4 }, { label: '>3d', jobs: 2 },
+    ],
+    jobsOlderThan24h: 6, fallbackShare: 25, fallbackJobs: 3, rankedJobs: 12, jobsWithApplicationsButNoRanking: 5,
+  });
+  assert.deepEqual(sent, [{ sql: 'SELECT * FROM admin_analytics_ranking_freshness()', params: undefined }]);
+  capturePool([{
+    under_1h: '0', from_1h_to_6h: '0', from_6h_to_24h: '0', from_1d_to_3d: '0', over_3d: '0',
+    ranked_jobs: '0', fallback_jobs: '0', jobs_with_applications_no_ranking: '2',
+  }]);
+  assert.equal((await analytics.getRankingFreshness()).fallbackShare, null, 'nothing ranked: no share');
+  capturePool([]);
+  await assert.rejects(analytics.getRankingFreshness(), /admin_analytics_ranking_freshness\(\) returned no row/);
+}
+
+// ---- K3.4 Home metrics (getHomeMetrics) ----
+// Two statements, one after the other: the scalars (totals, this week's new
+// paying employers, the 30-day hires and stale jobs) and the last 8 weeks of
+// signups, drawn as a running total that ends at today's total.
+{
+  const check = (globalThis.__adminCheck ??= {});
+  const homeNow = new Date('2026-10-14T15:00:00.000Z'); // a Wednesday; this week starts Oct 12
+  const statements = [];
+  let open = 0;
+  let maxOpen = 0;
+  const homePool = (scalars, signups) => ({
+    query: async (sql, params) => {
+      open += 1;
+      maxOpen = Math.max(maxOpen, open);
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      open -= 1;
+      const text = sql.replace(/\s+/g, ' ').trim();
+      statements.push({ sql: text, params });
+      if (/admin_analytics_signups/.test(text)) return { rows: signups };
+      return { rows: scalars };
+    },
+  });
+  const scalars = [{
+    total_workers: '50', total_employers: '10', paying_employers: '4', jobs_active: '7',
+    paying_new_this_week: '1', hires_last_30d: '9', jobs_with_hire_last_30d: '6', stale_jobs_14d: '2',
+  }];
+  check.pool = homePool(scalars, [
+    { bucket_start: new Date('2026-09-28T00:00:00.000Z'), worker_signups: '2', employer_signups: '1', worker_signups_verified: '1' },
+    { bucket_start: new Date('2026-10-12T00:00:00.000Z'), worker_signups: '3', employer_signups: '0', worker_signups_verified: '2' },
+  ]);
+  const home = await analytics.getHomeMetrics(homeNow);
+  assert.equal(statements.length, 2);
+  assert.match(statements[0].sql, /FROM admin_analytics_totals\(\) t CROSS JOIN admin_analytics_paying_weekly\(1\) p CROSS JOIN admin_analytics_home_metrics\(\) h/);
+  assert.equal(statements[0].params, undefined);
+  assert.deepEqual(statements[1], {
+    sql: 'SELECT * FROM admin_analytics_signups($1, $2)',
+    params: [new Date('2026-08-24T00:00:00.000Z'), 'week'],
+  });
+  assert.equal(maxOpen, 1, 'one statement at a time: the loader holds at most one pool connection');
+  const weekStarts = ['2026-08-24', '2026-08-31', '2026-09-07', '2026-09-14', '2026-09-21', '2026-09-28', '2026-10-05', '2026-10-12']
+    .map((day) => `${day}T00:00:00.000Z`);
+  assert.deepEqual(home, {
+    signupsTotal: 60, signupsThisWeek: 3,
+    payingEmployers: 4, payingThisWeek: 1,
+    hiresLast30d: 9, jobsWithHireLast30d: 6,
+    openJobs: 7, staleJobs14d: 2,
+    // 60 today; 6 in the window, so 54 before it.
+    signupsWeekly: weekStarts.map((weekStart, i) => ({
+      weekStart, partial: i === 7, cumulative: [54, 54, 54, 54, 54, 57, 57, 60][i],
+    })),
+  });
+
+  // No scalar row is an error, never zeros.
+  check.pool = homePool([], []);
+  await assert.rejects(analytics.getHomeMetrics(homeNow), /Home metrics returned no row/);
+}
 
 console.log('check-analytics-helpers: all assertions passed');

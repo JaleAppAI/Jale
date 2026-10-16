@@ -1,7 +1,7 @@
 // The Reports actions, behind POST /api/report-actions: reveal a contact,
 // open a screenshot, set the status, set the internal note, and change the
-// report settings. They have their own route and policy; the case console's
-// dispatch is separate and unchanged.
+// report settings. They have their own route and policy, separate from the
+// Inbox actions (inbox-actions.ts).
 //
 // Each action runs in one transaction on the console login and records its
 // event on the same client before COMMIT:

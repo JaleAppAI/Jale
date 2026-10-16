@@ -156,6 +156,13 @@ describe('database migrations', () => {
       '115',
       '117',
       '118',
+      '120',
+      '121',
+      '122',
+      '123',
+      '124',
+      '125',
+      '126',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -2114,6 +2121,153 @@ describe('database migrations', () => {
     expect(sql.indexOf('DROP POLICY users_org_bootstrap_read ON public.users;')).toBeLessThan(sql.indexOf('-- ── Self-check'));
   });
 
+  // Sprint 28, analytics capture (items 16, 17, 18, 20, 21). On RDS the
+  // migration's own DO blocks are the only runtime check; these literals pin
+  // that the capture stays behind capability functions and the reads behind
+  // the console's gate.
+  it('124 adds the capture tables behind capability functions, a one-time snapshot backfill and five gated console reads', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '124_analytics_capture.sql'), 'utf8');
+    const code = sql.replace(/--[^\n]*/g, '');
+
+    expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+    expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+    expect(code).toMatch(/^[\x00-\x7F]*$/);
+    const iBegin = sql.indexOf('BEGIN;');
+    const iLock = sql.indexOf("SET LOCAL lock_timeout = '5s';");
+    const iPre = sql.indexOf('DO $$');
+    const iTable = sql.indexOf('CREATE TABLE');
+    expect(iLock).toBeGreaterThan(iBegin);
+    expect(iPre).toBeGreaterThan(iLock);
+    expect(iTable).toBeGreaterThan(iPre);
+    expect(sql).toContain("RAISE EXCEPTION 'migration 124: already applied (the capture tables exist); it is not re-runnable';");
+
+    // Three new tables, each with row security enabled and forced, and rows
+    // that leave with their account.
+    // referral_funnel_daily references nothing and comes first; the two that
+    // reference users and jobs come late (see the lock ordering below).
+    const tables = ['referral_funnel_daily', 'signup_attribution', 'worker_job_views'];
+    expect([...code.matchAll(/CREATE TABLE public\.([a-z_]+) \(/g)].map((m) => m[1])).toEqual(tables);
+    for (const table of tables) {
+      expect(code).toContain(`ALTER TABLE public.${table} ENABLE ROW LEVEL SECURITY;`);
+      expect(code).toContain(`ALTER TABLE public.${table} FORCE ROW LEVEL SECURITY;`);
+    }
+    expect(code).toContain('user_id    UUID        PRIMARY KEY REFERENCES public.users(id) ON DELETE CASCADE,');
+    expect(code).toContain('worker_id   UUID        NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,');
+    expect(code).toContain('PRIMARY KEY (worker_id, job_id, viewed_hour)');
+    expect(code).toContain('PRIMARY KEY (day, link_kind, channel)');
+    expect(code).toContain(
+      'ALTER TABLE public.jobs\n'
+      + '  ADD COLUMN created_from_template_id UUID REFERENCES public.employer_job_templates(id) ON DELETE SET NULL;',
+    );
+
+    // No runtime login gets a right on a table: only the two capability
+    // owners are granted anything, and every write goes through a function.
+    const grants = [...code.matchAll(/^GRANT (?!EXECUTE|CREATE|USAGE)[^;]* TO ([a-z_, ]+);/gm)].map((m) => m[1].trim());
+    expect(new Set(grants)).toEqual(new Set(['jale_cap_analytics_capture', 'jale_cap_referral_snapshot']));
+    expect(code).not.toMatch(/GRANT [^;]*ON (TABLE )?public\.[a-z_]+ TO jale_(api|api_public|whatsapp|job_retention|admin_console)\b/);
+
+    // The capture functions and their only callers.
+    const executes: Array<[string, string]> = [
+      ['jale_cap.record_signup_source(uuid, text, text, text)', 'jale_api_public, jale_api'],
+      ['jale_cap.record_job_view(uuid, text)', 'jale_api'],
+      ['jale_cap.record_feed_impressions(uuid[])', 'jale_api'],
+      ['jale_cap.record_whatsapp_impressions(uuid[], uuid)', 'jale_whatsapp'],
+      ['jale_cap.referral_funnel_snapshot()', 'jale_job_retention'],
+    ];
+    for (const [signature, callers] of executes) {
+      expect(code).toContain(`REVOKE ALL ON FUNCTION ${signature} FROM PUBLIC;\nGRANT EXECUTE ON FUNCTION ${signature} TO ${callers};`);
+    }
+    expect(code.match(/^GRANT EXECUTE ON FUNCTION jale_cap\./gm)).toHaveLength(5);
+    // Every capture write is a no-op on repeat, and the caller of a worker
+    // write is the transaction's own worker, never an argument.
+    expect(code.match(/ON CONFLICT DO NOTHING;/g)).toHaveLength(5);
+    expect(code.match(/pg_catalog\.current_setting\('app\.current_internal_user_id', true\)/g)).toHaveLength(3);
+    expect(code).toContain("AND u.created_at > now() - interval '24 hours'");
+
+    // The backfill at apply is the snapshot itself, run once as its owner;
+    // the owner's USAGE lasts exactly that call, inside the ownership window.
+    const iWindow = sql.indexOf("EXECUTE format('GRANT %I TO %I WITH SET TRUE, INHERIT FALSE', owner_role, current_user);");
+    const iUsage = sql.indexOf('GRANT USAGE ON SCHEMA jale_cap TO jale_cap_referral_snapshot;');
+    const iRole = sql.indexOf('SET LOCAL ROLE jale_cap_referral_snapshot;');
+    const iRun = sql.indexOf('SELECT * INTO r FROM jale_cap.referral_funnel_snapshot();');
+    const iReset = sql.indexOf('RESET ROLE;');
+    const iRevoke = sql.indexOf('REVOKE USAGE ON SCHEMA jale_cap FROM jale_cap_referral_snapshot;');
+    const iClose = sql.indexOf("EXECUTE format('REVOKE %I FROM %I GRANTED BY %I', owner_role, current_user, current_user);");
+    expect(iWindow).toBeGreaterThan(-1);
+    expect([iUsage, iRole, iRun, iReset, iRevoke, iClose].every((i, n, all) => i > (n === 0 ? iWindow : all[n - 1]))).toBe(true);
+    // A day is rewritten only while every row it counts still exists: today
+    // and the six days before (apply tokens are purged 8 days after they are
+    // made, and a used one counts on the day after it was made).
+    expect(code).toContain('USING (day >= (now() AT TIME ZONE \'UTC\')::date - 6);');
+    expect(code).toContain('v_horizon DATE := (now() AT TIME ZONE \'UTC\')::date - 6;');
+
+    // Lock ordering. CREATE POLICY and ALTER TABLE hold ACCESS EXCLUSIVE, and
+    // a foreign key SHARE ROW EXCLUSIVE, on an existing table until COMMIT.
+    // The functions, the snapshot's rights and its backfill come first; then
+    // the statements the self-audit needs that lock users, jobs or the other
+    // tables the app writes on each request; then the self-audit; and last
+    // the capture owner's rights and policies on users and jobs. The referral
+    // tables (only the public referral routes write them) are locked from the
+    // snapshot's rights on.
+    const lastFunction = code.lastIndexOf('CREATE FUNCTION');
+    const backfill = code.indexOf('SELECT * INTO r FROM jale_cap.referral_funnel_snapshot();');
+    const selfAudit = code.indexOf('migration 124: a login holds a privilege on capture table %');
+    const firstOf = (patterns: RegExp[]) => Math.min(...patterns.map((re) => {
+      const m = re.exec(code);
+      return m ? m.index : Number.POSITIVE_INFINITY;
+    }));
+    const firstReferralLock = firstOf([/ON public\.(referral_apply_tokens|referral_pending_claims|job_share_opens|job_share_links)\b/]);
+    const firstAppLock = firstOf([
+      /REFERENCES public\.(users|jobs)\(/,
+      /ALTER TABLE public\.jobs\b/,
+      /ON public\.(users|jobs|worker_job_impressions|employer_job_templates|worker_attribution)\b/,
+    ]);
+    expect(lastFunction).toBeGreaterThan(-1);
+    expect(backfill).toBeGreaterThan(lastFunction);
+    expect(firstReferralLock).toBeGreaterThan(lastFunction);
+    expect(firstAppLock).toBeGreaterThan(backfill);
+    expect(selfAudit).toBeGreaterThan(firstAppLock);
+
+    // Nothing in the self-audit needs the capture owner's policies on users
+    // and jobs, so they follow its console smoke calls and window checks: the
+    // policy on users locks it exclusively only from there to COMMIT. Their
+    // existence check follows them.
+    const lastSmoke = code.lastIndexOf("EXECUTE format('SELECT count(*) FROM %s', replace(fn_sig, '(integer)', '(4)'));");
+    const windowCheck = code.lastIndexOf('did not reject the window');
+    const ownerCheck = code.indexOf('migration 124: the capture owner policy on % is missing or drifted');
+    const commit = code.lastIndexOf('COMMIT;');
+    expect(lastSmoke).toBeGreaterThan(selfAudit);
+    expect(windowCheck).toBeGreaterThan(lastSmoke);
+    const ownerRights = [
+      'GRANT SELECT (id, created_at) ON public.users TO jale_cap_analytics_capture;',
+      'CREATE POLICY users_cap_capture_recent_read ON public.users',
+      'GRANT SELECT (id) ON public.jobs TO jale_cap_analytics_capture;',
+      'CREATE POLICY jobs_cap_analytics_capture_select ON public.jobs',
+    ];
+    for (const statement of ownerRights) {
+      expect(code.indexOf(statement)).toBeGreaterThan(windowCheck);
+      expect(code.indexOf(statement)).toBeLessThan(ownerCheck);
+    }
+    expect(commit).toBeGreaterThan(ownerCheck);
+    expect(code.match(/CREATE POLICY [a-z_]+ ON public\.(users|jobs)\b/g)).toHaveLength(2);
+
+    // Five console reads: jale_admin's, the console's only, gate after the
+    // argument check, and a self-audit that rejects bad windows.
+    const reads = ['acquisition', 'job_views', 'template_reuse', 'match_to_apply', 'referral_funnel'];
+    for (const name of reads) {
+      expect(code).toContain(`ALTER FUNCTION public.admin_analytics_${name}(INTEGER) OWNER TO jale_admin;`);
+      expect(code).toContain(`REVOKE ALL ON FUNCTION public.admin_analytics_${name}(INTEGER) FROM PUBLIC;`);
+      expect(code).toContain(`GRANT EXECUTE ON FUNCTION public.admin_analytics_${name}(INTEGER) TO jale_admin_console;`);
+    }
+    expect(code.match(/RAISE EXCEPTION 'admin_analytics_invalid_weeks';\n  END IF;\s+PERFORM set_config\('app\.admin_analytics_read', 'on', true\);/g)).toHaveLength(5);
+    expect(code.match(/USING \(current_setting\('app\.admin_analytics_read', true\) = 'on'\);/g)).toHaveLength(7);
+    expect(sql).toContain('FOREACH v_arg IN ARRAY ARRAY[0, 27] LOOP');
+    expect(sql).toContain("v_raised := SQLERRM = 'admin_analytics_invalid_weeks';");
+    expect(sql).toContain('migration 124: a login holds a privilege on capture table %');
+    // 103 accepts no policy on worker_referred_jobs beyond its own and their copies.
+    expect(code).not.toMatch(/ON public\.worker_referred_jobs/);
+  });
+
   // A catalog may carry FORCE ROW LEVEL SECURITY on the five tables 114b
   // aligns, set outside the migrations. 115 refuses a forced
   // public.whatsapp_outbox, so 114b must run first wherever both are pending.
@@ -2125,6 +2279,76 @@ describe('database migrations', () => {
     expect(at('115_admin_ops_health.sql')).toBe(at('114b_access_manifest_alignment.sql') + 1);
     const ops = fs.readFileSync(path.join(migrationsDir, '115_admin_ops_health.sql'), 'utf8');
     expect(ops).toContain('whatsapp_outbox is FORCE ROW LEVEL SECURITY or not owned by jale_admin');
+  });
+
+  // Sprint 28 admin access: the trusted-browser table and the three Admins
+  // definers. On RDS the migration's own DO block is the only runtime check;
+  // these literals pin that it stays strict, and that the guards are raised
+  // with the codes the console maps.
+  it('120 adds the trusted-browser table and the Admins definers with their guards, closed to all but the console', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '120_admin_access.sql'), 'utf8');
+    const code = sql.replace(/--[^\n]*/g, '');
+
+    expect(sql).toContain('Run manually AFTER 117_admin_queues.sql,');
+    expect(sql).toContain('connected as jale_admin. Forward-only (ADR-005)');
+    expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+    expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+    expect(sql.indexOf("SET LOCAL lock_timeout = '5s';")).toBeGreaterThan(sql.indexOf('BEGIN;'));
+    expect(code).toMatch(/^[\x00-\x7F]*$/);
+    // No password, no role switch (a statement, not the role column), no drop,
+    // truncate or delete.
+    expect(code).not.toMatch(/PASSWORD|^\s*(RE)?SET\s+(LOCAL\s+|SESSION\s+)?ROLE\b(?!\s*=)|\bDROP\b|\bTRUNCATE\b|\bDELETE\s+FROM\b/im);
+
+    // The table: a hash of the device key, never the key; a seven-day window;
+    // a reason exactly when ended; one live row per admin and device.
+    expect(code).toContain('CREATE TABLE public.admin_trusted_devices (');
+    expect(code).toContain("device_key_hash CHAR(64)    NOT NULL CHECK (device_key_hash ~ '^[0-9a-f]{64}$')");
+    expect(code).toContain("end_reason      TEXT        CHECK (end_reason IN ('expired', 'admin_deactivated', 'signed_out_everywhere'))");
+    expect(code).toContain("CONSTRAINT admin_trusted_devices_seven_days CHECK (expires_at = trusted_at + interval '7 days')");
+    expect(code).toContain('CONSTRAINT admin_trusted_devices_ending CHECK ((ended_at IS NULL) = (end_reason IS NULL))');
+    expect(code).toContain(
+      'CREATE UNIQUE INDEX admin_trusted_devices_live_key\n'
+      + '  ON public.admin_trusted_devices (admin_user_id, device_key_hash)\n'
+      + '  WHERE ended_at IS NULL;',
+    );
+    expect(code).toContain('ALTER TABLE public.admin_trusted_devices FORCE ROW LEVEL SECURITY;');
+    expect(code.match(/CREATE POLICY/g)).toHaveLength(4);
+    expect(code.match(/^GRANT /gm)).toHaveLength(6);
+    expect(code).toContain('GRANT SELECT ON public.admin_trusted_devices TO jale_admin_console;');
+    expect(code).toContain('GRANT INSERT (admin_user_id, device_key_hash, expires_at) ON public.admin_trusted_devices TO jale_admin_console;');
+    expect(code).toContain('GRANT UPDATE (ended_at, end_reason) ON public.admin_trusted_devices TO jale_admin_console;');
+
+    // Three definers, owned by jale_admin, closed to PUBLIC, the console only.
+    for (const [name, args] of [
+      ['admin_user_invite_record', '(UUID, TEXT, TEXT, TEXT)'],
+      ['admin_user_set_role', '(UUID, UUID, TEXT)'],
+      ['admin_user_set_active', '(UUID, UUID, BOOLEAN)'],
+    ]) {
+      const body = code.match(new RegExp(`CREATE FUNCTION public\\.${name}\\([\\s\\S]*?\\nEND \\$\\$;`))?.[0] ?? '';
+      expect(body).toContain('LANGUAGE plpgsql\nSECURITY DEFINER\nSET search_path = pg_catalog, pg_temp\n');
+      // Every guard decides after the superadmin rows are locked.
+      expect(body.indexOf('FOR UPDATE')).toBeGreaterThan(0);
+      expect(code).toContain(`ALTER FUNCTION public.${name}${args} OWNER TO jale_admin;`);
+      expect(code).toContain(`REVOKE ALL ON FUNCTION public.${name}${args} FROM PUBLIC;`);
+      expect(code).toContain(`GRANT EXECUTE ON FUNCTION public.${name}${args} TO jale_admin_console;`);
+    }
+    for (const [error, sqlstate] of [
+      ['admin_invalid_input', '22023'],
+      ['admin_forbidden', '42501'],
+      ['admin_self_change', '55000'],
+      ['admin_last_superadmin', '55000'],
+      ['admin_not_found', 'P0002'],
+      ['admin_already_exists', '23505'],
+    ]) {
+      expect(code).toContain(`RAISE EXCEPTION '${error}' USING ERRCODE = '${sqlstate}';`);
+      // Documented in the header for the code that maps it.
+      expect(sql).toMatch(new RegExp(`--\\s+${error}\\s+${sqlstate}\\b`));
+    }
+    // Deactivation ends the admin's live trusted browsers.
+    expect(code).toContain("SET ended_at = now(), end_reason = 'admin_deactivated'");
+    // The self-audit fails closed on drift.
+    expect(sql).toContain('migration 120:');
+    expect(code).toContain("COALESCE(p.proconfig @> ARRAY['search_path=pg_catalog, pg_temp'], false)");
   });
 
   // 114b aligns the catalog with the reviewed access manifest. Where there is
@@ -2178,6 +2402,308 @@ describe('database migrations', () => {
     expect(code.indexOf('connect as jale_admin')).toBeLessThan(code.indexOf('NO FORCE ROW LEVEL SECURITY'));
     expect(code.indexOf('lacks CREATE on the database')).toBeLessThan(code.indexOf('NO FORCE ROW LEVEL SECURITY'));
     expect(code.indexOf('still forced or missing')).toBeGreaterThan(code.indexOf('ALTER SCHEMA public OWNER TO jale_admin;'));
+  });
+
+  // Sprint 28 support mode. On RDS the migration's own DO blocks are the
+  // only runtime check; these literals pin the shape the bot and the console
+  // rely on (support-mode-121.integration.test.ts proves the behaviour).
+  it('121 adds support mode: two conversation columns, the media table, seven definers and one email policy', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '121_whatsapp_support_mode.sql'), 'utf8');
+    const code = sql.replace(/--[^\n]*/g, '');
+
+    expect(sql).toContain('-- Run manually AFTER 117_admin_queues.sql,\n-- connected as jale_admin. Forward-only (ADR-005).');
+    expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+    expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+    expect(code).toMatch(/^[\x00-\x7F]*$/);
+    expect(sql.indexOf("SET LOCAL lock_timeout = '5s';")).toBeGreaterThan(sql.indexOf('BEGIN;'));
+    expect(sql.indexOf('DO $$')).toBeGreaterThan(sql.indexOf("SET LOCAL lock_timeout = '5s';"));
+
+    // Bot-only state on the conversation row.
+    expect(code).toContain(
+      'ALTER TABLE public.whatsapp_conversations\n'
+      + '  ADD COLUMN support_case_id UUID REFERENCES public.admin_cases(id) ON DELETE SET NULL,\n'
+      + '  ADD COLUMN support_last_activity_at TIMESTAMPTZ;\n',
+    );
+
+    // The media table: forced row security, one gated policy for the
+    // definers' owner, no grant to any login.
+    expect(code).toContain('CREATE TABLE public.support_case_media (');
+    expect(code).toContain('ALTER TABLE public.support_case_media FORCE ROW LEVEL SECURITY;');
+    expect(code.match(/CREATE POLICY/g)).toHaveLength(2);
+    expect(code).toMatch(new RegExp(
+      'CREATE POLICY support_case_media_definer_access\\s+ON public\\.support_case_media FOR ALL\\s+TO jale_admin\\s+'
+      + "USING \\(current_setting\\('app\\.support_case_media', true\\) = 'on'\\)\\s+"
+      + "WITH CHECK \\(current_setting\\('app\\.support_case_media', true\\) = 'on'\\);",
+    ));
+    expect(code).toMatch(new RegExp(
+      'CREATE POLICY email_outbox_admin_support_insert\\s+ON public\\.email_outbox FOR INSERT\\s+TO jale_admin\\s+'
+      + "WITH CHECK \\(source_type = 'admin_support_case'\\);",
+    ));
+    expect(code).not.toMatch(/GRANT\s+(SELECT|INSERT|UPDATE|DELETE|ALL)\b/);
+    expect(code).toContain("interval '90 days'");
+
+    // Seven definers, each with the pinned search path and no PUBLIC execute;
+    // six for the WhatsApp login, the email fan-out for no login at all.
+    const fns = [...code.matchAll(/CREATE FUNCTION (public\.support_[a-z_]+)\(/g)].map((m) => m[1]);
+    expect(fns).toEqual([
+      'public.support_notify_admins',
+      'public.support_open_case',
+      'public.support_append_message',
+      'public.support_mode_state',
+      'public.support_reentry_case',
+      'public.support_record_mode_change',
+      'public.support_record_admin_delivery',
+    ]);
+    expect(code.match(/SECURITY DEFINER\nSET search_path = pg_catalog, pg_temp\n/g)).toHaveLength(7);
+    for (const fn of fns) {
+      expect(code).toMatch(new RegExp(`REVOKE ALL ON FUNCTION ${fn.replace('.', '\\.')}\\([^)]*\\) FROM PUBLIC;`));
+    }
+    const grants = [...code.matchAll(/GRANT EXECUTE ON FUNCTION (public\.support_[a-z_]+)\([^)]*\) TO ([a-z_]+);/g)]
+      .map((m) => `${m[1]} ${m[2]}`);
+    expect(grants).toEqual(fns.filter((fn) => fn !== 'public.support_notify_admins').map((fn) => `${fn} jale_whatsapp`));
+
+    // The email: an https origin only, one row per active admin, a fixed text
+    // that names no worker, number or message.
+    const notify = code.slice(code.indexOf('CREATE FUNCTION public.support_notify_admins('), code.indexOf('CREATE FUNCTION public.support_open_case('));
+    expect(notify).toContain("'^https://[a-z0-9.-]+(:[0-9]+)?$'");
+    expect(notify).toContain('FROM public.admin_users a');
+    expect(notify).toContain('WHERE a.active');
+    expect(notify).toContain("'admin-support-case:' || p_case_id::text || ':' || a.id::text");
+    expect(notify).toContain("'New support case in the Jale admin console'");
+    expect(notify).toContain("'A worker asked for help on WhatsApp. Open the case: '");
+    expect(notify).toContain("'/inbox/support/'");
+    expect(notify).not.toMatch(/whatsapp_conversations|whatsapp_number|details|summary|lastMessage/);
+
+    // Re-entry window and the dedupe lock key.
+    expect(code).toContain("interval '72 hours'");
+    expect(code).toContain("hashtextextended('admin-support-case:' || p_conversation_id::text, 0)");
+
+    // Self-check before COMMIT.
+    expect(sql).toContain('migration 121: % has the wrong owner, security, search_path or grants');
+    expect(sql.lastIndexOf('migration 121:')).toBeLessThan(sql.indexOf('COMMIT;'));
+  });
+
+  // Sprint 28 admin Inbox. On RDS the migration's own DO blocks are the only
+  // runtime check; these literals pin what the console relies on
+  // (admin-inbox-122.integration.test.ts proves the behaviour).
+  // Text checks only; admin-analytics-s28.integration.test.ts proves the figures.
+  it('123 adds nine console read definers, recreates the billing inbox now with a 24-hour count, and two gated reads', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '123_admin_analytics_s28.sql'), 'utf8');
+    const code = sql.replace(/--[^\n]*/g, '');
+
+    expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+    expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+    expect(code).toMatch(/^[\x00-\x7F]*$/);
+    expect(sql).toContain('-- Run manually AFTER 122_admin_inbox.sql,');
+    const iLock = sql.indexOf("SET LOCAL lock_timeout = '5s';");
+    expect(iLock).toBeGreaterThan(sql.indexOf('BEGIN;'));
+    expect(sql.indexOf('DO $$')).toBeGreaterThan(iLock);
+    expect(sql.indexOf('CREATE POLICY')).toBeGreaterThan(sql.indexOf('DO $$'));
+
+    // Exactly two policies, 089's gate verbatim, SELECT-only, jale_admin.
+    expect(sql.match(/CREATE POLICY/g)).toHaveLength(2);
+    for (const table of ['identity_lockout_resets', 'employer_candidate_rankings']) {
+      expect(sql).toMatch(new RegExp(
+        `CREATE POLICY ${table}_admin_analytics_read\\s+ON public\\.${table} FOR SELECT\\s+TO jale_admin\\s+`
+        + "USING \\(current_setting\\('app\\.admin_analytics_read', true\\) = 'on'\\);",
+      ));
+    }
+
+    // Lock ordering. Each policy statement holds ACCESS EXCLUSIVE on its
+    // table until COMMIT, so the policies come after every function, the
+    // grants and the smoke calls of the eight functions that read neither
+    // table; only the policy check, the two functions that read those tables
+    // and the bounds checks run after them.
+    const firstPolicy = code.indexOf('CREATE POLICY');
+    const lastPolicy = code.lastIndexOf('CREATE POLICY');
+    expect(firstPolicy).toBeGreaterThan(code.lastIndexOf('CREATE FUNCTION'));
+    expect(firstPolicy).toBeGreaterThan(code.lastIndexOf('GRANT EXECUTE ON FUNCTION'));
+    const earlySmokes = [
+      'SELECT * FROM public.admin_analytics_paying_weekly(4)',
+      'SELECT * FROM public.admin_analytics_case_aging()',
+      'SELECT * FROM public.admin_analytics_case_resolution(4)',
+      "SELECT * FROM public.admin_analytics_onboarding_steps(4, ''all'')",
+      'SELECT * FROM public.admin_analytics_identity_funnel(4)',
+      'SELECT * FROM public.admin_analytics_billing_inbox_now()',
+      'SELECT * FROM public.admin_analytics_home_metrics()',
+      'SELECT * FROM public.admin_analytics_system_health()',
+    ];
+    for (const smoke of earlySmokes) {
+      expect(code.indexOf(smoke)).toBeGreaterThan(code.lastIndexOf('GRANT EXECUTE ON FUNCTION'));
+      expect(code.lastIndexOf(smoke)).toBeLessThan(firstPolicy);
+    }
+    for (const late of [
+      'a gated read policy is missing or drifted',
+      'SELECT * FROM public.admin_analytics_reset_reasons(30)',
+      'SELECT * FROM public.admin_analytics_ranking_freshness()',
+      'SELECT * FROM public.admin_analytics_paying_weekly(0)',
+      'SELECT * FROM public.admin_analytics_reset_reasons(91)',
+    ]) {
+      expect(code.indexOf(late)).toBeGreaterThan(lastPolicy);
+    }
+
+    // No index, table grant, FORCE or other drop: only the billing inbox's
+    // return type change, recreated and re-granted below.
+    expect(sql).not.toMatch(/CREATE INDEX|GRANT\s+(SELECT|INSERT|UPDATE|DELETE|ALL)|FORCE ROW LEVEL SECURITY;|ALTER TABLE/);
+    expect(code.match(/DROP [A-Z]+/g)).toEqual(['DROP FUNCTION']);
+    expect(sql).toContain('DROP FUNCTION public.admin_analytics_billing_inbox_now();\n\nCREATE FUNCTION public.admin_analytics_billing_inbox_now()');
+
+    const fns = [...code.matchAll(/CREATE FUNCTION public\.(\w+)\(([^)]*)\)/g)].map((m) => m[1]);
+    expect(fns).toEqual([
+      'admin_analytics_paying_weekly', 'admin_analytics_reset_reasons', 'admin_analytics_case_aging',
+      'admin_analytics_case_resolution', 'admin_analytics_onboarding_steps', 'admin_analytics_identity_funnel',
+      'admin_analytics_ranking_freshness', 'admin_analytics_billing_inbox_now', 'admin_analytics_home_metrics',
+      'admin_analytics_system_health',
+    ]);
+    // Every one a definer with the pinned path, owned by jale_admin, revoked
+    // from PUBLIC and executable by the console alone.
+    expect(code.match(/SECURITY DEFINER\s+SET search_path = pg_catalog, pg_temp/g)).toHaveLength(fns.length);
+    for (const fn of fns) {
+      expect(code).toMatch(new RegExp(`ALTER FUNCTION public\\.${fn}\\([^)]*\\) OWNER TO jale_admin;`));
+      expect(code).toMatch(new RegExp(`REVOKE ALL ON FUNCTION public\\.${fn}\\([^)]*\\) FROM PUBLIC;`));
+      expect(code).toMatch(new RegExp(`GRANT EXECUTE ON FUNCTION public\\.${fn}\\([^)]*\\) TO jale_admin_console;`));
+    }
+    expect(code.match(/GRANT EXECUTE ON FUNCTION [^;]+ TO (\w+);/g)!.every((g) => g.endsWith('TO jale_admin_console;'))).toBe(true);
+
+    // Each function validates its arguments before it opens the gate.
+    for (const piece of code.split(/CREATE FUNCTION /).slice(1)) {
+      const body = piece.slice(0, piece.indexOf('END $$;'));
+      const gate = body.indexOf("PERFORM set_config('app.admin_analytics_read', 'on', true);");
+      expect(gate).toBeGreaterThan(0);
+      const raise = body.indexOf('RAISE EXCEPTION');
+      if (raise !== -1) expect(raise).toBeLessThan(gate);
+    }
+
+    // No column that could name a person or a number leaves a function.
+    const results = [...code.matchAll(/RETURNS TABLE \(([^)]*)\)/g)].map((m) => m[1]).join(',');
+    expect(results).not.toMatch(/phone|whatsapp_number|email|cognito_sub|note|user_id|employer_id|challenge_id|case_id|job_id/);
+  });
+
+  it('122 adds case numbers, the resets and request tables, and the Inbox definers', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '122_admin_inbox.sql'), 'utf8');
+    const code = sql.replace(/--[^\n]*/g, '');
+
+    expect(sql).toContain('-- Run manually AFTER 121_whatsapp_support_mode.sql,\n-- connected as jale_admin. Forward-only (ADR-005).');
+    expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+    expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+    expect(code).toMatch(/^[\x00-\x7F]*$/);
+    expect(sql.indexOf("SET LOCAL lock_timeout = '5s';")).toBeGreaterThan(sql.indexOf('BEGIN;'));
+    expect(sql.indexOf('DO $$')).toBeGreaterThan(sql.indexOf("SET LOCAL lock_timeout = '5s';"));
+
+    // Case numbers: existing cases numbered in creation order, then an
+    // identity that continues after them, unique.
+    const backfill = sql.slice(sql.indexOf('-- BEGIN case_number backfill'), sql.indexOf('-- END case_number backfill'));
+    expect(backfill).toContain('ALTER TABLE public.admin_cases ADD COLUMN case_number BIGINT;');
+    expect(backfill).toContain('pg_catalog.row_number() OVER (ORDER BY k.created_at, k.id)');
+    expect(backfill).toContain('ALTER TABLE public.admin_cases ALTER COLUMN case_number SET NOT NULL;');
+    expect(backfill).toContain('ALTER TABLE public.admin_cases ALTER COLUMN case_number ADD GENERATED BY DEFAULT AS IDENTITY;');
+    expect(backfill).toContain('ALTER TABLE public.admin_cases ADD CONSTRAINT admin_cases_case_number_key UNIQUE (case_number);');
+    expect(backfill.indexOf('SET NOT NULL')).toBeGreaterThan(backfill.indexOf('UPDATE public.admin_cases'));
+
+    // Two tables: forced row security, one gated policy each for the
+    // definers' owner, no grant to any login.
+    for (const table of ['identity_lockout_resets', 'admin_inbox_requests']) {
+      expect(code).toContain(`CREATE TABLE public.${table} (`);
+      expect(code).toContain(`ALTER TABLE public.${table} FORCE ROW LEVEL SECURITY;`);
+      expect(code).toMatch(new RegExp(
+        `CREATE POLICY ${table}_definer_access\\s+ON public\\.${table} FOR ALL\\s+TO jale_admin\\s+`
+        + `USING \\(current_setting\\('app\\.${table}', true\\) = 'on'\\)\\s+`
+        + `WITH CHECK \\(current_setting\\('app\\.${table}', true\\) = 'on'\\);`,
+      ));
+    }
+    expect(code.match(/CREATE POLICY/g)).toHaveLength(2);
+    expect(code).not.toMatch(/GRANT\s+(SELECT|INSERT|UPDATE|DELETE|ALL)\b/);
+    expect(code).toContain("'codes_not_arriving', 'worker_confused', 'typo_in_details',\n                  'identity_confirmed_elsewhere', 'other'");
+    expect(code).toContain('BEFORE UPDATE OF challenge_id ON public.identity_lockout_resets');
+
+    // The console no longer writes the outbox itself.
+    expect(code).toContain('DROP POLICY whatsapp_outbox_console_insert ON public.whatsapp_outbox;\n'
+      + 'REVOKE INSERT ON public.whatsapp_outbox FROM jale_admin_console;');
+
+    // Sixteen functions, every one with the pinned search path and no PUBLIC
+    // execute; twelve definers; the console executes seven.
+    const fns = [...code.matchAll(/CREATE FUNCTION (public\.[a-z0-9_]+)\(/g)].map((m) => m[1]);
+    expect(fns).toEqual([
+      'public.identity_lockout_resets_forget_phone',
+      'public.admin_inbox_actor_role',
+      'public.admin_support_last_inbound',
+      'public.admin_identity_challenge_state',
+      'public.admin_support_one_line',
+      'public.admin_support_utf16_length',
+      'public.admin_inbox_request_seen',
+      'public.admin_inbox_request_remember',
+      'public.admin_support_enqueue',
+      'public.admin_support_case_view',
+      'public.admin_support_media_link',
+      'public.admin_support_reveal_phone',
+      'public.admin_queue_support_message',
+      'public.admin_identity_challenge_detail',
+      'public.admin_reset_identity_lockout',
+      'public.admin_open_support_from_lockout',
+    ]);
+    expect(code.match(/SET search_path = pg_catalog, pg_temp\n/g)).toHaveLength(16);
+    expect(code.match(/SECURITY DEFINER\nSET search_path = pg_catalog, pg_temp\n/g)).toHaveLength(12);
+    for (const fn of fns) {
+      expect(code).toMatch(new RegExp(`REVOKE ALL ON FUNCTION ${fn.replace('.', '\\.')}\\([^)]*\\) FROM PUBLIC;`));
+    }
+    const grants = [...code.matchAll(/GRANT EXECUTE ON FUNCTION (public\.[a-z_]+)\([^)]*\) TO ([a-z_]+);/g)]
+      .map((m) => `${m[1]} ${m[2]}`);
+    expect(grants).toEqual(fns.slice(9).map((fn) => `${fn} jale_admin_console`));
+
+    // Refusal codes and the template cap the console relies on.
+    for (const refusal of [
+      "'case_closed' USING ERRCODE = 'P0001'",
+      "'reply_too_long_for_template' USING ERRCODE = 'P0001'",
+      "'no_reply_target' USING ERRCODE = 'P0001'",
+      "'not_locked' USING ERRCODE = 'P0001'",
+      "'not_found' USING ERRCODE = 'P0002'",
+      "'forbidden' USING ERRCODE = '42501'",
+      "'invalid_input' USING ERRCODE = '22023'",
+    ]) {
+      expect(code).toContain(`RAISE EXCEPTION ${refusal};`);
+    }
+    const queue = code.slice(code.indexOf('CREATE FUNCTION public.admin_queue_support_message('),
+      code.indexOf('CREATE FUNCTION public.admin_identity_challenge_detail('));
+    // A window closing within 30 minutes takes the template cap.
+    expect(queue).toContain("interval '23 hours 15 minutes'");
+    expect(queue).toContain('public.admin_support_utf16_length(public.admin_support_one_line(v_text)) > 250');
+    expect(queue).toContain('FROM public.whatsapp_conversations wc');
+    // The number is read in SQL from the case's conversation, never passed in.
+    expect(queue).toContain('CREATE FUNCTION public.admin_queue_support_message(\n  p_actor UUID,\n  p_case_id UUID,\n'
+      + '  p_request_id UUID,\n  p_kind TEXT,\n  p_text TEXT\n)');
+    expect(queue).not.toMatch(/\bp_(number|phone|whatsapp_number)\b/);
+    const enqueue = code.slice(code.indexOf('CREATE FUNCTION public.admin_support_enqueue('),
+      code.indexOf('CREATE FUNCTION public.admin_support_case_view('));
+    expect(enqueue).toContain("'admin_support_reply_v2_' || p_language");
+    expect(enqueue).toContain("'admin-' || p_kind || ':' || p_request_id::text");
+    expect(enqueue).toContain("'admin_reply_queued'");
+
+    // The reset: the pre-auth save's lock, the cleared lock state, and the
+    // send history dropped; nothing else of the context changes.
+    const reset = code.slice(code.indexOf('CREATE FUNCTION public.admin_reset_identity_lockout('),
+      code.indexOf('CREATE FUNCTION public.admin_open_support_from_lockout('));
+    expect(reset).toContain('pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(v_hash, 0))');
+    expect(reset).toContain("'You can verify again now. Reply RESEND to get a new code.'");
+    expect(reset).toContain("U&'Ya puedes verificar de nuevo. Responde REENVIAR para recibir un c\\00F3digo nuevo.'");
+    expect(reset).toContain("SET status = 'pending',\n         attempts = 0,\n         locked_until = NULL,\n         expires_at = NULL,\n"
+      + "         context = ch.context - 'otpSendHistory',");
+    expect(reset).toContain("'lockout_reset'");
+    // The detail counts the resets of the number's earlier challenges only;
+    // this challenge's own resets are in its timeline.
+    const detail = code.slice(code.indexOf('CREATE FUNCTION public.admin_identity_challenge_detail('),
+      code.indexOf('CREATE FUNCTION public.admin_reset_identity_lockout('));
+    expect(detail).toContain('WHERE r.phone_hash = c.phone_hash\n     AND r.challenge_id IS DISTINCT FROM c.id;');
+    // The open-support action shares the bot's dedupe lock key (121).
+    expect(code).toContain("hashtextextended('admin-support-case:' || v_conv::text, 0)");
+
+    // Repeats: one ledger, fingerprints only, 24 hours.
+    expect(code).toContain("hashtextextended('admin-inbox-request:' || p_actor::text || ':' || p_request_id::text, 0)");
+    expect(code).toContain("r.created_at < pg_catalog.now() - interval '24 hours'");
+
+    // Self-check before COMMIT.
+    expect(sql).toContain('migration 122: % has the wrong owner, security, search_path or grants');
+    expect(sql).toContain('migration 122: the console can still insert into whatsapp_outbox');
+    expect(sql.lastIndexOf('migration 122:')).toBeLessThan(sql.indexOf('COMMIT;'));
   });
 
   // Same reason as the 082/088/089 blocks above: on RDS there is no Jest, so
@@ -4410,6 +4936,122 @@ describe('database migrations', () => {
       expect(t).toContain('migration 112: % has the wrong owner, kind, security, search_path or grants');
       expect(t).toContain('migration 112: jale_ops grants are % instead of USAGE for the operator group and jale_admin');
       expect(t).toContain('migration 112: tables the operator owner reads without exactly one read policy: %');
+    });
+  });
+
+  // Sprint 28 (BE-4b): 025 gave the WhatsApp login UPDATE on every column of
+  // job_conversations, the employer's read marker included. 126 keeps the
+  // five columns the engine's paths write (lib/job-messaging.ts: the worker's
+  // reply, the button open and decline, the worker's close) and nothing else.
+  // On RDS the migration's own DO blocks are the only runtime check; these
+  // literals pin that they stay strict.
+  describe('126 narrows the WhatsApp login to the conversation columns its paths write, and revokes its INSERT', () => {
+    const file = '126_job_conversations_whatsapp_update_columns.sql';
+    const fullText = () => fs.readFileSync(path.join(migrationsDir, file), 'utf8');
+    // Part A only: everything before part B's first section (the lease).
+    const text = () => {
+      const sql = fullText();
+      const partB = sql.indexOf('-- \u2500\u2500 4. The lease skips an expired row (part B)');
+      expect(partB).toBeGreaterThan(-1);
+      return sql.slice(0, partB);
+    };
+    const COLUMNS = 'status, closed_at, last_message_at, last_worker_message_at, accepted_at';
+
+    it('runs as jale_admin in one transaction, ASCII only, with a lock timeout first', () => {
+      const sql = fullText();
+      const code = sql.replace(/--[^\n]*/g, '');
+      expect(sql).toContain('-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n');
+      expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+      expect(code).toMatch(/^[\x00-\x7F]*$/);
+      expect(sql.indexOf("SET LOCAL lock_timeout = '5s';")).toBeGreaterThan(sql.indexOf('BEGIN;'));
+      expect(sql.indexOf('DO $$')).toBeGreaterThan(sql.indexOf("SET LOCAL lock_timeout = '5s';"));
+      expect(code).toContain("IF current_user <> 'jale_admin' THEN");
+    });
+
+    it('revokes the table-wide UPDATE and the INSERT before granting the five columns, and changes nothing else', () => {
+      const code = text().replace(/--[^\n]*/g, '');
+      expect(code).toContain('REVOKE INSERT ON public.job_conversations FROM jale_whatsapp;');
+      expect(code.match(/^\s*REVOKE /gm)).toHaveLength(2);
+      const iRevoke = code.indexOf('REVOKE UPDATE ON public.job_conversations FROM jale_whatsapp;');
+      const iGrant = code.indexOf(`GRANT UPDATE (${COLUMNS}) ON public.job_conversations TO jale_whatsapp;`);
+      expect(iRevoke).toBeGreaterThan(-1);
+      // A table-level REVOKE also clears column grants, so the order matters.
+      expect(iGrant).toBeGreaterThan(iRevoke);
+      expect(code.match(/^\s*GRANT /gm)).toHaveLength(1);
+      expect(code).not.toMatch(/CREATE POLICY|DROP POLICY|ALTER TABLE|CREATE TABLE|CREATE (OR REPLACE )?FUNCTION|SECURITY DEFINER/);
+      expect(code).not.toMatch(/employer_last_read_at\s*[,)]\s*ON public\.job_conversations/);
+    });
+
+    it('closes by checking every column of the table against the five, and the table-level rights', () => {
+      const sql = text();
+      const code = sql.replace(/--[^\n]*/g, '');
+      expect(code).toContain("v_columns CONSTANT TEXT[] := ARRAY['status', 'closed_at', 'last_message_at', 'last_worker_message_at', 'accepted_at'];");
+      expect(code).toContain("pg_catalog.has_column_privilege('jale_whatsapp', 'public.job_conversations'::regclass, a.attname, 'UPDATE')");
+      expect(code).toContain("pg_catalog.has_table_privilege('jale_whatsapp', 'public.job_conversations', 'UPDATE')");
+      expect(code).toContain("pg_catalog.has_table_privilege('jale_whatsapp', 'public.job_conversations', 'SELECT')");
+      expect(code).toContain("pg_catalog.has_any_column_privilege('jale_whatsapp', 'public.job_conversations', 'INSERT')");
+      expect(sql).toContain('migration 126: jale_whatsapp UPDATE rights on job_conversations drifted');
+      expect(sql).toContain('migration 126: jale_whatsapp still holds a table-level right it should not');
+    });
+
+    // Part B: the worker-intent drain honours worker_message_intents.expires_at.
+    // The DB pins are in whatsapp-worker-intent-043.integration.test.ts.
+    const partB = () => {
+      const sql = fullText();
+      return sql.slice(sql.indexOf('-- \u2500\u2500 4. The lease skips an expired row (part B)'));
+    };
+    const leaseFunction = (sql: string) => {
+      const start = sql.indexOf('CREATE OR REPLACE FUNCTION public.lease_worker_intent_outbox(p_limit INTEGER)');
+      expect(start).toBeGreaterThan(-1);
+      return sql.slice(start, sql.indexOf('END $$;', start) + 'END $$;'.length);
+    };
+
+    it("replaces 043's lease with exactly two added conditions and nothing else changed", () => {
+      const before = leaseFunction(fs.readFileSync(
+        path.join(migrationsDir, '043_whatsapp_worker_intent_transport.sql'), 'utf8')).split('\n');
+      const after = leaseFunction(partB()).split('\n');
+      expect(before.filter((line) => !after.includes(line))).toEqual([]);
+      expect(after.filter((line) => !before.includes(line)).map((line) => line.trim())).toEqual([
+        "-- 126: never past the intent's expiry.",
+        'AND (i.expires_at IS NULL OR i.expires_at > pg_catalog.now())',
+        '-- 126: an expired pending row is never sent, so it holds nothing back.',
+        "AND NOT (earlier_o.status = 'pending'",
+        'AND earlier_i.expires_at IS NOT NULL',
+        'AND earlier_i.expires_at <= pg_catalog.now())',
+      ]);
+    });
+
+    it('adds the expiry pass as a pinned definer for the WhatsApp login only, ending pending rows intents first', () => {
+      const code = partB().replace(/--[^\n]*/g, '');
+      expect(code).toContain('CREATE OR REPLACE FUNCTION public.expire_worker_intent_outbox()\nRETURNS TABLE (id UUID)\n'
+        + 'LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$');
+      expect(code).toContain('ALTER FUNCTION public.expire_worker_intent_outbox() OWNER TO jale_admin;');
+      expect(code).toContain('REVOKE ALL ON FUNCTION public.expire_worker_intent_outbox() FROM PUBLIC;');
+      expect(code).toContain('GRANT EXECUTE ON FUNCTION public.expire_worker_intent_outbox() TO jale_whatsapp;');
+      expect(code.match(/^\s*GRANT /gm)).toHaveLength(1);
+      expect(code.match(/^\s*REVOKE /gm)).toHaveLength(1);
+      // Pending rows only: a send_unknown row is the sender's to settle.
+      const pass = code.slice(code.indexOf('CREATE OR REPLACE FUNCTION public.expire_worker_intent_outbox()'));
+      expect(pass).not.toContain('send_unknown');
+      expect(pass.match(/o\.status = 'pending'/g)).toHaveLength(2);
+      // The intents are ended before the outbox row, so 043's delivery-state
+      // trigger finds no 'released' intent to mark 'failed'.
+      const iIntents = pass.indexOf("SET status = 'expired', decision_reason = 'intent_expired'");
+      const iOutbox = pass.indexOf("SET status = 'failed', next_attempt_at = NULL");
+      expect(iIntents).toBeGreaterThan(-1);
+      expect(iOutbox).toBeGreaterThan(iIntents);
+      expect(pass).toContain("last_error = 'worker intent expired before sending'");
+      expect(pass).not.toMatch(/attempt_count\s*=/);
+    });
+
+    it('closes by re-reading both functions: definer, owner, search_path, EXECUTE for the WhatsApp login and not PUBLIC', () => {
+      const sql = partB();
+      expect(sql).toContain("'public.lease_worker_intent_outbox(integer)',\n    'public.expire_worker_intent_outbox()'");
+      expect(sql).toContain('migration 126: % has the wrong owner, security or search_path');
+      expect(sql).toContain('migration 126: jale_whatsapp cannot execute %');
+      expect(sql).toContain('migration 126: PUBLIC can execute %');
+      expect(sql.indexOf('-- \u2500\u2500 6. Closing check (part B)')).toBeLessThan(sql.indexOf('COMMIT;'));
     });
   });
 });

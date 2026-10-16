@@ -25,6 +25,7 @@ import { ProgressRow } from '@/components/ui/progress-row';
 import { useToast } from '@/components/ui/toast';
 import { JobPostingCard } from '@/components/employer/JobPostingCard';
 import { PlanUsageMeter } from '@/components/employer/PlanUsageMeter';
+import { HireDetailsNeededBanner } from '@/components/employer/HireDetailsNeededBanner';
 import { SubscriptionBanner } from '@/components/employer/SubscriptionBanner';
 import { DeleteJobDialog } from '@/components/employer/DeleteJobDialog';
 import { PlanLimitDialog } from '@/components/employer/PlanLimitDialog';
@@ -34,7 +35,7 @@ import { PostJobButton } from '@/components/employer/PostJobButton';
 import { ApiError, deleteJob, getBilling, getJobs, listJobTemplates, updateJobStatus } from '@/lib/api/employer';
 import type { EmployerBilling, Job, JobCreatedOutcome } from '@/lib/api/employer';
 import { errorMessageKey } from '@/lib/api/errors';
-import { planLimitModel, subscriptionSignage } from '@/lib/plan-limit';
+import { isHealthyPaidPlan, planLimitModel, subscriptionSignage } from '@/lib/plan-limit';
 import type { PlanLimitModel } from '@/lib/plan-limit';
 import type { JobStatus, WritableJobStatus } from '@/lib/status';
 
@@ -237,6 +238,7 @@ export default function EmployerDashboardPage() {
 
     const jobs = useMemo(() => data?.jobs ?? [], [data]);
     const signage = useMemo(() => subscriptionSignage(data?.billing ?? null), [data]);
+    const healthyPlan = useMemo(() => isHealthyPaidPlan(data?.billing ?? null), [data]);
 
     const filteredJobs = useMemo(() => {
         let result = jobs;
@@ -256,6 +258,8 @@ export default function EmployerDashboardPage() {
     const closedCount = jobs.filter((job) => job.status === 'closed').length;
     const totalApplicants = jobs.reduce((sum, job) => sum + job.applicant_count, 0);
     const totalHired = jobs.reduce((sum, job) => sum + (job.hired_count ?? 0), 0);
+    // K4.4: hires still waiting on their start details, across every job.
+    const hiresNeedingDetails = jobs.reduce((sum, job) => sum + (job.hire_details_needed_count ?? 0), 0);
     const totalPositionsNeeded = jobs.reduce((sum, job) => sum + (job.number_of_workers_needed ?? 0), 0);
     const openRoles = jobs.reduce((sum, job) => sum + (job.open_count ?? 0), 0);
     const jobProgressPercent = share(totalHired, totalPositionsNeeded);
@@ -490,7 +494,8 @@ export default function EmployerDashboardPage() {
                                 changes what the buttons below it can do, so it is
                                 read first. It arrives with the jobs (one fetch), so
                                 it never pushes an already-read board down. */}
-                            <SubscriptionBanner signage={signage} locale={locale} />
+                            <SubscriptionBanner signage={signage} healthyPlan={healthyPlan} locale={locale} />
+                            <HireDetailsNeededBanner count={hiresNeedingDetails} href="/employer/applicants" />
 
                             {/* Full the first time, a one-line bar after that --
                                 the job list is what a returning employer came

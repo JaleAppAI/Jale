@@ -26,10 +26,13 @@ import {
 export function BottomTabBar({
     role,
     unreadCount = 0,
+    attentionCount = 0,
 }: {
     role: ShellRole;
     /** Unread WhatsApp threads, badged on the Messages tab. See `Sidebar`. */
     unreadCount?: number;
+    /** Applications that need the worker (F27). See `Sidebar`. */
+    attentionCount?: number;
 }) {
     const tShell = useTranslations('app_shell');
     const pathname = usePathname();
@@ -43,7 +46,7 @@ export function BottomTabBar({
                 {role === 'employer' ? (
                     <EmployerTabs pathname={pathname} unreadCount={unreadCount} />
                 ) : (
-                    <WorkerTabs pathname={pathname} />
+                    <WorkerTabs pathname={pathname} attentionCount={attentionCount} />
                 )}
             </ul>
         </nav>
@@ -58,13 +61,24 @@ export function BottomTabBar({
  * one hook or the other from a single component would be a conditional hook.
  */
 
-function WorkerTabs({ pathname }: { pathname: string }) {
+function WorkerTabs({ pathname, attentionCount }: { pathname: string; attentionCount: number }) {
     const t = useTranslations('header');
+    const tShell = useTranslations('app_shell');
     return (
         <>
-            {workerPrimaryNav.map((item) => (
-                <TabLink key={item.key} item={item} pathname={pathname} label={t(item.labelKey)} />
-            ))}
+            {workerPrimaryNav.map((item) => {
+                const badged = item.key === 'applications';
+                return (
+                    <TabLink
+                        key={item.key}
+                        item={item}
+                        pathname={pathname}
+                        label={t(item.labelKey)}
+                        badgeCount={badged ? attentionCount : 0}
+                        badgeLabel={badged ? tShell('applications_attention_badge', { count: attentionCount }) : undefined}
+                    />
+                );
+            })}
         </>
     );
 }
@@ -91,11 +105,13 @@ function TabLink({
     pathname,
     label,
     badgeCount = 0,
+    badgeLabel,
 }: {
     item: NavItem;
     pathname: string;
     label: string;
     badgeCount?: number;
+    badgeLabel?: string;
 }) {
     const active = isNavItemActive(item, pathname);
     return (
@@ -117,7 +133,7 @@ function TabLink({
                     <Icon name={item.icon} />
                     {badgeCount > 0 ? (
                         <span className="absolute -right-2.5 -top-1.5">
-                            <UnreadBadge count={badgeCount} tone="bar" />
+                            <UnreadBadge count={badgeCount} tone="bar" srLabel={badgeLabel} />
                         </span>
                     ) : null}
                 </span>

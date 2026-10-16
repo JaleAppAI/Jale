@@ -159,7 +159,17 @@ const CEILING = 470;
 // (POST /reports/{action}, POST and GET /public/reports/{action}) and their
 // three Lambda::Permissions: 12 resources, leaving 41 of headroom against
 // the 470 gate.
-const MEASURED_RESOURCES = 429;
+// → 433 once sprint 28's `POST /worker/jobs/{jobId}/view` (admin analytics
+// job view) added the `view` Resource, its POST + OPTIONS Methods and one
+// Lambda::Permission; it is served by the existing job detail Lambda, so no
+// Function, Role or log group: 4 resources, leaving 37 of headroom against
+// the 470 gate.
+// → 437 once sprint 28's F19 `PUT /employer/jobs/{jobId}/applicants/{workerId}/
+// hire-details` added the `{action}` Resource under the applicant, its PUT
+// and OPTIONS Methods and the Lambda::Permission, on the existing applicant
+// Lambda (no new Function): 4 resources, leaving 33 of headroom against the
+// 470 gate.
+const MEASURED_RESOURCES = 437;
 
 /**
  * Every `AWS::ApiGateway::Method` in the template, grouped by the resource it
@@ -500,6 +510,14 @@ describe('JaleApiStack resource ceiling (real bin/jale-app.ts composition)', () 
     ['POST', '/public/reports/upload', 'NONE'],
     ['POST', '/public/reports/attach', 'NONE'],
     ['GET', '/public/reports/config', 'NONE'],
+    // Sprint 28 admin analytics: the signed-in job view, served by the
+    // existing job detail Lambda (worker-job-dispatch.ts).
+    ['GET', '/worker/jobs/{jobId}', 'WorkerAuthorizer'],
+    ['POST', '/worker/jobs/{jobId}/view', 'WorkerAuthorizer'],
+    // F19 (sprint 28): the `{action}` child of an applicant, on the Lambda
+    // that already serves the bare applicant's status change.
+    ['PATCH', '/employer/jobs/{jobId}/applicants/{workerId}', 'EmployerAuthorizer'],
+    ['PUT', '/employer/jobs/{jobId}/applicants/{workerId}/hire-details', 'EmployerAuthorizer'],
   ];
 
   /**

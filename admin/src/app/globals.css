@@ -1,1628 +1,357 @@
-@import url('https://fonts.googleapis.com/css2?family=Lexend:wght@300;400;500;600;700;800&display=swap');
+@import "tailwindcss";
 
+/*
+ * Jale admin console styles (Tailwind v4).
+ *
+ * The :root and .dark token blocks below are copied byte for byte from
+ * frontend/src/app/globals.css, so the console looks like the Jale app.
+ * scripts/check-ui-token-drift.mjs fails when the two files disagree: change
+ * the frontend file first, then copy the blocks again.
+ *
+ * Lexend is loaded with next/font/google in src/app/layout.tsx, which sets
+ * --font-lexend on <html> and self-hosts the files; the CSP allows
+ * font-src 'self' only, so a Google Fonts @import would never load here.
+ *
+ * This is the admin's only stylesheet: the pre-Tailwind legacy.css was
+ * retired in sprint 28 phase 2.
+ */
+
+@custom-variant dark (&:is(.dark *));
+
+/* ===== JALE DESIGN TOKENS ============================================ */
 :root {
-  color-scheme: light;
-  --jale-blue-50: #eaf2ff;
+  /* Brand Blues */
+  --jale-blue-50:  #eaf2ff;
   --jale-blue-100: #cfe0ff;
   --jale-blue-200: #a8c5ff;
-  --jale-blue-500: #0179ff;
-  --jale-blue-600: #0064d6;
+  --jale-blue-300: #78a4ff;
+  --jale-blue-400: #4585ff;
+  /* The CTA blue. #0179FF only reached 4.05:1 under white, so every filled
+     button, wordmark and bubble label sat under AA; #0064d6 carries the same
+     hue at 5.54:1. */
+  --jale-blue-500: #0064d6;
+  /* Re-ramped: 500 moved down onto this stop's old value, which would have made
+     every `hover:bg-[var(--jale-blue-600)]` a no-op (blue-600's ONLY job in the
+     app is being 500's hover partner -- the three legal routes carry their own
+     private copies of these tokens). #005ac2 is the hue/saturation-preserving
+     midpoint of 500 and 700, so 500/600/700 stay monotonic with no duplicated
+     hex. The steps are near-even, not exactly even: 500 (0,100,214) -> 600
+     (0,90,194) is a per-channel delta of (0,10,20), and 600 -> 700 (0,80,173) is
+     (0,10,21) -- R pinned at 0, G exactly -10 twice, B -20 then -21 (the odd one
+     out is rounding, since the true midpoint of B is 193.5). Hover reads 1.17:1
+     darker than rest, and white on it is 6.48:1. */
+  --jale-blue-600: #005ac2;
   --jale-blue-700: #0050ad;
+  --jale-blue-800: #003d85;
   --jale-blue-900: #181855;
   --jale-blue-950: #0e0e3d;
-  --jale-teal-50: #e3faf4;
+
+  /* Brand Turquesa */
+  --jale-teal-50:  #e3faf4;
   --jale-teal-500: #21c3a4;
-  --jale-paper: #e3eaf2;
-  --jale-paper-2: #f4f6fa;
-  --jale-card: #ffffff;
-  --jale-input: #fafbfd;
-  --jale-divider: #d8dde6;
-  --jale-ink: #181855;
-  --jale-ink-2: #5b6480;
-  --jale-placeholder: #7b8498;
-  --jale-success: #1f9d55;
-  --jale-success-bg: #d9f2e2;
-  --jale-warning: #b65a00;
-  --jale-warning-bg: #fdebd0;
-  --jale-danger: #d4313c;
-  --jale-danger-bg: #fde2e3;
-  --bg: var(--jale-paper);
-  --panel: var(--jale-card);
-  --panel-soft: rgba(255, 255, 255, 0.76);
-  --panel-strong: #ffffff;
-  --border: var(--jale-divider);
-  --text: var(--jale-ink);
-  --muted: var(--jale-ink-2);
-  --accent: var(--jale-blue-500);
-  --accent-strong: var(--jale-blue-600);
-  --success: var(--jale-success);
-  --warning: var(--jale-warning);
-  --danger: var(--jale-danger);
-  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.04), 0 4px 16px rgba(0, 0, 0, 0.06);
-  --shadow-panel: 0 20px 50px -10px rgba(10, 23, 54, 0.25);
-  --shadow-focus: 0 0 0 3px rgba(1, 121, 255, 0.1);
-  --shadow-btn: 0 4px 12px rgba(1, 121, 255, 0.3);
-  --radius-card: 1rem;
+
+  /* Surfaces */
+  --jale-paper:    #e3eaf2;
+  --jale-paper-2:  #ccd7ea;
+  --jale-card:     #ebebeb;
+  --jale-input:    #f4f4f4;
+  --jale-divider:  #d1d1d1;
+  --jale-ink:      #181855;
+  --jale-ink-2:    #5b6480;
+  --jale-placeholder: #a1a9b8;
+  /* App-shell ground behind the sidebar + content column. */
+  --jale-shell:    #eef2f7;
+  /* Navy nav rail. A token (not a literal) so the dark theme can deepen it. */
+  --jale-sidebar:  #10143b;
+  /* Scrim behind modal panels. Token so dark mode can go darker than the
+     light theme's ink tint without every Modal call site knowing about it. */
+  --jale-backdrop: rgba(24,24,85,.45);
+
+  /* Semantic */
+  /* AA-contrast on white at small sizes. */
+  --jale-success:     #1f7a44;
+  --jale-success-bg:  #d9f2e2;
+  --jale-warning:     #b65a00;
+  --jale-warning-bg:  #fdebd0;
+  --jale-danger:      #d4313c;
+  --jale-danger-bg:   #fde2e3;
+
+  /* Semantic TEXT tones: darker pairs meant to sit ON the matching -bg tint
+     (AA at small sizes). The base --jale-success/-warning/-danger tokens are
+     tuned for white backgrounds; these are for tinted banners/toasts. */
+  --jale-success-text: #1f7a44;
+  --jale-warning-text: #8a4400;
+  --jale-danger-text:  #a51e28;
+
+  /* The hire celebration's header ground, as an OPAQUE colour.
+     Its only job is the text halo that keeps the header words legible where
+     confetti passes behind them, and a halo has to occlude. In light this is
+     `--jale-success-bg` verbatim; it exists as its own token because the dark
+     value of that one is rgba(31,122,68,.28) -- translucent, so a halo drawn
+     in it would let the confetti straight through and blur the words instead
+     of protecting them. */
+  --jale-hero-halo: #d9f2e2;
+
+  /* The tear line across the onboarding summary's job ticket, and the dashed
+     top edge of the stub that stands in for it -- one colour, so the stub
+     reads as torn off the ticket. The rgba components of --jale-blue-500
+     (#0064d6), tracked by hand like --shadow-focus below. Composites to 1.75:1
+     on the ticket's --jale-blue-50: decorative, it marks the tear and no more. */
+  --jale-perforation: rgba(0,100,214,.38);
+
+  /* Motion */
+  --motion-duration-fast: 150ms;
+  --motion-duration-base: 90ms;
+  --motion-duration-slow: 300ms;
+  --motion-ease-standard: linear;
+  --motion-ease-out: linear;
+
+  /* Mapped roles (used by Tailwind theme + components) */
+  --background:      var(--jale-paper);
+  --foreground:      var(--jale-ink);
+  --card:            var(--jale-card);
+  --card-foreground: var(--jale-ink);
+  --primary:         var(--jale-blue-500);
+  --primary-hover:   var(--jale-blue-600);
+  --primary-deep:    var(--jale-blue-900);
+  --primary-fg:      #ffffff;
+  --input:           var(--jale-input);
+  --input-focus:     #ffffff;
+  --muted:           var(--jale-ink-2);
+  --placeholder:     var(--jale-placeholder);
+  --border:          var(--jale-divider);
+  --error:           var(--jale-danger);
+  --dot-color:       #6b7da4;
+
+  /* Elevation */
+  --shadow-card:  0 1px 2px rgba(0,0,0,.04), 0 4px 16px rgba(0,0,0,.06);
+  /* rgba components of --jale-blue-500 (#0064d6). CSS cannot take an alpha of a
+     hex var without color-mix, so these track the token by hand -- change both
+     if blue-500 ever moves again. */
+  --shadow-focus: 0 0 0 3px rgba(0,100,214,.10);
+  --shadow-btn:   0 4px 12px rgba(0,100,214,.30);
+  --shadow-modal: 0 20px 50px -10px rgba(10,23,54,.25);
+  /* Cast UPWARD: the docked job stub sits on the viewport's bottom edge and
+     the summary scrolls up under it. --jale-ink (#181855) at .10. */
+  --shadow-dock:  0 -6px 18px rgba(24,24,85,.10);
+
+  /* Radii */
+  --radius-card:  1rem;
   --radius-input: 0.625rem;
+  --radius-pill:  9999px;
+
+  /* Typography */
+  --font-sans: 'Lexend', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
-* {
-  box-sizing: border-box;
+/* ===== TAILWIND THEME MAP ============================================ */
+@theme inline {
+  --color-background:      var(--background);
+  --color-foreground:      var(--foreground);
+  --color-card:            var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary:         var(--primary);
+  --color-primary-hover:   var(--primary-hover);
+  --color-primary-deep:    var(--primary-deep);
+  --color-primary-fg:      var(--primary-fg);
+  --color-input:           var(--input);
+  --color-input-focus:     var(--input-focus);
+  --color-muted:           var(--muted);
+  --color-muted-foreground: var(--jale-ink-2);
+  --color-placeholder:     var(--placeholder);
+  --color-border:          var(--border);
+  --color-error:           var(--error);
+  --color-dot:             var(--dot-color);
+
+  --color-jale-blue-50:    var(--jale-blue-50);
+  --color-jale-blue-500:   var(--jale-blue-500);
+  --color-jale-blue-600:   var(--jale-blue-600);
+  --color-jale-blue-700:   var(--jale-blue-700);
+  --color-jale-blue-900:   var(--jale-blue-900);
+  --color-jale-teal-500:   var(--jale-teal-500);
+  --color-jale-success:    var(--jale-success);
+  --color-jale-success-bg: var(--jale-success-bg);
+  --color-jale-warning:    var(--jale-warning);
+  --color-jale-warning-bg: var(--jale-warning-bg);
+  --color-jale-danger:     var(--jale-danger);
+  --color-jale-danger-bg:  var(--jale-danger-bg);
+  --color-jale-paper:      var(--jale-paper);
+  --color-jale-paper-2:    var(--jale-paper-2);
+  --color-jale-ink:        var(--jale-ink);
+  --color-jale-ink-2:      var(--jale-ink-2);
+  --color-jale-divider:    var(--jale-divider);
+  --color-jale-shell:      var(--jale-shell);
+  --color-jale-sidebar:    var(--jale-sidebar);
+  --color-jale-success-text: var(--jale-success-text);
+  --color-jale-warning-text: var(--jale-warning-text);
+  --color-jale-danger-text:  var(--jale-danger-text);
+
+  --ease-standard:         var(--motion-ease-standard);
+  --ease-out-soft:         var(--motion-ease-out);
+
+  --shadow-card:           var(--shadow-card);
+  --shadow-focus:          var(--shadow-focus);
+  --shadow-btn:            var(--shadow-btn);
+  --shadow-modal:          var(--shadow-modal);
+  --shadow-dock:           var(--shadow-dock);
+
+  --radius-card:           var(--radius-card);
+  --radius-input:          var(--radius-input);
+
+  --font-sans: var(--font-lexend), 'Lexend', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
-html,
+/* ===== BASE ========================================================== */
+html, body {
+  max-width: 100vw;
+  /* `clip`, not `hidden`: `hidden` makes html/body a scroll container and
+     breaks `position: sticky` on the console's sidebar and top bar. */
+  overflow-x: clip;
+  /* next/font gives the self-hosted face a generated family name, reached
+     through --font-lexend; the stack after it is the fallback. */
+  font-family: var(--font-lexend, 'Lexend'), -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
 body {
-  margin: 0;
-  min-height: 100%;
-  background-color: var(--bg);
-  background-image: radial-gradient(circle, rgba(107, 125, 164, 0.5) 0.7px, transparent 0.7px);
+  background-color: var(--background);
+  background-image: radial-gradient(circle, var(--dot-color) 0.7px, transparent 0.7px);
   background-size: 28px 28px;
-  color: var(--text);
-  font-family: 'Lexend', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  color: var(--foreground);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-a {
-  color: inherit;
-  text-decoration: none;
-}
-
-button,
-input,
-textarea,
-select {
-  font: inherit;
-}
-
-body {
-  line-height: 1.5;
-}
-
-h1,
-h2,
-h3,
-p {
-  margin: 0;
-}
-
-.admin-shell {
-  width: min(100%, 1280px);
-  margin: 0 auto;
-  padding: 24px;
-}
-
-.admin-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  position: sticky;
-  top: 12px;
-  z-index: 10;
-  margin-bottom: 24px;
-  padding: 14px 16px;
-  border: 1px solid rgba(216, 221, 230, 0.9);
-  border-radius: var(--radius-card);
-  background: rgba(255, 255, 255, 0.9);
-  box-shadow: var(--shadow-card);
-  backdrop-filter: blur(14px);
-}
-
-.brand {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 8px;
-  min-width: 210px;
-}
-
-.brand strong {
-  color: var(--jale-blue-500);
-  font-size: 1.25rem;
-  font-weight: 800;
-  letter-spacing: -0.03em;
-  line-height: 1;
-}
-
-.brand span,
-.muted {
-  color: var(--muted);
-}
-
-.brand span {
-  color: var(--jale-blue-900);
-  font-size: 0.92rem;
-  font-weight: 700;
-}
-
-.nav {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.nav a,
-.nav button,
-.button,
-.badge,
-.pill {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--panel-strong);
-  color: var(--text);
-  font-weight: 650;
-  line-height: 1.2;
-}
-
-.nav a,
-.nav button,
-.button {
-  min-height: 40px;
-  padding: 10px 14px;
-  cursor: pointer;
-  transition: border-color 150ms ease, box-shadow 150ms ease, color 150ms ease, background-color 150ms ease, transform 150ms ease;
-}
-
-.nav a:hover,
-.nav button:hover:not(:disabled),
-.button:hover:not(:disabled) {
-  border-color: rgba(1, 121, 255, 0.5);
-  color: var(--jale-blue-700);
-  box-shadow: var(--shadow-focus);
-  transform: translateY(-1px);
-}
-
-.nav a:focus-visible,
-.nav button:focus-visible,
-.button:focus-visible {
-  outline: none;
-  border-color: var(--jale-blue-500);
-  box-shadow: var(--shadow-focus);
-}
-
-.nav a:active,
-.nav button:active:not(:disabled),
-.button:active:not(:disabled) {
-  transform: scale(0.98);
-}
-
-.button {
-  background: var(--jale-blue-500);
-  border-color: var(--jale-blue-500);
-  color: #ffffff;
-  box-shadow: var(--shadow-btn);
-  text-transform: capitalize;
-}
-
-.button.secondary {
-  background: var(--jale-blue-50);
-  border-color: transparent;
-  color: var(--jale-blue-700);
-  box-shadow: none;
-}
-
-.button.secondary:hover:not(:disabled) {
-  background: var(--jale-blue-100);
-  color: var(--jale-blue-700);
-}
-
-.button:hover:not(:disabled) {
-  background: var(--jale-blue-600);
-  color: #ffffff;
-}
-
-.button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-  transform: none;
-}
-
-.button.danger {
-  background: var(--jale-danger);
-  border-color: var(--jale-danger);
-  color: #ffffff;
-  box-shadow: 0 4px 12px rgba(212, 49, 60, 0.18);
-}
-
-.action-note {
-  display: grid;
-  gap: 6px;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--jale-paper-2);
-}
-
-.action-form-grid,
-.action-form {
-  display: grid;
-  gap: 10px;
-}
-
-.action-form {
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: #ffffff;
-}
-
-.action-form input,
-.action-form textarea,
-.field input,
-.field textarea,
-.field select {
-  width: 100%;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-input);
-  padding: 11px 12px;
-  background: var(--jale-input);
-  color: var(--text);
-  outline: none;
-  transition: background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
-}
-
-.action-form input::placeholder,
-.action-form textarea::placeholder,
-.field input::placeholder,
-.field textarea::placeholder {
-  color: var(--jale-placeholder);
-}
-
-.action-form input:focus,
-.action-form textarea:focus,
-.field input:focus,
-.field textarea:focus,
-.field select:focus {
-  background: #ffffff;
-  border-color: var(--jale-blue-500);
-  box-shadow: var(--shadow-focus);
-}
-
-.action-form textarea {
-  min-height: 84px;
-  resize: vertical;
-}
-
-.hero,
-.card,
-.panel {
-  border: 1px solid rgba(216, 221, 230, 0.92);
-  border-radius: var(--radius-card);
-  background: rgba(255, 255, 255, 0.94);
-  padding: 22px;
-  box-shadow: var(--shadow-card);
-}
-
-.hero {
-  margin-bottom: 20px;
-  background: #ffffff;
-  box-shadow: var(--shadow-panel);
-}
-
-.hero h1,
-.card h1,
-.card h2,
-.panel h2 {
-  margin-top: 0;
-  color: var(--jale-ink);
-  letter-spacing: 0;
-  text-wrap: balance;
-}
-
-.hero h1 {
-  max-width: 900px;
-  margin-bottom: 10px;
-  font-size: clamp(1.65rem, 3vw, 2.45rem);
-  line-height: 1.08;
-}
-
-.card h2,
-.panel h2 {
-  font-size: 1.05rem;
-}
-
-.card > .meta:first-child {
-  margin-bottom: 4px;
-}
-
-.card > h1 + .muted {
-  margin-top: -4px;
-}
-
-.grid {
-  display: grid;
-  gap: 18px;
-  align-items: start;
-}
-
-.grid.two {
-  grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
-}
-
-.grid.three {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.kpi {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.kpi strong {
-  color: var(--jale-blue-700);
-  font-size: 2rem;
-  letter-spacing: 0;
-}
-
-.section-title {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin: 0 0 12px;
-  gap: 12px;
-}
-
-.list,
-.timeline {
-  display: grid;
-  gap: 12px;
-}
-
-.row,
-.case-row,
-.audit-row,
-.verification-row {
-  display: grid;
-  gap: 10px;
-  padding: 16px;
-  border-radius: 12px;
-  border: 1px solid rgba(91, 100, 128, 0.32);
-  background: #ffffff;
-  box-shadow:
-    0 1px 2px rgba(24, 24, 85, 0.08),
-    0 10px 24px rgba(24, 24, 85, 0.08);
-}
-
-.case-row,
-.verification-row,
-.audit-row {
-  grid-template-columns: minmax(0, 1.6fr) repeat(2, minmax(0, 0.9fr)) auto;
-  align-items: start;
-}
-
-.case-row:hover,
-.verification-row:hover,
-.audit-row:hover,
-.row:hover {
-  border-color: rgba(1, 121, 255, 0.42);
-  box-shadow:
-    0 1px 2px rgba(24, 24, 85, 0.1),
-    0 14px 30px rgba(24, 24, 85, 0.12);
-}
-
-.stack {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  color: var(--muted);
-  font-size: 0.9rem;
-  font-weight: 500;
-}
-
-.badge,
-.pill {
-  padding: 5px 10px;
-  font-size: 0.75rem;
-  min-height: 28px;
-  white-space: nowrap;
-}
-
-.badge {
-  text-transform: capitalize;
-}
-
-.nav a {
-  text-transform: capitalize;
-}
-
-.nav a[aria-current='page'] {
-  background: var(--jale-blue-50);
-  border-color: var(--jale-blue-100);
-  color: var(--jale-blue-700);
-}
-
-.nav-signout {
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  color: var(--muted);
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 650;
-  line-height: 1.2;
-  min-height: 40px;
-  padding: 10px 14px;
-  transition: border-color 150ms ease, box-shadow 150ms ease, color 150ms ease, background-color 150ms ease, transform 150ms ease;
-}
-
-.nav-signout:hover:not(:disabled) {
-  border-color: rgba(212, 49, 60, 0.5);
-  color: var(--jale-danger);
-  box-shadow: 0 0 0 3px rgba(212, 49, 60, 0.1);
-  transform: translateY(-1px);
-}
-
-.nav-signout:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-  transform: none;
-}
-
-.badge.open,
-.badge.pending_admin,
-.badge.pending_worker {
-  background: var(--jale-warning-bg);
-  border-color: rgba(182, 90, 0, 0.2);
-  color: #8a4400;
-}
-
-.badge.resolved,
-.badge.approved {
-  background: var(--jale-success-bg);
-  border-color: rgba(31, 157, 85, 0.22);
-  color: #1f7a44;
-}
-
-.badge.dismissed,
-.badge.rejected {
-  background: var(--jale-danger-bg);
-  border-color: rgba(212, 49, 60, 0.22);
-  color: #a51e28;
-}
-
-.badge.needs_more_info,
-.badge.verification,
-.badge.conversation_stuck {
-  background: var(--jale-blue-50);
-  border-color: rgba(1, 121, 255, 0.2);
-  color: var(--jale-blue-700);
-}
-
-.badge.active {
-  background: var(--jale-success-bg);
-  border-color: rgba(31, 157, 85, 0.22);
-  color: #1f7a44;
-}
-
-.badge.trialing {
-  background: var(--jale-blue-50);
-  border-color: rgba(1, 121, 255, 0.2);
-  color: var(--jale-blue-700);
-}
-
-.badge.past_due {
-  background: var(--jale-warning-bg);
-  border-color: rgba(182, 90, 0, 0.2);
-  color: #8a4400;
-}
-
-.pill.success {
-  background: var(--jale-success-bg);
-  border-color: rgba(31, 157, 85, 0.22);
-  color: #1f7a44;
-}
-
-.pill.warning {
-  background: var(--jale-warning-bg);
-  border-color: rgba(182, 90, 0, 0.2);
-  color: #8a4400;
-}
-
-.pill.danger {
-  background: var(--jale-danger-bg);
-  border-color: rgba(212, 49, 60, 0.22);
-  color: #a51e28;
-}
-
-.form-grid {
-  display: grid;
-  gap: 14px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.field label {
-  color: var(--muted);
-  font-size: 0.92rem;
-  font-weight: 650;
-}
-
-.field textarea {
-  min-height: 120px;
-  resize: vertical;
-}
-
-.stack-gap {
-  display: grid;
-  gap: 16px;
-}
-
-.form-error {
-  margin: 0;
-  color: var(--jale-danger);
-  font-weight: 650;
-}
-
-/* ── Access history ────────────────────────────────────────── */
-.history-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.history-code,
-.history-id code,
-.history-details code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.82rem;
-  overflow-wrap: anywhere;
-}
-
-.history-ids {
-  display: grid;
-  gap: 4px;
-}
-
-.history-id {
-  color: var(--jale-blue-700);
-  text-decoration: underline;
-  text-decoration-color: var(--jale-blue-200);
-  text-underline-offset: 2px;
-}
-
-.history-id:hover {
-  text-decoration-color: currentColor;
-}
-
-.history-id:focus-visible {
-  outline: 2px solid var(--jale-blue-500);
-  outline-offset: 2px;
-  border-radius: 4px;
-}
-
-.history-more summary {
-  color: var(--muted);
-  font-size: 0.82rem;
-  font-weight: 650;
-  cursor: pointer;
-}
-
-.history-details {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 14px;
-  margin: 0;
-  color: var(--muted);
-  font-size: 0.85rem;
-}
-
-.history-details div {
-  display: flex;
-  gap: 6px;
-}
-
-.history-details dt {
-  font-weight: 650;
-}
-
-.history-details dt::after {
-  content: ':';
-}
-
-.history-details dd {
-  margin: 0;
-  color: var(--text);
-  overflow-wrap: anywhere;
-}
-
-.history-name,
-.history-reason {
-  overflow-wrap: anywhere;
-}
-
-.history-badges {
-  flex-direction: column;
-  align-items: flex-end;
-}
-
-.history-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.history-problems {
-  margin: 0;
-  padding-left: 20px;
-}
-
-@media (max-width: 960px) {
-  .history-badges {
-    flex-direction: row;
-    align-items: center;
-  }
-}
-
-.setup-qr {
-  display: grid;
-  justify-content: start;
-  padding: 12px;
-  border: 1px solid var(--jale-divider);
-  border-radius: var(--radius-input);
-  background: #fff;
-}
-
-.setup-qr img {
-  display: block;
-}
+* { box-sizing: border-box; }
 
-.setup-code {
-  display: grid;
-  gap: 6px;
-  padding: 12px;
-  border: 1px solid var(--jale-divider);
-  border-radius: var(--radius-input);
-  background: var(--jale-paper-2);
+/* Layered on purpose: an unlayered rule beats every utility, so `text-white`
+   on a link would never apply. Inside `base` any utility on the anchor wins. */
+@layer base {
+  a { color: inherit; text-decoration: none; }
 }
 
-.setup-code code {
-  overflow-wrap: anywhere;
-  color: var(--jale-ink);
-  font-size: 0.95rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
+/* ===== MOTION ======================================================== */
+/* The app's one entry animation (modal panels, sheets, toasts). */
+@keyframes jale-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: none; }
 }
 
-::selection {
-  background: var(--jale-blue-100);
-  color: var(--jale-blue-900);
+.anim-fade-in {
+  animation: jale-fade-in var(--motion-duration-base) var(--motion-ease-out) both;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    scroll-behavior: auto !important;
-    transition-duration: 0.01ms !important;
-  }
-}
-
-@media (max-width: 960px) {
-  .grid.two,
-  .grid.three,
-  .case-row,
-  .verification-row,
-  .audit-row,
-  .form-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .admin-header {
-    align-items: flex-start;
-    flex-direction: column;
-    position: static;
-  }
-
-  .nav {
-    width: 100%;
-    justify-content: flex-start;
-  }
-}
-
-@media (max-width: 640px) {
-  .admin-shell {
-    padding: 14px;
-  }
-
-  .hero,
-  .card,
-  .panel {
-    padding: 16px;
-  }
-
-  .nav a,
-  .nav button,
-  .button {
-    width: 100%;
-  }
-}
-
-.data-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.9rem;
-}
-
-.data-table th,
-.data-table td {
-  text-align: left;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border);
-  white-space: nowrap;
-}
-
-.data-table th {
-  font-weight: 600;
-  opacity: 0.75;
-}
-
-.range-picker {
-  display: flex;
-  gap: 8px;
-}
-
-.range-picker a[aria-current='page'] {
-  background: var(--jale-blue-900);
-  border-color: var(--jale-blue-900);
-  color: #ffffff;
-  box-shadow: none;
-}
-
-.range-picker a[aria-current='page']:hover {
-  background: var(--jale-blue-900);
-  border-color: var(--jale-blue-900);
-  color: #ffffff;
-  transform: none;
-}
-
-/* ── Analytics ─────────────────────────────────────────────── */
-.analytics-hero {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 18px;
-}
-
-.kpi-strip {
-  display: grid;
-  gap: 12px;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-}
-
-.kpi-strip .card {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 16px 18px;
-}
-
-.kpi-strip .kpi-label {
-  color: var(--muted);
-  font-size: 0.82rem;
-}
-
-.kpi-strip .kpi-value {
-  color: var(--jale-blue-700);
-  font-size: 1.75rem;
-  font-weight: 700;
-  line-height: 1.1;
-}
-
-.kpi-note {
-  color: var(--muted);
-  font-size: 0.75rem;
-  font-weight: 650;
-}
-
-.kpi-note.positive {
-  color: #1f7a44;
-}
-
-.chart-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.chart-head p {
-  margin: 2px 0 0;
-  color: var(--muted);
-  font-size: 0.82rem;
-}
-
-.chart-head p strong {
-  color: var(--jale-ink);
-  font-weight: 650;
-}
-
-.chart-tools {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 16px;
-}
-
-.chart-legend {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  font-size: 0.82rem;
-  font-weight: 600;
-}
-
-.chart-legend span {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.legend-key {
-  display: inline-block;
-  width: 14px;
-  height: 2px;
-  border-radius: 1px;
-}
-
-.chart-svg {
-  display: block;
-  width: 100%;
-  height: auto;
-  margin-top: 8px;
-}
-
-.chart-svg .tick,
-.chart-svg .axis-date {
-  fill: var(--jale-placeholder);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-}
-
-.chart-svg .end-label {
-  fill: var(--jale-ink);
-  font-size: 12px;
-  font-weight: 650;
-}
-
-.chart-table summary {
-  display: inline-flex;
-  align-items: center;
-  min-height: 30px;
-  padding: 6px 10px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: #ffffff;
-  color: var(--muted);
-  font-size: 0.82rem;
-  font-weight: 650;
-  cursor: pointer;
-  list-style: none;
-}
-
-.chart-table summary::-webkit-details-marker {
-  display: none;
-}
-
-.chart-table[open] summary {
-  background: var(--jale-blue-50);
-  border-color: var(--jale-blue-100);
-  color: var(--jale-blue-700);
-}
-
-.chart-table .data-table {
-  margin-top: 12px;
-}
-
-.chart-table .data-table td.num,
-.chart-table .data-table th.num {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-.delivery-rows {
-  display: grid;
-  gap: 16px;
-}
-
-.delivery-row {
-  display: grid;
-  gap: 6px;
-}
-
-.delivery-row .delivery-meta {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  font-size: 0.82rem;
-}
-
-.delivery-bar {
-  display: flex;
-  gap: 2px;
-  height: 12px;
-}
-
-.delivery-bar .delivered {
-  background: var(--jale-blue-500);
-  border-radius: 6px 0 0 6px;
-}
-
-.delivery-bar .failed {
-  min-width: 8px;
-  background: var(--jale-danger);
-  border-radius: 0 6px 6px 0;
-}
-
-.delivery-bar .delivered:last-child {
-  border-radius: 6px;
-}
-
-.delivery-fail {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: #a51e28;
-  font-size: 0.75rem;
-  font-weight: 650;
-}
-
-.list-rows {
-  display: grid;
-}
-
-.list-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1.5fr) 90px 100px 120px;
-  gap: 12px;
-  align-items: center;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--border);
-}
-
-.list-row:last-child {
-  border-bottom: 0;
-}
-
-.list-row .name {
-  font-weight: 650;
-}
-
-.list-row .period {
-  text-align: right;
-  font-size: 0.82rem;
-  color: var(--muted);
-}
-
-.list-row .period.cancels {
-  color: #8a4400;
-  font-weight: 650;
-}
-
-.grid.analytics-bottom {
-  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
-}
-
-@media (max-width: 960px) {
-  .kpi-strip {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .analytics-hero,
-  .chart-head {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .grid.analytics-bottom {
-    grid-template-columns: 1fr;
-  }
-
-  .list-row {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .list-row .plan,
-  .list-row .period {
-    display: none;
-  }
-}
-
-@media (max-width: 640px) {
-  .kpi-strip {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-/* ── Reports inbox ─────────────────────────────────────────── */
-.visually-hidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  padding: 0;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-  border: 0;
-}
-
-.nav-count {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 22px;
-  height: 22px;
-  margin-left: 8px;
-  padding: 0 6px;
-  border-radius: 999px;
-  background: var(--jale-danger);
-  color: #ffffff;
-  font-size: 0.75rem;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-
-.report-filters {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(0, 1.2fr);
-  gap: 14px;
-  align-items: start;
-}
-
-.report-filter-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  grid-column: 1 / -1;
-}
-
-.report-list,
-.report-requests,
-.report-errors {
-  display: grid;
-  gap: 10px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.report-row {
-  display: grid;
-  grid-template-areas: 'main tags status time';
-  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1.2fr) auto minmax(96px, auto);
-  gap: 12px;
-  align-items: center;
-  padding: 14px 16px;
-  border: 1px solid rgba(91, 100, 128, 0.32);
-  border-radius: 12px;
-  background: #ffffff;
-  transition: border-color 150ms ease, box-shadow 150ms ease;
-}
-
-.report-row:hover {
-  border-color: rgba(1, 121, 255, 0.42);
-  box-shadow:
-    0 1px 2px rgba(24, 24, 85, 0.1),
-    0 14px 30px rgba(24, 24, 85, 0.12);
-}
-
-.report-row:focus-visible {
-  outline: none;
-  border-color: var(--jale-blue-500);
-  box-shadow: var(--shadow-focus);
-}
-
-.report-row-main { grid-area: main; }
-.report-row-tags { grid-area: tags; }
-.report-row-status { grid-area: status; }
-.report-row-time { grid-area: time; text-align: right; white-space: nowrap; }
-
-.report-number,
-.report-row-time {
-  font-variant-numeric: tabular-nums;
-}
-
-.report-paging {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.report-words {
-  margin: 0;
-  padding: 14px 16px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--jale-paper-2);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  line-height: 1.6;
-}
-
-.report-facts {
-  display: grid;
-  gap: 10px;
-  margin: 0;
-}
-
-.report-facts > div {
-  display: grid;
-  grid-template-columns: minmax(120px, 0.6fr) minmax(0, 1.4fr);
-  gap: 12px;
-}
-
-.report-facts dt {
-  color: var(--muted);
-  font-size: 0.9rem;
-  font-weight: 600;
-}
-
-.report-facts dd {
-  min-width: 0;
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
-.report-code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.85rem;
-  overflow-wrap: anywhere;
-}
-
-.report-method {
-  font-weight: 700;
-}
-
-.report-request {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: #ffffff;
-}
-
-.report-request > .stack {
-  flex: 1 1 240px;
-  min-width: 0;
-}
-
-.report-error {
-  display: grid;
-  gap: 8px;
-}
-
-.report-status-control {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.action-label {
-  color: var(--muted);
-  font-size: 0.92rem;
-  font-weight: 650;
-}
-
-.revealed-contact {
-  display: grid;
-  gap: 6px;
-  padding: 12px;
-  border: 1px solid rgba(212, 49, 60, 0.22);
-  border-radius: 12px;
-  background: var(--jale-danger-bg);
-}
-
-.revealed-value {
-  font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
-}
-
-.inline-link {
-  color: var(--jale-blue-700);
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
-.inline-link:hover,
-.report-summary summary:hover {
-  color: var(--jale-blue-900);
-}
-
-.inline-link:focus-visible,
-.report-summary summary:focus-visible,
-.switch-row input:focus-visible {
-  outline: 2px solid var(--jale-blue-500);
-  outline-offset: 2px;
-}
-
-.copy-control {
-  display: inline-flex;
-}
-
-.copy-button {
-  min-height: 36px;
-  padding: 8px 12px;
-}
-
-.report-summary summary {
-  color: var(--jale-blue-700);
-  font-weight: 650;
-  cursor: pointer;
-}
-
-.report-summary-text {
-  margin: 8px 0 0;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--jale-paper-2);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.85rem;
-}
-
-.settings-card {
-  max-width: 760px;
-}
-
-.settings-switches {
-  display: grid;
-  gap: 12px;
-  min-width: 0;
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-
-.settings-switches legend {
-  margin-bottom: 8px;
-  padding: 0;
-  color: var(--jale-ink);
-  font-weight: 700;
-}
-
-.switch-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: #ffffff;
-  cursor: pointer;
-}
-
-.switch-row input {
-  flex: none;
-  width: 20px;
-  height: 20px;
-  margin: 2px 0 0;
-  accent-color: var(--jale-blue-500);
-}
-
-@media (max-width: 960px) {
-  .report-filters {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .report-row {
-    grid-template-areas:
-      'main status'
-      'tags time';
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .report-facts > div {
-    grid-template-columns: 1fr;
-    gap: 2px;
-  }
-}
-
-@media (max-width: 640px) {
-  .report-filters {
-    grid-template-columns: 1fr;
-  }
-}
-
-/* ── Analytics: onboarding funnel (2a) ─────────────────────── */
-.analytics-tabs {
-  margin-bottom: 10px;
-}
-
-.funnel-pickers {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 20px;
-  justify-content: flex-end;
-}
-
-.kpi-strip.funnel-kpis {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-.funnel-bars {
-  display: grid;
-  gap: 14px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.funnel-row {
-  display: grid;
-  gap: 6px;
-}
-
-.funnel-meta {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 12px;
-  font-size: 0.82rem;
-}
-
-.funnel-meta strong {
-  color: var(--jale-ink);
-  font-weight: 650;
-}
-
-.funnel-label {
-  font-weight: 650;
-}
-
-.funnel-track {
-  height: 12px;
-  border-radius: 6px;
-  background: var(--jale-blue-50);
-}
-
-.funnel-fill {
-  height: 100%;
-  min-width: 2px;
-  border-radius: 6px;
-  background: var(--jale-blue-500);
-}
-
-.funnel-fill.stalled {
-  background: var(--jale-blue-200);
-}
-
-.table-scroll {
-  overflow-x: auto;
-}
-
-/* A grid item's minimum width is its content's; without this the wide cohort
-   table widens the whole page grid at phone width. */
-.cohort-card {
-  min-width: 0;
-}
-
-.cohort-table td.num,
-.cohort-table th.num {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-.cohort-settling {
-  margin-left: 8px;
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: var(--jale-blue-50);
-  color: var(--muted);
-  font-size: 0.7rem;
-  font-weight: 650;
-}
-
-@media (max-width: 960px) {
-  .funnel-pickers {
-    justify-content: flex-start;
-  }
-}
-
-@media (max-width: 640px) {
-  .kpi-strip.funnel-kpis {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-/* ── Analytics: employer health (2b) ───────────────────────── */
-/* Reuses 2a's .kpi-strip.funnel-kpis, .cohort-card, .table-scroll,
-   .cohort-table and .cohort-settling. */
-.employer-approx {
-  margin-left: 6px;
-  color: var(--jale-warning);
-  font-size: 0.7rem;
-  font-weight: 650;
-}
-
-.employer-more {
-  margin: 10px 0 0;
-  font-size: 0.82rem;
-}
-
-/* "since posting" under an Idle value. */
-.employer-note {
-  display: block;
-  color: var(--muted);
-  font-size: 0.7rem;
-  font-weight: 650;
-}
-
-/* Free text (job titles, company names) wraps instead of widening the table,
-   so the columns after it stay in reach. */
-.cohort-table td.wrap {
-  min-width: 10rem;
-  max-width: 18rem;
-  white-space: normal;
-  overflow-wrap: break-word;
-}
-
-/* Scroll regions take keyboard focus (tabIndex 0); show where the focus is. */
-.table-scroll:focus-visible {
-  outline: 2px solid var(--jale-blue-500);
-  outline-offset: 2px;
-}
-
-/* The tab row wraps instead of overflowing: with four tabs, Ops starts a
-   second row at 375 px; at 320 px two tabs sit on each row. */
-.analytics-tabs {
-  flex-wrap: wrap;
-}
-
-@media (max-width: 640px) {
-  .analytics-tabs .button {
-    width: auto;
-    flex: 1 1 auto;
-  }
-
-  /* Narrow enough that the column after a long title (Idle, Applications)
-     starts inside the first screen of the scroll box; a long word still
-     widens its column rather than breaking mid-word. */
-  .cohort-table td.wrap {
-    min-width: 7rem;
-    max-width: none;
-  }
-}
-
-/* A chart's open "Table" twin scrolls inside its card (the table sits in a
-   .table-scroll) instead of widening the page at phone width: the card, the
-   tool row and the twin may all be narrower than the table. */
-.chart-card,
-.chart-table {
-  min-width: 0;
-}
-
-.chart-tools,
-.chart-table {
-  max-width: 100%;
-}
-
-/* ── Analytics: ops health (2c) ────────────────────────────── */
-/* Reuses 2a/2b's .kpi-strip.funnel-kpis, .cohort-card, .table-scroll regions,
-   .cohort-table, td.wrap, .cohort-settling (the "so far" badge) and the
-   .funnel-bars rows. */
-
-/* Up to six lanes in one legend: wrap on phones instead of widening the card. */
-.chart-legend {
-  flex-wrap: wrap;
-}
-
-/* A six-lane Table twin (1,000 px) is wider than the card below ~1,200 px.
-   Where the chart head is still a row (961-1,200 px), the tool row may shrink
-   below it so the twin scrolls inside its region instead of widening the page. */
-.chart-tools {
-  min-width: 0;
-}
-
-/* The weeks picker and its note ("Weeks change ..."). */
-.ops-picker {
-  display: grid;
-  gap: 6px;
-  justify-items: end;
-}
-
-.ops-picker p {
-  margin: 0;
-  font-size: 0.75rem;
-  text-align: right;
-}
-
-/* A smaller second line in a cell or header: retry window, usable count, found of. */
-.ops-sub {
-  display: block;
-  color: var(--muted);
-  font-size: 0.7rem;
-  font-weight: 650;
-}
-
-/* A lane with messages past its retry window. */
-.cohort-table td.ops-stuck {
-  background: var(--jale-danger-bg);
-  color: #a51e28;
-  font-weight: 700;
-}
-
-/* Model ids (us.anthropic.claude-haiku-4-5-20251001-v1:0) wrap inside their
-   header, at the hyphens where they can. */
-.cohort-table th.ops-model {
-  min-width: 8rem;
-  max-width: 12rem;
-  white-space: normal;
-  overflow-wrap: break-word;
-}
-
-/* A tied top cause names every tied cause; room for about two per line,
-   also on phones (after 2b's 7 rem phone floor for td.wrap). */
-.cohort-table td.ops-cause {
-  min-width: 14rem;
-}
-
-/* Stripe event types have no spaces; they wrap anywhere rather than overflow. */
-.ops-code {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.ops-live {
-  margin: 0 0 10px;
-  font-size: 0.85rem;
-}
-
-@media (max-width: 960px) {
-  .ops-picker {
-    justify-items: start;
-  }
-
-  .ops-picker p {
-    text-align: left;
-  }
-}
-
-/* ── Analytics: admin queues (2d) ──────────────────────────── */
-/* Reuses 2a-2c's .cohort-card, .table-scroll regions, .cohort-table, td.wrap
-   (operator reset reasons) and .cohort-settling (the "so far" badge). */
-
-/* A line under a table: the web door's start-over note, the bulk runs left
-   out of the operator resets. A long reason wraps anywhere. */
-.restarts-note {
-  margin: 10px 0 0;
-  font-size: 0.82rem;
-  overflow-wrap: anywhere;
-}
-
-/* A reason is up to 80 characters: room for about four words per line, also
-   on phones (after 2b's 7 rem phone floor for td.wrap). */
-.cohort-table td.restarts-reason {
-  min-width: 14rem;
-}
-
-/* "Digest on for 12% of employers (34 of 280) · ..." above the digest table. */
-.digest-adoption {
-  margin: 0 0 10px;
-  font-size: 0.85rem;
+  .anim-fade-in { animation: none; }
+}
+
+/* ===== COLOR SCHEME ================================================== */
+/* Tells the UA which palette to draw native chrome from, so date pickers,
+   select popups, scrollbars and autofill follow the app instead of fighting
+   it. `.dark` is set on <html> by the no-FOUC script in [locale]/layout.tsx. */
+:root { color-scheme: light; }
+.dark { color-scheme: dark; }
+
+/* ===== DARK THEME ==================================================== */
+/* Overrides the token layer only — nothing here targets a component. Role
+   tokens (`--input-focus`, shadows) are re-pointed directly rather than via
+   the brand ramp, because `@theme inline` resolves `--color-*` to these vars
+   at use time, so a runtime override cascades through every Tailwind utility
+   built on them.
+   `--primary`/`--primary-hover` are deliberately NOT re-pointed here. They
+   used to become #4585ff/#78a4ff in dark, which put white bubble text at
+   3.47:1 and split the app across two CTA blues, since the `primary` Button
+   paints `--jale-blue-500` directly and never saw that re-tint. Letting both
+   fall through to the ramp gives one blue in both themes at 5.54:1.
+   Must stay AFTER :root: `.dark` and `:root` have equal specificity, so
+   source order is what makes these win. */
+.dark {
+  --jale-paper:   #0d1130;  --jale-paper-2: #1d2352;  --jale-card:  #161b44;
+  --jale-input:   #12163a;  --input-focus:  #1b2150;  --jale-divider: #2a3164;
+  --jale-shell:   #101438;  --jale-sidebar: #0a0d26;
+  --jale-ink:     #e9edfb;  --jale-ink-2:   #9aa4cb;  --jale-placeholder: #6d7699;
+  --jale-blue-50: #24305c;  --jale-blue-700:#a8c5ff;
+  --jale-success: #7fd6a4;  --jale-success-bg: rgba(31,122,68,.28);  --jale-success-text: #7fd6a4;
+  /* Not the light value, and not `--jale-success-bg` either: over the dark
+     card that tint composites to roughly this, and the halo has to be opaque
+     to occlude the confetti behind the header text. */
+  --jale-hero-halo: #193644;
+  --jale-warning: #ffc07d;  --jale-warning-bg: rgba(182,90,0,.26);   --jale-warning-text: #ffc07d;
+  --jale-danger:  #ff9aa4;  --jale-danger-bg:  rgba(212,49,60,.24);  --jale-danger-text:  #ff9aa4;
+  --jale-teal-50: rgba(33,195,164,.18); --jale-teal-500: #4fd8bd;
+  --dot-color: rgba(120,164,255,.14);
+  --shadow-card:  0 1px 2px rgba(0,0,0,.35), 0 4px 16px rgba(0,0,0,.35);
+  /* ONE ACTION BLUE, AND THE TWO SHADOWS THAT ARE ALLOWED TO DIVERGE FROM IT
+     -------------------------------------------------------------------------
+     The rule this theme now runs on: `--primary`/`--jale-blue-500` is one blue
+     (#0064d6) in BOTH themes, and it governs every FILL and every LABEL. The
+     two tokens below are not a second action colour -- they are lighter here on
+     purpose, and each for its own reason.
+
+     `--shadow-focus` is a FUNCTIONAL INDICATOR, the thing WCAG 2.2 1.4.11 and
+     2.4.11 actually measure, so it is required to be visible where a fill is
+     only required to be attractive. The old rgba(69,133,255,.25) composited to
+     #223673 over `--jale-card` (#161b44) -- 1.45:1, effectively invisible, which
+     mattered the moment the composers started relying on it. Raised to
+     `--jale-blue-300` (#78a4ff) at .65, which composites to #5674be over
+     `--jale-card` = 3.64:1, and clears 3:1 on EVERY dark ground it can land on:
+     card 3.64, page 3.87, paper-2 3.42, input 3.74, shell 3.80, sidebar 3.90,
+     navy 3.57, input-focus 3.46, and the worst case -- the blue-50 filter-chip
+     fill (#24305c) -- 3.08. Keeping it rgba rather than solid is what lets one
+     token do that across nine grounds. Deriving it from #0064d6 instead cannot
+     reach 3:1 at any alpha: the CTA blue is darker than several of these
+     grounds, so more alpha makes the ring vanish, not appear.
+
+     `--shadow-btn` is decoration -- a 12px-blurred lift under a filled button --
+     and it stays light blue after re-deriving it was considered and rejected on
+     the numbers: at .35 alpha the blue-400 glow separates from the dark grounds
+     by 1.68-1.71:1, a #0064d6 glow by only 1.40-1.41:1. Since a #0064d6 glow is
+     barely visible against grounds that are themselves dark navy, re-deriving it
+     would have quietly deleted the lift rather than aligned it. It carries no
+     information, so it owes nothing to 1.4.11; it just has to be seen. */
+  --shadow-focus: 0 0 0 3px rgba(120,164,255,.65);
+  --shadow-btn:   0 4px 12px rgba(69,133,255,.35);
+  --shadow-modal: 0 20px 50px -10px rgba(0,0,0,.5);
+  /* Black for the same reason as the scrim below: an ink-tinted shadow does
+     not darken a dark page, so the stub would stop reading as lifted. */
+  --shadow-dock:  0 -6px 18px rgba(0,0,0,.35);
+  /* Not in the light block's ink tint: over a dark page a 45% navy scrim is
+     nearly invisible, so the modal would stop reading as modal. */
+  --jale-backdrop: rgba(0,0,0,.55);
+  /* The dark --jale-blue-700 (#a8c5ff) at .40, by hand. The light value would
+     composite to 1.35:1 on this theme's --jale-blue-50 and all but vanish;
+     this one holds 2.44:1, so the tear still reads. */
+  --jale-perforation: rgba(168,197,255,.40);
+}
+
+/* ===== ADMIN-ONLY TOKENS ============================================== */
+/* Not in frontend/src/app/globals.css. The console's chart colours (D11):
+   six categorical series in a fixed hue order (blue, orange, teal, violet,
+   ochre, magenta; assigned in order, never cycled), stepped per theme and
+   validated with the dataviz palette validator against --jale-card (lightness
+   band, chroma floor, colour-blind separation, normal-vision floor, 3:1
+   contrast: all pass in both themes), then gridlines, axis lines and tick
+   text, and value labels. Change a value only with a new validator run.
+   Nothing else is added here without asking jalec (00-FE-INTERFACES §2). */
+:root {
+  --chart-1: #0064d6;
+  --chart-2: #8c3d12;
+  --chart-3: #168f70;
+  --chart-4: #6c2cb4;
+  --chart-5: #836d03;
+  --chart-6: #9a1366;
+  --chart-grid: #d1d1d1;
+  --chart-axis: #5b6480;
+  --chart-label: #181855;
+}
+
+.dark {
+  --chart-1: #0e6ee6;
+  --chart-2: #bd4d00;
+  --chart-3: #29a987;
+  --chart-4: #894ed6;
+  --chart-5: #897311;
+  --chart-6: #db479a;
+  --chart-grid: #2a3164;
+  --chart-axis: #9aa4cb;
+  --chart-label: #e9edfb;
 }

@@ -1,4 +1,5 @@
 import type { PoolClient } from 'pg';
+import { buildHireDetails, hireDetailsNeeded, type HireDetails } from './application-hire-view';
 
 export type ApplicantOverviewItem = {
   application_id: string;
@@ -23,6 +24,10 @@ export type ApplicantOverviewItem = {
    * which the pill renders differently from a zero.
    */
   trust_score: number | null;
+  /** F19 (K4.2): the start details the employer saved for a hire, or null. */
+  hire_details: HireDetails | null;
+  /** F19 (K4.2): hired with no start details yet. */
+  hire_details_needed: boolean;
 };
 
 export type OverviewJob = { job_id: string; title: string; city: string | null; status: string };
@@ -70,7 +75,14 @@ const OVERVIEW_QUERY = `
     -- for the same worker. The users JOIN below is already there for the name,
     -- and users_employer_applicant_read (020b:261-269) is what admits the row
     -- -- the caller sets app.current_internal_user_id before this runs.
-    u.trade_competency_score AS trust_score
+    u.trade_competency_score AS trust_score,
+    -- F19 (125): the start details, published only as hire_details.
+    to_char(ja.hire_start_date, 'YYYY-MM-DD') AS hire_start_date,
+    ja.hire_report_location,
+    ja.hire_contact_name,
+    ja.hire_contact_phone,
+    ja.hire_notes,
+    ja.hire_details_updated_at
   FROM job_applications ja
   JOIN jobs j ON j.id = ja.job_id AND j.employer_id = $1
   JOIN users u ON u.id = ja.worker_id
@@ -85,15 +97,28 @@ export async function listEmployerApplicantsOverview(
   client: PoolClient,
   employerId: string,
 ): Promise<ApplicantsOverview> {
-  const result = await client.query<ApplicantOverviewItem>(OVERVIEW_QUERY, [employerId]);
+  const result = await client.query<Record<string, any>>(OVERVIEW_QUERY, [employerId]);
+  const applicants: ApplicantOverviewItem[] = result.rows.map((row) => {
+    const {
+      hire_start_date: _hireStartDate, hire_report_location: _hireReportLocation, hire_contact_name: _hireContactName,
+      hire_contact_phone: _hireContactPhone, hire_notes: _hireNotes, hire_details_updated_at: _hireDetailsUpdatedAt,
+      ...item
+    } = row;
+    const hireDetails = row.application_status === 'hired' ? buildHireDetails(row) : null;
+    return {
+      ...(item as Omit<ApplicantOverviewItem, 'hire_details' | 'hire_details_needed'>),
+      hire_details: hireDetails,
+      hire_details_needed: hireDetailsNeeded(row.application_status, hireDetails),
+    };
+  });
 
   const jobs: OverviewJob[] = [];
   const seen = new Set<string>();
-  for (const item of result.rows) {
+  for (const item of applicants) {
     if (seen.has(item.job_id)) continue;
     seen.add(item.job_id);
     jobs.push({ job_id: item.job_id, title: item.job_title, city: item.job_city, status: item.job_status });
   }
 
-  return { applicants: result.rows, jobs, total: result.rows.length };
+  return { applicants, jobs, total: applicants.length };
 }

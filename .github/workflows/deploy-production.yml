@@ -93,6 +93,10 @@ jobs:
           # creates the fallback group every database Lambda writes to, and
           # the stacks holding those Lambdas depend on it.
           full_stack_list="JaleNetworkStack JaleDatabaseStack JaleAuditArchiveStack JaleAuditStack JaleAuditEdgeStack JaleAuditEdgeUsWest2Stack JaleAuthStack JaleAiStack JaleMatchingStack JaleReportsStack JaleApiStack JaleReferralsStack JaleNotificationsStack JaleBillingStack JaleLegalStack JaleWhatsAppStack JaleDocumentsStack JaleMediaBoardStack JaleAdminCertStack JaleAdminStack JaleFrontendStack"
+          # JaleFrontendStack imports the admin distribution id through a
+          # cross-region export that JaleAdminStack writes, so a frontend-only
+          # deploy works only after a full deploy has run once with that
+          # export in place.
           frontend_stack_list="JaleFrontendStack"
           admin_prerequisites_stack_list="JaleDatabaseStack JaleAdminCertStack"
           # JaleDocumentsStack precedes JaleWhatsAppStack: the WhatsApp
@@ -105,6 +109,8 @@ jobs:
           # audit stack's fallback log group (fixed name, no export) already
           # existing from the full release deploy. A first deploy of a release
           # that adds the audit stacks must be the full scope (all).
+          # JaleAdminStack also writes the cross-region export that
+          # JaleFrontendStack reads (the admin distribution id; see above).
           admin_stack_list="JaleDatabaseStack JaleDocumentsStack JaleWhatsAppStack JaleReportsStack JaleAdminStack"
           billing_prerequisites_stack_list="JaleNetworkStack JaleDatabaseStack"
 

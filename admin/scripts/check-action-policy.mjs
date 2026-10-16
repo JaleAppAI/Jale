@@ -1,188 +1,168 @@
+// Sprint 28 K2.7: the Inbox action policy (lib/action-policy.ts), the request
+// parser (lib/action-requests.ts) and the reply counter shared with the reply
+// box (lib/support-reply.ts). Pure modules: no database, no session.
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import ts from 'typescript';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { adminRoot, compileAdminSources, fakeUuid } from './lib/check-harness.mjs';
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const outDir = resolve(root, '.test-artifacts/action-contract');
-const sourceFiles = [
-  'src/lib/action-policy.ts',
-  'src/lib/action-requests.ts',
-  'src/lib/audit-contract.ts',
-].map((relativePath) => resolve(root, relativePath));
+const { load } = compileAdminSources({
+  name: 'action-policy',
+  sources: ['src/lib/action-policy.ts', 'src/lib/action-requests.ts', 'src/lib/support-reply.ts'],
+});
 
-for (const sourcePath of sourceFiles) {
-  assert.equal(existsSync(sourcePath), true, `${sourcePath.replace(`${root}/`, '')} should exist`);
+const policy = await load('src/lib/action-policy.ts');
+const requests = await load('src/lib/action-requests.ts');
+const reply = await load('src/lib/support-reply.ts');
+
+const ids = (actions) => actions.map((action) => action.id);
+const byId = (actions) => Object.fromEntries(actions.map((action) => [action.id, action]));
+
+// --- getSupportActions --------------------------------------------------------
+{
+  const open = policy.getSupportActions({ status: 'open', hasConversation: true }, 'admin_ops');
+  assert.deepEqual(ids(open), ['reply', 'request_info', 'resolve', 'reveal_phone']);
+  assert.ok(open.every((action) => action.enabled === true && action.reason === undefined), 'an open case with a conversation offers every action to Ops');
+  assert.ok(policy.getSupportActions({ status: 'pending_admin', hasConversation: true }, 'admin_superadmin').every((action) => action.enabled));
+
+  // Read-only: every action shown, every one disabled with the K2.7 reason.
+  for (const status of ['open', 'pending_worker', 'pending_admin', 'resolved', 'dismissed']) {
+    const readonly = policy.getSupportActions({ status, hasConversation: true }, 'admin_readonly');
+    assert.deepEqual(ids(readonly), ['reply', 'request_info', 'resolve', 'reveal_phone'], 'actions are never hidden');
+    for (const action of readonly) {
+      assert.equal(action.enabled, false);
+      assert.equal(action.reason, 'Requires Ops or Superadmin.');
+    }
+  }
+
+  // A closed case takes no message and cannot be resolved again; the number can still be revealed.
+  for (const status of ['resolved', 'dismissed']) {
+    const closed = byId(policy.getSupportActions({ status, hasConversation: true }, 'admin_ops'));
+    for (const id of ['reply', 'request_info', 'resolve']) {
+      assert.deepEqual(closed[id], { id, enabled: false, reason: 'This case is closed.' });
+    }
+    assert.deepEqual(closed.reveal_phone, { id: 'reveal_phone', enabled: true });
+  }
+
+  // No conversation: no reply and no number; resolving still works (it sends nothing).
+  const noTarget = byId(policy.getSupportActions({ status: 'open', hasConversation: false }, 'admin_ops'));
+  assert.deepEqual(noTarget.reply, { id: 'reply', enabled: false, reason: 'This case has no WhatsApp conversation.' });
+  assert.deepEqual(noTarget.request_info, { id: 'request_info', enabled: false, reason: 'This case has no WhatsApp conversation.' });
+  assert.deepEqual(noTarget.resolve, { id: 'resolve', enabled: true });
+  assert.deepEqual(noTarget.reveal_phone, { id: 'reveal_phone', enabled: false, reason: 'This case has no WhatsApp conversation.' });
 }
 
-mkdirSync(outDir, { recursive: true });
-
-const program = ts.createProgram(sourceFiles, {
-  module: ts.ModuleKind.ES2022,
-  target: ts.ScriptTarget.ES2022,
-  moduleResolution: ts.ModuleResolutionKind.Bundler,
-  strict: true,
-  skipLibCheck: true,
-  noEmitOnError: true,
-  outDir,
-});
-
-const diagnostics = ts.getPreEmitDiagnostics(program);
-assert.deepEqual(
-  diagnostics.map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')),
-  [],
-  'admin action contract modules should typecheck without diagnostics',
-);
-
-program.emit(undefined, (fileName, data) => {
-  if (fileName.endsWith('.js')) {
-    const moduleName = fileName.slice(fileName.lastIndexOf('/') + 1, -3);
-    writeFileSync(
-      resolve(outDir, `${moduleName}.mjs`),
-      data
-        .replaceAll('"./types"', '"./types.mjs"')
-        .replaceAll("'./types'", "'./types.mjs'")
-        .replaceAll('"./action-policy"', '"./action-policy.mjs"')
-        .replaceAll("'./action-policy'", "'./action-policy.mjs'")
-        .replaceAll('"./action-requests"', '"./action-requests.mjs"')
-        .replaceAll("'./action-requests'", "'./action-requests.mjs'")
-        .replaceAll('"./audit-contract"', '"./audit-contract.mjs"')
-        .replaceAll("'./audit-contract'", "'./audit-contract.mjs'"),
-    );
+// --- getLockoutActions ----------------------------------------------------------
+{
+  for (const state of ['locked', 'stuck_at_code']) {
+    const actions = policy.getLockoutActions({ state }, 'admin_ops');
+    assert.deepEqual(actions, [
+      { id: 'reset_lockout', enabled: true },
+      { id: 'open_support_from_lockout', enabled: true },
+    ]);
   }
-});
+  for (const state of ['in_progress', 'verified', 'expired', 'superseded']) {
+    const actions = byId(policy.getLockoutActions({ state }, 'admin_superadmin'));
+    assert.deepEqual(actions.reset_lockout, { id: 'reset_lockout', enabled: false, reason: 'Only a locked or stuck verification can be reset.' });
+    assert.deepEqual(actions.open_support_from_lockout, { id: 'open_support_from_lockout', enabled: true });
+  }
+  const readonly = policy.getLockoutActions({ state: 'locked' }, 'admin_readonly');
+  assert.deepEqual(readonly, [
+    { id: 'reset_lockout', enabled: false, reason: 'Requires Ops or Superadmin.' },
+    { id: 'open_support_from_lockout', enabled: false, reason: 'Requires Ops or Superadmin.' },
+  ]);
+  assert.equal(policy.canActOnInbox('admin_ops'), true);
+  assert.equal(policy.canActOnInbox('admin_superadmin'), true);
+  assert.equal(policy.canActOnInbox('admin_readonly'), false);
+}
 
-const policy = await import(pathToFileURL(resolve(outDir, 'action-policy.mjs')));
-const requests = await import(pathToFileURL(resolve(outDir, 'action-requests.mjs')));
-const audit = await import(pathToFileURL(resolve(outDir, 'audit-contract.mjs')));
+// The retired case console's policy is gone with its dispatcher.
+assert.equal(policy.getCaseActions, undefined);
+assert.equal(requests.parseAdminActionRequest, undefined);
+assert.equal(requests.validateAdminAction, undefined);
 
-assert.deepEqual(policy.getCaseActions({ status: 'open', type: 'help_request' }, 'admin_ops').map((action) => action.id), [
-  'reply_whatsapp',
-  'request_more_info',
-  'reveal_pii',
-  'resolve_case',
-]);
+// --- parseInboxAction (K2.7 bodies) ---------------------------------------------
+{
+  const requestId = fakeUuid(0x101);
+  const caseId = fakeUuid(0x102);
+  const challengeId = fakeUuid(0x103);
+  const mediaId = fakeUuid(0x104);
+  const parse = (body) => requests.parseInboxAction(body);
+  const invalid = { ok: false };
 
-assert.deepEqual(policy.getCaseActions({ status: 'pending_worker', type: 'outbound_failure' }, 'admin_ops').map((action) => action.id), [
-  'resend_outbound',
-  'reveal_pii',
-  'resolve_case',
-]);
-const outboundFailureActions = policy.getCaseActions(
-  { status: 'pending_worker', type: 'outbound_failure' },
-  'admin_ops',
-);
-assert.equal(outboundFailureActions[0].id, 'resend_outbound');
-assert.equal(outboundFailureActions[0].disabled, true);
-assert.match(outboundFailureActions[0].reason, /not available/);
+  assert.deepEqual(parse({ action: 'reply', requestId, caseId, text: '  Hola, ya revisamos tu cuenta.  ' }), {
+    ok: true,
+    value: { action: 'reply', requestId, caseId, text: 'Hola, ya revisamos tu cuenta.' },
+  });
+  assert.deepEqual(parse({ action: 'request_info', requestId, caseId: caseId.toUpperCase(), text: 'Send a photo, please.' }), {
+    ok: true,
+    value: { action: 'request_info', requestId, caseId, text: 'Send a photo, please.' },
+  });
+  assert.deepEqual(parse({ action: 'reply', requestId, caseId, text: 'x'.repeat(1000) }).ok, true);
+  assert.deepEqual(parse({ action: 'reply', requestId, caseId, text: 'x'.repeat(1001) }), invalid);
+  assert.deepEqual(parse({ action: 'reply', requestId, caseId, text: '   ' }), invalid);
+  assert.deepEqual(parse({ action: 'reply', requestId, caseId }), invalid);
+  assert.deepEqual(parse({ action: 'reply', requestId, caseId, text: 'a\u0000b' }), invalid);
+  assert.deepEqual(parse({ action: 'resolve', requestId, caseId }), { ok: true, value: { action: 'resolve', requestId, caseId } });
 
-assert.equal(
-  policy.getCaseActions({ status: 'resolved', type: 'help_request' }, 'admin_ops').every((action) => action.disabled),
-  true,
-  'resolved cases should render historical actions as disabled',
-);
+  // The reveal reason: the existing rule, 20 to 500 characters.
+  assert.deepEqual(parse({ action: 'reveal_phone', requestId, caseId, justification: 'Calling the worker back about the lockout.' }), {
+    ok: true,
+    value: { action: 'reveal_phone', requestId, caseId, justification: 'Calling the worker back about the lockout.' },
+  });
+  assert.deepEqual(parse({ action: 'reveal_phone', requestId, caseId, justification: 'too short' }), invalid);
+  assert.deepEqual(parse({ action: 'reveal_phone', requestId, caseId, justification: 'y'.repeat(501) }), invalid);
 
-assert.equal(
-  policy.getCaseActions({ status: 'open', type: 'help_request' }, 'admin_readonly').every((action) => action.disabled),
-  true,
-  'readonly admins should not be able to trigger mutations or PII reveals',
-);
+  assert.deepEqual(parse({ action: 'open_media', requestId, caseId, mediaId }), {
+    ok: true,
+    value: { action: 'open_media', requestId, caseId, mediaId },
+  });
+  assert.deepEqual(parse({ action: 'open_media', requestId, caseId, mediaId: 'support/key.jpg' }), invalid);
 
-// Roadmap 1b retired the four verification actions (they edited demo
-// admin_cases rows only and never touched worker_identity_challenges).
-assert.equal(policy.getVerificationActions, undefined, 'verification actions were retired (roadmap 1b)');
+  assert.deepEqual(parse({ action: 'reset_lockout', requestId, challengeId, reasonCode: 'codes_not_arriving' }), {
+    ok: true,
+    value: { action: 'reset_lockout', requestId, challengeId, reasonCode: 'codes_not_arriving' },
+  });
+  assert.deepEqual(parse({ action: 'reset_lockout', requestId, challengeId, reasonCode: 'worker_confused', note: '  ' }), {
+    ok: true,
+    value: { action: 'reset_lockout', requestId, challengeId, reasonCode: 'worker_confused' },
+  });
+  assert.deepEqual(parse({ action: 'reset_lockout', requestId, challengeId, reasonCode: 'other', note: 'Spoke on the phone.' }), {
+    ok: true,
+    value: { action: 'reset_lockout', requestId, challengeId, reasonCode: 'other', note: 'Spoke on the phone.' },
+  });
+  assert.deepEqual(parse({ action: 'reset_lockout', requestId, challengeId, reasonCode: 'other' }), invalid, 'other needs a note');
+  assert.deepEqual(parse({ action: 'reset_lockout', requestId, challengeId, reasonCode: 'other', note: 'n'.repeat(301) }), invalid);
+  assert.deepEqual(parse({ action: 'reset_lockout', requestId, challengeId, reasonCode: 'because' }), invalid);
+  assert.deepEqual(parse({ action: 'open_support_from_lockout', requestId, challengeId }), {
+    ok: true,
+    value: { action: 'open_support_from_lockout', requestId, challengeId },
+  });
 
-assert.equal(policy.requiresAuditLog('reveal_pii'), true);
-assert.equal(policy.requiresAuditLog('resolve_case'), true);
-assert.equal(policy.requiresAuditLog('approve_verification'), false);
-assert.equal(policy.requiresPiiJustification('reveal_pii'), true);
-assert.equal(policy.requiresPiiJustification('request_more_info'), false);
+  // Every action needs a UUID request id; unknown actions and old ones are refused.
+  assert.deepEqual(parse({ action: 'resolve', requestId: 'req-1', caseId }), invalid);
+  assert.deepEqual(parse({ action: 'resolve', caseId }), invalid);
+  assert.deepEqual(parse({ action: 'reply_whatsapp', requestId, caseId, text: 'x' }), invalid);
+  assert.deepEqual(parse({ action: 'resolve', requestId, caseId: 'case_hel_1001' }), invalid);
+  assert.deepEqual(parse(null), invalid);
+  assert.deepEqual(parse([]), invalid);
+  assert.deepEqual([...requests.INBOX_ACTIONS], [
+    'reply', 'request_info', 'resolve', 'reveal_phone', 'open_media', 'reset_lockout', 'open_support_from_lockout',
+  ]);
+}
 
-const validPiiRequest = requests.parseAdminActionRequest({
-  actionId: 'reveal_pii',
-  targetType: 'admin_case',
-  targetId: 'case_hel_1001',
-  justification: 'Need callback phone to resolve OTP lockout.',
-  note: 'Calling worker once.',
-});
-assert.equal(validPiiRequest.ok, true);
-assert.equal(validPiiRequest.value.actionId, 'reveal_pii');
+// --- The reply counter (CCR-7) ----------------------------------------------------
+{
+  assert.equal(reply.TEMPLATE_REPLY_MAX_CHARS, 250);
+  assert.equal(reply.FREEFORM_REPLY_MAX_CHARS, 1000);
+  assert.equal(reply.templateReplyText('  Hola\n\n  mundo\t !  '), 'Hola mundo !');
+  assert.equal(reply.templateReplyLength('  Hola\n\n  mundo\t !  '), 12);
+  // UTF-16 code units: an emoji outside the BMP counts twice, as the database counts it.
+  assert.equal(reply.templateReplyLength('\u{1F600}'), 2);
+  // Every JavaScript whitespace character folds, including no-break and ideographic spaces.
+  assert.equal(reply.templateReplyText('a  　﻿b'), 'a b');
+  const source = readFileSync(resolve(adminRoot, 'src/lib/support-reply.ts'), 'utf8');
+  assert.doesNotMatch(source, /^import /m, 'support-reply.ts is client-safe: it imports nothing');
+}
 
-assert.deepEqual(
-  requests.parseAdminActionRequest({
-    actionId: 'reveal_pii',
-    targetType: 'admin_case',
-    targetId: 'case_hel_1001',
-    justification: 'too short',
-  }),
-  { ok: false, error: 'pii_justification_required' },
-);
-
-assert.deepEqual(
-  requests.parseAdminActionRequest({
-    actionId: 'approve_verification',
-    targetType: 'admin_case',
-    targetId: 'case_hel_1001',
-  }),
-  { ok: false, error: 'invalid_action' },
-);
-
-assert.deepEqual(
-  requests.parseAdminActionRequest({
-    actionId: 'request_more_info',
-    targetType: 'verification',
-    targetId: 'verify_3001',
-  }),
-  { ok: false, error: 'invalid_target_type' },
-);
-
-const preview = requests.validateAdminAction({
-  actor: 'Luis',
-  role: 'admin_ops',
-  targetStatus: 'open',
-  targetKind: 'case',
-  targetCaseType: 'help_request',
-  request: validPiiRequest.value,
-});
-assert.equal(preview.ok, true);
-assert.equal(preview.auditEvent.piiReveal, true);
-assert.equal(preview.auditEvent.targetId, 'case_hel_1001');
-assert.equal(preview.auditEvent.summary.includes('Need callback phone'), true);
-
-const readonlyPreview = requests.validateAdminAction({
-  actor: 'Read Only Admin',
-  role: 'admin_readonly',
-  targetStatus: 'open',
-  targetKind: 'case',
-  targetCaseType: 'help_request',
-  request: validPiiRequest.value,
-});
-assert.equal(readonlyPreview.ok, false);
-assert.equal(readonlyPreview.status, 403);
-assert.equal(readonlyPreview.error, 'forbidden');
-
-const closedPreview = requests.validateAdminAction({
-  actor: 'Luis',
-  role: 'admin_ops',
-  targetStatus: 'resolved',
-  targetKind: 'case',
-  targetCaseType: 'help_request',
-  request: validPiiRequest.value,
-});
-assert.equal(closedPreview.ok, false);
-assert.equal(closedPreview.status, 409);
-assert.equal(closedPreview.error, 'action_disabled');
-
-const auditEvent = audit.buildAdminAuditEvent({
-  actor: 'Ivan',
-  actionId: 'resolve_case',
-  targetType: 'admin_case',
-  targetId: 'case_hel_1001',
-  justification: 'Issue handled on call.',
-});
-assert.equal(auditEvent.action, 'resolve_case');
-assert.equal(auditEvent.piiReveal, false);
-assert.equal(auditEvent.summary, 'Ivan requested resolve_case for admin_case case_hel_1001. Justification: Issue handled on call.');
-
-console.log('admin action contract checks passed');
+console.log('inbox action policy checks passed');

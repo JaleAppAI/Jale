@@ -38,6 +38,7 @@ import { getStripe, getStripeSecret } from '../lib/stripe-client';
 import { resolveEntitlements } from '../lib/entitlements';
 import { queueEmail } from '../lib/email-outbox';
 import { renderBillingPauseEmail } from '../lib/billing-pause-template';
+import { renderBillingResumeEmail } from '../lib/billing-resume-template';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -588,6 +589,58 @@ async function handleSubscriptionEvent(
       }
     }
 
+    // Sprint 28 (K4.5): an entitled subscription brings back the jobs billing
+    // paused (and only those: billing_paused_at marks them; an employer's own
+    // status change clears the mark), oldest first, up to the resolved limit.
+    // Same transaction as the upsert, so a rollback undoes both, and one
+    // email per event, keyed like the pause notice.
+    if (RESUMING_STATUSES.has(status)) {
+      const entitlements = await resolveEntitlements(client, userId);
+      const resumeRes = await client.query<{
+        resumed_count: number;
+        employer_email: string | null;
+        resumed_titles: string[];
+      }>(
+        `SELECT resumed_count, employer_email, resumed_titles
+           FROM jale_billing_internal.billing_resume_paused_jobs($1, $2)`,
+        [userId, entitlements.activeJobLimit],
+      );
+      const resumed = resumeRes.rows[0];
+      if (!resumed) throw new Error('billing_job_resume_invalid_result');
+      const resumedCount = Number(resumed.resumed_count);
+      if (!Number.isInteger(resumedCount) || resumedCount < 0) throw new Error('billing_job_resume_invalid_result');
+      if (resumedCount > 0) {
+        if (!persistedSubscriptionId) throw new Error('subscription_upsert_missing_id');
+        if (typeof resumed.employer_email !== 'string'
+          || resumed.employer_email.length > 320
+          || !resumed.employer_email.includes('@')) {
+          throw new Error('billing_job_resume_invalid_email');
+        }
+        const titles = Array.isArray(resumed.resumed_titles) ? resumed.resumed_titles : [];
+        if (titles.length !== resumedCount
+          || titles.some((title) => typeof title !== 'string' || title.trim().length === 0)) {
+          throw new Error('billing_job_resume_invalid_titles');
+        }
+        console.info('resumed_paused_jobs', { userId, resumedCount });
+        const origin = (process.env.ALLOWED_ORIGIN ?? '').replace(/\/$/, '');
+        if (!origin) throw new Error('billing_allowed_origin_missing');
+        const rendered = renderBillingResumeEmail({
+          resumedTitles: titles,
+          englishJobsUrl: `${origin}/en/employer/jobs`,
+          spanishJobsUrl: `${origin}/es/employer/jobs`,
+        });
+        await queueEmail(client, {
+          recipientEmail: resumed.employer_email,
+          subject: rendered.subject,
+          bodyText: rendered.bodyText,
+          bodyHtml: rendered.bodyHtml,
+          sourceType: 'billing_resume',
+          sourceId: persistedSubscriptionId,
+          idempotencyKey: `billing-resume:${persistedSubscriptionId}:${eventId}`,
+        });
+      }
+    }
+
     await markInboxStatusWithClient(client, eventId, 'processed', null, new Date());
     await client.query('COMMIT');
     return { outcome: 'processed' };
@@ -598,6 +651,9 @@ async function handleSubscriptionEvent(
     client.release();
   }
 }
+
+/** Statuses that entitle the employer again, so billing's paused jobs come back (K4.5). */
+const RESUMING_STATUSES: ReadonlySet<string> = new Set(['active', 'trialing']);
 
 // ── DB helpers ─────────────────────────────────────────────────────────────────
 

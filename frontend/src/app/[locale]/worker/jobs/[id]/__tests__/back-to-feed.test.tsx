@@ -72,6 +72,7 @@ vi.mock('@/lib/api/worker', async (importOriginal) => ({
     applyToJob: vi.fn(),
     updateWorkerProfile: vi.fn(),
     getVaultDocuments: vi.fn(async () => []),
+    recordJobView: vi.fn(),
 }));
 
 const job: JobDetail = {

@@ -52,7 +52,20 @@ const TONE_CLASS: Record<UnreadBadgeTone, string> = {
     bar: 'bg-[var(--jale-blue-500)] text-[var(--primary-fg)]',
 };
 
-export function UnreadBadge({ count, tone }: { count: number; tone: UnreadBadgeTone }) {
+export function UnreadBadge({
+    count,
+    tone,
+    srLabel,
+}: {
+    count: number;
+    tone: UnreadBadgeTone;
+    /**
+     * The sentence a screen reader hears, when the count is not unread
+     * messages (the worker's Applications badge). Defaults to the unread
+     * wording every existing caller relies on.
+     */
+    srLabel?: string;
+}) {
     const t = useTranslations('employer_dashboard');
     if (count <= 0) return null;
 
@@ -67,7 +80,7 @@ export function UnreadBadge({ count, tone }: { count: number; tone: UnreadBadgeT
             ].join(' ')}
         >
             <span aria-hidden="true">{printed}</span>
-            <span className="sr-only">{t('nav.unread_badge', { count })}</span>
+            <span className="sr-only">{srLabel ?? t('nav.unread_badge', { count })}</span>
         </span>
     );
 }

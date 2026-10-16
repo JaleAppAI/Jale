@@ -1,5 +1,5 @@
-import { formatCount } from './analytics-format';
-import { newestWeeksFirst, wholePercent } from './ops-health';
+import { formatCount, weekLabel, wholePercent } from './analytics-format';
+import { isCurrentWeek, newestWeeksFirst } from './ops-health';
 import type { DigestAdoption, DigestSendFigures, DigestSendsWeekly } from './types';
 
 // "Digest on for 12% of employers (34 of 280) · 29 of them have an email
@@ -50,4 +50,23 @@ export function digestTableRows(split: DigestSplit, now: Date = new Date()): Dig
 // Nothing emailed in these weeks: the table gives way to the empty state.
 export function digestEmpty(split: DigestSplit): boolean {
   return split.window.emailed === 0;
+}
+
+// ---- S28 FE-4: #13 digest adoption ------------------------------------------------
+// The #13 headline: employers who get the digest (on, with an email address).
+export function digestHeadline(adoption: DigestAdoption): { value: string; note: string } {
+  return {
+    value: wholePercent(adoption.digestOnWithEmail, adoption.employers),
+    note: `of employers get the digest (${formatCount(adoption.digestOnWithEmail)} of ${formatCount(adoption.employers)})`,
+  };
+}
+
+// Digest emails sent per week; the week holding `now` is partial.
+export function digestSendChart(split: DigestSplit, now: Date = new Date()): { labels: string[]; partialLast: boolean; values: number[] } {
+  const last = split.weekly.at(-1);
+  return {
+    labels: split.weekly.map((w) => weekLabel(w.weekStart)),
+    partialLast: last !== undefined && isCurrentWeek(last.weekStart, now),
+    values: split.weekly.map((w) => w.sent),
+  };
 }

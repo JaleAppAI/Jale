@@ -26,6 +26,7 @@ const baseJob: EmployerJobDetail = {
   applicant_count: 0,
   hired_count: 0,
   open_count: 0,
+  hire_details_needed_count: 0,
   pay_min: null,
   pay_max: null,
   pay_interval: null,

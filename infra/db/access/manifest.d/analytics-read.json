@@ -1,0 +1,146 @@
+{
+  "functions": {
+    "public.admin_analytics_paying_weekly(integer)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_weeks integer",
+      "returns": "TABLE(week_start timestamp with time zone, partial boolean, employers bigint, paying bigint, new_paying bigint, churned bigint, approximate_before timestamp with time zone)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "123",
+      "reason": "Admin console read: employers, paying employers and paying starts and stops per week, counts and one date only."
+    },
+    "public.admin_analytics_reset_reasons(integer)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_days integer",
+      "returns": "TABLE(source text, reason_code text, resets bigint)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "123",
+      "reason": "Admin console read: lockout resets by reason code and operator resets, counts only."
+    },
+    "public.admin_analytics_case_aging()": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "",
+      "returns": "TABLE(bucket text, waiting_on_us bigint, waiting_on_worker bigint)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "123",
+      "reason": "Admin console read: open cases by time in their status and by whom they wait on, counts only."
+    },
+    "public.admin_analytics_case_resolution(integer)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_weeks integer",
+      "returns": "TABLE(week_start timestamp with time zone, partial boolean, resolved bigint, median_hours numeric, p75_hours numeric)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "123",
+      "reason": "Admin console read: cases resolved per week with median and p75 hours, counts and times only."
+    },
+    "public.admin_analytics_onboarding_steps(integer, text)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_weeks integer, p_door text",
+      "returns": "TABLE(step_key text, step_order integer, branch boolean, reached bigint, started bigint)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "123",
+      "reason": "Admin console read: how many of a signup cohort reached each onboarding step, counts only."
+    },
+    "public.admin_analytics_identity_funnel(integer)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_weeks integer",
+      "returns": "TABLE(challenges bigint, reached_code bigint, verified bigint, locked_once bigint, expired_unused bigint, attempts_zero bigint, attempts_one bigint, attempts_two bigint, attempts_three_plus bigint, median_minutes_to_verify numeric, p75_minutes_to_verify numeric, timings_since timestamp with time zone)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "123",
+      "reason": "Admin console read: the WhatsApp identity verification funnel, counts, times and one date only."
+    },
+    "public.admin_analytics_ranking_freshness()": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "",
+      "returns": "TABLE(under_1h bigint, from_1h_to_6h bigint, from_6h_to_24h bigint, from_1d_to_3d bigint, over_3d bigint, ranked_jobs bigint, fallback_jobs bigint, jobs_with_applications_no_ranking bigint)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "123",
+      "reason": "Admin console read: how old active jobs' candidate rankings are, counts only."
+    },
+    "public.admin_analytics_home_metrics()": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "",
+      "returns": "TABLE(hires_last_30d bigint, jobs_with_hire_last_30d bigint, stale_jobs_14d bigint)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "123",
+      "reason": "Admin console read: hires and jobs with a hire in 30 days and stale jobs at 14 days, counts only."
+    },
+    "public.admin_analytics_system_health()": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "",
+      "returns": "TABLE(whatsapp_failed_24h bigint, ai_finished_7d bigint, ai_usable_7d bigint)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "123",
+      "reason": "Admin console read: failed WhatsApp sends in 24 hours and finished and usable voice notes in 7 days, counts only."
+    }
+  },
+  "table_additions": {
+    "public.employer_candidate_rankings": {
+      "policies": {
+        "employer_candidate_rankings_admin_analytics_read": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_admin"
+          ],
+          "origin": "existing",
+          "using": "(current_setting('app.admin_analytics_read'::text, true) = 'on'::text)",
+          "with_check": null,
+          "reason": "Gated read for the admin analytics definers (migration 123), which run as the master login: SELECT only, and only while a definer has set the transaction-local read flag. Never copied to a runtime login."
+        }
+      },
+      "reason": "Read by the ranking freshness definer (migration 123) through its gated policy."
+    },
+    "public.identity_lockout_resets": {
+      "policies": {
+        "identity_lockout_resets_admin_analytics_read": {
+          "command": "SELECT",
+          "permissive": true,
+          "to": [
+            "jale_admin"
+          ],
+          "origin": "existing",
+          "using": "(current_setting('app.admin_analytics_read'::text, true) = 'on'::text)",
+          "with_check": null,
+          "reason": "Gated read for the admin analytics definers (migration 123), which run as the master login: SELECT only, and only while a definer has set the transaction-local read flag. Never copied to a runtime login."
+        }
+      },
+      "reason": "Read by the resets-by-reason definer (migration 123) through its gated policy."
+    }
+  }
+}

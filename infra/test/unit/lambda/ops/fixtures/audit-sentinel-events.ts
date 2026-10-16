@@ -123,6 +123,82 @@ export const AUDIT_ALARM_ARN = `arn:aws:cloudwatch:${REGION}:${ACCOUNT}:alarm:Ja
 export const MAIN_BUS_ARN = `arn:aws:events:${REGION}:${ACCOUNT}:event-bus/default`;
 export const ADMIN_POOL_ID = `${REGION}_AdminPool1`;
 export const WORKER_POOL_ID = `${REGION}_WorkerPool1`;
+/** App clients, in Cognito's lowercase alphanumeric form. */
+export const ADMIN_CLIENT_ID = 'exampleadminclient00000000';
+export const WORKER_CLIENT_ID = 'exampleworkerclient0000000';
+/** The signing-in user, as `additionalEventData.sub` carries it. */
+export const SIGN_IN_SUB = '11111111-2222-4333-8444-555555555555';
+/** A remembered device's key, as device-issuing events carry it. */
+export const EXAMPLE_DEVICE_KEY = `${REGION}_dddddddd-0000-4000-8000-000000000000`;
+const HIDDEN = 'HIDDEN_DUE_TO_SECURITY_REASONS';
+
+/** A Security Hub control finding's Id: an ARN, as Security Hub writes it. */
+export const SECURITY_HUB_FINDING_ID = `arn:aws:securityhub:${REGION}:${ACCOUNT}:security-control/S3.8/finding/0a1b2c3d-0000-4000-8000-000000000001`;
+export const OTHER_SECURITY_HUB_FINDING_ID = `arn:aws:securityhub:${REGION}:${ACCOUNT}:security-control/S3.1/finding/0a1b2c3d-0000-4000-8000-000000000002`;
+
+/** One "Security Hub Findings - Imported" event of one control finding, imported at `time`. */
+function securityHubImport(eventId: string, time: string, finding: { Id: string; status?: string; severity?: string }): Json {
+  return {
+    version: '0',
+    id: eventId,
+    'detail-type': 'Security Hub Findings - Imported',
+    source: 'aws.securityhub',
+    account: ACCOUNT,
+    time,
+    region: REGION,
+    resources: [finding.Id],
+    detail: {
+      findings: [{
+        SchemaVersion: '2018-10-08',
+        Id: finding.Id,
+        ProductArn: `arn:aws:securityhub:${REGION}::product/aws/securityhub`,
+        ProductName: 'Security Hub',
+        GeneratorId: 'security-control/S3.8',
+        AwsAccountId: ACCOUNT,
+        Title: 'S3 general purpose buckets should block public access',
+        Severity: { Label: finding.severity ?? 'CRITICAL' },
+        Workflow: { Status: 'NEW' },
+        RecordState: 'ACTIVE',
+        ...(finding.status ? { Compliance: { Status: finding.status, SecurityControlId: 'S3.8' } } : {}),
+        ProductFields: { 'aws/securityhub/FindingId': finding.Id, 'aws/securityhub/ProductName': 'Security Hub' },
+        Resources: [{ Type: 'AwsS3Bucket', Id: 'arn:aws:s3:::example-bucket', Region: REGION }],
+        UpdatedAt: time,
+      }],
+    },
+  };
+}
+
+/**
+ * A user-pool sign-in call from a browser, with the keys CloudTrail records
+ * for it: the app client in `requestParameters.clientId`, the user in
+ * `additionalEventData.sub`, hidden challenge responses and session, and no
+ * user-pool id anywhere.
+ */
+function signInCall(eventName: string, fields: Json): Json {
+  return apiCall({
+    eventSource: 'cognito-idp.amazonaws.com',
+    eventName,
+    userIdentity: { type: 'Unknown', principalId: 'Anonymous' },
+    sourceIPAddress: '198.51.100.66',
+    userAgent: 'Mozilla/5.0 (example browser)',
+    responseElements: null,
+    additionalEventData: { sub: SIGN_IN_SUB },
+    requestID: '0e1f2a3b-0000-4000-8000-000000000001',
+    readOnly: false,
+    eventCategory: 'Management',
+    tlsDetails: { tlsVersion: 'TLSv1.3', cipherSuite: 'TLS_AES_128_GCM_SHA256', clientProvidedHostHeader: `cognito-idp.${REGION}.amazonaws.com` },
+    ...fields,
+  });
+}
+
+/** A wrong password: the SRP password step fails. */
+function passwordVerifierFailed(clientId: string): Json {
+  return signInCall('RespondToAuthChallenge', {
+    errorCode: 'NotAuthorizedException',
+    errorMessage: 'Incorrect username or password.',
+    requestParameters: { challengeName: 'PASSWORD_VERIFIER', challengeResponses: HIDDEN, clientId, session: HIDDEN },
+  });
+}
 
 /** The five reference events, plus the neighbours of each. */
 export const EVENTS = {
@@ -480,6 +556,7 @@ export const EVENTS = {
     sourceIPAddress: '198.51.100.88',
     additionalEventData: { userPoolId: WORKER_POOL_ID, sub: '7b8c9d0e-1f2a-4b3c-9d4e-5f6a7b8c9d0e' },
   }),
+  // A synthetic shape: real CloudTrail sign-in events always carry requestParameters.clientId.
   unattributedSignInFailed: apiCall({
     eventSource: 'cognito-idp.amazonaws.com',
     eventName: 'InitiateAuth',
@@ -487,7 +564,44 @@ export const EVENTS = {
     errorCode: 'NotAuthorizedException',
     sourceIPAddress: '198.51.100.99',
     additionalEventData: { sub: '8c9d0e1f-2a3b-4c4d-8e5f-6a7b8c9d0e1f' },
-    requestParameters: { clientId: 'exampleclientid' },
+    requestParameters: { authFlow: 'USER_SRP_AUTH', authParameters: HIDDEN },
+  }),
+  // Sign-in calls as CloudTrail records them: named by app client, never by pool.
+  adminSrpPasswordVerifierFailed: passwordVerifierFailed(ADMIN_CLIENT_ID),
+  adminMfaCodeFailedRealShape: signInCall('RespondToAuthChallenge', {
+    errorCode: 'CodeMismatchException',
+    errorMessage: 'Invalid code received for user',
+    requestParameters: { clientId: ADMIN_CLIENT_ID, challengeName: 'SOFTWARE_TOKEN_MFA', session: HIDDEN, challengeResponses: HIDDEN },
+  }),
+  // A remembered browser's device secret refused: the same code and message
+  // as a wrong password, at the device step, with no session.
+  adminDeviceSrpFailedRealShape: signInCall('RespondToAuthChallenge', {
+    errorCode: 'NotAuthorizedException',
+    errorMessage: 'Incorrect username or password.',
+    requestParameters: { clientId: ADMIN_CLIENT_ID, challengeName: 'DEVICE_PASSWORD_VERIFIER', challengeResponses: HIDDEN },
+  }),
+  workerSrpFailedRealShape: passwordVerifierFailed(WORKER_CLIENT_ID),
+  // A refresh token refused (revoked by a sign-out everywhere): the same code
+  // as a wrong password, on the refresh flow.
+  adminRefreshRevokedRealShape: signInCall('InitiateAuth', {
+    errorCode: 'NotAuthorizedException',
+    errorMessage: 'Refresh Token has been revoked',
+    requestParameters: { authFlow: 'REFRESH_TOKEN_AUTH', authParameters: HIDDEN, clientId: ADMIN_CLIENT_ID },
+  }),
+  // A sign-in that succeeded and issued a device: its key is in the response, in clear.
+  adminDeviceIssued: signInCall('RespondToAuthChallenge', {
+    requestParameters: { clientId: ADMIN_CLIENT_ID, challengeName: 'SOFTWARE_TOKEN_MFA', session: HIDDEN, challengeResponses: HIDDEN },
+    responseElements: {
+      challengeParameters: {},
+      authenticationResult: {
+        accessToken: HIDDEN,
+        expiresIn: 3600,
+        tokenType: 'Bearer',
+        refreshToken: HIDDEN,
+        idToken: HIDDEN,
+        newDeviceMetadata: { deviceKey: EXAMPLE_DEVICE_KEY, deviceGroupKey: '-exampleDeviceGroup' },
+      },
+    },
   }),
   rootSignIn: {
     version: '0',
@@ -589,28 +703,11 @@ export const EVENTS = {
       resource: { resourceType: 'Instance' },
     },
   },
-  securityHubCritical: {
-    version: '0',
-    id: '9a0b0000-0000-4000-8000-000000000003',
-    'detail-type': 'Security Hub Findings - Imported',
-    source: 'aws.securityhub',
-    account: ACCOUNT,
-    time: '2026-10-04T12:00:00Z',
-    region: REGION,
-    resources: [],
-    detail: {
-      findings: [{
-        Id: 'example-control-finding',
-        ProductName: 'Security Hub',
-        Title: 'S3 general purpose buckets should block public access',
-        Severity: { Label: 'CRITICAL' },
-        Workflow: { Status: 'NEW' },
-        RecordState: 'ACTIVE',
-        Compliance: { Status: 'FAILED' },
-        Resources: [{ Type: 'AwsS3Bucket' }],
-      }],
-    },
-  },
+  securityHubCritical: securityHubImport('9a0b0000-0000-4000-8000-000000000003', '2026-10-04T12:00:00Z', { Id: SECURITY_HUB_FINDING_ID, status: 'FAILED' }),
+  // The same finding, imported again a day later: a new event, the same state.
+  securityHubCriticalLater: securityHubImport('9a0b0000-0000-4000-8000-000000000005', '2026-10-05T12:00:00Z', { Id: SECURITY_HUB_FINDING_ID, status: 'FAILED' }),
+  securityHubCriticalPassed: securityHubImport('9a0b0000-0000-4000-8000-000000000006', '2026-10-06T12:00:00Z', { Id: SECURITY_HUB_FINDING_ID, status: 'PASSED' }),
+  securityHubCriticalOther: securityHubImport('9a0b0000-0000-4000-8000-000000000007', '2026-10-06T12:00:00Z', { Id: OTHER_SECURITY_HUB_FINDING_ID, status: 'FAILED' }),
   securityHubHigh: {
     version: '0',
     id: '9a0b0000-0000-4000-8000-000000000004',

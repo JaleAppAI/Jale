@@ -407,28 +407,38 @@ assert.equal(history.isHistoryCursor('2026-10-01T12:00:00.123456Z'), true);
 assert.equal(history.isHistoryCursor('2026-10-01T12:00:00.123Z'), false, 'a cursor keeps its microseconds');
 assert.equal(history.isHistoryCursor('2026-10-01T12:00:00.123456+00:00'), false, 'a cursor is UTC text, as the page wrote it');
 
-assert.equal(history.accessHistoryHref({}), '/access-history');
-assert.equal(history.accessHistoryHref({ subjectUserId: H_WORKER }), `/access-history?subject=${H_WORKER}`);
+assert.equal(history.accessHistoryHref({}), '/security');
+assert.equal(history.accessHistoryHref({ subjectUserId: H_WORKER }), `/security?subject=${H_WORKER}`);
 const fullHref = history.accessHistoryHref(fullQuery.filter, fullQuery.before);
 assert.equal(
   fullHref,
-  `/access-history?subject=${H_WORKER}&actor=${H_ACTOR}&record=${H_CASE}`
+  `/security?subject=${H_WORKER}&actor=${H_ACTOR}&record=${H_CASE}`
     + '&from=2026-10-01T00%3A00%3A00.000Z&to=2026-10-02T00%3A00%3A00%2B02%3A00'
     + '&category=contact_details&outcome=denied&before=2026-10-01T12%3A00%3A00.123456Z',
 );
 const roundTrip = history.parseAccessHistoryQuery(Object.fromEntries(new URL(fullHref, 'https://admin.example.test').searchParams));
 assert.deepEqual([roundTrip.filter, roundTrip.before], [fullQuery.filter, fullQuery.before], 'a link reproduces its search');
 
-// Verify list function return shapes export { rows, totalCount } (truncation
-// disclosure feature). These are compile-time checks via the TS typecheck
-// above; the runtime assertions below guard against regressions in the shape.
-assert.ok('ADMIN_CASES_PAGE_SIZE' in cases, 'cases module should export ADMIN_CASES_PAGE_SIZE');
-
-// Confirm the list functions exist and have the correct signature (no DB call
-// is made here; the DB-connect path is guarded by getAdminDbPool).
-assert.equal(typeof cases.listAdminCaseRows, 'function');
-assert.equal(typeof cases.loadCasesList, 'function');
+// Sprint 28 (K2): the case queue, the case page and the lockout list moved
+// to the Inbox (admin-inbox.ts, support-conversation.ts, loadLockoutDetail);
+// their old loaders are gone.
+for (const retired of ['ADMIN_CASES_PAGE_SIZE', 'listAdminCaseRows', 'loadCasesList', 'getAdminCaseRow', 'loadCaseDetail', 'revealCaseContact']) {
+  assert.equal(cases[retired], undefined, `${retired} was retired with the case console`);
+}
 assert.equal(typeof audit.loadAccessHistory, 'function');
+
+// A case's display ref is S-<case_number> (migration 122), from the column.
+assert.equal(cases.caseRef(124), 'S-124');
+assert.equal(cases.caseRef('7'), 'S-7');
+assert.equal(cases.caseRef(null), undefined);
+assert.equal(cases.caseRef('0'), undefined);
+assert.equal(cases.mapAdminCaseRow({
+  id: 'case-4', case_type: 'help_request', status: 'open', priority: 50,
+  user_id: null, conversation_id: null, employer_id: null, summary: 'Help', details: { caseNumber: 'CASE-1' },
+  created_at: '2026-10-07T12:00:00+00:00', updated_at: '2026-10-07T12:00:00+00:00',
+  status_changed_at: '2026-10-07T12:00:00+00:00', case_number: '124', assigned_admin_email: null,
+  user_name: null, user_phone: null, user_email: null, employer_name: null,
+}).caseNumber, 'S-124', 'the column wins over an old details key');
 
 // Roadmap 1b: dashboard tiles count with their own queries; the reveal
 // tile reads the access records (jale_audit.reveal_count). Roadmap 2d: the
@@ -481,7 +491,7 @@ assert.equal(lockouts.lockoutOutcomeBadge('verified'), 'approved');
 assert.equal(lockouts.lockoutOutcomeBadge('code_expired'), 'pending_worker');
 assert.equal(lockouts.LOCKOUT_WINDOW_DAYS, 7);
 assert.equal(typeof lockouts.listIdentityLockouts, 'function');
-assert.equal(typeof lockouts.loadLockouts, 'function');
+assert.equal(lockouts.loadLockouts, undefined, 'the lockout list moved to the Inbox lockouts tab');
 
 // ---- Roadmap 2d: case aging (migration 117's admin_cases.status_changed_at) ----
 const agingNow = new Date('2026-10-09T15:00:00.000Z'); // a Friday
@@ -515,8 +525,8 @@ assert.equal(
 const casesSource = readFileSync(resolve(adminRoot, 'src/lib/server/admin-cases.ts'), 'utf8');
 assert.equal(
   (casesSource.match(/\$\{CASE_QUEUE_ORDER\}/g) ?? []).length,
-  2,
-  'the /cases queue and the Home preview share one order',
+  1,
+  'the Home preview keeps the queue order (the /cases queue moved to the Inbox)',
 );
 assert.doesNotMatch(
   casesSource,
@@ -530,23 +540,18 @@ assert.equal(
 );
 assert.match(
   casesSource,
-  /getAdminCaseRow\(client: QueryClient, id: string\)[\s\S]*?`\$\{CASE_LIST_SELECT\}\s*WHERE c\.id = \$1/,
-  'the case page reads through the shared select, so it reads status_changed_at too',
-);
-assert.match(
-  casesSource,
   /WHERE \$\{OPEN_CASE_FILTER\}\s*\$\{CASE_QUEUE_ORDER\}\s*LIMIT \$1/,
   'the Home preview lists open cases only',
 );
 assert.match(casesSource, /client\.query<OpenCasesByWaitRow>\(OPEN_CASES_BY_WAIT_SQL\)/, 'the Home counts run the pinned query');
 
 // Timeline: events written in one transaction share created_at (117's
-// status_changed and, e.g., admin_reply_queued). Newest first, the status change
-// (the later write) sorts above the action that caused it; id breaks other ties.
+// status_changed and, e.g., admin_reply_queued). The conversation reads them
+// oldest first, the status change after the action that caused it.
 assert.match(
-  casesSource,
-  /ORDER BY created_at DESC,\s*\(event_type = 'status_changed'\) DESC,\s*id`/,
-  'events written in one transaction keep one order: the status change above the action that caused it',
+  readFileSync(resolve(adminRoot, 'src/lib/server/support-conversation.ts'), 'utf8'),
+  /ORDER BY created_at, \(event_type = 'status_changed'\), id/,
+  'events written in one transaction keep one order: the status change after the action that caused it',
 );
 assert.deepEqual(
   cases.mapAdminCaseEventRow({
@@ -809,11 +814,14 @@ function emfOrJsonLines(lines) {
     numberInvalid: false,
     before: '2026-10-02T11:59:00.000456Z',
   });
+  // Sprint 28 (K2.3/K2.5): the list lives on the Inbox's reports tab; the
+  // report status travels as reportStatus and the Inbox starts at its first page.
   assert.equal(
     reports.inboxHref(filters, { before: '2026-10-02T11:00:00.000001Z' }),
-    '/reports?status=looking&role=employer&category=billing&verified=no&number=1042&before=2026-10-02T11%3A00%3A00.000001Z',
+    '/inbox?tab=reports&reportStatus=looking&role=employer&category=billing&verified=no&number=1042',
   );
-  assert.equal(reports.inboxHref(filters, { before: null }), '/reports?status=looking&role=employer&category=billing&verified=no&number=1042');
+  assert.equal(reports.inboxHref(filters, { before: null }), '/inbox?tab=reports&reportStatus=looking&role=employer&category=billing&verified=no&number=1042');
+  assert.equal(reports.reportDetailHref(fakeUuid(0x4242).toUpperCase()), `/inbox/reports/${fakeUuid(0x4242)}`);
 
   assert.deepEqual(reports.parseInboxFilters({}), {
     status: null,
@@ -825,7 +833,7 @@ function emfOrJsonLines(lines) {
     numberInvalid: false,
     before: null,
   });
-  assert.equal(reports.inboxHref(reports.parseInboxFilters({}), {}), '/reports');
+  assert.equal(reports.inboxHref(reports.parseInboxFilters({}), {}), '/inbox?tab=reports');
 
   const junk = reports.parseInboxFilters({
     status: 'closed',

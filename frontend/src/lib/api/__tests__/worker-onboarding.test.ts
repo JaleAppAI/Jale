@@ -260,7 +260,7 @@ describe('claimReferral', () => {
         // session expired and `location.assign` the login page out from under
         // a worker who has just proved their number. A claim must never move
         // anyone anywhere.
-        const refreshIdToken = vi.fn(async () => 'fresh-token');
+        const refreshIdToken = vi.fn(async () => ({ status: 'ok' as const, token: 'fresh-token' }));
         const onSessionExpired = vi.fn();
         registerAuthBridge({ refreshIdToken, onSessionExpired });
         fetchMock.mockResolvedValue(json(401, { message: 'Unauthorized' }));

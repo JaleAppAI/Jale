@@ -88,8 +88,30 @@ for (const surface of [
   // The problem-report inbox's surfaces, registered with the audit codes.
   'admin.reports_list', 'admin.report_detail', 'admin.report_contact_reveal', 'admin.report_screenshot',
   'admin.report_status', 'admin.report_note', 'admin.report_settings',
+  // Sprint 28: the Admins page and its actions (K1).
+  'admin.admins_list', 'admin.admin_invite', 'admin.admin_resend_invite', 'admin.admin_role_change',
+  'admin.admin_deactivate', 'admin.admin_reactivate',
+  // Sprint 28: the Inbox, the support conversation, lockout detail, and their actions (K2).
+  'admin.inbox', 'admin.support_conversation', 'admin.lockout_detail',
+  'admin.inbox.reply', 'admin.inbox.request_info', 'admin.inbox.resolve', 'admin.inbox.reveal_phone',
+  'admin.inbox.open_media', 'admin.inbox.reset_lockout', 'admin.inbox.open_support',
 ]) {
   assert.ok(codes.ADMIN_SURFACES.includes(surface), `${surface} must be registered`);
+}
+// The Admins page's surfaces (K1.5) build valid events in admin_access,
+// naming admin_user records and field names only.
+for (const surface of ['admin.admins_list', 'admin.admin_invite', 'admin.admin_resend_invite', 'admin.admin_role_change', 'admin.admin_deactivate', 'admin.admin_reactivate']) {
+  const [payload] = record.buildAuditEventPayloads({
+    kind: surface === 'admin.admins_list' ? 'read' : 'action',
+    outcome: surface === 'admin.admins_list' ? 'allowed' : 'done',
+    actor: { actor_kind: 'admin', actor_id: ADMIN_ID, actor_role: 'admin_superadmin', actor_session: SESSION_ID },
+    event: { surface, categories: ['admin_access'], recordType: 'admin_user', recordIds: [fakeUuid(0xd9)], fieldNames: ['role'] },
+    requestId: REQUEST_ID,
+  });
+  assert.deepEqual(
+    [payload.surface, payload.categories, payload.record_type, payload.record_ids, payload.field_names],
+    [surface, ['admin_access'], 'admin_user', [fakeUuid(0xd9)], ['role']],
+  );
 }
 assert.equal(record.RECORD_EVENT_SQL, RECORD_EVENT_SQL);
 assert.equal(fallback.AUDIT_FALLBACK_LOG_GROUP_ENV, 'AUDIT_FALLBACK_LOG_GROUP');
@@ -580,6 +602,30 @@ let streamName;
     { kind: 'session', outcome: 'sign_in_rejected', actor_kind: 'anonymous', surface: 'admin.session' },
   );
   assert.equal('actor_id' in rejected, false);
+}
+
+// A session event may name field names (codes, never values): a sign-in that
+// used a trusted browser records ['trusted_device'] (contract K1.2). A
+// sign-in rejected for an admin who is known carries that admin, no session.
+{
+  const { pool, log } = createFakePool();
+  check.pool = pool;
+  await record.recordAdminSession('signed_in', opsSession, { fieldNames: ['trusted_device'] });
+  await record.recordAdminSession('sign_in_rejected', { adminUserId: ADMIN_ID, role: 'admin_ops' });
+  const [trusted, refused] = recordedEvents(log);
+  assert.deepEqual(trusted.field_names, ['trusted_device']);
+  assert.equal(trusted.outcome, 'signed_in');
+  assert.deepEqual(
+    [refused.outcome, refused.actor_kind, refused.actor_id, refused.actor_role, 'actor_session' in refused, refused.field_names],
+    ['sign_in_rejected', 'admin', ADMIN_ID, 'admin_ops', false, []],
+  );
+
+  // A field name that is not a code is never written: the event is lost to
+  // the fallback metric, and the caller is never interrupted.
+  const before = recordedEvents(log).length;
+  const { lines } = await captureConsole(() => record.recordAdminSession('signed_in', opsSession, { fieldNames: ['Trusted Device!'] }));
+  assert.equal(recordedEvents(log).length, before);
+  assert.equal(emfLines(lines.error, 'AuditFallbackFailed').length, 1);
 }
 
 console.log('admin audit record checks passed');

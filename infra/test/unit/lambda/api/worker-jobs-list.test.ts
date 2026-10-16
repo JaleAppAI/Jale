@@ -1,6 +1,6 @@
 import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { handler } from '../../../../lambda/api/worker-jobs-list';
-import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
+import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../../../../lambda/lib/db';
 import { listMatchedJobsForWorker, loadWorkerPreferredCities, cityAnchorsFrom } from '../../../../lambda/lib/job-matching';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
 
@@ -295,5 +295,57 @@ describe('worker-jobs-list', () => {
     mockListMatchedJobsForWorker.mockResolvedValue([job('a')]);
     const res = await handler(baseEvent);
     expect(JSON.parse(res.body).jobs[0].pre_application_prompts).toEqual([]);
+  });
+
+  // Sprint 28 (analytics item 20): the jobs the feed shows, recorded once per
+  // job and day as the calling worker, best-effort.
+  describe('showings', () => {
+    const RECORD = 'SELECT jale_cap.record_feed_impressions($1::uuid[])';
+    const statements = () => mockQuery.mock.calls.map(([sql]) => String(sql));
+
+    it('records every returned job, other_jobs included, in one call inside the list transaction', async () => {
+      mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+      mockCityKeys(['tx-el-paso']);
+      mockListMatchedJobsForWorker
+        .mockResolvedValueOnce([job('a'), job('b')])
+        .mockResolvedValueOnce([job('c')]);
+
+      const res = await handler(baseEvent);
+
+      expect(res.statusCode).toBe(200);
+      expect(mockQuery).toHaveBeenCalledWith(RECORD, [['a', 'b', 'c']]);
+      expect(setInternalUserRlsContext).toHaveBeenCalledWith(expect.objectContaining({ query: mockQuery }), 'worker-1');
+      const s = statements();
+      expect(s.slice(s.indexOf(RECORD) - 1, s.indexOf(RECORD) + 3))
+        .toEqual(['SAVEPOINT analytics_capture', RECORD, 'RELEASE SAVEPOINT analytics_capture', 'COMMIT']);
+    });
+
+    it('records nothing for an empty feed', async () => {
+      mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+      mockListMatchedJobsForWorker.mockResolvedValue([]);
+      const res = await handler(baseEvent);
+      expect(res.statusCode).toBe(200);
+      expect(statements()).not.toContain(RECORD);
+    });
+
+    it('a failing record never fails the list: same 200 body, and the transaction still commits', async () => {
+      mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+      mockListMatchedJobsForWorker.mockResolvedValue([job('a')]);
+      const baseline = await handler(baseEvent);
+
+      mockQuery.mockImplementation((q: string) => {
+        if (q.includes('FROM users WHERE cognito_sub')) return Promise.resolve({ rows: [{ id: 'worker-1' }] });
+        if (q === RECORD) return Promise.reject(Object.assign(new Error('permission denied'), { code: '42501' }));
+        return Promise.resolve({});
+      });
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const res = await handler(baseEvent);
+      warn.mockRestore();
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toBe(baseline.body);
+      expect(statements()).toContain('ROLLBACK TO SAVEPOINT analytics_capture');
+      expect(statements()[statements().length - 1]).toBe('COMMIT');
+    });
   });
 });

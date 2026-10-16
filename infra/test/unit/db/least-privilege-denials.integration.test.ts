@@ -315,6 +315,53 @@ maybeDescribe('least-privilege denials: writes only to the columns the paths wri
     }
   });
 
+  it('the WhatsApp engine records a worker\'s reply and closes a thread, but cannot set an employer\'s read marker, re-point a conversation or open one (42501)', async () => {
+    const conversation = (await su.query<{ id: string }>(
+      `INSERT INTO public.job_conversations (job_id, employer_id, worker_id, application_id, status)
+       VALUES ($1, $2, $3, $4, 'open') RETURNING id`, [ids.job, ids.employer, ids.applicant, ids.application],
+    )).rows[0].id;
+    // The worker's own context: the engine's row policy is keyed on it.
+    const worker = { internalUserId: ids.applicant };
+    try {
+      for (const set of [
+        'employer_last_read_at = now()', 'worker_id = worker_id', 'employer_id = employer_id',
+        'job_id = job_id', 'application_id = application_id', 'worker_thread_number = 1',
+      ]) {
+        expect([set, await refusalAs('jale_whatsapp', worker, `UPDATE public.job_conversations SET ${set} WHERE id = $1`, [conversation])])
+          .toEqual([set, '42501']);
+      }
+
+      // Rows back, not a null refusal: an UPDATE the row policy filters to
+      // zero rows also "succeeds", so only RETURNING proves the write landed.
+      expect(await rowsAs<{ id: string }>('jale_whatsapp', worker,
+        'SELECT id FROM public.job_conversations WHERE id = $1 FOR UPDATE', [conversation])).toEqual([{ id: conversation }]);
+      expect(await rowsAs<{ id: string }>('jale_whatsapp', worker,
+        `UPDATE public.job_conversations
+            SET last_message_at = now(), last_worker_message_at = now(), accepted_at = COALESCE(accepted_at, now())
+          WHERE id = $1 RETURNING id`, [conversation])).toEqual([{ id: conversation }]);
+      expect(await rowsAs<{ id: string }>('jale_whatsapp', worker,
+        `UPDATE public.job_conversations SET status = 'closed', closed_at = now() WHERE id = $1 RETURNING id`, [conversation]))
+        .toEqual([{ id: conversation }]);
+
+      // Opening a conversation is the employer's (request login) or a
+      // capability function's, never the engine's.
+      expect(await refusalAs('jale_whatsapp', worker,
+        `INSERT INTO public.job_conversations (job_id, employer_id, worker_id, application_id, status)
+         VALUES ($1, $2, $3, $4, 'open')`, [ids.job, ids.employer, ids.applicant, ids.application])).toBe('42501');
+
+      const { rows } = await su.query<{ marker: boolean; table_wide: boolean; insert: boolean }>(
+        `SELECT has_column_privilege('jale_whatsapp', 'public.job_conversations', 'employer_last_read_at', 'UPDATE') AS marker,
+                has_table_privilege('jale_whatsapp', 'public.job_conversations', 'UPDATE') AS table_wide,
+                has_any_column_privilege('jale_whatsapp', 'public.job_conversations', 'INSERT') AS insert`);
+      expect(rows[0]).toEqual({ marker: false, table_wide: false, insert: false });
+      const { rows: stamped } = await su.query<{ employer_last_read_at: Date | null }>(
+        'SELECT employer_last_read_at FROM public.job_conversations WHERE id = $1', [conversation]);
+      expect(stamped[0].employer_last_read_at).toBeNull();
+    } finally {
+      await su.query('DELETE FROM public.job_conversations WHERE id = $1', [conversation]);
+    }
+  });
+
   it('a user cannot write its own identity, contact-link or trust columns (42501), but can edit its profile', async () => {
     const self = { sub: subs.applicant, internalUserId: ids.applicant };
     for (const set of [

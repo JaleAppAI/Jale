@@ -1,37 +1,32 @@
-import { bucketLabel, formatCount } from '@/lib/analytics-format';
+import { TableScroll } from '@/components/ui/table-scroll';
+import { formatCount, weekLabel } from '@/lib/analytics-format';
+import { isCurrentWeek } from '@/lib/ops-health';
 import { hasStartOver, restartStepRows, restartTotals, restartWeeks, restartsEmpty } from '@/lib/restarts';
 import type { FunnelDoor, FunnelWeeks, OnboardingRestart } from '@/lib/types';
-import { TrendChart, type TrendSeries } from '@/components/analytics/TrendChart';
+import { AnalyticsPanel } from './AnalyticsPanel';
+import { ChartFrame } from './charts/ChartFrame';
+import { LineChart } from './charts/LineChart';
+import { seriesTable } from './charts/text';
+import type { ChartSeries } from './charts/types';
+import { TABLE, TD, TD_NUM, TH, TH_NUM } from './table-styles';
 
-// The validated pair of the Employers response-time chart.
-const STARTED_OVER_BLUE = '#0179ff';
-const WENT_BACK_ORANGE = '#eb6834';
+const RESTARTS_COUNTED =
+  'Reached counts the workers who were at a step in these weeks: they arrived there, or started over or went back from it. All steps and the weekly chart count each worker once, so the steps can add up to more; Presses count every press, so a worker who pressed twice counts twice.';
 
-export function RestartsByStep({
-  rows,
-  door,
-  weeks,
-  now,
-}: {
-  rows: OnboardingRestart[];
-  door: FunnelDoor;
-  weeks: FunnelWeeks;
-  now: Date;
-}) {
-  const heading = (
-    <div className="chart-head" style={{ marginBottom: 8 }}>
-      <div>
-        <h2>Start over and back</h2>
-        <p>By the step workers left, in onboarding order · workers, and their share of the workers who were at the step in these weeks</p>
-      </div>
-    </div>
-  );
+const RESTARTS_NOTES = [
+  'Start over and back counts workers by the step they left with the start over command (WhatsApp only) or back; voice-note retry loops and system moves do not count as going back.',
+  'Workers reset by an operator lose their onboarding history, so their earlier restarts are not counted.',
+  'Start over and back counts moves made since the last operator reset of each worker.',
+  'On All, the start-over share is of every worker who was at the step, web included.',
+];
+
+export function RestartsByStep({ rows, door, weeks, now }: { rows: OnboardingRestart[]; door: FunnelDoor; weeks: FunnelWeeks; now: Date }) {
+  const subtitle = 'By the step workers left, in onboarding order · workers, and their share of the workers who were at the step in these weeks';
   if (restartsEmpty(rows, door)) {
     return (
-      <article className="card">
-        {heading}
-        <p className="muted">No one started over or went back in these weeks.</p>
-      </article>
+      <AnalyticsPanel title="Start over and back" subtitle={subtitle} howCounted={RESTARTS_COUNTED} notes={RESTARTS_NOTES}>
+        <p className="m-0 text-sm text-[var(--jale-ink-2)]">No one started over or went back in these weeks.</p>
+      </AnalyticsPanel>
     );
   }
 
@@ -41,71 +36,62 @@ export function RestartsByStep({
   const startOver = hasStartOver(door);
   // Workers distinct across steps (the SQL's all-steps rows); a week with no
   // row had nobody: 0, not a gap.
-  const startedOver: TrendSeries = {
-    key: 'startedOver',
-    label: 'Started over',
-    color: STARTED_OVER_BLUE,
-    values: byWeek.map((week) => week.restartWorkers),
-  };
-  const wentBack: TrendSeries = {
-    key: 'wentBack',
-    label: 'Went back',
-    color: WENT_BACK_ORANGE,
-    values: byWeek.map((week) => week.backWorkers),
-  };
+  const startedOver: ChartSeries = { key: 'startedOver', label: 'Started over', color: 'chart-1', values: byWeek.map((week) => week.restartWorkers) };
+  const wentBack: ChartSeries = { key: 'wentBack', label: 'Went back', color: 'chart-2', values: byWeek.map((week) => week.backWorkers) };
+  const series = startOver ? [startedOver, wentBack] : [wentBack];
+  const labels = byWeek.map((week) => weekLabel(week.weekStart));
+  const partialLast = byWeek.length > 0 && isCurrentWeek(byWeek[byWeek.length - 1].weekStart, now);
 
   return (
     <>
-      <article className="card cohort-card">
-        {heading}
-        <div className="table-scroll" role="region" aria-label="Start over and back table" tabIndex={0}>
-          <table className="data-table cohort-table">
+      <AnalyticsPanel title="Start over and back" subtitle={subtitle} howCounted={RESTARTS_COUNTED} notes={RESTARTS_NOTES}>
+        <TableScroll label="Start over and back table">
+          <table className={TABLE}>
             <thead>
               <tr>
-                <th>Step</th>
-                <th className="num">Reached</th>
-                <th className="num">Started over</th>
-                <th className="num">Went back</th>
-                <th className="num">Presses</th>
+                <th className={TH}>Step</th>
+                <th className={TH_NUM}>Reached</th>
+                <th className={TH_NUM}>Started over</th>
+                <th className={TH_NUM}>Went back</th>
+                <th className={TH_NUM}>Presses</th>
               </tr>
             </thead>
             <tbody>
               {steps.map((row) => (
                 <tr key={row.stepKey}>
-                  <td>{row.label}</td>
-                  <td className="num">{formatCount(row.reached)}</td>
-                  <td className="num">{row.startedOver}</td>
-                  <td className="num">{row.wentBack}</td>
-                  <td className="num">{formatCount(row.presses)}</td>
+                  <td className={TD}>{row.label}</td>
+                  <td className={TD_NUM}>{formatCount(row.reached)}</td>
+                  <td className={TD_NUM}>{row.startedOver}</td>
+                  <td className={TD_NUM}>{row.wentBack}</td>
+                  <td className={TD_NUM}>{formatCount(row.presses)}</td>
                 </tr>
               ))}
             </tbody>
             <tfoot>
               <tr>
-                <th scope="row">All steps</th>
-                <td className="num">{formatCount(totals.reached)}</td>
-                <td className="num">{totals.startedOver}</td>
-                <td className="num">{totals.wentBack}</td>
-                <td className="num">{formatCount(totals.presses)}</td>
+                <th scope="row" className={TH}>All steps</th>
+                <td className={TD_NUM}>{formatCount(totals.reached)}</td>
+                <td className={TD_NUM}>{totals.startedOver}</td>
+                <td className={TD_NUM}>{totals.wentBack}</td>
+                <td className={TD_NUM}>{formatCount(totals.presses)}</td>
               </tr>
             </tfoot>
           </table>
-        </div>
-        {startOver ? null : <p className="muted restarts-note">No start over on the web</p>}
-      </article>
+        </TableScroll>
+        {startOver ? null : <p className="m-0 text-sm text-[var(--jale-ink-2)]">No start over on the web</p>}
+      </AnalyticsPanel>
 
-      <TrendChart
+      <ChartFrame
         title="Start over and back by week"
         subtitle={
           startOver
             ? 'Workers who started over or went back each week, at any step · each worker counted once'
             : 'Workers who went back each week, at any step · each worker counted once'
         }
-        labels={byWeek.map((week) => bucketLabel(week.weekStart, '90d'))}
-        tableCaption="Workers by week"
-        partialLast
-        series={startOver ? [startedOver, wentBack] : [wentBack]}
-      />
+        table={seriesTable('Workers by week', labels, series, { format: formatCount, partialLast })}
+      >
+        <LineChart title="Start over and back by week" labels={labels} series={series} xTitle="Week starting" yTitle="Workers" partialLast={partialLast} />
+      </ChartFrame>
     </>
   );
 }

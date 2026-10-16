@@ -192,21 +192,33 @@ export function parseInboxFilters(params: Readonly<Record<string, SearchParamVal
   };
 }
 
-/** A link to the list with the same filters; `before` replaces the cursor when given. */
-export function inboxHref(filters: ReportInboxFilters, overrides: { before?: string | null }): string {
-  const query = new URLSearchParams();
-  if (filters.status) query.set('status', filters.status);
+/**
+ * A link to the Inbox's reports tab with the same report filters (sprint 28,
+ * K2.3/K2.5: the reports list lives at /inbox?tab=reports). The report status
+ * travels as `reportStatus`, since `status` is the Inbox's own filter; this
+ * list's cursor is left out (the Inbox has its own), so the Inbox starts at
+ * its first page. `overrides` is kept for the callers' signature.
+ */
+export function inboxHref(
+  filters: Pick<ReportInboxFilters, 'status' | 'role' | 'category' | 'verified' | 'number'>,
+  overrides: { before?: string | null } = {},
+): string {
+  void overrides;
+  const query = new URLSearchParams({ tab: 'reports' });
+  if (filters.status) query.set('reportStatus', filters.status);
   if (filters.role) query.set('role', filters.role);
   if (filters.category) query.set('category', filters.category);
   if (filters.verified !== null) query.set('verified', filters.verified ? 'yes' : 'no');
   if (filters.number !== null) query.set('number', String(filters.number));
-  const before = 'before' in overrides ? overrides.before : filters.before;
-  if (before) query.set('before', before);
-  const text = query.toString();
-  return text ? `/reports?${text}` : '/reports';
+  return `/inbox?${query.toString()}`;
 }
 
-type InboxRow = {
+/** A report's page in the Inbox (K2.5). */
+export function reportDetailHref(reportId: string): string {
+  return `/inbox/reports/${encodeURIComponent(reportId.toLowerCase())}`;
+}
+
+export type InboxRow = {
   report_id: string;
   report_number: string | number;
   role: string;

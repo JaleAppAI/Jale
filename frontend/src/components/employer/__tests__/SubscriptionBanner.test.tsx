@@ -152,3 +152,68 @@ describe('subscription banner dismissal', () => {
         expect(screen.queryByText(message('billing.signage.lapsed_title'))).not.toBeInTheDocument();
     });
 });
+
+/*
+ * Item 5. The free-plan dismissal is permanent per account and keyed by plan
+ * code, so it outlived a paid period in between: an employer who dismissed it,
+ * upgraded, then fell back to Free never saw it again. Being SEEN on a healthy
+ * paid plan now forgets it. A missing billing read is not "seen on a plan".
+ */
+describe('the free-plan dismissal across a paid period', () => {
+    const proBilling: EmployerBilling = {
+        ...freeBilling,
+        planCode: 'employer_pro',
+        subscription: {
+            plan_code: 'employer_pro',
+            status: 'active',
+            current_period_start: null,
+            current_period_end: null,
+            cancel_at_period_end: false,
+            grace_ends_at: null,
+        },
+    };
+    const freeTitle = () => message('billing.signage.free_title');
+
+    it('shows the free banner again after the account was seen on a healthy paid plan', () => {
+        const { rerender } = renderIntl(
+            <SubscriptionBanner signage={subscriptionSignage(freeBilling)} healthyPlan={false} locale="en" />,
+        );
+        fireEvent.click(dismissButton());
+        expect(screen.queryByText(freeTitle())).not.toBeInTheDocument();
+
+        rerender(<SubscriptionBanner signage={subscriptionSignage(proBilling)} healthyPlan locale="en" />);
+        rerender(<SubscriptionBanner signage={subscriptionSignage(freeBilling)} healthyPlan={false} locale="en" />);
+
+        expect(screen.getByText(freeTitle())).toBeInTheDocument();
+    });
+
+    it('keeps the dismissal when no plan was observed (the billing read failed)', () => {
+        const { rerender } = renderIntl(
+            <SubscriptionBanner signage={subscriptionSignage(freeBilling)} healthyPlan={false} locale="en" />,
+        );
+        fireEvent.click(dismissButton());
+
+        // `withDeadline` gave up on /employer/billing: signage is null, but
+        // nothing was learned about the plan.
+        rerender(<SubscriptionBanner signage={null} healthyPlan={false} locale="en" />);
+        rerender(<SubscriptionBanner signage={subscriptionSignage(freeBilling)} healthyPlan={false} locale="en" />);
+
+        expect(screen.queryByText(freeTitle())).not.toBeInTheDocument();
+        expect(localStorage.getItem(FREE_KEY)).toBe('1');
+    });
+
+    it("forgets only the signed-in account's free dismissal, and never a lapsed one", () => {
+        localStorage.setItem(`jale.signage.free.employer_free.${SECOND}`, '1');
+        sessionStorage.setItem(LAPSED_KEY, '1');
+        const { rerender } = renderIntl(
+            <SubscriptionBanner signage={subscriptionSignage(freeBilling)} healthyPlan={false} locale="en" />,
+        );
+        fireEvent.click(dismissButton());
+
+        rerender(<SubscriptionBanner signage={subscriptionSignage(proBilling)} healthyPlan locale="en" />);
+
+        expect(localStorage.getItem(FREE_KEY)).toBeNull();
+        expect(localStorage.getItem(`jale.signage.free.employer_free.${SECOND}`)).toBe('1');
+        expect(sessionStorage.getItem(LAPSED_KEY)).toBe('1');
+    });
+});

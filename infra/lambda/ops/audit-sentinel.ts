@@ -1,6 +1,6 @@
 import * as zlib from 'zlib';
 import { HeadObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
-import { CognitoIdentityProviderClient, ListUserPoolsCommand } from '@aws-sdk/client-cognito-identity-provider';
+import { CognitoIdentityProviderClient, ListUserPoolClientsCommand, ListUserPoolsCommand } from '@aws-sdk/client-cognito-identity-provider';
 import { DescribeRuleCommand, EventBridgeClient, ListTargetsByRuleCommand } from '@aws-sdk/client-eventbridge';
 import { GetQueueAttributesCommand, SQSClient } from '@aws-sdk/client-sqs';
 import { PublishCommand, SNSClient } from '@aws-sdk/client-sns';
@@ -8,6 +8,7 @@ import { emitEmfMetrics } from '../lib/emf';
 import {
   classifyCognitoFailure,
   classifyEvent,
+  cognitoClientIdOf,
   cognitoPoolIdOf,
   type AlertRecord,
   type ArchiveRecord,
@@ -38,15 +39,18 @@ import {
  *       sign-in events. Each event is classified by `audit-sentinel-rules.ts`;
  *       an alert goes to the audit-alerts topic and its record to
  *       `findings/`, and a finding that does not alert is archived only.
- *       A failed user-pool sign-in alerts only when it is in the admin pool,
- *       which is looked up by name (see createAdminPoolResolver).
+ *       A failed user-pool sign-in alerts only when it is in the admin pool:
+ *       the pool it names, or, when it names none, the app client it names.
+ *       The pool is looked up by name, and its app clients with it (see
+ *       createAdminPoolResolver).
  *
  * ONE ALERT PER EVENT. Several rules can deliver the same CloudTrail event,
  * and a retried invocation delivers it again. The archive key is derived from
- * the CloudTrail event id, so the sentinel checks the key before publishing
- * and writes it after: a duplicate finds the record and stops, and a publish
- * that failed leaves no record, so the retry publishes. The worst case is a
- * duplicate alert, never a lost one.
+ * the CloudTrail event id (for a Security Hub finding, from the finding's
+ * state, so one alert per state however often it is imported), so the
+ * sentinel checks the key before publishing and writes it after: a duplicate
+ * finds the record and stops, and a publish that failed leaves no record, so
+ * the retry publishes. The worst case is a duplicate alert, never a lost one.
  *
  * FAILURES THROW. A batch or event that cannot be archived or published fails
  * the invocation; Lambda retries it and then hands it to the dead-letter
@@ -75,7 +79,7 @@ export interface SentinelDependencies {
   readonly publisher: AlertPublisher;
   /** The audit log groups created by name, and the source each one is archived as. */
   readonly logSources: Readonly<Record<string, Exclude<LogSource, 'engine'>>>;
-  /** Which user pool is the admin dashboard's. */
+  /** Which user pool, and which app clients, are the admin dashboard's. */
   readonly adminPool: AdminPoolResolver;
   /** The daily edge check's expectations and its read-only view of the edge regions. */
   readonly edge?: { config: EdgeCheckConfig; inspector: EdgeInspector };
@@ -119,19 +123,31 @@ export interface EdgeInspector {
 
 export type AdminPoolAnswer = { status: 'resolved'; adminPoolId: string } | { status: 'unresolved' };
 
+/** The admin pool and its app clients' ids. */
+export type AdminClientAnswer =
+  | { status: 'resolved'; adminPoolId: string; adminClientIds: ReadonlySet<string> }
+  | { status: 'unresolved' };
+
 export interface AdminPoolResolver {
   /** The admin pool, given the pool a failed sign-in names (see createAdminPoolResolver). */
   resolve(eventPoolId: string): Promise<AdminPoolAnswer>;
+  /** The admin pool and its app clients, given the app client a failed sign-in names when it names no pool. */
+  resolveClient(eventClientId: string): Promise<AdminClientAnswer>;
 }
 
 export interface AdminPoolResolverOptions {
   /** One ListUserPools page. */
   listPage(nextToken?: string): Promise<{ pools: Array<{ Id?: string; Name?: string }>; nextToken?: string }>;
+  /** One ListUserPoolClients page of a pool. */
+  listClientsPage(poolId: string, nextToken?: string): Promise<{ clients: Array<{ ClientId?: string }>; nextToken?: string }>;
   /** The admin pool's fixed name. */
   poolName: string;
   /** How long an answer is kept (default one hour). */
   ttlMs?: number;
-  /** The least age an answer must reach before an other-pool event refreshes it (default five minutes). */
+  /**
+   * The least age an answer must reach before an event naming another pool,
+   * or an app client it does not hold, refreshes it (default five minutes).
+   */
   minRefreshMs?: number;
   now?: () => number;
 }
@@ -139,19 +155,35 @@ export interface AdminPoolResolverOptions {
 /**
  * Finds the admin pool by its fixed name: every ListUserPools page, an exact
  * name match, and exactly one match, or the answer is `unresolved` (nothing
- * alerts, and the handler counts AuditCognitoPoolUnresolved). The answer is
- * cached for an hour. An event naming another pool refreshes it once, so a
- * recreated admin pool is found, but no more than once every five minutes:
- * worker and employer failures are frequent, and each would otherwise cost a
- * lookup. A failed lookup throws, so the event is retried.
+ * alerts, and the handler counts AuditCognitoPoolUnresolved). With the pool
+ * found, every ListUserPoolClients page of it gives the admin app clients.
+ * The answer is cached for an hour, and only once both listings complete. An
+ * event naming another pool, or an app client the answer does not hold,
+ * refreshes it once, so a recreated admin pool or a new admin client is
+ * found, but no more than once every five minutes: worker and employer
+ * failures are frequent, and each would otherwise cost a lookup. A failed
+ * lookup throws, so the event is retried.
  */
 export function createAdminPoolResolver(options: AdminPoolResolverOptions): AdminPoolResolver {
   const ttlMs = options.ttlMs ?? 60 * 60 * 1000;
   const minRefreshMs = options.minRefreshMs ?? 5 * 60 * 1000;
   const now = options.now ?? Date.now;
-  let cached: { answer: AdminPoolAnswer; at: number } | undefined;
+  let cached: { answer: AdminClientAnswer; at: number } | undefined;
 
-  async function lookup(): Promise<AdminPoolAnswer> {
+  async function clientIdsOf(poolId: string): Promise<ReadonlySet<string>> {
+    const ids = new Set<string>();
+    let nextToken: string | undefined;
+    do {
+      const page = await options.listClientsPage(poolId, nextToken);
+      for (const client of page.clients) {
+        if (typeof client.ClientId === 'string') ids.add(client.ClientId);
+      }
+      nextToken = page.nextToken;
+    } while (nextToken);
+    return ids;
+  }
+
+  async function lookup(): Promise<AdminClientAnswer> {
     const matches: string[] = [];
     let nextToken: string | undefined;
     do {
@@ -161,18 +193,28 @@ export function createAdminPoolResolver(options: AdminPoolResolverOptions): Admi
       }
       nextToken = page.nextToken;
     } while (nextToken);
-    const answer: AdminPoolAnswer = matches.length === 1 ? { status: 'resolved', adminPoolId: matches[0] } : { status: 'unresolved' };
+    const answer: AdminClientAnswer = matches.length === 1
+      ? { status: 'resolved', adminPoolId: matches[0], adminClientIds: await clientIdsOf(matches[0]) }
+      : { status: 'unresolved' };
     cached = { answer, at: now() };
+    return answer;
+  }
+
+  /** The cached answer, looked up again when it is older than the TTL, or when it does not know the event's value and is old enough. */
+  async function current(knows: (answer: AdminClientAnswer) => boolean): Promise<AdminClientAnswer> {
+    if (!cached || now() - cached.at >= ttlMs) return lookup();
+    const { answer, at } = cached;
+    if (!knows(answer) && now() - at >= minRefreshMs) return lookup();
     return answer;
   }
 
   return {
     async resolve(eventPoolId) {
-      if (!cached || now() - cached.at >= ttlMs) return lookup();
-      const { answer, at } = cached;
-      const matches = answer.status === 'resolved' && answer.adminPoolId === eventPoolId;
-      if (!matches && now() - at >= minRefreshMs) return lookup();
-      return answer;
+      const answer = await current((a) => a.status === 'resolved' && a.adminPoolId === eventPoolId);
+      return answer.status === 'resolved' ? { status: 'resolved', adminPoolId: answer.adminPoolId } : answer;
+    },
+    async resolveClient(eventClientId) {
+      return current((a) => a.status === 'resolved' && a.adminClientIds.has(eventClientId));
     },
   };
 }
@@ -248,19 +290,37 @@ async function raiseAlert(alert: AlertRecord, archive: ArchiveRecord, deps: Sent
   return { kind: 'event', action: 'alert', rule: alert.rule };
 }
 
-/** A failed user-pool sign-in: nothing of a non-admin event is kept. */
+/** An event that names a pool is attributed by that pool alone. */
+const BY_POOL_ALONE: ReadonlySet<string> = new Set();
+
+/**
+ * A failed user-pool sign-in: nothing of a non-admin event is kept.
+ *   - It names a pool: the admin pool's, or dropped.
+ *   - It names no pool and an app client: the admin pool's when the client
+ *     is one of its own; any other client is dropped silently, since worker
+ *     and employer sign-ins name theirs the same way.
+ *   - It names neither: counted (AuditCognitoEventUnattributed), and dropped.
+ */
 async function handleCognito(event: Record<string, any>, deps: SentinelDependencies): Promise<SentinelResult> {
-  const eventPoolId = cognitoPoolIdOf(event.detail ?? {});
-  if (eventPoolId === null) {
+  const detail = event.detail ?? {};
+  const eventPoolId = cognitoPoolIdOf(detail);
+  const eventClientId = cognitoClientIdOf(detail);
+  let admin: { poolId: string; clientIds: ReadonlySet<string> } | null;
+  if (eventPoolId !== null) {
+    const answer = await deps.adminPool.resolve(eventPoolId);
+    admin = answer.status === 'resolved' ? { poolId: answer.adminPoolId, clientIds: BY_POOL_ALONE } : null;
+  } else if (eventClientId !== null) {
+    const answer = await deps.adminPool.resolveClient(eventClientId);
+    admin = answer.status === 'resolved' ? { poolId: answer.adminPoolId, clientIds: answer.adminClientIds } : null;
+  } else {
     emitEmfMetrics(METRIC_NAMESPACE, [{ name: 'AuditCognitoEventUnattributed', value: 1 }]);
     return { kind: 'event', action: 'drop' };
   }
-  const answer = await deps.adminPool.resolve(eventPoolId);
-  if (answer.status === 'unresolved') {
+  if (admin === null) {
     emitEmfMetrics(METRIC_NAMESPACE, [{ name: 'AuditCognitoPoolUnresolved', value: 1 }]);
     return { kind: 'event', action: 'drop' };
   }
-  const result = classifyCognitoFailure(event, answer.adminPoolId);
+  const result = classifyCognitoFailure(event, admin.poolId, admin.clientIds);
   return result.action === 'alert' ? raiseAlert(result.alert, result.archive, deps) : { kind: 'event', action: 'drop' };
 }
 
@@ -562,6 +622,25 @@ export function s3ArchiveStore(client: S3Client, bucket: string): ArchiveStore {
   };
 }
 
+/**
+ * The user-pool listings the admin-pool resolver reads, through the SDK, 60
+ * to a page (the most either call returns).
+ */
+export function sdkUserPoolListers(
+  client: Pick<CognitoIdentityProviderClient, 'send'>,
+): Pick<AdminPoolResolverOptions, 'listPage' | 'listClientsPage'> {
+  return {
+    async listPage(nextToken) {
+      const page = await client.send(new ListUserPoolsCommand({ MaxResults: 60, NextToken: nextToken }));
+      return { pools: page.UserPools ?? [], nextToken: page.NextToken };
+    },
+    async listClientsPage(poolId, nextToken) {
+      const page = await client.send(new ListUserPoolClientsCommand({ UserPoolId: poolId, MaxResults: 60, NextToken: nextToken }));
+      return { clients: page.UserPoolClients ?? [], nextToken: page.NextToken };
+    },
+  };
+}
+
 /** The audit-alerts topic through SNS. */
 export function snsAlertPublisher(client: SNSClient, topicArn: string): AlertPublisher {
   return {
@@ -576,17 +655,10 @@ let production: ReturnType<typeof createSentinelHandler> | undefined;
 export async function handler(event: unknown, context?: InvocationContext): Promise<SentinelResult> {
   if (!production) {
     const { config, logSources, adminPoolName } = sentinelConfigFromEnv();
-    const cognito = new CognitoIdentityProviderClient({});
     production = createSentinelHandler({
       config,
       logSources,
-      adminPool: createAdminPoolResolver({
-        poolName: adminPoolName,
-        listPage: async (nextToken) => {
-          const page = await cognito.send(new ListUserPoolsCommand({ MaxResults: 60, NextToken: nextToken }));
-          return { pools: page.UserPools ?? [], nextToken: page.NextToken };
-        },
-      }),
+      adminPool: createAdminPoolResolver({ poolName: adminPoolName, ...sdkUserPoolListers(new CognitoIdentityProviderClient({})) }),
       edge: { config: edgeCheckConfigFromEnv(), inspector: sdkEdgeInspector() },
       archive: s3ArchiveStore(new S3Client({}), required('AUDIT_ARCHIVE_BUCKET')),
       publisher: snsAlertPublisher(new SNSClient({}), config.alertTopicArn),

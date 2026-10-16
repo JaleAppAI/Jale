@@ -50,14 +50,23 @@ const { load } = compileAdminSources({
     'src/lib/server/admin-cases.ts',
     'src/lib/server/admin-lockouts.ts',
     'src/lib/server/admin-analytics.ts',
-    'src/lib/server/admin-action-dispatch.ts',
+    'src/lib/server/admin-inbox.ts',
+    'src/lib/server/support-conversation.ts',
+    'src/lib/server/inbox-actions.ts',
     'src/lib/server/admin-audit.ts',
     'src/app/api/admin-sessions/revoke-all/route.ts',
+    'src/lib/server/admin-users.ts',
+    'src/lib/server/device-trust.ts',
   ],
   fakes: {
     // No AWS: a fallback write would mean the database write failed, and the
-    // checks below assert that it never happens.
+    // checks below assert that it never happens. The admin pool's directory
+    // is a fake too: the console's own SQL is what runs for real here.
     '@aws-sdk/client-cloudwatch-logs': 'scripts/fakes/cloudwatch-logs.mjs',
+    '@aws-sdk/client-cognito-identity-provider': 'scripts/fakes/cognito-idp.mjs',
+    // No AWS for a media link either: the presign is a fake that records its call.
+    '@aws-sdk/client-s3': 'scripts/fakes/s3-client.mjs',
+    '@aws-sdk/s3-request-presigner': 'scripts/fakes/s3-request-presigner.mjs',
     'next/headers': 'scripts/fakes/next-headers.mjs',
     'next/server': 'scripts/fakes/next-server.mjs',
     'next/navigation': 'scripts/fakes/next-navigation.mjs',
@@ -71,10 +80,14 @@ const db = await load('src/lib/server/db.ts');
 const cases = await load('src/lib/server/admin-cases.ts');
 const lockouts = await load('src/lib/server/admin-lockouts.ts');
 const analytics = await load('src/lib/server/admin-analytics.ts');
-const dispatch = await load('src/lib/server/admin-action-dispatch.ts');
+const inbox = await load('src/lib/server/admin-inbox.ts');
+const conversation = await load('src/lib/server/support-conversation.ts');
+const inboxActions = await load('src/lib/server/inbox-actions.ts');
 const audit = await load('src/lib/server/admin-audit.ts');
 const record = await load('src/lib/server/audit/record.ts');
 const revokeAll = await load('src/app/api/admin-sessions/revoke-all/route.ts');
+const adminUsers = await load('src/lib/server/admin-users.ts');
+const deviceTrust = await load('src/lib/server/device-trust.ts');
 
 const COOKIE = 'jale_admin_id_token_v2';
 const check = (globalThis.__adminCheck = {
@@ -146,6 +159,41 @@ async function signedIn(role) {
   return { admin, live, viewer };
 }
 
+// The admin pool, as a fake directory object for the Admins actions (the
+// console's SQL is the code under test): every call is kept in order.
+function fakeDirectory({ status = 'FORCE_CHANGE_PASSWORD', devices = [] } = {}) {
+  const calls = [];
+  const note = (name, ...args) => { calls.push([name, ...args]); };
+  return {
+    calls,
+    async createUser(email) { note('createUser', email); return { sub: `check-sub-${randomUUID().slice(0, 8)}` }; },
+    async resendInvitation(email) { note('resendInvitation', email); },
+    async getUser(username) { note('getUser', username); return { sub: username, status, enabled: true }; },
+    async addToGroup(username, group) { note('addToGroup', username, group); },
+    async removeFromGroup(username, group) { note('removeFromGroup', username, group); },
+    async listGroups(username) { note('listGroups', username); return []; },
+    async disableUser(username) { note('disableUser', username); },
+    async enableUser(username) { note('enableUser', username); },
+    async globalSignOut(username) { note('globalSignOut', username); },
+    async listDeviceKeys(username) { note('listDeviceKeys', username); return devices; },
+    async forgetDevice(username, key) { note('forgetDevice', username, key); },
+    async getDeviceRememberedStatus(username, key) { note('getDeviceRememberedStatus', username, key); return status; },
+    async setDeviceRemembered(username, key, remembered) { note('setDeviceRemembered', username, key, remembered); },
+  };
+}
+
+// One Inbox action through the real handler, with the body's SHA-256 as the
+// admin origin sends it.
+async function act(viewer, body) {
+  const text = JSON.stringify(body);
+  const response = await inboxActions.handleInboxActionRequest(new Request('https://admin.example.test/api/inbox-actions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-amz-content-sha256': sha256(text) },
+    body: text,
+  }), viewer);
+  return { status: response.status, body: await response.json() };
+}
+
 const results = [];
 async function step(label, fn) {
   await fn();
@@ -206,7 +254,7 @@ try {
     const signIn = await route.POST(new Request('https://admin.example.test/api/session', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'user-agent': 'check-browser' },
-      body: JSON.stringify({ idToken: 'token-value' }),
+      body: JSON.stringify({ idToken: 'token-value', accessToken: 'access-token-value', trustDevice: false }),
     }));
     assert.equal(signIn.status, 200);
     const rawToken = signIn.cookieSets[0].value;
@@ -235,7 +283,7 @@ try {
     const rejected = await route.POST(new Request('https://admin.example.test/api/session', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ idToken: 'token-value' }),
+      body: JSON.stringify({ idToken: 'token-value', accessToken: 'access-token-value', trustDevice: false }),
     }));
     assert.equal(rejected.status, 401);
     const { rows: rejections } = await su.query(
@@ -297,7 +345,7 @@ try {
     const signIn = await route.POST(new Request('https://admin.example.test/api/session', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ idToken: 'token-value' }),
+      body: JSON.stringify({ idToken: 'token-value', accessToken: 'access-token-value', trustDevice: false }),
     }));
     assert.equal(signIn.status, 200);
     const [cookie] = signIn.cookieSets;
@@ -326,28 +374,227 @@ try {
     assert.deepEqual(await revokeReason(created.id), { revoked: true, revoke_reason: 'expired' });
   });
 
-  // --- A case-detail load and its events row -------------------------------
-  await step('a case-detail load records one read event with its fields', async () => {
+  // --- Sessions end after an idle hour or eight hours; a request touches -----
+  await step('an idle hour and the eight-hour day end a session; a request moves the idle hour, once a minute', async () => {
+    const admin = await createAdmin('admin_ops');
+    const shaped = async (createdAgo, lastSeenAgo, expiresIn) => {
+      const live = await createSession(admin, { expiresInMs: expiresIn });
+      await su.query(
+        `UPDATE admin_sessions
+            SET created_at = now() - make_interval(secs => $2), last_seen_at = now() - make_interval(secs => $3)
+          WHERE id = $1`,
+        [live.id, createdAgo / 1000, lastSeenAgo / 1000],
+      );
+      return live;
+    };
+    const row = async (id) => (await su.query(
+      `SELECT revoke_reason,
+              extract(epoch FROM now() - last_seen_at)::float8 AS seen_ago_s,
+              extract(epoch FROM expires_at - now())::float8 AS ends_in_s,
+              extract(epoch FROM expires_at - (created_at + interval '8 hours'))::float8 AS past_day_s
+         FROM admin_sessions WHERE id = $1`, [id])).rows[0];
+    const resolveWith = async (live) => {
+      check.cookies = new Map([[COOKIE, live.rawToken]]);
+      return session.getCurrentAdminSession();
+    };
+
+    // Idle: no request for an hour, though the stored expiry is later.
+    const idle = await shaped(2 * 3600_000, 61 * 60_000, 2 * 3600_000);
+    assert.equal(await resolveWith(idle), undefined, 'an idle hour ends the session');
+    assert.equal((await row(idle.id)).revoke_reason, 'expired');
+    assert.deepEqual((await eventsFor('actor_session', idle.id)).map((event) => event.outcome), ['expired']);
+
+    // The eight-hour day, however recent the last request.
+    const day = await shaped(8 * 3600_000 + 60_000, 10_000, 30 * 60_000);
+    assert.equal(await resolveWith(day), undefined, 'eight hours after sign-in the session ends');
+    assert.equal((await row(day.id)).revoke_reason, 'expired');
+
+    // A request five minutes after the last one moves the idle hour.
+    const busy = await shaped(2 * 3600_000, 5 * 60_000, 55 * 60_000);
+    assert.ok(await resolveWith(busy));
+    const touched = await row(busy.id);
+    assert.ok(touched.seen_ago_s < 5, 'last_seen_at is now');
+    assert.ok(Math.abs(touched.ends_in_s - 3600) < 5, 'expires_at is an hour from now');
+    // A second request within the minute writes nothing.
+    await su.query(`UPDATE admin_sessions SET last_seen_at = now() - interval '30 seconds' WHERE id = $1`, [busy.id]);
+    assert.ok(await resolveWith(busy));
+    assert.ok((await row(busy.id)).seen_ago_s >= 29, 'no write within a minute');
+
+    // Late in the day the touch stops at sign-in + eight hours.
+    const late = await shaped(7 * 3600_000 + 50 * 60_000, 2 * 60_000, 10 * 60_000);
+    assert.ok(await resolveWith(late));
+    assert.ok(Math.abs((await row(late.id)).past_day_s) < 1, 'expires_at = sign-in + 8 hours');
+  });
+
+  // --- Trusted browsers, through the console's own rights --------------------
+  await step('a trusted browser is recorded, used, expired and refused through the console login', async () => {
+    const admin = await createAdmin('admin_ops');
+    const pool = await db.getAdminDbPool();
+    const deviceKey = `check-region_${randomUUID()}`;
+    const hash = sha256(deviceKey);
+    const apply = (status, trustDevice) => deviceTrust.applyDeviceTrust({
+      db: pool, directory: fakeDirectory({ status }), adminUserId: admin.id, username: admin.sub, deviceKey, trustDevice,
+    });
+    const trustRows = async () => (await su.query(
+      `SELECT end_reason, ended_at IS NULL AS live, extract(epoch FROM expires_at - trusted_at)::int AS span_s
+         FROM admin_trusted_devices WHERE admin_user_id = $1 ORDER BY trusted_at, id`, [admin.id])).rows;
+
+    assert.deepEqual(await apply('not_remembered', true), { outcome: 'code_sign_in', trusted: true });
+    const [first] = await trustRows();
+    assert.deepEqual([first.end_reason, first.live, first.span_s], [null, true, 7 * 24 * 3600]);
+    const { rows: [stored] } = await su.query('SELECT device_key_hash FROM admin_trusted_devices WHERE admin_user_id = $1', [admin.id]);
+    assert.equal(stored.device_key_hash, hash, 'the hash, never the key');
+
+    assert.deepEqual(await apply('remembered', false), { outcome: 'trusted_device' });
+
+    // Eight days later the same browser is refused and its record ends.
+    await su.query(
+      `UPDATE admin_trusted_devices SET trusted_at = now() - interval '8 days', expires_at = now() - interval '1 day'
+        WHERE admin_user_id = $1`, [admin.id]);
+    assert.deepEqual(await apply('remembered', true), { outcome: 'trust_expired' });
+    assert.deepEqual((await trustRows()).map((r) => [r.end_reason, r.live]), [['expired', false]]);
+
+    // Signing in with a code again and ticking the box starts a new trust.
+    assert.deepEqual(await apply('not_remembered', true), { outcome: 'code_sign_in', trusted: true });
+    assert.deepEqual((await trustRows()).map((r) => [r.end_reason, r.live]), [['expired', false], [null, true]]);
+
+    // The sign-in route records the trusted browser on the signed_in event.
+    check.verifyToken = async (token, config) => (config.tokenUse === 'access'
+      ? { sub: admin.sub, username: admin.sub, device_key: deviceKey }
+      : { sub: admin.sub, 'cognito:groups': ['admin_ops'] });
+    check.cognito = {
+      clients: [], sent: [],
+      behavior: (command) => (command.name === 'AdminGetDevice'
+        ? { Device: { DeviceAttributes: [{ Name: 'dev:device_remembered_status', Value: 'remembered' }] } }
+        : {}),
+    };
+    const signIn = await route.POST(new Request('https://admin.example.test/api/session', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ idToken: 'token-value', accessToken: 'access-token-value', trustDevice: false }),
+    }));
+    assert.equal(signIn.status, 200);
+    const { rows: [created] } = await su.query('SELECT id::text FROM admin_sessions WHERE token_hash = $1', [sha256(signIn.cookieSets[0].value)]);
+    const [signedIn] = await eventsFor('actor_session', created.id);
+    assert.deepEqual([signedIn.outcome, signedIn.field_names, signedIn.db_login], ['signed_in', ['trusted_device'], 'jale_admin_console']);
+    check.cognito = undefined;
+  });
+
+  // --- The Admins page, through the console login and migration 120 ----------
+  await step('the Admins actions write through the definers, record themselves, and reach live sessions', async () => {
+    const { viewer } = await signedIn('admin_superadmin');
+    const directory = fakeDirectory();
+    const act = (body) => adminUsers.runAdminUserAction(viewer, { requestId: randomUUID(), ...body }, directory);
+    const tag = randomUUID().slice(0, 8);
+
+    // Invite: a row, lower-cased, invited; one action event and one change record.
+    const invited = await act({ action: 'invite', email: `Invited-${tag}@Example.Test`, role: 'admin_readonly' });
+    assert.equal(invited.status, 200);
+    assert.deepEqual(
+      [invited.body.admin.email, invited.body.admin.role, invited.body.admin.status, invited.body.admin.canResendInvite],
+      [`invited-${tag}@example.test`, 'admin_readonly', 'invited', true],
+    );
+    const inviteEvents = (await eventsFor('request_id', viewer.requestId)).filter((event) => event.surface === 'admin.admin_invite');
+    assert.deepEqual(inviteEvents.map((event) => [event.kind, event.outcome, event.record_ids, event.db_login]),
+      [['action', 'done', [invited.body.admin.id], 'jale_admin_console']]);
+    const { rows: inviteChanges } = await su.query(
+      `SELECT operation, surface, context_status FROM jale_audit.changes
+        WHERE request_id = $1 AND table_name = 'public.admin_users'`, [viewer.requestId]);
+    assert.deepEqual(inviteChanges, [{ operation: 'insert', surface: 'admin.admin_invite', context_status: 'set' }]);
+    // A second invite of the same address, in any case, is refused before the
+    // pool is asked: no pool user and no second email.
+    const callsBeforeAgain = directory.calls.length;
+    const again = await act({ action: 'invite', email: `INVITED-${tag}@example.test`, role: 'admin_ops' });
+    assert.deepEqual(again, { status: 409, body: { ok: false, error: 'already_exists' } });
+    assert.deepEqual(directory.calls.slice(callsBeforeAgain), []);
+
+    // A role change reaches the target's live session at its next request.
+    // The target was provisioned by hand with its email in mixed case: the
+    // pool is reached through its sign-in id, never through that email.
+    const target = await createAdmin('admin_ops');
+    await su.query('UPDATE admin_users SET admin_email = $2 WHERE id = $1', [target.id, `Check-Mixed-${tag}@Example.Test`]);
+    const targetLive = await createSession(target, { expiresInMs: 30 * 60_000 });
+    const callsBeforeRole = directory.calls.length;
+    const changed = await act({ action: 'change_role', adminUserId: target.id, role: 'admin_readonly' });
+    assert.equal(changed.status, 200);
+    assert.deepEqual([...new Set(directory.calls.slice(callsBeforeRole).map(([, username]) => username))], [target.sub]);
+    check.cookies = new Map([[COOKIE, targetLive.rawToken]]);
+    assert.equal((await session.getCurrentAdminSession()).role, 'admin_readonly', 'the next request has the new role');
+
+    // Deactivation: sessions revoked, trusted browsers ended, the next request
+    // goes back to sign-in with the expiry notice.
+    await su.query(
+      `INSERT INTO admin_trusted_devices (admin_user_id, device_key_hash, expires_at)
+       VALUES ($1, $2, now() + interval '7 days')`, [target.id, sha256(`device-${tag}`)]);
+    const callsBefore = directory.calls.length;
+    const off = await act({ action: 'deactivate', adminUserId: target.id });
+    assert.equal(off.status, 200);
+    assert.equal(off.body.admin.status, 'deactivated');
+    const { rows: [revoked] } = await su.query('SELECT revoke_reason FROM admin_sessions WHERE id = $1', [targetLive.id]);
+    assert.equal(revoked.revoke_reason, 'admin_deactivated');
+    const { rows: ended } = await su.query('SELECT end_reason FROM admin_trusted_devices WHERE admin_user_id = $1', [target.id]);
+    assert.deepEqual(ended, [{ end_reason: 'admin_deactivated' }]);
+    check.cookies = new Map([[COOKIE, targetLive.rawToken]]);
+    check.headers = { 'x-admin-next': '/cases?status=open' };
+    await assert.rejects(() => session.requireAdminSession(), (error) => {
+      const url = new URL(error.redirectTo, 'https://admin.example.test');
+      assert.deepEqual([url.pathname, url.searchParams.get('next'), url.searchParams.get('reason')], ['/login', '/cases?status=open', 'expired']);
+      return true;
+    });
+    check.headers = undefined;
+    // The pool is told after the rows: sign out, forget the devices, and
+    // disable last; every call names the user by its sign-in id.
+    assert.deepEqual(
+      directory.calls.slice(callsBefore).map(([name, username]) => [name, username]),
+      [['getUser', target.sub], ['globalSignOut', target.sub], ['listDeviceKeys', target.sub], ['disableUser', target.sub]],
+    );
+
+    // Oneself: refused in SQL, recorded as denied.
+    const self = await act({ action: 'deactivate', adminUserId: viewer.adminUserId });
+    assert.deepEqual(self, { status: 409, body: { ok: false, error: 'self_change' } });
+
+    // Reactivation.
+    const on = await act({ action: 'reactivate', adminUserId: target.id });
+    assert.equal(on.status, 200);
+    assert.equal(on.body.admin.status, 'active');
+
+    // The list, for a superadmin: every admin above, recorded as one read.
+    const { viewer: lister } = await signedIn('admin_superadmin');
+    const listed = await adminUsers.loadAdmins(lister);
+    assert.equal(listed.status, 'ok');
+    const byId = new Map(listed.admins.map((admin) => [admin.id, admin]));
+    assert.equal(byId.get(invited.body.admin.id)?.status, 'invited');
+    assert.equal(byId.get(target.id)?.status, 'active');
+    assert.equal(byId.get(target.id)?.trustedBrowsers, 0);
+    const [listEvent] = await eventsFor('request_id', lister.requestId);
+    assert.deepEqual([listEvent.kind, listEvent.surface, listEvent.result_count], ['read', 'admin.admins_list', listed.admins.length]);
+  });
+
+  // --- The support conversation and the Inbox list -------------------------
+  await step('a support conversation records one read event; the Inbox records the case it lists', async () => {
     const { admin, live, viewer } = await signedIn('admin_readonly');
     const worker = await createUser('worker');
     const employer = await createUser('employer');
     const { rows: [kase] } = await su.query(
       `INSERT INTO admin_cases (case_type, status, priority, user_id, employer_id, summary, details)
        VALUES ('help_request', 'open', 60, $1, $2, 'Synthetic case for the access-record check', '{}'::jsonb)
-       RETURNING id::text`,
+       RETURNING id::text, case_number::text`,
       [worker, employer],
     );
     await su.query(
       `INSERT INTO admin_case_events (case_id, event_type, actor_type, payload)
-       VALUES ($1, 'help_keyword', 'worker', '{"title": "Help requested"}'::jsonb),
+       VALUES ($1, 'worker_message', 'worker', '{"title": "Worker message", "detail": "Synthetic words"}'::jsonb),
               ($1, 'note_added', 'system', '{"title": "Noted"}'::jsonb)`,
       [kase.id],
     );
 
-    const item = await cases.loadCaseDetail(viewer, kase.id);
-    assert.equal(item.id, kase.id);
-    assert.equal(item.timeline.length, 2);
-    assert.equal(item.workerName, 'Test P.', 'the page still gets masked names');
+    const item = await conversation.loadSupportConversation(viewer, kase.id);
+    assert.equal(item.caseId, kase.id);
+    assert.equal(item.ref, `S-${kase.case_number}`);
+    assert.equal(item.messages.length, 2);
+    assert.equal(item.worker.label, 'Test P.', 'the page still gets masked names');
+    assert.equal(item.reply.mode, 'template', 'no conversation: no open window');
+    assert.ok(item.actions.every((action) => action.enabled === false), 'read-only: every action disabled');
 
     assert.deepEqual(await eventsFor('request_id', viewer.requestId), [{
       kind: 'read',
@@ -357,8 +604,8 @@ try {
       actor_role: 'admin_readonly',
       actor_session: live.id,
       channel: 'admin',
-      surface: 'admin.case_detail',
-      categories: ['cases'],
+      surface: 'admin.support_conversation',
+      categories: ['cases', 'conversations'],
       subject_user_ids: [worker, employer],
       record_type: 'admin_case',
       record_ids: [kase.id],
@@ -371,36 +618,154 @@ try {
       db_login: 'jale_admin_console',
     }]);
 
-    // The list records the same case among the ids it shows.
+    // The Inbox finds the case by its ref and records it.
     const listViewer = await session.getCurrentAdminSession();
-    const list = await cases.loadCasesList(listViewer);
+    const page = await inbox.loadInbox(listViewer, { tab: 'all', status: 'waiting', q: `S-${kase.case_number}` });
+    assert.deepEqual(page.items.map((row) => row.id), [kase.id]);
     const [listEvent] = await eventsFor('request_id', listViewer.requestId);
-    assert.equal(listEvent.surface, 'admin.cases_list');
-    assert.deepEqual(listEvent.record_ids, list.rows.map((row) => row.id));
-    assert.ok(listEvent.record_ids.includes(kase.id));
+    assert.deepEqual(
+      [listEvent.surface, listEvent.categories, listEvent.record_type, listEvent.record_ids, listEvent.db_login],
+      ['admin.inbox', ['cases'], 'admin_case', [kase.id], 'jale_admin_console'],
+    );
     assert.ok(listEvent.subject_user_ids.includes(worker) && listEvent.subject_user_ids.includes(employer));
-    assert.equal(listEvent.result_count, list.rows.length);
+
+    // The whole waiting view loads on the console's login, across the three sources.
+    const allViewer = await session.getCurrentAdminSession();
+    const waiting = await inbox.loadInbox(allViewer, { tab: 'all', status: 'waiting' });
+    assert.ok(waiting.items.some((row) => row.id === kase.id));
+    assert.equal(waiting.total, waiting.tabCounts.all);
+
+    // The counts run as the console in one statement.
+    const counts = await inbox.getInboxCounts(await session.getCurrentAdminSession());
+    assert.ok(counts, 'the counts load on the console login');
+    assert.ok(counts.support >= 1 && counts.waitingOnUs >= counts.support);
 
     // An unknown case records a not_found attempt after the read ended.
     const missingViewer = await session.getCurrentAdminSession();
     const missingId = randomUUID();
-    assert.equal(await cases.loadCaseDetail(missingViewer, missingId), undefined);
+    assert.equal(await conversation.loadSupportConversation(missingViewer, missingId), null);
     const [attempt] = await eventsFor('request_id', missingViewer.requestId);
     assert.deepEqual(
       [attempt.kind, attempt.outcome, attempt.surface, attempt.record_ids, attempt.result_count, attempt.db_login],
-      ['attempt', 'not_found', 'admin.case_detail', [missingId], 0, 'jale_admin_console'],
+      ['attempt', 'not_found', 'admin.support_conversation', [missingId], 0, 'jale_admin_console'],
     );
   });
 
-  // --- The lockout list and the paying-employers list ----------------------
-  await step('the lockout list and the paying-employers list are recorded', async () => {
+  // --- The Inbox counts: looking reports, and "new since the last visit" -------
+  await step('the counts take looking reports as waiting on us, and "new since" starts at the last ended session', async () => {
+    const admin = await createAdmin('admin_ops');
+    // A session that ended two hours ago, a live one on another device seen a
+    // minute ago, and the current one.
+    const ended = await createSession(admin, { expiresInMs: 30 * 60_000 });
+    await su.query(
+      `UPDATE admin_sessions
+          SET created_at = now() - interval '3 hours', last_seen_at = now() - interval '2 hours',
+              revoked_at = now() - interval '2 hours', revoke_reason = 'signed_out'
+        WHERE id = $1`,
+      [ended.id],
+    );
+    const other = await createSession(admin, { expiresInMs: 30 * 60_000 });
+    await su.query(
+      `UPDATE admin_sessions SET created_at = now() - interval '50 minutes', last_seen_at = now() - interval '1 minute' WHERE id = $1`,
+      [other.id],
+    );
+    const current = await createSession(admin, { expiresInMs: 30 * 60_000 });
+    const viewer = { sub: admin.sub, role: admin.role, groups: [admin.role], adminUserId: admin.id, sessionId: current.id, requestId: randomUUID() };
+
+    const before = await inbox.getInboxCounts(viewer);
+    assert.ok(before && before.newSinceLastVisit !== null, 'an ended session exists, so "new since" is a number');
+
+    // A support case and a report being looked into, both waiting on us since
+    // an hour ago: after the ended session, before the other device's last look.
+    const { rows: [kase] } = await su.query(
+      `INSERT INTO admin_cases (case_type, status, priority, summary, details, status_changed_at)
+       VALUES ('help_request', 'open', 60, 'Synthetic case for the counts check', '{}'::jsonb, now() - interval '1 hour')
+       RETURNING id::text, status_changed_at > now() - interval '61 minutes' AND status_changed_at < now() - interval '59 minutes' AS hour_old`,
+    );
+    assert.equal(kase.hour_old, true, 'the case keeps its hour-old status time');
+    const reportId = randomUUID();
+    const { rows: [report] } = await su.query(
+      `INSERT INTO public.problem_reports (id, client_key, role, verified, category, locale, include_technical, has_image, status, created_at)
+       VALUES ($1, $2, 'worker', false, 'finding_jobs', 'en', false, false, 'looking', now() - interval '1 hour')
+       RETURNING report_number::text`,
+      [reportId, randomUUID()],
+    );
+    await su.query(
+      `INSERT INTO public.problem_report_contents (report_id, created_at, description)
+       SELECT id, created_at, 'The page stopped loading.' FROM public.problem_reports WHERE id = $1`,
+      [reportId],
+    );
+
+    const delta = (a, b) => ({
+      support: b.support - a.support,
+      reports: b.reports - a.reports,
+      waitingOnUs: b.waitingOnUs - a.waitingOnUs,
+      newSinceLastVisit: b.newSinceLastVisit - a.newSinceLastVisit,
+    });
+    const after = await inbox.getInboxCounts(viewer);
+    assert.deepEqual(delta(before, after), { support: 1, reports: 1, waitingOnUs: 2, newSinceLastVisit: 2 });
+
+    // A session past its expiry has ended too, before anything marks it.
+    await su.query(
+      `UPDATE admin_sessions SET revoked_at = NULL, revoke_reason = NULL, expires_at = now() - interval '2 hours' WHERE id = $1`,
+      [ended.id],
+    );
+    const expired = await inbox.getInboxCounts(viewer);
+    assert.equal(expired.newSinceLastVisit, after.newSinceLastVisit);
+
+    // The list agrees: the looking report waits on us.
+    const page = await inbox.loadInbox({ ...viewer, requestId: randomUUID() }, { tab: 'reports', status: 'waiting', q: `JR-${report.report_number}` });
+    const listed = page.items.find((row) => row.id === reportId);
+    assert.ok(listed, 'the looking report is listed');
+    assert.deepEqual([listed.waitingOn, listed.unread], ['us', true]);
+
+    await su.query('DELETE FROM public.problem_report_contents WHERE report_id = $1', [reportId]);
+    await su.query('DELETE FROM public.problem_reports WHERE id = $1', [reportId]);
+    await su.query('DELETE FROM admin_cases WHERE id = $1', [kase.id]);
+  });
+
+  // --- A lockout's detail, its reset and the paying-employers list --------------
+  await step('a lockout detail, a reset and the paying-employers list are recorded', async () => {
     const { viewer } = await signedIn('admin_ops');
-    const shown = await lockouts.loadLockouts(viewer);
-    const [lockoutEvent] = await eventsFor('request_id', viewer.requestId);
-    assert.equal(lockoutEvent.surface, 'admin.lockouts');
-    assert.deepEqual(lockoutEvent.categories, ['verifications']);
-    assert.deepEqual(lockoutEvent.record_ids, shown.map((item) => item.challengeId));
-    assert.equal(lockoutEvent.purpose_kind, 'verification');
+    const number = `+1202555${String(Math.floor(Math.random() * 10_000)).padStart(4, '0')}`;
+    const worker = await createUser('worker');
+    await su.query(
+      `INSERT INTO whatsapp_conversations (user_id, whatsapp_number, language)
+       VALUES ($1, $2, 'en') ON CONFLICT (whatsapp_number) DO UPDATE SET user_id = EXCLUDED.user_id`,
+      [worker, number],
+    );
+    const { rows: [challenge] } = await su.query(
+      `INSERT INTO worker_identity_challenges (phone_hash, current_step_key, preferred_language, status, attempts, locked_until)
+       VALUES ($1, 'identity.verify_otp', 'en', 'locked', 3, now() + interval '20 minutes') RETURNING id::text`,
+      [sha256(number)],
+    );
+
+    const detail = await lockouts.loadLockoutDetail(viewer, challenge.id);
+    assert.equal(detail.state, 'locked');
+    assert.equal(detail.maskedPhone.includes(number.slice(2, 8)), false, 'the number arrives masked');
+    const [detailEvent] = await eventsFor('request_id', viewer.requestId);
+    assert.deepEqual(
+      [detailEvent.surface, detailEvent.categories, detailEvent.record_type, detailEvent.record_ids, detailEvent.purpose_kind, detailEvent.subject_user_ids],
+      ['admin.lockout_detail', ['verifications'], 'identity_challenge', [challenge.id], 'verification', []],
+    );
+
+    const resetViewer = await session.getCurrentAdminSession();
+    const reset = await act(resetViewer, { action: 'reset_lockout', requestId: randomUUID(), challengeId: challenge.id, reasonCode: 'codes_not_arriving' });
+    assert.deepEqual(reset, { status: 200, body: { ok: true, kind: 'done' } });
+    const [resetEvent] = await eventsFor('request_id', resetViewer.requestId);
+    assert.deepEqual(
+      [resetEvent.kind, resetEvent.outcome, resetEvent.surface, resetEvent.record_type, resetEvent.record_ids, resetEvent.field_names, resetEvent.db_login],
+      ['action', 'done', 'admin.inbox.reset_lockout', 'identity_challenge', [challenge.id], ['status', 'attempts', 'locked_until', 'expires_at', 'context'], 'jale_admin_console'],
+    );
+    const { rows: [after] } = await su.query('SELECT status, attempts, locked_until FROM worker_identity_challenges WHERE id = $1', [challenge.id]);
+    assert.deepEqual(after, { status: 'pending', attempts: 0, locked_until: null });
+
+    const openViewer = await session.getCurrentAdminSession();
+    const opened = await act(openViewer, { action: 'open_support_from_lockout', requestId: randomUUID(), challengeId: challenge.id });
+    assert.equal(opened.status, 200);
+    assert.equal(opened.body.kind, 'case');
+    const [openEvent] = await eventsFor('request_id', openViewer.requestId);
+    assert.deepEqual([openEvent.surface, openEvent.record_ids], ['admin.inbox.open_support', [challenge.id]]);
 
     const payingViewer = await session.getCurrentAdminSession();
     const paying = await analytics.loadPayingEmployers(payingViewer);
@@ -454,7 +819,7 @@ try {
     assert.equal(slowestEvent.result_count, slowest.length);
 
     const staleViewer = await session.getCurrentAdminSession();
-    const stale = await analytics.loadStaleJobs(staleViewer);
+    const stale = await analytics.loadStaleJobs(staleViewer, 14);
     assert.ok(stale.some((row) => row.jobId === job.id && row.employerId === employer), 'the stale job is listed');
     const shown = stale.slice(0, 25);
     const [staleEvent] = await eventsFor('request_id', staleViewer.requestId);
@@ -471,25 +836,35 @@ try {
   const REASON = 'Synthetic callback reason for the access-record check.';
   const legacyRows = async () => (await su.query('SELECT count(*)::int AS n FROM admin_audit_log')).rows[0].n;
 
-  await step('a reveal records one read event with its reason, and no admin_audit_log row', async () => {
+  // A support case with a conversation, as the bot opens one (121).
+  async function supportCase(worker, summary) {
+    const number = `+1202555${String(Math.floor(Math.random() * 10_000)).padStart(4, '0')}`;
+    const { rows: [conv] } = await su.query(
+      `INSERT INTO whatsapp_conversations (user_id, whatsapp_number, language)
+       VALUES ($1, $2, 'en') ON CONFLICT (whatsapp_number) DO UPDATE SET user_id = EXCLUDED.user_id
+       RETURNING id::text`,
+      [worker, number],
+    );
+    const { rows: [kase] } = await su.query(
+      `INSERT INTO admin_cases (case_type, status, priority, user_id, conversation_id, summary, details)
+       VALUES ('help_request', 'open', 60, $1, $2, $3, '{"language": "en"}'::jsonb)
+       RETURNING id::text`,
+      [worker, conv.id, summary],
+    );
+    return { id: kase.id, number, conversationId: conv.id };
+  }
+
+  await step('a phone reveal records one read event with its reason, and no admin_audit_log row', async () => {
     const { admin, live, viewer } = await signedIn('admin_ops');
     const worker = await createUser('worker');
-    const { rows: [kase] } = await su.query(
-      `INSERT INTO admin_cases (case_type, status, priority, user_id, summary, details)
-       VALUES ('help_request', 'open', 60, $1, 'Synthetic case for a reveal', '{}'::jsonb)
-       RETURNING id::text`,
-      [worker],
-    );
+    const kase = await supportCase(worker, 'Synthetic case for a reveal');
     const legacyBefore = await legacyRows();
     // The dashboard tile counts reveals through jale_audit.reveal_count(7).
     const tile = async () => (await cases.loadAdminDashboard(await session.getCurrentAdminSession())).revealCount;
     const tileBefore = await tile();
 
-    const result = await dispatch.dispatchAdminAction(viewer, {
-      actionId: 'reveal_pii', targetType: 'admin_case', targetId: kase.id, justification: REASON,
-    });
-    assert.equal(result.ok, true);
-    assert.equal(result.revealed.name, 'Test Person');
+    const result = await act(viewer, { action: 'reveal_phone', requestId: randomUUID(), caseId: kase.id, justification: REASON });
+    assert.deepEqual(result, { status: 200, body: { ok: true, kind: 'phone', phone: kase.number } });
     assert.equal(await tile(), tileBefore + 1, 'the dashboard tile counts the reveal');
 
     assert.deepEqual(await eventsFor('request_id', viewer.requestId), [{
@@ -500,13 +875,13 @@ try {
       actor_role: 'admin_ops',
       actor_session: live.id,
       channel: 'admin',
-      surface: 'admin.case_detail.reveal',
+      surface: 'admin.inbox.reveal_phone',
       categories: ['contact_details'],
       subject_user_ids: [worker],
       record_type: 'admin_case',
       record_ids: [kase.id],
       result_count: 1,
-      field_names: ['full_name', 'phone', 'email'],
+      field_names: ['phone'],
       purpose_kind: 'reveal',
       purpose_id: null,
       reason: REASON,
@@ -515,68 +890,91 @@ try {
     }]);
     assert.equal(await legacyRows(), legacyBefore, 'no admin_audit_log row is written');
 
-    // A read-only admin is refused: an attempt after the rollback, same reason.
+    // A read-only admin is refused: a denied attempt with the same reason, nothing read.
     const { viewer: readonlyViewer } = await signedIn('admin_readonly');
-    const refused = await dispatch.dispatchAdminAction(readonlyViewer, {
-      actionId: 'reveal_pii', targetType: 'admin_case', targetId: kase.id, justification: REASON,
-    });
-    assert.equal(refused.status, 403);
+    const refused = await act(readonlyViewer, { action: 'reveal_phone', requestId: randomUUID(), caseId: kase.id, justification: REASON });
+    assert.deepEqual(refused, { status: 403, body: { ok: false, error: 'forbidden' } });
     const [attempt] = await eventsFor('request_id', readonlyViewer.requestId);
     assert.deepEqual(
-      [attempt.kind, attempt.outcome, attempt.surface, attempt.subject_user_ids, attempt.reason, attempt.result_count],
-      ['attempt', 'denied', 'admin.case_detail.reveal', [worker], REASON, 0],
+      [attempt.kind, attempt.outcome, attempt.surface, attempt.reason, attempt.result_count],
+      ['attempt', 'denied', 'admin.inbox.reveal_phone', REASON, 0],
     );
     assert.equal(await legacyRows(), legacyBefore);
     assert.equal(await tile(), tileBefore + 1, 'a refused reveal is not counted');
   });
 
-  // --- A reply's body stays in the case timeline only -------------------------
-  await step('a WhatsApp reply records an action, and its body stays in the case timeline', async () => {
+  // --- A photo opens through a short link the record names -----------------------
+  await step('opening a photo records one read event with the link expiry, for any role', async () => {
+    const { viewer } = await signedIn('admin_readonly');
+    const worker = await createUser('worker');
+    const kase = await supportCase(worker, 'Synthetic case for a photo');
+    const mediaId = randomUUID();
+    const { rows: [mediaEvent] } = await su.query(
+      `INSERT INTO admin_case_events (case_id, event_type, actor_type, payload)
+       VALUES ($1, 'worker_media', 'worker', jsonb_build_object('title', 'Worker sent a photo', 'mediaId', $2::text, 'mediaType', 'image'))
+       RETURNING id::text`,
+      [kase.id, mediaId],
+    );
+    await su.query(
+      `INSERT INTO support_case_media (id, case_id, event_id, s3_key, media_type, content_type, byte_size, created_at, expires_at)
+       VALUES ($1, $2, $3, $4, 'image', 'image/jpeg', 1234, now(), now() + interval '90 days')`,
+      [mediaId, kase.id, mediaEvent.id, `support/${kase.id}/${randomUUID()}.jpg`],
+    );
+    process.env.SUPPORT_MEDIA_BUCKET = 'check-support-media-bucket';
+    check.presign = { calls: [], behavior: () => 'https://media.example.test/signed', onPresign: undefined };
+    const opened = await act(viewer, { action: 'open_media', requestId: randomUUID(), caseId: kase.id, mediaId });
+    delete process.env.SUPPORT_MEDIA_BUCKET;
+    assert.equal(opened.status, 200);
+    assert.equal(opened.body.kind, 'media');
+    const { rows: [event] } = await su.query(
+      `SELECT surface, categories, record_ids::text[], link_expires_at FROM jale_audit.events WHERE request_id = $1`,
+      [viewer.requestId],
+    );
+    assert.deepEqual([event.surface, event.categories, event.record_ids], ['admin.inbox.open_media', ['cases', 'conversations'], [kase.id]]);
+    const [call] = check.presign.calls;
+    assert.equal(event.link_expires_at.getTime(), call.options.signingDate.getTime() + 300_000, 'the record names the link expiry');
+    assert.equal(opened.body.expiresAt, event.link_expires_at.toISOString());
+  });
+
+  // --- A reply's text stays in the case timeline only; a repeat sends nothing twice ---
+  await step('a WhatsApp reply records an action, its text stays in the case timeline, and a repeat queues nothing', async () => {
     const { viewer } = await signedIn('admin_ops');
     const worker = await createUser('worker');
-    const number = `+120255501${String(Math.floor(Math.random() * 100)).padStart(2, '0')}`;
-    const { rows: [conversation] } = await su.query(
-      `INSERT INTO whatsapp_conversations (user_id, whatsapp_number, language)
-       VALUES ($1, $2, 'en') ON CONFLICT (whatsapp_number) DO UPDATE SET user_id = EXCLUDED.user_id
-       RETURNING id::text`,
-      [worker, number],
-    );
-    const { rows: [kase] } = await su.query(
-      `INSERT INTO admin_cases (case_type, status, priority, user_id, conversation_id, summary, details)
-       VALUES ('help_request', 'open', 60, $1, $2, 'Synthetic case for a reply', '{}'::jsonb)
-       RETURNING id::text`,
-      [worker, conversation.id],
+    const kase = await supportCase(worker, 'Synthetic case for a reply');
+    // The worker wrote a minute ago, so the window is open.
+    await su.query(
+      `INSERT INTO whatsapp_processed_messages (message_sid, whatsapp_number, first_seen_at)
+       VALUES ($1, $2, now() - interval '1 minute')`,
+      [`SMcheck${randomUUID().replace(/-/g, '').slice(0, 26)}`, kase.number],
     );
     const body = `Synthetic reply body ${randomUUID()}`;
+    const requestId = randomUUID();
     const legacyBefore = await legacyRows();
-    const result = await dispatch.dispatchAdminAction(viewer, {
-      actionId: 'reply_whatsapp', targetType: 'admin_case', targetId: kase.id, requestId: randomUUID(), note: body,
-    });
-    assert.deepEqual(result, { ok: true, message: 'WhatsApp reply queued for delivery.' });
+    const result = await act(viewer, { action: 'reply', requestId, caseId: kase.id, text: body });
+    assert.deepEqual(result, { status: 200, body: { ok: true, kind: 'done' } });
 
     const [action] = await eventsFor('request_id', viewer.requestId);
     assert.deepEqual(
       [action.kind, action.outcome, action.surface, action.categories, action.subject_user_ids, action.record_ids, action.reason],
-      ['action', 'done', 'admin.case_detail.reply_whatsapp', ['cases', 'conversations'], [worker], [kase.id], null],
+      ['action', 'done', 'admin.inbox.reply', ['cases', 'conversations'], [worker], [kase.id], null],
     );
     const { rows: [timeline] } = await su.query(
       `SELECT count(*)::int AS n FROM admin_case_events WHERE case_id = $1 AND payload->>'detail' = $2`,
       [kase.id, body],
     );
-    assert.equal(timeline.n, 1, 'the body is in the case timeline');
+    assert.equal(timeline.n, 1, 'the text is in the case timeline');
     const { rows: [inEvents] } = await su.query(
       `SELECT count(*)::int AS n FROM jale_audit.events e WHERE to_jsonb(e)::text LIKE '%' || $1 || '%'`,
       [body],
     );
-    assert.equal(inEvents.n, 0, 'the body is in no event');
-    // The change log names changed columns, never their values.
+    assert.equal(inEvents.n, 0, 'the text is in no event');
     const { rows: [inChanges] } = await su.query(
       `SELECT count(*)::int AS n FROM jale_audit.changes c WHERE to_jsonb(c)::text LIKE '%' || $1 || '%'`,
       [body],
     );
-    assert.equal(inChanges.n, 0, 'the body is in no change record');
+    assert.equal(inChanges.n, 0, 'the text is in no change record');
     // The case update's change record names the admin, the action and the
-    // request: the action set the audit context.
+    // request: the action set the audit context before the definer ran.
     const { rows: caseChanges } = await su.query(
       `SELECT table_name, operation, row_count, changed_fields, actor_kind, actor_id::text, channel,
               surface, request_id, context_status, record_ids::text[]
@@ -596,21 +994,47 @@ try {
         actor_kind: 'admin',
         actor_id: viewer.adminUserId,
         channel: 'admin',
-        surface: 'admin.case_detail.reply_whatsapp',
+        surface: 'admin.inbox.reply',
         request_id: viewer.requestId,
         context_status: 'set',
         record_ids: [kase.id],
       },
     );
     assert.equal(await legacyRows(), legacyBefore, 'no admin_audit_log row is written');
+
+    // The same request again (a retry after a lost response): the first
+    // outcome, one outbox row, no second record. Another payload under the
+    // same id is invalid_input.
+    const outboxRows = async () => (await su.query(
+      `SELECT count(*)::int AS n FROM whatsapp_outbox WHERE source_type = 'admin_case' AND source_id = $1`, [kase.id],
+    )).rows[0].n;
+    assert.equal(await outboxRows(), 1);
+    await su.query(`UPDATE admin_cases SET status = 'pending_admin' WHERE id = $1`, [kase.id]);
+    const retryViewer = await session.getCurrentAdminSession();
+    assert.deepEqual(await act(retryViewer, { action: 'reply', requestId, caseId: kase.id, text: body }), { status: 200, body: { ok: true, kind: 'done' } });
+    assert.equal(await outboxRows(), 1, 'a repeat queues nothing');
+    assert.equal((await eventsFor('request_id', retryViewer.requestId)).length, 0, 'a repeat records nothing');
+    const otherViewer = await session.getCurrentAdminSession();
+    assert.deepEqual(
+      await act(otherViewer, { action: 'reply', requestId, caseId: kase.id, text: `${body} again` }),
+      { status: 400, body: { ok: false, error: 'invalid_input' } },
+    );
+    assert.equal(await outboxRows(), 1);
   });
 
   // --- Revoke-all names the admin and the count ----------------------------------
-  await step('revoke-all records an action naming the admin and the sessions revoked', async () => {
+  await step('revoke-all records an action naming the admin and the sessions revoked, and ends trusted browsers', async () => {
     const { viewer } = await signedIn('admin_superadmin');
     const target = await createAdmin('admin_ops');
     await createSession(target, { expiresInMs: 30 * 60_000 });
     await createSession(target, { expiresInMs: 30 * 60_000 });
+    await su.query(
+      `INSERT INTO admin_trusted_devices (admin_user_id, device_key_hash, expires_at)
+       VALUES ($1, $2, now() + interval '7 days')`, [target.id, sha256(`device-${randomUUID()}`)]);
+    check.cognito = {
+      clients: [], sent: [],
+      behavior: (command) => (command.name === 'AdminListDevices' ? { Devices: [{ DeviceKey: 'check-region_device-a' }] } : {}),
+    };
     const legacyBefore = await legacyRows();
     const response = await revokeAll.POST(new Request('https://admin.example.test/api/admin-sessions/revoke-all', {
       method: 'POST',
@@ -618,6 +1042,14 @@ try {
       body: JSON.stringify({ adminUserId: target.id }),
     }));
     assert.deepEqual(response.body, { ok: true, revokedCount: 2 });
+    const { rows: trust } = await su.query(
+      'SELECT end_reason FROM admin_trusted_devices WHERE admin_user_id = $1', [target.id]);
+    assert.deepEqual(trust, [{ end_reason: 'signed_out_everywhere' }]);
+    assert.deepEqual(
+      check.cognito.sent.map(({ name, input }) => [name, input.Username, input.DeviceKey]),
+      [['AdminListDevices', target.sub, undefined], ['AdminForgetDevice', target.sub, 'check-region_device-a']],
+    );
+    check.cognito = undefined;
     const { rows } = await su.query(
       `SELECT kind, outcome, surface, categories, record_type, record_ids::text[], result_count, actor_id::text
          FROM jale_audit.events WHERE surface = 'admin.sessions_revoke' AND $1::uuid = ANY (record_ids)`,
@@ -641,15 +1073,8 @@ try {
     // A person with a reveal on record.
     const { admin: opsAdmin, viewer: opsViewer } = await signedIn('admin_ops');
     const worker = await createUser('worker');
-    const { rows: [kase] } = await su.query(
-      `INSERT INTO admin_cases (case_type, status, priority, user_id, summary, details)
-       VALUES ('help_request', 'open', 60, $1, 'Synthetic case for the access history', '{}'::jsonb)
-       RETURNING id::text`,
-      [worker],
-    );
-    assert.equal((await dispatch.dispatchAdminAction(opsViewer, {
-      actionId: 'reveal_pii', targetType: 'admin_case', targetId: kase.id, justification: REASON,
-    })).ok, true);
+    const kase = await supportCase(worker, 'Synthetic case for the access history');
+    assert.equal((await act(opsViewer, { action: 'reveal_phone', requestId: randomUUID(), caseId: kase.id, justification: REASON })).status, 200);
 
     // Another role is refused: one denied attempt that names no search input,
     // and no search.
@@ -673,7 +1098,7 @@ try {
         assert.ok(Array.isArray(entry[list]), `${list} comes back from the driver as an array`);
       }
     }
-    const reveal = firstSearch.entries.find((entry) => entry.surface === 'admin.case_detail.reveal');
+    const reveal = firstSearch.entries.find((entry) => entry.surface === 'admin.inbox.reveal_phone');
     assert.ok(reveal, 'the reveal is in the person\'s history');
     assert.deepEqual(
       [reveal.source, reveal.kind, reveal.outcome, reveal.actorId, reveal.actorEmail, reveal.categories,

@@ -8,7 +8,7 @@ import { Icon } from '@/components/ui/icon';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { accountKeyFromIdToken } from '@/lib/account-key';
 import { formatShortDate } from '@/lib/date';
-import { readSignageDismissed, writeSignageDismissed } from '@/lib/signage-storage';
+import { clearFreeSignageDismissals, readSignageDismissed, writeSignageDismissed } from '@/lib/signage-storage';
 import type { SubscriptionSignage } from '@/lib/plan-limit';
 
 /**
@@ -33,9 +33,17 @@ function readDismissed(signage: SubscriptionSignage, account: string | null): bo
 
 export function SubscriptionBanner({
   signage,
+  healthyPlan = false,
   locale,
 }: {
   signage: SubscriptionSignage;
+  /**
+   * The billing read shows a healthy paid plan (`isHealthyPaidPlan`). Passed
+   * in, not inferred from `signage === null`: null signage is ALSO what a
+   * failed or timed-out billing read produces, and that must not forget a
+   * dismissal.
+   */
+  healthyPlan?: boolean;
   locale: string;
 }) {
   const tBilling = useTranslations('billing');
@@ -51,6 +59,12 @@ export function SubscriptionBanner({
   // from painting for a frame and then vanishing (a flash plus a layout shift
   // on every visit).
   const [dismissed, setDismissed] = useState(() => readDismissed(signage, account));
+
+  // Seen on a healthy paid plan: an earlier free-plan dismissal belonged to an
+  // earlier free period. Forget it, so a later fall back to Free is said again.
+  useEffect(() => {
+    if (healthyPlan) clearFreeSignageDismissals(account);
+  }, [healthyPlan, account]);
 
   useEffect(() => {
     setDismissed(readDismissed(signage, account));

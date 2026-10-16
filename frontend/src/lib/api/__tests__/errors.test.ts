@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   ApiError,
+  SESSION_REFRESH_UNAVAILABLE,
   classifyError,
   errorMessageKey,
   isRetryableKind,
@@ -397,5 +398,34 @@ describe('errorMessageKey / isRetryableKind', () => {
   it('marks exactly the transient kinds retryable', () => {
     const retryable = allKinds.filter(isRetryableKind);
     expect(retryable).toEqual(['offline', 'timeout', 'rate_limited', 'server']);
+  });
+});
+
+describe('classifyError — a token renewal that met an outage', () => {
+  it('reads it as connectivity, retryable', () => {
+    expect(classifyError(new ApiError(503, SESSION_REFRESH_UNAVAILABLE))).toMatchObject({
+      kind: 'offline',
+      retryable: true,
+      status: 503,
+      code: 'session_refresh_unavailable',
+    });
+  });
+
+  it('still reads an ordinary 503 as a server error', () => {
+    expect(classifyError(new ApiError(503, 'service_unavailable')).kind).toBe('server');
+  });
+});
+
+describe('parseApiError — retry_after_seconds', () => {
+  it('keeps a well-formed wait', async () => {
+    const err = await parseApiError(jsonResponse(429, { error: 'rate_limited', retry_after_seconds: 90 }), 'x');
+    expect(err.payload.retry_after_seconds).toBe(90);
+  });
+
+  it('drops a wait that is not a non-negative number', async () => {
+    for (const bad of ['soon', -5, Number.NaN, null]) {
+      const err = await parseApiError(jsonResponse(429, { error: 'rate_limited', retry_after_seconds: bad }), 'x');
+      expect(err.payload.retry_after_seconds).toBeUndefined();
+    }
   });
 });

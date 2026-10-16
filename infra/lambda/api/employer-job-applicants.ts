@@ -6,6 +6,7 @@ import { promptAnswersView, stageView } from '../lib/application-stage-view';
 import { parsePreApplicationPromptList } from '../lib/pre-application-prompts';
 import { APPLICATION_STATUSES } from '../lib/job-fields';
 import { checkCompliance } from '../legal/check-compliance';
+import { buildHireDetails, hireDetailsNeeded } from '../lib/application-hire-view';
 import { auditCaller, type AuditCaller } from '../lib/audit/caller';
 import { recordAccess, recordAttempt, responseFieldNames, type AttemptEvent } from '../lib/audit/record';
 
@@ -156,6 +157,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          ja.prompt_answers,
          ja.details_requested_at,
          ja.details_completed_at,
+         -- F19 (125): the start details the employer saved for a hire.
+         -- Published only as hire_details (stripped below); to_char keeps
+         -- the DATE the calendar day the employer picked.
+         to_char(ja.hire_start_date, 'YYYY-MM-DD') AS hire_start_date,
+         ja.hire_report_location,
+         ja.hire_contact_name,
+         ja.hire_contact_phone,
+         ja.hire_notes,
+         ja.hire_details_updated_at,
          ARRAY(
            SELECT ws.skill
            FROM worker_skills ws
@@ -212,7 +222,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // missing_optional_docs is an internal helper column, dropped from the
     // response -- only its contribution to not_provided is exposed.
     const applicants = result.rows.map((row: any) => {
-      const { missing_optional_docs, have_docs, ...applicant } = row;
+      const {
+        missing_optional_docs, have_docs,
+        hire_start_date: _hireStartDate, hire_report_location: _hireReportLocation, hire_contact_name: _hireContactName,
+        hire_contact_phone: _hireContactPhone, hire_notes: _hireNotes, hire_details_updated_at: _hireDetailsUpdatedAt,
+        ...applicant
+      } = row;
+      const hireDetails = row.status === 'hired' ? buildHireDetails(row) : null;
       // Guard + normalize, not just guard: application_answers is JSONB NOT
       // NULL DEFAULT '{}' and node-pg returns it pre-parsed in production,
       // but if it ever arrived as something else, ship the normalized {}
@@ -248,6 +264,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         // must never have to correlate answer ids against the job's prompts
         // themselves, and an answer to a since-deleted prompt still shows.
         prompt_answers: promptAnswersView(jobRow.pre_application_prompts, row.prompt_answers),
+        // F19 (K4.2): the saved start details, and whether a hire still needs them.
+        hire_details: hireDetails,
+        hire_details_needed: hireDetailsNeeded(row.status, hireDetails),
       };
     });
 

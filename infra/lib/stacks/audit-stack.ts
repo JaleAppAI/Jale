@@ -18,6 +18,7 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as securityhub from 'aws-cdk-lib/aws-securityhub';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
+import * as cr from 'aws-cdk-lib/custom-resources';
 import { Construct } from 'constructs';
 import { dedicatedDbLogin } from '../constructs/db-login-secrets';
 import { DB_POSTURE_GATE_POLICY_NAME } from '../constructs/db-posture-check';
@@ -37,6 +38,7 @@ import { AUDIT_ROUTE_NAMES, EDGE_DEAD_LETTER_QUEUE, auditEdgeRegions, cdkEventPa
 import type { AuditEngineWindow } from './database-stack';
 import type { NetworkStack } from './network-stack';
 import { reportImagesBucketName } from './reports-stack';
+import { supportMediaBucketName } from './whatsapp-stack';
 
 /** Audit metrics' namespace. */
 export const AUDIT_METRIC_NAMESPACE = 'Jale/Audit';
@@ -462,6 +464,13 @@ export class AuditStack extends cdk.Stack {
       actions: ['cognito-idp:ListUserPools'],
       resources: ['*'],
     }));
+    // The admin pool's app clients, which a browser's sign-in calls name
+    // instead of the pool. The pool's id is found at run time, so any pool.
+    sentinelFn.addToRolePolicy(new iam.PolicyStatement({
+      sid: 'ListTheAdminPoolClients',
+      actions: ['cognito-idp:ListUserPoolClients'],
+      resources: [`arn:${cdk.Aws.PARTITION}:cognito-idp:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:userpool/*`],
+    }));
     sentinelFn.addToRolePolicy(new iam.PolicyStatement({
       sid: 'UseTheAuditKey',
       actions: ['kms:GenerateDataKey', 'kms:Decrypt'],
@@ -602,7 +611,7 @@ export class AuditStack extends cdk.Stack {
           fieldSelectors: [{ field: 'eventCategory', equalTo: ['Management'] }],
         },
         {
-          name: 'Object reads on the documents, report images and archive buckets',
+          name: 'Object reads on the documents, report images, support media and archive buckets',
           fieldSelectors: [
             { field: 'eventCategory', equalTo: ['Data'] },
             { field: 'resources.type', equalTo: ['AWS::S3::Object'] },
@@ -612,6 +621,7 @@ export class AuditStack extends cdk.Stack {
               startsWith: [
                 objectArnPrefix(documentsBucketName()),
                 objectArnPrefix(reportImagesBucketName()),
+                objectArnPrefix(supportMediaBucketName()),
                 objectArnPrefix(archiveName),
               ],
             },
@@ -652,6 +662,7 @@ export class AuditStack extends cdk.Stack {
       });
       standard.addResourceDependency(hub);
     }
+    this.blockPublicSsmDocumentSharing();
 
     // ── The audit roles ─────────────────────────────────────────────────
     const auditRole = (logicalId: string, roleName: string, tag: 'reader' | 'admin', description: string): iam.Role =>
@@ -846,7 +857,7 @@ export class AuditStack extends cdk.Stack {
       treatMissingData: cloudwatch.TreatMissingData.BREACHING,
     });
     anyAbove0('CognitoEventUnattributedAlarm', 'JaleAuditCognitoEventUnattributed', 'AuditCognitoEventUnattributed', cdk.Duration.days(1),
-      'A failed user-pool sign-in named no user pool, so the admin-pool check could not attribute it. Nothing of it was kept.');
+      'A failed user-pool sign-in named neither a user pool nor an app client, so the admin-pool check could not attribute it. Nothing of it was kept.');
     anyAbove0('CognitoPoolUnresolvedAlarm', 'JaleAuditCognitoPoolUnresolved', 'AuditCognitoPoolUnresolved', cdk.Duration.days(1),
       `The sentinel could not find exactly one user pool named ${ADMIN_POOL_NAME}; failed admin sign-ins are not being alerted.`);
     anyAbove0('TrailDeliveryStaleAlarm', 'JaleAuditTrailDeliveryStale', 'AuditTrailDeliveryStale', cdk.Duration.hours(1),
@@ -924,6 +935,30 @@ export class AuditStack extends cdk.Stack {
     }));
   }
 
+  /**
+   * Systems Manager documents in this region cannot be shared publicly
+   * (Security Hub control SSM.7). The setting is made on create and again on
+   * every update, and stays as it is if the resource is ever removed.
+   */
+  private blockPublicSsmDocumentSharing(): void {
+    const setting = `arn:${cdk.Aws.PARTITION}:ssm:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:servicesetting/ssm/documents/console/public-sharing-permission`;
+    const disable: cr.AwsSdkCall = {
+      service: 'SSM',
+      action: 'updateServiceSetting',
+      parameters: { SettingId: setting, SettingValue: 'Disable' },
+      physicalResourceId: cr.PhysicalResourceId.of('ssm-public-sharing-disabled'),
+    };
+    new cr.AwsCustomResource(this, 'BlockPublicSsmDocumentSharing', {
+      onCreate: disable,
+      onUpdate: disable,
+      installLatestAwsSdk: false,
+      policy: cr.AwsCustomResourcePolicy.fromStatements([new iam.PolicyStatement({
+        actions: ['ssm:UpdateServiceSetting', 'ssm:GetServiceSetting'],
+        resources: [setting],
+      })]),
+    });
+  }
+
   /** The AWS Config recorder Security Hub needs, delivering to its own unlocked bucket. */
   private createConfigRecorder(): void {
     const bucket = new s3.Bucket(this, 'ConfigBucket', {
@@ -951,27 +986,31 @@ export class AuditStack extends cdk.Stack {
       resources: [bucket.arnForObjects(`config/AWSLogs/${cdk.Aws.ACCOUNT_ID}/Config/*`)],
       conditions: { StringEquals: { 's3:x-amz-acl': 'bucket-owner-full-control', 'aws:SourceAccount': cdk.Aws.ACCOUNT_ID } },
     }));
-    // Same-account delivery uses the recorder's own role (the service
-    // principal is only the cross-account fallback), so the role carries the
-    // documented S3 statements; the managed policy has no S3 write.
-    const role = new iam.Role(this, 'ConfigRecorderRole', {
-      assumedBy: configService.withConditions({ StringEquals: { 'AWS:SourceAccount': cdk.Aws.ACCOUNT_ID } }),
-      managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWS_ConfigRole')],
+    // The recorder runs as Config's service-linked role, which delivers
+    // through the two bucket statements above (it has no S3 write of its own).
+    // The role is created here unless the account has it already: IAM refuses
+    // a second one with an InvalidInput error, which counts as done. Removing
+    // the resource leaves the role in place.
+    const serviceLinkedRoleArn =
+      `arn:${cdk.Aws.PARTITION}:iam::${cdk.Aws.ACCOUNT_ID}:role/aws-service-role/config.amazonaws.com/AWSServiceRoleForConfig`;
+    const serviceLinkedRole = new cr.AwsCustomResource(this, 'ConfigServiceLinkedRole', {
+      onCreate: {
+        service: 'IAM',
+        action: 'createServiceLinkedRole',
+        parameters: { AWSServiceName: 'config.amazonaws.com' },
+        physicalResourceId: cr.PhysicalResourceId.of('config-slr'),
+        ignoreErrorCodesMatching: 'InvalidInput.*',
+      },
+      installLatestAwsSdk: false,
+      policy: cr.AwsCustomResourcePolicy.fromStatements([new iam.PolicyStatement({
+        actions: ['iam:CreateServiceLinkedRole'],
+        resources: [serviceLinkedRoleArn],
+        conditions: { StringEquals: { 'iam:AWSServiceName': 'config.amazonaws.com' } },
+      })]),
     });
-    role.addToPolicy(new iam.PolicyStatement({
-      sid: 'ConfigDeliversSnapshots',
-      actions: ['s3:PutObject', 's3:PutObjectAcl'],
-      resources: [bucket.arnForObjects(`config/AWSLogs/${cdk.Aws.ACCOUNT_ID}/*`)],
-      conditions: { StringLike: { 's3:x-amz-acl': 'bucket-owner-full-control' } },
-    }));
-    role.addToPolicy(new iam.PolicyStatement({
-      sid: 'ConfigChecksTheBucket',
-      actions: ['s3:GetBucketAcl', 's3:ListBucket'],
-      resources: [bucket.bucketArn],
-    }));
     const recorder = new config.CfnConfigurationRecorder(this, 'ConfigRecorder', {
       name: 'jale-audit-recorder',
-      roleArn: role.roleArn,
+      roleArn: serviceLinkedRoleArn,
       recordingGroup: { allSupported: true, includeGlobalResourceTypes: false },
       recordingMode: { recordingFrequency: 'DAILY' },
     });
@@ -984,8 +1023,10 @@ export class AuditStack extends cdk.Stack {
     // Neither waits on the other. The recorder's create starts recording, which
     // needs a delivery channel, and the channel's create needs a recorder, so
     // a dependency either way deadlocks (the create failed NotStabilized).
-    // CloudFormation creates them side by side, each after the bucket policy.
+    // CloudFormation creates them side by side, each after the bucket policy;
+    // the recorder also waits for its role.
     recorder.node.addDependency(bucket);
+    recorder.node.addDependency(serviceLinkedRole);
     channel.node.addDependency(bucket);
   }
 

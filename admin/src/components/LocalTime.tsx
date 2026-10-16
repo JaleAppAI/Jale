@@ -1,7 +1,7 @@
 'use client';
 
 import { useSyncExternalStore } from 'react';
-import { utcText } from '@/lib/local-time';
+import { relativeText, utcDateText, utcText, utcTimeText } from '@/lib/local-time';
 
 const subscribe = () => () => {};
 const onClient = () => true;
@@ -17,6 +17,8 @@ export function useIsClient(): boolean {
 }
 
 let localFormat: Intl.DateTimeFormat | undefined;
+let localDateFormat: Intl.DateTimeFormat | undefined;
+let localClockFormat: Intl.DateTimeFormat | undefined;
 
 function localText(iso: string): string {
   // The viewer's locale and zone; timeStyle 'long' names the zone.
@@ -25,8 +27,51 @@ function localText(iso: string): string {
   return Number.isNaN(date.getTime()) ? iso : localFormat.format(date);
 }
 
-/** An instant in the viewer's time zone (UTC text until hydration). */
-export function LocalTime({ iso }: { iso: string }) {
+function localDateText(iso: string): string {
+  localDateFormat ??= new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' });
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? iso : localDateFormat.format(date);
+}
+
+function localClockText(iso: string): string {
+  localClockFormat ??= new Intl.DateTimeFormat(undefined, { timeStyle: 'short' });
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? iso : localClockFormat.format(date);
+}
+
+type LocalTimeFormat = 'datetime' | 'date' | 'time' | 'relative';
+
+function serverText(iso: string, format: LocalTimeFormat, nowIso: string | undefined): string {
+  if (format === 'date') return utcDateText(iso);
+  if (format === 'time') return utcTimeText(iso);
+  // Relative text needs the server's request time to be deterministic.
+  if (format === 'relative' && nowIso) return relativeText(iso, Date.parse(nowIso));
+  return utcText(iso);
+}
+
+function clientText(iso: string, format: LocalTimeFormat): string {
+  if (format === 'date') return localDateText(iso);
+  if (format === 'time') return localClockText(iso);
+  if (format === 'relative') return relativeText(iso, Date.now());
+  return localText(iso);
+}
+
+/**
+ * An instant for the viewer. `datetime` (default) is the full local date and
+ * time; `date` the local date; `time` the local time of day (message times);
+ * `relative` "5m ago" against the server's `nowIso`, then against the
+ * viewer's clock after hydration. The server and the first client render show
+ * UTC-based text, so hydration never mismatches; `date`, `time` and
+ * `relative` carry the full local date-time as a title once hydrated.
+ */
+export function LocalTime({ iso, format = 'datetime', nowIso }: { iso: string; format?: LocalTimeFormat; nowIso?: string }) {
   const isClient = useIsClient();
-  return <time dateTime={iso}>{isClient ? localText(iso) : utcText(iso)}</time>;
+  if (!isClient) {
+    return <time dateTime={iso}>{serverText(iso, format, nowIso)}</time>;
+  }
+  return (
+    <time dateTime={iso} title={format === 'datetime' ? undefined : localText(iso)}>
+      {clientText(iso, format)}
+    </time>
+  );
 }

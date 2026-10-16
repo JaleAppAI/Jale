@@ -16,6 +16,7 @@ import * as wafv2 from 'aws-cdk-lib/aws-wafv2';
 import { Platform } from 'aws-cdk-lib/aws-ecr-assets';
 import { Construct } from 'constructs';
 import { jaleAlarm } from '../constructs/jale-alarm';
+import { BOUNCE_FLOOR, BOUNCE_SHARE, sesBounceShareMetric } from '../constructs/ses-bounce-alarm';
 
 export interface FrontendStackProps extends cdk.StackProps {
   /** API Gateway origin domain, without protocol or stage path. */
@@ -50,6 +51,12 @@ export interface FrontendStackProps extends cdk.StackProps {
    * value; see infra/lib/whatsapp-business-number.ts.
    */
   readonly whatsappBusinessNumber: string;
+  /**
+   * The admin console's CloudFront distribution (AdminStack, main region).
+   * Its 5xx alarm is created here, in us-east-1, the one region CloudFront
+   * publishes its metrics to. Without it, there is no such alarm.
+   */
+  readonly adminDistributionId?: string;
 }
 
 /**
@@ -611,22 +618,20 @@ function handler(event) {
     }));
     const alarmActions = [new cloudwatchActions.SnsAction(alarmTopic)];
 
-    // No dimensions on either metric — `AWS/SES` publishes Bounce and
-    // Reputation.* at the account level, and any dimension yields a metric that
-    // never reports, i.e. an alarm that cannot fire.
+    // No dimensions on any metric — `AWS/SES` publishes Bounce, Send and
+    // Reputation.* at the account level, and any dimension yields a metric
+    // that never reports, i.e. an alarm that cannot fire. The bounce alarm
+    // reads the hour's bounce share above a count floor, as NotificationsStack's
+    // does (`constructs/ses-bounce-alarm.ts`).
     jaleAlarm(this, 'SesBounceCountUsEast1Alarm', {
       alarmName: 'SesBounceCountUsEast1',
       alarmDescription:
-        'SES in us-east-1 reported a bounce in the last hour. This is the region Cognito sends '
+        `SES in us-east-1 reported ${BOUNCE_FLOOR} or more bounces in the last hour, and they were `
+        + `${BOUNCE_SHARE * 100}% or more of the hour's sends. This is the region Cognito sends `
         + 'verification and forgot-password emails from, so bounces here are signups and password '
         + 'resets that silently failed.',
-      metric: new cloudwatch.Metric({
-        namespace: 'AWS/SES',
-        metricName: 'Bounce',
-        period: cdk.Duration.hours(1),
-        statistic: 'Sum',
-      }),
-      threshold: 1,
+      metric: sesBounceShareMetric(),
+      threshold: BOUNCE_SHARE,
       actions: alarmActions,
     });
 
@@ -646,6 +651,28 @@ function handler(event) {
       threshold: 0.05,
       actions: alarmActions,
     });
+
+    // ── The admin console's CDN, us-east-1 ──────────────────────────
+    // Not about the frontend either. CloudFront publishes its metrics in
+    // us-east-1 only (`Region=Global`), and an alarm reads its own region's
+    // metrics, so the admin distribution's error alarm lives here, built by
+    // hand from the distribution's id and notifying the us-east-1 topic.
+    if (props.adminDistributionId) {
+      jaleAlarm(this, 'AdminCloudFront5xxAlarm', {
+        alarmName: 'jale-admin-cloudfront-5xx',
+        alarmDescription: "The admin console's CloudFront distribution served 5% or more 5xx responses for 10 minutes.",
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/CloudFront',
+          metricName: '5xxErrorRate',
+          dimensionsMap: { DistributionId: props.adminDistributionId, Region: 'Global' },
+          period: cdk.Duration.minutes(5),
+          statistic: 'Average',
+        }),
+        threshold: 5,
+        evaluationPeriods: 2,
+        actions: alarmActions,
+      });
+    }
 
     // ── Outputs ─────────────────────────────────────────────────────
     new cdk.CfnOutput(this, 'DistributionId', {

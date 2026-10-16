@@ -976,3 +976,44 @@ describe('flows.ts — COMMAND_KEYWORDS cannot swallow the fill lane\'s cancel w
     expect(isApplicationsCommand('cancelar')).toBe(false);
   });
 });
+
+// ── Sprint 28: support-mode keywords ─────────────────────────────────────
+// Read through the module object so this file still compiles where a
+// predicate is missing; the assertions fail on behaviour, not on types.
+import * as flowsModule from '../../../../../lambda/whatsapp/lib/flows';
+
+const supportPredicates = flowsModule as unknown as Record<string, ((text: string) => unknown) | undefined>;
+
+describe('support-mode keywords', () => {
+  it.each([
+    'SOPORTE', 'soporte', 'Soporte.', '  Soporte!  ', '¡Soporte!', 'Sopórte', 'SUPPORT', 'support?', 'Support...',
+  ])('isSupportCommand(%j) is true: trimmed, trailing punctuation dropped, accents folded', (text) => {
+    expect(isSupportCommand(text)).toBe(true);
+  });
+
+  it.each(['soporte tecnico', 'necesito soporte', 'soportes', 'supports', 'sop orte', ''])(
+    'isSupportCommand(%j) is false: the whole message must be the keyword',
+    (text) => {
+      expect(isSupportCommand(text)).toBe(false);
+    },
+  );
+
+  it.each(['MENU', 'menu', 'Menú', 'MENÚ', ' menu. ', 'Menu!'])('isMenuCommand(%j) is true', (text) => {
+    expect(supportPredicates.isMenuCommand?.(text)).toBe(true);
+  });
+
+  it.each(['menus', 'el menu', 'mnu', 'menuu', 'soporte', ''])('isMenuCommand(%j) is false (exact, never fuzzy)', (text) => {
+    expect(supportPredicates.isMenuCommand?.(text)).toBe(false);
+  });
+
+  it('keeps MENU out of the fuzzy command vocabulary', () => {
+    expect(matchCommandFuzzy('menu')).toBeNull();
+    expect(matchCommandFuzzy('menú')).toBeNull();
+  });
+
+  it.each([
+    ['Support', 'en'], ['SUPPORT.', 'en'], ['Soporte', 'es'], ['sopórte!', 'es'], ['hola', null],
+  ])('supportCommandLanguage(%j) is %j', (text, lang) => {
+    expect(supportPredicates.supportCommandLanguage?.(text)).toBe(lang);
+  });
+});

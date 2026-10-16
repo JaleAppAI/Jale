@@ -306,6 +306,18 @@ describe('runReset', () => {
     expect(calls.some((c) => /DELETE FROM legal_consent_log\b/.test(c.text))).toBe(false);
   });
 
+  // Sprint 28 (migration 124) decision: the admin analytics rows a reset
+  // worker leaves behind (where their signup started, the job pages they
+  // opened) are kept; deleting the account cascades them. The referral
+  // funnel's daily counts hold no person at all. worker_job_impressions was
+  // on the list before analytics read it and stays there.
+  it('leaves the admin analytics capture tables alone', () => {
+    const tables = DELETE_STEPS.map((step) => step.table);
+    for (const table of ['signup_attribution', 'worker_job_views', 'referral_funnel_daily']) {
+      expect(tables).not.toContain(table);
+    }
+  });
+
   it('never issues a bare DELETE FROM <table> without a WHERE clause', async () => {
     const { client, calls } = makeFakeClient();
 

@@ -26,7 +26,10 @@ import type {
   TrustExtractionWeekly,
   VoiceExtractionWeekly,
 } from '../types';
+import { cumulativeSeries } from '../analytics-format';
 import { STALE_JOBS_SHOWN, firstWithRest } from '../employer-health';
+import { stepLabel } from '../funnel';
+import { LOCKOUT_RESET_REASONS } from '../lockout-reasons';
 import { isMessageLane } from '../ops-health';
 import {
   recordAdminAccess,
@@ -34,6 +37,7 @@ import {
   withAdminReadTransaction,
   type AuditQueryClient,
 } from './audit/record';
+import { readDlqDepth, readSesBounces24h } from './aws-health';
 import { getAdminDbPool } from './db';
 import type { AdminSession } from './session-claims';
 
@@ -64,7 +68,11 @@ function utcStartOfIsoWeek(date: Date): Date {
 
 export type ResolvedRange = { from: Date; bucket: AnalyticsBucket };
 
-export function resolveRange(range: AnalyticsRange, now: Date = new Date()): ResolvedRange {
+export function resolveRange(range: AnalyticsRange | FunnelWeeks, now: Date = new Date()): ResolvedRange {
+  // K3.0: a number of weeks is this ISO week and the weeks - 1 before it, weekly.
+  if (typeof range === 'number') {
+    return { from: new Date(utcStartOfIsoWeek(now).getTime() - (range - 1) * 7 * DAY_MS), bucket: 'week' };
+  }
   const days = range === '7d' ? 7 : range === '30d' ? 30 : 90;
   const bucket: AnalyticsBucket = range === '90d' ? 'week' : 'day';
   const earliest = new Date(now.getTime() - (days - 1) * DAY_MS);
@@ -210,7 +218,7 @@ export async function getAnalyticsTotals(): Promise<AnalyticsTotals> {
   return mapTotalsRow(result.rows[0]);
 }
 
-export async function getSignups(range: AnalyticsRange, now: Date = new Date()): Promise<SignupBucket[]> {
+export async function getSignups(range: AnalyticsRange | FunnelWeeks, now: Date = new Date()): Promise<SignupBucket[]> {
   const { from, bucket } = resolveRange(range, now);
   const pool = await getAdminDbPool();
   const result = await pool.query<SignupRow>(
@@ -224,7 +232,7 @@ export async function getSignups(range: AnalyticsRange, now: Date = new Date()):
   );
 }
 
-export async function getJobsActivity(range: AnalyticsRange, now: Date = new Date()): Promise<JobsActivityBucket[]> {
+export async function getJobsActivity(range: AnalyticsRange | FunnelWeeks, now: Date = new Date()): Promise<JobsActivityBucket[]> {
   const { from, bucket } = resolveRange(range, now);
   const pool = await getAdminDbPool();
   const result = await pool.query<JobsActivityRow>(
@@ -238,7 +246,7 @@ export async function getJobsActivity(range: AnalyticsRange, now: Date = new Dat
   );
 }
 
-export async function getMessageTraffic(range: AnalyticsRange, now: Date = new Date()): Promise<MessageTrafficBucket[]> {
+export async function getMessageTraffic(range: AnalyticsRange | FunnelWeeks, now: Date = new Date()): Promise<MessageTrafficBucket[]> {
   const { from, bucket } = resolveRange(range, now);
   const pool = await getAdminDbPool();
   const result = await pool.query<MessageTrafficRow>(
@@ -300,7 +308,7 @@ export const DEFAULT_FUNNEL_DOOR: FunnelDoor = 'all';
 export const FUNNEL_STALLED_DAYS = 7;
 
 export function parseFunnelWeeks(value: unknown): FunnelWeeks {
-  return value === '4' ? 4 : value === '12' ? 12 : DEFAULT_FUNNEL_WEEKS;
+  return value === '13' ? 13 : value === '26' ? 26 : DEFAULT_FUNNEL_WEEKS;
 }
 
 export function parseFunnelDoor(value: unknown): FunnelDoor {
@@ -370,10 +378,18 @@ export async function getOnboardingStalled(): Promise<OnboardingStalled[]> {
 }
 
 // ---- 2b: employer health (migration 114) ----
-// The weeks picker reuses 2a's parseFunnelWeeks / FunnelWeeks (4 | 8 | 12).
+// The weeks picker reuses 2a's parseFunnelWeeks / FunnelWeeks (8 | 13 | 26).
 // Passed explicitly so the page copy ("14+ days", top 10) and the SQL agree.
 export const STALE_JOB_DAYS = 14;
 export const SLOWEST_EMPLOYERS_LIMIT = 10;
+
+// Contract K3.2 (sprint 28): the stale-jobs picker offers 7 / 14 / 30 days
+// (`?stale=`), default 14.
+export type StaleDays = 7 | 14 | 30;
+
+export function parseStaleDays(v: string | string[] | undefined): StaleDays {
+  return v === '7' ? 7 : v === '30' ? 30 : STALE_JOB_DAYS;
+}
 
 // NUMERIC arrives as a string ("5.2"); NULL (nothing to time) stays null.
 function asNullableNumber(value: string | number | null): number | null {
@@ -491,10 +507,10 @@ export async function getSlowestEmployers(client: AuditQueryClient, weeks: Funne
 }
 
 // Every stale active job, most idle first; the page shows the first 25.
-export async function getStaleJobs(client: AuditQueryClient): Promise<StaleJob[]> {
+export async function getStaleJobs(client: AuditQueryClient, days: StaleDays): Promise<StaleJob[]> {
   const result = await client.query<StaleJobRow>(
     'SELECT * FROM admin_analytics_stale_jobs($1)',
-    [STALE_JOB_DAYS],
+    [days],
   );
   return result.rows.map(mapStaleJobRow);
 }
@@ -533,10 +549,10 @@ export async function loadSlowestEmployers(session: AdminSession, weeks: FunnelW
  * STALE_JOBS_SHOWN through the same firstWithRest, and exactly those are
  * recorded: their employers and their number.
  */
-export async function loadStaleJobs(session: AdminSession): Promise<StaleJob[]> {
+export async function loadStaleJobs(session: AdminSession, days: StaleDays): Promise<StaleJob[]> {
   try {
     return await withAdminReadTransaction(session, async (client) => {
-      const rows = await getStaleJobs(client);
+      const rows = await getStaleJobs(client, days);
       const { shown } = firstWithRest(rows, STALE_JOBS_SHOWN);
       await recordAdminAccess(session, {
         surface: 'admin.analytics_stale_jobs',
@@ -557,7 +573,7 @@ export async function loadStaleJobs(session: AdminSession): Promise<StaleJob[]> 
 }
 
 // ---- 2c: ops health (migration 115) ----
-// The weeks picker reuses 2a's parseFunnelWeeks / FunnelWeeks (4 | 8 | 12).
+// The weeks picker reuses 2a's parseFunnelWeeks / FunnelWeeks (8 | 13 | 26).
 
 function asNullableIso(value: PgTimestamp | null): string | null {
   return value === null ? null : asIso(value);
@@ -707,6 +723,7 @@ export function mapBillingInboxRow(row: BillingInboxRow): BillingInboxWeekly {
 export type BillingInboxNowRow = {
   stuck_received: string | number;
   failed_now: string | number;
+  failed_last_24h: string | number;
   unresolved_older: string | number;
   oldest_stuck_at: PgTimestamp | null;
 };
@@ -715,6 +732,7 @@ export function mapBillingInboxNowRow(row: BillingInboxNowRow): BillingInboxNow 
   return {
     stuckReceived: asCount(row.stuck_received),
     failedNow: asCount(row.failed_now),
+    failedLast24h: asCount(row.failed_last_24h),
     unresolvedOlder: asCount(row.unresolved_older),
     oldestStuckAt: asNullableIso(row.oldest_stuck_at),
   };
@@ -777,7 +795,7 @@ export async function getBillingInboxNow(): Promise<BillingInboxNow> {
 }
 
 // ---- 2d: admin queues (migration 117) ----
-// The weeks picker reuses 2a's parseFunnelWeeks / FunnelWeeks (4 | 8 | 12).
+// The weeks picker reuses 2a's parseFunnelWeeks / FunnelWeeks (8 | 13 | 26).
 
 export type OnboardingRestartRow = {
   week_start: PgTimestamp | null;
@@ -905,4 +923,673 @@ export async function getDigestSends(weeks: FunnelWeeks): Promise<DigestSendsWee
     [weeks],
   );
   return result.rows.map(mapDigestSendsRow);
+}
+
+// ---- Sprint 28 contract K3.3: new analytics loaders (BE-3a owns the bodies) ----
+// Step 0 stubs: real names, signatures and types, with typed empty data
+// (empty series, zero counts, null for "nothing to measure"). Each loader
+// runs one query once BE-3a fills it in. Every series follows K3.0: Monday
+// 00:00 UTC weeks, oldest first, the last row possibly `partial`.
+
+// Shares travel as percents 0-100, unrounded (the UI rounds); null when there
+// is nothing to divide by (K3.0).
+function percentShare(part: number, whole: number): number | null {
+  return whole > 0 ? (part / whole) * 100 : null;
+}
+
+// Exactly one row from a one-row definer; a missing row is an error, never zeros.
+function onlyRow<T>(rows: T[], fn: string): T {
+  const row = rows[0];
+  if (!row) {
+    throw new Error(`${fn}() returned no row`);
+  }
+  return row;
+}
+
+// #2
+export type PayingWeek = { weekStart: string; partial: boolean; employers: number; paying: number; newPaying: number; churned: number };
+
+export type PayingWeekRow = {
+  week_start: PgTimestamp;
+  partial: boolean;
+  employers: string | number;
+  paying: string | number;
+  new_paying: string | number;
+  churned: string | number;
+  approximate_before: PgTimestamp | null;
+};
+
+export function mapPayingWeekRow(row: PayingWeekRow): PayingWeek {
+  return {
+    weekStart: asIso(row.week_start),
+    partial: row.partial,
+    employers: asCount(row.employers),
+    paying: asCount(row.paying),
+    newPaying: asCount(row.new_paying),
+    churned: asCount(row.churned),
+  };
+}
+
+// approximateBefore: the first live status change; earlier weeks rest on the
+// one-time backfill (cancellations dated when they happened, nothing older).
+export async function getPayingWeekly(weeks: number): Promise<{ weeks: PayingWeek[]; approximateBefore: string | null }> {
+  const pool = await getAdminDbPool();
+  const result = await pool.query<PayingWeekRow>('SELECT * FROM admin_analytics_paying_weekly($1)', [weeks]);
+  return {
+    weeks: result.rows.map(mapPayingWeekRow),
+    approximateBefore: result.rows.length === 0 ? null : asNullableIso(result.rows[0].approximate_before),
+  };
+}
+
+// #5 (last 30 days; lockout resets come from the K2 reset action, operator resets from the CLI audit)
+export type ResetReasonCount = { source: 'lockout_reset' | 'operator_reset'; reasonLabel: string; count: number };
+
+export type ResetReasonRow = { source: string; reason_code: string | null; resets: string | number };
+
+// The reset form's labels, without the form's own hint ("Other (add a note)").
+const RESET_REASON_LABELS: ReadonlyMap<string, string> = new Map(
+  LOCKOUT_RESET_REASONS.map(({ code, label }) => [code, label.replace(/ \([^)]*\)$/, '')]),
+);
+
+// Sources and codes are a contract with migration 123 and K2.6: an unknown
+// one is an error, never a row the chart would mislabel.
+export function mapResetReasonRow(row: ResetReasonRow): ResetReasonCount {
+  if (row.source === 'operator_reset') {
+    return { source: 'operator_reset', reasonLabel: 'Operator reset', count: asCount(row.resets) };
+  }
+  if (row.source !== 'lockout_reset') {
+    throw new Error(`Unexpected reset source: ${row.source}`);
+  }
+  const label = row.reason_code === null ? undefined : RESET_REASON_LABELS.get(row.reason_code);
+  if (label === undefined) {
+    throw new Error(`Unexpected reset reason: ${row.reason_code}`);
+  }
+  return { source: 'lockout_reset', reasonLabel: label, count: asCount(row.resets) };
+}
+
+// Every lockout reason (zeros included) in the form's order, then operator resets.
+export async function getResetReasons(days: 30): Promise<ResetReasonCount[]> {
+  const pool = await getAdminDbPool();
+  const result = await pool.query<ResetReasonRow>('SELECT * FROM admin_analytics_reset_reasons($1)', [days]);
+  return result.rows.map(mapResetReasonRow);
+}
+
+// #6
+export type CaseAgeBucket = { label: '<1h' | '1–4h' | '4–24h' | '1–3d' | '>3d'; waitingOnUs: number; waitingOnWorker: number };
+export type CaseResolutionWeek = { weekStart: string; partial: boolean; resolved: number; medianHours: number | null; p75Hours: number | null };
+
+export type CaseAgeRow = { bucket: string; waiting_on_us: string | number; waiting_on_worker: string | number };
+
+const CASE_AGE_LABELS: Record<string, CaseAgeBucket['label']> = {
+  under_1h: '<1h',
+  '1_4h': '1–4h',
+  '4_24h': '4–24h',
+  '1_3d': '1–3d',
+  over_3d: '>3d',
+};
+
+export function mapCaseAgeRow(row: CaseAgeRow): CaseAgeBucket {
+  const label = Object.hasOwn(CASE_AGE_LABELS, row.bucket) ? CASE_AGE_LABELS[row.bucket] : undefined;
+  if (label === undefined) {
+    throw new Error(`Unexpected case age bucket: ${row.bucket}`);
+  }
+  return { label, waitingOnUs: asCount(row.waiting_on_us), waitingOnWorker: asCount(row.waiting_on_worker) };
+}
+
+export type CaseResolutionRow = {
+  week_start: PgTimestamp;
+  partial: boolean;
+  resolved: string | number;
+  median_hours: string | number | null;
+  p75_hours: string | number | null;
+};
+
+export function mapCaseResolutionRow(row: CaseResolutionRow): CaseResolutionWeek {
+  return {
+    weekStart: asIso(row.week_start),
+    partial: row.partial,
+    resolved: asCount(row.resolved),
+    medianHours: asNullableNumber(row.median_hours),
+    p75Hours: asNullableNumber(row.p75_hours),
+  };
+}
+
+// Open cases by time in their current status: five buckets, in order.
+export async function getCaseAging(): Promise<CaseAgeBucket[]> {
+  const pool = await getAdminDbPool();
+  const result = await pool.query<CaseAgeRow>('SELECT * FROM admin_analytics_case_aging()');
+  return result.rows.map(mapCaseAgeRow);
+}
+
+export async function getCaseResolution(weeks: number): Promise<CaseResolutionWeek[]> {
+  const pool = await getAdminDbPool();
+  const result = await pool.query<CaseResolutionRow>('SELECT * FROM admin_analytics_case_resolution($1)', [weeks]);
+  return result.rows.map(mapCaseResolutionRow);
+}
+
+// #14
+export type OnboardingStepRow = { stepKey: string; label: string; order: number; branch: boolean; reached: number; ofStarted: number | null; ofPrevious: number | null };
+
+export type OnboardingStepsRow = {
+  step_key: string;
+  step_order: number;
+  branch: boolean;
+  reached: string | number;
+  started: string | number;
+};
+
+// Of started, and of the nearest earlier main-line step: a branch step is
+// measured against the step it forks from, and the step after a branch skips
+// it. The first step has no previous.
+export function onboardingStepRows(rows: OnboardingStepsRow[]): { started: number; steps: OnboardingStepRow[] } {
+  const started = rows.length === 0 ? 0 : asCount(rows[0].started);
+  let previousMain: number | null = null;
+  const steps = rows.map((row): OnboardingStepRow => {
+    const reached = asCount(row.reached);
+    const step: OnboardingStepRow = {
+      stepKey: row.step_key,
+      label: stepLabel(row.step_key),
+      order: row.step_order,
+      branch: row.branch,
+      reached,
+      ofStarted: percentShare(reached, started),
+      ofPrevious: previousMain === null ? null : percentShare(reached, previousMain),
+    };
+    if (!row.branch) previousMain = reached;
+    return step;
+  });
+  return { started, steps };
+}
+
+export async function getOnboardingSteps(weeks: number, door: 'all' | 'whatsapp' | 'web'): Promise<{ started: number; steps: OnboardingStepRow[] }> {
+  const pool = await getAdminDbPool();
+  const result = await pool.query<OnboardingStepsRow>('SELECT * FROM admin_analytics_onboarding_steps($1, $2)', [weeks, door]);
+  return onboardingStepRows(result.rows);
+}
+
+// #15 (WhatsApp door only; timings exclude backfilled history)
+export type IdentityFunnel = {
+  challenges: number; reachedCode: number; verified: number; lockedOnce: number; expiredUnused: number;
+  attempts: { zero: number; one: number; two: number; threePlus: number };
+  medianMinutesToVerify: number | null; p75MinutesToVerify: number | null; timingsSince: string | null;
+};
+
+export type IdentityFunnelRow = {
+  challenges: string | number;
+  reached_code: string | number;
+  verified: string | number;
+  locked_once: string | number;
+  expired_unused: string | number;
+  attempts_zero: string | number;
+  attempts_one: string | number;
+  attempts_two: string | number;
+  attempts_three_plus: string | number;
+  median_minutes_to_verify: string | number | null;
+  p75_minutes_to_verify: string | number | null;
+  timings_since: PgTimestamp | null;
+};
+
+export function mapIdentityFunnelRow(row: IdentityFunnelRow): IdentityFunnel {
+  return {
+    challenges: asCount(row.challenges),
+    reachedCode: asCount(row.reached_code),
+    verified: asCount(row.verified),
+    lockedOnce: asCount(row.locked_once),
+    expiredUnused: asCount(row.expired_unused),
+    attempts: {
+      zero: asCount(row.attempts_zero),
+      one: asCount(row.attempts_one),
+      two: asCount(row.attempts_two),
+      threePlus: asCount(row.attempts_three_plus),
+    },
+    medianMinutesToVerify: asNullableNumber(row.median_minutes_to_verify),
+    p75MinutesToVerify: asNullableNumber(row.p75_minutes_to_verify),
+    timingsSince: asNullableIso(row.timings_since),
+  };
+}
+
+export async function getIdentityFunnel(weeks: number): Promise<IdentityFunnel> {
+  const pool = await getAdminDbPool();
+  const result = await pool.query<IdentityFunnelRow>('SELECT * FROM admin_analytics_identity_funnel($1)', [weeks]);
+  return mapIdentityFunnelRow(onlyRow(result.rows, 'admin_analytics_identity_funnel'));
+}
+
+// #16
+export type AcquisitionSource = 'shared_link' | 'campaign_tag' | 'referral' | 'direct' | 'whatsapp_entry' | 'unknown';
+export type AcquisitionWeek = { weekStart: string; partial: boolean; bySource: Record<AcquisitionSource, number>; total: number };
+export type AcquisitionRow = {
+  week_start: PgTimestamp;
+  partial: boolean;
+  from_shared_link: string | number;
+  from_campaign_tag: string | number;
+  from_referral: string | number;
+  from_direct: string | number;
+  from_whatsapp_entry: string | number;
+  from_unknown: string | number;
+  total: string | number;
+  collecting_since: PgTimestamp | null;
+};
+
+export function mapAcquisitionRow(row: AcquisitionRow): AcquisitionWeek {
+  return {
+    weekStart: asIso(row.week_start),
+    partial: row.partial,
+    bySource: {
+      shared_link: asCount(row.from_shared_link),
+      campaign_tag: asCount(row.from_campaign_tag),
+      referral: asCount(row.from_referral),
+      direct: asCount(row.from_direct),
+      whatsapp_entry: asCount(row.from_whatsapp_entry),
+      unknown: asCount(row.from_unknown),
+    },
+    total: asCount(row.total),
+  };
+}
+
+// Migration 124's definers repeat their "since" column on every row; NULL
+// (nothing recorded yet) stays null, as does an empty result.
+function sinceOf<T>(rows: T[], pick: (row: T) => PgTimestamp | null): string | null {
+  return rows.length === 0 ? null : asNullableIso(pick(rows[0]));
+}
+
+export async function getAcquisition(weeks: number): Promise<{ weeks: AcquisitionWeek[]; collectingSince: string | null }> {
+  const pool = await getAdminDbPool();
+  const result = await pool.query<AcquisitionRow>('SELECT * FROM admin_analytics_acquisition($1)', [weeks]);
+  return { weeks: result.rows.map(mapAcquisitionRow), collectingSince: sinceOf(result.rows, (row) => row.collecting_since) };
+}
+
+// #17
+export type JobViewWeek = { weekStart: string; partial: boolean; publicOpens: number; publicApplications: number; workerViews: number; workerViewApplications: number };
+// collectingSince covers worker views; public opens already have history.
+export type JobViewRow = {
+  week_start: PgTimestamp;
+  partial: boolean;
+  public_opens: string | number;
+  public_applications: string | number;
+  worker_views: string | number;
+  worker_view_applications: string | number;
+  collecting_since: PgTimestamp | null;
+};
+
+export function mapJobViewRow(row: JobViewRow): JobViewWeek {
+  return {
+    weekStart: asIso(row.week_start),
+    partial: row.partial,
+    publicOpens: asCount(row.public_opens),
+    publicApplications: asCount(row.public_applications),
+    workerViews: asCount(row.worker_views),
+    workerViewApplications: asCount(row.worker_view_applications),
+  };
+}
+
+export async function getJobViewFunnel(weeks: number): Promise<{ weeks: JobViewWeek[]; collectingSince: string | null }> {
+  const pool = await getAdminDbPool();
+  const result = await pool.query<JobViewRow>('SELECT * FROM admin_analytics_job_views($1)', [weeks]);
+  return { weeks: result.rows.map(mapJobViewRow), collectingSince: sinceOf(result.rows, (row) => row.collecting_since) };
+}
+
+// #18
+export type TemplateReuseWeek = { weekStart: string; partial: boolean; jobs: number; fromTemplate: number; employersUsingTemplates: number; templatesSaved: number };
+export type TemplateReuseRow = {
+  week_start: PgTimestamp;
+  partial: boolean;
+  jobs: string | number;
+  from_template: string | number;
+  employers_using_templates: string | number;
+  templates_saved: string | number;
+  collecting_since: PgTimestamp | null;
+};
+
+export function mapTemplateReuseRow(row: TemplateReuseRow): TemplateReuseWeek {
+  return {
+    weekStart: asIso(row.week_start),
+    partial: row.partial,
+    jobs: asCount(row.jobs),
+    fromTemplate: asCount(row.from_template),
+    employersUsingTemplates: asCount(row.employers_using_templates),
+    templatesSaved: asCount(row.templates_saved),
+  };
+}
+
+export async function getTemplateReuse(weeks: number): Promise<{ weeks: TemplateReuseWeek[]; collectingSince: string | null }> {
+  const pool = await getAdminDbPool();
+  const result = await pool.query<TemplateReuseRow>('SELECT * FROM admin_analytics_template_reuse($1)', [weeks]);
+  return { weeks: result.rows.map(mapTemplateReuseRow), collectingSince: sinceOf(result.rows, (row) => row.collecting_since) };
+}
+
+// #19 (current state; no history exists)
+export type RankingFreshness = {
+  buckets: { label: '<1h' | '1–6h' | '6–24h' | '1–3d' | '>3d'; jobs: number }[];
+  jobsOlderThan24h: number; fallbackShare: number | null; fallbackJobs: number; rankedJobs: number; jobsWithApplicationsButNoRanking: number;
+};
+
+export type RankingFreshnessRow = {
+  under_1h: string | number;
+  from_1h_to_6h: string | number;
+  from_6h_to_24h: string | number;
+  from_1d_to_3d: string | number;
+  over_3d: string | number;
+  ranked_jobs: string | number;
+  fallback_jobs: string | number;
+  jobs_with_applications_no_ranking: string | number;
+};
+
+export function mapRankingFreshnessRow(row: RankingFreshnessRow): RankingFreshness {
+  const buckets: RankingFreshness['buckets'] = [
+    { label: '<1h', jobs: asCount(row.under_1h) },
+    { label: '1–6h', jobs: asCount(row.from_1h_to_6h) },
+    { label: '6–24h', jobs: asCount(row.from_6h_to_24h) },
+    { label: '1–3d', jobs: asCount(row.from_1d_to_3d) },
+    { label: '>3d', jobs: asCount(row.over_3d) },
+  ];
+  const rankedJobs = asCount(row.ranked_jobs);
+  const fallbackJobs = asCount(row.fallback_jobs);
+  return {
+    buckets,
+    // The ranking cache lives 24 hours: the last two buckets are past it.
+    jobsOlderThan24h: buckets[3].jobs + buckets[4].jobs,
+    fallbackShare: percentShare(fallbackJobs, rankedJobs),
+    fallbackJobs,
+    rankedJobs,
+    jobsWithApplicationsButNoRanking: asCount(row.jobs_with_applications_no_ranking),
+  };
+}
+
+export async function getRankingFreshness(): Promise<RankingFreshness> {
+  const pool = await getAdminDbPool();
+  const result = await pool.query<RankingFreshnessRow>('SELECT * FROM admin_analytics_ranking_freshness()');
+  return mapRankingFreshnessRow(onlyRow(result.rows, 'admin_analytics_ranking_freshness'));
+}
+
+// #20
+export type MatchWeek = { weekStart: string; partial: boolean; channel: 'web' | 'whatsapp'; shown: number; appliedWithin7d: number };
+export type MatchRow = {
+  week_start: PgTimestamp;
+  partial: boolean;
+  channel: string;
+  shown: string | number;
+  applied_within_7d: string | number;
+  collecting_since: PgTimestamp | null;
+};
+
+// Channels are a contract with migration 124: an unknown one is an error,
+// never a row the page would silently mislabel.
+export function mapMatchRow(row: MatchRow): MatchWeek {
+  if (row.channel !== 'web' && row.channel !== 'whatsapp') {
+    throw new Error(`Unexpected match channel: ${row.channel}`);
+  }
+  return {
+    weekStart: asIso(row.week_start),
+    partial: row.partial,
+    channel: row.channel,
+    shown: asCount(row.shown),
+    appliedWithin7d: asCount(row.applied_within_7d),
+  };
+}
+
+// Two rows per week (web, then WhatsApp), oldest week first.
+export async function getMatchToApply(weeks: number): Promise<{ weeks: MatchWeek[]; collectingSince: string | null }> {
+  const pool = await getAdminDbPool();
+  const result = await pool.query<MatchRow>('SELECT * FROM admin_analytics_match_to_apply($1)', [weeks]);
+  return { weeks: result.rows.map(mapMatchRow), collectingSince: sinceOf(result.rows, (row) => row.collecting_since) };
+}
+
+// #21 (apply intents and claims come from daily snapshots, so history survives the token purge)
+export type ReferralWeek = { weekStart: string; partial: boolean; opens: number; applyIntents: number; claims: number; applications: number; hires: number };
+export type ReferralRow = {
+  week_start: PgTimestamp;
+  partial: boolean;
+  opens: string | number;
+  apply_intents: string | number;
+  claims: string | number;
+  applications: string | number;
+  hires: string | number;
+  snapshots_since: PgTimestamp | null;
+};
+
+export function mapReferralRow(row: ReferralRow): ReferralWeek {
+  return {
+    weekStart: asIso(row.week_start),
+    partial: row.partial,
+    opens: asCount(row.opens),
+    applyIntents: asCount(row.apply_intents),
+    claims: asCount(row.claims),
+    applications: asCount(row.applications),
+    hires: asCount(row.hires),
+  };
+}
+
+// Weeks before snapshotsSince carry 0 apply intents and claims (no snapshot).
+export async function getReferralFunnel(weeks: number): Promise<{ weeks: ReferralWeek[]; snapshotsSince: string | null }> {
+  const pool = await getAdminDbPool();
+  const result = await pool.query<ReferralRow>('SELECT * FROM admin_analytics_referral_funnel($1)', [weeks]);
+  return { weeks: result.rows.map(mapReferralRow), snapshotsSince: sinceOf(result.rows, (row) => row.snapshots_since) };
+}
+
+// #11 (live; one failing queue never fails the page). Queue labels are plain
+// words ("WhatsApp inbound", "Billing webhooks", ...), never queue names.
+export type DlqDepth = { queues: { label: string; visible: number | null; inFlight: number | null; unavailable: boolean }[]; totalVisible: number | null };
+export async function getDlqDepth(): Promise<DlqDepth> {
+  return readDlqDepth();
+}
+
+// ---- Sprint 28 contract K3.4: Home metrics and health (BE-3a owns the bodies) ----
+export type HomeMetrics = {
+  signupsTotal: number; signupsThisWeek: number;
+  payingEmployers: number; payingThisWeek: number;
+  hiresLast30d: number; jobsWithHireLast30d: number;
+  openJobs: number; staleJobs14d: number;
+  signupsWeekly: { weekStart: string; partial: boolean; cumulative: number }[];   // last 8 weeks, for the Home chart
+};
+
+// The Home scalars in one statement: totals (088/113, every account, as the
+// Growth KPI strip), this week's new paying employers (123) and the 30-day
+// hires and 14-day stale jobs (123, test accounts left out).
+export const HOME_METRICS_SQL = `
+  SELECT t.total_workers, t.total_employers, t.paying_employers, t.jobs_active,
+         p.new_paying AS paying_new_this_week,
+         h.hires_last_30d, h.jobs_with_hire_last_30d, h.stale_jobs_14d
+    FROM admin_analytics_totals() t
+    CROSS JOIN admin_analytics_paying_weekly(1) p
+    CROSS JOIN admin_analytics_home_metrics() h`;
+
+export type HomeMetricsRow = {
+  total_workers: string | number;
+  total_employers: string | number;
+  paying_employers: string | number;
+  jobs_active: string | number;
+  paying_new_this_week: string | number;
+  hires_last_30d: string | number;
+  jobs_with_hire_last_30d: string | number;
+  stale_jobs_14d: string | number;
+};
+
+export const HOME_SIGNUP_WEEKS = 8;
+
+// Two statements, one after the other, so the loader never holds more than
+// one pool connection. The weekly series is the last 8 weeks of signups
+// (workers and employers) as a running total ending at today's total.
+export async function getHomeMetrics(now: Date = new Date()): Promise<HomeMetrics> {
+  const pool = await getAdminDbPool();
+  const scalars = await pool.query<HomeMetricsRow>(HOME_METRICS_SQL);
+  const row = scalars.rows[0];
+  if (!row) {
+    throw new Error('Home metrics returned no row');
+  }
+  const { from, bucket } = resolveRange(HOME_SIGNUP_WEEKS, now);
+  const signups = await pool.query<SignupRow>('SELECT * FROM admin_analytics_signups($1, $2)', [from, bucket]);
+  const weekly = fillBuckets(
+    signups.rows.map(mapSignupRow),
+    bucketStarts(from, bucket, now),
+    (bucketStart) => ({ bucketStart, workerSignups: 0, employerSignups: 0, workerSignupsVerified: 0 }),
+  );
+  const perWeek = weekly.map((week) => week.workerSignups + week.employerSignups);
+  const signupsTotal = asCount(row.total_workers) + asCount(row.total_employers);
+  const cumulative = cumulativeSeries(perWeek, signupsTotal);
+  return {
+    signupsTotal,
+    signupsThisWeek: perWeek.length === 0 ? 0 : perWeek[perWeek.length - 1],
+    payingEmployers: asCount(row.paying_employers),
+    payingThisWeek: asCount(row.paying_new_this_week),
+    hiresLast30d: asCount(row.hires_last_30d),
+    jobsWithHireLast30d: asCount(row.jobs_with_hire_last_30d),
+    openJobs: asCount(row.jobs_active),
+    staleJobs14d: asCount(row.stale_jobs_14d),
+    signupsWeekly: weekly.map((week, i) => ({
+      weekStart: week.bucketStart,
+      partial: i === weekly.length - 1,
+      cumulative: cumulative[i],
+    })),
+  };
+}
+
+export type HealthState = 'healthy' | 'watch' | 'problem' | 'unknown';
+export type HealthItem = {
+  key: 'whatsapp_delivery' | 'message_backlog' | 'billing_webhooks' | 'email_bounces' | 'ai_extraction';
+  label: string;   // "WhatsApp delivery"
+  value: string;   // "0 failed sends", "0 queued · 0 dead-lettered", "1 bounce", "97% complete"
+  state: HealthState;
+};
+
+// The figures the health strip judges. null = the source could not be read.
+export type SystemHealthInputs = {
+  whatsappFailed24h: number | null;
+  queuedOver1h: number | null;
+  stuckMessages: number | null;
+  dlqVisible: number | null;
+  billingFailed24h: number | null;
+  sesBounces24h: number | null;
+  aiFinished7d: number | null;
+  aiUsable7d: number | null;
+};
+
+// Thresholds (BE-3a spec §4.4; Luis may tune them). Each is the smallest value
+// that reaches the band.
+export const HEALTH_THRESHOLDS = {
+  whatsappFailedWatch: 1,
+  whatsappFailedProblem: 5,
+  sesBouncesWatch: 1,
+  sesBouncesProblem: 3,
+  aiUsableHealthyPercent: 95,
+  aiUsableWatchPercent: 85,
+} as const;
+
+const plural = (n: number, one: string, many: string): string =>
+  `${n.toLocaleString('en-US')} ${n === 1 ? one : many}`;
+const part = (n: number | null): string => (n === null ? '—' : n.toLocaleString('en-US'));
+const UNAVAILABLE = 'unavailable';
+
+export function systemHealthItems(input: SystemHealthInputs): HealthItem[] {
+  const t = HEALTH_THRESHOLDS;
+  const items: HealthItem[] = [];
+
+  const failed = input.whatsappFailed24h;
+  items.push({
+    key: 'whatsapp_delivery',
+    label: 'WhatsApp delivery',
+    value: failed === null ? UNAVAILABLE : plural(failed, 'failed send', 'failed sends'),
+    state: failed === null ? 'unknown'
+      : failed >= t.whatsappFailedProblem ? 'problem'
+        : failed >= t.whatsappFailedWatch ? 'watch' : 'healthy',
+  });
+
+  const { stuckMessages: stuck, queuedOver1h: queued, dlqVisible: dlq } = input;
+  items.push({
+    key: 'message_backlog',
+    label: 'Message backlog',
+    value: `${part(stuck)} stuck · ${part(queued)} queued over 1 h · ${part(dlq)} dead-lettered`,
+    state: stuck === null || queued === null || dlq === null ? 'unknown'
+      : stuck > 0 || dlq > 0 ? 'problem'
+        : queued > 0 ? 'watch' : 'healthy',
+  });
+
+  const billing = input.billingFailed24h;
+  items.push({
+    key: 'billing_webhooks',
+    label: 'Billing webhooks',
+    value: billing === null ? UNAVAILABLE : plural(billing, 'failed event', 'failed events'),
+    state: billing === null ? 'unknown' : billing > 0 ? 'problem' : 'healthy',
+  });
+
+  const bounces = input.sesBounces24h;
+  items.push({
+    key: 'email_bounces',
+    label: 'Email bounces',
+    value: bounces === null ? UNAVAILABLE : plural(bounces, 'bounce', 'bounces'),
+    state: bounces === null ? 'unknown'
+      : bounces >= t.sesBouncesProblem ? 'problem'
+        : bounces >= t.sesBouncesWatch ? 'watch' : 'healthy',
+  });
+
+  const { aiFinished7d: finished, aiUsable7d: usable } = input;
+  let ai: Pick<HealthItem, 'value' | 'state'>;
+  if (finished === null || usable === null) {
+    ai = { value: UNAVAILABLE, state: 'unknown' };
+  } else if (finished === 0) {
+    // Nothing to measure is not a fault.
+    ai = { value: 'no voice notes in 7 days', state: 'healthy' };
+  } else {
+    const share = (usable / finished) * 100;
+    // Rounded down, so the printed share never sits in a better band.
+    ai = {
+      value: `${Math.floor(share)}% usable (7 days)`,
+      state: share >= t.aiUsableHealthyPercent ? 'healthy' : share >= t.aiUsableWatchPercent ? 'watch' : 'problem',
+    };
+  }
+  items.push({ key: 'ai_extraction', label: 'AI extraction', ...ai });
+
+  return items;
+}
+
+// One statement for the database figures: the 24 h / 7 day counts (123), the
+// message backlog (115) and the billing inbox (115, failed_last_24h from 123).
+export const SYSTEM_HEALTH_SQL = `
+  SELECT h.whatsapp_failed_24h, h.ai_finished_7d, h.ai_usable_7d,
+         b.queued_over_1h, b.stuck_messages, n.failed_last_24h AS billing_failed_24h
+    FROM admin_analytics_system_health() h
+    CROSS JOIN (SELECT COALESCE(sum(m.open_1_24h + m.open_24_48h), 0) AS queued_over_1h,
+                       COALESCE(sum(m.stuck), 0) AS stuck_messages
+                  FROM admin_analytics_message_backlog() m) b
+    CROSS JOIN admin_analytics_billing_inbox_now() n`;
+
+export type SystemHealthRow = {
+  whatsapp_failed_24h: string | number;
+  ai_finished_7d: string | number;
+  ai_usable_7d: string | number;
+  queued_over_1h: string | number;
+  stuck_messages: string | number;
+  billing_failed_24h: string | number;
+};
+
+async function readSystemHealthRow(): Promise<SystemHealthRow | null> {
+  try {
+    const pool = await getAdminDbPool();
+    const result = await pool.query<SystemHealthRow>(SYSTEM_HEALTH_SQL);
+    return result.rows[0] ?? null;
+  } catch (error) {
+    // The strip shows the database items as unknown; the page still renders.
+    console.error(JSON.stringify({
+      metric: 'AdminHealthSourceUnavailable',
+      source: 'database',
+      error: error instanceof Error ? error.name : 'UnknownError',
+    }));
+    return null;
+  }
+}
+
+// Never throws: a source that cannot be read makes its items unknown.
+export async function getSystemHealth(): Promise<{ items: HealthItem[]; windowLabel: 'last 24 hours' }> {
+  const [row, dlq, bounces] = await Promise.all([readSystemHealthRow(), readDlqDepth(), readSesBounces24h()]);
+  const count = (value: string | number | undefined): number | null => (row && value !== undefined ? asCount(value) : null);
+  const items = systemHealthItems({
+    whatsappFailed24h: count(row?.whatsapp_failed_24h),
+    queuedOver1h: count(row?.queued_over_1h),
+    stuckMessages: count(row?.stuck_messages),
+    dlqVisible: dlq.totalVisible,
+    billingFailed24h: count(row?.billing_failed_24h),
+    sesBounces24h: bounces,
+    aiFinished7d: count(row?.ai_finished_7d),
+    aiUsable7d: count(row?.ai_usable_7d),
+  });
+  return { items, windowLabel: 'last 24 hours' };
 }

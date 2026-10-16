@@ -1,29 +1,32 @@
-import type { PayingEmployer } from '@/lib/types';
+import { Badge, type BadgeTone } from '@/components/ui/badge';
 import { periodEndLabel } from '@/lib/analytics-format';
+import type { PayingEmployer } from '@/lib/types';
+import { AnalyticsPanel } from './AnalyticsPanel';
+
+const STATUS_TONE: Record<string, BadgeTone> = { active: 'success', trialing: 'info', past_due: 'warning' };
 
 export function PayingEmployersList({ rows }: { rows: PayingEmployer[] }) {
   return (
-    <article className="card">
-      <div className="chart-head" style={{ marginBottom: 8 }}>
-        <div>
-          <h2>Paying employers</h2>
-          <p>{rows.length} subscriptions · active, trialing, or past due</p>
-        </div>
-      </div>
+    <AnalyticsPanel title="Paying employers" subtitle={`${rows.length} subscriptions · active, trialing, or past due`}>
       {rows.length === 0 ? (
-        <p className="muted">No paying employers yet.</p>
+        <p className="m-0 text-sm text-[var(--jale-ink-2)]">No paying employers yet.</p>
       ) : (
-        <div className="list-rows">
+        <ul className="m-0 flex list-none flex-col p-0">
           {rows.map((row) => (
-            <div key={`${row.employerId}-${row.planCode}`} className="list-row">
-              <span className="name">{row.displayName}</span>
-              <span className="muted plan" style={{ fontSize: '0.82rem' }}>{row.planCode}</span>
-              <span className={`badge ${row.status}`}>{row.status.replace('_', ' ')}</span>
-              <span className={row.cancelAtPeriodEnd ? 'period cancels' : 'period'}>{periodEndLabel(row)}</span>
-            </div>
+            <li
+              key={`${row.employerId}-${row.planCode}`}
+              className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-[var(--jale-divider)] py-2 text-sm first:border-t-0"
+            >
+              <span className="min-w-0 flex-1 font-semibold [overflow-wrap:anywhere]">{row.displayName}</span>
+              <span className="text-xs text-[var(--jale-ink-2)]">{row.planCode}</span>
+              <Badge tone={STATUS_TONE[row.status] ?? 'neutral'}>{row.status.replace('_', ' ')}</Badge>
+              <span className={row.cancelAtPeriodEnd ? 'text-xs font-semibold text-[var(--jale-warning-text)]' : 'text-xs'}>
+                {periodEndLabel(row)}
+              </span>
+            </li>
           ))}
-        </div>
+        </ul>
       )}
-    </article>
+    </AnalyticsPanel>
   );
 }

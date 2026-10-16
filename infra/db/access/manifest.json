@@ -698,7 +698,8 @@
             "job_id",
             "worker_id",
             "status",
-            "updated_at"
+            "updated_at",
+            "hire_details_updated_at"
           ],
           "reason": "Resolves a stage notification's application on the caller's jobs."
         },
@@ -724,7 +725,8 @@
             "details_completed_at",
             "prompt_answers",
             "hired_seen_at",
-            "hired_ack_at"
+            "hired_ack_at",
+            "hire_details_reminded_at"
           ]
         }
       }
@@ -824,8 +826,14 @@
         },
         "jale_whatsapp": {
           "select": "*",
-          "insert": "*",
-          "update": "*"
+          "update": [
+            "status",
+            "closed_at",
+            "last_message_at",
+            "last_worker_message_at",
+            "accepted_at"
+          ],
+          "reason": "The worker's side of a conversation (lib/job-messaging.ts:632, :721, :836, :892): records a reply and closes or opens a thread from a button. 126 narrowed UPDATE to these columns and revoked INSERT; the read marker, the parties and opening a conversation are the request login's or a capability function's."
         }
       }
     },
@@ -1403,11 +1411,10 @@
         "enabled": true,
         "forced": false
       },
-      "reason": "WhatsApp outbox; the WhatsApp engine and the admin console. Employer notifications insert through a capability function.",
+      "reason": "WhatsApp outbox; the WhatsApp engine, and the admin console as a reader (its support messages are queued through definers since migration 122). Employer notifications insert through a capability function.",
       "access": {
         "jale_admin_console": {
-          "select": "*",
-          "insert": "*"
+          "select": "*"
         },
         "jale_cap_worker_lane": {
           "insert": [
@@ -3717,15 +3724,6 @@
       "using": null,
       "with_check": "((inbound_message_sid IS NULL) AND (source_type = 'worker_intent'::text) AND (source_id IN ( SELECT i.id\n   FROM worker_message_intents i\n  WHERE ((i.status = 'eligible'::text) AND (i.outbox_id IS NULL)))))",
       "reason": "Worker-lane owner: the outbox row of an eligible intent that has none."
-    },
-    "public.whatsapp_outbox.whatsapp_outbox_console_insert": {
-      "command": "INSERT",
-      "permissive": true,
-      "to": [
-        "jale_admin_console"
-      ],
-      "origin": "existing",
-      "reason": "Admin console policy; unchanged."
     },
     "public.whatsapp_outbox.whatsapp_outbox_console_select": {
       "command": "SELECT",

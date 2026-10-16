@@ -5,6 +5,7 @@ import { useTranslations } from 'next-intl';
 import { useSearchParams } from 'next/navigation';
 import { usePathname, useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
+import { useWorkerAttention } from '@/contexts/WorkerAttentionContext';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { usePageData } from '@/hooks/usePageData';
 import { useStaggerOnce } from '@/hooks/useStaggerOnce';
@@ -23,7 +24,6 @@ import { WorkerJobCard } from '@/components/worker/WorkerJobCard';
 import { apiFetch } from '@/lib/api';
 import {
   acknowledgeHire,
-  getApplicationsAttention,
   type AttentionDetailsRequest,
   type AttentionHire,
   type HireAckStep,
@@ -238,112 +238,75 @@ export default function WorkerHomePage() {
   }, [feedHref, currentQuery, pathname, router]);
 
   /**
-   * Applications waiting on the worker, fetched BEST-EFFORT alongside the
-   * profile.
+   * What needs the worker -- an employer waiting on their details, a hire --
+   * read from the session-wide attention context (F27). The nav badge reads
+   * the same answer, so this page no longer asks for it on its own.
    *
-   * Deliberately not part of `usePageData`: this page's data is the job feed,
-   * and a failed applications call must never take the feed's phase with it.
-   *
-   * "Best-effort" is not the same as silent, though, and it used to be: the
-   * call ended in `.catch(() => {})`, so a failure left a home page that
-   * looked entirely normal while omitting the one thing a worker may have
-   * opened the app for -- an employer asking for their details, or a hire.
-   * There is nothing on such a page to suggest looking further. So the
-   * failure gets a sentence (below), in the same footnote shape the filter
-   * refetch already uses: the job feed underneath is real, and this is a
-   * footnote rather than a page state.
+   * Best-effort, and never part of the job feed's phase. A FAILED first read
+   * gets a footnote: a home page that silently omits the one notice a worker
+   * may have opened the app for looks entirely normal, so it must say so.
    */
+  const { attention, errorKind: attentionErrorKind, forgetHire } = useWorkerAttention();
   const [needingDetails, setNeedingDetails] = useState<AttentionDetailsRequest[]>([]);
-  /** The applications call failed, and the worker has not waved it away. */
-  const [applicationsFailed, setApplicationsFailed] = useState(false);
   const [applicationsNoticeDismissed, setApplicationsNoticeDismissed] = useState(false);
+  const applicationsFailed = attentionErrorKind !== null;
+  /*
+   * A dismissal is about one CONFIRMED failure, so only the next confirmed
+   * failure re-arms it (null -> a kind). A re-render with the same failure is
+   * not a new one. The render-phase adjustment, not an effect: an effect would
+   * paint the stale notice once before correcting it.
+   */
+  const [seenAttentionError, setSeenAttentionError] = useState<typeof attentionErrorKind>(attentionErrorKind);
+  if (seenAttentionError !== attentionErrorKind) {
+    setSeenAttentionError(attentionErrorKind);
+    if (attentionErrorKind !== null) setApplicationsNoticeDismissed(false);
+  }
   /**
-   * Hires this worker has not finished acknowledging -- the celebration state,
-   * read off the SAME response as the details banner because it is the same
-   * question asked of the same list.
-   *
+   * Hires this worker has not finished acknowledging -- the celebration state.
    * Two nullable stamps decide which of three things the worker sees:
-   *   `seen_at` null            -> the modal is owed (and this banner sits
-   *                                behind it, so closing the modal reveals it
-   *                                rather than replacing it)
+   *   `seen_at` null            -> the modal is owed (and the banner sits behind it)
    *   `seen_at` set, ack null   -> the banner alone
    *   `acknowledged_at` set     -> nothing, and the row never reaches here
-   *
-   * Both stamps live on the SERVER. A celebration remembered in
-   * `localStorage` would fire again on the worker's next device, and reading
-   * applications on a borrowed phone is the normal case for this audience.
+   * Both stamps live on the SERVER, so a celebration never repeats on the
+   * worker's next device.
    */
   const [hires, setHires] = useState<HireNotice[]>([]);
   /**
-   * The modal is an interruption, so it only opens on a frame the worker did
-   * not start typing on: the applications call lands AFTER first paint, and a
-   * worker already in the search box must not have their keystrokes yanked
-   * into a dialog. Decided once per fetch; the banner still shows, `seen_at`
-   * stays null, and the modal simply waits for the next visit.
+   * Hires whose modal is skipped THIS visit because they arrived while the
+   * worker was typing: a dialog must never yank keystrokes out of the search
+   * box. Decided once per hire, the first time it arrives; the banner still
+   * shows and `seen_at` stays null, so the modal waits for the next visit.
    */
-  const [modalSuppressed, setModalSuppressed] = useState(false);
+  const [modalSkipped, setModalSkipped] = useState<ReadonlySet<string>>(() => new Set());
+  const modalDecidedRef = useRef<Set<string>>(new Set());
   /**
-   * Receipts written this visit. A refetch (an id-token rotation re-runs the
-   * effect below) must not resurrect a modal or banner the worker already
-   * closed while the fire-and-forget POST was still in flight or was lost.
+   * Receipts written this visit. A later summary (the context refreshes) must
+   * not resurrect a modal or banner the worker already closed while the
+   * fire-and-forget POST was still in flight or was lost.
    */
   const receiptsRef = useRef<Record<string, HireAckStep>>({});
   useEffect(() => {
-    if (!idToken) return;
-    const controller = new AbortController();
-    // The SUMMARY, not a page of applications. What this page needs is the two
-    // things that interrupt a worker -- an employer waiting on their details,
-    // and a hire nobody has told them about -- and both are questions about
-    // their WHOLE list. Reading them off a page of it (200 rows once, 100
-    // after F26 paged the endpoint) meant an employer waiting on application
-    // 137 was never mentioned at all.
-    getApplicationsAttention(idToken, controller.signal)
-      .then((attention) => {
-        setApplicationsFailed(false);
-        setNeedingDetails(attention.details_requested);
-        // The receipts written THIS VISIT still win: a refetch (an id-token
-        // rotation re-runs this effect) must not resurrect a modal or banner
-        // the worker already closed while the fire-and-forget POST was in
-        // flight or was lost.
-        const receipts = receiptsRef.current;
-        setHires(attention.unacknowledged_hires.flatMap((notice) => {
-          const receipt = receipts[notice.application_id];
-          if (receipt === 'dismissed') return [];
-          const hire = receipt === 'seen' && notice.hire.seen_at === null
-            ? { ...notice.hire, seen_at: new Date().toISOString() }
-            : notice.hire;
-          return [{ ...notice, hire }];
-        }));
-        setModalSuppressed(isTypingSomewhere());
-      })
-      .catch((err: unknown) => {
-        // An abort is this page cancelling its OWN work -- the cleanup below
-        // fires on unmount and on every id-token rotation -- so it is not a
-        // failure and must not put a notice on screen. Both halves of the
-        // guard are load-bearing: the flag catches a rejection that arrives
-        // after the cleanup ran (the state setter would be pointless anyway),
-        // and the name catches the AbortError `apiFetch` re-throws verbatim
-        // for a caller-supplied signal.
-        //
-        // Checked by SHAPE, not `instanceof Error`: a fetch abort rejects with
-        // a `DOMException`, and whether that inherits from `Error` is up to
-        // the runtime (it does in modern browsers and in jsdom; it is not
-        // something this page should bet a false alarm on).
-        if (controller.signal.aborted) return;
-        if (typeof err === 'object' && err !== null && (err as { name?: unknown }).name === 'AbortError') return;
-        setApplicationsFailed(true);
-        // Re-arming the dismissal belongs HERE, with the confirmed failure it
-        // reacts to -- not on the attempt edge. `idToken` is this effect's
-        // only dep and `apiFetch`'s silent 401 refresh rotates it, so an
-        // attempt-edge reset put a notice the worker had already waved away
-        // back on screen the moment an unrelated token refresh fired, while
-        // the new request was still in flight and on no evidence at all, then
-        // flashed it off again if that request succeeded. Set together, the
-        // two states can only ever describe the same single failure.
-        setApplicationsNoticeDismissed(false);
-      });
-    return () => controller.abort();
-  }, [idToken]);
+    if (!attention) return;
+    setNeedingDetails(attention.details_requested);
+    const receipts = receiptsRef.current;
+    const next = attention.unacknowledged_hires.flatMap((notice) => {
+      const receipt = receipts[notice.application_id];
+      if (receipt === 'dismissed') return [];
+      const hire = receipt === 'seen' && notice.hire.seen_at === null
+        ? { ...notice.hire, seen_at: new Date().toISOString() }
+        : notice.hire;
+      return [{ ...notice, hire }];
+    });
+    setHires(next);
+    const typing = isTypingSomewhere();
+    const skipped: string[] = [];
+    for (const notice of next) {
+      if (notice.hire.seen_at !== null || modalDecidedRef.current.has(notice.application_id)) continue;
+      modalDecidedRef.current.add(notice.application_id);
+      if (typing) skipped.push(notice.application_id);
+    }
+    if (skipped.length > 0) setModalSkipped((prev) => new Set([...prev, ...skipped]));
+  }, [attention]);
 
   /**
    * Records a step of the hire receipt and forgets about it.
@@ -378,7 +341,8 @@ export default function WorkerHomePage() {
       (notice) => notice.application_id !== applicationId,
     ));
     recordHireStep(applicationId, 'dismissed');
-  }, [recordHireStep]);
+    forgetHire(applicationId);
+  }, [forgetHire, recordHireStep]);
 
   /**
    * The hire currently owed a celebration. Several unacknowledged hires at
@@ -387,9 +351,9 @@ export default function WorkerHomePage() {
    * fresh (its own confetti burst, its own focus entry) instead of swapping
    * content inside the open dialog.
    */
-  const celebrating = modalSuppressed
-    ? undefined
-    : hires.find((notice) => notice.hire.seen_at === null);
+  const celebrating = hires.find(
+    (notice) => notice.hire.seen_at === null && !modalSkipped.has(notice.application_id),
+  );
 
   useEffect(() => {
     if (!idToken) return;
@@ -579,8 +543,8 @@ export default function WorkerHomePage() {
             place and OUTSIDE the skeleton gate below: a notice about the
             applications call has no business waiting on the job feed, which
             is a different request with a different failure. No retry link --
-            the fetch is tied to the id-token effect rather than to a callback
-            this button could call, so the honest instruction is to reload. */}
+            the attention context retries a failed read on its own
+            (`ATTENTION_RETRY_MS`). */}
         {showApplicationsNotice ? (
           <div className="mb-4">
             <InlineFeedback

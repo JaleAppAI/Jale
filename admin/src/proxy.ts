@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import { ADMIN_SESSION_COOKIE } from '@/lib/session-cookie';
+import { ADMIN_NEXT_HEADER, ADMIN_SESSION_COOKIE } from '@/lib/session-cookie';
 import { safeNextPath } from '@/lib/safe-redirect';
 import { isLocalPreviewAllowed } from '@/lib/server/session-claims';
 
@@ -20,11 +20,21 @@ const PUBLIC_PREFIXES = [
 // before reading or mutating. Keeping verification in one place, next to the
 // data access it guards, is what makes it auditable. Do NOT add a page that
 // relies on this proxy for protection.
+//
+// ADMIN_NEXT_HEADER (`x-admin-next`, contract K1.3): the proxy hands the page
+// the requested path and query, through safeNextPath, so requireAdminSession()
+// can send an admin whose session has ended back to the same page after
+// sign-in. The proxy always sets it itself; a value the client sent never
+// reaches the page.
 export function proxy(request: NextRequest) {
-  const { pathname } = request.nextUrl;
+  const { pathname, search } = request.nextUrl;
+  const next = safeNextPath(pathname + search);
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set(ADMIN_NEXT_HEADER, next);
+  const passOn = () => NextResponse.next({ request: { headers: requestHeaders } });
 
   if (PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix))) {
-    return NextResponse.next();
+    return passOn();
   }
 
   const hasSessionCookie = Boolean(request.cookies.get(ADMIN_SESSION_COOKIE)?.value);
@@ -35,13 +45,15 @@ export function proxy(request: NextRequest) {
   );
 
   if (!hasSessionCookie && !hasLocalPreviewRole) {
+    // The query travels inside `next` only; nothing else is copied over.
     const loginUrl = request.nextUrl.clone();
     loginUrl.pathname = '/login';
-    loginUrl.searchParams.set('next', safeNextPath(pathname));
+    loginUrl.search = '';
+    loginUrl.searchParams.set('next', next);
     return NextResponse.redirect(loginUrl);
   }
 
-  return NextResponse.next();
+  return passOn();
 }
 
 export const config = {

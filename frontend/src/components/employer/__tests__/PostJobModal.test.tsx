@@ -236,3 +236,75 @@ describe('PostJobModal Enter key', () => {
     expect(hidden).toHaveAttribute('aria-hidden', 'true');
   });
 });
+
+/*
+ * Analytics #18 (K3.6): a job started from a saved template says so, even
+ * after the employer edited the prefilled fields -- "started from a template"
+ * is what reuse means.
+ */
+describe('PostJobModal template id', () => {
+  const titleField = () => screen.getByPlaceholderText(message('employer_dashboard.modal.job_title_placeholder'));
+  const next = () => screen.getByRole('button', { name: message('employer_dashboard.modal.next') });
+  const submit = () => screen.getByRole('button', { name: message('employer_dashboard.post_job_docs.submit') });
+
+  async function walkToSubmit(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(next());
+    await waitFor(() => expect(stepHeading()).toHaveTextContent(message('employer_dashboard.modal.steps.details')));
+    await user.click(next());
+    await waitFor(() => expect(submit()).toBeInTheDocument());
+    await user.click(submit());
+    await waitFor(() => expect(createJob).toHaveBeenCalledTimes(1));
+  }
+
+  beforeEach(() => {
+    createJob.mockResolvedValue({ id: 'job-new', title: 'Roofer lead' });
+    saveJobTemplate.mockResolvedValue({ id: 'tpl-saved', name: 'Mine', payload: {}, updated_at: '2026-10-14T00:00:00Z' });
+  });
+
+  it('sends template_id after a template was applied and then edited (T-e)', async () => {
+    const user = userEvent.setup();
+    await openWithTemplates([withCity]);
+    applyTemplate(withCity.id);
+    await user.type(titleField(), ' lead');
+
+    await walkToSubmit(user);
+
+    expect(createJob.mock.calls[0][1]).toMatchObject({ title: 'Roofer lead', template_id: 'tpl-city' });
+  });
+
+  it('sends the LAST template applied when the employer switches templates', async () => {
+    const user = userEvent.setup();
+    const second: JobTemplate = { ...withCity, id: 'tpl-city-2', name: 'Roofer (second)' };
+    await openWithTemplates([withCity, second]);
+    applyTemplate(withCity.id);
+    applyTemplate(second.id);
+
+    await walkToSubmit(user);
+
+    expect(createJob.mock.calls[0][1]).toMatchObject({ template_id: 'tpl-city-2' });
+  });
+
+  it('never puts template_id into a template it saves', async () => {
+    const user = userEvent.setup();
+    // Not `openWithTemplates`: its billing fixture caps templates at 1, and with
+    // one template loaded the cap pre-check would stop the submit before any save.
+    listJobTemplates.mockResolvedValue([withCity]);
+    getBilling.mockResolvedValue({
+      planCode: 'employer_pro', activeJobLimit: 10, templateLimit: 5, activeJobUsage: 0, subscription: null,
+      display_price_minor: 2000, currency: 'usd', billing_interval: 'month',
+    });
+    renderIntl(<PostJobModal open onClose={vi.fn()} onJobCreated={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText(withCity.name)).toBeInTheDocument());
+    applyTemplate(withCity.id);
+    await user.click(next());
+    await user.click(next());
+    await user.click(screen.getByRole('checkbox', { name: message('employer_dashboard.modal.template_save_toggle') }));
+    await user.type(screen.getByPlaceholderText(message('employer_dashboard.modal.template_name_placeholder')), 'Roofer copy');
+    await user.click(submit());
+
+    await waitFor(() => expect(saveJobTemplate).toHaveBeenCalledTimes(1));
+    expect(saveJobTemplate.mock.calls[0][1].payload).not.toHaveProperty('template_id');
+    await waitFor(() => expect(createJob).toHaveBeenCalledTimes(1));
+    expect(createJob.mock.calls[0][1]).toHaveProperty('template_id', 'tpl-city');
+  });
+});

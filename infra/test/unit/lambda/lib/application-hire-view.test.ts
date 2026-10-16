@@ -11,8 +11,10 @@
  * `worker-applications-list.test.ts` and in the 095 DB suite.
  */
 import {
+  buildHireDetails,
   buildHireSummary,
   EMPLOYER_DISPLAY_NAME_FALLBACK,
+  hireDetailsNeeded,
 } from '../../../../lambda/lib/application-hire-view';
 
 /** A hired row with every job fact present, as `pg` hands it back. */
@@ -58,6 +60,9 @@ describe('buildHireSummary', () => {
       // pure view's -- it has no client to query trade_aliases with.
       trade: { category: 'electrician', other: null, canonical_en: null, canonical_es: null },
       company: 'Acme Concrete',
+      // 125 (F19): no start details on this row yet, and no reminder sent.
+      details: null,
+      employer_reminded_at: null,
     });
   });
 
@@ -340,5 +345,74 @@ describe('buildHireSummary', () => {
     expect(buildHireSummary({ ...HIRED, hired_at: null })).toBeNull();
     expect(buildHireSummary({ ...HIRED, hired_at: undefined })).toBeNull();
     expect(buildHireSummary({ ...HIRED, hired_at: 'not-a-timestamp' })).toBeNull();
+  });
+});
+
+// F19 (sprint 28, contract K4.2): the start details an employer adds after a
+// hire. One shape for the worker's `hire.details` and the employer's
+// `hire_details`, so the two sides can never disagree about what was saved.
+describe('buildHireDetails', () => {
+  const DETAILS = {
+    hire_start_date: '2026-10-20',
+    hire_report_location: 'Gate 3, North lot',
+    hire_contact_name: 'Site lead',
+    hire_contact_phone: '+1 555 0100',
+    hire_notes: 'Bring boots.',
+    hire_details_updated_at: new Date('2026-10-14T12:00:00.000Z'),
+  };
+
+  it('publishes the five fields and the save time', () => {
+    expect(buildHireDetails(DETAILS)).toEqual({
+      start_date: '2026-10-20',
+      report_location: 'Gate 3, North lot',
+      contact_name: 'Site lead',
+      contact_phone: '+1 555 0100',
+      notes: 'Bring boots.',
+      updated_at: '2026-10-14T12:00:00.000Z',
+    });
+  });
+
+  it('keeps a partial save partial: unknown fields stay null', () => {
+    expect(buildHireDetails({ ...DETAILS, hire_start_date: null, hire_contact_name: ' ', hire_notes: undefined }))
+      .toMatchObject({ start_date: null, contact_name: null, notes: null, report_location: 'Gate 3, North lot' });
+  });
+
+  it('is null while no field holds anything, even after a save that cleared them all', () => {
+    const empty = {
+      hire_start_date: null, hire_report_location: null, hire_contact_name: null, hire_contact_phone: null,
+      hire_notes: null,
+    };
+    expect(buildHireDetails({ ...empty, hire_details_updated_at: null })).toBeNull();
+    expect(buildHireDetails({ ...empty, hire_details_updated_at: DETAILS.hire_details_updated_at })).toBeNull();
+    expect(buildHireDetails({})).toBeNull();
+  });
+
+  it('is null without a save time, which the contract promises on every details object', () => {
+    expect(buildHireDetails({ ...DETAILS, hire_details_updated_at: null })).toBeNull();
+  });
+
+  it('reads a DATE parsed by pg as the calendar day it holds', () => {
+    expect(buildHireDetails({ ...DETAILS, hire_start_date: new Date(2026, 9, 20) })?.start_date).toBe('2026-10-20');
+  });
+
+  it('reports the worker\'s last reminder, which the 24-hour remind window counts from (K4 CCR-4)', () => {
+    expect(buildHireSummary({ ...HIRED, hire_details_reminded_at: new Date('2026-10-13T08:00:00.000Z') })?.employer_reminded_at)
+      .toBe('2026-10-13T08:00:00.000Z');
+    expect(buildHireSummary(HIRED)?.employer_reminded_at).toBeNull();
+  });
+
+  it('rides on the hire summary of a hired row', () => {
+    expect(buildHireSummary({ ...HIRED, ...DETAILS })?.details).toEqual(buildHireDetails(DETAILS));
+  });
+});
+
+describe('hireDetailsNeeded', () => {
+  it('is true only for a hired application with no details', () => {
+    const details = buildHireDetails({ hire_report_location: 'Gate', hire_details_updated_at: '2026-10-14T12:00:00Z' });
+    expect(hireDetailsNeeded('hired', null)).toBe(true);
+    expect(hireDetailsNeeded('hired', details)).toBe(false);
+    for (const status of ['pending', 'contacted', 'talking', 'details_requested', 'rejected', 'not_interested']) {
+      expect(hireDetailsNeeded(status, null)).toBe(false);
+    }
   });
 });

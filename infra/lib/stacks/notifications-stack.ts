@@ -16,6 +16,7 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
 import { dedicatedDbLogin } from '../constructs/db-login-secrets';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
+import { BOUNCE_FLOOR, BOUNCE_SHARE, sesBounceShareMetric } from '../constructs/ses-bounce-alarm';
 import { lambdaIntegration, addPathOnlyResource } from '../api-integration';
 
 export interface NotificationsStackProps extends cdk.StackProps {
@@ -250,8 +251,8 @@ export class NotificationsStack extends cdk.Stack {
       alarmDescription: string,
       metric: cloudwatch.IMetric,
       // Every caller that predates the SES alarms below counts events, where
-      // "one is too many" — hence the default. `Reputation.BounceRate` is a
-      // RATIO, so it is the one signal here that needs a real number.
+      // "one is too many" — hence the default. The two SES ratios below (the
+      // bounce share and `Reputation.BounceRate`) need a real number.
       threshold: number = 1,
     ): cloudwatch.Alarm => {
       const alarm = new cloudwatch.Alarm(this, constructId, {
@@ -351,23 +352,24 @@ export class NotificationsStack extends cdk.Stack {
     // on the same operator-supplied context that the feedback lane needs would
     // rebuild the exact hole this closes.
     //
-    // NO DIMENSIONS on either metric, on purpose. `AWS/SES` publishes Bounce
-    // and Reputation.* at the ACCOUNT level; adding a dimension produces a
-    // metric that never reports a datapoint, and an alarm on a metric with no
-    // datapoints is an alarm that cannot fire — the same silent disarming the
-    // `$.metric` filter patterns caused above.
+    // NO DIMENSIONS on any metric, on purpose. `AWS/SES` publishes Bounce,
+    // Send and Reputation.* at the ACCOUNT level; adding a dimension produces
+    // a metric that never reports a datapoint, and an alarm on a metric with
+    // no datapoints is an alarm that cannot fire — the same silent disarming
+    // the `$.metric` filter patterns caused above.
+    //
+    // The bounce alarm reads the hour's bounce SHARE above a count floor
+    // (`constructs/ses-bounce-alarm.ts`, shared with the us-east-1 alarm in
+    // FrontendStack): one stray bounce stays quiet, a small all-bounce burst
+    // still pages.
     notificationsAlarm(
       'SesBounceCountAlarm',
       'SesBounceCount',
-      'SES reported a bounce in the last hour. Sum, not rate: a handful of sends can bounce 100% '
-        + 'without moving the reputation gauge at all, which is exactly how 6 of 6 bounced sends on '
-        + '2026-08-28 went unnoticed.',
-      new cloudwatch.Metric({
-        namespace: 'AWS/SES',
-        metricName: 'Bounce',
-        period: cdk.Duration.hours(1),
-        statistic: 'Sum',
-      }),
+      `SES reported ${BOUNCE_FLOOR} or more bounces in the last hour, and they were ${BOUNCE_SHARE * 100}% or more `
+        + 'of the hour\'s sends. A share, not the reputation rate: a handful of sends can bounce 100% without '
+        + 'moving the reputation gauge at all, which is exactly how 6 of 6 bounced sends on 2026-08-28 went unnoticed.',
+      sesBounceShareMetric(),
+      BOUNCE_SHARE,
     );
 
     notificationsAlarm(

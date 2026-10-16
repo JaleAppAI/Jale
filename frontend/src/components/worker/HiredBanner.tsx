@@ -3,6 +3,7 @@ import { useLocale, useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { formatStartDateWeekdayShort } from '@/lib/date';
+import { hasHireDetails } from '@/lib/hire-details';
 import { hireTradePhrase, type Translator } from '@/lib/job-detail-display';
 import type { ApplicationHire } from '@/lib/api/worker';
 
@@ -63,7 +64,10 @@ export function HiredBanner({
 
   // Date-only value, so the UTC-pinned formatter: `formatLongDate` here would
   // print the day before for any reader west of Greenwich.
-  const startDate = formatStartDateWeekdayShort(hire.start_date, locale);
+  // The employer's start details, once saved, replace the job's own facts and
+  // the "reach out if nothing arrives" sentence (F19).
+  const details = hasHireDetails(hire.details) ? hire.details : null;
+  const startDate = formatStartDateWeekdayShort(details?.start_date ?? hire.start_date, locale);
 
   /*
    * THE HEADING (option A1) -- the same four-case choice
@@ -119,7 +123,7 @@ export function HiredBanner({
           {compact ? (
             /* The row states the job, the company and the Hired chip already.
                Repeating them under it would read as a second, different hire. */
-            <span className="block">{t('row.body')}</span>
+            <span className="block">{details ? t('row.body_details') : t('row.body')}</span>
           ) : (
             <>
               <span className="block font-bold text-[var(--jale-ink)]">
@@ -134,9 +138,13 @@ export function HiredBanner({
                   "Starts null" and "Starts  ·" are both worse than saying
                   plainly that the employer has not set a date yet. */}
               <span className="block">
-                {startDate
-                  ? t('banner.body_dated', { date: startDate })
-                  : t('banner.body_undated')}
+                {details
+                  ? (startDate
+                    ? t('banner.body_details_dated', { date: startDate })
+                    : t('banner.body_details_undated'))
+                  : (startDate
+                    ? t('banner.body_dated', { date: startDate })
+                    : t('banner.body_undated'))}
               </span>
             </>
           )}

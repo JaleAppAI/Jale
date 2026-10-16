@@ -559,3 +559,35 @@ describe('sprint 27: referred-job copy', () => {
     }
   });
 });
+
+// ── Sprint 28: support mode copy (approved wording, verbatim) ──
+describe('sprint 28: support-mode copy', () => {
+  const entered = 'support_mode_entered' as TemplateKey;
+  const unsupported = 'support_media_unsupported' as TemplateKey;
+
+  it('support_mode_entered says who the worker is talking to and how to go back', () => {
+    expect(t(entered, 'en')).toBe(
+      "You're now chatting with the Jale team. Send your question and any photos here. Type MENU to go back.",
+    );
+    expect(t(entered, 'es')).toBe(
+      'Ahora estás hablando con el equipo de Jale. Envía tu pregunta y fotos aquí. Escribe MENÚ para volver.',
+    );
+  });
+
+  it('support_media_unsupported names the three kinds of file that reach the team', () => {
+    expect(t(unsupported, 'en')).toBe('We can only receive photos, voice notes and PDFs here.');
+    expect(t(unsupported, 'es')).toBe('Aquí solo podemos recibir fotos, notas de voz y archivos PDF.');
+  });
+
+  it.each([entered, unsupported])('%s: the ES slot reads as Spanish and the EN slot as English', (key) => {
+    expectDistinctLanguages(t(key, 'en'), t(key, 'es'));
+  });
+
+  it('points at an exit keyword the support router accepts', () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const flows = require('../../../../../lambda/whatsapp/lib/flows') as Record<string, ((s: string) => boolean) | undefined>;
+    const keyword = (lang: Lang) => t(entered, lang).match(/(?:Type|Escribe) (\S+) /)?.[1] ?? '';
+    expect(flows.isMenuCommand?.(keyword('en'))).toBe(true);
+    expect(flows.isMenuCommand?.(keyword('es'))).toBe(true);
+  });
+});

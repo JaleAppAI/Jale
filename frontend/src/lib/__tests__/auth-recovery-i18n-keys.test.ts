@@ -59,6 +59,8 @@ const ADDED_KEY_PATHS = [
     // auth.employer.errors — resend call-site mapping
     'auth.employer.errors.account_not_confirmed',
     'auth.employer.errors.already_confirmed',
+    // auth.employer.errors — a confirmed account whose email was never verified (F4, sprint 28)
+    'auth.employer.errors.reset_unavailable',
     'auth.employer.errors.resend_limit',
     'auth.employer.errors.code_delivery_failed',
 

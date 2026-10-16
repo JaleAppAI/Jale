@@ -1,5 +1,6 @@
 // Fake for next/server in the admin check scripts: enough of NextResponse
-// for route handlers to build JSON responses and set cookies.
+// for route handlers to build JSON responses and set cookies, and for the
+// proxy to pass a request on (with its forwarded headers) or redirect it.
 export class NextResponse {
   constructor(body, init = {}) {
     this.body = body;
@@ -15,8 +16,12 @@ export class NextResponse {
     return new NextResponse(body, init);
   }
 
-  static next() {
-    return new NextResponse(undefined);
+  // `init.request.headers` are the request headers a proxy forwards to the
+  // page; the fake keeps them on `requestHeaders`.
+  static next(init) {
+    const response = new NextResponse(undefined);
+    response.requestHeaders = init?.request?.headers;
+    return response;
   }
 
   static redirect(url, status = 307) {

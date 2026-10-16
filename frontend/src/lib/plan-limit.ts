@@ -382,3 +382,17 @@ export function subscriptionSignage(
     dismissKey: `jale.signage.free.${billing.planCode}`,
   };
 }
+
+/**
+ * Whether a billing READ shows the account on a working paid plan: the one
+ * state in which `subscriptionSignage` has nothing to say BECAUSE of the plan.
+ *
+ * `null`/`undefined` is not healthy -- it is the dashboard's best-effort read
+ * failing or timing out, which is the absence of an answer. A canceled
+ * subscription is lapsed, not healthy (owner decision D-P1, sprint 28).
+ */
+export function isHealthyPaidPlan(
+  billing: Pick<EmployerBilling, 'planCode' | 'activeJobLimit' | 'templateLimit' | 'subscription'> | null | undefined,
+): boolean {
+  return billing != null && subscriptionSignage(billing) === null;
+}

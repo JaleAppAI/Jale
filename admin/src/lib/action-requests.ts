@@ -1,177 +1,107 @@
-import {
-  getCaseActions,
-  requiresPiiJustification,
-  type AdminActionId,
-} from './action-policy';
-import { buildAdminAuditEvent, type AdminAuditEventDraft, type AdminAuditTargetType } from './audit-contract';
-import type { AdminCaseStatus, AdminCaseType, AdminRole } from './types';
+// Sprint 28 contract K2.7: the body of POST /api/inbox-actions, parsed
+// strictly. Pure on purpose (no server imports), so the rules can be checked
+// without a database. Anything outside the rules is `invalid_input`; the
+// database repeats every check that matters.
+import type { InboxAction } from './server/inbox-actions';
+import { LOCKOUT_RESET_REASONS, type LockoutResetReason } from './lockout-reasons';
+import { REVEAL_REASON_MAX_LENGTH, REVEAL_REASON_MIN_LENGTH } from './report-policy';
+import { FREEFORM_REPLY_MAX_CHARS } from './support-reply';
 
-export type AdminActionRequest = {
-  actionId: AdminActionId;
-  targetType: AdminAuditTargetType;
-  targetId: string;
-  requestId?: string;
-  justification?: string;
-  note?: string;
-};
+export const INBOX_ACTIONS = [
+  'reply',
+  'request_info',
+  'resolve',
+  'reveal_phone',
+  'open_media',
+  'reset_lockout',
+  'open_support_from_lockout',
+] as const satisfies readonly InboxAction['action'][];
 
-export type AdminActionRequestError =
-  | 'invalid_action'
-  | 'invalid_target_type'
-  | 'target_id_required'
-  | 'request_id_required'
-  | 'message_required'
-  | 'pii_justification_required';
+/** A reset note: up to 300 characters, required for the reason "other". */
+export const LOCKOUT_NOTE_MAX_LENGTH = 300;
 
-export type ParseAdminActionRequestResult =
-  | { ok: true; value: AdminActionRequest }
-  | { ok: false; error: AdminActionRequestError };
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const REASON_CODES: ReadonlySet<string> = new Set(LOCKOUT_RESET_REASONS.map((reason) => reason.code));
 
-export type ValidateAdminActionInput = {
-  actor: string;
-  role: AdminRole;
-  request: AdminActionRequest;
-  targetKind: 'case';
-  targetStatus: AdminCaseStatus;
-  targetCaseType: AdminCaseType;
-};
+export type ParsedInboxAction = { ok: true; value: InboxAction } | { ok: false };
 
-export type ValidateAdminActionResult =
-  | {
-      ok: false;
-      status: 403;
-      error: 'forbidden';
-      message: string;
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function uuid(value: unknown): string | null {
+  return typeof value === 'string' && UUID_PATTERN.test(value) ? value.toLowerCase() : null;
+}
+
+/** Trimmed text of `min` to `max` UTF-16 code units, without NUL; null otherwise. */
+function boundedText(value: unknown, min: number, max: number): string | null {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text.length >= min && text.length <= max && !text.includes('\u0000') ? text : null;
+}
+
+export function isInboxActionName(value: unknown): value is InboxAction['action'] {
+  return typeof value === 'string' && (INBOX_ACTIONS as readonly string[]).includes(value);
+}
+
+export function parseInboxAction(input: unknown): ParsedInboxAction {
+  const body = asRecord(input);
+  const action = body?.action;
+  const requestId = uuid(body?.requestId);
+  if (!body || !isInboxActionName(action) || !requestId) {
+    return { ok: false };
+  }
+
+  switch (action) {
+    case 'reply':
+    case 'request_info': {
+      const caseId = uuid(body.caseId);
+      const text = boundedText(body.text, 1, FREEFORM_REPLY_MAX_CHARS);
+      return caseId && text !== null ? { ok: true, value: { action, requestId, caseId, text } } : { ok: false };
     }
-  | {
-      ok: false;
-      status: 409;
-      error: 'action_disabled';
-      message: string;
+    case 'resolve': {
+      const caseId = uuid(body.caseId);
+      return caseId ? { ok: true, value: { action, requestId, caseId } } : { ok: false };
     }
-  | {
-      ok: true;
-      auditEvent: AdminAuditEventDraft;
-    };
-
-const CASE_ACTIONS = new Set<AdminActionId>([
-  'reply_whatsapp',
-  'request_more_info',
-  'resend_outbound',
-  'reveal_pii',
-  'resolve_case',
-]);
-// 'verification' stays an audit target type so historical audit rows render,
-// but new requests may not target it: its actions were retired (roadmap 1b).
-const TARGET_TYPES = new Set<AdminAuditTargetType>(['admin_case', 'whatsapp_outbox']);
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-function stringField(value: unknown): string | undefined {
-  return typeof value === 'string' ? value.trim() || undefined : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
-
-export function parseAdminActionRequest(input: unknown): ParseAdminActionRequestResult {
-  if (!isRecord(input)) {
-    return { ok: false, error: 'invalid_action' };
-  }
-
-  const actionId = stringField(input.actionId) as AdminActionId | undefined;
-  if (!actionId || !CASE_ACTIONS.has(actionId)) {
-    return { ok: false, error: 'invalid_action' };
-  }
-
-  const targetType = stringField(input.targetType) as AdminAuditTargetType | undefined;
-  if (!targetType || !TARGET_TYPES.has(targetType)) {
-    return { ok: false, error: 'invalid_target_type' };
-  }
-
-  const targetId = stringField(input.targetId);
-  if (!targetId) {
-    return { ok: false, error: 'target_id_required' };
-  }
-
-  const justification = stringField(input.justification);
-  const note = stringField(input.note);
-  const requestId = stringField(input.requestId);
-  if (actionId === 'reply_whatsapp' && (!note || note.length > 1000)) {
-    return { ok: false, error: 'message_required' };
-  }
-  if (actionId === 'reply_whatsapp' && (!requestId || !UUID_PATTERN.test(requestId))) {
-    return { ok: false, error: 'request_id_required' };
-  }
-
-  if (requiresPiiJustification(actionId) && (!justification || justification.length < 20)) {
-    return { ok: false, error: 'pii_justification_required' };
-  }
-
-  return {
-    ok: true,
-    value: {
-      actionId,
-      targetType,
-      targetId,
-      requestId,
-      justification,
-      note,
-    },
-  };
-}
-
-export function formDataToAdminActionRequest(formData: FormData): ParseAdminActionRequestResult {
-  return parseAdminActionRequest({
-    actionId: formData.get('actionId'),
-    targetType: formData.get('targetType'),
-    targetId: formData.get('targetId'),
-    requestId: formData.get('requestId'),
-    justification: formData.get('justification'),
-    note: formData.get('note'),
-  });
-}
-
-export function validateAdminAction(input: ValidateAdminActionInput): ValidateAdminActionResult {
-  const availableActions = getCaseActions({ status: input.targetStatus, type: input.targetCaseType }, input.role);
-  const matchingAction = availableActions.find((action) => action.id === input.request.actionId);
-
-  if (!matchingAction) {
-    return {
-      ok: false,
-      status: 409,
-      error: 'action_disabled',
-      message: 'Action is not available for this target state.',
-    };
-  }
-
-  if (matchingAction.disabled) {
-    if (matchingAction.reason?.startsWith('Requires')) {
+    case 'reveal_phone': {
+      const caseId = uuid(body.caseId);
+      const justification = boundedText(body.justification, REVEAL_REASON_MIN_LENGTH, REVEAL_REASON_MAX_LENGTH);
+      return caseId && justification !== null
+        ? { ok: true, value: { action, requestId, caseId, justification } }
+        : { ok: false };
+    }
+    case 'open_media': {
+      const caseId = uuid(body.caseId);
+      const mediaId = uuid(body.mediaId);
+      return caseId && mediaId ? { ok: true, value: { action, requestId, caseId, mediaId } } : { ok: false };
+    }
+    case 'reset_lockout': {
+      const challengeId = uuid(body.challengeId);
+      const reasonCode = body.reasonCode;
+      if (!challengeId || typeof reasonCode !== 'string' || !REASON_CODES.has(reasonCode)) {
+        return { ok: false };
+      }
+      let note: string | undefined;
+      if (body.note !== undefined && body.note !== null) {
+        if (typeof body.note !== 'string') return { ok: false };
+        const trimmed = body.note.trim();
+        if (trimmed !== '') {
+          const bounded = boundedText(trimmed, 1, LOCKOUT_NOTE_MAX_LENGTH);
+          if (bounded === null) return { ok: false };
+          note = bounded;
+        }
+      }
+      if (reasonCode === 'other' && note === undefined) {
+        return { ok: false };
+      }
       return {
-        ok: false,
-        status: 403,
-        error: 'forbidden',
-        message: matchingAction.reason,
+        ok: true,
+        value: { action, requestId, challengeId, reasonCode: reasonCode as LockoutResetReason, ...(note !== undefined ? { note } : {}) },
       };
     }
-
-    return {
-      ok: false,
-      status: 409,
-      error: 'action_disabled',
-      message: matchingAction.reason ?? 'Action is disabled for this target.',
-    };
+    case 'open_support_from_lockout': {
+      const challengeId = uuid(body.challengeId);
+      return challengeId ? { ok: true, value: { action, requestId, challengeId } } : { ok: false };
+    }
   }
-
-  return {
-    ok: true,
-    auditEvent: buildAdminAuditEvent({
-      actor: input.actor,
-      actionId: input.request.actionId,
-      targetType: input.request.targetType,
-      targetId: input.request.targetId,
-      justification: input.request.justification,
-      note: input.request.note,
-    }),
-  };
 }

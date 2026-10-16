@@ -1,4 +1,6 @@
-import { bucketLabel, formatCount, sum } from './analytics-format';
+import type { ChartColor, ChartSeries } from '../components/analytics/charts/types';
+import { bucketLabel, formatCount, oldestFirst, shareRate, sum, weekLabel, weeklyAxis, wholePercent } from './analytics-format';
+import type { CaseAgeBucket, CaseResolutionWeek, DlqDepth, RankingFreshness, ResetReasonCount } from './server/admin-analytics';
 import type {
   BillingInboxFigures,
   BillingInboxNow,
@@ -24,16 +26,9 @@ function hasWeek<T extends { weekStart: string | null }>(row: T): row is T & { w
   return row.weekStart !== null;
 }
 
-// A whole-percent share that never rounds a fact away: some but not all of
-// the whole reads "<1%" or ">99%", never "0%" or "100%". Nothing to divide
-// by is a dash.
-export function wholePercent(part: number, whole: number): string {
-  if (whole <= 0) return '—';
-  const share = Math.round((part * 100) / whole);
-  if (share === 0 && part > 0) return '<1%';
-  if (share === 100 && part < whole) return '>99%';
-  return `${share}%`;
-}
+// The never-rounds-a-fact-away share moved to analytics-format (FunnelChart
+// uses it); it stays exported here for its callers.
+export { wholePercent };
 
 // ---- Lanes ------------------------------------------------------------------
 // The SQL lane ids in display order, the page's labels, and each lane's retry
@@ -526,4 +521,131 @@ export function billingLiveLine(inbox: BillingInboxNow, now: Date = new Date()):
 // The weeks picker stays on the Ops tab.
 export function opsHref(weeks: FunnelWeeks): string {
   return `/analytics/ops?weeks=${weeks}`;
+}
+
+// ---- S28 FE-4: the Ops health tab (K3.3 shapes) --------------------------------
+// The six message lanes keep one chart token each, in LANES order.
+export const LANE_CHART_COLORS: Record<MessageLane, ChartColor> = {
+  reply: 'chart-1',
+  admin: 'chart-2',
+  worker_notification: 'chart-3',
+  employer_invite: 'chart-4',
+  employer_freeform: 'chart-5',
+  job_alert: 'chart-6',
+};
+
+// Failure rate per lane per week: one small-multiple row per lane.
+export function failureChart(split: MessageFailuresSplit, now: Date = new Date()): { labels: string[]; partialLast: boolean; series: ChartSeries[] } {
+  const last = split.weeks.at(-1);
+  return {
+    labels: split.weeks.map(weekLabel),
+    partialLast: last !== undefined && isCurrentWeek(last, now),
+    series: split.lanes.map((lane) => ({
+      key: lane.lane,
+      label: lane.label,
+      color: LANE_CHART_COLORS[lane.lane],
+      values: lane.weekly.map(failureRate),
+    })),
+  };
+}
+
+// #6: open cases by how long they have waited, in the K3 bucket order.
+export const CASE_AGE_BUCKETS: readonly { label: CaseAgeBucket['label']; text: string }[] = [
+  { label: '<1h', text: 'Under 1 hour' },
+  { label: '1–4h', text: '1 to 4 hours' },
+  { label: '4–24h', text: '4 to 24 hours' },
+  { label: '1–3d', text: '1 to 3 days' },
+  { label: '>3d', text: 'Over 3 days' },
+];
+
+export function caseAgeChart(buckets: CaseAgeBucket[]): { labels: string[]; series: ChartSeries[]; total: number } {
+  const find = (label: CaseAgeBucket['label']) => buckets.find((b) => b.label === label);
+  const us = CASE_AGE_BUCKETS.map((b) => find(b.label)?.waitingOnUs ?? 0);
+  const worker = CASE_AGE_BUCKETS.map((b) => find(b.label)?.waitingOnWorker ?? 0);
+  return {
+    labels: CASE_AGE_BUCKETS.map((b) => b.text),
+    series: [
+      { key: 'waitingOnUs', label: 'Waiting on us', color: 'chart-1', values: us },
+      { key: 'waitingOnWorker', label: 'Waiting on the worker', color: 'chart-2', values: worker },
+    ],
+    total: [...us, ...worker].reduce((a, b) => a + b, 0),
+  };
+}
+
+// #6: hours from opening to resolving, median and 75th percentile, per week.
+export function resolutionChart(weeks: CaseResolutionWeek[]): { labels: string[]; partialLast: boolean; series: ChartSeries[]; resolved: number[] } {
+  const sorted = oldestFirst(weeks);
+  return {
+    ...weeklyAxis(sorted),
+    series: [
+      { key: 'median', label: 'Median', color: 'chart-1', values: sorted.map((w) => w.medianHours) },
+      { key: 'p75', label: '75% resolved within', color: 'chart-2', values: sorted.map((w) => w.p75Hours) },
+    ],
+    resolved: sorted.map((w) => w.resolved),
+  };
+}
+
+// #5: reasons, most resets first (ties by label); each value "11 · 55%".
+export function resetReasonChart(rows: ResetReasonCount[]): { labels: string[]; values: number[]; total: number } {
+  const sorted = [...rows].sort((a, b) => b.count - a.count || (a.reasonLabel < b.reasonLabel ? -1 : a.reasonLabel > b.reasonLabel ? 1 : 0));
+  return {
+    labels: sorted.map((row) => row.reasonLabel),
+    values: sorted.map((row) => row.count),
+    total: sorted.reduce((sum, row) => sum + row.count, 0),
+  };
+}
+
+export function resetValueText(total: number): (v: number) => string {
+  return (v) => `${formatCount(v)} · ${wholePercent(v, total)}`;
+}
+
+// #10: usable voice notes as a share of attempts, per week.
+export function extractionChart(voice: VoiceSplit, now: Date = new Date()): { labels: string[]; partialLast: boolean; values: (number | null)[]; yMin: number } {
+  const last = voice.weekly.at(-1);
+  const values = voice.weekly.map((w) => shareRate(w.usable, w.processed));
+  return {
+    labels: voice.weekly.map((w) => weekLabel(w.weekStart)),
+    partialLast: last !== undefined && isCurrentWeek(last.weekStart, now),
+    values,
+    yMin: extractionAxisMin(values),
+  };
+}
+
+// #10 may start its axis at 80% only when every week is at or above it (the
+// panel then says so in its caption).
+export function extractionAxisMin(values: (number | null)[]): number {
+  const present = values.filter((v): v is number => v !== null);
+  return present.length > 0 && present.every((v) => v >= 80) ? 80 : 0;
+}
+
+export type PipelineTile = { value: string; hint: string };
+
+// #9: billing webhooks that failed among the events received in the last 24 hours (K3.1), plus the dead-lettered events of the last 14 days.
+export function billingTile(inbox: BillingInboxNow): PipelineTile {
+  return {
+    value: formatCount(inbox.failedLast24h),
+    hint: `${formatCount(inbox.unresolvedOlder)} dead-lettered in the last 14 days`,
+  };
+}
+
+// #11: messages waiting now · dead-lettered. A dead-letter queue that cannot
+// be read never fails the page and never reads as zero.
+export function queueTile(backlog: MessageBacklogLane[], dlq: DlqDepth): PipelineTile {
+  const unreadable = dlq.queues.filter((q) => q.unavailable).map((q) => q.label);
+  const dead = dlq.totalVisible === null ? '—' : formatCount(dlq.totalVisible);
+  const hint =
+    dlq.totalVisible === null
+      ? "Dead-letter queues: Couldn't read right now"
+      : unreadable.length > 0
+        ? `Couldn't read right now: ${unreadable.join(', ')}`
+        : `${formatCount(dlq.queues.length)} dead-letter ${dlq.queues.length === 1 ? 'queue' : 'queues'} checked`;
+  return { value: `${formatCount(openMessages(backlog))} · ${dead}`, hint };
+}
+
+// #19: jobs whose candidate ranking is older than 24 hours.
+export function rankingTile(f: RankingFreshness): PipelineTile {
+  return {
+    value: `${formatCount(f.jobsOlderThan24h)} ${f.jobsOlderThan24h === 1 ? 'job' : 'jobs'}`,
+    hint: `of ${formatCount(f.rankedJobs)} ranked · ${wholePercent(f.fallbackJobs, f.rankedJobs)} by the fallback · ${formatCount(f.jobsWithApplicationsButNoRanking)} with applicants but no ranking`,
+  };
 }

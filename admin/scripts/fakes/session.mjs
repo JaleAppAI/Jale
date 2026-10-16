@@ -11,3 +11,14 @@ export async function requireAdminSession() {
   }
   return session;
 }
+
+// The K1.3 helpers the API routes use: the state names whether the request
+// carried a session cookie (globalThis.__adminCheck.hadCookie).
+export async function getAdminSessionState() {
+  const session = await getCurrentAdminSession();
+  return { session, hadCookie: Boolean(globalThis.__adminCheck?.hadCookie) };
+}
+
+export function adminApiUnauthorized(state) {
+  return Response.json({ error: state.hadCookie ? 'session_expired' : 'unauthorized' }, { status: 401 });
+}

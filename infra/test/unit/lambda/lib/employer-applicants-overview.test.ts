@@ -92,4 +92,26 @@ describe('listEmployerApplicantsOverview', () => {
     const overview = await listEmployerApplicantsOverview(client, EMPLOYER);
     expect(overview.applicants[0].trust_score).toBeNull();
   });
+
+  // F19 (K4.2): the overview row carries the same hire details and prompt
+  // flag as the per-job list, from the same builder.
+  it('publishes hire_details and hire_details_needed, and strips the raw hire columns', async () => {
+    mockQuery.mockResolvedValueOnce(rowsResult([
+      baseRow({ application_id: 'hired-with', application_status: 'hired', hire_start_date: null, hire_report_location: null,
+        hire_contact_name: 'Site lead', hire_contact_phone: '+1 555 0100', hire_notes: null,
+        hire_details_updated_at: new Date('2026-10-14T12:00:00.000Z') }),
+      baseRow({ application_id: 'hired-without', application_status: 'hired' }),
+      baseRow({ application_id: 'pending', application_status: 'pending' }),
+    ]));
+    const { applicants } = await listEmployerApplicantsOverview(client, EMPLOYER);
+    expect(applicants.map((a: any) => [a.application_id, a.hire_details, a.hire_details_needed])).toEqual([
+      ['hired-with', { start_date: null, report_location: null, contact_name: 'Site lead', contact_phone: '+1 555 0100',
+        notes: null, updated_at: '2026-10-14T12:00:00.000Z' }, false],
+      ['hired-without', null, true],
+      ['pending', null, false],
+    ]);
+    expect(Object.prototype.hasOwnProperty.call(applicants[0], 'hire_contact_name')).toBe(false);
+    const [sql] = mockQuery.mock.calls[0];
+    expect(sql).toContain("to_char(ja.hire_start_date, 'YYYY-MM-DD') AS hire_start_date");
+  });
 });

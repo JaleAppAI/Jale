@@ -41,6 +41,136 @@ program.emit(undefined, (fileName, data) => {
 
 const sessionStore = await import(pathToFileURL(resolve(outDir, 'admin-session-store.mjs')));
 
+// --- T4: idle hour, eight-hour day, and a throttled touch ------------------
+// The fake evaluates the resolve's expressions from the parameters the store
+// sends, the way the SELECT above computes them, so these checks follow the
+// store's clock; the SQL text itself is pinned above.
+{
+  const HOUR = 60 * 60 * 1000;
+  const signedInAt = new Date('2026-06-15T08:00:00.000Z');
+  const at = (ms) => new Date(signedInAt.getTime() + ms);
+
+  function clockedDb(row) {
+    const seen = [];
+    return {
+      seen,
+      row,
+      async query(sql, params = []) {
+        const text = sql.replace(/\s+/g, ' ').trim();
+        seen.push({ sql: text, params });
+        if (text.includes('FROM admin_sessions s')) {
+          const [, now, idleFloor, dayFloor, touchFloor] = params;
+          const active = row.expires_at > now
+            && (idleFloor === undefined || row.last_seen_at > idleFloor)
+            && (dayFloor === undefined || row.created_at > dayFloor);
+          return {
+            rows: [{
+              session_id: 'session-id',
+              admin_user_id: 'admin-id',
+              cognito_sub: 'admin-sub',
+              admin_email: 'ops@jaleapp.ai',
+              role: 'admin_ops',
+              expires_at: row.expires_at,
+              active,
+              ...(touchFloor === undefined ? {} : { needs_touch: row.last_seen_at <= touchFloor }),
+            }],
+          };
+        }
+        if (text.startsWith('UPDATE admin_sessions SET last_seen_at')) {
+          const [, now, idleEnd, maxSeconds] = params;
+          const dayEnd = new Date(row.created_at.getTime() + maxSeconds * 1000);
+          row.last_seen_at = now;
+          row.expires_at = idleEnd < dayEnd ? idleEnd : dayEnd;
+          return { rows: [{ expires_at: row.expires_at }] };
+        }
+        if (text.startsWith("UPDATE admin_sessions SET revoked_at = NOW(), revoke_reason = 'expired'")) {
+          return { rows: [{ id: 'session-id' }] };
+        }
+        return { rows: [] };
+      },
+    };
+  }
+
+  const resolveAt = async (db, when, reports = []) => new sessionStore.AdminSessionStore(db, {
+    now: () => when,
+    onExpired: async (expired) => { reports.push(expired); },
+  }).resolve('raw-session-token');
+  const touches = (db) => db.seen.filter((call) => call.sql.startsWith('UPDATE admin_sessions SET last_seen_at'));
+  const expiries = (db) => db.seen.filter((call) => call.sql.includes("revoke_reason = 'expired'"));
+
+  // Idle: an hour with no request ends the session even though its stored
+  // expiry (here moved later by hand) has not passed.
+  {
+    const db = clockedDb({ created_at: signedInAt, last_seen_at: signedInAt, expires_at: at(3 * HOUR) });
+    const reports = [];
+    assert.equal(await resolveAt(db, at(HOUR), reports), undefined, 'an idle hour ends the session');
+    assert.equal(expiries(db).length, 1, 'the idle expiry is recorded once');
+    assert.equal(reports.length, 1);
+    assert.equal(touches(db).length, 0, 'an ended session is never touched');
+  }
+
+  // Absolute: eight hours after sign-in the session ends, however recently
+  // it was used and whatever its stored expiry says.
+  {
+    const db = clockedDb({ created_at: signedInAt, last_seen_at: at(8 * HOUR - 30_000), expires_at: at(9 * HOUR) });
+    assert.equal(await resolveAt(db, at(8 * HOUR)), undefined, 'the eight-hour day ends the session');
+    assert.equal(expiries(db).length, 1);
+  }
+
+  // A request keeps a session alive: each touch moves the idle hour, and
+  // touches carry it across the first hour.
+  {
+    const db = clockedDb({ created_at: signedInAt, last_seen_at: signedInAt, expires_at: at(HOUR) });
+    for (const minute of [50, 100, 150, 200]) {
+      assert.ok(await resolveAt(db, at(minute * 60_000)), `still signed in at minute ${minute}`);
+    }
+    assert.equal(touches(db).length, 4, 'one touch per request more than a minute apart');
+    assert.deepEqual(db.row.last_seen_at, at(200 * 60_000));
+    assert.deepEqual(db.row.expires_at, at(260 * 60_000), 'the idle hour runs from the last request');
+  }
+
+  // Throttle: no write within a minute of the last touch; one at a minute.
+  {
+    const db = clockedDb({ created_at: signedInAt, last_seen_at: at(HOUR), expires_at: at(2 * HOUR) });
+    assert.ok(await resolveAt(db, at(HOUR + 30_000)));
+    assert.ok(await resolveAt(db, at(HOUR + 59_999)));
+    assert.equal(touches(db).length, 0, 'no write within a minute');
+    assert.ok(await resolveAt(db, at(HOUR + 60_000)));
+    assert.equal(touches(db).length, 1, 'a write once a minute has passed');
+    const [touch] = touches(db);
+    assert.equal(
+      touch.sql,
+      'UPDATE admin_sessions SET last_seen_at = $2, expires_at = LEAST($3::timestamptz, created_at + make_interval(secs => $4)) WHERE id = $1 AND revoked_at IS NULL RETURNING expires_at',
+    );
+    assert.deepEqual(touch.params, ['session-id', at(HOUR + 60_000), at(2 * HOUR + 60_000), 8 * 60 * 60]);
+  }
+
+  // The touch never moves the expiry past the eight-hour day.
+  {
+    const db = clockedDb({ created_at: signedInAt, last_seen_at: at(7 * HOUR + 20 * 60_000), expires_at: at(8 * HOUR) });
+    const late = await resolveAt(db, at(7 * HOUR + 30 * 60_000));
+    assert.ok(late);
+    assert.deepEqual(db.row.expires_at, at(8 * HOUR), 'expires_at = LEAST(now + idle, sign-in + 8h)');
+    assert.deepEqual(late.expiresAt, at(8 * HOUR));
+  }
+
+  // A touch that fails leaves the session as it was: the request goes on.
+  {
+    const db = clockedDb({ created_at: signedInAt, last_seen_at: signedInAt, expires_at: at(HOUR) });
+    const failing = {
+      async query(sql, params) {
+        if (sql.replace(/\s+/g, ' ').trim().startsWith('UPDATE admin_sessions SET last_seen_at')) {
+          throw new Error('write failed');
+        }
+        return db.query(sql, params);
+      },
+    };
+    const still = await resolveAt(failing, at(30 * 60_000));
+    assert.ok(still, 'a failed touch never ends the session');
+    assert.deepEqual(still.expiresAt, at(HOUR));
+  }
+}
+
 const calls = [];
 const db = {
   async query(sql, params = []) {
@@ -91,8 +221,10 @@ const created = await store.create({
 assert.equal(created.rawToken, 'raw-session-token');
 assert.equal(calls[0].params.includes('raw-session-token'), false, 'raw session token must never be stored');
 assert.equal(calls[0].params[0], sessionStore.hashAdminSessionToken('raw-session-token'));
-// A session lasts one hour from sign-in, and the store says so to the cookie.
-assert.equal(sessionStore.ADMIN_SESSION_TTL_SECONDS, 60 * 60);
+// A session ends after an hour without a request, and eight hours after
+// sign-in at the latest. A new one starts with the idle hour.
+assert.equal(sessionStore.ADMIN_SESSION_IDLE_SECONDS, 60 * 60);
+assert.equal(sessionStore.ADMIN_SESSION_MAX_SECONDS, 8 * 60 * 60);
 assert.deepEqual(calls[0].params[2], new Date('2026-06-15T18:00:00.000Z'));
 
 const resolved = await store.resolve('raw-session-token');
@@ -108,9 +240,20 @@ assert.deepEqual(resolved, {
 assert.match(calls[1].sql, /u\.active = true/);
 assert.match(calls[1].sql, /s\.revoked_at IS NULL/);
 // Expiry is computed, not filtered: an expired session must be seen so that
-// exactly one resolve can mark it and record the expiry.
-assert.match(calls[1].sql, /s\.expires_at > \$2 AS active/);
-assert.doesNotMatch(calls[1].sql.slice(calls[1].sql.indexOf('WHERE')), /expires_at/);
+// exactly one resolve can mark it and record the expiry. It ends at its
+// stored expiry, after an idle hour, or eight hours after sign-in.
+assert.match(
+  calls[1].sql.replace(/\s+/g, ' '),
+  /\(s\.expires_at > \$2 AND s\.last_seen_at > \$3 AND s\.created_at > \$4\) AS active, s\.last_seen_at <= \$5 AS needs_touch/,
+);
+assert.doesNotMatch(calls[1].sql.slice(calls[1].sql.indexOf('WHERE')), /expires_at|last_seen_at|created_at/);
+assert.deepEqual(calls[1].params, [
+  sessionStore.hashAdminSessionToken('raw-session-token'),
+  new Date('2026-06-15T17:00:00.000Z'),
+  new Date('2026-06-15T16:00:00.000Z'),
+  new Date('2026-06-15T09:00:00.000Z'),
+  new Date('2026-06-15T16:59:00.000Z'),
+]);
 
 // Sign-out ends a session that has not ended yet, says whose it was, and
 // whether it was still live. One conditional UPDATE decides how it ended, on

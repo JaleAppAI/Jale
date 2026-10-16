@@ -21,12 +21,41 @@ const securityHeaders = [
   },
 ];
 
+// Old admin URLs land on the new pages, query kept: Next merges the request
+// query into the destination's, and the destination's own keys win. Temporary
+// (307) while the console settles; a 308 would be cached by browsers.
+// Report ids are UUIDs, so the pattern keeps /reports/settings out of the
+// /reports/:id rule; that page stays where it is.
+// The old report `status` is renamed to `reportStatus` (K2.3: the Inbox's own
+// `status` is a different filter). Next cannot drop a request key, so the old
+// `status` is still on the landed URL; the Reports tab ignores it once
+// `reportStatus` is set.
+const OLD_URL_REDIRECTS = [
+  { source: '/cases', destination: '/inbox?tab=support', permanent: false },
+  { source: '/cases/:id', destination: '/inbox/support/:id', permanent: false },
+  {
+    source: '/reports',
+    has: [{ type: 'query', key: 'status', value: '(?<reportStatus>.+)' }],
+    destination: '/inbox?tab=reports&reportStatus=:reportStatus',
+    permanent: false,
+  },
+  { source: '/reports', destination: '/inbox?tab=reports', permanent: false },
+  { source: '/reports/:id([0-9a-f-]{36})', destination: '/inbox/reports/:id', permanent: false },
+  { source: '/verifications', destination: '/inbox?tab=lockouts', permanent: false },
+  { source: '/verifications/:id', destination: '/inbox/lockouts/:id', permanent: false },
+  { source: '/access-history', destination: '/security', permanent: false },
+  { source: '/audit', destination: '/security', permanent: false },
+];
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: 'standalone',
   reactStrictMode: true,
   async headers() {
     return [{ source: '/:path*', headers: securityHeaders }];
+  },
+  async redirects() {
+    return OLD_URL_REDIRECTS.map((rule) => ({ ...rule }));
   },
   images: {
     unoptimized: true,

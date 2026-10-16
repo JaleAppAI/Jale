@@ -74,10 +74,16 @@
  * ── THE 24-HOUR WINDOW ───────────────────────────────────────────────
  * A free-form WhatsApp body is only deliverable inside Meta's 24-hour
  * customer-service window, which is opened by an INBOUND message. Outside
- * it Twilio answers 63016, and because this send carries no content
+ * it Twilio answers 63016, and because a free-form send carries no content
  * template, `isTemplatePendingRejection` (whatsapp/lib/outbox.ts) is false
  * for it -- the row would land in `recordFailure` as an ordinary `failed`
- * and burn its five attempts. So the window is checked before enqueueing.
+ * and burn its five attempts. So the window is checked before enqueueing:
+ * inside it the line goes out free-form; outside it (sprint 28, F28) the
+ * same words go as the `application_web_completed_<lang>` TEMPLATE. Both
+ * name the job's trade and link the application. Until that template's
+ * ContentSid is mapped the sender falls back to its `__fallback_body`,
+ * Twilio refuses it, and `isTemplatePendingRejection` -- which matches the
+ * `application_` prefix -- parks the row rather than failing it.
  *
  * `whatsapp_conversations.updated_at` is NOT the signal. Its
  * `wa_conversations_updated_at` trigger fires on every write, including the
@@ -100,6 +106,7 @@
 import type { PoolClient } from 'pg';
 
 import { FILL_SCRUB_KEYS } from '../whatsapp/lib/application-fill';
+import { workerApplicationUrl } from '../whatsapp/lib/worker-application-url';
 import { PROMPT_LANE_SCRUB_KEYS } from '../whatsapp/lib/application-prompts';
 import {
   enqueueWorkerMessage,
@@ -111,8 +118,10 @@ import type {
 } from '../whatsapp/lib/onboarding-types';
 import {
   WEB_COMPLETION_SOURCE_TYPE,
+  WEB_COMPLETION_TEMPLATE_SHAPE,
   buildWebCompletionBody,
   buildWebCompletionPayloadMessage,
+  webCompletionTradeLabel,
 } from './application-web-completion-copy';
 
 /**
@@ -147,19 +156,36 @@ export const LANE_SEND_SAVEPOINT = 'whatsapp_lane_release_send';
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /**
- * Meta's window, and therefore this intent's whole lifetime. Measured from
- * `last_inbound_at`, NOT from now: `evaluateDelivery` DEFERS an intent whose
- * worker is mid-onboarding or whose `deferred_delivery_enabled` control is
- * off, and a deferred intent is not materialized until the worker-ready
- * release picks it up (`outbox_id IS NULL`, whatsapp/worker-ready-release.ts).
- * A 24-hours-from-now expiry on a window that opened 23 hours ago would let
- * that path send a free-form body ~47 hours after the last inbound -- a
- * Twilio 63016 which, because `content_template` is null, is NOT the 093
- * defer branch but an ordinary `recordFailure` burning five attempts and
- * emitting WorkerIntentOutboxFailure. Anchoring the expiry to the inbound
- * instant makes the window guard itself, by construction.
+ * The free-form line's lifetime: Meta's window, measured from
+ * `last_inbound_at`, NOT from now, so the intent's `expires_at` is the
+ * instant the window closes. Three places refuse to send past it: the
+ * enqueue itself and the worker-ready release (a DEFERRED intent, materialized
+ * later by whatsapp/worker-ready-release.ts) through `evaluateDelivery`, and
+ * the drain, whose lease skips an outbox row whose intent has expired and
+ * whose expiry pass (`expire_worker_intent_outbox`, migration 126) ends it
+ * unsent. A 24-hours-from-now expiry on a window that opened 23 hours ago
+ * would let any of them send the body after the window closed, where Twilio
+ * refuses it (63016).
  */
 const CLOSING_LINE_EXPIRY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The TEMPLATE shape's lifetime (sprint 28, F28), measured from now: a
+ * template is deliverable whatever the window, so the lapsed inbound clock
+ * says nothing about it. 48 hours: a courtesy line older than that is not
+ * worth sending (the same span 093 gives an `application_*` row parked while
+ * its template awaits approval, though 093 counts from the outbox row's
+ * creation). Enforced like the free-form line's: at enqueue, at release and
+ * by the drain (migration 126).
+ */
+const CLOSING_TEMPLATE_EXPIRY_MS = 48 * 60 * 60 * 1000;
+
+/** `$1` = the application id, `$2` = the caller-proven worker id. */
+const JOB_TRADE_READ_SQL = `SELECT j.title, j.trade_category, j.trade_category_other
+       FROM job_applications ja
+       JOIN jobs j ON j.id = ja.job_id
+      WHERE ja.id = $1
+        AND ja.worker_id = $2`;
 
 /** `timestamptz` arrives as a Date from `pg`, but tolerate a string. */
 function toMillis(value: Date | string | null): number | null {
@@ -212,6 +238,34 @@ export interface ReleaseWhatsAppLanesInput {
 export interface ReleasePromptLaneInput {
   workerId: string;
   applicationId: string;
+}
+
+/** The fill-lane release takes the same two ids as the prompt-lane one. */
+export type ReleaseFillLaneInput = ReleasePromptLaneInput;
+
+/** Which release ran, for the log line and the failure metrics. */
+type LaneName = 'all' | 'prompt' | 'fill';
+
+/**
+ * The marker `releaseFillLaneForApplication` leaves on a conversation row
+ * (sprint 28, F29): the WEB took this application over from the bot on its
+ * first write. The bot never reads it -- every one of its readers gates on
+ * its OWN keys (`fill_application_id`, `prompt_application_id`, ...) being a
+ * string -- so it arms nothing. Its one reader is the completion release
+ * below: the arm keys are gone by the time the web finishes, and without
+ * this the finished application would no longer be tied to the conversation
+ * it started on, so the closing line would never be sent. The completion
+ * release removes it.
+ *
+ * ONE KEY PER APPLICATION (`released_to_web:<application id>`, value true): a
+ * worker can hand two applications to the web from the same conversation,
+ * and each must keep its own marker until its own completion.
+ */
+export const RELEASED_TO_WEB_KEY_PREFIX = 'released_to_web:';
+
+/** The marker key for one application. */
+export function releasedToWebKey(applicationId: string): string {
+  return `${RELEASED_TO_WEB_KEY_PREFIX}${applicationId}`;
 }
 
 export interface LaneReleaseResult {
@@ -323,9 +377,24 @@ const FULL_ARM_READ_SQL = `SELECT ${ARM_READ_COLUMNS}
       ORDER BY c.updated_at DESC`;
 
 /**
- * The prompt lane ALONE. A worker who answered the last pre-application
- * prompt on the web has not necessarily finished the details-stage fill, so
- * this must not match -- or clear -- a fill arm.
+ * The completion release's read: every live arm, plus a conversation whose
+ * arm the first web write already released (this application's
+ * `releasedToWebKey`).
+ */
+const COMPLETION_ARM_READ_SQL = `SELECT ${ARM_READ_COLUMNS}
+       FROM whatsapp_conversations c
+       ${ARM_READ_INBOUND_JOIN}
+      WHERE c.user_id = $1
+        AND (   c.state_context->>'fill_application_id'       = $2
+             OR c.state_context->>'fill_offer_application_id' = $2
+             OR c.state_context->>'prompt_application_id'     = $2
+             OR c.state_context ? ('${RELEASED_TO_WEB_KEY_PREFIX}' || $2))
+      ORDER BY c.updated_at DESC`;
+
+/**
+ * The prompt lane ALONE. A worker who answered a pre-application prompt on
+ * the web has not necessarily finished the details-stage fill, so this must
+ * not match -- or clear -- a fill arm.
  */
 const PROMPT_ARM_READ_SQL = `SELECT ${ARM_READ_COLUMNS}
        FROM whatsapp_conversations c
@@ -350,6 +419,44 @@ const SCRUB_SQL = `UPDATE whatsapp_conversations
         SET state_context = COALESCE(state_context, '{}'::jsonb) - $3::text[]
       WHERE id = ANY($1::uuid[])
         AND user_id = $2`;
+
+/**
+ * `SCRUB_SQL`, then the marker for `$4` (the application id). Any other
+ * application's marker on the row is left as it is.
+ */
+const SCRUB_AND_MARK_SQL = `UPDATE whatsapp_conversations
+        SET state_context = (COALESCE(state_context, '{}'::jsonb) - $3::text[])
+                            || jsonb_build_object('${RELEASED_TO_WEB_KEY_PREFIX}' || $4::text, true)
+      WHERE id = ANY($1::uuid[])
+        AND user_id = $2`;
+
+/**
+ * The completion release's scrub, for `$4` (the application id). A row can
+ * be matched by this application's marker alone while the bot is collecting
+ * ANOTHER application on it (the worker went back to WhatsApp and started
+ * one), so the bot's keys `$3` are removed only from a row whose live arm
+ * names this application. This application's marker is removed either way;
+ * any other application's marker stays.
+ */
+const COMPLETION_SCRUB_SQL = `UPDATE whatsapp_conversations
+        SET state_context = (CASE
+              WHEN state_context->>'fill_application_id'       = $4::text
+                OR state_context->>'fill_offer_application_id' = $4::text
+                OR state_context->>'prompt_application_id'     = $4::text
+              THEN COALESCE(state_context, '{}'::jsonb) - $3::text[]
+              ELSE COALESCE(state_context, '{}'::jsonb)
+            END) - ('${RELEASED_TO_WEB_KEY_PREFIX}' || $4::text)
+      WHERE id = ANY($1::uuid[])
+        AND user_id = $2`;
+
+/** How a release clears the rows it read. */
+type ScrubMode =
+  /** Remove the keys (the prompt-lane release). */
+  | 'plain'
+  /** Remove the keys and leave this application's marker (the first web write). */
+  | 'mark'
+  /** Remove the keys where the arm is this application's, and its marker (completion). */
+  | 'completion';
 
 function normalizeLang(
   raw: string | null | undefined,
@@ -381,15 +488,59 @@ async function sendClosingLine(
   opts: {
     workerId: string;
     applicationId: string;
-    lane: 'all' | 'prompt';
+    lane: LaneName;
     conversationId: string;
     lang: PreferredLanguage;
     jobTitle: string | null;
     lastInboundMs: number | null;
+    /** Inside Meta's 24h window: the free-form line. Outside it: the template. */
+    withinWindow: boolean;
   },
 ): Promise<boolean> {
   await client.query(`SAVEPOINT ${LANE_SEND_SAVEPOINT}`);
   try {
+    // One message inside or outside the window (sprint 28, F28): it names
+    // the job's trade and links the application either way. The job is read
+    // here, scoped to the worker the caller proved.
+    const job = await client.query<{
+      title: string | null; trade_category: string | null; trade_category_other: string | null;
+    }>(JOB_TRADE_READ_SQL, [opts.applicationId, opts.workerId]);
+    const row = job.rows[0];
+    const trade = row
+      ? webCompletionTradeLabel(opts.lang, {
+          tradeCategory: row.trade_category,
+          tradeCategoryOther: row.trade_category_other,
+          title: row.title,
+        })
+      : null;
+    if (trade === null) {
+      // Nothing to name the job by: no line, rather than one with a blank
+      // where the trade goes.
+      await client.query(`RELEASE SAVEPOINT ${LANE_SEND_SAVEPOINT}`);
+      return false;
+    }
+    let payload: Record<string, unknown> = {
+      kind: WEB_COMPLETION_SOURCE_TYPE,
+      applicationId: opts.applicationId,
+      conversationId: opts.conversationId,
+      jobTitle: opts.jobTitle,
+      lang: opts.lang,
+      trade,
+      // The same link the bot's own "finish it on the web" note uses:
+      // PUBLIC_SITE_BASE_URL, else the production site.
+      url: workerApplicationUrl(opts.lang, opts.applicationId),
+    };
+    let expiresAt: Date;
+    if (opts.withinWindow) {
+      // Free-form. Anchored to the INBOUND instant, not to now: see
+      // CLOSING_LINE_EXPIRY_MS.
+      expiresAt = new Date((opts.lastInboundMs ?? Date.now()) + CLOSING_LINE_EXPIRY_MS);
+    } else {
+      // Outside the window: the same words as the template.
+      payload = { ...payload, shape: WEB_COMPLETION_TEMPLATE_SHAPE };
+      expiresAt = new Date(Date.now() + CLOSING_TEMPLATE_EXPIRY_MS);
+    }
+
     registerCategoryRenderer('account', renderWebCompletion);
     await enqueueWorkerMessage(client, {
       workerId: opts.workerId,
@@ -397,23 +548,15 @@ async function sendClosingLine(
       ownerService: 'account',
       sourceType: WEB_COMPLETION_SOURCE_TYPE,
       sourceId: opts.applicationId,
-      // ONE line per application, forever. `markDetailsCompleteIfDone` only
-      // ever flips `details_completed_at` while it `IS NULL`
-      // (application-requirements.ts), so the caller fires this once by
-      // construction; this key is what makes a retried request idempotent.
+      // ONE line per application, forever, whichever shape it takes.
+      // `markDetailsCompleteIfDone` only ever flips `details_completed_at`
+      // while it `IS NULL` (application-requirements.ts), so the caller fires
+      // this once by construction; this key is what makes a retried request
+      // idempotent.
       dedupeKey: `application-web-completion:${opts.applicationId}`,
       priority: CLOSING_LINE_PRIORITY,
-      // Anchored to the INBOUND instant, not to now. See
-      // CLOSING_LINE_EXPIRY_MS: a deferred intent released later must not
-      // outlive the window it was cleared against.
-      expiresAt: new Date((opts.lastInboundMs ?? Date.now()) + CLOSING_LINE_EXPIRY_MS),
-      payload: {
-        kind: WEB_COMPLETION_SOURCE_TYPE,
-        applicationId: opts.applicationId,
-        conversationId: opts.conversationId,
-        jobTitle: opts.jobTitle,
-        lang: opts.lang,
-      },
+      expiresAt,
+      payload,
     });
     await client.query(`RELEASE SAVEPOINT ${LANE_SEND_SAVEPOINT}`);
     return true;
@@ -436,7 +579,7 @@ async function sendClosingLine(
 async function rollbackTo(
   client: PoolClient,
   savepoint: string,
-  opts: { lane: 'all' | 'prompt'; applicationId: string },
+  opts: { lane: LaneName; applicationId: string },
 ): Promise<void> {
   try {
     await client.query(`ROLLBACK TO SAVEPOINT ${savepoint}`);
@@ -468,8 +611,9 @@ async function releaseLanes(
     applicationId: string;
     armReadSql: string;
     scrubKeys: readonly string[];
-    lane: 'all' | 'prompt';
+    lane: LaneName;
     closing?: { jobTitle: string | null; lang: PreferredLanguage };
+    scrubMode: ScrubMode;
   },
 ): Promise<LaneReleaseResult> {
   // ── Scope A: the fix ──
@@ -491,10 +635,13 @@ async function releaseLanes(
     // armed row: the one the worker is actually talking on.
     primary = rows[0];
 
-    const scrub = await client.query(
-      SCRUB_SQL,
-      [rows.map((row) => row.id), opts.workerId, opts.scrubKeys],
-    );
+    const ids = rows.map((row) => row.id);
+    const scrub = opts.scrubMode === 'plain'
+      ? await client.query(SCRUB_SQL, [ids, opts.workerId, opts.scrubKeys])
+      : await client.query(
+          opts.scrubMode === 'mark' ? SCRUB_AND_MARK_SQL : COMPLETION_SCRUB_SQL,
+          [ids, opts.workerId, opts.scrubKeys, opts.applicationId],
+        );
     scrubbed = scrub.rowCount ?? 0;
 
     // Released HERE, before the send is attempted, so the scrub is committed
@@ -515,8 +662,11 @@ async function releaseLanes(
   }
 
   // ── Scope B: the courtesy ──
+  // Inside the window the free-form line; outside it (or with no inbound on
+  // record) the template (sprint 28, F28), which used to be skipped.
   let closingLineQueued = false;
-  if (opts.closing && primary.within_session_window === true) {
+  const withinWindow = primary.within_session_window === true;
+  if (opts.closing) {
     closingLineQueued = await sendClosingLine(client, {
       workerId: opts.workerId,
       applicationId: opts.applicationId,
@@ -525,6 +675,7 @@ async function releaseLanes(
       lang: normalizeLang(primary.language, opts.closing.lang),
       jobTitle: opts.closing.jobTitle,
       lastInboundMs: toMillis(primary.last_inbound_at),
+      withinWindow,
     });
   }
 
@@ -533,15 +684,17 @@ async function releaseLanes(
     applicationId: opts.applicationId,
     scrubbed,
     closingLineQueued,
-    withinSessionWindow: primary.within_session_window === true,
+    withinSessionWindow: withinWindow,
+    closingLineShape: opts.closing ? (withinWindow ? 'session' : 'template') : null,
   });
   return { armed: true, scrubbed, closingLineQueued };
 }
 
 /**
  * The details-stage release: clear every fill AND prompt key this
- * application could have armed, then -- inside the 24-hour window only --
- * queue exactly one closing line.
+ * application armed (only on a row whose live arm is this application's)
+ * and the marker its first web write left, then queue exactly one closing
+ * line: free-form inside the 24-hour window, the template outside it.
  *
  * Never throws, and never leaves the caller's transaction unusable. The
  * result exists for tests and for the log line; the web response does not
@@ -554,8 +707,9 @@ export async function releaseWhatsAppLanesForApplication(
   return releaseLanes(client, {
     workerId: input.workerId,
     applicationId: input.applicationId,
-    armReadSql: FULL_ARM_READ_SQL,
+    armReadSql: COMPLETION_ARM_READ_SQL,
     scrubKeys: FILL_SCRUB_KEYS,
+    scrubMode: 'completion',
     lane: 'all',
     closing: { jobTitle: input.jobTitle, lang: input.lang },
   });
@@ -563,9 +717,11 @@ export async function releaseWhatsAppLanesForApplication(
 
 /**
  * The pre-application-prompt release: clear the three `PROMPT_LANE_SCRUB`
- * keys and send NOTHING. Answering the last prompt on the web is not the end
- * of an application -- the details stage may not even have been requested
- * yet -- so there is nothing to close off, only a stale turn to stand down.
+ * keys and send NOTHING. Since sprint 28 (owner decision D-P4) the door
+ * calls it on the FIRST prompt answered on the web, not only the last one.
+ * Answering a prompt is not the end of an application -- the details stage
+ * may not even have been requested yet -- so there is nothing to close off,
+ * only the bot's prompt turn to stand down.
  */
 export async function releasePromptLaneForApplication(
   client: PoolClient,
@@ -576,6 +732,39 @@ export async function releasePromptLaneForApplication(
     applicationId: input.applicationId,
     armReadSql: PROMPT_ARM_READ_SQL,
     scrubKeys: PROMPT_LANE_SCRUB_KEYS,
+    scrubMode: 'plain',
     lane: 'prompt',
+  });
+}
+
+/**
+ * The first-web-write release (sprint 28, F29; owner decision: release on
+ * the first web answer, no new column). The worker answered a details-stage
+ * question in the browser for an application the bot is still collecting, so
+ * the bot stands down now rather than at completion: clear every fill AND
+ * prompt key this application armed (the completion release's key set) and
+ * send NOTHING, since nothing is finished yet.
+ *
+ * It leaves this application's marker (`releasedToWebKey`) on each row it
+ * clears, so the completion release can still find the conversation and
+ * send its one closing line when the web finishes. Its own read matches live
+ * arms only, so every later web
+ * write finds nothing armed and changes nothing. If the worker goes back to
+ * WhatsApp, the application command or the applications menu arms the bot
+ * again.
+ *
+ * Never throws, and never leaves the caller's transaction unusable.
+ */
+export async function releaseFillLaneForApplication(
+  client: PoolClient,
+  input: ReleaseFillLaneInput,
+): Promise<LaneReleaseResult> {
+  return releaseLanes(client, {
+    workerId: input.workerId,
+    applicationId: input.applicationId,
+    armReadSql: FULL_ARM_READ_SQL,
+    scrubKeys: FILL_SCRUB_KEYS,
+    scrubMode: 'mark',
+    lane: 'fill',
   });
 }
