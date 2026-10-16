@@ -1,0 +1,113 @@
+{
+  "tables": {
+    "public.admin_trusted_devices": {
+      "classification": "access",
+      "rls": {
+        "enabled": true,
+        "forced": true
+      },
+      "reason": "Admin trusted browsers (migration 120): the sha256 of each trusted device key and its 7-day window; the admin console login only.",
+      "access": {
+        "jale_admin_console": {
+          "select": "*",
+          "insert": [
+            "admin_user_id",
+            "device_key_hash",
+            "expires_at"
+          ],
+          "update": [
+            "ended_at",
+            "end_reason"
+          ],
+          "reason": "Sign-in reads a device's trust, records a new one and ends an expired one; the Admins page counts the live ones."
+        }
+      }
+    }
+  },
+  "policies": {
+    "public.admin_trusted_devices.admin_trusted_devices_service_all": {
+      "command": "ALL",
+      "permissive": true,
+      "to": [
+        "jale_admin"
+      ],
+      "origin": "new",
+      "using": "true",
+      "with_check": "true",
+      "open": true,
+      "reason": "The owner's Admins definers end an admin's trusted browsers on deactivation."
+    },
+    "public.admin_trusted_devices.admin_trusted_devices_console_read": {
+      "command": "SELECT",
+      "permissive": true,
+      "to": [
+        "jale_admin_console"
+      ],
+      "origin": "new",
+      "using": "true",
+      "with_check": null,
+      "open": true,
+      "reason": "Sign-in reads a device's trust; the Admins page counts each admin's live rows."
+    },
+    "public.admin_trusted_devices.admin_trusted_devices_console_insert": {
+      "command": "INSERT",
+      "permissive": true,
+      "to": [
+        "jale_admin_console"
+      ],
+      "origin": "new",
+      "using": null,
+      "with_check": "((ended_at IS NULL) AND (end_reason IS NULL))",
+      "reason": "A new trust is always live."
+    },
+    "public.admin_trusted_devices.admin_trusted_devices_console_end": {
+      "command": "UPDATE",
+      "permissive": true,
+      "to": [
+        "jale_admin_console"
+      ],
+      "origin": "new",
+      "using": "(ended_at IS NULL)",
+      "with_check": "(ended_at IS NOT NULL)",
+      "reason": "Only a live row changes, and only by ending."
+    }
+  },
+  "functions": {
+    "public.admin_user_invite_record(uuid, text, text, text)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_actor uuid, p_email text, p_role text, p_cognito_sub text",
+      "returns": "TABLE(admin_user_id uuid, email text, role text, active boolean, created_at timestamp with time zone)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "120",
+      "reason": "Admins page: records an invited admin for an active superadmin, once per email and sign-in id."
+    },
+    "public.admin_user_set_role(uuid, uuid, text)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_actor uuid, p_target uuid, p_role text",
+      "returns": "TABLE(admin_user_id uuid, email text, role text, active boolean, created_at timestamp with time zone)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "120",
+      "reason": "Admins page: changes another admin's role, never one's own, never leaving no active superadmin."
+    },
+    "public.admin_user_set_active(uuid, uuid, boolean)": {
+      "owner": "jale_admin",
+      "security": "definer",
+      "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_actor uuid, p_target uuid, p_active boolean",
+      "returns": "TABLE(admin_user_id uuid, email text, role text, active boolean, created_at timestamp with time zone)",
+      "execute": [
+        "jale_admin_console"
+      ],
+      "created_by": "120",
+      "reason": "Admins page: deactivates (ending the admin's trusted browsers) or reactivates another admin, never leaving no active superadmin."
+    }
+  }
+}

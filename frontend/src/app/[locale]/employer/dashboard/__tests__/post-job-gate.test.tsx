@@ -148,6 +148,7 @@ const activeJob: Job = {
     applicant_count: 2,
     hired_count: 0,
     open_count: 1,
+    hire_details_needed_count: 0,
     number_of_workers_needed: 1,
     trade_category: 'concrete',
     created_at: '2026-08-01T00:00:00Z',

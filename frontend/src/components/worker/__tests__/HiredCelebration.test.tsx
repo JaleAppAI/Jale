@@ -43,6 +43,9 @@ function hire(overrides: Partial<ApplicationHire> = {}): ApplicationHire {
     pay_min: null,
     pay_max: null,
     pay_interval: null,
+    // K4.2: no start details from the employer yet.
+    details: null,
+    employer_reminded_at: null,
     ...overrides,
   };
 }
@@ -765,5 +768,52 @@ describe('ConfettiBurst', () => {
       .map((el) => (el as HTMLElement).style.left);
 
     expect(after).toEqual(before);
+  });
+});
+
+describe('with start details from the employer (F19)', () => {
+  const DETAILS = {
+    start_date: '2026-10-20',
+    report_location: 'North gate, Building 3',
+    contact_name: 'Site lead',
+    contact_phone: null,
+    notes: null,
+    updated_at: '2026-10-12T15:00:00.000Z',
+  };
+  const reachOutBody = () => message('worker_applications.hired_celebration.modal.body');
+
+  it('the modal drops the reach-out sentence and shows the employer\'s date and place', () => {
+    renderIntl(
+      <HiredCelebrationModal open applicationId={APPLICATION_ID} jobTitle="Welder" companyName="NB Construction"
+        hire={hired({ start_date: null, details: DETAILS })} onClose={vi.fn()} />,
+    );
+    expect(screen.queryByText(reachOutBody())).not.toBeInTheDocument();
+    expect(screen.getByText(message('worker_applications.hired_celebration.modal.body_details'))).toBeInTheDocument();
+    expect(screen.getByText('North gate, Building 3')).toBeInTheDocument();
+  });
+
+  it('the banner says the details arrived, with the employer\'s date', () => {
+    renderIntl(
+      <HiredBanner applicationId={APPLICATION_ID} jobTitle="Welder" companyName="NB Construction"
+        hire={hired({ start_date: null, details: DETAILS })} onDismiss={vi.fn()} />,
+    );
+    expect(screen.queryByText(/reach out/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/Your employer sent your start details/)).toBeInTheDocument();
+  });
+
+  it('the compact row says it too', () => {
+    renderIntl(
+      <HiredBanner compact applicationId={APPLICATION_ID} jobTitle="Welder" companyName="NB Construction"
+        hire={hired({ details: DETAILS })} onDismiss={vi.fn()} />,
+    );
+    expect(screen.getByText(message('worker_applications.hired_celebration.row.body_details'))).toBeInTheDocument();
+  });
+
+  it('keeps the reach-out sentences while details are null', () => {
+    renderIntl(
+      <HiredCelebrationModal open applicationId={APPLICATION_ID} jobTitle="Welder" companyName="NB Construction"
+        hire={hired({ details: null })} onClose={vi.fn()} />,
+    );
+    expect(screen.getByText(reachOutBody())).toBeInTheDocument();
   });
 });

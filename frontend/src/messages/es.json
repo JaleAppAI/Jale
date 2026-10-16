@@ -8,7 +8,7 @@
     "city_multi_max": "Puedes agregar hasta {max} ciudades",
     "city_multi_remove": "Quitar {city}, {state}",
     "errors": {
-      "offline": "Parece que no tiene conexión. Revise su internet e intente de nuevo.",
+      "offline": "No pudimos conectar con Jale. Revise su conexión e intente de nuevo.",
       "timeout": "Esto está tardando más de lo esperado. Intente de nuevo.",
       "unauthorized": "Su sesión expiró. Inicie sesión de nuevo.",
       "forbidden": "No tiene acceso a esto.",
@@ -394,6 +394,7 @@
         "invalid_credentials": "El correo o la contraseña no son correctos.",
         "account_not_confirmed": "Su cuenta aún no está confirmada. Enviamos un código nuevo a su correo — revise su bandeja de entrada y la carpeta de spam.",
         "already_confirmed": "Esta cuenta ya está confirmada — inicie sesión con su contraseña o use “¿Olvidó su contraseña?”.",
+        "reset_unavailable": "No podemos enviar un código para restablecer la contraseña a este correo. Escríbanos a {email} y le ayudaremos a recuperar el acceso.",
         "confirmed_sign_in_failed": "Cuenta confirmada — la contraseña era incorrecta.",
         "resend_limit": "Demasiadas solicitudes de código. Intente más tarde — puede que deba esperar hasta una hora.",
         "code_delivery_failed": "No pudimos enviar un código a ese correo. Revise la dirección o contacte a soporte.",
@@ -510,13 +511,43 @@
     "skills_show_fewer": "Ver menos habilidades",
     "message_action": "Mensaje",
     "status_label": "Estado de la postulaci\u00f3n",
-    "hire_blocked": "No puedes marcar como contratado hasta que sus datos est\u00e9n completos. Abre su perfil para solicitarlos."
+    "hire_blocked": "No puedes marcar como contratado hasta que sus datos est\u00e9n completos. Abre su perfil para solicitarlos.",
+    "hire_details": {
+      "add": "Agregar detalles de inicio",
+      "edit": "Editar detalles de inicio",
+      "needed": "Agrega los detalles de inicio para que {name} sepa cuándo y dónde presentarse.",
+      "summary_starts": "Inicia el {date}",
+      "summary_location": "Presentarse en {location}",
+      "summary_saved": "Detalles de inicio guardados",
+      "title": "Detalles de inicio para {name}",
+      "intro": "{name} los verá en su solicitud en Jale.",
+      "start_date": "Fecha de inicio",
+      "report_location": "Dónde presentarse",
+      "report_location_placeholder": "Dirección de la obra o punto de encuentro…",
+      "contact_name": "Nombre del contacto",
+      "contact_phone": "Teléfono del contacto",
+      "contact_phone_hint": "Solo números, espacios y + ( ) -.",
+      "notes": "Notas (opcional)",
+      "notes_placeholder": "Qué traer, estacionamiento, instrucciones para el primer día…",
+      "save": "Guardar detalles de inicio",
+      "cancel": "Cancelar",
+      "saved": "Detalles de inicio guardados.",
+      "error_date": "Ingresa una fecha válida.",
+      "error_too_long": "Usa {max} caracteres o menos.",
+      "error_phone": "Usa solo números, espacios y + ( ) -.",
+      "error_field": "Revisa este campo e intenta de nuevo.",
+      "error_not_hired": "Solo los postulantes contratados pueden recibir detalles de inicio. Actualiza la lista e intenta de nuevo.",
+      "error_not_found": "Este postulante ya no está disponible. Actualiza la lista.",
+      "banner": "{count, plural, one {Agrega los detalles de inicio de # nueva contratación} other {Agrega los detalles de inicio de # nuevas contrataciones}}",
+      "banner_cta": "Ir a postulantes"
+    }
   },
   "employer_messages": {
     "title": "Mensajes",
     "subtitle": "Mensajee a los candidatos por WhatsApp manteniendo la conversación vinculada al empleo.",
     "threads": "Conversaciones",
     "drawer_button": "Mensajes",
+    "drawer_new_conversation": "Conversación nueva",
     "drawer_close": "Cerrar",
     "hide": "Ocultar",
     "empty": "Todavía no hay conversaciones abiertas.",
@@ -1070,7 +1101,8 @@
         "body": "El empleador te enviará más detalles pronto (dónde presentarte, documentos, contacto). Si no recibes nada en los próximos días, no dudes en comunicarte con él.",
         "reference": "Referencia de solicitud: {ref}",
         "cta": "¡Genial!",
-        "link": "Ver mi solicitud"
+        "link": "Ver mi solicitud",
+        "body_details": "Tu empleador te envió los detalles de inicio. Abre tu solicitud para ver dónde presentarte y a quién contactar."
       },
       "banner": {
         "title": "Te contrataron: {title} en {company}",
@@ -1080,10 +1112,13 @@
         "body_dated": "Inicio {date} · El empleador te enviará más detalles; si no llegan, comunícate con él.",
         "body_undated": "Fecha de inicio por confirmar · El empleador te enviará más detalles; si no llegan, comunícate con él.",
         "cta": "Ver solicitud",
-        "dismiss": "Cerrar el aviso de contratación de {title}"
+        "dismiss": "Cerrar el aviso de contratación de {title}",
+        "body_details_dated": "Inicio {date} · Tu empleador te envió los detalles de inicio.",
+        "body_details_undated": "Tu empleador te envió los detalles de inicio."
       },
       "row": {
-        "body": "¡Felicidades! El empleador te enviará más detalles. Si no llegan, comunícate con él."
+        "body": "¡Felicidades! El empleador te enviará más detalles. Si no llegan, comunícate con él.",
+        "body_details": "¡Felicidades! Tu empleador te envió los detalles de inicio."
       }
     },
     "stats": {
@@ -1196,7 +1231,31 @@
       "certification_document_limit": "Llegaste al límite de archivos para esta certificación. Quita uno en tu perfil primero.",
       "not_found": "Ya no encontramos esta postulación."
     },
-    "cert_have_question": "¿Tienes esta certificación?"
+    "cert_have_question": "¿Tienes esta certificación?",
+    "hired_card": {
+      "details_intro": "{company} te envió los detalles de inicio.",
+      "details_intro_no_company": "Tu empleador te envió los detalles de inicio.",
+      "start_date": "Fecha de inicio",
+      "start_date_tbc": "Por confirmar",
+      "report_location": "Dónde presentarte",
+      "contact": "Contacto",
+      "notes": "Notas de tu empleador",
+      "remind": "Recordarle a mi empleador",
+      "remind_sent": "Le recordamos a tu empleador que te envíe los detalles de inicio.",
+      "remind_recent": "Ya le recordaste a tu empleador.",
+      "remind_wait": "{hours, plural, one {Puedes recordárselo de nuevo en # hora.} other {Puedes recordárselo de nuevo en # horas.}}",
+      "message_label": "Envíale un mensaje a tu empleador",
+      "message_hint": "Tu empleador lo recibe en su bandeja de Jale. Su respuesta te llega por WhatsApp.",
+      "message_placeholder": "Escribe tu mensaje…",
+      "message_count": "{count}/{max}",
+      "message_send": "Enviar mensaje",
+      "message_sent_at": "Mensaje enviado · {time}",
+      "message_empty": "Escribe un mensaje primero.",
+      "message_too_long": "Los mensajes pueden tener hasta 2,000 caracteres.",
+      "message_invalid": "No pudimos enviar ese mensaje. Revísalo e intenta de nuevo.",
+      "message_rate_limited": "{minutes, plural, one {Enviaste varios mensajes en esta hora. Puedes enviar otro en # minuto.} other {Enviaste varios mensajes en esta hora. Puedes enviar otro en # minutos.}}",
+      "not_hired": "Esta solicitud ya no está marcada como contratada, así que no puedes enviar mensajes desde aquí."
+    }
   },
   "worker_home": {
     "title": "Buscar trabajos",
@@ -1863,6 +1922,7 @@
     }
   },
   "app_shell": {
+    "applications_attention_badge": "{count, plural, one {# solicitud necesita tu atención} other {# solicitudes necesitan tu atención}}",
     "worker_workspace": "Espacio del trabajador",
     "worker_role": "Trabajador",
     "employer_role": "Empleador",

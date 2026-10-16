@@ -659,4 +659,47 @@ maybeDescribe('L2.4: the web stage-2 details door, end to end', () => {
 
     expect((await row(appC)).application_answers).toEqual({});
   });
+
+  // =====================================================================
+  // 12. A sent application keeps the documents it was sent with
+  // =====================================================================
+
+  test('12. a certificate added to the vault after the details are sent is not copied onto the job', async () => {
+    // Its own job and application, so nothing above is disturbed: a job that
+    // asks for a certificate document and nothing else.
+    const certJobId = (await su.query<{ id: string }>(
+      `INSERT INTO jobs (employer_id, title, location, job_type, status, required_docs, number_of_workers_needed)
+       VALUES ($1, 'L24 Cert Job', 'El Paso', 'full-time', 'active', '{certification_doc}', 3) RETURNING id`,
+      [ids.employer],
+    )).rows[0].id;
+    const certApp = (await su.query<{ id: string }>(
+      `INSERT INTO job_applications (job_id, worker_id, status, details_requested_at)
+       VALUES ($1, $2, 'details_requested', now()) RETURNING id`,
+      [certJobId, ids.owner],
+    )).rows[0].id;
+    const jobCerts = async () => (await su.query<{ s3_key: string }>(
+      `SELECT s3_key FROM worker_documents
+        WHERE worker_id = $1 AND job_id = $2 AND doc_type = 'certification_doc' ORDER BY s3_key`,
+      [ids.owner, certJobId],
+    )).rows.map((r) => r.s3_key);
+
+    // Before sending, the read copies the vault certificate it holds.
+    expect((await getState('owner', certApp)).statusCode).toBe(200);
+    expect(await jobCerts()).toEqual([`l24-${tag}-owner-cert`]);
+
+    const sent = await postAction('owner', 'complete', {}, certApp);
+    expect(sent.statusCode).toBe(200);
+    expect((await row(certApp)).details_completed_at).not.toBeNull();
+
+    // A new vault upload after sending: a new key, so the copy's NOT EXISTS
+    // dedupe would admit it.
+    await su.query(
+      `INSERT INTO worker_documents (worker_id, job_id, doc_type, s3_key, file_name, file_size, mime_type)
+       VALUES ($1, NULL, 'certification_doc', $2, 'a-later.pdf', 2048, 'application/pdf')`,
+      [ids.owner, `l24-${tag}-owner-cert-later`],
+    );
+
+    expect((await getState('owner', certApp)).statusCode).toBe(200);
+    expect(await jobCerts()).toEqual([`l24-${tag}-owner-cert`]);
+  });
 });

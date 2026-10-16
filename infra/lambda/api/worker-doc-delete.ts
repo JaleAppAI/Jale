@@ -67,6 +67,23 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
            RETURNING s3_key`,
           [workerId, docType],
         );
+
+    // An application's documents are job-scoped COPIES of vault rows that
+    // share the vault row's s3_key (copyRequiredDocumentSnapshots in
+    // lib/applications.ts). Removing the object while a copy still names it
+    // would take the document away from an application that was sent with
+    // it, so the object goes only once no row of this worker names the key.
+    // Asked here, inside the transaction: worker_documents is FORCE RLS and
+    // the caller settings above are transaction-local.
+    const s3Key: string | undefined = delRes.rows[0]?.s3_key;
+    let keyStillReferenced = false;
+    if ((delRes.rowCount ?? 0) > 0 && s3Key) {
+      const refRes = await client.query<{ referenced: boolean }>(
+        `SELECT EXISTS (SELECT 1 FROM worker_documents WHERE worker_id = $1 AND s3_key = $2) AS referenced`,
+        [workerId, s3Key],
+      );
+      keyStillReferenced = refRes.rows?.[0]?.referenced === true;
+    }
     await client.query('COMMIT');
 
     if (delRes.rowCount === 0) {
@@ -74,11 +91,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     // Best-effort S3 delete — vault row is gone regardless.
-    const s3Key = delRes.rows[0].s3_key;
-    try {
-      await s3.send(new DeleteObjectCommand({ Bucket: process.env.DOCUMENTS_BUCKET!, Key: s3Key }));
-    } catch (s3Err) {
-      console.error('worker-doc-delete S3 delete failed (non-fatal):', errorMessage(s3Err));
+    if (s3Key && !keyStillReferenced) {
+      try {
+        await s3.send(new DeleteObjectCommand({ Bucket: process.env.DOCUMENTS_BUCKET!, Key: s3Key }));
+      } catch (s3Err) {
+        console.error('worker-doc-delete S3 delete failed (non-fatal):', errorMessage(s3Err));
+      }
     }
 
     return { statusCode: 204, headers: CORS_HEADERS, body: '' };

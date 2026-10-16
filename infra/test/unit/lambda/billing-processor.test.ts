@@ -169,7 +169,17 @@ function makeDbMock(queryResponses?: Map<string, unknown[]>) {
     return Promise.resolve({ rows: [] });
   });
   const releaseMock = jest.fn();
-  const clientMock = { query: queryMock, release: releaseMock };
+  // The resume definer (125) always answers exactly one row; a test that does
+  // not script it gets "nothing resumed" rather than an impossible empty
+  // result. Calls still go through queryMock, so they stay assertable.
+  const clientQuery = async (...args: unknown[]) => {
+    const result = await queryMock(...args);
+    if (String(args[0]).includes('billing_resume_paused_jobs') && !(result as { rows?: unknown[] })?.rows?.length) {
+      return { rows: [{ resumed_count: 0, employer_email: null, resumed_titles: [] }] };
+    }
+    return result;
+  };
+  const clientMock = { query: clientQuery, release: releaseMock };
   const poolMock = {
     query: queryMock,
     connect: jest.fn().mockResolvedValue(clientMock),
@@ -268,17 +278,80 @@ describe('billing processor: processEnvelope()', () => {
   );
 
   it.each(['active', 'trialing', 'past_due'])(
-    'does not enforce or email for non-reducing/grace status %s',
+    'does not enforce a pause for non-reducing/grace status %s',
     async (status) => {
       const { queryMock } = setupEntitlementReduction(2, ['Newest job']);
       mockStripe(makeStripeSubscription({ status }));
       const result = await processEnvelope(makeEnvelope(makeSubEvent({ status })));
       expect(result.outcome).toBe('processed');
-      expect(mockResolveEntitlements).not.toHaveBeenCalled();
       expect(queryMock.mock.calls.some(([sql]) => String(sql).includes('billing_pause_over_limit_jobs'))).toBe(false);
-      expect(mockQueueEmail).not.toHaveBeenCalled();
+      expect(mockQueueEmail.mock.calls.some(([, input]) => input.sourceType === 'billing_pause')).toBe(false);
     },
   );
+
+  // ── Sprint 28 (K4.5): paused-job auto-resume ──────────────────────────────
+
+  function setupResume(resumedCount: number, resumedTitles: string[] = [], employerEmail: string | null = 'employer@example.com') {
+    const { queryMock } = setupEntitlementReduction(0);
+    const base = queryMock.getMockImplementation()!;
+    queryMock.mockImplementation((sql: string, params?: unknown[]) => (sql.includes('billing_resume_paused_jobs')
+      ? Promise.resolve({ rows: [{ resumed_count: resumedCount, employer_email: employerEmail, resumed_titles: resumedTitles }] })
+      : base(sql, params)));
+    return { queryMock };
+  }
+
+  it.each(['active', 'trialing'])(
+    'resumes the jobs billing paused when the subscription is %s again, and mails the employer once',
+    async (status) => {
+      mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_pro', activeJobLimit: 10 });
+      const { queryMock } = setupResume(2, ['Older paused', 'Newer paused']);
+      mockStripe(makeStripeSubscription({ status }));
+      const result = await processEnvelope(makeEnvelope(makeSubEvent({ status })));
+      expect(result.outcome).toBe('processed');
+      expect(mockResolveEntitlements).toHaveBeenCalledWith(expect.anything(), USER1);
+      expect(queryMock).toHaveBeenCalledWith(expect.stringContaining('billing_resume_paused_jobs'), [USER1, 10]);
+      expect(mockQueueEmail).toHaveBeenCalledTimes(1);
+      expect(mockQueueEmail).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        recipientEmail: 'employer@example.com',
+        sourceType: 'billing_resume',
+        sourceId: 'subscription-row-uuid',
+        idempotencyKey: `billing-resume:subscription-row-uuid:${EVT1}`,
+        subject: 'Your jobs are live again · Sus empleos están activos de nuevo',
+        bodyText: expect.stringMatching(/Older paused[\s\S]*https:\/\/jaleapp\.ai\/en\/employer\/jobs[\s\S]*Su suscripción[\s\S]*https:\/\/jaleapp\.ai\/es\/employer\/jobs/),
+      }));
+      // Inside the processor's transaction, before it commits.
+      const resumeAt = queryMock.mock.calls.findIndex(([sql]) => String(sql).includes('billing_resume_paused_jobs'));
+      const commitAt = queryMock.mock.calls.map(([sql]) => sql).lastIndexOf('COMMIT');
+      expect(resumeAt).toBeGreaterThan(-1);
+      expect(commitAt).toBeGreaterThan(resumeAt);
+    },
+  );
+
+  it('sends nothing when no paused job came back', async () => {
+    setupResume(0, []);
+    mockStripe(makeStripeSubscription({ status: 'active' }));
+    await expect(processEnvelope(makeEnvelope(makeSubEvent({ status: 'active' })))).resolves.toEqual({ outcome: 'processed' });
+    expect(mockQueueEmail).not.toHaveBeenCalled();
+  });
+
+  it('never resumes for a past_due subscription', async () => {
+    const { queryMock } = setupResume(1, ['Paused']);
+    mockStripe(makeStripeSubscription({ status: 'past_due' }));
+    await processEnvelope(makeEnvelope(makeSubEvent({ status: 'past_due' })));
+    expect(queryMock.mock.calls.some(([sql]) => String(sql).includes('billing_resume_paused_jobs'))).toBe(false);
+  });
+
+  it.each([
+    { name: 'a missing employer email', count: 1, titles: ['Paused'], email: null, code: 'billing_job_resume_invalid_email' },
+    { name: 'a title count mismatch', count: 2, titles: ['Only one'], email: 'employer@example.com', code: 'billing_job_resume_invalid_titles' },
+  ])('rolls back a resume with $name', async ({ count, titles, email, code }) => {
+    const { queryMock } = setupResume(count, titles, email);
+    mockStripe(makeStripeSubscription({ status: 'active' }));
+    await expect(processEnvelope(makeEnvelope(makeSubEvent({ status: 'active' }))))
+      .resolves.toEqual({ outcome: 'failed', errorCode: code });
+    expect(queryMock).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockQueueEmail).not.toHaveBeenCalled();
+  });
 
   it('queues one bilingual email atomically with exact subscription/event idempotency', async () => {
     const infoLog = jest.spyOn(console, 'info').mockImplementation(() => undefined);
@@ -1867,7 +1940,7 @@ describe('billing processor: processEnvelope()', () => {
       );
     });
 
-    it('mirrors customer.subscription.resumed without enforcing', async () => {
+    it('mirrors customer.subscription.resumed without enforcing a pause, and resumes billing\'s paused jobs', async () => {
       const { queryMock } = setupMirrorPath();
       const { retrieve } = mockStripe(makeStripeSubscription({ status: 'active' }));
 
@@ -1879,7 +1952,10 @@ describe('billing processor: processEnvelope()', () => {
       expect(result.outcome).toBe('processed');
       expect(retrieve).toHaveBeenCalledWith(SUB1);
       expect(sqlIndex(queryMock, 'INSERT INTO subscriptions')).toBeGreaterThan(-1);
-      expect(mockResolveEntitlements).not.toHaveBeenCalled();
+      expect(sqlIndex(queryMock, 'billing_pause_over_limit_jobs')).toBe(-1);
+      // Sprint 28 (K4.5): an active subscription brings back billing's paused
+      // jobs; none were paused here, so nothing is mailed.
+      expect(sqlIndex(queryMock, 'billing_resume_paused_jobs')).toBeGreaterThan(-1);
       expect(mockQueueEmail).not.toHaveBeenCalled();
     });
 

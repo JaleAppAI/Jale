@@ -411,6 +411,58 @@ describe('worker-doc-confirm-auth', () => {
     });
   });
 
+  // Sprint 28: the documents bucket is versioned, and the job-scoped copies
+  // an application keeps carry this row's s3_version_id. Recording the
+  // version the upload created is what lets the employer's link name the
+  // exact bytes the worker sent.
+  describe('object version', () => {
+    const insertParams = () => mockQuery.mock.calls
+      .find(([q]) => typeof q === 'string' && q.includes('INSERT INTO worker_documents'))![1] as unknown[];
+    const insertSql = () => String(mockQuery.mock.calls
+      .find(([q]) => typeof q === 'string' && q.includes('INSERT INTO worker_documents'))![0]);
+
+    beforeEach(() => {
+      // clearAllMocks keeps queued one-off answers, and an earlier case that
+      // refuses before reaching S3 leaves one behind.
+      mockS3Send.mockReset();
+      mockQuery.mockImplementation((q: string) => {
+        if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'u1' }] });
+        if (q.includes('SELECT COUNT')) return Promise.resolve({ rows: [{ count: 0 }] });
+        if (q.includes('DELETE FROM worker_documents')) return Promise.resolve({ rowCount: 0 });
+        if (q.includes('INSERT INTO worker_documents')) return Promise.resolve({ rows: [{ id: 'd1' }] });
+        return Promise.resolve({});
+      });
+    });
+
+    it('stores the version HeadObject reports on a single-file upload', async () => {
+      mockS3Send.mockResolvedValueOnce({ ...validHead, VersionId: 'version-a' });
+      const res = await handler(mkEv({ doc_type: 'resume', s3_key: OWN_KEY, file_name: 'f', file_size: 1, mime_type: 'application/pdf' }));
+      expect(res.statusCode).toBe(201);
+      expect(insertSql()).toContain('s3_version_id');
+      expect(insertParams()).toContain('version-a');
+    });
+
+    it('stores the version HeadObject reports on a certificate upload', async () => {
+      mockS3Send.mockResolvedValueOnce({ ...validHead, VersionId: 'version-b' });
+      const res = await handler(mkEv({ doc_type: 'certification_doc', s3_key: CERT_KEY, file_name: 'c.pdf', file_size: 1, mime_type: 'application/pdf', cert_name: 'OSHA 10' }));
+      expect(res.statusCode).toBe(201);
+      expect(insertSql()).toContain('s3_version_id');
+      expect(insertParams()).toContain('version-b');
+    });
+
+    it('stores NULL when the bucket reports no version', async () => {
+      mockS3Send.mockResolvedValueOnce(validHead);
+      const res = await handler(mkEv({ doc_type: 'resume', s3_key: OWN_KEY, file_name: 'f', file_size: 1, mime_type: 'application/pdf' }));
+      expect(res.statusCode).toBe(201);
+      // Map the column to its VALUES placeholder ($n), then to its parameter.
+      const [columns, values] = [...insertSql().matchAll(/\(([^)]*)\)/g)].slice(0, 2)
+        .map((m) => m[1].split(',').map((c) => c.trim()));
+      const placeholder = values[columns.indexOf('s3_version_id')];
+      expect(placeholder).toMatch(/^\$\d+$/);
+      expect(insertParams()[Number(placeholder.slice(1)) - 1]).toBeNull();
+    });
+  });
+
   describe('change context', () => {
     it('states the worker in the transaction that replaces the vault row', async () => {
       mockS3Send.mockResolvedValueOnce(validHead);

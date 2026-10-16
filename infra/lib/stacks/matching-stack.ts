@@ -1,9 +1,11 @@
 import * as cdk from 'aws-cdk-lib';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as cloudwatchActions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
+import * as logs from 'aws-cdk-lib/aws-logs';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
@@ -179,6 +181,35 @@ export class MatchingStack extends cdk.Stack implements MatchingStackOutputs {
       threshold: 1,
       evaluationPeriods: 1,
       alarmDescription: 'Employer candidate rerank DLQ has messages',
+      actions: alarmActions,
+    });
+
+    // ── Rerank fallback ──
+    // When Bedrock fails or answers nothing, the rerank worker caches the
+    // deterministic order instead and logs one
+    // `{"metric":"EmployerCandidateRerankFallback","reason":...}` line
+    // (lambda/matching/employer-candidate-rerank.ts). Counted here so a
+    // failing model is seen rather than quietly served as the fallback order.
+    // A LITERAL term pattern, not a `$.metric` selector: the runtime prefixes
+    // every console line, so a JSON selector matches nothing
+    // (test/unit/stacks/metric-filter-patterns.test.ts).
+    new logs.MetricFilter(this, 'EmployerCandidateRerankFallbackMetric', {
+      logGroup: employerCandidateRerankLambda.logGroup,
+      filterPattern: logs.FilterPattern.literal('"EmployerCandidateRerankFallback"'),
+      metricNamespace: 'Jale/Matching',
+      metricName: 'EmployerCandidateRerankFallback',
+      metricValue: '1',
+    });
+    jaleAlarm(this, 'EmployerCandidateRerankFallbackAlarm', {
+      metric: new cloudwatch.Metric({
+        namespace: 'Jale/Matching',
+        metricName: 'EmployerCandidateRerankFallback',
+        period: cdk.Duration.minutes(5),
+        statistic: 'Sum',
+      }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      alarmDescription: 'Employer candidate rerank fell back to the deterministic order',
       actions: alarmActions,
     });
   }

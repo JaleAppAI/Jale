@@ -3,6 +3,7 @@ import {
     CognitoUserSession
 } from 'amazon-cognito-identity-js';
 import { recordFetch } from './report/context';
+import type { SignupSourceBody } from './signup-source';
 
 export type AuthTokens = {
     accessToken: string;
@@ -79,11 +80,10 @@ function confirm(pool: CognitoUserPool, username: string, code: string): Promise
 }
 
 /**
- * Phone only. The name is no longer collected at signup -- it is the
- * onboarding flow's `profile.name` step -- and the endpoint stopped requiring
- * it, so nothing is sent in its place.
+ * Phone only -- plus, when the visit carried one, the first-party signup
+ * source (contract K3.6). The name is collected by onboarding, not here.
  */
-export function workerSignUp(input: { phone: string }): Promise<void> {
+export function workerSignUp(input: { phone: string; signupSource?: SignupSourceBody | null }): Promise<void> {
     return workerWebSignUp(input);
 }
 
@@ -215,12 +215,17 @@ export function employerConfirmNewPassword(
     });
 }
 
-async function workerWebSignUp(input: { phone: string }): Promise<void> {
+async function workerWebSignUp(input: { phone: string; signupSource?: SignupSourceBody | null }): Promise<void> {
     const url = `${process.env.NEXT_PUBLIC_API_BASE_URL}/auth/worker/signup`;
     const res = await recordFetch({ method: 'POST', url }, () => fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone: input.phone.trim() }),
+        // `signup_source` only when there is one: the server stores the first
+        // one it sees per user and never fails a signup over it.
+        body: JSON.stringify({
+            phone: input.phone.trim(),
+            ...(input.signupSource ? { signup_source: input.signupSource } : {}),
+        }),
     }));
 
     if (res.ok) return;

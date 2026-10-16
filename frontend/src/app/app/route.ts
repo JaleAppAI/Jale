@@ -4,14 +4,17 @@
 // so it serves locale-middleware-free (see proxy.ts's PUBLIC_PATTERNS bypass)
 // and can default to Spanish instead of the site's English.
 //
-// Only a valid job id and a valid share code pass through. Everything else --
-// returnUrl, utm_*, `lang` itself -- is dropped. Nothing is counted here.
+// Only a valid job id, a valid share code and an allow-listed `src` (a
+// Jale-issued campaign code, analytics item #16) pass through. Everything else
+// -- returnUrl, utm_*, `lang` itself -- is dropped. Nothing is counted HERE:
+// the sign-up page stashes `src` for the signup (lib/signup-source.ts).
 //
 // A signed-in worker needs nothing special: the worker auth page already sends
 // them on (job, then returnUrl, then /worker/home) and ignores `step`.
 import { locales, type Locale } from '@/i18n/locales';
 import { validateJobId } from '@/lib/referral-return';
 import { normalizeShareCode } from '@/lib/share-code';
+import { normalizeSignupSourceCode } from '@/lib/signup-source';
 
 export const dynamic = 'force-dynamic';
 
@@ -62,6 +65,9 @@ export async function GET(request: Request): Promise<Response> {
   const shareCode =
     normalizeShareCode(searchParams.get('share')) ?? normalizeShareCode(searchParams.get('r'));
   if (shareCode) target.set('share', shareCode);
+  // First-party only (contract K3.6): one of Jale's own codes, or nothing.
+  const src = normalizeSignupSourceCode(searchParams.get('src'));
+  if (src) target.set('src', src);
 
   // Relative on purpose. Behind CloudFront this origin sees the Lambda
   // Function URL host, not jaleapp.ai, so a Location built from request.url

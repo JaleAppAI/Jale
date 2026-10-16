@@ -1,48 +1,49 @@
+import { TableScroll } from '@/components/ui/table-scroll';
 import { formatCount } from '@/lib/analytics-format';
 import { formatAvgSections, newestWeeksFirst, type TrustSplit } from '@/lib/ops-health';
+import { AnalyticsPanel } from './AnalyticsPanel';
+import { TABLE, TD, TD_NUM, TH, TH_NUM } from './table-styles';
 
 export function TrustExtraction({ trust, now }: { trust: TrustSplit; now: Date }) {
   return (
-    <article className="card cohort-card">
-      <div className="chart-head" style={{ marginBottom: 8 }}>
-        <div>
-          <h2>Trust extraction</h2>
-          <p>Newest first · per extractor version, by the week the extraction was created · in-flight extractions left out</p>
-        </div>
-      </div>
+    <AnalyticsPanel
+      title="Trust extraction"
+      subtitle="Newest first · per extractor version, by the week the extraction was created · in-flight extractions left out"
+      howCounted="Not enough detail means the answers had too little in them to send to the AI; average sections counts how many of the five (skills, tools, experience, safety, notable) came back non-empty."
+    >
       {trust.window.extractions === 0 ? (
-        <p className="muted">No trust extractions in these weeks.</p>
+        <p className="m-0 text-sm text-[var(--jale-ink-2)]">No trust extractions in these weeks.</p>
       ) : (
-        <div className="table-scroll" role="region" aria-label="Trust extraction table" tabIndex={0}>
-          <table className="data-table cohort-table">
+        <TableScroll label="Trust extraction table">
+          <table className={TABLE}>
             <thead>
               <tr>
-                <th>Week</th>
-                <th>Version</th>
-                <th className="num">Extractions</th>
-                <th className="num">Failed</th>
-                <th className="num">Not enough detail</th>
-                <th className="num">Avg sections of 5</th>
+                <th className={TH}>Week</th>
+                <th className={TH}>Version</th>
+                <th className={TH_NUM}>Extractions</th>
+                <th className={TH_NUM}>Failed</th>
+                <th className={TH_NUM}>Not enough detail</th>
+                <th className={TH_NUM}>Avg sections of 5</th>
               </tr>
             </thead>
             <tbody>
               {newestWeeksFirst(trust.weekly, now).map((row) => (
                 <tr key={`${row.weekStart}:${row.version ?? 'all'}`}>
-                  <td>
+                  <td className={TD}>
                     {row.label}
-                    {row.current ? <span className="cohort-settling" title="This week is still in progress">so far</span> : null}
+                    {row.current ? <span className="ml-2 text-xs text-[var(--jale-ink-2)]" title="This week is still in progress">so far</span> : null}
                   </td>
-                  <td>{row.version ?? '—'}</td>
-                  <td className="num">{formatCount(row.extractions)}</td>
-                  <td className="num">{formatCount(row.failed)}</td>
-                  <td className="num">{formatCount(row.notEnoughDetail)}</td>
-                  <td className="num">{formatAvgSections(row.avgSections)}</td>
+                  <td className={TD}>{row.version ?? '—'}</td>
+                  <td className={TD_NUM}>{formatCount(row.extractions)}</td>
+                  <td className={TD_NUM}>{formatCount(row.failed)}</td>
+                  <td className={TD_NUM}>{formatCount(row.notEnoughDetail)}</td>
+                  <td className={TD_NUM}>{formatAvgSections(row.avgSections)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
-        </div>
+        </TableScroll>
       )}
-    </article>
+    </AnalyticsPanel>
   );
 }

@@ -17,7 +17,7 @@
       "security": "definer",
       "search_path": "pg_catalog, pg_temp",
       "arguments": "",
-      "returns": "TABLE(stuck_received bigint, failed_now bigint, unresolved_older bigint, oldest_stuck_at timestamp with time zone)",
+      "returns": "TABLE(stuck_received bigint, failed_now bigint, failed_last_24h bigint, unresolved_older bigint, oldest_stuck_at timestamp with time zone)",
       "execute": [
         "jale_admin_console"
       ],

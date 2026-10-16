@@ -292,8 +292,9 @@ describe('an applicant the inbox does not list', () => {
 
     await user.click(screen.getByRole('button', { name: 'open thread' }));
 
-    expect(await screen.findByText('Ana Lopez')).toBeInTheDocument();
-    expect(screen.getByText(/Concrete Finisher · Dallas/)).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 2, name: 'Ana Lopez' })).toBeInTheDocument();
+    // Once in the list row, once in the composer header.
+    expect(screen.getAllByText(/Concrete Finisher · Dallas/)).toHaveLength(2);
     expect(screen.getByText(message('employer_messages.new_applicant'))).toBeInTheDocument();
     expect(screen.queryByText(message('employer_messages.candidate_unavailable'))).not.toBeInTheDocument();
     // There is no thread to fetch, and no inbox row to fetch one from.
@@ -308,7 +309,7 @@ describe('an applicant the inbox does not list', () => {
     });
     renderDrawer(<OpenerPage target={offBoard} />);
     await user.click(screen.getByRole('button', { name: 'open thread' }));
-    await screen.findByText('Ana Lopez');
+    await screen.findByRole('heading', { level: 2, name: 'Ana Lopez' });
 
     await user.type(
       screen.getByPlaceholderText(message('employer_messages.composer_placeholder')),
@@ -379,7 +380,7 @@ describe('an applicant who leaves the inbox', () => {
 
     await user.click(screen.getByRole('button', { name: 'open thread' }));
 
-    expect(await screen.findByText('Ana Flores')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 2, name: 'Ana Flores' })).toBeInTheDocument();
     expect(screen.queryByText(message('employer_messages.empty_select'))).not.toBeInTheDocument();
   });
 });
@@ -466,5 +467,102 @@ describe('the read receipt', () => {
       await Promise.resolve();
     });
     expect(markRead).not.toHaveBeenCalled();
+  });
+});
+
+/*
+ * Item 6. The drawer held ONE description -- the latest request -- so an
+ * applicant the inbox does not list was forgotten the moment another one was
+ * opened: no list row, and the vanish guard dropped them. Every described
+ * applicant now keeps a "New conversation" row until the inbox lists them
+ * with a thread.
+ */
+describe('several applicants the inbox does not list', () => {
+  const describedA: ConversationTarget = {
+    application_id: 'app-off-a',
+    worker_id: 'w-a',
+    job_id: 'job-paused',
+    worker_name: 'Ana Prueba',
+    job_title: 'Concrete Finisher',
+    job_city: 'Dallas',
+    applied_at: '2026-09-02T00:00:00Z',
+  };
+  const describedB: ConversationTarget = {
+    application_id: 'app-off-b',
+    worker_id: 'w-b',
+    job_id: 'job-closed',
+    worker_name: 'Beto Prueba',
+    job_title: 'Framer',
+    job_city: 'El Paso',
+    applied_at: '2026-09-03T00:00:00Z',
+  };
+
+  function TwoOpeners() {
+    const { openConversation } = useConversationDrawer();
+    return (
+      <>
+        <button type="button" onClick={() => openConversation(describedA)}>open first</button>
+        <button type="button" onClick={() => openConversation(describedB)}>open second</button>
+      </>
+    );
+  }
+
+  it('keeps the first applicant reachable after a second one is opened', async () => {
+    const user = userEvent.setup();
+    renderDrawer(<TwoOpeners />);
+
+    await user.click(screen.getByRole('button', { name: 'open first' }));
+    expect(await screen.findByRole('heading', { level: 2, name: 'Ana Prueba' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'open second' }));
+    expect(await screen.findByRole('heading', { level: 2, name: 'Beto Prueba' })).toBeInTheDocument();
+
+    // A is still listed, and choosing the row draws A's composer again.
+    await user.click(screen.getByRole('button', { name: /Ana Prueba/ }));
+
+    expect(await screen.findByRole('heading', { level: 2, name: 'Ana Prueba' })).toBeInTheDocument();
+    expect(screen.queryByText(message('employer_messages.candidate_unavailable'))).not.toBeInTheDocument();
+    expect(getConversation).not.toHaveBeenCalled();
+  });
+
+  it('labels a described applicant with no thread "New conversation"', async () => {
+    const user = userEvent.setup();
+    renderDrawer(<TwoOpeners />);
+    await user.click(screen.getByRole('button', { name: 'open first' }));
+    await user.click(screen.getByRole('button', { name: 'open second' }));
+
+    const rowA = screen.getByRole('button', { name: /Ana Prueba/ });
+    expect(within(rowA).getByText(message('employer_messages.drawer_new_conversation'))).toBeInTheDocument();
+  });
+
+  it('drops the "New conversation" row once the inbox lists that applicant with a thread', async () => {
+    const user = userEvent.setup();
+    const { rerender } = renderDrawer(<TwoOpeners />);
+    await user.click(screen.getByRole('button', { name: 'open first' }));
+    await user.click(screen.getByRole('button', { name: 'open second' }));
+
+    unreadState = {
+      items: [
+        messaged,
+        inboxItem({
+          application_id: 'app-off-a',
+          worker_id: 'w-a',
+          worker_name: 'Ana Prueba',
+          job_title: 'Concrete Finisher',
+          job_city: 'Dallas',
+          conversation_id: 'conv-a',
+          conversation_status: 'open',
+          last_message_at: '2026-09-16T11:00:00Z',
+          last_message_preview: 'See you Monday',
+        }),
+      ],
+      unreadCount: 1,
+      unreadByConversation: { 'conv-1': true },
+    };
+    rerender(<ConversationDrawerProvider><TwoOpeners /></ConversationDrawerProvider>);
+
+    await waitFor(() => expect(screen.getAllByRole('button', { name: /Ana Prueba/ })).toHaveLength(1));
+    const rowA = screen.getByRole('button', { name: /Ana Prueba/ });
+    expect(within(rowA).queryByText(message('employer_messages.drawer_new_conversation'))).not.toBeInTheDocument();
+    expect(within(rowA).getByText('See you Monday')).toBeInTheDocument();
   });
 });

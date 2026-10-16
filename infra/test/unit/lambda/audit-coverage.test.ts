@@ -32,12 +32,14 @@ const COVERAGE_EXCLUSIONS: Readonly<Record<string, string>> = {
   'api/worker-jobs-list.ts': 'The job board reads the worker\'s own profile to rank jobs and returns jobs, not the profile.',
   'api/worker-jobs-apply.ts': 'The worker applies; the copy of their own vault documents is a write the change log records.',
   'api/worker-doc-confirm-auth.ts': 'The worker confirms their own upload; a write the change log records.',
+  'api/worker-doc-delete.ts': 'The worker deletes their own vault document, a write the change log records; the check that another of their rows still names the file returns only a flag.',
   'whatsapp/web/worker-onboarding.ts': 'The worker\'s own onboarding run; outside the covered set.',
   'api/employer-profile.ts': 'The employer reads and edits their own profile; outside the covered set.',
   'billing/checkout.ts': 'The employer\'s own billing details, sent to the payment provider; outside the covered set.',
   // The read stays inside a database function that returns only codes, flags
   // and ids, so nothing personal reaches the handler or its caller.
   'api/employer-application-status-update.ts': 'The stage notice reads the worker\'s number inside jale_cap.employer_stage_recipient and the thread inside jale_cap.employer_claim_worker_intent; both return only ids, codes and flags, so nothing personal is returned to the caller.',
+  'api/employer-application-hire-details.ts': 'The details-added line reads the worker\'s number inside jale_cap.employer_hire_details_notice and the language inside jale_cap.employer_stage_recipient; both return only ids, codes and flags, and the response is the employer\'s own saved details, so nothing personal of the worker is returned to the caller.',
   'api/worker-doc-confirm.ts': 'The link holder confirms an upload; the document read stays inside jale_cap.upload_token_confirm, which returns only an outcome code and the document id, so nothing personal is returned to the caller.',
   'auth/worker-web-signup.ts': 'Web sign-up; the contact lookup stays inside public.reconcile_worker_signup, which returns only the user id, so nothing personal is returned to the caller.',
   'whatsapp/status-callback.ts': 'The delivery status callback; the message lookup stays inside jale_twilio_callback.record_twilio_delivery_status, which returns only two flags and a source code, so nothing personal is returned to the caller.',

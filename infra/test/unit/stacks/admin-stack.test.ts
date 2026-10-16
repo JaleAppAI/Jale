@@ -16,10 +16,12 @@ interface BuiltAdmin {
   stack: AdminStack;
   reportImagesBucket: s3.Bucket;
   reportImagesKey: kms.Key;
+  supportMediaBucket: s3.Bucket;
+  supportMediaKey: kms.Key;
 }
 
-function buildAdmin(alarmTopicArn?: string): BuiltAdmin {
-  const app = new cdk.App({ context: { environment: 'prod' } });
+function buildAdmin(alarmTopicArn?: string, extraContext: Record<string, unknown> = {}): BuiltAdmin {
+  const app = new cdk.App({ context: { environment: 'prod', ...extraContext } });
   const support = new cdk.Stack(app, 'AdminSupportStack', {
     env: { account: '111111111111', region: 'us-east-1' },
   });
@@ -28,6 +30,8 @@ function buildAdmin(alarmTopicArn?: string): BuiltAdmin {
   const adminDbSecret = new secretsmanager.Secret(support, 'AdminDbSecret');
   const reportImagesKey = new kms.Key(support, 'ReportImagesKey');
   const reportImagesBucket = new s3.Bucket(support, 'ReportImagesBucket', { encryptionKey: reportImagesKey });
+  const supportMediaKey = new kms.Key(support, 'SupportMediaKey');
+  const supportMediaBucket = new s3.Bucket(support, 'SupportMediaBucket', { encryptionKey: supportMediaKey });
   const certificate = acm.Certificate.fromCertificateArn(
     support,
     'AdminCert',
@@ -44,12 +48,16 @@ function buildAdmin(alarmTopicArn?: string): BuiltAdmin {
     adminDbSecret,
     reportImagesBucket,
     reportImagesKey,
+    supportMediaBucket,
+    supportMediaKey,
     certificate,
     webAclArn: 'arn:aws:wafv2:us-east-1:111111111111:global/webacl/admin/00000000-0000-0000-0000-000000000000',
     alarmTopicArn,
   });
 
-  return { template: Template.fromStack(stack), stack, reportImagesBucket, reportImagesKey };
+  return {
+    template: Template.fromStack(stack), stack, reportImagesBucket, reportImagesKey, supportMediaBucket, supportMediaKey,
+  };
 }
 
 describeIfDocker('AdminStack', () => {
@@ -57,9 +65,13 @@ describeIfDocker('AdminStack', () => {
   let stack: AdminStack;
   let reportImagesBucket: s3.Bucket;
   let reportImagesKey: kms.Key;
+  let supportMediaBucket: s3.Bucket;
+  let supportMediaKey: kms.Key;
 
   beforeAll(() => {
-    ({ template, stack, reportImagesBucket, reportImagesKey } = buildAdmin(ALARM_TOPIC_ARN));
+    ({
+      template, stack, reportImagesBucket, reportImagesKey, supportMediaBucket, supportMediaKey,
+    } = buildAdmin(ALARM_TOPIC_ARN));
   });
 
   test('creates a dedicated admin Cognito user pool and client', () => {
@@ -138,13 +150,14 @@ describeIfDocker('AdminStack', () => {
     template.hasResourceProperties('AWS::S3::Bucket', {
       LifecycleConfiguration: Match.anyValue(),
     });
-    template.resourceCountIs('AWS::CloudWatch::Alarm', 3);
+    template.resourceCountIs('AWS::CloudWatch::Alarm', 2);
   });
 
-  test('sends its three alarms to the ops topic, and only their ALARM state', () => {
+  // The distribution's 5xx alarm lives in FrontendStack, in us-east-1, the
+  // one region CloudFront publishes its metrics to.
+  test('sends its two alarms to the ops topic, and only their ALARM state', () => {
     const alarms = Object.values(template.findResources('AWS::CloudWatch::Alarm')) as any[];
     expect(alarms.map((a) => a.Properties.AlarmName).sort()).toEqual([
-      'jale-admin-cloudfront-5xx',
       'jale-admin-lambda-errors',
       'jale-admin-lambda-throttles',
     ]);
@@ -156,9 +169,9 @@ describeIfDocker('AdminStack', () => {
 
   // The ops topic arrives as the optional `whatsappAlarmTopicArn` context,
   // which a dev synth may not pass: the alarms still exist, with no action.
-  test('keeps its three alarms without an action when no alarm topic is given', () => {
+  test('keeps its two alarms without an action when no alarm topic is given', () => {
     const alarms = Object.values(buildAdmin().template.findResources('AWS::CloudWatch::Alarm')) as any[];
-    expect(alarms).toHaveLength(3);
+    expect(alarms).toHaveLength(2);
     for (const alarm of alarms) {
       expect(alarm.Properties.AlarmActions).toBeUndefined();
     }
@@ -215,21 +228,75 @@ describeIfDocker('AdminStack', () => {
     return out;
   }
 
-  test('the admin Lambda can read report images and nothing else in the reports bucket', () => {
+  test('the admin Lambda can read report images and support media, and nothing else in either bucket', () => {
     const resolve = (value: unknown) => JSON.stringify(cdk.Stack.of(stack).resolve(value));
     const s3Rights = adminRolePermissions().filter((p) => p.action.startsWith('s3:'));
     expect(s3Rights).toEqual([
       { action: 's3:GetObject', resource: resolve(reportImagesBucket.arnForObjects('images/*')) },
+      { action: 's3:GetObject', resource: resolve(supportMediaBucket.arnForObjects('support/*')) },
     ]);
     expect(JSON.stringify(s3Rights)).not.toContain('incoming');
   });
 
-  test('the admin Lambda can only decrypt with the report images key', () => {
+  test('the admin Lambda can only decrypt, with the report images and support media keys', () => {
     const resolve = (value: unknown) => JSON.stringify(cdk.Stack.of(stack).resolve(value));
     const kmsRights = adminRolePermissions().filter((p) => p.action.startsWith('kms:'));
     expect(kmsRights).toEqual([
       { action: 'kms:Decrypt', resource: resolve(reportImagesKey.keyArn) },
+      { action: 'kms:Decrypt', resource: resolve(supportMediaKey.keyArn) },
     ]);
+  });
+
+  test('the admin Lambda is told the support media bucket', () => {
+    const resources = template.toJSON().Resources as Record<string, any>;
+    const fn = Object.values(resources).find((r) => r.Type === 'AWS::Lambda::Function'
+      && r.Properties.FunctionName === 'jale-admin-nextjs');
+    expect(fn.Properties.Environment.Variables.SUPPORT_MEDIA_BUCKET)
+      .toEqual(cdk.Stack.of(stack).resolve(supportMediaBucket.bucketName));
+  });
+
+  // ── Dead-letter queue depth (K3.3 #11): the listed queues' attributes only ──
+
+  // The dead-letter queues with a producer, in the order the Ops page lists
+  // them. The candidate materialization and worker rerank queues have none.
+  const DLQ = [
+    ['whatsapp-inbound-v2-dlq.fifo', 'WhatsApp inbound'],
+    ['whatsapp-inbound-dlq', 'WhatsApp inbound (first version)'],
+    ['whatsapp-worker-intent-wake-dlq', 'Worker notifications'],
+    ['whatsapp-domain-outbox-wake-dlq', 'WhatsApp outbox'],
+    ['billing-webhook-dlq', 'Billing webhooks'],
+    ['jale-post-confirmation-dlq', 'Sign-up confirmations'],
+    ['jale-employer-candidate-rerank-dlq', 'Candidate ranking'],
+    ['trust-extraction-dlq', 'Trust answers'],
+    ['trust-assessment-dlq', 'Trust scores'],
+    ['jale-employer-digest-producer-dlq', 'Employer digest'],
+  ] as const;
+
+  test('the admin Lambda can read the depth of exactly the listed dead-letter queues', () => {
+    const resolve = (value: unknown) => JSON.stringify(cdk.Stack.of(stack).resolve(value));
+    const sqsRights = adminRolePermissions().filter((p) => p.action.startsWith('sqs:'));
+    expect(sqsRights).toEqual(DLQ.map(([name]) => ({
+      action: 'sqs:GetQueueAttributes',
+      resource: resolve(stack.formatArn({ service: 'sqs', resource: name })),
+    })));
+    expect(JSON.stringify(sqsRights)).not.toMatch(/materialization|worker-rerank|\*/);
+  });
+
+  test('the admin Lambda may read CloudWatch metric data, which has no resource-level form', () => {
+    const metricRights = adminRolePermissions().filter((p) => p.action.startsWith('cloudwatch:'));
+    expect(metricRights).toEqual([{ action: 'cloudwatch:GetMetricData', resource: JSON.stringify('*') }]);
+  });
+
+  test('the admin Lambda is told each listed queue by a plain label and its address', () => {
+    const resources = template.toJSON().Resources as Record<string, any>;
+    const fn = Object.values(resources).find((r) => r.Type === 'AWS::Lambda::Function'
+      && r.Properties.FunctionName === 'jale-admin-nextjs');
+    const queues = JSON.parse(fn.Properties.Environment.Variables.ADMIN_DLQ_QUEUES);
+    expect(queues).toEqual(DLQ.map(([name, label]) => ({
+      label,
+      url: `https://sqs.${stack.region}.amazonaws.com/${stack.account}/${name}`,
+    })));
+    for (const { label } of queues) expect(label).not.toMatch(/dlq|arn:|https?:/i);
   });
 
   test('the admin Lambda is told the report images bucket', () => {
@@ -246,6 +313,116 @@ describeIfDocker('AdminStack', () => {
     });
     template.hasOutput('AdminUserPoolId', Match.anyValue());
     template.hasOutput('AdminUserPoolClientId', Match.anyValue());
+  });
+});
+
+/**
+ * Sprint 28 (contract K1): the admin pool sends through the shared SES sender,
+ * invites with the branded template rendered at synth, remembers trusted
+ * browsers only on the server's say-so, and the console may manage this pool's
+ * admins and devices, and nothing else.
+ */
+describeIfDocker('AdminStack admin access (sprint 28)', () => {
+  const SES_CONTEXT = { sesEmailFromAddress: 'sender@example.test', sesEmailRegion: 'us-east-1' };
+  let ses: BuiltAdmin;
+  let plain: BuiltAdmin;
+
+  const poolOf = (built: BuiltAdmin) => {
+    const pools = built.template.findResources('AWS::Cognito::UserPool');
+    expect(Object.keys(pools)).toHaveLength(1);
+    const [[logicalId, pool]] = Object.entries(pools) as Array<[string, any]>;
+    return { logicalId, props: pool.Properties as Record<string, any> };
+  };
+
+  beforeAll(() => {
+    ses = buildAdmin(ALARM_TOPIC_ARN, SES_CONTEXT);
+    plain = buildAdmin(ALARM_TOPIC_ARN);
+  });
+
+  // Guard: the properties that would REPLACE the pool (and fail mid-deploy
+  // against DeletionProtection) stay exactly as they were.
+  test('keeps one pool with the same name, logical id, username attributes and no schema or aliases', () => {
+    for (const built of [ses, plain]) {
+      const { logicalId, props } = poolOf(built);
+      expect(logicalId).toMatch(/^AdminUserPool[0-9A-F]{8}$/);
+      expect(props.UserPoolName).toBe('jale-admin-pool');
+      expect(props.UsernameAttributes).toEqual(['email']);
+      expect(props.Schema).toBeUndefined();
+      expect(props.AliasAttributes).toBeUndefined();
+      expect(props.UsernameConfiguration).toBeUndefined();
+    }
+  });
+
+  test('sends through the SES sender in context, and through Cognito\'s default without it', () => {
+    const { props } = poolOf(ses);
+    expect(props.EmailConfiguration.EmailSendingAccount).toBe('DEVELOPER');
+    expect(props.EmailConfiguration.From).toBe('Jale <sender@example.test>');
+    expect(JSON.stringify(props.EmailConfiguration.SourceArn)).toContain(':identity/example.test');
+    expect(poolOf(plain).props.EmailConfiguration).toBeUndefined();
+  });
+
+  test('invites with the branded template: each placeholder once, nothing after the password', () => {
+    for (const built of [ses, plain]) {
+      const template = poolOf(built).props.AdminCreateUserConfig.InviteMessageTemplate;
+      expect(template.EmailSubject).toBe("You're invited to the Jale admin console");
+      const body: string = template.EmailMessage;
+      expect(body.split('{username}')).toHaveLength(2);
+      expect(body.split('{####}')).toHaveLength(2);
+      expect(body).not.toMatch(/\{####\}\s*\./);
+      expect(body).toContain('{####}</td>');
+      expect(body).toContain('href="https://admin.example.com"');
+      expect(body.length).toBeLessThanOrEqual(20000);
+      expect(poolOf(built).props.AdminCreateUserConfig.AllowAdminCreateUserOnly).toBe(true);
+    }
+  });
+
+  test('remembers a device only on request, and lets a remembered device stand in for the code', () => {
+    expect(poolOf(ses).props.DeviceConfiguration).toEqual({
+      ChallengeRequiredOnNewDevice: true,
+      DeviceOnlyRememberedOnUserPrompt: true,
+    });
+  });
+
+  test('states the temporary password\'s 7 days explicitly, as the invitation does', () => {
+    expect(poolOf(ses).props.Policies.PasswordPolicy.TemporaryPasswordValidityDays).toBe(7);
+  });
+
+  test('lets the console manage this pool\'s admins and devices, on its ARN only', () => {
+    const resources = ses.template.toJSON().Resources as Record<string, any>;
+    const fn = Object.values(resources).find((r) => r.Type === 'AWS::Lambda::Function'
+      && r.Properties.FunctionName === 'jale-admin-nextjs');
+    const roleId = fn.Properties.Role['Fn::GetAtt'][0];
+    const statements = Object.values(resources)
+      .filter((r) => r.Type === 'AWS::IAM::Policy' && r.Properties.Roles.some((x: any) => x.Ref === roleId))
+      .flatMap((r) => [r.Properties.PolicyDocument.Statement].flat());
+    const cognitoStatements = statements.filter((st) => [st.Action].flat().some((a: string) => a.startsWith('cognito-idp:')));
+    expect(cognitoStatements).toHaveLength(1);
+    const [statement] = cognitoStatements;
+    expect(statement.Effect).toBe('Allow');
+    expect(statement.Sid).toBe('AdminPoolDirectory');
+    expect([statement.Action].flat().sort()).toEqual([
+      'cognito-idp:AdminAddUserToGroup',
+      'cognito-idp:AdminCreateUser',
+      'cognito-idp:AdminDisableUser',
+      'cognito-idp:AdminEnableUser',
+      'cognito-idp:AdminForgetDevice',
+      'cognito-idp:AdminGetDevice',
+      'cognito-idp:AdminGetUser',
+      'cognito-idp:AdminListDevices',
+      'cognito-idp:AdminListGroupsForUser',
+      'cognito-idp:AdminRemoveUserFromGroup',
+      'cognito-idp:AdminUpdateDeviceStatus',
+      'cognito-idp:AdminUserGlobalSignOut',
+    ]);
+    const { logicalId } = poolOf(ses);
+    expect(statement.Resource).toEqual({ 'Fn::GetAtt': [logicalId, 'Arn'] });
+    expect(JSON.stringify(statements)).not.toContain('userpool/*');
+    // The metric read (cloudwatch:GetMetricData) has no resource-level form,
+    // so it is the one statement on "*"; it is pinned on its own above. No
+    // other statement of this role names a wildcard.
+    const isMetricRead = (st: any) => st.Action === 'cloudwatch:GetMetricData' && st.Resource === '*';
+    expect(statements.filter(isMetricRead)).toHaveLength(1);
+    expect(JSON.stringify(statements.filter((st) => !isMetricRead(st)))).not.toMatch(/"cognito-idp:\*"|"\*"/);
   });
 });
 
@@ -272,6 +449,8 @@ describeIfDocker('AdminStack Cognito DeletionProtection', () => {
     const adminDbSecret = new secretsmanager.Secret(support, 'AdminDbSecret');
     const reportImagesKey = new kms.Key(support, 'ReportImagesKey');
     const reportImagesBucket = new s3.Bucket(support, 'ReportImagesBucket', { encryptionKey: reportImagesKey });
+    const supportMediaKey = new kms.Key(support, 'SupportMediaKey');
+    const supportMediaBucket = new s3.Bucket(support, 'SupportMediaBucket', { encryptionKey: supportMediaKey });
     const certificate = acm.Certificate.fromCertificateArn(
       support,
       'AdminCert',
@@ -287,6 +466,8 @@ describeIfDocker('AdminStack Cognito DeletionProtection', () => {
       adminDbSecret,
       reportImagesBucket,
       reportImagesKey,
+      supportMediaBucket,
+      supportMediaKey,
       webAclArn: 'arn:aws:wafv2:us-east-1:111111111111:global/webacl/admin/00000000-0000-0000-0000-000000000000',
       certificate,
     });

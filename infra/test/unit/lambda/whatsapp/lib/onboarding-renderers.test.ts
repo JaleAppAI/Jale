@@ -1063,13 +1063,19 @@ describe('createReleaseRenderer — account_notice carries the intent payload', 
   // path that ever materializes it is this release renderer -- which, without
   // a branch of its own, fell through to the generic notice and shipped the
   // raw source type: "Actualizacion de cuenta (application_web_completion)".
+  const ES_LINK = `https://jaleapp.ai/es/worker/applications/${APPLICATION_ID}`;
+  const EN_LINK = `https://jaleapp.ai/en/worker/applications/${APPLICATION_ID}`;
   const webCompletionPayload = {
     kind: 'application_web_completion',
     applicationId: APPLICATION_ID,
     conversationId: '99999999-8888-4777-8666-555555555555',
     jobTitle: 'Concrete Finisher',
     lang: 'es',
+    trade: 'Concreto',
+    url: ES_LINK,
   };
+  /** A line queued by the release before the trade and the link were stored. */
+  const { trade: _trade, url: _url, ...legacyPayload } = webCompletionPayload;
 
   function webCompletionRequest(
     payload: Record<string, unknown> | null,
@@ -1092,7 +1098,8 @@ describe('createReleaseRenderer — account_notice carries the intent payload', 
     expect(result.contentTemplate).toBeNull();
     expect(result.contentVariables).toBeNull();
     expect(result.body).toBe(
-      'Completaste tu solicitud para Concrete Finisher en la web. Te avisamos por aqui cuando el empleador responda.',
+      `Completaste tu solicitud para el trabajo de Concreto en la web. Revisa su estado en ${ES_LINK} `
+        + 'y te avisamos por aqu\u00ed cuando el empleador responda.',
     );
     // The bug this closes: never the generic fallback with the raw sourceType.
     expect(result.body).not.toContain('application_web_completion');
@@ -1100,18 +1107,32 @@ describe('createReleaseRenderer — account_notice carries the intent payload', 
 
   it('renders the English closing line on release', async () => {
     const result = await createReleaseRenderer().render(
-      webCompletionRequest({ ...webCompletionPayload, lang: 'en' }, 'en'),
+      webCompletionRequest({ ...webCompletionPayload, lang: 'en', trade: 'Concrete', url: EN_LINK }, 'en'),
     );
     expect(result.body).toBe(
-      "You completed your application for Concrete Finisher on the web. We'll let you know here when the employer responds.",
+      `You completed your application for the Concrete job on the web. See its status at ${EN_LINK} `
+        + "and we'll let you know here when the employer responds.",
     );
   });
 
-  it('falls back to a generic job name when the deferred payload has no title', async () => {
-    const result = await createReleaseRenderer().render(
-      webCompletionRequest({ ...webCompletionPayload, jobTitle: null }),
+  it('renders a line queued before the trade and link were stored by its title, with the application link', async () => {
+    const result = await createReleaseRenderer().render(webCompletionRequest(legacyPayload));
+    expect(result.contentTemplate).toBeNull();
+    expect(result.body).toBe(
+      `Completaste tu solicitud para el trabajo de Concrete Finisher en la web. Revisa su estado en ${ES_LINK} `
+        + 'y te avisamos por aqu\u00ed cuando el empleador responda.',
     );
-    expect(result.body).toContain('para este empleo en la web');
+  });
+
+  it.each([
+    ['no trade and no title', { ...legacyPayload, jobTitle: null }],
+    ['an empty trade', { ...webCompletionPayload, trade: ' ' }],
+    ['a link that is not this application\'s', { ...webCompletionPayload, url: 'https://jaleapp.ai/es/worker/applications/other' }],
+    ['a link that is not https', { ...webCompletionPayload, url: `javascript:alert(1)/${APPLICATION_ID}` }],
+  ])('keeps the generic notice for a free-form payload with %s', async (_label, payload) => {
+    const result = await createReleaseRenderer().render(webCompletionRequest(payload));
+    expect(result.contentTemplate).toBeNull();
+    expect(result.body).toContain('Actualizacion de cuenta (application_web_completion)');
   });
 
   it("prefers the payload's own lang over the release language", async () => {
@@ -1127,6 +1148,50 @@ describe('createReleaseRenderer — account_notice carries the intent payload', 
   it('keeps the generic notice for a malformed web-completion payload', async () => {
     const result = await createReleaseRenderer().render(
       webCompletionRequest({ ...webCompletionPayload, applicationId: 'not-a-uuid' }),
+    );
+    expect(result.contentTemplate).toBeNull();
+    expect(result.body).toContain('Actualizacion de cuenta (application_web_completion)');
+  });
+
+  // Sprint 28 (F28): an intent queued OUTSIDE the 24h window carries the
+  // template shape. A deferred one is materialized here later, and must
+  // become the same template the category renderer would have sent.
+  const templatePayload = {
+    ...webCompletionPayload,
+    shape: 'template',
+    trade: 'Electricista',
+    url: ES_LINK,
+  };
+
+  it('renders the web-completion TEMPLATE for a deferred intent queued outside the window', async () => {
+    const result = await createReleaseRenderer().render(webCompletionRequest(templatePayload));
+    expect(result.body).toBeNull();
+    expect(result.contentTemplate).toBe('application_web_completed_es');
+    expect(result.contentVariables).toEqual({
+      '1': 'Electricista',
+      '2': templatePayload.url,
+      __fallback_body: 'Completaste tu solicitud para el trabajo de Electricista en la web. '
+        + `Revisa su estado en ${templatePayload.url} y te avisamos por aqu\u00ed cuando el empleador responda.`,
+    });
+  });
+
+  it('renders the English template when the payload says en', async () => {
+    const url = `https://jaleapp.ai/en/worker/applications/${APPLICATION_ID}`;
+    const result = await createReleaseRenderer().render(
+      webCompletionRequest({ ...templatePayload, lang: 'en', trade: 'Electrician', url }, 'es'),
+    );
+    expect(result.contentTemplate).toBe('application_web_completed_en');
+    expect(result.contentVariables?.['1']).toBe('Electrician');
+  });
+
+  it.each([
+    ['no trade', { trade: '' }],
+    ['no link', { url: undefined }],
+    ['a link that is not this application\'s', { url: 'https://jaleapp.ai/es/worker/applications/other' }],
+    ['a link that is not https', { url: `javascript:alert(1)/${APPLICATION_ID}` }],
+  ])('keeps the generic notice for a template payload with %s', async (_label, overrides) => {
+    const result = await createReleaseRenderer().render(
+      webCompletionRequest({ ...templatePayload, ...overrides }),
     );
     expect(result.contentTemplate).toBeNull();
     expect(result.body).toContain('Actualizacion de cuenta (application_web_completion)');

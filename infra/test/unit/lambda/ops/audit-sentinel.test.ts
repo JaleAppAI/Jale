@@ -1,4 +1,6 @@
 import * as zlib from 'zlib';
+import { ListUserPoolClientsCommand, ListUserPoolsCommand } from '@aws-sdk/client-cognito-identity-provider';
+import * as sentinel from '../../../../lambda/ops/audit-sentinel';
 import {
   createAdminPoolResolver,
   createSentinelHandler,
@@ -14,6 +16,7 @@ import {
 } from '../../../../lambda/ops/audit-sentinel';
 import type { SentinelConfig } from '../../../../lambda/ops/audit-sentinel-rules';
 import {
+  ADMIN_CLIENT_ID,
   ADMIN_POOL_ID,
   ALERT_KEY_ALIAS,
   ALERT_KEY_ARN,
@@ -25,11 +28,16 @@ import {
   EXPORT_ROLE_ARN,
   MAIN_BUS_ARN,
   MASTER_SECRET_ARN,
+  OTHER_SECURITY_HUB_FINDING_ID,
   REGION,
+  SECURITY_HUB_FINDING_ID,
   SENTINEL_DEAD_LETTER_ARN,
   SENTINEL_DEAD_LETTER_NAME,
   SENTINEL_DEAD_LETTER_URL,
   SENTINEL_FUNCTION_ARN,
+  SIGN_IN_SUB,
+  EXAMPLE_DEVICE_KEY,
+  WORKER_CLIENT_ID,
   WORKER_POOL_ID,
   apiCall,
   assumedRole,
@@ -104,18 +112,55 @@ function poolPages(pages: Array<Array<{ Id: string; Name: string }>>) {
   return { calls, listPage };
 }
 
-function setup(resolverPages: Array<Array<{ Id: string; Name: string }>> = [[{ Id: ADMIN_POOL_ID, Name: 'jale-admin-pool' }]]) {
+type ClientsPage = Array<{ ClientId: string }>;
+
+/** A fake ListUserPoolClients: pages of the pool's app clients (read at each call), and the calls made. */
+function clientPages(pages: () => ClientsPage[]) {
+  const calls: Array<{ poolId: string; nextToken?: string }> = [];
+  const listClientsPage = async (poolId: string, nextToken?: string) => {
+    calls.push({ poolId, nextToken });
+    const current = pages();
+    const index = nextToken === undefined ? 0 : Number(nextToken);
+    return { clients: current[index] ?? [], nextToken: index + 1 < current.length ? String(index + 1) : undefined };
+  };
+  return { calls, listClientsPage };
+}
+
+type ResolverOptions = Parameters<typeof createAdminPoolResolver>[0];
+
+/** The resolver, given a pool lister, and an app-client lister that lists none unless one is passed. */
+function resolverWith(options: Omit<ResolverOptions, 'listClientsPage'> & { listClientsPage?: (poolId: string, nextToken?: string) => Promise<{ clients: ClientsPage; nextToken?: string }> }) {
+  return createAdminPoolResolver({ listClientsPage: async () => ({ clients: [] }), ...options } as ResolverOptions);
+}
+
+interface SetupOptions {
+  /** The admin pool's app clients, page by page (default: the admin client). */
+  clients?: () => ClientsPage[];
+  listClientsPage?: (poolId: string, nextToken?: string) => Promise<{ clients: ClientsPage; nextToken?: string }>;
+  now?: () => number;
+}
+
+function setup(
+  resolverPages: Array<Array<{ Id: string; Name: string }>> = [[{ Id: ADMIN_POOL_ID, Name: 'jale-admin-pool' }]],
+  options: SetupOptions = {},
+) {
   const archive = new MemoryArchive();
   const publisher = new MemoryPublisher();
   const pools = poolPages(resolverPages);
+  const clients = clientPages(options.clients ?? (() => [[{ ClientId: ADMIN_CLIENT_ID }]]));
   const deps: SentinelDependencies = {
     config: CONFIG,
     archive,
     publisher,
     logSources: { '/jale/audit/fallback': 'fallback', '/jale/audit/ops-command': 'ops-command' },
-    adminPool: createAdminPoolResolver({ listPage: pools.listPage, poolName: 'jale-admin-pool' }),
+    adminPool: resolverWith({
+      listPage: pools.listPage,
+      listClientsPage: options.listClientsPage ?? clients.listClientsPage,
+      poolName: 'jale-admin-pool',
+      ...(options.now ? { now: options.now } : {}),
+    }),
   };
-  return { archive, publisher, pools, handler: createSentinelHandler(deps) };
+  return { archive, publisher, pools, clients, handler: createSentinelHandler(deps) };
 }
 
 /** The EMF metric names emitted, from console.log. */
@@ -218,6 +263,42 @@ describe('audit sentinel handler', () => {
       publisher.fail = false;
       await handler(EVENTS.auditRoleAssumed);
       expect(publisher.sent).toHaveLength(1);
+    });
+
+    it('alerts once per Security Hub finding state, however often the finding is imported', async () => {
+      const { archive, publisher, handler } = setup();
+      await handler(EVENTS.securityHubCritical);
+      await handler(EVENTS.securityHubCriticalLater);
+      expect(publisher.sent).toHaveLength(1);
+      await handler(EVENTS.securityHubCriticalPassed);
+      expect(publisher.sent).toHaveLength(1);
+      await handler(EVENTS.securityHubCriticalOther);
+      expect(publisher.sent).toHaveLength(2);
+      const stateKeys = [...archive.objects.keys()].filter((key) => key.startsWith('findings/securityhub-state/'));
+      expect(stateKeys).toHaveLength(2);
+      for (const key of stateKeys) expect(key).toMatch(/^findings\/securityhub-state\/[0-9a-f]{64}\.json\.gz$/);
+      // The passed finding is archived under its event, as any finding that does not alert.
+      expect([...archive.objects.keys()].filter((key) => !stateKeys.includes(key)))
+        .toEqual([expect.stringMatching(/^findings\/securityhub\/dt=2026-10-06\//)]);
+      const kept = [
+        ...publisher.sent.flatMap((m) => [m.subject, m.message]),
+        ...stateKeys.flatMap((key) => [key, JSON.stringify(archive.json(key))]),
+        ...log.mock.calls.map(([line]) => String(line)),
+      ].join('\n');
+      for (const id of [SECURITY_HUB_FINDING_ID, OTHER_SECURITY_HUB_FINDING_ID]) expect(kept).not.toContain(id);
+    });
+
+    it('alerts on nothing for a finding once it is archived or suppressed, and archives each such import under its event', async () => {
+      const { archive, publisher, handler } = setup();
+      const base = EVENTS.securityHubCritical;
+      const finding = base.detail.findings[0];
+      await handler({ ...base, id: '9a0b0000-0000-4000-8000-0000000000a1', detail: { findings: [{ ...finding, RecordState: 'ARCHIVED' }] } });
+      await handler({ ...base, id: '9a0b0000-0000-4000-8000-0000000000a2', detail: { findings: [{ ...finding, Workflow: { Status: 'SUPPRESSED' } }] } });
+      expect(publisher.sent).toEqual([]);
+      expect([...archive.objects.keys()]).toEqual([
+        expect.stringMatching(/^findings\/securityhub\/dt=2026-10-04\/9a0b0000-0000-4000-8000-0000000000a1\.json\.gz$/),
+        expect.stringMatching(/^findings\/securityhub\/dt=2026-10-04\/9a0b0000-0000-4000-8000-0000000000a2\.json\.gz$/),
+      ]);
     });
 
     it('archives a finding that does not alert, and publishes nothing', async () => {
@@ -530,6 +611,7 @@ describe('audit sentinel handler', () => {
         eventId: expect.any(String),
         principalType: 'Unknown',
         errorCode: 'NotAuthorizedException',
+        authFlow: 'USER_SRP_AUTH',
         poolMatch: true,
       });
       const keys = [...archive.objects.keys()];
@@ -552,15 +634,16 @@ describe('audit sentinel handler', () => {
       expect(metricsEmitted(log)).toEqual([]);
     });
 
-    it('counts a failure that names no pool, and stores nothing of it anywhere', async () => {
-      const { archive, publisher, pools, handler } = setup();
+    it('counts a failure that names neither a pool nor a client, looks nothing up, and stores nothing of it anywhere', async () => {
+      const { archive, publisher, pools, clients, handler } = setup();
       await handler(EVENTS.unattributedSignInFailed);
       expect(metricsEmitted(log)).toEqual(['AuditCognitoEventUnattributed']);
       expect(publisher.sent).toEqual([]);
       expect(archive.calls).toEqual([]);
       expect(pools.calls).toEqual([]);
+      expect(clients.calls).toEqual([]);
       const logged = log.mock.calls.map(([line]) => String(line)).join('\n');
-      expect(logged).not.toMatch(/198\.51\.100\.|8c9d0e1f|exampleclientid/);
+      expect(logged).not.toMatch(/198\.51\.100\.|8c9d0e1f/);
     });
 
     it.each([
@@ -586,13 +669,267 @@ describe('audit sentinel handler', () => {
     });
   });
 
+  describe('admin sign-in failures named by app client', () => {
+    /** Everything the sentinel sent, stored or logged, as one text. */
+    function everythingKept(archive: MemoryArchive, publisher: MemoryPublisher): string {
+      return [
+        ...publisher.sent.flatMap((m) => [m.subject, m.message]),
+        ...[...archive.objects.keys()].flatMap((key) => [key, JSON.stringify(archive.json(key))]),
+        ...log.mock.calls.map(([line]) => String(line)),
+      ].join('\n');
+    }
+
+    it.each([
+      ['a wrong password', 'adminSrpPasswordVerifierFailed', 'NotAuthorizedException', 'PASSWORD_VERIFIER'],
+      ['a wrong authenticator code', 'adminMfaCodeFailedRealShape', 'CodeMismatchException', 'SOFTWARE_TOKEN_MFA'],
+      ["a remembered browser's refused device secret", 'adminDeviceSrpFailedRealShape', 'NotAuthorizedException', 'DEVICE_PASSWORD_VERIFIER'],
+    ] as const)('alerts on %s through an admin app client, with codes only', async (_label, name, errorCode, challengeName) => {
+      const { archive, publisher, handler } = setup();
+      await handler(EVENTS[name]);
+      expect(publisher.sent).toHaveLength(1);
+      expect(publisher.sent[0].subject).toBe('Jale audit alert: admin_sign_in_failed');
+      const message = JSON.parse(publisher.sent[0].message);
+      expect(message).toEqual({
+        rule: 'admin_sign_in_failed',
+        summary: expect.any(String),
+        eventSource: 'cognito-idp.amazonaws.com',
+        eventName: 'RespondToAuthChallenge',
+        eventTime: '2026-10-04T12:00:00Z',
+        awsRegion: 'us-east-2',
+        eventId: expect.any(String),
+        principalType: 'Unknown',
+        errorCode,
+        challengeName,
+        poolMatch: true,
+      });
+      const keys = [...archive.objects.keys()];
+      expect(keys).toEqual([expect.stringMatching(/^findings\/cognito\/dt=2026-10-04\/[A-Za-z0-9-]+\.json\.gz$/)]);
+      expect(archive.json(keys[0])).toEqual({ alert: message });
+      expect(metricsEmitted(log)).toEqual(['AuditSentinelAlerts']);
+      const kept = everythingKept(archive, publisher);
+      for (const value of [ADMIN_CLIENT_ID, SIGN_IN_SUB, 'HIDDEN_DUE_TO_SECURITY_REASONS', '198.51.100.', 'Incorrect', 'Invalid code']) {
+        expect(kept).not.toContain(value);
+      }
+    });
+
+    it('alerts on a refused refresh through an admin app client, naming its flow, so it reads apart from a wrong password', async () => {
+      const { archive, publisher, handler } = setup();
+      await handler(EVENTS.adminRefreshRevokedRealShape);
+      expect(publisher.sent).toHaveLength(1);
+      const message = JSON.parse(publisher.sent[0].message);
+      expect(message).toEqual({
+        rule: 'admin_sign_in_failed',
+        summary: expect.any(String),
+        eventSource: 'cognito-idp.amazonaws.com',
+        eventName: 'InitiateAuth',
+        eventTime: '2026-10-04T12:00:00Z',
+        awsRegion: 'us-east-2',
+        eventId: expect.any(String),
+        principalType: 'Unknown',
+        errorCode: 'NotAuthorizedException',
+        authFlow: 'REFRESH_TOKEN_AUTH',
+        poolMatch: true,
+      });
+      const kept = everythingKept(archive, publisher);
+      for (const value of [ADMIN_CLIENT_ID, SIGN_IN_SUB, 'HIDDEN_DUE_TO_SECURITY_REASONS', '198.51.100.', 'Refresh Token has been revoked']) {
+        expect(kept).not.toContain(value);
+      }
+    });
+
+    it('keeps only codes from an admin failure that carries unknown values, a session or a device key', async () => {
+      const { archive, publisher, handler } = setup();
+      const base = EVENTS.adminDeviceSrpFailedRealShape;
+      await handler({
+        ...base,
+        detail: {
+          ...base.detail,
+          requestParameters: {
+            clientId: ADMIN_CLIENT_ID,
+            authFlow: 'EXAMPLE_FUTURE_FLOW',
+            challengeName: 'EXAMPLE_FUTURE_CHALLENGE',
+            session: 'example-session-value',
+            deviceKey: EXAMPLE_DEVICE_KEY,
+          },
+        },
+      });
+      expect(publisher.sent).toHaveLength(1);
+      expect(JSON.parse(publisher.sent[0].message)).toMatchObject({ authFlow: 'other', challengeName: 'other' });
+      const kept = everythingKept(archive, publisher);
+      for (const value of [ADMIN_CLIENT_ID, SIGN_IN_SUB, EXAMPLE_DEVICE_KEY, 'example-session-value', 'EXAMPLE_FUTURE_FLOW', 'EXAMPLE_FUTURE_CHALLENGE', '198.51.100.']) {
+        expect(kept).not.toContain(value);
+      }
+    });
+
+    it("drops another app client's failure silently: no alert, no archive, no metric", async () => {
+      const { archive, publisher, handler } = setup();
+      await handler(EVENTS.workerSrpFailedRealShape);
+      expect(publisher.sent).toEqual([]);
+      expect(archive.calls).toEqual([]);
+      expect(metricsEmitted(log)).toEqual([]);
+      const kept = everythingKept(archive, publisher);
+      for (const value of [WORKER_CLIENT_ID, SIGN_IN_SUB, '198.51.100.']) expect(kept).not.toContain(value);
+    });
+
+    it('drops a failure in another pool, even when it names an admin app client', async () => {
+      const { archive, publisher, clients, handler } = setup();
+      const named = EVENTS.workerSignInFailed;
+      await handler({ ...named, detail: { ...named.detail, requestParameters: { clientId: ADMIN_CLIENT_ID, challengeName: 'PASSWORD_VERIFIER' } } });
+      expect(publisher.sent).toEqual([]);
+      expect(archive.calls).toEqual([]);
+      expect(metricsEmitted(log)).toEqual([]);
+      expect(clients.calls.every((call) => call.poolId === ADMIN_POOL_ID)).toBe(true);
+    });
+
+    it('keeps nothing of a sign-in that succeeded, and never logs the device key it carries', async () => {
+      const { archive, publisher, pools, clients, handler } = setup();
+      await handler(EVENTS.adminDeviceIssued);
+      expect(publisher.sent).toEqual([]);
+      expect(archive.calls).toEqual([]);
+      expect(metricsEmitted(log)).toEqual([]);
+      expect([pools.calls, clients.calls]).toEqual([[], []]);
+      const kept = everythingKept(archive, publisher);
+      for (const value of [EXAMPLE_DEVICE_KEY, ADMIN_CLIENT_ID, SIGN_IN_SUB]) expect(kept).not.toContain(value);
+    });
+
+    it("reads the admin pool's app clients after the pool, and keeps them for later events", async () => {
+      let now = 0;
+      const { publisher, pools, clients, handler } = setup(undefined, { now: () => now });
+      await handler(EVENTS.adminSrpPasswordVerifierFailed);
+      now += 1000;
+      await handler(EVENTS.adminMfaCodeFailedRealShape);
+      now += 1000;
+      await handler(EVENTS.adminDeviceSrpFailedRealShape);
+      expect(publisher.sent).toHaveLength(3);
+      expect(pools.calls).toHaveLength(1);
+      expect(clients.calls).toEqual([{ poolId: ADMIN_POOL_ID, nextToken: undefined }]);
+    });
+
+    it('finds an admin app client on a later page', async () => {
+      const { publisher, clients, handler } = setup(undefined, {
+        clients: () => [[{ ClientId: 'exampleotherclient00000000' }], [{ ClientId: ADMIN_CLIENT_ID }]],
+      });
+      await handler(EVENTS.adminSrpPasswordVerifierFailed);
+      expect(clients.calls).toEqual([{ poolId: ADMIN_POOL_ID, nextToken: undefined }, { poolId: ADMIN_POOL_ID, nextToken: '1' }]);
+      expect(publisher.sent).toHaveLength(1);
+    });
+
+    it('reads the clients again for an unknown client at most once every five minutes, so other clients cost no lookup each', async () => {
+      let now = 0;
+      const { publisher, clients, handler } = setup(undefined, { now: () => now });
+      await handler(EVENTS.adminSrpPasswordVerifierFailed);
+      expect(clients.calls).toHaveLength(1);
+      for (let i = 0; i < 20; i += 1) {
+        now += 1000;
+        await handler(EVENTS.workerSrpFailedRealShape);
+      }
+      expect(clients.calls).toHaveLength(1);
+      now = 6 * 60 * 1000;
+      await handler(EVENTS.workerSrpFailedRealShape);
+      expect(clients.calls).toHaveLength(2);
+      now += 1000;
+      await handler(EVENTS.workerSrpFailedRealShape);
+      expect(clients.calls).toHaveLength(2);
+      expect(publisher.sent).toHaveLength(1);
+      expect(metricsEmitted(log).filter((name) => name !== 'AuditSentinelAlerts')).toEqual([]);
+    });
+
+    it('finds an admin app client added since the last read, once that read is five minutes old', async () => {
+      let now = 0;
+      let pages: ClientsPage[] = [[{ ClientId: 'exampleotherclient00000000' }]];
+      const { publisher, clients, handler } = setup(undefined, { now: () => now, clients: () => pages });
+      await handler(EVENTS.adminSrpPasswordVerifierFailed);
+      expect(publisher.sent).toEqual([]);
+      pages = [[{ ClientId: 'exampleotherclient00000000' }, { ClientId: ADMIN_CLIENT_ID }]];
+      now = 60 * 1000;
+      await handler(EVENTS.adminMfaCodeFailedRealShape);
+      expect(publisher.sent).toEqual([]);
+      now = 6 * 60 * 1000;
+      await handler(EVENTS.adminDeviceSrpFailedRealShape);
+      expect(publisher.sent).toHaveLength(1);
+      expect(clients.calls).toHaveLength(2);
+    });
+
+    it('reads the pool and its clients again after an hour', async () => {
+      let now = 0;
+      const { pools, clients, handler } = setup(undefined, { now: () => now });
+      await handler(EVENTS.adminSrpPasswordVerifierFailed);
+      now = 60 * 60 * 1000 - 1;
+      await handler(EVENTS.adminMfaCodeFailedRealShape);
+      expect([pools.calls.length, clients.calls.length]).toEqual([1, 1]);
+      now = 60 * 60 * 1000 + 1;
+      await handler(EVENTS.adminDeviceSrpFailedRealShape);
+      expect([pools.calls.length, clients.calls.length]).toEqual([2, 2]);
+    });
+
+    it('fails, so the event is retried, when listing the clients fails, and keeps no part of that lookup', async () => {
+      let fail = true;
+      const { publisher, pools, handler } = setup(undefined, {
+        listClientsPage: async () => {
+          if (fail) throw new Error('clients throttled');
+          return { clients: [{ ClientId: ADMIN_CLIENT_ID }] };
+        },
+      });
+      await expect(handler(EVENTS.adminSrpPasswordVerifierFailed)).rejects.toThrow('clients throttled');
+      expect(publisher.sent).toEqual([]);
+      fail = false;
+      await handler(EVENTS.adminSrpPasswordVerifierFailed);
+      expect(publisher.sent).toHaveLength(1);
+      expect(pools.calls).toHaveLength(2);
+    });
+
+    it('counts the pool as unresolved, and alerts on nothing, when no pool has the name', async () => {
+      const { archive, publisher, clients, handler } = setup([[{ Id: WORKER_POOL_ID, Name: 'jale-worker-pool' }]]);
+      await handler(EVENTS.adminSrpPasswordVerifierFailed);
+      expect(metricsEmitted(log)).toEqual(['AuditCognitoPoolUnresolved']);
+      expect(publisher.sent).toEqual([]);
+      expect(archive.calls).toEqual([]);
+      expect(clients.calls).toEqual([]);
+    });
+  });
+
+  describe('the user-pool listings through the SDK', () => {
+    type Listers = Pick<ResolverOptions, 'listPage'> & {
+      listClientsPage(poolId: string, nextToken?: string): Promise<{ clients: Array<{ ClientId?: string }>; nextToken?: string }>;
+    };
+    const sdkUserPoolListers = (sentinel as Record<string, unknown>).sdkUserPoolListers as (client: { send(command: unknown): Promise<unknown> }) => Listers;
+
+    it('lists the pools, and a pool\'s app clients, 60 to a page, following each next token', async () => {
+      expect(typeof sdkUserPoolListers).toBe('function');
+      const sent: unknown[] = [];
+      const client = {
+        async send(command: unknown) {
+          sent.push(command);
+          if (command instanceof ListUserPoolsCommand) {
+            return command.input.NextToken === undefined
+              ? { UserPools: [{ Id: WORKER_POOL_ID, Name: 'jale-worker-pool' }], NextToken: 'pools-2' }
+              : { UserPools: [{ Id: ADMIN_POOL_ID, Name: 'jale-admin-pool' }] };
+          }
+          if (command instanceof ListUserPoolClientsCommand) {
+            return command.input.NextToken === undefined
+              ? { UserPoolClients: [{ ClientId: 'exampleotherclient00000000', UserPoolId: ADMIN_POOL_ID }], NextToken: 'clients-2' }
+              : { UserPoolClients: [{ ClientId: ADMIN_CLIENT_ID, UserPoolId: ADMIN_POOL_ID }] };
+          }
+          throw new Error('unexpected command');
+        },
+      };
+      const resolver = createAdminPoolResolver({ ...sdkUserPoolListers(client), poolName: 'jale-admin-pool' } as ResolverOptions);
+      await expect(resolver.resolve(ADMIN_POOL_ID)).resolves.toMatchObject({ status: 'resolved', adminPoolId: ADMIN_POOL_ID });
+      expect(sent.map((command) => [(command as { constructor: { name: string } }).constructor.name, (command as { input: unknown }).input])).toEqual([
+        ['ListUserPoolsCommand', { MaxResults: 60 }],
+        ['ListUserPoolsCommand', { MaxResults: 60, NextToken: 'pools-2' }],
+        ['ListUserPoolClientsCommand', { UserPoolId: ADMIN_POOL_ID, MaxResults: 60 }],
+        ['ListUserPoolClientsCommand', { UserPoolId: ADMIN_POOL_ID, MaxResults: 60, NextToken: 'clients-2' }],
+      ]);
+    });
+  });
+
   describe('the admin pool resolver', () => {
     const HOUR = 60 * 60 * 1000;
 
     it('caches the pool for an hour, then looks it up again', async () => {
       let now = 0;
       const pools = poolPages([[{ Id: ADMIN_POOL_ID, Name: 'jale-admin-pool' }]]);
-      const resolver = createAdminPoolResolver({ listPage: pools.listPage, poolName: 'jale-admin-pool', now: () => now });
+      const resolver = resolverWith({ listPage: pools.listPage, poolName: 'jale-admin-pool', now: () => now });
       await expect(resolver.resolve(ADMIN_POOL_ID)).resolves.toEqual({ status: 'resolved', adminPoolId: ADMIN_POOL_ID });
       now = HOUR - 1;
       await resolver.resolve(ADMIN_POOL_ID);
@@ -606,7 +943,7 @@ describe('audit sentinel handler', () => {
       let now = 0;
       let pages = [[{ Id: 'us-east-2_OldAdmin', Name: 'jale-admin-pool' }]];
       const calls: number[] = [];
-      const resolver = createAdminPoolResolver({
+      const resolver = resolverWith({
         listPage: async () => { calls.push(now); return { pools: pages[0] }; },
         poolName: 'jale-admin-pool',
         now: () => now,
@@ -621,7 +958,7 @@ describe('audit sentinel handler', () => {
     it('does not look the pool up for every other-pool event: at most once every five minutes', async () => {
       let now = 0;
       const pools = poolPages([[{ Id: ADMIN_POOL_ID, Name: 'jale-admin-pool' }]]);
-      const resolver = createAdminPoolResolver({ listPage: pools.listPage, poolName: 'jale-admin-pool', now: () => now });
+      const resolver = resolverWith({ listPage: pools.listPage, poolName: 'jale-admin-pool', now: () => now });
       await resolver.resolve(ADMIN_POOL_ID);
       for (let i = 0; i < 20; i += 1) {
         now += 1000;
@@ -636,7 +973,7 @@ describe('audit sentinel handler', () => {
     it('caches an unresolved answer too, so a missing pool is not looked up on every event', async () => {
       let now = 0;
       const pools = poolPages([[]]);
-      const resolver = createAdminPoolResolver({ listPage: pools.listPage, poolName: 'jale-admin-pool', now: () => now });
+      const resolver = resolverWith({ listPage: pools.listPage, poolName: 'jale-admin-pool', now: () => now });
       await expect(resolver.resolve(ADMIN_POOL_ID)).resolves.toEqual({ status: 'unresolved' });
       now = 60 * 1000;
       await resolver.resolve(ADMIN_POOL_ID);
@@ -644,7 +981,7 @@ describe('audit sentinel handler', () => {
     });
 
     it('fails, so the event is retried, when the lookup itself fails', async () => {
-      const resolver = createAdminPoolResolver({
+      const resolver = resolverWith({
         listPage: async () => { throw new Error('throttled'); },
         poolName: 'jale-admin-pool',
       });
@@ -694,7 +1031,7 @@ describe('audit sentinel handler', () => {
         archive,
         publisher,
         logSources: {},
-        adminPool: createAdminPoolResolver({ listPage: async () => ({ pools: [] }), poolName: 'jale-admin-pool' }),
+        adminPool: resolverWith({ listPage: async () => ({ pools: [] }), poolName: 'jale-admin-pool' }),
         edge: {
           config: { regions: ['us-east-1', 'us-west-2'], rules: RULES, mainBusArn: MAIN_BUS, deadLetterArns: { 'us-east-1': DLQ('us-east-1'), 'us-west-2': DLQ('us-west-2') } },
           inspector,
@@ -805,7 +1142,7 @@ describe('audit sentinel handler', () => {
         archive: new MemoryArchive(),
         publisher,
         logSources: {},
-        adminPool: createAdminPoolResolver({ listPage: async () => ({ pools: [] }), poolName: 'jale-admin-pool' }),
+        adminPool: resolverWith({ listPage: async () => ({ pools: [] }), poolName: 'jale-admin-pool' }),
         edge: {
           config: {
             regions: [],
@@ -875,7 +1212,7 @@ describe('audit sentinel handler', () => {
         archive: new MemoryArchive(),
         publisher,
         logSources: {},
-        adminPool: createAdminPoolResolver({ listPage: async () => ({ pools: [] }), poolName: 'jale-admin-pool' }),
+        adminPool: resolverWith({ listPage: async () => ({ pools: [] }), poolName: 'jale-admin-pool' }),
         edge: {
           config: {
             regions: ['us-west-2'],

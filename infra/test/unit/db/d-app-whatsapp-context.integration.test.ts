@@ -433,6 +433,13 @@ describeInProfiles(['request', 'owner-unrestricted'], 'change records on the Wha
     const number = worker.phone!;
     rows.numbers.push(number);
     const caseId = await seed(() => adminReply(s, worker.id, number, { status: 'pending' }));
+    // The worker wrote recently: the reply goes freeform inside the window.
+    const inboundSid = `SM${hex(16)}`;
+    rows.sids.push(inboundSid);
+    await seed(() => s.world.su.query(
+      `INSERT INTO whatsapp_processed_messages (message_sid, whatsapp_number, status) VALUES ($1, $2, 'completed')`,
+      [inboundSid, number],
+    ));
     const sentSid = `SM${hex(16)}`;
     fetchSpy.mockImplementation((async () => ({
       ok: true, status: 201, json: async () => ({ sid: sentSid }),

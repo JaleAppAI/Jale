@@ -58,7 +58,9 @@ const WALKED_NAMESPACE_SIZES: Record<string, number> = {
     // `terminal.already_complete_note`, the line that tells a worker whose
     // edit was refused with 409 `application_locked` to reach the employer on
     // WhatsApp instead.
-    worker_application_details: 81,
+    // 103 since sprint 28 (F19): the 22 `hired_card` keys of the hired
+    // application's card (start details, Remind my employer, the message box).
+    worker_application_details: 103,
     'worker_applications.details_banner': 9,
     'worker_job_detail.apply_flow': 14,
     'worker_job_detail.what_you_need': 19,

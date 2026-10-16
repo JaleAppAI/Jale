@@ -186,7 +186,9 @@ describe('WorkerAuthForm — signup is phone only', () => {
         // onboarding flow's own step and written to the profile.
         await waitFor(() => expect(cognito.workerSignUp).toHaveBeenCalledTimes(1));
         const [arg] = cognito.workerSignUp.mock.calls[0];
-        expect(Object.keys(arg)).toEqual(['phone']);
+        // The phone and the first-party signup source (K3.6) -- never a name.
+        expect(Object.keys(arg).sort()).toEqual(['phone', 'signupSource']);
+        expect(arg.signupSource).toEqual({ src: null, entry: 'signup_page' });
     });
 });
 
@@ -656,7 +658,7 @@ describe('WorkerAuthForm — an unrecognised number on sign-in', () => {
         await user.click(await screen.findByRole('button', { name: message('auth.worker.signup_nudge') }));
         await user.click(screen.getByRole('button', { name: message('auth.worker.create_account') }));
 
-        await waitFor(() => expect(cognito.workerSignUp).toHaveBeenCalledWith({ phone: '+12105550134' }));
+        await waitFor(() => expect(cognito.workerSignUp).toHaveBeenCalledWith({ phone: '+12105550134', signupSource: { src: null, entry: 'signup_page' } }));
     });
 
     it('keeps its name apart from the "Create an account" link', async () => {
@@ -883,5 +885,51 @@ describe('WorkerAuthForm — the job opened last wins over a leftover referral',
         } finally {
             if (original) Object.defineProperty(window, 'sessionStorage', original);
         }
+    });
+});
+
+describe('WorkerAuthForm — where the signup came from (K3.6, T-c)', () => {
+    async function createAccount(user: ReturnType<typeof userEvent.setup>) {
+        await user.type(screen.getByRole('textbox'), '2100000000');
+        await user.click(screen.getByRole('button', { name: message('auth.worker.create_account') }));
+        await waitFor(() => expect(cognito.workerSignUp).toHaveBeenCalledTimes(1));
+        return cognito.workerSignUp.mock.calls[0][0];
+    }
+
+    it('sends the /app link\'s code, once', async () => {
+        query.current = new URLSearchParams('step=signup&src=qr');
+        const user = userEvent.setup();
+        render(<WorkerAuthForm />);
+
+        expect((await createAccount(user)).signupSource).toEqual({ src: 'qr', entry: 'app' });
+        expect(sessionStorage.getItem('jale.signup-source')).toBeNull();
+    });
+
+    it('drops a code that is not one of Jale\'s own', async () => {
+        query.current = new URLSearchParams('step=signup&src=evil-code');
+        const user = userEvent.setup();
+        render(<WorkerAuthForm />);
+
+        expect((await createAccount(user)).signupSource).toEqual({ src: null, entry: 'app' });
+    });
+
+    it('keeps the first touch of the visit', async () => {
+        sessionStorage.setItem('jale.signup-source', JSON.stringify({ src: 'flyer', entry: 'job_link', capturedAt: '2026-10-14T00:00:00.000Z' }));
+        query.current = new URLSearchParams('step=signup&src=qr');
+        const user = userEvent.setup();
+        render(<WorkerAuthForm />);
+
+        expect((await createAccount(user)).signupSource).toEqual({ src: 'flyer', entry: 'job_link' });
+    });
+
+    it('still signs up when storage refuses', async () => {
+        vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked'); });
+        vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
+        query.current = new URLSearchParams('step=signup&src=qr');
+        const user = userEvent.setup();
+        render(<WorkerAuthForm />);
+
+        expect((await createAccount(user)).signupSource).toBeNull();
+        vi.restoreAllMocks();
     });
 });

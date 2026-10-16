@@ -55,6 +55,12 @@ export type ApiErrorPayload = {
    * and only prefers this one when it arrives well-formed.
    */
   blocking_jobs?: Array<{ id: string; title: string }>;
+  /**
+   * `rate_limited` (429 from the worker message and remind doors, K4.3/K4.4):
+   * seconds until another send is accepted. Validated: a value that is not a
+   * finite number >= 0 is dropped, and the UI falls back to its own wording.
+   */
+  retry_after_seconds?: number;
 };
 
 /**
@@ -65,6 +71,14 @@ export type ApiErrorPayload = {
  * so callers can keep reading it off the plan-limit model.
  */
 export const BLOCKING_JOBS_LIMIT = 3;
+
+/**
+ * `apiFetch`'s code for a 401 whose token renewal was answered by an outage
+ * rather than a verdict (contract K4.1). The session is intact; the request
+ * can be retried. `classifyError` reads it as connectivity, not as a server
+ * fault in the request itself.
+ */
+export const SESSION_REFRESH_UNAVAILABLE = 'session_refresh_unavailable';
 
 const ALLOWED_PAYLOAD_KEYS = [
   'plan_code',
@@ -81,6 +95,7 @@ const ALLOWED_PAYLOAD_KEYS = [
   'missing',
   'fields',
   'blocking_jobs',
+  'retry_after_seconds',
 ] as const;
 
 /**
@@ -151,6 +166,10 @@ function pickAllowedPayload(body: Record<string, unknown>): ApiErrorPayload {
     // crash the surface rather than degrade it -- same reasoning as
     // `missing_docs` above, applied to each variant.
     if (key === 'missing' && !isStringArray(value) && !isHireGateMissing(value)) continue;
+    if (
+      key === 'retry_after_seconds'
+      && !(typeof value === 'number' && Number.isFinite(value) && value >= 0)
+    ) continue;
     if (key === 'blocking_jobs') {
       // One bad entry poisons the list: the dialog renders a row per entry, so
       // a partially-valid list is still one it cannot trust. Drop the whole key
@@ -283,7 +302,12 @@ export function classifyError(err: unknown): ClassifiedError {
   if (err instanceof ApiError) {
     const kind: ErrorKind = err.status === 0 && err.code === 'timeout'
       ? 'timeout'
-      : kindForStatus(err.status);
+      // A renewal outage is a 503 from OUR refresh path, not a fault in the
+      // request the page made: the session is intact, and the honest sentence
+      // is the connectivity one, with a retry.
+      : err.code === SESSION_REFRESH_UNAVAILABLE
+        ? 'offline'
+        : kindForStatus(err.status);
     return {
       kind,
       status: err.status,

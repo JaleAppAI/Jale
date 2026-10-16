@@ -86,3 +86,30 @@ export function clearSignageDismissals(): void {
         }
     }
 }
+
+/**
+ * Forgets THIS account's free-plan dismissals, for every plan code.
+ *
+ * Called when the account is seen on a healthy paid plan. A dismissal answered
+ * the free-plan banner of an EARLIER free period; a later fall back to Free is
+ * a new fact the employer has not read. Matched by prefix and account suffix,
+ * because at that moment the plan code is the paid one, not the free code the
+ * key carries. Lapsed dismissals (session storage) are left alone.
+ */
+export function clearFreeSignageDismissals(account: string | null): void {
+    if (account === null || typeof window === 'undefined') return;
+    const prefix = `${SIGNAGE_PREFIX}free.`;
+    const suffix = `.${account}`;
+    try {
+        const store = window.localStorage;
+        const doomed: string[] = [];
+        for (let i = 0; i < store.length; i += 1) {
+            const key = store.key(i);
+            if (key !== null && key.startsWith(prefix) && key.endsWith(suffix)) doomed.push(key);
+        }
+        // Collected first: removing during the walk reindexes the store.
+        for (const key of doomed) store.removeItem(key);
+    } catch {
+        // Storage unavailable: nothing was remembered, so nothing to forget.
+    }
+}

@@ -1,4 +1,7 @@
-import { bucketLabel, formatCount, percentOf } from './analytics-format';
+import type { ChartSeries } from '../components/analytics/charts/types';
+import { bucketLabel, formatCount, oldestFirst, percentOf, shareRate, weekLabel, weeklyAxis, wholePercent } from './analytics-format';
+import { isCurrentWeek } from './ops-health';
+import type { PayingWeek, StaleDays, TemplateReuseWeek } from './server/admin-analytics';
 import type {
   EmployerHealthFigures,
   EmployerHealthSummary,
@@ -148,7 +151,76 @@ export function formatDay(iso: string | null): string {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
 }
 
-// The weeks picker stays on the Employers tab.
-export function employersHref(weeks: FunnelWeeks): string {
-  return `/analytics/employers?weeks=${weeks}`;
+// The weeks and stale pickers stay on the Employers tab and keep each other;
+// the default stale window (14 days) is left out of the link.
+export function employersHref(weeks: FunnelWeeks, stale: StaleDays = 14): string {
+  return stale === 14 ? `/analytics/employers?weeks=${weeks}` : `/analytics/employers?weeks=${weeks}&stale=${stale}`;
+}
+
+// ---- S28 FE-4: the Employers tab and #2 (K3.3 shapes) ---------------------------
+export type WeeklyBars = { labels: string[]; partialLast: boolean; series: ChartSeries[] };
+
+// #2: new paying employers per week (a column per week).
+export function payingChart(result: { weeks: PayingWeek[]; approximateBefore: string | null }): WeeklyBars {
+  const weeks = oldestFirst(result.weeks);
+  return {
+    ...weeklyAxis(weeks),
+    series: [{ key: 'newPaying', label: 'New paying employers', color: 'chart-1', values: weeks.map((w) => w.newPaying) }],
+  };
+}
+
+// The #2 headline: the latest week's paying share, with its counts.
+export function payingHeadline(weeks: PayingWeek[]): { value: string; note: string } {
+  const last = oldestFirst(weeks).at(-1);
+  if (last === undefined) return { value: '—', note: 'of employers are paying' };
+  return {
+    value: wholePercent(last.paying, last.employers),
+    note: `of employers are paying (${formatCount(last.paying)} of ${formatCount(last.employers)})`,
+  };
+}
+
+export function approximateNote(approximateBefore: string | null): string | null {
+  return approximateBefore === null
+    ? null
+    : `Weeks before ${weekLabel(approximateBefore)} are approximate: subscription history starts then, so earlier churn is under-counted.`;
+}
+
+// #18: the share of new jobs posted from a saved template, per week.
+export function templateReuseChart(result: { weeks: TemplateReuseWeek[]; collectingSince: string | null }): WeeklyBars & { empty: boolean } {
+  const weeks = oldestFirst(result.weeks);
+  return {
+    ...weeklyAxis(weeks),
+    series: [{ key: 'fromTemplate', label: 'Jobs from a template', color: 'chart-1', values: weeks.map((w) => shareRate(w.fromTemplate, w.jobs)) }],
+    empty: result.collectingSince === null,
+  };
+}
+
+// #3: hires per week from the weekly employer figures (the week holding `now` is partial).
+export function hiresChart(weekly: EmployerWeek[], now: Date = new Date()): WeeklyBars {
+  const weeks = [...weekly].sort((a, b) => Date.parse(a.weekStart) - Date.parse(b.weekStart));
+  const last = weeks.at(-1);
+  return {
+    labels: weeks.map((w) => weekLabel(w.weekStart)),
+    partialLast: last !== undefined && isCurrentWeek(last.weekStart, now),
+    series: [{ key: 'hires', label: 'Hires', color: 'chart-1', values: weeks.map((w) => w.hires) }],
+  };
+}
+
+// #8: median first response and reply, in hours (null: nothing to time, a gap).
+export function responseChart(weekly: EmployerWeek[], now: Date = new Date()): WeeklyBars {
+  const weeks = [...weekly].sort((a, b) => Date.parse(a.weekStart) - Date.parse(b.weekStart));
+  const last = weeks.at(-1);
+  return {
+    labels: weeks.map((w) => weekLabel(w.weekStart)),
+    partialLast: last !== undefined && isCurrentWeek(last.weekStart, now),
+    series: [
+      { key: 'firstResponse', label: 'First response', color: 'chart-1', values: weeks.map((w) => w.firstResponseP50Hours) },
+      { key: 'reply', label: 'Reply time', color: 'chart-2', values: weeks.map((w) => w.replyP50Hours) },
+    ],
+  };
+}
+
+// #4: the words after the count, "6 | open jobs with no employer action".
+export function staleNote(count: number): string {
+  return `open ${count === 1 ? 'job' : 'jobs'} with no employer action`;
 }

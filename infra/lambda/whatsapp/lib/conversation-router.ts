@@ -46,6 +46,14 @@ export interface ConversationRow {
   otp_expires_at: Date | null;
   last_processed_message_sid: string | null;
   focused_job_conversation_id: string | null;
+  /**
+   * Support mode (migration 121): the case the conversation is talking to
+   * the team in, and when the worker or the team last wrote there. Written
+   * only by the bot (lib/support-mode.ts and the admin dispatcher). Optional
+   * because the read-only conversation lookups do not select them.
+   */
+  support_case_id?: string | null;
+  support_last_activity_at?: Date | null;
 }
 
 // ── Inbound message shape ───────────────────────────────────────

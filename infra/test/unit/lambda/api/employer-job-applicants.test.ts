@@ -316,6 +316,32 @@ describe('employer-job-applicants Lambda', () => {
       ]);
     });
 
+    // F19 (K4.2): the start details the employer saved for a hire, and
+    // whether a hire still needs them.
+    it('publishes hire_details and hire_details_needed, and strips the raw hire columns', async () => {
+      mockRun({}, [
+        { application_id: 'hired-with', status: 'hired', hire_start_date: '2026-10-20', hire_report_location: 'Gate 3',
+          hire_contact_name: null, hire_contact_phone: null, hire_notes: null,
+          hire_details_updated_at: new Date('2026-10-14T12:00:00.000Z') },
+        { application_id: 'hired-without', status: 'hired' },
+        { application_id: 'talking', status: 'talking' },
+      ]);
+      const applicants = JSON.parse((await handler(makeEvent())).body).applicants;
+      expect(applicants.map((a: any) => [a.application_id, a.hire_details, a.hire_details_needed])).toEqual([
+        ['hired-with', { start_date: '2026-10-20', report_location: 'Gate 3', contact_name: null, contact_phone: null,
+          notes: null, updated_at: '2026-10-14T12:00:00.000Z' }, false],
+        ['hired-without', null, true],
+        ['talking', null, false],
+      ]);
+      for (const applicant of applicants) {
+        for (const raw of ['hire_start_date', 'hire_report_location', 'hire_contact_name', 'hire_contact_phone', 'hire_notes',
+          'hire_details_updated_at']) {
+          expect(Object.prototype.hasOwnProperty.call(applicant, raw)).toBe(false);
+        }
+      }
+      expect(applicantSql()).toContain("to_char(ja.hire_start_date, 'YYYY-MM-DD') AS hire_start_date");
+    });
+
     it('drops the internal have_docs helper column from the response', async () => {
       mockRun({}, [{ have_docs: ['resume'] }]);
       const applicant = JSON.parse((await handler(makeEvent())).body).applicants[0];

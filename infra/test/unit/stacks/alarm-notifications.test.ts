@@ -106,8 +106,13 @@ const OPS_TOPIC_ALARMS: Array<[stack: string, constructId: string]> = [
   ['JaleMatchingStack', 'EmployerCandidateRerankDlqAlarm'],
   ['JaleAdminStack', 'AdminLambdaErrorsAlarm'],
   ['JaleAdminStack', 'AdminLambdaThrottlesAlarm'],
-  ['JaleAdminStack', 'AdminCloudFront5xxAlarm'],
 ];
+
+/** Whether an alarm reads a metric in a namespace, directly or through metric math. */
+function readsNamespace(alarm: Json, namespace: string): boolean {
+  return alarm.Properties.Namespace === namespace
+    || (alarm.Properties.Metrics ?? []).some((m: Json) => m.MetricStat?.Metric?.Namespace === namespace);
+}
 
 describe('alarm notifications (real composition)', () => {
   let stacks: Record<string, ComposedStack>;
@@ -134,6 +139,41 @@ describe('alarm notifications (real composition)', () => {
     for (const constructId of ['SesBounceCountUsEast1Alarm', 'SesReputationBounceRateUsEast1Alarm']) {
       expect(alarmByConstructId(frontend.template, constructId).Properties.AlarmActions).toEqual([{ Ref: topicId }]);
     }
+  });
+
+  it("owns the admin CDN error alarm in a us-east-1 stack, on CloudFront's global metric, notifying that region's topic", () => {
+    const owners = Object.entries(stacks).flatMap(([stackName, { region, template }]) => Object.values(alarmsOf(template))
+      .filter((alarm) => alarm.Properties.AlarmName === 'jale-admin-cloudfront-5xx')
+      .map((alarm) => ({ stackName, region, template, alarm })));
+    expect(owners).toHaveLength(1);
+    const [{ region, template, alarm }] = owners;
+    expect(region).toBe('us-east-1');
+    expect(alarm.Properties).toMatchObject({
+      Namespace: 'AWS/CloudFront',
+      MetricName: '5xxErrorRate',
+      Statistic: 'Average',
+      Period: 300,
+      Threshold: 5,
+      EvaluationPeriods: 2,
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      TreatMissingData: 'notBreaching',
+    });
+    const dimensions = Object.fromEntries((alarm.Properties.Dimensions as Json[]).map((d) => [d.Name, d.Value]));
+    expect(Object.keys(dimensions).sort()).toEqual(['DistributionId', 'Region']);
+    expect(dimensions.Region).toBe('Global');
+    // The admin distribution's id, carried over from the admin stack.
+    expect(JSON.stringify(dimensions.DistributionId)).toMatch(/JaleAdminStack/);
+    const topics = Object.entries(template.Resources as Record<string, Json>).filter(([, r]) => r.Type === 'AWS::SNS::Topic');
+    expect(topics).toHaveLength(1);
+    expect(alarm.Properties.AlarmActions).toEqual([{ Ref: topics[0][0] }]);
+  });
+
+  it('keeps every CloudFront alarm in a us-east-1 stack, the one region CloudFront publishes its metrics to', () => {
+    const cloudFront = Object.entries(stacks).flatMap(([stackName, { region, template }]) => Object.values(alarmsOf(template))
+      .filter((alarm) => readsNamespace(alarm, 'AWS/CloudFront'))
+      .map((alarm) => ({ name: `${stackName}/${alarm.Properties.AlarmName}`, region })));
+    expect(cloudFront.length).toBeGreaterThan(0);
+    expect(cloudFront.filter((a) => a.region !== 'us-east-1').map((a) => a.name)).toEqual([]);
   });
 
   it('leaves only the deliberately action-less alarms without an action', () => {

@@ -1,4 +1,5 @@
-// Checks the dashboard page loaders: each loads in one
+// Checks the dashboard page loaders (Home, the support conversation, the
+// lockout detail, analytics and the access history): each loads in one
 // transaction and records exactly the records it shows before COMMIT, and
 // returns data only after COMMIT, so the page renders after the record exists.
 import assert from 'node:assert/strict';
@@ -18,19 +19,56 @@ const { load } = compileAdminSources({
   sources: [
     'src/lib/server/admin-cases.ts',
     'src/lib/server/admin-lockouts.ts',
+    'src/lib/server/support-conversation.ts',
     'src/lib/server/admin-analytics.ts',
     'src/lib/server/admin-audit.ts',
+    'src/lib/access-history.ts',
   ],
   fakes: {
     'src/lib/server/db.ts': 'scripts/fakes/db.mjs',
     '@aws-sdk/client-cloudwatch-logs': 'scripts/fakes/cloudwatch-logs.mjs',
+    // admin-analytics.ts reads queue depth and bounce metrics (aws-health.ts).
+    '@aws-sdk/client-sqs': 'scripts/fakes/sqs.mjs',
+    '@aws-sdk/client-cloudwatch': 'scripts/fakes/cloudwatch.mjs',
   },
 });
 
 const cases = await load('src/lib/server/admin-cases.ts');
 const lockouts = await load('src/lib/server/admin-lockouts.ts');
+const conversation = await load('src/lib/server/support-conversation.ts');
 const analytics = await load('src/lib/server/admin-analytics.ts');
 const audit = await load('src/lib/server/admin-audit.ts');
+const history = await load('src/lib/access-history.ts');
+
+// --- The Security page (contract K1.6) -----------------------------------------
+// The access history lives at /security now. Every link the history writes
+// goes there, and every parameter (filters, deep links, the paging cursor)
+// keeps its name.
+{
+  const SUBJECT = fakeUuid(0xa9);
+  const ACTOR = fakeUuid(0xd9);
+  const RECORD = fakeUuid(0xc9);
+  assert.equal(history.ACCESS_HISTORY_PATH, '/security');
+  assert.equal(history.accessHistoryHref({}), '/security');
+  assert.equal(history.accessHistoryHref({ actorId: ACTOR }), `/security?actor=${ACTOR}`);
+  assert.equal(
+    history.accessHistoryHref({
+      subjectUserId: SUBJECT, actorId: ACTOR, recordId: RECORD,
+      from: '2026-10-01T00:00:00.000Z', to: '2026-10-08T00:00:00.000Z',
+      category: 'admin_access', outcome: 'done',
+    }, '2026-10-07T12:00:00.000000Z'),
+    `/security?subject=${SUBJECT}&actor=${ACTOR}&record=${RECORD}`
+      + '&from=2026-10-01T00%3A00%3A00.000Z&to=2026-10-08T00%3A00%3A00.000Z'
+      + '&category=admin_access&outcome=done&before=2026-10-07T12%3A00%3A00.000000Z',
+  );
+  assert.equal(history.accessHistorySearchHref({ subject: SUBJECT, category: 'admin_access' }), `/security?subject=${SUBJECT}&category=admin_access`);
+  assert.equal(history.accessHistorySearchHref({}), '/security');
+  // The tabs' presets are plain filters the parser already reads.
+  const signIns = history.parseAccessHistoryQuery({ category: 'admin_access' });
+  assert.deepEqual([signIns.filter.category, signIns.problems], ['admin_access', []]);
+  const actions = history.parseAccessHistoryQuery({ outcome: 'done', actor: ACTOR });
+  assert.deepEqual([actions.filter.outcome, actions.filter.actorId, actions.problems], ['done', ACTOR, []]);
+}
 
 const check = (globalThis.__adminCheck = {});
 const ADMIN_ID = fakeUuid(0xd1);
@@ -137,154 +175,251 @@ async function run(loader) {
   return result;
 }
 
-// --- The cases list records the case ids on the page and their subjects -------
-{
-  const { pool, log } = database([
-    [/FROM admin_cases c .* LIMIT \$1$/, [caseRow(CASE_1, { employer_id: EMPLOYER_1 }), caseRow(CASE_2, { user_id: WORKER_2 })]],
-    [/^SELECT COUNT\(\*\) AS count FROM admin_cases$/, [{ count: '5' }]],
-  ]);
-  check.pool = pool;
-  check.log = log;
-  const list = await run(() => cases.loadCasesList(session));
-  assertStatements(log, [
-    ...OPEN,
-    new RegExp(`^1: SELECT c\\.id, .* FROM admin_cases c .* ${escapeRe(QUEUE_ORDER)} LIMIT \\$1$`),
-    '1: SELECT COUNT(*) AS count FROM admin_cases',
-    RECORD,
-    ...CLOSE,
-  ]);
-  assert.deepEqual(log[2].params, [200]);
-  assert.deepEqual(recordedEvents(log), [{
-    kind: 'read',
-    outcome: 'allowed',
-    ...actor,
-    surface: 'admin.cases_list',
-    categories: ['cases'],
-    subject_user_ids: [WORKER_1, EMPLOYER_1, WORKER_2],
-    record_type: 'admin_case',
-    record_ids: [CASE_1, CASE_2],
-    result_count: 2,
-    field_names: [],
-    request_id: REQUEST_ID,
-  }]);
-  assert.equal(list.totalCount, 5);
-  assert.deepEqual(list.rows.map((row) => row.id), [CASE_1, CASE_2]);
-  assert.equal(list.rows[0].workerName, 'Test W.', 'names stay masked');
-}
+// --- The support conversation records the case, its subjects and the messages shown ---
+const CONV_CASE = normalizeSql(conversation.CONVERSATION_CASE_SQL);
+const CONV_EVENTS = normalizeSql(conversation.CONVERSATION_EVENTS_SQL);
+const CONV_VIEW = normalizeSql(conversation.CONVERSATION_VIEW_SQL);
+const CONV_EARLIER = normalizeSql(conversation.EARLIER_CASES_SQL);
+const OUTBOX_1 = fakeUuid(0x9101);
+const OUTBOX_2 = fakeUuid(0x9102);
+const MEDIA_1 = fakeUuid(0x9201);
+const CONVERSATION_1 = fakeUuid(0x9301);
 
-// --- Case detail records the case, its subjects and the timeline shown -------
+function conversationCase(overrides = {}) {
+  return {
+    id: CASE_1, case_type: 'help_request', status: 'pending_admin', summary: 'Synthetic case summary',
+    case_number: '124', user_id: WORKER_1, employer_id: null, conversation_id: CONVERSATION_1,
+    created_at: new Date('2026-10-01T12:00:00Z'), status_changed_at: new Date('2026-10-01T13:00:00Z'),
+    user_name: 'Test Worker', ...overrides,
+  };
+}
+const conversationEvents = [
+  { id: fakeUuid(0x7101), event_type: 'case_created', actor_type: 'worker', payload: { title: 'Support case opened', detail: 'A worker asked for help on WhatsApp' }, created_at: new Date('2026-10-01T12:00:00Z') },
+  { id: fakeUuid(0x7102), event_type: 'worker_message', actor_type: 'worker', payload: { title: 'Worker message', detail: 'Synthetic worker words' }, created_at: new Date('2026-10-01T12:00:01Z') },
+  { id: fakeUuid(0x7103), event_type: 'admins_notified', actor_type: 'system', payload: { title: 'Admins emailed', detail: '2 admins were emailed', count: 2 }, created_at: new Date('2026-10-01T12:00:02Z') },
+  { id: fakeUuid(0x7104), event_type: 'worker_media', actor_type: 'worker', payload: { title: 'Worker sent a photo', mediaId: MEDIA_1, mediaType: 'image', caption: 'my id' }, created_at: new Date('2026-10-01T12:01:00Z') },
+  { id: fakeUuid(0x7105), event_type: 'admin_reply_queued', actor_type: 'admin', payload: { title: 'Reply queued', detail: 'Synthetic admin words', outboxId: OUTBOX_1, via: null, kind: 'reply', byRole: 'Superadmin' }, created_at: new Date('2026-10-01T12:02:00Z') },
+  { id: fakeUuid(0x7106), event_type: 'status_changed', actor_type: 'admin', payload: { title: 'Status changed', detail: 'Pending admin → Pending worker' }, created_at: new Date('2026-10-01T12:02:00Z') },
+  { id: fakeUuid(0x7107), event_type: 'admin_reply_waiting_for_window', actor_type: 'system', payload: { title: 'Reply waiting for the worker', outboxId: OUTBOX_1 }, created_at: new Date('2026-10-01T12:03:00Z') },
+  { id: fakeUuid(0x7108), event_type: 'admin_reply_sent', actor_type: 'system', payload: { title: 'WhatsApp reply accepted by Twilio', outboxId: OUTBOX_1, via: 'template' }, created_at: new Date('2026-10-01T12:04:00Z') },
+  { id: fakeUuid(0x7109), event_type: 'admin_reply_queued', actor_type: 'admin', payload: { title: 'WhatsApp reply queued', detail: 'An older reply', outboxId: OUTBOX_2 }, created_at: new Date('2026-10-01T12:05:00Z') },
+  { id: fakeUuid(0x710a), event_type: 'admin_reply_failed', actor_type: 'system', payload: { title: 'WhatsApp reply failed', detail: 'provider error text', outboxId: OUTBOX_2 }, created_at: new Date('2026-10-01T12:06:00Z') },
+];
+const conversationView = {
+  has_conversation: true, language: 'es', window_open: false, window_closes_at: null,
+  window_closed_at: new Date('2026-10-02T11:45:00Z'), registered: true, onboarding_step_key: 'profile.trade',
+  failed_codes_today: 2, joined_at: new Date('2026-09-01T10:00:00Z'),
+};
+const earlierCases = [
+  { id: CASE_2, case_number: '99', status: 'resolved', resolved_at: new Date('2026-09-20T10:00:00Z'), status_changed_at: new Date('2026-09-20T10:00:00Z') },
+];
+const conversationAnswers = (overrides = {}) => [
+  [new RegExp(`^${escapeRe(CONV_CASE)}$`), [conversationCase(overrides.row)]],
+  [new RegExp(`^${escapeRe(CONV_EVENTS)}$`), overrides.events ?? conversationEvents],
+  [new RegExp(`^${escapeRe(CONV_VIEW)}$`), [overrides.view ?? conversationView]],
+  [new RegExp(`^${escapeRe(CONV_EARLIER)}$`), earlierCases],
+];
+
 {
-  const events = [
-    { id: fakeUuid(0x7001), event_type: 'help_keyword', actor_type: 'worker', payload: { title: 'Help requested' }, created_at: new Date('2026-10-01T12:01:00Z') },
-    { id: fakeUuid(0x7002), event_type: 'admin_reply_queued', actor_type: 'admin', payload: { title: 'Reply queued' }, created_at: new Date('2026-10-01T12:05:00Z') },
-  ];
-  const { pool, log } = database([
-    [/WHERE c\.id = \$1/, [caseRow(CASE_1, { employer_id: EMPLOYER_1 })]],
-    [/FROM admin_case_events/, events],
-  ]);
+  const { pool, log } = database(conversationAnswers());
   check.pool = pool;
   check.log = log;
-  const item = await run(() => cases.loadCaseDetail(session, CASE_1));
-  assertStatements(log, [
-    ...OPEN,
-    /^1: SELECT c\.id, .* FROM admin_cases c .* WHERE c\.id = \$1 LIMIT 1$/,
-    /^1: SELECT id, case_id, event_type, actor_type, payload, created_at FROM admin_case_events WHERE case_id = \$1 ORDER BY created_at DESC, \(event_type = 'status_changed'\) DESC, id$/,
-    RECORD,
-    ...CLOSE,
-  ]);
+  const item = await run(() => conversation.loadSupportConversation(session, CASE_1));
+  assertStatements(log, [...OPEN, `1: ${CONV_CASE}`, `1: ${CONV_EVENTS}`, `1: ${CONV_VIEW}`, `1: ${CONV_EARLIER}`, RECORD, ...CLOSE]);
   assert.deepEqual(log[2].params, [CASE_1]);
+  assert.deepEqual(log[5].params, [CASE_1, CONVERSATION_1, WORKER_1]);
+  assert.match(CONV_EVENTS, /ORDER BY created_at, \(event_type = 'status_changed'\), id$/);
+  assert.doesNotMatch(`${CONV_CASE} ${CONV_VIEW}`, /phone|whatsapp_number/, 'no number is read');
   assert.deepEqual(recordedEvents(log), [{
     kind: 'read',
     outcome: 'allowed',
     ...actor,
-    surface: 'admin.case_detail',
-    categories: ['cases'],
-    subject_user_ids: [WORKER_1, EMPLOYER_1],
+    surface: 'admin.support_conversation',
+    categories: ['cases', 'conversations'],
+    subject_user_ids: [WORKER_1],
     record_type: 'admin_case',
     record_ids: [CASE_1],
-    result_count: 2,
+    result_count: 7,
     field_names: [],
     purpose_kind: 'case',
     purpose_id: CASE_1,
     request_id: REQUEST_ID,
   }]);
-  assert.equal(item.id, CASE_1);
-  assert.equal(item.timeline.length, 2);
+
+  assert.deepEqual(
+    { ...item, messages: undefined, actions: undefined },
+    {
+      caseId: CASE_1, ref: 'S-124', kind: 'support', typeLabel: 'Support',
+      status: 'pending_admin', statusLabel: 'Worker replied', subject: 'Synthetic case summary',
+      language: 'es', languageLabel: 'Spanish',
+      messages: undefined,
+      window: { open: false, closesAt: null, closedAt: '2026-10-02T11:45:00.000Z' },
+      reply: {
+        mode: 'template',
+        maxChars: 250,
+        templatePreview: { before: 'Jale Soporte: «', after: '». Responde a este mensaje si necesitas más ayuda.' },
+      },
+      worker: {
+        label: 'Test W.', registered: true, userId: WORKER_1,
+        onboardingStepLabel: 'Trade', onboardingStepIndex: 8, onboardingStepCount: 17,
+        failedCodesToday: 2, joinedAt: '2026-09-01T10:00:00.000Z',
+      },
+      facts: { openedAt: '2026-10-01T12:00:00.000Z', waitingSince: '2026-10-01T13:00:00.000Z', messageCount: 4, mediaCount: 1, adminsEmailed: 2 },
+      earlierCases: [{ caseId: CASE_2, ref: 'S-99', statusLabel: 'Resolved', closedAt: '2026-09-20T10:00:00.000Z' }],
+      actions: undefined,
+    },
+  );
+  const media = item.messages.find((message) => message.kind === 'media');
+  assert.deepEqual(item.messages.map((message) => [message.from, message.kind]), [
+    ['system', 'note'], ['worker', 'text'], ['system', 'note'], ['worker', 'media'], ['admin', 'text'], ['system', 'note'], ['admin', 'text'],
+  ]);
+  assert.deepEqual(item.messages[0], { id: fakeUuid(0x7101), at: '2026-10-01T12:00:00.000Z', from: 'system', kind: 'note', text: 'Support case opened: A worker asked for help on WhatsApp' });
+  assert.equal(item.messages[1].text, 'Synthetic worker words');
+  assert.equal(item.messages[2].text, 'Admins emailed: 2 admins were emailed');
+  // Media older than the 90-day retention shows as expired.
+  assert.equal(media.mediaId, MEDIA_1);
+  assert.equal(media.mediaType, 'image');
+  assert.equal(media.caption, 'my id');
+  assert.equal(media.expired, Date.now() >= new Date('2026-10-01T12:01:00Z').getTime() + 90 * 86_400_000);
+  // Delivery comes from the dispatcher's events for the same outbox row; a
+  // final outcome is never undone, and a reply without a role was an Ops one.
+  assert.deepEqual(item.messages[4], {
+    id: fakeUuid(0x7105), at: '2026-10-01T12:02:00.000Z', from: 'admin', kind: 'text', text: 'Synthetic admin words',
+    byRole: 'Superadmin', delivery: 'sent', via: 'template',
+  });
+  assert.deepEqual(item.messages[6], {
+    id: fakeUuid(0x7109), at: '2026-10-01T12:05:00.000Z', from: 'admin', kind: 'text', text: 'An older reply',
+    byRole: 'Ops', delivery: 'failed', via: null,
+  });
+  assert.doesNotMatch(JSON.stringify(item.messages), /provider error text/, 'dispatcher details stay out of the conversation');
+  // A read-only viewer sees every action, disabled with the reason.
+  assert.deepEqual(item.actions, ['reply', 'request_info', 'resolve', 'reveal_phone'].map((id) => ({ id, enabled: false, reason: 'Requires Ops or Superadmin.' })));
 }
 
-// A case that does not exist: nothing read is recorded, then a not_found
-// attempt after the transaction has ended. A malformed id never reaches SQL.
+// The window open: free text up to 1000, no preview; English; an unregistered number.
 {
-  const { pool, log } = database([[/WHERE c\.id = \$1/, []]]);
+  const { pool } = database(conversationAnswers({
+    row: { user_id: null, user_name: null, status: 'pending_worker' },
+    view: { ...conversationView, language: 'en', window_open: true, window_closes_at: new Date('2026-10-02T11:45:00Z'), window_closed_at: null, registered: false, onboarding_step_key: null, failed_codes_today: 0, joined_at: null },
+    events: [],
+  }));
+  check.pool = pool;
+  const item = await conversation.loadSupportConversation({ ...session, role: 'admin_ops' }, CASE_1);
+  assert.deepEqual(item.reply, { mode: 'freeform', maxChars: 1000, templatePreview: null });
+  assert.deepEqual([item.language, item.languageLabel], ['en', 'English']);
+  assert.deepEqual(item.window, { open: true, closesAt: '2026-10-02T11:45:00.000Z', closedAt: null });
+  assert.deepEqual(item.worker, {
+    label: 'Unregistered number', registered: false, userId: null,
+    onboardingStepLabel: null, onboardingStepIndex: null, onboardingStepCount: null, failedCodesToday: 0, joinedAt: null,
+  });
+  assert.equal(item.facts.waitingSince, null, 'waiting on the worker is not a wait on us');
+  assert.ok(item.actions.every((action) => action.enabled), 'Ops may act on an open case with a conversation');
+  assert.equal(conversation.TEMPLATE_PREVIEWS.en.before, 'Jale Support replied to your help request: “');
+  assert.equal(conversation.TEMPLATE_PREVIEWS.en.after, '”. Reply to this message if you need more help.');
+}
+
+// A case that does not exist: a not_found attempt after the transaction; a
+// malformed id is never queried.
+{
+  const { pool, log } = database([[new RegExp(`^${escapeRe(CONV_CASE)}$`), []]]);
   check.pool = pool;
   check.log = log;
-  const missing = await cases.loadCaseDetail(session, CASE_2);
-  assert.equal(missing, undefined);
+  assert.equal(await conversation.loadSupportConversation(session, CASE_2), null);
   assertStatements(log, [
-    ...OPEN,
-    /^1: SELECT c\.id, .* WHERE c\.id = \$1 LIMIT 1$/,
-    '1: COMMIT',
-    '1: <commit_completed>',
-    '1: <release>',
-    '2: <connect>',
-    '2: BEGIN',
-    `2: ${RECORD_EVENT_SQL}`,
-    '2: COMMIT',
-    '2: <commit_completed>',
-    '2: <release>',
+    ...OPEN, `1: ${CONV_CASE}`, '1: COMMIT', '1: <commit_completed>', '1: <release>',
+    '2: <connect>', '2: BEGIN', `2: ${RECORD_EVENT_SQL}`, '2: COMMIT', '2: <commit_completed>', '2: <release>',
   ]);
   const [attempt] = recordedEvents(log);
   assert.deepEqual(
-    [attempt.kind, attempt.outcome, attempt.surface, attempt.record_type, attempt.record_ids, attempt.result_count],
-    ['attempt', 'not_found', 'admin.case_detail', 'admin_case', [CASE_2], 0],
+    [attempt.kind, attempt.outcome, attempt.surface, attempt.categories, attempt.record_type, attempt.record_ids],
+    ['attempt', 'not_found', 'admin.support_conversation', ['cases', 'conversations'], 'admin_case', [CASE_2]],
   );
 
   const { pool: pool2, log: log2 } = database([]);
   check.pool = pool2;
-  assert.equal(await cases.loadCaseDetail(session, 'not-a-case-id'), undefined);
+  assert.equal(await conversation.loadSupportConversation(session, 'not-a-case-id'), null);
   assert.equal(log2.filter((entry) => /admin_cases/.test(entry.sql ?? '')).length, 0, 'a malformed id is never queried');
-  const [malformed] = recordedEvents(log2);
-  assert.deepEqual([malformed.outcome, malformed.record_ids], ['not_found', []]);
-  assert.doesNotMatch(JSON.stringify(log2), /not-a-case-id/, 'the malformed id is not recorded');
+  assert.doesNotMatch(JSON.stringify(log2), /not-a-case-id/);
 }
 
-// A failed record rolls back, and the case is never returned. The failure is
-// then recorded as a failed attempt on a connection of its own.
+// --- The lockout detail records the challenge, with no subject ----------------------
+const LOCKOUT_DETAIL = normalizeSql(lockouts.LOCKOUT_DETAIL_SQL);
+const CHALLENGE_1 = 'abcd1234-0000-4000-8000-000000000001';
 {
-  const { pool, log } = createFakePool({
-    respond: ({ sql, connection }) => {
-      if (/WHERE c\.id = \$1/.test(sql)) return { rows: [caseRow(CASE_1)] };
-      if (sql === RECORD_EVENT_SQL && connection === 1) throw new Error('record failed');
-      return {};
-    },
-  });
-  check.pool = pool;
-  await captureConsole(async () => {
-    await assert.rejects(() => cases.loadCaseDetail(session, CASE_1), /record failed/);
-  });
-  const lines = statements(log);
-  assert.deepEqual(lines.slice(-7), [
-    '1: ROLLBACK',
-    '1: <release>',
-    '2: <connect>',
-    '2: BEGIN',
-    `2: ${RECORD_EVENT_SQL}`,
-    '2: COMMIT',
-    '2: <release>',
-  ]);
-  assert.equal(lines.includes('1: COMMIT'), false);
-  const attempts = recordedEvents(log.filter((entry) => entry.connection === 2));
-  assert.deepEqual(attempts.map((event) => [event.kind, event.outcome, event.record_ids]), [['attempt', 'failed', [CASE_1]]]);
-}
-
-// The preview session reads without recording.
-{
-  const { pool, log } = database([[/WHERE c\.id = \$1/, [caseRow(CASE_1)]], [/FROM admin_case_events/, []]]);
+  const detailRow = {
+    challenge_id: CHALLENGE_1, state: 'locked', language: 'en', masked_phone: '+1 202 *** 0123', attempts: 3,
+    locked_until: new Date('2026-10-01T16:00:00Z'), started_at: new Date('2026-10-01T15:00:00Z'), earlier_resets: 1,
+    typical_minutes_to_verify: 4, support_case_id: CASE_1.toUpperCase(),
+    timeline: [
+      { kind: 'status', at: '2026-10-01T15:00:00.123456+00:00', from_status: null, to_status: 'pending', attempts: 0, locked_until: null, is_backfill: false },
+      { kind: 'status', at: '2026-10-01T15:05:00+00:00', from_status: 'pending', to_status: 'pending', attempts: 1, locked_until: null, is_backfill: false },
+      { kind: 'reset', at: '2026-10-01T15:10:00+00:00', reason_code: 'codes_not_arriving', by_role: 'Ops' },
+      { kind: 'status', at: '2026-10-01T15:20:00+00:00', from_status: 'pending', to_status: 'locked', attempts: 3, locked_until: '2026-10-01T16:00:00+00:00', is_backfill: true },
+      { kind: 'mystery', at: '2026-10-01T15:30:00+00:00' },
+    ],
+    phone_hash: 'must-not-leave', verified_user_id: WORKER_1,
+  };
+  const { pool, log } = database([[new RegExp(`^${escapeRe(LOCKOUT_DETAIL)}$`), [detailRow]]]);
   check.pool = pool;
   check.log = log;
-  const item = await cases.loadCaseDetail({ preview: true, sub: 'local-preview-admin', role: 'admin_ops', groups: ['admin_ops'] }, CASE_1);
-  assert.equal(item.id, CASE_1);
-  assert.equal(recordedEvents(log).length, 0);
+  const detail = await run(() => lockouts.loadLockoutDetail({ ...session, role: 'admin_ops' }, CHALLENGE_1));
+  assertStatements(log, [...OPEN, `1: ${LOCKOUT_DETAIL}`, RECORD, ...CLOSE]);
+  assert.deepEqual(log[2].params, [CHALLENGE_1]);
+  assert.doesNotMatch(LOCKOUT_DETAIL, /phone_hash|user_id/, 'the read names neither the hash nor a user');
+  assert.deepEqual(detail, {
+    challengeId: CHALLENGE_1, ref: 'V-ABCD1234', state: 'locked', statusLabel: 'Locked',
+    languageLabel: 'English', maskedPhone: '+1 202 *** 0123', attemptsUsed: 3, attemptsAllowed: 3,
+    startedAt: '2026-10-01T15:00:00.000Z', lockedUntil: '2026-10-01T16:00:00.000Z', earlierResets: 1,
+    typicalMinutesToVerify: 4,
+    timeline: [
+      { at: '2026-10-01T15:00:00.123Z', title: 'Verification started', detail: null },
+      { at: '2026-10-01T15:05:00.000Z', title: 'Wrong code', detail: 'Attempt 1 of 3' },
+      { at: '2026-10-01T15:10:00.000Z', title: 'Reset by an Ops admin', detail: 'Codes not arriving' },
+      { at: '2026-10-01T15:20:00.000Z', title: 'Locked (recorded before history was kept)', detail: 'After 3 wrong codes' },
+    ],
+    supportCaseId: CASE_1,
+    actions: [{ id: 'reset_lockout', enabled: true }, { id: 'open_support_from_lockout', enabled: true }],
+  });
+  assert.doesNotMatch(JSON.stringify(detail), /must-not-leave|0000a1/, 'no hash and no user id leave the loader');
+  assert.deepEqual(recordedEvents(log), [{
+    kind: 'read',
+    outcome: 'allowed',
+    ...actor,
+    actor_role: 'admin_ops',
+    surface: 'admin.lockout_detail',
+    categories: ['verifications'],
+    subject_user_ids: [],
+    record_type: 'identity_challenge',
+    record_ids: [CHALLENGE_1],
+    result_count: 4,
+    field_names: [],
+    purpose_kind: 'verification',
+    request_id: REQUEST_ID,
+  }]);
+
+  // Verified: no reset; read-only: everything disabled.
+  const { pool: pool2 } = database([[new RegExp(`^${escapeRe(LOCKOUT_DETAIL)}$`), [{ ...detailRow, state: 'verified' }]]]);
+  check.pool = pool2;
+  const verified = await lockouts.loadLockoutDetail(session, CHALLENGE_1);
+  assert.deepEqual(verified.actions, [
+    { id: 'reset_lockout', enabled: false, reason: 'Requires Ops or Superadmin.' },
+    { id: 'open_support_from_lockout', enabled: false, reason: 'Requires Ops or Superadmin.' },
+  ]);
+  assert.throws(() => lockouts.mapLockoutDetailRow({ ...detailRow, state: 'approved' }, 'admin_ops'), /Unexpected lockout state/);
+
+  // Unknown and malformed ids.
+  const { pool: pool3, log: log3 } = database([[new RegExp(`^${escapeRe(LOCKOUT_DETAIL)}$`), []]]);
+  check.pool = pool3;
+  assert.equal(await lockouts.loadLockoutDetail(session, CHALLENGE_1), null);
+  const [attempt] = recordedEvents(log3);
+  assert.deepEqual(
+    [attempt.kind, attempt.outcome, attempt.surface, attempt.record_type, attempt.record_ids, attempt.purpose_kind],
+    ['attempt', 'not_found', 'admin.lockout_detail', 'identity_challenge', [CHALLENGE_1], 'verification'],
+  );
+  const { pool: pool4, log: log4 } = database([]);
+  check.pool = pool4;
+  assert.equal(await lockouts.loadLockoutDetail(session, 'V-ABCD1234'), null);
+  assert.equal(log4.filter((entry) => /admin_identity_challenge_detail/.test(entry.sql ?? '')).length, 0);
 }
 
 // --- The dashboard records the cases and the lockouts it shows ---------------
@@ -359,32 +494,6 @@ async function run(loader) {
   assert.deepEqual(dashboard.openCases.map((item) => item.id), [CASE_1, CASE_2]);
 }
 
-// --- The lockout list records every challenge id it shows -------------------
-{
-  const rows = [lockoutRow(1, 'lockout'), lockoutRow(2, 'stuck')];
-  const { pool, log } = database([[/admin_identity_lockouts/, rows]]);
-  check.pool = pool;
-  check.log = log;
-  const list = await run(() => lockouts.loadLockouts(session));
-  assertStatements(log, [...OPEN, '1: SELECT * FROM admin_identity_lockouts($1)', RECORD, ...CLOSE]);
-  assert.deepEqual(log[2].params, [7]);
-  assert.deepEqual(recordedEvents(log), [{
-    kind: 'read',
-    outcome: 'allowed',
-    ...actor,
-    surface: 'admin.lockouts',
-    categories: ['verifications'],
-    subject_user_ids: [],
-    record_type: 'identity_challenge',
-    record_ids: [fakeUuid(0x5001), fakeUuid(0x5002)],
-    result_count: 2,
-    field_names: [],
-    purpose_kind: 'verification',
-    request_id: REQUEST_ID,
-  }]);
-  assert.equal(list.length, 2);
-}
-
 // --- Only the paying-employers list names anyone; it records them -----------
 {
   const employers = [
@@ -455,7 +564,7 @@ function staleRow(n, employer) {
   const { pool, log } = database([[/admin_analytics_stale_jobs/, jobs]]);
   check.pool = pool;
   check.log = log;
-  const rows = await run(() => analytics.loadStaleJobs(session));
+  const rows = await run(() => analytics.loadStaleJobs(session, 14));
   assertStatements(log, [...OPEN, '1: SELECT * FROM admin_analytics_stale_jobs($1)', RECORD, ...CLOSE]);
   assert.deepEqual(log[2].params, [14]);
   assert.deepEqual(recordedEvents(log), [{
@@ -473,11 +582,35 @@ function staleRow(n, employer) {
   assert.equal(rows.length, 30, 'every stale job comes back, for the tile');
 }
 {
+  // K3.2 (sprint 28): the picker's day count reaches the SQL, and the record
+  // is still exactly the rendered slice (the first 25).
+  const jobs = Array.from({ length: 27 }, (_, i) => staleRow(i + 1, i < 25 ? EMPLOYER_1 : fakeUuid(0xe98)));
+  const { pool, log } = database([[/admin_analytics_stale_jobs/, jobs]]);
+  check.pool = pool;
+  check.log = log;
+  const rows = await run(() => analytics.loadStaleJobs(session, 30));
+  assertStatements(log, [...OPEN, '1: SELECT * FROM admin_analytics_stale_jobs($1)', RECORD, ...CLOSE]);
+  assert.deepEqual(log[2].params, [30], 'the chosen 30 days, not the default 14');
+  assert.deepEqual(recordedEvents(log).map((e) => [e.surface, e.subject_user_ids, e.result_count]),
+    [['admin.analytics_stale_jobs', [EMPLOYER_1], 25]]);
+  assert.equal(rows.length, 27);
+}
+{
+  // ?stale= accepts 7, 14 and 30; anything else (99, a repeated param,
+  // nothing) is the default 14.
+  assert.equal(analytics.parseStaleDays('7'), 7);
+  assert.equal(analytics.parseStaleDays('14'), 14);
+  assert.equal(analytics.parseStaleDays('30'), 30);
+  assert.equal(analytics.parseStaleDays('99'), 14);
+  assert.equal(analytics.parseStaleDays(['7']), 14);
+  assert.equal(analytics.parseStaleDays(undefined), 14);
+}
+{
   // An empty list is still a recorded view.
   const { pool, log } = database([[/admin_analytics_stale_jobs/, []]]);
   check.pool = pool;
   check.log = log;
-  assert.deepEqual(await run(() => analytics.loadStaleJobs(session)), []);
+  assert.deepEqual(await run(() => analytics.loadStaleJobs(session, 14)), []);
   assert.deepEqual(recordedEvents(log).map((e) => [e.surface, e.subject_user_ids, e.result_count]), [['admin.analytics_stale_jobs', [], 0]]);
 }
 
@@ -677,19 +810,22 @@ for (const role of ['admin_ops', 'admin_readonly']) {
 // Only a failed access record emits AuditWriteFailed.
 const FAILED_READS = [
   {
-    name: 'the cases list',
-    loader: () => cases.loadCasesList(session),
-    answers: [
-      [/FROM admin_cases c .* LIMIT \$1$/, [caseRow(CASE_1)]],
-      [/^SELECT COUNT\(\*\) AS count FROM admin_cases$/, [{ count: '1' }]],
-    ],
-    attempt: { ...actor, surface: 'admin.cases_list', categories: ['cases'], record_ids: [] },
+    name: 'a support conversation',
+    loader: () => conversation.loadSupportConversation(session, CASE_1),
+    answers: conversationAnswers(),
+    attempt: { ...actor, surface: 'admin.support_conversation', categories: ['cases', 'conversations'], record_type: 'admin_case', record_ids: [CASE_1] },
   },
   {
-    name: 'a case detail',
-    loader: () => cases.loadCaseDetail(session, CASE_1),
-    answers: [[/WHERE c\.id = \$1/, [caseRow(CASE_1)]], [/FROM admin_case_events/, []]],
-    attempt: { ...actor, surface: 'admin.case_detail', categories: ['cases'], record_type: 'admin_case', record_ids: [CASE_1] },
+    name: 'a lockout detail',
+    loader: () => lockouts.loadLockoutDetail(session, CHALLENGE_1),
+    answers: [[/admin_identity_challenge_detail/, [{
+      challenge_id: CHALLENGE_1, state: 'locked', language: 'es', masked_phone: null, attempts: 3, locked_until: null,
+      started_at: new Date('2026-10-01T15:00:00Z'), earlier_resets: 0, typical_minutes_to_verify: null, support_case_id: null, timeline: [],
+    }]]],
+    attempt: {
+      ...actor, surface: 'admin.lockout_detail', categories: ['verifications'], record_type: 'identity_challenge',
+      record_ids: [CHALLENGE_1], purpose_kind: 'verification',
+    },
   },
   {
     name: 'the dashboard',
@@ -701,12 +837,6 @@ const FAILED_READS = [
       [/admin_identity_lockouts/, [lockoutRow(1, 'lockout')]],
     ],
     attempt: { ...actor, surface: 'admin.dashboard', categories: ['cases', 'verifications'], record_ids: [] },
-  },
-  {
-    name: 'the lockout list',
-    loader: () => lockouts.loadLockouts(session),
-    answers: [[/admin_identity_lockouts/, [lockoutRow(1, 'lockout')]]],
-    attempt: { ...actor, surface: 'admin.lockouts', categories: ['verifications'], record_ids: [] },
   },
   {
     name: 'the paying-employers list',
@@ -725,7 +855,7 @@ const FAILED_READS = [
   },
   {
     name: 'the stale jobs list',
-    loader: () => analytics.loadStaleJobs(session),
+    loader: () => analytics.loadStaleJobs(session, 14),
     answers: [[/admin_analytics_stale_jobs/, [staleRow(1, EMPLOYER_1)]]],
     attempt: { ...actor, surface: 'admin.analytics_stale_jobs', categories: ['analytics'], record_ids: [] },
   },
@@ -818,12 +948,12 @@ for (const { name, loader, answers, attempt, points = ['query', 'record', 'commi
   });
   check.pool = pool;
   const { lines: output } = await captureConsole(async () => {
-    await assert.rejects(() => cases.loadCasesList(session), (error) => error === failure);
+    await assert.rejects(() => conversation.loadSupportConversation(session, CASE_1), (error) => error === failure);
   });
   assert.deepEqual(statements(log).slice(-3), [`2: ${RECORD_EVENT_SQL}`, '2: ROLLBACK', '2: <release>']);
   assert.deepEqual(
     fallbackLines().map((line) => [line.origin, line.kind, line.outcome, line.surface, line.actor_id, line.request_id]),
-    [['admin', 'attempt', 'failed', 'admin.cases_list', ADMIN_ID, REQUEST_ID]],
+    [['admin', 'attempt', 'failed', 'admin.support_conversation', ADMIN_ID, REQUEST_ID]],
   );
   assert.deepEqual(output.error, [], 'the fallback took the attempt: nothing is lost');
 
@@ -831,11 +961,11 @@ for (const { name, loader, answers, attempt, points = ['query', 'record', 'commi
   const unreachable = new Error('pool unavailable');
   check.pool = unreachable;
   await captureConsole(async () => {
-    await assert.rejects(() => lockouts.loadLockouts(session), (error) => error === unreachable);
+    await assert.rejects(() => lockouts.loadLockoutDetail(session, CHALLENGE_1), (error) => error === unreachable);
   });
   assert.deepEqual(
     fallbackLines().map((line) => [line.kind, line.outcome, line.surface]),
-    [['attempt', 'failed', 'admin.lockouts']],
+    [['attempt', 'failed', 'admin.lockout_detail']],
   );
   delete process.env.AUDIT_FALLBACK_LOG_GROUP;
 }

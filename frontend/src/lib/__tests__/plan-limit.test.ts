@@ -5,6 +5,7 @@ import {
   SUBSCRIPTION_STATUS_KEYS,
   activeJobsPreflightModel,
   blockingJobsFrom,
+  isHealthyPaidPlan,
   planLimitModel,
   subscriptionSignage,
 } from '../plan-limit';
@@ -558,5 +559,45 @@ describe('activeJobsPreflightModel', () => {
     const model = activeJobsPreflightModel(billing({ activeJobLimit: 1 }), 2, null);
     expect(model?.blockingJobs).toEqual([]);
     expect(model?.overflowCount).toBe(2);
+  });
+});
+
+describe('isHealthyPaidPlan', () => {
+  const base = {
+    planCode: 'employer_free',
+    activeJobLimit: 1,
+    templateLimit: 1,
+    subscription: null,
+  } as const;
+  const sub = (status: string) => ({
+    plan_code: 'employer_pro',
+    status,
+    current_period_start: null,
+    current_period_end: null,
+    cancel_at_period_end: false,
+    grace_ends_at: null,
+  });
+
+  it('is false when there was no billing read at all', () => {
+    expect(isHealthyPaidPlan(null)).toBe(false);
+    expect(isHealthyPaidPlan(undefined)).toBe(false);
+  });
+  it('is false on Free', () => {
+    expect(isHealthyPaidPlan(base)).toBe(false);
+  });
+  it('is true on an active or trialing subscription', () => {
+    expect(isHealthyPaidPlan({ ...base, planCode: 'employer_pro', subscription: sub('active') })).toBe(true);
+    expect(isHealthyPaidPlan({ ...base, planCode: 'employer_pro', subscription: sub('trialing') })).toBe(true);
+  });
+  it('is true on the Pro plan code with no subscription row', () => {
+    expect(isHealthyPaidPlan({ ...base, planCode: 'employer_pro' })).toBe(true);
+  });
+  it('is false for every lapsed status, canceled included (D-P1 keeps the lapsed banner)', () => {
+    for (const status of ['past_due', 'canceled', 'unpaid', 'paused', 'incomplete_expired']) {
+      expect(isHealthyPaidPlan({ ...base, subscription: sub(status) })).toBe(false);
+    }
+  });
+  it('is false for an incomplete checkout', () => {
+    expect(isHealthyPaidPlan({ ...base, subscription: sub('incomplete') })).toBe(false);
   });
 });

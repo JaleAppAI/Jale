@@ -82,6 +82,7 @@ vi.mock('@/lib/api/worker', async (importOriginal) => ({
     applyToJob: vi.fn(),
     updateWorkerProfile: vi.fn(),
     getVaultDocuments: vi.fn(async () => ({ documents: [] })),
+    recordJobView: vi.fn(),
 }));
 
 /** Assigned by each test before rendering; the fake hook serves it. */

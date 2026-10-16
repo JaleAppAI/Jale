@@ -8,6 +8,7 @@ import {
   _clearTwilioSecretCacheForTests,
 } from './twilio-secret';
 import type { RenderedOutboxMessage } from './onboarding-types';
+import { isWithinSessionWindow } from './session-window';
 
 /**
  * The content-variable key that carries a plain-text fallback body.
@@ -21,11 +22,28 @@ import type { RenderedOutboxMessage } from './onboarding-types';
  */
 export const FALLBACK_BODY_KEY = '__fallback_body';
 
-// H3: poison-message guard for the scheduled admin dispatcher. A row that Twilio
-// hard-rejects (4xx) flips to 'failed' and would otherwise be re-selected and
-// re-sent every minute forever. Stop retrying after this many attempts; the row
-// stays 'failed' with last_error set for operator follow-up.
+// The admin dispatcher's retry budget: a reply Twilio definitely did not
+// accept is retried with backoff (30s, doubled, at most 30 minutes) until its
+// fifth attempt, then stays 'failed' with last_error set for follow-up.
 const MAX_ADMIN_SEND_ATTEMPTS = 5;
+const ADMIN_BACKOFF_BASE_MS = 30_000;
+const ADMIN_BACKOFF_CAP_MS = 30 * 60_000;
+
+/**
+ * The only template keys an admin reply may go out as when the worker's
+ * 24-hour window is closed. The unversioned `admin_support_reply_<lang>` keys
+ * are deliberately absent: a row carrying one is sent freeform inside the
+ * window and waits outside it, whatever the Twilio secret maps.
+ */
+export const ADMIN_SUPPORT_REPLY_TEMPLATES: ReadonlySet<string> = new Set([
+  'admin_support_reply_v2_es',
+  'admin_support_reply_v2_en',
+]);
+
+/** What `last_error` says while a reply waits for the worker to write. */
+const ADMIN_WAITING_FOR_WINDOW = 'waiting_for_session_window';
+/** What a reply that waited 7 days records when it gives up. */
+const ADMIN_WINDOW_EXPIRED = 'The worker did not write within 7 days and the reply template is not available';
 
 class AmbiguousTwilioSendError extends Error {
   constructor(message: string) {
@@ -121,7 +139,7 @@ export async function sendTwilioWhatsAppMessage(to: string, row: {
   body: string | null;
   content_template: string | null;
   content_variables: Record<string, string> | null;
-}): Promise<string> {
+}, options?: SendWindowOptions): Promise<string> {
   const secret = await getTwilioSecret();
   const url = `https://api.twilio.com/2010-04-01/Accounts/${secret.accountSid}/Messages.json`;
   const formValues: Record<string, string> = {
@@ -129,8 +147,31 @@ export async function sendTwilioWhatsAppMessage(to: string, row: {
     To: to,
     StatusCallback: requireTwilioStatusCallbackUrl(),
   };
+  const sessionWindowOpen = options?.sessionWindowOpen;
 
-  if (row.content_template) {
+  if (sessionWindowOpen === true) {
+    // Inside the window: the full text, freeform, whatever is mapped.
+    const freeformBody = row.content_template ? row.content_variables?.[FALLBACK_BODY_KEY] : row.body;
+    if (!freeformBody) {
+      throw new Error(`Freeform body missing: ${row.content_template ?? 'body'}`);
+    }
+    formValues.Body = freeformBody;
+  } else if (sessionWindowOpen === false) {
+    // Outside the window only an approved template can be delivered; a
+    // freeform fallback here would be refused (63016), so there is none.
+    const contentSid = row.content_template
+      ? secret.templates?.[row.content_template as keyof NonNullable<TwilioSecret['templates']>]
+      : undefined;
+    const firstVariable = row.content_variables?.['1'];
+    if (!row.content_template || !contentSid) {
+      throw new Error(`Twilio template missing: ${row.content_template ?? 'body'}`);
+    }
+    if (!firstVariable) {
+      throw new Error(`Template variable missing: ${row.content_template}`);
+    }
+    formValues.ContentSid = contentSid;
+    formValues.ContentVariables = JSON.stringify({ '1': firstVariable });
+  } else if (row.content_template) {
     const contentSid = secret.templates?.[row.content_template as keyof NonNullable<TwilioSecret['templates']>];
     if (!contentSid) {
       if (row.content_template.startsWith('employer_message_')) {
@@ -211,6 +252,19 @@ export async function sendTwilioWhatsAppMessage(to: string, row: {
     );
   }
   return sid;
+}
+
+/**
+ * The optional window argument of `sendTwilioWhatsAppMessage`, used by the
+ * admin dispatcher (every other caller omits it and keeps the template-or-
+ * fallback behaviour):
+ *   - `true`: the worker wrote within the window; send the full text
+ *     freeform (`__fallback_body` for a template row, `body` otherwise);
+ *   - `false`: the window is closed; send the mapped template with
+ *     variable "1" only, and never fall back to freeform.
+ */
+export interface SendWindowOptions {
+  sessionWindowOpen?: boolean;
 }
 
 /**
@@ -514,6 +568,14 @@ interface LeasedWorkerIntentOutboxRow {
  * 0, no WorkerIntentOutboxFailure line, and nothing whatsoever in CloudWatch.
  * `recordDeferral` therefore reads the row's status back and reports which
  * branch the definer actually took.
+ *
+ * `expired` also counts the rows migration 126's expiry pass ended before
+ * the lease: rows whose intent passed its `expires_at` before they were
+ * sent (a free-form line whose WhatsApp window closed, a stale job alert).
+ * The lease never hands such a row out; `expire_worker_intent_outbox` moves
+ * it to 'failed' the way 093's ceiling does and returns its id. These get
+ * no per-row line: `WorkerIntentOutboxTemplateExpired` is about a template
+ * awaiting approval, which they are not.
  */
 export async function drainWorkerIntentOutbox(
   pool: { connect(): Promise<PoolClient> },
@@ -524,7 +586,12 @@ export async function drainWorkerIntentOutbox(
 }> {
   const leaseClient = await pool.connect();
   let leased: LeasedWorkerIntentOutboxRow[];
+  let endedBeforeLease: number;
   try {
+    const ended = await leaseClient.query<{ id: string }>(
+      'SELECT id FROM expire_worker_intent_outbox()',
+    );
+    endedBeforeLease = ended.rows.length;
     const result = await leaseClient.query<LeasedWorkerIntentOutboxRow>(
       'SELECT * FROM lease_worker_intent_outbox($1)', [limit],
     );
@@ -538,7 +605,7 @@ export async function drainWorkerIntentOutbox(
   let failed = 0;
   let leaseLost = 0;
   let deferred = 0;
-  let expired = 0;
+  let expired = endedBeforeLease;
 
   const recordFailure = async (
     row: LeasedWorkerIntentOutboxRow,
@@ -694,87 +761,389 @@ export async function countAgedWorkerIntentOutbox(
   }
 }
 
+interface ClaimedAdminRow {
+  id: string;
+  source_id: string;
+  whatsapp_number: string;
+  body: string | null;
+  content_template: string | null;
+  content_variables: Record<string, string> | null;
+  attempt_count: number;
+  window_wait_expired: boolean;
+}
+
+type AdminVia = 'freeform' | 'template';
+
+type AdminClaim =
+  | { kind: 'none' }
+  | { kind: 'waiting' }
+  | { kind: 'expired' }
+  | { kind: 'send'; row: ClaimedAdminRow; via: AdminVia; attempt: number };
+
+export interface AdminOutboxDrainResult {
+  sent: number;
+  waiting: number;
+  retrying: number;
+  failed: number;
+  ambiguous: number;
+}
+
+/** The mark a reply shortened to the template's one line ends with. */
+const SHORTENED_MARK = '…';
+
+/** A text on one line: every run of whitespace, newlines included, one space. */
+function oneLine(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
 /**
+ * True when the template's variable "1" is a shortened copy of the reply:
+ * it ends with the shortening mark, or the reply on one line is longer than
+ * it. Lengths are in characters (code points), not UTF-16 units.
+ */
+function isShortenedReply(variables: Record<string, string> | null): boolean {
+  const line = variables?.['1'] ?? '';
+  if (line.endsWith(SHORTENED_MARK)) return true;
+  const full = variables?.[FALLBACK_BODY_KEY];
+  return typeof full === 'string' && [...oneLine(full)].length > [...line].length;
+}
+
+/**
+ * How a reply can go right now: freeform inside the worker's 24-hour window
+ * (on the database clock), an approved v2 template outside it, or not at
+ * all (null) until the worker writes or the template is approved. A reply
+ * the template could only carry shortened also waits: the worker's next
+ * message opens the window and the whole reply then goes freeform.
+ */
+async function chooseAdminVia(client: PoolClient, row: ClaimedAdminRow): Promise<AdminVia | null> {
+  if (await isWithinSessionWindow(client, row.whatsapp_number)) return 'freeform';
+  if (!row.content_template || !ADMIN_SUPPORT_REPLY_TEMPLATES.has(row.content_template)) return null;
+  if (isShortenedReply(row.content_variables)) return null;
+  const secret = await getTwilioSecret();
+  const contentSid = secret.templates?.[row.content_template as keyof NonNullable<TwilioSecret['templates']>];
+  return contentSid ? 'template' : null;
+}
+
+/** The error codes a dispatch log line carries: never text, number or sid. */
+function adminDispatchCodes(err?: unknown): Record<string, string | number | null> {
+  return {
+    errorName: err instanceof Error ? err.name : null,
+    httpStatus: err instanceof TwilioSendRejectedError ? err.httpStatus : null,
+    twilioCode: err instanceof TwilioSendRejectedError || err instanceof TwilioTemplateInvalidError
+      ? err.twilioCode
+      : null,
+  };
+}
+
+/**
+ * One log line per failed attempt, codes only. Only a final outcome (failed,
+ * unknown, or given up after 7 days) is an `AdminOutboxDispatchFailure`, the
+ * term the alarm counts; an attempt that will be retried logs a different
+ * term, so one passing error raises one alarm at most, not one per retry.
+ */
+function logAdminDispatchFailure(outcome: 'retrying' | 'failed' | 'send_unknown' | 'expired', attempt: number, err?: unknown): void {
+  if (outcome === 'retrying') {
+    console.warn(JSON.stringify({ metric: 'AdminOutboxDispatchRetry', outcome, attempt, ...adminDispatchCodes(err) }));
+    return;
+  }
+  console.error(JSON.stringify({ metric: 'AdminOutboxDispatchFailure', outcome, attempt, ...adminDispatchCodes(err) }));
+}
+
+/**
+ * Twilio refused the template itself: 21655 (the Content SID is not usable)
+ * or 63016 at send time (not approved for use outside the window). Neither
+ * changes within a retry's minutes, so the reply waits as if no template
+ * were mapped.
+ */
+function isTemplateUnavailable(err: unknown): boolean {
+  return err instanceof TwilioTemplateInvalidError
+    || (err instanceof TwilioSendRejectedError && err.twilioCode === TWILIO_OUTSIDE_SESSION_WINDOW_CODE);
+}
+
+/**
+ * Gives up on a reply that waited 7 days for the worker's window or an
+ * approved template. The attempts are set to the cap: the row is final, and
+ * ops health reads a failed row under the cap as one still being retried.
+ */
+async function failAfterWindowWait(client: PoolClient, row: ClaimedAdminRow): Promise<void> {
+  await client.query(
+    `UPDATE whatsapp_outbox
+        SET status = 'failed', last_error = $2, next_attempt_at = NULL,
+            attempt_count = $3
+      WHERE id = $1`,
+    [row.id, ADMIN_WINDOW_EXPIRED, MAX_ADMIN_SEND_ATTEMPTS],
+  );
+  await recordAdminDelivery(client, row.id, 'failed', null, null, ADMIN_WINDOW_EXPIRED);
+  logAdminDispatchFailure('expired', row.attempt_count);
+}
+
+/**
+ * Opens one transaction of the drain and states its actor. Each caller then
+ * does its work inline and commits, or rolls back and rethrows: the work is
+ * never handed over as a callback, so every write visibly runs after the
+ * context is stated.
+ */
+async function beginAdminTransaction(client: PoolClient, caller: AuditCaller): Promise<void> {
+  await client.query('BEGIN');
+  try {
+    await setAuditContext(client, caller, 'whatsapp.admin_outbox');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw err;
+  }
+}
+
+async function recordAdminDelivery(
+  client: PoolClient,
+  outboxId: string,
+  outcome: 'sent' | 'failed' | 'send_unknown' | 'waiting_for_window',
+  via: AdminVia | null,
+  twilioMessageSid: string | null,
+  error: string | null,
+): Promise<void> {
+  await client.query(
+    'SELECT public.support_record_admin_delivery($1, $2, $3, $4, $5)',
+    [outboxId, outcome, via, twilioMessageSid, error],
+  );
+}
+
+/**
+ * The claim, inside the claim transaction: one due `pending` row, and how it
+ * can go now. A row that cannot go yet waits an hour (or fails after 7
+ * days) without an attempt spent; a row that can go is marked
+ * `send_unknown` with the attempt counted before anything is sent.
+ */
+async function decideAdminClaim(client: PoolClient): Promise<AdminClaim> {
+  const claimed = await client.query<ClaimedAdminRow>(
+    `SELECT id, source_id, whatsapp_number, body, content_template, content_variables, attempt_count,
+            created_at <= now() - interval '7 days' AS window_wait_expired
+       FROM whatsapp_outbox
+      WHERE source_type = 'admin_case'
+        AND status = 'pending'
+        AND attempt_count < $1
+        AND (next_attempt_at IS NULL OR next_attempt_at <= now())
+      ORDER BY created_at
+      LIMIT 1
+      FOR UPDATE SKIP LOCKED`,
+    [MAX_ADMIN_SEND_ATTEMPTS],
+  );
+  const row = claimed.rows[0];
+  if (!row) return { kind: 'none' };
+
+  const via = await chooseAdminVia(client, row);
+  if (!via) {
+    if (row.window_wait_expired) {
+      await failAfterWindowWait(client, row);
+      return { kind: 'expired' };
+    }
+    await client.query(
+      `UPDATE whatsapp_outbox
+          SET status = 'pending', last_error = $2,
+              next_attempt_at = now() + interval '1 hour'
+        WHERE id = $1`,
+      [row.id, ADMIN_WAITING_FOR_WINDOW],
+    );
+    await recordAdminDelivery(client, row.id, 'waiting_for_window', null, null, null);
+    return { kind: 'waiting' };
+  }
+
+  await client.query(
+    `UPDATE whatsapp_outbox
+        SET status = 'send_unknown', attempt_count = attempt_count + 1,
+            next_attempt_at = NULL
+      WHERE id = $1`,
+    [row.id],
+  );
+  return { kind: 'send', row, via, attempt: row.attempt_count + 1 };
+}
+
+/** What the send came to, decided outside any transaction. */
+type AdminSendOutcome =
+  | { kind: 'sent'; twilioMessageSid: string }
+  | { kind: 'template_unavailable'; err: unknown }
+  | { kind: 'unknown'; message: string; err: unknown }
+  | { kind: 'failed'; message: string; err: unknown }
+  | { kind: 'retry'; message: string; err: unknown; backoffMs: number };
+
+function classifyAdminSendError(err: unknown, via: AdminVia, attempt: number): AdminSendOutcome {
+  const message = err instanceof Error ? err.message : String(err);
+  if (via === 'template' && isTemplateUnavailable(err)) return { kind: 'template_unavailable', err };
+  if (err instanceof AmbiguousTwilioSendError) return { kind: 'unknown', message, err };
+  if (attempt >= MAX_ADMIN_SEND_ATTEMPTS) return { kind: 'failed', message, err };
+  const backoffMs = Math.min(ADMIN_BACKOFF_BASE_MS * 2 ** (attempt - 1), ADMIN_BACKOFF_CAP_MS);
+  return { kind: 'retry', message, err, backoffMs };
+}
+
+/**
+ * The finalize, inside its own transaction. Returns true when a reply whose
+ * template Twilio refused had already waited 7 days and so failed.
+ */
+async function finalizeAdminRow(
+  client: PoolClient,
+  row: ClaimedAdminRow,
+  via: AdminVia,
+  outcome: AdminSendOutcome,
+): Promise<boolean> {
+  if (outcome.kind === 'sent') {
+    await client.query(
+      `UPDATE whatsapp_outbox
+          SET status = 'sent',
+              sent_at = now(),
+              twilio_message_sid = $2,
+              last_error = NULL,
+              next_attempt_at = NULL
+        WHERE id = $1`,
+      [row.id, outcome.twilioMessageSid],
+    );
+    await recordAdminDelivery(client, row.id, 'sent', via, outcome.twilioMessageSid, null);
+    // An admin message keeps the worker's support mode awake, but only
+    // when the conversation is in the mode for this very case.
+    await client.query(
+      `UPDATE whatsapp_conversations
+          SET support_last_activity_at = now()
+        WHERE whatsapp_number = $1
+          AND support_case_id = $2`,
+      [row.whatsapp_number, row.source_id],
+    );
+    return false;
+  }
+  if (outcome.kind === 'template_unavailable') {
+    // Wait exactly like a reply with no template mapped: an hour at a time,
+    // the claim's attempt given back, one waiting event per reply, and
+    // failed only once it has waited 7 days.
+    if (row.window_wait_expired) {
+      await failAfterWindowWait(client, row);
+      return true;
+    }
+    await client.query(
+      `UPDATE whatsapp_outbox
+          SET status = 'pending', last_error = $2,
+              next_attempt_at = now() + interval '1 hour',
+              attempt_count = $3
+        WHERE id = $1`,
+      [row.id, ADMIN_WAITING_FOR_WINDOW, row.attempt_count],
+    );
+    await recordAdminDelivery(client, row.id, 'waiting_for_window', null, null, null);
+    return false;
+  }
+  if (outcome.kind === 'unknown') {
+    await client.query(
+      `UPDATE whatsapp_outbox
+          SET status = 'send_unknown', last_error = $2, next_attempt_at = NULL
+        WHERE id = $1`,
+      [row.id, outcome.message],
+    );
+    await recordAdminDelivery(client, row.id, 'send_unknown', via, null, outcome.message);
+    return false;
+  }
+  if (outcome.kind === 'failed') {
+    await client.query(
+      `UPDATE whatsapp_outbox
+          SET status = 'failed', last_error = $2, next_attempt_at = NULL
+        WHERE id = $1`,
+      [row.id, outcome.message],
+    );
+    await recordAdminDelivery(client, row.id, 'failed', via, null, outcome.message);
+    return false;
+  }
+  // A retry is not news on the case timeline: only the outcome is.
+  await client.query(
+    `UPDATE whatsapp_outbox
+        SET status = 'pending', last_error = $2,
+            next_attempt_at = now() + ($3 || ' milliseconds')::interval
+      WHERE id = $1`,
+    [row.id, outcome.message, String(outcome.backoffMs)],
+  );
+  return false;
+}
+
+/**
+ * Sends admin replies (`source_type = 'admin_case'`), one row at a time,
+ * claim-then-send like the job-alert drain:
+ *   1. claim one due `pending` row (`FOR UPDATE SKIP LOCKED`) and choose how
+ *      it can go: freeform inside the worker's window, the v2 template
+ *      outside it, or not yet -- then the row waits an hour with no attempt
+ *      spent (one `admin_reply_waiting_for_window` event), and fails after
+ *      7 days;
+ *   2. commit the claim as `send_unknown` with the attempt counted, so a
+ *      crash mid-send can never send twice;
+ *   3. send outside any transaction;
+ *   4. finalize: `sent` (and the conversation's support-mode activity, when
+ *      it is in this case's mode), a backoff retry, `failed` at the fifth
+ *      attempt, `send_unknown` for good when Twilio's answer is unknown, or
+ *      a wait when Twilio refused the template itself.
+ *
  * `caller` is the platform on WhatsApp. Recording a delivery can update the
- * support case it belongs to, which the change log covers, so every
- * transaction of the drain names it as the actor.
+ * case it belongs to, which the change log covers, so every transaction of
+ * the drain names it as the actor.
  */
 export async function sendPendingAdminOutbox(
   client: PoolClient,
   caller: AuditCaller,
   limit = 25,
-): Promise<void> {
+): Promise<AdminOutboxDrainResult> {
+  const result: AdminOutboxDrainResult = { sent: 0, waiting: 0, retrying: 0, failed: 0, ambiguous: 0 };
+
   for (let processed = 0; processed < limit; processed += 1) {
-    await client.query('BEGIN');
-    await setAuditContext(client, caller, 'whatsapp.admin_outbox');
+    let claim: AdminClaim;
+    await beginAdminTransaction(client, caller);
     try {
-      const pending = await client.query<{
-        id: string;
-        sequence: number;
-        whatsapp_number: string;
-        body: string | null;
-        content_template: string | null;
-        content_variables: Record<string, string> | null;
-      }>(
-        `SELECT id, sequence, whatsapp_number, body, content_template, content_variables
-           FROM whatsapp_outbox
-          WHERE source_type = 'admin_case'
-            AND status IN ('pending', 'failed')
-            AND attempt_count < $1
-          ORDER BY created_at
-          LIMIT 1
-          FOR UPDATE SKIP LOCKED`,
-        [MAX_ADMIN_SEND_ATTEMPTS],
-      );
-
-      const row = pending.rows[0];
-      if (!row) {
-        await client.query('COMMIT');
-        return;
-      }
-
-      try {
-        const twilioMessageSid = await sendTwilioWhatsAppMessage(`whatsapp:${row.whatsapp_number}`, row);
-        await client.query(
-          `UPDATE whatsapp_outbox
-              SET status = 'sent',
-                  sent_at = now(),
-                  twilio_message_sid = COALESCE($2, twilio_message_sid),
-                  last_error = NULL
-            WHERE id = $1`,
-          [row.id, twilioMessageSid],
-        );
-        await client.query(
-          `SELECT record_admin_whatsapp_delivery($1, 'sent', $2, NULL)`,
-          [row.id, twilioMessageSid],
-        );
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        const ambiguous = err instanceof AmbiguousTwilioSendError;
-        const failureStatus = ambiguous ? 'send_unknown' : 'failed';
-        // H4: parameterize the status instead of interpolating it into the SQL
-        // string. Matches sendPendingOutbox() above and the repo's rule against
-        // string-built SQL predicates.
-        await client.query(
-          `UPDATE whatsapp_outbox
-              SET status = $1,
-                  attempt_count = attempt_count + 1,
-                  last_error = $2
-            WHERE id = $3`,
-          [failureStatus, message, row.id],
-        );
-        await client.query(
-          `SELECT record_admin_whatsapp_delivery($1, $2, NULL, $3)`,
-          [row.id, failureStatus, message],
-        );
-      }
-
+      claim = await decideAdminClaim(client);
       await client.query('COMMIT');
     } catch (err) {
       await client.query('ROLLBACK').catch(() => undefined);
       throw err;
     }
+
+    if (claim.kind === 'none') break;
+    if (claim.kind === 'waiting') { result.waiting++; continue; }
+    if (claim.kind === 'expired') { result.failed++; continue; }
+
+    const { row, via, attempt } = claim;
+    let outcome: AdminSendOutcome;
+    try {
+      const twilioMessageSid = await sendTwilioWhatsAppMessage(
+        `whatsapp:${row.whatsapp_number}`,
+        row,
+        { sessionWindowOpen: via === 'freeform' },
+      );
+      outcome = { kind: 'sent', twilioMessageSid };
+    } catch (err) {
+      outcome = classifyAdminSendError(err, via, attempt);
+    }
+
+    let expired: boolean;
+    await beginAdminTransaction(client, caller);
+    try {
+      expired = await finalizeAdminRow(client, row, via, outcome);
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    }
+
+    if (outcome.kind === 'sent') {
+      result.sent++;
+    } else if (outcome.kind === 'template_unavailable') {
+      if (expired) {
+        result.failed++;
+      } else {
+        console.warn(JSON.stringify({ metric: 'AdminOutboxTemplateUnavailable', ...adminDispatchCodes(outcome.err) }));
+        result.waiting++;
+      }
+    } else if (outcome.kind === 'unknown') {
+      logAdminDispatchFailure('send_unknown', attempt, outcome.err);
+      result.ambiguous++;
+    } else if (outcome.kind === 'failed') {
+      logAdminDispatchFailure('failed', attempt, outcome.err);
+      result.failed++;
+    } else {
+      logAdminDispatchFailure('retrying', attempt, outcome.err);
+      result.retrying++;
+    }
   }
+
+  return result;
 }
 
 function parseTimeout(raw: string | undefined): number {

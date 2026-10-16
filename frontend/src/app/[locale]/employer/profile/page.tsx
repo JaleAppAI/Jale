@@ -22,7 +22,6 @@ import { Textarea } from '@/components/ui/textarea';
 import { CheckboxCard } from '@/components/ui/checkbox-card';
 import { DigestSettingsPanel } from '@/components/employer/DigestSettingsPanel';
 import {
-    getEmployerProfile,
     updateEmployerProfile,
     type CompanySize,
     type EmployerJobType,
@@ -31,6 +30,7 @@ import {
     type EmployerTrade,
 } from '@/lib/api/employer';
 import { validateEmployerProfileFields, type EmployerProfileField } from '@/lib/employer-profile-form';
+import { loadEmployerProfileWithPendingFlush } from '@/lib/employer-profile-flush';
 
 const FIELD_LABEL_KEY: Record<EmployerProfileField, string> = {
     company_name: 'field_company',
@@ -69,18 +69,7 @@ export default function EmployerProfilePage() {
         retry,
         setData,
     } = usePageData<EmployerProfileData>({
-        fetcher: async ({ token, signal }) => {
-            let loaded = await getEmployerProfile(token, signal);
-            const pending = sessionStorage.getItem('pendingEmployerProfile');
-            // The PATCH deliberately gets no signal: it is a write, and a
-            // half-applied profile the app then forgets about is worse than a
-            // request that outlives the page.
-            if (pending) {
-                loaded = await updateEmployerProfile(token, JSON.parse(pending));
-                sessionStorage.removeItem('pendingEmployerProfile');
-            }
-            return loaded;
-        },
+        fetcher: ({ token, signal }) => loadEmployerProfileWithPendingFlush(token, signal),
         legalReturnUrl: '/employer/profile',
     });
 

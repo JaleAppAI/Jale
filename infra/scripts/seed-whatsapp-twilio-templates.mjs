@@ -12,9 +12,13 @@ const TWILIO_API_ORIGIN = 'https://content.twilio.com';
  * resource is IMMUTABLE and repeated seed runs leave dead ones behind:
  *
  *   --recreate-application-templates
- *       Creates FOUR NEW resources for the application_* names, submits them
- *       for WhatsApp approval, and writes the new SIDs into the secret. The
- *       only way to ship a copy change to an already-submitted template.
+ *       Creates FOUR NEW resources for the four application stage templates
+ *       (APPLICATION_STAGE_TEMPLATE_NAMES: application_update_es/en and
+ *       application_hired_es/en), submits them for WhatsApp approval, and
+ *       writes the new SIDs into the secret. The only way to ship a copy
+ *       change to an already-submitted stage template. The other
+ *       QUICK_REPLY_DEFINITIONS entries (support reply, web completion) are
+ *       never recreated by it.
  *
  *   --purge-stale [--apply]
  *       Lists the account's Content with approval status and removes the
@@ -27,6 +31,24 @@ const TWILIO_API_ORIGIN = 'https://content.twilio.com';
  *       WhatsApp-approved; --allow-pending downgrades that to a warning.
  *       The only way to install a SID this repo does not know, which is what
  *       the D8 job-card relabel needs.
+ *
+ *   --unset-template <name> [...]
+ *       Removes a key from the templates map. Only the retired keys in
+ *       RETIRED_TEMPLATE_KEYS are accepted (admin_support_reply_es and
+ *       admin_support_reply_en, superseded by admin_support_reply_v2_<lang>);
+ *       any other name is refused. Run it after the deploy that stops reading
+ *       them. Also spelled --unset-template=<name>, repeatable, and may be
+ *       combined with --set-template: both edits land in one write. A key that
+ *       is already absent is reported and left alone. Prints key names only.
+ *
+ * Usage, from infra/ with AWS credentials for the target account (the secret
+ * id is fixed below; AWS_REGION defaults to us-east-2):
+ *   node scripts/seed-whatsapp-twilio-templates.mjs
+ *   node scripts/seed-whatsapp-twilio-templates.mjs --recreate-application-templates
+ *   node scripts/seed-whatsapp-twilio-templates.mjs --purge-stale [--apply]
+ *   node scripts/seed-whatsapp-twilio-templates.mjs --set-template <name>=<HX sid> [--allow-pending]
+ *   node scripts/seed-whatsapp-twilio-templates.mjs \
+ *     --unset-template admin_support_reply_es --unset-template admin_support_reply_en
  */
 const ARGS = process.argv.slice(2);
 const hasFlag = (flag) => ARGS.includes(flag);
@@ -135,7 +157,58 @@ const QUICK_REPLY_DEFINITIONS = {
     example: ['Concrete Finisher', 'Rucoba & Maya', 'app-123e4567-e89b-12d3-a456-426614174000', 'https://jaleapp.ai/en/worker/applications/123e4567-e89b-12d3-a456-426614174000'],
     actions: [],
   },
+  // Sprint 28, wording approved 2026-10-14. No buttons, so each is created as
+  // twilio/text. Neither pair is rendered by buildApplicationStageMessage, and
+  // their variables mean something else:
+  //   admin_support_reply_v2_*     {{1}} the admin's reply (one line, at most 250 chars)
+  //   application_web_completed_*  {{1}} the trade   {{2}} the application link
+  // The bodies are pinned byte for byte by
+  // test/unit/scripts/seed-whatsapp-twilio-templates.test.ts.
+  //
+  // Why the support-reply pair is versioned: the current admin reply path
+  // queues `admin_support_reply_<lang>` and sendTwilioWhatsAppMessage sends
+  // the mapped ContentSid whenever that key is present in the secret, without
+  // consulting the session window. Mapping those unversioned keys would
+  // therefore change how today's replies are delivered, so this file never
+  // creates or maps them. The window-aware dispatcher (sprint 28 lane BE-2a)
+  // reads the `admin_support_reply_v2_<lang>` keys defined here instead.
+  admin_support_reply_v2_es: {
+    language: 'es',
+    body: 'Jale Soporte: «{{1}}». Responde a este mensaje si necesitas más ayuda.',
+    example: ['Ya revisamos tu cuenta. Intenta iniciar sesión de nuevo.'],
+    actions: [],
+  },
+  admin_support_reply_v2_en: {
+    language: 'en',
+    body: 'Jale Support replied to your help request: “{{1}}”. Reply to this message if you need more help.',
+    example: ['We checked your account. Please try signing in again.'],
+    actions: [],
+  },
+  application_web_completed_es: {
+    language: 'es',
+    body:
+      'Completaste tu solicitud para el trabajo de {{1}} en la web. '
+      + 'Revisa su estado en {{2}} y te avisamos por aquí cuando el empleador responda.',
+    example: ['Electricista', 'https://jaleapp.ai/es/worker/applications/123e4567-e89b-12d3-a456-426614174000'],
+    actions: [],
+  },
+  application_web_completed_en: {
+    language: 'en',
+    body:
+      'You completed your application for the {{1}} job on the web. '
+      + "See its status at {{2}} and we'll let you know here when the employer responds.",
+    example: ['Electrician', 'https://jaleapp.ai/en/worker/applications/123e4567-e89b-12d3-a456-426614174000'],
+    actions: [],
+  },
 };
+
+/**
+ * The four application stage templates, and the ONLY names
+ * `--recreate-application-templates` recreates and submits. Listed by name
+ * rather than matched by prefix: `application_web_completed_*` also starts
+ * with `application_` and must not be recreated with them.
+ */
+const APPLICATION_STAGE_TEMPLATE_NAMES = ['application_update_es', 'application_update_en', 'application_hired_es', 'application_hired_en'];
 
 /**
  * Template names that must be RE-CREATED even when the secret already holds
@@ -259,11 +332,25 @@ const SETTABLE_TEMPLATE_KEYS = new Set([
   'employer_message_resume_en',
   'admin_support_reply_es',
   'admin_support_reply_en',
+  'admin_support_reply_v2_es',
+  'admin_support_reply_v2_en',
   'application_update_es',
   'application_update_en',
   'application_hired_es',
   'application_hired_en',
+  'application_web_completed_es',
+  'application_web_completed_en',
 ]);
+
+/**
+ * The template keys `--unset-template` is allowed to remove: the unversioned
+ * support-reply pair, superseded by `admin_support_reply_v2_<lang>`. The
+ * release before the window-aware dispatcher still sends them, so they stay
+ * mapped until that deploy and are removed after it. Nothing else is
+ * removable here: dropping a key the runtime still reads changes how its
+ * messages are sent.
+ */
+const RETIRED_TEMPLATE_KEYS = new Set(['admin_support_reply_es', 'admin_support_reply_en']);
 
 const TEMPLATE_NAME_PATTERN = /^[a-z][a-z0-9_]*$/;
 const CONTENT_SID_PATTERN = /^HX[0-9a-f]{32}$/;
@@ -331,6 +418,46 @@ const parseSetTemplateArgs = (args, settableKeys) => {
     pairs.push({ name, sid });
   }
   return { pairs, rest };
+};
+
+/**
+ * Pulls every `--unset-template <name>` out of `args` the way
+ * `parseSetTemplateArgs` handles its pairs, and returns the names alongside
+ * the args that are not part of one. Both spellings are accepted:
+ * `--unset-template name` and `--unset-template=name`. A name outside
+ * `unsettableKeys` refuses the whole run.
+ */
+const parseUnsetTemplateArgs = (args, unsettableKeys) => {
+  const names = [];
+  const rest = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    let value;
+    if (arg === '--unset-template') {
+      value = args[index + 1];
+      index += 1;
+    } else if (arg.startsWith('--unset-template=')) {
+      value = arg.slice('--unset-template='.length);
+    } else {
+      rest.push(arg);
+      continue;
+    }
+    // A following flag is a missing value, as with --set-template.
+    if (value === undefined || value === '' || value.startsWith('--')) {
+      throw new Error('--unset-template needs a <name> value');
+    }
+    if (!unsettableKeys.has(value)) {
+      throw new Error(
+        `--unset-template name '${value}' is not a retired template key `
+        + `(only ${[...unsettableKeys].join(', ')} can be removed)`,
+      );
+    }
+    if (names.includes(value)) {
+      throw new Error(`--unset-template ${value} was given more than once`);
+    }
+    names.push(value);
+  }
+  return { names, rest };
 };
 
 function parseSecret(secretString) {
@@ -505,12 +632,15 @@ async function requestWhatsAppApproval(sid, name, accountSid, authToken) {
 }
 
 /**
- * Submit every application_* template that has never been submitted; report
- * the WhatsApp approval status of all of them. Returns `{ name: status }`.
+ * Submit every quick-reply template in `names` (by default all of
+ * QUICK_REPLY_DEFINITIONS) that has never been submitted; report the WhatsApp
+ * approval status of all of them. Returns `{ name: status }`.
  */
-async function ensureWhatsAppApprovals(templates, accountSid, authToken) {
+async function ensureWhatsAppApprovals(
+  templates, accountSid, authToken, names = Object.keys(QUICK_REPLY_DEFINITIONS),
+) {
   const report = {};
-  for (const name of Object.keys(QUICK_REPLY_DEFINITIONS)) {
+  for (const name of names) {
     const sid = templates?.[name];
     if (!sid) continue;
     let status = await whatsappApprovalStatus(sid, accountSid, authToken);
@@ -606,8 +736,12 @@ async function createMissingQuickReplyTemplates(existingTemplates, accountSid, a
  * operator named: `persistTemplates` runs the map through `mergeTemplates`,
  * which re-imposes all of `NEW_TEMPLATES`, and a manual SID correction must
  * not silently revert 24 other hardcoded SIDs it was never asked about.
+ *
+ * `removedKeys` are the keys this run deletes (`--unset-template`). They are
+ * checked the same way in reverse: absent from `templates` before the write,
+ * and absent from the read-back after it.
  */
-async function writeAndVerifyTemplates(client, current, templates, expectedTemplates) {
+async function writeAndVerifyTemplates(client, current, templates, expectedTemplates, removedKeys = []) {
   const secret = parseSecret(current.SecretString);
   const nextSecret = { ...secret, templates };
 
@@ -616,6 +750,10 @@ async function writeAndVerifyTemplates(client, current, templates, expectedTempl
     .map(([key]) => key);
   if (notMerged.length > 0) {
     throw new Error(`Template merge failed before write: ${notMerged.join(', ')}`);
+  }
+  const notRemoved = removedKeys.filter((key) => Object.hasOwn(templates, key));
+  if (notRemoved.length > 0) {
+    throw new Error(`Template removal failed before write: ${notRemoved.join(', ')}`);
   }
 
   const nextSecretString = JSON.stringify(nextSecret);
@@ -633,6 +771,10 @@ async function writeAndVerifyTemplates(client, current, templates, expectedTempl
     .map(([key]) => key);
   if (missing.length > 0) {
     throw new Error(`Secret update did not persist these template keys: ${missing.join(', ')}`);
+  }
+  const stillMapped = removedKeys.filter((key) => Object.hasOwn(verifiedSecret.templates ?? {}, key));
+  if (stillMapped.length > 0) {
+    throw new Error(`Secret update did not remove these template keys: ${stillMapped.join(', ')}`);
   }
   return { verifiedSecret, expectedTemplates };
 }
@@ -706,8 +848,14 @@ async function inspectContentForSet(sid, accountSid, authToken) {
  * Writes through `writeAndVerifyTemplates`, not `persistTemplates`: the latter
  * re-imposes all of `NEW_TEMPLATES`, and a manual SID correction must change
  * exactly the keys it was asked about. Prints names, SIDs and statuses only.
+ *
+ * `--unset-template <name>` (repeatable) goes through here too, so a run that
+ * sets and removes keys makes one write. The set pairs are inspected first and
+ * can refuse the whole run; the removals need no Twilio call. A removed key is
+ * reported by name only, never with the SID it held, and a key that is already
+ * absent is reported and changes nothing.
  */
-async function setTemplateSids(client, current, pairs, allowPending) {
+async function editTemplateKeys(client, current, { pairs, unsetNames, allowPending }) {
   const secret = parseSecret(current.SecretString);
   const additional = {};
   const refusals = [];
@@ -742,14 +890,17 @@ async function setTemplateSids(client, current, pairs, allowPending) {
     throw new Error(`refusing to write the secret -- ${refusals.join('; ')}`);
   }
 
-  await writeAndVerifyTemplates(
-    client,
-    current,
-    { ...(secret.templates ?? {}), ...additional },
-    additional,
-  );
+  const stored = secret.templates ?? {};
+  const removed = unsetNames.filter((name) => Object.hasOwn(stored, name));
+  const next = { ...stored, ...additional };
+  for (const name of removed) delete next[name];
+
+  await writeAndVerifyTemplates(client, current, next, additional, removed);
   for (const name of Object.keys(additional)) {
     console.log(`updated templates.${name}`);
+  }
+  for (const name of unsetNames) {
+    console.log(removed.includes(name) ? `removed templates.${name}` : `templates.${name} already absent`);
   }
 }
 
@@ -762,15 +913,18 @@ async function setTemplateSids(client, current, pairs, allowPending) {
  * that SID is already `rejected`), because burning four Content resources and
  * four fresh Meta reviews is not something a routine seed should decide.
  *
+ * Creates, maps and submits exactly APPLICATION_STAGE_TEMPLATE_NAMES. Every
+ * other QUICK_REPLY_DEFINITIONS entry keeps the SID the secret already holds.
+ *
  * Prints names, SIDs and approval statuses. Nothing else: the secret it writes
  * holds the account auth token and every other template SID.
  */
 async function recreateApplicationTemplates(client, current) {
   const secret = parseSecret(current.SecretString);
   const created = {};
-  for (const [name, definition] of Object.entries(QUICK_REPLY_DEFINITIONS)) {
+  for (const name of APPLICATION_STAGE_TEMPLATE_NAMES) {
     created[name] = await createQuickReplyContent(
-      name, definition, secret.accountSid, secret.authToken,
+      name, QUICK_REPLY_DEFINITIONS[name], secret.accountSid, secret.authToken,
     );
   }
 
@@ -783,12 +937,13 @@ async function recreateApplicationTemplates(client, current) {
   // session window, which is the entire reason for recreating it.
   const approvals = await ensureWhatsAppApprovals(
     verifiedSecret.templates, secret.accountSid, secret.authToken,
+    APPLICATION_STAGE_TEMPLATE_NAMES,
   );
   for (const [name, status] of Object.entries(approvals)) {
     console.log(`WhatsApp approval ${name}: ${status}`);
   }
   console.log(
-    `Recreated ${Object.keys(created).length} application templates `
+    `Recreated ${Object.keys(created).length} application stage templates `
     + `and submitted them as ${WHATSAPP_APPROVAL_CATEGORY} `
     + `(allow_category_change=${ALLOW_CATEGORY_CHANGE}).`,
   );
@@ -872,9 +1027,11 @@ async function seedDefault(client, current) {
 }
 
 async function main() {
-  // Pull the --set-template pairs out FIRST: their `name=sid` values are not
-  // flags, so the unknown-flag check below would otherwise reject them.
-  const { pairs, rest } = parseSetTemplateArgs(ARGS, SETTABLE_TEMPLATE_KEYS);
+  // Pull the --set-template pairs and --unset-template names out FIRST: their
+  // values are not flags, so the unknown-flag check below would otherwise
+  // reject them.
+  const { pairs, rest: afterSet } = parseSetTemplateArgs(ARGS, SETTABLE_TEMPLATE_KEYS);
+  const { names: unsetNames, rest } = parseUnsetTemplateArgs(afterSet, RETIRED_TEMPLATE_KEYS);
   const unknown = rest.filter((arg) => ![
     '--recreate-application-templates', '--purge-stale', '--apply', '--allow-pending',
   ].includes(arg));
@@ -883,16 +1040,23 @@ async function main() {
   }
 
   const setMode = pairs.length > 0;
-  // --set-template REPLACES the run. Each of these would write SIDs of its
-  // own -- by creating resources, deleting them, or falling through to the
-  // default seed -- on top of the keys the operator named.
-  if (setMode) {
+  const unsetMode = unsetNames.length > 0;
+  const setAndUnset = pairs.map((pair) => pair.name).filter((name) => unsetNames.includes(name));
+  if (setAndUnset.length > 0) {
+    throw new Error(`${setAndUnset.join(', ')}: named by both --set-template and --unset-template`);
+  }
+  // --set-template / --unset-template REPLACE the run. Each of these would
+  // write SIDs of its own -- by creating resources, deleting them, or falling
+  // through to the default seed -- on top of the keys the operator named.
+  if (setMode || unsetMode) {
+    const named = [setMode && '--set-template', unsetMode && '--unset-template'].filter(Boolean).join(' / ');
     for (const flag of ['--purge-stale', '--recreate-application-templates']) {
       if (rest.includes(flag)) {
-        throw new Error(`--set-template cannot be combined with ${flag}`);
+        throw new Error(`${named} cannot be combined with ${flag}`);
       }
     }
-  } else if (rest.includes('--allow-pending')) {
+  }
+  if (!setMode && rest.includes('--allow-pending')) {
     throw new Error('--allow-pending is only meaningful with --set-template');
   }
   if (hasFlag('--apply') && !hasFlag('--purge-stale')) {
@@ -905,8 +1069,10 @@ async function main() {
     throw new Error(`Secret ${SECRET_ID} is empty`);
   }
 
-  if (setMode) {
-    await setTemplateSids(client, current, pairs, rest.includes('--allow-pending'));
+  if (setMode || unsetMode) {
+    await editTemplateKeys(client, current, {
+      pairs, unsetNames, allowPending: rest.includes('--allow-pending'),
+    });
     return;
   }
   if (hasFlag('--purge-stale')) {

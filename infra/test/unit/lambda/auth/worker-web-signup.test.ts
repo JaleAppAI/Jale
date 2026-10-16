@@ -224,6 +224,82 @@ describe('worker-web-signup', () => {
     ]);
   });
 
+  // ── Sprint 28 (K3.6): where the signup started ─────────────────────────
+  describe('signup_source', () => {
+    const USER_ID = '55555555-5555-4555-8555-555555555555';
+    const RECORD = 'SELECT jale_cap.record_signup_source($1, $2, $3, $4)';
+
+    function createsAccount() {
+      mockSend
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({ UserAttributes: [{ Name: 'sub', Value: 'worker-sub' }] })
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({});
+      // reconcile_worker_signup returns the account's id.
+      mockQuery.mockImplementation(async (sql: string) => (
+        /reconcile_worker_signup/.test(sql) ? { rows: [{ reconcile_worker_signup: USER_ID }] } : {}
+      ));
+    }
+    const statements = () => mockQuery.mock.calls.map(([sql]) => sql as string);
+
+    it('records an allow-listed source for the new account, in the signup transaction', async () => {
+      createsAccount();
+      const res = await handler(mkEv({ phone: '+19155550123', signup_source: { src: 'qr', entry: 'app' } }));
+
+      expect(res.statusCode).toBe(200);
+      expect(statements()).toEqual([
+        'BEGIN',
+        'SELECT reconcile_worker_signup($1, $2, $3)',
+        'SAVEPOINT analytics_capture',
+        RECORD,
+        'RELEASE SAVEPOINT analytics_capture',
+        'COMMIT',
+      ]);
+      expect(mockQuery).toHaveBeenCalledWith(RECORD, [USER_ID, 'web', 'app', 'qr']);
+    });
+
+    it('stores an unknown code as no code, keeping the entry', async () => {
+      createsAccount();
+      const res = await handler(mkEv({ phone: '+19155550123', signup_source: { src: 'billboard', entry: 'job_link' } }));
+
+      expect(res.statusCode).toBe(200);
+      expect(mockQuery).toHaveBeenCalledWith(RECORD, [USER_ID, 'web', 'job_link', null]);
+    });
+
+    it('drops a source whose entry is not a web entry, and records nothing', async () => {
+      createsAccount();
+      const res = await handler(mkEv({ phone: '+19155550123', signup_source: { src: 'qr', entry: 'email' } }));
+
+      expect(res.statusCode).toBe(200);
+      expect(statements()).toEqual(['BEGIN', 'SELECT reconcile_worker_signup($1, $2, $3)', 'COMMIT']);
+    });
+
+    it('a failing record never fails the signup: the account is still committed and the sign-in set up', async () => {
+      createsAccount();
+      mockQuery.mockImplementation(async (sql: string) => {
+        if (/reconcile_worker_signup/.test(sql)) return { rows: [{ reconcile_worker_signup: USER_ID }] };
+        if (sql === RECORD) throw Object.assign(new Error('permission denied'), { code: '42501' });
+        return {};
+      });
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const res = await handler(mkEv({ phone: '+19155550123', signup_source: { src: 'qr', entry: 'app' } }));
+      warnSpy.mockRestore();
+
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ ok: true });
+      expect(statements()).toEqual([
+        'BEGIN',
+        'SELECT reconcile_worker_signup($1, $2, $3)',
+        'SAVEPOINT analytics_capture',
+        RECORD,
+        'ROLLBACK TO SAVEPOINT analytics_capture',
+        'RELEASE SAVEPOINT analytics_capture',
+        'COMMIT',
+      ]);
+      expect(mockSend.mock.calls[3][0]).toBeInstanceOf(AdminSetUserPasswordCommand);
+    });
+  });
+
   it('rejects a body with no phone at all, and never opens a pool', async () => {
     const res = await handler(mkEv({ fullName: 'Robin Worker' }));
 

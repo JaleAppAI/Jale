@@ -755,8 +755,11 @@ describe('releaseWorkerReady', () => {
     // And the real renderer turns that request into the real line.
     const rendered = await createReleaseRenderer().render(notice);
     expect(rendered.contentTemplate).toBeNull();
+    // A payload without the stored trade and link (queued by the previous
+    // release) is named by its title and linked to its application.
     expect(rendered.body).toBe(
-      'Completaste tu solicitud para Concrete Finisher en la web. Te avisamos por aqui cuando el empleador responda.',
+      'Completaste tu solicitud para el trabajo de Concrete Finisher en la web. Revisa su estado en '
+        + `https://jaleapp.ai/es/worker/applications/${APP_ID} y te avisamos por aqu\u00ed cuando el empleador responda.`,
     );
     expect(rendered.body).not.toContain('application_web_completion');
   });

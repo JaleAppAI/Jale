@@ -24,6 +24,7 @@
  *     exits as `application_gone`.
  */
 import type { PoolClient } from 'pg';
+import { workerApplicationUrl } from './worker-application-url';
 import { randomUUID } from 'crypto';
 import { REQUIRED_FIELD_TYPES, DOC_TYPES, type PayInterval } from '../../lib/job-fields';
 import { EDUCATION_LEVELS } from '../../lib/application-answers';
@@ -185,15 +186,11 @@ export function fillCountsFor(snapshot: RequirementSnapshot | null): FillCounts 
 
 /**
  * The `{{url}}` the `web_handoff` note points at: the worker's own stage-2
- * page for THIS application. `PUBLIC_SITE_BASE_URL` is wired onto the
- * processor Lambda by whatsapp-stack.ts; the literal fallback keeps unit
- * tests and any un-migrated environment producing a real link rather than
- * "undefined/es/worker/...".
+ * page for THIS application. Defined in the leaf `worker-application-url.ts`
+ * (the web completion line names the same link) and re-exported here for
+ * this module's existing importers.
  */
-export function workerApplicationUrl(lang: Lang, applicationId: string): string {
-  const base = (process.env.PUBLIC_SITE_BASE_URL ?? 'https://jaleapp.ai').replace(/\/+$/, '');
-  return `${base}/${lang}/worker/applications/${applicationId}`;
-}
+export { workerApplicationUrl };
 
 /**
  * Localizes a list of uncollectable doc-type codes into a comma-joined,

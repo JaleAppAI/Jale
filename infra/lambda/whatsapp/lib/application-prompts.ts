@@ -80,8 +80,9 @@ const PROMPT_LANE_SCRUB = {
  * `PROMPT_LANE_SCRUB`'s key set, derived rather than restated -- the same
  * contract `FILL_SCRUB_KEYS` (application-fill.ts) documents, for the same
  * consumer: `lib/application-web-completion.ts` releases the PROMPT lane
- * alone when the web answers the last outstanding pre-application prompt,
- * and it must clear exactly these three so `repromptPromptLane`'s
+ * alone as soon as the web answers a pre-application prompt (the first
+ * answer, since sprint 28's owner decision D-P4, not the last outstanding
+ * one), and it must clear exactly these three so `repromptPromptLane`'s
  * `typeof ... === 'string'` guard on `prompt_application_id` stands down.
  *
  * Prompt-only, deliberately: a worker who finished the PROMPTS on the web has

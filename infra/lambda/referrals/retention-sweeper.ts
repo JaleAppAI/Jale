@@ -22,12 +22,20 @@
 //
 // Logs counts only — never a token, phone hash or IP.
 //
+// Before purging, each run takes the referral funnel's daily snapshot
+// (migration 124, admin analytics item 21): `jale_cap.referral_funnel_snapshot()`
+// turns the tagged apply taps and claims of the last few days into per-day
+// counts, so the funnel keeps its history after the purge removes the rows.
+// It runs first so it still sees what this run removes, and it is
+// best-effort: a failed snapshot logs one static line and the purge runs.
+//
 // job_visibility_events (migration 062) was evaluated for pruning here and
 // deliberately excluded -- do not add it without a new migration, which would
 // need a delete right, a delete rule and an index to serve the predicate
 // (`job_visibility_events_drain_idx` is partial on `status IN ('pending',
 // 'failed')`, which does not cover a sent/failed sweep). Migrations are
 // operator-run and forward-only.
+import type { PoolClient } from 'pg';
 import { getDbPool } from '../lib/db';
 
 // Batched so one call can never hold a long lock on a table the public page
@@ -40,6 +48,28 @@ export interface SweepResult {
   opensDeleted: number;
 }
 
+interface SnapshotRow {
+  days_covered: number | string;
+  rows_written: number | string;
+}
+
+async function snapshotReferralFunnel(client: PoolClient): Promise<void> {
+  try {
+    const snap = await client.query<SnapshotRow>(
+      'SELECT days_covered, rows_written FROM jale_cap.referral_funnel_snapshot()',
+    );
+    const row = snap.rows[0];
+    console.log(JSON.stringify({
+      metric: 'ReferralFunnelSnapshot',
+      daysCovered: Number(row?.days_covered ?? 0),
+      rowsWritten: Number(row?.rows_written ?? 0),
+    }));
+  } catch (err) {
+    const code = typeof (err as { code?: unknown })?.code === 'string' ? (err as { code: string }).code : 'unknown';
+    console.warn(JSON.stringify({ metric: 'ReferralFunnelSnapshotSkipped', code }));
+  }
+}
+
 interface PurgeRow {
   tokens_deleted: number | string;
   claims_deleted: number | string;
@@ -50,6 +80,7 @@ export async function handler(): Promise<SweepResult> {
   const pool = await getDbPool();
   const client = await pool.connect();
   try {
+    await snapshotReferralFunnel(client);
     const result: SweepResult = { tokensDeleted: 0, claimsDeleted: 0, opensDeleted: 0 };
     // Until a call comes back short on every table: a full batch from any one
     // of them means it may still hold expired rows.

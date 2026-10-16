@@ -15,6 +15,7 @@ import { MediaBoardStack } from '../../../lib/stacks/media-board-stack';
 import { BillingStack } from '../../../lib/stacks/billing-stack';
 import { ReferralsStack } from '../../../lib/stacks/referrals-stack';
 import { NotificationsStack } from '../../../lib/stacks/notifications-stack';
+import { MatchingStack } from '../../../lib/stacks/matching-stack';
 
 /**
  * Repo-wide audit of every `AWS::Logs::MetricFilter` we synthesize.
@@ -82,8 +83,8 @@ interface FilterRecord {
 }
 
 /**
- * Mirrors bin/jale-app.ts for the six stacks that own MetricFilters
- * (WhatsApp, Ai, Referrals, Billing, Notifications, MediaBoard) plus the
+ * Mirrors bin/jale-app.ts for the stacks that own MetricFilters (WhatsApp,
+ * Ai, Api, Referrals, Billing, Notifications, MediaBoard, Matching) plus the
  * stacks they depend on. Kept in one app so the audit sees every filter the
  * production synth produces. Returns the Stack objects, not Templates: the
  * construct tree is needed to map log groups back to handler sources.
@@ -207,6 +208,17 @@ function buildStacks(): Record<string, cdk.Stack> {
     alarmTopicArn: ALARM_TOPIC_ARN,
   });
 
+  const matching = new MatchingStack(app, 'TestMatchingStack', {
+    vpc: network.vpc,
+    privateSubnets: network.privateSubnets,
+    lambdaSg: network.lambdaSg,
+    matchingDbSecret: database.matchingDbSecret,
+    dbEndpointAddress: database.dbEndpoint,
+    dbEndpointPort: database.dbPort,
+    dbName: database.dbName,
+    alarmTopicArn: ALARM_TOPIC_ARN,
+  });
+
   return {
     AiStack: ai,
     ApiStack: api,
@@ -215,6 +227,7 @@ function buildStacks(): Record<string, cdk.Stack> {
     BillingStack: billing,
     ReferralsStack: referrals,
     NotificationsStack: notifications,
+    MatchingStack: matching,
   };
 }
 
@@ -361,6 +374,7 @@ describe('CloudWatch MetricFilter patterns', () => {
       'ai-stack.ts',
       'api-stack.ts',
       'billing-stack.ts',
+      'matching-stack.ts',
       'media-board-stack.ts',
       'notifications-stack.ts',
       'referrals-stack.ts',
@@ -379,9 +393,20 @@ describe('CloudWatch MetricFilter patterns', () => {
       'BillingStack',
       'ReferralsStack',
       'NotificationsStack',
+      'MatchingStack',
     ]) {
       expect(stacks).toContain(expected);
     }
+  });
+
+  // Sprint 28: the admin reply dispatcher's failure line is filtered on the
+  // dispatcher's own log group, where lib/outbox.ts writes it.
+  test('the admin reply dispatcher failure filter is audited on the dispatcher log group', () => {
+    const filter = FILTERS.find((f) => f.pattern === '"AdminOutboxDispatchFailure"');
+    expect(filter).toBeDefined();
+    expect(filter!.stack).toBe('WhatsAppStack');
+    expect(path.basename(filter!.entry)).toBe('admin-outbox-dispatcher.ts');
+    expect(filter!.metricNames).toEqual(['AdminOutboxDispatchFailures']);
   });
 
   // The regression guard. A `$.` selector pattern cannot match a Node 24
@@ -435,8 +460,8 @@ describe('CloudWatch MetricFilter patterns', () => {
 //
 // The ceiling assertion that used to live here has MOVED to
 // `api-stack-resource-ceiling.test.ts`. It was wrong where it stood:
-// `buildStacks()` above is a SUBSET of `bin/jale-app.ts` (no MatchingStack,
-// AdminStack, AdminCertStack, BastionStack or FrontendStack, and no
+// `buildStacks()` above is a SUBSET of `bin/jale-app.ts` (no AdminStack,
+// AdminCertStack, BastionStack or FrontendStack, and no
 // `crossRegionReferences: true`), so it undercounted the deployed ApiStack —
 // it read 499 while the real CI synth was at 501 and failing with
 // TooManyResourcesInStack. Do not re-add a ceiling assertion here; the

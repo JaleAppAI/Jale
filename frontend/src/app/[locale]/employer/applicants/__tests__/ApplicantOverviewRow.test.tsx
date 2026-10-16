@@ -30,9 +30,15 @@ vi.mock('@/components/ui/toast', () => ({
 }));
 
 const updateApplicantStatus = vi.fn();
+const updateHireDetails = vi.fn();
 vi.mock('@/lib/api/employer', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api/employer')>()),
   updateApplicantStatus: (...args: unknown[]) => updateApplicantStatus(...args),
+  updateHireDetails: (...args: unknown[]) => updateHireDetails(...args),
+}));
+
+vi.mock('@/hooks/useRequireAuth', () => ({
+  useRequireAuth: () => ({ handleLegalWall: (err: unknown) => { throw err; } }),
 }));
 
 import { interpolate, message, renderIntl } from '@/components/employer/__tests__/render-intl';
@@ -56,6 +62,8 @@ const item: ApplicantOverviewItem = {
   match_score: 72,
   score_band: 'strong',
   trust_score: 78,
+  hire_details: null,
+  hire_details_needed: false,
 };
 
 describe('ApplicantOverviewRow', () => {
@@ -325,5 +333,76 @@ describe('ApplicantOverviewRow status sync', () => {
     rerender(<ApplicantOverviewRow item={{ ...item }} />);
 
     expect(select().value).toBe('talking');
+  });
+});
+
+describe('ApplicantOverviewRow — start details for a hire (F19)', () => {
+  const hiredItem: ApplicantOverviewItem = {
+    ...item,
+    application_status: 'hired',
+    hire_details: null,
+    hire_details_needed: true,
+  };
+  const key = (k: string) => message(`employer_applicants.hire_details.${k}`);
+
+  it('prompts for start details on a hired applicant who has none', () => {
+    renderIntl(<ApplicantOverviewRow item={hiredItem} />);
+    expect(screen.getByText(interpolate(key('needed'), { name: 'Maria Garcia' }))).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: key('add') })).toBeInTheDocument();
+  });
+
+  it('opens the form for that applicant', async () => {
+    const user = userEvent.setup();
+    renderIntl(<ApplicantOverviewRow item={hiredItem} />);
+    await user.click(screen.getByRole('button', { name: key('add') }));
+    expect(await screen.findByRole('dialog', { name: interpolate(key('title'), { name: 'Maria Garcia' }) })).toBeInTheDocument();
+  });
+
+  it('summarises saved details and offers Edit', () => {
+    renderIntl(<ApplicantOverviewRow item={{
+      ...hiredItem,
+      hire_details_needed: false,
+      hire_details: { start_date: null, report_location: 'Gate 3', contact_name: null, contact_phone: null, notes: null, updated_at: '2026-10-14T15:00:00Z' },
+    }} />);
+    expect(screen.getByText(interpolate(key('summary_location'), { location: 'Gate 3' }))).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: key('edit') })).toBeInTheDocument();
+  });
+
+  it('goes back to needing details when a save clears every field', async () => {
+    updateHireDetails.mockResolvedValue(null);
+    const user = userEvent.setup();
+    renderIntl(<ApplicantOverviewRow item={{
+      ...hiredItem,
+      hire_details_needed: false,
+      hire_details: { start_date: null, report_location: 'Gate 3', contact_name: null, contact_phone: null, notes: null, updated_at: '2026-10-14T15:00:00Z' },
+    }} />);
+
+    await user.click(screen.getByRole('button', { name: key('edit') }));
+    const location = await screen.findByLabelText(key('report_location'));
+    expect(location).toHaveValue('Gate 3');
+    await user.clear(location);
+    await user.click(screen.getByRole('button', { name: key('save') }));
+
+    await waitFor(() => expect(updateHireDetails).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText(interpolate(key('needed'), { name: 'Maria Garcia' }))).toBeInTheDocument();
+    expect(screen.queryByText(interpolate(key('summary_location'), { location: 'Gate 3' }))).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: key('add') })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: key('add') }));
+    expect(await screen.findByLabelText(key('report_location'))).toHaveValue('');
+  });
+
+  it('says nothing about start details before the hire', () => {
+    renderIntl(<ApplicantOverviewRow item={{ ...item, hire_details: null, hire_details_needed: false }} />);
+    expect(screen.queryByRole('button', { name: key('add') })).not.toBeInTheDocument();
+  });
+
+  it('keeps today\'s row for a backend that sends no start-details fields', () => {
+    // The type requires the fields; a frontend deployed ahead of the handler meets a row without them.
+    const legacy: Record<string, unknown> = { ...item, application_status: 'hired' };
+    delete legacy.hire_details;
+    delete legacy.hire_details_needed;
+    renderIntl(<ApplicantOverviewRow item={legacy as unknown as ApplicantOverviewItem} />);
+    expect(screen.queryByRole('button', { name: key('add') })).not.toBeInTheDocument();
   });
 });

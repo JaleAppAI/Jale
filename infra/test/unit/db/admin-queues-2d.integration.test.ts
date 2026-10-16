@@ -58,15 +58,17 @@ const migrationSql = fs.readFileSync(
   path.join(__dirname, '..', '..', '..', 'db', 'migrations', '117_admin_queues.sql'), 'utf8');
 
 /**
- * The console's case SQL, read from admin/src/lib/server/admin-cases.ts (the
- * module that runs it) and never copied: its template literals, with their
- * ${NAME} references resolved. Read lazily by the tests that use it, so a
- * refactor of that module fails those tests with a clear message and nothing
- * else. `list` and `openList` take the LIMIT as $1, as the console passes it;
- * `timeline` takes one case id as $1. The console runs them on its pool or,
- * inside a recorded read transaction, on that transaction's client.
+ * The console's case SQL, read from admin/src/lib/server/admin-cases.ts and
+ * support-conversation.ts (the modules that run it) and never copied: their
+ * template literals, with their ${NAME} references resolved. Read lazily by
+ * the tests that use it, so a refactor of those modules fails those tests with
+ * a clear message and nothing else. `openList` (Home's preview) takes the
+ * LIMIT as $1, as the console passes it; `timeline` (the support
+ * conversation, sprint 28) takes one case id as $1. The console runs them
+ * inside a recorded read transaction, on that transaction's client. The case
+ * queue itself moved to the Inbox in sprint 28 (admin-inbox.ts).
  */
-function consoleCaseSql(): { list: string; openList: string; buckets: string; timeline: string } {
+function consoleCaseSql(): { openList: string; buckets: string; timeline: string } {
   const source = fs.readFileSync(
     path.join(__dirname, '..', '..', '..', '..', 'admin', 'src', 'lib', 'server', 'admin-cases.ts'), 'utf8');
   const scope: Record<string, string> = {};
@@ -87,11 +89,14 @@ function consoleCaseSql(): { list: string; openList: string; buckets: string; ti
     if (found.length !== 1) throw new Error(`admin-cases.ts: expected one ${what}, found ${found.length}`);
     return resolve(found[0]);
   };
+  const conversationSource = fs.readFileSync(
+    path.join(__dirname, '..', '..', '..', '..', 'admin', 'src', 'lib', 'server', 'support-conversation.ts'), 'utf8');
+  const timeline = conversationSource.match(/export const CONVERSATION_EVENTS_SQL = `([^`]*)`;/);
+  if (!timeline) throw new Error('support-conversation.ts: CONVERSATION_EVENTS_SQL not found');
   return {
-    list: only('queue query', (t) => t.includes('${CASE_QUEUE_ORDER}') && !t.includes('WHERE')),
     openList: only('open-case preview query', (t) => t.includes('WHERE ${OPEN_CASE_FILTER}') && t.includes('${CASE_QUEUE_ORDER}')),
     buckets: scope.OPEN_CASES_BY_WAIT_SQL,
-    timeline: only('timeline query', (t) => t.includes('FROM admin_case_events')),
+    timeline: timeline[1],
   };
 }
 
@@ -775,12 +780,13 @@ maybeDescribe('2d admin queues (117)', () => {
 
   // ── The console's case SQL ──────────────────────────────────
   //
-  // The queue order, Home's bucket query and the timeline order, run exactly
-  // as the console runs them (consoleCaseSql reads admin-cases.ts), as
+  // Home's preview order, Home's bucket query and the conversation's event
+  // order, run exactly as the console runs them (consoleCaseSql reads the
+  // admin modules), as
   // jale_admin_console. admin/scripts pins their text; these run it, so a later
   // migration that renames or retypes status_changed_at fails here.
 
-  it('orders the case queue: waiting on us, then on the worker, then closed; priority, then the longest wait', async () => {
+  it('orders the Home preview: waiting on us, then on the worker; priority, then the longest wait; no closed case', async () => {
     const sql = consoleCaseSql();
     const t = await dbNow(superUrl);
     const ago = (ms: number): Date => new Date(t - ms);
@@ -802,21 +808,17 @@ maybeDescribe('2d admin queues (117)', () => {
     const byId = new Map(Object.entries(ids).map(([name, id]) => [id, name]));
     const mine = (rows: Row[]): string[] => rows.filter((r) => byId.has(r.id as string)).map((r) => byId.get(r.id as string) as string);
 
-    const rows = await rowsOf(consoleUrl, sql.list, [100_000]);
+    const rows = await rowsOf(consoleUrl, sql.openList, [100_000]);
     expect(mine(rows)).toEqual([
       // Waiting on us: priority first (the 40 is last although it waited longest), then the longest wait, then id.
       'usHiOld', 'tieLow', 'tieHigh', 'usHiNew', 'usLoOld',
       // Waiting on the worker, after every case waiting on us whatever its priority.
       'workerHiOld', 'workerHiNew', 'workerLoOld',
-      // Closed, most recently closed first whatever the priority.
-      'closedNew', 'closedOld',
+      // Closed cases are not in the preview.
     ]);
     // The row carries the column the console maps, as a timestamp.
     const sample = rows.find((r) => r.id === ids.usHiOld) as Row;
     expect(new Date(sample.status_changed_at as Date).toISOString()).toBe(ago(5 * DAY).toISOString());
-    // The Home preview: the same order, open cases only.
-    expect(mine(await rowsOf(consoleUrl, sql.openList, [100_000])))
-      .toEqual(mine(rows).filter((name) => !name.startsWith('closed')));
   });
 
   it('buckets open cases by who they wait on and the time in their status, at every edge', async () => {
@@ -853,7 +855,7 @@ maybeDescribe('2d admin queues (117)', () => {
     });
   });
 
-  it('lists a status change above the reply that caused it in the case timeline', async () => {
+  it('lists a status change after the reply that caused it in the support conversation', async () => {
     const sql = consoleCaseSql();
     // Ten cases, so an order that only works by the luck of random ids is caught.
     const cases: string[] = [];
@@ -875,12 +877,13 @@ maybeDescribe('2d admin queues (117)', () => {
       });
     }
     for (const id of cases) {
-      // The case page reads one case's timeline at a time.
+      // The conversation page reads one case's events at a time.
       const events = await rowsOf(consoleUrl, sql.timeline, [id]);
-      expect(events.every((e) => e.case_id === id)).toBe(true);
-      // Newest first; the two events of the transaction share their time.
-      expect(events.map((e) => e.event_type)).toEqual(['status_changed', 'admin_reply_queued', 'case_opened']);
-      expect(iso(events[0].created_at)).toBe(iso(events[1].created_at));
+      expect(events).toHaveLength(3);
+      // Oldest first; the two events of the transaction share their time, and
+      // the status change follows the reply that caused it.
+      expect(events.map((e) => e.event_type)).toEqual(['case_opened', 'admin_reply_queued', 'status_changed']);
+      expect(iso(events[1].created_at)).toBe(iso(events[2].created_at));
     }
   });
 

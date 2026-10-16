@@ -3,6 +3,10 @@ import { Template, Match } from 'aws-cdk-lib/assertions';
 import { NetworkStack } from '../../../lib/stacks/network-stack';
 import { DatabaseStack } from '../../../lib/stacks/database-stack';
 import { AuthStack } from '../../../lib/stacks/auth-stack';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as cognito from 'aws-cdk-lib/aws-cognito';
+import { resolveCognitoSesEmail } from '../../../lib/constructs/cognito-ses-email';
 
 const ALARM_TOPIC_ARN = 'arn:aws:sns:us-east-2:111122223333:jale-alarms';
 
@@ -622,6 +626,47 @@ describe('AuthStack — employer SES email', () => {
     expect(templateJson).not.toContain('SES_SECRET');
     expect(templateJson).not.toContain('AWS_ACCESS_KEY_ID');
     expect(templateJson).not.toContain('AWS_SECRET_ACCESS_KEY');
+  });
+});
+
+// ── Employer pool: one SES reader for every pool ──────────────────────────────
+// The SES context is read and validated by one helper that the admin pool
+// uses too. The employer pool's EmailConfiguration is exactly what the helper
+// renders for the same context.
+describe('AuthStack — employer SES email comes from the shared helper', () => {
+  test('the employer pool\'s EmailConfiguration equals the helper\'s for the same context', () => {
+    const context = {
+      environment: 'production',
+      otpSmsFromNumber: '+15125550123',
+      otpSmsRequestTimeoutMs: 3500,
+      otpSmsValidityPeriodSeconds: 180,
+      sesEmailFromAddress: 'no-reply@jaleapp.ai',
+      sesEmailFromName: 'Jale',
+      sesEmailRegion: 'us-east-1',
+    };
+    const app = new cdk.App({ context });
+    const network = new NetworkStack(app, 'HelperNetworkStack');
+    new DatabaseStack(app, 'HelperDatabaseStack', { network });
+    const auth = new AuthStack(app, 'HelperAuthStack', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+    });
+    const reference = new cdk.Stack(app, 'HelperReferenceStack');
+    new cognito.UserPool(reference, 'Pool', { email: resolveCognitoSesEmail(reference) });
+
+    const employer = Object.values(Template.fromStack(auth).findResources('AWS::Cognito::UserPool', {
+      Properties: { UserPoolName: 'jale-employer-pool' },
+    }))[0] as any;
+    const helper = Object.values(Template.fromStack(reference).findResources('AWS::Cognito::UserPool'))[0] as any;
+    expect(helper.Properties.EmailConfiguration).toBeDefined();
+    expect(employer.Properties.EmailConfiguration).toEqual(helper.Properties.EmailConfiguration);
+
+    // One reader: AuthStack reads no SES context of its own.
+    const source = fs.readFileSync(path.join(__dirname, '../../../lib/stacks/auth-stack.ts'), 'utf8');
+    expect(source).toContain('resolveCognitoSesEmail(this)');
+    expect(source).not.toContain('UserPoolEmail.withSES');
+    expect(source).not.toMatch(/tryGetContext\('ses/);
   });
 });
 

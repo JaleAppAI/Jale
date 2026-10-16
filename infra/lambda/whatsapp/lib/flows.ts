@@ -336,9 +336,39 @@ export function isHelpCommand(text: string): boolean {
   return fuzzy === 'help' || fuzzy === 'ayuda' || fuzzy === 'commands' || fuzzy === 'comandos';
 }
 
+/**
+ * A whole message reduced to a keyword: lower case, surrounding punctuation,
+ * symbols and spaces dropped (`normalizeCommandText`), accents folded, so
+ * "¡Soporte!", "Sopórte." and "SUPPORT?" all read the same.
+ */
+function foldKeyword(text: string): string {
+  return normalizeCommandText(text).normalize('NFD').replace(/[̀-ͯ]/g, '');
+}
+
+/**
+ * SOPORTE / SUPPORT, the whole message and nothing else. Exact on purpose
+ * (never fuzzy): it enters support mode from any onboarding step, where a
+ * near-miss could be a worker's answer.
+ */
 export function isSupportCommand(text: string): boolean {
-  const n = text.trim().toLowerCase();
-  return /^(support|soporte)$/.test(n);
+  return /^(support|soporte)$/.test(foldKeyword(text));
+}
+
+/** The language the support keyword itself was typed in, or null for any other message. */
+export function supportCommandLanguage(text: string): Lang | null {
+  const n = foldKeyword(text);
+  if (n === 'support') return 'en';
+  if (n === 'soporte') return 'es';
+  return null;
+}
+
+/**
+ * MENU / MENÚ, the whole message: leaves support mode. An exact predicate
+ * like `isSupportCommand`, and deliberately not in COMMAND_KEYWORDS, whose
+ * fuzzy matcher would also take its typos.
+ */
+export function isMenuCommand(text: string): boolean {
+  return foldKeyword(text) === 'menu';
 }
 
 export function isProfileCommand(text: string): boolean {

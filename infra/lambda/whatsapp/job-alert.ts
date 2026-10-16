@@ -1,3 +1,4 @@
+import { recordWhatsAppImpressions } from '../lib/analytics-capture';
 import { getDbPool, setInternalUserRlsContext } from '../lib/db';
 import { categoryRenderers } from './lib/onboarding-renderers';
 import { enqueueWorkerMessage, registerCategoryRenderer } from './lib/worker-delivery-gateway';
@@ -125,7 +126,7 @@ export const handler = async (
         // lets a failed enqueue roll back without poisoning later workers.
         await client.query('BEGIN');
         await setInternalUserRlsContext(client, worker.id);
-        await enqueueWorkerMessage(client, {
+        const { intentId, decision } = await enqueueWorkerMessage(client, {
           workerId: worker.id,
           category: 'job_alert',
           ownerService: 'job-alert',
@@ -155,6 +156,13 @@ export const handler = async (
             }],
           },
         });
+        // Analytics item 20 (sprint 28): this alert shows the worker the job,
+        // recorded once per intent (alert:<intent>), unless the intent was
+        // rejected or has expired and so will never be sent. Best-effort under
+        // its own savepoint, so a failure never holds back the alert.
+        if (decision.action === 'allow' || decision.action === 'defer') {
+          await recordWhatsAppImpressions(client, [job.id], intentId);
+        }
         await client.query('COMMIT');
         queued++;
       } catch (err) {

@@ -1,86 +1,84 @@
+import { TableScroll } from '@/components/ui/table-scroll';
 import { formatCount } from '@/lib/analytics-format';
 import { billingLiveLine, newestWeeksFirst, skippedByType, type BillingSplit } from '@/lib/ops-health';
 import type { BillingInboxNow } from '@/lib/types';
+import { AnalyticsPanel } from './AnalyticsPanel';
+import { BarChart } from './charts/BarChart';
+import { ChartFrame } from './charts/ChartFrame';
+import { TABLE, TD, TD_NUM, TH, TH_NUM } from './table-styles';
+
+const BILLING_NOTES = ['Older ones have left the queue and must be resent from Stripe.'];
 
 export function BillingInbox({ billing, inbox, now }: { billing: BillingSplit; inbox: BillingInboxNow; now: Date }) {
   const empty = billing.window.received === 0;
   const skipped = skippedByType(billing.eventTypes);
-  const widest = Math.max(1, ...skipped.map((type) => type.skipped));
   return (
     <>
-      <article className="card cohort-card">
-        <div className="chart-head" style={{ marginBottom: 8 }}>
-          <div>
-            <h2>Billing inbox</h2>
-            <p>Stripe webhook events · newest first, by the week they were received</p>
-          </div>
-        </div>
-        <p className="ops-live">
+      <AnalyticsPanel
+        title="Billing inbox"
+        subtitle="Stripe webhook events · newest first, by the week they were received"
+        howCounted="Billing stuck means received but never claimed, or the 5-minute processing claim expired. Billing events are retried for about 20 minutes; any still stuck or failed after an hour have been dead-lettered and can be redriven from the queue for 14 days."
+        notes={BILLING_NOTES}
+      >
+        <p data-billing-live="" className="m-0 text-sm">
           <strong>Right now:</strong> {billingLiveLine(inbox, now)}
         </p>
         {empty ? (
-          <p className="muted">No billing events in these weeks.</p>
+          <p className="m-0 text-sm text-[var(--jale-ink-2)]">No billing events in these weeks.</p>
         ) : (
-          <div className="table-scroll" role="region" aria-label="Billing inbox table" tabIndex={0}>
-            <table className="data-table cohort-table">
+          <TableScroll label="Billing inbox table">
+            <table className={TABLE}>
               <thead>
                 <tr>
-                  <th>Week</th>
-                  <th className="num">Received</th>
-                  <th className="num">Processed</th>
-                  <th className="num">Skipped</th>
-                  <th className="num">Failed</th>
-                  <th className="num">Retried</th>
-                  <th className="num">Payment-failed invoices</th>
+                  <th className={TH}>Week</th>
+                  <th className={TH_NUM}>Received</th>
+                  <th className={TH_NUM}>Processed</th>
+                  <th className={TH_NUM}>Skipped</th>
+                  <th className={TH_NUM}>Failed</th>
+                  <th className={TH_NUM}>Retried</th>
+                  <th className={TH_NUM}>Payment-failed invoices</th>
                 </tr>
               </thead>
               <tbody>
                 {newestWeeksFirst(billing.weekly, now).map((row) => (
                   <tr key={row.weekStart}>
-                    <td>
+                    <td className={TD}>
                       {row.label}
-                      {row.current ? <span className="cohort-settling" title="This week is still in progress">so far</span> : null}
+                      {row.current ? <span className="ml-2 text-xs text-[var(--jale-ink-2)]" title="This week is still in progress">so far</span> : null}
                     </td>
-                    <td className="num">{formatCount(row.received)}</td>
-                    <td className="num">{formatCount(row.processed)}</td>
-                    <td className="num">{formatCount(row.skipped)}</td>
-                    <td className="num">{formatCount(row.failed)}</td>
-                    <td className="num">{formatCount(row.retried)}</td>
-                    <td className="num">{formatCount(row.paymentFailedInvoices)}</td>
+                    <td className={TD_NUM}>{formatCount(row.received)}</td>
+                    <td className={TD_NUM}>{formatCount(row.processed)}</td>
+                    <td className={TD_NUM}>{formatCount(row.skipped)}</td>
+                    <td className={TD_NUM}>{formatCount(row.failed)}</td>
+                    <td className={TD_NUM}>{formatCount(row.retried)}</td>
+                    <td className={TD_NUM}>{formatCount(row.paymentFailedInvoices)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          </div>
+          </TableScroll>
         )}
-      </article>
+      </AnalyticsPanel>
 
       {empty ? null : (
-        <article className="card">
-          <div className="chart-head" style={{ marginBottom: 14 }}>
-            <div>
-              <h2>Skipped events by type</h2>
-              <p>Events received in these weeks that billing skipped, by Stripe event type</p>
-            </div>
-          </div>
+        <ChartFrame
+          title="Skipped events by type"
+          subtitle="Events received in these weeks that billing skipped, by Stripe event type"
+          table={{ caption: 'Skipped events by type', columns: ['Event type', 'Skipped'], rows: skipped.map((type) => [type.eventType, formatCount(type.skipped)]) }}
+        >
           {skipped.length === 0 ? (
-            <p className="muted">No skipped events in these weeks.</p>
+            <p className="m-0 text-sm text-[var(--jale-ink-2)]">No skipped events in these weeks.</p>
           ) : (
-            <ol className="funnel-bars">
-              {skipped.map((type) => (
-                <li key={type.eventType} className="funnel-row">
-                  <div className="funnel-meta">
-                    <span className="funnel-label ops-code">{type.eventType}</span>
-                    <span className="muted"><strong>{formatCount(type.skipped)}</strong></span>
-                  </div>
-                  <div className="funnel-track" aria-hidden="true">
-                    <div className="funnel-fill stalled" style={{ width: `${(type.skipped / widest) * 100}%` }} />
-                  </div>
-                </li>
-              ))}
-            </ol>
+            <BarChart
+              title="Skipped events by type"
+              orientation="horizontal"
+              labels={skipped.map((type) => type.eventType)}
+              series={[{ key: 'skipped', label: 'Skipped', color: 'chart-1', values: skipped.map((type) => type.skipped) }]}
+              xTitle="Skipped events"
+              yTitle="Stripe event type"
+            />
           )}
-        </article>
+        </ChartFrame>
       )}
     </>
   );

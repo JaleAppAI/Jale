@@ -164,7 +164,7 @@ export type PayingEmployer = {
 };
 
 // Roadmap 2a: the worker onboarding funnel (migration 113).
-export type FunnelWeeks = 4 | 8 | 12;
+export type FunnelWeeks = 8 | 13 | 26; // K3.0 range picker (D-A2)
 export type FunnelDoor = 'all' | 'whatsapp' | 'web';
 
 export type CohortCounts = {
@@ -369,10 +369,13 @@ export type BillingInboxWeekly = BillingInboxFigures & {
 // received in the last hour; oldest = the oldest of those (null when none).
 // unresolvedOlder = dead-lettered in the last 14 days (received 1 h-14 d ago,
 // still stuck or failed): they can be redriven from the queue; older events
-// have left the queue and must be resent from Stripe.
+// have left the queue and must be resent from Stripe. failedLast24h = failed,
+// counted the same way as failedNow but over events received in the last
+// 24 hours (sprint 28, K3.1 #9).
 export type BillingInboxNow = {
   stuckReceived: number;
   failedNow: number;
+  failedLast24h: number;
   unresolvedOlder: number;
   oldestStuckAt: string | null;
 };

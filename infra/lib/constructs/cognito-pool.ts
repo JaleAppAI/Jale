@@ -41,8 +41,10 @@ export interface CognitoPoolProps {
     verifyAuthChallengeResponse?: lambda.IFunction;
     /**
      * Rewrites the subject/body of the sign-up, resend-code, forgot-password and
-     * attribute-verification emails Cognito sends for this pool (MFA and
-     * admin-create-user messages are left to Cognito). The handler must fail open:
+     * attribute-verification emails Cognito sends for this pool (MFA messages
+     * are left to Cognito, and this trigger passes admin-create-user messages
+     * through untouched: the admin pool's invitation is a template rendered
+     * at synth, AdminStack `userInvitation`). The handler must fail open:
      * Cognito rejects the whole SignUp/ForgotPassword call if this trigger
      * throws or returns a malformed message.
      */
@@ -60,7 +62,8 @@ export interface CognitoPoolProps {
    * undefined) to use Cognito's default shared email service.
    *
    * Operator pre-requisites before deploy (not enforced by CDK). Authoritative
-   * checklist is in AuthStack where the context vars are read and validated:
+   * checklist is in resolveCognitoSesEmail (constructs/cognito-ses-email.ts),
+   * where the context vars are read and validated:
    *   1. SES domain identity verified for the sender domain.
    *   2. SES identity resource policy grants cognito-idp.amazonaws.com
    *      ses:SendEmail / ses:SendRawEmail, scoped to the user pool ARN.

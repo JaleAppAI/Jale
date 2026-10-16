@@ -39,18 +39,18 @@ program.emit(undefined, (fileName, data) => {
 const otpauth = await import(pathToFileURL(resolve(outDir, 'otpauth.mjs')));
 
 assert.equal(
-  otpauth.buildOtpauthUri('ABC234', 'ivan@jaleapp.ai'),
-  'otpauth://totp/Jale%20Admin%3Aivan%40jaleapp.ai?secret=ABC234&issuer=Jale%20Admin',
+  otpauth.buildOtpauthUri('ABC234', 'admin@example.test'),
+  'otpauth://totp/Jale%20Admin%3Aadmin%40example.test?secret=ABC234&issuer=Jale%20Admin',
 );
 
 assert.match(
-  otpauth.buildOtpauthUri('ABC234', 'ivan@jaleapp.ai'),
+  otpauth.buildOtpauthUri('ABC234', 'admin@example.test'),
   /^otpauth:\/\/totp\//,
   'the otpauth URI should use the otpauth://totp/ scheme',
 );
 
 assert.match(
-  otpauth.buildOtpauthUri("A+B/C=", 'ivan@jaleapp.ai'),
+  otpauth.buildOtpauthUri("A+B/C=", 'admin@example.test'),
   /secret=A%2BB%2FC%3D/,
   'URL-meaningful characters in the secret should be percent-encoded',
 );

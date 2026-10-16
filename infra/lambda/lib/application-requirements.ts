@@ -291,6 +291,12 @@ function toSnapshot(row: RequirementRow): RequirementSnapshot {
  * FORCE RLS (005). A job that asks for no documents at all skips the whole
  * sync (no GUC, no copy, no re-read).
  *
+ * The sync also stops once the application is SENT (`detailsLocked`) or
+ * over (`applicationIsOver`: hired, not interested, or its job filled or
+ * closed). The job-scoped copies are what the employer reads; after either
+ * point they are the record of what the worker sent, and a later vault
+ * upload must not join them. The load is then a plain read.
+ *
  * Returns null for a vanished application (deleted, or its job
  * CASCADE-deleted); `nextStep(null)` turns that into `exit/application_gone`.
  */
@@ -305,6 +311,7 @@ export async function loadRequirementSnapshot(
 
   const snapshot = toSnapshot(row);
   if (!options.syncDocumentSnapshots) return snapshot;
+  if (detailsLocked(snapshot) || applicationIsOver(snapshot)) return snapshot;
 
   const docTypes = Array.from(new Set([...snapshot.requiredDocs, ...snapshot.optionalDocs]));
   if (docTypes.length === 0) return snapshot;
