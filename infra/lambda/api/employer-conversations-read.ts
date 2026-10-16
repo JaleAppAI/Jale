@@ -1,8 +1,9 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
+import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { markEmployerConversationRead } from '../lib/job-messaging';
 import { checkCompliance } from '../legal/check-compliance';
+import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
 
 const CORS_HEADERS = corsHeaders();
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -29,10 +30,10 @@ const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-
  * jale_admin -- the role this Lambda connects as, and the table's owner --
  * obeys its policies because of FORCE. The applicable one is
  * `job_conversations_employer_all FOR ALL TO jale_admin` (025:93-97), keyed on
- * `app.current_internal_user_id`. So `setInternalUserRlsContext` is not
- * bookkeeping: without it the UPDATE below matches ZERO rows and the employer
- * gets a 404 on their own conversation. `setRlsContext` (app.current_user_id)
- * is what the legal/compliance read keys on.
+ * `app.current_internal_user_id`. So the internal id `resolveEmployerActor`
+ * binds is not bookkeeping: without it the UPDATE below matches ZERO rows and
+ * the employer gets a 404 on their own conversation. `setRlsContext`
+ * (app.current_user_id) is what the legal/compliance read keys on.
  *
  * No new grant was needed: 025:78 grants jale_admin table-level
  * SELECT, INSERT, UPDATE on job_conversations, and a table-level privilege
@@ -40,11 +41,11 @@ const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-
  * 028:37).
  *
  * ── 404 MEANS "NOT YOURS **OR** NOT THERE" ────────────────────────────────
- * The UPDATE is scoped by RLS *and* by an explicit `employer_id` predicate, so
- * a conversation belonging to another employer and a conversation that does
- * not exist both come back as zero rows and both answer the same 404 with the
- * same body. Distinguishing them would turn this endpoint into an existence
- * oracle over every conversation id in the system.
+ * The UPDATE is scoped by RLS *and* by an explicit `employer_id = ANY(scope)`
+ * predicate, so a conversation outside the caller's scope and a conversation
+ * that does not exist both come back as zero rows and both answer the same
+ * 404 with the same body. Distinguishing them would turn this endpoint into an
+ * existence oracle over every conversation id in the system.
  *
  * ── THE updated_at SIDE EFFECT (accepted) ─────────────────────────────────
  * 025:74-76 puts an unconditional `BEFORE UPDATE ... set_updated_at()` trigger
@@ -92,23 +93,20 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
-    // A second read of `users`, deliberately. `checkCompliance` above SELECTs
-    // only `tos_version` (legal/check-compliance.ts:21) -- it never returns
-    // the internal id -- and the id is what
-    // job_conversations_employer_all keys on. Collapsing the two would mean
-    // widening that shared legal utility's return, which every employer and
-    // worker handler depends on; that is a cross-cutting change, not this
-    // endpoint's to make. The same two reads appear in every sibling handler
-    // (employer-conversations-update.ts, -detail.ts, -send.ts, employer-inbox.ts).
-    const employerRes = await client.query<{ id: string }>('SELECT id FROM users WHERE cognito_sub = $1', [cognitoSub]);
-    const employerId = employerRes.rows[0]?.id;
-    if (!employerId) {
+    // `checkCompliance` above SELECTs only `tos_version`
+    // (legal/check-compliance.ts:21) and never returns the internal id, which is
+    // what job_conversations_employer_all keys on. resolveEmployerActor reads it
+    // (with the caller's company scope) and binds it, the same as every sibling
+    // handler (employer-conversations-update.ts, -detail.ts, -send.ts,
+    // employer-inbox.ts).
+    const resolved = await resolveEmployerActor(client, cognitoSub);
+    if (!resolved.ok) {
       await client.query('COMMIT');
-      return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_provisioned' }) };
+      return employerActorFailureResponse(resolved, CORS_HEADERS);
     }
-    await setInternalUserRlsContext(client, employerId);
+    const { actor } = resolved;
 
-    const readAt = await markEmployerConversationRead(client, conversationId, employerId);
+    const readAt = await markEmployerConversationRead(client, conversationId, actor.scopeUserIds);
     await client.query('COMMIT');
 
     if (readAt === null) {

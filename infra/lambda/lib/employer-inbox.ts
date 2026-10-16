@@ -75,7 +75,7 @@ const INBOX_QUERY = `
     last_inbound.created_at AS last_inbound_message_at,
     last_msg.body AS last_message_preview
   FROM job_applications ja
-  JOIN jobs j ON j.id = ja.job_id AND j.employer_id = $1
+  JOIN jobs j ON j.id = ja.job_id AND j.employer_id = ANY($1::uuid[])
   JOIN users u ON u.id = ja.worker_id
   LEFT JOIN worker_profiles wp ON wp.user_id = ja.worker_id
   LEFT JOIN LATERAL (
@@ -174,9 +174,9 @@ function tabFor(row: Omit<InboxRow, 'employer_last_read_at' | 'last_inbound_mess
 
 export async function listEmployerInbox(
   client: PoolClient,
-  employerId: string,
+  scopeUserIds: string[],
 ): Promise<EmployerInbox> {
-  const result = await client.query<InboxRow>(INBOX_QUERY, [employerId]);
+  const result = await client.query<InboxRow>(INBOX_QUERY, [scopeUserIds]);
   const items: InboxItem[] = result.rows.map((row) => {
     const {
       employer_last_read_at: employerLastReadAt,

@@ -1,5 +1,6 @@
 import type { PoolClient } from 'pg';
 import { setInternalUserRlsContext } from './db';
+import type { EmployerActor } from './employer-actor';
 import { sendTwilioWhatsAppMessage, AmbiguousTwilioSendError, TwilioTemplateInvalidError } from '../whatsapp/lib/outbox';
 import { createReleaseRenderer } from '../whatsapp/lib/onboarding-renderers';
 import type { PreferredLanguage } from '../whatsapp/lib/onboarding-types';
@@ -171,10 +172,14 @@ async function inActorTransaction<T>(
   }
 }
 
+// The conversation's employer is the job's responsible person, who need not
+// be the caller: an owner acts on a foreman's thread. Their users row is
+// LEFT-joined because the caller may not read it (users is FORCE RLS); the
+// company name then falls back to the job's.
 async function loadConversationForEmployer(
   client: PoolClient,
   conversationId: string,
-  employerId: string,
+  scopeUserIds: string[],
 ): Promise<ConversationAccessRow | null> {
   const result = await client.query<ConversationAccessRow>(
     `SELECT
@@ -191,13 +196,13 @@ async function loadConversationForEmployer(
        jc.worker_thread_number
      FROM job_conversations jc
      JOIN jobs j ON j.id = jc.job_id
-     JOIN users employer ON employer.id = jc.employer_id
+     LEFT JOIN users employer ON employer.id = jc.employer_id
      JOIN users u ON u.id = jc.worker_id
      LEFT JOIN worker_profiles wp ON wp.user_id = jc.worker_id
      LEFT JOIN employer_profiles ep ON ep.user_id = jc.employer_id
      WHERE jc.id = $1
-       AND jc.employer_id = $2`,
-    [conversationId, employerId],
+       AND jc.employer_id = ANY($2::uuid[])`,
+    [conversationId, scopeUserIds],
   );
   return result.rows[0] ?? null;
 }
@@ -257,7 +262,7 @@ async function queueEmployerFreeformMessage(
 
 export async function listEmployerConversations(
   client: PoolClient,
-  employerId: string,
+  scopeUserIds: string[],
 ): Promise<ConversationSummary[]> {
   const result = await client.query<ConversationSummary>(
     `SELECT
@@ -284,10 +289,10 @@ export async function listEmployerConversations(
        ORDER BY jcm.created_at DESC
        LIMIT 1
      ) last_msg ON true
-     WHERE jc.employer_id = $1
+     WHERE jc.employer_id = ANY($1::uuid[])
      ORDER BY COALESCE(jc.last_message_at, jc.created_at) DESC
      LIMIT 100`,
-    [employerId],
+    [scopeUserIds],
   );
   return result.rows;
 }
@@ -295,7 +300,7 @@ export async function listEmployerConversations(
 export async function getEmployerConversationDetail(
   client: PoolClient,
   conversationId: string,
-  employerId: string,
+  scopeUserIds: string[],
 ): Promise<{ conversation: ConversationDetail; messages: ConversationMessage[] } | null> {
   const conversation = await client.query<ConversationDetail>(
     `SELECT
@@ -324,8 +329,8 @@ export async function getEmployerConversationDetail(
        LIMIT 1
      ) last_msg ON true
      WHERE jc.id = $1
-       AND jc.employer_id = $2`,
-    [conversationId, employerId],
+       AND jc.employer_id = ANY($2::uuid[])`,
+    [conversationId, scopeUserIds],
   );
 
   if (conversation.rowCount === 0) return null;
@@ -344,11 +349,15 @@ export async function getEmployerConversationDetail(
 
 export async function createApplicantConversation(
   client: PoolClient,
-  employerId: string,
+  actor: EmployerActor,
   jobId: string,
   workerId: string,
   initialMessage: string,
 ): Promise<{ conversationId: string }> {
+  // The job must be in the caller's scope. Its employer_id -- the job's
+  // responsible person, not necessarily the caller -- owns the conversation.
+  // The employer's users row is LEFT-joined: the caller may not read another
+  // member's row (users is FORCE RLS).
   const access = await client.query<ConversationAccessRow>(
     `SELECT
        j.id AS job_id,
@@ -360,19 +369,20 @@ export async function createApplicantConversation(
        j.title AS job_title
      FROM jobs j
      JOIN job_applications ja ON ja.job_id = j.id
-     JOIN users employer ON employer.id = j.employer_id
+     LEFT JOIN users employer ON employer.id = j.employer_id
      JOIN users u ON u.id = ja.worker_id
      LEFT JOIN worker_profiles wp ON wp.user_id = ja.worker_id
      LEFT JOIN employer_profiles ep ON ep.user_id = j.employer_id
      WHERE j.id = $1
-       AND j.employer_id = $2
+       AND j.employer_id = ANY($2::uuid[])
        AND ja.worker_id = $3`,
-    [jobId, employerId, workerId],
+    [jobId, actor.scopeUserIds, workerId],
   );
 
   const row = access.rows[0];
   if (!row) throw new Error('applicant_not_found');
   if (!normalizeWhatsappNumber(row.worker_phone)) throw new Error('worker_whatsapp_unavailable');
+  const jobEmployerId = row.employer_id;
 
   const open = await client.query<{ id: string }>(
     `SELECT jc.id
@@ -382,7 +392,7 @@ export async function createApplicantConversation(
         AND jc.worker_id = $3
         AND jc.status = 'open'
       LIMIT 1`,
-    [jobId, employerId, workerId],
+    [jobId, jobEmployerId, workerId],
   );
 
   let conversationId = open.rows[0]?.id;
@@ -396,7 +406,7 @@ export async function createApplicantConversation(
           (job_id, employer_id, worker_id, application_id, last_message_at, worker_thread_number)
        VALUES ($1, $2, $3, $4, now(), $5)
        RETURNING id`,
-      [jobId, employerId, workerId, row.application_id, threadNumber.rows[0].n],
+      [jobId, jobEmployerId, workerId, row.application_id, threadNumber.rows[0].n],
     );
     conversationId = created.rows[0].id;
   }
@@ -414,7 +424,7 @@ export async function createApplicantConversation(
           AND id != $3
           AND last_worker_message_at > now() - interval '24 hours'
      ) AS active`,
-    [employerId, workerId, conversationId],
+    [jobEmployerId, workerId, conversationId],
   );
   const workerSessionOpen = crossSessionRow.rows[0]?.active ?? false;
 
@@ -423,7 +433,7 @@ export async function createApplicantConversation(
   await queueConversationMessageFromEmployer(
     client,
     conversationId,
-    employerId,
+    actor,
     initialMessage,
     'invite',
     { forceCanSendFreeform: workerSessionOpen },
@@ -478,12 +488,12 @@ async function claimEmployerChatIntent(
 export async function queueConversationMessageFromEmployer(
   client: PoolClient,
   conversationId: string,
-  employerId: string,
+  actor: EmployerActor,
   body: string,
   closedWindowTemplate: 'invite' | 'resume' = 'resume',
   options?: { forceCanSendFreeform?: boolean },
 ): Promise<{ messageId: string; queuedAsTemplate: boolean }> {
-  const conversation = await loadConversationForEmployer(client, conversationId, employerId);
+  const conversation = await loadConversationForEmployer(client, conversationId, actor.scopeUserIds);
   if (!conversation || conversation.status !== 'open') throw new Error('conversation_not_found');
 
   const canSendFreeform = (options?.forceCanSendFreeform ?? false) || isWorkerReplyWindowOpen(conversation.last_worker_message_at);
@@ -574,26 +584,26 @@ export async function queueConversationMessageFromEmployer(
 export async function closeEmployerConversation(
   client: PoolClient,
   conversationId: string,
-  employerId: string,
+  scopeUserIds: string[],
 ): Promise<boolean> {
   const result = await client.query(
     `UPDATE job_conversations
         SET status = 'closed',
             closed_at = now()
       WHERE id = $1
-        AND employer_id = $2
+        AND employer_id = ANY($2::uuid[])
         AND status = 'open'`,
-    [conversationId, employerId],
+    [conversationId, scopeUserIds],
   );
   return (result.rowCount ?? 0) > 0;
 }
 
 /**
- * Stamp the employer's read marker on their OWN conversation, for
- * `POST /employer/conversations/{conversationId}/read`.
+ * Stamp the employer's read marker on a conversation in the caller's scope,
+ * for `POST /employer/conversations/{conversationId}/read`.
  *
  * Returns the new stamp, or `null` when the UPDATE matched nothing -- which
- * is a conversation belonging to another employer AND one that does not exist
+ * is a conversation outside the caller's scope AND one that does not exist
  * at all, deliberately indistinguishable. The caller answers the same 404 to
  * both rather than becoming an existence oracle over every conversation id.
  *
@@ -602,21 +612,21 @@ export async function closeEmployerConversation(
  * written by this same database's clock. A browser running a few seconds fast
  * would otherwise mark messages read before they arrived.
  *
- * The explicit employer_id predicate scopes this; the caller binds
- * app.current_internal_user_id first.
+ * The explicit `employer_id = ANY(scope)` predicate scopes this; the caller
+ * binds app.current_internal_user_id first (resolveEmployerActor).
  */
 export async function markEmployerConversationRead(
   client: PoolClient,
   conversationId: string,
-  employerId: string,
+  scopeUserIds: string[],
 ): Promise<string | null> {
   const result = await client.query<{ employer_last_read_at: string }>(
     `UPDATE job_conversations
         SET employer_last_read_at = now()
       WHERE id = $1
-        AND employer_id = $2
+        AND employer_id = ANY($2::uuid[])
     RETURNING employer_last_read_at`,
-    [conversationId, employerId],
+    [conversationId, scopeUserIds],
   );
   if ((result.rowCount ?? 0) === 0) return null;
   return result.rows[0].employer_last_read_at;
@@ -916,9 +926,12 @@ export type JobOutboxActorKind = 'worker' | 'employer';
  * employer (`actorKind: 'employer'`, always with the conversation just
  * written), and the WhatsApp processor and the outbox sweeper call it as the
  * worker (`actorKind: 'worker'`, with or without a conversation). The SELECT
- * names the caller explicitly (`jc.employer_id` or `jc.worker_id` = the
- * actor), so a flush is confined to the caller's own conversations by its
- * own SQL; the row policies on job_message_outbox are a second boundary.
+ * names the caller explicitly (`jc.employer_id = ANY(scopeUserIds)` -- the
+ * caller's scope, `[actorUserId]` when none is given -- or
+ * `jc.worker_id = actorUserId`), so a flush is confined to the caller's
+ * conversations by its own SQL; the row policies on job_message_outbox are a
+ * second boundary. The caller set in each step is always `actorUserId`, the
+ * person acting.
  *
  * Must be called OUTSIDE a transaction. Each database step runs in its own
  * short transaction with the actor set transaction-locally, and no
@@ -936,11 +949,19 @@ export type JobOutboxActorKind = 'worker' | 'employer';
  */
 export async function sendPendingJobMessageOutbox(
   client: PoolClient,
-  options: { conversationId?: string; actorUserId: string; actorKind: JobOutboxActorKind },
+  options: { conversationId?: string; actorUserId: string; actorKind: JobOutboxActorKind; scopeUserIds?: string[] },
 ): Promise<void> {
   const { actorUserId } = options;
-  const actorColumn = options.actorKind === 'employer' ? 'jc.employer_id' : 'jc.worker_id';
-  const params: string[] = [actorUserId];
+  // Who the flush may send for: an employer flush covers every conversation
+  // in the caller's scope (an owner's whole company), a worker flush the
+  // worker's own. inActorTransaction still sets only actorUserId.
+  const actorMatch = (n: number): string => (options.actorKind === 'employer'
+    ? `jc.employer_id = ANY($${n}::uuid[])`
+    : `jc.worker_id = $${n}`);
+  const actorParam: string | string[] = options.actorKind === 'employer'
+    ? (options.scopeUserIds ?? [actorUserId])
+    : actorUserId;
+  const params: Array<string | string[]> = [actorParam];
   let conversationFilter = '';
   if (options.conversationId) {
     params.push(options.conversationId);
@@ -961,7 +982,7 @@ export async function sendPendingJobMessageOutbox(
             o.content_template, o.content_variables, o.send_kind
        FROM job_message_outbox o
        JOIN job_conversations jc ON jc.id = o.conversation_id
-      WHERE ${actorColumn} = $1
+      WHERE ${actorMatch(1)}
         AND o.status IN ('pending', 'failed')
         AND o.attempt_count < ${MAX_SEND_ATTEMPTS}
         ${conversationFilter}
@@ -992,8 +1013,8 @@ export async function sendPendingJobMessageOutbox(
           AND EXISTS (SELECT 1
                         FROM job_conversations jc
                        WHERE jc.id = o.conversation_id
-                         AND ${actorColumn} = $2)`,
-      [row.id, actorUserId],
+                         AND ${actorMatch(2)})`,
+      [row.id, actorParam],
     ));
     if ((claim.rowCount ?? 0) !== 1) {
       heldConversations.add(row.conversation_id);
@@ -1085,8 +1106,8 @@ export async function sendPendingJobMessageOutbox(
             AND EXISTS (SELECT 1
                           FROM job_conversations jc
                          WHERE jc.id = o.conversation_id
-                           AND ${actorColumn} = $4)`,
-        [row.id, twilioMessageSid, (err as Error).message, actorUserId],
+                           AND ${actorMatch(4)})`,
+        [row.id, twilioMessageSid, (err as Error).message, actorParam],
       )).catch(() => undefined);
     }
   }
