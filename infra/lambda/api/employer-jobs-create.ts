@@ -8,6 +8,7 @@ import { parsePreApplicationPrompts } from '../lib/pre-application-prompts';
 import { setJobCoordinates } from '../lib/location';
 import { parseCityFields, parseCityFromLocation } from '../lib/city-fields';
 import { checkCompliance } from '../legal/check-compliance';
+import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
 
 const CORS_HEADERS = corsHeaders();
 
@@ -217,13 +218,16 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     // A7: Lock the employer's users row to serialize concurrent slot consumers.
-    // SELECT … FOR UPDATE on users ensures two simultaneous creates for the same
-    // employer cannot both read "0 active jobs" and both insert.
-    const lockResult = await client.query<{ id: string }>(
-      `SELECT id FROM users WHERE cognito_sub = $1 FOR UPDATE`,
-      [cognitoSub],
-    );
-    const userId = lockResult.rows[0]?.id;
+    // resolveEmployerActor's lockUser takes SELECT … FOR UPDATE on the caller's
+    // users row, so two simultaneous creates for the same employer cannot both
+    // read "0 active jobs" and both insert. Plan limits stay per person in
+    // Phase 1; Phase 2 moves this lock to organizations FOR UPDATE.
+    const actorResult = await resolveEmployerActor(client, cognitoSub, { lockUser: true });
+    if (!actorResult.ok) {
+      await client.query('ROLLBACK');
+      return employerActorFailureResponse(actorResult, CORS_HEADERS);
+    }
+    const userId = actorResult.actor.userId;
 
     // Resolve entitlements AFTER acquiring the lock so the limit is authoritative.
     const entitlements = await resolveEntitlements(client, userId);

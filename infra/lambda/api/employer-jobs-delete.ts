@@ -1,7 +1,8 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { auditCaller } from '../lib/audit/caller';
 import { setAuditContext } from '../lib/audit/context';
-import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
+import { getDbPool, setRlsContext } from '../lib/db';
+import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { enqueueVisibilityTransition, isEffectivelyVisible } from '../lib/job-visibility';
 import { checkCompliance } from '../legal/check-compliance';
@@ -13,9 +14,11 @@ const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-
  * DELETE /employer/jobs/{jobId} — permanently delete a job the caller owns, plus its
  * dependent rows. Blocked (409) when the job has hired workers.
  *
- * One transaction. After the ownership proof the employer's users.id is the
- * caller context for the transaction (app.current_internal_user_id, next to
- * the Cognito sub). The conversations are deleted explicitly, then the job;
+ * One transaction. resolveEmployerActor sets the signed-in person's users.id
+ * as the caller context for the transaction (app.current_internal_user_id,
+ * next to the Cognito sub); an owner deleting a member's job acts as
+ * themself, through the owner policies. The conversations are deleted
+ * explicitly, then the job;
  * everything else that hangs off the job -- job_applications, the matching
  * tables, job-scoped worker_documents and document_upload_tokens (with their
  * slots) -- goes with it through ON DELETE CASCADE.
@@ -57,27 +60,32 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
+    const actorResult = await resolveEmployerActor(client, cognitoSub);
+    if (!actorResult.ok) {
+      await client.query('ROLLBACK');
+      return employerActorFailureResponse(actorResult, CORS_HEADERS);
+    }
+    const { actor } = actorResult;
+
     // Ownership + hired-worker guard, locking the job row for the transaction.
-    // Ownership is enforced by the users join; rowCount === 0 means forbidden (and does
-    // not distinguish "not found" from "not yours", to avoid leaking job existence).
+    // Ownership is enforced by the scope predicate; rowCount === 0 means forbidden (and
+    // does not distinguish "not found" from "not yours", to avoid leaking job existence).
     // status/public_listing_enabled/public_code are captured here too, for the
     // visibility-event hook below -- deleting an effectively-visible job must
     // notify the same way turning off its listing would.
     const owned = await client.query<{
       id: string; hired_count: number; status: string; public_listing_enabled: boolean; public_code: string;
-      employer_user_id: string;
     }>(
       `SELECT jobs.id,
               jobs.status,
               jobs.public_listing_enabled,
               jobs.public_code,
-              u.id AS employer_user_id,
               (SELECT COUNT(*)::int FROM job_applications
                  WHERE job_id = jobs.id AND status = 'hired') AS hired_count
-       FROM jobs JOIN users u ON u.id = jobs.employer_id
-       WHERE jobs.id = $1 AND u.cognito_sub = $2
+       FROM jobs
+       WHERE jobs.id = $1 AND jobs.employer_id = ANY($2::uuid[])
        FOR UPDATE OF jobs`,
-      [jobId, cognitoSub],
+      [jobId, actor.scopeUserIds],
     );
     if (owned.rowCount === 0) {
       await client.query('ROLLBACK');
@@ -90,14 +98,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const ownedRow = owned.rows[0];
     const wasEffectivelyVisible = isEffectivelyVisible(ownedRow.status, ownedRow.public_listing_enabled);
 
-    // The employer's users.id, proven by the ownership join above, for the
-    // rest of this transaction.
-    await setInternalUserRlsContext(client, ownedRow.employer_user_id);
     // The deletes below cascade into tables the change log covers; the
-    // employer is named as their actor.
+    // signed-in person is named as their actor. The internal-id RLS context
+    // was already set to that same person by resolveEmployerActor.
     await setAuditContext(
       client,
-      auditCaller(event, { kind: 'employer', id: ownedRow.employer_user_id }, 'web'),
+      auditCaller(event, { kind: 'employer', id: actor.userId }, 'web'),
       'employer.job_delete',
     );
 

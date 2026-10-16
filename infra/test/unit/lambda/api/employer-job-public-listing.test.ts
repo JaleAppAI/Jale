@@ -2,9 +2,14 @@ import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { handler } from '../../../../lambda/api/employer-job-public-listing';
 import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
+import { resolveEmployerActor } from '../../../../lambda/lib/employer-actor';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
+jest.mock('../../../../lambda/lib/employer-actor', () => ({
+  ...jest.requireActual('../../../../lambda/lib/employer-actor'),
+  resolveEmployerActor: jest.fn(),
+}));
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
@@ -13,6 +18,14 @@ const mockQuery = jest.fn();
 const mockRelease = jest.fn();
 
 const JOB_ID = '11111111-2222-4333-8444-555555555555';
+const mockResolveEmployerActor = resolveEmployerActor as jest.Mock;
+const EMPLOYER_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const ORG_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const FOREMAN_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const ownerActor = (scopeUserIds: string[] = [EMPLOYER_ID]) => ({
+  ok: true,
+  actor: { userId: EMPLOYER_ID, organizationId: ORG_ID, role: 'owner', scopeUserIds },
+});
 
 function makeEvent(overrides: Partial<APIGatewayProxyEvent> = {}): APIGatewayProxyEvent {
   return {
@@ -30,6 +43,7 @@ describe('employer-job-public-listing', () => {
     process.env = { ...env, REQUIRED_TOS_VERSION: 'v1.0' };
     mockGetDbPool.mockResolvedValue({ connect: jest.fn().mockResolvedValue({ query: mockQuery, release: mockRelease }) });
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    mockResolveEmployerActor.mockResolvedValue(ownerActor());
   });
   afterAll(() => { process.env = env; });
 
@@ -70,8 +84,9 @@ describe('employer-job-public-listing', () => {
     expect(mockSetRlsContext).toHaveBeenCalledWith(expect.anything(), 'emp-sub');
     // The ownership scope lives inside the statement itself.
     const update = mockQuery.mock.calls.find((c) => /UPDATE jobs SET public_listing_enabled/.test(c[0]));
-    expect(update[0]).toContain('u.cognito_sub = $3');
-    expect(update[1]).toEqual([true, JOB_ID, 'emp-sub']);
+    expect(update[0]).toContain('j.employer_id = ANY($3::uuid[])');
+    expect(update[0]).not.toContain('cognito_sub');
+    expect(update[1]).toEqual([true, JOB_ID, [EMPLOYER_ID]]);
   });
 
   it('turns a listing off with the same shape', async () => {
@@ -147,5 +162,27 @@ describe('employer-job-public-listing', () => {
     const res = await handler(makeEvent({ body: JSON.stringify({ enabled: false }) }));
     expect(res.statusCode).toBe(200);
     expect(findEnqueueCall()).toBeUndefined();
+  });
+
+  it("passes the owner's whole scope as the uuid[] parameter", async () => {
+    mockResolveEmployerActor.mockResolvedValue(ownerActor([EMPLOYER_ID, FOREMAN_ID]));
+    mockUpdateReturning([{ id: JOB_ID, public_code: 'JOBCOD', public_listing_enabled: true, status: 'paused', old_enabled: false }]);
+    const res = await handler(makeEvent());
+    expect(res.statusCode).toBe(200);
+    expect(mockResolveEmployerActor).toHaveBeenCalledWith(expect.anything(), 'emp-sub');
+    const update = mockQuery.mock.calls.find((c) => /UPDATE jobs SET public_listing_enabled/.test(c[0]));
+    expect(update[1]).toEqual([true, JOB_ID, [EMPLOYER_ID, FOREMAN_ID]]);
+  });
+
+  it('returns the actor failure, rolls back, and touches no job when the membership is inactive', async () => {
+    mockResolveEmployerActor.mockResolvedValue({ ok: false, status: 403, error: 'membership_inactive' });
+    mockUpdateReturning([]);
+    const res = await handler(makeEvent());
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({ error: 'membership_inactive' });
+    const verbs = mockQuery.mock.calls.map((c) => c[0]);
+    expect(verbs).toContain('ROLLBACK');
+    expect(verbs).not.toContain('COMMIT');
+    expect(verbs.some((v) => typeof v === 'string' && v.includes('UPDATE jobs'))).toBe(false);
   });
 });

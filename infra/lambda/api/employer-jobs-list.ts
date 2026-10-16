@@ -2,6 +2,7 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
+import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
 
 const CORS_HEADERS = corsHeaders();
 
@@ -35,6 +36,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
+    const actorResult = await resolveEmployerActor(client, cognitoSub);
+    if (!actorResult.ok) {
+      await client.query('COMMIT');
+      return employerActorFailureResponse(actorResult, CORS_HEADERS);
+    }
+    const { actor } = actorResult;
+
     const result = await client.query(
       `
       SELECT
@@ -67,14 +75,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           WHERE ja.job_id = j.id
         ) AS applicant_count
       FROM jobs j
-      WHERE j.employer_id = (
-        SELECT id
-        FROM users
-        WHERE cognito_sub = $1
-      )
+      WHERE j.employer_id = ANY($1::uuid[])
       ORDER BY j.created_at DESC
     `,
-      [cognitoSub],
+      [actor.scopeUserIds],
     );
 
     await client.query('COMMIT');

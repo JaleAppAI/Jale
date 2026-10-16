@@ -2,15 +2,28 @@ import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { handler } from '../../../../lambda/api/employer-job-share';
 import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
+import { resolveEmployerActor } from '../../../../lambda/lib/employer-actor';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
+jest.mock('../../../../lambda/lib/employer-actor', () => ({
+  ...jest.requireActual('../../../../lambda/lib/employer-actor'),
+  resolveEmployerActor: jest.fn(),
+}));
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
 const mockCheckCompliance = checkCompliance as jest.Mock;
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
+const mockResolveEmployerActor = resolveEmployerActor as jest.Mock;
+const EMPLOYER_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const ORG_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const FOREMAN_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const ownerActor = (scopeUserIds: string[] = [EMPLOYER_ID]) => ({
+  ok: true,
+  actor: { userId: EMPLOYER_ID, organizationId: ORG_ID, role: 'owner', scopeUserIds },
+});
 
 function makeEvent(overrides: Partial<APIGatewayProxyEvent> = {}): APIGatewayProxyEvent {
   return {
@@ -28,6 +41,7 @@ describe('employer-job-share', () => {
     process.env = { ...env, REQUIRED_TOS_VERSION: 'v1.0', PUBLIC_SITE_BASE_URL: 'https://jale.app' };
     mockGetDbPool.mockResolvedValue({ connect: jest.fn().mockResolvedValue({ query: mockQuery, release: mockRelease }) });
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    mockResolveEmployerActor.mockResolvedValue(ownerActor());
   });
   afterAll(() => { process.env = env; });
 
@@ -98,24 +112,33 @@ describe('employer-job-share', () => {
     expect(JSON.parse(res.body)).toEqual({ error: 'share_url_misconfigured' });
   });
 
-  it('returns 403 employer_only when the caller is a worker', async () => {
-    mockQuery.mockImplementation((q: string) => {
-      if (q.includes('SELECT id, user_type FROM users')) return Promise.resolve({ rows: [{ id: 'worker-id', user_type: 'worker' }] });
-      return Promise.resolve({});
-    });
+  it('returns 403 employer_only when the caller is a worker (the resolver reports user_not_provisioned for a users row that exists but is not an employer)', async () => {
+    mockResolveEmployerActor.mockResolvedValue({ ok: false, status: 409, error: 'user_not_provisioned' });
+    mockQuery.mockResolvedValue({});
     const res = await handler(makeEvent());
     expect(res.statusCode).toBe(403);
     expect(JSON.parse(res.body)).toEqual({ error: 'employer_only' });
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+    expect(mockQuery.mock.calls.some((c) => typeof c[0] === 'string' && c[0].includes('FROM jobs'))).toBe(false);
   });
 
   it('returns 409 user_not_provisioned when no users row exists for the sub', async () => {
-    mockQuery.mockImplementation((q: string) => {
-      if (q.includes('SELECT id, user_type FROM users')) return Promise.resolve({ rows: [] });
-      return Promise.resolve({});
-    });
+    mockCheckCompliance.mockResolvedValue({ compliant: false, userExists: false });
+    mockQuery.mockResolvedValue({});
     const res = await handler(makeEvent());
     expect(res.statusCode).toBe(409);
     expect(JSON.parse(res.body)).toEqual({ error: 'user_not_provisioned' });
+    expect(mockResolveEmployerActor).not.toHaveBeenCalled();
+  });
+
+  it('returns the actor failure unchanged for an inactive membership, commits, and reads no job', async () => {
+    mockResolveEmployerActor.mockResolvedValue({ ok: false, status: 403, error: 'membership_inactive' });
+    mockQuery.mockResolvedValue({});
+    const res = await handler(makeEvent());
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({ error: 'membership_inactive' });
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+    expect(mockQuery.mock.calls.some((c) => typeof c[0] === 'string' && c[0].includes('FROM jobs'))).toBe(false);
   });
 
   it('returns 403 legal_required when the employer has not accepted the current ToS', async () => {
@@ -164,8 +187,8 @@ describe('employer-job-share', () => {
     expect(res.statusCode).toBe(404);
     expect(JSON.parse(res.body)).toEqual({ error: 'job_not_found' });
     const jobQuery = calls.find((c) => c.includes('SELECT j.id, j.public_code FROM jobs')) as string;
-    expect(jobQuery).toContain('JOIN users u ON u.id = j.employer_id');
-    expect(jobQuery).toContain('u.cognito_sub = $2');
+    expect(jobQuery).toContain('j.employer_id = ANY($2::uuid[])');
+    expect(jobQuery).not.toContain('cognito_sub');
     expect(jobQuery).toContain("status = 'active'");
     expect(jobQuery).toContain('public_listing_enabled = true');
   });
@@ -232,5 +255,18 @@ describe('employer-job-share', () => {
     const body = JSON.parse(res.body);
     expect(body.share_url).toBe('https://jale.app/j/JOBCOD?r=SHARECOD');
     expect(body).toEqual({ code: 'SHARECOD', channel: 'copy_link', share_url: 'https://jale.app/j/JOBCOD?r=SHARECOD' });
+  });
+
+  it("scopes the job to the owner's whole scope and records the signed-in person as the referrer", async () => {
+    mockResolveEmployerActor.mockResolvedValue(ownerActor([EMPLOYER_ID, FOREMAN_ID]));
+    mockHappyPath('SCOPED01');
+    const res = await handler(makeEvent());
+    expect(res.statusCode).toBe(200);
+    expect(mockResolveEmployerActor).toHaveBeenCalledWith(expect.anything(), 'e-sub');
+    const jobCall = mockQuery.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('SELECT j.id, j.public_code FROM jobs'));
+    expect(jobCall![1]).toEqual(['job-1', [EMPLOYER_ID, FOREMAN_ID]]);
+    const insertCall = mockQuery.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('INSERT INTO job_share_links'));
+    expect(insertCall![1][2]).toBe(EMPLOYER_ID);
+    expect(mockQuery.mock.calls.some((c) => typeof c[0] === 'string' && c[0].includes('FROM users'))).toBe(false);
   });
 });

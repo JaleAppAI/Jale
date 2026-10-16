@@ -4,11 +4,16 @@ import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
 import { resolveEntitlements } from '../../../../lambda/lib/entitlements';
 import { setJobCoordinates } from '../../../../lambda/lib/location';
+import { resolveEmployerActor } from '../../../../lambda/lib/employer-actor';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
 jest.mock('../../../../lambda/lib/entitlements');
 jest.mock('../../../../lambda/lib/location');
+jest.mock('../../../../lambda/lib/employer-actor', () => ({
+  ...jest.requireActual('../../../../lambda/lib/employer-actor'),
+  resolveEmployerActor: jest.fn(),
+}));
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
@@ -18,6 +23,14 @@ const mockSetJobCoordinates = setJobCoordinates as jest.Mock;
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
+const mockResolveEmployerActor = resolveEmployerActor as jest.Mock;
+const EMPLOYER_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const ORG_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const FOREMAN_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const ownerActor = (scopeUserIds: string[] = [EMPLOYER_ID]) => ({
+  ok: true,
+  actor: { userId: EMPLOYER_ID, organizationId: ORG_ID, role: 'owner', scopeUserIds },
+});
 
 function makeEvent(overrides: Partial<APIGatewayProxyEvent> = {}): APIGatewayProxyEvent {
   return {
@@ -40,6 +53,7 @@ describe('employer-jobs-update', () => {
     mockSetJobCoordinates.mockResolvedValue(undefined);
     // Default: employer_free plan with 1 slot, 0 active jobs — won't affect non-active transitions
     mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_free', activeJobLimit: 1 });
+    mockResolveEmployerActor.mockResolvedValue(ownerActor());
   });
 
   afterAll(() => { process.env = env; });
@@ -140,8 +154,8 @@ describe('employer-jobs-update', () => {
     expect(mockSetRlsContext).toHaveBeenCalledWith(expect.anything(), 'e-sub');
     expect(mockCheckCompliance).toHaveBeenCalledWith(expect.anything(), 'e-sub', 'v1.0');
     expect(mockQuery).toHaveBeenCalledWith(
-      expect.stringContaining('JOIN users u ON u.id = jobs.employer_id'),
-      ['paused', JOB_ID, 'e-sub'],
+      expect.stringContaining('jobs.employer_id = ANY($3::uuid[])'),
+      ['paused', JOB_ID, [EMPLOYER_ID]],
     );
     expect(mockQuery).toHaveBeenCalledWith('COMMIT');
     expect(mockRelease).toHaveBeenCalled();
@@ -1570,6 +1584,108 @@ describe('employer-jobs-update', () => {
       }));
       expect(res.statusCode).toBe(409);
       expect(JSON.parse(res.body).fields).toContain('pre_application_prompts');
+    });
+  });
+
+  describe('organization actor (Phase 1)', () => {
+    it('resolves the actor after the compliance check, without a lock, on the status path', async () => {
+      mockQuery.mockImplementation(makeUpdateQueryMock('active', 0));
+
+      const res = await handler(makeEvent());
+
+      expect(res.statusCode).toBe(200);
+      expect(mockResolveEmployerActor).toHaveBeenCalledWith(expect.anything(), 'e-sub');
+      expect(mockCheckCompliance.mock.invocationCallOrder[0])
+        .toBeLessThan(mockResolveEmployerActor.mock.invocationCallOrder[0]);
+    });
+
+    it('scopes the status pre-read and the status UPDATE to scopeUserIds', async () => {
+      mockResolveEmployerActor.mockResolvedValue(ownerActor([EMPLOYER_ID, FOREMAN_ID]));
+      mockQuery.mockImplementation(makeUpdateQueryMock('active', 0));
+
+      const res = await handler(makeEvent());
+
+      expect(res.statusCode).toBe(200);
+      const preRead = mockQuery.mock.calls.find(([q]) => typeof q === 'string' && q.includes('jobs.status') && q.includes('FOR UPDATE OF jobs'));
+      expect(preRead![0]).toContain('jobs.employer_id = ANY($2::uuid[])');
+      expect(preRead![1]).toEqual([JOB_ID, [EMPLOYER_ID, FOREMAN_ID]]);
+      const cte = mockQuery.mock.calls.find(([q]) => typeof q === 'string' && q.includes('UPDATE jobs SET status'));
+      expect(cte![0]).toContain('jobs.employer_id = ANY($3::uuid[])');
+      expect(cte![1]).toEqual(['paused', JOB_ID, [EMPLOYER_ID, FOREMAN_ID]]);
+      expect(mockQuery.mock.calls.some(([q]) => typeof q === 'string' && q.includes('cognito_sub'))).toBe(false);
+    });
+
+    it("reactivation counts against the caller (limits stay per person in Phase 1) and locks the caller's own users row", async () => {
+      // An owner reactivating a job in their scope: entitlements, the active-job
+      // count and the lock all use actor.userId, exactly as create does.
+      mockResolveEmployerActor.mockResolvedValue(ownerActor([EMPLOYER_ID, FOREMAN_ID]));
+      mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_pro', activeJobLimit: 10 });
+      mockQuery.mockImplementation(makeUpdateQueryMock('paused', 2));
+
+      const res = await handler(makeEvent({ body: JSON.stringify({ status: 'active' }) }));
+
+      expect(res.statusCode).toBe(200);
+      const lock = mockQuery.mock.calls.find(([q]) => typeof q === 'string' && q.includes('FROM users') && q.includes('FOR UPDATE'));
+      expect(lock![0]).toBe('SELECT id FROM users WHERE id = $1 FOR UPDATE');
+      expect(lock![1]).toEqual([EMPLOYER_ID]);
+      expect(mockResolveEntitlements).toHaveBeenCalledTimes(1);
+      expect(mockResolveEntitlements).toHaveBeenCalledWith(expect.anything(), EMPLOYER_ID);
+      const count = mockQuery.mock.calls.find(([q]) => typeof q === 'string' && q.includes('AS active_jobs'));
+      expect(count![1]).toEqual([EMPLOYER_ID]);
+    });
+
+    it('counts against the actor when the job is outside the scope, then refuses with 403 forbidden', async () => {
+      mockQuery.mockImplementation((q: string) => {
+        if (q.includes('SELECT') && q.includes('jobs.status') && !q.includes('UPDATE jobs')) return Promise.resolve({ rows: [] });
+        if (q.includes('UPDATE jobs')) return Promise.resolve({ rowCount: 0, rows: [] });
+        if (q.includes('AS active_jobs')) return Promise.resolve({ rows: [{ active_jobs: 0 }] });
+        return Promise.resolve({ rows: [] });
+      });
+
+      const res = await handler(makeEvent({ body: JSON.stringify({ status: 'active' }) }));
+
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body)).toEqual({ error: 'forbidden' });
+      expect(mockResolveEntitlements).toHaveBeenCalledWith(expect.anything(), EMPLOYER_ID);
+    });
+
+    it('returns the actor failure, rolls back, and reads no job on the status path', async () => {
+      mockResolveEmployerActor.mockResolvedValue({ ok: false, status: 403, error: 'membership_inactive' });
+      mockQuery.mockResolvedValue({});
+
+      const res = await handler(makeEvent());
+
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body)).toEqual({ error: 'membership_inactive' });
+      expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+      expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
+      expect(mockQuery.mock.calls.some(([q]) => typeof q === 'string' && q.includes('FROM jobs'))).toBe(false);
+    });
+
+    it('scopes the field-edit pre-read to scopeUserIds', async () => {
+      mockResolveEmployerActor.mockResolvedValue(ownerActor([EMPLOYER_ID, FOREMAN_ID]));
+      mockCurrentJob();
+
+      const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+
+      expect(res.statusCode).toBe(200);
+      expect(mockResolveEmployerActor).toHaveBeenCalledWith(expect.anything(), 'e-sub');
+      const preRead = mockQuery.mock.calls.find(([q]) => typeof q === 'string' && q.includes('applicant_count') && q.includes('FOR UPDATE OF jobs'));
+      expect(preRead![0]).toContain('jobs.employer_id = ANY($2::uuid[])');
+      expect(preRead![0]).not.toContain('cognito_sub');
+      expect(preRead![1]).toEqual([JOB_ID, [EMPLOYER_ID, FOREMAN_ID]]);
+    });
+
+    it('returns the actor failure, rolls back, and reads no job on the field-edit path', async () => {
+      mockResolveEmployerActor.mockResolvedValue({ ok: false, status: 403, error: 'no_organization' });
+      mockQuery.mockResolvedValue({});
+
+      const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body)).toEqual({ error: 'no_organization' });
+      expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+      expect(mockQuery.mock.calls.some(([q]) => typeof q === 'string' && q.includes('FROM jobs'))).toBe(false);
     });
   });
 });

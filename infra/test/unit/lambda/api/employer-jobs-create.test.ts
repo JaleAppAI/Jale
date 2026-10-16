@@ -5,17 +5,30 @@ import { setJobCoordinates } from '../../../../lambda/lib/location';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
 import { resolveEntitlements } from '../../../../lambda/lib/entitlements';
 import { DOC_TYPES, REQUIRED_FIELD_TYPES } from '../../../../lambda/lib/job-fields';
+import { resolveEmployerActor } from '../../../../lambda/lib/employer-actor';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/lib/location');
 jest.mock('../../../../lambda/legal/check-compliance');
 jest.mock('../../../../lambda/lib/entitlements');
+jest.mock('../../../../lambda/lib/employer-actor', () => ({
+  ...jest.requireActual('../../../../lambda/lib/employer-actor'),
+  resolveEmployerActor: jest.fn(),
+}));
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
 const mockSetJobCoordinates = setJobCoordinates as jest.Mock;
 const mockCheckCompliance = checkCompliance as jest.Mock;
 const mockResolveEntitlements = resolveEntitlements as jest.Mock;
+const mockResolveEmployerActor = resolveEmployerActor as jest.Mock;
+const EMPLOYER_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const ORG_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const FOREMAN_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const ownerActor = (scopeUserIds: string[] = [EMPLOYER_ID]) => ({
+  ok: true,
+  actor: { userId: EMPLOYER_ID, organizationId: ORG_ID, role: 'owner', scopeUserIds },
+});
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
 
@@ -42,6 +55,7 @@ describe('employer-jobs-create', () => {
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
     // Default: employer_free, 1 slot, 0 active jobs — allow create
     mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_free', activeJobLimit: 1 });
+    mockResolveEmployerActor.mockResolvedValue(ownerActor());
     mockQuery.mockImplementation((sql: string) => {
       if (sql.includes('FOR UPDATE')) {
         return Promise.resolve({ rows: [{ id: 'user-uuid-1' }] });
@@ -225,13 +239,13 @@ describe('employer-jobs-create', () => {
     expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
   });
 
-  it('issues FOR UPDATE lock query before resolving entitlements', async () => {
+  it('locks the caller through resolveEmployerActor before resolving entitlements', async () => {
     const callOrder: string[] = [];
+    mockResolveEmployerActor.mockImplementation(async () => {
+      callOrder.push('for_update');
+      return ownerActor();
+    });
     mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('FOR UPDATE')) {
-        callOrder.push('for_update');
-        return Promise.resolve({ rows: [{ id: 'user-uuid-1' }] });
-      }
       if (sql.includes('COUNT(*)')) {
         callOrder.push('count');
         return Promise.resolve({ rows: [{ active_jobs: 0 }] });
@@ -249,6 +263,8 @@ describe('employer-jobs-create', () => {
 
     await handler(makeEvent({}));
 
+    expect(mockResolveEmployerActor).toHaveBeenCalledWith(expect.anything(), 'employer-sub', { lockUser: true });
+    expect(callOrder.indexOf('for_update')).toBeGreaterThanOrEqual(0);
     expect(callOrder.indexOf('for_update')).toBeLessThan(callOrder.indexOf('resolve_entitlements'));
     expect(callOrder.indexOf('resolve_entitlements')).toBeLessThan(callOrder.indexOf('count'));
     expect(callOrder.indexOf('count')).toBeLessThan(callOrder.indexOf('insert'));
@@ -716,6 +732,45 @@ describe('employer-jobs-create', () => {
       const res = await handler(makeEvent({ pre_application_prompts: [{ id: 'p1', text: 'A' }] }));
       expect(res.statusCode).toBe(201);
       expect(JSON.parse(res.body).pre_application_prompts).toEqual([{ id: 'p1', text: 'A' }]);
+    });
+  });
+
+  describe('organization actor (Phase 1)', () => {
+    it('resolves the actor after the compliance check and issues no users lookup of its own', async () => {
+      const res = await handler(makeEvent({}));
+
+      expect(res.statusCode).toBe(201);
+      expect(mockCheckCompliance.mock.invocationCallOrder[0])
+        .toBeLessThan(mockResolveEmployerActor.mock.invocationCallOrder[0]);
+      expect(mockQuery.mock.calls.some(([sql]) => typeof sql === 'string' && /FROM users/.test(sql))).toBe(false);
+    });
+
+    it('creates, counts and limits as the actor even when the owner scope spans two members', async () => {
+      mockResolveEmployerActor.mockResolvedValue(ownerActor([EMPLOYER_ID, FOREMAN_ID]));
+
+      const res = await handler(makeEvent({}));
+
+      expect(res.statusCode).toBe(201);
+      expect(mockResolveEntitlements).toHaveBeenCalledWith(expect.anything(), EMPLOYER_ID);
+      const countCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('COUNT(*)'));
+      expect(countCall![1]).toEqual([EMPLOYER_ID]);
+      const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
+      const params = insertCall![1] as unknown[];
+      // employer_id (first column) is the signed-in person.
+      expect(params[0]).toBe(EMPLOYER_ID);
+    });
+
+    it('returns the actor failure, rolls back, and runs no job query when the membership is inactive', async () => {
+      mockResolveEmployerActor.mockResolvedValue({ ok: false, status: 403, error: 'membership_inactive' });
+
+      const res = await handler(makeEvent({}));
+
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body)).toEqual({ error: 'membership_inactive' });
+      expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+      expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
+      expect(mockQuery.mock.calls.some(([sql]) => typeof sql === 'string' && /jobs/.test(sql))).toBe(false);
+      expect(mockResolveEntitlements).not.toHaveBeenCalled();
     });
   });
 });

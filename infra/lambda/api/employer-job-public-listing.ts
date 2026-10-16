@@ -3,6 +3,7 @@ import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { enqueueVisibilityTransition, isEffectivelyVisible } from '../lib/job-visibility';
 import { checkCompliance } from '../legal/check-compliance';
+import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
 
 /**
  * PATCH /employer/jobs/{jobId}/public-listing
@@ -69,21 +70,27 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'legal_required', requiredVersion: process.env.REQUIRED_TOS_VERSION, currentVersion: compliance.currentVersion }) };
     }
 
+    const actorResult = await resolveEmployerActor(client, cognitoSub);
+    if (!actorResult.ok) {
+      await client.query('ROLLBACK');
+      return employerActorFailureResponse(actorResult, CORS_HEADERS);
+    }
+    const { actor } = actorResult;
+
     // The CTE captures the pre-update status and enabled value so the
     // visibility-event decision below can tell an actual on/off transition
     // apart from a no-op write, without a second round trip.
     const result = await client.query(
       `WITH employer_job AS (
          SELECT j.id, j.status, j.public_listing_enabled AS old_enabled FROM jobs j
-           JOIN users u ON u.id = j.employer_id
-          WHERE j.id = $2 AND u.cognito_sub = $3
+          WHERE j.id = $2 AND j.employer_id = ANY($3::uuid[])
        )
        UPDATE jobs SET public_listing_enabled = $1
          FROM employer_job
         WHERE jobs.id = employer_job.id
        RETURNING jobs.id, jobs.public_code, jobs.public_listing_enabled,
          employer_job.status, employer_job.old_enabled`,
-      [enabled, jobId, cognitoSub],
+      [enabled, jobId, actor.scopeUserIds],
     );
 
     if (result.rows.length === 0) {
