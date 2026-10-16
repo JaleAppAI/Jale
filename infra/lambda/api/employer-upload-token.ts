@@ -2,9 +2,10 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { createHash, randomBytes } from 'crypto';
 import { auditCaller } from '../lib/audit/caller';
 import { setAuditContext } from '../lib/audit/context';
-import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
+import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
+import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
 
 const CORS_HEADERS = corsHeaders();
 
@@ -76,15 +77,21 @@ export const handler = async (
       };
     }
 
-    const applicantCheck = await client.query<{ worker_id: string; job_id: string; employer_user_id: string }>(
-      `SELECT ja.worker_id, ja.job_id, employer.id AS employer_user_id
+    const resolved = await resolveEmployerActor(client, cognitoSub);
+    if (!resolved.ok) {
+      await client.query('COMMIT');
+      return employerActorFailureResponse(resolved, CORS_HEADERS);
+    }
+    const { actor } = resolved;
+
+    const applicantCheck = await client.query<{ worker_id: string; job_id: string }>(
+      `SELECT ja.worker_id, ja.job_id
        FROM job_applications ja
        JOIN jobs j ON j.id = ja.job_id
-       JOIN users employer ON employer.id = j.employer_id
        WHERE ja.job_id = $1
          AND ja.worker_id = $2
-         AND employer.cognito_sub = $3`,
-      [job_id, worker_id, cognitoSub],
+         AND j.employer_id = ANY($3::uuid[])`,
+      [job_id, worker_id, actor.scopeUserIds],
     );
     if (applicantCheck.rows.length === 0) {
       await client.query('COMMIT');
@@ -95,12 +102,11 @@ export const handler = async (
       };
     }
 
-    // The capability function reads the caller from the internal id, the
-    // employer's users.id proven by the join above.
-    await setInternalUserRlsContext(client, applicantCheck.rows[0].employer_user_id);
+    // The capability function reads the caller from the internal id, which
+    // resolveEmployerActor set to the caller's users.id.
     await setAuditContext(
       client,
-      auditCaller(event, { kind: 'employer', id: applicantCheck.rows[0].employer_user_id }, 'web'),
+      auditCaller(event, { kind: 'employer', id: actor.userId }, 'web'),
       'employer.upload_link',
     );
 
