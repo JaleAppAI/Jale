@@ -21,8 +21,9 @@
  * transaction:
  *   * `app.current_user_id`          = the employer's Cognito sub
  *                                      (`setRlsContext`)
- *   * `app.current_internal_user_id` = the EMPLOYER's `users.id`
- *                                      (`setInternalUserRlsContext`)
+ *   * `app.current_internal_user_id` = the CALLER's `users.id` -- the
+ *                                      job's employer or their company's
+ *                                      owner (set by `resolveEmployerActor`)
  *
  * The request login holds no rights on the worker lane's tables. Two
  * capability functions in schema `jale_cap` do the worker-lane work (see

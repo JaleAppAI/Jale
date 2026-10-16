@@ -36,12 +36,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
     const { actor } = actorResult;
 
-    // Templates are a company asset: every member reads every template of
-    // their organization (jale_internal.shares_org_with, migration 118).
+    // Templates are a company asset: every active member reads every
+    // template of their organization. The same array test as 119's
+    // employer_job_templates_org_read policy (jale_internal.org_member_scope,
+    // migration 118): one call per statement, '{}' unless the caller is an
+    // active member.
     const result = await client.query(
       `SELECT t.id, t.name, t.payload, t.updated_at
          FROM employer_job_templates t
-        WHERE jale_internal.shares_org_with($1::text, t.employer_id)
+        WHERE t.employer_id = ANY ((SELECT jale_internal.org_member_scope($1::text))::uuid[])
         ORDER BY t.updated_at DESC`,
       [actor.userId],
     );

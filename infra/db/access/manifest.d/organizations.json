@@ -56,7 +56,7 @@
       "arguments": "p_caller_id text, p_member_id uuid", "returns": "boolean",
       "execute": ["jale_admin", "jale_api", "jale_cap_upload_tokens", "jale_cap_worker_lane"],
       "created_by": "118",
-      "reason": "Single-row owner predicate: is the caller the active owner of this member's company. The capability owners call it from their 119 policies and functions."
+      "reason": "Single-row owner predicate: is the caller the active owner of this member's company. The capability owners call it from their 119 functions."
     },
     "jale_internal.shares_org_with(text, uuid)": {
       "owner": "jale_rls_relationship_reader", "security": "definer", "search_path": "pg_catalog, pg_temp",
@@ -70,7 +70,7 @@
       "arguments": "p_caller_id text, p_active_only boolean", "returns": "uuid[]",
       "execute": ["jale_admin", "jale_api", "jale_cap_upload_tokens", "jale_cap_worker_lane"],
       "created_by": "118",
-      "reason": "The active owner's company as member ids, evaluated once per statement by the owner row policies. The capability owners call it from their 119 policies and functions."
+      "reason": "The active owner's company as member ids, evaluated once per statement by the owner row policies and once per call by the 119 applicant predicate (employer_has_applicant_relationship). The capability owners call it from their 119 policies."
     },
     "jale_internal.org_member_scope(text)": {
       "owner": "jale_rls_relationship_reader", "security": "definer", "search_path": "pg_catalog, pg_temp",

@@ -14,8 +14,10 @@
  *     their owner;
  *   - the feed's applied-job filter, as the request login with a worker's
  *     context.
- * No plan may contain a Seq Scan on job_applications. Timings are printed,
- * never gated on.
+ * No plan may contain a Seq Scan on job_applications. A company owner's
+ * applicant read (with and without the handler's own predicate) may not
+ * Seq Scan jobs either, nor call a per-row owner predicate. Timings are
+ * printed, never gated on.
  *
  * Connection: JALE_TEST_DATABASE_URL (the bed's superuser URL) for the
  * fixtures and the definer-owner plans; the request login signs in through
@@ -53,6 +55,25 @@ function seqScansOnApplications(explain: Array<{ Plan: PlanNode }>): string[] {
   return nodes(explain[0].Plan)
     .filter((node) => node['Node Type'] === 'Seq Scan' && node['Relation Name'] === 'job_applications')
     .map((node) => node['Node Type']);
+}
+
+/** A node's own fields (its children left out), as text. */
+function ownText(node: PlanNode): string {
+  const { Plans: _children, ...own } = node;
+  return JSON.stringify(own);
+}
+
+/**
+ * The nodes that mention `fn` anywhere in their own fields (filter, index
+ * condition, output), with how they hang off their parent.
+ */
+function nodesCalling(explain: Array<{ Plan: PlanNode }>, fn: string): Array<{ relationship: string; name: string }> {
+  return nodes(explain[0].Plan)
+    .filter((node) => ownText(node).includes(fn))
+    .map((node) => ({
+      relationship: String((node as unknown as Record<string, unknown>)['Parent Relationship'] ?? 'root'),
+      name: String((node as unknown as Record<string, unknown>)['Subplan Name'] ?? node['Node Type']),
+    }));
 }
 
 function seqScansOn(explain: Array<{ Plan: PlanNode }>, relation: string): string[] {
@@ -262,6 +283,35 @@ maybeDescribe('least-privilege query plans at volume', () => {
       console.log(`[query-plans] owner applicant read: ${plan[0]['Execution Time']} ms`);
       expect(seqScansOn(plan, 'jobs')).toEqual([]);
       expect(seqScansOnApplications(plan)).toEqual([]);
+
+      // The same read with NO handler predicate: RLS alone decides the rows,
+      // so the policies' own row checks are all the planner has. Same session
+      // settings (enable_seqscan off). With sequential scans off a per-row
+      // policy predicate need not show as a Seq Scan -- the planner can walk a
+      // whole index and filter each row instead -- so besides the Seq Scan
+      // check this asserts the property itself: the owner's company is read
+      // only by InitPlans (once per statement, org_owner_scope), and no node
+      // calls is_org_owner_of (a per-row call). VERBOSE prints each node's
+      // expressions with their function names.
+      const rlsOnly = `SELECT ja.id FROM job_applications ja JOIN jobs j ON j.id = ja.job_id`;
+      const rlsPlan = await withLoginClient('jale_api', async (client) => {
+        await client.query('BEGIN');
+        try {
+          await client.query(`SELECT set_config('app.current_user_id', $1, true)`, [owner.sub]);
+          await client.query(`SELECT set_config('app.current_internal_user_id', $1, true)`, [owner.id]);
+          await client.query('SET LOCAL enable_seqscan = off');
+          const { rows } = await client.query<ExplainRow>(`EXPLAIN (ANALYZE, VERBOSE, FORMAT JSON) ${rlsOnly}`);
+          return rows[0]['QUERY PLAN'];
+        } finally {
+          await client.query('ROLLBACK');
+        }
+      });
+      console.log(`[query-plans] owner applicant read, RLS only: ${rlsPlan[0]['Execution Time']} ms`);
+      expect(seqScansOn(rlsPlan, 'jobs')).toEqual([]);
+      expect(nodesCalling(rlsPlan, 'is_org_owner_of')).toEqual([]);
+      const scopeCalls = nodesCalling(rlsPlan, 'org_owner_scope');
+      expect(scopeCalls.length).toBeGreaterThan(0);
+      expect(scopeCalls.filter((call) => call.relationship !== 'InitPlan')).toEqual([]);
     } finally {
       await su.query(`DELETE FROM public.organization_members WHERE organization_id = $1`, [org]);
       await su.query(`DELETE FROM public.organizations WHERE id = $1`, [org]);

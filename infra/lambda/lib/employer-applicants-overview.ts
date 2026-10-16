@@ -69,7 +69,7 @@ const OVERVIEW_QUERY = `
     -- overview and the per-job list can never show a different trust number
     -- for the same worker. The users JOIN below is already there for the name,
     -- and users_employer_applicant_read (020b:261-269) is what admits the row
-    -- -- the caller sets app.current_internal_user_id before this runs.
+    -- -- resolveEmployerActor sets app.current_internal_user_id before this runs.
     u.trade_competency_score AS trust_score
   FROM job_applications ja
   JOIN jobs j ON j.id = ja.job_id AND j.employer_id = ANY($1::uuid[])

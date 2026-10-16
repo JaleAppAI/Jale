@@ -22,7 +22,8 @@
 --
 -- Also: jale_internal.employer_has_applicant_relationship gains the owner
 -- case (so every policy that calls it -- users, trust tables, worker posts
--- and media, onboarding state -- follows), and three capability functions
+-- and media, onboarding state -- follows), through the same array helper
+-- (org_owner_scope, once per call), and three capability functions
 -- that compare j.employer_id to the caller accept the member's owner:
 -- jale_cap.upload_token_issue, jale_cap.employer_stage_recipient and the
 -- two job checks in jale_cap.employer_claim_worker_intent. Each is replaced
@@ -32,6 +33,12 @@
 -- Company templates: every active member reads them
 -- (jale_internal.org_member_scope; a removed member's templates stay with
 -- the company); the owner may edit or delete any.
+--
+-- LOCK ORDER. CREATE POLICY takes an ACCESS EXCLUSIVE lock on its table,
+-- held to COMMIT. The policies on public.jobs and public.job_applications
+-- (the hottest tables: every employer and worker read) are created after
+-- every other policy and function, just before the catch-up back-fill, so
+-- those locks are taken last and held for the shortest time.
 --
 -- CATCH-UP BACK-FILL. 118 may be applied before Milestone A's
 -- post-confirmation Lambda is deployed, and that Lambda keeps a new
@@ -82,24 +89,6 @@ END $$;
 -- ── Owner policies for jale_api ─────────────────────────────
 -- Each row check is x = ANY ((SELECT jale_internal.org_owner_scope(...))::uuid[]):
 -- one evaluation per statement, then an index-usable comparison.
-CREATE POLICY jobs_org_owner_select ON public.jobs AS PERMISSIVE FOR SELECT TO jale_api
-  USING (employer_id = ANY ((SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id', true), false))::uuid[]));
--- Reassignment: any member's job (USING), but only to an active member (WITH CHECK).
-CREATE POLICY jobs_org_owner_update ON public.jobs AS PERMISSIVE FOR UPDATE TO jale_api
-  USING (employer_id = ANY ((SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id', true), false))::uuid[]))
-  WITH CHECK (employer_id = ANY ((SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id', true), true))::uuid[]));
-CREATE POLICY jobs_org_owner_delete ON public.jobs AS PERMISSIVE FOR DELETE TO jale_api
-  USING (employer_id = ANY ((SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id', true), false))::uuid[]));
-
-CREATE POLICY applications_org_owner_select ON public.job_applications AS PERMISSIVE FOR SELECT TO jale_api
-  USING (job_id IN (SELECT jobs.id FROM public.jobs
-                     WHERE jobs.employer_id = ANY ((SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id', true), false))::uuid[])));
-CREATE POLICY applications_org_owner_update ON public.job_applications AS PERMISSIVE FOR UPDATE TO jale_api
-  USING (job_id IN (SELECT jobs.id FROM public.jobs
-                     WHERE jobs.employer_id = ANY ((SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id', true), false))::uuid[])))
-  WITH CHECK (job_id IN (SELECT jobs.id FROM public.jobs
-                     WHERE jobs.employer_id = ANY ((SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id', true), false))::uuid[])));
-
 CREATE POLICY job_conversations_org_owner_all ON public.job_conversations AS PERMISSIVE FOR ALL TO jale_api
   USING (employer_id = ANY ((SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id', true), false))::uuid[]))
   WITH CHECK (employer_id = ANY ((SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id', true), false))::uuid[]));
@@ -162,13 +151,6 @@ CREATE POLICY employer_job_templates_org_owner_delete ON public.employer_job_tem
 -- ── The capability owners' reads ────────────────────────────
 -- Their EXECUTE on org_owner_scope and is_org_owner_of is granted by the
 -- functions' owner, inside the relationship-reader window below.
-CREATE POLICY jobs_cap_upload_tokens_org_owner_select ON public.jobs AS PERMISSIVE FOR SELECT TO jale_cap_upload_tokens
-  USING (employer_id = ANY ((SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id', true), false))::uuid[]));
-CREATE POLICY jobs_cap_worker_lane_org_owner_select ON public.jobs AS PERMISSIVE FOR SELECT TO jale_cap_worker_lane
-  USING (employer_id = ANY ((SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id', true), false))::uuid[]));
-CREATE POLICY job_applications_cap_worker_lane_org_owner_select ON public.job_applications AS PERMISSIVE FOR SELECT TO jale_cap_worker_lane
-  USING (job_id IN (SELECT j.id FROM public.jobs j
-                     WHERE j.employer_id = ANY ((SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id', true), false))::uuid[])));
 CREATE POLICY job_conversations_cap_worker_lane_org_owner_select ON public.job_conversations AS PERMISSIVE FOR SELECT TO jale_cap_worker_lane
   USING (employer_id = ANY ((SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id', true), false))::uuid[]));
 CREATE POLICY job_conversation_messages_cap_worker_lane_org_owner_select ON public.job_conversation_messages AS PERMISSIVE FOR SELECT TO jale_cap_worker_lane
@@ -178,6 +160,10 @@ CREATE POLICY job_conversation_messages_cap_worker_lane_org_owner_select ON publ
 -- ── Applicant predicate: the owner case ─────────────────────
 -- Also the capability owners' EXECUTE on the two helpers they call: only the
 -- functions' owner may grant it, so it is granted here, as that owner.
+-- The owner case uses the array helper, like the row policies: the policies
+-- that call this predicate run it once per candidate row, so the company is
+-- read once per call (an initplan), not once per application of the worker.
+-- jale_rls_relationship_reader owns org_owner_scope, so it may execute it.
 DO $$
 BEGIN
   EXECUTE format('GRANT %I TO %I WITH SET TRUE, INHERIT FALSE', 'jale_rls_relationship_reader', current_user);
@@ -201,7 +187,7 @@ AS $$
       JOIN public.jobs j ON j.id = ja.job_id
      WHERE ja.worker_id = p_worker_id
        AND (j.employer_id::TEXT = p_employer_internal_id
-            OR jale_internal.is_org_owner_of(p_employer_internal_id, j.employer_id))
+            OR j.employer_id = ANY ((SELECT jale_internal.org_owner_scope(p_employer_internal_id, false))::uuid[]))
   );
 $$;
 RESET ROLE;
@@ -554,6 +540,37 @@ BEGIN
   END LOOP;
 END $$;
 
+-- ── Owner policies on jobs and job_applications ────────────
+-- The hottest tables, so CREATE POLICY's ACCESS EXCLUSIVE lock on them is
+-- taken last (before only the catch-up's lock on users) and held for the
+-- shortest time before COMMIT. Same row check as above.
+CREATE POLICY jobs_org_owner_select ON public.jobs AS PERMISSIVE FOR SELECT TO jale_api
+  USING (employer_id = ANY ((SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id', true), false))::uuid[]));
+-- Reassignment: any member's job (USING), but only to an active member (WITH CHECK).
+CREATE POLICY jobs_org_owner_update ON public.jobs AS PERMISSIVE FOR UPDATE TO jale_api
+  USING (employer_id = ANY ((SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id', true), false))::uuid[]))
+  WITH CHECK (employer_id = ANY ((SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id', true), true))::uuid[]));
+CREATE POLICY jobs_org_owner_delete ON public.jobs AS PERMISSIVE FOR DELETE TO jale_api
+  USING (employer_id = ANY ((SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id', true), false))::uuid[]));
+
+CREATE POLICY applications_org_owner_select ON public.job_applications AS PERMISSIVE FOR SELECT TO jale_api
+  USING (job_id IN (SELECT jobs.id FROM public.jobs
+                     WHERE jobs.employer_id = ANY ((SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id', true), false))::uuid[])));
+CREATE POLICY applications_org_owner_update ON public.job_applications AS PERMISSIVE FOR UPDATE TO jale_api
+  USING (job_id IN (SELECT jobs.id FROM public.jobs
+                     WHERE jobs.employer_id = ANY ((SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id', true), false))::uuid[])))
+  WITH CHECK (job_id IN (SELECT jobs.id FROM public.jobs
+                     WHERE jobs.employer_id = ANY ((SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id', true), false))::uuid[])));
+
+-- The capability owners' reads of the same two tables.
+CREATE POLICY jobs_cap_upload_tokens_org_owner_select ON public.jobs AS PERMISSIVE FOR SELECT TO jale_cap_upload_tokens
+  USING (employer_id = ANY ((SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id', true), false))::uuid[]));
+CREATE POLICY jobs_cap_worker_lane_org_owner_select ON public.jobs AS PERMISSIVE FOR SELECT TO jale_cap_worker_lane
+  USING (employer_id = ANY ((SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id', true), false))::uuid[]));
+CREATE POLICY job_applications_cap_worker_lane_org_owner_select ON public.job_applications AS PERMISSIVE FOR SELECT TO jale_cap_worker_lane
+  USING (job_id IN (SELECT j.id FROM public.jobs j
+                     WHERE j.employer_id = ANY ((SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id', true), false))::uuid[])));
+
 -- ── Catch-up back-fill ──────────────────────────────────────
 -- 118 section (6), for employers with no membership yet (confirmed between
 -- 118 and Milestone A's post-confirmation Lambda). Last, as in 118, so the
@@ -662,11 +679,12 @@ BEGIN
   -- Replaced functions keep their owners, definer status, search_path and grants.
   FOR fn IN
     SELECT * FROM (VALUES
-      ('jale_cap.upload_token_issue(text, uuid, uuid)', 'jale_cap_upload_tokens', 'jale_api'),
-      ('jale_cap.employer_stage_recipient(uuid)', 'jale_cap_worker_lane', 'jale_api'),
-      ('jale_cap.employer_claim_worker_intent(uuid, text, uuid, jsonb, jsonb)', 'jale_cap_worker_lane', 'jale_api'),
-      ('jale_internal.employer_has_applicant_relationship(text, uuid)', 'jale_rls_relationship_reader', 'jale_api')
-    ) AS t(sig, owner_name, caller)
+      ('jale_cap.upload_token_issue(text, uuid, uuid)', 'jale_cap_upload_tokens', 'jale_api', 'is_org_owner_of'),
+      ('jale_cap.employer_stage_recipient(uuid)', 'jale_cap_worker_lane', 'jale_api', 'is_org_owner_of'),
+      ('jale_cap.employer_claim_worker_intent(uuid, text, uuid, jsonb, jsonb)', 'jale_cap_worker_lane', 'jale_api', 'is_org_owner_of'),
+      -- The predicate runs inside per-row policies: the array helper, once per call.
+      ('jale_internal.employer_has_applicant_relationship(text, uuid)', 'jale_rls_relationship_reader', 'jale_api', 'org_owner_scope')
+    ) AS t(sig, owner_name, caller, owner_helper)
   LOOP
     IF NOT EXISTS (
       SELECT 1 FROM pg_proc p JOIN pg_roles r ON r.oid = p.proowner
@@ -676,10 +694,16 @@ BEGIN
        OR NOT has_function_privilege(fn.caller, to_regprocedure(fn.sig), 'EXECUTE') THEN
       RAISE EXCEPTION 'migration 119: % drifted', fn.sig;
     END IF;
-    IF position('is_org_owner_of' IN pg_get_functiondef(to_regprocedure(fn.sig))) = 0 THEN
+    IF position(fn.owner_helper IN pg_get_functiondef(to_regprocedure(fn.sig))) = 0 THEN
       RAISE EXCEPTION 'migration 119: % has no owner case', fn.sig;
     END IF;
   END LOOP;
+  IF position('is_org_owner_of' IN pg_get_functiondef(to_regprocedure('jale_internal.employer_has_applicant_relationship(text, uuid)'))) > 0 THEN
+    RAISE EXCEPTION 'migration 119: employer_has_applicant_relationship calls is_org_owner_of per row';
+  END IF;
+  IF NOT has_function_privilege('jale_rls_relationship_reader', to_regprocedure('jale_internal.org_owner_scope(text, boolean)'), 'EXECUTE') THEN
+    RAISE EXCEPTION 'migration 119: jale_rls_relationship_reader cannot execute org_owner_scope';
+  END IF;
 
   -- All the windows are closed.
   IF EXISTS (

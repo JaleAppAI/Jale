@@ -523,6 +523,7 @@ export async function queueConversationMessageFromEmployer(
   // it must be 'waiting_worker_reply' regardless of the reply window — the
   // open-conversation flush delivers it verbatim on the worker's next
   // reply. On the v1 paths the original stamping stands.
+  // sender_user_id is stamped by 118's job_messages_stamp_sender trigger from app.current_internal_user_id.
   const message = await client.query<{ id: string }>(
     `INSERT INTO job_conversation_messages
        (conversation_id, sender_type, direction, body, status)

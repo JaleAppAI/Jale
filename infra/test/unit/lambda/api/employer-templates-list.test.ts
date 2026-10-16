@@ -86,7 +86,8 @@ describe('employer-templates-list', () => {
     );
     expect(selectCall).toBeDefined();
     expect(selectCall[0]).toContain('ORDER BY t.updated_at DESC');
-    expect(selectCall[0]).toContain('jale_internal.shares_org_with($1::text, t.employer_id)');
+    expect(selectCall[0]).toContain('t.employer_id = ANY ((SELECT jale_internal.org_member_scope($1::text))::uuid[])');
+    expect(selectCall[0]).not.toContain('shares_org_with');
     expect(selectCall[0]).not.toContain('cognito_sub');
     expect(selectCall[1]).toEqual([EMPLOYER_ID]);
   });

@@ -2136,11 +2136,33 @@ describe('database migrations', () => {
     expect(catchupAt).toBeGreaterThan(sql.indexOf('CREATE OR REPLACE FUNCTION jale_cap.employer_claim_worker_intent('));
     expect(catchupAt).toBeLessThan(sql.indexOf('CREATE TEMP TABLE org_catchup ON COMMIT DROP AS'));
     expect(sql.indexOf('DROP POLICY users_org_bootstrap_read ON public.users;')).toBeLessThan(sql.indexOf('-- ── Self-check'));
+    // The policies on jobs and job_applications (ACCESS EXCLUSIVE on the
+    // hottest tables) come after every other policy and function, just
+    // before the catch-up.
+    const policyAt = (name: string) => sql.indexOf(`CREATE POLICY ${name} ON public.`);
+    const hot = ['jobs_org_owner_select', 'jobs_org_owner_update', 'jobs_org_owner_delete',
+      'applications_org_owner_select', 'applications_org_owner_update', 'jobs_cap_upload_tokens_org_owner_select',
+      'jobs_cap_worker_lane_org_owner_select', 'job_applications_cap_worker_lane_org_owner_select'];
+    const otherPolicies = [...sql.matchAll(/^CREATE POLICY (\S+) ON public\.(\S+)/gm)]
+      .filter((m) => !hot.includes(m[1]) && m[1] !== 'users_org_bootstrap_read');
+    expect(otherPolicies).toHaveLength(14);
+    for (const m of otherPolicies) {
+      expect(['jobs', 'job_applications']).not.toContain(m[2]);
+    }
+    const lastOther = Math.max(...otherPolicies.map((m) => m.index!),
+      sql.indexOf('CREATE OR REPLACE FUNCTION jale_cap.employer_claim_worker_intent('),
+      sql.indexOf('CREATE OR REPLACE FUNCTION jale_internal.employer_has_applicant_relationship('));
+    for (const name of hot) {
+      expect(policyAt(name)).toBeGreaterThan(lastOther);
+      expect(policyAt(name)).toBeLessThan(catchupAt);
+    }
     // Row policies use the array helpers, cast to uuid[] (without the cast,
     // ANY ((SELECT ...)) is the subquery form); reassignment checks active members only.
     expect(sql).toContain("WITH CHECK (employer_id = ANY ((SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id', true), true))::uuid[]));");
     const code = sql.replace(/--.*$/gm, '');
-    expect(code.match(/= ANY \(\(SELECT jale_internal\.org_(owner|member)_scope\(/g)).toHaveLength(28);
+    // 28 in the row policies, plus the applicant predicate's owner case.
+    expect(code.match(/= ANY \(\(SELECT jale_internal\.org_(owner|member)_scope\(/g)).toHaveLength(29);
+    expect(sql).toContain('OR j.employer_id = ANY ((SELECT jale_internal.org_owner_scope(p_employer_internal_id, false))::uuid[]))');
     expect(code.match(/= ANY \(\(SELECT jale_internal\.org_(owner|member)_scope\(current_setting\('app\.current_internal_user_id', true\)(, (true|false))?\)\)::uuid\[\]\)/g)).toHaveLength(28);
     expect(sql).not.toMatch(/^\s*(USING|WITH CHECK) \(jale_internal\.is_org_owner_of\(/m);
     // The capability owners' EXECUTE is granted by the helpers' owner, not as jale_admin.

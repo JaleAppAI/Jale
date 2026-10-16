@@ -10,7 +10,8 @@ const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-
 
 /**
  * POST /employer/conversations/{conversationId}/read — stamp
- * `job_conversations.employer_last_read_at` for the employer's OWN thread.
+ * `job_conversations.employer_last_read_at` for a thread in the caller's
+ * scope: their own, or, for the company's owner, any member's.
  *
  * This is the write half of the employer unread badge. `lib/employer-inbox.ts`
  * derives `unread` from `last_inbound_message_at > employer_last_read_at` --
@@ -26,19 +27,21 @@ const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-
  * owns the HTTP shape.
  *
  * ── TWO RLS CONTEXTS, BOTH LOAD-BEARING ───────────────────────────────────
- * `job_conversations` is ENABLE + FORCE ROW LEVEL SECURITY (025:87-88) and
- * jale_admin -- the role this Lambda connects as, and the table's owner --
- * obeys its policies because of FORCE. The applicable one is
- * `job_conversations_employer_all FOR ALL TO jale_admin` (025:93-97), keyed on
- * `app.current_internal_user_id`. So the internal id `resolveEmployerActor`
- * binds is not bookkeeping: without it the UPDATE below matches ZERO rows and
- * the employer gets a 404 on their own conversation. `setRlsContext`
- * (app.current_user_id) is what the legal/compliance read keys on.
+ * `job_conversations` is ENABLE + FORCE ROW LEVEL SECURITY (025:87-88). This
+ * Lambda connects as the request login, jale_api (DB_EXPECTED_LOGIN, from
+ * `dedicatedDbLogin(this, 'jale_api')` in api-stack.ts), and two permissive
+ * policies admit its UPDATE, both keyed on `app.current_internal_user_id`:
+ * `job_conversations_employer_all__api` (106's copy of 025:93-97), the
+ * caller's own threads, and 119's `job_conversations_org_owner_all`, which
+ * admits a company owner's mark-read on every member's threads. So the
+ * internal id `resolveEmployerActor` binds is not bookkeeping: without it the
+ * UPDATE below matches ZERO rows and the employer gets a 404 on their own
+ * conversation. `setRlsContext` (app.current_user_id) is what the
+ * legal/compliance read keys on.
  *
- * No new grant was needed: 025:78 grants jale_admin table-level
- * SELECT, INSERT, UPDATE on job_conversations, and a table-level privilege
- * covers columns added later -- `employer_last_read_at` among them (added by
- * 028:37).
+ * Column rights: the access manifest grants jale_api UPDATE on
+ * `employer_last_read_at` (added by 028:37) among job_conversations' columns
+ * (106).
  *
  * ── 404 MEANS "NOT YOURS **OR** NOT THERE" ────────────────────────────────
  * The UPDATE is scoped by RLS *and* by an explicit `employer_id = ANY(scope)`

@@ -88,6 +88,8 @@ maybeDescribe('migration 119: owner-wide access', () => {
       [convA, messageA],
     )).rows[0].id;
     await su.query(`INSERT INTO worker_profiles (user_id) VALUES ($1)`, [worker.id]);
+    // worker_skills' NOT NULL columns (worker_id, skill); cascades from users.
+    await su.query(`INSERT INTO worker_skills (worker_id, skill) VALUES ($1, 'roofing')`, [worker.id]);
     // A job-scoped document on jobA, with r-paths-world.ts's column set (:217-224).
     const documentA = (await su.query<{ id: string }>(
       `INSERT INTO worker_documents (worker_id, job_id, doc_type, s3_key, file_name, file_size, mime_type, cert_name)
@@ -290,6 +292,101 @@ maybeDescribe('migration 119: owner-wide access', () => {
       } finally {
         await su.query(`UPDATE organization_members SET status = 'active' WHERE user_id = $1`, [w.foremanA.id]);
       }
+    });
+  });
+
+  // Every write path an owner's handler takes on a member's rows (Tasks 6-9),
+  // as the deployed jale_api login. Each case is one rolled-back transaction
+  // (asApi); expected errors run under a savepoint (rejects).
+  describeInProfiles(['standard', 'request'], 'owner writes', () => {
+    /** A second thread on convA's application: worker_thread_number 2 (convA holds 1). */
+    const reopen = `INSERT INTO job_conversations (job_id, employer_id, worker_id, application_id, last_message_at, worker_thread_number)
+                    VALUES ($1, $2, $3, $4, now(), 2)`;
+    const reopenParams = () => [w.jobA, w.foremanA.id, w.worker.id, w.appA];
+    const sendMessage = `INSERT INTO job_conversation_messages (conversation_id, sender_type, direction, body, status)
+                         VALUES ($1, 'employer', 'outbound', 'x', 'queued') RETURNING sender_user_id`;
+    // job_message_outbox (025): whatsapp_number is NOT NULL, and for jale_api
+    // its recipient trigger replaces it with the conversation's worker number.
+    // Already 'sent', so nothing would pick it up even if it were committed.
+    const queueOutbox = `INSERT INTO job_message_outbox (conversation_id, whatsapp_number, send_kind, body, status, sent_at)
+                         VALUES ($1, '+15550000000', 'freeform', 'x', 'sent', now()) RETURNING id`;
+    const claimChat = `SELECT * FROM jale_cap.employer_claim_worker_intent($1, 'employer_chat', $2, '{}'::jsonb, NULL)`;
+
+    it('a. the owner moves foreman A\'s applicant to contacted; foreman B and the stranger change nothing', async () => {
+      const contact = `UPDATE job_applications SET status = 'contacted' WHERE id = $1`;
+      await asApi(w.owner, async (c) => expect((await c.query(contact, [w.appA])).rowCount).toBe(1));
+      await asApi(w.foremanB, async (c) => expect((await c.query(contact, [w.appA])).rowCount).toBe(0));
+      await asApi(w.stranger, async (c) => expect((await c.query(contact, [w.appA])).rowCount).toBe(0));
+    });
+
+    it('b. the owner closes foreman A\'s conversation and opens a new thread for it; foreman B can do neither', async () => {
+      const close = `UPDATE job_conversations SET status = 'closed' WHERE id = $1`;
+      await asApi(w.owner, async (c) => {
+        expect((await c.query(close, [w.convA])).rowCount).toBe(1);
+        expect((await c.query(reopen, reopenParams())).rowCount).toBe(1);
+      });
+      await asApi(w.foremanB, async (c) => {
+        expect((await c.query(close, [w.convA])).rowCount).toBe(0);
+        await rejects(c, reopen, reopenParams(), '42501');
+      });
+    });
+
+    it('c. the owner sends in foreman A\'s conversation, stamped as the owner (118 trigger); foreman B and the stranger cannot', async () => {
+      await asApi(w.owner, async (c) => {
+        const sent = await c.query<{ sender_user_id: string }>(sendMessage, [w.convA]);
+        expect(sent.rows[0].sender_user_id).toBe(w.owner.id);
+      });
+      await asApi(w.foremanB, async (c) => rejects(c, sendMessage, [w.convA], '42501'));
+      await asApi(w.stranger, async (c) => rejects(c, sendMessage, [w.convA], '42501'));
+    });
+
+    it('d. the owner queues and updates an outbox row on foreman A\'s conversation; foreman B can do neither', async () => {
+      await asApi(w.owner, async (c) => {
+        const queued = await c.query<{ id: string }>(queueOutbox, [w.convA]);
+        expect(queued.rowCount).toBe(1);
+        const touched = await c.query(`UPDATE job_message_outbox SET attempt_count = attempt_count WHERE id = $1`, [queued.rows[0].id]);
+        expect(touched.rowCount).toBe(1);
+      });
+      await asApi(w.foremanB, async (c) => {
+        await rejects(c, queueOutbox, [w.convA], '42501');
+        expect((await c.query(`UPDATE job_message_outbox SET attempt_count = attempt_count WHERE id = $1`, [w.outboxA])).rowCount).toBe(0);
+      });
+    });
+
+    it('e. the owner renames foreman A\'s template; foreman B cannot', async () => {
+      const rename = `UPDATE employer_job_templates SET name = 'Renamed' WHERE id = $1`;
+      await asApi(w.owner, async (c) => expect((await c.query(rename, [w.templateA])).rowCount).toBe(1));
+      await asApi(w.foremanB, async (c) => expect((await c.query(rename, [w.templateA])).rowCount).toBe(0));
+    });
+
+    // jobB is foreman B's own job, so foreman B's negative is the other
+    // foreman's job (jobA), and foreman A's is jobB.
+    it('f. the owner deletes foreman B\'s job; neither foreman deletes the other\'s', async () => {
+      await asApi(w.owner, async (c) => expect((await c.query(`DELETE FROM jobs WHERE id = $1`, [w.jobB])).rowCount).toBe(1));
+      await asApi(w.foremanA, async (c) => expect((await c.query(`DELETE FROM jobs WHERE id = $1`, [w.jobB])).rowCount).toBe(0));
+      await asApi(w.foremanB, async (c) => expect((await c.query(`DELETE FROM jobs WHERE id = $1`, [w.jobA])).rowCount).toBe(0));
+    });
+
+    it('g. the owner reads foreman A\'s applicant\'s skills; foreman B does not', async () => {
+      await asApi(w.owner, async (c) => expect(await count(c, `SELECT 1 FROM worker_skills WHERE worker_id = $1`, [w.worker.id])).toBe(1));
+      await asApi(w.foremanB, async (c) => expect(await count(c, `SELECT 1 FROM worker_skills WHERE worker_id = $1`, [w.worker.id])).toBe(0));
+    });
+
+    it('h. the owner passes employer_claim_worker_intent\'s caller checks for foreman A\'s chat message; foreman B gets 42501', async () => {
+      await asApi(w.owner, async (c) => {
+        await c.query('SAVEPOINT claim');
+        let code: string | undefined;
+        try {
+          await c.query(claimChat, [w.worker.id, w.messageA]);
+        } catch (err) {
+          code = (err as { code?: string }).code;
+        }
+        await c.query('ROLLBACK TO SAVEPOINT claim');
+        // Any decision row, or a later check's error, is fine: only the
+        // caller checks (42501) must let the owner through.
+        expect(code).not.toBe('42501');
+      });
+      await asApi(w.foremanB, async (c) => rejects(c, claimChat, [w.worker.id, w.messageA], '42501'));
     });
   });
 });
