@@ -173,7 +173,7 @@ maybeDescribe('employer applicant reads against real PostgreSQL', () => {
       // worker_documents, job_applications, jobs AND users, so the failure is
       // a raise at parse time: every employer documents request 500s.
       const rows = await asEmployer(subs.employerA, employerA, async () =>
-        (await client.query(EMPLOYER_WORKER_DOCS_SQL, [worker, jobId, subs.employerA])).rows,
+        (await client.query(EMPLOYER_WORKER_DOCS_SQL, [worker, jobId, [employerA]])).rows,
       );
       expect(Array.isArray(rows)).toBe(true);
     });
@@ -182,7 +182,7 @@ maybeDescribe('employer applicant reads against real PostgreSQL', () => {
       const rows = await asEmployer(subs.employerA, employerA, async () =>
         (await client.query<{ id: string; doc_type: string; file_name: string }>(
           EMPLOYER_WORKER_DOCS_SQL,
-          [worker, jobId, subs.employerA],
+          [worker, jobId, [employerA]],
         )).rows,
       );
       expect(rows).toHaveLength(2);
@@ -200,7 +200,7 @@ maybeDescribe('employer applicant reads against real PostgreSQL', () => {
 
     it('returns nothing to an employer with no application from this worker', async () => {
       const rows = await asEmployer(subs.employerB, employerB, async () =>
-        (await client.query(EMPLOYER_WORKER_DOCS_SQL, [worker, jobId, subs.employerB])).rows,
+        (await client.query(EMPLOYER_WORKER_DOCS_SQL, [worker, jobId, [employerB]])).rows,
       );
       expect(rows).toHaveLength(0);
     });
@@ -228,7 +228,7 @@ maybeDescribe('employer applicant reads against real PostgreSQL', () => {
     });
 
     const postsFor = (employerId: string) =>
-      employerWorkerPostsQuery({ workerId: worker, employerId, before: null, beforeId: null, limit: 24 });
+      employerWorkerPostsQuery({ workerId: worker, scopeUserIds: [employerId], before: null, beforeId: null, limit: 24 });
 
     it('returns the post to the employer the worker applied to, the statement run alone', async () => {
       const { text, values } = postsFor(employerA);

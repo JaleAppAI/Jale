@@ -29,6 +29,22 @@ jest.mock('@aws-sdk/client-s3', () => ({
   }),
 }));
 
+import { resolveEmployerActor } from '../../../../lambda/lib/employer-actor';
+
+jest.mock('../../../../lambda/lib/employer-actor', () => ({
+  ...jest.requireActual('../../../../lambda/lib/employer-actor'),
+  resolveEmployerActor: jest.fn(),
+}));
+
+const mockResolveEmployerActor = resolveEmployerActor as jest.Mock;
+const ORG_ID = '99999999-9999-4999-8999-999999999999';
+const OWNER_ID = 'aaaaaaaa-1111-4111-8111-111111111111';
+const FOREMAN_ID = 'bbbbbbbb-2222-4222-8222-222222222222';
+const actorResult = (userId: string, scopeUserIds: string[] = [userId]) => ({
+  ok: true as const,
+  actor: { userId, organizationId: ORG_ID, role: 'owner' as const, scopeUserIds },
+});
+
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockQuery = jest.fn();
 const WORKER_ID = '44444444-4444-4444-8444-444444444444';
@@ -53,6 +69,7 @@ describe('employer-worker-posts Lambda', () => {
     (setRlsContext as jest.Mock).mockResolvedValue(undefined);
     (setInternalUserRlsContext as jest.Mock).mockResolvedValue(undefined);
     (checkCompliance as jest.Mock).mockResolvedValue({ compliant: true, userExists: true });
+    mockResolveEmployerActor.mockResolvedValue(actorResult(EMPLOYER_ID));
     mockQuery.mockImplementation((sql: string) => {
       const text = String(sql);
       if (text.includes('FROM users')) return { rows: [{ id: EMPLOYER_ID }] };
@@ -84,9 +101,10 @@ describe('employer-worker-posts Lambda', () => {
     expect(JSON.parse(res.body).error).toBe('forbidden');
   });
 
-  it('sets the internal RLS context to the employer id, not the worker id', async () => {
+  it('resolves the caller as the employer (which binds the internal id), and never binds the worker id itself', async () => {
     await handler(makeEvent());
-    expect(setInternalUserRlsContext).toHaveBeenCalledWith(expect.anything(), EMPLOYER_ID);
+    expect(mockResolveEmployerActor).toHaveBeenCalledWith(expect.anything(), 'employer-sub');
+    expect(setInternalUserRlsContext).not.toHaveBeenCalled();
   });
 
   it('returns published posts with approved media only, excluding all-flagged posts via SQL', async () => {
@@ -110,9 +128,9 @@ describe('employer-worker-posts Lambda', () => {
     expect(postsCall).toBeDefined();
     const [postsSql, postsParams] = postsCall as [string, unknown[]];
     expect(postsSql).toMatch(
-      /AND EXISTS \(SELECT 1\s+FROM job_applications ja\s+JOIN jobs j ON j\.id = ja\.job_id\s+WHERE ja\.worker_id = p\.worker_id\s+AND j\.employer_id = \$5\)/,
+      /AND EXISTS \(SELECT 1\s+FROM job_applications ja\s+JOIN jobs j ON j\.id = ja\.job_id\s+WHERE ja\.worker_id = p\.worker_id\s+AND j\.employer_id = ANY\(\$5::uuid\[\]\)\)/,
     );
-    expect(postsParams).toEqual([WORKER_ID, null, null, 24, EMPLOYER_ID]);
+    expect(postsParams).toEqual([WORKER_ID, null, null, 24, [EMPLOYER_ID]]);
   });
 
   it('pins the presigned GET to the media s3_version_id', async () => {
@@ -229,6 +247,29 @@ describe('employer-worker-posts Lambda', () => {
       expect(mockRecordAttempt).toHaveBeenCalledWith(client, employer, {
         surface: 'employer.worker_posts', outcome: 'denied', subjectUserIds: [WORKER_ID],
       });
+    });
+  });
+
+  describe('caller scope (employer organizations)', () => {
+    it('answers the actor failure after COMMIT and checks no relationship', async () => {
+      mockResolveEmployerActor.mockResolvedValueOnce({ ok: false, status: 403, error: 'membership_inactive' });
+      const res = await handler(makeEvent());
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body)).toEqual({ error: 'membership_inactive' });
+      expect(mockQuery.mock.calls.map(([sql]) => sql)).toEqual(['BEGIN', 'COMMIT']);
+      expect(recordAttempt).not.toHaveBeenCalled();
+    });
+
+    it("checks the relationship and reads the posts against an owner's whole scope", async () => {
+      mockResolveEmployerActor.mockResolvedValueOnce(actorResult(OWNER_ID, [OWNER_ID, FOREMAN_ID]));
+      expect((await handler(makeEvent())).statusCode).toBe(200);
+      const relationship = mockQuery.mock.calls.find(([sql]) =>
+        String(sql).includes('FROM job_applications ja') && !String(sql).includes('FROM worker_posts'))!;
+      expect(String(relationship[0])).toContain('j.employer_id = ANY($2::uuid[])');
+      expect(String(relationship[0])).not.toContain('cognito_sub');
+      expect(relationship[1]).toEqual([WORKER_ID, [OWNER_ID, FOREMAN_ID]]);
+      const posts = mockQuery.mock.calls.find(([sql]) => String(sql).includes('FROM worker_posts'))!;
+      expect(posts[1]).toEqual([WORKER_ID, null, null, 24, [OWNER_ID, FOREMAN_ID]]);
     });
   });
 });

@@ -26,6 +26,22 @@ jest.mock('@aws-sdk/s3-request-presigner', () => ({
   getSignedUrl: jest.fn().mockResolvedValue('https://s3.example.com/presigned-get'),
 }));
 
+import { resolveEmployerActor } from '../../../../lambda/lib/employer-actor';
+
+jest.mock('../../../../lambda/lib/employer-actor', () => ({
+  ...jest.requireActual('../../../../lambda/lib/employer-actor'),
+  resolveEmployerActor: jest.fn(),
+}));
+
+const mockResolveEmployerActor = resolveEmployerActor as jest.Mock;
+const ORG_ID = '99999999-9999-4999-8999-999999999999';
+const OWNER_ID = 'aaaaaaaa-1111-4111-8111-111111111111';
+const FOREMAN_ID = 'bbbbbbbb-2222-4222-8222-222222222222';
+const actorResult = (userId: string, scopeUserIds: string[] = [userId]) => ({
+  ok: true as const,
+  actor: { userId, organizationId: ORG_ID, role: 'owner' as const, scopeUserIds },
+});
+
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
 const mockSetInternalUserRlsContext = setInternalUserRlsContext as jest.Mock;
@@ -89,6 +105,7 @@ describe('employer-worker-docs Lambda', () => {
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
     mockSetRlsContext.mockResolvedValue(undefined);
     mockSetInternalUserRlsContext.mockResolvedValue(undefined);
+    mockResolveEmployerActor.mockResolvedValue(actorResult('employer-id'));
   });
 
   const makeEvent = (sub: string, requestedWorkerId = workerId, requestedJobId = jobId) =>
@@ -118,30 +135,30 @@ describe('employer-worker-docs Lambda', () => {
     expect(queries.some((q) => q.includes('FROM worker_documents'))).toBe(false);
   });
 
-  it('returns 409 when the caller has no users row to bind the internal lane to', async () => {
-    setupMockQuery({ employer: { rows: [] } });
+  it('returns the actor failure (409 user_not_provisioned) and checks nothing', async () => {
+    setupMockQuery();
+    mockResolveEmployerActor.mockResolvedValueOnce({ ok: false, status: 409, error: 'user_not_provisioned' });
     const res = await handler(makeEvent('emp-sub'));
 
     expect(res.statusCode).toBe(409);
     expect(JSON.parse(res.body).error).toBe('user_not_provisioned');
     expect(mockSetInternalUserRlsContext).not.toHaveBeenCalled();
+    expect(mockQuery.mock.calls.some(([q]) => String(q).includes('FROM job_applications ja'))).toBe(false);
   });
 
-  it('binds BOTH RLS lanes: the sub-keyed one the doc policy uses, then the internal-id one', async () => {
+  it('binds the sub lane, then resolves the actor (which binds the internal lane to the EMPLOYER)', async () => {
     // `worker_documents_employer_select` (018) resolves the employer through
     // `current_setting('app.current_user_id')`, so the sub lane must stay
-    // bound. `setInternalUserRlsContext` writes a DIFFERENT GUC
-    // (`app.current_internal_user_id`) and never clears the first -- it is
-    // purely additive, and it must carry the EMPLOYER's id, never the
-    // worker's, or the worker-self policies elsewhere would match instead.
+    // bound. resolveEmployerActor (mocked here) binds the second setting to
+    // the caller's users.id; the handler never binds an id itself.
     setupMockQuery({ documents: { rows: [resumeRow] } });
     await handler(makeEvent('emp-sub'));
 
     expect(mockSetRlsContext).toHaveBeenCalledWith(expect.anything(), 'emp-sub');
-    expect(mockSetInternalUserRlsContext).toHaveBeenCalledWith(expect.anything(), 'employer-id');
-    const rlsOrder = mockSetRlsContext.mock.invocationCallOrder[0];
-    const internalOrder = mockSetInternalUserRlsContext.mock.invocationCallOrder[0];
-    expect(rlsOrder).toBeLessThan(internalOrder);
+    expect(mockResolveEmployerActor).toHaveBeenCalledWith(expect.anything(), 'emp-sub');
+    expect(mockSetInternalUserRlsContext).not.toHaveBeenCalled();
+    expect(mockSetRlsContext.mock.invocationCallOrder[0])
+      .toBeLessThan(mockResolveEmployerActor.mock.invocationCallOrder[0]);
   });
 
   it('returns 200 with presigned GET URLs for each uploaded document', async () => {
@@ -163,7 +180,8 @@ describe('employer-worker-docs Lambda', () => {
     expect(queries.some((q) => q.includes('FROM job_applications ja'))).toBe(true);
     expect(queries.some((q) => q.includes('JOIN job_applications ja ON ja.worker_id = wd.worker_id'))).toBe(true);
     expect(queries.some((q) => q.includes('JOIN jobs j ON j.id = ja.job_id'))).toBe(true);
-    expect(queries.some((q) => q.includes('JOIN users employer ON employer.id = j.employer_id'))).toBe(true);
+    expect(queries.some((q) => q.includes('JOIN users employer'))).toBe(false);
+    expect(queries.filter((q) => q.includes('j.employer_id = ANY($3::uuid[])'))).toHaveLength(2);
     const docsSql = queries.find((q) => q.includes('FROM worker_documents wd'));
     expect(docsSql).toContain('cert_name');
     // `id` is the stable React key for the multi-file certification slot,
@@ -338,6 +356,36 @@ describe('employer-worker-docs Lambda', () => {
       expect(res.statusCode).toBe(500);
       expect(mockRecordAccess).toHaveBeenCalledTimes(1);
       expect(mockRecordAttempt.mock.calls[0][2]).toMatchObject({ outcome: 'failed' });
+    });
+  });
+
+  describe('caller scope (employer organizations)', () => {
+    beforeEach(() => {
+      // jest.clearAllMocks keeps implementations, and the preceding
+      // 'access record' tests leave mockRejectedValue stubs behind.
+      mockRecordAccess.mockResolvedValue(undefined);
+      mockRecordAttempt.mockResolvedValue(undefined);
+      mockGetSignedUrl.mockResolvedValue('https://s3.example.com/presigned-get');
+    });
+
+    it('answers the actor failure after COMMIT and checks no applicant', async () => {
+      setupMockQuery();
+      mockResolveEmployerActor.mockResolvedValueOnce({ ok: false, status: 403, error: 'membership_inactive' });
+      const res = await handler(makeEvent('emp-sub'));
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body)).toEqual({ error: 'membership_inactive' });
+      expect(mockQuery.mock.calls.map(([q]) => q)).toEqual(['BEGIN', 'COMMIT']);
+    });
+
+    it("checks the applicant and reads the documents against an owner's whole scope", async () => {
+      setupMockQuery({ documents: { rows: [resumeRow] } });
+      mockResolveEmployerActor.mockResolvedValueOnce(actorResult(OWNER_ID, [OWNER_ID, FOREMAN_ID]));
+      expect((await handler(makeEvent('emp-sub'))).statusCode).toBe(200);
+      const check = mockQuery.mock.calls.find(([q]) =>
+        String(q).includes('FROM job_applications ja') && !String(q).includes('FROM worker_documents wd'))!;
+      expect(check[1]).toEqual([workerId, jobId, [OWNER_ID, FOREMAN_ID]]);
+      const docs = mockQuery.mock.calls.find(([q]) => String(q).includes('FROM worker_documents wd'))!;
+      expect(docs[1]).toEqual([workerId, jobId, [OWNER_ID, FOREMAN_ID]]);
     });
   });
 });

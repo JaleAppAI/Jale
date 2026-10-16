@@ -39,7 +39,7 @@ describe('listEmployerApplicantsOverview', () => {
       baseRow({ application_id: 'app-2', worker_id: 'w-2', job_id: 'job-2', job_title: 'Dishwasher', job_city: 'Dallas', match_score: null, score_band: null }),
       baseRow({ application_id: 'app-3', worker_id: 'w-3' }),
     ]));
-    const overview = await listEmployerApplicantsOverview(client, EMPLOYER);
+    const overview = await listEmployerApplicantsOverview(client, [EMPLOYER]);
     expect(overview.total).toBe(3);
     expect(overview.applicants).toHaveLength(3);
     expect(overview.jobs).toEqual([
@@ -50,10 +50,10 @@ describe('listEmployerApplicantsOverview', () => {
 
   it('scopes to the employer, excludes dismissed applicants, and joins the ranking cache in SQL', async () => {
     mockQuery.mockResolvedValueOnce(rowsResult([]));
-    await listEmployerApplicantsOverview(client, EMPLOYER);
+    await listEmployerApplicantsOverview(client, [EMPLOYER]);
     const [sql, params] = mockQuery.mock.calls[0];
-    expect(params).toEqual([EMPLOYER]);
-    expect(sql).toMatch(/j\.employer_id = \$1/);
+    expect(params).toEqual([[EMPLOYER]]);
+    expect(sql).toMatch(/j\.employer_id = ANY\(\$1::uuid\[\]\)/);
     expect(sql).toMatch(/ja\.status NOT IN \('not_interested', 'rejected'\)/);
     expect(sql).toMatch(/LEFT JOIN employer_candidate_rankings ecr/);
     expect(sql).toMatch(/j\.city AS job_city/);
@@ -67,7 +67,7 @@ describe('listEmployerApplicantsOverview', () => {
 
   it("selects the worker's trust score the same way the per-job ranking query does", async () => {
     mockQuery.mockResolvedValueOnce(rowsResult([]));
-    await listEmployerApplicantsOverview(client, EMPLOYER);
+    await listEmployerApplicantsOverview(client, [EMPLOYER]);
     const [sql] = mockQuery.mock.calls[0];
     // users.trade_competency_score (012:122, INTEGER 0..100) aliased to
     // trust_score -- the same expression employer-candidate-ranking.ts:338
@@ -79,7 +79,7 @@ describe('listEmployerApplicantsOverview', () => {
     mockQuery.mockResolvedValueOnce(rowsResult([
       baseRow({ availability: 'weekends', years_experience: 9, trust_score: 64 }),
     ]));
-    const overview = await listEmployerApplicantsOverview(client, EMPLOYER);
+    const overview = await listEmployerApplicantsOverview(client, [EMPLOYER]);
     expect(overview.applicants[0]).toMatchObject({
       availability: 'weekends',
       years_experience: 9,
@@ -89,7 +89,14 @@ describe('listEmployerApplicantsOverview', () => {
 
   it('keeps a never-assessed worker\'s trust_score null rather than zero', async () => {
     mockQuery.mockResolvedValueOnce(rowsResult([baseRow({ trust_score: null })]));
-    const overview = await listEmployerApplicantsOverview(client, EMPLOYER);
+    const overview = await listEmployerApplicantsOverview(client, [EMPLOYER]);
     expect(overview.applicants[0].trust_score).toBeNull();
+  });
+
+  it("reads every job in the caller's scope through one uuid[] parameter", async () => {
+    const FOREMAN = 'eeeeeeee-0000-0000-0000-000000000002';
+    mockQuery.mockResolvedValueOnce(rowsResult([]));
+    await listEmployerApplicantsOverview(client, [EMPLOYER, FOREMAN]);
+    expect(mockQuery.mock.calls[0][1]).toEqual([[EMPLOYER, FOREMAN]]);
   });
 });

@@ -33,7 +33,7 @@ export type ApplicantsOverview = {
   total: number;
 };
 
-// One row per non-dismissed application across ALL the employer's jobs.
+// One row per non-dismissed application across ALL the jobs in the caller's scope.
 // The ranking cache is a LEFT JOIN on purpose: a missing score renders as
 // "not scored", never blocks the row. Status vocabulary is the 091 set
 // (pending|contacted|talking|details_requested|hired|not_interested) plus the
@@ -72,7 +72,7 @@ const OVERVIEW_QUERY = `
     -- -- the caller sets app.current_internal_user_id before this runs.
     u.trade_competency_score AS trust_score
   FROM job_applications ja
-  JOIN jobs j ON j.id = ja.job_id AND j.employer_id = $1
+  JOIN jobs j ON j.id = ja.job_id AND j.employer_id = ANY($1::uuid[])
   JOIN users u ON u.id = ja.worker_id
   LEFT JOIN worker_profiles wp ON wp.user_id = ja.worker_id
   LEFT JOIN employer_candidate_rankings ecr
@@ -83,9 +83,9 @@ const OVERVIEW_QUERY = `
 
 export async function listEmployerApplicantsOverview(
   client: PoolClient,
-  employerId: string,
+  scopeUserIds: string[],
 ): Promise<ApplicantsOverview> {
-  const result = await client.query<ApplicantOverviewItem>(OVERVIEW_QUERY, [employerId]);
+  const result = await client.query<ApplicantOverviewItem>(OVERVIEW_QUERY, [scopeUserIds]);
 
   const jobs: OverviewJob[] = [];
   const seen = new Set<string>();

@@ -17,6 +17,22 @@ jest.mock('../../../../lambda/lib/audit/record', () => ({
 }));
 jest.mock('../../../../lambda/lib/audit/context');
 
+import { resolveEmployerActor } from '../../../../lambda/lib/employer-actor';
+
+jest.mock('../../../../lambda/lib/employer-actor', () => ({
+  ...jest.requireActual('../../../../lambda/lib/employer-actor'),
+  resolveEmployerActor: jest.fn(),
+}));
+
+const mockResolveEmployerActor = resolveEmployerActor as jest.Mock;
+const ORG_ID = '99999999-9999-4999-8999-999999999999';
+const OWNER_ID = 'aaaaaaaa-1111-4111-8111-111111111111';
+const FOREMAN_ID = 'bbbbbbbb-2222-4222-8222-222222222222';
+const actorResult = (userId: string, scopeUserIds: string[] = [userId]) => ({
+  ok: true as const,
+  actor: { userId, organizationId: ORG_ID, role: 'owner' as const, scopeUserIds },
+});
+
 const mockRecordAccess = recordAccess as jest.Mock;
 const mockRecordAttempt = recordAttempt as jest.Mock;
 
@@ -69,6 +85,7 @@ describe('employer-worker-profile Lambda', () => {
     });
     mockSetRlsContext.mockResolvedValue(undefined);
     mockSetInternalUserRlsContext.mockResolvedValue(undefined);
+    mockResolveEmployerActor.mockResolvedValue(actorResult('employer-id'));
   });
 
   const makeEvent = (sub: string | null, workerId = 'worker-uuid', jobId = 'job-uuid') =>
@@ -168,7 +185,7 @@ describe('employer-worker-profile Lambda', () => {
     const profileQuery = mockQuery.mock.calls.find(([queryText]) => String(queryText).includes('FROM job_applications ja'))?.[0];
     expect(profileQuery).toContain('FROM worker_skills ws');
     expect(profileQuery).toContain('WHERE ws.worker_id = ja.worker_id');
-    expect(profileQuery).toContain('j.employer_id = $3');
+    expect(profileQuery).toContain('j.employer_id = ANY($3::uuid[])');
     expect(profileQuery).not.toContain('wp.skills');
     expect(profileQuery).toContain('wp.experience_months');
     expect(profileQuery).toContain('wp.certifications');
@@ -520,7 +537,15 @@ describe('employer-worker-profile Lambda', () => {
       extraction: { rows: [completedExtraction] },
     });
     await handler(makeEvent('employer-sub'));
-    expect(mockSetInternalUserRlsContext).toHaveBeenCalledWith(expect.anything(), 'employer-id');
+    // resolveEmployerActor (mocked) binds the EMPLOYER's id; the handler
+    // never binds an id itself, so it can never bind the worker's.
+    expect(mockResolveEmployerActor).toHaveBeenCalledWith(expect.anything(), 'employer-sub');
+    expect(mockSetInternalUserRlsContext).not.toHaveBeenCalled();
+    expect(mockResolveEmployerActor.mock.invocationCallOrder[0]).toBeLessThan(
+      mockQuery.mock.invocationCallOrder[
+        mockQuery.mock.calls.findIndex(([q]) => String(q).includes('FROM worker_trust_extractions'))
+      ],
+    );
   });
 
   // ---------------------------------------------------------------------------
@@ -700,10 +725,38 @@ describe('employer-worker-profile Lambda', () => {
       mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: false });
       expect((await handler(makeEvent('employer-sub'))).statusCode).toBe(409);
       mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
-      setupMockQuery({ employer: { rows: [] } });
+      setupMockQuery();
+      mockResolveEmployerActor.mockResolvedValueOnce({ ok: false, status: 409, error: 'user_not_provisioned' });
       expect((await handler(makeEvent('employer-sub'))).statusCode).toBe(409);
       expect(mockRecordAccess).not.toHaveBeenCalled();
       expect(mockRecordAttempt).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('caller scope (employer organizations)', () => {
+    beforeEach(() => {
+      mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    });
+
+    it('answers the actor failure after COMMIT and never checks the job', async () => {
+      setupMockQuery();
+      mockResolveEmployerActor.mockResolvedValueOnce({ ok: false, status: 403, error: 'membership_inactive' });
+      const res = await handler(makeEvent('employer-sub'));
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body)).toEqual({ error: 'membership_inactive' });
+      expect(mockQuery.mock.calls.map(([q]) => q)).toEqual(['BEGIN', 'COMMIT']);
+    });
+
+    it("checks the job and reads the applicant against an owner's whole scope", async () => {
+      setupMockQuery({ profile: { rows: [{ ...mockProfile, ...stageColumns }] } });
+      mockResolveEmployerActor.mockResolvedValueOnce(actorResult(OWNER_ID, [OWNER_ID, FOREMAN_ID]));
+      expect((await handler(makeEvent('employer-sub'))).statusCode).toBe(200);
+      expect(mockQuery).toHaveBeenCalledWith(
+        'SELECT id FROM jobs WHERE id = $1 AND employer_id = ANY($2::uuid[])',
+        ['job-uuid', [OWNER_ID, FOREMAN_ID]],
+      );
+      const profile = mockQuery.mock.calls.find(([q]) => String(q).includes('FROM job_applications ja'))!;
+      expect(profile[1]).toEqual(['job-uuid', 'worker-uuid', [OWNER_ID, FOREMAN_ID]]);
     });
   });
 });

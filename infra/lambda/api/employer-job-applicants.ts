@@ -1,5 +1,5 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
+import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { isPlainObject } from '../lib/application-answers';
 import { promptAnswersView, stageView } from '../lib/application-stage-view';
@@ -8,6 +8,7 @@ import { APPLICATION_STATUSES } from '../lib/job-fields';
 import { checkCompliance } from '../legal/check-compliance';
 import { auditCaller, type AuditCaller } from '../lib/audit/caller';
 import { recordAccess, recordAttempt, responseFieldNames, type AttemptEvent } from '../lib/audit/record';
+import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
 
 const CORS_HEADERS = corsHeaders();
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -53,18 +54,17 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
-    const employerRes = await client.query(`SELECT id FROM users WHERE cognito_sub = $1`, [cognitoSub]);
-    const employerId: string | undefined = employerRes.rows[0]?.id;
-    if (!employerId) {
+    const resolved = await resolveEmployerActor(client, cognitoSub);
+    if (!resolved.ok) {
       await client.query('COMMIT');
-      return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_provisioned' }) };
+      return employerActorFailureResponse(resolved, CORS_HEADERS);
     }
-    await setInternalUserRlsContext(client, employerId);
-    caller = auditCaller(event, { kind: 'employer', id: employerId }, 'web');
+    const { actor } = resolved;
+    caller = auditCaller(event, { kind: 'employer', id: actor.userId }, 'web');
     const purpose = { kind: 'job', id: jobId } as const;
     attempt = { surface: SURFACE, purpose };
 
-    // Verify this job belongs to the caller (the employer_id predicate
+    // Verify this job is in the caller's scope (the employer_id predicate
     // returns no row if not).
     // Also carries optional_fields/optional_docs so the applicant query
     // below can compute each applicant's not_provided list without a
@@ -76,8 +76,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       `SELECT id, optional_fields, optional_docs,
               required_fields, required_docs,
               certification_requirements, pre_application_prompts
-         FROM jobs WHERE id = $1 AND employer_id = $2`,
-      [jobId, employerId],
+         FROM jobs WHERE id = $1 AND employer_id = ANY($2::uuid[])`,
+      [jobId, actor.scopeUserIds],
     );
     if (jobCheck.rowCount === 0) {
       await client.query('COMMIT');
@@ -91,8 +91,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     // Build applicant query with optional filters
     const qs = event.queryStringParameters ?? {};
-    const conditions: string[] = ['ja.job_id = $1', 'j.employer_id = $2'];
-    const params: (string | number | string[])[] = [jobId, employerId, optionalDocs];
+    const conditions: string[] = ['ja.job_id = $1', 'j.employer_id = ANY($2::uuid[])'];
+    const params: (string | number | string[])[] = [jobId, actor.scopeUserIds, optionalDocs];
     let idx = 4;
 
     if (qs.status) {
