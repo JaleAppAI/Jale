@@ -39,7 +39,7 @@ describe('listEmployerInbox', () => {
     mockQuery.mockResolvedValueOnce(rowsResult([
       baseRow({ conversation_id: 'c-1', conversation_status: 'open' }),
     ]));
-    const inbox = await listEmployerInbox(client, EMPLOYER);
+    const inbox = await listEmployerInbox(client, [EMPLOYER]);
     expect(inbox.items).toHaveLength(1);
     expect(inbox.items[0].tab).toBe('active');
   });
@@ -48,7 +48,7 @@ describe('listEmployerInbox', () => {
     mockQuery.mockResolvedValueOnce(rowsResult([
       baseRow({ conversation_id: 'c-1', conversation_status: 'closed' }),
     ]));
-    const inbox = await listEmployerInbox(client, EMPLOYER);
+    const inbox = await listEmployerInbox(client, [EMPLOYER]);
     expect(inbox.items[0].tab).toBe('closed');
   });
 
@@ -56,13 +56,13 @@ describe('listEmployerInbox', () => {
     mockQuery.mockResolvedValueOnce(rowsResult([
       baseRow({ conversation_id: 'c-1', conversation_status: 'open', job_status: 'closed' }),
     ]));
-    const inbox = await listEmployerInbox(client, EMPLOYER);
+    const inbox = await listEmployerInbox(client, [EMPLOYER]);
     expect(inbox.items[0].tab).toBe('closed');
   });
 
   it('assigns tab=active to a never-messaged applicant on an active job', async () => {
     mockQuery.mockResolvedValueOnce(rowsResult([baseRow()]));
-    const inbox = await listEmployerInbox(client, EMPLOYER);
+    const inbox = await listEmployerInbox(client, [EMPLOYER]);
     expect(inbox.items[0].tab).toBe('active');
     expect(inbox.items[0].conversation_id).toBeNull();
   });
@@ -73,7 +73,7 @@ describe('listEmployerInbox', () => {
       baseRow({ application_id: 'app-2', job_id: 'job-2', job_title: 'Dishwasher', job_status: 'closed', conversation_id: 'c-2', conversation_status: 'closed' }),
       baseRow({ application_id: 'app-3', job_id: 'job-1', job_title: 'Line Cook' }),
     ]));
-    const inbox = await listEmployerInbox(client, EMPLOYER);
+    const inbox = await listEmployerInbox(client, [EMPLOYER]);
     expect(inbox.jobs).toEqual([
       { job_id: 'job-1', title: 'Line Cook', city: 'Austin', status: 'active' },
       { job_id: 'job-2', title: 'Dishwasher', city: 'Austin', status: 'closed' },
@@ -82,37 +82,44 @@ describe('listEmployerInbox', () => {
 
   it('excludes not_interested applicants and scopes to the employer in SQL', async () => {
     mockQuery.mockResolvedValueOnce(rowsResult([]));
-    await listEmployerInbox(client, EMPLOYER);
+    await listEmployerInbox(client, [EMPLOYER]);
     const [sql, params] = mockQuery.mock.calls[0];
     expect(sql).toMatch(/ja\.status <> 'not_interested'/);
-    expect(sql).toMatch(/j\.employer_id = \$1/);
-    expect(params).toEqual([EMPLOYER]);
+    expect(sql).toMatch(/j\.employer_id = ANY\(\$1::uuid\[\]\)/);
+    expect(params).toEqual([[EMPLOYER]]);
+  });
+
+  it("reads every job in the caller's scope through one uuid[] parameter", async () => {
+    const FOREMAN = 'eeeeeeee-0000-0000-0000-000000000002';
+    mockQuery.mockResolvedValueOnce(rowsResult([]));
+    await listEmployerInbox(client, [EMPLOYER, FOREMAN]);
+    expect(mockQuery.mock.calls[0][1]).toEqual([[EMPLOYER, FOREMAN]]);
   });
 
   it('drops never-messaged applicants on non-active jobs in SQL', async () => {
     mockQuery.mockResolvedValueOnce(rowsResult([]));
-    await listEmployerInbox(client, EMPLOYER);
+    await listEmployerInbox(client, [EMPLOYER]);
     const [sql] = mockQuery.mock.calls[0];
     expect(sql).toMatch(/c\.id IS NOT NULL OR j\.status = 'active'/);
   });
 
   it('picks the open conversation over closed ones as the representative thread', async () => {
     mockQuery.mockResolvedValueOnce(rowsResult([]));
-    await listEmployerInbox(client, EMPLOYER);
+    await listEmployerInbox(client, [EMPLOYER]);
     const [sql] = mockQuery.mock.calls[0];
     expect(sql).toMatch(/ORDER BY \(jc\.status = 'open'\) DESC/);
   });
 
   it('orders conversations before never-messaged applicants', async () => {
     mockQuery.mockResolvedValueOnce(rowsResult([]));
-    await listEmployerInbox(client, EMPLOYER);
+    await listEmployerInbox(client, [EMPLOYER]);
     const [sql] = mockQuery.mock.calls[0];
     expect(sql).toMatch(/ORDER BY\s+\(c\.id IS NOT NULL\) DESC/);
   });
 
   it('selects the job city and state for each row', async () => {
     mockQuery.mockResolvedValueOnce(rowsResult([]));
-    await listEmployerInbox(client, EMPLOYER);
+    await listEmployerInbox(client, [EMPLOYER]);
     const [sql] = mockQuery.mock.calls[0];
     expect(sql).toMatch(/j\.city AS job_city/);
     expect(sql).toMatch(/j\.state_region AS job_state_region/);
@@ -155,7 +162,7 @@ describe('listEmployerInbox', () => {
           employer_last_read_at: null,
         }),
       ]));
-      const inbox = await listEmployerInbox(client, EMPLOYER);
+      const inbox = await listEmployerInbox(client, [EMPLOYER]);
       expect(inbox.items[0].unread).toBe(false);
       expect(inbox.unread_count).toBe(0);
     });
@@ -170,7 +177,7 @@ describe('listEmployerInbox', () => {
           employer_last_read_at: null,
         }),
       ]));
-      const inbox = await listEmployerInbox(client, EMPLOYER);
+      const inbox = await listEmployerInbox(client, [EMPLOYER]);
       expect(inbox.items[0].unread).toBe(true);
     });
 
@@ -183,7 +190,7 @@ describe('listEmployerInbox', () => {
           employer_last_read_at: '2026-09-10T12:00:01Z',
         }),
       ]));
-      const inbox = await listEmployerInbox(client, EMPLOYER);
+      const inbox = await listEmployerInbox(client, [EMPLOYER]);
       expect(inbox.items[0].unread).toBe(false);
     });
 
@@ -196,7 +203,7 @@ describe('listEmployerInbox', () => {
           employer_last_read_at: '2026-09-10T12:00:01Z',
         }),
       ]));
-      const inbox = await listEmployerInbox(client, EMPLOYER);
+      const inbox = await listEmployerInbox(client, [EMPLOYER]);
       expect(inbox.items[0].unread).toBe(true);
     });
 
@@ -216,7 +223,7 @@ describe('listEmployerInbox', () => {
           employer_last_read_at: '2020-01-01T00:00:00Z',
         }),
       ]));
-      const inbox = await listEmployerInbox(client, EMPLOYER);
+      const inbox = await listEmployerInbox(client, [EMPLOYER]);
       expect(inbox.items.map((i) => i.unread)).toEqual([false, false]);
     });
 
@@ -229,7 +236,7 @@ describe('listEmployerInbox', () => {
           employer_last_read_at: '2026-09-10T12:00:00Z',
         }),
       ]));
-      const inbox = await listEmployerInbox(client, EMPLOYER);
+      const inbox = await listEmployerInbox(client, [EMPLOYER]);
       expect(inbox.items[0].unread).toBe(false);
     });
 
@@ -253,7 +260,7 @@ describe('listEmployerInbox', () => {
           employer_last_read_at: '2026-09-10T12:00:02Z',
         }),
       ]));
-      const inbox = await listEmployerInbox(client, EMPLOYER);
+      const inbox = await listEmployerInbox(client, [EMPLOYER]);
       expect(inbox.items.map((i) => i.unread)).toEqual([true, false]);
     });
 
@@ -261,7 +268,7 @@ describe('listEmployerInbox', () => {
     // conversation column comes back NULL from the LEFT JOIN LATERAL.
     it('is not unread for a never-messaged applicant (no conversation row)', async () => {
       mockQuery.mockResolvedValueOnce(rowsResult([baseRow()]));
-      const inbox = await listEmployerInbox(client, EMPLOYER);
+      const inbox = await listEmployerInbox(client, [EMPLOYER]);
       expect(inbox.items[0].conversation_id).toBeNull();
       expect(inbox.items[0].unread).toBe(false);
     });
@@ -273,20 +280,20 @@ describe('listEmployerInbox', () => {
         baseRow({ application_id: 'a3', conversation_id: 'c-3', conversation_status: 'open', last_inbound_message_at: '2026-09-10T12:00:00Z', employer_last_read_at: '2026-09-11T00:00:00Z' }),
         baseRow({ application_id: 'a4' }),
       ]));
-      const inbox = await listEmployerInbox(client, EMPLOYER);
+      const inbox = await listEmployerInbox(client, [EMPLOYER]);
       expect(inbox.items.map((i) => i.unread)).toEqual([true, true, false, false]);
       expect(inbox.unread_count).toBe(2);
     });
 
     it('reports unread_count 0 for an empty inbox', async () => {
       mockQuery.mockResolvedValueOnce(rowsResult([]));
-      const inbox = await listEmployerInbox(client, EMPLOYER);
+      const inbox = await listEmployerInbox(client, [EMPLOYER]);
       expect(inbox.unread_count).toBe(0);
     });
 
     it('selects the employer read stamp and the newest INBOUND message from SQL', async () => {
       mockQuery.mockResolvedValueOnce(rowsResult([]));
-      await listEmployerInbox(client, EMPLOYER);
+      await listEmployerInbox(client, [EMPLOYER]);
       const [sql] = mockQuery.mock.calls[0];
       expect(sql).toMatch(/c\.employer_last_read_at/);
       // ...and the LATERAL must project it, or the outer reference is a 42703.
@@ -301,7 +308,7 @@ describe('listEmployerInbox', () => {
     // single join cannot serve both.
     it('keeps the preview LATERAL unfiltered by direction', async () => {
       mockQuery.mockResolvedValueOnce(rowsResult([]));
-      await listEmployerInbox(client, EMPLOYER);
+      await listEmployerInbox(client, [EMPLOYER]);
       const [sql] = mockQuery.mock.calls[0];
       const preview = sql.slice(sql.indexOf('last_msg.body'), sql.indexOf(') last_msg'));
       expect(preview).not.toMatch(/direction/);
@@ -314,7 +321,7 @@ describe('listEmployerInbox', () => {
       mockQuery.mockResolvedValueOnce(rowsResult([
         baseRow({ conversation_id: 'c-1', conversation_status: 'open', employer_last_read_at: '2026-09-11T00:00:00Z', last_inbound_message_at: '2026-09-10T00:00:00Z' }),
       ]));
-      const inbox = await listEmployerInbox(client, EMPLOYER);
+      const inbox = await listEmployerInbox(client, [EMPLOYER]);
       expect(Object.keys(inbox.items[0])).not.toContain('employer_last_read_at');
       expect(Object.keys(inbox.items[0])).not.toContain('last_inbound_message_at');
       // ...but last_worker_message_at stays: the drawer's reply-window hint
@@ -335,7 +342,7 @@ describe('listEmployerInbox', () => {
   describe('dismissed applicants', () => {
     it('keeps a not_interested applicant whose conversation still exists', async () => {
       mockQuery.mockResolvedValueOnce(rowsResult([]));
-      await listEmployerInbox(client, EMPLOYER);
+      await listEmployerInbox(client, [EMPLOYER]);
       const [sql] = mockQuery.mock.calls[0];
       expect(sql).toMatch(/\(ja\.status <> 'not_interested' OR c\.id IS NOT NULL\)/);
       // The other half of the WHERE is untouched: a never-messaged applicant
@@ -352,7 +359,7 @@ describe('listEmployerInbox', () => {
           last_inbound_message_at: '2026-09-10T12:00:00Z',
         }),
       ]));
-      const inbox = await listEmployerInbox(client, EMPLOYER);
+      const inbox = await listEmployerInbox(client, [EMPLOYER]);
       expect(inbox.items[0].application_status).toBe('not_interested');
       // Reachable AND badged: the employer has an unanswered message from
       // somebody they dismissed, which is exactly what they need to see.

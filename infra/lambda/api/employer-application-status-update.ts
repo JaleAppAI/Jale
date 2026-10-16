@@ -1,11 +1,12 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
+import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { APPLICATION_STATUSES } from '../lib/job-fields';
 import { enqueueVisibilityTransition, isEffectivelyVisible } from '../lib/job-visibility';
 import { parseHireGateError } from '../lib/application-requirements';
 import { enqueueApplicationStageNotification } from '../lib/application-stage-notify';
 import { checkCompliance } from '../legal/check-compliance';
+import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
 
 const CORS_HEADERS = corsHeaders();
 const DEFAULT_FRONTEND_BASE_URL = 'https://jaleapp.ai';
@@ -75,6 +76,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
+    const resolved = await resolveEmployerActor(client, cognitoSub);
+    if (!resolved.ok) {
+      await client.query('ROLLBACK');
+      return employerActorFailureResponse(resolved, CORS_HEADERS);
+    }
+    const { actor } = resolved;
+
     // status/public_listing_enabled/public_code are read here -- BEFORE the
     // application UPDATE below -- so the visibility-event decision has a
     // clean "before" snapshot. sync_job_hired_counts() (029, SECURITY
@@ -86,12 +94,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const jobCheck = await client.query(
       `SELECT jobs.id, jobs.number_of_workers_needed, jobs.workers_hired,
               jobs.status, jobs.public_listing_enabled, jobs.public_code,
-              jobs.employer_id, jobs.title, u.id AS employer_user_id
+              jobs.employer_id, jobs.title
        FROM jobs
-       JOIN users u ON u.id = jobs.employer_id
-       WHERE jobs.id = $1 AND u.cognito_sub = $2
+       WHERE jobs.id = $1 AND jobs.employer_id = ANY($2::uuid[])
        FOR UPDATE OF jobs`,
-      [jobId, cognitoSub],
+      [jobId, actor.scopeUserIds],
     );
     if (jobCheck.rowCount === 0) {
       await client.query('ROLLBACK');
@@ -100,14 +107,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     const job = jobCheck.rows[0];
 
-    // `app.current_internal_user_id` must hold the EMPLOYER's users.id for the
-    // rest of this transaction -- the same thing employer-job-applicants.ts
-    // does. The stage notification's capability functions
-    // (`jale_cap.employer_stage_recipient` and
-    // `jale_cap.employer_claim_worker_intent`) read the caller from it and
-    // check in SQL that the application is on one of the caller's jobs, so
-    // the employer stays the caller for the whole transaction.
-    await setInternalUserRlsContext(client, job.employer_user_id);
+    // `app.current_internal_user_id` holds the CALLER's users.id for the rest
+    // of this transaction: resolveEmployerActor set it, and nothing here
+    // re-points it (not at the job's employer, not at the worker). The stage
+    // notification's capability functions (`jale_cap.employer_stage_recipient`
+    // and `jale_cap.employer_claim_worker_intent`) read the caller from it and
+    // check in SQL that the application is on one of the caller's jobs -- or,
+    // for an owner, on a job of a member of the owner's company (migration 119).
 
     // `details_completed_at` rides along in the SAME row read as `status`:
     // the F3 resend guard below needs both, the row is already FOR UPDATE, and

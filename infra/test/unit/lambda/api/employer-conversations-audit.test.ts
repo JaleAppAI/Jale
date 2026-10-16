@@ -47,6 +47,22 @@ jest.mock('../../../../lambda/lib/audit/record', () => ({
 }));
 jest.mock('../../../../lambda/lib/audit/context');
 
+import { resolveEmployerActor } from '../../../../lambda/lib/employer-actor';
+
+jest.mock('../../../../lambda/lib/employer-actor', () => ({
+  ...jest.requireActual('../../../../lambda/lib/employer-actor'),
+  resolveEmployerActor: jest.fn(),
+}));
+
+const mockResolveEmployerActor = resolveEmployerActor as jest.Mock;
+const ORG_ID = '99999999-9999-4999-8999-999999999999';
+const OWNER_ID = 'aaaaaaaa-1111-4111-8111-111111111111';
+const FOREMAN_ID = 'bbbbbbbb-2222-4222-8222-222222222222';
+const actorResult = (userId: string, scopeUserIds: string[] = [userId]) => ({
+  ok: true as const,
+  actor: { userId, organizationId: ORG_ID, role: 'owner' as const, scopeUserIds },
+});
+
 const mockQuery = jest.fn();
 const mockRecordAccess = recordAccess as jest.Mock;
 const mockRecordAttempt = recordAttempt as jest.Mock;
@@ -89,6 +105,7 @@ beforeEach(() => {
   mockRecordAccess.mockResolvedValue(undefined);
   mockRecordAttempt.mockResolvedValue(undefined);
   (sendPendingJobMessageOutbox as jest.Mock).mockResolvedValue(undefined);
+  mockResolveEmployerActor.mockResolvedValue(actorResult(EMPLOYER_ID));
 });
 
 describe('employer.applicants_overview', () => {
@@ -123,6 +140,24 @@ describe('employer.applicants_overview', () => {
     expect(JSON.parse(res.body)).toEqual({ error: 'internal_error' });
     expectAttemptAfter(mockQuery, mockRecordAttempt, 'ROLLBACK');
     expect(mockRecordAttempt).toHaveBeenCalledWith(client, employer, { surface: 'employer.applicants_overview', outcome: 'failed' });
+  });
+
+  it('answers the actor failure after COMMIT and reads nothing', async () => {
+    mockResolveEmployerActor.mockResolvedValueOnce({ ok: false, status: 403, error: 'membership_inactive' });
+    const res = await overviewHandler(event());
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({ error: 'membership_inactive' });
+    expect(mockQuery.mock.calls.map(([q]) => q)).toEqual(['BEGIN', 'COMMIT']);
+    expect(listEmployerApplicantsOverview).not.toHaveBeenCalled();
+    expect(mockRecordAttempt).not.toHaveBeenCalled();
+  });
+
+  it("lists the owner's whole scope and records the owner as the caller", async () => {
+    mockResolveEmployerActor.mockResolvedValueOnce(actorResult(OWNER_ID, [OWNER_ID, FOREMAN_ID]));
+    (listEmployerApplicantsOverview as jest.Mock).mockResolvedValue(overview);
+    expect((await overviewHandler(event())).statusCode).toBe(200);
+    expect(listEmployerApplicantsOverview).toHaveBeenCalledWith(client, [OWNER_ID, FOREMAN_ID]);
+    expect(mockRecordAccess.mock.calls[0][1]).toEqual(callerFor('employer', OWNER_ID));
   });
 });
 
@@ -281,5 +316,82 @@ describe('employer.conversation_create / _send / _update', () => {
     expect(res.statusCode).toBe(404);
     expect(mockRecordAccess).not.toHaveBeenCalled();
     expectAttemptAfter(mockQuery, mockRecordAttempt, 'COMMIT');
+  });
+});
+
+describe('conversations act for the caller scope (employer organizations)', () => {
+  const OWNER_SCOPE = [OWNER_ID, FOREMAN_ID];
+  const owner = callerFor('employer', OWNER_ID);
+  const ownerActor = actorResult(OWNER_ID, OWNER_SCOPE).actor;
+
+  it.each([
+    ['list', () => listHandler(event())],
+    ['detail', () => detailHandler(event({ pathParameters: { conversationId: CONVERSATION_ID } } as never))],
+    ['create', () => createHandler(event({ body: JSON.stringify({ job_id: JOB_ID, worker_id: WORKER_ID, initial_message: 'fixture text' }) }))],
+    ['send', () => sendHandler(event({ pathParameters: { conversationId: CONVERSATION_ID }, body: JSON.stringify({ body: 'fixture text' }) } as never))],
+    ['update', () => updateHandler(event({ pathParameters: { conversationId: CONVERSATION_ID }, body: JSON.stringify({ status: 'closed' }) } as never))],
+  ])('%s: answers the actor failure after COMMIT and touches no conversation', async (_name, run) => {
+    mockResolveEmployerActor.mockResolvedValueOnce({ ok: false, status: 403, error: 'membership_inactive' });
+    const res = await run();
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({ error: 'membership_inactive' });
+    expect(mockQuery.mock.calls.map(([q]) => q)).toEqual(['BEGIN', 'COMMIT']);
+    for (const fn of [listEmployerConversations, getEmployerConversationDetail, createApplicantConversation,
+      queueConversationMessageFromEmployer, closeEmployerConversation, sendPendingJobMessageOutbox]) {
+      expect(fn).not.toHaveBeenCalled();
+    }
+    expect(mockRecordAttempt).not.toHaveBeenCalled();
+  });
+
+  it('list: reads the whole scope and records the owner', async () => {
+    mockResolveEmployerActor.mockResolvedValueOnce(actorResult(OWNER_ID, OWNER_SCOPE));
+    (listEmployerConversations as jest.Mock).mockResolvedValue([]);
+    expect((await listHandler(event())).statusCode).toBe(200);
+    expect(listEmployerConversations).toHaveBeenCalledWith(client, OWNER_SCOPE);
+    expect(mockRecordAccess.mock.calls[0][1]).toEqual(owner);
+  });
+
+  it('detail: reads the thread by the whole scope', async () => {
+    mockResolveEmployerActor.mockResolvedValueOnce(actorResult(OWNER_ID, OWNER_SCOPE));
+    (getEmployerConversationDetail as jest.Mock).mockResolvedValue(detail);
+    expect((await detailHandler(event({ pathParameters: { conversationId: CONVERSATION_ID } } as never))).statusCode).toBe(200);
+    expect(getEmployerConversationDetail).toHaveBeenCalledWith(client, CONVERSATION_ID, OWNER_SCOPE);
+    expect(mockRecordAccess.mock.calls[0][1]).toEqual(owner);
+  });
+
+  it('update: closes and reads the thread by the whole scope', async () => {
+    mockResolveEmployerActor.mockResolvedValueOnce(actorResult(OWNER_ID, OWNER_SCOPE));
+    (closeEmployerConversation as jest.Mock).mockResolvedValue(true);
+    (getEmployerConversationDetail as jest.Mock).mockResolvedValue(detail);
+    expect((await updateHandler(event({ pathParameters: { conversationId: CONVERSATION_ID }, body: JSON.stringify({ status: 'closed' }) } as never))).statusCode).toBe(200);
+    expect(closeEmployerConversation).toHaveBeenCalledWith(client, CONVERSATION_ID, OWNER_SCOPE);
+    expect(getEmployerConversationDetail).toHaveBeenCalledWith(client, CONVERSATION_ID, OWNER_SCOPE);
+  });
+
+  it('send: queues as the actor and flushes as the owner over the whole scope', async () => {
+    mockResolveEmployerActor.mockResolvedValueOnce(actorResult(OWNER_ID, OWNER_SCOPE));
+    (queueConversationMessageFromEmployer as jest.Mock).mockResolvedValue(undefined);
+    (getEmployerConversationDetail as jest.Mock).mockResolvedValue(detail);
+    expect((await sendHandler(event({ pathParameters: { conversationId: CONVERSATION_ID }, body: JSON.stringify({ body: 'fixture text' }) } as never))).statusCode).toBe(200);
+    expect(queueConversationMessageFromEmployer).toHaveBeenCalledWith(client, CONVERSATION_ID, ownerActor, 'fixture text');
+    expect(getEmployerConversationDetail).toHaveBeenCalledWith(client, CONVERSATION_ID, OWNER_SCOPE);
+    expect(sendPendingJobMessageOutbox).toHaveBeenCalledWith(client, {
+      conversationId: CONVERSATION_ID, actorUserId: OWNER_ID, actorKind: 'employer', scopeUserIds: OWNER_SCOPE,
+    });
+  });
+
+  it('create: creates as the actor and flushes as the owner over the whole scope', async () => {
+    mockResolveEmployerActor.mockResolvedValueOnce(actorResult(OWNER_ID, OWNER_SCOPE));
+    (createApplicantConversation as jest.Mock).mockResolvedValue({ conversationId: CONVERSATION_ID });
+    (getEmployerConversationDetail as jest.Mock).mockResolvedValue(detail);
+    expect((await createHandler(event({
+      body: JSON.stringify({ job_id: JOB_ID, worker_id: WORKER_ID, initial_message: 'fixture text' }),
+    }))).statusCode).toBe(201);
+    expect(createApplicantConversation).toHaveBeenCalledWith(client, ownerActor, JOB_ID, WORKER_ID, 'fixture text');
+    expect(getEmployerConversationDetail).toHaveBeenCalledWith(client, CONVERSATION_ID, OWNER_SCOPE);
+    expect(sendPendingJobMessageOutbox).toHaveBeenCalledWith(client, {
+      conversationId: CONVERSATION_ID, actorUserId: OWNER_ID, actorKind: 'employer', scopeUserIds: OWNER_SCOPE,
+    });
+    expect(mockRecordAccess.mock.calls[0][1]).toEqual(owner);
   });
 });

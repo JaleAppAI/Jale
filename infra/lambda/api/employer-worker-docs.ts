@@ -1,11 +1,12 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
+import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
 import { auditCaller, type AuditCaller } from '../lib/audit/caller';
 import { recordAccess, recordAttempt, responseFieldNames, type AttemptEvent } from '../lib/audit/record';
+import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
 
 const CORS_HEADERS = corsHeaders();
 const s3 = new S3Client({});
@@ -20,16 +21,16 @@ export const DOCUMENT_LINK_TTL_SECONDS = 900;
  * text rather than a copy that can rot -- the unit tests mock `lib/db`
  * wholesale, so nothing else in the suite ever sends this to a planner.
  *
- * EVERY column is `wd.`-qualified. Three of the four joined relations also
- * expose `id`, so a bare `id` is 42702 ("column reference is ambiguous") and
- * takes the whole endpoint down. Qualifying the rest as well means a future
- * column on `jobs` or `users` cannot resurrect it.
+ * EVERY column is `wd.`-qualified. All three joined relations expose `id`,
+ * so a bare `id` is 42702 ("column reference is ambiguous") and takes the
+ * whole endpoint down. Qualifying the rest as well means a future column on
+ * `jobs` cannot resurrect it.
  *
  * cert_name is additive (BE-T3): it lets the employer see WHICH labeled
  * certification file they are looking at ("OSHA 30" vs "Forklift cert")
  * among the up-to-20 files a slot may hold.
  *
- * $1 worker id, $2 job id, $3 the employer's Cognito sub.
+ * $1 worker id, $2 job id, $3 the users.id values in the caller's scope (uuid[]).
  */
 export const EMPLOYER_WORKER_DOCS_SQL = `
   SELECT wd.id, wd.doc_type, wd.s3_key, wd.file_name, wd.file_size,
@@ -37,10 +38,9 @@ export const EMPLOYER_WORKER_DOCS_SQL = `
     FROM worker_documents wd
     JOIN job_applications ja ON ja.worker_id = wd.worker_id AND ja.job_id = wd.job_id
     JOIN jobs j ON j.id = ja.job_id
-    JOIN users employer ON employer.id = j.employer_id
    WHERE wd.worker_id = $1
      AND wd.job_id = $2
-     AND employer.cognito_sub = $3`;
+     AND j.employer_id = ANY($3::uuid[])`;
 
 export const handler = async (
   event: APIGatewayProxyEvent,
@@ -107,24 +107,16 @@ export const handler = async (
     }
 
     // Same two-lane bind as the sibling employer reads
-    // (`employer-worker-profile`, `employer-worker-posts`): both caller
-    // settings are bound, `setRlsContext` above and `setInternalUserRlsContext`
-    // here, and the internal id is the EMPLOYER's, never the worker's.
-    const employerRes = await client.query(
-      `SELECT id FROM users WHERE cognito_sub = $1`,
-      [cognitoSub],
-    );
-    const employerId: string | undefined = employerRes.rows[0]?.id;
-    if (!employerId) {
+    // (`employer-worker-profile`, `employer-worker-posts`): `setRlsContext`
+    // above binds the sub lane, and `resolveEmployerActor` binds the internal
+    // lane to the CALLER's users.id, never the worker's.
+    const resolved = await resolveEmployerActor(client, cognitoSub);
+    if (!resolved.ok) {
       await client.query('COMMIT');
-      return {
-        statusCode: 409,
-        headers: CORS_HEADERS,
-        body: JSON.stringify({ error: 'user_not_provisioned' }),
-      };
+      return employerActorFailureResponse(resolved, CORS_HEADERS);
     }
-    await setInternalUserRlsContext(client, employerId);
-    caller = auditCaller(event, { kind: 'employer', id: employerId }, 'web');
+    const { actor } = resolved;
+    caller = auditCaller(event, { kind: 'employer', id: actor.userId }, 'web');
     const purpose = { kind: 'job', id: jobId } as const;
     attempt = { surface: SURFACE, subjectUserIds: [workerId], purpose };
 
@@ -132,12 +124,11 @@ export const handler = async (
       `SELECT 1
        FROM job_applications ja
        JOIN jobs j ON j.id = ja.job_id
-       JOIN users employer ON employer.id = j.employer_id
        WHERE ja.worker_id = $1
          AND ja.job_id = $2
-         AND employer.cognito_sub = $3
+         AND j.employer_id = ANY($3::uuid[])
        LIMIT 1`,
-      [workerId, jobId, cognitoSub],
+      [workerId, jobId, actor.scopeUserIds],
     );
     if (applicantCheck.rows.length === 0) {
       await client.query('COMMIT');
@@ -149,7 +140,7 @@ export const handler = async (
       };
     }
 
-    const docsResult = await client.query(EMPLOYER_WORKER_DOCS_SQL, [workerId, jobId, cognitoSub]);
+    const docsResult = await client.query(EMPLOYER_WORKER_DOCS_SQL, [workerId, jobId, actor.scopeUserIds]);
 
     // `s3_key`/`s3_version_id` are destructured OUT rather than spread
     // through: the bucket is private, every read the browser makes is this

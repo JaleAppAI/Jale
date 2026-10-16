@@ -4,6 +4,7 @@ import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../../../..
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
 import { setAuditContext } from '../../../../lambda/lib/audit/context';
 import { callerFor, expectContextBeforeWrite, withRequestId } from './audit-expectations';
+import { resolveEmployerActor } from '../../../../lambda/lib/employer-actor';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
@@ -13,6 +14,10 @@ jest.mock('../../../../lambda/lib/audit/record', () => ({
   recordAttempt: jest.fn(),
 }));
 jest.mock('../../../../lambda/lib/audit/context');
+jest.mock('../../../../lambda/lib/employer-actor', () => ({
+  ...jest.requireActual('../../../../lambda/lib/employer-actor'),
+  resolveEmployerActor: jest.fn(),
+}));
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
@@ -21,6 +26,17 @@ const mockCheckCompliance = checkCompliance as jest.Mock;
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
+const mockResolveEmployerActor = resolveEmployerActor as jest.Mock;
+// Kept equal to the id the change-context assertions below already expect.
+const EMPLOYER_ID = 'employer-user-id';
+const ORG_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const FOREMAN_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const ownerActor = (scopeUserIds: string[] = [EMPLOYER_ID]) => ({
+  ok: true,
+  actor: { userId: EMPLOYER_ID, organizationId: ORG_ID, role: 'owner', scopeUserIds },
+});
+// The ownership + hired-worker guard, now scoped by employer_id instead of a users join.
+const OWNERSHIP_SQL = /FROM jobs\s+WHERE jobs\.id = \$1 AND jobs\.employer_id = ANY\(\$2::uuid\[\]\)/i;
 
 function makeEvent(overrides: Partial<APIGatewayProxyEvent> = {}): APIGatewayProxyEvent {
   return {
@@ -39,6 +55,7 @@ describe('employer-jobs-delete', () => {
     mockGetDbPool.mockResolvedValue({ connect: jest.fn().mockResolvedValue({ query: mockQuery, release: mockRelease }) });
     mockSetRlsContext.mockResolvedValue(undefined);
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    mockResolveEmployerActor.mockResolvedValue(ownerActor());
   });
 
   afterAll(() => { process.env = env; });
@@ -57,7 +74,7 @@ describe('employer-jobs-delete', () => {
 
   it('returns 403 forbidden when the ownership query returns no row', async () => {
     mockQuery.mockImplementation((sql: string) => {
-      if (/FROM jobs\s+JOIN users/i.test(sql)) return { rowCount: 0, rows: [] };
+      if (OWNERSHIP_SQL.test(sql)) return { rowCount: 0, rows: [] };
       return { rowCount: 1, rows: [] };
     });
     const res = await handler(makeEvent());
@@ -67,7 +84,7 @@ describe('employer-jobs-delete', () => {
 
   it('returns 409 job_has_hired_workers and issues no destructive delete', async () => {
     mockQuery.mockImplementation((sql: string) => {
-      if (/FROM jobs\s+JOIN users/i.test(sql)) return { rowCount: 1, rows: [{ id: JOB_ID, hired_count: 2 }] };
+      if (OWNERSHIP_SQL.test(sql)) return { rowCount: 1, rows: [{ id: JOB_ID, hired_count: 2 }] };
       return { rowCount: 1, rows: [] };
     });
     const res = await handler(makeEvent());
@@ -81,7 +98,7 @@ describe('employer-jobs-delete', () => {
     const calls: string[] = [];
     mockQuery.mockImplementation((sql: string) => {
       calls.push(sql.replace(/\s+/g, ' ').trim());
-      if (/FROM jobs\s+JOIN users/i.test(sql)) return { rowCount: 1, rows: [{ id: JOB_ID, hired_count: 0, employer_user_id: 'employer-user-id' }] };
+      if (OWNERSHIP_SQL.test(sql)) return { rowCount: 1, rows: [{ id: JOB_ID, hired_count: 0, employer_user_id: 'employer-user-id' }] };
       return { rowCount: 1, rows: [] };
     });
     const res = await handler(makeEvent());
@@ -95,26 +112,37 @@ describe('employer-jobs-delete', () => {
     expect(mockQuery).toHaveBeenCalledWith('COMMIT');
   });
 
-  it("sets the employer's internal id from the ownership row before any delete", async () => {
-    const order: string[] = [];
-    mockQuery.mockImplementation((sql: string) => {
-      order.push(sql.replace(/\s+/g, ' ').trim());
-      if (/FROM jobs\s+JOIN users/i.test(sql)) return { rowCount: 1, rows: [{ id: JOB_ID, hired_count: 0, employer_user_id: 'employer-user-id' }] };
+  it("acts as the signed-in person: never switches the internal id to the job's employer", async () => {
+    mockResolveEmployerActor.mockResolvedValue(ownerActor([EMPLOYER_ID, FOREMAN_ID]));
+    const calls: Array<[string, unknown[] | undefined]> = [];
+    mockQuery.mockImplementation((sql: string, params?: unknown[]) => {
+      calls.push([sql.replace(/\s+/g, ' ').trim(), params]);
+      if (OWNERSHIP_SQL.test(sql)) return { rowCount: 1, rows: [{ id: JOB_ID, hired_count: 0 }] };
       return { rowCount: 1, rows: [] };
     });
-    mockSetInternalUserRlsContext.mockImplementation(async () => { order.push('SET INTERNAL'); });
     const res = await handler(makeEvent());
     expect(res.statusCode).toBe(200);
-    expect(mockSetInternalUserRlsContext).toHaveBeenCalledWith(expect.anything(), 'employer-user-id');
-    const ownership = order.findIndex((sql) => /FROM jobs JOIN users/i.test(sql));
-    expect(order[ownership]).toMatch(/u\.id AS employer_user_id/);
-    expect(order.indexOf('SET INTERNAL')).toBeGreaterThan(ownership);
-    expect(order.indexOf('SET INTERNAL')).toBeLessThan(order.findIndex((sql) => sql.startsWith('DELETE')));
+    expect(mockResolveEmployerActor).toHaveBeenCalledWith(expect.anything(), 'e-sub');
+    expect(mockSetInternalUserRlsContext).not.toHaveBeenCalled();
+    const ownership = calls.find(([sql]) => OWNERSHIP_SQL.test(sql));
+    expect(ownership![0]).not.toMatch(/JOIN users|cognito_sub|employer_user_id/);
+    expect(ownership![1]).toEqual([JOB_ID, [EMPLOYER_ID, FOREMAN_ID]]);
+  });
+
+  it('returns the actor failure, rolls back, and reads no job when the membership is inactive', async () => {
+    mockResolveEmployerActor.mockResolvedValue({ ok: false, status: 403, error: 'membership_inactive' });
+    mockQuery.mockImplementation(() => ({ rowCount: 0, rows: [] }));
+    const res = await handler(makeEvent());
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({ error: 'membership_inactive' });
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockQuery.mock.calls.some((c) => typeof c[0] === 'string' && /FROM jobs|DELETE/.test(c[0]))).toBe(false);
+    expect(setAuditContext).not.toHaveBeenCalled();
   });
 
   it('returns 500, rolls back and never deletes the job when a conversation survives the delete', async () => {
     mockQuery.mockImplementation((sql: string) => {
-      if (/FROM jobs\s+JOIN users/i.test(sql)) return { rowCount: 1, rows: [{ id: JOB_ID, hired_count: 0, employer_user_id: 'employer-user-id' }] };
+      if (OWNERSHIP_SQL.test(sql)) return { rowCount: 1, rows: [{ id: JOB_ID, hired_count: 0, employer_user_id: 'employer-user-id' }] };
       if (/SELECT EXISTS \(SELECT 1 FROM job_conversations/i.test(sql)) return { rowCount: 1, rows: [{ remaining: true }] };
       return { rowCount: 1, rows: [] };
     });
@@ -127,7 +155,7 @@ describe('employer-jobs-delete', () => {
 
   it('returns 500 and rolls back when the final job delete affects 0 rows', async () => {
     mockQuery.mockImplementation((sql: string) => {
-      if (/FROM jobs\s+JOIN users/i.test(sql)) return { rowCount: 1, rows: [{ id: JOB_ID, hired_count: 0, employer_user_id: 'employer-user-id' }] };
+      if (OWNERSHIP_SQL.test(sql)) return { rowCount: 1, rows: [{ id: JOB_ID, hired_count: 0, employer_user_id: 'employer-user-id' }] };
       if (/DELETE FROM jobs/i.test(sql)) return { rowCount: 0, rows: [] };
       return { rowCount: 1, rows: [] };
     });
@@ -141,7 +169,7 @@ describe('employer-jobs-delete', () => {
     const calls: Array<[string, unknown[] | undefined]> = [];
     mockQuery.mockImplementation((sql: string, params?: unknown[]) => {
       calls.push([sql.replace(/\s+/g, ' ').trim(), params]);
-      if (/FROM jobs\s+JOIN users/i.test(sql)) {
+      if (OWNERSHIP_SQL.test(sql)) {
         return { rowCount: 1, rows: [{ id: JOB_ID, hired_count: 0, status: 'active', public_listing_enabled: true, public_code: 'ABC123', employer_user_id: 'employer-user-id' }] };
       }
       return { rowCount: 1, rows: [] };
@@ -161,7 +189,7 @@ describe('employer-jobs-delete', () => {
 
   it('does NOT enqueue a visibility event for a paused (non-active) job even if listed', async () => {
     mockQuery.mockImplementation((sql: string) => {
-      if (/FROM jobs\s+JOIN users/i.test(sql)) {
+      if (OWNERSHIP_SQL.test(sql)) {
         return { rowCount: 1, rows: [{ id: JOB_ID, hired_count: 0, status: 'paused', public_listing_enabled: true, public_code: 'ABC123', employer_user_id: 'employer-user-id' }] };
       }
       return { rowCount: 1, rows: [] };
@@ -174,7 +202,7 @@ describe('employer-jobs-delete', () => {
   describe('change context', () => {
     it('states the employer before the deletes, whose cascades reach covered tables', async () => {
       mockQuery.mockImplementation((sql: string) => {
-        if (/FROM jobs\s+JOIN users/i.test(sql)) return { rowCount: 1, rows: [{ id: JOB_ID, hired_count: 0, employer_user_id: 'employer-user-id' }] };
+        if (OWNERSHIP_SQL.test(sql)) return { rowCount: 1, rows: [{ id: JOB_ID, hired_count: 0, employer_user_id: 'employer-user-id' }] };
         return { rowCount: 1, rows: [] };
       });
       const res = await handler(withRequestId(makeEvent()));
@@ -184,7 +212,7 @@ describe('employer-jobs-delete', () => {
         expect.objectContaining({ query: mockQuery }), callerFor('employer', 'employer-user-id'), 'employer.job_delete');
       expectContextBeforeWrite(mockQuery, setAuditContext as jest.Mock, /DELETE FROM job_conversations/);
       expect((setAuditContext as jest.Mock).mock.invocationCallOrder[0])
-        .toBeGreaterThan(mockSetInternalUserRlsContext.mock.invocationCallOrder[0]);
+        .toBeGreaterThan(mockResolveEmployerActor.mock.invocationCallOrder[0]);
     });
 
     it('states nothing when the job is not the caller\'s', async () => {

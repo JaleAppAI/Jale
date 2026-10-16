@@ -9,6 +9,7 @@ import { resolveJobLocationFields } from '../lib/job-location-parse';
 import { enqueueVisibilityPing, enqueueVisibilityTransition, isEffectivelyVisible } from '../lib/job-visibility';
 import { parsePreApplicationPrompts, promptsNormalized } from '../lib/pre-application-prompts';
 import { checkCompliance } from '../legal/check-compliance';
+import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
 
 const CORS_HEADERS = corsHeaders();
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -70,6 +71,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
+    const actorResult = await resolveEmployerActor(client, cognitoSub);
+    if (!actorResult.ok) {
+      await client.query('ROLLBACK');
+      return employerActorFailureResponse(actorResult, CORS_HEADERS);
+    }
+    const { actor } = actorResult;
+
     // Fetch the current status + public listing state once, up front. This backs
     // two independent things: the A7 entitlement gate below (which only needs
     // currentStatus) and the visibility-event decision after the UPDATE (which
@@ -82,9 +90,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // stale currentStatus/public_listing_enabled snapshot (TOCTOU).
     const currentResult = await client.query<{ status: string; public_listing_enabled: boolean; public_code: string }>(
       `SELECT jobs.status, jobs.public_listing_enabled, jobs.public_code
-         FROM jobs JOIN users u ON u.id = jobs.employer_id WHERE jobs.id = $1 AND u.cognito_sub = $2
+         FROM jobs WHERE jobs.id = $1 AND jobs.employer_id = ANY($2::uuid[])
          FOR UPDATE OF jobs`,
-      [jobId, cognitoSub],
+      [jobId, actor.scopeUserIds],
     );
     const currentRow = currentResult.rows?.[0];
     const currentStatus = currentRow?.status;
@@ -95,18 +103,19 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (status === 'active') {
       if (currentStatus !== 'active') {
         // Non-active→active: this consumes a slot. Enforce the entitlement gate.
-        // Lock the employer's users row to serialize all concurrent slot consumers.
-        const lockResult = await client.query<{ id: string }>(
-          `SELECT id FROM users WHERE cognito_sub = $1 FOR UPDATE`,
-          [cognitoSub],
-        );
-        const userId = lockResult.rows[0]?.id;
+        // Plan limits stay per person in Phase 1 and are the caller's, exactly
+        // as in create: an owner reactivating a member's job is counted against
+        // the owner until Phase 2 moves limits to the company.
+        // Lock the caller's own users row to serialize concurrent slot
+        // consumers. RLS lets a session lock only its own users row; Phase 2
+        // moves the lock to organizations FOR UPDATE.
+        await client.query(`SELECT id FROM users WHERE id = $1 FOR UPDATE`, [actor.userId]);
 
-        const entitlements = await resolveEntitlements(client, userId);
+        const entitlements = await resolveEntitlements(client, actor.userId);
 
         const countResult = await client.query<{ active_jobs: number }>(
           `SELECT COUNT(*)::int AS active_jobs FROM jobs WHERE employer_id = $1 AND status = 'active'`,
-          [userId],
+          [actor.userId],
         );
         const activeJobs = countResult.rows[0].active_jobs;
 
@@ -132,8 +141,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       `WITH employer_job AS (
          SELECT jobs.id
          FROM jobs
-         JOIN users u ON u.id = jobs.employer_id
-         WHERE jobs.id = $2 AND u.cognito_sub = $3
+         WHERE jobs.id = $2 AND jobs.employer_id = ANY($3::uuid[])
        )
        UPDATE jobs SET status = $1, billing_paused_at = NULL
        FROM employer_job
@@ -146,10 +154,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          jobs.trade_category, jobs.required_experience_years, jobs.required_experience_months, jobs.certifications,
          jobs.public_code, jobs.public_listing_enabled,
          (SELECT COUNT(*)::int FROM job_applications WHERE job_id = $2) AS applicant_count`,
-      [status, jobId, cognitoSub],
+      [status, jobId, actor.scopeUserIds],
     );
 
-    // Ownership is enforced by the users join above; rowCount === 0 means forbidden.
+    // Ownership is enforced by the scope predicate above; rowCount === 0 means forbidden.
     if (result.rowCount === 0) {
       await client.query('ROLLBACK');
       return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'forbidden' }) };
@@ -325,6 +333,13 @@ async function handleFieldEdit(
       return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'legal_required', requiredVersion: process.env.REQUIRED_TOS_VERSION }) };
     }
 
+    const actorResult = await resolveEmployerActor(client, cognitoSub);
+    if (!actorResult.ok) {
+      await client.query('ROLLBACK');
+      return employerActorFailureResponse(actorResult, CORS_HEADERS);
+    }
+    const { actor } = actorResult;
+
     const current = await client.query<{
       job_type: string; required_docs: string[] | null; optional_docs: string[] | null;
       required_fields: string[] | null; optional_fields: string[] | null;
@@ -344,10 +359,10 @@ async function handleFieldEdit(
               jobs.certification_requirements,
               jobs.pre_application_prompts,
               (SELECT COUNT(*)::int FROM job_applications WHERE job_id = jobs.id) AS applicant_count
-         FROM jobs JOIN users u ON u.id = jobs.employer_id
-        WHERE jobs.id = $1 AND u.cognito_sub = $2
+         FROM jobs
+        WHERE jobs.id = $1 AND jobs.employer_id = ANY($2::uuid[])
         FOR UPDATE OF jobs`,
-      [jobId, cognitoSub],
+      [jobId, actor.scopeUserIds],
     );
     if (current.rowCount === 0) {
       await client.query('ROLLBACK');

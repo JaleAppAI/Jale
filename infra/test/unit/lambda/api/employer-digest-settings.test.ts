@@ -2,9 +2,14 @@ import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { handler } from '../../../../lambda/api/employer-digest-settings';
 import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
+import { resolveEmployerActor } from '../../../../lambda/lib/employer-actor';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
+jest.mock('../../../../lambda/lib/employer-actor', () => ({
+  ...jest.requireActual('../../../../lambda/lib/employer-actor'),
+  resolveEmployerActor: jest.fn(),
+}));
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
@@ -14,6 +19,13 @@ const mockQuery = jest.fn();
 const mockRelease = jest.fn();
 
 const EMPLOYER_ID = '11111111-2222-4333-8444-555555555555';
+const mockResolveEmployerActor = resolveEmployerActor as jest.Mock;
+const ORG_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const FOREMAN_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const ownerActor = (scopeUserIds: string[] = [EMPLOYER_ID]) => ({
+  ok: true,
+  actor: { userId: EMPLOYER_ID, organizationId: ORG_ID, role: 'owner', scopeUserIds },
+});
 
 function makeEvent(overrides: Partial<APIGatewayProxyEvent> = {}): APIGatewayProxyEvent {
   return {
@@ -67,6 +79,7 @@ describe('employer-digest-settings', () => {
     });
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
     configureDb();
+    mockResolveEmployerActor.mockResolvedValue(ownerActor());
   });
   afterAll(() => { process.env = env; });
 
@@ -93,17 +106,29 @@ describe('employer-digest-settings', () => {
     expect(JSON.parse(res.body)).toMatchObject({ error: 'legal_required', requiredVersion: 'v1.0' });
   });
 
-  it('returns 409 when the users row cannot be resolved to an employer id', async () => {
-    configureDb({ employerId: null });
+  it('returns the actor failure and rolls back when the caller cannot act as an employer', async () => {
+    mockResolveEmployerActor.mockResolvedValue({ ok: false, status: 409, error: 'user_not_provisioned' });
     const res = await handler(makeEvent());
     expect(res.statusCode).toBe(409);
     expect(JSON.parse(res.body).error).toBe('user_not_provisioned');
+    expect(mockQuery.mock.calls.map((c) => String(c[0]))).toContain('ROLLBACK');
   });
 
-  it('sets the cognito-sub RLS context then the internal-id one', async () => {
+  it('returns 403 membership_inactive and touches no settings row for a removed member', async () => {
+    mockResolveEmployerActor.mockResolvedValue({ ok: false, status: 403, error: 'membership_inactive' });
+    const res = await handler(patchEvent({ enabled: true }));
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({ error: 'membership_inactive' });
+    expect(mockQuery.mock.calls.map((c) => String(c[0]))).toContain('ROLLBACK');
+    expect(mockQuery.mock.calls.some((c) => String(c[0]).includes('employer_digest_settings'))).toBe(false);
+  });
+
+  it('sets the cognito-sub RLS context, then lets resolveEmployerActor set the internal id', async () => {
     await handler(makeEvent());
     expect(mockSetRlsContext).toHaveBeenCalledWith(expect.anything(), 'emp-sub');
-    expect(mockSetInternalUserRlsContext).toHaveBeenCalledWith(expect.anything(), EMPLOYER_ID);
+    expect(mockResolveEmployerActor).toHaveBeenCalledWith(expect.anything(), 'emp-sub', { lockUser: false });
+    expect(mockSetInternalUserRlsContext).not.toHaveBeenCalled();
+    expect(mockQuery.mock.calls.some((c) => /FROM users\b/.test(String(c[0])))).toBe(false);
   });
 
   it('always releases the connection', async () => {
@@ -145,8 +170,8 @@ describe('employer-digest-settings', () => {
 
   it('GET does not take a row lock', async () => {
     await handler(makeEvent());
-    const userSelect = mockQuery.mock.calls.find((c) => /FROM users\b/.test(String(c[0])));
-    expect(String(userSelect![0])).not.toContain('FOR UPDATE');
+    expect(mockResolveEmployerActor).toHaveBeenCalledWith(expect.anything(), 'emp-sub', { lockUser: false });
+    expect(mockQuery.mock.calls.some((c) => String(c[0]).includes('FOR UPDATE'))).toBe(false);
   });
 
   // ── PATCH: subsets ───────────────────────────────────────────────────────
@@ -160,8 +185,11 @@ describe('employer-digest-settings', () => {
   it('PATCH locks the employer row before upserting', async () => {
     configureDb({ upsertRow: { enabled: true, send_hour_local: 8, timezone: 'America/Chicago', language: 'en' } });
     await handler(patchEvent({ enabled: true }));
-    const userSelect = mockQuery.mock.calls.find((c) => /FROM users\b/.test(String(c[0])));
-    expect(String(userSelect![0])).toContain('FOR UPDATE');
+    expect(mockResolveEmployerActor).toHaveBeenCalledWith(expect.anything(), 'emp-sub', { lockUser: true });
+    const upsertIndex = mockQuery.mock.calls.findIndex((c) => String(c[0]).includes('INSERT INTO employer_digest_settings'));
+    expect(upsertIndex).toBeGreaterThanOrEqual(0);
+    expect(mockResolveEmployerActor.mock.invocationCallOrder[0])
+      .toBeLessThan(mockQuery.mock.invocationCallOrder[upsertIndex]);
   });
 
   it('PATCH echoes the full stored row, not the request', async () => {
@@ -341,5 +369,22 @@ describe('employer-digest-settings', () => {
     await handler(makeEvent());
     expect(mockQuery.mock.calls.map((c) => String(c[0])).join('\n'))
       .not.toContain('unsubscribe_token_version');
+  });
+
+  it("keeps settings per person: an owner's two-id scope still reads and writes only actor.userId", async () => {
+    mockResolveEmployerActor.mockResolvedValue(ownerActor([EMPLOYER_ID, FOREMAN_ID]));
+    configureDb({
+      settingsRow: { enabled: true, send_hour_local: 8, timezone: 'America/Chicago', language: 'en' },
+      upsertRow: { enabled: true, send_hour_local: 8, timezone: 'America/Chicago', language: 'en' },
+    });
+
+    await handler(makeEvent());
+    const select = mockQuery.mock.calls.find((c) => String(c[0]).includes('FROM employer_digest_settings'));
+    expect(select![1]).toEqual([EMPLOYER_ID]);
+
+    mockQuery.mockClear();
+    await handler(patchEvent({ enabled: true }));
+    const upsert = mockQuery.mock.calls.find((c) => String(c[0]).includes('INSERT INTO employer_digest_settings'));
+    expect(upsert![1][0]).toBe(EMPLOYER_ID);
   });
 });

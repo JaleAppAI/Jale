@@ -15,6 +15,22 @@ jest.mock('../../../../lambda/lib/audit/record', () => ({
 }));
 jest.mock('../../../../lambda/lib/audit/context');
 
+import { resolveEmployerActor } from '../../../../lambda/lib/employer-actor';
+
+jest.mock('../../../../lambda/lib/employer-actor', () => ({
+  ...jest.requireActual('../../../../lambda/lib/employer-actor'),
+  resolveEmployerActor: jest.fn(),
+}));
+
+const mockResolveEmployerActor = resolveEmployerActor as jest.Mock;
+const ORG_ID = '99999999-9999-4999-8999-999999999999';
+const OWNER_ID = 'aaaaaaaa-1111-4111-8111-111111111111';
+const FOREMAN_ID = 'bbbbbbbb-2222-4222-8222-222222222222';
+const actorResult = (userId: string, scopeUserIds: string[] = [userId]) => ({
+  ok: true as const,
+  actor: { userId, organizationId: ORG_ID, role: 'owner' as const, scopeUserIds },
+});
+
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
 const mockSetInternalUserRlsContext = setInternalUserRlsContext as jest.Mock;
@@ -57,6 +73,10 @@ describe('employer-upload-token Lambda', () => {
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
     mockSetRlsContext.mockImplementation(async () => { timeline.push('SET SUB'); });
     mockSetInternalUserRlsContext.mockImplementation(async (_client: unknown, id: string) => { timeline.push(`SET INTERNAL ${id}`); });
+    mockResolveEmployerActor.mockImplementation(async () => {
+      timeline.push('RESOLVE ACTOR');
+      return actorResult('employer-user-id');
+    });
   });
 
   const makeEvent = (body: object) =>
@@ -97,15 +117,40 @@ describe('employer-upload-token Lambda', () => {
     expect(mockRelease).toHaveBeenCalled();
   });
 
-  it("sets the employer's internal id from the applicant check before issuing", async () => {
+  it("resolves the caller before the applicant check and never re-points the internal id at the job's employer", async () => {
     respond();
     await handler(makeEvent({ job_id: 'j1', worker_id: 'w1' }));
+    const resolve = timeline.indexOf('RESOLVE ACTOR');
     const check = timeline.findIndex((step) => /FROM job_applications ja/.test(step));
-    expect(timeline[check]).toMatch(/AS employer_user_id/);
-    const internal = timeline.indexOf('SET INTERNAL employer-user-id');
     const issue = timeline.findIndex((step) => /upload_token_issue/.test(step));
-    expect(internal).toBeGreaterThan(check);
-    expect(issue).toBeGreaterThan(internal);
+    expect(resolve).toBeGreaterThan(timeline.indexOf('SET SUB'));
+    expect(check).toBeGreaterThan(resolve);
+    expect(issue).toBeGreaterThan(check);
+    expect(timeline[check]).toContain('j.employer_id = ANY($3::uuid[])');
+    expect(timeline[check]).not.toMatch(/employer_user_id|cognito_sub/);
+    expect(timeline.some((step) => step.startsWith('SET INTERNAL'))).toBe(false);
+  });
+
+  it('answers the actor failure after COMMIT, checks nothing and issues nothing', async () => {
+    respond();
+    mockResolveEmployerActor.mockImplementation(async () => ({ ok: false, status: 403, error: 'membership_inactive' }));
+    const res = await handler(makeEvent({ job_id: 'j1', worker_id: 'w1' }));
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({ error: 'membership_inactive' });
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+    expect(timeline.some((step) => /job_applications|upload_token_issue/.test(step))).toBe(false);
+    expect(setAuditContext).not.toHaveBeenCalled();
+  });
+
+  it("checks the applicant against an owner's whole scope and states the owner as the caller", async () => {
+    respond();
+    mockResolveEmployerActor.mockImplementation(async () => actorResult(OWNER_ID, [OWNER_ID, FOREMAN_ID]));
+    const res = await handler(withRequestId(makeEvent({ job_id: 'j1', worker_id: 'w1' })));
+    expect(res.statusCode).toBe(201);
+    const check = mockQuery.mock.calls.find(([sql]) => /FROM job_applications ja/.test(String(sql)))!;
+    expect(check[1]).toEqual(['j1', 'w1', [OWNER_ID, FOREMAN_ID]]);
+    expect(setAuditContext).toHaveBeenCalledWith(
+      expect.objectContaining({ query: mockQuery }), callerFor('employer', OWNER_ID), 'employer.upload_link');
   });
 
   it('returns 403 and rolls back when the function refuses the issue', async () => {

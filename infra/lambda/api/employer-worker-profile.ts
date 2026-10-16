@@ -1,10 +1,11 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
+import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { promptAnswersView, stageView } from '../lib/application-stage-view';
 import { checkCompliance } from '../legal/check-compliance';
 import { auditCaller, type AuditCaller } from '../lib/audit/caller';
 import { recordAccess, recordAttempt, responseFieldNames, type AttemptEvent } from '../lib/audit/record';
+import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
 
 const CORS_HEADERS = corsHeaders();
 const SURFACE = 'employer.worker_profile';
@@ -122,27 +123,22 @@ export const handler = async (
       };
     }
 
-    const employerRes = await client.query(`SELECT id FROM users WHERE cognito_sub = $1`, [cognitoSub]);
-    const employerId: string | undefined = employerRes.rows[0]?.id;
-    if (!employerId) {
+    const resolved = await resolveEmployerActor(client, cognitoSub);
+    if (!resolved.ok) {
       await client.query('COMMIT');
-      return {
-        statusCode: 409,
-        headers: CORS_HEADERS,
-        body: JSON.stringify({ error: 'user_not_provisioned' }),
-      };
+      return employerActorFailureResponse(resolved, CORS_HEADERS);
     }
-    await setInternalUserRlsContext(client, employerId);
+    const { actor } = resolved;
     // Access records name the employer; a refusal or failure from here on is
     // recorded as an attempt once the transaction has ended.
-    caller = auditCaller(event, { kind: 'employer', id: employerId }, 'web');
+    caller = auditCaller(event, { kind: 'employer', id: actor.userId }, 'web');
     const purpose = { kind: 'job', id: jobId } as const;
     attempt = { surface: SURFACE, subjectUserIds: [workerId], purpose };
 
-    // Verify employer owns the job
+    // Verify the job is in the caller's scope
     const jobCheck = await client.query(
-      `SELECT id FROM jobs WHERE id = $1 AND employer_id = $2`,
-      [jobId, employerId],
+      `SELECT id FROM jobs WHERE id = $1 AND employer_id = ANY($2::uuid[])`,
+      [jobId, actor.scopeUserIds],
     );
     if (jobCheck.rows.length === 0) {
       await client.query('COMMIT');
@@ -198,8 +194,8 @@ export const handler = async (
        JOIN jobs j ON j.id = ja.job_id
        JOIN users u ON u.id = ja.worker_id
        LEFT JOIN worker_profiles wp ON wp.user_id = ja.worker_id
-       WHERE ja.job_id = $1 AND ja.worker_id = $2 AND j.employer_id = $3`,
-      [jobId, workerId, employerId],
+       WHERE ja.job_id = $1 AND ja.worker_id = $2 AND j.employer_id = ANY($3::uuid[])`,
+      [jobId, workerId, actor.scopeUserIds],
     );
 
     if (result.rows.length === 0) {

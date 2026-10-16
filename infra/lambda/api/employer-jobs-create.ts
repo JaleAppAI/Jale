@@ -9,18 +9,21 @@ import { setJobCoordinates } from '../lib/location';
 import { parseCityFields, parseCityFromLocation } from '../lib/city-fields';
 import { isUuid } from '../lib/uuid';
 import { checkCompliance } from '../legal/check-compliance';
+import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
 import type { PoolClient } from 'pg';
 
 const CORS_HEADERS = corsHeaders();
 
 /**
  * The saved template the job started from (contract K3.6, analytics item
- * 18), kept only when the caller sees it as its own template inside its own
- * RLS context; anything else is stored as no template. The check runs under
- * its own savepoint, so it can never fail the post.
+ * 18), kept only when it is one of the caller's company's templates (the
+ * set GET /employer/templates lists: the same jale_internal.org_member_scope
+ * array as 119's employer_job_templates_org_read policy), checked inside the
+ * caller's own RLS context; anything else is stored as no template. The
+ * check runs under its own savepoint, so it can never fail the post.
  */
-async function ownTemplateId(client: PoolClient, value: unknown, employerId: string | undefined): Promise<string | null> {
-  if (typeof value !== 'string' || !isUuid(value) || !employerId) return null;
+async function ownTemplateId(client: PoolClient, value: unknown, callerId: string | undefined): Promise<string | null> {
+  if (typeof value !== 'string' || !isUuid(value) || !callerId) return null;
   try {
     await client.query('SAVEPOINT template_check');
   } catch {
@@ -28,8 +31,8 @@ async function ownTemplateId(client: PoolClient, value: unknown, employerId: str
   }
   try {
     const found = await client.query(
-      'SELECT 1 FROM employer_job_templates WHERE id = $1 AND employer_id = $2',
-      [value, employerId],
+      'SELECT 1 FROM employer_job_templates WHERE id = $1 AND employer_id = ANY ((SELECT jale_internal.org_member_scope($2::text))::uuid[])',
+      [value, callerId],
     );
     await client.query('RELEASE SAVEPOINT template_check');
     return (found?.rowCount ?? 0) > 0 ? value : null;
@@ -252,13 +255,16 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     // A7: Lock the employer's users row to serialize concurrent slot consumers.
-    // SELECT … FOR UPDATE on users ensures two simultaneous creates for the same
-    // employer cannot both read "0 active jobs" and both insert.
-    const lockResult = await client.query<{ id: string }>(
-      `SELECT id FROM users WHERE cognito_sub = $1 FOR UPDATE`,
-      [cognitoSub],
-    );
-    const userId = lockResult.rows[0]?.id;
+    // resolveEmployerActor's lockUser takes SELECT … FOR UPDATE on the caller's
+    // users row, so two simultaneous creates for the same employer cannot both
+    // read "0 active jobs" and both insert. Plan limits stay per person in
+    // Phase 1; Phase 2 moves this lock to organizations FOR UPDATE.
+    const actorResult = await resolveEmployerActor(client, cognitoSub, { lockUser: true });
+    if (!actorResult.ok) {
+      await client.query('ROLLBACK');
+      return employerActorFailureResponse(actorResult, CORS_HEADERS);
+    }
+    const userId = actorResult.actor.userId;
 
     // Resolve entitlements AFTER acquiring the lock so the limit is authoritative.
     const entitlements = await resolveEntitlements(client, userId);

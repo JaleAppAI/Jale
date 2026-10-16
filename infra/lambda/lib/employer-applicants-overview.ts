@@ -38,7 +38,7 @@ export type ApplicantsOverview = {
   total: number;
 };
 
-// One row per non-dismissed application across ALL the employer's jobs.
+// One row per non-dismissed application across ALL the jobs in the caller's scope.
 // The ranking cache is a LEFT JOIN on purpose: a missing score renders as
 // "not scored", never blocks the row. Status vocabulary is the 091 set
 // (pending|contacted|talking|details_requested|hired|not_interested) plus the
@@ -74,7 +74,7 @@ const OVERVIEW_QUERY = `
     -- overview and the per-job list can never show a different trust number
     -- for the same worker. The users JOIN below is already there for the name,
     -- and users_employer_applicant_read (020b:261-269) is what admits the row
-    -- -- the caller sets app.current_internal_user_id before this runs.
+    -- -- resolveEmployerActor sets app.current_internal_user_id before this runs.
     u.trade_competency_score AS trust_score,
     -- F19 (125): the start details, published only as hire_details.
     to_char(ja.hire_start_date, 'YYYY-MM-DD') AS hire_start_date,
@@ -84,7 +84,7 @@ const OVERVIEW_QUERY = `
     ja.hire_notes,
     ja.hire_details_updated_at
   FROM job_applications ja
-  JOIN jobs j ON j.id = ja.job_id AND j.employer_id = $1
+  JOIN jobs j ON j.id = ja.job_id AND j.employer_id = ANY($1::uuid[])
   JOIN users u ON u.id = ja.worker_id
   LEFT JOIN worker_profiles wp ON wp.user_id = ja.worker_id
   LEFT JOIN employer_candidate_rankings ecr
@@ -95,9 +95,9 @@ const OVERVIEW_QUERY = `
 
 export async function listEmployerApplicantsOverview(
   client: PoolClient,
-  employerId: string,
+  scopeUserIds: string[],
 ): Promise<ApplicantsOverview> {
-  const result = await client.query<Record<string, any>>(OVERVIEW_QUERY, [employerId]);
+  const result = await client.query<Record<string, any>>(OVERVIEW_QUERY, [scopeUserIds]);
   const applicants: ApplicantOverviewItem[] = result.rows.map((row) => {
     const {
       hire_start_date: _hireStartDate, hire_report_location: _hireReportLocation, hire_contact_name: _hireContactName,
