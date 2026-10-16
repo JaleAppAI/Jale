@@ -4,6 +4,7 @@ import { setAuditContext } from '../lib/audit/context';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
+import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
 import { TRADE_KEYS } from '../lib/worker-vocab';
 
 const CORS_HEADERS = corsHeaders();
@@ -70,6 +71,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
+    // GET and PATCH both resolve the actor, so a removed member or a login
+    // with no organization is answered here, on the first call the app makes.
+    const actorResult = await resolveEmployerActor(client, cognitoSub);
+    if (!actorResult.ok) {
+      await client.query('COMMIT');
+      return employerActorFailureResponse(actorResult, CORS_HEADERS);
+    }
+    const { actor } = actorResult;
+
     let result;
     if (event.httpMethod === 'PATCH') {
       let body: any;
@@ -104,12 +114,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       const hiringTradesProvided = Object.prototype.hasOwnProperty.call(body, 'hiring_trades');
       const jobTypesProvided = Object.prototype.hasOwnProperty.call(body, 'typical_job_types');
 
-      // The change records name the employer by users.id, so it is read
+      // The change records name the employer by users.id (the actor), stated
       // before the first write.
-      const actorRes = await client.query<{ id: string }>('SELECT id FROM users WHERE cognito_sub = $1', [cognitoSub]);
-      const actorId = actorRes.rows[0]?.id;
-      if (!actorId) throw new Error('employer profile: the caller has no users row');
-      await setAuditContext(client, auditCaller(event, { kind: 'employer', id: actorId }, 'web'), 'employer.profile_update');
+      await setAuditContext(client, auditCaller(event, { kind: 'employer', id: actor.userId }, 'web'), 'employer.profile_update');
 
       if (companyName) {
         await client.query('UPDATE users SET full_name = $1, phone = COALESCE($2, phone) WHERE cognito_sub = $3', [companyName, phone, cognitoSub]);
@@ -123,7 +130,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
            hiring_trades, typical_job_types, company_size, company_description
          )
          VALUES (
-           (SELECT id FROM users WHERE cognito_sub = $1),
+           $1,
            $2, $3, $4, $5, $6, $7::text[], $8::text[], $9, $10
          )
          ON CONFLICT (user_id) DO UPDATE SET
@@ -149,7 +156,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
            company_size,
            company_description`,
         [
-          cognitoSub,
+          actor.userId,
           companyName,
           contactName,
           phone,

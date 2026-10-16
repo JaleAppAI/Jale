@@ -5,6 +5,7 @@ import { checkCompliance } from '../../../../lambda/legal/check-compliance';
 import { setAuditContext } from '../../../../lambda/lib/audit/context';
 import { callerFor, expectContextBeforeWrite, withRequestId } from './audit-expectations';
 import { corsHeaders } from '../../../../lambda/lib/http';
+import { resolveEmployerActor } from '../../../../lambda/lib/employer-actor';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
@@ -14,12 +15,25 @@ jest.mock('../../../../lambda/lib/audit/record', () => ({
   recordAttempt: jest.fn(),
 }));
 jest.mock('../../../../lambda/lib/audit/context');
+jest.mock('../../../../lambda/lib/employer-actor', () => ({
+  ...jest.requireActual('../../../../lambda/lib/employer-actor'),
+  resolveEmployerActor: jest.fn(),
+}));
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
 const mockCheckCompliance = checkCompliance as jest.Mock;
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
+const mockResolveEmployerActor = resolveEmployerActor as jest.Mock;
+// Equal to the users.id the existing assertions already expect.
+const EMPLOYER_ID = 'usr-123';
+const ORG_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const FOREMAN_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const ownerActor = (scopeUserIds: string[] = [EMPLOYER_ID]) => ({
+  ok: true,
+  actor: { userId: EMPLOYER_ID, organizationId: ORG_ID, role: 'owner', scopeUserIds },
+});
 
 describe('Employer Profile API Lambda', () => {
   const originalEnv = process.env;
@@ -34,6 +48,7 @@ describe('Employer Profile API Lambda', () => {
         release: mockRelease,
       }),
     });
+    mockResolveEmployerActor.mockResolvedValue(ownerActor());
   });
 
   afterAll(() => {
@@ -176,9 +191,6 @@ describe('Employer Profile API Lambda', () => {
       if (queryText.includes('LEFT JOIN employer_profiles')) {
         return Promise.resolve({ rows: [updated] });
       }
-      if (queryText.includes('SELECT id FROM users WHERE cognito_sub')) {
-        return Promise.resolve({ rows: [{ id: 'usr-123' }] });
-      }
       return Promise.resolve({});
     });
 
@@ -207,7 +219,7 @@ describe('Employer Profile API Lambda', () => {
     expect(mockQuery).toHaveBeenCalledWith(
       expect.stringContaining('INSERT INTO employer_profiles'),
       [
-        'test-user-sub',
+        EMPLOYER_ID,
         'Acme Builders',
         'Ava Manager',
         '+15551234567',
@@ -269,7 +281,6 @@ describe('Employer Profile API Lambda', () => {
     beforeEach(() => {
       mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
       mockQuery.mockImplementation((queryText: string) => {
-        if (queryText.includes('SELECT id FROM users WHERE cognito_sub')) return Promise.resolve({ rows: [{ id: 'usr-123' }] });
         if (queryText.includes('LEFT JOIN employer_profiles')) return Promise.resolve({ rows: [{ id: 'usr-123' }] });
         return Promise.resolve({});
       });
@@ -286,6 +297,54 @@ describe('Employer Profile API Lambda', () => {
 
     it('states nothing on a read', async () => {
       await handler(mockEvent);
+      expect(setAuditContext).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('organization actor (Phase 1)', () => {
+    it('resolves the actor on GET after the compliance check', async () => {
+      mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+      mockQuery.mockImplementation((queryText: string) => {
+        if (queryText.includes('LEFT JOIN employer_profiles')) return Promise.resolve({ rows: [{ id: EMPLOYER_ID }] });
+        return Promise.resolve({});
+      });
+
+      const response = await handler(mockEvent);
+
+      expect(response.statusCode).toBe(200);
+      expect(mockResolveEmployerActor).toHaveBeenCalledWith(expect.anything(), 'test-user-sub');
+      expect(mockCheckCompliance.mock.invocationCallOrder[0])
+        .toBeLessThan(mockResolveEmployerActor.mock.invocationCallOrder[0]);
+    });
+
+    it("keys the profile upsert on actor.userId (per person, never the owner's scope) and drops the sub lookup", async () => {
+      mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+      mockResolveEmployerActor.mockResolvedValue(ownerActor([EMPLOYER_ID, FOREMAN_ID]));
+      mockQuery.mockImplementation((queryText: string) => {
+        if (queryText.includes('LEFT JOIN employer_profiles')) return Promise.resolve({ rows: [{ id: EMPLOYER_ID }] });
+        return Promise.resolve({});
+      });
+
+      const response = await handler({ ...mockEvent, httpMethod: 'PATCH', body: JSON.stringify({ contact_name: 'Ava' }) } as unknown as APIGatewayProxyEvent);
+
+      expect(response.statusCode).toBe(200);
+      const upsert = mockQuery.mock.calls.find((c) => String(c[0]).includes('INSERT INTO employer_profiles'));
+      expect(String(upsert![0])).not.toContain('cognito_sub');
+      expect(upsert![1][0]).toBe(EMPLOYER_ID);
+      expect(mockQuery.mock.calls.some((c) => String(c[0]).includes('SELECT id FROM users WHERE cognito_sub'))).toBe(false);
+    });
+
+    it('returns the actor failure, commits, and reads no profile when the membership is inactive', async () => {
+      mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+      mockResolveEmployerActor.mockResolvedValue({ ok: false, status: 403, error: 'membership_inactive' });
+      mockQuery.mockResolvedValue({});
+
+      const response = await handler(mockEvent);
+
+      expect(response.statusCode).toBe(403);
+      expect(JSON.parse(response.body)).toEqual({ error: 'membership_inactive' });
+      expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+      expect(mockQuery.mock.calls.some((c) => String(c[0]).includes('employer_profiles'))).toBe(false);
       expect(setAuditContext).not.toHaveBeenCalled();
     });
   });
