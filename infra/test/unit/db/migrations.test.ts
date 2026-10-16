@@ -2103,6 +2103,15 @@ describe('database migrations', () => {
     // No mass UPDATE of jobs: created_by is filled by the trigger, and has no FK.
     expect(sql).not.toMatch(/UPDATE\s+public\.jobs\s+SET/i);
     expect(sql).toContain('ALTER TABLE public.jobs ADD COLUMN created_by_user_id UUID;');
+    // sender_user_id is a history column too: no FK, and an UPDATE cannot change it.
+    expect(sql).toContain('ALTER TABLE public.job_conversation_messages ADD COLUMN sender_user_id UUID;');
+    expect(sql).not.toMatch(/sender_user_id UUID REFERENCES/);
+    expect(sql).toContain('BEFORE INSERT OR UPDATE OF sender_user_id ON public.job_conversation_messages');
+    // The back-fill (and its ACCESS EXCLUSIVE lock on users) comes after every other change.
+    const backfillAt = sql.indexOf('CREATE POLICY users_org_bootstrap_read ON public.users');
+    expect(backfillAt).toBeGreaterThan(sql.indexOf('CREATE TRIGGER job_messages_stamp_sender'));
+    expect(backfillAt).toBeGreaterThan(sql.indexOf('CREATE OR REPLACE FUNCTION public.capture_job_application_status_event()'));
+    expect(sql.indexOf('DROP POLICY users_org_bootstrap_read ON public.users;')).toBeLessThan(sql.indexOf('-- ── Self-check'));
   });
 
   // A catalog may carry FORCE ROW LEVEL SECURITY on the five tables 114b

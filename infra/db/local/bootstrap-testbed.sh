@@ -47,7 +47,9 @@ Options:
                      cluster (roles are cluster-wide, so a fresh DB is not enough).
   --bare             Container and database only — no roles, no extension.
                      For billing-034-upgrade.test.ts, which creates jale_admin
-                     itself as a non-executor GRANT target on purpose.
+                     itself as a non-executor GRANT target on purpose, and
+                     employer-organizations-118-upgrade.test.ts, which creates
+                     the jale_admin owner itself and applies the chain as it.
   --profile NAME     standard (default), request or owner-unrestricted.
                      Exported to the command as JALE_TEST_DB_PROFILE. --empty
                      and --bare accept only standard.

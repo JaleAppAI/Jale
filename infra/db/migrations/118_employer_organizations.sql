@@ -34,20 +34,21 @@
 -- (4b) DISPLAY NAME. employer_display_name(person) returns the company
 --     name from the active owner's employer_profiles row (unchanged for a
 --     one-person company), so a foreman is shown under their company.
--- (5) BACK-FILL. Every existing employer becomes the active owner of a
---     one-person company named after employer_profiles.company_name, else
---     users.full_name, else 'Employer'. The users read it needs
---     (users_org_bootstrap_read) exists only for the back-fill: it is
---     dropped again before COMMIT.
--- (6) ACTORS. jobs.created_by_user_id (stamped on insert from employer_id;
+-- (5) ACTORS. jobs.created_by_user_id (stamped on insert from employer_id;
 --     on the first employer_id change, a NULL is filled from the old
 --     employer_id, so COALESCE(created_by_user_id, employer_id) is always
 --     the poster; no FK, a history column);
 --     job_conversation_messages.sender_user_id (stamped on insert: the
 --     session's app.current_internal_user_id for an employer message, NULL
---     otherwise); job_application_status_events.actor_user_id (the
---     session's app.current_internal_user_id, NULL when unset or not a
---     uuid).
+--     otherwise; an UPDATE never changes it; no FK, a history column);
+--     job_application_status_events.actor_user_id (the session's
+--     app.current_internal_user_id, NULL when unset or not a uuid).
+-- (6) BACK-FILL. Every existing employer becomes the active owner of a
+--     one-person company named after employer_profiles.company_name, else
+--     users.full_name, else 'Employer'. The users read it needs
+--     (users_org_bootstrap_read) exists only for the back-fill: it is
+--     dropped again before COMMIT. It runs last, so the ACCESS EXCLUSIVE
+--     lock its CREATE POLICY takes on users is held for the shortest time.
 -- ============================================================
 
 BEGIN;
@@ -364,7 +365,103 @@ BEGIN
 END;
 $$;
 
--- ── (5) Back-fill: every employer owns a one-person company ──
+-- ── (5) Actor columns ───────────────────────────────────────
+-- No foreign key: a history column. An ON DELETE SET NULL would run an
+-- UPDATE OF created_by_user_id, which jobs_stamp_created_by turns back into
+-- the old value.
+ALTER TABLE public.jobs ADD COLUMN created_by_user_id UUID;
+COMMENT ON COLUMN public.jobs.created_by_user_id IS
+  'Who posted the job (history; no FK, it keeps the id even after that person is deleted). NULL only for jobs created before migration 118 whose employer_id never changed: read COALESCE(created_by_user_id, employer_id).';
+
+CREATE FUNCTION public.jobs_stamp_created_by()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    NEW.created_by_user_id := NEW.employer_id;
+  ELSE
+    NEW.created_by_user_id := COALESCE(OLD.created_by_user_id, OLD.employer_id);
+  END IF;
+  RETURN NEW;
+END;
+$fn$;
+ALTER FUNCTION public.jobs_stamp_created_by() OWNER TO jale_admin;
+REVOKE ALL ON FUNCTION public.jobs_stamp_created_by() FROM PUBLIC;
+
+CREATE TRIGGER jobs_stamp_created_by
+  BEFORE INSERT OR UPDATE OF employer_id, created_by_user_id ON public.jobs
+  FOR EACH ROW EXECUTE FUNCTION public.jobs_stamp_created_by();
+
+-- No foreign key, like jobs.created_by_user_id: a history column, and an
+-- ON DELETE SET NULL would be an UPDATE OF sender_user_id, which
+-- job_messages_stamp_sender turns back into the old value.
+ALTER TABLE public.job_conversation_messages ADD COLUMN sender_user_id UUID;
+COMMENT ON COLUMN public.job_conversation_messages.sender_user_id IS
+  'The person who sent an employer message (sender_type = employer), stamped on insert by job_messages_stamp_sender from app.current_internal_user_id and never changed by an UPDATE (history; no FK, it keeps the id even after that person is deleted). NULL for worker and system messages, when that setting is unset or not a uuid, and for messages before migration 118.';
+
+-- The database, not the caller, says who sent an employer message: the
+-- session's app.current_internal_user_id (resolveEmployerActor sets it), or
+-- NULL when it is unset or not a uuid. Any other sender gets NULL. A value
+-- supplied by the INSERT is always overwritten, and an UPDATE keeps the
+-- stamped value.
+CREATE FUNCTION public.job_messages_stamp_sender()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  v_caller TEXT := pg_catalog.current_setting('app.current_internal_user_id', true);
+BEGIN
+  IF TG_OP = 'UPDATE' THEN
+    NEW.sender_user_id := OLD.sender_user_id;
+  ELSIF NEW.sender_type = 'employer'
+     AND v_caller ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN
+    NEW.sender_user_id := v_caller::uuid;
+  ELSE
+    NEW.sender_user_id := NULL;
+  END IF;
+  RETURN NEW;
+END;
+$fn$;
+ALTER FUNCTION public.job_messages_stamp_sender() OWNER TO jale_admin;
+REVOKE ALL ON FUNCTION public.job_messages_stamp_sender() FROM PUBLIC;
+
+CREATE TRIGGER job_messages_stamp_sender
+  BEFORE INSERT OR UPDATE OF sender_user_id ON public.job_conversation_messages
+  FOR EACH ROW EXECUTE FUNCTION public.job_messages_stamp_sender();
+
+ALTER TABLE public.job_application_status_events ADD COLUMN actor_user_id UUID;
+COMMENT ON COLUMN public.job_application_status_events.actor_user_id IS
+  'users.id in app.current_internal_user_id when the status changed; NULL when unset or not a uuid, and for events before migration 118. No FK: an event must never fail a status change.';
+
+CREATE OR REPLACE FUNCTION public.capture_job_application_status_event()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  v_from   TEXT;
+  v_caller TEXT := pg_catalog.current_setting('app.current_internal_user_id', true);
+  v_actor  UUID;
+BEGIN
+  IF TG_OP = 'UPDATE' THEN
+    v_from := OLD.status;
+  END IF;
+  IF v_caller ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN
+    v_actor := v_caller::uuid;
+  END IF;
+  INSERT INTO public.job_application_status_events (application_id, job_id, from_status, to_status, actor_user_id)
+  VALUES (NEW.id, NEW.job_id, v_from, NEW.status, v_actor);
+  RETURN NULL;
+END;
+$fn$;
+
+-- ── (6) Back-fill: every employer owns a one-person company ──
+-- Last, so the ACCESS EXCLUSIVE lock CREATE POLICY takes on users is held
+-- for the shortest time before COMMIT.
 -- jale_admin reads users under FORCE RLS. This policy lets it see employer
 -- rows while the bootstrap gate is open; it exists only for the back-fill
 -- and is dropped at the end of this section (DDL is transactional, so it
@@ -407,95 +504,6 @@ SELECT set_config('app.employer_name_lookup', 'off', true);
 SELECT set_config('app.org_bootstrap', 'off', true);
 
 DROP POLICY users_org_bootstrap_read ON public.users;
-
--- ── (6) Actor columns ───────────────────────────────────────
--- No foreign key: a history column. An ON DELETE SET NULL would run an
--- UPDATE OF created_by_user_id, which jobs_stamp_created_by turns back into
--- the old value.
-ALTER TABLE public.jobs ADD COLUMN created_by_user_id UUID;
-COMMENT ON COLUMN public.jobs.created_by_user_id IS
-  'Who posted the job (history; no FK, it keeps the id even after that person is deleted). NULL only for jobs created before migration 118 whose employer_id never changed: read COALESCE(created_by_user_id, employer_id).';
-
-CREATE FUNCTION public.jobs_stamp_created_by()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-SET search_path = pg_catalog, pg_temp
-AS $fn$
-BEGIN
-  IF TG_OP = 'INSERT' THEN
-    NEW.created_by_user_id := NEW.employer_id;
-  ELSE
-    NEW.created_by_user_id := COALESCE(OLD.created_by_user_id, OLD.employer_id);
-  END IF;
-  RETURN NEW;
-END;
-$fn$;
-ALTER FUNCTION public.jobs_stamp_created_by() OWNER TO jale_admin;
-REVOKE ALL ON FUNCTION public.jobs_stamp_created_by() FROM PUBLIC;
-
-CREATE TRIGGER jobs_stamp_created_by
-  BEFORE INSERT OR UPDATE OF employer_id, created_by_user_id ON public.jobs
-  FOR EACH ROW EXECUTE FUNCTION public.jobs_stamp_created_by();
-
-ALTER TABLE public.job_conversation_messages
-  ADD COLUMN sender_user_id UUID REFERENCES public.users(id) ON DELETE SET NULL;
-COMMENT ON COLUMN public.job_conversation_messages.sender_user_id IS
-  'The person who sent an employer message (sender_type = employer), stamped on insert by job_messages_stamp_sender from app.current_internal_user_id; NULL for worker and system messages, when that setting is unset or not a uuid, and for messages before migration 118.';
-
--- The database, not the caller, says who sent an employer message: the
--- session's app.current_internal_user_id (resolveEmployerActor sets it), or
--- NULL when it is unset or not a uuid. Any other sender gets NULL. A value
--- supplied by the INSERT is always overwritten.
-CREATE FUNCTION public.job_messages_stamp_sender()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-SET search_path = pg_catalog, pg_temp
-AS $fn$
-DECLARE
-  v_caller TEXT := pg_catalog.current_setting('app.current_internal_user_id', true);
-BEGIN
-  IF NEW.sender_type = 'employer'
-     AND v_caller ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN
-    NEW.sender_user_id := v_caller::uuid;
-  ELSE
-    NEW.sender_user_id := NULL;
-  END IF;
-  RETURN NEW;
-END;
-$fn$;
-ALTER FUNCTION public.job_messages_stamp_sender() OWNER TO jale_admin;
-REVOKE ALL ON FUNCTION public.job_messages_stamp_sender() FROM PUBLIC;
-
-CREATE TRIGGER job_messages_stamp_sender
-  BEFORE INSERT ON public.job_conversation_messages
-  FOR EACH ROW EXECUTE FUNCTION public.job_messages_stamp_sender();
-
-ALTER TABLE public.job_application_status_events ADD COLUMN actor_user_id UUID;
-COMMENT ON COLUMN public.job_application_status_events.actor_user_id IS
-  'users.id in app.current_internal_user_id when the status changed; NULL when unset or not a uuid, and for events before migration 118. No FK: an event must never fail a status change.';
-
-CREATE OR REPLACE FUNCTION public.capture_job_application_status_event()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = pg_catalog, pg_temp
-AS $fn$
-DECLARE
-  v_from   TEXT;
-  v_caller TEXT := pg_catalog.current_setting('app.current_internal_user_id', true);
-  v_actor  UUID;
-BEGIN
-  IF TG_OP = 'UPDATE' THEN
-    v_from := OLD.status;
-  END IF;
-  IF v_caller ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN
-    v_actor := v_caller::uuid;
-  END IF;
-  INSERT INTO public.job_application_status_events (application_id, job_id, from_status, to_status, actor_user_id)
-  VALUES (NEW.id, NEW.job_id, v_from, NEW.status, v_actor);
-  RETURN NULL;
-END;
-$fn$;
 
 -- ── Self-check ──────────────────────────────────────────────
 DO $$
@@ -553,9 +561,27 @@ BEGIN
      OR has_table_privilege('jale_api', 'public.organization_members', 'UPDATE')
      OR has_table_privilege('jale_api', 'public.organization_members', 'DELETE')
      OR has_any_column_privilege('jale_api', 'public.organizations', 'SELECT')
-     OR has_any_column_privilege('jale_api', 'public.organization_invites', 'SELECT') THEN
+     OR has_any_column_privilege('jale_api', 'public.organization_invites', 'SELECT')
+     OR has_table_privilege('jale_api', 'public.organizations', 'INSERT, UPDATE, DELETE')
+     OR has_table_privilege('jale_api', 'public.organization_invites', 'INSERT, UPDATE, DELETE') THEN
     RAISE EXCEPTION 'migration 118: jale_api privileges on the organization tables drifted';
   END IF;
+
+  -- No runtime login (the access manifest's login set) holds any right on
+  -- organizations or organization_invites: only the definers reach them.
+  FOREACH v_sig IN ARRAY ARRAY[
+    'jale_api', 'jale_api_public', 'jale_job_email_sender', 'jale_job_visibility_drain', 'jale_job_digest',
+    'jale_job_ses_feedback', 'jale_job_retention', 'jale_posture', 'jale_whatsapp', 'jale_ai', 'jale_billing',
+    'jale_public_jobs', 'jale_matching', 'jale_admin_console'
+  ] LOOP
+    CONTINUE WHEN to_regrole(v_sig) IS NULL;
+    IF has_table_privilege(v_sig, 'public.organizations', 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER')
+       OR has_any_column_privilege(v_sig, 'public.organizations', 'SELECT, INSERT, UPDATE, REFERENCES')
+       OR has_table_privilege(v_sig, 'public.organization_invites', 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER')
+       OR has_any_column_privilege(v_sig, 'public.organization_invites', 'SELECT, INSERT, UPDATE, REFERENCES') THEN
+      RAISE EXCEPTION 'migration 118: login % holds a right on organizations or organization_invites', v_sig;
+    END IF;
+  END LOOP;
 
   -- Exactly the reviewed policy set on the new table.
   IF (SELECT array_agg(polname ORDER BY polname) FROM pg_policy WHERE polrelid = 'public.organization_members'::regclass)
@@ -578,6 +604,16 @@ BEGIN
     RAISE EXCEPTION 'migration 118: employer_ensure_organization drifted';
   END IF;
 
+  -- The replaced display-name definer keeps its owner and pinned search_path.
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_proc p JOIN pg_roles r ON r.oid = p.proowner
+     WHERE p.oid = to_regprocedure('public.employer_display_name(uuid)')
+       AND r.rolname = 'jale_admin' AND p.prosecdef
+       AND p.proconfig = ARRAY['search_path=public, pg_temp']::TEXT[]
+  ) THEN
+    RAISE EXCEPTION 'migration 118: employer_display_name drifted';
+  END IF;
+
   -- The actor columns and the two stamping triggers.
   IF NOT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'public.jobs'::regclass AND attname = 'created_by_user_id' AND NOT attisdropped)
      OR NOT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'public.job_conversation_messages'::regclass AND attname = 'sender_user_id' AND NOT attisdropped)
@@ -588,11 +624,28 @@ BEGIN
                        AND tgfoid = to_regprocedure('public.job_messages_stamp_sender()')) THEN
     RAISE EXCEPTION 'migration 118: an actor column or a stamping trigger is missing';
   END IF;
-  -- created_by_user_id is a history column: no foreign key.
+  -- job_messages_stamp_sender fires BEFORE INSERT OR UPDATE OF sender_user_id,
+  -- FOR EACH ROW (tgtype ROW 1 | BEFORE 2 | INSERT 4 | UPDATE 16 = 23).
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger t
+     WHERE t.tgrelid = 'public.job_conversation_messages'::regclass
+       AND t.tgname = 'job_messages_stamp_sender'
+       AND t.tgenabled = 'O'
+       AND t.tgtype = 23
+       AND cardinality(t.tgattr::int2[]) = 1
+       AND (SELECT a.attnum FROM pg_attribute a
+             WHERE a.attrelid = 'public.job_conversation_messages'::regclass
+               AND a.attname = 'sender_user_id') = ANY (t.tgattr::int2[])
+  ) THEN
+    RAISE EXCEPTION 'migration 118: job_messages_stamp_sender must fire BEFORE INSERT OR UPDATE OF sender_user_id FOR EACH ROW';
+  END IF;
+  -- created_by_user_id and sender_user_id are history columns: no foreign key.
   IF EXISTS (SELECT 1 FROM pg_constraint c
                JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
-              WHERE c.conrelid = 'public.jobs'::regclass AND c.contype = 'f' AND a.attname = 'created_by_user_id') THEN
-    RAISE EXCEPTION 'migration 118: jobs.created_by_user_id must have no foreign key';
+              WHERE c.contype = 'f'
+                AND ((c.conrelid = 'public.jobs'::regclass AND a.attname = 'created_by_user_id')
+                  OR (c.conrelid = 'public.job_conversation_messages'::regclass AND a.attname = 'sender_user_id'))) THEN
+    RAISE EXCEPTION 'migration 118: jobs.created_by_user_id and job_conversation_messages.sender_user_id must have no foreign key';
   END IF;
   -- Both trigger functions: jale_admin, invoker, pinned search_path, no PUBLIC execute.
   FOREACH v_sig IN ARRAY ARRAY['public.jobs_stamp_created_by()', 'public.job_messages_stamp_sender()'] LOOP

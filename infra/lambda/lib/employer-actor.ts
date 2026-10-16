@@ -6,8 +6,8 @@ import { setInternalUserRlsContext } from './db';
  *
  * Every employer login belongs to one company (organization_members,
  * migration 118). A foreman acts on their own jobs; the company's active
- * owner acts on every member's jobs (the database agrees: migration 119's
- * *_org_owner policies). Handlers scope SQL with
+ * owner acts on every member's jobs (migration 119 adds the matching
+ * *_org_owner policies so the database agrees). Handlers scope SQL with
  * `employer_id = ANY($n::uuid[])` and `scopeUserIds`, and create rows as
  * `userId`.
  *

@@ -14,6 +14,9 @@ import { errorMessage } from '../lib/http';
 
 const VALID_USER_TYPES = ['worker', 'employer'];
 
+// SQLSTATE undefined_function: employer_ensure_organization (migration 118) is not there yet.
+const UNDEFINED_FUNCTION = '42883';
+
 // Module-level clients — reused across warm Lambda invocations
 const cognitoClient = new CognitoIdentityProviderClient({});
 const sqsClient = new SQSClient({});
@@ -109,8 +112,25 @@ export const handler = async (
     // An employer login always belongs to a company. Same transaction as the
     // users row: both exist or neither does (the DLQ path below covers a
     // failure exactly as before). Idempotent, so a Cognito retry is safe.
+    //
+    // Deploy order: this code can reach a database where migration 118 is not
+    // applied yet. The SAVEPOINT lets that one case (42883 undefined_function)
+    // keep the users row; 119's catch-up back-fill creates the company later.
+    // Any other error still rolls back the whole transaction.
     if (userType === 'employer') {
-      await client.query('SELECT public.employer_ensure_organization($1) AS org', [companyName]);
+      await client.query('SAVEPOINT company_bootstrap');
+      try {
+        await client.query('SELECT public.employer_ensure_organization($1) AS org', [companyName]);
+        await client.query('RELEASE SAVEPOINT company_bootstrap');
+      } catch (err) {
+        if ((err as { code?: string } | null)?.code !== UNDEFINED_FUNCTION) throw err;
+        await client.query('ROLLBACK TO SAVEPOINT company_bootstrap');
+        console.error(
+          `[PostConfirm] CRITICAL: employer ${event.userName} has no company yet: `
+          + 'public.employer_ensure_organization is missing (migration 118 not applied). '
+          + 'The users row is kept; migration 119\'s catch-up back-fill will create the company.',
+        );
+      }
     }
     await client.query('COMMIT');
   } catch (err) {

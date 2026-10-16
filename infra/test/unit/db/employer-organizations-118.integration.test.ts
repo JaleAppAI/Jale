@@ -31,19 +31,23 @@ maybeDescribe('migration 118: employer organizations', () => {
     // Remove everything this suite committed, children first. Every person it
     // made has a cognito_sub starting org118-; their companies are found
     // through their memberships (organizations has no other link to them).
-    const ids = (await su.query<{ id: string }>(`SELECT id FROM users WHERE cognito_sub LIKE 'org118-%'`))
-      .rows.map((r) => r.id);
-    const orgs = (await su.query<{ organization_id: string }>(
-      `SELECT DISTINCT organization_id FROM organization_members WHERE user_id = ANY($1::uuid[])`, [ids],
-    )).rows.map((r) => r.organization_id);
-    // Conversations restrict their application; jobs cascade to applications
-    // and their status events; applications restrict their worker.
-    await su.query(`DELETE FROM job_conversations WHERE employer_id = ANY($1::uuid[]) OR worker_id = ANY($1::uuid[])`, [ids]);
-    await su.query(`DELETE FROM jobs WHERE employer_id = ANY($1::uuid[])`, [ids]);
-    await su.query(`DELETE FROM organization_members WHERE organization_id = ANY($1::uuid[])`, [orgs]);
-    await su.query(`DELETE FROM organizations WHERE id = ANY($1::uuid[])`, [orgs]);
-    await su.query(`DELETE FROM users WHERE id = ANY($1::uuid[])`, [ids]);
-    await su.end();
+    // su.end() runs even when a cleanup statement fails.
+    try {
+      const ids = (await su.query<{ id: string }>(`SELECT id FROM users WHERE cognito_sub LIKE 'org118-%'`))
+        .rows.map((r) => r.id);
+      const orgs = (await su.query<{ organization_id: string }>(
+        `SELECT DISTINCT organization_id FROM organization_members WHERE user_id = ANY($1::uuid[])`, [ids],
+      )).rows.map((r) => r.organization_id);
+      // Conversations restrict their application; jobs cascade to applications
+      // and their status events; applications restrict their worker.
+      await su.query(`DELETE FROM job_conversations WHERE employer_id = ANY($1::uuid[]) OR worker_id = ANY($1::uuid[])`, [ids]);
+      await su.query(`DELETE FROM jobs WHERE employer_id = ANY($1::uuid[])`, [ids]);
+      await su.query(`DELETE FROM organization_members WHERE organization_id = ANY($1::uuid[])`, [orgs]);
+      await su.query(`DELETE FROM organizations WHERE id = ANY($1::uuid[])`, [orgs]);
+      await su.query(`DELETE FROM users WHERE id = ANY($1::uuid[])`, [ids]);
+    } finally {
+      await su.end();
+    }
   });
 
   async function user(type: 'employer' | 'worker', name = 'Person'): Promise<Person> {
@@ -333,10 +337,18 @@ maybeDescribe('migration 118: employer organizations', () => {
         `INSERT INTO jobs (employer_id, title, location, job_type, status) VALUES ($1, 'T', 'Austin', 'full-time', 'active') RETURNING id`,
         [poster.id],
       )).rows[0].id;
-      // Simulate a job created before 118: the column is NULL.
-      await su.query(`ALTER TABLE jobs DISABLE TRIGGER jobs_stamp_created_by`);
-      await su.query(`UPDATE jobs SET created_by_user_id = NULL WHERE id = $1`, [job]);
-      await su.query(`ALTER TABLE jobs ENABLE TRIGGER jobs_stamp_created_by`);
+      // Simulate a job created before 118: the column is NULL. One
+      // transaction, so the trigger can never stay disabled on a shared bed.
+      await su.query('BEGIN');
+      try {
+        await su.query(`ALTER TABLE jobs DISABLE TRIGGER jobs_stamp_created_by`);
+        await su.query(`UPDATE jobs SET created_by_user_id = NULL WHERE id = $1`, [job]);
+        await su.query(`ALTER TABLE jobs ENABLE TRIGGER jobs_stamp_created_by`);
+        await su.query('COMMIT');
+      } catch (err) {
+        await su.query('ROLLBACK');
+        throw err;
+      }
 
       await su.query(`UPDATE jobs SET employer_id = $1 WHERE id = $2`, [next.id, job]);
       const after = (await su.query(`SELECT employer_id, created_by_user_id FROM jobs WHERE id = $1`, [job])).rows[0];
@@ -429,6 +441,52 @@ maybeDescribe('migration 118: employer organizations', () => {
           [conv, other.id],
         )).rows;
         expect(unset).toEqual([{ sender_user_id: null }]);
+      } finally {
+        await su.query('ROLLBACK');
+      }
+    });
+
+    it('an UPDATE never changes sender_user_id', async () => {
+      const employer = await user('employer');
+      const other = await user('employer');
+      const worker = await user('worker');
+      const job = (await su.query<{ id: string }>(
+        `INSERT INTO jobs (employer_id, title, location, job_type, status) VALUES ($1, 'T', 'Austin', 'full-time', 'active') RETURNING id`,
+        [employer.id],
+      )).rows[0].id;
+      const app = (await su.query<{ id: string }>(
+        `INSERT INTO job_applications (job_id, worker_id, status) VALUES ($1, $2, 'pending') RETURNING id`,
+        [job, worker.id],
+      )).rows[0].id;
+      const conv = (await su.query<{ id: string }>(
+        `INSERT INTO job_conversations (job_id, employer_id, worker_id, application_id) VALUES ($1, $2, $3, $4) RETURNING id`,
+        [job, employer.id, worker.id, app],
+      )).rows[0].id;
+
+      await su.query('BEGIN');
+      try {
+        await su.query(`SELECT set_config('app.current_internal_user_id', $1, true)`, [employer.id]);
+        const [employerMessage, workerMessage] = (await su.query<{ id: string }>(
+          `INSERT INTO job_conversation_messages (conversation_id, sender_type, direction, body, status)
+           VALUES ($1, 'employer', 'outbound', 'hi', 'queued'),
+                  ($1, 'worker', 'inbound', 'hello', 'received')
+           RETURNING id`,
+          [conv],
+        )).rows.map((r) => r.id);
+
+        // Even with another caller in the session, an UPDATE keeps the stamped value.
+        await su.query(`SELECT set_config('app.current_internal_user_id', $1, true)`, [other.id]);
+        const read = async (id: string) =>
+          (await su.query(`SELECT sender_user_id FROM job_conversation_messages WHERE id = $1`, [id])).rows[0].sender_user_id;
+        await su.query(`UPDATE job_conversation_messages SET sender_user_id = $1 WHERE id = $2`, [other.id, employerMessage]);
+        expect(await read(employerMessage)).toBe(employer.id);
+        await su.query(`UPDATE job_conversation_messages SET sender_user_id = NULL WHERE id = $1`, [employerMessage]);
+        expect(await read(employerMessage)).toBe(employer.id);
+        await su.query(`UPDATE job_conversation_messages SET sender_user_id = $1 WHERE id = $2`, [other.id, workerMessage]);
+        expect(await read(workerMessage)).toBeNull();
+        // An UPDATE of other columns leaves it alone too.
+        await su.query(`UPDATE job_conversation_messages SET body = 'edited' WHERE id = $1`, [employerMessage]);
+        expect(await read(employerMessage)).toBe(employer.id);
       } finally {
         await su.query('ROLLBACK');
       }

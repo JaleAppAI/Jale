@@ -98,7 +98,7 @@
       "arguments": "", "returns": "trigger",
       "execute": [],
       "created_by": "118",
-      "reason": "Trigger function stamping job_conversation_messages.sender_user_id from the session caller on employer messages; firing a trigger checks no EXECUTE right."
+      "reason": "Trigger function stamping job_conversation_messages.sender_user_id from the session caller on employer messages, and keeping it on UPDATE; firing a trigger checks no EXECUTE right."
     }
   },
   "table_additions": {

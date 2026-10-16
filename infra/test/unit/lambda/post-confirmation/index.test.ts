@@ -227,6 +227,67 @@ describe('Post-confirmation trigger Lambda', () => {
     expect(result).toBe(event); // sign-up is never blocked
   });
 
+  it('wraps the company call in a savepoint and releases it on success', async () => {
+    mockQuery.mockResolvedValue({ rows: [{ org: 'org-1' }] });
+    await handler(createEvent('employer'));
+
+    const sqls = mockQuery.mock.calls.map(([sql]) => String(sql));
+    const savepointAt = sqls.indexOf('SAVEPOINT company_bootstrap');
+    const ensureAt = sqls.findIndex((s) => s.includes('public.employer_ensure_organization($1)'));
+    const releaseAt = sqls.indexOf('RELEASE SAVEPOINT company_bootstrap');
+    expect(savepointAt).toBeGreaterThan(sqls.findIndex((s) => s.includes('INSERT INTO users')));
+    expect(ensureAt).toBeGreaterThan(savepointAt);
+    expect(releaseAt).toBeGreaterThan(ensureAt);
+    expect(sqls.lastIndexOf('COMMIT')).toBeGreaterThan(releaseAt);
+    expect(sqls).not.toContain('ROLLBACK TO SAVEPOINT company_bootstrap');
+  });
+
+  it('keeps the users row when migration 118 is not applied yet (42883), logs loudly, and sends nothing to the DLQ', async () => {
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    mockQuery.mockImplementation((sql: string) => {
+      if (sql.includes('employer_ensure_organization')) {
+        return Promise.reject(Object.assign(new Error('function public.employer_ensure_organization(text) does not exist'), { code: '42883' }));
+      }
+      return Promise.resolve({ rows: [] });
+    });
+    const event = createEvent('employer');
+    const result = await handler(event);
+
+    const sqls = mockQuery.mock.calls.map(([sql]) => String(sql));
+    const ensureAt = sqls.findIndex((s) => s.includes('public.employer_ensure_organization($1)'));
+    const rollbackToAt = sqls.indexOf('ROLLBACK TO SAVEPOINT company_bootstrap');
+    expect(rollbackToAt).toBeGreaterThan(ensureAt);
+    expect(sqls.lastIndexOf('COMMIT')).toBeGreaterThan(rollbackToAt);
+    expect(sqls).not.toContain('ROLLBACK');
+    expect(sqls).not.toContain('RELEASE SAVEPOINT company_bootstrap');
+    expect(SendMessageCommand).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringMatching(/no company yet.*119/s));
+    expect(mockRelease).toHaveBeenCalled();
+    expect(result).toBe(event);
+    errorSpy.mockRestore();
+  });
+
+  it('still rolls back everything and uses the DLQ for any other SQLSTATE from the company call', async () => {
+    mockQuery.mockImplementation((sql: string) => {
+      if (sql.includes('employer_ensure_organization')) {
+        return Promise.reject(Object.assign(new Error('permission denied'), { code: '42501' }));
+      }
+      return Promise.resolve({ rows: [] });
+    });
+    const event = createEvent('employer');
+    const result = await handler(event);
+
+    const sqls = mockQuery.mock.calls.map(([sql]) => String(sql));
+    expect(sqls).toContain('ROLLBACK');
+    expect(sqls).not.toContain('ROLLBACK TO SAVEPOINT company_bootstrap');
+    expect(sqls).not.toContain('COMMIT');
+    expect(SendMessageCommand).toHaveBeenCalledWith(expect.objectContaining({
+      QueueUrl: 'https://sqs.dlq.url',
+      MessageBody: expect.stringContaining('permission denied'),
+    }));
+    expect(result).toBe(event);
+  });
+
   describe('change context', () => {
     it('states an anonymous actor, with no id, before the users row is created', async () => {
       mockCognitoSend.mockResolvedValue({});

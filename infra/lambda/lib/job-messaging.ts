@@ -515,10 +515,10 @@ export async function queueConversationMessageFromEmployer(
   // reply. On the v1 paths the original stamping stands.
   const message = await client.query<{ id: string }>(
     `INSERT INTO job_conversation_messages
-       (conversation_id, sender_type, direction, body, status, sender_user_id)
-     VALUES ($1, 'employer', 'outbound', $2, $3, $4)
+       (conversation_id, sender_type, direction, body, status)
+     VALUES ($1, 'employer', 'outbound', $2, $3)
      RETURNING id`,
-    [conversation.id, body, workerOnboarding || !canSendFreeform ? 'waiting_worker_reply' : 'queued', employerId],
+    [conversation.id, body, workerOnboarding || !canSendFreeform ? 'waiting_worker_reply' : 'queued'],
   );
   const messageId = message.rows[0].id;
 
