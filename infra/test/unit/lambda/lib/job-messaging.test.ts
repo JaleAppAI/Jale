@@ -695,6 +695,18 @@ describe('queueConversationMessageFromEmployer: gate and languages through the d
     expect(indexOf(calls, /employer_worker_delivery_context/)).toBeLessThan(indexOf(calls, /INSERT INTO job_conversation_messages/));
   });
 
+  it('leaves sender_user_id to the database', async () => {
+    // Migration 118's trigger job_messages_stamp_sender stamps sender_user_id
+    // from app.current_internal_user_id; the INSERT must not name it.
+    const { client: c, calls } = employerClient({ lifecycle: 'ready' });
+    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'hola');
+    const insert = calls.find((call) => /INSERT INTO job_conversation_messages/.test(call.sql));
+    expect(insert).toBeDefined();
+    expect(insert!.sql).toMatch(/\(conversation_id, sender_type, direction, body, status\)/);
+    expect(insert!.sql).not.toMatch(/sender_user_id/);
+    expect(insert!.params).toHaveLength(3);
+  });
+
   it('an English worker outside the reply window gets the English resume template and fallback copy', async () => {
     const { client: c, calls } = employerClient({ lifecycle: 'ready', whatsappLanguage: 'en' });
     await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'hello');

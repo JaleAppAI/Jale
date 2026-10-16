@@ -80,14 +80,31 @@ async function cleanupSweepRows(scene: SweepScene): Promise<void> {
       [scene.wageAreas.map((area) => area.cityKey)],
     );
   }
-  // Accounts a handler created: no rows of their own beyond cascades.
+  // Accounts a handler created: no rows of their own beyond cascades, except
+  // the company an employer sign-up creates (migration 118). Deleting the user
+  // cascades the membership; the organization is removed once no member is
+  // left in it. Its ids are read BEFORE the users delete, while the
+  // membership rows still name them.
   if (scene.createdSubs.length > 0) {
     await su.query(
       `DELETE FROM legal_consent_log
         WHERE user_id IN (SELECT id FROM users WHERE cognito_sub = ANY($1::text[]))`,
       [scene.createdSubs],
     );
+    const createdOrganizations = await su.query<{ organization_id: string }>(
+      `SELECT m.organization_id
+         FROM organization_members m
+         JOIN users u ON u.id = m.user_id
+        WHERE u.cognito_sub = ANY($1::text[])`,
+      [scene.createdSubs],
+    );
     await su.query(`DELETE FROM users WHERE cognito_sub = ANY($1::text[])`, [scene.createdSubs]);
+    await su.query(
+      `DELETE FROM organizations o
+        WHERE o.id = ANY($1::uuid[])
+          AND NOT EXISTS (SELECT 1 FROM organization_members m WHERE m.organization_id = o.id)`,
+      [createdOrganizations.rows.map((row) => row.organization_id)],
+    );
   }
 }
 

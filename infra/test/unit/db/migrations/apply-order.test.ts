@@ -124,6 +124,7 @@ const expectedBaselineMigrations = [
   '114b_access_manifest_alignment.sql',
   '115_admin_ops_health.sql',
   '117_admin_queues.sql',
+  '118_employer_organizations.sql',
 ];
 
 function migrationFiles(): string[] {
