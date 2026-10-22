@@ -1788,6 +1788,8 @@
       "upload": "Upload",
       "replace": "Replace",
       "delete": "Delete",
+      "delete_cancel": "Cancel",
+      "delete_confirm": "Delete this document?",
       "view": "View"
     },
     "edit": {

@@ -1788,6 +1788,8 @@
       "upload": "Subir",
       "replace": "Reemplazar",
       "delete": "Eliminar",
+      "delete_cancel": "Cancelar",
+      "delete_confirm": "¿Eliminar este documento?",
       "view": "Ver"
     },
     "edit": {

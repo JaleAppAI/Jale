@@ -1,5 +1,5 @@
 'use client';
-import { useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -25,6 +25,16 @@ import type { DocType, WorkerVaultDoc } from '@/lib/api/worker';
  * Badge flipping to "Uploaded" (plus an ambient toast) on success, and a
  * kind-classified `InlineFeedback` on failure. Nothing here ever renders
  * `err.message` -- see `useErrorMessage`.
+ *
+ * The actions say what they do in words at every width: on a phone an icon
+ * alone left the worker guessing which one deletes. Below `sm` they sit on
+ * their own line under the document, so the labels never squeeze the name.
+ *
+ * DELETE ASKS FIRST, IN PLACE. The first press swaps the actions for the
+ * question and a Delete / Cancel pair inside this slot -- no dialog, so
+ * nothing stacks over the page and the worker keeps their place in the list.
+ * Focus goes to Cancel (the safe choice) while it is open, and back to the
+ * button that opened it when it closes.
  */
 export function DocumentSlot(props: {
   token: string;
@@ -39,7 +49,33 @@ export function DocumentSlot(props: {
   const fileRef = useRef<HTMLInputElement>(null);
   const [busyAction, setBusyAction] = useState<'upload' | 'delete' | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const confirmLabelId = useId();
+  const uploadButtonRef = useRef<HTMLButtonElement>(null);
+  const deleteButtonRef = useRef<HTMLButtonElement>(null);
+  const cancelButtonRef = useRef<HTMLButtonElement>(null);
+  // Where focus goes once the confirm opens or closes. Set by the handler that
+  // changes it, applied after the commit, when the target button exists.
+  const pendingFocusRef = useRef<'upload' | 'delete' | 'cancel' | null>(null);
   const busy = busyAction !== null;
+
+  useEffect(() => {
+    const target = pendingFocusRef.current;
+    if (!target || busy) return;
+    pendingFocusRef.current = null;
+    const ref = target === 'cancel' ? cancelButtonRef : target === 'delete' ? deleteButtonRef : uploadButtonRef;
+    ref.current?.focus();
+  }, [confirming, busy]);
+
+  function askToDelete() {
+    pendingFocusRef.current = 'cancel';
+    setConfirming(true);
+  }
+
+  function cancelDelete() {
+    pendingFocusRef.current = 'delete';
+    setConfirming(false);
+  }
   // A report opened mid-upload, or after one failed, is about uploads.
   useReportCategoryHint(busyAction === 'upload' || error ? 'uploads' : null);
 
@@ -68,18 +104,23 @@ export function DocumentSlot(props: {
     try {
       await deleteVaultDocument(props.token, props.doc_type);
       toast.success(t('delete_success'));
+      // The Delete button goes with the document; the slot's own upload
+      // button is what is left to focus.
+      pendingFocusRef.current = 'upload';
       props.onChange();
     } catch (e) {
       // Same as the upload path: no raw code, no untranslated token.
       setError(errorMessage(e));
+      pendingFocusRef.current = 'delete';
     } finally {
+      setConfirming(false);
       setBusyAction(null);
     }
   }
 
   return (
     <div className="p-4">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
           <p className="text-sm font-semibold text-[var(--jale-ink)]">{t(`types.${props.doc_type}`)}</p>
 
@@ -105,54 +146,77 @@ export function DocumentSlot(props: {
           )}
         </div>
 
-        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-          {props.existing && (
-            <a href={props.existing.url} target="_blank" rel="noreferrer" aria-label={t('view')} title={t('view')} className="inline-flex h-9 w-9 items-center justify-center rounded-full text-[var(--jale-blue-700)] hover:bg-[var(--jale-paper-2)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)] sm:h-auto sm:w-auto sm:gap-1.5 sm:rounded sm:px-2 sm:text-xs sm:font-semibold sm:underline">
-              <Icon name="eye" />
-              <span className="sr-only sm:not-sr-only">{t('view')}</span>
-            </a>
-          )}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => fileRef.current?.click()}
-            disabled={busy}
-            // Not Button's `loading`: that prop stacks `Spinner + children` in a
-            // grid cell the button does not re-measure, so on this icon+label
-            // button the loading row overflows and the label wraps under the
-            // icon. Swapping the glyph keeps the width identical, and
-            // `aria-busy` (which Button's spread lets us set directly) still
-            // announces the pending state.
-            aria-busy={busyAction === 'upload' || undefined}
-            aria-label={props.existing ? t('replace') : t('upload')}
-            title={props.existing ? t('replace') : t('upload')}
-            // Override Button's default sizeClasses.sm padding (px-4) so the button
-            // stays compact when icon-only (label hidden below sm).
-            className="!px-2 sm:!px-3"
+        {confirming && props.existing ? (
+          <div
+            role="group"
+            aria-labelledby={confirmLabelId}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape' && !busy) cancelDelete();
+            }}
+            className="flex flex-wrap items-center gap-2 sm:justify-end"
           >
-            {busyAction === 'upload' ? <Spinner size="md" /> : <Icon name="upload" />}
-            <span className="sr-only sm:not-sr-only">{props.existing ? t('replace') : t('upload')}</span>
-          </Button>
-          {props.existing && (
+            <p id={confirmLabelId} className="w-full text-sm font-semibold text-[var(--jale-ink)] sm:w-auto">
+              {t('delete_confirm')}
+            </p>
             <Button
-              variant="outline"
+              variant="error"
               size="sm"
               onClick={handleDelete}
               disabled={busy}
-              // Same reason as the upload button above.
               aria-busy={busyAction === 'delete' || undefined}
-              aria-label={t('delete')}
-              title={t('delete')}
-              // Override Button's default sizeClasses.sm padding (px-4) so the button
-              // stays compact when icon-only (label hidden below sm).
-              className="!px-2 sm:!px-3"
             >
               {busyAction === 'delete' ? <Spinner size="md" /> : <Icon name="trash" />}
-              <span className="sr-only sm:not-sr-only">{t('delete')}</span>
+              {t('delete')}
             </Button>
-          )}
-          <input ref={fileRef} type="file" accept="application/pdf,image/jpeg,image/png" hidden onChange={handleFile} />
-        </div>
+            <Button ref={cancelButtonRef} variant="outline" size="sm" onClick={cancelDelete} disabled={busy}>
+              {t('delete_cancel')}
+            </Button>
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2 sm:shrink-0 sm:justify-end">
+            {props.existing && (
+              <a
+                href={props.existing.url}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex h-9 items-center gap-1.5 rounded px-2 text-xs font-semibold text-[var(--jale-blue-700)] underline hover:bg-[var(--jale-paper-2)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
+              >
+                <Icon name="eye" />
+                {t('view')}
+              </a>
+            )}
+            <Button
+              ref={uploadButtonRef}
+              variant="outline"
+              size="sm"
+              onClick={() => fileRef.current?.click()}
+              disabled={busy}
+              // Not Button's `loading`: that prop stacks `Spinner + children` in a
+              // grid cell the button does not re-measure, so on this icon+label
+              // button the loading row overflows and the label wraps under the
+              // icon. Swapping the glyph keeps the width identical, and
+              // `aria-busy` (which Button's spread lets us set directly) still
+              // announces the pending state.
+              aria-busy={busyAction === 'upload' || undefined}
+            >
+              {busyAction === 'upload' ? <Spinner size="md" /> : <Icon name="upload" />}
+              {props.existing ? t('replace') : t('upload')}
+            </Button>
+            {props.existing && (
+              <Button
+                ref={deleteButtonRef}
+                variant="outline"
+                size="sm"
+                onClick={askToDelete}
+                disabled={busy}
+              >
+                <Icon name="trash" />
+                {t('delete')}
+              </Button>
+            )}
+          </div>
+        )}
+        <input ref={fileRef} type="file" accept="application/pdf,image/jpeg,image/png" hidden onChange={handleFile} />
       </div>
 
       {/* Full-width under the row: a failure here belongs to THIS slot, and at
