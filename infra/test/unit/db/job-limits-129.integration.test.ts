@@ -12,10 +12,6 @@
  *     the 16th with job_limit_reached, and creates a Pro employer's 50th
  *     active job and refuses the 51st.
  *
- * It reads the free plan as 129 left it, so SUITES runs it before
- * entitlement-concurrency.integration.test.ts, which writes its own
- * entitlements fixture to that row.
- *
  * Fixtures and every read that decides an assertion go through the
  * superuser URL; the handler runs on jale_api (login-pool.ts).
  */

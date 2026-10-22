@@ -119,8 +119,6 @@ SUITES=(
   test/unit/db/application-stage-notify.integration.test.ts
   test/unit/db/application-web-completion.integration.test.ts
   test/unit/db/billing-rls.integration.test.ts
-  #    129's suite reads the free plan as 129 left it, so it runs before
-  #    entitlement-concurrency, which writes its own fixture to that row.
   test/unit/db/job-limits-129.integration.test.ts
   test/unit/db/entitlement-concurrency.integration.test.ts
   test/unit/db/billing-job-limit.integration.test.ts
