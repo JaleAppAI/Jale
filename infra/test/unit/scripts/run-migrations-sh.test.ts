@@ -972,7 +972,7 @@ describe('run-migrations.sh: engine audit modes and the ops-command output recor
     expect(exitAt).toBeLessThan(script.indexOf('run_on_bastion "$WORKDIR/rotate.sh"'));
     // After the posture control.
     expect(run).toBeGreaterThan(script.indexOf('run_on_bastion "$WORKDIR/posture.sh" "posture control" true'));
-    expect(script).toContain('--prepare-logins, --enable-pgaudit, --disable-master-audit, --audit-status, --list-holds, --release-hold and --redact-and-release are separate runs');
+    expect(script).toContain('--prepare-logins, --enable-pgaudit, --disable-master-audit, --audit-status, --list-holds, --release-hold, --redact-and-release and --report are separate runs');
     const { lib, enable, reset } = auditPayloads();
     for (const body of [lib, enable, reset]) {
       expect(body).not.toMatch(/secretsmanager|WITH PASSWORD|schema_migrations/);
@@ -1285,7 +1285,18 @@ if script_file is not None or not cmds:
         sql = sql.replace(":'%s'" % k, "'" + v.replace("'", "''") + "'")
 
 out = []
-if "server_version_num" in sql:
+if "BEGIN READ ONLY;" in sql:
+    # --report: the statements as psql received them, the session options and the login.
+    with open(STATE / "report.log", "a") as f:
+        f.write(json.dumps({"sql": sql, "argv": ARGV, "user": user, "pgoptions": os.environ.get("PGOPTIONS"), "vars": variables}) + "\n")
+    if os.environ.get("FAKE_REPORT_FAIL"):
+        # psql prints the results of the statements before the one that fails.
+        sys.stdout.write(" item | queued\n PARTIAL-RESULT\n")
+        sys.stderr.write("psql:<stdin>:3: ERROR:  25006\n" if variables.get("VERBOSITY") == "sqlstate" else
+                         "psql:<stdin>:3: ERROR:  cannot execute INSERT in a read-only transaction\nLINE 1: INSERT INTO FAKE-VALUE-MUST-NOT-PRINT\n")
+        sys.exit(3)
+    out.extend([" item | queued", "------+--------", " f19  |      0", "(1 row)", ""])
+elif "server_version_num" in sql:
     out.append("%s|%s" % (os.environ["FAKE_MASTER_RLS"], os.environ.get("FAKE_SERVER_VERSION_NUM", "160008")))
 elif "jale_ops.audit_export_status()" in sql or "jale_ops.audit_event_counts(" in sql or "jale_audit.list_holds()" in sql \
         or "jale_audit.release_hold(" in sql or "jale_audit.redact_and_release(" in sql or "AT TIME ZONE 'UTC'" in sql:
@@ -1737,7 +1748,10 @@ describe('run-migrations.sh against a fake AWS CLI and a fake ops host', () => {
         [['--disable-master-audit', '--dry-run']],
         [['--audit-status']],
         [['--list-holds']],
+        [['--report', 'report.sql']],
       ])('refuses every form without it, before any AWS call (args: %j)', (args) => {
+        // A report file that passes its own check, so the baseline is what stops the run.
+        fs.writeFileSync(path.join(h.repo, 'report.sql'), 'SELECT 1;\n');
         const r = runScript(h, args, { [POSTURE_BASELINE_VARIABLE]: null });
         expect(r.status).toBe(1);
         expect(awsCalls(h)).toEqual([]);
@@ -2860,6 +2874,255 @@ describe('run-migrations.sh: the master\'s audit operations, against the fakes',
     expect(r.status).toBe(2);
     expect(r.stderr).toContain(why);
     expect(awsCalls(h)).toEqual([]);
+  });
+});
+
+// ===========================================================================
+// --report FILE: a read-only report, run as the master login. The file is
+// checked here before anything is sent (SELECT, WITH, VALUES and TABLE
+// statements only, comments only on lines of their own), sent without its
+// comments, and run in one read-only transaction that is rolled back, in a
+// session whose default is read-only. The output is the results only.
+// ===========================================================================
+
+/** The report file the harness tests write, relative to the run's working directory. */
+const REPORT_FILE = 'report.sql';
+
+function writeReport(h: Harness, text: string): void {
+  fs.writeFileSync(path.join(h.repo, REPORT_FILE), text);
+}
+
+/** The statements a report payload carries, decoded the way the ops host decodes them. */
+function reportPayloadSql(payload: string): string {
+  const m = payload.match(/^REPORT_SQL_B64='([A-Za-z0-9+/=]+)'$/m);
+  if (!m) throw new Error('no REPORT_SQL_B64 in the payload');
+  return zlib.gunzipSync(Buffer.from(m[1], 'base64')).toString('utf8');
+}
+
+describe('run-migrations.sh: the read-only report (static)', () => {
+  it('documents --report FILE, and --help prints it', () => {
+    const script = readScript();
+    expect(script).toMatch(/^#\s+bash scripts\/run-migrations\.sh --report FILE$/m);
+    expect(script).toMatch(/^#\s+--report FILE\b/m);
+    const help = execFileSync('bash', [scriptPath, '--help'], { encoding: 'utf8' });
+    expect(help).toContain('--report FILE');
+    expect(help).not.toContain('Why this script is shaped');
+  });
+
+  it('runs the statements in one read-only transaction that is rolled back, in a read-only session, stopping at the first error', () => {
+    const payload = heredocBody(readScript(), 'REPORT_OPS');
+    expect(payload).toContain("printf '%s\\n' 'BEGIN READ ONLY;'");
+    expect(payload).toContain("printf '%s\\n' 'ROLLBACK;'");
+    const calls = payload.split('\n').filter((l) => /"\$\{PG\[@\]\}"/.test(l));
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain(`PGOPTIONS='-c default_transaction_read_only=on' "\${PG[@]}" -X -q -v ON_ERROR_STOP=1 -v VERBOSITY=sqlstate -f -`);
+    // psql's own transaction wrapper would send its BEGIN first, and READ ONLY would not apply.
+    expect(payload).not.toMatch(/(^|\s)(-1|--single-transaction)(\s|$)/m);
+    // The checked statements arrive encoded and checksum-verified, as a migration does.
+    expect(payload).toContain('base64 -d | gunzip > "$REPORT_SQL"');
+    expect(payload).toContain('sha256sum "$REPORT_SQL"');
+  });
+
+  it('prints the results only once the transaction ended without an error, and reports a failure by its code', () => {
+    const payload = heredocBody(readScript(), 'REPORT_OPS');
+    expect(payload).not.toMatch(/^\s*echo\b/m);
+    const run = payload.indexOf('>"$AUDIT_DIR/report.out" 2>"$ERR"');
+    const failed = payload.indexOf('|| report_failed', run);
+    const printed = payload.indexOf('cat "$AUDIT_DIR/report.out"');
+    expect(run).toBeGreaterThan(-1);
+    expect(failed).toBeGreaterThan(run);
+    expect(printed).toBeGreaterThan(failed);
+    const sensitive = /\$\{?(SECRET_JSON|PGPASSWORD|DB_HOST|DB_PORT|DB_NAME|DB_USER|ERR|REPORT_SQL_B64)\b/;
+    for (const line of payload.split('\n').filter((l) => /\b(say|warn|fail)\s/.test(l))) expect(line).not.toMatch(sensitive);
+    expect(payload).not.toMatch(/secretsmanager|WITH PASSWORD|schema_migrations|ALTER ROLE/);
+  });
+
+  it('checks the file before the posture baseline, so a refused file sends nothing', () => {
+    const script = readScript();
+    const check = script.indexOf('check_report_file "$REPORT_FILE"');
+    const baseline = script.search(new RegExp(`^if \\[\\[ "\\$\\{${POSTURE_BASELINE_VARIABLE}:-\\}" != "t"`, 'm'));
+    expect(check).toBeGreaterThan(-1);
+    expect(baseline).toBeGreaterThan(check);
+  });
+});
+
+describe('run-migrations.sh --report, against the fakes', () => {
+  jest.setTimeout(240_000);
+  let h: Harness;
+  beforeEach(() => {
+    h = makeHarness();
+  });
+  afterEach(() => {
+    fs.rmSync(h.dir, { recursive: true, force: true });
+  });
+
+  function reportRuns(): Array<{ sql: string; argv: string[]; user: string; pgoptions: string | null; vars: Record<string, string> }> {
+    return readLines(h, 'report.log').map((l) => JSON.parse(l));
+  }
+
+  const ACCEPTED = [
+    '-- REPORT-COMMENT-ONE: what the counts are for',
+    "SELECT 'f19' AS item, count(*) AS queued",
+    '  FROM report_fixture_table',
+    " WHERE status IN ('pending', 'send_unknown');",
+    '',
+    '    -- REPORT-COMMENT-TWO, indented: expected to return 0 rows',
+    'WITH recent AS (',
+    "  SELECT id FROM report_fixture_table WHERE created_at > now() - interval '1 day'",
+    ')',
+    'SELECT count(*) AS recent FROM recent;',
+    'values (1), (2);',
+    'TABLE report_fixture_view;',
+    '(SELECT 1 AS one);',
+    '',
+  ].join('\n');
+  /** What is sent: the file, its comment lines left empty. */
+  const SENT = ACCEPTED.split('\n').map((l) => (/^\s*--/.test(l) ? '' : l)).join('\n');
+
+  it('sends the statements without their comments, runs them read-only and rolls back, and prints the results only', () => {
+    writeReport(h, ACCEPTED);
+    const ledgerBefore = fs.readFileSync(path.join(h.state, 'ledger.txt'), 'utf8');
+    const r = runScript(h, ['--report', REPORT_FILE]);
+    expect(r.stderr).toBe('');
+    expect(r.status).toBe(0);
+    expect(readLines(h, 'ssm-comments.log')).toEqual(['bastion readiness', 'posture control', 'read-only report']);
+
+    // The payload: the read-only wrapper and session setting, and the checked statements, comments gone.
+    const payload = fs.readFileSync(path.join(h.state, 'ssm', '3.sh'), 'utf8');
+    expect(payload).toContain('BEGIN READ ONLY;');
+    expect(payload).toContain('ROLLBACK;');
+    expect(payload).toContain('default_transaction_read_only=on');
+    expect(payload).not.toContain('REPORT-COMMENT');
+    const sent = reportPayloadSql(payload);
+    expect(sent).toBe(SENT);
+    expect(sent).not.toContain('REPORT-COMMENT');
+    expect(sent).not.toContain('--');
+
+    // What psql received, and how.
+    const runs = reportRuns();
+    expect(runs).toHaveLength(1);
+    expect(runs[0].sql).toBe(`BEGIN READ ONLY;\n${SENT}ROLLBACK;\n`);
+    expect(runs[0].pgoptions).toBe('-c default_transaction_read_only=on');
+    expect(runs[0].user).toBe('jale_admin');
+    expect(runs[0].argv).toEqual(expect.arrayContaining(['-X', '-q', '-f', '-']));
+    expect(runs[0].argv).not.toContain('-1');
+    expect(runs[0].argv).not.toContain('--single-transaction');
+    expect(runs[0].vars).toMatchObject({ ON_ERROR_STOP: '1', VERBOSITY: 'sqlstate' });
+
+    // Nothing is written anywhere: no secret is put, updated or rotated, no
+    // password is set, the ledger and the logins are as they were, and the
+    // report's payload carries no migration, ledger or password statement.
+    expect(awsCalls(h).filter((argv) => argv[0] === 'secretsmanager' && !['get-secret-value', 'describe-secret'].includes(argv[1])))
+      .toEqual([]);
+    for (const [id, value] of Object.entries(SEEDED_SECRETS)) expect(readSecret(h, id)).toEqual(value);
+    expect(alters(h)).toEqual([]);
+    expect(fs.readFileSync(path.join(h.state, 'ledger.txt'), 'utf8')).toBe(ledgerBefore);
+    expect(fs.readdirSync(path.join(h.state, 'roles')).filter((f) => !f.endsWith('.attrs'))).toEqual([]);
+    expect(payload).not.toMatch(/schema_migrations|ALTER ROLE|WITH PASSWORD|put-secret-value|jale-mig\.sql/);
+
+    // The results reach the operator; the statements and the comments do not.
+    expect(r.stdout).toContain(' item | queued\n------+--------\n f19  |      0\n(1 row)');
+    expect(sayLines(r)).toContain('read-only report: complete; its transaction was rolled back');
+    const printed = r.stdout + r.stderr;
+    for (const text of ['report_fixture', 'REPORT-COMMENT', 'BEGIN READ ONLY', "interval '1 day'"]) expect(printed).not.toContain(text);
+    expect(outputConfigs(h)).toHaveLength(3);
+    for (const c of outputConfigs(h)) expect(c).toEqual({ CloudWatchOutputEnabled: true, CloudWatchLogGroupName: OPS_COMMAND_LOG_GROUP });
+    expectNoAuditOutputLeaks(h, r);
+  });
+
+  it('reports a failed report by its code only, and prints none of its results', () => {
+    writeReport(h, ACCEPTED);
+    const r = runScript(h, ['--report', REPORT_FILE], { FAKE_REPORT_FAIL: '1' });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("!! bastion command 'read-only report' ended: Failed");
+    expect(r.stderr).toContain('!! the report stopped (25006): the read-only transaction refused a statement; nothing was changed');
+    const printed = r.stdout + r.stderr;
+    expect(printed).not.toContain('PARTIAL-RESULT');
+    expect(printed).not.toContain('report_fixture');
+    expectNoAuditOutputLeaks(h, r);
+  });
+
+  it('stops at a changed posture before the report is sent', () => {
+    writeReport(h, ACCEPTED);
+    const r = runScript(h, ['--report', REPORT_FILE], { FAKE_MASTER_RLS: otherReading(HARNESS_POSTURE) });
+    expect(r.status).toBe(1);
+    expect(readLines(h, 'ssm-comments.log')).toEqual(['bastion readiness', 'posture control']);
+    expect(reportRuns()).toEqual([]);
+  });
+
+  it.each([
+    ['a backslash (a psql command)', 'SELECT 1;\n\\copy (SELECT 1) TO report_fixture.csv\n', 'line 2 holds a backslash; psql commands are refused'],
+    ['a backslash inside a string', "SELECT 'report_fixture\\n';\n", 'line 1 holds a backslash'],
+    ['transaction control', 'BEGIN;\nSELECT 1 FROM report_fixture_table;\n',
+      'the statement on line 1 starts with BEGIN; transaction control and session statements are refused'],
+    ['a session statement', 'SELECT 1;\n\nSET search_path = report_fixture;\n',
+      'the statement on line 3 starts with SET; transaction control and session statements are refused'],
+    ['a schema change at statement start', 'SELECT 1;\nDROP TABLE report_fixture_table;\n',
+      'the statement on line 2 starts with DROP; data and schema changes are refused'],
+    ['a data change at statement start', 'TRUNCATE report_fixture_table;\n',
+      'the statement on line 1 starts with TRUNCATE; data and schema changes are refused'],
+    ['an INSERT', 'INSERT INTO report_fixture_table VALUES (1);\n', 'line 1 holds INSERT; a report only reads'],
+    ['a data-modifying WITH', 'WITH gone AS (\n  delete FROM report_fixture_table RETURNING id\n)\nSELECT count(*) FROM gone;\n',
+      'line 2 holds DELETE; a report only reads'],
+    ['SELECT INTO', 'SELECT * INTO report_fixture_copy FROM report_fixture_table;\n', 'line 1 holds INTO; a report only reads'],
+    ['a row lock', 'SELECT id FROM report_fixture_table FOR UPDATE;\n', 'line 1 holds UPDATE; a report only reads'],
+    ['another statement', 'EXPLAIN SELECT 1 FROM report_fixture_table;\n',
+      'the statement on line 1 does not start with SELECT, WITH, VALUES or TABLE'],
+    ['a comment after a statement', 'SELECT 1 FROM report_fixture_table; -- note\n',
+      'line 1 holds a comment that is not on a line of its own'],
+    ['a block comment', '/* note */\nSELECT 1 FROM report_fixture_table;\n', 'line 1 holds a comment that is not on a line of its own'],
+    ['a comment marker inside a string', "SELECT '--' AS report_fixture; DELETE FROM report_fixture_table;\n",
+      'line 1 holds a comment that is not on a line of its own'],
+    ['a last statement without a semicolon', 'SELECT 1 FROM report_fixture_table;\nSELECT 2\n',
+      'the last statement does not end with a semicolon'],
+    ['comments only', '-- report_fixture: nothing to run\n', 'the file holds no statement'],
+    ['an empty file', '', 'the file is empty'],
+  ])('refuses %s before any AWS call, naming the rule and not the text', (_label, text, why) => {
+    writeReport(h, text);
+    const r = runScript(h, ['--report', REPORT_FILE]);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain(`!! --report: ${why}`);
+    expect(r.stderr).not.toContain('report_fixture');
+    expect(awsCalls(h)).toEqual([]);
+    expect(readLines(h, 'ssm-comments.log')).toEqual([]);
+  });
+
+  it('refuses a file that does not exist before any AWS call', () => {
+    const r = runScript(h, ['--report', 'no-such-report.sql']);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('!! --report: the file does not exist or cannot be read');
+    expect(awsCalls(h)).toEqual([]);
+  });
+
+  describe('argument rules', () => {
+    beforeEach(() => {
+      writeReport(h, 'SELECT 1;\n');
+    });
+
+    it.each([
+      [['--report', REPORT_FILE, '--prepare-logins'], 'are separate runs'],
+      [['--report', REPORT_FILE, '--enable-pgaudit'], 'are separate runs'],
+      [['--report', REPORT_FILE, '--disable-master-audit'], 'are separate runs'],
+      [['--report', REPORT_FILE, '--audit-status'], 'are separate runs'],
+      [['--report', REPORT_FILE, '--list-holds'], 'are separate runs'],
+      [['--report', REPORT_FILE, '--release-hold', 'events', '1'], 'are separate runs'],
+      [['--report', REPORT_FILE, '--redact-and-release', '1'], 'are separate runs'],
+      [['--report', REPORT_FILE, '--report', REPORT_FILE], '--report may be given once'],
+      [['--report', REPORT_FILE, '--rotate-secrets'], 'apply no migrations and change no password'],
+      [['--report', REPORT_FILE, '--baseline-through', '001_initial_schema.sql'], 'apply no migrations and change no password'],
+      [['--report', REPORT_FILE, '--force-replay'], 'apply no migrations and change no password'],
+      [['--report', REPORT_FILE, '--skip-secrets'], 'apply no migrations and change no password'],
+      [['--report', REPORT_FILE, '--only', 'jale_api'], '--only needs --prepare-logins'],
+      [['--report', REPORT_FILE, '--since', '2026-10-01T00:00:00Z'], '--since needs --audit-status'],
+      [['--report', REPORT_FILE, '--confirm-cutover-verified'], '--confirm-cutover-verified needs --enable-pgaudit'],
+      [['--report', REPORT_FILE, '--dry-run'], '--dry-run does not apply to --audit-status, --list-holds, --report,'],
+      [['--report'], '--report needs a SQL file'],
+    ])('%j is refused before any AWS call', (args, why) => {
+      const r = runScript(h, args);
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain(why);
+      expect(awsCalls(h)).toEqual([]);
+    });
   });
 });
 

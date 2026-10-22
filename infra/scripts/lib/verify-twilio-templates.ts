@@ -11,11 +11,11 @@
 // WhatsApp under the UTILITY category: they carry transactional messages, and
 // a template filed as MARKETING is not one. For the employer templates a
 // category other than UTILITY is a notice rather than a failure.
-// The unversioned admin_support_reply_<lang> keys must not be mapped. The
-// one exception is `beforeDeploy` (`--verify-templates --before-deploy`): the
-// release before the window-aware dispatcher still sends them, so until that
-// deploy a mapped one is a notice rather than a failure, and after it they are
+// The unversioned admin_support_reply_<lang> keys are retired and must not be
+// mapped: admin replies use admin_support_reply_v2_<lang>. A mapped one is
 // removed with `seed-whatsapp-twilio-templates.mjs --unset-template <key>`.
+// Under `beforeDeploy` (`--verify-templates --before-deploy`) a mapped one is
+// a notice rather than a failure.
 // Everything else is reported informationally. This is step 0/5 of the
 // employer-messaging runbook.
 import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
@@ -91,9 +91,8 @@ export async function verifyTwilioTemplates(deps: {
   secretId?: string;
   region?: string;
   /**
-   * Run before the deploy that retires RETIRED_SUPPORT_REPLY_KEYS: a mapped
-   * retired key becomes a notice instead of a failure. Every other rule is
-   * unchanged.
+   * A mapped RETIRED_SUPPORT_REPLY_KEYS entry becomes a notice instead of a
+   * failure. Every other rule is unchanged.
    */
   beforeDeploy?: boolean;
 } = {}): Promise<VerifyTemplatesResult> {
@@ -126,7 +125,7 @@ export async function verifyTwilioTemplates(deps: {
     if (!templates[retired]) continue;
     if (deps.beforeDeploy) {
       notices.push(
-        `${retired}: still mapped, which the current release needs; remove after the deploy with `
+        `${retired}: still mapped; admin replies use admin_support_reply_v2_<lang>, so remove it with `
         + `seed-whatsapp-twilio-templates.mjs --unset-template ${retired}`,
       );
     } else {

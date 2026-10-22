@@ -18,7 +18,6 @@
 // Never logged: the revealed contact, object keys, links, notes, the team
 // mailbox, or any database message (it can carry row values). Log lines
 // carry an event tag, the action, a SQLSTATE and the request id.
-import { createHash } from 'node:crypto';
 import {
   recordAdminAccess,
   recordAdminAction,
@@ -29,6 +28,7 @@ import {
   type AttemptOutcome,
   type AuditCategory,
 } from './audit/record';
+import { payloadHashMatches, readActionBody } from './payload-hash';
 import type { AdminSession } from './session-claims';
 import {
   REPORT_NOTE_MAX_LENGTH,
@@ -62,10 +62,12 @@ export const SETTINGS_SET_SQL = `
     $1::uuid, $2::boolean, $3::boolean, $4::boolean, $5::boolean, $6::text, $7::text, $8::integer)
 `;
 
-/** The admin origin is CloudFront in front of a signed Function URL: every body carries its SHA-256. */
-const PAYLOAD_HASH_HEADER = 'x-amz-content-sha256';
-const SHA256_HEX = /^[0-9a-f]{64}$/;
-const MAX_BODY_LENGTH = 65_536;
+/**
+ * The admin origin is CloudFront in front of a signed Function URL: every body
+ * carries its SHA-256, checked by payload-hash.ts. The Reports actions read
+ * bodies up to this limit, above the shared one.
+ */
+const MAX_REPORT_ACTION_BODY_LENGTH = 65_536;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SQLSTATE_PATTERN = /^[0-9A-Z]{5}$/;
 const OUTCOME_CODE_PATTERN = /^[a-z_]{1,40}$/;
@@ -517,34 +519,13 @@ async function updateSettings(session: AdminSession, request: Extract<ReportActi
 
 // --- The route -----------------------------------------------------------------------
 
-async function readBody(request: Request): Promise<string | null> {
-  const declared = Number(request.headers.get('content-length'));
-  if (Number.isFinite(declared) && declared > MAX_BODY_LENGTH) {
-    return null;
-  }
-  try {
-    const text = await request.text();
-    return text.length > MAX_BODY_LENGTH ? null : text;
-  } catch {
-    return null;
-  }
-}
-
-function payloadHashMatches(request: Request, text: string): boolean {
-  const header = request.headers.get(PAYLOAD_HASH_HEADER)?.trim().toLowerCase();
-  if (!header || !SHA256_HEX.test(header)) {
-    return false;
-  }
-  return header === createHash('sha256').update(text, 'utf8').digest('hex');
-}
-
 /**
  * POST /api/report-actions. Only the five actions exist. A request that names
  * no known action has no surface to record against, so it is answered (401
  * or 400) without an attempt event.
  */
 export async function handleReportActionRequest(request: Request, session: AdminSession | undefined): Promise<Response> {
-  const text = await readBody(request);
+  const text = await readActionBody(request, MAX_REPORT_ACTION_BODY_LENGTH);
   const body = text === null ? undefined : parseJson(text);
   const named = attemptTargetOf(body);
 

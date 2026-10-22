@@ -32,10 +32,10 @@
  *   # secret), no DB env:
  *   npx tsx scripts/whatsapp-runtime-controls.ts --verify-templates
  *
- *   # Before the deploy that retires the unversioned admin_support_reply_<lang>
- *   # keys: a retired key that is still mapped prints as a NOTICE instead of a
- *   # failure; every other rule still fails the run. After the deploy, remove
- *   # the pair with `node scripts/seed-whatsapp-twilio-templates.mjs
+ *   # The unversioned admin_support_reply_<lang> keys are retired. With
+ *   # --before-deploy, a retired key that is still mapped prints as a NOTICE
+ *   # instead of a failure; every other rule still fails the run. Remove a
+ *   # mapped one with `node scripts/seed-whatsapp-twilio-templates.mjs
  *   # --unset-template <key>` and run the plain --verify-templates above.
  *   npx tsx scripts/whatsapp-runtime-controls.ts --verify-templates --before-deploy
  */

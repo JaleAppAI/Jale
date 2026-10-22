@@ -334,10 +334,10 @@ describe('seed-whatsapp-twilio-templates.mjs — sprint 28 support-reply and web
     },
   );
 
-  // The current admin reply path queues `admin_support_reply_<lang>` and the
-  // sender uses whatever ContentSid is mapped under that key. The seed must
-  // therefore never create or map the unversioned pair; the support-reply
-  // template it seeds lives under the v2 keys the new dispatcher reads.
+  // The earlier admin reply path queued `admin_support_reply_<lang>` and the
+  // sender used whatever ContentSid was mapped under that key. The seed
+  // therefore never creates or maps the unversioned pair; the support-reply
+  // template it seeds lives under the v2 keys the dispatcher reads.
   const UNVERSIONED_SUPPORT_KEYS = ['admin_support_reply_es', 'admin_support_reply_en'];
 
   it('defines no unversioned admin_support_reply_* template', () => {
@@ -348,13 +348,18 @@ describe('seed-whatsapp-twilio-templates.mjs — sprint 28 support-reply and web
     expect(QUICK_REPLY_DEFINITIONS.admin_support_reply_v2_en).toBeDefined();
   });
 
-  it('keeps the unversioned keys settable, next to the v2 keys', () => {
-    // The runtime still declares them, and --set-template mirrors that
-    // interface; only the default seed is barred from writing them.
+  it('accepts the v2 keys as settable and not the retired unversioned pair', () => {
+    // The runtime no longer declares the unversioned pair, and --set-template
+    // mirrors that interface: the pair can only be removed (--unset-template).
     const settable = literal<Set<string>>('SETTABLE_TEMPLATE_KEYS');
-    for (const key of [...UNVERSIONED_SUPPORT_KEYS, 'admin_support_reply_v2_es', 'admin_support_reply_v2_en']) {
+    for (const key of UNVERSIONED_SUPPORT_KEYS) {
+      expect(settable.has(key)).toBe(false);
+    }
+    for (const key of ['admin_support_reply_v2_es', 'admin_support_reply_v2_en']) {
       expect(settable.has(key)).toBe(true);
     }
+    const retired = literal<Set<string>>('RETIRED_TEMPLATE_KEYS');
+    expect([...retired].filter((key) => settable.has(key))).toEqual([]);
   });
 
   describe('the default run', () => {
@@ -1326,6 +1331,13 @@ describe('seed-whatsapp-twilio-templates.mjs — --unset-template', () => {
     return harness;
   }
 
+  it.each([RETIRED_ES, RETIRED_EN])('refuses --set-template %s and writes nothing', async (key) => {
+    await expectUnsetRefusal(
+      { argv: ['--set-template', `${key}=${FAKE_SET_SID}`] },
+      new RegExp(`'${key}' is not a template key the runtime reads`),
+    );
+  });
+
   it('allowlists exactly the two retired support-reply keys', () => {
     const retired = literal<Set<string>>('RETIRED_TEMPLATE_KEYS');
     expect([...retired].sort()).toEqual([RETIRED_EN, RETIRED_ES]);
@@ -1475,10 +1487,12 @@ describe('seed-whatsapp-twilio-templates.mjs — --unset-template', () => {
     );
   });
 
-  it('rejects a key named by both --set-template and --unset-template', async () => {
+  it('refuses a retired key named by both --set-template and --unset-template', async () => {
+    // --set-template refuses the retired key on its own, before the two
+    // flags' names are compared.
     await expectUnsetRefusal(
       { argv: ['--set-template', `${RETIRED_ES}=${FAKE_SET_SID}`, '--unset-template', RETIRED_ES] },
-      /both --set-template and --unset-template/,
+      new RegExp(`'${RETIRED_ES}' is not a template key the runtime reads`),
     );
   });
 

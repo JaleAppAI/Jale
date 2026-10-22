@@ -1011,7 +1011,8 @@ export class AuditStack extends cdk.Stack {
     const recorder = new config.CfnConfigurationRecorder(this, 'ConfigRecorder', {
       name: 'jale-audit-recorder',
       roleArn: serviceLinkedRoleArn,
-      recordingGroup: { allSupported: true, includeGlobalResourceTypes: false },
+      // Global resource types are recorded here, the one recorder region.
+      recordingGroup: { allSupported: true, includeGlobalResourceTypes: true },
       recordingMode: { recordingFrequency: 'DAILY' },
     });
     const channel = new config.CfnDeliveryChannel(this, 'ConfigDeliveryChannel', {

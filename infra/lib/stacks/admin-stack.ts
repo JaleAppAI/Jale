@@ -52,14 +52,22 @@ export interface AdminStackProps extends cdk.StackProps {
    * exist and are visible in the console, with no action.
    */
   readonly alarmTopicArn?: string;
+  /**
+   * The SES feedback handler's dead-letter queue (NotificationsStack), by
+   * name. Given only when that queue exists, which is when the employer email
+   * configuration set is named; the Home health strip reads its depth, and
+   * shows it as not configured without it.
+   */
+  readonly sesFeedbackDlqName?: string;
 }
 
 /**
  * The dead-letter queues whose depth the Ops page shows (contract K3.3 #11),
  * by queue name, with the plain label the page prints. Only queues with a
  * producer: the candidate materialization and worker rerank queues have
- * none. The SES feedback queue (its name comes from deploy context) and the
- * audit edge queues (other regions) are not listed.
+ * none. The SES feedback queue (its name comes from deploy context) is read
+ * on its own, for the Home health strip (sesFeedbackDlqName); the audit edge
+ * queues (other regions) are not listed.
  */
 export const ADMIN_DLQ_QUEUES: ReadonlyArray<{ name: string; label: string }> = [
   { name: 'whatsapp-inbound-v2-dlq.fifo', label: 'WhatsApp inbound' },
@@ -101,6 +109,15 @@ export class AdminStack extends cdk.Stack {
 
     const environment = this.node.tryGetContext('environment') ?? 'dev';
     const durability = getAdminDurability(environment);
+
+    const sesFeedbackDlqName = props.sesFeedbackDlqName;
+    if (sesFeedbackDlqName !== undefined && !/^[A-Za-z0-9_-]{1,80}$/.test(sesFeedbackDlqName)) {
+      throw new Error(
+        `sesFeedbackDlqName must be 1-80 characters of letters, digits, '-' or '_', got ${JSON.stringify(sesFeedbackDlqName)}`,
+      );
+    }
+    const queueUrl = (name: string) =>
+      `https://sqs.${cdk.Stack.of(this).region}.amazonaws.com/${cdk.Stack.of(this).account}/${name}`;
 
     // Same app-global `deletionProtection` context flag the production deploy
     // workflow passes for RDS and the worker/employer pools: the admin pool
@@ -238,8 +255,11 @@ export class AdminStack extends cdk.Stack {
         // exports anything to this one.
         ADMIN_DLQ_QUEUES: cdk.Stack.of(this).toJsonString(ADMIN_DLQ_QUEUES.map(({ name, label }) => ({
           label,
-          url: `https://sqs.${cdk.Stack.of(this).region}.amazonaws.com/${cdk.Stack.of(this).account}/${name}`,
+          url: queueUrl(name),
         }))),
+        // The SES feedback dead-letter queue, for the Home health strip; set
+        // only when the queue exists.
+        ...(sesFeedbackDlqName ? { ADMIN_SES_FEEDBACK_DLQ_URL: queueUrl(sesFeedbackDlqName) } : {}),
       },
     });
 
@@ -291,12 +311,14 @@ export class AdminStack extends cdk.Stack {
       resources: [this.adminPool.userPoolArn],
     }));
 
-    // Ops health (contract K3.3 #11): the depth of the listed dead-letter
-    // queues, and nothing else on them. Reading queue attributes needs no
-    // key, whatever the queue's encryption.
+    // Ops health (contract K3.3 #11) and Home health (K3.4): the depth of the
+    // listed dead-letter queues and of the SES feedback one when it exists,
+    // and nothing else on them. Reading queue attributes needs no key,
+    // whatever the queue's encryption.
     adminFunction.addToRolePolicy(new iam.PolicyStatement({
       actions: ['sqs:GetQueueAttributes'],
-      resources: ADMIN_DLQ_QUEUES.map(({ name }) => cdk.Stack.of(this).formatArn({ service: 'sqs', resource: name })),
+      resources: [...ADMIN_DLQ_QUEUES.map(({ name }) => name), ...(sesFeedbackDlqName ? [sesFeedbackDlqName] : [])]
+        .map((name) => cdk.Stack.of(this).formatArn({ service: 'sqs', resource: name })),
     }));
     // Home health (contract K3.4): email bounces from the account-level SES
     // metric. GetMetricData has no resource-level permission, so it can only
