@@ -166,6 +166,7 @@ describe('database migrations', () => {
       '126',
       '127',
       '128',
+      '129',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -5314,6 +5315,64 @@ describe('database migrations', () => {
 
     it('keeps 125\'s per-person functions untouched', () => {
       expect(sql).not.toMatch(/(CREATE OR REPLACE|DROP) FUNCTION jale_billing_internal\.billing_(pause_over_limit_jobs|resume_paused_jobs)/);
+    });
+  });
+
+  describe('129 Phase 1 owner carry-overs', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '129_org_owner_carry_overs.sql'), 'utf8');
+
+    it('is one transaction, forward-only, after 128', () => {
+      expect(sql).toContain('-- Run manually AFTER 128_company_limits.sql,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n');
+      expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+      expect(sql).toContain("SET LOCAL lock_timeout = '5s';");
+    });
+
+    it('replaces both 125 functions under their owners with only the caller check widened', () => {
+      expect(sql).toContain('SET LOCAL ROLE jale_cap_hire_details;\n\nCREATE OR REPLACE FUNCTION jale_cap.employer_save_hire_details(');
+      expect(sql).toContain('SET LOCAL ROLE jale_cap_worker_lane;\n\nCREATE OR REPLACE FUNCTION jale_cap.employer_hire_details_notice(');
+      expect(sql.match(/AND \(j\.employer_id::text = v_caller OR jale_internal\.is_org_owner_of\(v_caller, j\.employer_id\)\)/g)).toHaveLength(2);
+      expect(sql).not.toMatch(/^\s+AND j\.employer_id::text = v_caller$/m);
+    });
+
+    it('adds three owner policies and relaxes jobs_org_owner_update, every scope through the array helper cast to uuid[]', () => {
+      expect(sql.match(/^CREATE POLICY /gm)).toHaveLength(3);
+      expect(sql.match(/^ALTER POLICY .*$/gm)).toEqual(['ALTER POLICY jobs_org_owner_update ON public.jobs']);
+      expect(sql).not.toMatch(/^DROP POLICY/m);
+      const code = sql.replace(/--.*$/gm, '');
+      // One in the jobs policy, one in the applications SELECT, two in the applications UPDATE, one in the ALTER POLICY.
+      expect(code.match(/= ANY \(\(SELECT jale_internal\.org_owner_scope\(current_setting\('app\.current_internal_user_id', true\), false\)\)::uuid\[\]\)/g)).toHaveLength(5);
+      // 119's active-only form is gone from what this migration writes.
+      expect(code).not.toContain('), true))::uuid[])');
+    });
+
+    it('guards job moves and reactivations with a trigger, and takes the jobs and job_applications locks last', () => {
+      expect(sql).toContain('CREATE TRIGGER jobs_assignee_must_be_active\n  BEFORE UPDATE OF employer_id, status ON public.jobs\n  FOR EACH ROW\n'
+        + "  WHEN (OLD.employer_id IS DISTINCT FROM NEW.employer_id\n        OR (OLD.status IS DISTINCT FROM 'active' AND NEW.status = 'active'))\n");
+      // One stable DETAIL per refusal reason, so callers can tell each from an RLS denial.
+      for (const detail of ['assignee_not_member', 'assignee_inactive', 'job_employer_not_member', 'assignee_other_company',
+        'employer_inactive_for_activation']) {
+        expect(sql).toContain(`DETAIL = '${detail}'`);
+      }
+      // 105's hired-count recount reopens a filled job to paused while the employer is not an active member,
+      // billing-marked only for a billing-suspended member; it is never let through as active.
+      expect(sql).toContain("IF OLD.status = 'filled' AND pg_catalog.pg_trigger_depth() > 1 THEN\n      NEW.status := 'paused';\n"
+        + '      IF v_billing IS NOT NULL THEN\n        NEW.billing_paused_at := pg_catalog.now();\n      END IF;\n      RETURN NEW;\n');
+      expect(sql).not.toContain('IS NOT TRUE THEN');
+      // The self-check pins the trigger's catalog definition and the function's callers.
+      expect(sql).toContain('pg_get_triggerdef(t.oid) INTO v_def');
+      // The drift precondition compares 119's exact WITH CHECK (active members only).
+      expect(sql).toContain("current_setting('app.current_internal_user_id'::text, true), true) AS org_owner_scope)::uuid[]))$q$");
+      const lastAt = sql.indexOf('-- ── 5. Last: jobs and job_applications');
+      expect(lastAt).toBeGreaterThan(sql.indexOf('CREATE FUNCTION public.jobs_assignee_must_be_active()'));
+      for (const statement of ['CREATE POLICY jobs_cap_hire_details_org_owner_select ON public.jobs',
+        'CREATE POLICY job_applications_cap_hire_details_org_owner_select ON public.job_applications',
+        'CREATE POLICY job_applications_cap_hire_details_org_owner_update ON public.job_applications',
+        'ALTER POLICY jobs_org_owner_update ON public.jobs', 'CREATE TRIGGER jobs_assignee_must_be_active']) {
+        expect(sql.indexOf(statement)).toBeGreaterThan(lastAt);
+      }
+      expect(sql).toContain("polname = 'jobs_cap_worker_lane_org_owner_select'");
+      expect(sql).toContain("polname = 'job_applications_cap_worker_lane_org_owner_select'");
     });
   });
 });

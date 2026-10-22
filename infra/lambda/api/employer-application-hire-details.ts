@@ -199,9 +199,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     // resolveEmployerActor refuses a login with no active company membership
     // and sets app.current_internal_user_id to the caller, which the definers
-    // read. 125's definers still compare the job's employer to the caller
-    // alone, so an owner's save on a member's hire is a 404 until they gain
-    // the owner case.
+    // read. Migration 129 gives 125's definers the owner case: the job's
+    // employer or the active owner of their company may save, so an owner's
+    // save on a member's hire succeeds; anyone else still gets a 404.
     const resolved = await resolveEmployerActor(client, cognitoSub);
     if (!resolved.ok) {
       await client.query('ROLLBACK');
