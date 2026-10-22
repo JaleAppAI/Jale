@@ -354,8 +354,27 @@ export function TrustQuestionStep({
                                     : ''}
                         </span>
                     )}
-                    <span className="text-xs tabular-nums text-[var(--jale-ink-2)]">
-                        {t('chars', { count: trimmed.length })}
+                    {/* The minimum is on screen from the first frame -- "0 / 15
+                        minimum" -- so it never appears for the first time as
+                        the thing blocking the button. Once it is met, the count
+                        is said in words and the check mark only decorates it.
+                        Polite: a screen-reader user hears it settle without
+                        leaving the box, and it never talks over the question. */}
+                    <span
+                        aria-live="polite"
+                        className={[
+                            'flex-none text-xs tabular-nums',
+                            ready
+                                ? 'font-bold text-[var(--jale-success)]'
+                                : 'font-semibold text-[var(--jale-ink-2)]',
+                        ].join(' ')}
+                    >
+                        {answerLongEnough(answer) ? (
+                            <>
+                                <span>{t('chars', { count: trimmed.length })}</span>
+                                {ready ? <span aria-hidden="true">{' ✓'}</span> : null}
+                            </>
+                        ) : t('counter_min', { count: trimmed.length, min: MIN_ANSWER_CHARS })}
                     </span>
                 </div>
 

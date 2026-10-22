@@ -88,6 +88,63 @@ describe('TrustQuestionStep', () => {
         ));
     });
 
+    /*
+     * The minimum is visible before it blocks anyone: "0 / 15 minimum" from
+     * the first frame, counting up as the worker types, and a polite live
+     * region so a screen reader hears it without leaving the box.
+     */
+    it('shows the counter against the minimum from the start, at 0', () => {
+        renderIntl(<TrustQuestionStep {...props({ answer: '' })} />);
+        expect(screen.getByText(interpolate(
+            message('worker_onboarding.question.counter_min'),
+            { count: 0, min: MIN_ANSWER_CHARS },
+        ))).toBeInTheDocument();
+    });
+
+    it('updates the counter as the answer grows', () => {
+        const { rerender } = renderIntl(<TrustQuestionStep {...props({ answer: 'too short' })} />);
+        expect(screen.getByText(interpolate(
+            message('worker_onboarding.question.counter_min'),
+            { count: 9, min: MIN_ANSWER_CHARS },
+        ))).toBeInTheDocument();
+        rerender(<TrustQuestionStep {...props({ answer: 'a bit longer' })} />);
+        expect(screen.getByText(interpolate(
+            message('worker_onboarding.question.counter_min'),
+            { count: 12, min: MIN_ANSWER_CHARS },
+        ))).toBeInTheDocument();
+    });
+
+    it('announces the counter politely', () => {
+        renderIntl(<TrustQuestionStep {...props({ answer: '' })} />);
+        const counter = screen.getByText(interpolate(
+            message('worker_onboarding.question.counter_min'),
+            { count: 0, min: MIN_ANSWER_CHARS },
+        ));
+        expect(counter.closest('[aria-live="polite"]')).not.toBeNull();
+    });
+
+    it('says the count in words once the minimum is met, the check mark only decorating it', () => {
+        renderIntl(<TrustQuestionStep {...props({ answer: LONG_ENOUGH })} />);
+        const counter = screen.getByText(interpolate(
+            message('worker_onboarding.question.chars'),
+            { count: LONG_ENOUGH.length },
+        ));
+        expect(counter.closest('[aria-live="polite"]')).not.toBeNull();
+        expect(screen.queryByText(/\/ 15/)).not.toBeInTheDocument();
+        const check = counter.parentElement!.querySelector('[aria-hidden="true"]');
+        expect(check).not.toBeNull();
+    });
+
+    it('shows the example answer from the approved board as the placeholder, in both languages', () => {
+        const { unmount } = renderIntl(<TrustQuestionStep {...props()} />);
+        expect(screen.getByRole('textbox', { name: 'What do you do on a typical day?' }))
+            .toHaveAttribute('placeholder', message('worker_onboarding.question.placeholder'));
+        expect(message('worker_onboarding.question.placeholder')).toMatch(/^Example: /);
+        unmount();
+        renderIntl(<TrustQuestionStep {...props()} />, 'es');
+        expect(message('worker_onboarding.question.placeholder', 'es')).toMatch(/^Ejemplo: /);
+    });
+
     it('counts characters', () => {
         renderIntl(<TrustQuestionStep {...props({ answer: LONG_ENOUGH })} />);
         expect(screen.getByText(interpolate(
