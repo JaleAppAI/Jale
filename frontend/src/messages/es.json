@@ -898,7 +898,7 @@
       "certifications_no_matches": "No hay certificaciones que coincidan",
       "certifications_already_added": "Ya agregada",
       "certifications_remove_aria": "Quitar {name}",
-      "certifications_picker_hint": "Elija de la lista o agregue la suya. En el siguiente paso marcará cada una como requerida u opcional.",
+      "certifications_picker_hint": "Agregue varias, de la lista o con sus propias palabras.",
       "legacy_value_note": "Ingresado originalmente como: {value}",
       "validation_required": "Complete los campos requeridos.",
       "validation_number": "Ingrese números válidos y no negativos.",
