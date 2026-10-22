@@ -3,7 +3,7 @@ import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
 import { resolveCompanyEntitlements } from '../lib/entitlements';
-import { readCompanyUsage } from '../lib/company-usage';
+import { readCompanyUsage, CompanyUsageRefusedError } from '../lib/company-usage';
 import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
 
 const CORS_HEADERS = corsHeaders();
@@ -92,6 +92,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     });
   } catch (err) {
     if (client) { try { await client.query('ROLLBACK'); } catch (_) {} }
+    if (err instanceof CompanyUsageRefusedError) {
+      // The definer says the caller is no longer an active member: the answer resolveEmployerActor gives.
+      return employerActorFailureResponse({ ok: false, status: 403, error: 'membership_inactive' }, CORS_HEADERS);
+    }
     console.error('billing-get error:', errorMessage(err));
     return response(500, { error: 'internal_error' });
   } finally {

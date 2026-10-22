@@ -2,7 +2,7 @@ import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../../../lambda/lib/db';
 import { checkCompliance } from '../../../lambda/legal/check-compliance';
 import { resolveCompanyEntitlements } from '../../../lambda/lib/entitlements';
-import { readCompanyUsage } from '../../../lambda/lib/company-usage';
+import { readCompanyUsage, CompanyUsageRefusedError } from '../../../lambda/lib/company-usage';
 import { resolveEmployerActor } from '../../../lambda/lib/employer-actor';
 import { handler } from '../../../lambda/billing/get-billing';
 
@@ -163,6 +163,18 @@ describe('billing get handler', () => {
 
     expect(res.statusCode).toBe(500);
     expect(JSON.parse(res.body)).toEqual({ error: 'internal_error' });
+    expect(query).toHaveBeenCalledWith('ROLLBACK');
+    expect(query).not.toHaveBeenCalledWith('COMMIT');
+    expect(release).toHaveBeenCalled();
+  });
+
+  it('answers 403 membership_inactive and rolls back when the usage read refuses the caller', async () => {
+    mockReadCompanyUsage.mockRejectedValue(new CompanyUsageRefusedError());
+
+    const res = await handler(event());
+
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({ error: 'membership_inactive' });
     expect(query).toHaveBeenCalledWith('ROLLBACK');
     expect(query).not.toHaveBeenCalledWith('COMMIT');
     expect(release).toHaveBeenCalled();

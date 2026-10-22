@@ -1,4 +1,4 @@
-import { readCompanyUsage } from '../../../../lambda/lib/company-usage';
+import { readCompanyUsage, CompanyUsageRefusedError } from '../../../../lambda/lib/company-usage';
 
 const ORG = '33333333-3333-4333-8333-333333333333';
 
@@ -42,8 +42,24 @@ describe('readCompanyUsage', () => {
     await expect(readCompanyUsage(clientWith(rows))).rejects.toThrow('company_usage_unavailable');
   });
 
-  it('lets the database refusal through (an inactive or unset caller)', async () => {
-    const client = { query: jest.fn().mockRejectedValue(Object.assign(new Error('not an active member'), { code: '42501' })) } as never;
-    await expect(readCompanyUsage(client)).rejects.toMatchObject({ code: '42501' });
+  const dbError = (message: string, code: string) => Object.assign(new Error(message), { code });
+  const failingClient = (err: unknown) => ({ query: jest.fn().mockRejectedValue(err) }) as never;
+
+  it('maps the definer\'s not-an-active-member refusal (42501) to CompanyUsageRefusedError', async () => {
+    const err = dbError('employer_org_usage: the caller is not an active member of a company', '42501');
+    const thrown = await readCompanyUsage(failingClient(err), { lock: true }).catch((e) => e);
+    expect(thrown).toBeInstanceOf(CompanyUsageRefusedError);
+  });
+
+  it.each([
+    ['the caller context is not set', dbError('employer_org_usage: the caller context is not set', '42501')],
+    ['the company row is missing', dbError('employer_org_usage: the company row is missing', '42501')],
+    ['an RLS violation', dbError('new row violates row-level security policy', '42501')],
+    ['the not-a-member text under another code', dbError('the caller is not an active member of a company', 'P0001')],
+    ['a lock timeout', dbError('canceling statement due to lock timeout', '55P03')],
+  ])('rethrows %s unchanged', async (_name, err) => {
+    const thrown = await readCompanyUsage(failingClient(err)).catch((e) => e);
+    expect(thrown).toBe(err);
+    expect(thrown).not.toBeInstanceOf(CompanyUsageRefusedError);
   });
 });

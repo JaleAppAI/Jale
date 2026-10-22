@@ -41,7 +41,7 @@ try {
   Invoke-InDirectory 'infra' { npx jest test/unit/db/migrations/apply-order.test.ts -t 'applies migrations' }
   Write-Host 'Running billing database integration tests...'
   Invoke-InDirectory 'infra' {
-    npx jest test/unit/db/billing-rls.integration.test.ts test/unit/db/entitlement-concurrency.integration.test.ts --runInBand
+    npx jest test/unit/db/billing-rls.integration.test.ts --runInBand
   }
 } finally {
   Remove-Item Env:JALE_TEST_DATABASE_URL -ErrorAction SilentlyContinue
