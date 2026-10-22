@@ -310,3 +310,31 @@ describe('a reply that arrives while the thread is open', () => {
     await waitFor(() => expect(refreshPolled).toHaveBeenCalled());
   });
 });
+
+// ---------------------------------------------------------------------------
+// Sprint 29: the two WhatsApp counters use the E4 board's chip words, and one
+// plain line says what they mean (traced in the messaging lambda: within 24
+// hours of the worker's last message yours goes straight through; otherwise an
+// invitation goes first and your message waits for the reply).
+// ---------------------------------------------------------------------------
+
+describe('the WhatsApp counters on the Messages board', () => {
+  it('uses the board wording and explains it in one line', async () => {
+    renderIntl(<EmployerConversationsPage />);
+    await waitFor(() => expect(rowFor('Maria Garcia')).toBeInTheDocument());
+
+    expect(screen.getByText('Reply window open')).toBeInTheDocument();
+    expect(screen.getByText('Invitation sent')).toBeInTheDocument();
+    expect(screen.getByText(
+      'Within 24 hours of a worker’s last message, yours goes straight to their WhatsApp. Otherwise Jale sends them an invitation first, and your message waits until they reply.',
+    )).toBeInTheDocument();
+  });
+
+  it('says the same in Spanish', async () => {
+    renderIntl(<EmployerConversationsPage />, 'es');
+    await waitFor(() => expect(rowFor('Maria Garcia')).toBeInTheDocument());
+
+    expect(screen.getByText('Ventana de respuesta abierta')).toBeInTheDocument();
+    expect(screen.getByText('Invitación enviada')).toBeInTheDocument();
+  });
+});

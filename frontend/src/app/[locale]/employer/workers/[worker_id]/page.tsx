@@ -806,6 +806,9 @@ export default function WorkerProfilePage() {
                                                     {trustAssessment.competency_score}/100
                                                 </span>
                                             </div>
+                                            {/* Where the number comes from, in one line:
+                                                it read as a black box in the employer demo. */}
+                                            <p className="-mt-2 text-xs text-[var(--jale-ink-2)]">{t('trust_caption')}</p>
                                             {(() => {
                                                 const components = trustAssessment.score_components;
                                                 const rubricVersion = trustAssessment.rubric_version;

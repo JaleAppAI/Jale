@@ -455,6 +455,11 @@ export default function EmployerConversationsPage() {
         <MetricCard variant="accent" tone="green" value={repliedCount} label={t('worker_replied')} hint={t('reply_window_open')} />
         <MetricCard variant="accent" tone="amber" value={waitingCount} label={t('waiting_reply')} hint={t('template_invite_sent')} />
         <MetricCard variant="accent" tone="navy" value={newApplicantCount} label={t('new_applicants')} hint={t('not_yet_messaged')} />
+        {/* What "Reply window open" and "Invitation sent" mean, in one line.
+            Traced in the messaging lambda: within 24 hours of the worker's last
+            message a free-form message goes straight through; otherwise an
+            invitation goes first and the message waits for the reply. */}
+        <p className="text-xs text-[var(--jale-ink-2)] md:col-span-4">{t('whatsapp_window_caption')}</p>
       </section>
 
       {/* One bordered container; every pane inside it is separated by dividers,
