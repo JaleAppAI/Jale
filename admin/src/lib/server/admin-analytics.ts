@@ -37,7 +37,7 @@ import {
   withAdminReadTransaction,
   type AuditQueryClient,
 } from './audit/record';
-import { readDlqDepth, readSesBounces24h } from './aws-health';
+import { readDlqDepth, readSesBounces24h, type DlqQueue } from './aws-health';
 import { getAdminDbPool } from './db';
 import type { AdminSession } from './session-claims';
 
@@ -1445,7 +1445,7 @@ export async function getHomeMetrics(now: Date = new Date()): Promise<HomeMetric
 
 export type HealthState = 'healthy' | 'watch' | 'problem' | 'unknown';
 export type HealthItem = {
-  key: 'whatsapp_delivery' | 'message_backlog' | 'billing_webhooks' | 'email_bounces' | 'ai_extraction';
+  key: 'whatsapp_delivery' | 'message_backlog' | 'billing_webhooks' | 'email_bounces' | 'email_feedback' | 'ai_extraction';
   label: string;   // "WhatsApp delivery"
   value: string;   // "0 failed sends", "0 queued · 0 dead-lettered", "1 bounce", "97% complete"
   state: HealthState;
@@ -1459,6 +1459,8 @@ export type SystemHealthInputs = {
   dlqVisible: number | null;
   billingFailed24h: number | null;
   sesBounces24h: number | null;
+  /** Messages in the SES feedback dead-letter queue; undefined when that queue is not configured. */
+  sesFeedbackDlqVisible: number | null | undefined;
   aiFinished7d: number | null;
   aiUsable7d: number | null;
 };
@@ -1521,6 +1523,15 @@ export function systemHealthItems(input: SystemHealthInputs): HealthItem[] {
         : bounces >= t.sesBouncesWatch ? 'watch' : 'healthy',
   });
 
+  // Bounce and complaint events the feedback handler could not process.
+  const feedback = input.sesFeedbackDlqVisible;
+  items.push({
+    key: 'email_feedback',
+    label: 'Email feedback',
+    value: feedback === undefined ? 'not configured' : feedback === null ? UNAVAILABLE : `${part(feedback)} dead-lettered`,
+    state: feedback === undefined || feedback === null ? 'unknown' : feedback > 0 ? 'problem' : 'healthy',
+  });
+
   const { aiFinished7d: finished, aiUsable7d: usable } = input;
   let ai: Pick<HealthItem, 'value' | 'state'>;
   if (finished === null || usable === null) {
@@ -1577,9 +1588,21 @@ async function readSystemHealthRow(): Promise<SystemHealthRow | null> {
   }
 }
 
+// AdminStack sets ADMIN_SES_FEEDBACK_DLQ_URL only when the SES feedback
+// dead-letter queue exists. Unset, the queue is not configured and not read.
+function sesFeedbackDlqQueues(url: string | undefined = process.env.ADMIN_SES_FEEDBACK_DLQ_URL): DlqQueue[] {
+  return url ? [{ label: 'Email feedback', url }] : [];
+}
+
 // Never throws: a source that cannot be read makes its items unknown.
 export async function getSystemHealth(): Promise<{ items: HealthItem[]; windowLabel: 'last 24 hours' }> {
-  const [row, dlq, bounces] = await Promise.all([readSystemHealthRow(), readDlqDepth(), readSesBounces24h()]);
+  const feedbackQueues = sesFeedbackDlqQueues();
+  const [row, dlq, bounces, feedback] = await Promise.all([
+    readSystemHealthRow(),
+    readDlqDepth(),
+    readSesBounces24h(),
+    feedbackQueues.length > 0 ? readDlqDepth(feedbackQueues) : undefined,
+  ]);
   const count = (value: string | number | undefined): number | null => (row && value !== undefined ? asCount(value) : null);
   const items = systemHealthItems({
     whatsappFailed24h: count(row?.whatsapp_failed_24h),
@@ -1588,6 +1611,7 @@ export async function getSystemHealth(): Promise<{ items: HealthItem[]; windowLa
     dlqVisible: dlq.totalVisible,
     billingFailed24h: count(row?.billing_failed_24h),
     sesBounces24h: bounces,
+    sesFeedbackDlqVisible: feedback === undefined ? undefined : feedback.totalVisible,
     aiFinished7d: count(row?.ai_finished_7d),
     aiUsable7d: count(row?.ai_usable_7d),
   });

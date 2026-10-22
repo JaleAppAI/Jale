@@ -1479,14 +1479,20 @@ assert.equal(restarts.restartWeeks([], 'all', 13, fe4Now).length, 13);
     },
   });
   const bounces = (values) => ({ MetricDataResults: [{ Id: 'bounces', Values: values }] });
+  // The SES feedback dead-letter queue, set only when it exists (AdminStack).
+  const FEEDBACK_URL = 'https://sqs.example.test/ses-feedback';
   // Sets every source, runs getSystemHealth, returns key -> [state, value].
-  async function healthOf({ row = healthRow(), dlq = [0, 0], cw = () => bounces([]) } = {}) {
+  // `feedback`: undefined leaves the feedback queue unset; a number is its
+  // depth; an Error is a failed read.
+  async function healthOf({ row = healthRow(), dlq = [0, 0], cw = () => bounces([]), feedback } = {}) {
     check.pool = healthPool(row);
     process.env.ADMIN_DLQ_QUEUES = JSON.stringify(dlq.map((_, i) => ({ label: `Queue ${i}`, url: `https://sqs.example.test/q${i}` })));
+    if (feedback === undefined) delete process.env.ADMIN_SES_FEEDBACK_DLQ_URL;
+    else process.env.ADMIN_SES_FEEDBACK_DLQ_URL = FEEDBACK_URL;
     check.sqs = {
       clients: [], sent: [],
       behavior: (command) => {
-        const visible = dlq[Number(command.input.QueueUrl.slice(-1))];
+        const visible = command.input.QueueUrl === FEEDBACK_URL ? feedback : dlq[Number(command.input.QueueUrl.slice(-1))];
         return visible instanceof Error ? visible
           : { Attributes: { ApproximateNumberOfMessages: String(visible), ApproximateNumberOfMessagesNotVisible: '0' } };
       },
@@ -1494,11 +1500,12 @@ assert.equal(restarts.restartWeeks([], 'all', 13, fe4Now).length, 13);
     check.metrics = { clients: [], sent: [], behavior: cw };
     const { result } = await captureConsole(() => analytics.getSystemHealth());
     delete process.env.ADMIN_DLQ_QUEUES;
+    delete process.env.ADMIN_SES_FEEDBACK_DLQ_URL;
     assert.equal(result.windowLabel, 'last 24 hours');
     return Object.fromEntries(result.items.map((item) => [item.key, [item.state, item.value]]));
   }
 
-  // Everything quiet: the five items, in order, with their labels.
+  // Everything quiet: the six items, in order, with their labels.
   check.pool = healthPool(healthRow());
   check.metrics = { clients: [], sent: [], behavior: () => bounces([]) };
   const quiet = await captureConsole(() => analytics.getSystemHealth());
@@ -1507,6 +1514,7 @@ assert.equal(restarts.restartWeeks([], 'all', 13, fe4Now).length, 13);
     ['message_backlog', 'Message backlog'],
     ['billing_webhooks', 'Billing webhooks'],
     ['email_bounces', 'Email bounces'],
+    ['email_feedback', 'Email feedback'],
     ['ai_extraction', 'AI extraction'],
   ]);
   assert.equal(healthStatements.length, 1, 'one statement for every database figure');
@@ -1521,8 +1529,24 @@ assert.equal(restarts.restartWeeks([], 'all', 13, fe4Now).length, 13);
     message_backlog: ['healthy', '0 stuck · 0 queued over 1 h · 0 dead-lettered'],
     billing_webhooks: ['healthy', '0 failed events'],
     email_bounces: ['healthy', '0 bounces'],
+    email_feedback: ['unknown', 'not configured'],
     ai_extraction: ['healthy', '100% usable (7 days)'],
   });
+
+  // Email feedback: not configured without the queue, and then never
+  // read; with it, empty is healthy, any message a problem, and a queue that
+  // cannot be read is unknown.
+  {
+    await healthOf();
+    assert.deepEqual(check.sqs.sent.map((sent) => sent.input.QueueUrl).filter((url) => url === FEEDBACK_URL), [], 'an unset queue is not read');
+  }
+  assert.deepEqual((await healthOf({ feedback: 0 })).email_feedback, ['healthy', '0 dead-lettered']);
+  assert.deepEqual(check.sqs.sent.filter((sent) => sent.input.QueueUrl === FEEDBACK_URL).length, 1, 'the feedback queue is read once');
+  assert.deepEqual((await healthOf({ feedback: 1 })).email_feedback, ['problem', '1 dead-lettered']);
+  assert.deepEqual((await healthOf({ feedback: 1200 })).email_feedback, ['problem', '1,200 dead-lettered']);
+  assert.deepEqual((await healthOf({ feedback: new Error('refused') })).email_feedback, ['unknown', 'unavailable']);
+  // Its messages are its own: the message backlog counts the listed queues only.
+  assert.deepEqual((await healthOf({ feedback: 4 })).message_backlog, ['healthy', '0 stuck · 0 queued over 1 h · 0 dead-lettered']);
 
   // WhatsApp delivery: 0 healthy, 1-4 watch, 5+ problem.
   for (const [failed, state, value] of [
@@ -1590,6 +1614,7 @@ assert.equal(restarts.restartWeeks([], 'all', 13, fe4Now).length, 13);
     message_backlog: ['unknown', '— stuck · — queued over 1 h · 0 dead-lettered'],
     billing_webhooks: ['unknown', 'unavailable'],
     email_bounces: ['healthy', '0 bounces'],
+    email_feedback: ['unknown', 'not configured'],
     ai_extraction: ['unknown', 'unavailable'],
   });
   if (savedRegion === undefined) delete process.env.AWS_REGION;
