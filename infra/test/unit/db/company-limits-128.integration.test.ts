@@ -4,9 +4,10 @@
  *    active member, a suspended foreman's jobs included; 42501 for anyone
  *    else; with p_lock, the company row stays locked FOR NO KEY UPDATE to
  *    COMMIT, while a foreign-key check (FOR KEY SHARE) still passes;
- *  - billing_enforce_org_limits / billing_restore_org (jale_billing): pause
- *    the newest jobs across members, suspend the most recently joined
- *    foremen (marked billing_suspended_at), revoke the newest live invites;
+ *  - billing_enforce_org_limits / billing_restore_org (jale_billing): suspend
+ *    the most recently joined foremen first (marked billing_suspended_at),
+ *    then pause jobs across members, suspended members' first and then the
+ *    newest of active members', and revoke the newest live invites;
  *    restore only marked foremen, earliest marked then earliest joined, then
  *    resume the oldest billing-paused jobs of active members; both
  *    idempotent, and neither touches another company.
@@ -364,6 +365,168 @@ maybeDescribe('migration 128: company limits', () => {
         [[live1, live2, expired, accepted]]);
       expect(Object.fromEntries(invites.rows.map((r) => [r.id, r.revoked])))
         .toEqual({ [live1]: true, [live2]: true, [expired]: false, [accepted]: false });
+    });
+
+    it('on Free, enforce suspends the foreman first and pauses their older job, so the owner\'s newer job stays live', async () => {
+      const owner = await user();
+      const org = await company(owner);
+      const f = await user();
+      await foreman(org, f, '2026-01-01T00:00:00Z');
+      const older = await job(f, 'Foreman older', '2026-02-01T00:00:00Z');
+      const newer = await job(owner, 'Owner newer', '2026-02-02T00:00:00Z');
+      const code = await publish(older);
+
+      // Free: one active job, no foreman seat.
+      const result = await asBilling(ENFORCE_SQL, [org, 1, 0]);
+
+      expect(result).toEqual({
+        paused_count: 1, paused_titles: ['Foreman older'],
+        suspended_count: 1, suspended_emails: [f.email],
+        revoked_invite_count: 0, owner_email: owner.email,
+      });
+      expect(await memberStatus(f)).toBe('suspended+billing');
+      expect(await statusOf([older, newer])).toEqual({ [older]: 'paused+billing', [newer]: 'active' });
+      expect(await statusEvents([older, newer])).toEqual([`Foreman older:active>paused@${f.id}`]);
+      expect(await visibilityEvents([older, newer])).toEqual([`${code}:removed`]);
+
+      // A repeated webhook changes nothing.
+      expect(await asBilling(ENFORCE_SQL, [org, 1, 0])).toEqual({
+        paused_count: 0, paused_titles: [], suspended_count: 0, suspended_emails: [], revoked_invite_count: 0, owner_email: owner.email,
+      });
+      expect(await statusOf([older, newer])).toEqual({ [older]: 'paused+billing', [newer]: 'active' });
+      // Restore on the same plan brings nothing back: no seat is free and the owner's job holds the slot.
+      expect(await asBilling(RESTORE_SQL, [org, 1, 0])).toEqual({
+        resumed_count: 0, resumed_titles: [], restored_count: 0, restored_emails: [], owner_email: owner.email,
+      });
+    });
+
+    it('enforce pauses a suspended foreman\'s job first; among active members\' jobs the oldest stay, whoever posted them', async () => {
+      const owner = await user();
+      const org = await company(owner);
+      const f1 = await user();
+      const f2 = await user();
+      await foreman(org, f1, '2026-01-01T00:00:00Z');
+      await foreman(org, f2, '2026-01-02T00:00:00Z');
+      // f2 (joined last, so suspended) has the oldest job; f1's beats the owner's on age.
+      const f2Job = await job(f2, 'F2 oldest', '2026-02-01T00:00:00Z');
+      const f1Job = await job(f1, 'F1 middle', '2026-02-02T00:00:00Z');
+      const ownerJob = await job(owner, 'Owner newest', '2026-02-03T00:00:00Z');
+
+      const result = await asBilling(ENFORCE_SQL, [org, 1, 1]);
+
+      expect(result).toEqual({
+        paused_count: 2, paused_titles: ['F2 oldest', 'Owner newest'],
+        suspended_count: 1, suspended_emails: [f2.email],
+        revoked_invite_count: 0, owner_email: owner.email,
+      });
+      expect([await memberStatus(owner), await memberStatus(f1), await memberStatus(f2)])
+        .toEqual(['active', 'active', 'suspended+billing']);
+      expect(await statusOf([f2Job, f1Job, ownerJob])).toEqual({
+        [f2Job]: 'paused+billing', [f1Job]: 'active', [ownerJob]: 'paused+billing',
+      });
+      expect(await statusEvents([f2Job, f1Job, ownerJob])).toEqual([
+        `F2 oldest:active>paused@${f2.id}`, `Owner newest:active>paused@${owner.id}`,
+      ]);
+    });
+
+    it('a Free downgrade round-trips: restore on Pro brings the foreman back and resumes every paused job, oldest first', async () => {
+      const owner = await user();
+      const org = await company(owner);
+      const f = await user();
+      await foreman(org, f, '2026-01-01T00:00:00Z');
+      const fOld = await job(f, 'Foreman older', '2026-02-01T00:00:00Z');
+      const oNew = await job(owner, 'Owner newer', '2026-02-02T00:00:00Z');
+      const oNewest = await job(owner, 'Owner newest', '2026-02-03T00:00:00Z');
+
+      const enforced = await asBilling<{ paused_titles: string[] }>(ENFORCE_SQL, [org, 1, 0]);
+      expect(enforced.paused_titles).toEqual(['Foreman older', 'Owner newest']);
+      expect(await statusOf([fOld, oNew, oNewest])).toEqual({
+        [fOld]: 'paused+billing', [oNew]: 'active', [oNewest]: 'paused+billing',
+      });
+
+      // Pro: ten jobs, three seats.
+      const restored = await asBilling(RESTORE_SQL, [org, 10, 3]);
+
+      expect(restored).toEqual({
+        resumed_count: 2, resumed_titles: enforced.paused_titles, restored_count: 1, restored_emails: [f.email], owner_email: owner.email,
+      });
+      expect(await memberStatus(f)).toBe('active');
+      expect(await statusOf([fOld, oNew, oNewest])).toEqual({ [fOld]: 'active', [oNew]: 'active', [oNewest]: 'active' });
+    });
+
+    it('a partial restore resumes the oldest billing-paused job across the owner and the restored foreman', async () => {
+      const owner = await user();
+      const org = await company(owner);
+      const f = await user();
+      await foreman(org, f, '2026-01-01T00:00:00Z');
+      const fJob = await job(f, 'Foreman oldest', '2026-02-01T00:00:00Z');
+      const oKept = await job(owner, 'Owner kept', '2026-02-02T00:00:00Z');
+      const oPaused = await job(owner, 'Owner paused', '2026-02-03T00:00:00Z');
+      await asBilling(ENFORCE_SQL, [org, 1, 0]);
+      expect(await statusOf([fJob, oKept, oPaused])).toEqual({
+        [fJob]: 'paused+billing', [oKept]: 'active', [oPaused]: 'paused+billing',
+      });
+
+      // Two jobs, one seat: the foreman comes back, and one slot opens. The
+      // foreman's job is older than the owner's paused one, so it resumes.
+      const restored = await asBilling(RESTORE_SQL, [org, 2, 1]);
+
+      expect(restored).toEqual({
+        resumed_count: 1, resumed_titles: ['Foreman oldest'], restored_count: 1, restored_emails: [f.email], owner_email: owner.email,
+      });
+      expect(await statusOf([fJob, oKept, oPaused])).toEqual({
+        [fJob]: 'active', [oKept]: 'active', [oPaused]: 'paused+billing',
+      });
+    });
+
+    for (const status of ['suspended', 'removed']) {
+      it(`a ${status} member without the billing mark: their older job is paused first, and restore neither returns them nor resumes it`, async () => {
+        const owner = await user();
+        const org = await company(owner);
+        const active = await user();
+        const other = await user();
+        await foreman(org, active, '2026-01-01T00:00:00Z');
+        // Not the enforcer's doing: no billing_suspended_at.
+        await foreman(org, other, '2026-01-02T00:00:00Z', status);
+        const otherJob = await job(other, 'Other oldest', '2026-02-01T00:00:00Z');
+        const activeJob = await job(active, 'Active newest', '2026-02-02T00:00:00Z');
+
+        // One job, one seat: the active foreman holds the seat, so nobody is suspended.
+        const result = await asBilling(ENFORCE_SQL, [org, 1, 1]);
+
+        expect(result).toEqual({
+          paused_count: 1, paused_titles: ['Other oldest'], suspended_count: 0, suspended_emails: [],
+          revoked_invite_count: 0, owner_email: owner.email,
+        });
+        expect(await statusOf([otherJob, activeJob])).toEqual({ [otherJob]: 'paused+billing', [activeJob]: 'active' });
+        expect(await statusEvents([otherJob, activeJob])).toEqual([`Other oldest:active>paused@${other.id}`]);
+        expect([await memberStatus(active), await memberStatus(other)]).toEqual(['active', status]);
+
+        expect(await asBilling(RESTORE_SQL, [org, 10, 3])).toEqual({
+          resumed_count: 0, resumed_titles: [], restored_count: 0, restored_emails: [], owner_email: owner.email,
+        });
+        expect(await memberStatus(other)).toBe(status);
+        expect(await statusOf([otherJob, activeJob])).toEqual({ [otherJob]: 'paused+billing', [activeJob]: 'active' });
+      });
+    }
+
+    it('under the job limit, a foreman cut by seats keeps their active job', async () => {
+      const owner = await user();
+      const org = await company(owner);
+      const f = await user();
+      await foreman(org, f, '2026-01-01T00:00:00Z');
+      const fJob = await job(f, 'Foreman job', '2026-02-01T00:00:00Z');
+      await job(owner, 'Owner job', '2026-02-02T00:00:00Z');
+
+      const result = await asBilling(ENFORCE_SQL, [org, 10, 0]);
+
+      expect(result).toEqual({
+        paused_count: 0, paused_titles: [], suspended_count: 1, suspended_emails: [f.email],
+        revoked_invite_count: 0, owner_email: owner.email,
+      });
+      expect(await memberStatus(f)).toBe('suspended+billing');
+      expect(await statusOf([fJob])).toEqual({ [fJob]: 'active' });
+      expect(await statusEvents([fJob])).toEqual([]);
     });
 
     it('a second enforce with the same limits changes nothing (a repeated webhook)', async () => {

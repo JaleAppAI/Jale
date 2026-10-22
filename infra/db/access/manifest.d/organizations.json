@@ -174,7 +174,7 @@
       "returns": "TABLE(paused_count integer, paused_titles text[], suspended_count integer, suspended_emails text[], revoked_invite_count integer, owner_email text)",
       "execute": ["jale_billing"],
       "created_by": "128",
-      "reason": "On a reducing subscription status, under the company lock: pauses the company's newest jobs (a job_status_events row each, a removed visibility event for a public one), suspends (and marks billing_suspended_at on) its most recently joined foremen and revokes its newest live invites over the limits."
+      "reason": "On a reducing subscription status, under the company lock: first suspends (and marks billing_suspended_at on) its most recently joined foremen over the seat limit, then pauses jobs over the job limit, keeping active members' oldest jobs first so a suspended foreman's jobs go before the owner's (a job_status_events row each, a removed visibility event for a public one), and revokes its newest live invites over the seats left."
     },
     "jale_billing_internal.billing_restore_org(uuid, integer, integer)": {
       "owner": "jale_billing_job_enforcer", "security": "definer", "search_path": "pg_catalog, pg_temp",

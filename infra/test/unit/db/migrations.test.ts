@@ -5298,6 +5298,20 @@ describe('database migrations', () => {
       expect(body).toContain('WHERE j.id = ANY (v_paused_ids)');
     });
 
+    it('enforce cuts seats before jobs, and keeps active members\' jobs first, oldest first', () => {
+      const body = sql.slice(sql.indexOf('CREATE FUNCTION jale_billing_internal.billing_enforce_org_limits('),
+        sql.indexOf('CREATE FUNCTION jale_billing_internal.billing_restore_org('));
+      const seatsAt = body.indexOf("SET status = 'suspended', status_changed_at = now(), billing_suspended_at = now()");
+      const activeAt = body.indexOf("COALESCE(array_agg(m.user_id) FILTER (WHERE m.status = 'active'), ARRAY[]::UUID[])\n    INTO v_members, v_active_ids");
+      const rankAt = body.indexOf('row_number() OVER (ORDER BY (j.employer_id = ANY (v_active_ids)) DESC, j.created_at ASC, j.id ASC) AS active_rank');
+      const pauseAt = body.indexOf("SET status = 'paused', updated_at = now(), billing_paused_at = now()");
+      expect(seatsAt).toBeGreaterThan(0);
+      expect(activeAt).toBeGreaterThan(seatsAt);
+      expect(rankAt).toBeGreaterThan(activeAt);
+      expect(pauseAt).toBeGreaterThan(rankAt);
+      expect(body).not.toContain('row_number() OVER (ORDER BY j.created_at ASC, j.id ASC)');
+    });
+
     it('keeps 125\'s per-person functions untouched', () => {
       expect(sql).not.toMatch(/(CREATE OR REPLACE|DROP) FUNCTION jale_billing_internal\.billing_(pause_over_limit_jobs|resume_paused_jobs)/);
     });

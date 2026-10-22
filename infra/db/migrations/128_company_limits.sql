@@ -36,14 +36,16 @@
 -- (2) BILLING BY COMPANY (caller jale_billing), owned by
 --     jale_billing_job_enforcer like 036's and 125's functions:
 --       billing_enforce_org_limits(company, job limit, seat limit): under the
---         company lock, pauses active jobs across every member beyond the
---         job limit (the oldest stay; billing_paused_at marks them, as in
---         125; one job_status_events row per paused job with the job's own
+--         company lock, first suspends active foremen beyond the seat limit
+--         (the earliest joined stay; billing_suspended_at marks them), then
+--         pauses active jobs across every member beyond the job limit:
+--         the jobs of members still active keep their slots first, the
+--         oldest first, so a suspended foreman's jobs are paused before the
+--         owner's (billing_paused_at marks them, as in 125; one
+--         job_status_events row per paused job with the job's own
 --         employer_id, and a 'removed' visibility event for a public job,
---         mirroring the resume), suspends active foremen beyond the seat
---         limit (the earliest joined stay; billing_suspended_at marks
---         them), and revokes the
---         newest live pending invites beyond the seats left.
+--         mirroring the resume), and revokes the newest live pending
+--         invites beyond the seats left.
 --       billing_restore_org(company, job limit, seat limit): under the same
 --         lock, restores marked foremen up to the seats left (earliest
 --         marked first, then earliest joined; active foremen and live
@@ -343,6 +345,7 @@ AS $$
 #variable_conflict use_column
 DECLARE
   v_members        UUID[];
+  v_active_ids     UUID[];
   v_active_foremen INTEGER;
   v_paused_ids     UUID[];
   rec              RECORD;
@@ -367,14 +370,43 @@ BEGIN
     RAISE EXCEPTION 'billing_owner_not_found' USING ERRCODE = 'P0002';
   END IF;
 
-  SELECT COALESCE(array_agg(m.user_id), ARRAY[]::UUID[]) INTO v_members
+  -- (a) Seats first: the earliest-joined active foremen keep theirs; the
+  --     most recently joined beyond the limit are suspended and marked.
+  --     Before the jobs, so the jobs know who is still active.
+  WITH ranked AS MATERIALIZED (
+    SELECT m.user_id, row_number() OVER (ORDER BY m.joined_at ASC, m.user_id ASC) AS seat_rank
+      FROM public.organization_members m
+     WHERE m.organization_id = p_organization_id AND m.role = 'foreman' AND m.status = 'active'
+  ), suspended AS (
+    UPDATE public.organization_members m
+       SET status = 'suspended', status_changed_at = now(), billing_suspended_at = now()
+      FROM ranked r
+     WHERE m.user_id = r.user_id AND r.seat_rank > p_foreman_seat_limit AND m.status = 'active'
+    RETURNING m.user_id, m.joined_at
+  )
+  SELECT count(*)::INTEGER,
+         COALESCE(array_agg(COALESCE(NULLIF(u.email, ''), '(no email on file)') ORDER BY s.joined_at DESC, s.user_id DESC),
+                  ARRAY[]::TEXT[])
+    INTO suspended_count, suspended_emails
+    FROM suspended s
+    LEFT JOIN public.users u ON u.id = s.user_id;
+
+  SELECT COALESCE(array_agg(m.user_id), ARRAY[]::UUID[]),
+         COALESCE(array_agg(m.user_id) FILTER (WHERE m.status = 'active'), ARRAY[]::UUID[])
+    INTO v_members, v_active_ids
     FROM public.organization_members m
    WHERE m.organization_id = p_organization_id;
 
-  -- (a) Jobs: the oldest active jobs across every member keep their slots;
-  --     the newest beyond the limit are paused and marked (125's mark).
+  -- (b) Jobs: every member's active jobs count, whatever their membership
+  --     status. Active members' jobs (after (a)) keep their slots first, the
+  --     oldest first; the rest are paused and marked (125's mark), so a
+  --     suspended foreman's jobs go before the owner's. billing_restore_org
+  --     resumes only active members' jobs, oldest first: the same order back.
+  --     A removed or otherwise-suspended member's active jobs still count and
+  --     rank last, and billing_restore_org does not resume them.
   WITH ranked AS MATERIALIZED (
-    SELECT j.id, row_number() OVER (ORDER BY j.created_at ASC, j.id ASC) AS active_rank
+    SELECT j.id,
+           row_number() OVER (ORDER BY (j.employer_id = ANY (v_active_ids)) DESC, j.created_at ASC, j.id ASC) AS active_rank
       FROM public.jobs j
      WHERE j.employer_id = ANY (v_members) AND j.status = 'active'
   ), paused AS (
@@ -404,26 +436,6 @@ BEGIN
       PERFORM public.enqueue_job_visibility_event(rec.id, rec.public_code, 'removed');
     END IF;
   END LOOP;
-
-  -- (b) Seats: the earliest-joined active foremen keep theirs; the most
-  --     recently joined beyond the limit are suspended and marked.
-  WITH ranked AS MATERIALIZED (
-    SELECT m.user_id, row_number() OVER (ORDER BY m.joined_at ASC, m.user_id ASC) AS seat_rank
-      FROM public.organization_members m
-     WHERE m.organization_id = p_organization_id AND m.role = 'foreman' AND m.status = 'active'
-  ), suspended AS (
-    UPDATE public.organization_members m
-       SET status = 'suspended', status_changed_at = now(), billing_suspended_at = now()
-      FROM ranked r
-     WHERE m.user_id = r.user_id AND r.seat_rank > p_foreman_seat_limit AND m.status = 'active'
-    RETURNING m.user_id, m.joined_at
-  )
-  SELECT count(*)::INTEGER,
-         COALESCE(array_agg(COALESCE(NULLIF(u.email, ''), '(no email on file)') ORDER BY s.joined_at DESC, s.user_id DESC),
-                  ARRAY[]::TEXT[])
-    INTO suspended_count, suspended_emails
-    FROM suspended s
-    LEFT JOIN public.users u ON u.id = s.user_id;
 
   -- (c) Invites: live pending invites hold seats too; the newest beyond the
   --     seats left are revoked. Expired and accepted invites are left alone.
@@ -564,7 +576,7 @@ BEGIN
   END LOOP;
 
   -- Only jobs billing paused and still paused, with an opening left:
-  -- oldest first, as the pause keeps the oldest active.
+  -- oldest first, as the pause keeps active members' oldest jobs.
   IF p_active_job_limit > v_active THEN
     SELECT COALESCE(array_agg(picked.id ORDER BY picked.created_at ASC, picked.id ASC), ARRAY[]::UUID[])
       INTO v_ids
