@@ -33,6 +33,8 @@ import { LatestMessagePanel } from '@/components/employer/LatestMessagePanel';
 import { PostJobButton } from '@/components/employer/PostJobButton';
 import { ApiError, deleteJob, getBilling, getJobs, listJobTemplates, updateJobStatus } from '@/lib/api/employer';
 import { flushPendingEmployerProfile } from '@/lib/employer-profile-flush';
+import { hasJobsDone } from '@/lib/employer-tutorial-done';
+import { useTutorial } from '@/lib/tutorials/use-tutorial';
 import type { EmployerBilling, Job, JobCreatedOutcome } from '@/lib/api/employer';
 import { errorMessageKey } from '@/lib/api/errors';
 import { isHealthyPaidPlan, planLimitModel, subscriptionSignage } from '@/lib/plan-limit';
@@ -288,6 +290,27 @@ export default function EmployerDashboardPage() {
 
     // Posted from this page's buttons or from any other employer page.
     useJobCreated(handleJobCreated);
+
+    /*
+     * The welcome tutorial (E1): asked once per page view, when the board has
+     * loaded, and it opens only for an employer with no job yet (K1.5). Its
+     * plan line reads the plan's real limit -- the same billing snapshot the
+     * usage meter shows -- and takes no number at all when billing could not
+     * be read.
+     */
+    const welcomeTutorial = useTutorial('employer_welcome', {
+        done: phase === 'ready' ? hasJobsDone(data?.jobs) : undefined,
+    });
+    const welcomeAskedRef = useRef(false);
+    useEffect(() => {
+        if (welcomeAskedRef.current || phase !== 'ready' || !data) return;
+        welcomeAskedRef.current = true;
+        if (data.billing) {
+            welcomeTutorial.maybeAutoOpen({ activeJobLimit: data.billing.activeJobLimit });
+        } else {
+            welcomeTutorial.maybeAutoOpen();
+        }
+    }, [data, phase, welcomeTutorial]);
 
     const recentJob = jobs[0];
     const timeToFillJob = jobs.find((job) =>
