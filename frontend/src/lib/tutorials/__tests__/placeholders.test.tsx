@@ -2,7 +2,6 @@ import { render, renderHook, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { EMPLOYER_TUTORIAL_IDS, WORKER_TUTORIAL_IDS } from '@/lib/api/tutorials';
 import { OverlayPresenceProvider, useOverlayPresence } from '../overlay';
-import { TutorialProgressProvider } from '../progress';
 import { useTutorial } from '../use-tutorial';
 import type { TutorialDefinition } from '../types';
 import employerWelcome from '@/components/tutorials/content/employer-welcome';
@@ -56,13 +55,11 @@ describe('useTutorial placeholder', () => {
   });
 });
 
-describe('provider and overlay placeholders', () => {
+describe('overlay placeholders', () => {
   it('render their children unchanged', () => {
     render(
       <OverlayPresenceProvider>
-        <TutorialProgressProvider>
-          <p>shell content</p>
-        </TutorialProgressProvider>
+        <p>shell content</p>
       </OverlayPresenceProvider>,
     );
 
