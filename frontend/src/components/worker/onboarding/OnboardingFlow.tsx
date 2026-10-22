@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useReducer, useRef, useState } from 'react';
+import { useEffect, useEffectEvent, useReducer, useRef, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { usePathname, useRouter } from '@/i18n/navigation';
 import { classifyError, errorMessageKey } from '@/lib/api/errors';
@@ -25,6 +25,7 @@ import {
 } from '@/lib/onboarding-flow';
 import { clearPendingReferral, readPendingReferral, validateJobId } from '@/lib/referral-return';
 import { tradeLabel } from '@/lib/worker-vocab';
+import { useTutorial } from '@/lib/tutorials/use-tutorial';
 import { Button } from '@/components/ui/button';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { OnboardingShell, type LanguageChoice } from './OnboardingHeader';
@@ -127,6 +128,23 @@ export function OnboardingFlow({
     const stuck = flow.server.lifecycle !== 'ready'
         && !isAnswerableStepKey(flow.server.run.stepKey);
     const extractionStatus = flow.server.extraction?.status ?? 'pending';
+
+    /*
+     * W1, the onboarding tutorial (K1.5: done once the run is `ready`). It is
+     * asked for ONCE per page view, and only on the first screen -- a worker
+     * resuming later in the run, or stopped on an exit panel, is past the
+     * point it explains. Whether it opens is the tutorial's decision (a
+     * record, this signal, another overlay), not this flow's.
+     */
+    const tutorial = useTutorial('worker_onboarding', { done: flow.server.lifecycle === 'ready' });
+    const tutorialAskedRef = useRef(false);
+    const askTutorial = useEffectEvent(() => tutorial.maybeAutoOpen());
+    useEffect(() => {
+        if (tutorialAskedRef.current) return;
+        if (screen !== 'terms' || flow.blocked || stuck) return;
+        tutorialAskedRef.current = true;
+        askTutorial();
+    }, [screen, flow.blocked, stuck]);
 
     // The draft is parked under the run AND the step it belongs to: a worker
     // who toggles language on `profile.location` and is then moved forward by
