@@ -107,7 +107,11 @@ export class World {
       [id, org],
     );
     // Extra cleanups run before the users are deleted, so remove the members first.
+    // Billing rows restrict their company (127), so they go before it. Matching the
+    // payer as well as the company keeps this working before 127 stamps the column.
     this.onCleanup(async () => {
+      await this.su.query(`DELETE FROM subscriptions WHERE user_id = $1 OR organization_id = $2`, [id, org]);
+      await this.su.query(`DELETE FROM billing_customers WHERE user_id = $1 OR organization_id = $2`, [id, org]);
       await this.su.query(`DELETE FROM organization_members WHERE organization_id = $1`, [org]);
       await this.su.query(`DELETE FROM organizations WHERE id = $1`, [org]);
     });

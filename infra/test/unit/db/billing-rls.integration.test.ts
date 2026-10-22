@@ -23,6 +23,7 @@
 
 import { Client } from 'pg';
 import { describeInProfiles } from './helpers/login-pool';
+import { ensureOwnerCompany } from './helpers/org-fixtures';
 
 // ---------------------------------------------------------------------------
 // Harness helpers
@@ -148,6 +149,9 @@ let otherEmployerUserId: string;
 let otherEmployerCognitoSub: string;
 let workerUserId: string;
 let workerCognitoSub: string;
+// Every fixture user this suite lets pay. The users and their companies persist across
+// runs (ensureOwnerCompany is idempotent); afterAll removes only the billing rows.
+const PAYER_SUBS = ['emp-cognito-sub-1', 'emp-cognito-sub-2', 'sub-uniqueness-test'];
 
 // ---------------------------------------------------------------------------
 // Suite setup: apply migrations, create test fixtures
@@ -190,6 +194,10 @@ maybeDescribe('billing RLS integration (migration 034)', () => {
       otherEmployerUserId = e2.rows[0].id;
       otherEmployerCognitoSub = e2.rows[0].cognito_sub;
 
+      // Both employers pay in the tests below; since 127 a payer owns a company.
+      await ensureOwnerCompany(setup, employerUserId);
+      await ensureOwnerCompany(setup, otherEmployerUserId);
+
       // worker1
       const w1 = await setup.query<{ id: string; cognito_sub: string }>(
         `INSERT INTO users (cognito_sub, user_type, whatsapp_number, created_at, updated_at)
@@ -203,6 +211,21 @@ maybeDescribe('billing RLS integration (migration 034)', () => {
       await setup.end();
     }
   }, 60_000);
+
+  afterAll(async () => {
+    if (!databaseUrl) return;
+    const cleanup = new Client({ connectionString: superuserUrl });
+    await cleanup.connect();
+    try {
+      // Only the billing rows this suite made; the payers and their companies stay.
+      await cleanup.query(
+        `DELETE FROM subscriptions WHERE user_id IN (SELECT id FROM users WHERE cognito_sub = ANY($1::text[]))`, [PAYER_SUBS]);
+      await cleanup.query(
+        `DELETE FROM billing_customers WHERE user_id IN (SELECT id FROM users WHERE cognito_sub = ANY($1::text[]))`, [PAYER_SUBS]);
+    } finally {
+      await cleanup.end();
+    }
+  });
 
   // ---------------------------------------------------------------------------
   // Catalog shape tests (static SQL assertions — no DB needed, but run inside
@@ -710,6 +733,7 @@ maybeDescribe('billing RLS integration (migration 034)', () => {
            RETURNING id`,
         );
         testUserId = r.rows[0].id;
+        await ensureOwnerCompany(setup, testUserId);
       } finally {
         await setup.end();
       }

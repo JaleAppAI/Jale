@@ -28,6 +28,7 @@
  */
 
 import { Client } from 'pg';
+import { dropCompanies, ensureOwnerCompany } from './helpers/org-fixtures';
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
 
@@ -46,6 +47,7 @@ const SUB_NEW = 'sub_test_current_b_new';
 
 maybeDescribe('subscriptions_one_current_per_user: retire before upsert', () => {
   let employerId: string;
+  let companyId: string;
 
   beforeAll(async () => {
     const setup = new Client({ connectionString: databaseUrl });
@@ -59,6 +61,8 @@ maybeDescribe('subscriptions_one_current_per_user: retire before upsert', () => 
         [COGNITO_SUB],
       );
       employerId = employer.rows[0].id;
+      // The payer owns a company, as every employer does (118; required by 127).
+      companyId = await ensureOwnerCompany(setup, employerId);
       // Leftovers from an interrupted run would themselves occupy the slot.
       await setup.query('DELETE FROM subscriptions WHERE user_id = $1', [employerId]);
     } finally {
@@ -73,6 +77,7 @@ maybeDescribe('subscriptions_one_current_per_user: retire before upsert', () => 
     try {
       await cleanup.query('DELETE FROM subscriptions WHERE user_id = $1', [employerId]);
       await cleanup.query('DELETE FROM users WHERE cognito_sub = $1', [COGNITO_SUB]);
+      await dropCompanies(cleanup, [companyId]);
     } finally {
       await cleanup.end();
     }
