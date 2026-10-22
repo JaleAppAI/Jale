@@ -17,7 +17,7 @@ import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { auditCallerFor, type AuditCaller } from '../lib/audit/caller';
 import { setAuditContext } from '../lib/audit/context';
 import { cityAnchorsFrom, listMatchedJobsForWorker, loadWorkerPreferredCities } from '../lib/job-matching';
-import { formatPayRangeLocalized, payNotSpecifiedLabel } from '../lib/job-fields';
+import { formatPayRangeLocalized, formatShiftPeriodsLocalized, payNotSpecifiedLabel } from '../lib/job-fields';
 import {
   declineLatestWorkerConversationFromButtonText,
   declineWorkerConversationFromButton,
@@ -2621,6 +2621,7 @@ async function handleJobAction(
     pay_min: number | null; pay_max: number | null; pay_interval: string | null;
     pay_raw: string | null;
     pre_application_prompts: unknown;
+    shift_periods: string[] | null;
   }>(
     // Sprint 23: `required_fields`/`optional_fields` are no longer read here.
     // Nothing at accept time consults them any more -- the stage-2 arm
@@ -2633,7 +2634,8 @@ async function handleJobAction(
             pay_max,
             pay_interval,
             pay AS pay_raw,
-            pre_application_prompts
+            pre_application_prompts,
+            shift_periods
        FROM jobs
       WHERE id = $1
         AND status = 'active'`,
@@ -2716,17 +2718,21 @@ async function handleJobAction(
  * with, and the text a job card degrades to without its ContentSid
  * (`queueReferredJobCard`). `commandIndex` is the job's 1-based position in
  * `state_context.recent_jobs`, which is what "<n> me interesa" resolves
- * against.
+ * against. A job with shift choices (128) gets one line right after the pay
+ * line ("Shifts: Day, Night" / "Turnos: Día, Noche"); a job without them
+ * reads exactly as before.
  */
 function buildJobDetailsText(
-  job: { title: string; company: string; location: string } & LocalizablePay,
+  job: { title: string; company: string; location: string; shift_periods?: unknown } & LocalizablePay,
   lang: Lang,
   commandIndex: number,
 ): string {
   const pay = localizedJobPay(job, lang);
+  const shifts = formatShiftPeriodsLocalized(job.shift_periods, lang);
+  const shiftLine = shifts === null ? '' : `\n${lang === 'es' ? 'Turnos' : 'Shifts'}: ${shifts}`;
   return lang === 'es'
-    ? `Detalles del trabajo\n\n${job.title}\n${job.company}\n${job.location}\n${pay}\n\nResponde "${commandIndex} me interesa" para aplicar.`
-    : `Job details\n\n${job.title}\n${job.company}\n${job.location}\n${pay}\n\nReply "${commandIndex} interested" to apply.`;
+    ? `Detalles del trabajo\n\n${job.title}\n${job.company}\n${job.location}\n${pay}${shiftLine}\n\nResponde "${commandIndex} me interesa" para aplicar.`
+    : `Job details\n\n${job.title}\n${job.company}\n${job.location}\n${pay}${shiftLine}\n\nReply "${commandIndex} interested" to apply.`;
 }
 
 // localizeDocList lives in lib/application-fill.ts (Task 11). Sprint 23
@@ -2757,6 +2763,7 @@ export async function queueReferredJobCard(
     id: string; title: string; company: string; location: string;
     pay_min: number | null; pay_max: number | null; pay_interval: string | null;
     pay_raw: string | null;
+    shift_periods: string[] | null;
   }>(
     `SELECT id,
             title,
@@ -2765,7 +2772,8 @@ export async function queueReferredJobCard(
             pay_min,
             pay_max,
             pay_interval,
-            pay AS pay_raw
+            pay AS pay_raw,
+            shift_periods
        FROM jobs
       WHERE id = $1
         AND status = 'active'`,

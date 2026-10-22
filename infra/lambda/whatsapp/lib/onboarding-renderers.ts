@@ -41,7 +41,7 @@ import { buildWebCompletionPayloadMessage } from '../../lib/application-web-comp
  * HERE first so that function's throw is unreachable from a renderer. */
 const STAGE_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 import { t, type Lang } from './templates';
-import { formatPayRangeLocalized, payNotSpecifiedLabel } from '../../lib/job-fields';
+import { formatPayRangeLocalized, formatShiftPeriodsLocalized, payNotSpecifiedLabel } from '../../lib/job-fields';
 
 /** Shared numeric coercion for `pay_min`/`pay_max`, which arrive from
  * different producers as either `number` (a direct SQL query) or `string`
@@ -237,10 +237,18 @@ interface DigestJob {
   payMin?: string | number | null;
   payMax?: string | number | null;
   payInterval?: string | null;
+  /** Shift choices (128): `jobs.shift_periods` off the live job row. Optional
+   * and nullable because a payload enqueued without it (the job_alert
+   * producer's, or a deferred intent from before the field) must render
+   * exactly as before. */
+  shiftPeriods?: string[] | null;
 }
 
 function buildJobAlertDigestText(lang: Lang, jobs: ReadonlyArray<DigestJob>): string {
-  const lines = jobs.map((j, i) => `${i + 1}. ${j.title} - ${j.companyName}`);
+  const lines = jobs.map((j, i) => {
+    const shifts = formatShiftPeriodsLocalized(j.shiftPeriods, lang);
+    return `${i + 1}. ${j.title} - ${j.companyName}${shifts === null ? '' : ` (${shifts})`}`;
+  });
   const header =
     lang === 'es'
       ? `Tenemos ${jobs.length} trabajo(s) para ti:`

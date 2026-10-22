@@ -1482,4 +1482,44 @@ describe('releaseWorkerReady', () => {
       expect(requests.some((r) => r.kind === 'employer_chat_single')).toBe(true);
     });
   });
+
+  // Shift choices (128, contract K2.4): the digest reads them off the live job
+  // row, like every other field it prints, so the multi-job text names them.
+  describe('shift choices in the job alert digest', () => {
+    const alertIntents = () => [
+      intentRow({ id: 'ja-1', category: 'job_alert', source_id: 'job-1', payload: { score: 2 } }),
+      intentRow({ id: 'ja-2', category: 'job_alert', source_id: 'job-2', payload: { score: 1 }, created_at: new Date(NOW.getTime() - 1000) }),
+    ];
+    const jobs = [
+      { id: 'job-1', status: 'active', title: 'Electricista', company: 'ACME', shift_periods: ['day', 'night'] },
+      { id: 'job-2', status: 'active', title: 'Plomero', company: 'ACME', shift_periods: [] },
+    ] as unknown as JobRow[];
+
+    it('reads shift_periods in the batch job read and carries them into the digest request', async () => {
+      const { client, calls } = scriptedClient({ eventStatus: 'processing', intents: alertIntents(), jobs });
+      const { render, requests } = recordingRenderer();
+
+      await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+
+      const jobRead = calls.find((c) => /FROM jobs WHERE id = ANY/.test(c.sql));
+      expect(jobRead!.sql).toMatch(/\bshift_periods\b/);
+      const digest = requests.find((r) => r.kind === 'job_alert_digest') as Extract<ReleaseRenderRequest, { kind: 'job_alert_digest' }>;
+      expect(digest.jobs.map((j) => [j.jobId, (j as unknown as { shiftPeriods?: unknown }).shiftPeriods])).toEqual([
+        ['job-1', ['day', 'night']],
+        ['job-2', []],
+      ]);
+    });
+
+    it('prints them in the released digest text', async () => {
+      const { client, outboxRows } = scriptedClient({ eventStatus: 'processing', intents: alertIntents(), jobs });
+
+      await releaseWorkerReady(client, EVENT_KEY, { renderer: createReleaseRenderer(), now: () => NOW });
+
+      const bodies = outboxRows.map((r) => r.params[1]).filter((b): b is string => typeof b === 'string');
+      expect(bodies).toContain(
+        'Tenemos 2 trabajo(s) para ti:\n1. Electricista - ACME (Día, Noche)\n2. Plomero - ACME\n'
+        + 'Responde TRABAJOS (JOBS) para ver la lista completa.',
+      );
+    });
+  });
 });
