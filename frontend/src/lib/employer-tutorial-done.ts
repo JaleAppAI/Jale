@@ -35,19 +35,18 @@ export function hasJobsDone(jobs: readonly unknown[] | null | undefined): boolea
 
 /**
  * E3: any application on any of the employer's jobs is past applied, as the
- * page's own applicants or the inbox show it. A page that already shows one
- * settles it without waiting for the inbox; a failed inbox read leaves the
- * page's data to answer alone.
+ * page's own applicants or the inbox show it. Unknown while either source is
+ * still loading; a failed inbox read leaves the page's data to answer alone.
  */
 export function applicantsTutorialDone(
     pageStatuses: readonly (ApplicationStatus | LegacyApplicationStatus)[] | null,
     inbox: InboxSignal,
 ): boolean | undefined {
     if (pageStatuses === null) return undefined;
-    if (pageStatuses.some(isPastApplied)) return true;
-    if (inbox.errorKind) return false;
+    const pageDone = pageStatuses.some(isPastApplied);
+    if (inbox.errorKind) return pageDone;
     if (inbox.loading) return undefined;
-    return inbox.items.some((item) => isPastApplied(item.application_status));
+    return pageDone || inbox.items.some((item) => isPastApplied(item.application_status));
 }
 
 /**

@@ -240,10 +240,12 @@ describe('job page: the applicants tutorial', () => {
         expect(tutorial.handle.maybeAutoOpen).not.toHaveBeenCalled();
     });
 
-    it('passes done true when an applicant on this page is past applied', () => {
+    it('passes done true when an applicant on this page is past applied, once both sources are in', () => {
         renderIntl(<EmployerJobDetailPage />);
         act(() => ready([applicant('pending', 1), applicant('details_requested', 2)]));
+        expect(tutorial.latestDone.employer_applicants).toBeUndefined();
 
+        act(() => inbox.set({ loading: false, errorKind: null, items: [] }));
         expect(tutorial.latestDone.employer_applicants).toBe(true);
     });
 

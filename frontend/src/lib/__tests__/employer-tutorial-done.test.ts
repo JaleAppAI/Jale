@@ -40,8 +40,9 @@ describe('applicantsTutorialDone', () => {
         expect(applicantsTutorialDone(null, inbox())).toBeUndefined();
     });
 
-    it('is unknown while the inbox is loading and the page shows nothing past applied', () => {
+    it('is unknown while the inbox is loading, whatever the page shows', () => {
         expect(applicantsTutorialDone(['pending', 'contacted'], inbox({ loading: true }))).toBeUndefined();
+        expect(applicantsTutorialDone(['hired'], inbox({ loading: true }))).toBeUndefined();
     });
 
     it('is done when the page shows a status past applied', () => {

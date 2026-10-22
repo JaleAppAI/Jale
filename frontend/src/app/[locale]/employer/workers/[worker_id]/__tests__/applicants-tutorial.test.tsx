@@ -182,10 +182,12 @@ describe('applicant profile: the applicants tutorial', () => {
         expect(tutorial.handle.maybeAutoOpen).toHaveBeenCalledTimes(1);
     });
 
-    it('passes done true when this application is past applied', () => {
+    it('passes done true when this application is past applied, once both sources are in', () => {
         renderIntl(<EmployerWorkerPage />);
         act(() => ready('not_interested'));
+        expect(tutorial.latestDone.employer_applicants).toBeUndefined();
 
+        act(() => inbox.set({ loading: false, errorKind: null, items: [] }));
         expect(tutorial.latestDone.employer_applicants).toBe(true);
     });
 
