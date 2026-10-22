@@ -616,3 +616,85 @@ describe('EmployerAuthForm — where the signup came from (K3.6, T-c)', () => {
         expect(JSON.parse(sessionStorage.getItem('jale.signup-source') as string)).toMatchObject({ src: null, entry: 'signup_page' });
     });
 });
+
+/*
+ * Signup copy (sprint 29, employer demo). The heading used to frame the step
+ * as "let's verify your email", and an employer asked whether they had to
+ * create an account first; the password field did not say to make a new one.
+ * The new copy is asserted as literals: it is the behaviour under test.
+ */
+describe('EmployerAuthForm — signup copy', () => {
+    async function openSignup(user: ReturnType<typeof userEvent.setup>) {
+        await user.click(screen.getByRole('button', { name: message('auth.employer.signup_link') }));
+    }
+
+    async function fillSignup(user: ReturnType<typeof userEvent.setup>, container: HTMLElement) {
+        const [company, contact, email] = screen.getAllByRole('textbox');
+        await user.type(company, 'Test Builders');
+        await user.type(contact, 'Test Owner');
+        await user.type(email, 'owner@example.com');
+        const [password, confirm] = Array.from(container.querySelectorAll<HTMLInputElement>('input[type="password"]'));
+        await user.type(password, 'GoodPass1!');
+        await user.type(confirm, 'GoodPass1!');
+        const phone = container.querySelector<HTMLInputElement>('input[type="tel"]')
+            ?? screen.getAllByRole('textbox')[3];
+        await user.type(phone, '5555550100');
+        const cityField = screen.getAllByRole('combobox').find((el) => el.tagName === 'INPUT')!;
+        await user.type(cityField, 'El Paso, TX');
+        // The service-area input is the first plain input after the city one.
+        const inputs = Array.from(container.querySelectorAll<HTMLInputElement>('input'));
+        const serviceArea = inputs.slice(inputs.indexOf(cityField as HTMLInputElement) + 1)
+            .find((el) => el.type === 'text' || el.type === '')!;
+        await user.type(serviceArea, 'West Texas');
+        await user.click(screen.getByText(message('auth.employer.trades.electrician')));
+        await user.click(screen.getByText(message('auth.employer.job_types.full_time')));
+    }
+
+    it('asks the employer to create an account, and says a code comes by email next', async () => {
+        const user = userEvent.setup();
+        render(<EmployerAuthForm />);
+        await openSignup(user);
+
+        expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Create your employer account');
+        expect(screen.getByText('Next, we’ll email you a code to confirm your address.')).toBeInTheDocument();
+    });
+
+    it('labels the new password "Create password", with "Confirm password" under it', async () => {
+        const user = userEvent.setup();
+        render(<EmployerAuthForm />);
+        await openSignup(user);
+
+        expect(screen.getByText('Create password')).toBeInTheDocument();
+        expect(screen.getByText('Confirm password')).toBeInTheDocument();
+        expect(screen.queryByText(/^Password$/)).not.toBeInTheDocument();
+    });
+
+    it('keeps "Password" on the sign-in step', () => {
+        render(<EmployerAuthForm />);
+        expect(screen.getByText(/^Password$/)).toBeInTheDocument();
+        expect(screen.queryByText('Create password')).not.toBeInTheDocument();
+    });
+
+    it('names "Create password" in the missing-fields summary', async () => {
+        const user = userEvent.setup();
+        render(<EmployerAuthForm />);
+        await openSignup(user);
+        await user.click(screen.getByRole('button', { name: new RegExp(`^${message('auth.employer.create_account')}`) }));
+
+        expect(screen.getByRole('alert')).toHaveTextContent(/Create password/);
+    });
+
+    it('on the code step, stops promising the code and asks for it', async () => {
+        const user = userEvent.setup();
+        cognito.employerSignUp.mockResolvedValueOnce(undefined);
+        const { container } = render(<EmployerAuthForm />);
+        await openSignup(user);
+        await fillSignup(user, container);
+        await user.click(screen.getByRole('button', { name: new RegExp(`^${message('auth.employer.create_account')}`) }));
+
+        expect(await screen.findByText(message('auth.employer.fields.confirmation_code'))).toBeInTheDocument();
+        expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Create your employer account');
+        expect(screen.getByText('Last step: confirm your email so you can start hiring.')).toBeInTheDocument();
+        expect(screen.queryByText('Next, we’ll email you a code to confirm your address.')).not.toBeInTheDocument();
+    });
+});

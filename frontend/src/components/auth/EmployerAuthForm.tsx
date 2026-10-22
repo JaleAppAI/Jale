@@ -58,7 +58,9 @@ const FIELD_LABEL_KEY: Record<EmployerSignupField, string> = {
     company_name: 'fields.company_name',
     contact_name: 'fields.contact_name',
     email: 'fields.email',
-    password: 'fields.password',
+    // The signup step labels this field "Create password" (sign-in keeps
+    // "Password"), and this map only feeds the signup summary.
+    password: 'fields.password_create',
     password_confirm: 'fields.password_confirm',
     phone: 'fields.phone',
     city: 'fields.city',
@@ -547,8 +549,8 @@ export default function EmployerAuthForm() {
     };
 
     // A recovery confirm is not a signup, so it must not be greeted with
-    // "Welcome to Jale" and "let's verify your email so you can start hiring" —
-    // this user already has an account and is trying to get back into it.
+    // "Create your employer account" — this user already has an account and is
+    // trying to get back into it.
     const isRecoveryConfirm = step === 'confirm' && confirmOrigin === 'signin';
     const heading =
         step === 'login' ? t('hero')
@@ -563,7 +565,10 @@ export default function EmployerAuthForm() {
         step === 'login' ? t('title')
             : step === 'forgot_request' || step === 'forgot_confirm' ? ''
                 : isRecoveryConfirm ? t('recovery_subtitle')
-                    : t('signup_subtitle');
+                    // The signup's own code step: the code has arrived, so the
+                    // "we'll email you a code" line no longer fits.
+                    : step === 'confirm' ? t('signup_confirm_subtitle')
+                        : t('signup_subtitle');
 
     return (
         <div className="flex w-full flex-col">
@@ -657,7 +662,7 @@ export default function EmployerAuthForm() {
                         <Field label={t('fields.email')} error={missingFields.includes('email') ? t('errors.required') : undefined}>
                             <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" />
                         </Field>
-                        <Field label={t('fields.password')} error={missingFields.includes('password') ? t('errors.required') : undefined}>
+                        <Field label={t('fields.password_create')} error={missingFields.includes('password') ? t('errors.required') : undefined}>
                             <PasswordInput
                                 value={password}
                                 onChange={(e) => setPassword(e.target.value)}
