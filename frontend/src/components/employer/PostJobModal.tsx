@@ -14,7 +14,7 @@ import { planLimitModel, type PlanLimitModel } from '@/lib/plan-limit';
 import {
   LANGUAGE_OPTIONS,
   type JobForm, type WorkDay,
-  initialForm, jobFormToCreatePayload, jobFormFromTemplatePayload,
+  initialForm, jobFormToCreatePayload, jobFormFromTemplatePayload, toggleShiftPeriod,
   validateStepBasics, validateStepDetails, validateFullJobForm, validateStepRequirements,
   applyLocationToJobForm,
 } from '@/lib/job-form';
@@ -835,6 +835,9 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
             onToggleDay={toggleWorkDay}
             onShiftStartChange={(value) => update('shift_start', value)}
             onShiftEndChange={(value) => update('shift_end', value)}
+            shiftPeriods={form.shift_periods}
+            onToggleShiftPeriod={(period) =>
+              setForm((current) => ({ ...current, shift_periods: toggleShiftPeriod(current.shift_periods, period) }))}
           />
           <ExperienceStepper
             value={form.required_experience_years}

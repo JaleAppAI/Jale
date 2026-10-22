@@ -61,6 +61,23 @@ export type WorkDay = typeof WORK_DAYS[number];
 export const SHIFT_PERIODS = ['day', 'evening', 'night', 'overnight'] as const;
 export type ShiftPeriod = (typeof SHIFT_PERIODS)[number];
 
+function isShiftPeriod(value: unknown): value is ShiftPeriod {
+  return typeof value === 'string' && (SHIFT_PERIODS as readonly string[]).includes(value);
+}
+
+/** Known values only, deduplicated, in canonical order (contract K2.2). */
+function canonicalShiftPeriods(values: readonly unknown[]): ShiftPeriod[] {
+  const present = new Set(values.filter(isShiftPeriod));
+  return SHIFT_PERIODS.filter((period) => present.has(period));
+}
+
+/** Adds or removes one shift choice, keeping the list in canonical order. */
+export function toggleShiftPeriod(list: readonly ShiftPeriod[], period: ShiftPeriod): ShiftPeriod[] {
+  return list.includes(period)
+    ? canonicalShiftPeriods(list.filter((item) => item !== period))
+    : canonicalShiftPeriods([...list, period]);
+}
+
 /**
  * English-canonical display strings for `deriveLegacyExpectedDuration` below.
  * Copied verbatim from `messages/en.json`'s `common.duration_bucket.*` (the
@@ -132,6 +149,8 @@ export type JobForm = {
   /** 'HH:MM' 24h, or '' when not set. May be one-sided (see migration 077). */
   shift_start: string;
   shift_end: string;
+  /** Shift choices (contract K2.2), canonical order; `[]` when none is chosen. */
+  shift_periods: ShiftPeriod[];
   /**
    * Per-certification requirement rows (job-flow redesign, FE-T2 type, FE-T3
    * form/payload wiring). Independent of the legacy `certification_doc`
@@ -160,6 +179,7 @@ export const initialForm: JobForm = {
   number_of_workers_needed: '1', trade_category: '', trade_category_other: '', required_experience_years: '',
   certifications: '', requirements: initialRequirements(),
   expected_duration_bucket: '', work_days: [], shift_start: '', shift_end: '',
+  shift_periods: [],
   certification_requirements: [],
   pre_application_prompts: [],
 };
@@ -347,6 +367,11 @@ export function deriveLegacyExpectedDuration(bucket: DurationBucket): string {
   return DURATION_BUCKET_LABELS[bucket];
 }
 
+/** English shift labels, matching messages/en.json's common.shift_periods.* (contract K2.1). */
+const SHIFT_PERIOD_LABELS: Record<ShiftPeriod, string> = {
+  day: 'Day', evening: 'Evening', night: 'Night', overnight: 'Overnight',
+};
+
 /** Canonical Mon..Sun short labels, matching messages/en.json's common.work_days.*. */
 const DAY_LABELS: Record<WorkDay, string> = {
   mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat', sun: 'Sun',
@@ -422,15 +447,32 @@ function formatHoursRange(shiftStart: string, shiftEnd: string): string {
 
 /**
  * Legacy `shift_schedule` free-text derivation from the structured
- * work_days/shift_start/shift_end fields, e.g.
- * "Mon–Tue, Thu–Fri · 7:00 AM–4:00 PM" (days-only and hours-only shapes omit
- * the missing segment and its separator entirely; '' when nothing is set).
+ * work_days/shift_start/shift_end/shift_periods fields, e.g.
+ * "Mon–Tue, Thu–Fri · 7:00 AM–4:00 PM · Day, Night". The segments are days,
+ * hours, then the shift labels in canonical order (contract K2.3); a missing
+ * segment is dropped with its separator, and '' comes back when nothing is set.
  */
-export function deriveLegacyShiftSchedule(workDays: readonly string[], shiftStart: string, shiftEnd: string): string {
+export function deriveLegacyShiftSchedule(
+  workDays: readonly string[],
+  shiftStart: string,
+  shiftEnd: string,
+  shiftPeriods: readonly string[] = [],
+): string {
   const daysPart = formatDayRanges(workDays);
   const hoursPart = formatHoursRange(shiftStart, shiftEnd);
-  if (daysPart && hoursPart) return `${daysPart} · ${hoursPart}`;
-  return daysPart || hoursPart;
+  const periodsPart = canonicalShiftPeriods(shiftPeriods).map((period) => SHIFT_PERIOD_LABELS[period]).join(', ');
+  return [daysPart, hoursPart, periodsPart].filter(Boolean).join(' · ');
+}
+
+/**
+ * Whether the form holds any structured schedule: days, a shift time, or a
+ * shift choice. When it does, the saved `shift_schedule` text is derived from
+ * them; when it does not, the loaded legacy text is passed through.
+ */
+export function hasShiftStructure(
+  form: Pick<JobForm, 'work_days' | 'shift_start' | 'shift_end' | 'shift_periods'>,
+): boolean {
+  return form.work_days.length > 0 || form.shift_start !== '' || form.shift_end !== '' || form.shift_periods.length > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -530,8 +572,6 @@ function jobFormToBasePayload(form: JobForm): BasePayload {
     ? optional_docs.filter((doc) => doc !== 'certification_doc')
     : optional_docs;
 
-  const hasShiftStructure = form.work_days.length > 0 || form.shift_start !== '' || form.shift_end !== '';
-
   return {
     title: form.title.trim(),
     location: form.location.trim(),
@@ -561,8 +601,8 @@ function jobFormToBasePayload(form: JobForm): BasePayload {
     expected_duration: form.expected_duration_bucket
       ? deriveLegacyExpectedDuration(form.expected_duration_bucket)
       : (form.expected_duration.trim() || null),
-    shift_schedule: hasShiftStructure
-      ? deriveLegacyShiftSchedule(form.work_days, form.shift_start, form.shift_end)
+    shift_schedule: hasShiftStructure(form)
+      ? deriveLegacyShiftSchedule(form.work_days, form.shift_start, form.shift_end, form.shift_periods)
       : (form.shift_schedule.trim() || null),
     transportation_required: form.transportation_required,
     // Derived, not a separate input: the legacy standalone column mirrors
@@ -608,6 +648,9 @@ function jobFormToBasePayload(form: JobForm): BasePayload {
     ...(form.work_days.length > 0 ? { work_days: [...form.work_days] } : {}),
     ...(form.shift_start ? { shift_start: form.shift_start } : {}),
     ...(form.shift_end ? { shift_end: form.shift_end } : {}),
+    // Contract K2.2 on create and template save: omitted when none is chosen.
+    // The edit payload overrides this with the exact array (see below).
+    ...(form.shift_periods.length > 0 ? { shift_periods: [...form.shift_periods] } : {}),
     ...(hasCertRequirements
       ? {
           certification_requirements: trimmedCerts.map((cert) => ({
@@ -665,6 +708,10 @@ export function jobFormToEditPayload(
   return {
     ...jobFormToBasePayload(form),
     state_region: stateTrimmed || (initialStateHadValue ? null : undefined),
+    // Contract K2.2 on update: an omitted key keeps the stored value, so the
+    // array always goes out, `[]` included -- that is how clearing every
+    // shift reaches the server.
+    shift_periods: [...form.shift_periods],
   };
 }
 
@@ -780,6 +827,7 @@ export function jobToForm(job: EmployerJobDetail): JobForm {
     work_days: (job.work_days ?? []).filter((day): day is WorkDay => (WORK_DAYS as readonly string[]).includes(day)),
     shift_start: normalizeShiftTime(job.shift_start),
     shift_end: normalizeShiftTime(job.shift_end),
+    shift_periods: canonicalShiftPeriods(job.shift_periods ?? []),
     certification_requirements: seedCertificationRequirements(job),
     // Ids preserved verbatim; malformed/absent lists degrade to no prompts.
     // NEVER re-minted here -- see `lib/pre-application-prompts.ts`'s header.

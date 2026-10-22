@@ -1,18 +1,34 @@
 import * as React from "react";
 
+/**
+ * The app's boolean toggle card.
+ *
+ * `description` (optional) adds a second, quieter line under the label. When
+ * it is given, the checkbox is named by the label alone and described by that
+ * line, so a screen reader says "Day, checkbox" and then the help, rather than
+ * one long name. `disabled` (optional) greys the card and stops the toggle.
+ * Without either prop the card renders exactly as before.
+ */
 export function CheckboxCard({
   checked,
   label,
   onChange,
+  description,
+  disabled,
 }: {
   checked: boolean;
   label: string;
   onChange: () => void;
+  description?: string;
+  disabled?: boolean;
 }) {
+  const labelId = React.useId();
+  const descriptionId = React.useId();
   return (
     <label
       className={[
-        "flex items-center gap-2 cursor-pointer select-none",
+        "flex items-center gap-2 select-none",
+        disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer",
         "rounded-[var(--radius-input)] border px-3 py-2.5 text-sm font-medium",
         "transition-[background-color,border-color,box-shadow] duration-150",
       ].join(" ")}
@@ -39,8 +55,23 @@ export function CheckboxCard({
           </svg>
         )}
       </span>
-      <input type="checkbox" checked={checked} onChange={onChange} className="sr-only" />
-      <span>{label}</span>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={onChange}
+        disabled={disabled}
+        className="sr-only"
+        aria-labelledby={description ? labelId : undefined}
+        aria-describedby={description ? descriptionId : undefined}
+      />
+      {description ? (
+        <span className="flex min-w-0 flex-col gap-0.5">
+          <span id={labelId} className="font-bold">{label}</span>
+          <span id={descriptionId} className="text-xs font-normal text-[var(--jale-ink-2)]">{description}</span>
+        </span>
+      ) : (
+        <span>{label}</span>
+      )}
     </label>
   );
 }

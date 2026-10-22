@@ -2,7 +2,7 @@ import { describe, it, expect, expectTypeOf } from 'vitest';
 import {
   applyLocationToJobForm, initialForm, jobFormToCreatePayload, jobFormToEditPayload, jobToForm, validateJobLocationFields, jobFormFromTemplatePayload, templateRowSummary, setRequirementState, type JobForm,
   DURATION_BUCKETS, WORK_DAYS, DURATION_BUCKET_LABELS, type DurationBucket,
-  SHIFT_PERIODS, type ShiftPeriod,
+  SHIFT_PERIODS, type ShiftPeriod, hasShiftStructure, toggleShiftPeriod,
   deriveLegacyExpectedDuration, deriveLegacyShiftSchedule,
   payRangeExceeds, validateJobNumbers, validateStepBasics, validateStepDetails, validateFullJobForm,
   validateStepRequirements,
@@ -565,6 +565,10 @@ describe('initialForm additive defaults', () => {
     expect(initialForm.shift_end).toBe('');
     expect(initialForm.certification_requirements).toEqual([]);
   });
+
+  it('starts with no shift chosen', () => {
+    expect((initialForm as JobForm & { shift_periods?: unknown }).shift_periods).toEqual([]);
+  });
 });
 
 describe('deriveLegacyExpectedDuration', () => {
@@ -638,6 +642,25 @@ describe('deriveLegacyShiftSchedule', () => {
 
   it('tolerates a Postgres TIME value with seconds (HH:MM:SS)', () => {
     expect(deriveLegacyShiftSchedule([], '07:00:00', '16:00:30.5')).toBe('7:00 AM–4:00 PM');
+  });
+
+  // Contract K2.3: the derived text carries the shift labels, appended after
+  // the existing days and hours, in canonical order.
+  it('appends the shift labels after the days and hours', () => {
+    const derive = deriveLegacyShiftSchedule as (...args: unknown[]) => string;
+    expect(derive(['mon', 'tue', 'wed', 'thu', 'fri'], '07:00', '16:00', ['night', 'day']))
+      .toBe('Mon–Fri · 7:00 AM–4:00 PM · Day, Night');
+  });
+
+  it('writes the shift labels alone when nothing else is set', () => {
+    const derive = deriveLegacyShiftSchedule as (...args: unknown[]) => string;
+    expect(derive([], '', '', ['overnight', 'evening'])).toBe('Evening, Overnight');
+  });
+
+  it('drops the missing segment between days and shift labels', () => {
+    const derive = deriveLegacyShiftSchedule as (...args: unknown[]) => string;
+    expect(derive(['sat'], '', '', ['day'])).toBe('Sat · Day');
+    expect(derive([], '06:00', '', ['day'])).toBe('From 6:00 AM · Day');
   });
 
   it('returns an empty string when nothing is set', () => {
@@ -927,6 +950,69 @@ describe('jobFormToBasePayload (via jobFormToCreatePayload): work_days / shift_s
     expect(payload.shift_schedule).toBe('From 7:00 AM');
     expect(payload.shift_start).toBe('07:00');
     expect('shift_end' in payload).toBe(false);
+  });
+});
+
+describe('shift choices in the form and payloads (contract K2.2)', () => {
+  const base = { ...initialForm, title: 'Job', location: 'Reno, NV', trade_category: 'concrete' } as JobForm;
+  const withShifts = (periods: string[]) => ({ ...base, shift_periods: periods }) as unknown as JobForm;
+
+  it('create omits the key when no shift is chosen', () => {
+    expect('shift_periods' in jobFormToCreatePayload(withShifts([]))).toBe(false);
+  });
+
+  it('create sends the chosen shifts as a fresh copy', () => {
+    const periods = ['day', 'night'];
+    const payload = jobFormToCreatePayload(withShifts(periods));
+    expect(payload.shift_periods).toEqual(['day', 'night']);
+    expect(payload.shift_periods).not.toBe(periods);
+  });
+
+  it('edit always sends the exact array, so clearing every shift sends []', () => {
+    expect(jobFormToEditPayload(withShifts(['evening']), { state_region: '' }).shift_periods).toEqual(['evening']);
+    const cleared = jobFormToEditPayload(withShifts([]), { state_region: '' });
+    expect('shift_periods' in cleared).toBe(true);
+    expect(cleared.shift_periods).toEqual([]);
+  });
+
+  it('a shift choice alone derives the saved shift_schedule text', () => {
+    const payload = jobFormToCreatePayload({ ...withShifts(['night', 'day']), shift_schedule: 'old text' } as JobForm);
+    expect(payload.shift_schedule).toBe('Day, Night');
+  });
+
+  it('counts shift choices as schedule structure', () => {
+    expect(hasShiftStructure(withShifts(['day']))).toBe(true);
+    expect(hasShiftStructure(withShifts([]))).toBe(false);
+    expect(hasShiftStructure({ ...withShifts([]), shift_end: '16:00' } as JobForm)).toBe(true);
+  });
+
+  it('jobToForm restores the stored shifts, canonical, known values only', () => {
+    const form = jobToForm({ ...baseJob, shift_periods: ['overnight', 'swing', 'day'] } as unknown as EmployerJobDetail);
+    expect((form as JobForm & { shift_periods?: unknown }).shift_periods).toEqual(['day', 'overnight']);
+  });
+
+  it('jobToForm reads a job from before shift choices as none chosen', () => {
+    const form = jobToForm({ ...baseJob });
+    expect((form as JobForm & { shift_periods?: unknown }).shift_periods).toEqual([]);
+  });
+
+  it('round-trips through jobToForm and the edit payload unchanged', () => {
+    const form = jobToForm({ ...baseJob, shift_periods: ['evening', 'night'] });
+    expect(jobFormToEditPayload(form, { state_region: '' }).shift_periods).toEqual(['evening', 'night']);
+  });
+
+  it('a template restores its shifts', () => {
+    const { form } = jobFormFromTemplatePayload({
+      title: 'T', location: 'Reno, NV', job_type: 'contract' as const, trade_category: 'concrete', shift_periods: ['night'],
+    });
+    expect((form as JobForm & { shift_periods?: unknown }).shift_periods).toEqual(['night']);
+  });
+
+  it('toggling keeps the list in canonical order', () => {
+    const toggle = toggleShiftPeriod as (list: readonly ShiftPeriod[], period: ShiftPeriod) => ShiftPeriod[];
+    expect(toggle([], 'night')).toEqual(['night']);
+    expect(toggle(['night'], 'day')).toEqual(['day', 'night']);
+    expect(toggle(['day', 'night'], 'day')).toEqual(['night']);
   });
 });
 

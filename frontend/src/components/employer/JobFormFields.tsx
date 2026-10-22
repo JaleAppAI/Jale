@@ -5,6 +5,7 @@ import { useTranslations } from 'next-intl';
 import {
   LANGUAGE_OPTIONS,
   type JobForm, type JobFormLocation, type WorkDay,
+  toggleShiftPeriod,
 } from '@/lib/job-form';
 import { CertificationsPicker } from '@/components/employer/CertificationsPicker';
 import { DescriptionHelper } from '@/components/employer/DescriptionHelper';
@@ -206,6 +207,8 @@ export function JobFormFields({
         onToggleDay={toggleWorkDay}
         onShiftStartChange={(value) => onUpdate('shift_start', value)}
         onShiftEndChange={(value) => onUpdate('shift_end', value)}
+        shiftPeriods={form.shift_periods}
+        onToggleShiftPeriod={(period) => onUpdate('shift_periods', toggleShiftPeriod(form.shift_periods, period))}
       />
       <ExperienceStepper
         value={form.required_experience_years}
