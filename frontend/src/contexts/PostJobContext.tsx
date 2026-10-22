@@ -16,6 +16,8 @@ import { PostJobModal } from '@/components/employer/PostJobModal';
 import { getBilling, getJobs } from '@/lib/api/employer';
 import type { EmployerBilling, Job, JobCreatedOutcome } from '@/lib/api/employer';
 import { activeJobsPreflightModel, type PlanLimitModel } from '@/lib/plan-limit';
+import { hasJobsDone } from '@/lib/employer-tutorial-done';
+import { useTutorial } from '@/lib/tutorials/use-tutorial';
 
 /**
  * "Post a job", from anywhere in the employer app.
@@ -110,8 +112,29 @@ export function PostJobProvider({ children }: { children: ReactNode }) {
 
     const isEmployer = isAuthenticated && userType === 'employer';
 
+    /*
+     * The post-job tutorial (E2) plays before the wizard for an employer with
+     * no job yet (K1.5). Whether they have one is learned from the same jobs
+     * list the gate reads: a page's published snapshot, or this provider's own
+     * read. Unknown until one of them answers, and a failed read leaves it as
+     * it was rather than claiming "no jobs".
+     */
+    const [hasJobs, setHasJobs] = useState<boolean | undefined>(undefined);
+    const postJobTutorial = useTutorial('employer_post_job', {
+        done: isEmployer ? hasJobs : undefined,
+    });
+    /*
+     * A gate that let the employer through, waiting for the tutorial step.
+     * Counted, and handled in an effect after the commit that carries the jobs
+     * the gate just read, so the tutorial judges this press by them and not by
+     * whatever it knew before the read.
+     */
+    const [wizardRequest, setWizardRequest] = useState(0);
+    const handledWizardRequestRef = useRef(0);
+
     const registerSnapshot = useCallback((snapshot: PostJobSnapshot | null) => {
         pageSnapshotRef.current = snapshot;
+        if (snapshot) setHasJobs(hasJobsDone(snapshot.jobs));
     }, []);
 
     const subscribeJobCreated = useCallback((listener: JobCreatedListener) => {
@@ -128,11 +151,18 @@ export function PostJobProvider({ children }: { children: ReactNode }) {
             snapshot?.jobs ?? null,
         );
         if (gate) {
+            // The limit dialog, and no tutorial: there is no wizard to explain.
             setPlanLimit(gate);
             return;
         }
-        setOpen(true);
+        setWizardRequest((count) => count + 1);
     }, []);
+
+    useEffect(() => {
+        if (wizardRequest === handledWizardRequestRef.current) return;
+        handledWizardRequestRef.current = wizardRequest;
+        postJobTutorial.runBeforeHost(() => setOpen(true));
+    }, [postJobTutorial, wizardRequest]);
 
     /**
      * The plan and the jobs list, for a page that does not already hold them.
@@ -143,10 +173,12 @@ export function PostJobProvider({ children }: { children: ReactNode }) {
      * means no named "pause this one instead" suggestions.
      */
     const fetchSnapshot = useCallback(async (token: string): Promise<PostJobSnapshot> => {
-        const [jobs, billing] = await Promise.all([
-            getJobs(token).catch(() => [] as Job[]),
+        const [read, billing] = await Promise.all([
+            getJobs(token).catch(() => null),
             getBilling(token).catch(() => null),
         ]);
+        if (read) setHasJobs(hasJobsDone(read));
+        const jobs = read ?? [];
         return { billing, jobs, activeCount: activeJobsIn(jobs) };
     }, []);
 
@@ -169,11 +201,12 @@ export function PostJobProvider({ children }: { children: ReactNode }) {
 
             const known = snapshot ?? pageSnapshotRef.current;
             if (known) {
-                // Synchronous whenever the page on screen is already holding
-                // the answer, so the wizard opens in the same frame as the
-                // click. That page keeps its own snapshot current; this
-                // context has no way to learn that a stored one went stale,
-                // which is exactly why it stores none.
+                // Decided without a request whenever the page on screen is
+                // already holding the answer, so the wizard opens in the same
+                // frame as the click. That page keeps its own snapshot current;
+                // this context has no way to learn that a stored one went
+                // stale, which is exactly why it stores none.
+                setHasJobs(hasJobsDone(known.jobs));
                 applySnapshot(known);
                 return;
             }
