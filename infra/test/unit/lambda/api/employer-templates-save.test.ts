@@ -243,6 +243,40 @@ describe('employer-templates-save', () => {
     expect(body.keys).toEqual(['resume']);
   });
 
+  // Date of birth is no longer offered on new jobs; existing jobs keep it.
+  it('stores a new template without date_of_birth in either tier', async () => {
+    let res = await handler(makeEvent({
+      payload: { ...BASE_PAYLOAD, required_fields: ['work_authorization', 'date_of_birth'], optional_fields: ['education'] },
+    }));
+    expect(res.statusCode).toBe(201);
+    let insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO employer_job_templates'));
+    expect(JSON.parse(insertCall[1][2])).toMatchObject({ required_fields: ['work_authorization'], optional_fields: ['education'] });
+
+    mockQuery.mockClear();
+    res = await handler(makeEvent({ payload: { ...BASE_PAYLOAD, optional_fields: ['date_of_birth'] } }));
+    expect(res.statusCode).toBe(201);
+    insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO employer_job_templates'));
+    expect(JSON.parse(insertCall[1][2]).optional_fields).toEqual([]);
+  });
+
+  it('drops date_of_birth when an existing template is saved again', async () => {
+    mockQuery.mockImplementation((sql: string) => {
+      if (sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'emp-1' }] });
+      if (sql.includes('SELECT id FROM employer_job_templates')) return Promise.resolve({ rowCount: 0, rows: [] });
+      if (sql.includes('UPDATE employer_job_templates')) return Promise.resolve({ rowCount: 1, rows: [TEMPLATE_ROW] });
+      return Promise.resolve({});
+    });
+
+    const res = await handler(makeEvent({
+      id: '3f6d3a2e-8c4b-4a1e-9d2f-1b5e6c7a8d90',
+      payload: { ...BASE_PAYLOAD, required_fields: ['date_of_birth', 'home_address'] },
+    }));
+
+    expect(res.statusCode).toBe(200);
+    const updateCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('UPDATE employer_job_templates'));
+    expect(JSON.parse(updateCall[1][1]).required_fields).toEqual(['home_address']);
+  });
+
   it('rejects an invalid optional_docs entry with 400 invalid_optional_docs', async () => {
     const res = await handler(makeEvent({ payload: { ...BASE_PAYLOAD, optional_docs: ['bogus'] } }));
     expect(res.statusCode).toBe(400);

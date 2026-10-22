@@ -2,7 +2,7 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { resolveEntitlements } from '../lib/entitlements';
 import { corsHeaders, errorMessage } from '../lib/http';
-import { JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs, parseRequiredFields } from '../lib/job-fields';
+import { JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs, parseRequiredFields, stripRetiredFields } from '../lib/job-fields';
 import { parseCityFields, parseCityFromLocation } from '../lib/city-fields';
 import { parsePreApplicationPrompts } from '../lib/pre-application-prompts';
 import { checkCompliance } from '../legal/check-compliance';
@@ -39,6 +39,10 @@ function validateTemplatePayload(raw: Record<string, unknown>):
   if (!requiredFields.ok) return { ok: false, status: 400, error: 'invalid_required_fields', extra: { valid: requiredFields.valid } };
   const optionalFields = parseRequiredFields(raw.optional_fields);
   if (!optionalFields.ok) return { ok: false, status: 400, error: 'invalid_optional_fields', extra: { valid: optionalFields.valid } };
+  // Retired field types are no longer offered on new jobs (job-fields.ts), so
+  // a template drops them when it is saved.
+  requiredFields.value = stripRetiredFields(requiredFields.value);
+  optionalFields.value = stripRetiredFields(optionalFields.value);
 
   const jobFields = parseJobFields(raw);
   if (!jobFields.ok) return { ok: false, status: 400, error: jobFields.error, extra: jobFields.valid ? { valid: jobFields.valid } : undefined };

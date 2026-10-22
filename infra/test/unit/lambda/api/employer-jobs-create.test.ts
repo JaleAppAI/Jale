@@ -419,6 +419,32 @@ describe('employer-jobs-create', () => {
     expect(mockGetDbPool).not.toHaveBeenCalled();
   });
 
+  // Date of birth is no longer offered on new jobs; existing jobs keep it.
+  // Bind params: 8 required_fields, 9 optional_fields.
+  it('creates the job without date_of_birth when it is sent as a required field', async () => {
+    const res = await handler(makeEvent({ required_fields: ['work_authorization', 'date_of_birth'], optional_fields: ['education'] }));
+    expect(res.statusCode).toBe(201);
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
+    expect(insertCall[1][8]).toEqual(['work_authorization']);
+    expect(insertCall[1][9]).toEqual(['education']);
+  });
+
+  it('creates the job without date_of_birth when it is sent as an optional field', async () => {
+    const res = await handler(makeEvent({ required_fields: ['work_authorization'], optional_fields: ['date_of_birth', 'education'] }));
+    expect(res.statusCode).toBe(201);
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
+    expect(insertCall[1][8]).toEqual(['work_authorization']);
+    expect(insertCall[1][9]).toEqual(['education']);
+  });
+
+  it('creates the job without date_of_birth when it is sent in both tiers', async () => {
+    const res = await handler(makeEvent({ required_fields: ['date_of_birth'], optional_fields: ['date_of_birth'] }));
+    expect(res.statusCode).toBe(201);
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
+    expect(insertCall[1][8]).toEqual([]);
+    expect(insertCall[1][9]).toEqual([]);
+  });
+
   it('derives work_authorization_required=true from required_fields, overriding a false legacy flag', async () => {
     const res = await handler(makeEvent({ required_fields: ['work_authorization'], work_authorization_required: false }));
     expect(res.statusCode).toBe(201);
