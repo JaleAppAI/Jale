@@ -9,7 +9,12 @@ vi.mock('@/lib/api/employer', async (importOriginal) => ({
   updateEmployerProfile: (...args: unknown[]) => updateEmployerProfile(...args),
 }));
 
+import * as flushModule from '../employer-profile-flush';
 import { loadEmployerProfileWithPendingFlush } from '../employer-profile-flush';
+
+type Flush = (token: string) => Promise<unknown>;
+const flushPending = (token: string) =>
+  (flushModule as unknown as { flushPendingEmployerProfile: Flush }).flushPendingEmployerProfile(token);
 
 const PENDING = { company_name: 'Prueba Co', hiring_trades: ['concrete'] };
 const STASH = { src: 'partner', entry: 'signup_page', capturedAt: '2026-10-14T00:00:00.000Z' };
@@ -58,5 +63,47 @@ describe('the first profile save after sign-up (K3.6)', () => {
     await expect(loadEmployerProfileWithPendingFlush('tok')).rejects.toThrow('offline');
     expect(sessionStorage.getItem('pendingEmployerProfile')).not.toBeNull();
     expect(sessionStorage.getItem('jale.signup-source')).not.toBeNull();
+  });
+});
+
+/*
+ * The dashboard flushes the same answers (a new employer now lands there, not
+ * on Profile), so the profile page and the dashboard can both ask at once --
+ * and StrictMode runs effects twice. One PATCH per pending payload, whoever
+ * asks first.
+ */
+describe('flushing the pending sign-up answers from anywhere', () => {
+  it('sends one PATCH for concurrent asks, and clears the store once it lands', async () => {
+    sessionStorage.setItem('pendingEmployerProfile', JSON.stringify(PENDING));
+    let land: (value: unknown) => void = () => {};
+    updateEmployerProfile.mockReturnValue(new Promise((resolve) => { land = resolve; }));
+
+    const first = flushPending('tok');
+    const second = flushPending('tok');
+    const fromProfile = loadEmployerProfileWithPendingFlush('tok');
+    await Promise.resolve();
+    land({ id: 'e1', company_name: 'Prueba Co' });
+    await Promise.all([first, second, fromProfile]);
+
+    expect(updateEmployerProfile).toHaveBeenCalledTimes(1);
+    expect(sessionStorage.getItem('pendingEmployerProfile')).toBeNull();
+    expect(await fromProfile).toEqual({ id: 'e1', company_name: 'Prueba Co' });
+  });
+
+  it('does nothing when there is nothing pending', async () => {
+    await expect(flushPending('tok')).resolves.toBeNull();
+    expect(updateEmployerProfile).not.toHaveBeenCalled();
+  });
+
+  it('keeps the store after a failure, and the next ask retries', async () => {
+    sessionStorage.setItem('pendingEmployerProfile', JSON.stringify(PENDING));
+    updateEmployerProfile.mockRejectedValueOnce(new Error('offline'));
+
+    await expect(flushPending('tok')).rejects.toThrow('offline');
+    expect(sessionStorage.getItem('pendingEmployerProfile')).not.toBeNull();
+
+    await flushPending('tok');
+    expect(updateEmployerProfile).toHaveBeenCalledTimes(2);
+    expect(sessionStorage.getItem('pendingEmployerProfile')).toBeNull();
   });
 });

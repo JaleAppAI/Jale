@@ -1,7 +1,6 @@
 'use client';
 import { useEffect, useState, type FormEvent, type InputHTMLAttributes, type ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
-import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { employerConfirmSignUp, employerSignIn, employerSignUp, employerForgotPassword, employerConfirmNewPassword, employerResendConfirmationCode } from '@/lib/cognito';
 import { captureSignupSource } from '@/lib/signup-source';
@@ -70,7 +69,6 @@ const FIELD_LABEL_KEY: Record<EmployerSignupField, string> = {
 };
 
 export default function EmployerAuthForm() {
-    const router = useRouter();
     const t = useTranslations('auth.employer');
     const tCommon = useTranslations('common');
     const { setTokens } = useAuth();
@@ -246,8 +244,9 @@ export default function EmployerAuthForm() {
         setIsLoading(true);
         try {
             const tokens = await employerSignIn(email, password);
+            // No navigation here: the auth page lands every fresh session (the
+            // dashboard, or `returnUrl`). A push from the form raced it.
             setTokens(tokens, 'employer');
-            router.push('/employer/profile');
         } catch (err) {
             // Never console.error the raw exception: a Cognito error object
             // carries the submitted email and the request context, and the
@@ -431,8 +430,9 @@ export default function EmployerAuthForm() {
 
         try {
             const tokens = await employerSignIn(email, password);
+            // No navigation here: the auth page lands every fresh session (the
+            // dashboard, or `returnUrl`). A push from the form raced it.
             setTokens(tokens, 'employer');
-            router.push('/employer/profile');
         } catch (err) {
             // The code has been spent, so leaving the user on the confirm step
             // would strand them behind an input that can never succeed again.

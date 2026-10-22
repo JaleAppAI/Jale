@@ -33,6 +33,7 @@ import { DashboardHero } from '@/components/employer/DashboardHero';
 import { LatestMessagePanel } from '@/components/employer/LatestMessagePanel';
 import { PostJobButton } from '@/components/employer/PostJobButton';
 import { ApiError, deleteJob, getBilling, getJobs, listJobTemplates, updateJobStatus } from '@/lib/api/employer';
+import { flushPendingEmployerProfile } from '@/lib/employer-profile-flush';
 import type { EmployerBilling, Job, JobCreatedOutcome } from '@/lib/api/employer';
 import { errorMessageKey } from '@/lib/api/errors';
 import { isHealthyPaidPlan, planLimitModel, subscriptionSignage } from '@/lib/plan-limit';
@@ -174,6 +175,21 @@ export default function EmployerDashboardPage() {
      * nothing there and one code path is better than two.
      */
     const planLimitOpenerRef = useRef<HTMLElement | null>(null);
+
+    /*
+     * A new employer lands HERE after sign-up, so the answers the sign-up form
+     * collected (company, phone, city, trades, signup source) are saved from
+     * here too, not only when Profile is opened. Best-effort and off the
+     * board's critical path: a failure keeps them in the store, and the next
+     * dashboard or profile load retries. The flush shares one request with any
+     * concurrent ask, so the profile page's own flush cannot double it.
+     */
+    useEffect(() => {
+        if (!idToken) return;
+        flushPendingEmployerProfile(idToken).catch(() => {
+            // Kept for the next load; nothing on this board depends on it.
+        });
+    }, [idToken]);
 
     /**
      * The last billing/template numbers that actually arrived. A refresh whose

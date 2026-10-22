@@ -698,3 +698,37 @@ describe('EmployerAuthForm — signup copy', () => {
         expect(screen.queryByText('Next, we’ll email you a code to confirm your address.')).not.toBeInTheDocument();
     });
 });
+
+/*
+ * One landing after sign-in and confirm. The auth page owns the redirect (to
+ * the dashboard, or to `returnUrl`); the form used to push to the profile page
+ * at the same moment, so the two navigations raced and `returnUrl` was lost.
+ */
+describe('EmployerAuthForm — leaves the landing to the page', () => {
+    it('makes no navigation after a successful sign-in', async () => {
+        const user = userEvent.setup();
+        cognito.employerSignIn.mockResolvedValueOnce({ accessToken: 'a', idToken: 'i', refreshToken: 'r' });
+        render(<EmployerAuthForm />);
+
+        await user.type(screen.getByPlaceholderText(message('auth.employer.email_label')), 'owner@example.com');
+        await user.type(screen.getByPlaceholderText(message('auth.employer.password_label')), 'GoodPass1!');
+        await user.click(screen.getByRole('button', { name: new RegExp(`^${message('auth.employer.sign_in')}`) }));
+
+        await vi.waitFor(() => expect(setTokens).toHaveBeenCalledTimes(1));
+        expect(push).not.toHaveBeenCalled();
+    });
+
+    it('makes no navigation after a confirm that signs the employer in', async () => {
+        const user = userEvent.setup();
+        render(<EmployerAuthForm />);
+        await reachConfirmStepViaSignIn(user);
+
+        cognito.employerConfirmSignUp.mockResolvedValueOnce(undefined);
+        cognito.employerSignIn.mockResolvedValueOnce({ accessToken: 'a', idToken: 'i', refreshToken: 'r' });
+        await user.type(screen.getByRole('textbox'), '123456');
+        await user.click(screen.getByRole('button', { name: new RegExp(`^${message('auth.employer.confirm_account')}`) }));
+
+        await vi.waitFor(() => expect(setTokens).toHaveBeenCalledTimes(1));
+        expect(push).not.toHaveBeenCalled();
+    });
+});

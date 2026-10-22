@@ -162,6 +162,40 @@ describe('employer auth page', () => {
         expect(replace).toHaveBeenCalledWith('/employer/dashboard');
     });
 
+    // The page is the ONE place that lands a fresh sign-in (the form makes no
+    // navigation of its own): signed out, then signed in, is exactly one move.
+    it('lands a fresh sign-in on the dashboard exactly once', () => {
+        state.isAuthenticated = false;
+        state.userType = null;
+        const { rerender } = render(<EmployerAuthPage />);
+        expect(screen.getByTestId('employer-form')).toBeInTheDocument();
+
+        state.isAuthenticated = true;
+        state.userType = 'employer';
+        rerender(<EmployerAuthPage />);
+
+        expect(replace).toHaveBeenCalledTimes(1);
+        expect(replace).toHaveBeenCalledWith('/employer/dashboard');
+        expect(push).not.toHaveBeenCalled();
+        expect(assignReturnPath).not.toHaveBeenCalled();
+    });
+
+    it('lands a fresh sign-in on the return path instead, once', () => {
+        state.isAuthenticated = false;
+        state.userType = null;
+        state.params = 'returnUrl=%2Fen%2Femployer%2Fconversations';
+        const { rerender } = render(<EmployerAuthPage />);
+
+        state.isAuthenticated = true;
+        state.userType = 'employer';
+        rerender(<EmployerAuthPage />);
+
+        expect(assignReturnPath).toHaveBeenCalledTimes(1);
+        expect(assignReturnPath).toHaveBeenCalledWith('/en/employer/conversations');
+        expect(replace).not.toHaveBeenCalled();
+        expect(push).not.toHaveBeenCalled();
+    });
+
     it('refuses an off-origin return path', () => {
         state.userType = 'employer';
         state.params = 'returnUrl=%2F%2Fevil.com%2Fes%2Femployer%2Fdashboard';
