@@ -2,7 +2,9 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
-import { resolveEntitlements } from '../lib/entitlements';
+import { resolveCompanyEntitlements } from '../lib/entitlements';
+import { readCompanyUsage } from '../lib/company-usage';
+import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
 
 const CORS_HEADERS = corsHeaders();
 
@@ -31,14 +33,31 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return response(403, { error: 'legal_required', requiredVersion: process.env.REQUIRED_TOS_VERSION, currentVersion: compliance.currentVersion });
     }
 
-    const userRes = await client.query(`SELECT id FROM users WHERE cognito_sub = $1 AND user_type = 'employer'`, [cognitoSub]);
-    if (userRes.rows.length !== 1) {
+    const actorResult = await resolveEmployerActor(client, cognitoSub);
+    if (!actorResult.ok) {
       await client.query('COMMIT');
-      return response(403, { error: 'employer_required' });
+      // compliance proved the user exists, so "not provisioned" means "not an employer".
+      if (actorResult.status === 409) return response(403, { error: 'employer_required' });
+      return employerActorFailureResponse(actorResult, CORS_HEADERS);
     }
-    const userId = String(userRes.rows[0].id);
-    const entitlements = await resolveEntitlements(client, userId);
-    const usageRes = await client.query(`SELECT count(*)::int AS active_jobs FROM jobs WHERE employer_id = $1 AND status = 'active'`, [userId]);
+    const { actor } = actorResult;
+
+    // The company's plan and company-wide usage (Phase 2): every member sees
+    // the same numbers. The owner also sees the foreman seats.
+    const entitlements = await resolveCompanyEntitlements(client, actor.organizationId);
+    const usage = await readCompanyUsage(client);
+    // A foreman's jobs list shows only their own active jobs, so the frontend
+    // adds the rest. The owner lists every member's, so it is always 0 (no
+    // subtraction across two unlocked reads that a concurrent post could skew).
+    let otherMembersActiveJobs = 0;
+    if (actor.role === 'foreman') {
+      const visibleRes = await client.query<{ active_jobs: number }>(
+        `SELECT count(*)::int AS active_jobs FROM jobs WHERE employer_id = ANY($1::uuid[]) AND status = 'active'`,
+        [actor.scopeUserIds],
+      );
+      const visibleActive = Number(visibleRes.rows[0]?.active_jobs ?? 0);
+      otherMembersActiveJobs = Math.max(0, usage.activeJobs - visibleActive);
+    }
     const planRes = await client.query(
       `SELECT display_price_minor, currency, billing_interval FROM billing_plans WHERE code = $1 AND active = true`,
       [entitlements.planCode],
@@ -47,10 +66,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const subRes = await client.query(
       `SELECT plan_code, status, current_period_start, current_period_end, cancel_at_period_end, grace_ends_at
          FROM subscriptions
-        WHERE user_id = $1
+        WHERE organization_id = $1
         ORDER BY updated_at DESC
         LIMIT 1`,
-      [userId],
+      [actor.organizationId],
     );
 
     await client.query('COMMIT');
@@ -58,7 +77,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       planCode: entitlements.planCode,
       activeJobLimit: entitlements.activeJobLimit,
       templateLimit: entitlements.templateLimit,
-      activeJobUsage: Number(usageRes.rows[0]?.active_jobs ?? 0),
+      foremanSeatLimit: entitlements.foremanSeatLimit,
+      activeJobUsage: usage.activeJobs,
+      templateUsage: usage.templates,
+      otherMembersActiveJobs,
+      role: actor.role,
+      seats: actor.role === 'owner'
+        ? { used: usage.activeForemen, limit: entitlements.foremanSeatLimit, suspended: usage.suspendedForemen }
+        : null,
       subscription: subRes.rows[0] ?? null,
       display_price_minor: planRes.rows[0].display_price_minor,
       currency: planRes.rows[0].currency,
