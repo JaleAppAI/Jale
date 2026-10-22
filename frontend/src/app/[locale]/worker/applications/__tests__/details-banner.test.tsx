@@ -234,3 +234,45 @@ describe('worker applications -- where the waiting rows sit', () => {
     expect(titles).toEqual(['Drywall Hanger', 'Rebar Tier', 'Roofer']);
   });
 });
+
+/*
+ * A row that needs details takes the worker straight to the details form:
+ * that is the one thing to do with it. Every other row still opens the job.
+ * The row link and the compact banner's link are siblings, never nested.
+ */
+describe('worker applications — a row that needs details', () => {
+  const rowFor = (title: string) => screen.getByText(title).closest('li')!;
+
+  it('links the whole row to the details form', () => {
+    seed = pageOf([
+      requested({ application_id: 'aaaaaaaa-1111-4222-8333-444444444441', job_id: 'job-1', job_title: 'Welder' }),
+      application({ application_id: 'aaaaaaaa-1111-4222-8333-444444444442', job_id: 'job-2', job_title: 'Roofer' }),
+    ]);
+    renderIntl(<WorkerApplicationsPage />);
+
+    const [welderRow] = within(rowFor('Welder')).getAllByRole('link');
+    expect(welderRow).toHaveAttribute('href', '/worker/applications/aaaaaaaa-1111-4222-8333-444444444441');
+    const [rooferRow] = within(rowFor('Roofer')).getAllByRole('link');
+    expect(rooferRow).toHaveAttribute('href', '/worker/jobs/job-2');
+  });
+
+  it('never nests one link inside another', () => {
+    seed = pageOf([requested({ job_title: 'Welder' })]);
+    const { container } = renderIntl(<WorkerApplicationsPage />);
+    expect(container.querySelector('a a')).toBeNull();
+  });
+
+  it('lists what the employer asked for on the row', () => {
+    seed = pageOf([requested({
+      job_title: 'Welder',
+      remaining_count: 2,
+      remaining: {
+        prompts: [], fields: ['date_available'], certifications: { unclaimed: [], unproven: [] }, docs: ['resume'],
+        counts: { prompts: 0, fields: 1, certifications: 0, docs: 1 }, complete: false,
+      },
+    })]);
+    renderIntl(<WorkerApplicationsPage />);
+    expect(within(rowFor('Welder')).getByText('1 question')).toBeInTheDocument();
+    expect(within(rowFor('Welder')).getByText('1 document')).toBeInTheDocument();
+  });
+});

@@ -1093,7 +1093,13 @@
       "many_cta": "See applications",
       "multi_body": "Start with the one at the top.",
       "row_left": "{count} items left",
-      "row_body": "{company} asked for your details."
+      "row_body": "{company} asked for your details.",
+      "items": {
+        "questions": "{count, plural, one {# question} other {# questions}}",
+        "certifications": "{count, plural, one {# certification} other {# certifications}}",
+        "documents": "{count, plural, one {# document} other {# documents}}"
+      },
+      "about_time": "About 5 min"
     },
     "hired_celebration": {
       "modal": {

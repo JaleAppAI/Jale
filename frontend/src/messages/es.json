@@ -1093,7 +1093,13 @@
       "many_cta": "Ver postulaciones",
       "multi_body": "Empieza por la de arriba.",
       "row_left": "Faltan {count} cosas",
-      "row_body": "{company} te pidió tus datos."
+      "row_body": "{company} te pidió tus datos.",
+      "items": {
+        "questions": "{count, plural, one {# pregunta} other {# preguntas}}",
+        "certifications": "{count, plural, one {# certificación} other {# certificaciones}}",
+        "documents": "{count, plural, one {# documento} other {# documentos}}"
+      },
+      "about_time": "Unos 5 min"
     },
     "hired_celebration": {
       "modal": {

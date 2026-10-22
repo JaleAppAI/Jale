@@ -2,6 +2,7 @@
 import { useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
+import type { RequirementsRemaining } from '@/lib/api/worker';
 
 /**
  * "An employer is waiting on you." The one thing the worker app interrupts for.
@@ -27,16 +28,26 @@ import { InlineFeedback } from '@/components/ui/inline-feedback';
  * `remainingCount` is optional because only some callers know it -- the list
  * rows carry `remaining_count`, the home banner does not. When it is absent
  * the banner says why it is here without claiming a number it cannot back up.
+ *
+ * WHAT IS ASKED, AND HOW LONG IT TAKES. A caller holding the request's own
+ * `counts` (a list row, the job page) gets a short list in its place -- "2
+ * questions · 1 document" -- where questions are the employer's prompts and
+ * fields together, because to the worker both are questions to answer. Every
+ * banner ends with "About 5 min", the W3 estimate, so a worker knows the cost
+ * before opening it.
  */
 export function DetailsRequestedBanner({
   applicationId,
   companyName,
   remainingCount,
+  counts,
   compact = false,
 }: {
   applicationId: string;
   companyName?: string | null;
   remainingCount?: number;
+  /** The request's own counts, when the caller has them; wins over `remainingCount`. */
+  counts?: RequirementsRemaining['counts'];
   /** Row-level variant: tighter, no heading line. */
   compact?: boolean;
 }) {
@@ -46,6 +57,20 @@ export function DetailsRequestedBanner({
     ? t('row_body', { company: companyName })
     : t('one_head');
 
+  const questions = counts ? counts.prompts + counts.fields : 0;
+  const items = counts
+    ? [
+      questions > 0 ? t('items.questions', { count: questions }) : null,
+      counts.certifications > 0 ? t('items.certifications', { count: counts.certifications }) : null,
+      counts.docs > 0 ? t('items.documents', { count: counts.docs }) : null,
+    ].filter((item): item is string => item !== null)
+    : [];
+  const summary = items.length > 0
+    ? items
+    : remainingCount !== undefined && remainingCount > 0
+      ? [t('row_left', { count: remainingCount })]
+      : [];
+
   return (
     <InlineFeedback tone="warning">
       <span className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
@@ -53,12 +78,16 @@ export function DetailsRequestedBanner({
           {!compact ? (
             <span className="block font-semibold text-[var(--jale-ink)]">{t('one_head')}</span>
           ) : null}
-          {remainingCount !== undefined && remainingCount > 0 ? (
-            <span className="block font-semibold text-[var(--jale-ink)]">
-              {t('row_left', { count: remainingCount })}
-            </span>
-          ) : null}
           <span className="block">{body}</span>
+          {/* One line: what is asked, then the time it takes. */}
+          <span className="block font-semibold text-[var(--jale-ink)]">
+            {[...summary, t('about_time')].map((part, index) => (
+              <span key={part}>
+                {index > 0 ? <span aria-hidden="true">{' · '}</span> : null}
+                <span>{part}</span>
+              </span>
+            ))}
+          </span>
         </span>
         <Link
           href={`/worker/applications/${applicationId}`}

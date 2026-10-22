@@ -946,10 +946,7 @@ export default function WorkerJobDetailPage() {
                   <DetailsRequestedBanner
                     applicationId={job.application_id}
                     companyName={job.company_name}
-                    remainingCount={job.remaining?.counts
-                      ? job.remaining.counts.prompts + job.remaining.counts.fields
-                        + job.remaining.counts.certifications + job.remaining.counts.docs
-                      : undefined}
+                    counts={job.remaining?.counts}
                   />
                 ) : null}
 

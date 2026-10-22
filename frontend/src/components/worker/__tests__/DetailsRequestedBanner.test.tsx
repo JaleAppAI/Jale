@@ -69,6 +69,55 @@ describe('DetailsRequestedBanner', () => {
   });
 });
 
+/*
+ * What the employer wants, in a few words, and how long it takes: "2 questions
+ * · 1 document · About 5 min". Built from the request's own counts; a caller
+ * with only a total (the home page) keeps the "{count} items left" line.
+ */
+describe('DetailsRequestedBanner — what is asked and how long it takes', () => {
+  const COUNTS = { prompts: 1, fields: 1, certifications: 0, docs: 1 };
+
+  it('lists the asked-for items from the request, questions and fields together', () => {
+    renderIntl(<DetailsRequestedBanner applicationId="app-1" companyName="Acme" counts={COUNTS} />);
+    expect(screen.getByText('2 questions')).toBeInTheDocument();
+    expect(screen.getByText('1 document')).toBeInTheDocument();
+    // A category with nothing in it is not mentioned.
+    expect(screen.queryByText(/certification/)).not.toBeInTheDocument();
+    // The list replaces the bare total.
+    expect(screen.queryByText(/items left/)).not.toBeInTheDocument();
+  });
+
+  it('says it takes about 5 minutes, with or without a list', () => {
+    const { unmount } = renderIntl(<DetailsRequestedBanner applicationId="app-1" companyName="Acme" counts={COUNTS} />);
+    expect(screen.getByText('About 5 min')).toBeInTheDocument();
+    unmount();
+    renderIntl(<DetailsRequestedBanner applicationId="app-1" companyName="Acme" remainingCount={3} />);
+    expect(screen.getByText('About 5 min')).toBeInTheDocument();
+    expect(screen.getByText(
+      interpolate(message('worker_applications.details_banner.row_left'), { count: 3 }),
+    )).toBeInTheDocument();
+  });
+
+  it('still names the employer in the compact row variant', () => {
+    renderIntl(<DetailsRequestedBanner applicationId="app-1" companyName="Acme" counts={COUNTS} compact />);
+    expect(screen.getByText(
+      interpolate(message('worker_applications.details_banner.row_body'), { company: 'Acme' }),
+    )).toBeInTheDocument();
+    expect(screen.getByText('2 questions')).toBeInTheDocument();
+  });
+
+  it('says it all in Spanish', () => {
+    renderIntl(
+      <DetailsRequestedBanner applicationId="app-1" companyName="Acme" counts={{ ...COUNTS, certifications: 2 }} />,
+      'es',
+    );
+    expect(screen.getByText('2 preguntas')).toBeInTheDocument();
+    expect(screen.getByText('2 certificaciones')).toBeInTheDocument();
+    expect(screen.getByText('1 documento')).toBeInTheDocument();
+    expect(screen.getByText('Unos 5 min')).toBeInTheDocument();
+  });
+});
+
 describe('DetailsRequestedMultiBanner', () => {
   it('counts the waiting applications and links to the list', () => {
     renderIntl(<DetailsRequestedMultiBanner count={2} />);
