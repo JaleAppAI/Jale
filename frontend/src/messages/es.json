@@ -123,7 +123,7 @@
     "profile": "Perfil",
     "home": "Inicio",
     "worker_home": "Trabajos",
-    "my_applications": "Mis aplicaciones",
+    "my_applications": "Mis postulaciones",
     "employer_jobs": "Trabajos",
     "messages": "Mensajes"
   },
@@ -1749,17 +1749,17 @@
     }
   },
   "job_share": {
-    "title": "Comparta este trabajo",
-    "subtitle": "Ayude a alguien a encontrar trabajo: comparta este empleo.",
+    "title": "Comparte este trabajo",
+    "subtitle": "Ayuda a alguien a encontrar trabajo: comparte este empleo.",
     "whatsapp": "WhatsApp",
     "sms": "Mensaje de texto",
     "facebook": "Facebook",
     "copy_link": "Copiar enlace",
     "copied": "¡Copiado!",
     "more": "Más...",
-    "error_misconfigured": "Compartir no está disponible en este momento. Intente más tarde.",
+    "error_misconfigured": "Compartir no está disponible en este momento. Inténtalo más tarde.",
     "error_not_public": "Este trabajo todavía no tiene página pública, así que no se puede compartir.",
-    "error_generic": "No pudimos compartir en este momento. Intente de nuevo."
+    "error_generic": "No pudimos compartir en este momento. Inténtalo de nuevo."
   },
   "worker_profile": {
     "title": "Mi perfil",
@@ -1945,7 +1945,7 @@
     }
   },
   "app_shell": {
-    "applications_attention_badge": "{count, plural, one {# solicitud necesita tu atención} other {# solicitudes necesitan tu atención}}",
+    "applications_attention_badge": "{count, plural, one {# postulación necesita tu atención} other {# postulaciones necesitan tu atención}}",
     "worker_workspace": "Espacio del trabajador",
     "worker_role": "Trabajador",
     "employer_role": "Empleador",
@@ -2238,7 +2238,7 @@
     "categories": {
       "sign_in": "No puedo entrar / no me llegó el código",
       "finding_jobs": "Buscar trabajos",
-      "applying": "Aplicar a un trabajo",
+      "applying": "Postularse a un trabajo",
       "uploads": "Subir documentos o fotos",
       "profile": "Mi perfil",
       "whatsapp": "Mensajes de WhatsApp",

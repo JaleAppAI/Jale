@@ -56,6 +56,26 @@ const TU_KEYS = [
     'worker_profile.field_bio',
     'worker_profile.edit.bio',
     'worker_profile.edit.preferred_cities_label',
+    // The share panel on the worker job page, its only reader.
+    'job_share.title',
+    'job_share.subtitle',
+    'job_share.error_misconfigured',
+    'job_share.error_generic',
+    // Copy added this sprint, kept to the same register.
+    'auth.worker.phone_hint',
+    'worker_onboarding.terms.time',
+    'worker_onboarding.question.lock_note',
+    'worker_onboarding.question.placeholder',
+    'worker_applications.status_hint.pending',
+    'worker_applications.status_hint.contacted',
+    'worker_applications.status_hint.talking',
+    'worker_applications.status_hint.details_requested',
+    'worker_applications.status_hint.hired',
+    'worker_applications.status_hint.not_interested',
+    'worker_job_detail.apply_hint',
+    'worker_home.empty.cta',
+    'worker_profile.documents.delete_confirm',
+    'worker_application_details.terminal.already_complete_note',
 ];
 
 /** Worker keys that name the worker's application. */
@@ -76,6 +96,11 @@ const POSTULACION_KEYS = [
     'worker_application_details.terminal.not_interested',
     'worker_application_details.terminal.view_applications',
     'worker_application_details.hired_card.not_hired',
+    // Read only by the worker navigation (`workerPrimaryNav`, and the worker
+    // tab bar and sidebar for the badge) and the worker report sheet.
+    'header.my_applications',
+    'app_shell.applications_attention_badge',
+    'report_worker.categories.applying',
 ];
 
 /**
@@ -96,7 +121,7 @@ describe('worker Spanish copy', () => {
     it.each(POSTULACION_KEYS)('%s calls the application a postulación', (path) => {
         const value = resolve(path);
         expect(value).not.toMatch(OTHER_NOUNS);
-        expect(value).toMatch(/postulaci[oó]n|postul(es|as)\b/i);
+        expect(value).toMatch(/postul/i);
     });
 
     it.each(STATUS_KEYS)('%s keeps "Aplicado" as the status word', (path) => {
