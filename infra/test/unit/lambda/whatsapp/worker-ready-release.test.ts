@@ -2,6 +2,7 @@ import { releaseWorkerReady } from '../../../../lambda/whatsapp/worker-ready-rel
 import type { ReleaseRenderRequest, ReleaseRenderedMessage } from '../../../../lambda/whatsapp/lib/onboarding-types';
 import { createReleaseRenderer } from '../../../../lambda/whatsapp/lib/onboarding-renderers';
 import { t } from '../../../../lambda/whatsapp/lib/templates';
+import { FALLBACK_BODY_KEY } from '../../../../lambda/whatsapp/lib/outbox';
 
 const WORKER_ID = 'aaaaaaaa-0000-0000-0000-000000000001';
 const EVENT_KEY = 'worker.ready:aaaaaaaa-0000-0000-0000-000000000001:1';
@@ -1048,6 +1049,51 @@ describe('releaseWorkerReady', () => {
       expect(outboxRows.map((r) => r.params[1] ?? r.params[2])).toEqual([t('v2_ready_jobs_one', 'es'), 'job_alert_es']);
     });
 
+    // Shift choices (128, contract K2.4): the card's fallback text names the
+    // job's shifts, read off the live job row; the approved job_alert template
+    // and its five variables are the same with and without them.
+    describe('shift choices on the card', () => {
+      const FALLBACK = {
+        es: (line: string) => `Tenemos 1 trabajo(s) para ti:\n${line}\nResponde TRABAJOS (JOBS) para ver la lista completa.`,
+        en: (line: string) => `We have 1 job(s) for you:\n${line}\nReply JOBS to see the full list.`,
+      } as const;
+
+      async function card(language: 'en' | 'es', shiftPeriods: string[] | undefined) {
+        const job = activeJob('job-1', { title: 'Framer' });
+        const row = shiftPeriods === undefined ? job : ({ ...job, shift_periods: shiftPeriods } as unknown as JobRow);
+        const { client, outboxRows } = scriptedClient({
+          eventStatus: 'processing', intents: [], referredJobIds: ['job-1'], jobs: [row], preferredLanguage: language,
+        });
+        await releaseWorkerReady(client, EVENT_KEY, { renderer: createReleaseRenderer(), now: () => NOW });
+        const cardRow = outboxRows.find((r) => r.params[2] === `job_alert_${language}`)!;
+        const { [FALLBACK_BODY_KEY]: fallback, ...variables } = variablesOf(cardRow);
+        return { template: cardRow.params[2], variables, fallback };
+      }
+
+      it.each(['en', 'es'] as const)('names the shifts in the card fallback (%s)', async (language) => {
+        const { fallback } = await card(language, ['night', 'day']);
+        const labels = language === 'es' ? 'Día, Noche' : 'Day, Night';
+        expect(fallback).toBe(FALLBACK[language](`1. Framer - Acme (${labels})`));
+      });
+
+      it.each([
+        ['es', []], ['en', []], ['es', undefined], ['en', undefined],
+      ] as const)('keeps the fallback exactly as before for %s with no shifts (%j)', async (language, periods) => {
+        const { fallback } = await card(language, periods === undefined ? undefined : [...periods]);
+        expect(fallback).toBe(FALLBACK[language]('1. Framer - Acme'));
+      });
+
+      it.each(['en', 'es'] as const)('sends the same template and variables 1-5 with and without shifts (%s)', async (language) => {
+        const plain = await card(language, []);
+        const withShifts = await card(language, ['overnight']);
+        expect(withShifts.template).toBe(`job_alert_${language}`);
+        expect(withShifts.template).toBe(plain.template);
+        expect(Object.keys(withShifts.variables)).toEqual(['1', '2', '3', '4', '5']);
+        expect(withShifts.variables).toEqual(plain.variables);
+        expect(withShifts.fallback).not.toBe(plain.fallback);
+      });
+    });
+
     it('no referred job: the plain welcome, exactly as before', async () => {
       const { client, outboxRows } = scriptedClient({ eventStatus: 'processing', intents: [] });
 
@@ -1480,6 +1526,46 @@ describe('releaseWorkerReady', () => {
 
       expect(finalIntents.get('ec-1')?.status).toBe('released');
       expect(requests.some((r) => r.kind === 'employer_chat_single')).toBe(true);
+    });
+  });
+
+  // Shift choices (128, contract K2.4): the digest reads them off the live job
+  // row, like every other field it prints, so the multi-job text names them.
+  describe('shift choices in the job alert digest', () => {
+    const alertIntents = () => [
+      intentRow({ id: 'ja-1', category: 'job_alert', source_id: 'job-1', payload: { score: 2 } }),
+      intentRow({ id: 'ja-2', category: 'job_alert', source_id: 'job-2', payload: { score: 1 }, created_at: new Date(NOW.getTime() - 1000) }),
+    ];
+    const jobs = [
+      { id: 'job-1', status: 'active', title: 'Electricista', company: 'ACME', shift_periods: ['day', 'night'] },
+      { id: 'job-2', status: 'active', title: 'Plomero', company: 'ACME', shift_periods: [] },
+    ] as unknown as JobRow[];
+
+    it('reads shift_periods in the batch job read and carries them into the digest request', async () => {
+      const { client, calls } = scriptedClient({ eventStatus: 'processing', intents: alertIntents(), jobs });
+      const { render, requests } = recordingRenderer();
+
+      await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+
+      const jobRead = calls.find((c) => /FROM jobs WHERE id = ANY/.test(c.sql));
+      expect(jobRead!.sql).toMatch(/\bshift_periods\b/);
+      const digest = requests.find((r) => r.kind === 'job_alert_digest') as Extract<ReleaseRenderRequest, { kind: 'job_alert_digest' }>;
+      expect(digest.jobs.map((j) => [j.jobId, (j as unknown as { shiftPeriods?: unknown }).shiftPeriods])).toEqual([
+        ['job-1', ['day', 'night']],
+        ['job-2', []],
+      ]);
+    });
+
+    it('prints them in the released digest text', async () => {
+      const { client, outboxRows } = scriptedClient({ eventStatus: 'processing', intents: alertIntents(), jobs });
+
+      await releaseWorkerReady(client, EVENT_KEY, { renderer: createReleaseRenderer(), now: () => NOW });
+
+      const bodies = outboxRows.map((r) => r.params[1]).filter((b): b is string => typeof b === 'string');
+      expect(bodies).toContain(
+        'Tenemos 2 trabajo(s) para ti:\n1. Electricista - ACME (Día, Noche)\n2. Plomero - ACME\n'
+        + 'Responde TRABAJOS (JOBS) para ver la lista completa.',
+      );
     });
   });
 });

@@ -3,6 +3,7 @@ import { handler } from '../../../../lambda/api/employer-templates-save';
 import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
 import { resolveEntitlements } from '../../../../lambda/lib/entitlements';
+import { parseJobFields } from '../../../../lambda/lib/job-fields';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
@@ -495,3 +496,54 @@ describe('employer-templates-save', () => {
     expect(JSON.parse(updateCall[1][1])).toMatchObject({ city_key: 'austin-tx', city: 'Austin', state: 'TX' });
   });
 });
+
+// Shift choices (128, contract K2.2): templates carry them through
+// parseJobFields, the parser job create runs on the same payload.
+describe('employer-templates-save: shift_periods', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.REQUIRED_TOS_VERSION = 'v1.0';
+    mockGetDbPool.mockResolvedValue({
+      connect: jest.fn().mockResolvedValue({ query: mockQuery, release: mockRelease }),
+    });
+    mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_free', activeJobLimit: 1, templateLimit: 2 });
+    mockQuery.mockImplementation((sql: string) => {
+      if (sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'emp-1' }] });
+      if (sql.includes('COUNT(*)')) return Promise.resolve({ rows: [{ template_count: 0 }] });
+      if (sql.includes('SELECT id FROM employer_job_templates')) return Promise.resolve({ rowCount: 0, rows: [] });
+      if (sql.includes('INSERT INTO employer_job_templates')) return Promise.resolve({ rows: [TEMPLATE_ROW] });
+      return Promise.resolve({});
+    });
+  });
+
+  const storedPayload = () => {
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO employer_job_templates'));
+    return JSON.parse(insertCall![1][2]) as Record<string, unknown>;
+  };
+
+  it('stores the periods canonical, and the stored payload parses back to the same periods for a new job', async () => {
+    const res = await handler(makeEvent({ payload: { ...BASE_PAYLOAD, shift_periods: ['night', 'day', 'day'] } }));
+    expect(res.statusCode).toBe(201);
+    const stored = storedPayload();
+    expect(stored.shift_periods).toEqual(['day', 'night']);
+
+    // Applying the template posts this payload to job create.
+    const reparsed = parseJobFields(stored);
+    expect(reparsed.ok && (reparsed.value as unknown as Record<string, unknown>).shift_periods).toEqual(['day', 'night']);
+  });
+
+  it('stores [] for a payload without the field', async () => {
+    const res = await handler(makeEvent({ payload: BASE_PAYLOAD }));
+    expect(res.statusCode).toBe(201);
+    expect(storedPayload().shift_periods).toEqual([]);
+  });
+
+  it('rejects an invalid value with the work_days error shape and stores nothing', async () => {
+    const res = await handler(makeEvent({ payload: { ...BASE_PAYLOAD, shift_periods: ['afternoon'] } }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'invalid_shift_periods', valid: ['day', 'evening', 'night', 'overnight'] });
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+});
+

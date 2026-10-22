@@ -1,3 +1,5 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import {
   APPLICATION_STATUSES,
   DOC_TYPES,
@@ -6,6 +8,7 @@ import {
   MAX_CERTIFICATION_FILES,
   MAX_CERTIFICATION_FILES_PER_NAME,
   REQUIRED_FIELD_TYPES,
+  SHIFT_PERIODS,
   WORK_DAYS,
   formatPayRangeLocalized,
   isReusableField,
@@ -15,6 +18,7 @@ import {
   parseRequiredFields,
   payNotSpecifiedLabel,
 } from '../../../../lambda/lib/job-fields';
+import * as jobFieldsModule from '../../../../lambda/lib/job-fields';
 
 const validBody = {
   pay_min: 25,
@@ -211,6 +215,7 @@ describe('job-fields parser', () => {
           shift_start: null,
           shift_end: null,
           certification_requirements: null,
+          shift_periods: [],
         },
       });
     });
@@ -310,6 +315,74 @@ describe('job-fields parser', () => {
     it('rejects a non-array value', () => {
       const result = parseJobFields({ ...validBody, work_days: 'mon' });
       expect(result).toEqual({ ok: false, error: 'invalid_work_days', valid: WORK_DAYS });
+    });
+  });
+
+  // Shift choices (contract K2.2): optional, stored deduplicated in
+  // SHIFT_PERIODS order, never null.
+  describe('shift_periods', () => {
+    const shiftPeriodsOf = (body: Record<string, unknown>) => {
+      const result = parseJobFields({ ...validBody, ...body });
+      return result.ok ? (result.value as unknown as Record<string, unknown>).shift_periods : result;
+    };
+
+    it('accepts a valid subset', () => {
+      expect(shiftPeriodsOf({ shift_periods: ['day', 'night'] })).toEqual(['day', 'night']);
+    });
+
+    it('accepts all four periods', () => {
+      expect(shiftPeriodsOf({ shift_periods: [...SHIFT_PERIODS] })).toEqual(['day', 'evening', 'night', 'overnight']);
+    });
+
+    it('sorts into the canonical order', () => {
+      expect(shiftPeriodsOf({ shift_periods: ['overnight', 'day', 'evening'] })).toEqual(['day', 'evening', 'overnight']);
+    });
+
+    it('folds duplicates into one entry each', () => {
+      expect(shiftPeriodsOf({ shift_periods: ['night', 'day', 'night'] })).toEqual(['day', 'night']);
+    });
+
+    it('accepts an explicit empty array', () => {
+      expect(shiftPeriodsOf({ shift_periods: [] })).toEqual([]);
+    });
+
+    it('reads as an empty array when absent', () => {
+      expect(shiftPeriodsOf({})).toEqual([]);
+    });
+
+    it.each([
+      ['an unknown value', ['day', 'afternoon']],
+      ['a non-string entry', ['day', 1]],
+      ['a null entry', ['day', null]],
+      ['a non-array value', 'day'],
+      ['an object', { day: true }],
+      ['an explicit null', null],
+      ['five items', ['day', 'evening', 'night', 'overnight', 'day']],
+      ['five copies of one value', ['day', 'day', 'day', 'day', 'day']],
+    ])('rejects %s and echoes the valid list', (_label, value) => {
+      expect(parseJobFields({ ...validBody, shift_periods: value })).toEqual({
+        ok: false,
+        error: 'invalid_shift_periods',
+        valid: ['day', 'evening', 'night', 'overnight'],
+      });
+    });
+
+    it('uses the same error shape as work_days', () => {
+      const shiftError = parseJobFields({ ...validBody, shift_periods: 'day' });
+      const workDaysError = parseJobFields({ ...validBody, work_days: 'mon' });
+      expect(shiftError.ok).toBe(false);
+      expect(workDaysError.ok).toBe(false);
+      expect(Object.keys(shiftError).sort()).toEqual(Object.keys(workDaysError).sort());
+      expect(shiftError).toMatchObject({ error: 'invalid_shift_periods', valid: SHIFT_PERIODS });
+    });
+
+    it('needs no shift times, and shift times need no periods', () => {
+      expect(shiftPeriodsOf({ shift_periods: ['evening'] })).toEqual(['evening']);
+      const timesOnly = parseJobFields({ ...validBody, shift_start: '07:00', shift_end: '15:00' });
+      expect(timesOnly).toEqual({
+        ok: true,
+        value: expect.objectContaining({ shift_start: '07:00', shift_end: '15:00', shift_periods: [] }),
+      });
     });
   });
 
@@ -561,6 +634,13 @@ describe('EXPECTED_DURATION_BUCKETS / WORK_DAYS (077 CHECK byte-match)', () => {
   it('WORK_DAYS byte-matches the jobs_work_days_valid CHECK', () => {
     expect(WORK_DAYS).toEqual(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']);
   });
+
+  it('SHIFT_PERIODS matches the jobs_shift_periods_valid CHECK of 128', () => {
+    const sql = fs.readFileSync(path.join(__dirname, '../../../../db/migrations/128_job_shift_periods.sql'), 'utf8');
+    const literal = `ARRAY[${SHIFT_PERIODS.map((p) => `'${p}'`).join(', ')}]::text[]`;
+    expect(sql).toContain(literal);
+    expect(sql).toContain(`cardinality(shift_periods) <= ${SHIFT_PERIODS.length}`);
+  });
 });
 
 describe('parseOptionalCoordinates', () => {
@@ -663,6 +743,46 @@ describe('payNotSpecifiedLabel', () => {
   it('returns the localized "not specified" placeholder for each locale', () => {
     expect(payNotSpecifiedLabel('en')).toBe('Pay not specified');
     expect(payNotSpecifiedLabel('es')).toBe('Pago no especificado');
+  });
+});
+
+// Contract K2.1: the shift labels the WhatsApp text prints, identical to the
+// web's. Read through the module object so a missing export is a value
+// mismatch here rather than a compile error.
+describe('shift period labels', () => {
+  const mod = jobFieldsModule as unknown as Record<string, unknown>;
+  type Formatter = (value: unknown, locale: 'en' | 'es') => string | null;
+  const format: Formatter = (value, locale) => {
+    const fn = mod.formatShiftPeriodsLocalized;
+    return typeof fn === 'function' ? (fn as Formatter)(value, locale) : 'formatShiftPeriodsLocalized is not exported';
+  };
+
+  it('labels every period in both languages, exactly as the contract lists them', () => {
+    expect(mod.SHIFT_PERIOD_LABELS).toEqual({
+      en: { day: 'Day', evening: 'Evening', night: 'Night', overnight: 'Overnight' },
+      es: { day: 'Día', evening: 'Tarde', night: 'Noche', overnight: 'Madrugada' },
+    });
+  });
+
+  it('joins the labels in canonical order', () => {
+    expect(format(['night', 'day'], 'en')).toBe('Day, Night');
+    expect(format(['night', 'day'], 'es')).toBe('Día, Noche');
+    expect(format([...SHIFT_PERIODS], 'es')).toBe('Día, Tarde, Noche, Madrugada');
+  });
+
+  it('prints each period once and skips values outside the set', () => {
+    expect(format(['evening', 'evening', 'afternoon', 7], 'en')).toBe('Evening');
+  });
+
+  it.each([
+    ['an empty array', []],
+    ['undefined', undefined],
+    ['null', null],
+    ['a string', 'day'],
+    ['only unknown values', ['afternoon']],
+  ])('returns null for %s', (_label, value) => {
+    expect(format(value, 'en')).toBeNull();
+    expect(format(value, 'es')).toBeNull();
   });
 });
 

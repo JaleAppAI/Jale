@@ -402,4 +402,35 @@ describe('worker-jobs-detail', () => {
       expect(b.missing_docs).toEqual(['resume']);
     });
   });
+
+  // Shift choices (128, contract K2.4): returned wherever work_days is, as an
+  // array, never null.
+  describe('shift_periods', () => {
+    const respondWith = (job: Record<string, unknown>) => {
+      mockQuery.mockImplementation((q: string) => {
+        if (q.trim().startsWith('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-id' }] });
+        if (q.includes('FROM jobs')) return Promise.resolve({ rows: [job] });
+        if (q.includes('FROM job_applications')) return Promise.resolve({ rows: [] });
+        return Promise.resolve({ rows: [] });
+      });
+    };
+    const base = { id: 'job-1', title: 'T', location: 'L', job_type: 'full-time', description: 'D', required_docs: [], created_at: 'ts', company_name: 'Acme' };
+
+    it('selects the column and returns the stored periods', async () => {
+      respondWith({ ...base, shift_periods: ['evening', 'overnight'] });
+      const res = await handler(baseEvent);
+      expect(res.statusCode).toBe(200);
+      const jobsSql = mockQuery.mock.calls.find(([q]) => String(q).includes('FROM jobs'))?.[0];
+      expect(jobsSql).toContain('j.shift_periods');
+      expect(JSON.parse(res.body).shift_periods).toEqual(['evening', 'overnight']);
+    });
+
+    it('returns [] when the row carries no array', async () => {
+      for (const shift_periods of [null, undefined]) {
+        respondWith({ ...base, shift_periods });
+        const res = await handler(baseEvent);
+        expect(JSON.parse(res.body).shift_periods).toEqual([]);
+      }
+    });
+  });
 });

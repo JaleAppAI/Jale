@@ -53,6 +53,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          GREATEST(number_of_workers_needed - workers_hired, 0) AS open_count,
          trade_category, required_experience_years, required_experience_months, certifications,
          trade_category_other, expected_duration_bucket, work_days, shift_start, shift_end, certification_requirements,
+         shift_periods,
          public_code, public_listing_enabled,
          city_key, city, state, latitude::float8 AS latitude, longitude::float8 AS longitude,
          (SELECT COUNT(*)::int FROM job_applications WHERE job_id = $1) AS applicant_count
@@ -82,6 +83,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         optional_docs: Array.isArray(job.optional_docs) ? job.optional_docs : [],
         required_fields: Array.isArray(job.required_fields) ? job.required_fields : [],
         optional_fields: Array.isArray(job.optional_fields) ? job.optional_fields : [],
+        // Shift choices (128, contract K2.2): always an array, never null.
+        shift_periods: Array.isArray(job.shift_periods) ? job.shift_periods : [],
       }),
     };
   } catch (err) {

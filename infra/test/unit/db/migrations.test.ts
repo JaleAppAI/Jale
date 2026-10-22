@@ -164,6 +164,7 @@ describe('database migrations', () => {
       '125',
       '126',
       '127',
+      '128',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -5140,6 +5141,66 @@ describe('database migrations', () => {
         "migration 127: a user_tutorial_progress policy is not the caller''s own row for jale_api",
         'migration 127: user_tutorial_progress.user_id must reference users(id) ON DELETE CASCADE',
       ]) expect(closing).toContain(message);
+    });
+  });
+
+  // Sprint 29 (BE-2, contract K2): the job's shift choices. On RDS the
+  // migration's own DO blocks are the only runtime check; these literals pin
+  // that they stay strict. The DB pins are in
+  // job-shift-periods.integration.test.ts.
+  describe('128 adds jobs.shift_periods with its CHECK and the public page grant', () => {
+    const file = '128_job_shift_periods.sql';
+    const text = () => fs.readFileSync(path.join(migrationsDir, file), 'utf8');
+    const code = () => text().replace(/--[^\n]*/g, '');
+
+    it('runs after 127 as jale_admin in one transaction, ASCII only, with a lock timeout first', () => {
+      const sql = text();
+      expect(sql).toContain('-- Run manually AFTER 127,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n');
+      expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+      expect(code()).toMatch(/^[\x00-\x7F]*$/);
+      expect(sql.indexOf("SET LOCAL lock_timeout = '5s';")).toBeGreaterThan(sql.indexOf('BEGIN;'));
+      expect(sql.indexOf('DO $$')).toBeGreaterThan(sql.indexOf("SET LOCAL lock_timeout = '5s';"));
+      expect(code()).toContain("IF current_user <> 'jale_admin' THEN");
+      expect(sql).toContain('DEPLOY ORDER: apply this migration BEFORE deploying the code.');
+    });
+
+    it('adds the column NOT NULL with an empty default, and its one-dimension CHECK, idempotently', () => {
+      const sql = code();
+      expect(sql).toContain("ADD COLUMN IF NOT EXISTS shift_periods TEXT[] NOT NULL DEFAULT '{}';");
+      expect(sql).toContain('DROP CONSTRAINT IF EXISTS jobs_shift_periods_valid;');
+      expect(sql).toContain(
+        "ADD CONSTRAINT jobs_shift_periods_valid\n  CHECK (shift_periods <@ ARRAY['day', 'evening', 'night', 'overnight']::text[]\n"
+        + '         AND cardinality(shift_periods) <= 4\n'
+        + '         AND (array_ndims(shift_periods) IS NULL OR array_ndims(shift_periods) = 1));',
+      );
+      expect(sql.indexOf('DROP CONSTRAINT IF EXISTS jobs_shift_periods_valid;'))
+        .toBeLessThan(sql.indexOf('ADD CONSTRAINT jobs_shift_periods_valid'));
+    });
+
+    it('grants the column to the public page login only, and changes nothing else', () => {
+      const sql = code();
+      expect(sql.match(/^\s*GRANT /gm)).toHaveLength(1);
+      expect(sql).toContain('GRANT SELECT (shift_periods) ON public.jobs TO jale_public_jobs;');
+      expect(sql).not.toMatch(/^\s*REVOKE /m);
+      expect(sql).not.toMatch(/CREATE POLICY|DROP POLICY|CREATE TABLE|CREATE (OR REPLACE )?FUNCTION|SECURITY DEFINER|UPDATE public\.jobs|SET ROLE/);
+      expect(sql).not.toMatch(/jale_job_digest[^']*ON public\.jobs/);
+    });
+
+    it('closes by re-reading the column, the CHECK text and every reader of the column', () => {
+      const sql = text();
+      expect(sql).toContain("v_default IS DISTINCT FROM '''{}''::text[]'");
+      expect(sql).toContain(
+        "'CHECK (((shift_periods <@ ARRAY[''day''::text, ''evening''::text, ''night''::text, ''overnight''::text]) "
+        + "AND (cardinality(shift_periods) <= 4) "
+        + "AND ((array_ndims(shift_periods) IS NULL) OR (array_ndims(shift_periods) = 1))))'",
+      );
+      expect(sql).toContain("pg_catalog.has_column_privilege('jale_public_jobs', 'public.jobs', 'shift_periods', 'SELECT')");
+      expect(sql).toContain("pg_catalog.has_table_privilege('jale_public_jobs', 'public.jobs', 'SELECT')");
+      expect(sql).toContain("ARRAY['jale_api', 'jale_whatsapp', 'jale_matching']");
+      expect(sql).toContain("pg_catalog.has_column_privilege('jale_job_digest', 'public.jobs', 'shift_periods', 'SELECT')");
+      expect(sql).toContain('migration 128: jale_job_digest can read jobs.shift_periods');
+      expect(sql.indexOf('-- \u2500\u2500 4. Closing check')).toBeLessThan(sql.indexOf('COMMIT;'));
     });
   });
 });

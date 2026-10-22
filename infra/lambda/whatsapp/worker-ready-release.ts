@@ -35,6 +35,9 @@ export interface ReleaseJobSummary {
   payMin?: number | null;
   payMax?: number | null;
   payInterval?: string | null;
+  /** Shift choices (128), off the same live row, as on onboarding-types.ts's
+   * job_alert_digest entries. */
+  shiftPeriods?: string[] | null;
 }
 
 export interface ReleaseDeps {
@@ -349,8 +352,9 @@ export async function releaseWorkerReady(
           // let the renderer show localized pay text instead of the
           // English-only `pay` string; `pay` stays the raw legacy fallback.
           pay_min: number | null; pay_max: number | null; pay_interval: string | null;
+          shift_periods: string[] | null;
         }>(
-          `SELECT id, status, title, COALESCE(company, 'Jale') AS company, location, pay, pay_min, pay_max, pay_interval
+          `SELECT id, status, title, COALESCE(company, 'Jale') AS company, location, pay, pay_min, pay_max, pay_interval, shift_periods
              FROM jobs WHERE id = ANY($1::uuid[])`,
           [jobIdsToLoad],
         )
@@ -659,6 +663,7 @@ export async function releaseWorkerReady(
           payMin: job.pay_min,
           payMax: job.pay_max,
           payInterval: job.pay_interval,
+          shiftPeriods: job.shift_periods,
         },
       },
       intents: [intent],
@@ -700,6 +705,7 @@ export async function releaseWorkerReady(
         payMin: job.pay_min,
         payMax: job.pay_max,
         payInterval: job.pay_interval,
+        shiftPeriods: job.shift_periods,
       };
     });
     renderPlan.push({

@@ -84,6 +84,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       work_days?: string[] | null;
       shift_start?: string | null;
       shift_end?: string | null;
+      shift_periods?: string[];
       certification_requirements?: { name: string; tier: 'required' | 'optional'; proof_required: boolean }[] | null;
       pre_application_prompts?: { id?: string; text: string }[] | null;
       city_key?: string;
@@ -294,6 +295,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       : JSON.stringify(jobFields.value.certification_requirements);
 
     // Sprint 28: appended last ($36), for the same positional reason as 077's.
+    // Sprint 29 (128): shift_periods follows it as $37, for the same reason.
     const templateId = await ownTemplateId(client, body.template_id, userId);
 
     const result = await client.query(
@@ -333,11 +335,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          shift_end,
          certification_requirements,
          pre_application_prompts,
-         created_from_template_id
+         created_from_template_id,
+         shift_periods
        )
        VALUES (
          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::date, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
-         $29, $30, $31, $32::time, $33::time, $34::jsonb, $35::jsonb, $36
+         $29, $30, $31, $32::time, $33::time, $34::jsonb, $35::jsonb, $36, $37
        )
        RETURNING id, title, location, pay, job_type, status, required_docs, optional_docs, required_fields, optional_fields, created_at,
          pay_min, pay_max, pay_interval, start_date, expected_duration, shift_schedule,
@@ -346,7 +349,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          GREATEST(number_of_workers_needed - workers_hired, 0) AS open_count,
          trade_category, required_experience_years, required_experience_months, certifications,
          city_key, city, state, state_region,
-         trade_category_other, expected_duration_bucket, work_days, shift_start, shift_end, certification_requirements, pre_application_prompts`,
+         trade_category_other, expected_duration_bucket, work_days, shift_start, shift_end, certification_requirements, pre_application_prompts,
+         shift_periods`,
       [
         userId,
         title.trim(),
@@ -390,6 +394,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         // certification_requirements has to dodge above cannot arise here.
         JSON.stringify(pre_application_prompts),
         templateId,
+        // NOT NULL DEFAULT '{}' (128): parseJobFields returns [] when the
+        // body omits it, never null.
+        jobFields.value.shift_periods,
       ],
     );
     const job = result.rows[0];
