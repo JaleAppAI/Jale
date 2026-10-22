@@ -200,7 +200,7 @@ describe('worker job detail — the facts card', () => {
             [t('shift_schedule'), 'Mon, Tue, Wed · 7:00 AM – 4:00 PM'],
             [t('expected_duration'), message('common.duration_bucket.1_3m')],
             [t('start_date'), 'June 15, 2026'],
-            [t('openings'), '1/3'],
+            [t('openings'), '1 of 3 spots open'],
             [t('facts.location'), 'Austin, TX'],
             [t('trade'), message('employer_dashboard.modal.trade.drywall')],
             [t('required_experience'), '3 years'],

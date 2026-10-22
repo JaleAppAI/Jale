@@ -1278,10 +1278,11 @@
       "part_time": "Medio tiempo",
       "contract": "Contrato"
     },
-    "openings_count": "{open}/{total} disponibles",
+    "openings_count": "{open} de {total} lugares disponibles",
     "empty": {
       "title": "No hay trabajos publicados ahora",
-      "body": "Los empleadores publican trabajos nuevos cada semana. Vuelva pronto, o mantenga su perfil y sus ciudades al día para que los mejores le lleguen primero."
+      "body": "Los empleadores publican trabajos nuevos cada semana. Vuelva pronto, o mantenga su perfil y sus ciudades al día para que los mejores le lleguen primero.",
+      "cta": "Elige tus ciudades"
     },
     "empty_filtered": {
       "title": "Ningún trabajo coincide con esta búsqueda",
@@ -1305,6 +1306,7 @@
     "expected_duration": "Duración",
     "shift_schedule": "Horario",
     "openings": "Vacantes",
+    "openings_value": "{open} de {total} lugares disponibles",
     "required_experience": "Experiencia",
     "posted": "Publicado",
     "upload_prompt": "Sube los documentos que faltan en tu perfil.",

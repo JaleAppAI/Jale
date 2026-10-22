@@ -97,3 +97,27 @@ describe('WorkerJobCard — a referred job carries no tag', () => {
         expect(() => message('match.reasons.referred_job', 'es')).toThrow();
     });
 });
+
+/*
+ * Openings read as words: "2/5 open" made workers ask whether two people were
+ * hired or two spots were left. The board copy says which.
+ */
+describe('WorkerJobCard — spots open', () => {
+    it('says how many of the spots are still open', () => {
+        renderIntl(<WorkerJobCard job={job({ open_count: 2, number_of_workers_needed: 5 })} href="/worker/jobs/job-1" />);
+        expect(screen.getByText('2 of 5 spots open')).toBeInTheDocument();
+    });
+
+    it('says it in Spanish', () => {
+        renderIntl(
+            <WorkerJobCard job={job({ open_count: 2, number_of_workers_needed: 5 })} href="/worker/jobs/job-1" />,
+            'es',
+        );
+        expect(screen.getByText('2 de 5 lugares disponibles')).toBeInTheDocument();
+    });
+
+    it('says nothing about spots when the job does not carry the counts', () => {
+        renderIntl(<WorkerJobCard job={job({ open_count: null, number_of_workers_needed: 5 })} href="/worker/jobs/job-1" />);
+        expect(screen.queryByText(/spots open/)).not.toBeInTheDocument();
+    });
+});

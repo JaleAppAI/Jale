@@ -680,7 +680,9 @@ export default function WorkerJobDetailPage() {
         key: 'openings',
         label: t('openings'),
         value: (
-          <span className="tabular-nums">{`${job.open_count ?? 0}/${job.number_of_workers_needed}`}</span>
+          <span className="tabular-nums">
+            {t('openings_value', { open: job.open_count ?? 0, total: job.number_of_workers_needed })}
+          </span>
         ),
       });
     }

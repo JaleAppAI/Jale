@@ -1278,10 +1278,11 @@
       "part_time": "Part-time",
       "contract": "Contract"
     },
-    "openings_count": "{open}/{total} open",
+    "openings_count": "{open} of {total} spots open",
     "empty": {
       "title": "No jobs posted right now",
-      "body": "Employers post new jobs every week. Check back soon, or keep your profile and cities up to date so the right ones reach you first."
+      "body": "Employers post new jobs every week. Check back soon, or keep your profile and cities up to date so the right ones reach you first.",
+      "cta": "Pick your cities"
     },
     "empty_filtered": {
       "title": "No jobs match this search",
@@ -1305,6 +1306,7 @@
     "expected_duration": "Duration",
     "shift_schedule": "Shift",
     "openings": "Openings",
+    "openings_value": "{open} of {total} spots open",
     "required_experience": "Experience",
     "posted": "Posted",
     "upload_prompt": "Upload missing documents in your profile.",
