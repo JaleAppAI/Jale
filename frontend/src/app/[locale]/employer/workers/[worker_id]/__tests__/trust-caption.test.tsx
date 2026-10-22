@@ -97,8 +97,8 @@ import EmployerWorkerPage from '../page';
 function profile(overrides: Partial<WorkerProfile> = {}): WorkerProfile {
   return {
     worker_id: WORKER_ID,
-    full_name: 'Marta Reyes',
-    phone: '+15125550143',
+    full_name: 'Test Worker',
+    phone: null,
     skills: ['Conduit bending'],
     availability: 'full_time',
     years_experience: 9,
