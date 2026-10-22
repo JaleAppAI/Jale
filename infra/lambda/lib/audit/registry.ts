@@ -110,7 +110,9 @@ export const ACCESS_SURFACES = {
   },
   'employer.applicants_overview': {
     handlers: ['api/employer-applicants-overview.ts'],
-    categories: ['profile', 'trust_assessments'],
+    // details_status is derived from the application answers and the job's
+    // document records, so both are named although only the status is returned.
+    categories: ['profile', 'trust_assessments', 'application_answers', 'documents'],
     recordType: 'job_application',
   },
   'employer.inbox': {

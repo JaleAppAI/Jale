@@ -58,7 +58,7 @@ describe('the request surface registry', () => {
       'employer.worker_posts': ['api/employer-worker-posts.ts', 'posts', 'worker_post'],
       'employer.job_applicants': ['api/employer-job-applicants.ts', 'application_answers,contact_details,profile', 'job_application'],
       'employer.job_candidates': ['api/employer-job-candidates.ts', 'contact_details,profile,trust_assessments', 'user'],
-      'employer.applicants_overview': ['api/employer-applicants-overview.ts', 'profile,trust_assessments', 'job_application'],
+      'employer.applicants_overview': ['api/employer-applicants-overview.ts', 'application_answers,documents,profile,trust_assessments', 'job_application'],
       'employer.inbox': ['api/employer-inbox.ts', 'conversations', 'job_conversation'],
       'employer.conversations_list': ['api/employer-conversations-list.ts', 'conversations', 'job_conversation'],
       'employer.conversation_detail': ['api/employer-conversations-detail.ts', 'conversations', 'job_conversation'],
