@@ -1291,7 +1291,7 @@
     },
     "no_city_jobs": "Nada en sus ciudades en este momento.",
     "applications_error": "No pudimos cargar sus solicitudes. Recargue la página para ver los avisos de sus empleadores.",
-    "required_docs_label": "Documentos necesarios",
+    "docs_later_label": "El empleador puede pedirlos después",
     "results_count": "{count, plural, one {# empleo encontrado} other {# empleos encontrados}}",
     "job_type": {
       "full-time": "40 hrs/sem",
@@ -1336,8 +1336,10 @@
       "body": "El empleador dejó de aceptar postulaciones para esta publicación. Hay otros trabajos abiertos."
     },
     "page_title": "Detalles del empleo",
-    "doc_ok": "Subido",
+    "doc_ok": "Guardado",
     "doc_missing": "Falta",
+    "doc_later": "Después",
+    "docs_later": "El empleador puede pedirlos después, solo si quiere contratarte. No los necesitas para postularte.",
     "job_type": {
       "full-time": "Tiempo completo",
       "part-time": "Medio tiempo",
@@ -1423,7 +1425,8 @@
     "transportation": "Transporte",
     "work_authorization": "Autorización de trabajo",
     "yes": "Requerido",
-    "required_docs": "Documentos necesarios para postularte",
+    "docs_later": "El empleador puede pedirlos después",
+    "doc_later": "Después",
     "doc_resume": "Currículum",
     "doc_driver_license": "Licencia de conducir",
     "doc_ssn": "Tarjeta de seguro social / ITIN",

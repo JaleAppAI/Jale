@@ -230,7 +230,17 @@ describe('public job page — the facts card', () => {
             `OSHA 10 · ${message('worker_job_detail.what_you_need.proof_needed')}, ${required}`,
             `Scaffold, ${message('job_requirements.states.optional')}`,
         ]);
-        expect(chipsUnder(t('required_docs'))).toEqual([`${t('doc_resume')}, ${required}`]);
+        // Documents never stop anyone applying: the row says the employer may
+        // ask for them later, and each one reads "Later", not "Required".
+        expect(chipsUnder(t('docs_later'))).toEqual([`${t('doc_resume')}, ${t('doc_later')}`]);
+    });
+
+    it('states the documents as a later ask in Spanish too', async () => {
+        await renderPage(fullJob(), 'es');
+        const row = screen.getByRole('heading', { level: 3, name: message('public_job.docs_later', 'es') }).parentElement!;
+        expect(Array.from(row.querySelectorAll('li')).map((chip) => chip.textContent)).toEqual([
+            `${message('public_job.doc_resume', 'es')}, ${message('public_job.doc_later', 'es')}`,
+        ]);
     });
 
     it('renders the description under a plain About label, the date in the header', async () => {
@@ -281,7 +291,7 @@ describe('public job page — the facts card', () => {
             expect(screen.queryByText(t('pay_range'))).toBeNull();
             expect(screen.queryByRole('heading', { level: 3, name: t('facts.requirements') })).toBeNull();
             expect(screen.queryByRole('heading', { level: 3, name: t('certifications') })).toBeNull();
-            expect(screen.queryByRole('heading', { level: 3, name: t('required_docs') })).toBeNull();
+            expect(screen.queryByRole('heading', { level: 3, name: t('docs_later') })).toBeNull();
             expect(screen.queryByRole('heading', { level: 3, name: t('about_job') })).toBeNull();
         });
 

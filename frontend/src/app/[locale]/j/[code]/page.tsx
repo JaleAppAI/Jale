@@ -491,11 +491,14 @@ export default async function PublicJobPage({ params }: PageProps) {
     });
   }
 
+  // Documents never stop anyone applying: the employer asks for them only if
+  // they want to hire. So each chip is in the quiet state and says "Later",
+  // under a heading that says the same thing in a sentence.
   const documentChips: JobFactRequirement[] = active.required_docs.map((doc, index) => ({
     key: `doc-${index}`,
     label: docLabel(t, doc),
-    state: 'required' as const,
-    stateLabel: requiredWord,
+    state: 'optional' as const,
+    stateLabel: t('doc_later'),
   }));
 
   return (
@@ -572,7 +575,7 @@ export default async function PublicJobPage({ params }: PageProps) {
                 chips: [
                   { key: 'policy', label: t('facts.requirements'), items: policyChips },
                   { key: 'certifications', label: t('certifications'), items: certificationChips },
-                  { key: 'documents', label: t('required_docs'), items: documentChips },
+                  { key: 'documents', label: t('docs_later'), items: documentChips },
                 ],
               }}
               /* A stranger has no document vault, so the job's documents are

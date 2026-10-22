@@ -617,6 +617,9 @@ export default function WorkerJobDetailPage() {
   // in-page flow's Documents & Certifications step, which is the real doc/
   // cert gate (backed by a live vault fetch), with its own Submit action.
   const canApply = job ? !job.already_applied && (job.status ?? 'active') === 'active' : false;
+  // The employer has asked this worker for their details: the one state in
+  // which a missing document is really missing.
+  const docsRequested = Boolean(job?.already_applied && job.details_status === 'requested');
   const jobStatusBadge = job ? visibleJobStatusBadge(job.status) : null;
   /*
    * Under `sm` the Apply panel is pinned above the bottom tab bar, so the
@@ -861,17 +864,28 @@ export default function WorkerJobDetailPage() {
                         items: requirementItems,
                       }],
                     }}
-                    /* The vault rows stay EXACTLY as they were, badges and
-                       all: the worker page is the only one of the three that
-                       knows whether a document is already uploaded, so this
-                       section has no employer/public counterpart -- there the
-                       job's documents are Requirements chips instead. */
+                    /* The vault rows: the worker page is the only one of the
+                       three that knows whether a document is already saved, so
+                       this section has no employer/public counterpart -- there
+                       the job's documents are Requirements chips instead.
+
+                       Before the employer asks for anything, a document is
+                       never a reason not to apply: the section says they may
+                       ask later and marks each missing one "Later" in a
+                       neutral tone. Only a real details request
+                       (`details_status === 'requested'`) turns the same rows
+                       into "Missing" with the way to upload them. */
                     documents={
                       job.required_docs.length > 0
                         ? {
                           label: t('facts.documents'),
                           children: (
                             <>
+                              {docsRequested ? null : (
+                                <p className="mb-2 text-xs leading-relaxed text-[var(--jale-ink-2)]">
+                                  {t('docs_later')}
+                                </p>
+                              )}
                               <ul className="divide-y divide-[var(--jale-divider)] overflow-hidden rounded-[var(--radius-input)] border border-[var(--jale-divider)]">
                                 {job.required_docs.map((doc) => {
                                   const missing = job.missing_docs.includes(doc);
@@ -880,14 +894,18 @@ export default function WorkerJobDetailPage() {
                                       <span className="min-w-0 text-sm font-medium text-[var(--jale-ink)]">
                                         {docLabel(doc)}
                                       </span>
-                                      <Badge tone={missing ? 'danger' : 'success'}>
-                                        {missing ? t('doc_missing') : t('doc_ok')}
-                                      </Badge>
+                                      {!missing ? (
+                                        <Badge tone="success">{t('doc_ok')}</Badge>
+                                      ) : docsRequested ? (
+                                        <Badge tone="danger">{t('doc_missing')}</Badge>
+                                      ) : (
+                                        <Badge tone="neutral">{t('doc_later')}</Badge>
+                                      )}
                                     </li>
                                   );
                                 })}
                               </ul>
-                              {job.missing_docs.length > 0 ? (
+                              {docsRequested && job.missing_docs.length > 0 ? (
                                 <p className="mt-2 text-xs text-[var(--jale-ink-2)]">
                                   {t('upload_prompt')}{' '}
                                   <Link

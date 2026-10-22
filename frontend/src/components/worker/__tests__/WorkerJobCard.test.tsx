@@ -121,3 +121,23 @@ describe('WorkerJobCard — spots open', () => {
         expect(screen.queryByText(/spots open/)).not.toBeInTheDocument();
     });
 });
+
+/*
+ * The feed says the same thing as the job page and the public page: the
+ * employer may ask for these documents later. Nothing on the card reads as a
+ * condition for applying.
+ */
+describe('WorkerJobCard — documents', () => {
+    it('lists the documents as a later ask', () => {
+        renderIntl(<WorkerJobCard job={job({ required_docs: ['resume', 'driver_license'] })} href="/worker/jobs/job-1" />);
+        const line = screen.getByText(message('worker_home.docs_later_label'), { exact: false }).closest('p')!;
+        expect(line).toHaveTextContent(`${message('doc_types.resume')} · ${message('doc_types.driver_license')}`);
+        expect(screen.queryByText(/Documents needed/)).not.toBeInTheDocument();
+    });
+
+    it('says it in Spanish', () => {
+        renderIntl(<WorkerJobCard job={job({ required_docs: ['resume'] })} href="/worker/jobs/job-1" />, 'es');
+        expect(screen.getByText(message('worker_home.docs_later_label', 'es'), { exact: false })).toBeInTheDocument();
+        expect(screen.queryByText(/Documentos necesarios/)).not.toBeInTheDocument();
+    });
+});

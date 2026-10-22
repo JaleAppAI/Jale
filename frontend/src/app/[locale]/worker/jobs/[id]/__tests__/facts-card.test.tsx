@@ -263,7 +263,69 @@ describe('worker job detail — the facts card', () => {
         const documents = screen.getByRole('heading', { level: 3, name: t('facts.documents') })
             .parentElement!;
         expect(within(documents).getByText(message('doc_types.resume'))).toBeInTheDocument();
-        expect(within(documents).getByText(t('doc_missing'))).toBeInTheDocument();
+    });
+
+    /*
+     * Before the employer asks for anything, a document is never a reason not
+     * to apply: the section says they may ask later, marks each missing one
+     * "Later" in a neutral tone, and sends nobody off to upload. Only a real
+     * details request turns the same rows into "still missing".
+     */
+    describe('documents before a details request', () => {
+        const documentsSection = () => screen.getByRole('heading', { level: 3, name: t('facts.documents') })
+            .parentElement!;
+
+        it.each([
+            ['not applied yet', { already_applied: false }],
+            ['applied, nothing requested', { already_applied: true, application_status: 'pending', details_status: 'not_requested' }],
+            ['applied, details already sent', { already_applied: true, application_status: 'details_requested', details_status: 'complete' }],
+        ] as const)('says the employer may ask later, never "Missing" (%s)', (_label, over) => {
+            seed = fullJob({ required_docs: ['resume', 'driver_license'], missing_docs: ['resume'], ...over });
+            renderIntl(<WorkerJobDetailPage />);
+
+            const documents = documentsSection();
+            expect(within(documents).getByText(t('docs_later'))).toBeInTheDocument();
+            expect(within(documents).queryByText('Missing')).not.toBeInTheDocument();
+            expect(within(documents).queryByText(/Upload missing documents/)).not.toBeInTheDocument();
+            expect(within(documents).queryByRole('link', { name: t('upload_link') })).not.toBeInTheDocument();
+            expect(within(documents).getByText(t('doc_later'))).toBeInTheDocument();
+            // A saved document still says so.
+            expect(within(documents).getByText(t('doc_ok'))).toBeInTheDocument();
+            // The "Later" chip is neutral, not the danger tone.
+            expect(within(documents).getByText(t('doc_later')).closest('[class*="danger"]')).toBeNull();
+        });
+
+        it('says it in Spanish', () => {
+            seed = fullJob({ required_docs: ['resume'], missing_docs: ['resume'] });
+            renderIntl(<WorkerJobDetailPage />, 'es');
+            const documents = screen.getByRole('heading', {
+                level: 3, name: message('worker_job_detail.facts.documents', 'es'),
+            }).parentElement!;
+            expect(within(documents).getByText(message('worker_job_detail.docs_later', 'es'))).toBeInTheDocument();
+            expect(within(documents).getByText('Después')).toBeInTheDocument();
+            expect(within(documents).queryByText('Falta')).not.toBeInTheDocument();
+        });
+    });
+
+    describe('documents after a details request', () => {
+        it('still marks a missing one and sends the worker to upload it', () => {
+            seed = fullJob({
+                required_docs: ['resume'],
+                missing_docs: ['resume'],
+                already_applied: true,
+                application_status: 'details_requested',
+                details_status: 'requested',
+                application_id: 'app-1',
+            });
+            renderIntl(<WorkerJobDetailPage />);
+
+            const documents = screen.getByRole('heading', { level: 3, name: t('facts.documents') })
+                .parentElement!;
+            expect(within(documents).getByText(t('doc_missing'))).toBeInTheDocument();
+            expect(within(documents).getByText(t('upload_prompt'), { exact: false })).toBeInTheDocument();
+            expect(within(documents).getByRole('link', { name: t('upload_link') })).toHaveAttribute('href', '/worker/profile');
+            expect(within(documents).queryByText(t('docs_later'))).not.toBeInTheDocument();
+        });
     });
 
     it('renders the description under a plain About label, the date in the header', () => {

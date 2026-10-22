@@ -1291,7 +1291,7 @@
     },
     "no_city_jobs": "Nothing in your cities right now.",
     "applications_error": "We couldn't load your applications. Reload the page to see notices from your employers.",
-    "required_docs_label": "Documents needed",
+    "docs_later_label": "The employer may ask for these later",
     "results_count": "{count, plural, one {# job found} other {# jobs found}}",
     "job_type": {
       "full-time": "40 hrs/wk",
@@ -1336,8 +1336,10 @@
       "body": "The employer stopped accepting applications for this posting. Other jobs are still open."
     },
     "page_title": "Job details",
-    "doc_ok": "Uploaded",
+    "doc_ok": "Saved",
     "doc_missing": "Missing",
+    "doc_later": "Later",
+    "docs_later": "The employer may ask for these later, only if they want to hire you. You don’t need them to apply.",
     "job_type": {
       "full-time": "Full-time",
       "part-time": "Part-time",
@@ -1423,7 +1425,8 @@
     "transportation": "Transportation",
     "work_authorization": "Work authorization",
     "yes": "Required",
-    "required_docs": "Documents needed to apply",
+    "docs_later": "The employer may ask for these later",
+    "doc_later": "Later",
     "doc_resume": "Resume",
     "doc_driver_license": "Driver's License",
     "doc_ssn": "SSN Card / ITIN",
