@@ -49,6 +49,23 @@ vi.mock('@/contexts/AuthContext', () => ({
     useAuth: () => auth,
 }));
 
+// The page reads the session-wide inbox for the applicants tutorial; the app
+// mounts its provider in the root layout. Stubbed settled and empty here.
+const inboxValue = {
+    items: [],
+    unreadCount: 0,
+    unreadByConversation: {},
+    loading: false,
+    errorKind: null,
+    retry: vi.fn(),
+    refresh: vi.fn(),
+    markRead: vi.fn(),
+};
+vi.mock('@/contexts/UnreadMessagesContext', () => ({
+    useUnreadMessages: () => inboxValue,
+    useUnreadCount: () => 0,
+}));
+
 const requireAuth = {
     handleLegalWall: (err: unknown) => {
         throw err;
