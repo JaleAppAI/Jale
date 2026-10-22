@@ -21,6 +21,15 @@ vi.mock('@/components/worker/HiredCard', () => ({
   ),
 }));
 
+// The page reads the worker's applications for the W3 tutorial's signal when
+// the stepper shows; stubbed so the real fetch never runs here.
+vi.mock('@/lib/api/worker', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/api/worker')>()),
+  getApplications: vi.fn(async () => ({
+    applications: [], next_cursor: null, attention: { details_requested: [], unacknowledged_hires: [] },
+  })),
+}));
+
 let seed: unknown;
 vi.mock('@/hooks/usePageData', () => ({
   usePageData: () => ({ phase: 'ready' as const, data: seed, errorKind: null, retry: vi.fn() }),
@@ -42,7 +51,13 @@ function state(application: Record<string, unknown>, hire: unknown = null) {
       id: 'job-1', title: 'Welder', company_name: 'Bravo Co', status: 'active', required_fields: [], optional_fields: [],
       required_docs: [], optional_docs: [], certification_requirements: [], pre_application_prompts: [],
     },
-    answers: {}, certifications: [], prompt_answers: {}, documents: [], remaining: {}, next_step: { kind: 'complete' },
+    answers: {}, certifications: [], prompt_answers: {}, documents: [],
+    // The wire shape the door always sends, even when nothing is left.
+    remaining: {
+      prompts: [], fields: [], certifications: { unclaimed: [], unproven: [] }, docs: [],
+      counts: { prompts: 0, fields: 0, certifications: 0, docs: 0 }, complete: true, uncollectable_docs: [],
+    },
+    next_step: { kind: 'complete' },
   };
 }
 
