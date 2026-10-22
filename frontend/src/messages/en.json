@@ -927,9 +927,9 @@
       "years_experience": "{years, plural, one {# yr exp} other {# yrs exp}}"
     },
     "post_job_docs": {
-      "step_label": "Step 2 of 2",
+      "step_label": "Step 3 of 3 · Questions",
       "title": "Document Requirements",
-      "subtitle": "Your apply-time questions, then what you'll ask for once you request someone's details.",
+      "subtitle": "Quick questions when they apply, then the questions for someone you want to hire.",
       "optional_label": "Optional",
       "required_label": "Required",
       "next": "Next: Document Requirements",
@@ -1596,7 +1596,12 @@
   "job_requirements": {
     "picker": {
       "rule_line": "Required items must be completed when you request details. Optional items can be skipped. Off items are not asked.",
-      "after_request_note": "These are asked only after you request details from an applicant.",
+      "part_label": "Part 2 · Before you hire",
+      "title": "Questions for applicants",
+      "note_head": "These are for the people who apply, not for you.",
+      "after_request_note": "Applicants answer them only after you request details from someone you want to hire. Until then you see their trade, experience and answers about their work.",
+      "note_lock": "Once someone applies, neither part can change.",
+      "retired_note": "No longer offered on new jobs.",
       "count_badge": "{required} required · {optional} optional",
       "locked_note": "Requirements are locked — this job already has applicants",
       "sensitive": "Sensitive",
@@ -1612,8 +1617,9 @@
       "doc_hint_optional": "Applicants may attach this when you request details — never required."
     },
     "prompts": {
-      "section_title": "Pre-application questions",
-      "section_subtitle": "Asked at apply time. The worker answers in their own words — nothing else is asked to apply.",
+      "part_label": "Part 1 · When they apply",
+      "section_title": "Quick questions",
+      "section_subtitle": "Asked when the worker applies, answered in their own words. We suggest 2 or fewer.",
       "empty": "No questions yet — workers apply with one tap.",
       "add": "Add a question",
       "question_number": "Question {number}",

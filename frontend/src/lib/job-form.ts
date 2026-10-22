@@ -17,6 +17,7 @@ import {
   initialRequirements,
   requirementsToArrays,
   arraysToRequirements,
+  withoutRetiredFields,
 } from '@/lib/job-requirements';
 export type { RequirementsMap } from '@/lib/job-requirements';
 export type { CertificationRequirement, CertificationTier } from '@/lib/job-requirements';
@@ -25,6 +26,7 @@ export {
   REQUIREMENT_FIELD_KEYS,
   REQUIREMENT_KEYS,
   FIELD_GROUPS,
+  RETIRED_FIELD_KEYS,
   initialRequirements,
   requirementsToArrays,
   arraysToRequirements,
@@ -839,12 +841,18 @@ export function jobToForm(job: EmployerJobDetail): JobForm {
 // (the payload is the create-request shape, a subset-compatible cousin of
 // EmployerJobDetail) and then blanks start_date -- templates never carry a
 // date. cityPrefilled drives the "check the city" highlight in the modal.
+//
+// This is the one funnel stored data takes into a NEW job form (the wizard
+// and the template editor both use it), so it is also where the retired
+// requirement keys (date of birth) are switched off: a new job never offers
+// them, and the form must not carry a selection the picker no longer shows.
+// `jobToForm` (editing an existing job) keeps them.
 export function jobFormFromTemplatePayload(
   payload: Partial<JobWritePayload>,
 ): { form: JobForm; cityPrefilled: boolean } {
   const form = jobToForm(payload as unknown as EmployerJobDetail);
   return {
-    form: { ...form, start_date: '' },
+    form: { ...form, start_date: '', requirements: withoutRetiredFields(form.requirements) },
     cityPrefilled: form.city_key !== null,
   };
 }

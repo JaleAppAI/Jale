@@ -148,3 +148,29 @@ describe('TemplateEditModal Enter key', () => {
         expect(buttons.filter((btn) => btn.type === 'submit' && !btn.hidden)).toHaveLength(0);
     });
 });
+
+/*
+ * Date of birth is no longer offered (sprint 29). A template saved before that
+ * opens here without it -- no hidden selection -- and saving writes it back
+ * without it, so the next job started from the template cannot ask for it.
+ */
+describe('TemplateEditModal: a template that asked for date of birth', () => {
+    it('opens without it and saves without it', async () => {
+        saveJobTemplate.mockResolvedValue({ ...withCity });
+        const oldTemplate: JobTemplate = {
+            ...withCity,
+            id: 'tpl-dob',
+            payload: { ...withCity.payload, required_fields: ['date_of_birth', 'home_address'], optional_fields: ['date_of_birth'] },
+        };
+        renderIntl(<TemplateEditModal open template={oldTemplate} onClose={vi.fn()} onSaved={vi.fn()} />);
+
+        expect(screen.queryByRole('radiogroup', { name: message('job_requirements.fields.date_of_birth') }))
+            .not.toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: message('employer_dashboard.templates.save') }));
+
+        await waitFor(() => expect(saveJobTemplate).toHaveBeenCalledTimes(1));
+        const sent = saveJobTemplate.mock.calls[0][1] as { payload: { required_fields: string[]; optional_fields: string[] } };
+        expect(sent.payload.required_fields).toEqual(['home_address']);
+        expect(sent.payload.optional_fields).not.toContain('date_of_birth');
+    });
+});

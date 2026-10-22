@@ -21,8 +21,9 @@ import {
  * Sits ABOVE `RequirementsPicker` on step 3 of PostJobModal and in
  * JobFormFields (Edit/Template), because it is the only thing on that panel a
  * worker meets while applying: everything the picker below configures is now
- * asked later, once the employer requests details. The section's own subtitle
- * and the picker's new `after_request_note` are what carry that split.
+ * asked later, once the employer requests details. Sprint 29 names the split:
+ * this is "Part 1 · When they apply" and the picker is "Part 2 · Before you
+ * hire", under the picker's note that neither part changes once someone applies.
  *
  * Presentational and fully controlled -- every mutation goes through
  * `lib/pre-application-prompts.ts` and comes back as a whole new list on
@@ -55,11 +56,12 @@ export function PreApplicationPromptsEditor({
 
     return (
         <div className="grid gap-3">
-            <div>
-                <p className="text-xs font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">
-                    {t('prompts.section_title')}
+            <div className="grid gap-1">
+                <p className="text-[11px] font-bold uppercase tracking-wider text-[var(--jale-blue-700)]">
+                    {t('prompts.part_label')}
                 </p>
-                <p className="mt-1 text-xs text-[var(--jale-ink-2)]">{t('prompts.section_subtitle')}</p>
+                <h4 className="text-base font-extrabold text-[var(--jale-ink)]">{t('prompts.section_title')}</h4>
+                <p className="text-xs text-[var(--jale-ink-2)]">{t('prompts.section_subtitle')}</p>
             </div>
 
             {/*

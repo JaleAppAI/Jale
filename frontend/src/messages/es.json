@@ -927,9 +927,9 @@
       "years_experience": "{years, plural, one {# año de experiencia} other {# años de experiencia}}"
     },
     "post_job_docs": {
-      "step_label": "Paso 2 de 2",
+      "step_label": "Paso 3 de 3 · Preguntas",
       "title": "Requisitos de documentos",
-      "subtitle": "Sus preguntas de postulación, y luego lo que pedirá cuando solicite los datos de alguien.",
+      "subtitle": "Preguntas rápidas al postularse y luego las preguntas para alguien que quiera contratar.",
       "optional_label": "Opcional",
       "required_label": "Requerido",
       "next": "Siguiente: Requisitos de documentos",
@@ -1596,7 +1596,12 @@
   "job_requirements": {
     "picker": {
       "rule_line": "Los elementos Requeridos deben completarse cuando usted solicite los datos. Los Opcionales se pueden omitir. Los que están Desactivados no se piden.",
-      "after_request_note": "Estos se piden solo después de que usted solicite los datos a un postulante.",
+      "part_label": "Parte 2 · Antes de contratar",
+      "title": "Preguntas para postulantes",
+      "note_head": "Estas preguntas son para quienes se postulan, no para usted.",
+      "after_request_note": "Los postulantes las responden solo cuando usted solicita los datos de alguien que quiere contratar. Antes de eso, usted ve su oficio, su experiencia y sus respuestas sobre su trabajo.",
+      "note_lock": "Cuando alguien se postula, ninguna de las dos partes se puede cambiar.",
+      "retired_note": "Ya no se ofrece en empleos nuevos.",
       "count_badge": "{required, plural, one {# requerido} other {# requeridos}} · {optional, plural, one {# opcional} other {# opcionales}}",
       "locked_note": "Los requisitos están bloqueados — este trabajo ya tiene postulantes",
       "sensitive": "Sensible",
@@ -1612,8 +1617,9 @@
       "doc_hint_optional": "Los postulantes pueden adjuntarlo cuando usted solicite los datos — nunca es obligatorio."
     },
     "prompts": {
-      "section_title": "Preguntas de postulación",
-      "section_subtitle": "Se preguntan al postularse. El trabajador contesta con sus propias palabras — no se le pide nada más para postularse.",
+      "part_label": "Parte 1 · Al postularse",
+      "section_title": "Preguntas rápidas",
+      "section_subtitle": "Se preguntan cuando el trabajador se postula y las contesta con sus propias palabras. Le sugerimos 2 o menos.",
       "empty": "Aún no hay preguntas — los trabajadores se postulan con un toque.",
       "add": "Agregar una pregunta",
       "question_number": "Pregunta {number}",

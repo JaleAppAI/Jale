@@ -407,6 +407,37 @@ describe('jobFormFromTemplatePayload', () => {
     const { form } = jobFormFromTemplatePayload({ ...payload, bogus_future_field: 'x' } as never);
     expect('bogus_future_field' in form).toBe(false);
   });
+
+  // A NEW job never asks for date of birth, so a template saved before it was
+  // retired loads without it: what the employer sees is what is saved.
+  it('drops a required date of birth from an old template, in the form and the create payload', () => {
+    const { form } = jobFormFromTemplatePayload({
+      ...payload, required_fields: ['date_of_birth', 'home_address'], optional_fields: [],
+    });
+    expect(form.requirements.date_of_birth).toBe('off');
+    expect(form.requirements.home_address).toBe('required');
+    const created = jobFormToCreatePayload(form);
+    expect(created.required_fields).toEqual(['home_address']);
+    expect(created.optional_fields).not.toContain('date_of_birth');
+  });
+
+  it('drops an optional date of birth from an old template too', () => {
+    const { form } = jobFormFromTemplatePayload({
+      ...payload, required_fields: [], optional_fields: ['date_of_birth', 'education'],
+    });
+    expect(form.requirements.date_of_birth).toBe('off');
+    const created = jobFormToCreatePayload(form);
+    expect(created.optional_fields).toEqual(['education']);
+    expect(created.required_fields).not.toContain('date_of_birth');
+  });
+});
+
+describe('date of birth on an existing job', () => {
+  it('stays in the form and in the edit payload', () => {
+    const form = jobToForm({ ...baseJob, required_fields: ['date_of_birth'], optional_fields: [] });
+    expect(form.requirements.date_of_birth).toBe('required');
+    expect(jobFormToEditPayload(form, { state_region: '' }).required_fields).toContain('date_of_birth');
+  });
 });
 
 describe('requirements mapper round-trip (three-state -> four arrays -> back)', () => {
