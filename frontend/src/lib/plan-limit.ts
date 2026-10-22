@@ -202,6 +202,22 @@ export function planLimitModel(
 }
 
 /**
+ * The company's active-job count: the caller's live own count plus
+ * `billing.otherMembersActiveJobs` (the active jobs of members whose jobs the
+ * caller's list cannot show; 0 for the owner). A missing, negative or
+ * non-integer figure counts as 0, so the owner and an API from before Phase 2
+ * get `activeCount` exactly. The post-a-job gate and `PlanUsageMeter` both use
+ * this, so the two can never disagree.
+ */
+export function companyActiveJobCount(
+  billing: Pick<EmployerBilling, 'otherMembersActiveJobs'> | null | undefined,
+  activeCount: number,
+): number {
+  const others = billing?.otherMembersActiveJobs;
+  return activeCount + (typeof others === 'number' && Number.isInteger(others) && others > 0 ? others : 0);
+}
+
+/**
  * The same dialog model, decided BEFORE anything is submitted.
  *
  * `planLimitModel` above reads a 403 the server already sent. This one answers
@@ -229,17 +245,23 @@ export function planLimitModel(
  * it does -- and a gate that still blocked after the employer freed a slot
  * would be indistinguishable from the bug. The caller passes the count it
  * derives from the live jobs list, which is also the number `PlanUsageMeter`
- * shows the employer in the same panel.
+ * shows the employer in the same panel. Since Phase 2 both add
+ * `billing.otherMembersActiveJobs`, the company's active jobs that list cannot show.
  */
 export function activeJobsPreflightModel(
-  billing: Pick<EmployerBilling, 'planCode' | 'activeJobLimit'> | null | undefined,
+  billing: Pick<EmployerBilling, 'planCode' | 'activeJobLimit' | 'otherMembersActiveJobs'> | null | undefined,
   activeCount: number,
   jobs?: ReadonlyArray<Pick<Job, 'id' | 'title' | 'status' | 'created_at'>> | null,
 ): PlanLimitModel | null {
   if (!billing) return null;
   const limit = billing.activeJobLimit;
   if (!Number.isInteger(limit) || limit < 0) return null;
-  if (activeCount < limit) return null;
+  // The limit is the company's (Phase 2). A foreman's list shows only their
+  // own jobs, so the jobs of other members come from billing -- a load-time
+  // figure, but one the caller cannot change from this page. The owner's
+  // list already holds every member's job, and the API sends 0 for them.
+  const used = companyActiveJobCount(billing, activeCount);
+  if (used < limit) return null;
 
   const blockingJobs = blockingJobsFrom(jobs);
 
@@ -249,10 +271,10 @@ export function activeJobsPreflightModel(
     // "this plan does not include the thing", which is `body_jobs_zero`'s job
     // and reads the same whether the server or this function decided it.
     bodyKey: limit === 0 ? 'limit_dialog.body_jobs_zero' : 'limit_dialog.body_jobs_preflight',
-    bodyParams: { limit, used: activeCount },
+    bodyParams: { limit, used },
     planNameKey: planNameKeyFor(billing.planCode),
     blockingJobs,
-    overflowCount: Math.max(0, activeCount - blockingJobs.length),
+    overflowCount: Math.max(0, used - blockingJobs.length),
     hintKey: 'limit_dialog.hint_jobs',
     ctas: JOBS_CTAS,
   };
