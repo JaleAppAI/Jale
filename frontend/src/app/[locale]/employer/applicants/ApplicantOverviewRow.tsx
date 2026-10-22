@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { useFormatter, useLocale, useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
@@ -15,7 +15,7 @@ import { initialsFor } from '@/components/employer/ConversationThread';
 import { HireDetailsForm } from '@/components/employer/HireDetailsForm';
 import { TrustScorePill } from '@/app/[locale]/employer/jobs/[id]/TrustScorePill';
 import { formatStartDateWeekdayShort } from '@/lib/date';
-import { statusSelectOptions } from '@/lib/hire-gate';
+import { hireBlockReason, statusSelectOptions } from '@/lib/hire-gate';
 import { hasHireDetails } from '@/lib/hire-details';
 import { ApiError } from '@/lib/api/errors';
 import { updateApplicantStatus } from '@/lib/api/employer';
@@ -80,7 +80,9 @@ export function ApplicantOverviewRow({
   const tShared = useTranslations('employer_dashboard');
   const tListing = useTranslations('employer_job_listing');
   const tMatch = useTranslations('match');
+  const tProfile = useTranslations('employer_worker_profile');
   const format = useFormatter();
+  const hireHintId = useId();
   const { idToken } = useAuth();
   const { openConversation } = useConversationDrawer();
   const toast = useToast();
@@ -115,6 +117,22 @@ export function ApplicantOverviewRow({
   }
   const status = savedStatus ?? item.application_status;
 
+  /*
+   * The same hire gate as the applicant profile (lib/hire-gate): while the
+   * list says the details are outstanding, Hired is offered disabled and
+   * relabelled, with the profile's hint under the row. `hireBlockReason`
+   * fails open when the list does not say, and the database's 409 below stays
+   * the authority either way. Never applied to someone already hired: a
+   * select whose value is a disabled option renders blank in some browsers.
+   */
+  const blockReason = hireBlockReason(item);
+  const hireOptionDisabled = blockReason !== null && status !== 'hired';
+  const hireHint = !hireOptionDisabled
+    ? null
+    : blockReason === 'not_requested'
+      ? tProfile('hire_blocked_not_requested')
+      : tProfile('hire_blocked_requested_no_count');
+
   async function handleStatusChange(next: ApplicationStatus) {
     /*
      * The guard that keeps `details_requested` out of this control.
@@ -141,10 +159,10 @@ export function ApplicantOverviewRow({
     } catch (err) {
       setSavedStatus(previous === item.application_status ? null : previous);
       /*
-       * The database's own hire gate (migration 091), surfaced. This row
-       * carries no `details_status`, so -- exactly like `hireBlockReason` on
-       * an API that publishes no stage vocabulary -- `hired` is OFFERED and
-       * the 409 is the authority. The remedy (request details) lives on the
+       * The database's own hire gate (migration 091), surfaced. When the list
+       * carries no `details_status` -- exactly like `hireBlockReason` on an
+       * API that publishes no stage vocabulary -- `hired` is OFFERED and the
+       * 409 is the authority. The remedy (request details) lives on the
        * profile, so the sentence sends them there rather than listing fields
        * this row cannot act on.
        */
@@ -272,15 +290,19 @@ export function ApplicantOverviewRow({
               this call site. */}
           <Select
             aria-label={t('status_label')}
+            aria-describedby={hireHint ? hireHintId : undefined}
             value={status}
             disabled={saving || !idToken}
             onChange={(event) => void handleStatusChange(event.target.value as ApplicationStatus)}
           >
-            {statusSelectOptions(status).map((option) => (
-              <option key={option} value={option}>
-                {tShared(`applicants.status.${option}`)}
-              </option>
-            ))}
+            {statusSelectOptions(status).map((option) => {
+              const blocked = option === 'hired' && hireOptionDisabled;
+              return (
+                <option key={option} value={option} disabled={blocked}>
+                  {blocked ? tProfile('hire_option_blocked') : tShared(`applicants.status.${option}`)}
+                </option>
+              );
+            })}
           </Select>
         </div>
 
@@ -317,6 +339,10 @@ export function ApplicantOverviewRow({
           {tShared('applicants.view_profile')}
         </Link>
       </div>
+
+      {hireHint ? (
+        <p id={hireHintId} className="basis-full text-xs text-[var(--jale-ink-2)]">{hireHint}</p>
+      ) : null}
 
       {status === 'hired' && hireDetailsSupported ? (
         <div className="flex basis-full flex-wrap items-center gap-2 border-t border-dashed border-[var(--jale-divider)] pt-2">

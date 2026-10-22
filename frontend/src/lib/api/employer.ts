@@ -402,6 +402,12 @@ export type ApplicantOverviewItem = {
   hire_details: HireDetails | null;
   /** K4.2: hired with no start details yet. Drives the "Add start details" prompt. */
   hire_details_needed: boolean;
+  /**
+   * Where the details request stands, derived the same way as the per-job
+   * applicants list. Optional: an overview API that does not send it yet
+   * leaves the hire gate open (`hireBlockReason` fails open), as before.
+   */
+  details_status?: ApplicationDetailsStatus;
 };
 
 export type ApplicantsOverviewResponse = {
