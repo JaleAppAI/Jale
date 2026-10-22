@@ -1261,6 +1261,15 @@ describe('job alert digest: shift choices', () => {
     }
   });
 
+  it('a referred card with shifts is still the same message as the one-job digest, and its fallback names them', async () => {
+    const job = { jobId: 'job-ref', title: 'Finish Carpenter', companyName: 'Acme Builders', location: 'Austin, TX', pay: '$22-26/hr', shiftPeriods: ['night', 'day'] };
+    const renderer = createReleaseRenderer();
+    const card = await renderer.render({ kind: 'referred_job', workerId: WORKER_ID, language: 'es', job } as unknown as ReleaseRenderRequest);
+    const oneJobDigest = await digest('es', [{ ...job, score: 0 }]);
+    expect(card).toEqual(oneJobDigest);
+    expect(card.contentVariables![FALLBACK_BODY_KEY]).toContain('1. Finish Carpenter - Acme Builders (Día, Noche)');
+  });
+
   it('the job_alert category renderer, fed a payload without the field, renders as before', async () => {
     const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'es' });
     const job = { jobId: 'job-9', title: 'Electricista', companyName: 'ACME', score: 1 };

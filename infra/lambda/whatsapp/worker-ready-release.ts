@@ -35,9 +35,8 @@ export interface ReleaseJobSummary {
   payMin?: number | null;
   payMax?: number | null;
   payInterval?: string | null;
-  /** Shift choices (128), off the same live row. The renderer's DigestJob
-   * declares the field; onboarding-types.ts's job_alert_digest entry does
-   * not, and passes it through unchanged. */
+  /** Shift choices (128), off the same live row, as on onboarding-types.ts's
+   * job_alert_digest entries. */
   shiftPeriods?: string[] | null;
 }
 
@@ -664,6 +663,7 @@ export async function releaseWorkerReady(
           payMin: job.pay_min,
           payMax: job.pay_max,
           payInterval: job.pay_interval,
+          shiftPeriods: job.shift_periods,
         },
       },
       intents: [intent],
