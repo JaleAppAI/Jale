@@ -222,3 +222,25 @@ describe('worker job page — documents not yet saved read as "Later"', () => {
         expect(within(panelEs).getAllByText('Después').length).toBeGreaterThan(0);
     });
 });
+
+describe('worker job page — what applying costs', () => {
+    it('says under Apply that it takes about 2 minutes and documents come later', () => {
+        seed = fullJob();
+        renderIntl(<WorkerJobDetailPage />);
+        const hint = screen.getByText(t('apply_hint'));
+        // In the same panel as the button, so it travels with it on a phone.
+        expect(hint.closest('section')).toBe(screen.getByRole('button', { name: t('apply') }).closest('section'));
+    });
+
+    it('drops the hint once the worker has applied', () => {
+        seed = fullJob({ already_applied: true, application_status: 'pending' });
+        renderIntl(<WorkerJobDetailPage />);
+        expect(screen.queryByText(t('apply_hint'))).not.toBeInTheDocument();
+    });
+
+    it('says it in Spanish', () => {
+        seed = fullJob();
+        renderIntl(<WorkerJobDetailPage />, 'es');
+        expect(screen.getByText(message('worker_job_detail.apply_hint', 'es'))).toBeInTheDocument();
+    });
+});

@@ -979,19 +979,26 @@ export default function WorkerJobDetailPage() {
                           />
                         </>
                       ) : (
-                        <Button
-                          onClick={handleApplyClick}
-                          disabled={!canApply}
-                          loading={applying}
-                          loadingLabel={tCommon('loading')}
-                          className="max-sm:w-full"
-                        >
-                          {/* "Continue application" once the worker has left
-                              something behind in the flow (an answer, a visit
-                              past step 1, a cert claim) -- otherwise the
-                              plain "Apply" a first-time visitor sees. */}
-                          {flowHasProgress(applyState) ? tFlow('continue_button') : t('apply')}
-                        </Button>
+                        <div className="flex flex-col items-end gap-1.5 max-sm:w-full max-sm:items-stretch">
+                          <Button
+                            onClick={handleApplyClick}
+                            disabled={!canApply}
+                            loading={applying}
+                            loadingLabel={tCommon('loading')}
+                            className="max-sm:w-full"
+                          >
+                            {/* "Continue application" once the worker has left
+                                something behind in the flow (an answer, a visit
+                                past step 1, a cert claim) -- otherwise the
+                                plain "Apply" a first-time visitor sees. */}
+                            {flowHasProgress(applyState) ? tFlow('continue_button') : t('apply')}
+                          </Button>
+                          {/* What applying costs, said where the decision is
+                              made: a couple of minutes, and no documents. */}
+                          {canApply ? (
+                            <p className="text-xs text-[var(--jale-ink-2)] max-sm:text-center">{t('apply_hint')}</p>
+                          ) : null}
+                        </div>
                       )}
                     </div>
                   </div>

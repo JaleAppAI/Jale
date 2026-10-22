@@ -276,6 +276,7 @@
     "worker": {
       "title": "Inicia sesión con tu teléfono",
       "phone_label": "Enviaremos un código de 6 dígitos por mensaje de texto.",
+      "phone_hint": "Usa el mismo número que usas en WhatsApp",
       "send_otp": "Enviar código",
       "otp_label": "Ingresa el código que te enviamos",
       "verify": "Verificar",
@@ -1312,6 +1313,7 @@
     "upload_prompt": "Sube los documentos que faltan en tu perfil.",
     "upload_link": "Ir al perfil",
     "apply": "Postularme",
+    "apply_hint": "Unos 2 min · documentos solo si quieren contratarte",
     "apply_success": "Postulación enviada. El empleador ya puede verla.",
     "already_applied": "Ya te postulaste",
     "errors": {
@@ -2028,6 +2030,7 @@
     "terms": {
       "title": "Antes de empezar",
       "subtitle": "Una lectura rápida. Tus respuestas se comparten solo con los empleadores a los que apliques.",
+      "time": "Unos 2 minutos",
       "info_title": "Cómo usa Jale tu información",
       "info_body": "Tu nombre, oficio, ubicación y respuestas se muestran a los empleadores solo cuando aplicas a su trabajo. Nunca vendemos tus datos.",
       "messages_title": "Mensajes",

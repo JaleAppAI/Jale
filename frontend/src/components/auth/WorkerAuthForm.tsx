@@ -425,6 +425,9 @@ export default function WorkerAuthForm() {
                             onCountryCodeChange={setPhoneCountryCode}
                             onLocalNumberChange={setPhoneLocalNumber}
                         />
+                        {/* A different number from the WhatsApp one makes a
+                            second account. Under the field, on both doors. */}
+                        <p className="text-xs leading-relaxed text-[var(--jale-ink-2)]">{t('phone_hint')}</p>
                     </Field>
                     {error ? (
                         <div className="flex flex-col gap-2.5">
@@ -473,6 +476,9 @@ export default function WorkerAuthForm() {
                             onCountryCodeChange={setPhoneCountryCode}
                             onLocalNumberChange={setPhoneLocalNumber}
                         />
+                        {/* A different number from the WhatsApp one makes a
+                            second account. Under the field, on both doors. */}
+                        <p className="text-xs leading-relaxed text-[var(--jale-ink-2)]">{t('phone_hint')}</p>
                     </Field>
                     {error && <FormError>{error}</FormError>}
                     <Button type="submit" className="w-full" size="lg" disabled={!phoneReady} loading={isLoading} loadingLabel={tCommon('loading')}>
