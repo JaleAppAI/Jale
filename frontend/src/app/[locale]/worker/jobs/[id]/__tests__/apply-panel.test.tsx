@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import type { ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { screen } from '@testing-library/react';
+import { screen, within } from '@testing-library/react';
 
 import type { JobDetail } from '@/lib/api/worker';
 import { renderIntl, message } from '@/components/worker/onboarding/__tests__/render-intl';
@@ -149,5 +149,76 @@ describe('worker job page — after applying', () => {
         renderIntl(<WorkerJobDetailPage />, 'es');
 
         expect(screen.getByText(message('worker_applications.status_hint.pending', 'es'))).toBeInTheDocument();
+    });
+});
+
+/*
+ * On a phone the Apply button used to sit at the bottom of a long page. Under
+ * `sm` its panel is pinned above the bottom tab bar, so Apply stays in view
+ * while the worker reads; from `sm` up it is back in the flow. It is ONE Apply
+ * element either way -- moved by classes, never duplicated -- and the content
+ * above gets room at the bottom so the bar never covers the last block.
+ */
+describe('worker job page — Apply stays in view on phones', () => {
+    const PINNED = 'max-sm:fixed';
+    const ABOVE_TAB_BAR = 'max-sm:bottom-[calc(5rem+env(safe-area-inset-bottom))]';
+
+    function applyPanel(): HTMLElement {
+        return screen.getByRole('button', { name: t('apply') }).closest('section')!;
+    }
+
+    it('renders exactly one Apply button', () => {
+        seed = fullJob();
+        renderIntl(<WorkerJobDetailPage />);
+        expect(screen.getAllByRole('button', { name: t('apply') })).toHaveLength(1);
+    });
+
+    it('pins the Apply panel above the tab bar under sm, and leaves it in flow from sm up', () => {
+        seed = fullJob();
+        renderIntl(<WorkerJobDetailPage />);
+
+        const panel = applyPanel();
+        expect(panel.className).toContain(PINNED);
+        expect(panel.className).toContain(ABOVE_TAB_BAR);
+        // Every pinning class is phone-only: nothing pins it from sm up.
+        expect(panel.className.split(/\s+/).filter((c) => /^(fixed|sticky)$/.test(c))).toEqual([]);
+        expect(screen.getByRole('button', { name: t('apply') }).className).toContain('max-sm:w-full');
+    });
+
+    it('gives the content room at the bottom so the bar never covers it', () => {
+        seed = fullJob();
+        renderIntl(<WorkerJobDetailPage />);
+
+        const content = applyPanel().parentElement!;
+        expect(content.className).toContain('max-sm:pb-28');
+    });
+
+    it('does not pin anything once the worker has applied', () => {
+        seed = fullJob({ already_applied: true, application_status: 'pending' });
+        const { container } = renderIntl(<WorkerJobDetailPage />);
+        expect(container.querySelector('[class*="max-sm:fixed"]')).toBeNull();
+        expect(container.querySelector('[class*="max-sm:pb-28"]')).toBeNull();
+    });
+
+    it('does not pin a job that can no longer take an application', () => {
+        seed = fullJob({ status: 'closed' });
+        const { container } = renderIntl(<WorkerJobDetailPage />);
+        expect(container.querySelector('[class*="max-sm:fixed"]')).toBeNull();
+    });
+});
+
+describe('worker job page — documents not yet saved read as "Later"', () => {
+    it('marks a document the worker has not saved as Later, in both languages', () => {
+        seed = fullJob({ required_docs: ['resume'], missing_docs: ['resume'] });
+        const { unmount } = renderIntl(<WorkerJobDetailPage />);
+        const panel = screen.getByRole('heading', { name: t('what_you_need.title') }).closest('section')!;
+        expect(within(panel).getAllByText('Later').length).toBeGreaterThan(0);
+        expect(within(panel).queryByText('Not yet')).not.toBeInTheDocument();
+        unmount();
+
+        renderIntl(<WorkerJobDetailPage />, 'es');
+        const panelEs = screen.getByRole('heading', { name: message('worker_job_detail.what_you_need.title', 'es') })
+            .closest('section')!;
+        expect(within(panelEs).getAllByText('Después').length).toBeGreaterThan(0);
     });
 });

@@ -1368,7 +1368,7 @@
       "in_vault": "In your vault",
       "proof_in_vault": "Proof in your vault",
       "proof_needed": "Proof needed",
-      "not_yet": "Not yet",
+      "not_yet": "Later",
       "required": "Required",
       "optional": "Optional",
       "vault_note": "Anything already in your vault counts on its own — you won’t upload it twice.",

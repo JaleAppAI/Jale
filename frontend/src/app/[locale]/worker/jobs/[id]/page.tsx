@@ -618,6 +618,15 @@ export default function WorkerJobDetailPage() {
   // cert gate (backed by a live vault fetch), with its own Submit action.
   const canApply = job ? !job.already_applied && (job.status ?? 'active') === 'active' : false;
   const jobStatusBadge = job ? visibleJobStatusBadge(job.status) : null;
+  /*
+   * Under `sm` the Apply panel is pinned above the bottom tab bar, so the
+   * button stays in view while the worker reads a long posting; from `sm` up
+   * it is back in the flow. Only while the job can take an application: an
+   * applied or closed job has nothing to keep in reach. The details tree is
+   * the only place this panel renders, so `viewMode === 'details'` holds
+   * whenever it is on screen.
+   */
+  const pinApply = canApply;
 
   /*
    * The job's facts, as the ONE card body all three job pages render.
@@ -784,7 +793,9 @@ export default function WorkerJobDetailPage() {
                 onBackToDetails={handleBackToDetails}
               />
             ) : (
-              <div className="space-y-5">
+              /* `max-sm:pb-28` is the room the pinned Apply panel takes, so it
+                 never covers the last block above it. */
+              <div className={pinApply ? 'space-y-5 max-sm:pb-28' : 'space-y-5'}>
                 {refreshError ? (
                   <InlineFeedback tone="warning">{tCommon('feedback.refresh_failed')}</InlineFeedback>
                 ) : null}
@@ -932,11 +943,20 @@ export default function WorkerJobDetailPage() {
                   </DashboardPanel>
                 ) : null}
 
-                <DashboardPanel>
-                  <div className="flex flex-col gap-3 px-5 py-4 md:px-6">
+                {/* ONE Apply element at every width, moved by classes and
+                    never duplicated: under `sm` this panel is the bar pinned
+                    above the tab bar (square, top rule and the dock shadow),
+                    from `sm` up the ordinary card in the flow. */}
+                <DashboardPanel
+                  className={pinApply
+                    ? 'max-sm:fixed max-sm:inset-x-0 max-sm:bottom-[calc(5rem+env(safe-area-inset-bottom))] max-sm:z-20 max-sm:rounded-none max-sm:border-x-0 max-sm:border-b-0 max-sm:shadow-[var(--shadow-dock)]'
+                    : ''}
+                >
+                  <div className="flex flex-col gap-3 px-5 py-4 max-sm:px-4 max-sm:py-3 md:px-6">
                     {/* Anchored to the control that produced it -- never the
                         page top, where a worker who just tapped Apply would
-                        have to go looking for the answer. */}
+                        have to go looking for the answer. On a phone that is
+                        the pinned bar, right above the button. */}
                     {applyFeedback ? (
                       <InlineFeedback
                         tone={applyFeedback.tone}
@@ -964,6 +984,7 @@ export default function WorkerJobDetailPage() {
                           disabled={!canApply}
                           loading={applying}
                           loadingLabel={tCommon('loading')}
+                          className="max-sm:w-full"
                         >
                           {/* "Continue application" once the worker has left
                               something behind in the flow (an answer, a visit
