@@ -853,6 +853,8 @@
       "trade_other_hint": "Workers who listed this trade will be matched to your job.",
       "pay_min": "Pay Min",
       "pay_max": "Pay Max",
+      "pay_max_placeholder": "Optional",
+      "pay_max_hint": "Max is optional. Leave it blank if pay is negotiable.",
       "pay_interval": "Pay Interval",
       "pay_interval_option": {
         "hourly": "Hourly",

@@ -853,6 +853,8 @@
       "trade_other_hint": "Los trabajadores que registraron este oficio se emparejarán con su empleo.",
       "pay_min": "Pago mínimo",
       "pay_max": "Pago máximo",
+      "pay_max_placeholder": "Opcional",
+      "pay_max_hint": "El máximo es opcional. Déjelo en blanco si el pago es negociable.",
       "pay_interval": "Intervalo de pago",
       "pay_interval_option": {
         "hourly": "Por hora",

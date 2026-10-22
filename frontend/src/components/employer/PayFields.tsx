@@ -1,5 +1,6 @@
 'use client';
 import type React from 'react';
+import { useId } from 'react';
 import { useTranslations } from 'next-intl';
 import { PAY_INTERVALS, payRangeExceeds, type JobForm, type PayInterval } from '@/lib/job-form';
 import { Input } from '@/components/ui/input';
@@ -13,6 +14,9 @@ import { Select } from '@/components/ui/select';
  * `validateJobNumbers`/`validateStepDetails` still run the same check at
  * submit/step-advance time as the authoritative gate, this is purely the
  * earlier, friendlier surfacing of the same rule.
+ *
+ * The max carries a standing hint that it is optional (pay can be negotiable),
+ * and every label is tied to its control so each input has a name.
  */
 interface PayFieldsProps {
   payMin: string;
@@ -29,12 +33,18 @@ export function PayFields({
 }: PayFieldsProps) {
   const t = useTranslations('employer_dashboard');
   const rangeInvalid = payRangeExceeds(payMin, payMax);
+  const minId = useId();
+  const maxId = useId();
+  const intervalId = useId();
+  const maxHintId = useId();
+  const rangeErrorId = useId();
 
   return (
     <div className="grid gap-4">
       <div className="grid gap-3 md:grid-cols-2">
-        <Field label={t('modal.pay_min')}>
+        <Field label={t('modal.pay_min')} htmlFor={minId}>
           <Input
+            id={minId}
             type="number"
             min={0}
             className="tabular-nums"
@@ -42,27 +52,33 @@ export function PayFields({
             onChange={(e) => onPayMinChange(e.target.value)}
             disabled={disabled}
             aria-invalid={rangeInvalid || undefined}
+            aria-describedby={rangeInvalid ? rangeErrorId : undefined}
           />
         </Field>
-        <Field label={t('modal.pay_max')}>
+        <Field label={t('modal.pay_max')} htmlFor={maxId}>
           <Input
+            id={maxId}
             type="number"
             min={0}
             className="tabular-nums"
+            placeholder={t('modal.pay_max_placeholder')}
             value={payMax}
             onChange={(e) => onPayMaxChange(e.target.value)}
             disabled={disabled}
             aria-invalid={rangeInvalid || undefined}
+            aria-describedby={rangeInvalid ? `${maxHintId} ${rangeErrorId}` : maxHintId}
           />
+          <p id={maxHintId} className="text-xs text-[var(--jale-ink-2)]">{t('modal.pay_max_hint')}</p>
         </Field>
       </div>
       {rangeInvalid && (
-        <p role="alert" className="-mt-2 text-xs font-semibold text-[var(--jale-danger)]">
+        <p id={rangeErrorId} role="alert" className="-mt-2 text-xs font-semibold text-[var(--jale-danger)]">
           {t('modal.validation_pay_range')}
         </p>
       )}
-      <Field label={t('modal.pay_interval')}>
+      <Field label={t('modal.pay_interval')} htmlFor={intervalId}>
         <Select
+          id={intervalId}
           value={payInterval}
           onChange={(e) => onPayIntervalChange(e.target.value as JobForm['pay_interval'])}
           disabled={disabled}
@@ -76,10 +92,10 @@ export function PayFields({
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, htmlFor, children }: { label: string; htmlFor: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <label className="text-xs font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">{label}</label>
+      <label htmlFor={htmlFor} className="text-xs font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">{label}</label>
       {children}
     </div>
   );
