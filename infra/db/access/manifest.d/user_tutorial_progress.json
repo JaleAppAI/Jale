@@ -1,0 +1,43 @@
+{
+  "tables": {
+    "public.user_tutorial_progress": {
+      "classification": "access",
+      "rls": {
+        "enabled": true,
+        "forced": true
+      },
+      "reason": "Which first-time tutorials each account has finished or skipped, one row per account and tutorial (migration 127). UI progress flags; no personal data beyond the account link.",
+      "access": {
+        "jale_api": {
+          "select": "*",
+          "insert": "*",
+          "reason": "lambda/api/tutorial-progress.ts reads the caller's records and records an outcome once, first write wins; no UPDATE or DELETE, so a row leaves only with its users row."
+        }
+      }
+    }
+  },
+  "policies": {
+    "public.user_tutorial_progress.user_tutorial_progress_self_read": {
+      "command": "SELECT",
+      "permissive": true,
+      "to": [
+        "jale_api"
+      ],
+      "origin": "existing",
+      "using": "(user_id = ( SELECT users.id\n   FROM users\n  WHERE (users.cognito_sub = current_setting('app.current_user_id'::text, true))))",
+      "with_check": null,
+      "reason": "A login reads its own tutorial progress, keyed like organization_members_self_read."
+    },
+    "public.user_tutorial_progress.user_tutorial_progress_self_insert": {
+      "command": "INSERT",
+      "permissive": true,
+      "to": [
+        "jale_api"
+      ],
+      "origin": "existing",
+      "using": null,
+      "with_check": "(user_id = ( SELECT users.id\n   FROM users\n  WHERE (users.cognito_sub = current_setting('app.current_user_id'::text, true))))",
+      "reason": "A login records its own tutorial progress, keyed like organization_members_self_read."
+    }
+  }
+}
