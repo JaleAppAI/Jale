@@ -163,6 +163,7 @@ describe('database migrations', () => {
       '124',
       '125',
       '126',
+      '129',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -5052,6 +5053,52 @@ describe('database migrations', () => {
       expect(sql).toContain('migration 126: jale_whatsapp cannot execute %');
       expect(sql).toContain('migration 126: PUBLIC can execute %');
       expect(sql.indexOf('-- \u2500\u2500 6. Closing check (part B)')).toBeLessThan(sql.indexOf('COMMIT;'));
+    });
+  });
+
+  // Sprint 29 (BE-3): Free 15 and Pro 50 active jobs; template limits unchanged.
+  // billing_plans has read policies only, so the two UPDATEs run under a write
+  // policy that 129 creates and drops in its own transaction (069's pattern).
+  // The DB pins are in job-limits-129.integration.test.ts.
+  describe('129 raises the active-job limits to 15 (Free) and 50 (Pro) and nothing else', () => {
+    const file = '129_job_limit_increase.sql';
+    const sql = () => fs.readFileSync(path.join(migrationsDir, file), 'utf8');
+    const code = () => sql().replace(/--[^\n]*/g, '');
+
+    it('runs as jale_admin in one transaction, ASCII only, with a lock timeout first', () => {
+      const text = sql();
+      expect(text).toContain('-- Run manually AFTER 128,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n');
+      expect(text.match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(text.match(/^COMMIT;$/gm)).toHaveLength(1);
+      expect(code()).toMatch(/^[\x00-\x7F]*$/);
+      expect(text.indexOf("SET LOCAL lock_timeout = '5s';")).toBeGreaterThan(text.indexOf('BEGIN;'));
+      expect(text.indexOf('DO $$')).toBeGreaterThan(text.indexOf("SET LOCAL lock_timeout = '5s';"));
+      expect(code()).toContain("IF current_user <> 'jale_admin' THEN");
+    });
+
+    it('opens the write policy, updates the two plans, and drops the policy, in that order', () => {
+      const c = code();
+      const iCreate = c.indexOf('CREATE POLICY billing_plans_job_limit_seed\n  ON billing_plans FOR UPDATE TO jale_admin USING (true) WITH CHECK (true);');
+      const iFree = c.indexOf(`UPDATE billing_plans SET entitlements = entitlements || '{"active_job_limit": 15}' WHERE code = 'employer_free';`);
+      const iPro = c.indexOf(`UPDATE billing_plans SET entitlements = entitlements || '{"active_job_limit": 50}' WHERE code = 'employer_pro';`);
+      const iDrop = c.lastIndexOf('DROP POLICY IF EXISTS billing_plans_job_limit_seed ON billing_plans;');
+      expect(iCreate).toBeGreaterThan(-1);
+      expect(iFree).toBeGreaterThan(iCreate);
+      expect(iPro).toBeGreaterThan(iFree);
+      expect(iDrop).toBeGreaterThan(iPro);
+      expect(c.match(/^\s*CREATE POLICY /gm)).toHaveLength(1);
+      expect(c.match(/^\s*UPDATE /gm)).toHaveLength(2);
+      expect(c).not.toMatch(/template_limit"\s*:/);
+      expect(c).not.toMatch(/UPDATE (public\.)?jobs|GRANT |REVOKE |ALTER TABLE|CREATE TABLE|CREATE (OR REPLACE )?FUNCTION/);
+    });
+
+    it('closes by checking both limits, both template limits and that the write policy is gone', () => {
+      const c = code();
+      expect(c).toContain("v_free_jobs IS DISTINCT FROM '15'::jsonb OR v_pro_jobs IS DISTINCT FROM '50'::jsonb");
+      expect(c).toContain("v_free_templates IS DISTINCT FROM '2'::jsonb OR v_pro_templates IS DISTINCT FROM '20'::jsonb");
+      expect(c).toContain("policyname = 'billing_plans_job_limit_seed'");
+      expect(sql()).toContain('migration 129: the write policy billing_plans_job_limit_seed is still present');
+      expect(sql().indexOf('-- \u2500\u2500 3. Closing check')).toBeLessThan(sql().indexOf('COMMIT;'));
     });
   });
 });

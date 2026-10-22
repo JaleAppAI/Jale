@@ -226,7 +226,7 @@ maybeDescribe('billing RLS integration (migration 034)', () => {
       }
     });
 
-    it('employer_pro plan has display_price_minor=2000 and active_job_limit=10 in entitlements', async () => {
+    it('employer_pro plan has display_price_minor=2000 and active_job_limit=50 in entitlements', async () => {
       if (!databaseUrl) return;
       const client = new Client({ connectionString: adminUrl });
       await client.connect();
@@ -241,7 +241,28 @@ maybeDescribe('billing RLS integration (migration 034)', () => {
         );
         expect(result.rows).toHaveLength(1);
         expect(result.rows[0].display_price_minor).toBe(2000);
-        expect(result.rows[0].entitlements).toEqual({ active_job_limit: 10, template_limit: 20 });
+        expect(result.rows[0].entitlements).toEqual({ active_job_limit: 50, template_limit: 20 });
+      } finally {
+        await client.end();
+      }
+    });
+
+    it('employer_free plan has display_price_minor=0 and active_job_limit=15 in entitlements', async () => {
+      if (!databaseUrl) return;
+      const client = new Client({ connectionString: adminUrl });
+      await client.connect();
+      try {
+        await client.query(`SET app.current_user_id = 'any-cognito-sub'`);
+        const result = await client.query<{
+          display_price_minor: number;
+          entitlements: Record<string, unknown>;
+        }>(
+          `SELECT display_price_minor, entitlements
+           FROM billing_plans WHERE code = 'employer_free'`,
+        );
+        expect(result.rows).toHaveLength(1);
+        expect(result.rows[0].display_price_minor).toBe(0);
+        expect(result.rows[0].entitlements).toEqual({ active_job_limit: 15, template_limit: 2 });
       } finally {
         await client.end();
       }
