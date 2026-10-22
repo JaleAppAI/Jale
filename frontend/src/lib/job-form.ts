@@ -56,6 +56,11 @@ export type DurationBucket = typeof DURATION_BUCKETS[number];
 export const WORK_DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const;
 export type WorkDay = typeof WORK_DAYS[number];
 
+// Shift choices (contract K2.1), in canonical order. The same list lives in
+// the backend's `infra/lambda/lib/job-fields.ts`; keep the two identical.
+export const SHIFT_PERIODS = ['day', 'evening', 'night', 'overnight'] as const;
+export type ShiftPeriod = (typeof SHIFT_PERIODS)[number];
+
 /**
  * English-canonical display strings for `deriveLegacyExpectedDuration` below.
  * Copied verbatim from `messages/en.json`'s `common.duration_bucket.*` (the

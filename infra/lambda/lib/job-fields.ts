@@ -71,6 +71,10 @@ export const EXPECTED_DURATION_BUCKETS = ['lt_1w', '1_2w', '2_4w', '1_3m', '3_6m
 // BE-T2: MUST byte-match the jobs_work_days_valid CHECK's ARRAY[...] literal
 // added by 077_jobs_structured_fields.sql.
 export const WORK_DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const;
+// Shift choices (contract K2.1), in canonical order. Identical to
+// SHIFT_PERIODS in frontend/src/lib/job-form.ts; the jobs.shift_periods CHECK
+// that a later migration adds must allow exactly this list.
+export const SHIFT_PERIODS = ['day', 'evening', 'night', 'overnight'] as const;
 
 export type JobType = typeof JOB_TYPES[number];
 export type JobStatus = typeof JOB_STATUSES[number];
@@ -79,6 +83,7 @@ export type ApplicationStatus = typeof APPLICATION_STATUSES[number];
 export type PayInterval = typeof PAY_INTERVALS[number];
 export type ExpectedDurationBucket = typeof EXPECTED_DURATION_BUCKETS[number];
 export type WorkDay = typeof WORK_DAYS[number];
+export type ShiftPeriod = (typeof SHIFT_PERIODS)[number];
 export type CertificationTier = 'required' | 'optional';
 export type RequiredFieldType = typeof REQUIRED_FIELD_TYPES[number];
 
