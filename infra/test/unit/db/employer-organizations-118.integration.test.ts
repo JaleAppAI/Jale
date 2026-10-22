@@ -333,6 +333,8 @@ maybeDescribe('migration 118: employer organizations', () => {
     it('created_by survives an employer_id change on a pre-118 job', async () => {
       const poster = await user('employer');
       const next = await user('employer');
+      // 129: a job moves only between active members of one company.
+      await member(await company(poster), next, 'foreman');
       const job = (await su.query<{ id: string }>(
         `INSERT INTO jobs (employer_id, title, location, job_type, status) VALUES ($1, 'T', 'Austin', 'full-time', 'active') RETURNING id`,
         [poster.id],

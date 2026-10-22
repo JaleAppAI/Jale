@@ -1,21 +1,36 @@
 {
+  "capability_owners": {
+    "jale_cap_org_limits": {
+      "created_by": "128",
+      "reason": "Owns jale_cap.employer_org_usage: reads the caller's company memberships, its members' active jobs and templates, and locks the company row; every read limited to the caller's company by its own policies."
+    }
+  },
   "tables": {
     "public.organization_members": {
       "classification": "access",
       "rls": { "enabled": true, "forced": true },
-      "reason": "Which company each employer login belongs to, and as what (migration 118). The helper role jale_rls_relationship_reader also holds SELECT on four columns (user_id, organization_id, role, status) for the jale_internal org helpers; helper roles are not listed under access.",
+      "reason": "Which company each employer login belongs to, and as what (migration 118); billing_suspended_at marks a member the billing enforcer suspended (128). The helper roles also hold column rights: jale_rls_relationship_reader SELECT on four columns for the jale_internal org helpers; jale_billing_job_enforcer SELECT on seven (user_id, organization_id, role, status, joined_at, status_changed_at, billing_suspended_at) and UPDATE on status, status_changed_at and billing_suspended_at for the company enforcer (128). Helper roles are not listed under access.",
       "access": {
         "jale_api": {
           "select": ["user_id", "organization_id", "role", "status", "joined_at"],
           "reason": "resolveEmployerActor reads the caller's membership and, for an owner, the company's member ids."
+        },
+        "jale_cap_org_limits": {
+          "select": ["user_id", "organization_id", "role", "status", "billing_suspended_at"],
+          "reason": "employer_org_usage finds the caller's company and counts its active and billing-suspended foremen."
         }
       }
     },
     "public.organization_invites": {
       "classification": "excluded",
       "rls": { "enabled": true, "forced": true },
-      "reason": "Foreman invites; created empty in migration 118, readers and writers arrive with Phase 3.",
-      "access": {}
+      "reason": "Foreman invites; created empty in migration 118. Readers and writers arrive with Phase 3. The billing enforcer jale_billing_job_enforcer (a helper role, not listed under access) holds SELECT on six columns (id, organization_id, created_at, expires_at, accepted_at, revoked_at) and UPDATE on revoked_at: it revokes the newest live invites over a reduced seat limit (128). The usage definer's owner jale_cap_org_limits reads four columns to count live pending invites (128).",
+      "access": {
+        "jale_cap_org_limits": {
+          "select": ["organization_id", "expires_at", "accepted_at", "revoked_at"],
+          "reason": "employer_org_usage counts the caller's company's live pending invites (they hold seats)."
+        }
+      }
     }
   },
   "policies": {
@@ -54,13 +69,45 @@
       "using": "(current_setting('app.org_trigger_read'::text, true) = 'on'::text)",
       "with_check": null,
       "reason": "Gate opened only inside the jale_admin trigger functions billing_stamp_organization (127) and jobs_assignee_must_be_active (129), around their one membership read."
+    },
+    "public.organization_members.organization_members_cap_org_limits_select": {
+      "command": "SELECT", "permissive": true, "to": ["jale_cap_org_limits"], "origin": "existing",
+      "using": "(user_id = ANY (( SELECT jale_internal.org_member_scope(current_setting('app.current_internal_user_id'::text, true)) AS org_member_scope)::uuid[]))",
+      "with_check": null,
+      "reason": "The caller's company's members, for employer_org_usage."
+    },
+    "public.organization_members.organization_members_billing_job_enforcer_select": {
+      "command": "SELECT", "permissive": true, "to": ["jale_billing_job_enforcer"], "origin": "existing",
+      "using": "true", "with_check": null,
+      "reason": "The company enforcer reads the members of the company the processor names."
+    },
+    "public.organization_members.organization_members_billing_job_enforcer_update": {
+      "command": "UPDATE", "permissive": true, "to": ["jale_billing_job_enforcer"], "origin": "existing",
+      "using": "(role = 'foreman'::text)", "with_check": "(role = 'foreman'::text)",
+      "reason": "The company enforcer suspends and restores foremen only."
+    },
+    "public.organization_invites.organization_invites_billing_job_enforcer_select": {
+      "command": "SELECT", "permissive": true, "to": ["jale_billing_job_enforcer"], "origin": "existing",
+      "using": "true", "with_check": null,
+      "reason": "The company enforcer counts live pending invites as held seats."
+    },
+    "public.organization_invites.organization_invites_cap_org_limits_select": {
+      "command": "SELECT", "permissive": true, "to": ["jale_cap_org_limits"], "origin": "existing",
+      "using": "(organization_id IN ( SELECT m.organization_id\n   FROM organization_members m\n  WHERE (m.user_id = ANY (( SELECT jale_internal.org_member_scope(current_setting('app.current_internal_user_id'::text, true)) AS org_member_scope)::uuid[]))))",
+      "with_check": null,
+      "reason": "The caller's company's invites, for employer_org_usage's pending_invites."
+    },
+    "public.organization_invites.organization_invites_billing_job_enforcer_update": {
+      "command": "UPDATE", "permissive": true, "to": ["jale_billing_job_enforcer"], "origin": "existing",
+      "using": "(accepted_at IS NULL)", "with_check": "(accepted_at IS NULL)",
+      "reason": "The company enforcer revokes pending invites only."
     }
   },
   "functions": {
     "jale_internal.is_org_owner_of(text, uuid)": {
       "owner": "jale_rls_relationship_reader", "security": "definer", "search_path": "pg_catalog, pg_temp",
       "arguments": "p_caller_id text, p_member_id uuid", "returns": "boolean",
-      "execute": ["jale_admin", "jale_api", "jale_cap_upload_tokens", "jale_cap_worker_lane"],
+      "execute": ["jale_admin", "jale_api", "jale_cap_upload_tokens", "jale_cap_worker_lane", "jale_cap_hire_details"],
       "created_by": "118",
       "reason": "Single-row owner predicate: is the caller the active owner of this member's company. The capability owners call it from their 119 functions."
     },
@@ -74,14 +121,14 @@
     "jale_internal.org_owner_scope(text, boolean)": {
       "owner": "jale_rls_relationship_reader", "security": "definer", "search_path": "pg_catalog, pg_temp",
       "arguments": "p_caller_id text, p_active_only boolean", "returns": "uuid[]",
-      "execute": ["jale_admin", "jale_api", "jale_cap_upload_tokens", "jale_cap_worker_lane"],
+      "execute": ["jale_admin", "jale_api", "jale_cap_upload_tokens", "jale_cap_worker_lane", "jale_cap_hire_details"],
       "created_by": "118",
       "reason": "The active owner's company as member ids, evaluated once per statement by the owner row policies and once per call by the 119 applicant predicate (employer_has_applicant_relationship). The capability owners call it from their 119 policies."
     },
     "jale_internal.org_member_scope(text)": {
       "owner": "jale_rls_relationship_reader", "security": "definer", "search_path": "pg_catalog, pg_temp",
       "arguments": "p_caller_id text", "returns": "uuid[]",
-      "execute": ["jale_admin", "jale_api"],
+      "execute": ["jale_admin", "jale_api", "jale_cap_org_limits"],
       "created_by": "118",
       "reason": "An active member's company as member ids, for company-shared reads (templates, 119)."
     },
@@ -112,21 +159,86 @@
       "execute": [],
       "created_by": "127",
       "reason": "Trigger function: billing_customers and subscriptions rows belong to the payer's company; it stamps a missing organization_id and refuses a wrong or changed one, a changed payer, a payer with no company and a Stripe customer who is not the active owner. Firing a trigger checks no EXECUTE right."
+    },
+    "public.jobs_assignee_must_be_active()": {
+      "owner": "jale_admin", "security": "definer", "search_path": "pg_catalog, pg_temp",
+      "arguments": "", "returns": "trigger",
+      "execute": [],
+      "created_by": "129",
+      "reason": "Trigger function (BEFORE UPDATE OF employer_id, status on jobs): a job moves only to an active member of its own company, and only an active member's job is made active (105's hired-count recount reopening a filled job reopens to paused while the employer is not an active member, billing-marked when the member is billing-suspended); a person with no company, a member who is not active and another company's member are refused. Firing a trigger checks no EXECUTE right."
+    },
+    "jale_cap.employer_org_usage(boolean)": {
+      "owner": "jale_cap_org_limits", "security": "definer", "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_lock boolean",
+      "returns": "TABLE(organization_id uuid, active_jobs integer, templates integer, active_foremen integer, suspended_foremen integer, pending_invites integer)",
+      "execute": ["jale_api"],
+      "created_by": "128",
+      "reason": "Company-wide usage for the caller's company (active jobs, templates, active and billing-suspended foremen, live pending invites), optionally under the company lock, the caller re-checked once it is held: the plan-limit gates of job creation, reactivation and template saves, and get-billing."
+    },
+    "jale_billing_internal.billing_enforce_org_limits(uuid, integer, integer)": {
+      "owner": "jale_billing_job_enforcer", "security": "definer", "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_organization_id uuid, p_active_job_limit integer, p_foreman_seat_limit integer",
+      "returns": "TABLE(paused_count integer, paused_titles text[], suspended_count integer, suspended_emails text[], revoked_invite_count integer, owner_email text)",
+      "execute": ["jale_billing"],
+      "created_by": "128",
+      "reason": "On a reducing subscription status, under the company lock: first suspends (and marks billing_suspended_at on) its most recently joined foremen over the seat limit, then pauses jobs over the job limit, keeping active members' oldest jobs first so a suspended foreman's jobs go before the owner's (a job_status_events row each, a removed visibility event for a public one), and revokes its newest live invites over the seats left."
+    },
+    "jale_billing_internal.billing_restore_org(uuid, integer, integer)": {
+      "owner": "jale_billing_job_enforcer", "security": "definer", "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_organization_id uuid, p_active_job_limit integer, p_foreman_seat_limit integer",
+      "returns": "TABLE(resumed_count integer, resumed_titles text[], restored_count integer, restored_emails text[], owner_email text)",
+      "execute": ["jale_billing"],
+      "created_by": "128",
+      "reason": "On an entitled subscription status, under the company lock: restores the company's billing-suspended foremen (marked billing_suspended_at, earliest marked then earliest joined) into the seats left, then resumes the billing-paused jobs of its active members oldest first."
     }
   },
   "table_additions": {
     "public.organizations": {
+      "access": {
+        "jale_cap_org_limits": {
+          "select": ["id"], "update": ["updated_at"],
+          "reason": "employer_org_usage locks the caller's company row (UPDATE only so SELECT ... FOR NO KEY UPDATE is allowed; never written)."
+        }
+      },
       "policies": {
         "organizations_org_bootstrap": {
           "command": "ALL", "permissive": true, "to": ["jale_admin"], "origin": "existing",
           "using": "(current_setting('app.org_bootstrap'::text, true) = 'on'::text)",
           "with_check": "(current_setting('app.org_bootstrap'::text, true) = 'on'::text)",
           "reason": "Gate opened only inside employer_ensure_organization, the 118 back-fill and the 119 catch-up back-fill."
+        },
+        "organizations_cap_org_limits_select": {
+          "command": "SELECT", "permissive": true, "to": ["jale_cap_org_limits"], "origin": "existing",
+          "using": "(id IN ( SELECT m.organization_id\n   FROM organization_members m\n  WHERE (m.user_id = ANY (( SELECT jale_internal.org_member_scope(current_setting('app.current_internal_user_id'::text, true)) AS org_member_scope)::uuid[]))))",
+          "with_check": null,
+          "reason": "The caller's company row only."
+        },
+        "organizations_cap_org_limits_lock": {
+          "command": "UPDATE", "permissive": true, "to": ["jale_cap_org_limits"], "origin": "existing",
+          "using": "(id IN ( SELECT m.organization_id\n   FROM organization_members m\n  WHERE (m.user_id = ANY (( SELECT jale_internal.org_member_scope(current_setting('app.current_internal_user_id'::text, true)) AS org_member_scope)::uuid[]))))",
+          "with_check": "(id IN ( SELECT m.organization_id\n   FROM organization_members m\n  WHERE (m.user_id = ANY (( SELECT jale_internal.org_member_scope(current_setting('app.current_internal_user_id'::text, true)) AS org_member_scope)::uuid[]))))",
+          "reason": "SELECT ... FOR NO KEY UPDATE of the caller's company row (the company lock)."
+        },
+        "organizations_billing_job_enforcer_select": {
+          "command": "SELECT", "permissive": true, "to": ["jale_billing_job_enforcer"], "origin": "existing",
+          "using": "true", "with_check": null,
+          "reason": "The company enforcer finds the company the processor names."
+        },
+        "organizations_billing_job_enforcer_lock": {
+          "command": "UPDATE", "permissive": true, "to": ["jale_billing_job_enforcer"], "origin": "existing",
+          "using": "true", "with_check": "true",
+          "reason": "The company enforcer takes the company lock (SELECT ... FOR NO KEY UPDATE); it never writes the row."
         }
       },
-      "reason": "Companies are created by the sign-up bootstrap and the 118 / 119 back-fills."
+      "reason": "Companies are created by the sign-up bootstrap and the 118 / 119 back-fills; the company lock (128) is taken by the usage definer's owner (listed under access) and the billing enforcer jale_billing_job_enforcer, a helper role not listed under access, which holds SELECT on id and UPDATE on updated_at (only so SELECT ... FOR NO KEY UPDATE is allowed; never written)."
     },
     "public.jobs": {
+      "access": {
+        "jale_cap_org_limits": {
+          "select": ["id", "employer_id", "status"],
+          "reason": "employer_org_usage counts the company's active jobs."
+        }
+      },
       "policies": {
         "jobs_org_owner_select": {
           "command": "SELECT", "permissive": true, "to": ["jale_api"], "origin": "existing",
@@ -137,8 +249,8 @@
         "jobs_org_owner_update": {
           "command": "UPDATE", "permissive": true, "to": ["jale_api"], "origin": "existing",
           "using": "(employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))",
-          "with_check": "(employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), true) AS org_owner_scope)::uuid[]))",
-          "reason": "The owner edits any member's job and reassigns it only to an active member."
+          "with_check": "(employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))",
+          "reason": "The owner edits any member's job, a suspended member's included (129); jobs_assignee_must_be_active keeps a move to active members of the job's company and refuses making a job active while its employer is not an active member."
         },
         "jobs_org_owner_delete": {
           "command": "DELETE", "permissive": true, "to": ["jale_api"], "origin": "existing",
@@ -157,6 +269,18 @@
           "using": "(employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))",
           "with_check": null,
           "reason": "The worker-lane functions read a member's job for the company owner."
+        },
+        "jobs_cap_org_limits_select": {
+          "command": "SELECT", "permissive": true, "to": ["jale_cap_org_limits"], "origin": "existing",
+          "using": "(employer_id = ANY (( SELECT jale_internal.org_member_scope(current_setting('app.current_internal_user_id'::text, true)) AS org_member_scope)::uuid[]))",
+          "with_check": null,
+          "reason": "The caller's company's jobs."
+        },
+        "jobs_cap_hire_details_org_owner_select": {
+          "command": "SELECT", "permissive": true, "to": ["jale_cap_hire_details"], "origin": "existing",
+          "using": "(employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))",
+          "with_check": null,
+          "reason": "employer_save_hire_details reads a member's job for the company owner (129)."
         }
       },
       "reason": "Company owners act on every member's jobs (migration 119)."
@@ -180,6 +304,18 @@
           "using": "(job_id IN ( SELECT j.id\n   FROM jobs j\n  WHERE (j.employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))))",
           "with_check": null,
           "reason": "employer_stage_recipient and employer_claim_worker_intent read an application on a member's job for the company owner."
+        },
+        "job_applications_cap_hire_details_org_owner_select": {
+          "command": "SELECT", "permissive": true, "to": ["jale_cap_hire_details"], "origin": "existing",
+          "using": "(job_id IN ( SELECT j.id\n   FROM jobs j\n  WHERE (j.employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))))",
+          "with_check": null,
+          "reason": "employer_save_hire_details reads a hire on a member's job for the company owner (129)."
+        },
+        "job_applications_cap_hire_details_org_owner_update": {
+          "command": "UPDATE", "permissive": true, "to": ["jale_cap_hire_details"], "origin": "existing",
+          "using": "(job_id IN ( SELECT j.id\n   FROM jobs j\n  WHERE (j.employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))))",
+          "with_check": "(job_id IN ( SELECT j.id\n   FROM jobs j\n  WHERE (j.employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))))",
+          "reason": "employer_save_hire_details writes the details of a hire on a member's job for the company owner (129)."
         }
       },
       "reason": "Company owners act on the applications to every member's jobs (migration 119)."
@@ -291,6 +427,12 @@
       "reason": "Company owners read and delete the job documents on every member's jobs (migration 119)."
     },
     "public.employer_job_templates": {
+      "access": {
+        "jale_cap_org_limits": {
+          "select": ["id", "employer_id"],
+          "reason": "employer_org_usage counts the company's templates."
+        }
+      },
       "policies": {
         "employer_job_templates_org_read": {
           "command": "SELECT", "permissive": true, "to": ["jale_api"], "origin": "existing",
@@ -309,6 +451,12 @@
           "using": "(employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))",
           "with_check": null,
           "reason": "The owner deletes any member's template."
+        },
+        "employer_job_templates_cap_org_limits_select": {
+          "command": "SELECT", "permissive": true, "to": ["jale_cap_org_limits"], "origin": "existing",
+          "using": "(employer_id = ANY (( SELECT jale_internal.org_member_scope(current_setting('app.current_internal_user_id'::text, true)) AS org_member_scope)::uuid[]))",
+          "with_check": null,
+          "reason": "The caller's company's templates."
         }
       },
       "reason": "Templates belong to the company: every active member reads them, the owner edits and deletes them (migration 119)."
@@ -323,6 +471,25 @@
         }
       },
       "reason": "A subscription belongs to the payer's company (127)."
+    },
+    "public.users": {
+      "access": {
+        "jale_cap_org_limits": {
+          "select": ["id", "cognito_sub", "user_type"],
+          "reason": "employer_job_templates_self (069, TO PUBLIC) is evaluated for every reader of templates and its sub-query reads these columns; the owner never returns them."
+        }
+      },
+      "reason": "The company usage definer's owner reads templates (128)."
+    }
+  },
+  "schema_additions": {
+    "jale_cap": {
+      "create": ["jale_cap_org_limits"],
+      "reason": "The company usage definer's owner holds CREATE to own its function (128)."
+    },
+    "jale_internal": {
+      "usage": ["jale_cap_org_limits", "jale_cap_hire_details"],
+      "reason": "Their policies and functions call the jale_internal org helpers (128, 129)."
     }
   }
 }
