@@ -164,6 +164,7 @@ describe('database migrations', () => {
       '124',
       '125',
       '126',
+      '127',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -5109,6 +5110,100 @@ describe('database migrations', () => {
       expect(sql).toContain('migration 126: jale_whatsapp cannot execute %');
       expect(sql).toContain('migration 126: PUBLIC can execute %');
       expect(sql.indexOf('-- \u2500\u2500 6. Closing check (part B)')).toBeLessThan(sql.indexOf('COMMIT;'));
+    });
+  });
+
+  describe('127 company billing', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '127_company_billing.sql'), 'utf8');
+
+    it('is one transaction, forward-only, after 126 and 119', () => {
+      expect(sql).toContain('-- Run manually AFTER 126_job_conversations_whatsapp_update_columns.sql\n-- and 119_employer_org_owner_access.sql (PR #105),\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n');
+      expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+      expect(sql).toContain("SET LOCAL lock_timeout = '5s';");
+    });
+
+    it('locks both billing tables ACCESS EXCLUSIVE first, creates the triggers before the back-fill, and drops every temporary policy again', () => {
+      const lockAt = sql.indexOf('\nLOCK TABLE public.billing_customers, public.subscriptions IN ACCESS EXCLUSIVE MODE;\n');
+      expect(lockAt).toBeGreaterThan(-1);
+      expect(lockAt).toBeLessThan(sql.indexOf('CREATE FUNCTION public.billing_stamp_organization()'));
+      expect(sql.match(/^LOCK TABLE /gm)).toHaveLength(1);
+      const triggerAt = sql.indexOf('CREATE TRIGGER subscriptions_stamp_organization');
+      expect(triggerAt).toBeGreaterThan(-1);
+      expect(triggerAt).toBeLessThan(sql.indexOf('UPDATE public.billing_customers bc'));
+      // The two back-fill policies, the seat seed, subscriptions_org_member_read
+      // and organization_members_trigger_read; none on users.
+      expect(sql.match(/^CREATE POLICY /gm)).toHaveLength(5);
+      expect(sql.match(/^DROP POLICY .*$/gm)).toEqual([
+        'DROP POLICY billing_customers_org_backfill ON public.billing_customers;',
+        'DROP POLICY subscriptions_org_backfill ON public.subscriptions;',
+        'DROP POLICY billing_plans_seat_seed ON public.billing_plans;',
+      ]);
+      // The statement itself: the header comment also says "SET NOT NULL".
+      expect(sql.indexOf('DROP POLICY subscriptions_org_backfill'))
+        .toBeLessThan(sql.indexOf('ALTER TABLE public.billing_customers ALTER COLUMN organization_id SET NOT NULL;'));
+    });
+
+    it('stamps on insert and refuses a change of payer or company on update', () => {
+      expect(sql).toContain('CREATE TRIGGER billing_customers_stamp_organization\n  BEFORE INSERT OR UPDATE OF organization_id, user_id ON public.billing_customers\n');
+      expect(sql).toContain('CREATE TRIGGER subscriptions_stamp_organization\n  BEFORE INSERT OR UPDATE OF organization_id, user_id ON public.subscriptions\n');
+      expect(sql).toContain("RAISE EXCEPTION '%: user_id never changes'");
+      expect(sql).toContain("RAISE EXCEPTION '%: organization_id never changes'");
+    });
+
+    it('takes the organization_members ACCESS EXCLUSIVE lock last, reads users through 089\'s pinned gate, and fails closed on an employer without a company', () => {
+      const code = sql.replace(/--.*$/gm, '');
+      const memberReadAt = code.indexOf('CREATE POLICY subscriptions_org_member_read');
+      expect(memberReadAt).toBeGreaterThan(code.indexOf('DROP POLICY billing_plans_seat_seed'));
+      expect(code.indexOf('ON public.organization_members')).toBeGreaterThan(memberReadAt);
+      // No policy is created on users; 089's users_admin_analytics_read is pinned in the preconditions.
+      expect(code).not.toContain('ON public.users');
+      expect(sql).toContain("AND p.polname = 'users_admin_analytics_read'");
+      expect(sql).toContain("AND pg_get_expr(p.polqual, p.polrelid) = $q$(current_setting('app.admin_analytics_read'::text, true) = 'on'::text)$q$");
+      expect(code.indexOf("AND p.polname = 'users_admin_analytics_read'")).toBeLessThan(code.indexOf('LOCK TABLE'));
+      // The count's gate opens after the last ACCESS EXCLUSIVE lock and closes before the self-check.
+      const countGateAt = code.lastIndexOf("SELECT set_config('app.admin_analytics_read', 'on', true);");
+      expect(countGateAt).toBeGreaterThan(code.indexOf('CREATE POLICY organization_members_trigger_read'));
+      expect(code.lastIndexOf("SELECT set_config('app.admin_analytics_read', 'off', true);")).toBeGreaterThan(countGateAt);
+      expect(sql).toContain('employer users have no company');
+      expect(sql).toContain("USING DETAIL = 'Employers (user_id, user_type; up to 20): ' || v_detail;");
+    });
+
+    it('moves the one-current rule to the company and fails closed on orphans and duplicates', () => {
+      expect(sql).toContain('ALTER TABLE public.billing_customers ALTER COLUMN organization_id SET NOT NULL;');
+      expect(sql).toContain('ALTER TABLE public.subscriptions ALTER COLUMN organization_id SET NOT NULL;');
+      expect(sql).toContain("CREATE UNIQUE INDEX subscriptions_one_current_per_organization\n  ON public.subscriptions (organization_id)\n  WHERE status NOT IN ('canceled', 'incomplete_expired');");
+      expect(sql).toContain('DROP INDEX public.subscriptions_one_current_per_user;');
+      expect(sql).toContain('billing_customers rows have a payer with no company');
+      expect(sql).toContain('subscriptions rows have a payer with no company');
+      expect(sql).toContain('companies have more than one Stripe customer');
+      expect(sql).toContain('companies have more than one current subscription');
+      // A worker payer is never told to get a company.
+      expect(sql).toContain("'A row whose payer is not an employer must be removed or re-assigned to an employer.'");
+      expect(sql).not.toContain('employer_ensure_organization');
+      // The not-owner check matches the trigger.
+      expect(sql).toContain("WHERE m.role <> 'owner' OR m.status <> 'active';");
+      // Every fail-closed RAISE in the back-fill and the employer count carries a DETAIL.
+      const checks = sql.slice(sql.indexOf('-- ── 2.'), sql.indexOf('-- ── Self-check'));
+      const raises = checks.match(/RAISE EXCEPTION 'migration 127: [\s\S]*?\n\s*END IF;/g) ?? [];
+      expect(raises.length).toBe(8);
+      for (const raise of raises) expect(raise).toContain('USING DETAIL = ');
+    });
+
+    it('self-checks enabled triggers, the pinned trigger-read gate and a seat limit on every employer plan', () => {
+      expect(sql).toContain("AND t.tgenabled <> 'D'");
+      expect(sql).toContain("AND pg_get_expr(polqual, polrelid) = $q$(current_setting('app.org_trigger_read'::text, true) = 'on'::text)$q$");
+      expect(sql).toContain("WHERE audience = 'employer' AND NOT (entitlements ? 'foreman_seat_limit')");
+      expect(sql).toContain("OR current_setting('app.admin_analytics_read', true) IS DISTINCT FROM 'off'");
+    });
+
+    it('documents why the INSERT branch never refuses an unchanged company (webhook upserts fire BEFORE INSERT)', () => {
+      expect(sql).toContain('INSERT ... ON\n  -- CONFLICT DO UPDATE fires BEFORE INSERT');
+    });
+
+    it('keys the member read on the company and casts the member scope to uuid[] (PG16 parses the uncast form as a sub-query)', () => {
+      expect(sql).toContain('USING (organization_id IN (SELECT m.organization_id FROM public.organization_members m\n');
+      expect(sql).toContain("WHERE m.user_id = ANY ((SELECT jale_internal.org_member_scope(current_setting('app.current_internal_user_id', true)))::uuid[])));");
     });
   });
 });

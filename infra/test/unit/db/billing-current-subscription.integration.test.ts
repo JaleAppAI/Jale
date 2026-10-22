@@ -5,17 +5,18 @@
  *
  * The processor mirrors Stripe with
  * `INSERT INTO subscriptions ... ON CONFLICT (provider_subscription_id)`.
- * When a user who still holds a current row acquires a NEW
+ * When a company that still holds a current row acquires a NEW
  * provider_subscription_id, that conflict target does not match, so the
- * statement INSERTs — and the partial unique index from migration 034,
+ * statement INSERTs — and the partial unique index from migration 127,
  *
- *   CREATE UNIQUE INDEX subscriptions_one_current_per_user
- *       ON subscriptions (user_id)
+ *   CREATE UNIQUE INDEX subscriptions_one_current_per_organization
+ *       ON subscriptions (organization_id)
  *    WHERE status NOT IN ('canceled', 'incomplete_expired');
  *
- * rejects it with 23505. This test proves that rejection is real against a
- * live server (not merely inferred from the DDL) and that the retire UPDATE
- * the processor now issues first is what makes the re-subscribe path work.
+ * rejects it with 23505 (034's per-user index of the same shape is gone).
+ * This test proves that rejection is real against a live server (not
+ * merely inferred from the DDL) and that the retire UPDATE the processor
+ * now issues first is what makes the re-subscribe path work.
  *
  * Connection: JALE_TEST_DATABASE_URL must point at a database with the full
  * migration chain already applied, using a superuser (fixtures need to bypass
@@ -45,7 +46,7 @@ const COGNITO_SUB = 'b3-current-sub-employer';
 const SUB_OLD = 'sub_test_current_a_old';
 const SUB_NEW = 'sub_test_current_b_new';
 
-maybeDescribe('subscriptions_one_current_per_user: retire before upsert', () => {
+maybeDescribe('subscriptions_one_current_per_organization: retire before upsert', () => {
   let employerId: string;
   let companyId: string;
 
@@ -111,7 +112,7 @@ maybeDescribe('subscriptions_one_current_per_user: retire before upsert', () => 
       // Name the index explicitly: a bare 23505 assertion would also pass for
       // the provider_subscription_id UNIQUE constraint, which is a different
       // failure with a different fix.
-      expect(String(collision!.message)).toContain('subscriptions_one_current_per_user');
+      expect(String(collision!.message)).toContain('subscriptions_one_current_per_organization');
 
       // The failed statement aborted the transaction — every later statement
       // returns 25P02 until we unwind to the savepoint.

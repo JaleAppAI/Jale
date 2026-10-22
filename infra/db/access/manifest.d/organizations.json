@@ -48,6 +48,12 @@
       "using": "(current_setting('app.org_bootstrap'::text, true) = 'on'::text)",
       "with_check": "(current_setting('app.org_bootstrap'::text, true) = 'on'::text)",
       "reason": "Gate opened only inside employer_ensure_organization, the 118 back-fill and the 119 catch-up back-fill."
+    },
+    "public.organization_members.organization_members_trigger_read": {
+      "command": "SELECT", "permissive": true, "to": ["jale_admin"], "origin": "existing",
+      "using": "(current_setting('app.org_trigger_read'::text, true) = 'on'::text)",
+      "with_check": null,
+      "reason": "Gate opened only inside the jale_admin trigger functions billing_stamp_organization (127) and jobs_assignee_must_be_active (129), around their one membership read."
     }
   },
   "functions": {
@@ -99,6 +105,13 @@
       "execute": [],
       "created_by": "118",
       "reason": "Trigger function stamping job_conversation_messages.sender_user_id from the session caller on employer messages, and keeping it on UPDATE; firing a trigger checks no EXECUTE right."
+    },
+    "public.billing_stamp_organization()": {
+      "owner": "jale_admin", "security": "definer", "search_path": "pg_catalog, pg_temp",
+      "arguments": "", "returns": "trigger",
+      "execute": [],
+      "created_by": "127",
+      "reason": "Trigger function: billing_customers and subscriptions rows belong to the payer's company; it stamps a missing organization_id and refuses a wrong or changed one, a changed payer, a payer with no company and a Stripe customer who is not the active owner. Firing a trigger checks no EXECUTE right."
     }
   },
   "table_additions": {
@@ -299,6 +312,17 @@
         }
       },
       "reason": "Templates belong to the company: every active member reads them, the owner edits and deletes them (migration 119)."
+    },
+    "public.subscriptions": {
+      "policies": {
+        "subscriptions_org_member_read": {
+          "command": "SELECT", "permissive": true, "to": ["jale_api"], "origin": "existing",
+          "using": "(organization_id IN ( SELECT m.organization_id\n   FROM organization_members m\n  WHERE (m.user_id = ANY (( SELECT jale_internal.org_member_scope(current_setting('app.current_internal_user_id'::text, true)) AS org_member_scope)::uuid[]))))",
+          "with_check": null,
+          "reason": "Every active member reads the company's subscription, keyed on organization_id, so a foreman resolves the company plan (127). It exposes whole rows, the Stripe subscription id and the billing periods included, to every active member: accepted, as get-billing shows them the same plan."
+        }
+      },
+      "reason": "A subscription belongs to the payer's company (127)."
     }
   }
 }

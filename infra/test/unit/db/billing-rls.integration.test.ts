@@ -249,7 +249,7 @@ maybeDescribe('billing RLS integration (migration 034)', () => {
       }
     });
 
-    it('employer_pro plan has display_price_minor=2000 and active_job_limit=10 in entitlements', async () => {
+    it('employer_pro plan has display_price_minor=2000 and its limits (10 jobs, 20 templates, 3 foreman seats) in entitlements', async () => {
       if (!databaseUrl) return;
       const client = new Client({ connectionString: adminUrl });
       await client.connect();
@@ -264,7 +264,7 @@ maybeDescribe('billing RLS integration (migration 034)', () => {
         );
         expect(result.rows).toHaveLength(1);
         expect(result.rows[0].display_price_minor).toBe(2000);
-        expect(result.rows[0].entitlements).toEqual({ active_job_limit: 10, template_limit: 20 });
+        expect(result.rows[0].entitlements).toEqual({ active_job_limit: 10, template_limit: 20, foreman_seat_limit: 3 });
       } finally {
         await client.end();
       }
@@ -302,43 +302,22 @@ maybeDescribe('billing RLS integration (migration 034)', () => {
       }
     });
 
-    it('billing_customers.organization_id is nullable and defaults NULL', async () => {
+    it('billing_customers.organization_id and subscriptions.organization_id are NOT NULL with no default (127)', async () => {
       if (!databaseUrl) return;
       const client = new Client({ connectionString: adminUrl });
       await client.connect();
       try {
-        const result = await client.query<{
-          is_nullable: string;
-          column_default: string | null;
-        }>(
-          `SELECT is_nullable, column_default
+        const result = await client.query<{ table_name: string; is_nullable: string; column_default: string | null }>(
+          `SELECT table_name::text, is_nullable::text, column_default
            FROM information_schema.columns
-           WHERE table_name = 'billing_customers' AND column_name = 'organization_id'`,
+           WHERE table_schema = 'public' AND column_name = 'organization_id'
+             AND table_name IN ('billing_customers', 'subscriptions')
+           ORDER BY table_name`,
         );
-        expect(result.rows).toHaveLength(1);
-        expect(result.rows[0].is_nullable).toBe('YES');
-        expect(result.rows[0].column_default).toBeNull();
-      } finally {
-        await client.end();
-      }
-    });
-
-    it('subscriptions.organization_id is nullable and defaults NULL', async () => {
-      if (!databaseUrl) return;
-      const client = new Client({ connectionString: adminUrl });
-      await client.connect();
-      try {
-        const result = await client.query<{
-          is_nullable: string;
-          column_default: string | null;
-        }>(
-          `SELECT is_nullable, column_default
-           FROM information_schema.columns
-           WHERE table_name = 'subscriptions' AND column_name = 'organization_id'`,
-        );
-        expect(result.rows).toHaveLength(1);
-        expect(result.rows[0].is_nullable).toBe('YES');
-        expect(result.rows[0].column_default).toBeNull();
+        expect(result.rows).toEqual([
+          { table_name: 'billing_customers', is_nullable: 'NO', column_default: null },
+          { table_name: 'subscriptions', is_nullable: 'NO', column_default: null },
+        ]);
       } finally {
         await client.end();
       }
@@ -707,10 +686,10 @@ maybeDescribe('billing RLS integration (migration 034)', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Concurrent uniqueness: subscriptions_one_current_per_user
+  // Concurrent uniqueness: subscriptions_one_current_per_organization
   // ---------------------------------------------------------------------------
 
-  describe('subscriptions_one_current_per_user partial uniqueness index', () => {
+  describe('subscriptions_one_current_per_organization partial uniqueness index', () => {
     it('two concurrent non-terminal inserts for the same user: exactly one wins', async () => {
       if (!databaseUrl) return;
 
