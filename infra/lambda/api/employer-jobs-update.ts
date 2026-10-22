@@ -362,10 +362,12 @@ async function handleFieldEdit(
     // pre-existing exact-replace semantics -- deliberately asymmetric, same
     // as the city/state_region clear-vs-preserve distinction commented below.
     const optional_docs = hasOptionalDocsKey ? optionalDocsInput : (cur.optional_docs ?? []);
-    // A retired field type (job-fields.ts) stays only in a tier the stored job
-    // already has it in; a body that adds it elsewhere has it dropped.
-    const required_fields = hasRequiredFieldsKey ? stripRetiredFields(requiredFieldsInput, cur.required_fields ?? []) : (cur.required_fields ?? []);
-    const optional_fields = hasOptionalFieldsKey ? stripRetiredFields(optionalFieldsInput, cur.optional_fields ?? []) : (cur.optional_fields ?? []);
+    // A retired field type (job-fields.ts) is kept when the stored job already
+    // asks for it, in either tier; a body that adds it to a job without it has
+    // it dropped.
+    const storedFields = [...(cur.required_fields ?? []), ...(cur.optional_fields ?? [])];
+    const required_fields = hasRequiredFieldsKey ? stripRetiredFields(requiredFieldsInput, storedFields) : (cur.required_fields ?? []);
+    const optional_fields = hasOptionalFieldsKey ? stripRetiredFields(optionalFieldsInput, storedFields) : (cur.optional_fields ?? []);
     // Written back verbatim when omitted, so the lock comparison below is
     // equal BY CONSTRUCTION and the UPDATE is a no-op round-trip on this
     // column rather than a clear.

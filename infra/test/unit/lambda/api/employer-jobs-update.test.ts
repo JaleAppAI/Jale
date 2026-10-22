@@ -1111,7 +1111,7 @@ describe('employer-jobs-update', () => {
   });
 
   // Date of birth is no longer offered on new jobs; existing jobs keep it.
-  // It stays only in the tier the stored job already has it in.
+  // It is kept when the stored job already asks for it, in either tier.
   describe('date_of_birth on an existing job', () => {
     it('drops a newly added date_of_birth from required_fields', async () => {
       mockCurrentJob({ required_fields: ['work_authorization'] });
@@ -1140,13 +1140,29 @@ describe('employer-jobs-update', () => {
       expect((findUpdateCall()![1] as unknown[])[8]).toEqual(['date_of_birth']);
     });
 
-    it('drops date_of_birth when it moves from required_fields to optional_fields', async () => {
+    it('keeps date_of_birth, in required_fields only, when it moves there from optional_fields', async () => {
+      mockCurrentJob({ optional_fields: ['date_of_birth', 'education'] });
+      const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, required_fields: ['date_of_birth'], optional_fields: ['education'] }) }));
+      expect(res.statusCode).toBe(200);
+      const params = findUpdateCall()![1] as unknown[];
+      expect(params[7]).toEqual(['date_of_birth']);
+      expect(params[8]).toEqual(['education']);
+    });
+
+    it('keeps date_of_birth, in optional_fields only, when it moves there from required_fields', async () => {
       mockCurrentJob({ required_fields: ['date_of_birth'] });
       const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, required_fields: [], optional_fields: ['date_of_birth'] }) }));
       expect(res.statusCode).toBe(200);
       const params = findUpdateCall()![1] as unknown[];
       expect(params[7]).toEqual([]);
-      expect(params[8]).toEqual([]);
+      expect(params[8]).toEqual(['date_of_birth']);
+    });
+
+    it('still refuses date_of_birth in both tiers of a job that has it with 400 requirements_tier_overlap', async () => {
+      mockCurrentJob({ optional_fields: ['date_of_birth'] });
+      const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, required_fields: ['date_of_birth'], optional_fields: ['date_of_birth'] }) }));
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body)).toEqual({ error: 'requirements_tier_overlap', keys: ['date_of_birth'] });
     });
 
     it('saves a job with applicants unchanged when the edit only adds date_of_birth', async () => {
