@@ -40,10 +40,17 @@ export function PreApplicationPromptsEditor({
     prompts,
     onChange,
     locked = false,
+    fieldError,
 }: {
     prompts: PromptDraft[];
     onChange: (next: PromptDraft[]) => void;
     locked?: boolean;
+    /**
+     * The question a refused step is about, by position, with its sentence.
+     * Every question carries `data-field="prompt-<n>"` so the wizard can move
+     * focus to it.
+     */
+    fieldError?: { index: number; message: string } | null;
 }) {
     const t = useTranslations('job_requirements');
 
@@ -122,6 +129,9 @@ export function PreApplicationPromptsEditor({
 
                             <Textarea
                                 aria-labelledby={`prompt-label-${prompt.id}`}
+                                data-field={`prompt-${index}`}
+                                aria-invalid={fieldError?.index === index || undefined}
+                                aria-describedby={fieldError?.index === index ? `prompt-error-${prompt.id}` : undefined}
                                 rows={2}
                                 value={prompt.text}
                                 disabled={locked}
@@ -137,6 +147,12 @@ export function PreApplicationPromptsEditor({
                                 maxLength={MAX_PROMPT_CHARS}
                                 onChange={(event) => emit(updatePromptText(prompts, index, event.target.value))}
                             />
+
+                            {fieldError?.index === index && (
+                                <p id={`prompt-error-${prompt.id}`} className="text-xs font-medium text-[var(--jale-danger-text)]">
+                                    {fieldError.message}
+                                </p>
+                            )}
 
                             {!locked && (
                                 <p className="text-right text-[11px] tabular-nums text-[var(--jale-ink-2)]">

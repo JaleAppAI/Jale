@@ -35,12 +35,14 @@ interface ScheduleFieldsProps {
   shiftPeriods: ShiftPeriod[];
   onToggleShiftPeriod: (period: ShiftPeriod) => void;
   disabled?: boolean;
+  /** The time field a refused step is about, with the sentence shown under the times. */
+  fieldError?: { field: 'shift_start' | 'shift_end'; message: string } | null;
 }
 
 export function ScheduleFields({
   workDays, shiftStart, shiftEnd, legacyShiftSchedule,
   onToggleDay, onShiftStartChange, onShiftEndChange,
-  shiftPeriods, onToggleShiftPeriod, disabled,
+  shiftPeriods, onToggleShiftPeriod, disabled, fieldError,
 }: ScheduleFieldsProps) {
   const t = useTranslations('employer_dashboard');
   const tCommon = useTranslations('common');
@@ -48,6 +50,9 @@ export function ScheduleFields({
   const timesHintId = useId();
   const startId = useId();
   const endId = useId();
+  const timeErrorId = useId();
+  const startMarked = fieldError?.field === 'shift_start';
+  const endMarked = fieldError?.field === 'shift_end';
 
   const showLegacyNote =
     workDays.length === 0 && shiftPeriods.length === 0 && shiftStart === '' && shiftEnd === ''
@@ -115,8 +120,10 @@ export function ScheduleFields({
           </label>
           <Input
             id={startId}
+            data-field="shift_start"
             type="time"
-            aria-describedby={timesHintId}
+            aria-invalid={startMarked || undefined}
+            aria-describedby={startMarked ? `${timesHintId} ${timeErrorId}` : timesHintId}
             value={shiftStart}
             onChange={(e) => onShiftStartChange(e.target.value)}
             disabled={disabled}
@@ -129,14 +136,19 @@ export function ScheduleFields({
           </label>
           <Input
             id={endId}
+            data-field="shift_end"
             type="time"
-            aria-describedby={timesHintId}
+            aria-invalid={endMarked || undefined}
+            aria-describedby={endMarked ? `${timesHintId} ${timeErrorId}` : timesHintId}
             value={shiftEnd}
             onChange={(e) => onShiftEndChange(e.target.value)}
             disabled={disabled}
           />
         </div>
       </div>
+      {fieldError && (
+        <p id={timeErrorId} className="-mt-1.5 text-xs font-medium text-[var(--jale-danger-text)]">{fieldError.message}</p>
+      )}
       <p id={timesHintId} className="-mt-1.5 text-xs text-[var(--jale-ink-2)]">{t('modal.shift_times_hint')}</p>
 
       {showLegacyNote && (

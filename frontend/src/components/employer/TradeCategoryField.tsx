@@ -1,5 +1,6 @@
 'use client';
 import type React from 'react';
+import { useId } from 'react';
 import { useTranslations } from 'next-intl';
 import { TRADE_CATEGORIES, type JobForm } from '@/lib/job-form';
 import { Input } from '@/components/ui/input';
@@ -25,17 +26,33 @@ interface TradeCategoryFieldProps {
   onTradeCategoryChange: (value: JobForm['trade_category']) => void;
   onTradeCategoryOtherChange: (value: string) => void;
   disabled?: boolean;
+  /**
+   * The field a refused step is about, with the sentence shown under it. The
+   * control is marked `aria-invalid` and described by that sentence. Both
+   * controls carry `data-field`, so the wizard can move focus to them.
+   */
+  fieldError?: { field: 'trade_category' | 'trade_category_other'; message: string } | null;
 }
 
 export function TradeCategoryField({
   tradeCategory, tradeCategoryOther, onTradeCategoryChange, onTradeCategoryOtherChange, disabled,
+  fieldError,
 }: TradeCategoryFieldProps) {
   const t = useTranslations('employer_dashboard');
+  const selectId = useId();
+  const otherId = useId();
+  const errorId = useId();
+  const tradeInvalid = fieldError?.field === 'trade_category';
+  const otherInvalid = fieldError?.field === 'trade_category_other';
 
   return (
     <div className="grid gap-4">
-      <Field label={t('modal.trade_category')} required>
+      <Field label={t('modal.trade_category')} htmlFor={selectId} required>
         <Select
+          id={selectId}
+          data-field="trade_category"
+          aria-invalid={tradeInvalid || undefined}
+          aria-describedby={tradeInvalid ? errorId : undefined}
           value={tradeCategory}
           onChange={(e) => onTradeCategoryChange(e.target.value as JobForm['trade_category'])}
           disabled={disabled}
@@ -45,16 +62,22 @@ export function TradeCategoryField({
             <option key={trade} value={trade}>{t(`modal.trade.${trade}`)}</option>
           ))}
         </Select>
+        {tradeInvalid && <FieldMessage id={errorId}>{fieldError.message}</FieldMessage>}
       </Field>
 
       {tradeCategory === 'other' && (
-        <Field label={t('modal.trade_other_label')} required>
+        <Field label={t('modal.trade_other_label')} htmlFor={otherId} required>
           <Input
+            id={otherId}
+            data-field="trade_category_other"
+            aria-invalid={otherInvalid || undefined}
+            aria-describedby={otherInvalid ? errorId : undefined}
             value={tradeCategoryOther}
             onChange={(e) => onTradeCategoryOtherChange(e.target.value)}
             placeholder={t('modal.trade_other_placeholder')}
             disabled={disabled}
           />
+          {otherInvalid && <FieldMessage id={errorId}>{fieldError.message}</FieldMessage>}
           <p className="mt-1 text-xs text-[var(--jale-ink-2)]">{t('modal.trade_other_hint')}</p>
         </Field>
       )}
@@ -62,10 +85,14 @@ export function TradeCategoryField({
   );
 }
 
-function Field({ label, required, children }: { label: string; required?: boolean; children: React.ReactNode }) {
+function FieldMessage({ id, children }: { id: string; children: React.ReactNode }) {
+  return <p id={id} className="text-xs font-medium text-[var(--jale-danger-text)]">{children}</p>;
+}
+
+function Field({ label, htmlFor, required, children }: { label: string; htmlFor: string; required?: boolean; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <label className="text-xs font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">
+      <label htmlFor={htmlFor} className="text-xs font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">
         {label}{required ? ' *' : ''}
       </label>
       {children}

@@ -3,6 +3,7 @@ import {
   applyLocationToJobForm, initialForm, jobFormToCreatePayload, jobFormToEditPayload, jobToForm, validateJobLocationFields, jobFormFromTemplatePayload, templateRowSummary, setRequirementState, type JobForm,
   DURATION_BUCKETS, WORK_DAYS, DURATION_BUCKET_LABELS, type DurationBucket,
   SHIFT_PERIODS, type ShiftPeriod, hasShiftStructure, toggleShiftPeriod,
+  firstInvalidField,
   deriveLegacyExpectedDuration, deriveLegacyShiftSchedule,
   payRangeExceeds, validateJobNumbers, validateStepBasics, validateStepDetails, validateFullJobForm,
   validateStepRequirements,
@@ -1384,5 +1385,76 @@ describe('validateFullJobForm: prompt codes', () => {
 
   it('passes a job that asks nothing', () => {
     expect(validateFullJobForm(valid)).toBeNull();
+  });
+});
+
+// The wizard names, marks and focuses the field that stopped it (sprint 29).
+// The step validators above still own the rules and return codes; this helper
+// only says WHICH field each code is about, in the same order.
+describe('firstInvalidField', () => {
+  const valid: JobForm = {
+    ...initialForm,
+    title: 'Roofer', location: 'El Paso, TX', trade_category: 'concrete',
+    city_key: 'el-paso-tx', city: 'El Paso', state: 'TX', state_region: 'TX',
+  };
+  const find = firstInvalidField as (form: JobForm, step: 1 | 2 | 3) => unknown;
+
+  it('is null for a valid step, exactly when the step validator is', () => {
+    expect(find(valid, 1)).toBeNull();
+    expect(find(valid, 2)).toBeNull();
+    expect(find(valid, 3)).toBeNull();
+  });
+
+  it('names title, then location, then trade, in that order', () => {
+    expect(find({ ...valid, title: ' ' }, 1)).toEqual({ field: 'title', code: 'required' });
+    expect(find({ ...valid, title: '', location: '' }, 1)).toEqual({ field: 'title', code: 'required' });
+    expect(find({ ...valid, location: '', city_key: null }, 1)).toEqual({ field: 'location', code: 'required' });
+    expect(find({ ...valid, trade_category: '' }, 1)).toEqual({ field: 'trade_category', code: 'required' });
+  });
+
+  it('names the other-trade text, the city pick and the state on the location field', () => {
+    expect(find({ ...valid, trade_category: 'other', trade_category_other: '' }, 1))
+      .toEqual({ field: 'trade_category_other', code: 'trade_category_other_required' });
+    expect(find({ ...valid, city_key: null }, 1)).toEqual({ field: 'location', code: 'location_pick_required' });
+    expect(find({ ...valid, state_region: 'Texas' }, 1)).toEqual({ field: 'location', code: 'state_region' });
+  });
+
+  it('names the pay field that is not a number, the range, the headcount and experience', () => {
+    expect(find({ ...valid, pay_min: 'abc' }, 2)).toEqual({ field: 'pay_min', code: 'number' });
+    expect(find({ ...valid, pay_max: '-1' }, 2)).toEqual({ field: 'pay_max', code: 'number' });
+    expect(find({ ...valid, pay_min: '30', pay_max: '20' }, 2)).toEqual({ field: 'pay_min', code: 'pay_range' });
+    expect(find({ ...valid, number_of_workers_needed: '0' }, 2))
+      .toEqual({ field: 'number_of_workers_needed', code: 'headcount' });
+    expect(find({ ...valid, required_experience_years: 'x' }, 2))
+      .toEqual({ field: 'required_experience_years', code: 'number' });
+  });
+
+  it('names the missing side of a half-filled shift, and has no end-before-start rule', () => {
+    expect(find({ ...valid, shift_start: '07:00' }, 2)).toEqual({ field: 'shift_end', code: 'shift_incomplete' });
+    expect(find({ ...valid, shift_end: '16:00' }, 2)).toEqual({ field: 'shift_start', code: 'shift_incomplete' });
+    // A night shift ends after midnight.
+    expect(find({ ...valid, shift_start: '22:00', shift_end: '06:00' }, 2)).toBeNull();
+  });
+
+  it('names the first question that is blank or too long, by position', () => {
+    const prompts = [{ id: 'a', text: 'Tools?' }, { id: 'b', text: ' ' }, { id: 'c', text: '' }];
+    expect(find({ ...valid, pre_application_prompts: prompts }, 3))
+      .toEqual({ field: 'prompt', code: 'prompt_blank', index: 1 });
+    const long = [{ id: 'a', text: 'Tools?' }, { id: 'b', text: 'x'.repeat(501) }];
+    expect(find({ ...valid, pre_application_prompts: long }, 3))
+      .toEqual({ field: 'prompt', code: 'prompt_too_long', index: 1 });
+  });
+
+  it('agrees with the step validators on whether a step passes', () => {
+    const cases: JobForm[] = [
+      valid, { ...valid, title: '' }, { ...valid, city_key: null }, { ...valid, pay_min: '9', pay_max: '1' },
+      { ...valid, shift_start: '07:00' }, { ...valid, number_of_workers_needed: '0' },
+      { ...valid, pre_application_prompts: [{ id: 'a', text: '' }] },
+    ];
+    for (const form of cases) {
+      expect(find(form, 1) === null).toBe(validateStepBasics(form) === null);
+      expect(find(form, 2) === null).toBe(validateStepDetails(form) === null);
+      expect(find(form, 3) === null).toBe(validateStepRequirements(form) === null);
+    }
   });
 });

@@ -26,10 +26,16 @@ interface PayFieldsProps {
   onPayMaxChange: (value: string) => void;
   onPayIntervalChange: (value: PayInterval) => void;
   disabled?: boolean;
+  /**
+   * The pay field a refused step is about. `message: null` marks it without a
+   * second sentence -- the live range error below already says it.
+   */
+  fieldError?: { field: 'pay_min' | 'pay_max'; message: string | null } | null;
 }
 
 export function PayFields({
   payMin, payMax, payInterval, onPayMinChange, onPayMaxChange, onPayIntervalChange, disabled,
+  fieldError,
 }: PayFieldsProps) {
   const t = useTranslations('employer_dashboard');
   const rangeInvalid = payRangeExceeds(payMin, payMax);
@@ -38,6 +44,10 @@ export function PayFields({
   const intervalId = useId();
   const maxHintId = useId();
   const rangeErrorId = useId();
+  const fieldErrorId = useId();
+  const minMarked = fieldError?.field === 'pay_min';
+  const maxMarked = fieldError?.field === 'pay_max';
+  const describe = (...ids: Array<string | false>) => ids.filter(Boolean).join(' ') || undefined;
 
   return (
     <div className="grid gap-4">
@@ -45,19 +55,22 @@ export function PayFields({
         <Field label={t('modal.pay_min')} htmlFor={minId}>
           <Input
             id={minId}
+            data-field="pay_min"
             type="number"
             min={0}
             className="tabular-nums"
             value={payMin}
             onChange={(e) => onPayMinChange(e.target.value)}
             disabled={disabled}
-            aria-invalid={rangeInvalid || undefined}
-            aria-describedby={rangeInvalid ? rangeErrorId : undefined}
+            aria-invalid={rangeInvalid || minMarked || undefined}
+            aria-describedby={describe(rangeInvalid && rangeErrorId, minMarked && !!fieldError?.message && fieldErrorId)}
           />
+          {minMarked && fieldError?.message && <FieldMessage id={fieldErrorId}>{fieldError.message}</FieldMessage>}
         </Field>
         <Field label={t('modal.pay_max')} htmlFor={maxId}>
           <Input
             id={maxId}
+            data-field="pay_max"
             type="number"
             min={0}
             className="tabular-nums"
@@ -65,9 +78,10 @@ export function PayFields({
             value={payMax}
             onChange={(e) => onPayMaxChange(e.target.value)}
             disabled={disabled}
-            aria-invalid={rangeInvalid || undefined}
-            aria-describedby={rangeInvalid ? `${maxHintId} ${rangeErrorId}` : maxHintId}
+            aria-invalid={rangeInvalid || maxMarked || undefined}
+            aria-describedby={describe(maxHintId, rangeInvalid && rangeErrorId, maxMarked && !!fieldError?.message && fieldErrorId)}
           />
+          {maxMarked && fieldError?.message && <FieldMessage id={fieldErrorId}>{fieldError.message}</FieldMessage>}
           <p id={maxHintId} className="text-xs text-[var(--jale-ink-2)]">{t('modal.pay_max_hint')}</p>
         </Field>
       </div>
@@ -90,6 +104,10 @@ export function PayFields({
       </Field>
     </div>
   );
+}
+
+function FieldMessage({ id, children }: { id: string; children: React.ReactNode }) {
+  return <p id={id} className="text-xs font-medium text-[var(--jale-danger-text)]">{children}</p>;
 }
 
 function Field({ label, htmlFor, children }: { label: string; htmlFor: string; children: React.ReactNode }) {

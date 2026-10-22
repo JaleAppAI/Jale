@@ -308,3 +308,101 @@ describe('PostJobModal template id', () => {
     expect(createJob.mock.calls[0][1]).toHaveProperty('template_id', 'tpl-city');
   });
 });
+
+/*
+ * A failed Next or Post names the field, moves to it and marks it (sprint 29).
+ * The demo employer saw one "Complete the required fields." under the footer
+ * and had to hunt for which one. New copy, so asserted as literals.
+ */
+describe('PostJobModal: a refused step points at its field', () => {
+  const nextButton = () => screen.getByRole('button', { name: message('employer_dashboard.modal.next') });
+  const titleField = () => screen.getByPlaceholderText(message('employer_dashboard.modal.job_title_placeholder'));
+  const tradeSelect = () =>
+    (screen.getByRole('option', { name: message('employer_dashboard.modal.select_placeholder') }) as HTMLOptionElement)
+      .closest('select') as HTMLSelectElement;
+  const workersField = () => document.querySelector('input[type="number"][min="1"]') as HTMLInputElement;
+  const timeFields = () => Array.from(document.querySelectorAll<HTMLInputElement>('input[type="time"]'));
+
+  async function openEmpty() {
+    listJobTemplates.mockResolvedValue([]);
+    getBilling.mockResolvedValue(null);
+    renderIntl(<PostJobModal open onClose={vi.fn()} onJobCreated={vi.fn()} />);
+  }
+
+  it('marks, describes and focuses a missing title, and the banner names it', async () => {
+    await openEmpty();
+    fireEvent.click(nextButton());
+
+    await waitFor(() => expect(titleField()).toHaveFocus());
+    expect(titleField()).toHaveAttribute('aria-invalid', 'true');
+    expect(titleField()).toHaveAccessibleDescription('Add a job title');
+    expect(screen.getByRole('alert')).toHaveTextContent('Add a job title');
+  });
+
+  it('points at the trade when only the trade is missing', async () => {
+    await openWithTemplates([withCity]);
+    applyTemplate(withCity.id);
+    fireEvent.change(tradeSelect(), { target: { value: '' } });
+    fireEvent.click(nextButton());
+
+    await waitFor(() => expect(tradeSelect()).toHaveFocus());
+    expect(tradeSelect()).toHaveAttribute('aria-invalid', 'true');
+    expect(tradeSelect()).toHaveAccessibleDescription('Pick a trade');
+    expect(titleField()).not.toHaveAttribute('aria-invalid');
+  });
+
+  it('points at the missing end time of a half-filled shift', async () => {
+    await openWithTemplates([withCity]);
+    applyTemplate(withCity.id);
+    fireEvent.click(nextButton());
+    await waitFor(() => expect(stepHeading()).toHaveTextContent(message('employer_dashboard.modal.steps.details')));
+
+    fireEvent.change(timeFields()[0], { target: { value: '07:00' } });
+    fireEvent.click(nextButton());
+
+    const end = timeFields()[1];
+    await waitFor(() => expect(end).toHaveFocus());
+    expect(end).toHaveAttribute('aria-invalid', 'true');
+    expect(end).toHaveAccessibleDescription(expect.stringContaining('Add the end time too, or clear the start time'));
+    expect(screen.getByRole('alert')).toHaveTextContent('Add the end time too, or clear the start time');
+  });
+
+  it('lands on step 2 with the headcount focused when a jump past it is refused', async () => {
+    const zeroWorkers: JobTemplate = { ...withCity, id: 'tpl-zero', payload: { ...withCity.payload, number_of_workers_needed: 0 } };
+    await openWithTemplates([zeroWorkers]);
+    applyTemplate(zeroWorkers.id);
+    fireEvent.click(screen.getByRole('button', { name: message('employer_dashboard.modal.steps.documents') }));
+
+    await waitFor(() => expect(workersField()).toHaveFocus());
+    expect(stepHeading()).toHaveTextContent(message('employer_dashboard.modal.steps.details'));
+    expect(workersField()).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter how many workers you need, 1 or more');
+  });
+
+  it('points at the blank question when Post is refused', async () => {
+    await openWithTemplates([withCity]);
+    applyTemplate(withCity.id);
+    fireEvent.click(nextButton());
+    await waitFor(() => expect(stepHeading()).toHaveTextContent(message('employer_dashboard.modal.steps.details')));
+    fireEvent.click(nextButton());
+    await waitFor(() => expect(stepHeading()).toHaveTextContent(message('employer_dashboard.modal.steps.documents')));
+
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(message('job_requirements.prompts.add')) }));
+    fireEvent.click(screen.getByRole('button', { name: message('employer_dashboard.post_job_docs.submit') }));
+
+    const question = document.querySelector('textarea[aria-labelledby^="prompt-label-"]') as HTMLTextAreaElement;
+    await waitFor(() => expect(question).toHaveFocus());
+    expect(question).toHaveAttribute('aria-invalid', 'true');
+    expect(question).toHaveAccessibleDescription(message('job_requirements.prompts.validation_blank'));
+    expect(createJob).not.toHaveBeenCalled();
+  });
+
+  it('clears the mark once the field is edited', async () => {
+    await openEmpty();
+    fireEvent.click(nextButton());
+    await waitFor(() => expect(titleField()).toHaveAttribute('aria-invalid', 'true'));
+
+    fireEvent.change(titleField(), { target: { value: 'Roofer' } });
+    expect(titleField()).not.toHaveAttribute('aria-invalid');
+  });
+});

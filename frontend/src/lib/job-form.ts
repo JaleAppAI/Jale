@@ -3,6 +3,7 @@ import type { EmployerJobDetail, JobWritePayload } from '@/lib/api/employer';
 import { locationDatasetFailed, slugCityKey } from '@/lib/location-search';
 import {
   type PromptDraft,
+  MAX_PROMPT_CHARS,
   normalizePrompts,
   sanitizePrompts,
   validatePrompts,
@@ -356,6 +357,74 @@ export function validateFullJobForm(
   opts?: { minWorkers?: number },
 ): JobFormErrorCode | null {
   return validateStepBasics(form) ?? validateStepDetails(form, opts) ?? validateStepRequirements(form);
+}
+
+// ---------------------------------------------------------------------------
+// Field-level verdict (sprint 29): which field a step's failure is about, so
+// the wizard can name it in the banner, mark it `aria-invalid` with its own
+// message, and move focus to it. The step validators above stay the single
+// source of the rules and their codes; this mirrors them in the same order
+// and only adds the field (and, for a question, its position). A test pins
+// that the two agree on whether each step passes.
+// ---------------------------------------------------------------------------
+
+export type JobFormField =
+  | 'title' | 'location' | 'trade_category' | 'trade_category_other'
+  | 'pay_min' | 'pay_max' | 'required_experience_years' | 'number_of_workers_needed'
+  | 'shift_start' | 'shift_end'
+  | 'prompt';
+
+export type JobFormFieldProblem = {
+  field: JobFormField;
+  code: JobFormErrorCode;
+  /** The question's position, for `field: 'prompt'`. */
+  index?: number;
+};
+
+function isBadNumber(value: string): boolean {
+  const parsed = parseOptionalNumber(value);
+  return Number.isNaN(parsed) || (parsed !== null && parsed < 0);
+}
+
+function firstBasicsProblem(form: JobForm): JobFormFieldProblem | null {
+  if (!form.title.trim()) return { field: 'title', code: 'required' };
+  if (!form.location.trim()) return { field: 'location', code: 'required' };
+  if (!form.trade_category) return { field: 'trade_category', code: 'required' };
+  const code = validateStepBasics(form);
+  if (code === 'trade_category_other_required') return { field: 'trade_category_other', code };
+  if (code === 'location_pick_required' || code === 'state_region') return { field: 'location', code };
+  return null;
+}
+
+function firstDetailsProblem(form: JobForm): JobFormFieldProblem | null {
+  const code = validateStepDetails(form);
+  if (code === null) return null;
+  if (code === 'number') {
+    if (isBadNumber(form.pay_min)) return { field: 'pay_min', code };
+    if (isBadNumber(form.pay_max)) return { field: 'pay_max', code };
+    return { field: 'required_experience_years', code };
+  }
+  if (code === 'pay_range') return { field: 'pay_min', code };
+  if (code === 'headcount') return { field: 'number_of_workers_needed', code };
+  // shift_incomplete: exactly one side is set; name the side that is not.
+  return { field: form.shift_start === '' ? 'shift_start' : 'shift_end', code };
+}
+
+function firstRequirementsProblem(form: JobForm): JobFormFieldProblem | null {
+  const code = validateStepRequirements(form);
+  if (code === null) return null;
+  const prompts = form.pre_application_prompts;
+  const index = code === 'prompt_blank'
+    ? prompts.findIndex((prompt) => prompt.text.trim().length === 0)
+    : prompts.findIndex((prompt) => prompt.text.trim().length > MAX_PROMPT_CHARS);
+  return { field: 'prompt', code, index };
+}
+
+/** The first field that stops `step`, or `null` when the step passes. */
+export function firstInvalidField(form: JobForm, step: 1 | 2 | 3): JobFormFieldProblem | null {
+  if (step === 1) return firstBasicsProblem(form);
+  if (step === 2) return firstDetailsProblem(form);
+  return firstRequirementsProblem(form);
 }
 
 // ---------------------------------------------------------------------------

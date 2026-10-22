@@ -905,6 +905,18 @@
       "certifications_picker_hint": "Agregue varias, de la lista o con sus propias palabras.",
       "legacy_value_note": "Ingresado originalmente como: {value}",
       "validation_required": "Complete los campos requeridos.",
+      "field_errors": {
+        "title": "Agregue un título para el empleo",
+        "location": "Agregue la ciudad donde es el empleo",
+        "trade": "Elija un oficio",
+        "trade_other": "Escriba el nombre del oficio",
+        "pay_min": "Ingrese el pago mínimo como número, 0 o más",
+        "pay_max": "Ingrese el pago máximo como número, 0 o más",
+        "experience": "Ingrese los años de experiencia como número, 0 o más",
+        "workers": "Indique cuántos trabajadores necesita, 1 o más",
+        "shift_start": "Agregue también la hora de entrada, o borre la de salida",
+        "shift_end": "Agregue también la hora de salida, o borre la de entrada"
+      },
       "validation_number": "Ingrese números válidos y no negativos.",
       "validation_pay_range": "El pago mínimo no puede ser mayor que el máximo.",
       "validation_headcount": "Trabajadores necesarios debe ser al menos 1.",
