@@ -1002,7 +1002,7 @@ describeInProfiles(['request', 'owner-unrestricted'], 'handler sweep: every list
     })));
     expectStatus(response, 200, logs);
     expect(response.body).toEqual(expect.objectContaining({
-      planCode: 'employer_pro', activeJobLimit: 10, templateLimit: 20, activeJobUsage: 0,
+      planCode: 'employer_pro', activeJobLimit: 50, templateLimit: 20, activeJobUsage: 0,
       subscription: expect.objectContaining({ plan_code: 'employer_pro', status: 'active' }),
     }));
   });
