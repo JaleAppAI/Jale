@@ -19,7 +19,8 @@ import workerProfile from '@/components/tutorials/content/worker-profile';
  * before the tutorial framework lands: the hook and providers keep their
  * final signatures and do nothing, except that a "before the host" call opens
  * the host at once. The tutorial framework lane replaces these bodies and this
- * suite with its own.
+ * suite with its own. The content checks assert only ids, roles and
+ * namespaces, so filling a content file with real slides keeps them green.
  */
 
 describe('useTutorial placeholder', () => {
@@ -97,18 +98,11 @@ describe('tutorial content placeholders', () => {
     ]);
   });
 
+  // Only what stays true once the content lanes fill these files: the slides
+  // themselves are theirs to change.
   it.each(CONTENT)('%s exports its own id, role and namespace', (file, definition, role) => {
     expect(definition.id).toBe(file.replace(/-/g, '_'));
     expect(definition.role).toBe(role);
     expect(definition.namespace).toBe(`tutorial.${definition.id}`);
-  });
-
-  it.each(CONTENT)('%s has one slide whose scene renders nothing', (_file, definition) => {
-    expect(definition.slides).toHaveLength(1);
-    const { Scene } = definition.slides[0];
-
-    const { container } = render(<Scene still={false} />);
-
-    expect(container).toBeEmptyDOMElement();
   });
 });
