@@ -1146,6 +1146,21 @@ describe('JaleAuditStack', () => {
       expect(configBucket.Properties.ObjectLockEnabled).toBeUndefined();
     });
 
+    it('records every supported type, the global IAM types included, in its one recorder region', () => {
+      // Security Hub's Config.1 control expects the recorder to cover every
+      // resource type the enabled controls read, the IAM global types (users,
+      // groups, roles, customer managed policies) included. Those are the same
+      // in every Region, so the control's guidance is to record them in the
+      // home Region only: here, the one region with a recorder.
+      // https://docs.aws.amazon.com/securityhub/latest/userguide/config-controls.html#config-1
+      expect(onlyResource(template, 'AWS::Config::ConfigurationRecorder').Properties.RecordingGroup)
+        .toEqual({ AllSupported: true, IncludeGlobalResourceTypes: true });
+      for (const region of auditEdgeRegions('us-east-2')) {
+        const edge = Template.fromStack(new AuditEdgeStack(new cdk.App(), 'Edge', { env: { region }, mainRegion: 'us-east-2' })).toJSON();
+        expect(Object.keys(resourcesOf(edge, 'AWS::Config::ConfigurationRecorder'))).toEqual([]);
+      }
+    });
+
     it('creates the recorder and the delivery channel side by side, each after the bucket policy only', () => {
       // The recorder's create starts recording, which needs a delivery channel;
       // the channel's create needs a recorder. Either one waiting on the other
@@ -1240,6 +1255,7 @@ describe('JaleAuditStack', () => {
       const names = Object.values(resourcesOf(t, 'AWS::Events::Rule')).map((r) => r.Properties.Name);
       expect(names).not.toContain('jale-audit-guardduty-findings');
       expect(names).not.toContain('jale-audit-securityhub-findings');
+      expect(Object.keys(resourcesOf(t, 'AWS::Config::ConfigurationRecorder'))).toEqual([]);
     });
 
     it('treats an unset flag as off outside production', () => {
