@@ -163,6 +163,7 @@ describe('database migrations', () => {
       '124',
       '125',
       '126',
+      '127',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -5052,6 +5053,93 @@ describe('database migrations', () => {
       expect(sql).toContain('migration 126: jale_whatsapp cannot execute %');
       expect(sql).toContain('migration 126: PUBLIC can execute %');
       expect(sql.indexOf('-- \u2500\u2500 6. Closing check (part B)')).toBeLessThan(sql.indexOf('COMMIT;'));
+    });
+  });
+
+  // Sprint 29 (BE-1): tutorial progress. One row per account and tutorial,
+  // read and inserted by the request login for the caller only, keyed like
+  // 118's organization_members_self_read. No UPDATE or DELETE right: the
+  // first outcome stays, and a row leaves only with its users row. The DB
+  // pins are in user-tutorial-progress.integration.test.ts.
+  describe('127 adds user_tutorial_progress: the caller reads and inserts their own rows on the request login', () => {
+    const file = '127_user_tutorial_progress.sql';
+    const text = () => fs.readFileSync(path.join(migrationsDir, file), 'utf8');
+    const code = () => text().replace(/--[^\n]*/g, '');
+    const squash = (sql: string) => sql.replace(/\s+/g, ' ').trim();
+    const PREDICATE = "user_id = (SELECT users.id FROM public.users WHERE users.cognito_sub = current_setting('app.current_user_id', true))";
+
+    it('runs as jale_admin after 126 in one transaction, ASCII only, with a lock timeout first', () => {
+      const sql = text();
+      expect(sql).toContain('-- Run manually AFTER 126_job_conversations_whatsapp_update_columns.sql,\n');
+      expect(sql).toContain('-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n');
+      expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+      expect(code()).toMatch(/^[\x00-\x7F]*$/);
+      expect(sql.indexOf("SET LOCAL lock_timeout = '5s';")).toBeGreaterThan(sql.indexOf('BEGIN;'));
+      expect(sql.indexOf('DO $$')).toBeGreaterThan(sql.indexOf("SET LOCAL lock_timeout = '5s';"));
+      expect(code()).toContain("IF current_user <> 'jale_admin' THEN");
+      expect(sql).toContain('migration 127: connect as jale_admin (this session runs as %)');
+    });
+
+    it('refuses a replay once the table exists', () => {
+      const sql = code();
+      expect(sql).toContain("IF pg_catalog.to_regclass('public.user_tutorial_progress') IS NOT NULL THEN");
+      expect(sql).toContain('migration 127: already applied (public.user_tutorial_progress exists); it is not re-runnable');
+      expect(sql.indexOf('already applied')).toBeLessThan(sql.indexOf('CREATE TABLE'));
+    });
+
+    it('creates the table keyed on the account and the tutorial, cascading with users, with row security forced', () => {
+      const sql = squash(code());
+      expect(sql).toContain(squash(`CREATE TABLE public.user_tutorial_progress (
+        user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+        tutorial_id TEXT NOT NULL CHECK (tutorial_id ~ '^(employer|worker)_[a-z_]{1,40}$'),
+        outcome TEXT NOT NULL CHECK (outcome IN ('completed', 'skipped')),
+        recorded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (user_id, tutorial_id)
+      );`));
+      expect(code().match(/CREATE TABLE/g)).toHaveLength(1);
+      expect(sql).toContain('ALTER TABLE public.user_tutorial_progress ENABLE ROW LEVEL SECURITY;');
+      expect(sql).toContain('ALTER TABLE public.user_tutorial_progress FORCE ROW LEVEL SECURITY;');
+    });
+
+    it('grants the request login SELECT and INSERT only, and no other login anything', () => {
+      const sql = code();
+      expect(sql.match(/^\s*GRANT /gm)).toHaveLength(1);
+      expect(sql).toContain('GRANT SELECT, INSERT ON public.user_tutorial_progress TO jale_api;');
+      expect(sql).not.toMatch(/^\s*REVOKE /m);
+      expect(sql).not.toMatch(/GRANT[^;]*\b(UPDATE|DELETE|TRUNCATE|ALL)\b/);
+      expect(sql).not.toMatch(/CREATE (OR REPLACE )?FUNCTION|SECURITY DEFINER|DROP |ALTER DEFAULT PRIVILEGES/);
+    });
+
+    it("adds exactly the self-read and self-insert policies for jale_api, with 118's self-read predicate", () => {
+      const sql = squash(code());
+      expect(sql.match(/CREATE POLICY/g)).toHaveLength(2);
+      expect(sql).toContain(`CREATE POLICY user_tutorial_progress_self_read ON public.user_tutorial_progress AS PERMISSIVE FOR SELECT TO jale_api USING (${PREDICATE});`);
+      expect(sql).toContain(`CREATE POLICY user_tutorial_progress_self_insert ON public.user_tutorial_progress AS PERMISSIVE FOR INSERT TO jale_api WITH CHECK (${PREDICATE});`);
+      // The same predicate 118 wrote for a login's own membership row.
+      const precedent = squash(fs.readFileSync(path.join(migrationsDir, '118_employer_organizations.sql'), 'utf8'));
+      expect(precedent).toContain(`CREATE POLICY organization_members_self_read ON public.organization_members AS PERMISSIVE FOR SELECT TO jale_api USING (${PREDICATE});`);
+    });
+
+    it('closes by checking row security, the exact rights, both policies against the 118 predicate, and the cascade', () => {
+      const sql = text();
+      const closing = sql.slice(sql.indexOf('-- ── 4. Closing check'));
+      expect(closing.indexOf('DO $$')).toBeGreaterThan(-1);
+      expect(closing.indexOf('COMMIT;')).toBeGreaterThan(closing.indexOf('DO $$'));
+      expect(closing).toContain('c.relrowsecurity AND c.relforcerowsecurity');
+      expect(closing).toContain("NOT (a.grantee = 'jale_api'::regrole::oid AND a.privilege_type IN ('SELECT', 'INSERT'))");
+      expect(closing).toContain("p.polrelid = 'public.organization_members'::regclass AND p.polname = 'organization_members_self_read'");
+      expect(closing).toContain('pg_catalog.pg_get_expr(p.polqual, p.polrelid) = v_self');
+      expect(closing).toContain('pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid) = v_self');
+      expect(closing).toContain("k.confdeltype = 'c'");
+      for (const message of [
+        'migration 127: user_tutorial_progress must have row security enabled and forced',
+        'migration 127: jale_api cannot read and insert user_tutorial_progress',
+        'migration 127: an unexpected privilege on user_tutorial_progress: %',
+        'migration 127: user_tutorial_progress policy set drifted',
+        "migration 127: a user_tutorial_progress policy is not the caller''s own row for jale_api",
+        'migration 127: user_tutorial_progress.user_id must reference users(id) ON DELETE CASCADE',
+      ]) expect(closing).toContain(message);
     });
   });
 });

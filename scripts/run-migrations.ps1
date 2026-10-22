@@ -183,6 +183,7 @@ $MigrationFiles = @(
     '124_analytics_capture.sql'
     '125_hire_details_and_billing_resume.sql'
     '126_job_conversations_whatsapp_update_columns.sql'
+    '127_user_tutorial_progress.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path
