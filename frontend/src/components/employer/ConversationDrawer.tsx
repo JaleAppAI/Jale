@@ -34,6 +34,7 @@ import {
   startConversation,
 } from '@/lib/api/employer';
 import type { EmployerConversationResponse, InboxItem } from '@/lib/api/employer';
+import { useOverlayPresence } from '@/lib/tutorials/overlay';
 
 /**
  * The floating conversations drawer, mounted on EVERY page (by
@@ -100,6 +101,8 @@ export function ConversationDrawer() {
   const { openRequest } = useConversationDrawer();
 
   const [open, setOpen] = useState(false);
+  // Not a Modal or a Sheet, so it reports itself: no tutorial auto-opens over it.
+  useOverlayPresence(open);
   /** The selected APPLICATION, not conversation -- see the header note. */
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [sending, setSending] = useState(false);

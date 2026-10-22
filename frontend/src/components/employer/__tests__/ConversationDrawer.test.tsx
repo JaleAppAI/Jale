@@ -79,6 +79,14 @@ vi.mock('@/contexts/UnreadMessagesContext', () => ({
   useUnreadCount: () => unreadState.unreadCount,
 }));
 
+/** What the drawer last told the overlay coordinator about itself. */
+const overlay = vi.hoisted(() => ({ calls: [] as boolean[] }));
+vi.mock('@/lib/tutorials/overlay', () => ({
+  useOverlayPresence: (open: boolean) => {
+    overlay.calls.push(open);
+  },
+}));
+
 // Below the mocks (they hoist).
 import { message, renderIntl } from '@/components/employer/__tests__/render-intl';
 import {
@@ -146,6 +154,7 @@ afterEach(() => {
 });
 
 beforeEach(() => {
+  overlay.calls.length = 0;
   markRead.mockReset();
   // The context reports whether the stamp landed; a receipt that is refused is
   // retried (see `useThreadReadReceipt`), so the stub has to answer.
@@ -564,5 +573,25 @@ describe('several applicants the inbox does not list', () => {
     const rowA = screen.getByRole('button', { name: /Ana Prueba/ });
     expect(within(rowA).queryByText(message('employer_messages.drawer_new_conversation'))).not.toBeInTheDocument();
     expect(within(rowA).getByText('See you Monday')).toBeInTheDocument();
+  });
+});
+
+/*
+ * The drawer is not a Modal or a Sheet, so it reports its own open state to
+ * the overlay coordinator (sprint 29): no tutorial auto-opens on top of it.
+ */
+describe('overlay presence', () => {
+  it('tells the overlay coordinator whether the drawer is open', async () => {
+    const user = userEvent.setup();
+    renderDrawer();
+    const toggle = () =>
+      screen.getByRole('button', { name: new RegExp(`${message('employer_messages.drawer_button')}|${message('employer_messages.drawer_close')}`) });
+    expect(overlay.calls.at(-1)).toBe(false);
+
+    await user.click(toggle());
+    expect(overlay.calls.at(-1)).toBe(true);
+
+    await user.click(toggle());
+    expect(overlay.calls.at(-1)).toBe(false);
   });
 });
