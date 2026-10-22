@@ -2,7 +2,7 @@
 import * as React from 'react';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 /*
@@ -60,13 +60,17 @@ const refreshPolled = vi.fn();
  * The session-wide inbox, as the context polls it. Assigned per test: this is
  * the copy that LEARNS things, and the page's own is frozen at load.
  */
-let polled: { items: import('@/lib/api/employer').InboxItem[]; unreadByConversation: Record<string, boolean> };
+let polled: {
+  items: import('@/lib/api/employer').InboxItem[];
+  unreadByConversation: Record<string, boolean>;
+  loading?: boolean;
+};
 vi.mock('@/contexts/UnreadMessagesContext', () => ({
   useUnreadMessages: () => ({
     items: polled.items,
     unreadCount: Object.values(polled.unreadByConversation).filter(Boolean).length,
     unreadByConversation: polled.unreadByConversation,
-    loading: false,
+    loading: polled.loading ?? false,
     errorKind: null,
     retry: vi.fn(),
     refresh: refreshPolled,
@@ -85,6 +89,34 @@ vi.mock('@/lib/api/employer', async (importOriginal) => ({
   startConversation: vi.fn(),
   closeConversation: vi.fn(),
   updateApplicantStatus: vi.fn(),
+}));
+
+/*
+ * The messages tutorial (E4) as a recording handle: 'pass' opens the thread at
+ * once, as the real hook does when a tutorial does not play; 'hold' keeps it
+ * waiting, as a playing tutorial does, until the test lets it through.
+ */
+const tutorial = vi.hoisted(() => {
+  const state = {
+    mode: 'pass' as 'pass' | 'hold',
+    held: [] as (() => void)[],
+    latestDone: {} as Record<string, boolean | undefined>,
+  };
+  const handle = {
+    maybeAutoOpen: vi.fn(),
+    runBeforeHost: vi.fn((openHost: () => void) => {
+      if (state.mode === 'hold') state.held.push(openHost);
+      else openHost();
+    }),
+    replay: vi.fn(),
+  };
+  return { state, handle };
+});
+vi.mock('@/lib/tutorials/use-tutorial', () => ({
+  useTutorial: (id: string, options: { done: boolean | undefined }) => {
+    tutorial.state.latestDone[id] = options.done;
+    return tutorial.handle;
+  },
 }));
 
 // Below the mocks (they hoist).
@@ -152,6 +184,10 @@ function rowFor(name: string): HTMLElement {
 const UNREAD = () => message('employer_messages.unread');
 
 beforeEach(() => {
+  tutorial.handle.runBeforeHost.mockClear();
+  tutorial.state.mode = 'pass';
+  tutorial.state.held.length = 0;
+  for (const id of Object.keys(tutorial.state.latestDone)) delete tutorial.state.latestDone[id];
   markRead.mockReset();
   markRead.mockResolvedValue(true);
   refreshPolled.mockReset();
@@ -336,5 +372,39 @@ describe('the WhatsApp counters on the Messages board', () => {
 
     expect(screen.getByText('Ventana de respuesta abierta')).toBeInTheDocument();
     expect(screen.getByText('Invitación enviada')).toBeInTheDocument();
+  });
+});
+
+/*
+ * E4 (sprint 29), second host: picking a conversation on the Messages board
+ * plays the messages tutorial first, for an employer with no conversation yet
+ * (K1.5, read from the session inbox).
+ */
+describe('the messages tutorial on the Messages board', () => {
+  it('passes done from the session inbox', async () => {
+    polled = { items: [], unreadByConversation: {}, loading: true };
+    const { rerender } = renderIntl(<EmployerConversationsPage />);
+    expect(tutorial.state.latestDone.employer_messages).toBeUndefined();
+
+    polled = { items: [unreadItem], unreadByConversation: {} };
+    rerender(<EmployerConversationsPage />);
+    expect(tutorial.state.latestDone.employer_messages).toBe(true);
+    await waitFor(() => expect(rowFor('Maria Garcia')).toBeInTheDocument());
+  });
+
+  it('holds the picked thread until the tutorial lets it through', async () => {
+    tutorial.state.mode = 'hold';
+    const user = userEvent.setup();
+    renderIntl(<EmployerConversationsPage />);
+    await waitFor(() => expect(rowFor('Maria Garcia')).toBeInTheDocument());
+
+    await user.click(rowFor('Maria Garcia'));
+
+    expect(tutorial.handle.runBeforeHost).toHaveBeenCalledTimes(1);
+    expect(getConversation).not.toHaveBeenCalled();
+
+    act(() => tutorial.state.held[0]());
+
+    await waitFor(() => expect(getConversation).toHaveBeenCalledWith('test-token', 'conv-1', expect.anything()));
   });
 });
