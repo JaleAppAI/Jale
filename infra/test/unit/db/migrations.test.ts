@@ -5077,13 +5077,14 @@ describe('database migrations', () => {
       expect(sql).toContain('DEPLOY ORDER: apply this migration BEFORE deploying the code.');
     });
 
-    it('adds the column NOT NULL with an empty default, and its CHECK, idempotently', () => {
+    it('adds the column NOT NULL with an empty default, and its one-dimension CHECK, idempotently', () => {
       const sql = code();
       expect(sql).toContain("ADD COLUMN IF NOT EXISTS shift_periods TEXT[] NOT NULL DEFAULT '{}';");
       expect(sql).toContain('DROP CONSTRAINT IF EXISTS jobs_shift_periods_valid;');
       expect(sql).toContain(
         "ADD CONSTRAINT jobs_shift_periods_valid\n  CHECK (shift_periods <@ ARRAY['day', 'evening', 'night', 'overnight']::text[]\n"
-        + '         AND cardinality(shift_periods) <= 4);',
+        + '         AND cardinality(shift_periods) <= 4\n'
+        + '         AND (array_ndims(shift_periods) IS NULL OR array_ndims(shift_periods) = 1));',
       );
       expect(sql.indexOf('DROP CONSTRAINT IF EXISTS jobs_shift_periods_valid;'))
         .toBeLessThan(sql.indexOf('ADD CONSTRAINT jobs_shift_periods_valid'));
@@ -5103,7 +5104,8 @@ describe('database migrations', () => {
       expect(sql).toContain("v_default IS DISTINCT FROM '''{}''::text[]'");
       expect(sql).toContain(
         "'CHECK (((shift_periods <@ ARRAY[''day''::text, ''evening''::text, ''night''::text, ''overnight''::text]) "
-        + "AND (cardinality(shift_periods) <= 4)))'",
+        + "AND (cardinality(shift_periods) <= 4) "
+        + "AND ((array_ndims(shift_periods) IS NULL) OR (array_ndims(shift_periods) = 1))))'",
       );
       expect(sql).toContain("pg_catalog.has_column_privilege('jale_public_jobs', 'public.jobs', 'shift_periods', 'SELECT')");
       expect(sql).toContain("pg_catalog.has_table_privilege('jale_public_jobs', 'public.jobs', 'SELECT')");

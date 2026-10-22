@@ -6,7 +6,8 @@
  *
  *   - jobs.shift_periods is NOT NULL DEFAULT '{}', so a job written without
  *     it reads as no shift chosen; jobs_shift_periods_valid refuses a value
- *     outside the four periods, a NULL element and a fifth item;
+ *     outside the four periods, a NULL element, a fifth item and a second
+ *     array dimension;
  *   - who reads it: jale_public_jobs through its column grant; jale_api,
  *     jale_whatsapp and jale_matching through the table-level SELECT they
  *     already hold; jale_job_digest keeps its column list and cannot;
@@ -117,6 +118,17 @@ describeInProfiles([...ALL_PROFILES], 'migration 128: the column and its CHECK',
     ['a fifth item', ['day', 'evening', 'night', 'overnight', 'day']],
   ])('refuses %s (23514)', async (_label, value) => {
     expect(await sqlState(write(value))).toBe('23514');
+  });
+
+  // Valid periods and at most four elements, so only the one-dimension rule
+  // can refuse these: `<@` and cardinality() both ignore array dimensions.
+  it.each([
+    ['two rows of one', '{{day},{night}}'],
+    ['two rows of two', '{{day,night},{evening,overnight}}'],
+  ])('refuses a two-dimensional array (%s, 23514)', async (_label, literal) => {
+    expect(await sqlState(world.su.query(
+      'UPDATE public.jobs SET shift_periods = $2::text[] WHERE id = $1', [jobId, literal],
+    ))).toBe('23514');
   });
 
   it('refuses NULL for the whole value (23502)', async () => {

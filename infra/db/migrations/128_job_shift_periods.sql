@@ -8,8 +8,10 @@
 -- optional and independent of it. jobs.shift_periods holds the choice:
 --   * TEXT[] NOT NULL DEFAULT '{}'. Every existing job reads as no shift
 --     chosen; a constant default adds the column without rewriting the table.
---   * jobs_shift_periods_valid: every element is one of the four periods and
---     there are at most four. `<@` accepts duplicates, so the API parser
+--   * jobs_shift_periods_valid: every element is one of the four periods,
+--     there are at most four, and the array has one dimension (`<@` and
+--     cardinality() both ignore dimensions; an empty array has none, so its
+--     array_ndims is NULL). `<@` accepts duplicates, so the API parser
 --     (lambda/lib/job-fields.ts, parseShiftPeriods) folds them and stores the
 --     periods in canonical order. The ARRAY[...] literal matches
 --     SHIFT_PERIODS in that file (job-fields.test.ts pins the two together).
@@ -62,7 +64,8 @@ ALTER TABLE public.jobs
 ALTER TABLE public.jobs
   ADD CONSTRAINT jobs_shift_periods_valid
   CHECK (shift_periods <@ ARRAY['day', 'evening', 'night', 'overnight']::text[]
-         AND cardinality(shift_periods) <= 4);
+         AND cardinality(shift_periods) <= 4
+         AND (array_ndims(shift_periods) IS NULL OR array_ndims(shift_periods) = 1));
 
 -- ── 3. Grants ───────────────────────────────────────────────
 GRANT SELECT (shift_periods) ON public.jobs TO jale_public_jobs;
@@ -99,7 +102,7 @@ BEGIN
      AND c.contype = 'c'
      AND c.convalidated;
   IF v_check IS DISTINCT FROM
-     'CHECK (((shift_periods <@ ARRAY[''day''::text, ''evening''::text, ''night''::text, ''overnight''::text]) AND (cardinality(shift_periods) <= 4)))' THEN
+     'CHECK (((shift_periods <@ ARRAY[''day''::text, ''evening''::text, ''night''::text, ''overnight''::text]) AND (cardinality(shift_periods) <= 4) AND ((array_ndims(shift_periods) IS NULL) OR (array_ndims(shift_periods) = 1))))' THEN
     RAISE EXCEPTION 'migration 128: jobs_shift_periods_valid is missing or reads %', COALESCE(v_check, '<absent>');
   END IF;
 
