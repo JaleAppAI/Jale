@@ -92,6 +92,10 @@ let superuserUrl: string;
 let adminUrl: string;
 let employerUserId: string;
 let employerCognitoSub: string;
+// The free plan's catalog row as this suite found it (null when absent).
+// afterAll puts it back, so the suites that follow read the catalog the
+// migrations left.
+let savedFreePlan: { entitlements: unknown; active: boolean } | null = null;
 
 // ---------------------------------------------------------------------------
 // Suite
@@ -120,6 +124,11 @@ maybeDescribe('entitlement concurrency (A7 race-safe gate)', () => {
       employerUserId = e1.rows[0].id;
       employerCognitoSub = e1.rows[0].cognito_sub;
 
+      const found = await setup.query<{ entitlements: unknown; active: boolean }>(
+        `SELECT entitlements, active FROM billing_plans WHERE code = 'employer_free'`,
+      );
+      savedFreePlan = found.rows[0] ?? null;
+
       // Ensure employer_free catalog row exists (migration 034 seeds it, but be safe)
       await setup.query(
         `INSERT INTO billing_plans (code, audience, display_name, active, entitlements, created_at, updated_at)
@@ -136,6 +145,30 @@ maybeDescribe('entitlement concurrency (A7 race-safe gate)', () => {
       await setup.end();
     }
   }, 60_000);
+
+  afterAll(async () => {
+    if (!databaseUrl) return;
+    // Put the free plan back as beforeAll found it, through the superuser URL
+    // the fixture upsert used.
+    const restore = new Client({ connectionString: superuserUrl });
+    await restore.connect();
+    try {
+      if (savedFreePlan) {
+        await restore.query(
+          `UPDATE billing_plans SET entitlements = $1::jsonb, active = $2 WHERE code = 'employer_free'`,
+          [JSON.stringify(savedFreePlan.entitlements), savedFreePlan.active],
+        );
+      } else {
+        await restore.query(`DELETE FROM billing_plans WHERE code = 'employer_free'`);
+      }
+      const after = await restore.query<{ entitlements: unknown; active: boolean }>(
+        `SELECT entitlements, active FROM billing_plans WHERE code = 'employer_free'`,
+      );
+      expect(after.rows[0] ?? null).toEqual(savedFreePlan);
+    } finally {
+      await restore.end();
+    }
+  });
 
   afterEach(async () => {
     if (!databaseUrl) return;

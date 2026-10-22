@@ -2,7 +2,7 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { resolveEntitlements } from '../lib/entitlements';
 import { corsHeaders, errorMessage } from '../lib/http';
-import { formatPayRange, JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs, parseRequiredFields, WRITABLE_JOB_STATUSES } from '../lib/job-fields';
+import { formatPayRange, JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs, parseRequiredFields, stripRetiredFields, WRITABLE_JOB_STATUSES } from '../lib/job-fields';
 import { setJobCoordinates } from '../lib/location';
 import { parseCityFields, parseCityFromLocation } from '../lib/city-fields';
 import { resolveJobLocationFields } from '../lib/job-location-parse';
@@ -374,8 +374,12 @@ async function handleFieldEdit(
     // pre-existing exact-replace semantics -- deliberately asymmetric, same
     // as the city/state_region clear-vs-preserve distinction commented below.
     const optional_docs = hasOptionalDocsKey ? optionalDocsInput : (cur.optional_docs ?? []);
-    const required_fields = hasRequiredFieldsKey ? requiredFieldsInput : (cur.required_fields ?? []);
-    const optional_fields = hasOptionalFieldsKey ? optionalFieldsInput : (cur.optional_fields ?? []);
+    // A retired field type (job-fields.ts) is kept when the stored job already
+    // asks for it, in either tier; a body that adds it to a job without it has
+    // it dropped.
+    const storedFields = [...(cur.required_fields ?? []), ...(cur.optional_fields ?? [])];
+    const required_fields = hasRequiredFieldsKey ? stripRetiredFields(requiredFieldsInput, storedFields) : (cur.required_fields ?? []);
+    const optional_fields = hasOptionalFieldsKey ? stripRetiredFields(optionalFieldsInput, storedFields) : (cur.optional_fields ?? []);
     // Written back verbatim when omitted, so the lock comparison below is
     // equal BY CONSTRUCTION and the UPDATE is a no-op round-trip on this
     // column rather than a clear.

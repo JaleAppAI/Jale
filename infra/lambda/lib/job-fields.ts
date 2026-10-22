@@ -278,6 +278,15 @@ export function parseRequiredFields(value: unknown): { ok: true; value: string[]
   return { ok: true, value: Array.from(new Set(value)) };
 }
 
+// No longer offered on new jobs; existing jobs keep it. They stay in
+// REQUIRED_FIELD_TYPES (and the 073 CHECK), so stored jobs remain valid.
+export const RETIRED_FIELD_TYPES = ['date_of_birth'] as const;
+
+/** Removes retired field types from a parsed tier, except those in `keep`: kept when the stored job already asks for it, in either tier. */
+export function stripRetiredFields(fields: readonly string[], keep: readonly string[] = []): string[] {
+  return fields.filter((field) => !(RETIRED_FIELD_TYPES as readonly string[]).includes(field) || keep.includes(field));
+}
+
 // BE-T2 (077): one-way, mirroring jobs_trade_category_other_valid -- forbidden
 // on any non-'other' category. Deliberately NOT required when tradeCategory
 // IS 'other': legacy 'other' rows (and their template re-saves) predate this

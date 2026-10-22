@@ -2,7 +2,7 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { resolveEntitlements } from '../lib/entitlements';
 import { corsHeaders, errorMessage } from '../lib/http';
-import { formatPayRange, JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs, parseRequiredFields } from '../lib/job-fields';
+import { formatPayRange, JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs, parseRequiredFields, stripRetiredFields } from '../lib/job-fields';
 import { resolveJobLocationFields } from '../lib/job-location-parse';
 import { parsePreApplicationPrompts } from '../lib/pre-application-prompts';
 import { setJobCoordinates } from '../lib/location';
@@ -144,13 +144,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (!requiredFieldsResult.ok) {
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_required_fields', valid: requiredFieldsResult.valid }) };
     }
-    const required_fields = requiredFieldsResult.value;
+    // Retired field types are no longer offered on new jobs (job-fields.ts).
+    const required_fields = stripRetiredFields(requiredFieldsResult.value);
 
     const optionalFieldsResult = parseRequiredFields(body.optional_fields);
     if (!optionalFieldsResult.ok) {
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_optional_fields', valid: optionalFieldsResult.valid }) };
     }
-    const optional_fields = optionalFieldsResult.value;
+    const optional_fields = stripRetiredFields(optionalFieldsResult.value);
 
     // Tier-overlap rejection BEFORE hitting the DB CHECK (jobs_fields_tiers_disjoint /
     // jobs_docs_tiers_disjoint in 074_job_optional_requirements.sql enforce
