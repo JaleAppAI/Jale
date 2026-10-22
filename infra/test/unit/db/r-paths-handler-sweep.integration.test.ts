@@ -925,7 +925,7 @@ describeInProfiles(['request', 'owner-unrestricted'], 'handler sweep: every list
     })]);
   });
 
-  it('EmployerApplicantsOverviewLambda on jale_api: 200 listing the applicant', async () => {
+  it('EmployerApplicantsOverviewLambda on jale_api: 200 listing the applicants', async () => {
     const s = await openWorld();
     // Details requested from two applicants of a job that requires one
     // document. The first attached it to this job, so nothing is outstanding
