@@ -1224,7 +1224,7 @@
       "view_job": "Ver el empleo",
       "view_applications": "Ver mis solicitudes",
       "find_jobs": "Buscar otros empleos",
-      "already_complete_note": "Tu postulación ya se envió. Contacta al empleador por WhatsApp para cambiarla."
+      "already_complete_note": "Tu postulación ya se envió. Para cambiar algo, respóndele al empleador cuando te escriba por WhatsApp."
     },
     "cert_question": "¿Tienes {name}?",
     "cert_use_vault": "Usar {file} de tu bóveda",

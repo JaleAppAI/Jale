@@ -1224,7 +1224,7 @@
       "view_job": "View job",
       "view_applications": "View my applications",
       "find_jobs": "Find other jobs",
-      "already_complete_note": "Your application was sent. Contact the employer through WhatsApp to change it."
+      "already_complete_note": "Your application was sent. To change something, answer the employer when they message you on WhatsApp."
     },
     "cert_question": "Do you have {name}?",
     "cert_use_vault": "Use {file} from your vault",
