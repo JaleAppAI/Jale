@@ -1,6 +1,16 @@
 'use client';
 
-import { createContext, use, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+    createContext,
+    use,
+    useCallback,
+    useEffect,
+    useLayoutEffect,
+    useMemo,
+    useRef,
+    useState,
+    useSyncExternalStore,
+} from 'react';
 import type { ReactNode } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { usePathname } from '@/i18n/navigation';
@@ -14,7 +24,11 @@ import {
     type TutorialRecord,
     type TutorialRole,
 } from '@/lib/api/tutorials';
+import { TutorialPlayer } from '@/components/tutorials/TutorialPlayer';
+import { useOverlayRegistry } from './overlay';
+import { getTutorial } from './registry';
 import { clearRecordFailed, readRecordFailed, writeRecordFailed } from './storage';
+import type { TutorialSceneProps } from './types';
 
 /**
  * The tutorial progress store (contract K1): which tutorials this account has
@@ -45,6 +59,19 @@ import { clearRecordFailed, readRecordFailed, writeRecordFailed } from './storag
  *    (`./storage`, account-scoped), plus an in-memory copy for when storage is
  *    unavailable or the account cannot be read. The save is never retried.
  *  - Nothing is ever written on render.
+ *
+ * PLAYS. The store also renders the ONE tutorial player, and owns the rule
+ * that keeps a single dialog on screen (ruling R4):
+ *  - a play is first PENDING, and is only shown after the commit that queued
+ *    it, from a passive effect, when every overlay that opened in that same
+ *    commit has registered. An auto play refused there (an overlay is up)
+ *    never shows; a "before the host" play then opens its host instead;
+ *  - one play at a time: a request while another is pending or up is refused;
+ *  - a play's `then` (the host it plays before) runs from a post-commit effect
+ *    AFTER the player has unmounted: Modal's cleanups have already handed the
+ *    scroll lock and the focus back, so the host opens from the real button
+ *    and locks the page afresh;
+ *  - only AUTO plays record their outcome. Replays never do.
  */
 
 export type TutorialProgressStatus =
@@ -67,7 +94,103 @@ export type TutorialProgressValue = {
     isFlagged(id: TutorialId): boolean;
     /** Records how an AUTO-OPENED play of `id` was dismissed. Replays never call this. */
     recordOutcome(id: TutorialId, outcome: TutorialOutcome): void;
+    /** Queues a play; false (and nothing queued) when another is already pending or up. */
+    play(request: PlayRequest): boolean;
+    /** Drops a play `source` queued that has not shown yet (its page went away). */
+    cancel(source: object): void;
+    /** True while a play is pending or up. */
+    isBusy(): boolean;
+    /** True while any other overlay is open (see `./overlay`). */
+    isOverlayPresent(): boolean;
+    /** Keeps the latest vars a host gave for `id`, so a Help replay draws the same picture. */
+    rememberVars(id: TutorialId, vars: TutorialVars): void;
+    varsFor(id: TutorialId): TutorialVars;
 };
+
+export type TutorialVars = TutorialSceneProps['vars'];
+
+export type PlayRequest = {
+    id: TutorialId;
+    vars?: TutorialVars;
+    /** `auto` plays obey the overlay rule and record their outcome; `replay` plays do neither. */
+    mode: 'auto' | 'replay';
+    /** Runs once the play's dialog has gone, or at once if it is refused: the host it plays before. */
+    then?: () => void;
+    /** Called when the play is refused at the last check. */
+    onRefused?: () => void;
+    /** Who asked, for `cancel`. */
+    source?: object;
+};
+
+type Play = PlayRequest & { seq: number };
+type PlayState = { readonly pending: Play | null; readonly active: Play | null };
+
+const NO_PLAY: PlayState = { pending: null, active: null };
+
+/**
+ * The play state, kept outside React (read with `useSyncExternalStore`) so a
+ * host's handler can ask "is a tutorial busy?" and get this instant's answer,
+ * not the last render's.
+ */
+function createPlayStore() {
+    let state: PlayState = NO_PLAY;
+    let seq = 0;
+    const listeners = new Set<() => void>();
+    /** Hosts waiting for the play that just ended to leave the page. */
+    let afterClose: Array<() => void> = [];
+    const set = (next: PlayState) => {
+        state = next;
+        listeners.forEach((listener) => listener());
+    };
+    return {
+        subscribe(listener: () => void) {
+            listeners.add(listener);
+            return () => {
+                listeners.delete(listener);
+            };
+        },
+        getSnapshot: () => state,
+        isBusy: () => state.pending !== null || state.active !== null,
+        request(request: PlayRequest): boolean {
+            if (state.pending !== null || state.active !== null) return false;
+            seq += 1;
+            set({ pending: { ...request, seq }, active: null });
+            return true;
+        },
+        /** The last check before a pending play shows. Returns the play when refused. */
+        settle(refuse: (play: Play) => boolean): Play | null {
+            const pending = state.pending;
+            if (pending === null) return null;
+            if (refuse(pending)) {
+                set(NO_PLAY);
+                return pending;
+            }
+            set({ pending: null, active: pending });
+            return null;
+        },
+        /** Ends the play on screen. Its `then` waits for the commit that removes it. */
+        finish(): Play | null {
+            const active = state.active;
+            if (active === null) return null;
+            if (active.then) afterClose.push(active.then);
+            set(NO_PLAY);
+            return active;
+        },
+        takeAfterClose(): Array<() => void> {
+            const tasks = afterClose;
+            afterClose = [];
+            return tasks;
+        },
+        cancel(source: object) {
+            if (state.pending?.source === source) set({ pending: null, active: state.active });
+        },
+        /** The session ended: nothing plays, and no host waits on a play. */
+        reset() {
+            afterClose = [];
+            if (state !== NO_PLAY) set(NO_PLAY);
+        },
+    };
+}
 
 const TutorialProgressContext = createContext<TutorialProgressValue | null>(null);
 
@@ -129,6 +252,12 @@ export function TutorialProgressProvider({ children }: { children: ReactNode }) 
 
     /** Failed saves this page load knows about, whatever storage can hold. */
     const flagsRef = useRef(new Set<string>());
+    /** The latest vars each host gave, for Help replays. */
+    const varsRef = useRef(new Map<TutorialId, NonNullable<TutorialVars>>());
+
+    const overlays = useOverlayRegistry();
+    const [plays] = useState(createPlayStore);
+    const playState = useSyncExternalStore(plays.subscribe, plays.getSnapshot, plays.getSnapshot);
 
     // THE READ: once per role + account. Superseded or unmounted reads are
     // aborted, and their answers dropped.
@@ -177,7 +306,35 @@ export function TutorialProgressProvider({ children }: { children: ReactNode }) 
             if (cleared === null || key.startsWith(`${cleared}:`)) flagsRef.current.delete(key);
         }
         clearRecordFailed(cleared ?? undefined);
-    }, [sessionCleared]);
+        varsRef.current.clear();
+        // Whatever was playing belonged to the session that ended.
+        plays.reset();
+    }, [sessionCleared, plays]);
+
+    // THE LAST CHECK before a pending play shows. A passive effect, so every
+    // overlay that opened in the commit that queued the play (wherever it
+    // sits in the tree) has already registered in its layout phase.
+    const pending = playState.pending;
+    useEffect(() => {
+        if (pending === null) return;
+        const refused = plays.settle(
+            (play) =>
+                !getTutorial(play.id)?.slides.length ||
+                (play.mode === 'auto' && (overlays?.isPresent() ?? false)),
+        );
+        if (refused) {
+            refused.onRefused?.();
+            // Nothing showed, so the host it was to play before opens now.
+            refused.then?.();
+        }
+    }, [pending, plays, overlays]);
+
+    // A host waiting on the play that just ended. This runs after the commit
+    // that unmounted the player, once Modal's cleanups have released the
+    // scroll lock and returned focus, so the host reads the real opener.
+    useEffect(() => {
+        for (const task of plays.takeAfterClose()) task();
+    }, [playState, plays]);
 
     const hasRecord = useCallback(
         (id: TutorialId) => entry?.state === 'ready' && entry.records.has(id),
@@ -218,10 +375,55 @@ export function TutorialProgressProvider({ children }: { children: ReactNode }) 
         recordTutorialOutcome(token, servingRole, id, outcome).then(markRecorded, flag);
     }, []);
 
-    const value = useMemo<TutorialProgressValue>(
-        () => ({ shellRole, role, status, hasRecord, isFlagged, recordOutcome }),
-        [shellRole, role, status, hasRecord, isFlagged, recordOutcome],
+    const play = useCallback((request: PlayRequest) => plays.request(request), [plays]);
+    const cancel = useCallback((source: object) => plays.cancel(source), [plays]);
+    const isBusy = useCallback(() => plays.isBusy(), [plays]);
+    const isOverlayPresent = useCallback(() => overlays?.isPresent() ?? false, [overlays]);
+    const rememberVars = useCallback((id: TutorialId, vars: TutorialVars) => {
+        if (vars !== undefined) varsRef.current.set(id, vars);
+    }, []);
+    const varsFor = useCallback((id: TutorialId) => varsRef.current.get(id), []);
+
+    const onDismiss = useCallback(
+        (outcome: TutorialOutcome) => {
+            const ended = plays.finish();
+            if (ended?.mode === 'auto') recordOutcome(ended.id, outcome);
+        },
+        [plays, recordOutcome],
     );
 
-    return <TutorialProgressContext value={value}>{children}</TutorialProgressContext>;
+    const value = useMemo<TutorialProgressValue>(
+        () => ({
+            shellRole,
+            role,
+            status,
+            hasRecord,
+            isFlagged,
+            recordOutcome,
+            play,
+            cancel,
+            isBusy,
+            isOverlayPresent,
+            rememberVars,
+            varsFor,
+        }),
+        [shellRole, role, status, hasRecord, isFlagged, recordOutcome, play, cancel, isBusy, isOverlayPresent, rememberVars, varsFor],
+    );
+
+    const active = playState.active;
+    const activeDefinition = active !== null ? getTutorial(active.id) : undefined;
+
+    return (
+        <TutorialProgressContext value={value}>
+            {children}
+            {active !== null && activeDefinition ? (
+                <TutorialPlayer
+                    key={active.seq}
+                    definition={activeDefinition}
+                    vars={active.vars}
+                    onDismiss={onDismiss}
+                />
+            ) : null}
+        </TutorialProgressContext>
+    );
 }
