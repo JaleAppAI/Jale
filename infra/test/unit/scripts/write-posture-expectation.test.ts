@@ -1,10 +1,29 @@
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { canonicalJson, loadManifest, manifestDigest, parseManifest } from '../../../db/access/access-manifest';
+
+jest.mock('@aws-sdk/client-secrets-manager', () => ({
+  SecretsManagerClient: jest.fn(() => ({ send: jest.fn() })),
+  GetSecretValueCommand: jest.fn(),
+}));
+jest.mock('pg', () => ({ Client: jest.fn() }));
+
+import {
+  canonicalJson,
+  loadManifest,
+  manifestDigest,
+  parseManifest,
+  type AccessManifest,
+} from '../../../db/access/access-manifest';
+import type { PostureResult } from '../../../db/access/posture';
 import { changeLogDigest, loadChangeLog, parseChangeLog, type ChangeLog } from '../../../db/access/posture-audit';
+import {
+  createPostureCheckHandler,
+  type PostureCheckDependencies,
+  type PostureConnection,
+} from '../../../lambda/ops/db-posture-check';
 import { writePostureExpectation } from '../../../scripts/write-posture-expectation';
 
 /**
@@ -87,6 +106,62 @@ describe('write-posture-expectation', () => {
       expect(written.change_log).toEqual(changeLog);
       expect(written.change_log_sha256).toBe(changeLogDigest(changeLog));
       expect(changeLogDigest(parseChangeLog(written.change_log))).toBe(written.change_log_sha256);
+    });
+  });
+
+  describe('what the posture function makes of it', () => {
+    const env = process.env;
+
+    beforeEach(() => {
+      process.env = { ...env, DB_EXPECTED_LOGIN: 'jale_posture' };
+      jest.spyOn(console, 'log').mockImplementation(() => {});
+      jest.spyOn(console, 'error').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      process.env = env;
+      jest.restoreAllMocks();
+    });
+
+    it('reports the two digests the writer wrote, for the manifest and change log it sent', async () => {
+      const written = writeAndRead();
+      const connection = {
+        query: jest.fn(async () => ({ rows: [{ session_login: 'jale_posture', login: 'jale_posture' }] })),
+        end: jest.fn(async () => undefined),
+      };
+      const checkPosture = jest.fn(async (_client: unknown, manifest: AccessManifest): Promise<PostureResult> => ({
+        complete: true,
+        violations: [],
+        serverVersion: '16.4',
+        manifestDigest: manifestDigest(manifest),
+      }));
+      const deps = {
+        readManifest: () => { throw new Error('the bundled manifest is not used'); },
+        readChangeLog: () => { throw new Error('the bundled change log is not used'); },
+        readSecret: async () => ({
+          host: 'posture-db.internal.example',
+          port: 5432,
+          dbname: 'jale',
+          username: 'jale_posture',
+          password: randomBytes(12).toString('hex'),
+        }),
+        connect: async () => connection as unknown as PostureConnection,
+        checkPosture,
+      } as unknown as PostureCheckDependencies;
+      // As the deploy gate sends it: the two files, without their digests.
+      const event = JSON.parse(JSON.stringify({
+        trigger: 'deploy',
+        phase: 'pre',
+        expected: { manifest: written.manifest, change_log: written.change_log },
+      }));
+
+      const report = (await createPostureCheckHandler(deps)(event)) as unknown as Record<string, unknown>;
+
+      expect(checkPosture).toHaveBeenCalledTimes(1);
+      expect(report.complete).toBe(true);
+      expect(report.expected_source).toBe('supplied');
+      expect(report.manifest_sha256).toBe(written.manifest_sha256);
+      expect(report.change_log_sha256).toBe(written.change_log_sha256);
     });
   });
 
