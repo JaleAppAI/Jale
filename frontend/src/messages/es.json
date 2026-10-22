@@ -1075,6 +1075,14 @@
       "hired": "Contratado",
       "not_interested": "No seleccionado"
     },
+    "status_hint": {
+      "pending": "Esperando al empleador",
+      "contacted": "Revisa WhatsApp: el empleador te escribió",
+      "talking": "El empleador te escribió",
+      "details_requested": "Quieren contratarte",
+      "hired": "Conseguiste el trabajo. Revisa tus datos de inicio",
+      "not_interested": "El empleador eligió a otros candidatos"
+    },
     "details_banner": {
       "one_head": "Falta algo — completa tus datos.",
       "one_body": "{company} quiere seguir adelante.",

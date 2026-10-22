@@ -1075,6 +1075,14 @@
       "hired": "Hired",
       "not_interested": "Not selected"
     },
+    "status_hint": {
+      "pending": "Waiting for the employer",
+      "contacted": "Check WhatsApp: the employer messaged you",
+      "talking": "The employer wrote to you",
+      "details_requested": "They want to hire you",
+      "hired": "You got the job. Check your start details",
+      "not_interested": "The employer chose other candidates"
+    },
     "details_banner": {
       "one_head": "Action needed — complete your details.",
       "one_body": "{company} wants to move forward.",

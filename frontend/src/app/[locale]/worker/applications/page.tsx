@@ -16,7 +16,7 @@ import { MetricCard } from '@/components/ui/metric-card';
 import { ListPageSkeleton } from '@/components/ui/page-skeletons';
 import { PanelHeader } from '@/components/ui/panel-header';
 import { Skeleton } from '@/components/ui/skeleton';
-import { ApplicationStatusChip } from '@/components/worker/ApplicationStatusChip';
+import { ApplicationStatusChip, ApplicationStatusHint } from '@/components/worker/ApplicationStatusChip';
 import {
   DetailsRequestedBanner,
   DetailsRequestedMultiBanner,
@@ -347,6 +347,7 @@ export default function WorkerApplicationsPage() {
                                 <p className="mt-0.5 text-xs font-medium text-[var(--jale-ink-2)]">
                                   {a.company_name}
                                 </p>
+                                <ApplicationStatusHint status={a.status} className="mt-1" />
                                 {jobStatusBadge ? (
                                   <p className="mt-1">
                                     <JobStatusBadge status={jobStatusBadge}>

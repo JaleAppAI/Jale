@@ -21,7 +21,7 @@ import {
   type JobFactRequirement,
   type JobFactTile,
 } from '@/components/jobs/JobFactsCard';
-import { ApplicationStatusChip } from '@/components/worker/ApplicationStatusChip';
+import { ApplicationStatusChip, ApplicationStatusHint } from '@/components/worker/ApplicationStatusChip';
 import { PayReferenceHint } from '@/components/PayReferenceHint';
 import { ShareJobPanel } from '@/components/worker/ShareJobPanel';
 import { WhatYouNeedPanel } from '@/components/worker/WhatYouNeedPanel';
@@ -951,6 +951,10 @@ export default function WorkerJobDetailPage() {
                             {t('already_applied')}
                           </span>
                           <ApplicationStatusChip status={job.application_status ?? 'pending'} short />
+                          <ApplicationStatusHint
+                            status={job.application_status ?? 'pending'}
+                            className="basis-full text-right"
+                          />
                         </>
                       ) : (
                         <Button
