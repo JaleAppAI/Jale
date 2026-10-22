@@ -19,6 +19,22 @@ jest.mock('../../../../lambda/lib/audit/context');
 jest.mock('../../../../lambda/lib/employer-candidate-ranking');
 jest.mock('../../../../lambda/legal/check-compliance');
 
+import { resolveEmployerActor } from '../../../../lambda/lib/employer-actor';
+
+jest.mock('../../../../lambda/lib/employer-actor', () => ({
+  ...jest.requireActual('../../../../lambda/lib/employer-actor'),
+  resolveEmployerActor: jest.fn(),
+}));
+
+const mockResolveEmployerActor = resolveEmployerActor as jest.Mock;
+const ORG_ID = '99999999-9999-4999-8999-999999999999';
+const OWNER_ID = 'aaaaaaaa-1111-4111-8111-111111111111';
+const FOREMAN_ID = 'bbbbbbbb-2222-4222-8222-222222222222';
+const actorResult = (userId: string, scopeUserIds: string[] = [userId]) => ({
+  ok: true as const,
+  actor: { userId, organizationId: ORG_ID, role: 'owner' as const, scopeUserIds },
+});
+
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
 const mockListEmployerCandidates = listEmployerCandidates as jest.Mock;
@@ -59,6 +75,7 @@ describe('employer-job-candidates Lambda', () => {
       },
     });
     mockSqsSend.mockResolvedValue({});
+    mockResolveEmployerActor.mockResolvedValue(actorResult('employer-id'));
   });
 
   it('returns 401 if Cognito sub is missing', async () => {
@@ -81,7 +98,6 @@ describe('employer-job-candidates Lambda', () => {
   it('returns 403 when the ownership query finds no job', async () => {
     mockQuery
       .mockResolvedValueOnce({})
-      .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] })
       .mockResolvedValueOnce({ rows: [], rowCount: 0 })
       .mockResolvedValueOnce({});
 
@@ -106,7 +122,6 @@ describe('employer-job-candidates Lambda', () => {
   it('returns candidates and enqueues rerank after commit when cache is stale', async () => {
     mockQuery
       .mockResolvedValueOnce({})
-      .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] })
       .mockResolvedValueOnce({ rows: [{ id: JOB_ID }], rowCount: 1 })
       .mockResolvedValueOnce({});
     mockListEmployerCandidates.mockResolvedValue({
@@ -133,7 +148,6 @@ describe('employer-job-candidates Lambda', () => {
   it('does not enqueue rerank when cache is fresh', async () => {
     mockQuery
       .mockResolvedValueOnce({})
-      .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] })
       .mockResolvedValueOnce({ rows: [{ id: JOB_ID }], rowCount: 1 })
       .mockResolvedValueOnce({});
     mockListEmployerCandidates.mockResolvedValue({
@@ -177,7 +191,6 @@ describe('employer-job-candidates Lambda', () => {
     function queueOwnedJob(): void {
       mockQuery
         .mockResolvedValueOnce({})
-        .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] })
         .mockResolvedValueOnce({ rows: [{ id: JOB_ID }], rowCount: 1 })
         .mockResolvedValue({});
     }
@@ -219,7 +232,6 @@ describe('employer-job-candidates Lambda', () => {
     it('records the denial after its ROLLBACK, in its own transaction', async () => {
       mockQuery
         .mockResolvedValueOnce({})
-        .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] })
         .mockResolvedValueOnce({ rows: [], rowCount: 0 })
         .mockResolvedValue({});
       const res = await handler(withRequestId(makeEvent()));
@@ -229,6 +241,31 @@ describe('employer-job-candidates Lambda', () => {
       expect(mockRecordAttempt).toHaveBeenCalledWith(client, employer, {
         surface: 'employer.job_candidates', outcome: 'denied', purpose: { kind: 'job', id: JOB_ID },
       });
+    });
+  });
+
+  describe('caller scope (employer organizations)', () => {
+    it('answers the actor failure after COMMIT and never checks the job', async () => {
+      mockResolveEmployerActor.mockResolvedValueOnce({ ok: false, status: 403, error: 'membership_inactive' });
+      mockQuery.mockResolvedValue({});
+      const res = await handler(makeEvent());
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body)).toEqual({ error: 'membership_inactive' });
+      expect(mockQuery.mock.calls.map(([q]) => q)).toEqual(['BEGIN', 'COMMIT']);
+      expect(mockListEmployerCandidates).not.toHaveBeenCalled();
+    });
+
+    it("checks the job against an owner's whole scope as one uuid[] parameter", async () => {
+      mockResolveEmployerActor.mockResolvedValueOnce(actorResult(OWNER_ID, [OWNER_ID, FOREMAN_ID]));
+      mockQuery
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({ rows: [{ id: JOB_ID }], rowCount: 1 })
+        .mockResolvedValueOnce({});
+      expect((await handler(makeEvent())).statusCode).toBe(200);
+      expect(mockQuery).toHaveBeenCalledWith(
+        'SELECT id FROM jobs WHERE id = $1 AND employer_id = ANY($2::uuid[])',
+        [JOB_ID, [OWNER_ID, FOREMAN_ID]],
+      );
     });
   });
 });

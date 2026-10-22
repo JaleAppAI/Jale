@@ -24,7 +24,8 @@
  */
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import type { PoolClient } from 'pg';
-import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
+import { getDbPool, setRlsContext } from '../lib/db';
+import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
 import { loadStageRecipient } from '../lib/employer-worker-lane';
@@ -196,14 +197,16 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return json(403, { error: 'legal_required', requiredVersion: process.env.REQUIRED_TOS_VERSION });
     }
 
-    const employerRes = await client.query<{ id: string }>(`SELECT id FROM users WHERE cognito_sub = $1`, [cognitoSub]);
-    const employerId = employerRes.rows[0]?.id;
-    if (!employerId) {
+    // resolveEmployerActor refuses a login with no active company membership
+    // and sets app.current_internal_user_id to the caller, which the definers
+    // read. 125's definers still compare the job's employer to the caller
+    // alone, so an owner's save on a member's hire is a 404 until they gain
+    // the owner case.
+    const resolved = await resolveEmployerActor(client, cognitoSub);
+    if (!resolved.ok) {
       await client.query('ROLLBACK');
-      return json(409, { error: 'user_not_provisioned' });
+      return employerActorFailureResponse(resolved, CORS_HEADERS);
     }
-    // The definers read the caller from this setting.
-    await setInternalUserRlsContext(client, employerId);
 
     const saveRes = await client.query(
       `SELECT outcome, application_id, changed, start_date, report_location, contact_name, contact_phone, notes, updated_at

@@ -5,6 +5,21 @@ import { checkCompliance } from '../../../../lambda/legal/check-compliance';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
+import { resolveEmployerActor } from '../../../../lambda/lib/employer-actor';
+
+jest.mock('../../../../lambda/lib/employer-actor', () => ({
+  ...jest.requireActual('../../../../lambda/lib/employer-actor'),
+  resolveEmployerActor: jest.fn(),
+}));
+
+const mockResolveEmployerActor = resolveEmployerActor as jest.Mock;
+const ORG_ID = '99999999-9999-4999-8999-999999999999';
+const OWNER_ID = 'aaaaaaaa-1111-4111-8111-111111111111';
+const FOREMAN_ID = 'bbbbbbbb-2222-4222-8222-222222222222';
+const actorResult = (userId: string, scopeUserIds: string[] = [userId]) => ({
+  ok: true as const,
+  actor: { userId, organizationId: ORG_ID, role: 'owner' as const, scopeUserIds },
+});
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
@@ -51,6 +66,7 @@ describe('employer-conversations-read', () => {
     mockSetRlsContext.mockResolvedValue(undefined);
     mockSetInternalUserRlsContext.mockResolvedValue(undefined);
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    mockResolveEmployerActor.mockResolvedValue(actorResult(EMPLOYER_ID));
   });
 
   afterAll(() => { process.env = env; });
@@ -122,25 +138,25 @@ describe('employer-conversations-read', () => {
   // job_conversations_employer_all keys on -- without the second, the UPDATE
   // below matches ZERO rows and this endpoint 404s on the employer's own
   // conversation.
-  it('sets BOTH RLS contexts inside the transaction and before the UPDATE', async () => {
+  it('binds the sub lane, then resolves the actor (which binds the internal lane), inside the transaction and before the UPDATE', async () => {
     const order: string[] = [];
     mockSetRlsContext.mockImplementation(async () => { order.push('setRlsContext'); });
-    mockSetInternalUserRlsContext.mockImplementation(async () => { order.push('setInternalUserRlsContext'); });
+    mockResolveEmployerActor.mockImplementation(async () => { order.push('resolveEmployerActor'); return actorResult(EMPLOYER_ID); });
     mockQuery.mockImplementation((sql: string) => {
       if (/^BEGIN$/i.test(sql)) order.push('BEGIN');
       if (/UPDATE job_conversations/i.test(sql)) {
         order.push('UPDATE');
         return { rowCount: 1, rows: [{ employer_last_read_at: READ_AT }] };
       }
-      if (/FROM users WHERE cognito_sub/i.test(sql)) return { rowCount: 1, rows: [{ id: EMPLOYER_ID }] };
       return { rowCount: 1, rows: [] };
     });
 
     await handler(makeEvent());
 
     expect(mockSetRlsContext).toHaveBeenCalledWith(expect.anything(), 'e-sub');
-    expect(mockSetInternalUserRlsContext).toHaveBeenCalledWith(expect.anything(), EMPLOYER_ID);
-    expect(order).toEqual(['BEGIN', 'setRlsContext', 'setInternalUserRlsContext', 'UPDATE']);
+    expect(mockResolveEmployerActor).toHaveBeenCalledWith(expect.anything(), 'e-sub');
+    expect(mockSetInternalUserRlsContext).not.toHaveBeenCalled();
+    expect(order).toEqual(['BEGIN', 'setRlsContext', 'resolveEmployerActor', 'UPDATE']);
   });
 
   // Defence in depth, not redundancy: RLS already scopes the row set, and the
@@ -155,9 +171,9 @@ describe('employer-conversations-read', () => {
     )!;
     expect(sql).toMatch(/SET employer_last_read_at = now\(\)/i);
     expect(sql).toMatch(/WHERE id = \$1/i);
-    expect(sql).toMatch(/AND employer_id = \$2/i);
+    expect(sql).toMatch(/AND employer_id = ANY\(\$2::uuid\[\]\)/i);
     expect(sql).toMatch(/RETURNING employer_last_read_at/i);
-    expect(params).toEqual([CONVERSATION_ID, EMPLOYER_ID]);
+    expect(params).toEqual([CONVERSATION_ID, [EMPLOYER_ID]]);
   });
 
   // A conversation belonging to somebody else and a conversation that does not
@@ -201,5 +217,25 @@ describe('employer-conversations-read', () => {
     mockQuery.mockImplementation(() => { throw new Error('boom'); });
     await handler(makeEvent());
     expect(mockRelease).toHaveBeenCalledTimes(2);
+  });
+
+  it('answers the actor failure after COMMIT and writes nothing', async () => {
+    wireQueries({ rowCount: 1, rows: [{ employer_last_read_at: READ_AT }] });
+    mockResolveEmployerActor.mockResolvedValue({ ok: false, status: 403, error: 'membership_inactive' });
+    const res = await handler(makeEvent());
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({ error: 'membership_inactive' });
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+    expect(mockQuery).not.toHaveBeenCalledWith(expect.stringMatching(/UPDATE job_conversations/i), expect.anything());
+  });
+
+  it("marks a thread in an owner's scope with the whole scope as the uuid[] parameter", async () => {
+    wireQueries({ rowCount: 1, rows: [{ employer_last_read_at: READ_AT }] });
+    mockResolveEmployerActor.mockResolvedValue(actorResult(OWNER_ID, [OWNER_ID, FOREMAN_ID]));
+    expect((await handler(makeEvent())).statusCode).toBe(200);
+    const [, params] = mockQuery.mock.calls.find(
+      (call) => typeof call[0] === 'string' && /UPDATE job_conversations/i.test(call[0]),
+    )!;
+    expect(params).toEqual([CONVERSATION_ID, [OWNER_ID, FOREMAN_ID]]);
   });
 });

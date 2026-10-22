@@ -1,5 +1,5 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
+import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import {
   createApplicantConversation,
@@ -11,6 +11,7 @@ import { checkCompliance } from '../legal/check-compliance';
 import { auditCaller, type AuditCaller } from '../lib/audit/caller';
 import { conversationReadEvent } from '../lib/audit/conversations';
 import { recordAccess, recordAttempt, type AttemptEvent } from '../lib/audit/record';
+import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
 
 
 const CORS_HEADERS = corsHeaders();
@@ -19,7 +20,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   let client;
   let caller: AuditCaller | undefined;
   let attempt: Omit<AttemptEvent, 'outcome'> | undefined;
-  let outbox: { conversationId: string; employerId: string } | null = null;
+  let outbox: { conversationId: string; actorUserId: string; scopeUserIds: string[] } | null = null;
 
   try {
     const cognitoSub: string | undefined = event.requestContext.authorizer?.claims?.sub;
@@ -54,27 +55,27 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
-    const employerRes = await client.query<{ id: string }>('SELECT id FROM users WHERE cognito_sub = $1', [cognitoSub]);
-    const employerId = employerRes.rows[0]?.id;
-    if (!employerId) {
+    const resolved = await resolveEmployerActor(client, cognitoSub);
+    if (!resolved.ok) {
       await client.query('COMMIT');
-      return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_provisioned' }) };
+      return employerActorFailureResponse(resolved, CORS_HEADERS);
     }
-    await setInternalUserRlsContext(client, employerId);
-    caller = auditCaller(event, { kind: 'employer', id: employerId }, 'web');
+    const { actor } = resolved;
+    caller = auditCaller(event, { kind: 'employer', id: actor.userId }, 'web');
     attempt = { surface: SURFACE, subjectUserIds: [workerId], purpose: { kind: 'job', id: jobId } };
 
-    const created = await createApplicantConversation(client, employerId, jobId, workerId, initialMessage);
-    const detail = await getEmployerConversationDetail(client, created.conversationId, employerId);
+    const created = await createApplicantConversation(client, actor, jobId, workerId, initialMessage);
+    const detail = await getEmployerConversationDetail(client, created.conversationId, actor.scopeUserIds);
     if (detail) await recordAccess(client, caller, conversationReadEvent(SURFACE, detail));
-    outbox = { conversationId: created.conversationId, employerId };
+    outbox = { conversationId: created.conversationId, actorUserId: actor.userId, scopeUserIds: actor.scopeUserIds };
     await client.query('COMMIT');
 
     if (outbox) {
       await sendPendingJobMessageOutbox(client, {
         conversationId: outbox.conversationId,
-        actorUserId: outbox.employerId,
+        actorUserId: outbox.actorUserId,
         actorKind: 'employer',
+        scopeUserIds: outbox.scopeUserIds,
       });
     }
 

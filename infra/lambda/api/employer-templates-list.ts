@@ -2,6 +2,7 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
+import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
 
 const CORS_HEADERS = corsHeaders();
 
@@ -28,13 +29,24 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'legal_required', requiredVersion: process.env.REQUIRED_TOS_VERSION }) };
     }
 
+    const actorResult = await resolveEmployerActor(client, cognitoSub);
+    if (!actorResult.ok) {
+      await client.query('ROLLBACK');
+      return employerActorFailureResponse(actorResult, CORS_HEADERS);
+    }
+    const { actor } = actorResult;
+
+    // Templates are a company asset: every active member reads every
+    // template of their organization. The same array test as 119's
+    // employer_job_templates_org_read policy (jale_internal.org_member_scope,
+    // migration 118): one call per statement, '{}' unless the caller is an
+    // active member.
     const result = await client.query(
       `SELECT t.id, t.name, t.payload, t.updated_at
          FROM employer_job_templates t
-         JOIN users u ON u.id = t.employer_id
-        WHERE u.cognito_sub = $1
+        WHERE t.employer_id = ANY ((SELECT jale_internal.org_member_scope($1::text))::uuid[])
         ORDER BY t.updated_at DESC`,
-      [cognitoSub],
+      [actor.userId],
     );
     await client.query('COMMIT');
     return { statusCode: 200, headers: CORS_HEADERS, body: JSON.stringify({ templates: result.rows }) };
