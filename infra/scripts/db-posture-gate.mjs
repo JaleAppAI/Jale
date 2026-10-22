@@ -3,16 +3,38 @@
  * The database posture gate, run by the deploy workflow on both sides of
  * "Deploy CDK stacks":
  *
- *   node scripts/db-posture-gate.mjs --phase pre    # the gate, before the deploy
- *   node scripts/db-posture-gate.mjs --phase post   # the verification, after it
+ *   node scripts/db-posture-gate.mjs --phase pre --expected <file>   # the gate, before the deploy
+ *   node scripts/db-posture-gate.mjs --phase post                    # the verification, after it
  *
  * In this order, it:
  *   1. reads the posture metric history (CloudWatch GetMetricData) and settles
  *      the mode BEFORE anything runs the check, so a run can never change its
  *      own mode. Only completed UTC days count;
  *   2. finds the posture function through the database stack's output;
- *   3. invokes it as a deploy-triggered run and reads its report;
+ *   3. invokes it and reads its report;
  *   4. passes, warns or fails, and appends a short summary to the run.
+ *
+ * The invoke:
+ *   - before the deploy, the database already holds the incoming release's
+ *     migrations, so the gate checks it against that release's expectation,
+ *     not the one the deployed function bundles. `<file>` is the output of
+ *     scripts/write-posture-expectation.ts: the merged manifest, the change
+ *     log and their digests. The gate sends
+ *     `{ trigger: 'deploy', phase: 'pre', expected: { manifest, change_log } }`
+ *     from a file in its temporary directory (`fileb://`), since the payload
+ *     is larger than one command-line argument may be. It accepts the report
+ *     only when it says `expected_source: 'supplied'` with both digests equal
+ *     to the file's; any other supplied report is unavailable
+ *     (expectation-mismatch). A report without `expected_source` comes from a
+ *     function that predates supplied checks and checked its own bundle: it is
+ *     accepted, with a note, only when its manifest digest is the incoming
+ *     one, and is otherwise unavailable (stale-manifest). The function
+ *     publishes a supplied run under Trigger=deploy-pre only, so this run
+ *     never enters the history read in step 1;
+ *   - after the deploy, the gate sends `{ trigger: 'deploy' }`, and the newly
+ *     deployed function checks against its own bundle.
+ *   A missing or unreadable expectation before the deploy, or one passed
+ *   after it, is a usage error (exit 2) before any AWS call.
  *
  * The mode:
  *   - report-only until a qualifying window has occurred: 14 consecutive
@@ -35,9 +57,10 @@
  *     step pass whatever the check says, and the reason goes into the summary.
  *     An override without a reason fails before any AWS call.
  *
- * It never writes violation objects or details, AWS error text, or any value
- * read from the account: the repository and its run logs are public, and the
- * posture function's own logs hold the details.
+ * It never writes violation objects or details, AWS error text, the
+ * expectation it sends, or any value read from the account: the repository
+ * and its run logs are public, and the posture function's own logs hold the
+ * details.
  *
  * Node built-ins and the AWS CLI only; credentials come from the job.
  */
@@ -65,8 +88,18 @@ const UNAVAILABLE_REASONS = {
   'function-error': 'the function failed',
   'bad-response': 'the response was not a posture report',
   'no-cli': 'the AWS CLI is not installed',
+  'stale-manifest': 'the posture function checked a manifest other than the incoming one',
+  'expectation-mismatch': 'the report does not match the incoming expectation',
   error: 'the call failed',
 };
+
+const USAGE = 'usage: node scripts/db-posture-gate.mjs --phase pre --expected <file> | --phase post\n';
+const EXPECTATION_ERROR = '::error::The posture expectation file could not be read. '
+  + 'Write it with scripts/write-posture-expectation.ts in the same step.\n';
+
+/** A sha256 digest in hex, as the posture library writes them. */
+const DIGEST = /^[0-9a-f]{64}$/;
+const EXPECTATION_KEYS = ['change_log', 'change_log_sha256', 'manifest', 'manifest_sha256'];
 
 // ── AWS CLI ─────────────────────────────────────────────────────────────────
 
@@ -213,10 +246,55 @@ async function readHistory(now) {
   });
 }
 
+// ── The incoming expectation ────────────────────────────────────────────────
+
+function isObject(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The expectation file, or null when it cannot be used: exactly the writer's
+ * four fields, two objects and two digests. The gate never looks inside the
+ * manifest or the change log; the posture function validates them.
+ */
+function readExpectation(file) {
+  let body;
+  try {
+    body = JSON.parse(readFileSync(file, 'utf8'));
+  } catch {
+    return null;
+  }
+  if (!isObject(body) || Object.keys(body).sort().join(' ') !== EXPECTATION_KEYS.join(' ')) return null;
+  if (!isObject(body.manifest) || !isObject(body.change_log)) return null;
+  if (typeof body.manifest_sha256 !== 'string' || !DIGEST.test(body.manifest_sha256)) return null;
+  if (typeof body.change_log_sha256 !== 'string' || !DIGEST.test(body.change_log_sha256)) return null;
+  return body;
+}
+
+/**
+ * Whether a report is a check against the expectation the gate sent:
+ * `supplied` when the function says so and both digests match; `predates`
+ * for a function without supplied checks whose own manifest is the incoming
+ * one; otherwise the reason it is unavailable.
+ */
+function provenance(report, expectation) {
+  if (!Object.prototype.hasOwnProperty.call(report, 'expected_source')) {
+    return report.manifest_sha256 === expectation.manifest_sha256
+      ? { accepted: 'predates' }
+      : { reason: 'stale-manifest' };
+  }
+  if (report.expected_source === 'supplied'
+      && report.manifest_sha256 === expectation.manifest_sha256
+      && report.change_log_sha256 === expectation.change_log_sha256) {
+    return { accepted: 'supplied' };
+  }
+  return { reason: 'expectation-mismatch' };
+}
+
 // ── 2 and 3. The check ──────────────────────────────────────────────────────
 
 function unavailable(reason) {
-  return { status: 'unavailable', reason, violations: null };
+  return { status: 'unavailable', reason, violations: null, expectation: null };
 }
 
 function failureReason(kind) {
@@ -247,15 +325,26 @@ function isPostureReport(report) {
     && Array.isArray(report.violations);
 }
 
-async function runCheck(functionName) {
+/** `expectation` is the incoming one before the deploy, and null after it. */
+async function runCheck(functionName, expectation) {
   return withTempDir(async (dir) => {
     const responseFile = join(dir, 'response.json');
+    let payload = JSON.stringify({ trigger: 'deploy' });
+    if (expectation) {
+      const payloadFile = join(dir, 'payload.json');
+      writeFileSync(payloadFile, JSON.stringify({
+        trigger: 'deploy',
+        phase: 'pre',
+        expected: { manifest: expectation.manifest, change_log: expectation.change_log },
+      }));
+      payload = `fileb://${payloadFile}`;
+    }
     const result = await aws([
       'lambda', 'invoke',
       '--function-name', functionName,
       '--cli-binary-format', 'raw-in-base64-out',
       '--cli-read-timeout', '120',
-      '--payload', JSON.stringify({ trigger: 'deploy' }),
+      '--payload', payload,
       '--output', 'json',
       responseFile,
     ]);
@@ -274,9 +363,15 @@ async function runCheck(functionName) {
       return unavailable('bad-response');
     }
     if (!isPostureReport(report)) return unavailable('bad-response');
-    if (report.violations.length > 0) return { status: 'violations', violations: report.violations.length };
-    if (report.complete !== true) return { status: 'incomplete', violations: 0 };
-    return { status: 'clean', violations: 0 };
+    let accepted = null;
+    if (expectation) {
+      const checked = provenance(report, expectation);
+      if (checked.reason) return unavailable(checked.reason);
+      accepted = checked.accepted;
+    }
+    if (report.violations.length > 0) return { status: 'violations', violations: report.violations.length, expectation: accepted };
+    if (report.complete !== true) return { status: 'incomplete', violations: 0, expectation: accepted };
+    return { status: 'clean', violations: 0, expectation: accepted };
   });
 }
 
@@ -341,6 +436,14 @@ function describeMode(history, decision) {
     + 'with a clean deploy-triggered run among them.';
 }
 
+function describeExpectation(check) {
+  if (check.expectation === 'supplied') return 'checked against the incoming release\'s manifest and change log';
+  if (check.expectation === 'predates') {
+    return 'posture function predates supplied checks; accepted because its manifest digest is the incoming one';
+  }
+  return 'not confirmed';
+}
+
 function describeCheck(check) {
   switch (check.status) {
     case 'clean': return 'clean';
@@ -363,20 +466,45 @@ function writeSummary(env, lines) {
   process.stdout.write(text);
 }
 
-function parsePhase(argv) {
-  if (argv.length === 1 && argv[0].startsWith('--phase=')) {
-    const value = argv[0].slice('--phase='.length);
-    return value in TITLES ? value : null;
+/**
+ * `--phase pre --expected <file>` or `--phase post`, each argument at most
+ * once, in either order, as `--name value` or `--name=value`. Anything else
+ * is null.
+ */
+function parseArgs(argv) {
+  const values = {};
+  for (let i = 0; i < argv.length; i += 1) {
+    const match = /^--(phase|expected)(?:=(.*))?$/s.exec(argv[i]);
+    if (!match || match[1] in values) return null;
+    if (match[2] !== undefined) {
+      values[match[1]] = match[2];
+    } else {
+      if (i + 1 >= argv.length) return null;
+      i += 1;
+      values[match[1]] = argv[i];
+    }
   }
-  if (argv.length === 2 && argv[0] === '--phase') return argv[1] in TITLES ? argv[1] : null;
-  return null;
+  const { phase, expected } = values;
+  if (!Object.prototype.hasOwnProperty.call(TITLES, phase)) return null;
+  if (phase === 'pre' && !expected) return null;
+  if (phase === 'post' && expected !== undefined) return null;
+  return { phase, expectedFile: expected ?? null };
 }
 
 async function main(argv, env, now) {
-  const phase = parsePhase(argv);
-  if (!phase) {
-    process.stderr.write('usage: node scripts/db-posture-gate.mjs --phase pre|post\n');
+  const args = parseArgs(argv);
+  if (!args) {
+    process.stderr.write(USAGE);
     return 2;
+  }
+  const { phase } = args;
+  let expectation = null;
+  if (phase === 'pre') {
+    expectation = readExpectation(args.expectedFile);
+    if (!expectation) {
+      process.stdout.write(EXPECTATION_ERROR);
+      return 2;
+    }
   }
   const title = TITLES[phase];
   const override = readOverride(env);
@@ -394,7 +522,7 @@ async function main(argv, env, now) {
 
   const history = await readHistory(now);
   const target = await findFunction();
-  const check = target.ok ? await runCheck(target.name) : unavailable(target.reason);
+  const check = target.ok ? await runCheck(target.name, expectation) : unavailable(target.reason);
   const decision = decide(history, check, override);
 
   const streak = history.readable ? String(history.streak) : 'unknown';
@@ -405,6 +533,7 @@ async function main(argv, env, now) {
     `- Mode: ${describeMode(history, decision)}`,
     `- Consecutive clean days: ${streak}`,
     `- Check: ${describeCheck(check)}`,
+    ...(expectation ? [`- Expectation: ${describeExpectation(check)}`] : []),
     `- Violations: ${violations}`,
     override.active ? `- Override: used. Reason: \`${override.reason}\`` : '- Override: not used',
     `- Result: **${decision.result}**`,
