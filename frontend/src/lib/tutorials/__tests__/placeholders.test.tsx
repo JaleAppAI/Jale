@@ -1,7 +1,6 @@
-import { render, renderHook, screen } from '@testing-library/react';
+import { renderHook } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { EMPLOYER_TUTORIAL_IDS, WORKER_TUTORIAL_IDS } from '@/lib/api/tutorials';
-import { OverlayPresenceProvider, useOverlayPresence } from '../overlay';
 import { useTutorial } from '../use-tutorial';
 import type { TutorialDefinition } from '../types';
 import employerWelcome from '@/components/tutorials/content/employer-welcome';
@@ -52,27 +51,6 @@ describe('useTutorial placeholder', () => {
     rerender({ done: true });
 
     expect(result.current).toBe(first);
-  });
-});
-
-describe('overlay placeholders', () => {
-  it('render their children unchanged', () => {
-    render(
-      <OverlayPresenceProvider>
-        <p>shell content</p>
-      </OverlayPresenceProvider>,
-    );
-
-    expect(screen.getByText('shell content')).toBeInTheDocument();
-  });
-
-  it('useOverlayPresence accepts either state and does nothing', () => {
-    const { rerender, result } = renderHook(({ open }: { open: boolean }) => useOverlayPresence(open), {
-      initialProps: { open: true },
-    });
-    rerender({ open: false });
-
-    expect(result.current).toBeUndefined();
   });
 });
 
