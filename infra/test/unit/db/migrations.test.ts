@@ -165,6 +165,7 @@ describe('database migrations', () => {
       '125',
       '126',
       '127',
+      '128',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -5204,6 +5205,101 @@ describe('database migrations', () => {
     it('keys the member read on the company and casts the member scope to uuid[] (PG16 parses the uncast form as a sub-query)', () => {
       expect(sql).toContain('USING (organization_id IN (SELECT m.organization_id FROM public.organization_members m\n');
       expect(sql).toContain("WHERE m.user_id = ANY ((SELECT jale_internal.org_member_scope(current_setting('app.current_internal_user_id', true)))::uuid[])));");
+    });
+  });
+
+  describe('128 company limits', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '128_company_limits.sql'), 'utf8');
+
+    it('is one transaction, forward-only, after 127', () => {
+      expect(sql).toContain('-- Run manually AFTER 127_company_billing.sql,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n');
+      expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+      expect(sql).toContain("SET LOCAL lock_timeout = '5s';");
+    });
+
+    it('creates twelve policies and alters or drops none; organization_members, templates, users and jobs come last', () => {
+      expect(sql.match(/^CREATE POLICY /gm)).toHaveLength(12);
+      expect(sql).not.toMatch(/^(ALTER|DROP) POLICY/m);
+      const lastAt = sql.indexOf('-- ── 6. Last: organization_members, employer_job_templates, users, jobs');
+      expect(lastAt).toBeGreaterThan(sql.indexOf('CREATE FUNCTION jale_billing_internal.billing_restore_org('));
+      for (const statement of ['ALTER TABLE public.organization_members', 'ON public.organization_members TO jale_billing_job_enforcer;',
+        'GRANT SELECT (billing_suspended_at) ON public.organization_members TO jale_cap_org_limits;',
+        'CREATE POLICY organization_members_cap_org_limits_select ON public.organization_members',
+        'CREATE POLICY organization_members_billing_job_enforcer_select ON public.organization_members',
+        'CREATE POLICY organization_members_billing_job_enforcer_update ON public.organization_members',
+        'CREATE POLICY employer_job_templates_cap_org_limits_select ON public.employer_job_templates',
+        'GRANT SELECT (id, cognito_sub, user_type) ON public.users', 'GRANT SELECT (id, employer_id, status) ON public.jobs',
+        'CREATE POLICY jobs_cap_org_limits_select ON public.jobs']) {
+        expect(sql.indexOf(statement)).toBeGreaterThan(lastAt);
+      }
+      // Before section 6, policies go only on the two tables no request reads.
+      const earlier = sql.slice(0, lastAt).match(/^CREATE POLICY \w+ ON public\.\w+/gm)!.map((s) => s.replace(/^CREATE POLICY \w+ ON /, ''));
+      expect([...new Set(earlier)].sort()).toEqual(['public.organization_invites', 'public.organizations']);
+    });
+
+    it('marks a billing suspension, and restores only marked members, earliest marked then earliest joined', () => {
+      expect(sql).toContain("ADD CONSTRAINT organization_members_billing_mark_while_suspended\n    CHECK (billing_suspended_at IS NULL OR status = 'suspended');");
+      expect(sql).toContain("SET status = 'suspended', status_changed_at = now(), billing_suspended_at = now()");
+      expect(sql).toContain("SET status = 'active', status_changed_at = now(), billing_suspended_at = NULL");
+      expect(sql).toContain('ORDER BY m.billing_suspended_at ASC, m.joined_at ASC, m.user_id ASC');
+      // A still-suspended foreman's billing-paused jobs stay paused: both resume reads take active members only.
+      expect(sql.match(/WHERE j\.employer_id = ANY \(v_active_ids\)/g)).toHaveLength(2);
+    });
+
+    it('opens and closes each role window once, and grants employer_org_usage\'s EXECUTE before the transfer', () => {
+      for (const role of ['jale_rls_relationship_reader', 'jale_cap_org_limits', 'jale_billing_job_enforcer']) {
+        expect(sql.split(`'GRANT %I TO %I WITH SET TRUE, INHERIT FALSE', '${role}', current_user`)).toHaveLength(2);
+        expect(sql.split(`'REVOKE %I FROM %I GRANTED BY %I', '${role}', current_user, current_user`)).toHaveLength(2);
+      }
+      // The owner holds no USAGE on jale_cap, so jale_admin grants it first (105's pattern);
+      // ALTER ... OWNER TO makes the owner the grantor.
+      const granted = sql.indexOf('GRANT EXECUTE ON FUNCTION jale_cap.employer_org_usage(boolean) TO jale_api;');
+      expect(granted).toBeGreaterThan(sql.indexOf('REVOKE ALL ON FUNCTION jale_cap.employer_org_usage(boolean) FROM PUBLIC;'));
+      expect(granted).toBeLessThan(sql.indexOf('ALTER FUNCTION jale_cap.employer_org_usage(boolean) OWNER TO jale_cap_org_limits;'));
+      expect(sql).not.toContain('SET LOCAL ROLE jale_cap_org_limits;');
+      expect(sql).toContain('SET LOCAL ROLE jale_rls_relationship_reader;\nGRANT USAGE ON SCHEMA jale_internal TO jale_cap_org_limits;\nGRANT EXECUTE ON FUNCTION jale_internal.org_member_scope(TEXT) TO jale_cap_org_limits;\nRESET ROLE;');
+    });
+
+    it('takes the company lock FOR NO KEY UPDATE in all three definers and casts every scope to uuid[]', () => {
+      expect(sql.match(/FROM public\.organizations o WHERE o\.id = (v_org|p_organization_id) FOR NO KEY UPDATE;/g)).toHaveLength(3);
+      expect(sql).not.toMatch(/FROM public\.organizations o WHERE o\.id = \w+ FOR UPDATE/);
+      const code = sql.replace(/--.*$/gm, '');
+      // One each in the policies on organization_members, employer_job_templates, jobs and
+      // organization_invites and in organizations_cap_org_limits_select, two in
+      // organizations_cap_org_limits_lock.
+      expect(code.match(/= ANY \(\(SELECT jale_internal\.org_(member|owner)_scope\(/g)).toHaveLength(7);
+      expect(code.match(/= ANY \(\(SELECT jale_internal\.org_(member|owner)_scope\([^;]*?\)\)::uuid\[\]\)/g)).toHaveLength(7);
+    });
+
+    it('checks the usage caller again after the lock, in its own statement, for both p_lock values', () => {
+      const body = sql.slice(sql.indexOf('CREATE FUNCTION jale_cap.employer_org_usage('), sql.indexOf('REVOKE ALL ON FUNCTION jale_cap.employer_org_usage'));
+      const lockAt = body.indexOf('PERFORM 1 FROM public.organizations o WHERE o.id = v_org FOR NO KEY UPDATE;');
+      const lockEnd = body.indexOf('  END IF;\n', body.indexOf('  END IF;\n', lockAt) + 1);
+      const recheck = "PERFORM 1 FROM public.organization_members m\n   WHERE m.user_id = v_caller::uuid AND m.organization_id = v_org AND m.status = 'active';\n"
+        + "  IF NOT FOUND THEN\n    RAISE EXCEPTION 'employer_org_usage: the caller is not an active member of a company' USING ERRCODE = 'insufficient_privilege';";
+      // Outside the IF p_lock block (after its END IF), before the counts.
+      expect(body.indexOf(recheck)).toBeGreaterThan(lockEnd);
+      expect(lockEnd).toBeGreaterThan(lockAt);
+      expect(body.indexOf(recheck)).toBeLessThan(body.indexOf('RETURN QUERY'));
+    });
+
+    it('returns billing-suspended foremen and live invites, pending_invites last', () => {
+      expect(sql).toContain('  suspended_foremen INTEGER,\n  pending_invites   INTEGER\n)');
+      expect(sql).toContain("AND m.role = 'foreman' AND m.status = 'suspended'\n             AND m.billing_suspended_at IS NOT NULL),");
+      expect(sql).toContain('AND i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > now());\nEND;');
+    });
+
+    it('records each job the enforcer pauses: a status event with its own employer, and a removed event when public', () => {
+      const body = sql.slice(sql.indexOf('CREATE FUNCTION jale_billing_internal.billing_enforce_org_limits('),
+        sql.indexOf('CREATE FUNCTION jale_billing_internal.billing_restore_org('));
+      expect(body).toContain("VALUES (rec.id, rec.employer_id, 'active', 'paused', 'billing');");
+      expect(body).toContain("IF rec.public_listing_enabled AND rec.public_code IS NOT NULL THEN\n      PERFORM public.enqueue_job_visibility_event(rec.id, rec.public_code, 'removed');");
+      expect(body).toContain('WHERE j.id = ANY (v_paused_ids)');
+    });
+
+    it('keeps 125\'s per-person functions untouched', () => {
+      expect(sql).not.toMatch(/(CREATE OR REPLACE|DROP) FUNCTION jale_billing_internal\.billing_(pause_over_limit_jobs|resume_paused_jobs)/);
     });
   });
 });

@@ -126,6 +126,8 @@ SUITES=(
   test/unit/db/employer-organizations-118.integration.test.ts
   test/unit/db/employer-org-owner-access-119.integration.test.ts
   test/unit/db/company-billing-127.integration.test.ts
+  test/unit/db/company-limits-128.integration.test.ts
+  test/unit/db/company-limit-concurrency.integration.test.ts
   test/unit/db/whatsapp-support-039.integration.test.ts
   test/unit/db/whatsapp-delivery-040.integration.test.ts
   test/unit/db/referrals-rls.integration.test.ts

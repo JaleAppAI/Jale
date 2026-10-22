@@ -145,6 +145,7 @@ proves each signature, owner and grant on a real database.
 | `resolve_share_link(p_code text)` | `jale_api` | `jale_cap_share_links` | `TABLE(job_id uuid, channel text, referrer_worker_id uuid, referrer_employer_id uuid)` |
 | `apply_ses_feedback(p_ses_message_id text)` | `jale_job_ses_feedback` | `jale_cap_ses_feedback` | `TABLE(outcome text, source_type text, changed integer)` |
 | `retention_purge(p_batch integer)` | `jale_job_retention` | `jale_cap_retention` | `TABLE(tokens_deleted integer, claims_deleted integer, opens_deleted integer)` |
+| `employer_org_usage(p_lock boolean)` | `jale_api` | `jale_cap_org_limits` | `TABLE(organization_id uuid, active_jobs integer, templates integer, active_foremen integer, suspended_foremen integer, pending_invites integer)` |
 
 - **resolve_share_link** returns the one active (unrevoked) link for the code,
   or no row for an unknown, malformed or revoked code. It cannot list links.
@@ -161,6 +162,21 @@ proves each signature, owner and grant on a real database.
   Call it until every count is below `p_batch`. `p_batch` must be between 1 and
   5000 (`22023` otherwise). Its owner's DELETE and SELECT policies carry the
   same ages, so it can never remove a younger row.
+- **employer_org_usage** answers for the caller's company (the caller is
+  `app.current_internal_user_id` and must be an active member; `42501`
+  otherwise): every member's active jobs, whatever their membership status,
+  every member's templates, the active foremen, the billing-suspended foremen
+  (`status = 'suspended'` with `billing_suspended_at` set; a suspension for
+  any other reason is not counted) and the live pending invites (not
+  accepted, revoked or expired). `pending_invites` is the last column, so a
+  reader that names its columns is unaffected. With
+  `p_lock = true` it first takes the company's `organizations` row
+  `FOR NO KEY UPDATE`, held to the end of the caller's transaction: the lock
+  the plan-limit gates and the billing enforcer serialise on (migration 128).
+  Once the lock is held it checks the caller again, so a member a downgrade
+  suspended while they waited is refused (`42501`).
+  NO KEY UPDATE conflicts with itself but not with the `FOR KEY SHARE` of a
+  foreign-key check, so an insert that names the company never waits for it.
 
 ## Re-owned definers (no signature change)
 

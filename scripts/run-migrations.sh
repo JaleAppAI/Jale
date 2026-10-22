@@ -589,6 +589,7 @@ MIGRATIONS=(
   "125_hire_details_and_billing_resume.sql"
   "126_job_conversations_whatsapp_update_columns.sql"
   "127_company_billing.sql"
+  "128_company_limits.sql"
 )
 
 WORKDIR="$(mktemp -d)"
