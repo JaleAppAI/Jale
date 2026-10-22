@@ -225,7 +225,7 @@ export function TutorialPlayer({
                         <span className="text-[11px] font-semibold text-[var(--jale-ink-2)]">
                             {tCommon('counter', { current: index + 1, total: slides.length })}
                         </span>
-                        <h2 className="text-[22px] font-extrabold leading-tight tracking-[-0.03em] text-[var(--jale-ink)]">
+                        <h2 className="text-balance text-[22px] font-extrabold leading-tight tracking-[-0.03em] text-[var(--jale-ink)]">
                             {t(slide.titleKey, values)}
                         </h2>
                         <p className="text-sm leading-normal text-[var(--jale-ink-2)]">{t(slide.bodyKey, values)}</p>

@@ -143,7 +143,7 @@ function HelpMenu({
         <Modal open onClose={onClose} labelledById={titleId} size="sm" initialFocusRef={firstRef}>
             <div className="flex flex-col gap-3">
                 <div className="flex items-center justify-between gap-3">
-                    <h2 id={titleId} className="text-base font-bold text-[var(--jale-ink)]">
+                    <h2 id={titleId} className="text-balance text-base font-bold text-[var(--jale-ink)]">
                         {tCommon('help_title')}
                     </h2>
                     <button
