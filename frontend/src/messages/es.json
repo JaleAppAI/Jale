@@ -1278,7 +1278,7 @@
     "cities_all": "Todas las ciudades",
     "cities_edit": "Editar ciudades",
     "cities_done": "Listo",
-    "other_jobs_header": "Otros trabajos fuera de sus ciudades",
+    "other_jobs_header": "Otros trabajos fuera de tus ciudades",
     "filter": {
       "all": "Todos",
       "full_time": "Tiempo completo",
@@ -1288,15 +1288,15 @@
     "openings_count": "{open} de {total} lugares disponibles",
     "empty": {
       "title": "No hay trabajos publicados ahora",
-      "body": "Los empleadores publican trabajos nuevos cada semana. Vuelva pronto, o mantenga su perfil y sus ciudades al día para que los mejores le lleguen primero.",
+      "body": "Los empleadores publican trabajos nuevos cada semana. Vuelve pronto, o mantén tu perfil y tus ciudades al día para que los mejores te lleguen primero.",
       "cta": "Elige tus ciudades"
     },
     "empty_filtered": {
       "title": "Ningún trabajo coincide con esta búsqueda",
-      "body": "Pruebe con una palabra más corta o con otro tipo de trabajo."
+      "body": "Prueba con una palabra más corta o con otro tipo de trabajo."
     },
-    "no_city_jobs": "Nada en sus ciudades en este momento.",
-    "applications_error": "No pudimos cargar sus solicitudes. Recargue la página para ver los avisos de sus empleadores.",
+    "no_city_jobs": "Nada en tus ciudades en este momento.",
+    "applications_error": "No pudimos cargar tus postulaciones. Recarga la página para ver los avisos de tus empleadores.",
     "docs_later_label": "El empleador puede pedirlos después",
     "results_count": "{count, plural, one {# empleo encontrado} other {# empleos encontrados}}",
     "job_type": {
@@ -1774,7 +1774,7 @@
     "field_availability": "Disponibilidad",
     "field_years_experience": "Años de experiencia",
     "field_location": "Ubicación",
-    "field_bio": "Acerca de usted",
+    "field_bio": "Acerca de ti",
     "empty_name": "Nombre sin especificar",
     "empty_skills": "Sin habilidades registradas",
     "empty_certifications": "Sin certificaciones registradas",
@@ -1819,8 +1819,8 @@
       },
       "years_experience": "Años de experiencia",
       "location": "Ubicación",
-      "preferred_cities_label": "Ciudades donde quiere encontrar trabajo",
-      "bio": "Acerca de usted",
+      "preferred_cities_label": "Ciudades donde quieres encontrar trabajo",
+      "bio": "Acerca de ti",
       "certifications_placeholder": "OSHA 10, montacargas, CDL",
       "save": "Guardar",
       "cancel": "Cancelar"
@@ -2038,10 +2038,10 @@
     },
     "terms": {
       "title": "Antes de empezar",
-      "subtitle": "Una lectura rápida. Tus respuestas se comparten solo con los empleadores a los que apliques.",
+      "subtitle": "Una lectura rápida. Tus respuestas se comparten solo con los empleadores a los que te postules.",
       "time": "Unos 2 minutos",
       "info_title": "Cómo usa Jale tu información",
-      "info_body": "Tu nombre, oficio, ubicación y respuestas se muestran a los empleadores solo cuando aplicas a su trabajo. Nunca vendemos tus datos.",
+      "info_body": "Tu nombre, oficio, ubicación y respuestas se muestran a los empleadores solo cuando te postulas a su trabajo. Nunca vendemos tus datos.",
       "messages_title": "Mensajes",
       "messages_body": "Al continuar aceptas recibir mensajes de trabajo por SMS y WhatsApp. Responde STOP en cualquier momento.",
       "terms_title": "Términos de servicio",
@@ -2050,7 +2050,7 @@
     },
     "about": {
       "title": "Sobre ti",
-      "subtitle": "Los empleadores lo ven en tus aplicaciones.",
+      "subtitle": "Los empleadores lo ven en tus postulaciones.",
       "first_name": "Nombre",
       "last_name": "Apellido",
       "location": "Dónde vives",

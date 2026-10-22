@@ -46,11 +46,26 @@ const TU_KEYS = [
     'upload_page.error_submit',
     'upload_page.error_confirm_required',
     'upload_page.expired_body',
+    // The feed.
+    'worker_home.other_jobs_header',
+    'worker_home.empty.body',
+    'worker_home.empty_filtered.body',
+    'worker_home.no_city_jobs',
+    'worker_home.applications_error',
+    // The profile.
+    'worker_profile.field_bio',
+    'worker_profile.edit.bio',
+    'worker_profile.edit.preferred_cities_label',
 ];
 
 /** Worker keys that name the worker's application. */
 const POSTULACION_KEYS = [
     'upload_page.explainer',
+    'worker_home.applications_error',
+    // Onboarding, which used the verb "aplicar" for it.
+    'worker_onboarding.terms.subtitle',
+    'worker_onboarding.terms.info_body',
+    'worker_onboarding.about.subtitle',
 ];
 
 describe('worker Spanish copy', () => {
@@ -61,6 +76,6 @@ describe('worker Spanish copy', () => {
     it.each(POSTULACION_KEYS)('%s calls the application a postulación', (path) => {
         const value = resolve(path);
         expect(value).not.toMatch(OTHER_NOUNS);
-        expect(value).toMatch(/postulaci[oó]n/i);
+        expect(value).toMatch(/postulaci[oó]n|postul(es|as)\b/i);
     });
 });
