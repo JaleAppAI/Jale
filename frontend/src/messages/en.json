@@ -826,7 +826,7 @@
       "description_placeholder_notes": "Write a brief description — a sentence or two is enough. Generate with AI will build the full posting around it, or work from the job basics alone.",
       "description_helper": {
         "use_sample": "Use a sample",
-        "source_credit": "Source: O*NET",
+        "source_credit": "Based on U.S. job data",
         "generate": "Generate with AI",
         "generating": "Generating…",
         "replace_hint": "This will replace the current description.",
