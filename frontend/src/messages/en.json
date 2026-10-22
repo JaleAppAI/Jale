@@ -2342,5 +2342,15 @@
       "image_failed_final": "The image didn't send and can't be sent again. Your report is saved.",
       "image_paused": "Images are paused right now, so only your report was sent."
     }
+  },
+  "tutorial": {
+    "common": {
+      "back": "Back",
+      "next": "Next",
+      "skip": "Skip",
+      "got_it": "Got it",
+      "counter": "{current} of {total}",
+      "close": "Close"
+    }
   }
 }
