@@ -46,6 +46,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // the same numbers. The owner also sees the foreman seats.
     const entitlements = await resolveCompanyEntitlements(client, actor.organizationId);
     const usage = await readCompanyUsage(client);
+    // The plan is resolved for the actor's company, so the count must be the same company's.
+    if (usage.organizationId !== actor.organizationId) throw new Error('company_usage_unavailable');
     // A foreman's jobs list shows only their own active jobs, so the frontend
     // adds the rest. The owner lists every member's, so it is always 0 (no
     // subtraction across two unlocked reads that a concurrent post could skew).
@@ -67,7 +69,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       `SELECT plan_code, status, current_period_start, current_period_end, cancel_at_period_end, grace_ends_at
          FROM subscriptions
         WHERE organization_id = $1
-        ORDER BY updated_at DESC
+        -- The eligible row first, with the predicate resolveCompanyEntitlements
+        -- uses: the processor retires the old row and upserts the new one in one
+        -- transaction, so both share updated_at, and the retired row must not win
+        -- the tie (it would show a paying owner the lapsed banner).
+        ORDER BY CASE WHEN status IN ('active', 'trialing')
+                        OR (status = 'past_due' AND grace_ends_at > now())
+                      THEN 0 ELSE 1 END,
+                 updated_at DESC, created_at DESC, id DESC
         LIMIT 1`,
       [actor.organizationId],
     );

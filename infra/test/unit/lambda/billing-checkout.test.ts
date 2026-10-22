@@ -4,7 +4,7 @@ import { setAuditContext } from '../../../lambda/lib/audit/context';
 import { callerFor, expectContextBeforeWrite, withRequestId } from './api/audit-expectations';
 import { checkCompliance } from '../../../lambda/legal/check-compliance';
 import { getStripe, getStripeSecret, StripeConfigError } from '../../../lambda/lib/stripe-client';
-import { checkoutRequestHash } from '../../../lambda/lib/billing-operations';
+import { BillingCustomerConflictError, checkoutRequestHash, persistBillingCustomer } from '../../../lambda/lib/billing-operations';
 import { handler } from '../../../lambda/billing/checkout';
 import { resolveEmployerActor } from '../../../lambda/lib/employer-actor';
 
@@ -599,6 +599,145 @@ describe('billing checkout handler', () => {
     );
     // Never treated as a retryable provider error — no ROLLBACK-driven 503.
     expect(res.statusCode).not.toBe(503);
+  });
+
+  it('when a concurrent checkout trips the one-customer-per-company index (23505), checkout resolves to the persisted winner', async () => {
+    let inTx = false;
+    let aborted = false;
+    let billingCustomersReads = 0;
+    query.mockImplementation((sql: string) => {
+      if (sql === 'BEGIN') { inTx = true; return Promise.resolve({ rows: [] }); }
+      if (sql === 'ROLLBACK') { inTx = false; aborted = false; return Promise.resolve({ rows: [] }); }
+      if (aborted) return Promise.reject(Object.assign(new Error('current transaction is aborted'), { code: '25P02' }));
+      if (sql === 'COMMIT') { inTx = false; return Promise.resolve({ rows: [] }); }
+      if (sql.includes('SELECT id, email FROM users')) return Promise.resolve({ rows: [{ id: 'user-1', email: 'e@example.com' }] });
+      if (sql.includes('SELECT code FROM billing_plans')) return Promise.resolve({ rows: [{ code: 'employer_pro' }] });
+      if (sql.includes('INSERT INTO billing_customers')) {
+        aborted = inTx;
+        return Promise.reject(Object.assign(new Error('duplicate key'), { code: '23505', constraint: 'billing_customers_one_per_organization' }));
+      }
+      if (sql.includes('SELECT provider_customer_id FROM billing_customers')) {
+        billingCustomersReads += 1;
+        // 1st = prepare-time lookup (none yet); 2nd = the post-ROLLBACK re-read.
+        return Promise.resolve({ rows: billingCustomersReads === 1 ? [] : [{ provider_customer_id: 'cus_concurrent_winner' }] });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+    customerCreate.mockResolvedValue({ id: 'cus_B_orphaned' });
+
+    const res = await handler(event());
+
+    expect(res.statusCode).toBe(200);
+    expect(checkoutCreate).toHaveBeenCalledWith(expect.objectContaining({ customer: 'cus_concurrent_winner' }), expect.any(Object));
+  });
+
+  describe('persistBillingCustomer', () => {
+    const caller = { kind: 'employer', id: 'user-1' } as unknown as Parameters<typeof persistBillingCustomer>[5];
+    const sqls = () => query.mock.calls.map(([sql]) => String(sql).trim().split(/\s+/).slice(0, 2).join(' '));
+    const persist = (customerId = 'cus_mine') =>
+      persistBillingCustomer({ query } as never, 'cognito-sub', 'user-1', 'org-1', customerId, caller);
+    const uniqueViolation = (constraint: string) => Object.assign(new Error('duplicate key'), { code: '23505', constraint });
+    const insertRejects = (err: unknown, storedRows: Array<{ provider_customer_id: string }>) =>
+      query.mockImplementation((sql: string) => {
+        if (sql.includes('INSERT INTO billing_customers')) return Promise.reject(err);
+        if (sql.includes('SELECT provider_customer_id FROM billing_customers')) return Promise.resolve({ rows: storedRows });
+        return Promise.resolve({ rows: [] });
+      });
+
+    it('happy path: inserts, verifies and commits in one transaction, with no ROLLBACK', async () => {
+      query.mockImplementation((sql: string) => (sql.includes('SELECT provider_customer_id')
+        ? Promise.resolve({ rows: [{ provider_customer_id: 'cus_mine' }] })
+        : Promise.resolve({ rows: [] })));
+
+      await expect(persist()).resolves.toBeUndefined();
+
+      expect(sqls()).toEqual(['BEGIN', 'INSERT INTO', 'SELECT provider_customer_id', 'COMMIT']);
+      expect(mockSetRlsContext).toHaveBeenCalledTimes(1);
+    });
+
+    it('a 23505 on billing_customers_one_per_organization rolls back, re-reads in a fresh RLS transaction, and throws the conflict with the stored id', async () => {
+      insertRejects(uniqueViolation('billing_customers_one_per_organization'), [{ provider_customer_id: 'cus_winner' }]);
+
+      const err = await persist().catch((e) => e);
+
+      expect(err).toBeInstanceOf(BillingCustomerConflictError);
+      expect(err.persistedCustomerId).toBe('cus_winner');
+      expect(sqls()).toEqual(['BEGIN', 'INSERT INTO', 'ROLLBACK', 'BEGIN', 'SELECT provider_customer_id', 'COMMIT']);
+      expect(mockSetRlsContext).toHaveBeenCalledTimes(2);
+      expect(mockSetRlsContext).toHaveBeenLastCalledWith(expect.any(Object), 'cognito-sub');
+      const reread = query.mock.calls.filter(([sql]) => String(sql).includes('SELECT provider_customer_id')).pop();
+      expect(String(reread![0])).toMatch(/WHERE user_id = \$1/);
+      expect(reread![1]).toEqual(['user-1']);
+    });
+
+    it('a 23505 on the user_id key whose stored id is this same customer returns normally (the other request saved it)', async () => {
+      insertRejects(uniqueViolation('billing_customers_pkey'), [{ provider_customer_id: 'cus_mine' }]);
+
+      await expect(persist('cus_mine')).resolves.toBeUndefined();
+
+      expect(sqls()).toEqual(['BEGIN', 'INSERT INTO', 'ROLLBACK', 'BEGIN', 'SELECT provider_customer_id', 'COMMIT']);
+    });
+
+    it('a 23505 on the company index with no row for this user (another payer holds it) rolls back and rethrows the 23505', async () => {
+      const dup = uniqueViolation('billing_customers_one_per_organization');
+      insertRejects(dup, []);
+
+      await expect(persist()).rejects.toBe(dup);
+
+      expect(sqls()).toEqual(['BEGIN', 'INSERT INTO', 'ROLLBACK', 'BEGIN', 'SELECT provider_customer_id', 'COMMIT']);
+    });
+
+    it('a 23505 on the provider_customer_id key (same Stripe customer via the shared idempotency key) re-reads and returns normally', async () => {
+      insertRejects(uniqueViolation('billing_customers_provider_customer_id_key'), [{ provider_customer_id: 'cus_mine' }]);
+
+      await expect(persist('cus_mine')).resolves.toBeUndefined();
+
+      expect(sqls()).toEqual(['BEGIN', 'INSERT INTO', 'ROLLBACK', 'BEGIN', 'SELECT provider_customer_id', 'COMMIT']);
+    });
+
+    it('a re-read whose BEGIN fails (25P02 after a failed ROLLBACK) is rolled back quietly and its error rethrown', async () => {
+      const aborted = Object.assign(new Error('current transaction is aborted'), { code: '25P02' });
+      let begins = 0;
+      query.mockImplementation((sql: string) => {
+        if (sql.includes('INSERT INTO billing_customers')) return Promise.reject(uniqueViolation('billing_customers_one_per_organization'));
+        if (sql === 'ROLLBACK') return Promise.reject(new Error('connection hiccup'));
+        if (sql === 'BEGIN') return (begins += 1) === 1 ? Promise.resolve({ rows: [] }) : Promise.reject(aborted);
+        return Promise.resolve({ rows: [] });
+      });
+
+      await expect(persist()).rejects.toBe(aborted);
+
+      expect(sqls()).toEqual(['BEGIN', 'INSERT INTO', 'ROLLBACK', 'BEGIN', 'ROLLBACK']);
+    });
+
+    it('a 23505 on any other constraint rolls back and rethrows without a re-read', async () => {
+      const dup = uniqueViolation('billing_customers_some_other_key');
+      insertRejects(dup, [{ provider_customer_id: 'cus_winner' }]);
+
+      await expect(persist()).rejects.toBe(dup);
+
+      expect(sqls()).toEqual(['BEGIN', 'INSERT INTO', 'ROLLBACK']);
+    });
+
+    it("a 42501 from 127's trigger rolls back first, then rethrows the same error (no typed refusal yet)", async () => {
+      const refused = Object.assign(new Error('not the active owner'), { code: '42501' });
+      insertRejects(refused, []);
+
+      await expect(persist()).rejects.toBe(refused);
+
+      expect(sqls()).toEqual(['BEGIN', 'INSERT INTO', 'ROLLBACK']);
+    });
+
+    it('a failing ROLLBACK is ignored and the original error is still rethrown', async () => {
+      const refused = Object.assign(new Error('not the active owner'), { code: '42501' });
+      query.mockImplementation((sql: string) => {
+        if (sql.includes('INSERT INTO billing_customers')) return Promise.reject(refused);
+        if (sql === 'ROLLBACK') return Promise.reject(new Error('connection terminated'));
+        return Promise.resolve({ rows: [] });
+      });
+
+      await expect(persist()).rejects.toBe(refused);
+    });
   });
 
   describe('the company (Phase 2)', () => {

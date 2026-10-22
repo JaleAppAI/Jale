@@ -180,6 +180,28 @@ describe('billing get handler', () => {
     expect(release).toHaveBeenCalled();
   });
 
+  it('answers 500 and rolls back when the usage read is for a different company than the actor', async () => {
+    mockReadCompanyUsage.mockResolvedValue({ organizationId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', activeJobs: 3, templates: 4, activeForemen: 1, suspendedForemen: 0 });
+
+    const res = await handler(event());
+
+    expect(res.statusCode).toBe(500);
+    expect(JSON.parse(res.body)).toEqual({ error: 'internal_error' });
+    expect(query).toHaveBeenCalledWith('ROLLBACK');
+    expect(query).not.toHaveBeenCalledWith('COMMIT');
+    expect(release).toHaveBeenCalled();
+  });
+
+  it('reads the eligible subscription first, with deterministic tiebreakers, so a retired row never wins a same-transaction tie', async () => {
+    await handler(event());
+
+    const sub = query.mock.calls.find(([sql]) => String(sql).includes('SELECT plan_code, status'));
+    const sql = String(sub![0]).replace(/\s+/g, ' ');
+    expect(sql).toMatch(
+      /ORDER BY CASE WHEN status IN \('active', 'trialing'\) OR \(status = 'past_due' AND grace_ends_at > now\(\)\) THEN 0 ELSE 1 END, updated_at DESC, created_at DESC, id DESC LIMIT 1/,
+    );
+  });
+
   it('answers 200 with subscription null for a company with no subscription row', async () => {
     query.mockImplementation((sql: string) => {
       if (sql.includes('count(*)::int AS active_jobs')) return Promise.resolve({ rows: [{ active_jobs: 3 }] });
