@@ -734,6 +734,24 @@ export class ApiStack extends cdk.Stack {
     apiDb.grantRead(workerProfileUpdateLambda.function);
     props.aliasGeneratorFn.grantInvoke(workerProfileUpdateLambda.function);
 
+    // Tutorial progress (sprint 29, contract K1) — employer and worker auth,
+    // DB access. One function serves GET/POST /employer/tutorials and
+    // /worker/tutorials: the path picks the role, and each path's authorizer
+    // pins its pool. Configured like the pay-reference function: no
+    // REQUIRED_TOS_VERSION, because the handler does not call
+    // checkCompliance() (UI state, shown before worker onboarding finishes).
+    const tutorialProgressFunction = new JaleLambdaFunction(this, 'TutorialProgressFunction', {
+      entry: path.join(__dirname, '../../lambda/api/tutorial-progress.ts'),
+      description: 'Tutorial progress endpoint',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        ...apiDb.environment,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+    });
+    apiDb.grantRead(tutorialProgressFunction.function);
+
     // ── IAM: Cognito permissions for auth Lambdas ──
     // Scoped to the two pool ARNs to respect least privilege.
     const poolArns = [
@@ -902,6 +920,18 @@ export class ApiStack extends cdk.Stack {
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
 
+    // GET  /worker/tutorials — the worker's tutorial progress
+    // POST /worker/tutorials — record how an auto-opened tutorial was dismissed
+    const workerTutorialsResource = workerResource.addResource('tutorials');
+    workerTutorialsResource.addMethod('GET', lambdaIntegration(tutorialProgressFunction.function), {
+      authorizer: workerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+    workerTutorialsResource.addMethod('POST', lambdaIntegration(tutorialProgressFunction.function), {
+      authorizer: workerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+
     // GET /employer/profile
     // PATCH /employer/profile
     // Exported as public readonly so BillingStack can hang /employer/billing routes off it.
@@ -1065,6 +1095,18 @@ export class ApiStack extends cdk.Stack {
     // DELETE /employer/templates/{templateId} — delete a job template the employer owns
     const employerTemplateResource = employerTemplatesResource.addResource('{templateId}');
     employerTemplateResource.addMethod('DELETE', lambdaIntegration(employerTemplatesDeleteLambda.function), {
+      authorizer: employerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+
+    // GET  /employer/tutorials — the employer's tutorial progress
+    // POST /employer/tutorials — record how an auto-opened tutorial was dismissed
+    const employerTutorialsResource = this.employerResource.addResource('tutorials');
+    employerTutorialsResource.addMethod('GET', lambdaIntegration(tutorialProgressFunction.function), {
+      authorizer: employerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+    employerTutorialsResource.addMethod('POST', lambdaIntegration(tutorialProgressFunction.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });

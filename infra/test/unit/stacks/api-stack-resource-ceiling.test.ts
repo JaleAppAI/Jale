@@ -518,6 +518,12 @@ describe('JaleApiStack resource ceiling (real bin/jale-app.ts composition)', () 
     // that already serves the bare applicant's status change.
     ['PATCH', '/employer/jobs/{jobId}/applicants/{workerId}', 'EmployerAuthorizer'],
     ['PUT', '/employer/jobs/{jobId}/applicants/{workerId}/hire-details', 'EmployerAuthorizer'],
+    // Sprint 29 tutorial progress (contract K1): one function, a route per
+    // role, each behind its own pool's authorizer.
+    ['GET', '/employer/tutorials', 'EmployerAuthorizer'],
+    ['POST', '/employer/tutorials', 'EmployerAuthorizer'],
+    ['GET', '/worker/tutorials', 'WorkerAuthorizer'],
+    ['POST', '/worker/tutorials', 'WorkerAuthorizer'],
   ];
 
   /**
