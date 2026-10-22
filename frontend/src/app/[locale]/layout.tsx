@@ -13,6 +13,8 @@ import { PostJobProvider } from "@/contexts/PostJobContext";
 import { UnreadMessagesProvider } from "@/contexts/UnreadMessagesContext";
 import { WorkerAttentionProvider } from "@/contexts/WorkerAttentionContext";
 import { ReportProblemProvider } from "@/contexts/ReportProblemContext";
+import { OverlayPresenceProvider } from "@/lib/tutorials/overlay";
+import { TutorialProgressProvider } from "@/lib/tutorials/progress";
 
 const lexend = Lexend({
   subsets: ["latin"],
@@ -76,50 +78,63 @@ export default async function RootLayout({
       <body>
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
         <NextIntlClientProvider locale={locale} messages={messages}>
-          <AuthProvider locale={locale}>
-            {/* "Report a problem" from anywhere: inside AuthProvider (the
-                form needs the session) and above everything else, so every
-                header, sign-in screen and error state below can open it. It
-                mounts its own sheet, and records the screens visited and
-                uncaught errors for the report's context. */}
-            <ReportProblemProvider>
-              {/* One profile load for the whole session. Every page mounts its
-                  own AppShell, so a chip fetch owned by the shell ran again on
-                  every navigation -- see SidebarProfileContext. */}
-              <SidebarProfileProvider>
-                <ToastProvider>
-                  {/* One inbox read for the whole session, above the router.
-                      The nav badge, the drawer and the dashboard panel all
-                      render the same unread count, and a hook per surface would
-                      be four pollers on one endpoint -- see
-                      UnreadMessagesContext. Above PostJobProvider so the drawer
-                      (mounted below it) can consume it. */}
-                  <UnreadMessagesProvider>
-                    {/* The worker's "needs your attention" summary, once for
-                        the session: the nav badge on both rails and the home
-                        page's banners read the same answer -- see
-                        WorkerAttentionContext. It asks nothing for an
-                        employer or a visitor. */}
-                    <WorkerAttentionProvider>
-                      {/* Inside ToastProvider (it toasts a posted job) and outside
-                          the pages, so "Post a job" is reachable from every employer
-                          surface rather than only from the dashboard. */}
-                      <PostJobProvider>
-                        {/* Mounts the drawer itself, the way PostJobProvider
-                            mounts the wizard, so any surface can open a thread
-                            for one applicant instead of only the drawer's own
-                            floating button being able to. */}
-                        <ConversationDrawerProvider>
-                          <Header />
-                          {children}
-                        </ConversationDrawerProvider>
-                      </PostJobProvider>
-                    </WorkerAttentionProvider>
-                  </UnreadMessagesProvider>
-                </ToastProvider>
-              </SidebarProfileProvider>
-            </ReportProblemProvider>
-          </AuthProvider>
+          {/* One record of which dialogs are open, above everything that
+              opens one (the report sheet, the job wizard, the plan-limit
+              notice, the conversation drawer), so a tutorial never
+              auto-opens over another dialog. `Modal` and `Sheet` report
+              themselves to it. */}
+          <OverlayPresenceProvider>
+            <AuthProvider locale={locale}>
+              {/* "Report a problem" from anywhere: inside AuthProvider (the
+                  form needs the session) and above everything else, so every
+                  header, sign-in screen and error state below can open it. It
+                  mounts its own sheet, and records the screens visited and
+                  uncaught errors for the report's context. */}
+              <ReportProblemProvider>
+                {/* One profile load for the whole session. Every page mounts its
+                    own AppShell, so a chip fetch owned by the shell ran again on
+                    every navigation -- see SidebarProfileContext. */}
+                <SidebarProfileProvider>
+                  <ToastProvider>
+                    {/* One inbox read for the whole session, above the router.
+                        The nav badge, the drawer and the dashboard panel all
+                        render the same unread count, and a hook per surface would
+                        be four pollers on one endpoint -- see
+                        UnreadMessagesContext. Above PostJobProvider so the drawer
+                        (mounted below it) can consume it. */}
+                    <UnreadMessagesProvider>
+                      {/* The worker's "needs your attention" summary, once for
+                          the session: the nav badge on both rails and the home
+                          page's banners read the same answer -- see
+                          WorkerAttentionContext. It asks nothing for an
+                          employer or a visitor. */}
+                      <WorkerAttentionProvider>
+                        {/* Tutorial progress, read once for the session, and the one
+                            tutorial player. Inside AuthProvider (it reads the
+                            session) and above the job wizard and the conversation
+                            drawer, whose tutorials play before they open. */}
+                        <TutorialProgressProvider>
+                          {/* Inside ToastProvider (it toasts a posted job) and outside
+                              the pages, so "Post a job" is reachable from every employer
+                              surface rather than only from the dashboard. */}
+                          <PostJobProvider>
+                            {/* Mounts the drawer itself, the way PostJobProvider
+                                mounts the wizard, so any surface can open a thread
+                                for one applicant instead of only the drawer's own
+                                floating button being able to. */}
+                            <ConversationDrawerProvider>
+                              <Header />
+                              {children}
+                            </ConversationDrawerProvider>
+                          </PostJobProvider>
+                        </TutorialProgressProvider>
+                      </WorkerAttentionProvider>
+                    </UnreadMessagesProvider>
+                  </ToastProvider>
+                </SidebarProfileProvider>
+              </ReportProblemProvider>
+            </AuthProvider>
+          </OverlayPresenceProvider>
         </NextIntlClientProvider>
       </body>
     </html>

@@ -2350,7 +2350,9 @@
       "skip": "Skip",
       "got_it": "Got it",
       "counter": "{current} of {total}",
-      "close": "Close"
+      "close": "Close",
+      "help": "Help",
+      "help_title": "How Jale works"
     }
   }
 }
