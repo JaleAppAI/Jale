@@ -176,6 +176,7 @@ SUITES=(
   test/unit/db/least-privilege-denials.integration.test.ts
   test/unit/db/least-privilege-query-plans.integration.test.ts
   test/unit/db/hire-and-resume-125.integration.test.ts
+  test/unit/db/job-shift-periods.integration.test.ts
   # 4. The tail, in this order. 093 leases worker_intent rows globally and
   #    advances the attempt count of every row it leases, so it follows every
   #    suite that could own one. Then each suite that re-applies its migration

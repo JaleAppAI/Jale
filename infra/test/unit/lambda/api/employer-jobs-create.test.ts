@@ -737,8 +737,9 @@ describe('employer-jobs-create', () => {
       expect(res.statusCode).toBe(201);
       expect(mockQuery).toHaveBeenCalledWith(CHECK, [TEMPLATE, 'user-uuid-1']);
       const sql = String(insertCall()[0]);
-      expect(sql).toMatch(/pre_application_prompts,\s+created_from_template_id\s+\)/);
-      expect(sql).toMatch(/\$35::jsonb, \$36\s+\)/);
+      // shift_periods (128) follows it as the last column and parameter.
+      expect(sql).toMatch(/pre_application_prompts,\s+created_from_template_id,\s+shift_periods\s+\)/);
+      expect(sql).toMatch(/\$35::jsonb, \$36, \$37\s+\)/);
       expect(insertCall()[1][35]).toBe(TEMPLATE);
       const s = statements();
       expect(s.indexOf(CHECK)).toBeLessThan(s.findIndex((q) => q.startsWith('INSERT INTO jobs')));
@@ -774,6 +775,55 @@ describe('employer-jobs-create', () => {
         'SAVEPOINT template_check', CHECK, 'ROLLBACK TO SAVEPOINT template_check', 'RELEASE SAVEPOINT template_check',
       ]);
       expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+    });
+  });
+
+  // Shift choices (128, contract K2.2): appended as the LAST column and bind
+  // parameter ($37, index 36), so every positional index above stays put.
+  describe('shift_periods (128)', () => {
+    const SHIFT_PERIODS_INDEX = 36;
+    const insertCall = () => mockQuery.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO jobs'))!;
+
+    it('stores the periods once each, in canonical order, as the last INSERT column and parameter', async () => {
+      const res = await handler(makeEvent({ shift_periods: ['night', 'day', 'night'] }));
+      expect(res.statusCode).toBe(201);
+      const [sql, params] = insertCall();
+      expect(String(sql)).toMatch(/created_from_template_id,\s+shift_periods\s+\)\s+VALUES/);
+      expect(String(sql)).toMatch(/\$36, \$37\s+\)\s+RETURNING/);
+      expect(params).toHaveLength(37);
+      expect(params[SHIFT_PERIODS_INDEX]).toEqual(['day', 'night']);
+      expect(String(sql).split('RETURNING')[1]).toMatch(/\bshift_periods\b/);
+    });
+
+    it('stores [] when the body omits the field', async () => {
+      const res = await handler(makeEvent({}));
+      expect(res.statusCode).toBe(201);
+      expect(insertCall()[1][SHIFT_PERIODS_INDEX]).toEqual([]);
+    });
+
+    it('needs no shift times, and stores times without periods', async () => {
+      await handler(makeEvent({ shift_periods: ['evening'] }));
+      expect(insertCall()[1][SHIFT_PERIODS_INDEX]).toEqual(['evening']);
+      expect(insertCall()[1][31]).toBeNull();
+      mockQuery.mockClear();
+      await handler(makeEvent({ shift_start: '07:00', shift_end: '15:00' }));
+      expect(insertCall()[1][SHIFT_PERIODS_INDEX]).toEqual([]);
+      expect(insertCall()[1][31]).toBe('07:00');
+    });
+
+    it.each([
+      ['an unknown value', ['day', 'afternoon']],
+      ['a non-array value', 'day'],
+      ['an explicit null', null],
+      ['five items', ['day', 'evening', 'night', 'overnight', 'day']],
+    ])('rejects %s with 400 before opening a DB connection, in the work_days error shape', async (_label, value) => {
+      const res = await handler(makeEvent({ shift_periods: value }));
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body)).toEqual({ error: 'invalid_shift_periods', valid: ['day', 'evening', 'night', 'overnight'] });
+      expect(mockGetDbPool).not.toHaveBeenCalled();
+
+      const workDays = await handler(makeEvent({ work_days: 'mon' }));
+      expect(Object.keys(JSON.parse(workDays.body)).sort()).toEqual(Object.keys(JSON.parse(res.body)).sort());
     });
   });
 });

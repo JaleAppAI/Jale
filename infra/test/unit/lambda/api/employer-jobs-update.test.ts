@@ -1584,4 +1584,94 @@ describe('employer-jobs-update', () => {
       expect(JSON.parse(res.body).fields).toContain('pre_application_prompts');
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // shift_periods (128, contract K2.2), field-edit path
+  // ---------------------------------------------------------------------------
+  //
+  // Appended at the END of EDITABLE_COLUMNS (index 34), so every positional
+  // index above is undisturbed; WHERE id is now bind $36. PRESERVE-on-omit,
+  // like pre_application_prompts: an absent key keeps the stored value, an
+  // array replaces it exactly, and [] clears it.
+
+  describe('shift_periods (128)', () => {
+    const SHIFT_PERIODS_INDEX = 34;
+    const withStored = (shift_periods: string[], extra: Record<string, unknown> = {}) =>
+      mockCurrentJob({ ...extra, shift_periods } as unknown as Parameters<typeof mockCurrentJob>[0]);
+    const params = () => findUpdateCall()![1] as unknown[];
+
+    it('threads the canonical value through UPDATE and RETURNING, with the column read into cur', async () => {
+      withStored([]);
+      const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, shift_periods: ['overnight', 'day', 'day'] }) }));
+      expect(res.statusCode).toBe(200);
+      const [sql] = findUpdateCall()!;
+      expect(String(sql).split('SET')[1].split('WHERE')[0]).toMatch(/shift_periods = \$35(?!::)/);
+      expect(String(sql)).toMatch(/WHERE id = \$36/);
+      expect(String(sql).split('RETURNING')[1]).toMatch(/\bshift_periods\b/);
+      expect(params()).toHaveLength(36);
+      expect(params()[SHIFT_PERIODS_INDEX]).toEqual(['day', 'overnight']);
+      const curCall = mockQuery.mock.calls.find(
+        (c) => typeof c[0] === 'string' && c[0].includes('applicant_count') && !c[0].includes('UPDATE jobs'),
+      );
+      expect(curCall![0]).toContain('jobs.shift_periods');
+    });
+
+    it('keeps the stored value when the body omits the key', async () => {
+      withStored(['evening', 'night']);
+      const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+      expect(res.statusCode).toBe(200);
+      expect(params()[SHIFT_PERIODS_INDEX]).toEqual(['evening', 'night']);
+    });
+
+    it('keeps [] when the body omits the key on a row that predates the column read', async () => {
+      mockCurrentJob();
+      const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+      expect(res.statusCode).toBe(200);
+      expect(params()[SHIFT_PERIODS_INDEX]).toEqual([]);
+    });
+
+    it('replaces the stored value exactly when the key is sent', async () => {
+      withStored(['evening', 'night']);
+      const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, shift_periods: ['day'] }) }));
+      expect(res.statusCode).toBe(200);
+      expect(params()[SHIFT_PERIODS_INDEX]).toEqual(['day']);
+    });
+
+    it('clears the stored value on an explicit empty array', async () => {
+      withStored(['evening', 'night']);
+      const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, shift_periods: [] }) }));
+      expect(res.statusCode).toBe(200);
+      expect(params()[SHIFT_PERIODS_INDEX]).toEqual([]);
+    });
+
+    it('is not one of the fields locked once the job has applicants', async () => {
+      withStored(['day'], { applicant_count: 3 });
+      const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, shift_periods: ['night'] }) }));
+      expect(res.statusCode).toBe(200);
+      expect(params()[SHIFT_PERIODS_INDEX]).toEqual(['night']);
+    });
+
+    it.each([
+      ['an unknown value', ['day', 'afternoon']],
+      ['a non-array value', 'day'],
+      ['an explicit null', null],
+      ['five items', ['day', 'evening', 'night', 'overnight', 'day']],
+    ])('rejects %s with 400 before opening a DB connection', async (_label, value) => {
+      const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, shift_periods: value }) }));
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body)).toEqual({ error: 'invalid_shift_periods', valid: ['day', 'evening', 'night', 'overnight'] });
+      expect(mockGetDbPool).not.toHaveBeenCalled();
+    });
+
+    it('leaves the status-only update untouched', async () => {
+      mockQuery.mockImplementation((q: string) => {
+        if (q.includes('UPDATE jobs')) return Promise.resolve({ rowCount: 1, rows: [{ id: JOB_ID, status: 'paused' }] });
+        return Promise.resolve({ rowCount: 1, rows: [{ status: 'active', public_listing_enabled: false, public_code: null }] });
+      });
+      const res = await handler(makeEvent({ body: JSON.stringify({ status: 'paused' }) }));
+      expect(res.statusCode).toBe(200);
+      const statusUpdate = mockQuery.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('UPDATE jobs SET status'));
+      expect(statusUpdate![0]).not.toContain('shift_periods');
+    });
+  });
 });

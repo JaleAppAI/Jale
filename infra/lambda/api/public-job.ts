@@ -26,7 +26,8 @@ const CORS_HEADERS = corsHeaders();
 // jobLocation), and further extended by migration 077's column-scoped grant
 // of the six BE-T2 structured fields below, and by migration 091's
 // column-scoped grant of pre_application_prompts (the public job page shows
-// the employer's stage-1 questions before a visitor signs up). employer_id
+// the employer's stage-1 questions before a visitor signs up), and by
+// migration 128's column-scoped grant of shift_periods. employer_id
 // and any OTHER geo column from 009 remain deliberately absent from that
 // grant and must never be added here.
 const PUBLIC_JOB_COLUMNS = `
@@ -38,7 +39,8 @@ const PUBLIC_JOB_COLUMNS = `
   transportation_required, work_authorization_required,
   number_of_workers_needed, required_docs, status, created_at,
   trade_category_other, expected_duration_bucket, work_days,
-  shift_start, shift_end, certification_requirements, pre_application_prompts
+  shift_start, shift_end, certification_requirements, pre_application_prompts,
+  shift_periods
 `;
 
 export const handler = async (
@@ -77,6 +79,8 @@ export const handler = async (
     // hand-edited row degrades to "this job asks no prompts" rather than
     // 500-ing an unauthenticated, crawler-visible page.
     job.pre_application_prompts = parsePreApplicationPromptList(job.pre_application_prompts);
+    // Shift choices (128, contract K2.2): always an array, never null.
+    job.shift_periods = Array.isArray(job.shift_periods) ? job.shift_periods : [];
 
     // Older jobs predate the `company` column backfill; fall back to the
     // employer's profile via the SECURITY DEFINER function rather than
