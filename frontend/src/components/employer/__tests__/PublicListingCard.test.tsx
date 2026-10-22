@@ -81,6 +81,17 @@ describe('PublicListingCard', () => {
     expect(writeText).toHaveBeenCalledWith(SHARE_URL);
   });
 
+  it('announces the copy to assistive technology, not only by relabelling the button', async () => {
+    renderCard({ initialEnabled: true });
+    fireEvent.click(screen.getByRole('button', { name: t('get_link') }));
+    await waitFor(() => expect(screen.getByDisplayValue(SHARE_URL)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: t('copy_link') }));
+
+    await waitFor(() =>
+      expect(screen.getAllByRole('status').map((el) => el.textContent)).toContain(t('copied')));
+  });
+
   it('downloads a QR code of the tracked link', async () => {
     renderCard({ initialEnabled: true });
     fireEvent.click(screen.getByRole('button', { name: t('get_link') }));

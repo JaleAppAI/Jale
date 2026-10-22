@@ -165,6 +165,10 @@ export function ShareLinkRow({
             >
                 {copied ? t('copied') : t('copy_link')}
             </button>
+            {/* A relabelled button is not reliably read out; this is. */}
+            <span role="status" className="sr-only">
+                {copied ? t('copied') : ''}
+            </span>
         </div>
     );
 }
