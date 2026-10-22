@@ -61,6 +61,7 @@ jest.mock('../../../lambda/lib/billing-operations', () => {
       kind: 'ready',
       operationId: '00000000-0000-4000-8000-000000000001',
       userId: '00000000-0000-4000-8000-000000000002',
+      organizationId: '00000000-0000-4000-8000-000000000003',
       email: null,
       planCode: 'employer_pro',
       requestHash: 'fixture-hash',

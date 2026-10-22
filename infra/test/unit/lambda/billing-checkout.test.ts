@@ -6,6 +6,7 @@ import { checkCompliance } from '../../../lambda/legal/check-compliance';
 import { getStripe, getStripeSecret, StripeConfigError } from '../../../lambda/lib/stripe-client';
 import { checkoutRequestHash } from '../../../lambda/lib/billing-operations';
 import { handler } from '../../../lambda/billing/checkout';
+import { resolveEmployerActor } from '../../../lambda/lib/employer-actor';
 
 jest.mock('../../../lambda/lib/db');
 jest.mock('../../../lambda/lib/audit/context');
@@ -18,12 +19,19 @@ jest.mock('../../../lambda/lib/stripe-client', () => ({
   getStripe: jest.fn(),
   getStripeSecret: jest.fn(),
 }));
+jest.mock('../../../lambda/lib/employer-actor', () => ({
+  ...jest.requireActual('../../../lambda/lib/employer-actor'),
+  resolveEmployerActor: jest.fn(),
+}));
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
 const mockCheckCompliance = checkCompliance as jest.Mock;
 const mockGetStripe = getStripe as jest.Mock;
 const mockGetStripeSecret = getStripeSecret as jest.Mock;
+const mockResolveEmployerActor = resolveEmployerActor as jest.Mock;
+const OWNER_ACTOR = { ok: true, actor: { userId: 'user-1', organizationId: 'org-1', role: 'owner', scopeUserIds: ['user-1'] } };
+const FOREMAN_ACTOR = { ok: true, actor: { userId: 'user-1', organizationId: 'org-1', role: 'foreman', scopeUserIds: ['user-1'] } };
 
 const checkoutCreate = jest.fn();
 const customerCreate = jest.fn();
@@ -56,6 +64,7 @@ describe('billing checkout handler', () => {
     jest.resetAllMocks();
     process.env = { ...originalEnv, ALLOWED_ORIGIN: 'http://localhost:3000', REQUIRED_TOS_VERSION: 'v1' };
     wireDb();
+    mockResolveEmployerActor.mockResolvedValue(OWNER_ACTOR);
     mockCheckCompliance.mockResolvedValue({ userExists: true, compliant: true, currentVersion: 'v1' });
     mockGetStripeSecret.mockResolvedValue({ priceIdEmployerPro: 'price_employer_pro' });
     mockGetStripe.mockResolvedValue({
@@ -480,7 +489,7 @@ describe('billing checkout handler', () => {
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toEqual({ url: 'https://checkout.stripe.test/session', sessionId: 'cs_123' });
     expect(customerCreate).toHaveBeenCalledWith(
-      { email: 'e@example.com', metadata: { userId: 'user-1' } },
+      { email: 'e@example.com', metadata: { userId: 'user-1', organizationId: 'org-1' } },
       { idempotencyKey: 'customer:user-1' },
     );
     expect(checkoutCreate).toHaveBeenCalledWith(
@@ -590,6 +599,115 @@ describe('billing checkout handler', () => {
     );
     // Never treated as a retryable provider error — no ROLLBACK-driven 503.
     expect(res.statusCode).not.toBe(503);
+  });
+
+  describe('the company (Phase 2)', () => {
+    const users = (sql: string) => (sql.includes('SELECT id, email FROM users') ? Promise.resolve({ rows: [{ id: 'user-1', email: 'e@example.com' }] }) : undefined);
+
+    it('checkout: 403 owner_required for a foreman, before any Stripe call', async () => {
+      mockResolveEmployerActor.mockResolvedValue(FOREMAN_ACTOR);
+      query.mockImplementation((sql: string) => users(sql) ?? Promise.resolve({ rows: [] }));
+
+      const res = await handler(event());
+
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body)).toEqual({ error: 'owner_required' });
+      expect(mockGetStripe).not.toHaveBeenCalled();
+      expect(query.mock.calls.some(([sql]) => String(sql).includes('billing_operations'))).toBe(false);
+      expect(query).toHaveBeenCalledWith('COMMIT');
+    });
+
+    it('checkout: answers the actor failure for a suspended member', async () => {
+      mockResolveEmployerActor.mockResolvedValue({ ok: false, status: 403, error: 'membership_inactive' });
+      query.mockImplementation((sql: string) => users(sql) ?? Promise.resolve({ rows: [] }));
+
+      const res = await handler(event());
+
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body)).toEqual({ error: 'membership_inactive' });
+      expect(mockGetStripe).not.toHaveBeenCalled();
+      expect(query.mock.calls.some(([sql]) => String(sql).includes('billing_operations'))).toBe(false);
+      expect(query).toHaveBeenCalledWith('COMMIT');
+    });
+
+    it('checkout: answers 403 no_organization for an employer with no company, before any Stripe call', async () => {
+      mockResolveEmployerActor.mockResolvedValue({ ok: false, status: 403, error: 'no_organization' });
+      query.mockImplementation((sql: string) => users(sql) ?? Promise.resolve({ rows: [] }));
+
+      const res = await handler(event());
+
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body)).toEqual({ error: 'no_organization' });
+      expect(mockGetStripe).not.toHaveBeenCalled();
+      expect(query.mock.calls.some(([sql]) => String(sql).includes('billing_operations'))).toBe(false);
+      expect(query).toHaveBeenCalledWith('COMMIT');
+    });
+
+    it('checkout: an actor 409 (unreachable after the users lock) is answered 403 employer_required', async () => {
+      mockResolveEmployerActor.mockResolvedValue({ ok: false, status: 409, error: 'user_not_provisioned' });
+      query.mockImplementation((sql: string) => users(sql) ?? Promise.resolve({ rows: [] }));
+
+      const res = await handler(event());
+
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body)).toEqual({ error: 'employer_required' });
+      expect(mockGetStripe).not.toHaveBeenCalled();
+      expect(query.mock.calls.some(([sql]) => String(sql).includes('billing_operations'))).toBe(false);
+      expect(query).toHaveBeenCalledWith('COMMIT');
+    });
+
+    it('checkout: "already subscribed" is the company\'s current subscription', async () => {
+      query.mockImplementation((sql: string) => {
+        const u = users(sql);
+        if (u) return u;
+        if (sql.includes('SELECT code FROM billing_plans')) return Promise.resolve({ rows: [{ code: 'employer_pro' }] });
+        if (sql.includes('FROM subscriptions') && sql.includes('status IN')) return Promise.resolve({ rows: [{ '?column?': 1 }] });
+        return Promise.resolve({ rows: [] });
+      });
+
+      const res = await handler(event());
+
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body)).toEqual({ error: 'subscription_already_current' });
+      const current = query.mock.calls.find(([sql]) => String(sql).includes('FROM subscriptions') && String(sql).includes('status IN'));
+      expect(String(current![0])).toMatch(/WHERE organization_id = \$1/);
+      expect(current![1]).toEqual(['org-1', 'employer_pro']);
+    });
+
+    it('checkout: stores the company on the new Stripe customer row and in the Stripe metadata', async () => {
+      let inserted = false;
+      query.mockImplementation((sql: string) => {
+        const u = users(sql);
+        if (u) return u;
+        if (sql.includes('SELECT code FROM billing_plans')) return Promise.resolve({ rows: [{ code: 'employer_pro' }] });
+        if (sql.includes('INSERT INTO billing_customers')) {
+          inserted = true;
+          return Promise.resolve({ rows: [] });
+        }
+        if (sql.includes('SELECT provider_customer_id FROM billing_customers')) {
+          return Promise.resolve({ rows: inserted ? [{ provider_customer_id: 'cus_123' }] : [] });
+        }
+        return Promise.resolve({ rows: [] });
+      });
+
+      const res = await handler(event());
+
+      expect(res.statusCode).toBe(200);
+      const insert = query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO billing_customers'));
+      expect(String(insert![0])).toMatch(/\(user_id, provider, provider_customer_id, organization_id\)/);
+      expect(insert![1]).toEqual(['user-1', 'cus_123', 'org-1']);
+      expect(customerCreate).toHaveBeenCalledWith(
+        { email: 'e@example.com', metadata: { userId: 'user-1', organizationId: 'org-1' } },
+        { idempotencyKey: 'customer:user-1' },
+      );
+      expect(checkoutCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          client_reference_id: 'user-1',
+          metadata: expect.objectContaining({ userId: 'user-1', organizationId: 'org-1', planCode: 'employer_pro' }),
+        }),
+        expect.anything(),
+      );
+    });
   });
 
   describe('change context', () => {

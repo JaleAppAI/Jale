@@ -3,6 +3,7 @@ import type { PoolClient } from 'pg';
 import type { AuditCaller } from './audit/caller';
 import { setAuditContext } from './audit/context';
 import { setRlsContext } from './db';
+import { resolveEmployerActor } from './employer-actor';
 import { checkCompliance } from '../legal/check-compliance';
 
 export const CHECKOUT_OPERATION_TYPE = 'subscription_checkout';
@@ -18,6 +19,8 @@ export interface CheckoutOperationReady {
   kind: 'ready';
   operationId: string;
   userId: string;
+  /** The payer's company (the owner's organization). */
+  organizationId: string;
   email: string | null;
   planCode: string;
   requestHash: string;
@@ -108,6 +111,22 @@ export async function prepareCheckoutOperation(
   }
   const userId = String(userRes.rows[0].id);
 
+  // A company pays one subscription, and only its owner pays (Phase 2). The
+  // users row above stays locked for this transaction, as before.
+  const actorResult = await resolveEmployerActor(client, cognitoSub);
+  if (!actorResult.ok) {
+    await client.query('COMMIT');
+    // The row above proves an employer exists, so a 409 here cannot happen;
+    // answered like the missing-employer case for safety.
+    if (actorResult.status === 409) return { kind: 'error', statusCode: 403, error: 'employer_required' };
+    return { kind: 'error', statusCode: actorResult.status, error: actorResult.error };
+  }
+  if (actorResult.actor.role !== 'owner') {
+    await client.query('COMMIT');
+    return { kind: 'error', statusCode: 403, error: 'owner_required' };
+  }
+  const organizationId = actorResult.actor.organizationId;
+
   const planRes = await client.query(
     `SELECT code FROM billing_plans WHERE code = $1 AND audience = 'employer' AND active = true`,
     [request.planCode],
@@ -159,6 +178,7 @@ export async function prepareCheckoutOperation(
       kind: 'ready',
       operationId,
       userId,
+      organizationId,
       email: userRes.rows[0].email ?? null,
       planCode: request.planCode,
       requestHash,
@@ -170,11 +190,11 @@ export async function prepareCheckoutOperation(
 
   const currentSub = await client.query(
     `SELECT 1 FROM subscriptions
-      WHERE user_id = $1
+      WHERE organization_id = $1
         AND plan_code = $2
         AND (status IN ('active', 'trialing') OR (status = 'past_due' AND grace_ends_at > now()))
       LIMIT 1`,
-    [userId, request.planCode],
+    [organizationId, request.planCode],
   );
   if (currentSub.rows.length > 0) {
     await client.query('COMMIT');
@@ -236,6 +256,7 @@ export async function prepareCheckoutOperation(
     kind: 'ready',
     operationId,
     userId,
+    organizationId,
     email: userRes.rows[0].email ?? null,
     planCode: request.planCode,
     requestHash,
@@ -249,17 +270,20 @@ export async function persistBillingCustomer(
   client: PoolClient,
   cognitoSub: string,
   userId: string,
+  organizationId: string,
   providerCustomerId: string,
   caller: AuditCaller,
 ): Promise<void> {
   await client.query('BEGIN');
   await setRlsContext(client, cognitoSub);
   await setAuditContext(client, caller, 'employer.billing_checkout');
+  // 127's trigger checks organization_id is the payer's company and that the
+  // payer is its active owner.
   await client.query(
-    `INSERT INTO billing_customers (user_id, provider, provider_customer_id)
-     VALUES ($1, 'stripe', $2)
+    `INSERT INTO billing_customers (user_id, provider, provider_customer_id, organization_id)
+     VALUES ($1, 'stripe', $2, $3)
      ON CONFLICT (user_id) DO NOTHING`,
-    [userId, providerCustomerId],
+    [userId, providerCustomerId, organizationId],
   );
   const res = await client.query(
     `SELECT provider_customer_id FROM billing_customers WHERE user_id = $1`,

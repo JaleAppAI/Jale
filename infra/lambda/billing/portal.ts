@@ -4,6 +4,7 @@ import { corsHeaders } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
 import { getStripe, getStripeSecret, StripeConfigError } from '../lib/stripe-client';
 import { assertAllowedReturnUrl } from '../lib/billing-operations';
+import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
 
 const CORS_HEADERS = corsHeaders();
 
@@ -45,14 +46,25 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return response(403, { error: 'legal_required', requiredVersion: process.env.REQUIRED_TOS_VERSION, currentVersion: compliance.currentVersion });
     }
 
+    // Only the company's owner manages its billing (Phase 2).
+    const actorResult = await resolveEmployerActor(client, cognitoSub);
+    if (!actorResult.ok) {
+      await client.query('COMMIT');
+      // compliance proved the user exists, so "not provisioned" means "not an employer".
+      if (actorResult.status === 409) return response(403, { error: 'employer_required' });
+      return employerActorFailureResponse(actorResult, CORS_HEADERS);
+    }
+    if (actorResult.actor.role !== 'owner') {
+      await client.query('COMMIT');
+      return response(403, { error: 'owner_required' });
+    }
+
     const customerRes = await client.query(
       `SELECT bc.provider_customer_id
          FROM billing_customers bc
-         JOIN users u ON u.id = bc.user_id
-        WHERE u.cognito_sub = $1
-          AND u.user_type = 'employer'
+        WHERE bc.organization_id = $1
           AND bc.provider = 'stripe'`,
-      [cognitoSub],
+      [actorResult.actor.organizationId],
     );
     if (customerRes.rows.length !== 1) {
       await client.query('COMMIT');
