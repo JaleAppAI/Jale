@@ -66,6 +66,26 @@ const POSTULACION_KEYS = [
     'worker_onboarding.terms.subtitle',
     'worker_onboarding.terms.info_body',
     'worker_onboarding.about.subtitle',
+    // The applications list and the hire celebration.
+    'worker_applications.title',
+    'worker_applications.hired_celebration.modal.reference',
+    'worker_applications.hired_celebration.modal.link',
+    'worker_applications.hired_celebration.modal.body_details',
+    'worker_applications.hired_celebration.banner.cta',
+    // One application's page.
+    'worker_application_details.terminal.not_interested',
+    'worker_application_details.terminal.view_applications',
+    'worker_application_details.hired_card.not_hired',
+];
+
+/**
+ * "Aplicado" stays the STATUS word, as on every approved board: it names the
+ * state, and the noun for the thing itself is still "postulación".
+ */
+const STATUS_KEYS = [
+    'worker_applications.applied',
+    'worker_applications.status.pending',
+    'worker_applications.status_short.pending',
 ];
 
 describe('worker Spanish copy', () => {
@@ -77,5 +97,9 @@ describe('worker Spanish copy', () => {
         const value = resolve(path);
         expect(value).not.toMatch(OTHER_NOUNS);
         expect(value).toMatch(/postulaci[oó]n|postul(es|as)\b/i);
+    });
+
+    it.each(STATUS_KEYS)('%s keeps "Aplicado" as the status word', (path) => {
+        expect(resolve(path)).toBe('Aplicado');
     });
 });

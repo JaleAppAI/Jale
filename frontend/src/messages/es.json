@@ -1055,7 +1055,7 @@
     "expired_body": "Los enlaces de subida se pueden usar una sola vez y vencen después de un tiempo. Pídele al empleador que te contactó que te envíe uno nuevo."
   },
   "worker_applications": {
-    "title": "Mis aplicaciones",
+    "title": "Mis postulaciones",
     "applied": "Aplicado",
     "empty": "Aún no te has postulado a ningún trabajo.",
     "empty_body": "Los trabajos a los que te postules aparecen aquí, con el estado de cada uno.",
@@ -1114,10 +1114,10 @@
         "pay": "Pago",
         "schedule": "Horario",
         "body": "El empleador te enviará más detalles pronto (dónde presentarte, documentos, contacto). Si no recibes nada en los próximos días, no dudes en comunicarte con él.",
-        "reference": "Referencia de solicitud: {ref}",
+        "reference": "Referencia de postulación: {ref}",
         "cta": "¡Genial!",
-        "link": "Ver mi solicitud",
-        "body_details": "Tu empleador te envió los detalles de inicio. Abre tu solicitud para ver dónde presentarte y a quién contactar."
+        "link": "Ver mi postulación",
+        "body_details": "Tu empleador te envió los detalles de inicio. Abre tu postulación para ver dónde presentarte y a quién contactar."
       },
       "banner": {
         "title": "Te contrataron: {title} en {company}",
@@ -1126,7 +1126,7 @@
         "title_no_company": "Te contrataron: {title}",
         "body_dated": "Inicio {date} · El empleador te enviará más detalles; si no llegan, comunícate con él.",
         "body_undated": "Fecha de inicio por confirmar · El empleador te enviará más detalles; si no llegan, comunícate con él.",
-        "cta": "Ver solicitud",
+        "cta": "Ver postulación",
         "dismiss": "Cerrar el aviso de contratación de {title}",
         "body_details_dated": "Inicio {date} · Tu empleador te envió los detalles de inicio.",
         "body_details_undated": "Tu empleador te envió los detalles de inicio."
@@ -1218,11 +1218,11 @@
       "hired": "¡Te contrataron para este empleo!",
       "hired_body": "{company} te seleccionó para este puesto. El empleador te enviará más detalles (dónde presentarte, documentos, contacto); si no llegan en los próximos días, no dudes en comunicarte con él.",
       "hired_body_no_company": "El empleador te seleccionó para este puesto y te enviará más detalles (dónde presentarte, documentos, contacto); si no llegan en los próximos días, no dudes en comunicarte con él.",
-      "not_interested": "Esta solicitud se cerró.",
+      "not_interested": "Esta postulación se cerró.",
       "not_interested_body": "{company} siguió con otros candidatos. Tu perfil guarda todo lo que ya contestaste para tu próxima postulación.",
       "not_interested_body_no_company": "El empleador siguió con otros candidatos. Tu perfil guarda todo lo que ya contestaste para tu próxima postulación.",
       "view_job": "Ver el empleo",
-      "view_applications": "Ver mis solicitudes",
+      "view_applications": "Ver mis postulaciones",
       "find_jobs": "Buscar otros empleos",
       "already_complete_note": "Tu postulación ya se envió. Para cambiar algo, respóndele al empleador cuando te escriba por WhatsApp."
     },
@@ -1269,7 +1269,7 @@
       "message_too_long": "Los mensajes pueden tener hasta 2,000 caracteres.",
       "message_invalid": "No pudimos enviar ese mensaje. Revísalo e intenta de nuevo.",
       "message_rate_limited": "{minutes, plural, one {Enviaste varios mensajes en esta hora. Puedes enviar otro en # minuto.} other {Enviaste varios mensajes en esta hora. Puedes enviar otro en # minutos.}}",
-      "not_hired": "Esta solicitud ya no está marcada como contratada, así que no puedes enviar mensajes desde aquí."
+      "not_hired": "Esta postulación ya no está marcada como contratada, así que no puedes enviar mensajes desde aquí."
     }
   },
   "worker_home": {
