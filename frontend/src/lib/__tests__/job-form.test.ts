@@ -1,13 +1,16 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, expectTypeOf } from 'vitest';
 import {
   applyLocationToJobForm, initialForm, jobFormToCreatePayload, jobFormToEditPayload, jobToForm, validateJobLocationFields, jobFormFromTemplatePayload, templateRowSummary, setRequirementState, type JobForm,
   DURATION_BUCKETS, WORK_DAYS, DURATION_BUCKET_LABELS, type DurationBucket,
+  SHIFT_PERIODS, type ShiftPeriod,
   deriveLegacyExpectedDuration, deriveLegacyShiftSchedule,
   payRangeExceeds, validateJobNumbers, validateStepBasics, validateStepDetails, validateFullJobForm,
   validateStepRequirements,
   type CertificationRequirement,
 } from '@/lib/job-form';
-import type { EmployerJobDetail } from '@/lib/api/employer';
+import type { EmployerJobDetail, Job as EmployerJob, JobWritePayload } from '@/lib/api/employer';
+import type { Job as WorkerJob } from '@/lib/api/worker';
+import type { PublicJobActive } from '@/lib/api/publicJob';
 
 const base: JobForm = { ...initialForm, title: 'Roofer', location: 'El Paso, TX', trade_category: 'other' };
 
@@ -534,6 +537,22 @@ describe('DURATION_BUCKETS / WORK_DAYS constants', () => {
 
   it('byte-matches the migration 077 work_days allowlist order', () => {
     expect(WORK_DAYS).toEqual(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']);
+  });
+});
+
+describe('SHIFT_PERIODS (contract K2.1)', () => {
+  it('lists the four shifts in canonical order', () => {
+    expect(SHIFT_PERIODS).toEqual(['day', 'evening', 'night', 'overnight']);
+  });
+
+  // The API modules re-declare the union instead of importing it (an import
+  // would be a cycle), so this is what keeps the copies identical.
+  it('is the same union every API type uses', () => {
+    expectTypeOf<ShiftPeriod>().toEqualTypeOf<(typeof SHIFT_PERIODS)[number]>();
+    expectTypeOf<NonNullable<EmployerJob['shift_periods']>[number]>().toEqualTypeOf<ShiftPeriod>();
+    expectTypeOf<NonNullable<JobWritePayload['shift_periods']>[number]>().toEqualTypeOf<ShiftPeriod>();
+    expectTypeOf<NonNullable<WorkerJob['shift_periods']>[number]>().toEqualTypeOf<ShiftPeriod>();
+    expectTypeOf<NonNullable<PublicJobActive['shift_periods']>[number]>().toEqualTypeOf<ShiftPeriod>();
   });
 });
 

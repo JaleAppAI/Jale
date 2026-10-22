@@ -631,10 +631,15 @@ export default function JobDetailPage() {
      * `t('job.yes')`/`t('job.no')` are therefore no longer read from here.
      */
     const schedule = scheduleSummary(job, locale, tCommonDisplay);
-    // ONE Horario tile: the days and the hours are one fact. `legacy` is already
-    // mutually exclusive with the structured pair (see `scheduleSummary`).
+    // ONE Horario tile: the days, the hours and the shift choices are one fact,
+    // in the same order as the saved `shift_schedule` text. `legacy` is already
+    // mutually exclusive with the structured pieces (see `scheduleSummary`).
     const scheduleText = schedule.legacy
-        ?? ([schedule.days.length > 0 ? schedule.days.join(', ') : null, schedule.hours]
+        ?? ([
+            schedule.days.length > 0 ? schedule.days.join(', ') : null,
+            schedule.hours,
+            schedule.periods.length > 0 ? schedule.periods.join(', ') : null,
+        ]
             .filter(Boolean)
             .join(' · ') || null);
     const durationText = durationLabel(job, tCommonDisplay);

@@ -75,6 +75,18 @@
       "sat": "Sat",
       "sun": "Sun"
     },
+    "shift_periods": {
+      "day": "Day",
+      "evening": "Evening",
+      "night": "Night",
+      "overnight": "Overnight"
+    },
+    "shift_period_help": {
+      "day": "Starts in the morning, ends by late afternoon",
+      "evening": "Starts in the afternoon, ends by late evening",
+      "night": "Starts in the evening, ends after midnight",
+      "overnight": "Runs through the night, ends in the morning"
+    },
     "experience_years_unit": "{n, plural, one {# year} other {# years}}",
     "experience_months_unit": "{n, plural, one {# month} other {# months}}",
     "experience_none": "No experience required"

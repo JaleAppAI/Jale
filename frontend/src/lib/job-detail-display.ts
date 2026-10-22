@@ -62,6 +62,8 @@ export type ScheduleFields = {
   expected_duration_bucket?: string | null;
   shift_schedule?: string | null;
   work_days?: readonly string[] | null;
+  /** Shift choices (contract K2.2); `[]` when none is chosen. */
+  shift_periods?: readonly string[] | null;
   shift_start?: string | null;
   shift_end?: string | null;
 };
@@ -387,6 +389,26 @@ export function workDayChips(job: ScheduleFields, tCommon: Translator): string[]
 }
 
 /**
+ * The shift choices in canonical order (contract K2.1). Kept local, like
+ * `CANONICAL_DAYS`, because this module imports nothing; the job-form suite
+ * pins the shared list.
+ */
+const CANONICAL_SHIFT_PERIODS = ['day', 'evening', 'night', 'overnight'] as const;
+
+/**
+ * Localized labels for a job's `shift_periods`, in canonical order whatever
+ * order they arrive in, with any value outside the set dropped rather than
+ * shown as a raw key. `[]` when there are none.
+ *
+ * `tCommon` is scoped to `common`; each label is `tCommon('shift_periods.<v>')`.
+ */
+export function shiftPeriodLabels(job: ScheduleFields, tCommon: Translator): string[] {
+  if (!job.shift_periods || job.shift_periods.length === 0) return [];
+  const present = new Set(job.shift_periods);
+  return CANONICAL_SHIFT_PERIODS.filter((period) => present.has(period)).map((period) => tCommon(`shift_periods.${period}`));
+}
+
+/**
  * `'07:00'` -> a UTC `Date` on a fixed nominal day, or `null` if unparseable.
  *
  * Tolerates an optional `:SS` (and fractional seconds): `shift_start`/
@@ -433,10 +455,11 @@ export function shiftHoursLabel(job: ScheduleFields, locale: string): string | n
 }
 
 /**
- * Combined convenience for the schedule row: work-day chips, a shift-hours
- * range, and the legacy `shift_schedule` string -- with `legacy` populated
- * ONLY when no structured schedule data exists at all (no `work_days`, and
- * neither `shift_start` nor `shift_end`). If the job has any structured
+ * Combined convenience for the schedule row: work-day chips, shift-choice
+ * labels, a shift-hours range, and the legacy `shift_schedule` string -- with
+ * `legacy` populated ONLY when no structured schedule data exists at all (no
+ * `work_days`, no `shift_periods`, and neither `shift_start` nor
+ * `shift_end`). If the job has any structured
  * schedule data -- even a one-sided shift with no matching end/start --
  * `legacy` is suppressed in favor of showing whatever structured pieces are
  * available, rather than mixing an old free-text description with a
@@ -450,13 +473,15 @@ export function scheduleSummary(
   job: ScheduleFields,
   locale: string,
   tCommon: Translator,
-): { days: string[]; hours: string | null; legacy: string | null } {
+): { days: string[]; periods: string[]; hours: string | null; legacy: string | null } {
   const hasStructured = Boolean(job.work_days && job.work_days.length > 0)
+    || Boolean(job.shift_periods && job.shift_periods.length > 0)
     || Boolean(job.shift_start?.trim())
     || Boolean(job.shift_end?.trim());
 
   return {
     days: workDayChips(job, tCommon),
+    periods: shiftPeriodLabels(job, tCommon),
     hours: shiftHoursLabel(job, locale),
     legacy: hasStructured ? null : (job.shift_schedule?.trim() || null),
   };

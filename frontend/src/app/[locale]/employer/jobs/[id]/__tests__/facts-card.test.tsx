@@ -239,6 +239,26 @@ describe('employer job detail — the facts card', () => {
         ]);
     });
 
+    it('adds the shift choices to the schedule tile, after the days and hours', () => {
+        setSeed(fullJob({ shift_periods: ['night', 'day'] }));
+        const { container } = renderIntl(<EmployerJobDetailPage />);
+
+        expect(tiles(container)[0]).toEqual([
+            shared('modal.shift_schedule'),
+            `Mon, Tue, Wed · 7:00 AM – 4:00 PM · ${message('common.shift_periods.day')}, ${message('common.shift_periods.night')}`,
+        ]);
+    });
+
+    it('shows the schedule tile for a job whose only schedule is its shift choices', () => {
+        setSeed(sparseJob({ shift_periods: ['evening'], shift_schedule: 'Old free text' }));
+        const { container } = renderIntl(<EmployerJobDetailPage />);
+
+        expect(tiles(container)).toContainEqual([
+            shared('modal.shift_schedule'),
+            message('common.shift_periods.evening'),
+        ]);
+    });
+
     /*
      * A bare "3" under "Experience" is a number, not a requirement -- it reads
      * as a score as readily as a duration. The unit comes from the same shared
