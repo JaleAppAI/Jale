@@ -17,10 +17,12 @@ import userEvent from '@testing-library/user-event';
  *    be advanced with the mouse.
  */
 
+const routerPush = vi.fn();
 vi.mock('@/i18n/navigation', () => ({
   Link: ({ href, children, ...rest }: { href: string; children: ReactNode }) => (
     <a href={href} {...rest}>{children}</a>
   ),
+  useRouter: () => ({ push: routerPush, replace: vi.fn() }),
 }));
 
 vi.mock('@/contexts/AuthContext', () => ({
@@ -53,6 +55,8 @@ const listJobTemplates = vi.fn();
 const getBilling = vi.fn();
 const createJob = vi.fn();
 const saveJobTemplate = vi.fn();
+const updateJobPublicListing = vi.fn();
+const shareEmployerJob = vi.fn();
 
 // Partial mock: `ApiError` and `EMPLOYER_PRO_PLAN_CODE` must stay real -- both
 // this modal and `lib/plan-limit` import them from here.
@@ -62,10 +66,13 @@ vi.mock('@/lib/api/employer', async (importOriginal) => ({
   getBilling: (...args: unknown[]) => getBilling(...args),
   createJob: (...args: unknown[]) => createJob(...args),
   saveJobTemplate: (...args: unknown[]) => saveJobTemplate(...args),
+  updateJobPublicListing: (...args: unknown[]) => updateJobPublicListing(...args),
+  shareEmployerJob: (...args: unknown[]) => shareEmployerJob(...args),
 }));
 
 import { message, renderIntl } from './render-intl';
 import { PostJobModal } from '../PostJobModal';
+import { ApiError } from '@/lib/api/employer';
 import type { JobTemplate } from '@/lib/api/employer';
 
 /** A template that kept its city identity: applying it leaves step 1 valid. */
@@ -404,5 +411,172 @@ describe('PostJobModal: a refused step points at its field', () => {
 
     fireEvent.change(titleField(), { target: { value: 'Roofer' } });
     expect(titleField()).not.toHaveAttribute('aria-invalid');
+  });
+});
+
+/*
+ * After a successful post the wizard shows a "Job posted" screen inside the
+ * SAME dialog (sprint 29): the confirmation, a one-tap share link, what happens
+ * next, and a way back to the dashboard. New copy, so asserted through the
+ * catalogue.
+ */
+describe('PostJobModal: the job posted screen', () => {
+  const next = () => screen.getByRole('button', { name: message('employer_dashboard.modal.next') });
+  const submit = () => screen.getByRole('button', { name: message('employer_dashboard.post_job_docs.submit') });
+  const turnOn = () => screen.getByRole('button', { name: message('employer_dashboard.job_posted.turn_on') });
+  const postedHeading = () =>
+    screen.getByRole('heading', { name: message('employer_dashboard.job_posted.title') });
+
+  const postedJob = {
+    id: 'job-new-0001',
+    title: 'Roofer',
+    location: 'El Paso, TX',
+    status: 'active',
+    shift_periods: ['night', 'day'],
+    public_listing_enabled: false,
+  };
+
+  async function postJob(
+    user: ReturnType<typeof userEvent.setup>,
+    props: {
+      onClose?: () => void;
+      onJobCreated?: () => void;
+      beforeSubmit?: () => Promise<void>;
+    } = {},
+  ) {
+    listJobTemplates.mockResolvedValue([withCity]);
+    getBilling.mockResolvedValue({
+      planCode: 'employer_pro', activeJobLimit: 10, templateLimit: 5, activeJobUsage: 0, subscription: null,
+      display_price_minor: 2000, currency: 'usd', billing_interval: 'month',
+    });
+    renderIntl(
+      <PostJobModal open onClose={props.onClose ?? vi.fn()} onJobCreated={props.onJobCreated ?? vi.fn()} />,
+    );
+    await waitFor(() => expect(screen.getByText(withCity.name)).toBeInTheDocument());
+    applyTemplate(withCity.id);
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    await user.click(next());
+    await user.click(next());
+    await waitFor(() => expect(submit()).toBeInTheDocument());
+    await props.beforeSubmit?.();
+    await user.click(submit());
+    await waitFor(() => expect(createJob).toHaveBeenCalledTimes(1));
+  }
+
+  beforeEach(() => {
+    createJob.mockResolvedValue(postedJob);
+    updateJobPublicListing.mockResolvedValue({
+      id: postedJob.id, public_code: 'AB12CD', public_listing_enabled: true,
+    });
+    shareEmployerJob.mockResolvedValue({ share_url: 'https://example.test/j/AB12CD?ref=test' });
+  });
+
+  it('shows the posted screen in the same dialog instead of closing', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const onJobCreated = vi.fn();
+    await postJob(user, { onClose, onJobCreated });
+
+    await waitFor(() => expect(postedHeading()).toBeInTheDocument());
+    expect(onJobCreated).toHaveBeenCalledWith(postedJob, undefined);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    // Title, place and shifts in one line; shifts in canonical order.
+    expect(screen.getByText('Roofer · El Paso, TX · Day, Night')).toBeInTheDocument();
+    expect(screen.getByText(message('employer_dashboard.job_posted.n1'))).toBeInTheDocument();
+    // The wizard's own controls are gone.
+    expect(screen.queryByRole('button', { name: message('employer_dashboard.post_job_docs.submit') })).not.toBeInTheDocument();
+    expect(postedHeading()).toHaveFocus();
+  });
+
+  it('turns the share link on, then shows the link, Copy and the QR download', async () => {
+    const user = userEvent.setup();
+    await postJob(user);
+    await waitFor(() => expect(postedHeading()).toBeInTheDocument());
+
+    await user.click(turnOn());
+
+    await waitFor(() => expect(shareEmployerJob).toHaveBeenCalledTimes(1));
+    expect(updateJobPublicListing).toHaveBeenCalledWith('test-token', postedJob.id, true);
+    expect(shareEmployerJob).toHaveBeenCalledWith('test-token', postedJob.id);
+    expect(updateJobPublicListing.mock.invocationCallOrder[0])
+      .toBeLessThan(shareEmployerJob.mock.invocationCallOrder[0]);
+    expect(await screen.findByDisplayValue('https://example.test/j/AB12CD?ref=test')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: message('employer_job_listing.copy_link') })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: message('employer_job_listing.download_qr') })).toBeInTheDocument();
+    expect(screen.getByText(message('employer_dashboard.job_posted.crew'))).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: message('employer_dashboard.job_posted.turn_on') })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+  });
+
+  it('keeps the job private and says so inline when turning the link on fails', async () => {
+    const user = userEvent.setup();
+    updateJobPublicListing.mockRejectedValue(new ApiError(418, 'something_unexpected'));
+    await postJob(user);
+    await waitFor(() => expect(postedHeading()).toBeInTheDocument());
+
+    await user.click(turnOn());
+
+    expect(await screen.findByText(message('employer_job_listing.toggle_error'))).toBeInTheDocument();
+    expect(shareEmployerJob).not.toHaveBeenCalled();
+    expect(turnOn()).toBeEnabled();
+  });
+
+  it('offers to fetch the link again, without a second switch, when only the link failed', async () => {
+    const user = userEvent.setup();
+    shareEmployerJob.mockRejectedValueOnce(new ApiError(418, 'something_unexpected'));
+    await postJob(user);
+    await waitFor(() => expect(postedHeading()).toBeInTheDocument());
+
+    await user.click(turnOn());
+
+    expect(await screen.findByText(message('employer_job_listing.error_generic'))).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: message('employer_job_listing.get_link') }));
+
+    expect(await screen.findByDisplayValue('https://example.test/j/AB12CD?ref=test')).toBeInTheDocument();
+    expect(updateJobPublicListing).toHaveBeenCalledTimes(1);
+    expect(shareEmployerJob).toHaveBeenCalledTimes(2);
+  });
+
+  it('closes and goes to the dashboard from Back to dashboard', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    await postJob(user, { onClose });
+    await waitFor(() => expect(postedHeading()).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: message('employer_dashboard.job_posted.back') }));
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(routerPush).toHaveBeenCalledWith('/employer/dashboard');
+  });
+
+  it('closes in place on Escape, without navigating', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    await postJob(user, { onClose });
+    await waitFor(() => expect(postedHeading()).toBeInTheDocument());
+
+    await user.keyboard('{Escape}');
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(routerPush).not.toHaveBeenCalled();
+  });
+
+  it('carries the template-not-saved note onto the posted screen', async () => {
+    const user = userEvent.setup();
+    saveJobTemplate.mockRejectedValue(
+      new ApiError(403, 'template_limit_reached', { template_limit: 5 }),
+    );
+    await postJob(user, {
+      beforeSubmit: async () => {
+        await user.click(screen.getByRole('checkbox', { name: message('employer_dashboard.modal.template_save_toggle') }));
+        await user.type(screen.getByPlaceholderText(message('employer_dashboard.modal.template_name_placeholder')), 'Roofer copy');
+      },
+    });
+    await waitFor(() => expect(postedHeading()).toBeInTheDocument());
+
+    expect(screen.getByText(message('employer_dashboard.jobs.template_not_saved_after_post').replace('{limit}', '5'))).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: message('employer_dashboard.templates.manage_link') }))
+      .toHaveAttribute('href', '/employer/templates');
   });
 });

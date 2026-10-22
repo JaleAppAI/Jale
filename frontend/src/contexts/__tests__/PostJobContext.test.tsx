@@ -173,8 +173,10 @@ describe('post a job from any employer page', () => {
         fireEvent.click(screen.getByRole('button', { name: 'publish' }));
 
         await waitFor(() => expect(onCreated).toHaveBeenCalledWith(postedJob));
-        expect(toastSuccess).toHaveBeenCalledWith(message('employer_dashboard.jobs.post_success'));
-        expect(screen.queryByTestId('post-job-wizard')).not.toBeInTheDocument();
+        // The wizard stays open on its own "Job posted" screen, which is the
+        // confirmation; a toast on top of it would say the same thing twice.
+        expect(toastSuccess).not.toHaveBeenCalled();
+        expect(screen.getByTestId('post-job-wizard')).toBeInTheDocument();
     });
 
     it('shows the limit dialog instead of the wizard when the plan has no slot', async () => {
@@ -278,13 +280,16 @@ describe('with no session to post with', () => {
             }, [openPostJob]);
             return null;
         }
-        const tree = (
+        // A fresh element per render: the real `useAuth` is a context, so a
+        // session change re-renders the provider. The mock is a plain object,
+        // so the change is delivered by rendering the provider again.
+        const tree = () => (
             <PostJobProvider>
                 <Probe />
                 <ApplicantsLikePage />
             </PostJobProvider>
         );
-        const { rerender } = renderIntl(tree);
+        const { rerender } = renderIntl(tree());
 
         act(() => opener.current?.());
 
@@ -297,7 +302,7 @@ describe('with no session to post with', () => {
          */
         authState.idToken = 'test-token';
         authState.isAuthenticated = true;
-        rerender(tree);
+        rerender(tree());
 
         await waitFor(() => expect(postJobButton()).toBeEnabled());
         expect(screen.queryByTestId('post-job-wizard')).not.toBeInTheDocument();

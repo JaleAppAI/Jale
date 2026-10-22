@@ -10,9 +10,7 @@ import {
     useState,
 } from 'react';
 import type { ReactNode } from 'react';
-import { useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
-import { useToast } from '@/components/ui/toast';
 import { PlanLimitDialog } from '@/components/employer/PlanLimitDialog';
 import { PostJobModal } from '@/components/employer/PostJobModal';
 import { getBilling, getJobs } from '@/lib/api/employer';
@@ -93,8 +91,6 @@ function activeJobsIn(jobs: Job[]): number {
 
 export function PostJobProvider({ children }: { children: ReactNode }) {
     const { idToken, isAuthenticated, userType } = useAuth();
-    const t = useTranslations('employer_dashboard');
-    const toast = useToast();
 
     const [open, setOpen] = useState(false);
     const [opening, setOpening] = useState(false);
@@ -190,14 +186,15 @@ export function PostJobProvider({ children }: { children: ReactNode }) {
         [applySnapshot, fetchSnapshot, idToken],
     );
 
-    const handleJobCreated = useCallback(
-        (job: Job, outcome?: JobCreatedOutcome) => {
-            setOpen(false);
-            toast.success(t('jobs.post_success'));
-            for (const listener of listenersRef.current) listener(job, outcome);
-        },
-        [t, toast],
-    );
+    /*
+     * The wizard stays open on its own "Job posted" screen, which is the
+     * confirmation -- so no toast here, and no close: the employer leaves that
+     * screen themselves. Subscribers hear about the job now, not on close, so
+     * the page behind the dialog already shows the new row.
+     */
+    const handleJobCreated = useCallback((job: Job, outcome?: JobCreatedOutcome) => {
+        for (const listener of listenersRef.current) listener(job, outcome);
+    }, []);
 
     const handlePlanLimitClose = useCallback(() => {
         setPlanLimit(null);

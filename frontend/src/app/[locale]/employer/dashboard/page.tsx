@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
-import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useJobCreated, usePostJobSnapshot } from '@/contexts/PostJobContext';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
@@ -122,7 +121,6 @@ export default function EmployerDashboardPage() {
     // wall must go to /legal/accept, not show an error the user cannot act on).
     const { handleLegalWall } = useRequireAuth();
     const t = useTranslations('employer_dashboard');
-    const tBilling = useTranslations('billing');
     const tCommon = useTranslations('common');
     const errorMessage = useErrorMessage();
     const toast = useToast();
@@ -133,12 +131,6 @@ export default function EmployerDashboardPage() {
     const [deleteError, setDeleteError] = useState<string | null>(null);
     const [search, setSearch] = useState('');
     const [statusFilter, setStatusFilter] = useState<JobStatus | 'all'>('all');
-    /**
-     * The backstop for a job that posted while its "save as template" box was
-     * ticked and the template limit was already reached. The modal says so too,
-     * but it closes on success -- so the fact would otherwise vanish with it.
-     */
-    const [templateNotice, setTemplateNotice] = useState<{ limit: number } | null>(null);
     /**
      * The one plan-limit dialog on this page, fed by two paths: the PRE-flight
      * gate on "Post a job" (`activeJobsPreflightModel`) and a resume that the
@@ -323,19 +315,12 @@ export default function EmployerDashboardPage() {
 
     /**
      * A job was posted -- from this page's buttons or from any other employer
-     * page, since the wizard is mounted once above the router. Closing the
-     * modal and the success toast belong to `PostJobContext`; what is left here
-     * is this board's own reaction to the new row.
+     * page, since the wizard is mounted once above the router. The wizard's own
+     * "Job posted" screen is the confirmation (and says when a ticked template
+     * was not saved); what is left here is this board's own reaction to the
+     * new row.
      */
     function handleJobCreated(job: Job, outcome?: JobCreatedOutcome) {
-        // Set BEFORE the `data === null` guard below returns: the template was
-        // not saved either way, and that fact must not depend on whether the
-        // list happened to be loaded.
-        // Set (or cleared) on EVERY post, not only the failing ones: a notice
-        // left standing from an earlier post would sit next to a fresh success
-        // toast claiming a template that this post did save was not saved.
-        const notSaved = outcome?.templateNotSaved;
-        setTemplateNotice(notSaved ? { limit: notSaved.templateLimit } : null);
         // `setData` is a no-op while nothing is rendered (a failed or in-flight
         // first load), so in that case ask for the list properly instead of
         // silently dropping the job the employer just posted.
@@ -641,39 +626,6 @@ export default function EmployerDashboardPage() {
                                                     {t('jobs.refresh')}
                                                 </Button>
                                             </div>
-
-                                            {/* The job posted; the template attached to it did
-                                                not. The modal that said so has already closed,
-                                                so the notice is repeated here with the two
-                                                actions that resolve it. */}
-                                            {templateNotice ? (
-                                                <InlineFeedback
-                                                    tone="warning"
-                                                    className="mt-3"
-                                                    onDismiss={() => setTemplateNotice(null)}
-                                                >
-                                                    <span className="block">
-                                                        {t('jobs.template_not_saved_after_post', {
-                                                            limit: templateNotice.limit,
-                                                        })}
-                                                    </span>
-                                                    <span className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
-                                                        <Link
-                                                            href="/employer/templates"
-                                                            className="inline-flex items-center gap-1.5 text-xs font-bold underline underline-offset-2"
-                                                        >
-                                                            {t('templates.manage_link')}
-                                                        </Link>
-                                                        <Link
-                                                            href="/employer/billing"
-                                                            className="inline-flex items-center gap-1.5 text-xs font-bold underline underline-offset-2"
-                                                        >
-                                                            <Icon name="spark" />
-                                                            {tBilling('limit_reached.cta')}
-                                                        </Link>
-                                                    </span>
-                                                </InlineFeedback>
-                                            ) : null}
 
                                             {/* A failed background refresh is a FOOTNOTE.
                                                 `usePageData` cannot let it clear `data`, so

@@ -949,6 +949,20 @@
       "back": "Atrás",
       "submit": "Publicar empleo"
     },
+    "job_posted": {
+      "title": "Su empleo está publicado",
+      "share_head": "Compártalo con trabajadores",
+      "share_body": "Su empleo es privado hasta que lo comparta. Active el enlace para que cualquiera que lo tenga pueda ver el empleo y postularse, sin crear una cuenta.",
+      "turn_on": "Activar el enlace para compartir",
+      "link_label": "Enlace para compartir",
+      "crew": "Envíelo a sus encargados, o imprima el código QR para su próxima reunión de seguridad.",
+      "off_note": "Puede desactivar el enlace cuando quiera desde la página del empleo.",
+      "next_head": "Qué sigue",
+      "n1": "Los trabajadores abren el enlace y se postulan por WhatsApp o en la web.",
+      "n2": "Cada uno aparece en Postulantes, con su oficio, su experiencia y sus respuestas.",
+      "n3": "Escriba a los que le interesen desde Mensajes. Sus respuestas llegan por WhatsApp.",
+      "back": "Volver al panel"
+    },
     "templates": {
       "title": "Plantillas de empleo",
       "meter": "{count} guardadas · {limit} permitidas en su plan",

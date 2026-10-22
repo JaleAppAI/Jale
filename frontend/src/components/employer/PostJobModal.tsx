@@ -26,6 +26,7 @@ import { DurationField } from '@/components/employer/DurationField';
 import { ExperienceStepper } from '@/components/employer/ExperienceStepper';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { Input } from '@/components/ui/input';
+import { JobPostedFooter, JobPostedPanel } from '@/components/employer/JobPostedPanel';
 import { LocationPicker } from '@/components/ui/LocationPicker';
 import { Modal } from '@/components/ui/modal';
 import { PayFields } from '@/components/employer/PayFields';
@@ -43,10 +44,10 @@ interface Props {
   open: boolean;
   onClose: () => void;
   /**
-   * `outcome` reports what the post did NOT achieve. The only member today is
-   * `templateNotSaved`: the job posted, the modal closed on that success, and
-   * the template hit the plan cap on the way -- a shortfall the caller has to
-   * surface because this modal is gone by the time it is known.
+   * Called once the job exists, while this modal moves on to its "Job posted"
+   * screen. `outcome` reports what else the post did: `templateSaved` (a new
+   * template row) and `templateNotSaved` (the ticked template hit the plan
+   * cap). The posted screen tells the employer about the second itself.
    */
   onJobCreated: (job: Job, outcome?: JobCreatedOutcome) => void;
 }
@@ -152,6 +153,13 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
    */
   const [fieldProblem, setFieldProblem] = useState<JobFormFieldProblem | null>(null);
   const [focusRequest, setFocusRequest] = useState(0);
+  /*
+   * The job this run posted (sprint 29). While set, the dialog shows the
+   * "Job posted" screen instead of a step -- the same dialog, so nothing
+   * stacks and focus stays inside it. `templateNotSavedLimit` is the cap the
+   * ticked template ran into, or null when there is nothing to say about it.
+   */
+  const [posted, setPosted] = useState<{ job: Job; templateNotSavedLimit: number | null } | null>(null);
 
   const headingRef = useRef<HTMLHeadingElement>(null);
   const feedbackRef = useRef<HTMLDivElement>(null);
@@ -275,6 +283,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     setTemplateLimit(null);
     setDescriptionGenerating(false);
     setFieldProblem(null);
+    setPosted(null);
     savedTemplateIdRef.current = null;
     setAppliedTemplateId(null);
     onClose();
@@ -449,8 +458,8 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     setError('');
     setTemplateNotice('');
 
-    // What the post did not achieve, carried past `handleClose` to the caller:
-    // the modal is gone by the time the dashboard can say anything about it.
+    // What the post did not achieve: shown on the posted screen, and reported
+    // to the caller with the job.
     let templateShortfall: JobCreatedOutcome['templateNotSaved'];
     let templateSavedNew = false;
 
@@ -488,7 +497,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       if (templateShortfall) outcome.templateNotSaved = templateShortfall;
       if (templateSavedNew) outcome.templateSaved = true;
       onJobCreated(job, templateShortfall || templateSavedNew ? outcome : undefined);
-      handleClose();
+      setPosted({ job, templateNotSavedLimit: templateShortfall?.templateLimit ?? null });
     } catch (err) {
       try {
         handleLegalWall(err, '/employer/dashboard');
@@ -567,7 +576,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       // carry, and the one this modal most needed: Escape and the header X are
       // deliberate, a mis-aimed click is not.
       closeOnOverlay={false}
-      footer={
+      footer={posted ? <JobPostedFooter onClose={handleClose} /> : (
         <div className="flex w-full items-center gap-2">
           {/* Every non-submit button here is EXPLICITLY type="button". They sit
               outside the step form, so the native submit default cannot reach
@@ -607,8 +616,16 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
             </Button>
           )}
         </div>
-      }
+      )}
     >
+      {posted ? (
+        <JobPostedPanel
+          job={posted.job}
+          templateNotSavedLimit={posted.templateNotSavedLimit}
+          onNavigate={handleClose}
+        />
+      ) : (
+      <>
       <nav aria-label={t('modal.steps.aria_label')} className="mb-5">
         <p className="sr-only">{t('modal.step_label', { current: step, total: STEPS.length })}</p>
         <ol className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
@@ -1025,6 +1042,8 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
           <PlanLimitNotice model={jobLimit} onNavigate={handleClose} />
         </div>
       ) : null}
+      </>
+      )}
     </Modal>
   );
 }

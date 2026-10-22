@@ -949,6 +949,20 @@
       "back": "Back",
       "submit": "Post Job"
     },
+    "job_posted": {
+      "title": "Your job is posted",
+      "share_head": "Share it with workers",
+      "share_body": "Your job is private until you share it. Turn on the share link so anyone with it can see the job and apply, no account needed.",
+      "turn_on": "Turn on the share link",
+      "link_label": "Share link",
+      "crew": "Send it to your crew leads, or print the QR code for your next safety meeting.",
+      "off_note": "You can turn the link off any time on the job page.",
+      "next_head": "What happens next",
+      "n1": "Workers open the link and apply on WhatsApp or on the web.",
+      "n2": "Each one appears under Applicants, with their trade, experience and answers.",
+      "n3": "Message the ones you like from Messages. Their replies come in from WhatsApp.",
+      "back": "Back to dashboard"
+    },
     "templates": {
       "title": "Job templates",
       "meter": "{count} saved · {limit} allowed on your plan",
