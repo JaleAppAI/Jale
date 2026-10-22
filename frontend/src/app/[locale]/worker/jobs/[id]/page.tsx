@@ -46,10 +46,11 @@ import {
 } from '@/lib/job-detail-display';
 import { formatPay } from '@/lib/pay';
 import {
-  getJob, applyToJob, updateWorkerProfile, getVaultDocuments, recordJobView,
+  getJob, applyToJob, updateWorkerProfile, getVaultDocuments, recordJobView, getApplications,
   type JobDetail, type WorkerApiError, type WorkerVaultDoc,
 } from '@/lib/api/worker';
 import { visibleJobStatusBadge } from '@/lib/jobStatusDisplay';
+import { useTutorial } from '@/lib/tutorials/use-tutorial';
 
 export const dynamic = 'force-dynamic';
 
@@ -272,6 +273,9 @@ export default function WorkerJobDetailPage() {
    * URL only when it is handed a state that is not already its own.
    */
   const applyParamHandledForRef = useRef<string | null>(null);
+  // Set when this visit arrived with `?apply=1`, before the param is stripped,
+  // so the W2 tutorial below never opens over a worker already mid-apply.
+  const arrivedToApplyRef = useRef(false);
   const applyFromLink = useEffectEvent(() => {
     void handleApplyClick();
   });
@@ -280,10 +284,33 @@ export default function WorkerJobDetailPage() {
     applyParamHandledForRef.current = job.id;
     const url = new URL(window.location.href);
     if (url.searchParams.get('apply') !== '1') return;
+    arrivedToApplyRef.current = true;
     url.searchParams.delete('apply');
     window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
     if (!job.already_applied && (job.status ?? 'active') === 'active') applyFromLink();
   }, [job]);
+
+  /*
+   * W2, the applying tutorial. Its K1.5 signal -- the worker has any
+   * application -- is not on this page, so it reads ONE application of its
+   * own, once per signed-in visit (a token rotation does not re-read). Until
+   * that read answers `done` is `undefined`, and a failed read leaves it
+   * there: no signal means no auto-open on this page view.
+   */
+  const [hasApplied, setHasApplied] = useState<boolean | undefined>(undefined);
+  const signedIn = Boolean(idToken);
+  const readOneApplication = useEffectEvent((signal: AbortSignal) => (
+    idToken ? getApplications(idToken, signal, { limit: 1 }) : null
+  ));
+  useEffect(() => {
+    if (!signedIn) return;
+    const controller = new AbortController();
+    readOneApplication(controller.signal)
+      ?.then((page) => setHasApplied(page.applications.length > 0))
+      .catch(() => { /* no signal, no auto-open: `done` stays undefined */ });
+    return () => controller.abort();
+  }, [signedIn]);
+  const applyTutorial = useTutorial('worker_apply', { done: hasApplied });
 
   // One shared vault fetch, refetched on demand via `onVaultChanged` (after a
   // successful upload from inside `ApplyFlow`) and whenever the auth token
@@ -630,6 +657,24 @@ export default function WorkerJobDetailPage() {
    * whenever it is on screen.
    */
   const pinApply = canApply;
+
+  /*
+   * Asked ONCE per page view, at the first moment both the job and the signal
+   * are known. Not over a worker who arrived with `?apply=1` (they are already
+   * applying), not over the profile gate or the in-page flow, and not on a
+   * job that can no longer take an application. Whether it then opens is the
+   * tutorial's decision (a record, the signal, another overlay).
+   */
+  const applyTutorialAskedRef = useRef(false);
+  const askApplyTutorial = useEffectEvent(() => applyTutorial.maybeAutoOpen());
+  const jobLoaded = Boolean(job);
+  useEffect(() => {
+    if (applyTutorialAskedRef.current) return;
+    if (!jobLoaded || hasApplied === undefined) return;
+    applyTutorialAskedRef.current = true;
+    if (arrivedToApplyRef.current || viewMode !== 'details' || !canApply || modalOpen || applying) return;
+    askApplyTutorial();
+  }, [jobLoaded, hasApplied, viewMode, canApply, modalOpen, applying]);
 
   /*
    * The job's facts, as the ONE card body all three job pages render.
