@@ -14,6 +14,7 @@ import {
     serveTutorials,
     signIn,
     tutorialCalls,
+    watchDialogs,
 } from '@/lib/tutorials/__tests__/harness';
 import { ReportProblemContext } from '@/components/report/report-problem-context';
 import { AppShell } from '@/components/layout/AppShell';
@@ -90,14 +91,6 @@ async function settle() {
 
 const dialogs = () => document.querySelectorAll('[role="dialog"]').length;
 
-function watchDialogs() {
-    let most = dialogs();
-    const observer = new MutationObserver(() => {
-        most = Math.max(most, dialogs());
-    });
-    observer.observe(document.body, { childList: true, subtree: true });
-    return { most: () => most, stop: () => observer.disconnect() };
-}
 
 async function openHelp() {
     const help = screen.getByRole('button', { name: 'Help' });

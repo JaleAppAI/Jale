@@ -153,3 +153,47 @@ export function intlWrapper(locale: 'en' | 'es' = 'en', extra: Record<string, un
 export function renderWithIntl(ui: ReactElement, locale: 'en' | 'es' = 'en', extra: Record<string, unknown> = {}) {
     return render(ui, { wrapper: intlWrapper(locale, extra) });
 }
+
+function dialogsIn(node: Node): number {
+    if (!(node instanceof Element)) return 0;
+    return (node.matches('[role="dialog"]') ? 1 : 0) + node.querySelectorAll('[role="dialog"]').length;
+}
+
+/**
+ * The most dialogs the page held at any moment while watching. It replays
+ * every DOM mutation in order with a running count, rather than sampling the
+ * count when the observer is notified: one `act()` can commit several times
+ * before that, and a second dialog that came and went in between must not
+ * hide.
+ */
+export function watchDialogs() {
+    let count = document.querySelectorAll('[role="dialog"]').length;
+    let most = count;
+    const observer = new MutationObserver((records) => {
+        for (const change of records) {
+            change.removedNodes.forEach((node) => {
+                count -= dialogsIn(node);
+            });
+            change.addedNodes.forEach((node) => {
+                count += dialogsIn(node);
+                most = Math.max(most, count);
+            });
+        }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    return {
+        most: () => {
+            for (const change of observer.takeRecords()) {
+                change.removedNodes.forEach((node) => {
+                    count -= dialogsIn(node);
+                });
+                change.addedNodes.forEach((node) => {
+                    count += dialogsIn(node);
+                    most = Math.max(most, count);
+                });
+            }
+            return most;
+        },
+        stop: () => observer.disconnect(),
+    };
+}

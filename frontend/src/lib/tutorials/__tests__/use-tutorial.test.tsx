@@ -1,4 +1,5 @@
 import { StrictMode, useEffect, useState } from 'react';
+import { flushSync } from 'react-dom';
 import type { ReactNode } from 'react';
 import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { NextIntlClientProvider } from 'next-intl';
@@ -19,7 +20,9 @@ import {
     route,
     serveTutorials,
     signIn,
+    signOut,
     tutorialCalls,
+    watchDialogs,
 } from './harness';
 
 vi.mock('@/contexts/AuthContext', async () => ({ useAuth: (await import('./harness')).useAuthMock }));
@@ -152,18 +155,6 @@ function HostPage({
     );
 }
 
-/** Counts the dialogs after every DOM change, so a brief second one cannot hide. */
-function watchDialogs() {
-    let most = dialogs();
-    const observer = new MutationObserver(() => {
-        most = Math.max(most, dialogs());
-    });
-    observer.observe(document.body, { childList: true, subtree: true });
-    return {
-        most: () => most,
-        stop: () => observer.disconnect(),
-    };
-}
 
 async function readyEmployer(records = [] as ReturnType<typeof record>[]) {
     route.path = '/employer/dashboard';
@@ -673,6 +664,88 @@ describe('the handle', () => {
 
         expect(handle).toBe(first);
         await waitFor(() => expect(tutorialDialog('employer_welcome')).toBeInTheDocument());
+    });
+});
+
+describe('public pages and signed-out visitors', () => {
+    /** Every way a page can reach the hooks: auto-open, before a host, and a replay dismissed. */
+    function EveryCall() {
+        const tutorial = useTutorial('employer_welcome', { done: false });
+        const [hostOpen, setHostOpen] = useState(false);
+        useEffect(() => {
+            tutorial.maybeAutoOpen();
+        }, [tutorial]);
+        return (
+            <>
+                <button type="button" onClick={() => tutorial.runBeforeHost(() => setHostOpen(true))}>
+                    Host
+                </button>
+                <button type="button" onClick={() => tutorial.replay()}>
+                    Replay
+                </button>
+                {hostOpen ? <p>host open</p> : null}
+            </>
+        );
+    }
+
+    it.each([
+        ['/', false],
+        ['/j/AB12CD', false],
+        ['/auth/employer', false],
+        ['/', true],
+        ['/j/AB12CD', true],
+        ['/auth/employer', true],
+    ])('make no tutorial request on %s (signed in: %s)', async (path, signedIn) => {
+        route.path = path;
+        if (signedIn) signIn('employer');
+        else signOut();
+        serveTutorials([]);
+
+        render(<EveryCall />, { wrapper: Providers });
+        await settle();
+        act(() => screen.getByRole('button', { name: 'Host' }).click());
+        expect(screen.getByText('host open')).toBeInTheDocument();
+        act(() => screen.getByRole('button', { name: 'Replay' }).click());
+        await waitFor(() => expect(tutorialDialog('employer_welcome')).toBeInTheDocument());
+        act(() => screen.getByRole('button', { name: 'Skip' }).click());
+        await settle();
+
+        expect(tutorialCalls()).toEqual([]);
+        expect(apiFetch).not.toHaveBeenCalled();
+    });
+});
+
+describe('the dialog watch used above', () => {
+    it('catches a second dialog that comes and goes inside one act', () => {
+        function Flicker() {
+            const [first, setFirst] = useState(false);
+            const [second, setSecond] = useState(false);
+            return (
+                <>
+                    <button
+                        type="button"
+                        onClick={() => {
+                            flushSync(() => setFirst(true));
+                            flushSync(() => setSecond(true));
+                            flushSync(() => setSecond(false));
+                        }}
+                    >
+                        flicker
+                    </button>
+                    {first ? <div role="dialog" aria-label="first" /> : null}
+                    {second ? <div role="dialog" aria-label="second" /> : null}
+                </>
+            );
+        }
+        render(<Flicker />);
+        const watch = watchDialogs();
+
+        act(() => screen.getByRole('button', { name: 'flicker' }).click());
+        const most = watch.most();
+        watch.stop();
+
+        expect(dialogs()).toBe(1);
+        expect(most).toBe(2);
     });
 });
 
