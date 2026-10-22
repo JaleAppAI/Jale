@@ -2086,13 +2086,6 @@
         "uploading": "Sending your recording…"
       }
     },
-    "photo": {
-      "title": "Add a photo?",
-      "subtitle": "Optional. Workers with a photo get more replies.",
-      "add": "Choose a photo",
-      "finish": "Finish",
-      "skip": "Skip for now"
-    },
     "referred_job": {
       "strip": "Applying to: <b>{title}</b> · {company}",
       "strip_closed": "Applying to: <b>{title}</b> <muted>(no longer open)</muted> · {company}"

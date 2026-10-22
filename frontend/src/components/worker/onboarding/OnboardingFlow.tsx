@@ -35,7 +35,6 @@ import { TradeStep } from './TradeStep';
 import { WorkStep } from './WorkStep';
 import { transcribeVoiceAnswer } from '@/lib/onboarding-voice';
 import { TrustQuestionStep } from './TrustQuestionStep';
-import { PhotoStep } from './PhotoStep';
 import { DoneStep, type DoneAction, type DoneNext } from './DoneStep';
 import { ReferredJobStrip } from './ReferredJobStrip';
 
@@ -55,9 +54,9 @@ import { ReferredJobStrip } from './ReferredJobStrip';
  *     fighting for the run.
  *
  * WHERE THE RUN ENDS. The engine completes on the THIRD trust answer -- that
- * response already says `lifecycle: 'ready'`. The photo prompt after it is
- * client-side only (there is no photo step to post), so the flow shows it once
- * out of `photoPending` and then moves to the summary.
+ * response already says `lifecycle: 'ready'`, so the next screen is the
+ * summary. There is no photo screen on the web until a photo can actually be
+ * uploaded here.
  *
  * WHEN THE RUN IS SOMEWHERE THIS DOOR CANNOT GO. `run.stepKey` can name a
  * step this flow has no screen for -- the two retired photo steps that older
@@ -126,7 +125,6 @@ export function OnboardingFlow({
     // is checked first below and nothing ever clears it, so suspended runs
     // keep their own message.
     const stuck = flow.server.lifecycle !== 'ready'
-        && !flow.photoPending
         && !isAnswerableStepKey(flow.server.run.stepKey);
     const extractionStatus = flow.server.extraction?.status ?? 'pending';
 
@@ -272,12 +270,8 @@ export function OnboardingFlow({
                 return;
             }
 
-            // The third answer completes the run. Offer the (client-only)
-            // photo prompt once before the summary.
-            if (screen === 'q3' && result.state.lifecycle === 'ready') {
-                dispatch({ type: 'finished', server: result.state });
-                return;
-            }
+            // The third answer completes the run, and its response already
+            // says so: hydrating from it lands on the summary.
             dispatch({ type: 'hydrate', server: result.state });
         } catch (err) {
             dispatch({ type: 'save_failed', errorKind: classifyError(err).kind });
@@ -355,9 +349,9 @@ export function OnboardingFlow({
         </Button>
     ) : null;
     // Back walks the ENGINE, so it is only offered where the engine can walk:
-    // not on the first screen, and not once the run has completed (the photo
-    // prompt and the summary both sit after that point).
-    const backHandler = screen === 'terms' || screen === 'photo' || screen === 'done' ? null : goBack;
+    // not on the first screen, and not once the run has completed (the
+    // summary sits after that point).
+    const backHandler = screen === 'terms' || screen === 'done' ? null : goBack;
 
     return (
         <OnboardingShell
@@ -478,8 +472,6 @@ export function OnboardingFlow({
                     />
                 );
             }
-            case 'photo':
-                return <PhotoStep onSkip={() => dispatch({ type: 'photo_skipped' })} />;
             case 'done':
                 return (
                     <DoneStep

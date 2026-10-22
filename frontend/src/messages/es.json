@@ -2086,13 +2086,6 @@
         "uploading": "Enviando tu grabación…"
       }
     },
-    "photo": {
-      "title": "¿Agregar una foto?",
-      "subtitle": "Opcional. Los trabajadores con foto reciben más respuestas.",
-      "add": "Elegir foto",
-      "finish": "Terminar",
-      "skip": "Por ahora no"
-    },
     "referred_job": {
       "strip": "Postulándote a: <b>{title}</b> · {company}",
       "strip_closed": "Postulándote a: <b>{title}</b> <muted>(ya no está disponible)</muted> · {company}"
