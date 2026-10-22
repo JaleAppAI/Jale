@@ -2057,6 +2057,7 @@
     "question": {
       "eyebrow": "Question {number} of 3",
       "intro": "In your own words. Type or tap the mic.",
+      "lock_note": "You can go back and change your answers until you finish question 3. After that they lock.",
       "placeholder": "Write your answer here…",
       "must": "Employers read these three answers to decide who to hire — they're required.",
       "too_short": "A little more, please — at least {count} characters.",

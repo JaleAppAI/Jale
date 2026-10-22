@@ -2057,6 +2057,7 @@
     "question": {
       "eyebrow": "Pregunta {number} de 3",
       "intro": "Con tus propias palabras. Escribe o toca el micrófono.",
+      "lock_note": "Puedes regresar y cambiar tus respuestas hasta terminar la pregunta 3. Después se bloquean.",
       "placeholder": "Escribe tu respuesta aquí…",
       "must": "Los empleadores leen estas tres respuestas para decidir a quién contratar — son obligatorias.",
       "too_short": "Un poco más, por favor — al menos {count} caracteres.",

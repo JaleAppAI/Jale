@@ -1,6 +1,7 @@
 'use client';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
+import { Lock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Icon } from '@/components/ui/icon';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
@@ -256,6 +257,21 @@ export function TrustQuestionStep({
                 fieldTakesFocus
             />
             <StepBody>
+                {/* Question 1 says up front when the answers lock, so the
+                    warning on question 3 is not the first time a worker hears
+                    it. Above the box, so it is read before typing. A `note`,
+                    not an `alert`: a standing condition of the screen, and it
+                    must not talk over the question on arrival. Quieter than
+                    the question 3 callout on purpose -- nothing is final yet. */}
+                {index === 1 ? (
+                    <div
+                        role="note"
+                        className="flex items-start gap-2 rounded-[var(--radius-input)] bg-[var(--jale-warning-bg)] px-3.5 py-3 text-[var(--jale-warning-text)]"
+                    >
+                        <Lock aria-hidden="true" className="mt-0.5 size-4 flex-none" strokeWidth={2} />
+                        <span className="text-[13px] leading-snug">{t('lock_note')}</span>
+                    </div>
+                ) : null}
                 <div className="flex items-stretch gap-2.5">
                     <Textarea
                         id={`${fieldId}-answer`}
