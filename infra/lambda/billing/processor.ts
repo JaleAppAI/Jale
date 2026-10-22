@@ -29,13 +29,18 @@
  * Runs as jale_billing which has:
  *   SELECT billing_plans, billing_customers
  *   SELECT/INSERT/UPDATE subscriptions, billing_webhook_events
+ *   EXECUTE on the company enforcer functions (migration 128)
  *   NO users-table access — correlate via billing_customers.provider_customer_id
+ *
+ * A company pays one subscription (Phase 2): a customer maps to its company
+ * through billing_customers.organization_id (127), never through Stripe
+ * metadata, so customers created before Phase 2 map like new ones.
  */
 import type { SQSHandler, SQSRecord } from 'aws-lambda';
 import Stripe = require('stripe');
 import { getDbPool } from '../lib/db';
 import { getStripe, getStripeSecret } from '../lib/stripe-client';
-import { resolveEntitlements } from '../lib/entitlements';
+import { resolveCompanyEntitlements } from '../lib/entitlements';
 import { queueEmail } from '../lib/email-outbox';
 import { renderBillingPauseEmail } from '../lib/billing-pause-template';
 import { renderBillingResumeEmail } from '../lib/billing-resume-template';
@@ -63,19 +68,20 @@ const INBOX_LEASE_MS = 5 * 60 * 1000;
 
 /**
  * The statuses excluded from the partial unique index
- * subscriptions_one_current_per_user (migration 034):
+ * subscriptions_one_current_per_organization (migration 127; 034's
+ * per-user index of the same shape before it):
  *
- *   CREATE UNIQUE INDEX subscriptions_one_current_per_user
- *       ON subscriptions (user_id)
+ *   CREATE UNIQUE INDEX subscriptions_one_current_per_organization
+ *       ON subscriptions (organization_id)
  *    WHERE status NOT IN ('canceled', 'incomplete_expired');
  *
- * A row in one of these statuses does NOT occupy the user's single
+ * A row in one of these statuses does NOT occupy the company's single
  * "current subscription" slot.
  *
  * Deliberately NOT the same set as `reducingStatuses` in
- * handleSubscriptionEvent: that one drives job-limit enforcement and also
- * lists 'unpaid' and 'paused', both of which this index still counts as
- * current. Do not merge the two — they answer different questions.
+ * handleSubscriptionEvent: that one drives the company's job- and
+ * seat-limit enforcement and invite revocation, and also lists 'unpaid' and
+ * 'paused', both of which this index still counts as current. Do not merge the two — they answer different questions.
  */
 const TERMINAL_SUBSCRIPTION_STATUSES: readonly string[] = ['canceled', 'incomplete_expired'];
 
@@ -305,10 +311,12 @@ async function handleSubscriptionEvent(
     return { outcome: 'failed', errorCode: 'customer_id_missing' };
   }
 
-  // Look up user_id via billing_customers
+  // The payer and their company, via billing_customers. A customer created
+  // before Phase 2 (its Stripe metadata names only userId) maps the same
+  // way: 127 back-filled organization_id from the payer's company.
   const pool = await getDbPool();
-  const customerRes = await pool.query(
-    'SELECT user_id FROM billing_customers WHERE provider_customer_id = $1',
+  const customerRes = await pool.query<{ user_id: string; organization_id: string | null }>(
+    'SELECT user_id, organization_id FROM billing_customers WHERE provider_customer_id = $1',
     [customerId],
   );
   if (customerRes.rows.length === 0) {
@@ -355,6 +363,13 @@ async function handleSubscriptionEvent(
     return { outcome: 'skipped', errorCode: 'unknown_customer' };
   }
   const userId: string = String(customerRes.rows[0].user_id);
+  const organizationId = customerRes.rows[0].organization_id ? String(customerRes.rows[0].organization_id) : null;
+  if (!organizationId) {
+    // Only possible before migration 127 makes the column NOT NULL. Retryable:
+    // the redelivered event maps once 127 is applied (Release runbook).
+    await markInboxStatus(eventId, 'failed', 'billing_customer_organization_missing', null);
+    return { outcome: 'failed', errorCode: 'billing_customer_organization_missing' };
+  }
 
   // Verify the subscription item price equals the configured priceIdEmployerPro
   const firstItem = subscription.items?.data?.[0];
@@ -375,6 +390,18 @@ async function handleSubscriptionEvent(
   try {
     await client.query('BEGIN');
 
+    // Serialise every webhook for this company, first thing in the
+    // transaction and before the company's plan is read. Without it a
+    // redelivered 'canceled' for an old subscription and a 'created' for the
+    // new one can each read the plan before the other commits, and enforce
+    // Free limits on a paying company. An advisory lock because jale_billing
+    // cannot lock organizations or billing_customers; keyed on the company id
+    // from billing_customers (never a user id), released at COMMIT/ROLLBACK.
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended('billing-org:' || $1::uuid::text, 0))",
+      [organizationId],
+    );
+
     // Fetch existing subscription row for grace logic
     const existingRes = await client.query(
       `SELECT id, status, grace_ends_at FROM subscriptions
@@ -394,8 +421,9 @@ async function handleSubscriptionEvent(
 
     // ── Which subscription is this user's CURRENT one? ───────────────────
     //
-    // subscriptions_one_current_per_user (migration 034) lets a user hold
-    // exactly one row whose status is not 'canceled'/'incomplete_expired'.
+    // subscriptions_one_current_per_organization (migration 127) lets a
+    // company hold exactly one row whose status is not
+    // 'canceled'/'incomplete_expired'. (Read "user" below as "company".)
     // The upsert below conflicts on (provider_subscription_id), so when a
     // SECOND provider_subscription_id shows up for a user who still has a
     // current row, that target does not match, the statement INSERTs, and it
@@ -432,14 +460,15 @@ async function handleSubscriptionEvent(
     //                                Neither is acceptable, so skip it.
     //
     // Superseded rows deliberately do NOT trigger
-    // billing_pause_over_limit_jobs — enforcement stays decided by the
+    // billing_enforce_org_limits — enforcement stays decided by the
     // incoming subscription's own status below, exactly as before.
     //
-    // Concurrency remains a separate and self-healing matter: two invocations
-    // racing here can still deadlock (40P01) or collide (23505). Either
-    // aborts one transaction, marks that inbox row failed, and SQS redelivers
-    // it — by which time the committed state sends the retry down the right
-    // branch.
+    // Concurrency: two invocations for one company serialise on the company
+    // advisory lock taken after BEGIN, so the second reads what the first
+    // committed. Anything that still aborts a transaction here (a 40P01 or a
+    // 23505) is self-healing: it marks that inbox row failed and SQS
+    // redelivers it, by which time the committed state sends the retry down
+    // the right branch.
     if (!TERMINAL_SUBSCRIPTION_STATUSES.includes(status)) {
       // Terminal incoming statuses skip this read altogether: same outcome as
       // reading it and ignoring the result, minus the locks.
@@ -449,12 +478,12 @@ async function handleSubscriptionEvent(
       // a <> comparison against it evaluates to NULL and would miss it.
       const othersRes = await client.query<{ id: string; provider_subscription_id: string | null }>(
         `SELECT id, provider_subscription_id FROM subscriptions
-          WHERE user_id = $1
+          WHERE organization_id = $1
             AND provider_subscription_id IS DISTINCT FROM $2
             AND status NOT IN ('canceled', 'incomplete_expired')
           ORDER BY updated_at DESC
           FOR UPDATE`,
-        [userId, providerSubId],
+        [organizationId, providerSubId],
       );
       const others = othersRes.rows;
 
@@ -474,6 +503,7 @@ async function handleSubscriptionEvent(
         // No PII: internal user id and Stripe subscription ids only.
         console.info('superseded_prior_subscription', {
           userId,
+          organizationId,
           supersededCount: others.length,
           newProviderSubId: providerSubId,
         });
@@ -488,6 +518,7 @@ async function handleSubscriptionEvent(
         // the Jale/Billing BillingKnownEventSkipped metric; keep it in sync.
         console.warn('billing_superseded_subscription_event', {
           userId,
+          organizationId,
           eventType,
           providerSubId,
           currentProviderSubId: others[0].provider_subscription_id,
@@ -502,13 +533,13 @@ async function handleSubscriptionEvent(
       `INSERT INTO subscriptions (
           user_id, plan_code, provider_subscription_id, status,
           current_period_start, current_period_end, cancel_at_period_end,
-          grace_ends_at, updated_at
+          grace_ends_at, updated_at, organization_id
         ) VALUES ($1, $2, $3, $4, $5, $6, $7,
           CASE WHEN $4 = 'past_due' AND $8::timestamptz IS NULL
                THEN now() + interval '7 days'
                ELSE $8::timestamptz
           END,
-          now())
+          now(), $9)
        ON CONFLICT (provider_subscription_id)
          DO UPDATE SET
            status               = EXCLUDED.status,
@@ -533,6 +564,7 @@ async function handleSubscriptionEvent(
         currentPeriodEnd,
         cancelAtPeriodEnd,
         graceFragment,
+        organizationId,
       ],
     );
 
@@ -540,26 +572,38 @@ async function handleSubscriptionEvent(
     const reducingStatuses = new Set(['canceled', 'unpaid', 'incomplete_expired', 'paused']);
     if (reducingStatuses.has(status)) {
       if (!persistedSubscriptionId) throw new Error('subscription_upsert_missing_id');
-      const entitlements = await resolveEntitlements(client, userId);
+      // Phase 2: the company's plan, enforced across the company (128):
+      // foremen over the seat limit are suspended first (most recently
+      // joined first), then jobs over the job limit pause (a suspended or
+      // inactive member's jobs before active members', each oldest kept
+      // first), and the newest live invites over the seats left are
+      // revoked. Idempotent, so a repeated event changes nothing and mails
+      // nothing.
+      const entitlements = await resolveCompanyEntitlements(client, organizationId);
       const enforcement = await client.query<{
         paused_count: number;
-        employer_email: string | null;
         paused_titles: string[];
+        suspended_count: number;
+        suspended_emails: string[];
+        revoked_invite_count: number;
+        owner_email: string | null;
       }>(
-        `SELECT paused_count, employer_email, paused_titles
-           FROM jale_billing_internal.billing_pause_over_limit_jobs($1, $2)`,
-        [userId, entitlements.activeJobLimit],
+        `SELECT paused_count, paused_titles, suspended_count, suspended_emails, revoked_invite_count, owner_email
+           FROM jale_billing_internal.billing_enforce_org_limits($1, $2, $3)`,
+        [organizationId, entitlements.activeJobLimit, entitlements.foremanSeatLimit],
       );
       const result = enforcement.rows[0];
       if (!result) throw new Error('billing_job_enforcement_invalid_result');
       const pausedCount = Number(result.paused_count);
-      if (!Number.isInteger(pausedCount) || pausedCount < 0) {
+      const suspendedCount = Number(result.suspended_count);
+      const revokedInvites = Number(result.revoked_invite_count);
+      if (![pausedCount, suspendedCount, revokedInvites].every((n) => Number.isInteger(n) && n >= 0)) {
         throw new Error('billing_job_enforcement_invalid_result');
       }
-      if (pausedCount > 0) {
-        if (typeof result?.employer_email !== 'string'
-          || result.employer_email.length > 320
-          || !result.employer_email.includes('@')) {
+      if (pausedCount > 0 || suspendedCount > 0) {
+        if (typeof result.owner_email !== 'string'
+          || result.owner_email.length > 320
+          || !result.owner_email.includes('@')) {
           throw new Error('billing_job_enforcement_invalid_email');
         }
         const titles = Array.isArray(result.paused_titles) ? result.paused_titles : [];
@@ -567,18 +611,22 @@ async function handleSubscriptionEvent(
           || titles.some((title) => typeof title !== 'string' || title.trim().length === 0)) {
           throw new Error('billing_job_enforcement_invalid_titles');
         }
-        console.info('paused_over_limit_jobs', { userId, pausedCount });
+        const members = Array.isArray(result.suspended_emails) ? result.suspended_emails : [];
+        if (members.length !== suspendedCount
+          || members.some((member) => typeof member !== 'string' || member.trim().length === 0)) {
+          throw new Error('billing_seat_enforcement_invalid_members');
+        }
+        console.info('enforced_company_limits', { organizationId, pausedCount, suspendedCount, revokedInvites });
         const origin = (process.env.ALLOWED_ORIGIN ?? '').replace(/\/$/, '');
         if (!origin) throw new Error('billing_allowed_origin_missing');
-        const englishBillingUrl = `${origin}/en/employer/billing`;
-        const spanishBillingUrl = `${origin}/es/employer/billing`;
         const rendered = renderBillingPauseEmail({
           pausedTitles: titles,
-          englishBillingUrl,
-          spanishBillingUrl,
+          suspendedMembers: members,
+          englishBillingUrl: `${origin}/en/employer/billing`,
+          spanishBillingUrl: `${origin}/es/employer/billing`,
         });
         await queueEmail(client, {
-          recipientEmail: result.employer_email,
+          recipientEmail: result.owner_email,
           subject: rendered.subject,
           bodyText: rendered.bodyText,
           bodyHtml: rendered.bodyHtml,
@@ -586,34 +634,43 @@ async function handleSubscriptionEvent(
           sourceId: persistedSubscriptionId,
           idempotencyKey: `billing-pause:${persistedSubscriptionId}:${eventId}`,
         });
+      } else if (revokedInvites > 0) {
+        console.info('enforced_company_limits', { organizationId, pausedCount, suspendedCount, revokedInvites });
       }
     }
 
-    // Sprint 28 (K4.5): an entitled subscription brings back the jobs billing
-    // paused (and only those: billing_paused_at marks them; an employer's own
-    // status change clears the mark), oldest first, up to the resolved limit.
-    // Same transaction as the upsert, so a rollback undoes both, and one
-    // email per event, keyed like the pause notice.
+    // Sprint 28 (K4.5), per company since Phase 2: an entitled subscription
+    // first restores the earliest suspended foremen into the seats left, then
+    // brings back the jobs billing paused (only those: billing_paused_at marks
+    // them; an employer's own status change clears the mark), oldest first, up
+    // to the resolved limit. Same transaction as the upsert, so a rollback
+    // undoes all of it, and one email per event, keyed like the pause notice.
     if (RESUMING_STATUSES.has(status)) {
-      const entitlements = await resolveEntitlements(client, userId);
+      const entitlements = await resolveCompanyEntitlements(client, organizationId);
       const resumeRes = await client.query<{
         resumed_count: number;
-        employer_email: string | null;
         resumed_titles: string[];
+        restored_count: number;
+        restored_emails: string[];
+        owner_email: string | null;
       }>(
-        `SELECT resumed_count, employer_email, resumed_titles
-           FROM jale_billing_internal.billing_resume_paused_jobs($1, $2)`,
-        [userId, entitlements.activeJobLimit],
+        `SELECT resumed_count, resumed_titles, restored_count, restored_emails, owner_email
+           FROM jale_billing_internal.billing_restore_org($1, $2, $3)`,
+        [organizationId, entitlements.activeJobLimit, entitlements.foremanSeatLimit],
       );
       const resumed = resumeRes.rows[0];
       if (!resumed) throw new Error('billing_job_resume_invalid_result');
       const resumedCount = Number(resumed.resumed_count);
-      if (!Number.isInteger(resumedCount) || resumedCount < 0) throw new Error('billing_job_resume_invalid_result');
+      const restoredCount = Number(resumed.restored_count);
+      if (![resumedCount, restoredCount].every((n) => Number.isInteger(n) && n >= 0)) {
+        throw new Error('billing_job_resume_invalid_result');
+      }
+      if (restoredCount > 0) console.info('restored_company_members', { organizationId, restoredCount });
       if (resumedCount > 0) {
         if (!persistedSubscriptionId) throw new Error('subscription_upsert_missing_id');
-        if (typeof resumed.employer_email !== 'string'
-          || resumed.employer_email.length > 320
-          || !resumed.employer_email.includes('@')) {
+        if (typeof resumed.owner_email !== 'string'
+          || resumed.owner_email.length > 320
+          || !resumed.owner_email.includes('@')) {
           throw new Error('billing_job_resume_invalid_email');
         }
         const titles = Array.isArray(resumed.resumed_titles) ? resumed.resumed_titles : [];
@@ -621,7 +678,7 @@ async function handleSubscriptionEvent(
           || titles.some((title) => typeof title !== 'string' || title.trim().length === 0)) {
           throw new Error('billing_job_resume_invalid_titles');
         }
-        console.info('resumed_paused_jobs', { userId, resumedCount });
+        console.info('resumed_paused_jobs', { organizationId, resumedCount });
         const origin = (process.env.ALLOWED_ORIGIN ?? '').replace(/\/$/, '');
         if (!origin) throw new Error('billing_allowed_origin_missing');
         const rendered = renderBillingResumeEmail({
@@ -630,7 +687,7 @@ async function handleSubscriptionEvent(
           spanishJobsUrl: `${origin}/es/employer/jobs`,
         });
         await queueEmail(client, {
-          recipientEmail: resumed.employer_email,
+          recipientEmail: resumed.owner_email,
           subject: rendered.subject,
           bodyText: rendered.bodyText,
           bodyHtml: rendered.bodyHtml,
