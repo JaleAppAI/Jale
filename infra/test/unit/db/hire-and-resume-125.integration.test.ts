@@ -25,7 +25,7 @@
  *     never a closed or filled job, with one job_status_events row per job
  *     and a visibility event for a public job; an employer's own status write
  *     clears the mark; the console reads the resumes through its definer.
- *     133 dropped 125's per-person pause/resume pair, so these cases drive
+ *     136 dropped 125's per-person pause/resume pair, so these cases drive
  *     128's company pair (billing_enforce_org_limits / billing_restore_org)
  *     on the employer's one-person company, with no seat for a foreman;
  *     company-limits-128 covers the pair itself.
@@ -126,7 +126,7 @@ const MARK_SQL = 'SELECT jale_cap.mark_hire_details_nudged($1) AS marked';
 const NUDGE_SQL = `SELECT application_id, job_id, employer_id, employer_email, worker_name, job_title, kind, requested_at
                      FROM jale_cap.claim_hire_details_nudges($1)`;
 // 128's company pair, called with the employer's company and no foreman seat
-// (133 dropped 125's per-person pair); the columns keep 125's names.
+// (136 dropped 125's per-person pair); the columns keep 125's names.
 const PAUSE_SQL = `SELECT paused_count, owner_email AS employer_email, paused_titles
                      FROM jale_billing_internal.billing_enforce_org_limits($1, $2, 0)`;
 const RESUME_SQL = `SELECT resumed_count, owner_email AS employer_email, resumed_titles
@@ -741,7 +741,7 @@ describeInProfiles([...ALL_PROFILES], 'migration 125: the nudge sweep', () => {
 describeInProfiles([...ALL_PROFILES], 'migration 125: billing pause and resume', () => {
   let world: World;
   let employer: { id: string; sub: string };
-  // The employer's one-person company: 128's pair takes the company (133).
+  // The employer's one-person company: 128's pair takes the company (136).
   let org: string;
   const jobs: Record<string, string> = {};
   const publicCodes: Record<string, string> = {};

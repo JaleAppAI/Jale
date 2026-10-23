@@ -1,5 +1,5 @@
 /**
- * org-team-invites-130 -- migration 130 on a real bed: the team invites and
+ * org-team-invites-133 -- migration 133 on a real bed: the team invites and
  * their acceptance, each definer run as its real login (jale_api with
  * app.current_user_id and app.current_internal_user_id set; jale_api_public
  * and jale_billing with nothing set), inside a transaction that is rolled
@@ -22,7 +22,7 @@
  *
  * Run: bash infra/db/local/bootstrap-testbed.sh --ephemeral --ref none --profile request \
  *   --container <name> --port <port> -- \
- *   bash infra/scripts/run-whatsapp-v2-db-tests.sh --suite test/unit/db/org-team-invites-130.integration.test.ts
+ *   bash infra/scripts/run-whatsapp-v2-db-tests.sh --suite test/unit/db/org-team-invites-133.integration.test.ts
  */
 import { createHash, randomUUID } from 'node:crypto';
 import type { Client } from 'pg';
@@ -31,7 +31,7 @@ import { describeInProfiles, withLoginClient } from './helpers/login-pool';
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
 if (!databaseUrl) {
-  test('CONCERN: org-team-invites-130 needs JALE_TEST_DATABASE_URL (see header)', () => {
+  test('CONCERN: org-team-invites-133 needs JALE_TEST_DATABASE_URL (see header)', () => {
     expect(databaseUrl).toBeUndefined();
   });
 }
@@ -76,8 +76,8 @@ const FUNCTIONS: Array<[string, string | null, string]> = [
 
 /**
  * Step 3's sections 2, 3 and 5, as table:column:privilege, sorted (C collation),
- * on the five tables 130 touches; plus users.full_name, which 131 adds for the
- * team list's display name (131's suite pins its other new rights).
+ * on the five tables 133 touches; plus users.full_name, which 134 adds for the
+ * team list's display name (134's suite pins its other new rights).
  */
 const REVIEWED_COLUMN_RIGHTS = [
   'email_outbox:attempt_count:SELECT', 'email_outbox:body_html:INSERT', 'email_outbox:body_text:INSERT',
@@ -107,7 +107,7 @@ const REVIEWED_COLUMN_RIGHTS = [
   'users:cognito_sub:SELECT', 'users:email:SELECT', 'users:full_name:SELECT', 'users:id:SELECT', 'users:user_type:SELECT',
 ];
 
-maybeDescribe('migration 130: team invites and acceptance', () => {
+maybeDescribe('migration 133: team invites and acceptance', () => {
   let world: World;
   /** Employer logins with no company (a confirmation that found no invite). */
   const bareLogins: string[] = [];
@@ -246,7 +246,7 @@ maybeDescribe('migration 130: team invites and acceptance', () => {
       }]]));
     });
 
-    it('jale_api still holds no right on organizations, organization_invites or email_outbox via 130', async () => {
+    it('jale_api still holds no right on organizations, organization_invites or email_outbox via 133', async () => {
       const { rows } = await world.su.query<{ login: string; rel: string; any: boolean }>(
         `SELECT l.login, r.rel,
                 has_any_column_privilege(l.login, r.rel::regclass, 'SELECT,INSERT,UPDATE')

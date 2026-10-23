@@ -1,11 +1,11 @@
 /**
- * org-team-members-131 -- migration 131 on a real bed: member removal, the
+ * org-team-members-134 -- migration 134 on a real bed: member removal, the
  * owner's team lists, the caller's membership and the desired Cognito state,
  * each definer run as its real login (jale_api with app.current_user_id and
  * app.current_internal_user_id set; jale_billing with nothing set), inside a
  * transaction that is rolled back unless the case needs committed rows.
  *
- *  - the catalog: every 131 function's owner (jale_cap_org_team), definer
+ *  - the catalog: every 134 function's owner (jale_cap_org_team), definer
  *    security, pinned search_path and its one caller; the capability owner's
  *    new column rights (employer_profiles, jobs, users.full_name) and its two
  *    open SELECT policies; the full (organization_id, email) invites index;
@@ -25,13 +25,13 @@
  *    a re-invite of a long-removed member first (order checked to the
  *    microsecond); a padded, mixed-case users.email still matches its
  *    invite; argument errors raise 22023 and the bounds are accepted.
- * Invites are created through 130's definers; other fixtures through the
+ * Invites are created through 133's definers; other fixtures through the
  * superuser URL (Task 1's World). afterAll removes them, the invite mail
  * included.
  *
  * Run: bash infra/db/local/bootstrap-testbed.sh --ephemeral --ref none --profile request \
  *   --container <name> --port <port> -- \
- *   bash infra/scripts/run-whatsapp-v2-db-tests.sh --suite test/unit/db/org-team-members-131.integration.test.ts
+ *   bash infra/scripts/run-whatsapp-v2-db-tests.sh --suite test/unit/db/org-team-members-134.integration.test.ts
  */
 import { createHash, randomUUID } from 'node:crypto';
 import type { Client } from 'pg';
@@ -40,7 +40,7 @@ import { describeInProfiles, withLoginClient } from './helpers/login-pool';
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
 if (!databaseUrl) {
-  test('CONCERN: org-team-members-131 needs JALE_TEST_DATABASE_URL (see header)', () => {
+  test('CONCERN: org-team-members-134 needs JALE_TEST_DATABASE_URL (see header)', () => {
     expect(databaseUrl).toBeUndefined();
   });
 }
@@ -56,7 +56,7 @@ const INVITES_SQL = 'SELECT * FROM jale_cap.org_team_invites()';
 const MEMBERSHIP_SQL = 'SELECT * FROM jale_cap.org_team_membership()';
 const ACCESS_SQL = 'SELECT * FROM jale_cap.org_member_access($1, $2, $3)';
 
-/** Every 131 function: [signature, caller, pg_get_function_result]. */
+/** Every 134 function: [signature, caller, pg_get_function_result]. */
 const FUNCTIONS: Array<[string, string, string]> = [
   ['jale_cap.org_member_access(uuid, timestamp with time zone, integer)', 'jale_billing',
     'TABLE(user_id uuid, cognito_sub text, enabled boolean, changed_at timestamp with time zone)'],
@@ -82,7 +82,7 @@ type MembershipRow = {
 };
 type AccessRow = { user_id: string; cognito_sub: string; enabled: boolean; changed_at: Date };
 
-maybeDescribe('migration 131: removal, team lists, membership, member access', () => {
+maybeDescribe('migration 134: removal, team lists, membership, member access', () => {
   let world: World;
   /** Employer logins with no company. */
   const bareLogins: string[] = [];
@@ -166,7 +166,7 @@ maybeDescribe('migration 131: removal, team lists, membership, member access', (
   const access = async (c: Client, org: string | null, since: Date | string | null, limit: number | null) =>
     (await c.query<AccessRow>(ACCESS_SQL, [org, since, limit])).rows;
 
-  /** Create plus queue_email in one committed transaction, as the owner (130's path); the invite id. */
+  /** Create plus queue_email in one committed transaction, as the owner (133's path); the invite id. */
   async function invite(owner: UserFixture, email: string, name: string | null = null): Promise<string> {
     return commitApi(owner, async (c) => {
       const rows = (await c.query<{ outcome: string; invite_id: string }>(CREATE_SQL, [email, name, hash(randomUUID()), 10])).rows;
@@ -177,7 +177,7 @@ maybeDescribe('migration 131: removal, team lists, membership, member access', (
   }
 
   describeInProfiles(['standard', 'request', 'owner-unrestricted'], 'the catalog', () => {
-    it('each 131 function has its owner, definer security, pinned search_path and one caller', async () => {
+    it('each 134 function has its owner, definer security, pinned search_path and one caller', async () => {
       const actual = [];
       for (const [signature] of FUNCTIONS) {
         const { rows } = await world.su.query(
@@ -541,7 +541,7 @@ maybeDescribe('migration 131: removal, team lists, membership, member access', (
 
     it('org_member_access matches a removed member\'s live invite whatever the case and padding of users.email', async () => {
       // users.email has no lower(btrim()) CHECK (118's CHECK is on organization_invites), so a login's
-      // email can be stored padded or mixed case; 130 invites it normalised.
+      // email can be stored padded or mixed case; 133 invites it normalised.
       const owner = await world.employer();
       const org = await orgOf(owner);
       const plain = freshEmail();

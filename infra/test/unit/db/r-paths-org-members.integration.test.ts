@@ -156,7 +156,7 @@ describeInProfiles(['standard', 'request'], 'one company, two foremen, through t
     foremanA = await world.foreman(owner.id);
     foremanB = await world.foreman(owner.id);
     stranger = await world.employer({ companyName: 'Other Co' });
-    // Gate Co on Pro, so the plan's active-job limit (Free: 1) never answers
+    // Gate Co on Pro, so the plan's active-job limit (Free: 15, Pro: 50 since 132) never answers
     // before the scope does; the owner's company cleanup removes the row.
     await world.su.query(
       `INSERT INTO subscriptions (user_id, organization_id, plan_code, status)

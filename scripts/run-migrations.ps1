@@ -190,10 +190,10 @@ $MigrationFiles = @(
     '130_user_tutorial_progress.sql'
     '131_job_shift_periods.sql'
     '132_job_limit_increase.sql'
-    '130_org_team_invites.sql'
-    '131_org_team_members.sql'
-    '132_org_team_carry_overs.sql'
-    '133_retire_per_person_billing.sql'
+    '133_org_team_invites.sql'
+    '134_org_team_members.sql'
+    '135_org_team_carry_overs.sql'
+    '136_retire_per_person_billing.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path

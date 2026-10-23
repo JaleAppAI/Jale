@@ -197,7 +197,7 @@ maybeDescribe('migration 128: company limits', () => {
       }]);
     });
 
-    it('the company enforcer functions are pinned definers for jale_billing alone; 133 dropped 125\'s per-person pair', async () => {
+    it('the company enforcer functions are pinned definers for jale_billing alone; 136 dropped 125\'s per-person pair', async () => {
       const { rows } = await su.query(
         `SELECT p.proname::text AS fn, pg_catalog.pg_get_function_identity_arguments(p.oid) AS args,
                 pg_catalog.pg_get_userbyid(p.proowner) AS owner, p.prosecdef AS definer,

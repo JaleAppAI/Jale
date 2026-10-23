@@ -178,7 +178,7 @@ proves each signature, owner and grant on a real database.
   NO KEY UPDATE conflicts with itself but not with the `FOR KEY SHARE` of a
   foreign-key check, so an insert that names the company never waits for it.
 
-## Team invites (owner `jale_cap_org_team`, migration 130)
+## Team invites (owner `jale_cap_org_team`, migration 133)
 
 | Function | Caller | Returns |
 |---|---|---|
@@ -249,7 +249,7 @@ proves each signature, owner and grant on a real database.
   longer retry (108's terms), oldest first, up to `p_batch`, and returns the
   count.
 
-## Team members (owner `jale_cap_org_team`, migration 131)
+## Team members (owner `jale_cap_org_team`, migration 134)
 
 | Function | Caller | Returns |
 |---|---|---|
@@ -261,7 +261,7 @@ proves each signature, owner and grant on a real database.
 
 - **Caller context.** remove_member, members and invites read the caller
   from `app.current_internal_user_id` and act only for the company's active
-  owner. remove_member takes the company lock through 130's
+  owner. remove_member takes the company lock through 133's
   `org_team_locked_owner_org()` (anyone else gets `not_owner`); members and
   invites only read, without the lock, and raise `42501` (`org_team: the
   caller is not the active owner`) for anyone else. membership reads the
@@ -301,7 +301,7 @@ proves each signature, owner and grant on a real database.
   `changed_at DESC, user_id`, with `p_limit` required in 1..1000). Anything
   else raises `22023`. Both forms are ordered the same way. The invites are
   read through `organization_invites_by_org_email (organization_id, email)`,
-  which 131 adds.
+  which 134 adds.
 
 ## Re-owned definers (no signature change)
 

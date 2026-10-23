@@ -10,7 +10,7 @@
     },
     "jale_cap_hire_nudges": {
       "created_by": "125",
-      "reason": "Owns the hire-details nudge claim and stamp: reads hired applications with no details and the two names and the address a nudge needs, and stamps a hire once its nudge is queued; and, since 132, the job member's status and their company's active owner, to whom a suspended or removed member's nudge goes."
+      "reason": "Owns the hire-details nudge claim and stamp: reads hired applications with no details and the two names and the address a nudge needs, and stamps a hire once its nudge is queued; and, since 135, the job member's status and their company's active owner, to whom a suspended or removed member's nudge goes."
     }
   },
   "tables": {

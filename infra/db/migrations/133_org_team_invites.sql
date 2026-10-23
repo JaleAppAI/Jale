@@ -1,6 +1,6 @@
 -- ============================================================
--- 130_org_team_invites.sql
--- Run manually AFTER 129_org_owner_carry_overs.sql,
+-- 133_org_team_invites.sql
+-- Run manually AFTER 132_job_limit_increase.sql,
 -- connected as jale_admin. Forward-only (ADR-005). ONE transaction.
 --
 -- Employer organizations, Phase 3 milestone A, part 1: team invites
@@ -56,6 +56,12 @@
 --
 -- LOCK ORDER. Everything on organization_members, users and email_outbox
 -- (their grants, policies and the invite-mail index) is the last section.
+-- CREATE POLICY takes ACCESS EXCLUSIVE on its table, so from each policy
+-- until COMMIT every read and every write of organization_members, users
+-- and email_outbox waits. The invite-mail index is built before the
+-- outbox's policies (members and users are already locked by then): its
+-- SHARE lock holds back only the outbox's writes, and its reads wait only
+-- from the first outbox policy. Apply in a quiet window.
 --
 -- REPLAY: refused once jale_cap.org_team_invite_accept exists.
 -- ============================================================
@@ -67,31 +73,31 @@ SET LOCAL lock_timeout = '5s';
 DO $$
 BEGIN
   IF session_user <> current_user THEN
-    RAISE EXCEPTION 'migration 130: connect as the migration login itself, without SET ROLE';
+    RAISE EXCEPTION 'migration 133: connect as the migration login itself, without SET ROLE';
   END IF;
   IF to_regprocedure('jale_cap.org_team_invite_accept(bytea)') IS NOT NULL THEN
-    RAISE EXCEPTION 'migration 130: already applied (jale_cap.org_team_invite_accept exists); it is not re-runnable';
+    RAISE EXCEPTION 'migration 133: already applied (jale_cap.org_team_invite_accept exists); it is not re-runnable';
   END IF;
   IF to_regprocedure('public.jobs_assignee_must_be_active()') IS NULL THEN
-    RAISE EXCEPTION 'migration 130: apply 129 first';
+    RAISE EXCEPTION 'migration 133: apply 129 first';
   END IF;
   IF to_regprocedure('jale_cap.employer_org_usage(boolean)') IS NULL
      OR NOT EXISTS (SELECT 1 FROM pg_policy WHERE polrelid = 'public.organization_invites'::regclass
                      AND polname = 'organization_invites_billing_job_enforcer_update') THEN
-    RAISE EXCEPTION 'migration 130: 128''s company lock and invite enforcer are missing';
+    RAISE EXCEPTION 'migration 133: 128''s company lock and invite enforcer are missing';
   END IF;
   IF EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'public.organization_invites'::regclass
               AND attname = 'last_sent_at' AND NOT attisdropped) THEN
-    RAISE EXCEPTION 'migration 130: organization_invites.last_sent_at already exists';
+    RAISE EXCEPTION 'migration 133: organization_invites.last_sent_at already exists';
   END IF;
   IF (SELECT count(*) FROM pg_roles WHERE rolname IN ('jale_api', 'jale_api_public', 'jale_billing')) <> 3
      OR to_regnamespace('jale_cap') IS NULL THEN
-    RAISE EXCEPTION 'migration 130: a schema or role it builds on is missing';
+    RAISE EXCEPTION 'migration 133: a schema or role it builds on is missing';
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_roles r ON r.oid = p.proowner
                   WHERE p.oid = to_regprocedure('public.employer_display_name(uuid)')
                     AND r.rolname = 'jale_admin' AND p.prosecdef) THEN
-    RAISE EXCEPTION 'migration 130: public.employer_display_name(uuid) is missing or not a jale_admin definer';
+    RAISE EXCEPTION 'migration 133: public.employer_display_name(uuid) is missing or not a jale_admin definer';
   END IF;
   -- 118's tables as applied: one pending invite per (company, email), the
   -- email stored lower(btrim()), the token a 32-byte hash, and one
@@ -107,7 +113,7 @@ BEGIN
      OR NOT EXISTS (SELECT 1 FROM pg_constraint c
                      WHERE c.conrelid = 'public.organization_invites'::regclass AND c.contype = 'c'
                        AND pg_get_constraintdef(c.oid) = 'CHECK ((octet_length(token_hash) = 32))') THEN
-    RAISE EXCEPTION 'migration 130: organization_invites or organization_members are not as 118 left them';
+    RAISE EXCEPTION 'migration 133: organization_invites or organization_members are not as 118 left them';
   END IF;
 END $$;
 
@@ -124,7 +130,7 @@ BEGIN
 
   IF helper.rolcanlogin OR helper.rolsuper OR helper.rolcreatedb OR helper.rolcreaterole
      OR helper.rolinherit OR helper.rolreplication OR helper.rolbypassrls THEN
-    RAISE EXCEPTION 'migration 130: existing role jale_cap_org_team has unsafe attributes';
+    RAISE EXCEPTION 'migration 133: existing role jale_cap_org_team has unsafe attributes';
   END IF;
 
   IF EXISTS (
@@ -134,7 +140,7 @@ BEGIN
             AND NOT (am.member = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = current_user)
                      AND am.admin_option AND NOT am.inherit_option AND NOT am.set_option))
   ) THEN
-    RAISE EXCEPTION 'migration 130: role jale_cap_org_team has unsafe memberships';
+    RAISE EXCEPTION 'migration 133: role jale_cap_org_team has unsafe memberships';
   END IF;
 
   IF NOT EXISTS (
@@ -178,7 +184,7 @@ GRANT EXECUTE ON FUNCTION public.employer_display_name(uuid) TO jale_cap_org_tea
 -- proof queue_email asks for (a pending invite sent in this transaction).
 ALTER TABLE public.organization_invites ADD COLUMN last_sent_at TIMESTAMPTZ NOT NULL DEFAULT now();
 COMMENT ON COLUMN public.organization_invites.last_sent_at IS
-  'When the invite email was last sent: set by the create (its default) and by every resend (130). Drives the 60-second resend cooldown; org_team_invite_queue_email accepts only an invite whose last_sent_at is the current transaction''s now().';
+  'When the invite email was last sent: set by the create (its default) and by every resend (133). Drives the 60-second resend cooldown; org_team_invite_queue_email accepts only an invite whose last_sent_at is the current transaction''s now().';
 GRANT SELECT (last_sent_at), INSERT (last_sent_at), UPDATE (last_sent_at) ON public.organization_invites TO jale_cap_org_team;
 
 -- ── 4. Functions ────────────────────────────────────────────
@@ -873,13 +879,14 @@ GRANT SELECT (id, source_type, source_id, created_at, status, attempt_count),
       INSERT (recipient_email, subject, body_text, body_html, source_type, source_id, idempotency_key),
       DELETE
   ON public.email_outbox TO jale_cap_org_team;
+-- The send counts (20 per company, 5 resends per invite, 24 hours) run under
+-- the company lock: read them by invite and time, not by scanning the outbox.
+-- Built before the outbox's policies: its SHARE lock lets reads through.
+CREATE INDEX email_outbox_organization_invite_sends ON public.email_outbox (source_id, created_at)
+  WHERE source_type = 'organization_invite';
 CREATE POLICY email_outbox_cap_org_team_select ON public.email_outbox AS PERMISSIVE FOR SELECT TO jale_cap_org_team USING (source_type = 'organization_invite');
 CREATE POLICY email_outbox_cap_org_team_insert ON public.email_outbox AS PERMISSIVE FOR INSERT TO jale_cap_org_team WITH CHECK (source_type = 'organization_invite');
 CREATE POLICY email_outbox_cap_org_team_delete ON public.email_outbox AS PERMISSIVE FOR DELETE TO jale_cap_org_team USING (source_type = 'organization_invite');
--- The send counts (20 per company, 5 resends per invite, 24 hours) run under
--- the company lock: read them by invite and time, not by scanning the outbox.
-CREATE INDEX email_outbox_organization_invite_sends ON public.email_outbox (source_id, created_at)
-  WHERE source_type = 'organization_invite';
 
 -- ── 6. Self-check ───────────────────────────────────────────
 DO $$
@@ -923,7 +930,7 @@ BEGIN
     IF fn_oid IS NULL OR info.owner_name IS DISTINCT FROM 'jale_cap_org_team' OR NOT info.definer
        OR info.config IS DISTINCT FROM ARRAY['search_path=pg_catalog, pg_temp']
        OR info.language <> 'plpgsql' THEN
-      RAISE EXCEPTION 'migration 130: jale_cap.% has the wrong owner, security, search_path or language', spec.fn_name;
+      RAISE EXCEPTION 'migration 133: jale_cap.% has the wrong owner, security, search_path or language', spec.fn_name;
     END IF;
     SELECT string_agg(CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(a.grantee) END, ', ')
       INTO offender
@@ -932,10 +939,10 @@ BEGIN
        AND a.grantee <> p.proowner
        AND (a.grantee = 0 OR spec.caller IS NULL OR pg_catalog.pg_get_userbyid(a.grantee) <> spec.caller);
     IF offender IS NOT NULL THEN
-      RAISE EXCEPTION 'migration 130: jale_cap.% is executable by a role other than its owner and caller (%)', spec.fn_name, offender;
+      RAISE EXCEPTION 'migration 133: jale_cap.% is executable by a role other than its owner and caller (%)', spec.fn_name, offender;
     END IF;
     IF spec.caller IS NOT NULL AND NOT has_function_privilege(spec.caller, fn_oid, 'EXECUTE') THEN
-      RAISE EXCEPTION 'migration 130: % cannot execute jale_cap.%', spec.caller, spec.fn_name;
+      RAISE EXCEPTION 'migration 133: % cannot execute jale_cap.%', spec.caller, spec.fn_name;
     END IF;
   END LOOP;
 
@@ -956,7 +963,7 @@ BEGIN
            ('public.email_outbox', 'email_outbox_cap_org_team_insert'),
            ('public.email_outbox', 'email_outbox_cap_org_team_delete'))) <> 12
      OR (SELECT count(*) FROM pg_policy p WHERE 'jale_cap_org_team'::regrole::oid = ANY (p.polroles)) <> 12 THEN
-    RAISE EXCEPTION 'migration 130: the jale_cap_org_team policy set is not as reviewed';
+    RAISE EXCEPTION 'migration 133: the jale_cap_org_team policy set is not as reviewed';
   END IF;
 
   -- The capability owner: no login, nothing elevated, NOINHERIT, member of
@@ -968,7 +975,7 @@ BEGIN
      OR EXISTS (SELECT 1 FROM pg_auth_members am
                  WHERE am.member = 'jale_cap_org_team'::regrole
                     OR (am.roleid = 'jale_cap_org_team'::regrole AND (am.inherit_option OR am.set_option))) THEN
-    RAISE EXCEPTION 'migration 130: jale_cap_org_team has unsafe attributes or memberships';
+    RAISE EXCEPTION 'migration 133: jale_cap_org_team has unsafe attributes or memberships';
   END IF;
   SELECT array_agg(c.relname || ':' || a.attname || ':' || p.privilege
                    ORDER BY (c.relname || ':' || a.attname || ':' || p.privilege) COLLATE "C")
@@ -1006,7 +1013,7 @@ BEGIN
     'organizations:id:SELECT', 'organizations:updated_at:UPDATE',
     'users:cognito_sub:SELECT', 'users:email:SELECT', 'users:id:SELECT', 'users:user_type:SELECT'
   ]::TEXT[] THEN
-    RAISE EXCEPTION 'migration 130: jale_cap_org_team column rights are not as reviewed (%)', v_grants;
+    RAISE EXCEPTION 'migration 133: jale_cap_org_team column rights are not as reviewed (%)', v_grants;
   END IF;
   IF EXISTS (SELECT 1 FROM pg_class c
               WHERE c.relkind IN ('r', 'p') AND c.oid <> 'public.email_outbox'::regclass
@@ -1015,7 +1022,7 @@ BEGIN
      OR NOT has_schema_privilege('jale_cap_org_team', 'jale_cap', 'USAGE')
      OR NOT has_schema_privilege('jale_billing', 'jale_cap', 'USAGE')
      OR NOT has_function_privilege('jale_cap_org_team', 'public.employer_display_name(uuid)', 'EXECUTE') THEN
-    RAISE EXCEPTION 'migration 130: jale_cap_org_team table, schema or function rights are not as reviewed';
+    RAISE EXCEPTION 'migration 133: jale_cap_org_team table, schema or function rights are not as reviewed';
   END IF;
 
   -- No runtime login holds a right on organizations or organization_invites
@@ -1031,7 +1038,7 @@ BEGIN
        OR has_any_column_privilege(v_login, 'public.organizations', 'SELECT, INSERT, UPDATE, REFERENCES')
        OR has_table_privilege(v_login, 'public.organization_invites', 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER')
        OR has_any_column_privilege(v_login, 'public.organization_invites', 'SELECT, INSERT, UPDATE, REFERENCES') THEN
-      RAISE EXCEPTION 'migration 130: login % holds a right on organizations or organization_invites', v_login;
+      RAISE EXCEPTION 'migration 133: login % holds a right on organizations or organization_invites', v_login;
     END IF;
   END LOOP;
   -- And the request logins none on the invite mail.
@@ -1039,13 +1046,13 @@ BEGIN
      OR has_any_column_privilege('jale_api_public', 'public.email_outbox', 'SELECT, INSERT, UPDATE')
      OR has_table_privilege('jale_api', 'public.email_outbox', 'DELETE, TRUNCATE')
      OR has_table_privilege('jale_api_public', 'public.email_outbox', 'DELETE, TRUNCATE') THEN
-    RAISE EXCEPTION 'migration 130: a request login holds a right on email_outbox';
+    RAISE EXCEPTION 'migration 133: a request login holds a right on email_outbox';
   END IF;
 
   -- The send counts' index.
   IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'email_outbox_organization_invite_sends'
                   AND indexdef = 'CREATE INDEX email_outbox_organization_invite_sends ON public.email_outbox USING btree (source_id, created_at) WHERE (source_type = ''organization_invite''::text)') THEN
-    RAISE EXCEPTION 'migration 130: email_outbox_organization_invite_sends is missing or drifted';
+    RAISE EXCEPTION 'migration 133: email_outbox_organization_invite_sends is missing or drifted';
   END IF;
 
   -- The new column.
@@ -1054,7 +1061,7 @@ BEGIN
                   WHERE a.attrelid = 'public.organization_invites'::regclass AND a.attname = 'last_sent_at'
                     AND a.atttypid = 'timestamptz'::regtype AND a.attnotnull AND NOT a.attisdropped
                     AND pg_get_expr(d.adbin, d.adrelid) = 'now()') THEN
-    RAISE EXCEPTION 'migration 130: organization_invites.last_sent_at is missing or not NOT NULL DEFAULT now()';
+    RAISE EXCEPTION 'migration 133: organization_invites.last_sent_at is missing or not NOT NULL DEFAULT now()';
   END IF;
 
   -- Every window is closed.
@@ -1064,7 +1071,7 @@ BEGIN
       JOIN pg_roles u ON u.oid = m.member
      WHERE g.rolname = 'jale_cap_org_team' AND u.rolname = current_user AND (m.set_option OR m.inherit_option)
   ) THEN
-    RAISE EXCEPTION 'migration 130: the jale_cap_org_team window was left open';
+    RAISE EXCEPTION 'migration 133: the jale_cap_org_team window was left open';
   END IF;
 END $$;
 

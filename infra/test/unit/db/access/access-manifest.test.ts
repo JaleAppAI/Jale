@@ -305,12 +305,12 @@ describe('access manifest reviewed expressions', () => {
     // 12 in the analytics capture fragment, 16 in the hire-and-resume fragment and 30 in the
     // organizations fragment (5 from 119; 6 from 128, the company usage owner's on organization_members,
     // organizations (two), organization_invites, employer_job_templates and jobs; 3 from 129, the
-    // hire-details owner's on jobs and job_applications; 12 from 130 (jale_cap_org_team), on
+    // hire-details owner's on jobs and job_applications; 12 from 133 (jale_cap_org_team), on
     // organizations (two), organization_invites (three), organization_members (three), users and
-    // email_outbox (three); 2 from 131 (jale_cap_org_team), on employer_profiles and jobs; 2 from 132
+    // email_outbox (three); 2 from 134 (jale_cap_org_team), on employer_profiles and jobs; 2 from 135
     // (jale_cap_hire_nudges, the nudge's recipient), on organization_members and users). 118's go
     // to jale_api, jale_admin and the relationship reader; 128's enforcer policies go to a helper role;
-    // 132's five digest policies go to a login, jale_job_digest.
+    // 135's five digest policies go to a login, jale_job_digest.
     expect(reviewed.filter(([key]) => sources.has(key))).toHaveLength(38);
     expect(reviewed.filter(([, p]) => p.to.some((role) => owners.has(role)))).toHaveLength(122);
   });

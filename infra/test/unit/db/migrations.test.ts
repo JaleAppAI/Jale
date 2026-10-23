@@ -171,6 +171,9 @@ describe('database migrations', () => {
       '131',
       '132',
       '133',
+      '134',
+      '135',
+      '136',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -5380,8 +5383,8 @@ describe('database migrations', () => {
     });
   });
 
-  describe('130 team invites', () => {
-    const sql = fs.readFileSync(path.join(migrationsDir, '130_org_team_invites.sql'), 'utf8');
+  describe('133 team invites', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '133_org_team_invites.sql'), 'utf8');
     const code = sql.replace(/--.*$/gm, '');
     const FUNCTIONS = [
       'org_team_locked_owner_org', 'org_team_invite_create', 'org_team_invite_resend', 'org_team_invite_revoke',
@@ -5394,9 +5397,9 @@ describe('database migrations', () => {
       return sql.slice(start, sql.indexOf('\n$fn$;\n', start));
     };
 
-    it('is one transaction, forward-only, after 129', () => {
-      expect(sql.startsWith('-- ============================================================\n-- 130_org_team_invites.sql\n'
-        + '-- Run manually AFTER 129_org_owner_carry_overs.sql,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n')).toBe(true);
+    it('is one transaction, forward-only, after 132', () => {
+      expect(sql.startsWith('-- ============================================================\n-- 133_org_team_invites.sql\n'
+        + '-- Run manually AFTER 132_job_limit_increase.sql,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n')).toBe(true);
       expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
       expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
       expect(sql).toContain("SET LOCAL lock_timeout = '5s';");
@@ -5405,7 +5408,7 @@ describe('database migrations', () => {
 
     it('refuses a replay, and needs 129', () => {
       expect(sql).toContain("IF to_regprocedure('jale_cap.org_team_invite_accept(bytea)') IS NOT NULL THEN\n"
-        + "    RAISE EXCEPTION 'migration 130: already applied (jale_cap.org_team_invite_accept exists); it is not re-runnable';");
+        + "    RAISE EXCEPTION 'migration 133: already applied (jale_cap.org_team_invite_accept exists); it is not re-runnable';");
       expect(sql).toContain("IF to_regprocedure('public.jobs_assignee_must_be_active()') IS NULL THEN");
     });
 
@@ -5541,8 +5544,8 @@ describe('database migrations', () => {
     });
   });
 
-  describe('131 team members', () => {
-    const sql = fs.readFileSync(path.join(migrationsDir, '131_org_team_members.sql'), 'utf8');
+  describe('134 team members', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '134_org_team_members.sql'), 'utf8');
     const code = sql.replace(/--.*$/gm, '');
     const FUNCTIONS = [
       'org_team_remove_member', 'org_team_members', 'org_team_invites', 'org_team_membership', 'org_member_access',
@@ -5553,18 +5556,18 @@ describe('database migrations', () => {
       return sql.slice(start, sql.indexOf('\n$fn$;\n', start));
     };
 
-    it('is one transaction, forward-only, after 130', () => {
-      expect(sql.startsWith('-- ============================================================\n-- 131_org_team_members.sql\n'
-        + '-- Run manually AFTER 130_org_team_invites.sql,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n')).toBe(true);
+    it('is one transaction, forward-only, after 133', () => {
+      expect(sql.startsWith('-- ============================================================\n-- 134_org_team_members.sql\n'
+        + '-- Run manually AFTER 133_org_team_invites.sql,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n')).toBe(true);
       expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
       expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
       expect(sql).toContain("SET LOCAL lock_timeout = '5s';");
       expect(sql.indexOf("SET LOCAL lock_timeout = '5s';")).toBeLessThan(sql.indexOf('-- ── 0. Preconditions'));
     });
 
-    it('refuses a replay, and needs 130', () => {
+    it('refuses a replay, and needs 133', () => {
       expect(sql).toContain("IF to_regprocedure('jale_cap.org_team_remove_member(uuid)') IS NOT NULL THEN\n"
-        + "    RAISE EXCEPTION 'migration 131: already applied (jale_cap.org_team_remove_member exists); it is not re-runnable';");
+        + "    RAISE EXCEPTION 'migration 134: already applied (jale_cap.org_team_remove_member exists); it is not re-runnable';");
       expect(sql).toContain("IF to_regprocedure('jale_cap.org_team_invite_accept(bytea)') IS NULL");
       expect(sql).toContain("WHERE p.oid = to_regprocedure('jale_cap.org_team_locked_owner_org()')");
     });
@@ -5581,7 +5584,7 @@ describe('database migrations', () => {
         + '  p_since           TIMESTAMPTZ DEFAULT NULL,\n  p_limit           INTEGER     DEFAULT NULL\n)');
     });
 
-    it('takes no row lock: no FOR UPDATE and no FOR SHARE anywhere; removal locks the company through 130\'s helper', () => {
+    it('takes no row lock: no FOR UPDATE and no FOR SHARE anywhere; removal locks the company through 133\'s helper', () => {
       // CREATE POLICY ... FOR SELECT names a command, not a row lock.
       expect(code).not.toMatch(/\bFOR\s+(NO\s+KEY\s+)?UPDATE\b/i);
       expect(code).not.toMatch(/\bFOR\s+(KEY\s+)?SHARE\b/i);
@@ -5684,8 +5687,8 @@ describe('database migrations', () => {
     });
   });
 
-  describe('132 team carry-overs', () => {
-    const sql = fs.readFileSync(path.join(migrationsDir, '132_org_team_carry_overs.sql'), 'utf8');
+  describe('135 team carry-overs', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '135_org_team_carry_overs.sql'), 'utf8');
     const code = sql.replace(/--.*$/gm, '');
     const lastAt = sql.indexOf('-- ── 3. Last: members, users, the digest tables, jobs, conversations');
     const selfCheckAt = sql.indexOf('-- ── 4. Self-check');
@@ -5694,9 +5697,9 @@ describe('database migrations', () => {
       + '  ADD CONSTRAINT job_conversations_job_employer_fkey FOREIGN KEY (job_id, employer_id)\n'
       + '  REFERENCES public.jobs (id, employer_id) ON UPDATE CASCADE ON DELETE CASCADE;';
 
-    it('is one transaction, forward-only, after 131', () => {
-      expect(sql.startsWith('-- ============================================================\n-- 132_org_team_carry_overs.sql\n'
-        + '-- Run manually AFTER 131_org_team_members.sql,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n')).toBe(true);
+    it('is one transaction, forward-only, after 134', () => {
+      expect(sql.startsWith('-- ============================================================\n-- 135_org_team_carry_overs.sql\n'
+        + '-- Run manually AFTER 134_org_team_members.sql,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n')).toBe(true);
       expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
       expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
       expect(sql.indexOf("SET LOCAL lock_timeout = '5s';")).toBeGreaterThan(sql.indexOf('BEGIN;'));
@@ -5704,8 +5707,8 @@ describe('database migrations', () => {
       expect(code).not.toMatch(/\b(DROP|TRUNCATE)\s+(TABLE|FUNCTION|POLICY|INDEX|CONSTRAINT)\b/i);
     });
 
-    it('refuses a replay, needs 131 and 105\'s guard, and dry-runs the conversations through the analytics gate', () => {
-      expect(sql).toContain("RAISE EXCEPTION 'migration 132: already applied (job_conversations_job_employer_fkey exists); it is not re-runnable';");
+    it('refuses a replay, needs 134 and 105\'s guard, and dry-runs the conversations through the analytics gate', () => {
+      expect(sql).toContain("RAISE EXCEPTION 'migration 135: already applied (job_conversations_job_employer_fkey exists); it is not re-runnable';");
       expect(sql).toContain("WHERE p.oid = to_regprocedure('jale_cap.org_team_remove_member(uuid)')");
       expect(sql).toContain("AND t.tgname = 'job_conversations_application_guard' AND t.tgenabled = 'O'");
       expect(sql).toContain("AND t.tgfoid = to_regprocedure('jale_cap.job_conversation_application_guard()'))");
@@ -5715,7 +5718,7 @@ describe('database migrations', () => {
       expect(close).toBeGreaterThan(open);
       expect(close).toBeLessThan(sql.indexOf('-- ── 1. The nudge'));
       expect(sql.split("set_config('app.admin_analytics_read'")).toHaveLength(3);
-      expect(sql).toContain("RAISE EXCEPTION 'migration 132: % conversation(s) name another employer than their job''s; fix them with support before applying', v_mismatched;");
+      expect(sql).toContain("RAISE EXCEPTION 'migration 135: % conversation(s) name another employer than their job''s; fix them with support before applying', v_mismatched;");
     });
 
     it('adds the composite key and the cascading foreign key last, validated in the same statement', () => {
@@ -5817,16 +5820,16 @@ describe('database migrations', () => {
     });
   });
 
-  describe('133 retire per-person billing', () => {
-    const sql = fs.readFileSync(path.join(migrationsDir, '133_retire_per_person_billing.sql'), 'utf8');
+  describe('136 retire per-person billing', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '136_retire_per_person_billing.sql'), 'utf8');
     const code = sql.replace(/--.*$/gm, '');
     const selfCheckAt = sql.indexOf('-- ── 2. Self-check');
     const PAUSE = 'DROP FUNCTION jale_billing_internal.billing_pause_over_limit_jobs(uuid, integer);';
     const RESUME = 'DROP FUNCTION jale_billing_internal.billing_resume_paused_jobs(uuid, integer);';
 
-    it('is one transaction, forward-only, after 132', () => {
-      expect(sql.startsWith('-- ============================================================\n-- 133_retire_per_person_billing.sql\n'
-        + '-- Run manually AFTER 132_org_team_carry_overs.sql,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n')).toBe(true);
+    it('is one transaction, forward-only, after 135', () => {
+      expect(sql.startsWith('-- ============================================================\n-- 136_retire_per_person_billing.sql\n'
+        + '-- Run manually AFTER 135_org_team_carry_overs.sql,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n')).toBe(true);
       expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
       expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
       expect(sql.indexOf("SET LOCAL lock_timeout = '5s';")).toBeGreaterThan(sql.indexOf('BEGIN;'));
@@ -5845,11 +5848,11 @@ describe('database migrations', () => {
       expect(code).not.toMatch(/^\s*(GRANT|REVOKE)\b/gm);
     });
 
-    it('needs 132, 128\'s company pair and 125\'s exact pair, and refuses a replay', () => {
-      expect(sql).toContain("RAISE EXCEPTION 'migration 133: already applied (125''s per-person billing functions are gone); it is not re-runnable';");
-      expect(sql).toContain("RAISE EXCEPTION 'migration 133: apply 132 first (job_conversations_job_employer_fkey is missing)';");
-      // A database without 132 is told to apply 132, not that 133 already ran.
-      expect(sql.indexOf("'migration 133: apply 132 first")).toBeLessThan(sql.indexOf("'migration 133: already applied"));
+    it('needs 135, 128\'s company pair and 125\'s exact pair, and refuses a replay', () => {
+      expect(sql).toContain("RAISE EXCEPTION 'migration 136: already applied (125''s per-person billing functions are gone); it is not re-runnable';");
+      expect(sql).toContain("RAISE EXCEPTION 'migration 136: apply 135 first (job_conversations_job_employer_fkey is missing)';");
+      // A database without 135 is told to apply 135, not that 136 already ran.
+      expect(sql.indexOf("'migration 136: apply 135 first")).toBeLessThan(sql.indexOf("'migration 136: already applied"));
       expect(sql).toContain("AND pg_get_function_identity_arguments(p.oid) = 'p_user_id uuid, p_active_job_limit integer'");
       expect(sql).toContain("AND pg_get_function_identity_arguments(p.oid) = 'p_organization_id uuid, p_active_job_limit integer, p_foreman_seat_limit integer'");
       // By catalog row: jale_admin holds no USAGE on jale_billing_internal.
@@ -5876,11 +5879,14 @@ describe('database migrations', () => {
     it('self-checks by catalog row that both are gone, 128\'s pair is intact, and the window is closed', () => {
       const check = sql.slice(selfCheckAt);
       expect(check).toContain("AND p.proname IN ('billing_pause_over_limit_jobs', 'billing_resume_paused_jobs')");
-      expect(check).toContain("RAISE EXCEPTION 'migration 133: a per-person billing function is still present';");
+      expect(check).toContain("RAISE EXCEPTION 'migration 136: a per-person billing function is still present';");
       expect(check).toContain("AND p.proname IN ('billing_enforce_org_limits', 'billing_restore_org')");
-      expect(check).toContain("RAISE EXCEPTION 'migration 133: 128''s billing_enforce_org_limits / billing_restore_org are not intact';");
-      expect(check).toContain("RAISE EXCEPTION 'migration 133: the jale_billing_job_enforcer window was left open';");
+      expect(check).toContain("RAISE EXCEPTION 'migration 136: 128''s billing_enforce_org_limits / billing_restore_org are not intact';");
+      expect(check).toContain("RAISE EXCEPTION 'migration 136: the jale_billing_job_enforcer window was left open';");
       expect(check).toContain('JOIN pg_namespace n ON n.oid = p.pronamespace');
+    });
+  });
+
   // Sprint 29 (BE-1): tutorial progress. One row per account and tutorial,
   // read and inserted by the request login for the caller only, keyed like
   // 118's organization_members_self_read. No UPDATE or DELETE right: the

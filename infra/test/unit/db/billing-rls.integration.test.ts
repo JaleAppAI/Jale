@@ -313,7 +313,7 @@ maybeDescribe('billing RLS integration (migration 034)', () => {
 
         // No app policies: 118's sign-up bootstrap gate for jale_admin, and
         // the company lock for three NOLOGIN roles (128's usage definer's owner
-        // and billing enforcer, 130's team-invite definers' owner). No app role
+        // and billing enforcer, 133's team-invite definers' owner). No app role
         // sees a row.
         const policyResult = await client.query<{ policyname: string; roles: string[] }>(
           `SELECT policyname, roles::text[] AS roles FROM pg_policies

@@ -201,7 +201,7 @@ describe('production upgrade 020b/035-046 operator tooling', () => {
     await client.connect();
     try {
       // Predicate 2 is 036's: it names billing_pause_over_limit_jobs, which
-      // migration 133 dropped (128's company pair replaced it). On the fully
+      // migration 136 dropped (128's company pair replaced it). On the fully
       // migrated schema it is false for that reason alone: the rest of what
       // 036 left (role, schema, policies, grants) still holds, which a
       // rolled-back stand-in for the function proves below.

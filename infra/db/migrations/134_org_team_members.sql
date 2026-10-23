@@ -1,6 +1,6 @@
 -- ============================================================
--- 131_org_team_members.sql
--- Run manually AFTER 130_org_team_invites.sql,
+-- 134_org_team_members.sql
+-- Run manually AFTER 133_org_team_invites.sql,
 -- connected as jale_admin. Forward-only (ADR-005). ONE transaction.
 --
 -- Employer organizations, Phase 3 milestone A, part 2: member removal, the
@@ -8,10 +8,10 @@
 -- (docs/superpowers/specs/2026-10-15-employer-organizations-design.md,
 -- "Reassignment and removal", "Removing or suspending a member").
 --
--- (1) THE DEFINERS, owned by 130's jale_cap_org_team, each SECURITY DEFINER
+-- (1) THE DEFINERS, owned by 133's jale_cap_org_team, each SECURITY DEFINER
 --     with a pinned search_path and exactly one caller:
 --       org_team_remove_member (jale_api, the company's active owner): takes
---         the company lock through 130's org_team_locked_owner_org(), then
+--         the company lock through 133's org_team_locked_owner_org(), then
 --         removes a foreman who has no job left; outcomes removed, not_owner,
 --         not_found, is_owner, already_removed, has_jobs. It moves no job:
 --         remove-with-reassign (Task 9's handler) moves them first, in the
@@ -27,14 +27,14 @@
 --         should have, by company or changed since a time (the catch-up
 --         sync), for the billing processor and the team handlers to apply
 --         after COMMIT. Owners are never listed.
--- (2) NO ROW LOCKS. As in 130: the only lock is the company row's (128's
+-- (2) NO ROW LOCKS. As in 133: the only lock is the company row's (128's
 --     order, organizations first); the reads after it are plain, and the one
 --     UPDATE names the member already classified and checks ROW_COUNT = 1.
 -- (3) THE BILLING MARK. A removal clears billing_suspended_at (128's CHECK
 --     allows the mark only on a suspended row).
 -- (4) THE INVITES INDEX. organization_invites (organization_id, email), for
 --     member access and membership, which read a company's invites for an
---     email whatever their state (130's one-pending index covers pending
+--     email whatever their state (133's one-pending index covers pending
 --     invites only).
 -- No runtime login gains any right on a table.
 --
@@ -52,19 +52,19 @@ SET LOCAL lock_timeout = '5s';
 DO $$
 BEGIN
   IF session_user <> current_user THEN
-    RAISE EXCEPTION 'migration 131: connect as the migration login itself, without SET ROLE';
+    RAISE EXCEPTION 'migration 134: connect as the migration login itself, without SET ROLE';
   END IF;
   IF to_regprocedure('jale_cap.org_team_remove_member(uuid)') IS NOT NULL THEN
-    RAISE EXCEPTION 'migration 131: already applied (jale_cap.org_team_remove_member exists); it is not re-runnable';
+    RAISE EXCEPTION 'migration 134: already applied (jale_cap.org_team_remove_member exists); it is not re-runnable';
   END IF;
-  -- 130 as committed: its owner, its company-lock helper and its accept.
+  -- 133 as committed: its owner, its company-lock helper and its accept.
   IF to_regprocedure('jale_cap.org_team_invite_accept(bytea)') IS NULL
      OR NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_roles r ON r.oid = p.proowner
                      WHERE p.oid = to_regprocedure('jale_cap.org_team_locked_owner_org()')
                        AND r.rolname = 'jale_cap_org_team' AND p.prosecdef
                        AND p.proconfig = ARRAY['search_path=pg_catalog, pg_temp']
                        AND pg_get_function_result(p.oid) = 'uuid') THEN
-    RAISE EXCEPTION 'migration 131: apply 130 first (jale_cap.org_team_locked_owner_org is missing or not jale_cap_org_team''s definer)';
+    RAISE EXCEPTION 'migration 134: apply 133 first (jale_cap.org_team_locked_owner_org is missing or not jale_cap_org_team''s definer)';
   END IF;
   IF EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname = 'jale_cap_org_team'
               AND (r.rolcanlogin OR r.rolsuper OR r.rolcreatedb OR r.rolcreaterole OR r.rolinherit
@@ -74,9 +74,9 @@ BEGIN
                      WHERE am.roleid = 'jale_cap_org_team'::regrole
                        AND am.member = (SELECT oid FROM pg_roles WHERE rolname = current_user)
                        AND am.admin_option AND NOT am.inherit_option AND NOT am.set_option) THEN
-    RAISE EXCEPTION 'migration 131: jale_cap_org_team is not as 130 left it (attributes, a membership of its own, or the migration login''s closed admin grant)';
+    RAISE EXCEPTION 'migration 134: jale_cap_org_team is not as 133 left it (attributes, a membership of its own, or the migration login''s closed admin grant)';
   END IF;
-  -- 130's twelve policies, the company lock's among them, and no other for the owner.
+  -- 133's twelve policies, the company lock's among them, and no other for the owner.
   IF (SELECT count(*) FROM pg_policy p
        WHERE p.polpermissive AND p.polroles = ARRAY['jale_cap_org_team'::regrole::oid]
          AND (p.polrelid, p.polname) IN (
@@ -93,9 +93,9 @@ BEGIN
            ('public.email_outbox'::regclass, 'email_outbox_cap_org_team_insert'),
            ('public.email_outbox'::regclass, 'email_outbox_cap_org_team_delete'))) <> 12
      OR (SELECT count(*) FROM pg_policy p WHERE 'jale_cap_org_team'::regrole::oid = ANY (p.polroles)) <> 12 THEN
-    RAISE EXCEPTION 'migration 131: the jale_cap_org_team policy set is not 130''s';
+    RAISE EXCEPTION 'migration 134: the jale_cap_org_team policy set is not 133''s';
   END IF;
-  -- The rights the bodies read through, exactly as 130 granted them (130's
+  -- The rights the bodies read through, exactly as 133 granted them (133's
   -- self-check array), and none yet on employer_profiles or jobs.
   IF NOT has_schema_privilege('jale_cap_org_team', 'jale_cap', 'USAGE')
      OR NOT has_schema_privilege('jale_cap_org_team', 'jale_cap', 'CREATE')
@@ -137,7 +137,7 @@ BEGIN
     'organizations:id:SELECT', 'organizations:updated_at:UPDATE',
     'users:cognito_sub:SELECT', 'users:email:SELECT', 'users:id:SELECT', 'users:user_type:SELECT'
   ]::TEXT[] THEN
-    RAISE EXCEPTION 'migration 131: jale_cap_org_team''s rights are not as 130 left them';
+    RAISE EXCEPTION 'migration 134: jale_cap_org_team''s rights are not as 133 left them';
   END IF;
   -- 128: the enforcer whose revocations the member access reflects, and the
   -- billing mark allowed only on a suspended row.
@@ -149,10 +149,10 @@ BEGIN
                      WHERE c.conrelid = 'public.organization_members'::regclass AND c.contype = 'c'
                        AND c.conname = 'organization_members_billing_mark_while_suspended'
                        AND pg_get_constraintdef(c.oid) = 'CHECK (((billing_suspended_at IS NULL) OR (status = ''suspended''::text)))') THEN
-    RAISE EXCEPTION 'migration 131: 128''s enforcer or billing-mark check is missing';
+    RAISE EXCEPTION 'migration 134: 128''s enforcer or billing-mark check is missing';
   END IF;
   IF (SELECT count(*) FROM pg_roles WHERE rolname IN ('jale_api', 'jale_billing')) <> 2 THEN
-    RAISE EXCEPTION 'migration 131: a role it builds on is missing';
+    RAISE EXCEPTION 'migration 134: a role it builds on is missing';
   END IF;
   IF (SELECT count(*) FROM pg_attribute a
        WHERE NOT a.attisdropped AND a.attnum > 0
@@ -162,7 +162,7 @@ BEGIN
      OR EXISTS (SELECT 1 FROM pg_policy p
                  WHERE p.polname IN ('employer_profiles_cap_org_team_select', 'jobs_cap_org_team_select'))
      OR to_regclass('public.organization_invites_by_org_email') IS NOT NULL THEN
-    RAISE EXCEPTION 'migration 131: employer_profiles, jobs or users are not as expected, or a 131 policy or index already exists';
+    RAISE EXCEPTION 'migration 134: employer_profiles, jobs or users are not as expected, or a 134 policy or index already exists';
   END IF;
 END $$;
 
@@ -211,7 +211,7 @@ BEGIN
   --    same transaction: that is safe because the company lock is taken
   --    first (the handler's employer_org_usage(true), then here again in the
   --    same transaction), and every writer of a company's jobs and members
-  --    (a post, 128's enforcer and restorer, 130's accepts) holds it, so
+  --    (a post, 128's enforcer and restorer, 133's accepts) holds it, so
   --    neither the jobs nor the member row change in between. A post in
   --    flight commits before this reads (the lock waits for it): has_jobs.
   PERFORM 1 FROM public.jobs j WHERE j.employer_id = p_user_id LIMIT 1;
@@ -454,18 +454,18 @@ END $$;
 -- ── 2. The invites index ────────────────────────────────────
 -- 128's lock order: invites before members and jobs. Member access and
 -- membership read a company's invites for one email whatever their state;
--- 130's organization_invites_one_pending covers pending invites only.
+-- 133's organization_invites_one_pending covers pending invites only.
 CREATE INDEX organization_invites_by_org_email ON public.organization_invites (organization_id, email);
 
 -- ── 3. Last: profiles, jobs, users ──────────────────────────
 -- Columns only, under open policies: each function's caller check (the
 -- company's active owner, the caller's own login, or jale_billing's company
--- and time keys) is the boundary, as in 130.
+-- and time keys) is the boundary, as in 133.
 GRANT SELECT (user_id, contact_name) ON public.employer_profiles TO jale_cap_org_team;
 CREATE POLICY employer_profiles_cap_org_team_select ON public.employer_profiles AS PERMISSIVE FOR SELECT TO jale_cap_org_team USING (true);
 GRANT SELECT (id, employer_id, status) ON public.jobs TO jale_cap_org_team;
 CREATE POLICY jobs_cap_org_team_select ON public.jobs AS PERMISSIVE FOR SELECT TO jale_cap_org_team USING (true);
--- The team list's display name falls back to the login's full name (130's
+-- The team list's display name falls back to the login's full name (133's
 -- users_cap_org_team_select keeps the read to employer logins).
 GRANT SELECT (full_name) ON public.users TO jale_cap_org_team;
 
@@ -505,7 +505,7 @@ BEGIN
     IF fn_oid IS NULL OR info.owner_name IS DISTINCT FROM 'jale_cap_org_team' OR NOT info.definer
        OR info.config IS DISTINCT FROM ARRAY['search_path=pg_catalog, pg_temp']
        OR info.language <> 'plpgsql' THEN
-      RAISE EXCEPTION 'migration 131: jale_cap.% has the wrong owner, security, search_path or language', spec.fn_name;
+      RAISE EXCEPTION 'migration 134: jale_cap.% has the wrong owner, security, search_path or language', spec.fn_name;
     END IF;
     SELECT string_agg(CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(a.grantee) END, ', ')
       INTO offender
@@ -514,10 +514,10 @@ BEGIN
        AND a.grantee <> p.proowner
        AND (a.grantee = 0 OR pg_catalog.pg_get_userbyid(a.grantee) <> spec.caller);
     IF offender IS NOT NULL THEN
-      RAISE EXCEPTION 'migration 131: jale_cap.% is executable by a role other than its owner and caller (%)', spec.fn_name, offender;
+      RAISE EXCEPTION 'migration 134: jale_cap.% is executable by a role other than its owner and caller (%)', spec.fn_name, offender;
     END IF;
     IF NOT has_function_privilege(spec.caller, fn_oid, 'EXECUTE') THEN
-      RAISE EXCEPTION 'migration 131: % cannot execute jale_cap.%', spec.caller, spec.fn_name;
+      RAISE EXCEPTION 'migration 134: % cannot execute jale_cap.%', spec.caller, spec.fn_name;
     END IF;
   END LOOP;
 
@@ -529,10 +529,10 @@ BEGIN
            ('public.employer_profiles'::regclass, 'employer_profiles_cap_org_team_select'),
            ('public.jobs'::regclass, 'jobs_cap_org_team_select'))) <> 2
      OR (SELECT count(*) FROM pg_policy p WHERE 'jale_cap_org_team'::regrole::oid = ANY (p.polroles)) <> 14 THEN
-    RAISE EXCEPTION 'migration 131: the jale_cap_org_team policy set is not as reviewed';
+    RAISE EXCEPTION 'migration 134: the jale_cap_org_team policy set is not as reviewed';
   END IF;
 
-  -- The capability owner's column rights: 130's plus employer_profiles,
+  -- The capability owner's column rights: 133's plus employer_profiles,
   -- jobs and users.full_name, reads only.
   SELECT array_agg(c.relname || ':' || a.attname || ':' || p.privilege
                    ORDER BY (c.relname || ':' || a.attname || ':' || p.privilege) COLLATE "C")
@@ -573,18 +573,18 @@ BEGIN
     'organizations:id:SELECT', 'organizations:updated_at:UPDATE',
     'users:cognito_sub:SELECT', 'users:email:SELECT', 'users:full_name:SELECT', 'users:id:SELECT', 'users:user_type:SELECT'
   ]::TEXT[] THEN
-    RAISE EXCEPTION 'migration 131: jale_cap_org_team column rights are not as reviewed (%)', v_grants;
+    RAISE EXCEPTION 'migration 134: jale_cap_org_team column rights are not as reviewed (%)', v_grants;
   END IF;
   IF EXISTS (SELECT 1 FROM pg_class c
               WHERE c.relkind IN ('r', 'p') AND c.oid <> 'public.email_outbox'::regclass
                 AND has_table_privilege('jale_cap_org_team', c.oid, 'DELETE, TRUNCATE, TRIGGER')) THEN
-    RAISE EXCEPTION 'migration 131: jale_cap_org_team holds a table right beyond 130''s';
+    RAISE EXCEPTION 'migration 134: jale_cap_org_team holds a table right beyond 133''s';
   END IF;
 
   -- The invites index, exactly.
   IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'organization_invites_by_org_email'
                   AND indexdef = 'CREATE INDEX organization_invites_by_org_email ON public.organization_invites USING btree (organization_id, email)') THEN
-    RAISE EXCEPTION 'migration 131: organization_invites_by_org_email is missing or drifted';
+    RAISE EXCEPTION 'migration 134: organization_invites_by_org_email is missing or drifted';
   END IF;
 
   -- Every window is closed, and the owner is a member of nothing.
@@ -594,7 +594,7 @@ BEGIN
       JOIN pg_roles u ON u.oid = m.member
      WHERE g.rolname = 'jale_cap_org_team' AND (m.set_option OR m.inherit_option)
   ) OR EXISTS (SELECT 1 FROM pg_auth_members am WHERE am.member = 'jale_cap_org_team'::regrole) THEN
-    RAISE EXCEPTION 'migration 131: the jale_cap_org_team window was left open, or it is a member of a role';
+    RAISE EXCEPTION 'migration 134: the jale_cap_org_team window was left open, or it is a member of a role';
   END IF;
 END $$;
 

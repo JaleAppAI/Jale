@@ -62,7 +62,7 @@ maybeDescribe('billing job-limit enforcement migration 036', () => {
     } finally { await cleanup.end(); }
   });
 
-  // 133 dropped 036's per-person billing_pause_over_limit_jobs (as 125 left
+  // 136 dropped 036's per-person billing_pause_over_limit_jobs (as 125 left
   // it); 128's billing_enforce_org_limits replaces it, tested in
   // company-limits-128. What 036 set up around it stays: the processor's login
   // still reaches jobs and users only through the enforcer's definers.

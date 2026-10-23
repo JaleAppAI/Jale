@@ -1,5 +1,5 @@
 /**
- * org-team-carry-overs-132 -- migration 132 on a real bed: conversations
+ * org-team-carry-overs-135 -- migration 135 on a real bed: conversations
  * follow their job, the hire-details nudge goes to the company's owner when
  * the job's member is not active, and the owner's digest session reads the
  * whole company. Code under test runs on its real login (jale_api,
@@ -38,7 +38,7 @@
  *
  * Run: bash infra/db/local/bootstrap-testbed.sh --ephemeral --ref none --profile request \
  *   --container <name> --port <port> -- \
- *   bash infra/scripts/run-whatsapp-v2-db-tests.sh --suite test/unit/db/org-team-carry-overs-132.integration.test.ts
+ *   bash infra/scripts/run-whatsapp-v2-db-tests.sh --suite test/unit/db/org-team-carry-overs-135.integration.test.ts
  */
 import { randomUUID } from 'node:crypto';
 import type { Client, Pool, PoolClient } from 'pg';
@@ -60,7 +60,7 @@ jest.mock('../../../lambda/lib/db', () => {
 const { handler: hireDetails } = require('../../../lambda/api/employer-application-hire-details');
 
 if (!databaseUrl) {
-  test('CONCERN: org-team-carry-overs-132 needs JALE_TEST_DATABASE_URL (see header)', () => {
+  test('CONCERN: org-team-carry-overs-135 needs JALE_TEST_DATABASE_URL (see header)', () => {
     expect(databaseUrl).toBeUndefined();
   });
 }
@@ -103,7 +103,7 @@ async function asLogin<T>(login: string, ctx: Context, fn: (c: Client) => Promis
 }
 const as = (p: UserFixture): Context => ({ sub: p.sub, internal: p.id });
 
-describeInProfiles([...ALL_PROFILES], 'migration 132: the catalog', () => {
+describeInProfiles([...ALL_PROFILES], 'migration 135: the catalog', () => {
   let world: World;
   beforeAll(async () => {
     world = new World(databaseUrl!);
@@ -125,7 +125,7 @@ describeInProfiles([...ALL_PROFILES], 'migration 132: the catalog', () => {
       { rel: 'jobs', conname: 'jobs_id_employer_id_key', contype: 'u', convalidated: true, condeferrable: false,
         def: 'UNIQUE (id, employer_id)' },
     ]);
-    // The referencing side's index (132), for every key change or delete on jobs.
+    // The referencing side's index (135), for every key change or delete on jobs.
     expect((await world.su.query(
       `SELECT indexdef FROM pg_catalog.pg_indexes WHERE schemaname = 'public' AND indexname = 'job_conversations_job_id_employer_id_idx'`)).rows)
       .toEqual([{ indexdef: 'CREATE INDEX job_conversations_job_id_employer_id_idx ON public.job_conversations USING btree (job_id, employer_id)' }]);
@@ -213,7 +213,7 @@ describeInProfiles([...ALL_PROFILES], 'migration 132: the catalog', () => {
   });
 });
 
-describeInProfiles([...ROW_PROFILES], 'migration 132: conversations, nudges and digests on the bed', () => {
+describeInProfiles([...ROW_PROFILES], 'migration 135: conversations, nudges and digests on the bed', () => {
   let world: World;
   let owner: UserFixture;
   let foremanA: UserFixture;

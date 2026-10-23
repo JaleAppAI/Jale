@@ -1,5 +1,5 @@
 /**
- * org-team-concurrency -- migration 130's invite definers under real
+ * org-team-concurrency -- migration 133's invite definers under real
  * concurrency, as the deployed logins (two connections; one holds the
  * company lock, the other's call is proven to wait on it, then resolves):
  *  1. two of the owner's sessions inviting for the last seat: the second
@@ -20,7 +20,7 @@
  *     commits, answers already_member instead of raising 23505;
  *  7. accept_email racing a start-company (employer_ensure_organization)
  *     for the same login: already_member, not 23505;
- *  8. the owner's removal of a foreman (131) waiting on that foreman's post
+ *  8. the owner's removal of a foreman (134) waiting on that foreman's post
  *     in flight (128's employer_org_usage lock plus the job insert): once
  *     the post commits, the removal sees the job and gives has_jobs;
  *  9. the removal waiting on a downgrade (128's enforcer) that suspends and
@@ -383,7 +383,7 @@ maybeDescribe('team invites under concurrency', () => {
         await poster.query(
           `INSERT INTO jobs (employer_id, title, location, job_type, status)
            VALUES ($1, 'Posted while removed', 'Austin', 'full-time', 'active')`, [foreman.id]);
-        // The owner's removal (131) asks for the same lock and waits.
+        // The owner's removal (134) asks for the same lock and waits.
         await begin(remover, owner);
         const removing = remover.query<{ outcome: string; cognito_sub: string | null }>(
           'SELECT outcome, cognito_sub FROM jale_cap.org_team_remove_member($1)', [foreman.id]);

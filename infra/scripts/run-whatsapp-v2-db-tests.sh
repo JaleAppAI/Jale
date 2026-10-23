@@ -130,10 +130,10 @@ SUITES=(
   test/unit/db/company-limit-concurrency.integration.test.ts
   test/unit/db/org-owner-carry-overs-129.integration.test.ts
   test/unit/db/r-paths-org-members.integration.test.ts
-  test/unit/db/org-team-invites-130.integration.test.ts
+  test/unit/db/org-team-invites-133.integration.test.ts
   test/unit/db/org-team-concurrency.integration.test.ts
-  test/unit/db/org-team-members-131.integration.test.ts
-  test/unit/db/org-team-carry-overs-132.integration.test.ts
+  test/unit/db/org-team-members-134.integration.test.ts
+  test/unit/db/org-team-carry-overs-135.integration.test.ts
   test/unit/db/whatsapp-support-039.integration.test.ts
   test/unit/db/whatsapp-delivery-040.integration.test.ts
   test/unit/db/referrals-rls.integration.test.ts
