@@ -142,10 +142,14 @@ function renderDashboard(locale: Locale = 'en') {
 }
 
 /** Two separate acts: the second commits whatever the first one's promises woke up. */
+/**
+ * Several separate acts, each a short real wait: long enough for the lazily
+ * loaded player to arrive, so "stays shut" means it was never asked for.
+ */
 async function settle() {
     for (let turn = 0; turn < 3; turn += 1) {
         await act(async () => {
-            await new Promise((resolve) => setTimeout(resolve, 0));
+            await new Promise((resolve) => setTimeout(resolve, 15));
         });
     }
 }
