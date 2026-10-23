@@ -134,7 +134,10 @@ export function PostJobProvider({ children }: { children: ReactNode }) {
 
     const registerSnapshot = useCallback((snapshot: PostJobSnapshot | null) => {
         pageSnapshotRef.current = snapshot;
-        if (snapshot) setHasJobs(hasJobsDone(snapshot.jobs));
+        // A page that withdraws its snapshot (it unmounted) takes what it said
+        // with it: the next press reads the jobs again rather than trusting an
+        // answer that may have gone stale since.
+        setHasJobs(snapshot ? hasJobsDone(snapshot.jobs) : undefined);
     }, []);
 
     const subscribeJobCreated = useCallback((listener: JobCreatedListener) => {

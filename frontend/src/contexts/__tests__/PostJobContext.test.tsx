@@ -419,6 +419,24 @@ describe('the post-job tutorial', () => {
         expect(screen.queryByTestId('post-job-wizard')).not.toBeInTheDocument();
     });
 
+    it('forgets what a page told it once that page is gone', () => {
+        const { rerender } = renderIntl(
+            <PostJobProvider>
+                <PageWithSnapshot snapshot={noJobsSnapshot} />
+            </PostJobProvider>,
+        );
+        expect(tutorial.latestDone.employer_post_job).toBe(false);
+
+        rerender(
+            <PostJobProvider>
+                <PostJobButton />
+            </PostJobProvider>,
+        );
+
+        // Back to unknown: the next press reads the jobs again.
+        expect(tutorial.latestDone.employer_post_job).toBeUndefined();
+    });
+
     it('keeps done unknown for a session that is not an employer', () => {
         authState.userType = 'worker';
         renderIntl(
