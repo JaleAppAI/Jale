@@ -99,8 +99,10 @@ export function arriveFrames(step: SceneStep, from: 'below' | 'left' | 'dim'): K
     ];
 }
 
-/** The rgba components of `--jale-blue-500` (#0064d6), tracked by hand like `--shadow-btn`. */
-const RING = 'rgba(0,100,214,';
+/** The tap ring's colour: the `--jale-blue-500` token at `percent` strength, so it follows the theme. */
+function ring(percent: number): string {
+    return `color-mix(in srgb, var(--jale-blue-500) ${percent}%, transparent)`;
+}
 
 /** A tap: an expanding ring (the default, near the end of the pass) or a quick press. */
 export function tapFrames(kind: 'ring' | 'press', at: number): Keyframe[] {
@@ -115,10 +117,10 @@ export function tapFrames(kind: 'ring' | 'press', at: number): Keyframe[] {
         ];
     }
     return [
-        { offset: 0, boxShadow: `0 0 0 0 ${RING}.5)` },
-        { offset: land, boxShadow: `0 0 0 0 ${RING}.5)`, easing: EASE_OUT },
-        { offset: land + 0.18, boxShadow: `0 0 0 12px ${RING}0)` },
-        { offset: 1, boxShadow: `0 0 0 0 ${RING}0)` },
+        { offset: 0, boxShadow: `0 0 0 0 ${ring(50)}` },
+        { offset: land, boxShadow: `0 0 0 0 ${ring(50)}`, easing: EASE_OUT },
+        { offset: land + 0.18, boxShadow: `0 0 0 12px ${ring(0)}` },
+        { offset: 1, boxShadow: `0 0 0 0 ${ring(0)}` },
     ];
 }
 

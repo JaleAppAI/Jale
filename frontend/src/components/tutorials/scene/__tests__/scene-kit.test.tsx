@@ -279,6 +279,23 @@ describe('motion', () => {
         }
     });
 
+    it('draws the tap ring in the blue token, so it follows the theme', () => {
+        stubReducedMotion(false);
+        const { calls } = stubAnimate();
+
+        renderStage(false);
+
+        const shadows = calls
+            .flatMap((call) => call.keyframes)
+            .map((frame) => frame.boxShadow)
+            .filter((value): value is string => typeof value === 'string');
+        expect(shadows.length).toBeGreaterThan(0);
+        for (const shadow of shadows) {
+            expect(shadow).toContain('var(--jale-blue-500)');
+            expect(shadow).not.toMatch(/rgba?\(|#[0-9a-f]{3,8}\b/i);
+        }
+    });
+
     it('draws the pointer only while it moves', () => {
         stubReducedMotion(false);
         stubAnimate();
