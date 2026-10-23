@@ -388,4 +388,13 @@ describe('the plan meter on the dashboard', () => {
         const link = screen.getByRole('link', { name: message('employer_dashboard.usage.view_plan') });
         expect(link).toHaveAttribute('href', '/employer/billing');
     });
+
+    // The phone bar has no Billing tab, so this link is the phone route to the
+    // plan page -- including when the plan could not be read.
+    it('still links to the billing page when the plan could not be read', () => {
+        seed = { ...seed, billing: null };
+        renderDashboard();
+        const link = screen.getByRole('link', { name: message('employer_dashboard.usage.view_plan') });
+        expect(link).toHaveAttribute('href', '/employer/billing');
+    });
 });
