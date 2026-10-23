@@ -38,6 +38,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { Client } from 'pg';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { dropCompanies, ensureOwnerCompany } from './helpers/org-fixtures';
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
 
@@ -198,6 +199,7 @@ maybeDescribe('sprint 28 admin analytics read side (123)', () => {
   const cases: string[] = [];
   const challenges: string[] = [];
   const phones: string[] = [];
+  const companies: string[] = [];
 
   /** Runs `fn` in one superuser transaction with triggers suppressed. */
   async function seed(fn: (c: Client) => Promise<void>): Promise<void> {
@@ -319,9 +321,13 @@ maybeDescribe('sprint 28 admin analytics read side (123)', () => {
         `INSERT INTO billing_plans (code, audience, display_name, entitlements) VALUES ($1, 'employer', 'IT 123 plan', '{}')
          ON CONFLICT (code) DO NOTHING`, [PLAN]);
       const subscription = async (userId: string, status: string, history: [string | null, string, Date, boolean?][]): Promise<void> => {
+        // A subscription belongs to the payer's company (127). seed() runs with
+        // triggers off, so the row names its company itself.
+        const org = await ensureOwnerCompany(c, userId);
+        companies.push(org);
         const subId = (await c.query(
-          `INSERT INTO subscriptions (user_id, plan_code, status) VALUES ($1, $2, $3) RETURNING id`,
-          [userId, PLAN, status],
+          `INSERT INTO subscriptions (user_id, organization_id, plan_code, status) VALUES ($1, $4, $2, $3) RETURNING id`,
+          [userId, PLAN, status, org],
         )).rows[0].id as string;
         for (const [from, to, at, backfill] of history) {
           await c.query(
@@ -635,6 +641,7 @@ maybeDescribe('sprint 28 admin analytics read side (123)', () => {
       // Extractions restrict their account's deletion.
       await su.query(`DELETE FROM worker_profile_ai_extractions WHERE user_id = ANY($1::uuid[])`, [users]);
       await su.query(`DELETE FROM users WHERE id = ANY($1::uuid[])`, [users]);
+      await dropCompanies(su, companies);
       await su.query(`DELETE FROM billing_plans WHERE code = $1`, [PLAN]);
       await su.query('COMMIT');
     });

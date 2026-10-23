@@ -1,6 +1,6 @@
 -- ============================================================
 -- 130_user_tutorial_progress.sql
--- Run manually AFTER 126_job_conversations_whatsapp_update_columns.sql,
+-- Run manually AFTER 129_org_owner_carry_overs.sql,
 -- connected as jale_admin. Forward-only (ADR-005). ONE transaction.
 --
 -- Tutorial progress (sprint 29, contract K1): which first-time tutorials an

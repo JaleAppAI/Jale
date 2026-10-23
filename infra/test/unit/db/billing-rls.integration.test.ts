@@ -23,6 +23,7 @@
 
 import { Client } from 'pg';
 import { describeInProfiles } from './helpers/login-pool';
+import { ensureOwnerCompany } from './helpers/org-fixtures';
 
 // ---------------------------------------------------------------------------
 // Harness helpers
@@ -148,6 +149,9 @@ let otherEmployerUserId: string;
 let otherEmployerCognitoSub: string;
 let workerUserId: string;
 let workerCognitoSub: string;
+// Every fixture user this suite lets pay. The users and their companies persist across
+// runs (ensureOwnerCompany is idempotent); afterAll removes only the billing rows.
+const PAYER_SUBS = ['emp-cognito-sub-1', 'emp-cognito-sub-2', 'sub-uniqueness-test'];
 
 // ---------------------------------------------------------------------------
 // Suite setup: apply migrations, create test fixtures
@@ -190,6 +194,10 @@ maybeDescribe('billing RLS integration (migration 034)', () => {
       otherEmployerUserId = e2.rows[0].id;
       otherEmployerCognitoSub = e2.rows[0].cognito_sub;
 
+      // Both employers pay in the tests below; since 127 a payer owns a company.
+      await ensureOwnerCompany(setup, employerUserId);
+      await ensureOwnerCompany(setup, otherEmployerUserId);
+
       // worker1
       const w1 = await setup.query<{ id: string; cognito_sub: string }>(
         `INSERT INTO users (cognito_sub, user_type, whatsapp_number, created_at, updated_at)
@@ -203,6 +211,21 @@ maybeDescribe('billing RLS integration (migration 034)', () => {
       await setup.end();
     }
   }, 60_000);
+
+  afterAll(async () => {
+    if (!databaseUrl) return;
+    const cleanup = new Client({ connectionString: superuserUrl });
+    await cleanup.connect();
+    try {
+      // Only the billing rows this suite made; the payers and their companies stay.
+      await cleanup.query(
+        `DELETE FROM subscriptions WHERE user_id IN (SELECT id FROM users WHERE cognito_sub = ANY($1::text[]))`, [PAYER_SUBS]);
+      await cleanup.query(
+        `DELETE FROM billing_customers WHERE user_id IN (SELECT id FROM users WHERE cognito_sub = ANY($1::text[]))`, [PAYER_SUBS]);
+    } finally {
+      await cleanup.end();
+    }
+  });
 
   // ---------------------------------------------------------------------------
   // Catalog shape tests (static SQL assertions — no DB needed, but run inside
@@ -226,7 +249,7 @@ maybeDescribe('billing RLS integration (migration 034)', () => {
       }
     });
 
-    it('employer_pro plan has display_price_minor=2000 and active_job_limit=50 in entitlements', async () => {
+    it('employer_pro plan has display_price_minor=2000 and its limits (50 jobs, 20 templates, 3 foreman seats) in entitlements', async () => {
       if (!databaseUrl) return;
       const client = new Client({ connectionString: adminUrl });
       await client.connect();
@@ -241,13 +264,13 @@ maybeDescribe('billing RLS integration (migration 034)', () => {
         );
         expect(result.rows).toHaveLength(1);
         expect(result.rows[0].display_price_minor).toBe(2000);
-        expect(result.rows[0].entitlements).toEqual({ active_job_limit: 50, template_limit: 20 });
+        expect(result.rows[0].entitlements).toEqual({ active_job_limit: 50, template_limit: 20, foreman_seat_limit: 3 });
       } finally {
         await client.end();
       }
     });
 
-    it('employer_free plan has display_price_minor=0 and active_job_limit=15 in entitlements', async () => {
+    it('employer_free plan has display_price_minor=0 and its limits (15 jobs, 2 templates, no foreman seats) in entitlements', async () => {
       if (!databaseUrl) return;
       const client = new Client({ connectionString: adminUrl });
       await client.connect();
@@ -262,7 +285,7 @@ maybeDescribe('billing RLS integration (migration 034)', () => {
         );
         expect(result.rows).toHaveLength(1);
         expect(result.rows[0].display_price_minor).toBe(0);
-        expect(result.rows[0].entitlements).toEqual({ active_job_limit: 15, template_limit: 2 });
+        expect(result.rows[0].entitlements).toEqual({ active_job_limit: 15, template_limit: 2, foreman_seat_limit: 0 });
       } finally {
         await client.end();
       }
@@ -288,55 +311,41 @@ maybeDescribe('billing RLS integration (migration 034)', () => {
         expect(forceResult.rows[0].relrowsecurity).toBe(true);
         expect(forceResult.rows[0].relforcerowsecurity).toBe(true);
 
-        // No app policies: the only policy is 118's sign-up bootstrap gate, for
-        // jale_admin alone, so no app role sees a row.
+        // No app policies: 118's sign-up bootstrap gate for jale_admin, and
+        // 128's company lock for two NOLOGIN roles (the usage definer's owner
+        // and the billing enforcer). No app role sees a row.
         const policyResult = await client.query<{ policyname: string; roles: string[] }>(
           `SELECT policyname, roles::text[] AS roles FROM pg_policies
-           WHERE schemaname = 'public' AND tablename = 'organizations'`,
+           WHERE schemaname = 'public' AND tablename = 'organizations' ORDER BY policyname`,
         );
-        expect(policyResult.rows).toEqual([{ policyname: 'organizations_org_bootstrap', roles: ['jale_admin'] }]);
+        expect(policyResult.rows).toEqual([
+          { policyname: 'organizations_billing_job_enforcer_lock', roles: ['jale_billing_job_enforcer'] },
+          { policyname: 'organizations_billing_job_enforcer_select', roles: ['jale_billing_job_enforcer'] },
+          { policyname: 'organizations_cap_org_limits_lock', roles: ['jale_cap_org_limits'] },
+          { policyname: 'organizations_cap_org_limits_select', roles: ['jale_cap_org_limits'] },
+          { policyname: 'organizations_org_bootstrap', roles: ['jale_admin'] },
+        ]);
       } finally {
         await client.end();
       }
     });
 
-    it('billing_customers.organization_id is nullable and defaults NULL', async () => {
+    it('billing_customers.organization_id and subscriptions.organization_id are NOT NULL with no default (127)', async () => {
       if (!databaseUrl) return;
       const client = new Client({ connectionString: adminUrl });
       await client.connect();
       try {
-        const result = await client.query<{
-          is_nullable: string;
-          column_default: string | null;
-        }>(
-          `SELECT is_nullable, column_default
+        const result = await client.query<{ table_name: string; is_nullable: string; column_default: string | null }>(
+          `SELECT table_name::text, is_nullable::text, column_default
            FROM information_schema.columns
-           WHERE table_name = 'billing_customers' AND column_name = 'organization_id'`,
+           WHERE table_schema = 'public' AND column_name = 'organization_id'
+             AND table_name IN ('billing_customers', 'subscriptions')
+           ORDER BY table_name`,
         );
-        expect(result.rows).toHaveLength(1);
-        expect(result.rows[0].is_nullable).toBe('YES');
-        expect(result.rows[0].column_default).toBeNull();
-      } finally {
-        await client.end();
-      }
-    });
-
-    it('subscriptions.organization_id is nullable and defaults NULL', async () => {
-      if (!databaseUrl) return;
-      const client = new Client({ connectionString: adminUrl });
-      await client.connect();
-      try {
-        const result = await client.query<{
-          is_nullable: string;
-          column_default: string | null;
-        }>(
-          `SELECT is_nullable, column_default
-           FROM information_schema.columns
-           WHERE table_name = 'subscriptions' AND column_name = 'organization_id'`,
-        );
-        expect(result.rows).toHaveLength(1);
-        expect(result.rows[0].is_nullable).toBe('YES');
-        expect(result.rows[0].column_default).toBeNull();
+        expect(result.rows).toEqual([
+          { table_name: 'billing_customers', is_nullable: 'NO', column_default: null },
+          { table_name: 'subscriptions', is_nullable: 'NO', column_default: null },
+        ]);
       } finally {
         await client.end();
       }
@@ -705,10 +714,10 @@ maybeDescribe('billing RLS integration (migration 034)', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Concurrent uniqueness: subscriptions_one_current_per_user
+  // Concurrent uniqueness: subscriptions_one_current_per_organization
   // ---------------------------------------------------------------------------
 
-  describe('subscriptions_one_current_per_user partial uniqueness index', () => {
+  describe('subscriptions_one_current_per_organization partial uniqueness index', () => {
     it('two concurrent non-terminal inserts for the same user: exactly one wins', async () => {
       if (!databaseUrl) return;
 
@@ -731,6 +740,7 @@ maybeDescribe('billing RLS integration (migration 034)', () => {
            RETURNING id`,
         );
         testUserId = r.rows[0].id;
+        await ensureOwnerCompany(setup, testUserId);
       } finally {
         await setup.end();
       }

@@ -1943,6 +1943,11 @@
       "label": "Publicaciones de empleo activas",
       "value": "{used} de {limit} usadas"
     },
+    "company": {
+      "owner_only": "Solo el propietario de su empresa puede cambiar el plan o administrar la facturación.",
+      "suspended_title": "Algunos miembros del equipo están suspendidos",
+      "suspended_body": "{count, plural, one {# capataz está suspendido y no puede} other {# capataces están suspendidos y no pueden}} usar la cuenta de su empresa mientras su plan tenga menos puestos que miembros. Cambie su plan para restablecerlos."
+    },
     "actions": {
       "upgrade": "Mejorar plan",
       "upgrade_loading": "Redirigiendo al pago...",

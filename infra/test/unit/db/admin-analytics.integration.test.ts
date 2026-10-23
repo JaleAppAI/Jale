@@ -30,6 +30,7 @@
  */
 
 import { Client } from 'pg';
+import { dropCompanies, ensureOwnerCompany } from './helpers/org-fixtures';
 
 // ---------------------------------------------------------------------------
 // Harness helpers (mirrors billing-rls.integration.test.ts)
@@ -99,6 +100,7 @@ maybeDescribe('admin analytics definer functions', () => {
   let jobClosedId: string;
   const waSids = ['it-analytics-wa-1', 'it-analytics-wa-2'];
   const PLAN = 'it_analytics_plan';
+  const companies: string[] = [];
 
   beforeAll(async () => {
     superUrl = databaseUrl!;
@@ -130,11 +132,13 @@ maybeDescribe('admin analytics definer functions', () => {
          VALUES ($1, 'employer', 'IT Analytics Plan', '{}') ON CONFLICT (code) DO NOTHING`,
         [PLAN],
       );
+      // A subscription belongs to the payer's company (127).
+      companies.push(await ensureOwnerCompany(su, employer1Id), await ensureOwnerCompany(su, employer2Id));
       await su.query(
-        `INSERT INTO subscriptions (user_id, plan_code, status, cancel_at_period_end) VALUES
-           ($1, $3, 'active', false),
-           ($2, $3, 'canceled', false)`,
-        [employer1Id, employer2Id, PLAN],
+        `INSERT INTO subscriptions (user_id, organization_id, plan_code, status, cancel_at_period_end) VALUES
+           ($1, $4, $3, 'active', false),
+           ($2, $5, $3, 'canceled', false)`,
+        [employer1Id, employer2Id, PLAN, companies[0], companies[1]],
       );
 
       // Jobs: one active (recent), one closed (outside the 7d window).
@@ -198,6 +202,7 @@ maybeDescribe('admin analytics definer functions', () => {
       await su.query(`DELETE FROM jobs WHERE employer_id IN (SELECT id FROM users WHERE cognito_sub = ANY($1))`, [subs]);
       await su.query(`DELETE FROM employer_profiles WHERE user_id IN (SELECT id FROM users WHERE cognito_sub = ANY($1))`, [subs]);
       await su.query(`DELETE FROM users WHERE cognito_sub = ANY($1)`, [subs]);
+      await dropCompanies(su, companies);
     } finally {
       await su.end();
     }

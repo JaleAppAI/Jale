@@ -1,6 +1,7 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
-import { resolveEntitlements } from '../lib/entitlements';
+import { resolveCompanyEntitlements } from '../lib/entitlements';
+import { readCompanyUsage, CompanyUsageRefusedError } from '../lib/company-usage';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { formatPayRange, JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs, parseRequiredFields, stripRetiredFields } from '../lib/job-fields';
 import { resolveJobLocationFields } from '../lib/job-location-parse';
@@ -256,27 +257,24 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
-    // A7: Lock the employer's users row to serialize concurrent slot consumers.
-    // resolveEmployerActor's lockUser takes SELECT … FOR UPDATE on the caller's
-    // users row, so two simultaneous creates for the same employer cannot both
-    // read "0 active jobs" and both insert. Plan limits stay per person in
-    // Phase 1; Phase 2 moves this lock to organizations FOR UPDATE.
-    const actorResult = await resolveEmployerActor(client, cognitoSub, { lockUser: true });
+    const actorResult = await resolveEmployerActor(client, cognitoSub);
     if (!actorResult.ok) {
       await client.query('ROLLBACK');
       return employerActorFailureResponse(actorResult, CORS_HEADERS);
     }
     const userId = actorResult.actor.userId;
 
-    // Resolve entitlements AFTER acquiring the lock so the limit is authoritative.
-    const entitlements = await resolveEntitlements(client, userId);
-
-    // Count the employer's current active jobs while holding the lock.
-    const countResult = await client.query<{ active_jobs: number }>(
-      `SELECT COUNT(*)::int AS active_jobs FROM jobs WHERE employer_id = $1 AND status = 'active'`,
-      [userId],
-    );
-    const activeJobs = countResult.rows[0].active_jobs;
+    // A7, per company (Phase 2): the plan and its active-job limit are the
+    // company's. readCompanyUsage({ lock: true }) takes the company's
+    // organizations row FOR NO KEY UPDATE (jale_cap.employer_org_usage, 128)
+    // and counts every member's active jobs under it, so two members posting
+    // at once cannot both take the last slot, and a downgrade in flight waits.
+    const usage = await readCompanyUsage(client, { lock: true });
+    // The plan is resolved for the actor's company, so the count must be the same company's.
+    if (usage.organizationId !== actorResult.actor.organizationId) throw new Error('company_usage_unavailable');
+    // Resolved under the lock, so the limit is authoritative.
+    const entitlements = await resolveCompanyEntitlements(client, actorResult.actor.organizationId);
+    const activeJobs = usage.activeJobs;
 
     if (activeJobs >= entitlements.activeJobLimit) {
       await client.query('ROLLBACK');
@@ -421,6 +419,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     };
   } catch (err) {
     if (client) { try { await client.query('ROLLBACK'); } catch (_) {} }
+    if (err instanceof CompanyUsageRefusedError) {
+      // The definer says the caller is no longer an active member: the answer resolveEmployerActor gives.
+      return employerActorFailureResponse({ ok: false, status: 403, error: 'membership_inactive' }, CORS_HEADERS);
+    }
     console.error('employer-jobs-create error:', errorMessage(err));
     return { statusCode: 500, headers: CORS_HEADERS, body: JSON.stringify({ error: 'internal_error' }) };
   } finally {

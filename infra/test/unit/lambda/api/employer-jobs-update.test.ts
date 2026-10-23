@@ -2,13 +2,15 @@ import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { handler } from '../../../../lambda/api/employer-jobs-update';
 import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
-import { resolveEntitlements } from '../../../../lambda/lib/entitlements';
+import { resolveCompanyEntitlements } from '../../../../lambda/lib/entitlements';
+import { readCompanyUsage, CompanyUsageRefusedError } from '../../../../lambda/lib/company-usage';
 import { setJobCoordinates } from '../../../../lambda/lib/location';
 import { resolveEmployerActor } from '../../../../lambda/lib/employer-actor';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
 jest.mock('../../../../lambda/lib/entitlements');
+jest.mock('../../../../lambda/lib/company-usage');
 jest.mock('../../../../lambda/lib/location');
 jest.mock('../../../../lambda/lib/employer-actor', () => ({
   ...jest.requireActual('../../../../lambda/lib/employer-actor'),
@@ -18,7 +20,9 @@ jest.mock('../../../../lambda/lib/employer-actor', () => ({
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
 const mockCheckCompliance = checkCompliance as jest.Mock;
-const mockResolveEntitlements = resolveEntitlements as jest.Mock;
+const mockResolveEntitlements = resolveCompanyEntitlements as jest.Mock;
+const mockReadCompanyUsage = readCompanyUsage as jest.Mock;
+const companyUsage = (activeJobs: number) => ({ organizationId: ORG_ID, activeJobs, templates: 0, activeForemen: 0, suspendedForemen: 0 });
 const mockSetJobCoordinates = setJobCoordinates as jest.Mock;
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
@@ -54,6 +58,7 @@ describe('employer-jobs-update', () => {
     // Default: employer_free plan with 1 slot, 0 active jobs — won't affect non-active transitions
     mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_free', activeJobLimit: 1 });
     mockResolveEmployerActor.mockResolvedValue(ownerActor());
+    mockReadCompanyUsage.mockResolvedValue(companyUsage(0));
   });
 
   afterAll(() => { process.env = env; });
@@ -219,17 +224,14 @@ describe('employer-jobs-update', () => {
   // currentJobStatus: status returned by the SELECT before UPDATE.
   // activeJobs: count returned for active job count.
   function makeUpdateQueryMock(currentJobStatus: string, activeJobs: number) {
+    mockReadCompanyUsage.mockResolvedValue(companyUsage(activeJobs));
     return (q: string) => {
-      // The pre-read (current job status fetch) now carries its own
-      // "FOR UPDATE OF jobs" row lock (fix: TOCTOU on status change), so it
-      // must be matched BEFORE the generic entitlement-lock "FOR UPDATE"
-      // check below, or this branch would never be reached.
+      // The pre-read (current job status fetch), which carries its own
+      // "FOR UPDATE OF jobs" row lock (fix: TOCTOU on status change).
       if (q.includes('SELECT') && q.includes('jobs.status') && !q.includes('UPDATE jobs')) {
         // current job status fetch
         return Promise.resolve({ rows: [{ status: currentJobStatus }] });
       }
-      if (q.includes('FROM users') && q.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'user-uuid-1' }] });
-      if (q.includes('COUNT(*)')) return Promise.resolve({ rows: [{ active_jobs: activeJobs }] });
       if (q.includes('UPDATE jobs')) {
         return Promise.resolve({
           rowCount: 1,
@@ -276,7 +278,7 @@ describe('employer-jobs-update', () => {
   });
 
   it('does NOT apply entitlement gate for active→paused (slot freed, not consumed)', async () => {
-    // Even if resolveEntitlements would return limit=0 (impossible but proves gate is skipped)
+    // Even if resolveCompanyEntitlements would return limit=0 (impossible but proves gate is skipped)
     mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_free', activeJobLimit: 0 });
     mockQuery.mockImplementation((q: string) => {
       if (q.includes('UPDATE jobs')) {
@@ -301,16 +303,8 @@ describe('employer-jobs-update', () => {
 
     expect(res.statusCode).toBe(200);
     expect(mockQuery).toHaveBeenCalledWith('COMMIT');
-    // Gate NOT applied: no FOR UPDATE and no active-job-count gate query (distinct from
-    // the applicant_count subselect in the UPDATE RETURNING clause).
-    const calls = mockQuery.mock.calls.map(([sql]: [string]) => sql);
-    // Specific to the entitlement lock (`FROM users ... FOR UPDATE`), not a
-    // generic "FOR UPDATE" substring check -- the pre-read query always runs
-    // and always carries its own "FOR UPDATE OF jobs" (fix: TOCTOU on status
-    // change), which would otherwise make this assertion trivially true for
-    // the wrong reason regardless of whether the entitlement gate ran.
-    expect(calls.some((s: string) => s.includes('FROM users') && s.includes('FOR UPDATE'))).toBe(false);
-    expect(calls.some((s: string) => s.includes('active_jobs'))).toBe(false);
+    // A move that frees a slot takes no company lock.
+    expect(mockReadCompanyUsage).not.toHaveBeenCalled();
     expect(mockResolveEntitlements).not.toHaveBeenCalled();
   });
 
@@ -338,14 +332,8 @@ describe('employer-jobs-update', () => {
 
     expect(res.statusCode).toBe(200);
     expect(mockQuery).toHaveBeenCalledWith('COMMIT');
-    const calls = mockQuery.mock.calls.map(([sql]: [string]) => sql);
-    // Specific to the entitlement lock (`FROM users ... FOR UPDATE`), not a
-    // generic "FOR UPDATE" substring check -- the pre-read query always runs
-    // and always carries its own "FOR UPDATE OF jobs" (fix: TOCTOU on status
-    // change), which would otherwise make this assertion trivially true for
-    // the wrong reason regardless of whether the entitlement gate ran.
-    expect(calls.some((s: string) => s.includes('FROM users') && s.includes('FOR UPDATE'))).toBe(false);
-    expect(calls.some((s: string) => s.includes('active_jobs'))).toBe(false);
+    // A move that frees a slot takes no company lock.
+    expect(mockReadCompanyUsage).not.toHaveBeenCalled();
     expect(mockResolveEntitlements).not.toHaveBeenCalled();
   });
 
@@ -378,24 +366,17 @@ describe('employer-jobs-update', () => {
 
     expect(res.statusCode).toBe(200);
     expect(mockQuery).toHaveBeenCalledWith('COMMIT');
-    const calls = mockQuery.mock.calls.map(([sql]: [string]) => sql);
-    // Specific to the entitlement lock (`FROM users ... FOR UPDATE`), not a
-    // generic "FOR UPDATE" substring check -- the pre-read query always runs
-    // and always carries its own "FOR UPDATE OF jobs" (fix: TOCTOU on status
-    // change), which would otherwise make this assertion trivially true for
-    // the wrong reason regardless of whether the entitlement gate ran.
-    expect(calls.some((s: string) => s.includes('FROM users') && s.includes('FOR UPDATE'))).toBe(false);
-    expect(calls.some((s: string) => s.includes('active_jobs'))).toBe(false);
+    // Already active: the company lock is taken (any move to 'active' takes it) but no slot is consumed, so no plan is resolved.
+    expect(mockReadCompanyUsage).toHaveBeenCalledWith(expect.anything(), { lock: true });
     expect(mockResolveEntitlements).not.toHaveBeenCalled();
   });
 
-  it('returns 500 when resolveEntitlements throws billing_plan_catalog_invalid on paused→active', async () => {
+  it('returns 500 when resolveCompanyEntitlements throws billing_plan_catalog_invalid on paused→active', async () => {
     mockResolveEntitlements.mockRejectedValue(new Error('billing_plan_catalog_invalid'));
     mockQuery.mockImplementation((q: string) => {
       if (q.includes('SELECT') && q.includes('jobs.status') && !q.includes('UPDATE jobs')) {
         return Promise.resolve({ rows: [{ status: 'paused' }] });
       }
-      if (q.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'user-uuid-1' }] });
       return Promise.resolve({});
     });
 
@@ -969,15 +950,12 @@ describe('employer-jobs-update', () => {
     activeJobs?: number;
   }) {
     const { currentStatus, publicListingEnabled, newStatus, publicCode = 'JOBCOD', activeJobs = 0 } = opts;
+    mockReadCompanyUsage.mockResolvedValue(companyUsage(activeJobs));
     return (q: string) => {
-      // Same ordering fix as makeUpdateQueryMock above: the pre-read now has
-      // its own "FOR UPDATE OF jobs", so it must be matched before the
-      // generic entitlement-lock "FOR UPDATE" check.
+      // The pre-read, as in makeUpdateQueryMock above.
       if (q.includes('SELECT') && q.includes('jobs.status') && !q.includes('UPDATE jobs')) {
         return Promise.resolve({ rows: [{ status: currentStatus, public_listing_enabled: publicListingEnabled, public_code: publicCode }] });
       }
-      if (q.includes('FROM users') && q.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'user-uuid-1' }] });
-      if (q.includes('COUNT(*)')) return Promise.resolve({ rows: [{ active_jobs: activeJobs }] });
       if (q.includes('UPDATE jobs')) {
         return Promise.resolve({
           rowCount: 1,
@@ -1759,7 +1737,7 @@ describe('employer-jobs-update', () => {
     });
   });
 
-  describe('organization actor (Phase 1)', () => {
+  describe('organization actor', () => {
     it('resolves the actor after the compliance check, without a lock, on the status path', async () => {
       mockQuery.mockImplementation(makeUpdateQueryMock('active', 0));
 
@@ -1787,30 +1765,38 @@ describe('employer-jobs-update', () => {
       expect(mockQuery.mock.calls.some(([q]) => typeof q === 'string' && q.includes('cognito_sub'))).toBe(false);
     });
 
-    it("reactivation counts against the caller (limits stay per person in Phase 1) and locks the caller's own users row", async () => {
-      // An owner reactivating a job in their scope: entitlements, the active-job
-      // count and the lock all use actor.userId, exactly as create does.
+    it('reactivation counts the company under the company lock, taken before the job row lock', async () => {
       mockResolveEmployerActor.mockResolvedValue(ownerActor([EMPLOYER_ID, FOREMAN_ID]));
-      mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_pro', activeJobLimit: 10 });
+      mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_pro', activeJobLimit: 10, templateLimit: 20, foremanSeatLimit: 3 });
       mockQuery.mockImplementation(makeUpdateQueryMock('paused', 2));
 
       const res = await handler(makeEvent({ body: JSON.stringify({ status: 'active' }) }));
 
       expect(res.statusCode).toBe(200);
-      const lock = mockQuery.mock.calls.find(([q]) => typeof q === 'string' && q.includes('FROM users') && q.includes('FOR UPDATE'));
-      expect(lock![0]).toBe('SELECT id FROM users WHERE id = $1 FOR UPDATE');
-      expect(lock![1]).toEqual([EMPLOYER_ID]);
-      expect(mockResolveEntitlements).toHaveBeenCalledTimes(1);
-      expect(mockResolveEntitlements).toHaveBeenCalledWith(expect.anything(), EMPLOYER_ID);
-      const count = mockQuery.mock.calls.find(([q]) => typeof q === 'string' && q.includes('AS active_jobs'));
-      expect(count![1]).toEqual([EMPLOYER_ID]);
+      expect(mockReadCompanyUsage).toHaveBeenCalledWith(expect.anything(), { lock: true });
+      expect(mockResolveEntitlements).toHaveBeenCalledWith(expect.anything(), ORG_ID);
+      const preReadAt = mockQuery.mock.calls.findIndex(([q]) => typeof q === 'string' && q.includes('FOR UPDATE OF jobs'));
+      expect(mockReadCompanyUsage.mock.invocationCallOrder[0]).toBeLessThan(mockQuery.mock.invocationCallOrder[preReadAt]);
+      expect(mockQuery.mock.calls.some(([q]) => typeof q === 'string' && q.includes('FROM users'))).toBe(false);
     });
 
-    it('counts against the actor when the job is outside the scope, then refuses with 403 forbidden', async () => {
+    it('refuses a reactivation when another member\'s jobs fill the company plan', async () => {
+      mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_free', activeJobLimit: 1, templateLimit: 2, foremanSeatLimit: 0 });
+      mockQuery.mockImplementation(makeUpdateQueryMock('paused', 1));
+
+      const res = await handler(makeEvent({ body: JSON.stringify({ status: 'active' }) }));
+
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body)).toMatchObject({ error: 'job_limit_reached', active_jobs: 1, active_job_limit: 1 });
+      expect(mockQuery).not.toHaveBeenCalledWith(expect.stringContaining('UPDATE jobs SET status'), expect.anything());
+    });
+
+    it('refuses a reactivation of a job outside the scope with 403 forbidden, even with plan room', async () => {
+      mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_pro', activeJobLimit: 10, templateLimit: 20, foremanSeatLimit: 3 });
+      mockReadCompanyUsage.mockResolvedValue(companyUsage(0));
       mockQuery.mockImplementation((q: string) => {
-        if (q.includes('SELECT') && q.includes('jobs.status') && !q.includes('UPDATE jobs')) return Promise.resolve({ rows: [] });
+        if (q.includes('SELECT') && q.includes('jobs.status') && !q.includes('UPDATE jobs')) return Promise.resolve({ rows: [] }); // not in scope
         if (q.includes('UPDATE jobs')) return Promise.resolve({ rowCount: 0, rows: [] });
-        if (q.includes('AS active_jobs')) return Promise.resolve({ rows: [{ active_jobs: 0 }] });
         return Promise.resolve({ rows: [] });
       });
 
@@ -1818,7 +1804,42 @@ describe('employer-jobs-update', () => {
 
       expect(res.statusCode).toBe(403);
       expect(JSON.parse(res.body)).toEqual({ error: 'forbidden' });
-      expect(mockResolveEntitlements).toHaveBeenCalledWith(expect.anything(), EMPLOYER_ID);
+      expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+      expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
+    });
+
+    it('answers 403 membership_inactive and rolls back when the company lock refuses the caller', async () => {
+      mockQuery.mockImplementation(makeUpdateQueryMock('paused', 0));
+      mockReadCompanyUsage.mockRejectedValue(new CompanyUsageRefusedError());
+
+      const res = await handler(makeEvent({ body: JSON.stringify({ status: 'active' }) }));
+
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body)).toEqual({ error: 'membership_inactive' });
+      expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+      expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
+      expect(mockQuery).not.toHaveBeenCalledWith(expect.stringContaining('UPDATE jobs SET status'), expect.anything());
+    });
+
+    it('returns 500 and rolls back a reactivation when the usage read is for another company than the actor\'s', async () => {
+      mockQuery.mockImplementation(makeUpdateQueryMock('paused', 0));
+      mockReadCompanyUsage.mockResolvedValue({ ...companyUsage(0), organizationId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' });
+
+      const res = await handler(makeEvent({ body: JSON.stringify({ status: 'active' }) }));
+
+      expect(res.statusCode).toBe(500);
+      expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+      expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
+      expect(mockQuery).not.toHaveBeenCalledWith(expect.stringContaining('UPDATE jobs SET status'), expect.anything());
+    });
+
+    it('takes no company lock for a change that consumes no slot', async () => {
+      mockQuery.mockImplementation(makeUpdateQueryMock('active', 0));
+
+      const res = await handler(makeEvent({ body: JSON.stringify({ status: 'paused' }) }));
+
+      expect(res.statusCode).toBe(200);
+      expect(mockReadCompanyUsage).not.toHaveBeenCalled();
     });
 
     it('returns the actor failure, rolls back, and reads no job on the status path', async () => {

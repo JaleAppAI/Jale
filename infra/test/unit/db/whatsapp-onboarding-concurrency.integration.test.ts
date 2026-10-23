@@ -13,7 +13,7 @@
  *
  * Two-connection concurrency (scenarios 3, 4, 5) always uses two independent
  * `pg.Client` connections with an explicit barrier — never `Promise.all` over
- * one client — following entitlement-concurrency.integration.test.ts.
+ * one client — following company-limit-concurrency.integration.test.ts.
  */
 import { randomUUID, createHash } from 'node:crypto';
 import { Client, type PoolClient } from 'pg';

@@ -5,6 +5,7 @@ import {
   SUBSCRIPTION_STATUS_KEYS,
   activeJobsPreflightModel,
   blockingJobsFrom,
+  companyActiveJobCount,
   isHealthyPaidPlan,
   planLimitModel,
   subscriptionSignage,
@@ -33,7 +34,7 @@ const CONCRETE = job('job-concrete', 'Concrete Finisher', '2026-07-15T09:00:00.0
 
 function billing(over: Partial<EmployerBilling> = {}): Pick<
   EmployerBilling,
-  'planCode' | 'activeJobLimit' | 'templateLimit' | 'subscription'
+  'planCode' | 'activeJobLimit' | 'templateLimit' | 'subscription' | 'otherMembersActiveJobs'
 > {
   return {
     planCode: 'employer_free',
@@ -559,6 +560,54 @@ describe('activeJobsPreflightModel', () => {
     const model = activeJobsPreflightModel(billing({ activeJobLimit: 1 }), 2, null);
     expect(model?.blockingJobs).toEqual([]);
     expect(model?.overflowCount).toBe(2);
+  });
+
+  it('adds the company jobs the caller cannot see (a foreman) to the live count', () => {
+    // One own active job, two of other members: three of three is the cap.
+    const model = activeJobsPreflightModel({ ...billing({ activeJobLimit: 3 }), otherMembersActiveJobs: 2 }, 1, [LANDSCAPE]);
+    expect(model?.bodyParams).toEqual({ limit: 3, used: 3 });
+    // Only the caller's own job can be named; the rest is overflow.
+    expect(model?.blockingJobs).toEqual([{ id: LANDSCAPE.id, title: LANDSCAPE.title }]);
+    expect(model?.overflowCount).toBe(2);
+  });
+
+  it('does not gate while the company is under the cap, and ignores a missing or negative figure', () => {
+    expect(activeJobsPreflightModel({ ...billing({ activeJobLimit: 3 }), otherMembersActiveJobs: 1 }, 1, [LANDSCAPE])).toBeNull();
+    expect(activeJobsPreflightModel({ ...billing({ activeJobLimit: 3 }), otherMembersActiveJobs: -5 }, 2, [LANDSCAPE])).toBeNull();
+    expect(activeJobsPreflightModel(billing({ activeJobLimit: 3 }), 2, [LANDSCAPE])).toBeNull();
+  });
+
+  it('ignores a non-integer company figure', () => {
+    expect(activeJobsPreflightModel({ ...billing({ activeJobLimit: 3 }), otherMembersActiveJobs: 1.5 }, 2, [LANDSCAPE])).toBeNull();
+    expect(activeJobsPreflightModel({ ...billing({ activeJobLimit: 3 }), otherMembersActiveJobs: Number.NaN }, 2, [LANDSCAPE])).toBeNull();
+  });
+
+  it('a plan with no postings stays the zero-postings notice, with the company figure counted', () => {
+    const model = activeJobsPreflightModel({ ...billing({ activeJobLimit: 0 }), otherMembersActiveJobs: 2 }, 0, []);
+    expect(model?.bodyKey).toBe('limit_dialog.body_jobs_zero');
+    expect(model?.bodyParams).toEqual({ limit: 0, used: 2 });
+    expect(model?.overflowCount).toBe(2);
+  });
+});
+
+describe('companyActiveJobCount', () => {
+  it('adds the other members\' active jobs to the live own count', () => {
+    expect(companyActiveJobCount({ otherMembersActiveJobs: 3 }, 1)).toBe(4);
+    expect(companyActiveJobCount({ otherMembersActiveJobs: 0 }, 2)).toBe(2);
+  });
+
+  it('is the live count alone for the owner, an older API, or no billing at all', () => {
+    expect(companyActiveJobCount({}, 2)).toBe(2);
+    expect(companyActiveJobCount({ otherMembersActiveJobs: undefined }, 2)).toBe(2);
+    expect(companyActiveJobCount(null, 2)).toBe(2);
+    expect(companyActiveJobCount(undefined, 0)).toBe(0);
+  });
+
+  it('ignores a negative, non-integer or non-finite figure', () => {
+    expect(companyActiveJobCount({ otherMembersActiveJobs: -5 }, 2)).toBe(2);
+    expect(companyActiveJobCount({ otherMembersActiveJobs: 1.5 }, 2)).toBe(2);
+    expect(companyActiveJobCount({ otherMembersActiveJobs: Number.NaN }, 2)).toBe(2);
+    expect(companyActiveJobCount({ otherMembersActiveJobs: Number.POSITIVE_INFINITY }, 2)).toBe(2);
   });
 });
 
