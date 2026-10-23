@@ -453,6 +453,27 @@ for (const name of ['Database posture gate', 'Deploy CDK stacks', 'Database post
     fail(`.github/workflows/_reusable-deploy.yml (deploy job) must have exactly one step named ${name} (found ${count})`);
   }
 }
+// The gate before the deploy first writes this release's posture expectation
+// (infra/scripts/write-posture-expectation.ts) and checks against it, so its
+// run block is pinned whole too: the writer, then the gate with --expected,
+// under set -euo pipefail, so a failed writer stops the step before the gate.
+const POSTURE_EXPECTATION_FILE = '"$RUNNER_TEMP/posture-expected.json"';
+const postureRuns = {
+  pre: {
+    lines: [
+      '        run: |',
+      '          set -euo pipefail',
+      `          npx --no-install tsx scripts/write-posture-expectation.ts ${POSTURE_EXPECTATION_FILE}`,
+      `          node scripts/db-posture-gate.mjs --phase pre --expected ${POSTURE_EXPECTATION_FILE}`,
+    ],
+    described: 'a run block of exactly set -euo pipefail, then npx --no-install tsx scripts/write-posture-expectation.ts '
+      + `${POSTURE_EXPECTATION_FILE}, then node scripts/db-posture-gate.mjs --phase pre --expected ${POSTURE_EXPECTATION_FILE}`,
+  },
+  post: {
+    lines: ['        run: node scripts/db-posture-gate.mjs --phase post'],
+    described: 'the whole command node scripts/db-posture-gate.mjs --phase post',
+  },
+};
 for (const [name, phase] of [['Database posture gate', 'pre'], ['Database posture verification', 'post']]) {
   const step = deploySteps.find((candidate) => candidate.name === name);
   if (!step) continue;
@@ -463,12 +484,12 @@ for (const [name, phase] of [['Database posture gate', 'pre'], ['Database postur
     '        env:',
     '          POSTURE_OVERRIDE: ${{ inputs.posture-override }}',
     '          POSTURE_OVERRIDE_REASON: ${{ inputs.posture-override-reason }}',
-    `        run: node scripts/db-posture-gate.mjs --phase ${phase}`,
+    ...postureRuns[phase].lines,
   ].join('\n');
   if (stepText(step.block) !== pinned) {
     fail(
       `.github/workflows/_reusable-deploy.yml (deploy job, ${name}) must be exactly the pinned step: working-directory infra, `
-      + `shell bash, the two override variables and nothing else in env, and the whole command node scripts/db-posture-gate.mjs --phase ${phase}; `
+      + `shell bash, the two override variables and nothing else in env, and ${postureRuns[phase].described}; `
       + 'no condition and no continue-on-error',
     );
   }
