@@ -107,3 +107,41 @@ describe('flushing the pending sign-up answers from anywhere', () => {
     expect(sessionStorage.getItem('pendingEmployerProfile')).toBeNull();
   });
 });
+
+/*
+ * The dashboard calls this from an effect and only handles a rejection, so it
+ * must never throw synchronously: storage can be blocked (some webviews, a
+ * "block all cookies" setting), and a stash can be unreadable.
+ */
+describe('flushing when storage cannot be trusted', () => {
+  it('resolves to null, without throwing, when storage access is blocked', async () => {
+    const blocked = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new DOMException('blocked', 'SecurityError');
+    });
+    try {
+      let result: Promise<unknown> | undefined;
+      expect(() => { result = flushPending('tok'); }).not.toThrow();
+      await expect(result).resolves.toBeNull();
+      expect(updateEmployerProfile).not.toHaveBeenCalled();
+    } finally {
+      blocked.mockRestore();
+    }
+  });
+
+  it('keeps an unreadable stash and sends nothing', async () => {
+    sessionStorage.setItem('pendingEmployerProfile', '{not json');
+
+    let result: Promise<unknown> | undefined;
+    expect(() => { result = flushPending('tok'); }).not.toThrow();
+    await expect(result).resolves.toBeNull();
+    expect(updateEmployerProfile).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem('pendingEmployerProfile')).toBe('{not json');
+  });
+
+  it('treats a stash that is not an object as unreadable', async () => {
+    sessionStorage.setItem('pendingEmployerProfile', '"just text"');
+
+    await expect(flushPending('tok')).resolves.toBeNull();
+    expect(updateEmployerProfile).not.toHaveBeenCalled();
+  });
+});
