@@ -161,6 +161,20 @@ describe('ApplicationRequirementsFlow — terminal panels', () => {
       .toBeInTheDocument();
   });
 
+  /*
+   * The only way a worker's WhatsApp words reach an employer is as a reply in
+   * a conversation the employer opened (`recordWorkerConversationReply` routes
+   * free text only into an open thread). So the note says exactly that: answer
+   * the employer when they write -- never "contact them", which a worker cannot
+   * start from either channel.
+   */
+  it('says how to change a sent application without promising a channel that does not exist', () => {
+    renderFlow(serverState({ application: { details_completed_at: '2026-09-02T00:00:00Z' } }));
+    const note = screen.getByText(message('worker_application_details.terminal.already_complete_note'));
+    expect(note).toHaveTextContent('when they message you on WhatsApp');
+    expect(note).not.toHaveTextContent(/Contact the employer/);
+  });
+
   it('shows the not-requested panel before the employer asks', () => {
     renderFlow(serverState({
       application: { stage: 'apply', details_status: 'not_requested', details_requested_at: null },

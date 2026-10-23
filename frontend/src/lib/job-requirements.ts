@@ -238,13 +238,37 @@ export function deriveCertificationDocTier(
   return 'off';
 }
 
-/** The picker's field sub-groups (design: "Identity & contact / Availability & pay / Background / Experience"). */
+/**
+ * The picker's field sub-groups (design: "Identity & contact / Availability &
+ * pay / Background / Experience"): the choices a NEW job is offered. The
+ * retired keys below are not in any group.
+ */
 export const FIELD_GROUPS: Record<'identity' | 'availability' | 'background' | 'experience', readonly RequirementFieldKey[]> = {
-  identity: ['work_authorization', 'date_of_birth', 'home_address', 'emergency_contact'],
+  identity: ['work_authorization', 'home_address', 'emergency_contact'],
   availability: ['date_available', 'desired_pay'],
   background: ['worked_here_before', 'education', 'military_service'],
   experience: ['references', 'work_history'],
 };
+
+/**
+ * Field keys no longer offered on new jobs (sprint 29: date of birth). They
+ * stay in the vocabulary so an existing job that asks for one still shows it
+ * and keeps it on save; a new job, including one started from an older
+ * template, never carries one (`withoutRetiredFields`).
+ */
+export const RETIRED_FIELD_KEYS: readonly RequirementFieldKey[] = ['date_of_birth'];
+
+/** The retired keys this map still asks for (any state but Off). */
+export function retiredFieldsInUse(requirements: RequirementsMap): RequirementFieldKey[] {
+  return RETIRED_FIELD_KEYS.filter((key) => requirements[key] !== 'off');
+}
+
+/** The same map with every retired key switched Off -- the new-job rule. */
+export function withoutRetiredFields(requirements: RequirementsMap): RequirementsMap {
+  let next = requirements;
+  for (const key of RETIRED_FIELD_KEYS) next = setRequirementState(next, key, 'off');
+  return next;
+}
 
 /**
  * The certification_doc row's hint: when the row is not Off and the

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { useTranslations } from 'next-intl';
 import type { JobStatus } from '@/lib/status';
 import { useAuth } from '@/contexts/AuthContext';
@@ -8,10 +8,10 @@ import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { DashboardPanel } from '@/components/ui/dashboard-panel';
-import { Input } from '@/components/ui/input';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { PanelHeader } from '@/components/ui/panel-header';
-import { ApiError, shareEmployerJob, updateJobPublicListing } from '@/lib/api/employer';
+import { ShareLinkRow, useCopyFeedback, useJobShareLink } from '@/components/employer/JobShareLink';
+import { updateJobPublicListing } from '@/lib/api/employer';
 
 interface PublicListingCardProps {
     jobId: string;
@@ -41,9 +41,6 @@ interface PublicListingCardProps {
     onEnabledChange?: (enabled: boolean) => void;
 }
 
-/** How long "Copied!" stays on a copy control before reverting. */
-const COPIED_RESET_MS = 2000;
-
 // The employer's opt-IN to a public job page (migration 057), merged with the
 // trackable share link + QR code that becomes available once a job is public.
 // Jobs start private; nothing becomes publicly readable until the employer
@@ -67,6 +64,9 @@ const COPIED_RESET_MS = 2000;
 // hardcoded mid-green reads as a bright confetti chip against the dark theme's
 // navy panels, and a light literal grey disappears into them entirely. Teal is
 // reserved for referral attribution and is deliberately absent here.
+//
+// The share half (tracked link, copy, QR) lives in `JobShareLink`, shared with
+// the "Job posted" screen; this card owns the switch.
 export function PublicListingCard({
     jobId,
     initialEnabled,
@@ -85,24 +85,8 @@ export function PublicListingCard({
     const [toggleError, setToggleError] = useState<string | null>(null);
 
     // Share half.
-    const [shareUrl, setShareUrl] = useState<string | null>(null);
-    const [loadingShare, setLoadingShare] = useState(false);
-    const [copiedLink, setCopiedLink] = useState(false);
-    const [generatingQr, setGeneratingQr] = useState(false);
-    const [shareError, setShareError] = useState<string | null>(null);
-    const [copiedFallback, setCopiedFallback] = useState(false);
-
-    // One timer per copy control, cleared on unmount: a 2s timeout that fires
-    // after the page has navigated away sets state on a dead component.
-    const copiedLinkTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const copiedFallbackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-    useEffect(
-        () => () => {
-            if (copiedLinkTimer.current) clearTimeout(copiedLinkTimer.current);
-            if (copiedFallbackTimer.current) clearTimeout(copiedFallbackTimer.current);
-        },
-        [],
-    );
+    const share = useJobShareLink(jobId);
+    const fallbackCopy = useCopyFeedback();
 
     // Same origin as the app -- the public page lives on this domain, so no
     // config is needed and the link is correct in every environment.
@@ -111,12 +95,6 @@ export function PublicListingCard({
             ? `${window.location.origin}/j/${publicCode}`
             : `/j/${publicCode}`
         : null;
-
-    const clearShareState = useCallback(() => {
-        setShareUrl(null);
-        setCopiedLink(false);
-        setShareError(null);
-    }, []);
 
     async function handleToggle() {
         if (!idToken || saving) return;
@@ -131,7 +109,7 @@ export function PublicListingCard({
             if (!result.public_listing_enabled) {
                 // Turning the listing off invalidates any share link fetched while
                 // it was on -- clear it so stale link UI doesn't linger.
-                clearShareState();
+                share.clear();
             }
         } catch (err) {
             // Never `err.message`. Classified copy for the failures that have a
@@ -142,94 +120,6 @@ export function PublicListingCard({
             setSaving(false);
         }
     }
-
-    async function handleGetLink() {
-        if (!idToken || loadingShare) return;
-        setShareError(null);
-        setLoadingShare(true);
-        try {
-            const result = await shareEmployerJob(idToken, jobId);
-            setShareUrl(result.share_url);
-        } catch (err) {
-            const code = err instanceof ApiError ? err.code : null;
-            if (code === 'share_url_misconfigured') {
-                setShareError(t('error_misconfigured'));
-            } else if (code === 'job_not_found') {
-                // Public listing is opt-in (migration 057): the share endpoint 404s
-                // for a job the employer has not published. Should be rare here
-                // since this half only renders while enabled, but a concurrent
-                // toggle-off elsewhere can still race it.
-                setShareError(t('error_not_public'));
-            } else {
-                setShareError(errorMessage(err, { unknown: t('error_generic') }));
-            }
-        } finally {
-            setLoadingShare(false);
-        }
-    }
-
-    async function handleCopyLink() {
-        if (!shareUrl) return;
-        try {
-            await navigator.clipboard.writeText(shareUrl);
-            setCopiedLink(true);
-            if (copiedLinkTimer.current) clearTimeout(copiedLinkTimer.current);
-            copiedLinkTimer.current = setTimeout(() => setCopiedLink(false), COPIED_RESET_MS);
-        } catch {
-            // Clipboard can be unavailable (permissions, http); the URL is visible
-            // as text either way, so failing quietly loses nothing.
-        }
-    }
-
-    async function handleCopyFallback() {
-        if (!fallbackUrl) return;
-        try {
-            await navigator.clipboard.writeText(fallbackUrl);
-            setCopiedFallback(true);
-            if (copiedFallbackTimer.current) clearTimeout(copiedFallbackTimer.current);
-            copiedFallbackTimer.current = setTimeout(
-                () => setCopiedFallback(false),
-                COPIED_RESET_MS,
-            );
-        } catch {
-            // Clipboard can be unavailable (permissions, http); the URL is visible
-            // as text either way, so failing quietly loses nothing.
-        }
-    }
-
-    async function handleDownloadQr() {
-        if (!shareUrl || generatingQr) return;
-        setShareError(null);
-        setGeneratingQr(true);
-        try {
-            // Named import, not a default import: qrcode is a CommonJS package and
-            // its default-export shape under @types/qrcode isn't guaranteed --
-            // the named form works either way.
-            const { toDataURL } = await import('qrcode');
-            const dataUrl = await toDataURL(shareUrl, { width: 512, margin: 2 });
-            const link = document.createElement('a');
-            link.href = dataUrl;
-            link.download = `jale-job-${jobId.slice(0, 8)}-qr.png`;
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-        } catch {
-            setShareError(t('error_qr'));
-        } finally {
-            setGeneratingQr(false);
-        }
-    }
-
-    const copyButtonClass = [
-        'shrink-0 cursor-pointer rounded px-1 text-sm font-semibold',
-        'text-[var(--jale-blue-700)] hover:underline',
-        'focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]',
-    ].join(' ');
-
-    const linkRowClass = [
-        'flex items-center gap-2 rounded-[var(--radius-input)]',
-        'border border-[var(--jale-divider)] bg-[var(--jale-paper-2)] px-3 py-2',
-    ].join(' ');
 
     return (
         <DashboardPanel>
@@ -289,35 +179,25 @@ export function PublicListingCard({
                             {t('subtitle', { jobTitle })}
                         </p>
 
-                        {!shareUrl ? (
+                        {!share.shareUrl ? (
                             <Button
                                 type="button"
                                 variant="outline"
                                 size="sm"
-                                loading={loadingShare}
+                                loading={share.loading}
                                 loadingLabel={t('loading')}
-                                onClick={handleGetLink}
+                                onClick={() => void share.fetchLink()}
                             >
                                 {t('get_link')}
                             </Button>
                         ) : (
                             <div className="space-y-2">
-                                <div className={linkRowClass}>
-                                    <Input
-                                        readOnly
-                                        value={shareUrl}
-                                        aria-label={t('title')}
-                                        onFocus={(e) => e.currentTarget.select()}
-                                        className="font-mono text-xs sm:text-sm"
-                                    />
-                                    <button
-                                        type="button"
-                                        onClick={handleCopyLink}
-                                        className={copyButtonClass}
-                                    >
-                                        {copiedLink ? t('copied') : t('copy_link')}
-                                    </button>
-                                </div>
+                                <ShareLinkRow
+                                    url={share.shareUrl}
+                                    label={t('title')}
+                                    copied={share.copied}
+                                    onCopy={() => void share.copyLink()}
+                                />
                                 <p className="text-xs text-[var(--jale-ink-2)]">
                                     {t('tracked_caption')}
                                 </p>
@@ -325,18 +205,18 @@ export function PublicListingCard({
                                     type="button"
                                     variant="outline"
                                     size="sm"
-                                    loading={generatingQr}
+                                    loading={share.generatingQr}
                                     loadingLabel={t('generating_qr')}
-                                    onClick={handleDownloadQr}
+                                    onClick={() => void share.downloadQr()}
                                 >
                                     {t('download_qr')}
                                 </Button>
                             </div>
                         )}
 
-                        {shareError ? (
-                            <InlineFeedback tone="danger" onDismiss={() => setShareError(null)}>
-                                {shareError}
+                        {share.error ? (
+                            <InlineFeedback tone="danger" onDismiss={() => share.setError(null)}>
+                                {share.error}
                             </InlineFeedback>
                         ) : null}
 
@@ -345,27 +225,17 @@ export function PublicListingCard({
                             hand out. Only shown when the tracked link never came
                             through -- once shareUrl exists, the tracked link is the
                             only link shown. */}
-                        {shareError && !shareUrl && fallbackUrl ? (
+                        {share.error && !share.shareUrl && fallbackUrl ? (
                             <div className="space-y-2">
                                 <p className="text-xs font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">
                                     {t('fallback_link_label')}
                                 </p>
-                                <div className={linkRowClass}>
-                                    <Input
-                                        readOnly
-                                        value={fallbackUrl}
-                                        aria-label={t('fallback_link_label')}
-                                        onFocus={(e) => e.currentTarget.select()}
-                                        className="font-mono text-xs sm:text-sm"
-                                    />
-                                    <button
-                                        type="button"
-                                        onClick={handleCopyFallback}
-                                        className={copyButtonClass}
-                                    >
-                                        {copiedFallback ? t('copied') : t('copy_link')}
-                                    </button>
-                                </div>
+                                <ShareLinkRow
+                                    url={fallbackUrl}
+                                    label={t('fallback_link_label')}
+                                    copied={fallbackCopy.copied}
+                                    onCopy={() => void fallbackCopy.copy(fallbackUrl)}
+                                />
                                 <p className="text-xs text-[var(--jale-ink-2)]">
                                     {t('fallback_link_untracked')}
                                 </p>

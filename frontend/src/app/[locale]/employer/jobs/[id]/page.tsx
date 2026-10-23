@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { useLocale, useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
+import { useUnreadMessages } from '@/contexts/UnreadMessagesContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { usePageData } from '@/hooks/usePageData';
 import { useStaggerOnce } from '@/hooks/useStaggerOnce';
@@ -58,6 +59,8 @@ import { classifyError, type ErrorKind } from '@/lib/api/errors';
 import { planLimitModel, type PlanLimitModel } from '@/lib/plan-limit';
 import { answerEntries } from '@/lib/format-application-answers';
 import type { WritableJobStatus } from '@/lib/status';
+import { applicantsTutorialDone } from '@/lib/employer-tutorial-done';
+import { useTutorial } from '@/lib/tutorials/use-tutorial';
 import {
     canRequestDetails,
     canResendDetails,
@@ -220,6 +223,26 @@ export default function JobDetailPage() {
     const job = data?.job ?? null;
     const applicants = data?.applicants ?? [];
     const appliedFilters = data?.appliedFilters ?? EMPTY_APPLICANT_FILTERS;
+
+    /*
+     * The applicants tutorial (E3): asked once per page view, the first time
+     * this job's applicants are on screen, and it opens only for an employer
+     * who has not yet moved any application past applied (K1.5) -- on this
+     * job, or on any other as the inbox shows it.
+     */
+    const inbox = useUnreadMessages();
+    const applicantsDone = applicantsTutorialDone(
+        phase === 'ready' && data ? data.applicants.map((row) => row.status) : null,
+        inbox,
+    );
+    const applicantsTutorial = useTutorial('employer_applicants', { done: applicantsDone });
+    const applicantsAskedRef = useRef(false);
+    const hasApplicants = applicants.length > 0;
+    useEffect(() => {
+        if (applicantsAskedRef.current || applicantsDone === undefined || !hasApplicants) return;
+        applicantsAskedRef.current = true;
+        applicantsTutorial.maybeAutoOpen();
+    }, [applicantsDone, applicantsTutorial, hasApplicants]);
 
     /*
      * Optimistic, because the PATCH answers with `{ status }` and nothing
@@ -631,10 +654,15 @@ export default function JobDetailPage() {
      * `t('job.yes')`/`t('job.no')` are therefore no longer read from here.
      */
     const schedule = scheduleSummary(job, locale, tCommonDisplay);
-    // ONE Horario tile: the days and the hours are one fact. `legacy` is already
-    // mutually exclusive with the structured pair (see `scheduleSummary`).
+    // ONE Horario tile: the days, the hours and the shift choices are one fact,
+    // in the same order as the saved `shift_schedule` text. `legacy` is already
+    // mutually exclusive with the structured pieces (see `scheduleSummary`).
     const scheduleText = schedule.legacy
-        ?? ([schedule.days.length > 0 ? schedule.days.join(', ') : null, schedule.hours]
+        ?? ([
+            schedule.days.length > 0 ? schedule.days.join(', ') : null,
+            schedule.hours,
+            schedule.periods.length > 0 ? schedule.periods.join(', ') : null,
+        ]
             .filter(Boolean)
             .join(' · ') || null);
     const durationText = durationLabel(job, tCommonDisplay);

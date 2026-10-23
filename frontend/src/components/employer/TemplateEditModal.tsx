@@ -1,5 +1,5 @@
 'use client';
-import { useId, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
@@ -67,6 +67,21 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
   // with its own copy, its own way out, and no dismiss. `lib/plan-limit` owns
   // all three; this modal only decides where the notice sits.
   const [limitModel, setLimitModel] = useState<PlanLimitModel | null>(null);
+  /*
+   * The save was refused for a shift value the server does not know (K2
+   * `invalid_shift_periods`). Marks the choices and focuses the first one;
+   * cleared as soon as a choice changes. `shiftFocusRequest` counts refusals,
+   * so a second refusal focuses again.
+   */
+  const [shiftPeriodsRejected, setShiftPeriodsRejected] = useState(false);
+  const [shiftFocusRequest, setShiftFocusRequest] = useState(0);
+  const formRef = useRef<HTMLFormElement>(null);
+  useEffect(() => {
+    if (shiftFocusRequest === 0) return;
+    const first = formRef.current?.querySelector<HTMLElement>('[data-field="shift_periods"] input');
+    first?.scrollIntoView({ block: 'center' });
+    first?.focus();
+  }, [shiftFocusRequest]);
 
   // The name is this form's one field the job form does not have; it is also
   // where editing starts, so the Modal lands initial focus on it.
@@ -77,8 +92,10 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
   // gives the form a default button for Enter.
   const formId = useId();
 
-  const update = <K extends keyof JobForm>(key: K, value: JobForm[K]) =>
+  const update = <K extends keyof JobForm>(key: K, value: JobForm[K]) => {
     setForm((current) => ({ ...current, [key]: value }));
+    if (key === 'shift_periods') setShiftPeriodsRejected(false);
+  };
 
   const handleClose = () => {
     if (loading) return;
@@ -92,6 +109,7 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
     setNameError('');
     setError('');
     setLimitModel(null);
+    setShiftPeriodsRejected(false);
     if (!name.trim()) return setNameError(t('templates.name_required'));
     // `validateFullJobForm` replaces this modal's own inline checks -- no
     // `minWorkers` floor here, unlike EditJobModal: a template has no hired
@@ -149,6 +167,10 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
         setError(tReq('errors.tier_overlap'));
       } else if (err instanceof ApiError && err.code === 'invalid_pre_application_prompts') {
         setError(tReq('prompts.invalid_rejected'));
+      } else if (err instanceof ApiError && err.code === 'invalid_shift_periods') {
+        setError(t('modal.field_errors.shift_periods'));
+        setShiftPeriodsRejected(true);
+        setShiftFocusRequest((n) => n + 1);
       } else {
         setError(t('templates.save_error'));
       }
@@ -200,7 +222,7 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
         </div>
       }
     >
-      <form id={formId} onSubmit={handleFormSubmit} className="grid gap-4">
+      <form id={formId} ref={formRef} onSubmit={handleFormSubmit} className="grid gap-4">
         {/* The form's default button, so Enter in any field saves. See
             PostJobModal's copy of this comment for why it cannot simply be
             the footer's Save. */}
@@ -225,6 +247,7 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
           }}
           showStartDate={false}
           locationInvalid={cityMissing}
+          shiftPeriodsError={shiftPeriodsRejected ? t('modal.field_errors.shift_periods') : null}
         />
       </form>
     </Modal>

@@ -376,3 +376,25 @@ describe('pause and resume from the board', () => {
         expect(pauseButton()).toBeInTheDocument();
     });
 });
+
+/*
+ * Sprint 29 moved Billing off the phone bar to make room for Applicants. On a
+ * phone the dashboard's plan meter is the way to the plan, so it must link
+ * there whenever the plan has loaded.
+ */
+describe('the plan meter on the dashboard', () => {
+    it('links to the billing page', () => {
+        renderDashboard();
+        const link = screen.getByRole('link', { name: message('employer_dashboard.usage.view_plan') });
+        expect(link).toHaveAttribute('href', '/employer/billing');
+    });
+
+    // The phone bar has no Billing tab, so this link is the phone route to the
+    // plan page -- including when the plan could not be read.
+    it('still links to the billing page when the plan could not be read', () => {
+        seed = { ...seed, billing: null };
+        renderDashboard();
+        const link = screen.getByRole('link', { name: message('employer_dashboard.usage.view_plan') });
+        expect(link).toHaveAttribute('href', '/employer/billing');
+    });
+});

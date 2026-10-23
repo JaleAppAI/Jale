@@ -5,6 +5,7 @@ import { useTranslations } from 'next-intl';
 import {
   LANGUAGE_OPTIONS,
   type JobForm, type JobFormLocation, type WorkDay,
+  toggleShiftPeriod,
 } from '@/lib/job-form';
 import { CertificationsPicker } from '@/components/employer/CertificationsPicker';
 import { DescriptionHelper } from '@/components/employer/DescriptionHelper';
@@ -55,12 +56,18 @@ interface JobFormFieldsProps {
    * `form.city_key` alone would light the ring up on every empty new form.
    */
   locationInvalid?: boolean;
+  /**
+   * The sentence for shift choices the server refused (K2
+   * `invalid_shift_periods`); marks every choice. The caller owns it, and
+   * clears it once a choice changes.
+   */
+  shiftPeriodsError?: string | null;
 }
 
 export function JobFormFields({
   form, onUpdate, onLocationChange,
   showStartDate = true, locked = false, minWorkers = 1, titleRef,
-  locationInvalid = false,
+  locationInvalid = false, shiftPeriodsError = null,
 }: JobFormFieldsProps) {
   const t = useTranslations('employer_dashboard');
   const locationHelperId = useId();
@@ -206,6 +213,9 @@ export function JobFormFields({
         onToggleDay={toggleWorkDay}
         onShiftStartChange={(value) => onUpdate('shift_start', value)}
         onShiftEndChange={(value) => onUpdate('shift_end', value)}
+        shiftPeriods={form.shift_periods}
+        onToggleShiftPeriod={(period) => onUpdate('shift_periods', toggleShiftPeriod(form.shift_periods, period))}
+        fieldError={shiftPeriodsError ? { field: 'shift_periods', message: shiftPeriodsError } : null}
       />
       <ExperienceStepper
         value={form.required_experience_years}

@@ -42,6 +42,7 @@ vi.mock('@/lib/api/employer', async (importOriginal) => ({
 
 import { message, renderIntl } from './render-intl';
 import { TemplateEditModal } from '../TemplateEditModal';
+import { ApiError } from '@/lib/api/employer';
 import type { JobTemplate } from '@/lib/api/employer';
 
 const withCity: JobTemplate = {
@@ -146,5 +147,78 @@ describe('TemplateEditModal Enter key', () => {
         const buttons = Array.from(document.querySelectorAll('form button')) as HTMLButtonElement[];
         expect(buttons.length).toBeGreaterThan(0);
         expect(buttons.filter((btn) => btn.type === 'submit' && !btn.hidden)).toHaveLength(0);
+    });
+});
+
+/*
+ * Date of birth is no longer offered (sprint 29). A template saved before that
+ * opens here without it -- no hidden selection -- and saving writes it back
+ * without it, so the next job started from the template cannot ask for it.
+ */
+describe('TemplateEditModal: a template that asked for date of birth', () => {
+    it('opens without it and saves without it', async () => {
+        saveJobTemplate.mockResolvedValue({ ...withCity });
+        const oldTemplate: JobTemplate = {
+            ...withCity,
+            id: 'tpl-dob',
+            payload: { ...withCity.payload, required_fields: ['date_of_birth', 'home_address'], optional_fields: ['date_of_birth'] },
+        };
+        renderIntl(<TemplateEditModal open template={oldTemplate} onClose={vi.fn()} onSaved={vi.fn()} />);
+
+        expect(screen.queryByRole('radiogroup', { name: message('job_requirements.fields.date_of_birth') }))
+            .not.toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: message('employer_dashboard.templates.save') }));
+
+        await waitFor(() => expect(saveJobTemplate).toHaveBeenCalledTimes(1));
+        const sent = saveJobTemplate.mock.calls[0][1] as { payload: { required_fields: string[]; optional_fields: string[] } };
+        expect(sent.payload.required_fields).toEqual(['home_address']);
+        expect(sent.payload.optional_fields).not.toContain('date_of_birth');
+    });
+});
+
+/*
+ * K2 (2026-10-22): an explicit `shift_periods: null` is a 400 on template save.
+ * A template stored with no shift choice, or with a null, saves without the key.
+ */
+describe('TemplateEditModal: a template with no shift choices', () => {
+    for (const [name, payload] of [
+        ['none stored', { ...withCity.payload }],
+        ['a stored null', { ...withCity.payload, shift_periods: null }],
+    ] as const) {
+        it(`saves without a shift_periods key (${name})`, async () => {
+            saveJobTemplate.mockResolvedValue({ ...withCity });
+            const template = { ...withCity, id: 'tpl-shifts', payload } as unknown as JobTemplate;
+            renderIntl(<TemplateEditModal open template={template} onClose={vi.fn()} onSaved={vi.fn()} />);
+
+            fireEvent.click(screen.getByRole('button', { name: message('employer_dashboard.templates.save') }));
+
+            await waitFor(() => expect(saveJobTemplate).toHaveBeenCalledTimes(1));
+            const sent = saveJobTemplate.mock.calls[0][1] as { payload: Record<string, unknown> };
+            expect('shift_periods' in sent.payload).toBe(false);
+        });
+    }
+});
+
+/*
+ * K2 (2026-10-22): a template save refused with 400 `invalid_shift_periods`
+ * says so and marks the shift choices, with focus on the first of them.
+ */
+describe('TemplateEditModal: refused shift choices', () => {
+    it('names and marks the shift choices', async () => {
+        saveJobTemplate.mockRejectedValue(
+            // The body also lists the valid values; the form does not need them.
+            new ApiError(400, 'invalid_shift_periods'),
+        );
+        renderIntl(<TemplateEditModal open template={withCity} onClose={vi.fn()} onSaved={vi.fn()} />);
+
+        fireEvent.click(screen.getByRole('button', { name: message('employer_dashboard.templates.save') }));
+
+        const day = () => screen.getByRole('checkbox', { name: message('common.shift_periods.day') });
+        await waitFor(() => expect(day()).toHaveFocus());
+        expect(day()).toHaveAttribute('aria-invalid', 'true');
+        expect(screen.getAllByText('Pick the shifts again from this list').length).toBeGreaterThan(0);
+
+        fireEvent.click(day());
+        expect(day()).not.toHaveAttribute('aria-invalid');
     });
 });

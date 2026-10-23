@@ -23,7 +23,7 @@ import { formatPay } from '@/lib/pay';
  *
  * Everything the card showed is still here — title, employer, location, pay,
  * start date, schedule, openings, job type, match band, match reasons and the
- * required-document indicators. Only the paint changed.
+ * job's documents. Only the paint changed.
  */
 
 const WORKER_REASON_KEYS = new Set([
@@ -152,12 +152,13 @@ export function WorkerJobCard({ job, href }: { job: Job; href: string }) {
               dot; success/info/warning stay reserved for the match band. */}
           <Badge tone="neutral">{jobTypeLabel(t, job.job_type)}</Badge>
 
-          {/* Required docs used to be tinted pills. The locked style has no
-              tinted status pills, and four coloured dots for four documents
-              would out-shout the match band, so they read as a labelled list. */}
+          {/* The job's documents, as a later ask: the employer requests them
+              only if they want to hire, so nothing here reads as a condition
+              for applying. A plain labelled list, not tinted pills -- four
+              coloured dots would out-shout the match band. */}
           {docLabels.length > 0 ? (
             <p className="min-w-0 text-xs font-medium text-[var(--jale-ink-2)]">
-              <span className="font-bold">{t('required_docs_label')}:</span>{' '}
+              <span className="font-semibold">{t('docs_later_label')}:</span>{' '}
               {docLabels.join(' · ')}
             </p>
           ) : null}

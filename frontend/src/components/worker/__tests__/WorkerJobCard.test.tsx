@@ -97,3 +97,47 @@ describe('WorkerJobCard — a referred job carries no tag', () => {
         expect(() => message('match.reasons.referred_job', 'es')).toThrow();
     });
 });
+
+/*
+ * Openings read as words: "2/5 open" made workers ask whether two people were
+ * hired or two spots were left. The board copy says which.
+ */
+describe('WorkerJobCard — spots open', () => {
+    it('says how many of the spots are still open', () => {
+        renderIntl(<WorkerJobCard job={job({ open_count: 2, number_of_workers_needed: 5 })} href="/worker/jobs/job-1" />);
+        expect(screen.getByText('2 of 5 spots open')).toBeInTheDocument();
+    });
+
+    it('says it in Spanish', () => {
+        renderIntl(
+            <WorkerJobCard job={job({ open_count: 2, number_of_workers_needed: 5 })} href="/worker/jobs/job-1" />,
+            'es',
+        );
+        expect(screen.getByText('2 de 5 lugares disponibles')).toBeInTheDocument();
+    });
+
+    it('says nothing about spots when the job does not carry the counts', () => {
+        renderIntl(<WorkerJobCard job={job({ open_count: null, number_of_workers_needed: 5 })} href="/worker/jobs/job-1" />);
+        expect(screen.queryByText(/spots open/)).not.toBeInTheDocument();
+    });
+});
+
+/*
+ * The feed says the same thing as the job page and the public page: the
+ * employer may ask for these documents later. Nothing on the card reads as a
+ * condition for applying.
+ */
+describe('WorkerJobCard — documents', () => {
+    it('lists the documents as a later ask', () => {
+        renderIntl(<WorkerJobCard job={job({ required_docs: ['resume', 'driver_license'] })} href="/worker/jobs/job-1" />);
+        const line = screen.getByText(message('worker_home.docs_later_label'), { exact: false }).closest('p')!;
+        expect(line).toHaveTextContent(`${message('doc_types.resume')} · ${message('doc_types.driver_license')}`);
+        expect(screen.queryByText(/Documents needed/)).not.toBeInTheDocument();
+    });
+
+    it('says it in Spanish', () => {
+        renderIntl(<WorkerJobCard job={job({ required_docs: ['resume'] })} href="/worker/jobs/job-1" />, 'es');
+        expect(screen.getByText(message('worker_home.docs_later_label', 'es'), { exact: false })).toBeInTheDocument();
+        expect(screen.queryByText(/Documentos necesarios/)).not.toBeInTheDocument();
+    });
+});

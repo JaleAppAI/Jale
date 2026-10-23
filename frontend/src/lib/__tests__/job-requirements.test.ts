@@ -19,6 +19,7 @@ import {
   type RequirementsMap,
   type CertificationRequirement,
 } from '@/lib/job-requirements';
+import * as jobRequirements from '@/lib/job-requirements';
 
 describe('initialRequirements', () => {
   // Owner decision 2026-09-04: a new job asks for NOTHING until the employer
@@ -361,10 +362,20 @@ describe('vocabulary shape', () => {
     expect(REQUIREMENT_FIELD_KEYS).toHaveLength(11);
   });
 
-  it('FIELD_GROUPS partitions all 11 field keys with no overlap and no omission', () => {
+  // Date of birth left the choices for new jobs (sprint 29). It stays in the
+  // vocabulary so an existing job that asks for it still shows and keeps it.
+  it('FIELD_GROUPS plus the retired keys cover all 11 field keys with no overlap and no omission', () => {
+    const retired = (jobRequirements as unknown as { RETIRED_FIELD_KEYS?: readonly string[] }).RETIRED_FIELD_KEYS ?? [];
     const grouped = Object.values(FIELD_GROUPS).flat();
-    expect(grouped.sort()).toEqual([...REQUIREMENT_FIELD_KEYS].sort());
-    expect(new Set(grouped).size).toBe(grouped.length);
+    const all = [...grouped, ...retired];
+    expect([...all].sort()).toEqual([...REQUIREMENT_FIELD_KEYS].sort());
+    expect(new Set(all).size).toBe(all.length);
+  });
+
+  it('no longer offers date of birth in any group', () => {
+    expect(Object.values(FIELD_GROUPS).flat()).not.toContain('date_of_birth');
+    expect((jobRequirements as unknown as { RETIRED_FIELD_KEYS?: readonly string[] }).RETIRED_FIELD_KEYS)
+      .toEqual(['date_of_birth']);
   });
 });
 

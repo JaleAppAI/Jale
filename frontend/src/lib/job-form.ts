@@ -3,6 +3,7 @@ import type { EmployerJobDetail, JobWritePayload } from '@/lib/api/employer';
 import { locationDatasetFailed, slugCityKey } from '@/lib/location-search';
 import {
   type PromptDraft,
+  MAX_PROMPT_CHARS,
   normalizePrompts,
   sanitizePrompts,
   validatePrompts,
@@ -17,6 +18,7 @@ import {
   initialRequirements,
   requirementsToArrays,
   arraysToRequirements,
+  withoutRetiredFields,
 } from '@/lib/job-requirements';
 export type { RequirementsMap } from '@/lib/job-requirements';
 export type { CertificationRequirement, CertificationTier } from '@/lib/job-requirements';
@@ -25,6 +27,7 @@ export {
   REQUIREMENT_FIELD_KEYS,
   REQUIREMENT_KEYS,
   FIELD_GROUPS,
+  RETIRED_FIELD_KEYS,
   initialRequirements,
   requirementsToArrays,
   arraysToRequirements,
@@ -60,6 +63,23 @@ export type WorkDay = typeof WORK_DAYS[number];
 // the backend's `infra/lambda/lib/job-fields.ts`; keep the two identical.
 export const SHIFT_PERIODS = ['day', 'evening', 'night', 'overnight'] as const;
 export type ShiftPeriod = (typeof SHIFT_PERIODS)[number];
+
+function isShiftPeriod(value: unknown): value is ShiftPeriod {
+  return typeof value === 'string' && (SHIFT_PERIODS as readonly string[]).includes(value);
+}
+
+/** Known values only, deduplicated, in canonical order (contract K2.2). */
+function canonicalShiftPeriods(values: readonly unknown[]): ShiftPeriod[] {
+  const present = new Set(values.filter(isShiftPeriod));
+  return SHIFT_PERIODS.filter((period) => present.has(period));
+}
+
+/** Adds or removes one shift choice, keeping the list in canonical order. */
+export function toggleShiftPeriod(list: readonly ShiftPeriod[], period: ShiftPeriod): ShiftPeriod[] {
+  return list.includes(period)
+    ? canonicalShiftPeriods(list.filter((item) => item !== period))
+    : canonicalShiftPeriods([...list, period]);
+}
 
 /**
  * English-canonical display strings for `deriveLegacyExpectedDuration` below.
@@ -132,6 +152,8 @@ export type JobForm = {
   /** 'HH:MM' 24h, or '' when not set. May be one-sided (see migration 077). */
   shift_start: string;
   shift_end: string;
+  /** Shift choices (contract K2.2), canonical order; `[]` when none is chosen. */
+  shift_periods: ShiftPeriod[];
   /**
    * Per-certification requirement rows (job-flow redesign, FE-T2 type, FE-T3
    * form/payload wiring). Independent of the legacy `certification_doc`
@@ -160,6 +182,7 @@ export const initialForm: JobForm = {
   number_of_workers_needed: '1', trade_category: '', trade_category_other: '', required_experience_years: '',
   certifications: '', requirements: initialRequirements(),
   expected_duration_bucket: '', work_days: [], shift_start: '', shift_end: '',
+  shift_periods: [],
   certification_requirements: [],
   pre_application_prompts: [],
 };
@@ -323,6 +346,8 @@ export function validateStepRequirements(form: JobForm): PromptValidationCode | 
 export type JobFormErrorCode =
   | StepBasicsErrorCode
   | 'number' | 'pay_range' | 'headcount' | 'shift_incomplete'
+  // Server-side only (K2): a shift value the backend does not know.
+  | 'invalid_shift_periods'
   | PromptValidationCode;
 
 /**
@@ -337,6 +362,74 @@ export function validateFullJobForm(
 }
 
 // ---------------------------------------------------------------------------
+// Field-level verdict (sprint 29): which field a step's failure is about, so
+// the wizard can name it in the banner, mark it `aria-invalid` with its own
+// message, and move focus to it. The step validators above stay the single
+// source of the rules and their codes; this mirrors them in the same order
+// and only adds the field (and, for a question, its position). A test pins
+// that the two agree on whether each step passes.
+// ---------------------------------------------------------------------------
+
+export type JobFormField =
+  | 'title' | 'location' | 'trade_category' | 'trade_category_other'
+  | 'pay_min' | 'pay_max' | 'required_experience_years' | 'number_of_workers_needed'
+  | 'shift_start' | 'shift_end' | 'shift_periods'
+  | 'prompt';
+
+export type JobFormFieldProblem = {
+  field: JobFormField;
+  code: JobFormErrorCode;
+  /** The question's position, for `field: 'prompt'`. */
+  index?: number;
+};
+
+function isBadNumber(value: string): boolean {
+  const parsed = parseOptionalNumber(value);
+  return Number.isNaN(parsed) || (parsed !== null && parsed < 0);
+}
+
+function firstBasicsProblem(form: JobForm): JobFormFieldProblem | null {
+  if (!form.title.trim()) return { field: 'title', code: 'required' };
+  if (!form.location.trim()) return { field: 'location', code: 'required' };
+  if (!form.trade_category) return { field: 'trade_category', code: 'required' };
+  const code = validateStepBasics(form);
+  if (code === 'trade_category_other_required') return { field: 'trade_category_other', code };
+  if (code === 'location_pick_required' || code === 'state_region') return { field: 'location', code };
+  return null;
+}
+
+function firstDetailsProblem(form: JobForm): JobFormFieldProblem | null {
+  const code = validateStepDetails(form);
+  if (code === null) return null;
+  if (code === 'number') {
+    if (isBadNumber(form.pay_min)) return { field: 'pay_min', code };
+    if (isBadNumber(form.pay_max)) return { field: 'pay_max', code };
+    return { field: 'required_experience_years', code };
+  }
+  if (code === 'pay_range') return { field: 'pay_min', code };
+  if (code === 'headcount') return { field: 'number_of_workers_needed', code };
+  // shift_incomplete: exactly one side is set; name the side that is not.
+  return { field: form.shift_start === '' ? 'shift_start' : 'shift_end', code };
+}
+
+function firstRequirementsProblem(form: JobForm): JobFormFieldProblem | null {
+  const code = validateStepRequirements(form);
+  if (code === null) return null;
+  const prompts = form.pre_application_prompts;
+  const index = code === 'prompt_blank'
+    ? prompts.findIndex((prompt) => prompt.text.trim().length === 0)
+    : prompts.findIndex((prompt) => prompt.text.trim().length > MAX_PROMPT_CHARS);
+  return { field: 'prompt', code, index };
+}
+
+/** The first field that stops `step`, or `null` when the step passes. */
+export function firstInvalidField(form: JobForm, step: 1 | 2 | 3): JobFormFieldProblem | null {
+  if (step === 1) return firstBasicsProblem(form);
+  if (step === 2) return firstDetailsProblem(form);
+  return firstRequirementsProblem(form);
+}
+
+// ---------------------------------------------------------------------------
 // Legacy free-text derivation (FE-T3). English-canonical -- this module has
 // no next-intl access (existing expected_duration/shift_schedule round-trips
 // are already untranslated English; see DURATION_BUCKET_LABELS above).
@@ -346,6 +439,11 @@ export function validateFullJobForm(
 export function deriveLegacyExpectedDuration(bucket: DurationBucket): string {
   return DURATION_BUCKET_LABELS[bucket];
 }
+
+/** English shift labels, matching messages/en.json's common.shift_periods.* (contract K2.1). */
+const SHIFT_PERIOD_LABELS: Record<ShiftPeriod, string> = {
+  day: 'Day', evening: 'Evening', night: 'Night', overnight: 'Overnight',
+};
 
 /** Canonical Mon..Sun short labels, matching messages/en.json's common.work_days.*. */
 const DAY_LABELS: Record<WorkDay, string> = {
@@ -422,15 +520,32 @@ function formatHoursRange(shiftStart: string, shiftEnd: string): string {
 
 /**
  * Legacy `shift_schedule` free-text derivation from the structured
- * work_days/shift_start/shift_end fields, e.g.
- * "Mon–Tue, Thu–Fri · 7:00 AM–4:00 PM" (days-only and hours-only shapes omit
- * the missing segment and its separator entirely; '' when nothing is set).
+ * work_days/shift_start/shift_end/shift_periods fields, e.g.
+ * "Mon–Tue, Thu–Fri · 7:00 AM–4:00 PM · Day, Night". The segments are days,
+ * hours, then the shift labels in canonical order (contract K2.3); a missing
+ * segment is dropped with its separator, and '' comes back when nothing is set.
  */
-export function deriveLegacyShiftSchedule(workDays: readonly string[], shiftStart: string, shiftEnd: string): string {
+export function deriveLegacyShiftSchedule(
+  workDays: readonly string[],
+  shiftStart: string,
+  shiftEnd: string,
+  shiftPeriods: readonly string[] = [],
+): string {
   const daysPart = formatDayRanges(workDays);
   const hoursPart = formatHoursRange(shiftStart, shiftEnd);
-  if (daysPart && hoursPart) return `${daysPart} · ${hoursPart}`;
-  return daysPart || hoursPart;
+  const periodsPart = canonicalShiftPeriods(shiftPeriods).map((period) => SHIFT_PERIOD_LABELS[period]).join(', ');
+  return [daysPart, hoursPart, periodsPart].filter(Boolean).join(' · ');
+}
+
+/**
+ * Whether the form holds any structured schedule: days, a shift time, or a
+ * shift choice. When it does, the saved `shift_schedule` text is derived from
+ * them; when it does not, the loaded legacy text is passed through.
+ */
+export function hasShiftStructure(
+  form: Pick<JobForm, 'work_days' | 'shift_start' | 'shift_end' | 'shift_periods'>,
+): boolean {
+  return form.work_days.length > 0 || form.shift_start !== '' || form.shift_end !== '' || form.shift_periods.length > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -530,8 +645,6 @@ function jobFormToBasePayload(form: JobForm): BasePayload {
     ? optional_docs.filter((doc) => doc !== 'certification_doc')
     : optional_docs;
 
-  const hasShiftStructure = form.work_days.length > 0 || form.shift_start !== '' || form.shift_end !== '';
-
   return {
     title: form.title.trim(),
     location: form.location.trim(),
@@ -561,8 +674,8 @@ function jobFormToBasePayload(form: JobForm): BasePayload {
     expected_duration: form.expected_duration_bucket
       ? deriveLegacyExpectedDuration(form.expected_duration_bucket)
       : (form.expected_duration.trim() || null),
-    shift_schedule: hasShiftStructure
-      ? deriveLegacyShiftSchedule(form.work_days, form.shift_start, form.shift_end)
+    shift_schedule: hasShiftStructure(form)
+      ? deriveLegacyShiftSchedule(form.work_days, form.shift_start, form.shift_end, form.shift_periods)
       : (form.shift_schedule.trim() || null),
     transportation_required: form.transportation_required,
     // Derived, not a separate input: the legacy standalone column mirrors
@@ -608,6 +721,9 @@ function jobFormToBasePayload(form: JobForm): BasePayload {
     ...(form.work_days.length > 0 ? { work_days: [...form.work_days] } : {}),
     ...(form.shift_start ? { shift_start: form.shift_start } : {}),
     ...(form.shift_end ? { shift_end: form.shift_end } : {}),
+    // Contract K2.2 on create and template save: omitted when none is chosen.
+    // The edit payload overrides this with the exact array (see below).
+    ...(form.shift_periods.length > 0 ? { shift_periods: [...form.shift_periods] } : {}),
     ...(hasCertRequirements
       ? {
           certification_requirements: trimmedCerts.map((cert) => ({
@@ -665,6 +781,10 @@ export function jobFormToEditPayload(
   return {
     ...jobFormToBasePayload(form),
     state_region: stateTrimmed || (initialStateHadValue ? null : undefined),
+    // Contract K2.2 on update: an omitted key keeps the stored value, so the
+    // array always goes out, `[]` included -- that is how clearing every
+    // shift reaches the server.
+    shift_periods: [...form.shift_periods],
   };
 }
 
@@ -780,6 +900,9 @@ export function jobToForm(job: EmployerJobDetail): JobForm {
     work_days: (job.work_days ?? []).filter((day): day is WorkDay => (WORK_DAYS as readonly string[]).includes(day)),
     shift_start: normalizeShiftTime(job.shift_start),
     shift_end: normalizeShiftTime(job.shift_end),
+    // Anything but an array (missing, null, a stray string) reads as no shift
+    // chosen, so no later write can carry it back (K2: `null` is a 400).
+    shift_periods: canonicalShiftPeriods(Array.isArray(job.shift_periods) ? job.shift_periods : []),
     certification_requirements: seedCertificationRequirements(job),
     // Ids preserved verbatim; malformed/absent lists degrade to no prompts.
     // NEVER re-minted here -- see `lib/pre-application-prompts.ts`'s header.
@@ -791,12 +914,18 @@ export function jobToForm(job: EmployerJobDetail): JobForm {
 // (the payload is the create-request shape, a subset-compatible cousin of
 // EmployerJobDetail) and then blanks start_date -- templates never carry a
 // date. cityPrefilled drives the "check the city" highlight in the modal.
+//
+// This is the one funnel stored data takes into a NEW job form (the wizard
+// and the template editor both use it), so it is also where the retired
+// requirement keys (date of birth) are switched off: a new job never offers
+// them, and the form must not carry a selection the picker no longer shows.
+// `jobToForm` (editing an existing job) keeps them.
 export function jobFormFromTemplatePayload(
   payload: Partial<JobWritePayload>,
 ): { form: JobForm; cityPrefilled: boolean } {
   const form = jobToForm(payload as unknown as EmployerJobDetail);
   return {
-    form: { ...form, start_date: '' },
+    form: { ...form, start_date: '', requirements: withoutRetiredFields(form.requirements) },
     cityPrefilled: form.city_key !== null,
   };
 }

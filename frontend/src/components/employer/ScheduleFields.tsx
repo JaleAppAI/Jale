@@ -1,6 +1,8 @@
 'use client';
+import { useId } from 'react';
 import { useTranslations } from 'next-intl';
-import { WORK_DAYS, type WorkDay } from '@/lib/job-form';
+import { SHIFT_PERIODS, WORK_DAYS, type ShiftPeriod, type WorkDay } from '@/lib/job-form';
+import { CheckboxCard } from '@/components/ui/checkbox-card';
 import { Input } from '@/components/ui/input';
 
 /**
@@ -16,6 +18,11 @@ import { Input } from '@/components/ui/input';
  * the free-text INPUT is gone from this surface -- so a legacy value would
  * otherwise become invisible. Showing it as a read-only note keeps it from
  * silently disappearing on the employer while they fill in the new fields.
+ *
+ * Shift choices (contract K2): Day / Evening / Night / Overnight, several at
+ * once, each with its one-line help, as `CheckboxCard`s in a fieldset. The
+ * start and end times sit under them and are labelled optional: a shift
+ * choice never needs times, and times never need a shift choice.
  */
 interface ScheduleFieldsProps {
   workDays: string[];
@@ -25,18 +32,38 @@ interface ScheduleFieldsProps {
   onToggleDay: (day: WorkDay) => void;
   onShiftStartChange: (value: string) => void;
   onShiftEndChange: (value: string) => void;
+  shiftPeriods: ShiftPeriod[];
+  onToggleShiftPeriod: (period: ShiftPeriod) => void;
   disabled?: boolean;
+  /**
+   * The field a refused step or save is about: a time (the sentence goes under
+   * the times) or the shift choices (it goes under the choices, and every
+   * choice is marked).
+   */
+  fieldError?: { field: 'shift_start' | 'shift_end' | 'shift_periods'; message: string } | null;
 }
 
 export function ScheduleFields({
   workDays, shiftStart, shiftEnd, legacyShiftSchedule,
-  onToggleDay, onShiftStartChange, onShiftEndChange, disabled,
+  onToggleDay, onShiftStartChange, onShiftEndChange,
+  shiftPeriods, onToggleShiftPeriod, disabled, fieldError,
 }: ScheduleFieldsProps) {
   const t = useTranslations('employer_dashboard');
   const tCommon = useTranslations('common');
+  const shiftsHintId = useId();
+  const timesHintId = useId();
+  const startId = useId();
+  const endId = useId();
+  const timeErrorId = useId();
+  const periodsErrorId = useId();
+  const startMarked = fieldError?.field === 'shift_start';
+  const endMarked = fieldError?.field === 'shift_end';
+  const periodsMarked = fieldError?.field === 'shift_periods';
+  const timeError = startMarked || endMarked ? fieldError : null;
 
   const showLegacyNote =
-    workDays.length === 0 && shiftStart === '' && shiftEnd === '' && legacyShiftSchedule.trim() !== '';
+    workDays.length === 0 && shiftPeriods.length === 0 && shiftStart === '' && shiftEnd === ''
+    && legacyShiftSchedule.trim() !== '';
 
   return (
     <div className="grid gap-3">
@@ -71,13 +98,49 @@ export function ScheduleFields({
         </div>
       </div>
 
+      <fieldset
+        data-field="shift_periods"
+        className="m-0 flex min-w-0 flex-col gap-1.5 border-0 p-0"
+        aria-describedby={shiftsHintId}
+      >
+        <legend className="mb-1.5 p-0 text-xs font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">
+          {t('modal.shifts_label')}
+        </legend>
+        <p id={shiftsHintId} className="text-xs text-[var(--jale-ink-2)]">{t('modal.shifts_hint')}</p>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {SHIFT_PERIODS.map((period) => (
+            <CheckboxCard
+              key={period}
+              checked={shiftPeriods.includes(period)}
+              label={tCommon(`shift_periods.${period}`)}
+              description={tCommon(`shift_period_help.${period}`)}
+              onChange={() => onToggleShiftPeriod(period)}
+              disabled={disabled}
+              invalid={periodsMarked}
+              errorId={periodsMarked ? periodsErrorId : undefined}
+              focusRing
+            />
+          ))}
+        </div>
+        {periodsMarked && fieldError && (
+          <p id={periodsErrorId} className="text-xs font-medium text-[var(--jale-danger-text)]">{fieldError.message}</p>
+        )}
+      </fieldset>
+
+      <p className="-mb-1.5 text-xs font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">
+        {t('modal.shift_times_label')}
+      </p>
       <div className="flex flex-wrap items-end gap-2">
         <div className="flex min-w-[8rem] flex-1 flex-col gap-1.5">
-          <label className="text-xs font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">
+          <label htmlFor={startId} className="text-xs font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">
             {t('modal.shift_start_label')}
           </label>
           <Input
+            id={startId}
+            data-field="shift_start"
             type="time"
+            aria-invalid={startMarked || undefined}
+            aria-describedby={startMarked ? `${timesHintId} ${timeErrorId}` : timesHintId}
             value={shiftStart}
             onChange={(e) => onShiftStartChange(e.target.value)}
             disabled={disabled}
@@ -85,17 +148,25 @@ export function ScheduleFields({
         </div>
         <span className="pb-2.5 text-xs font-semibold text-[var(--jale-ink-2)]">{t('modal.shift_to')}</span>
         <div className="flex min-w-[8rem] flex-1 flex-col gap-1.5">
-          <label className="text-xs font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">
+          <label htmlFor={endId} className="text-xs font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">
             {t('modal.shift_end_label')}
           </label>
           <Input
+            id={endId}
+            data-field="shift_end"
             type="time"
+            aria-invalid={endMarked || undefined}
+            aria-describedby={endMarked ? `${timesHintId} ${timeErrorId}` : timesHintId}
             value={shiftEnd}
             onChange={(e) => onShiftEndChange(e.target.value)}
             disabled={disabled}
           />
         </div>
       </div>
+      {timeError && (
+        <p id={timeErrorId} className="-mt-1.5 text-xs font-medium text-[var(--jale-danger-text)]">{timeError.message}</p>
+      )}
+      <p id={timesHintId} className="-mt-1.5 text-xs text-[var(--jale-ink-2)]">{t('modal.shift_times_hint')}</p>
 
       {showLegacyNote && (
         <p className="text-xs text-[var(--jale-ink-2)]">

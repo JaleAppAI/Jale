@@ -17,10 +17,15 @@ import userEvent from '@testing-library/user-event';
  *    be advanced with the mouse.
  */
 
+const routerPush = vi.fn();
+/** The page the wizard was opened from (locale-free, as next-intl reports it). */
+const nav = vi.hoisted(() => ({ pathname: '/employer/applicants' }));
 vi.mock('@/i18n/navigation', () => ({
   Link: ({ href, children, ...rest }: { href: string; children: ReactNode }) => (
     <a href={href} {...rest}>{children}</a>
   ),
+  useRouter: () => ({ push: routerPush, replace: vi.fn() }),
+  usePathname: () => nav.pathname,
 }));
 
 vi.mock('@/contexts/AuthContext', () => ({
@@ -53,6 +58,8 @@ const listJobTemplates = vi.fn();
 const getBilling = vi.fn();
 const createJob = vi.fn();
 const saveJobTemplate = vi.fn();
+const updateJobPublicListing = vi.fn();
+const shareEmployerJob = vi.fn();
 
 // Partial mock: `ApiError` and `EMPLOYER_PRO_PLAN_CODE` must stay real -- both
 // this modal and `lib/plan-limit` import them from here.
@@ -62,10 +69,13 @@ vi.mock('@/lib/api/employer', async (importOriginal) => ({
   getBilling: (...args: unknown[]) => getBilling(...args),
   createJob: (...args: unknown[]) => createJob(...args),
   saveJobTemplate: (...args: unknown[]) => saveJobTemplate(...args),
+  updateJobPublicListing: (...args: unknown[]) => updateJobPublicListing(...args),
+  shareEmployerJob: (...args: unknown[]) => shareEmployerJob(...args),
 }));
 
 import { message, renderIntl } from './render-intl';
 import { PostJobModal } from '../PostJobModal';
+import { ApiError } from '@/lib/api/employer';
 import type { JobTemplate } from '@/lib/api/employer';
 
 /** A template that kept its city identity: applying it leaves step 1 valid. */
@@ -284,6 +294,21 @@ describe('PostJobModal template id', () => {
     expect(createJob.mock.calls[0][1]).toMatchObject({ template_id: 'tpl-city-2' });
   });
 
+  it('posts a job from a template stored with a null shift list without the key (K2)', async () => {
+    const user = userEvent.setup();
+    const nullShifts = {
+      ...withCity,
+      id: 'tpl-null-shifts',
+      payload: { ...withCity.payload, shift_periods: null },
+    } as unknown as JobTemplate;
+    await openWithTemplates([nullShifts]);
+    applyTemplate(nullShifts.id);
+
+    await walkToSubmit(user);
+
+    expect('shift_periods' in createJob.mock.calls[0][1]).toBe(false);
+  });
+
   it('never puts template_id into a template it saves', async () => {
     const user = userEvent.setup();
     // Not `openWithTemplates`: its billing fixture caps templates at 1, and with
@@ -306,5 +331,330 @@ describe('PostJobModal template id', () => {
     expect(saveJobTemplate.mock.calls[0][1].payload).not.toHaveProperty('template_id');
     await waitFor(() => expect(createJob).toHaveBeenCalledTimes(1));
     expect(createJob.mock.calls[0][1]).toHaveProperty('template_id', 'tpl-city');
+  });
+});
+
+/*
+ * A failed Next or Post names the field, moves to it and marks it (sprint 29).
+ * The demo employer saw one "Complete the required fields." under the footer
+ * and had to hunt for which one. New copy, so asserted as literals.
+ */
+describe('PostJobModal: a refused step points at its field', () => {
+  const nextButton = () => screen.getByRole('button', { name: message('employer_dashboard.modal.next') });
+  const titleField = () => screen.getByPlaceholderText(message('employer_dashboard.modal.job_title_placeholder'));
+  const tradeSelect = () =>
+    (screen.getByRole('option', { name: message('employer_dashboard.modal.select_placeholder') }) as HTMLOptionElement)
+      .closest('select') as HTMLSelectElement;
+  const workersField = () => document.querySelector('input[type="number"][min="1"]') as HTMLInputElement;
+  const timeFields = () => Array.from(document.querySelectorAll<HTMLInputElement>('input[type="time"]'));
+
+  async function openEmpty() {
+    listJobTemplates.mockResolvedValue([]);
+    getBilling.mockResolvedValue(null);
+    renderIntl(<PostJobModal open onClose={vi.fn()} onJobCreated={vi.fn()} />);
+  }
+
+  it('marks, describes and focuses a missing title, and the banner names it', async () => {
+    await openEmpty();
+    fireEvent.click(nextButton());
+
+    await waitFor(() => expect(titleField()).toHaveFocus());
+    expect(titleField()).toHaveAttribute('aria-invalid', 'true');
+    expect(titleField()).toHaveAccessibleDescription('Add a job title');
+    expect(screen.getByRole('alert')).toHaveTextContent('Add a job title');
+  });
+
+  it('points at the trade when only the trade is missing', async () => {
+    await openWithTemplates([withCity]);
+    applyTemplate(withCity.id);
+    fireEvent.change(tradeSelect(), { target: { value: '' } });
+    fireEvent.click(nextButton());
+
+    await waitFor(() => expect(tradeSelect()).toHaveFocus());
+    expect(tradeSelect()).toHaveAttribute('aria-invalid', 'true');
+    expect(tradeSelect()).toHaveAccessibleDescription('Pick a trade');
+    expect(titleField()).not.toHaveAttribute('aria-invalid');
+  });
+
+  it('points at the missing end time of a half-filled shift', async () => {
+    await openWithTemplates([withCity]);
+    applyTemplate(withCity.id);
+    fireEvent.click(nextButton());
+    await waitFor(() => expect(stepHeading()).toHaveTextContent(message('employer_dashboard.modal.steps.details')));
+
+    fireEvent.change(timeFields()[0], { target: { value: '07:00' } });
+    fireEvent.click(nextButton());
+
+    const end = timeFields()[1];
+    await waitFor(() => expect(end).toHaveFocus());
+    expect(end).toHaveAttribute('aria-invalid', 'true');
+    expect(end).toHaveAccessibleDescription(expect.stringContaining('Add the end time too, or clear the start time'));
+    expect(screen.getByRole('alert')).toHaveTextContent('Add the end time too, or clear the start time');
+  });
+
+  it('clears the end-time mark when the start time is cleared instead, as the sentence offers', async () => {
+    await openWithTemplates([withCity]);
+    applyTemplate(withCity.id);
+    fireEvent.click(nextButton());
+    await waitFor(() => expect(stepHeading()).toHaveTextContent(message('employer_dashboard.modal.steps.details')));
+    fireEvent.change(timeFields()[0], { target: { value: '07:00' } });
+    fireEvent.click(nextButton());
+    await waitFor(() => expect(timeFields()[1]).toHaveAttribute('aria-invalid', 'true'));
+
+    fireEvent.change(timeFields()[0], { target: { value: '' } });
+
+    expect(timeFields()[1]).not.toHaveAttribute('aria-invalid');
+  });
+
+  it('lands on step 2 with the headcount focused when a jump past it is refused', async () => {
+    const zeroWorkers: JobTemplate = { ...withCity, id: 'tpl-zero', payload: { ...withCity.payload, number_of_workers_needed: 0 } };
+    await openWithTemplates([zeroWorkers]);
+    applyTemplate(zeroWorkers.id);
+    fireEvent.click(screen.getByRole('button', { name: message('employer_dashboard.modal.steps.documents') }));
+
+    await waitFor(() => expect(workersField()).toHaveFocus());
+    expect(stepHeading()).toHaveTextContent(message('employer_dashboard.modal.steps.details'));
+    expect(workersField()).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter how many workers you need, 1 or more');
+  });
+
+  it('points at the blank question when Post is refused', async () => {
+    await openWithTemplates([withCity]);
+    applyTemplate(withCity.id);
+    fireEvent.click(nextButton());
+    await waitFor(() => expect(stepHeading()).toHaveTextContent(message('employer_dashboard.modal.steps.details')));
+    fireEvent.click(nextButton());
+    await waitFor(() => expect(stepHeading()).toHaveTextContent(message('employer_dashboard.modal.steps.documents')));
+
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(message('job_requirements.prompts.add')) }));
+    fireEvent.click(screen.getByRole('button', { name: message('employer_dashboard.post_job_docs.submit') }));
+
+    const question = document.querySelector('textarea[aria-labelledby^="prompt-label-"]') as HTMLTextAreaElement;
+    await waitFor(() => expect(question).toHaveFocus());
+    expect(question).toHaveAttribute('aria-invalid', 'true');
+    expect(question).toHaveAccessibleDescription(message('job_requirements.prompts.validation_blank'));
+    expect(createJob).not.toHaveBeenCalled();
+  });
+
+  it('points at the shift choices when the server refuses them (K2 invalid_shift_periods)', async () => {
+    createJob.mockRejectedValue(
+      // The body also lists the valid values; the form does not need them.
+      new ApiError(400, 'invalid_shift_periods'),
+    );
+    await openWithTemplates([withCity]);
+    applyTemplate(withCity.id);
+    fireEvent.click(nextButton());
+    await waitFor(() => expect(stepHeading()).toHaveTextContent(message('employer_dashboard.modal.steps.details')));
+    fireEvent.click(nextButton());
+    await waitFor(() => expect(stepHeading()).toHaveTextContent(message('employer_dashboard.modal.steps.documents')));
+    fireEvent.click(screen.getByRole('button', { name: message('employer_dashboard.post_job_docs.submit') }));
+
+    const day = () => screen.getByRole('checkbox', { name: message('common.shift_periods.day') });
+    await waitFor(() => expect(day()).toHaveFocus());
+    expect(stepHeading()).toHaveTextContent(message('employer_dashboard.modal.steps.details'));
+    expect(day()).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByRole('alert')).toHaveTextContent('Pick the shifts again from this list');
+
+    // Picking again clears the mark.
+    fireEvent.click(day());
+    expect(day()).not.toHaveAttribute('aria-invalid');
+  });
+
+  it('clears the mark once the field is edited', async () => {
+    await openEmpty();
+    fireEvent.click(nextButton());
+    await waitFor(() => expect(titleField()).toHaveAttribute('aria-invalid', 'true'));
+
+    fireEvent.change(titleField(), { target: { value: 'Roofer' } });
+    expect(titleField()).not.toHaveAttribute('aria-invalid');
+  });
+});
+
+/*
+ * After a successful post the wizard shows a "Job posted" screen inside the
+ * SAME dialog (sprint 29): the confirmation, a one-tap share link, what happens
+ * next, and a way back to the dashboard. New copy, so asserted through the
+ * catalogue.
+ */
+describe('PostJobModal: the job posted screen', () => {
+  const next = () => screen.getByRole('button', { name: message('employer_dashboard.modal.next') });
+  const submit = () => screen.getByRole('button', { name: message('employer_dashboard.post_job_docs.submit') });
+  const turnOn = () => screen.getByRole('button', { name: message('employer_dashboard.job_posted.turn_on') });
+  const postedHeading = () =>
+    screen.getByRole('heading', { name: message('employer_dashboard.job_posted.title') });
+
+  const postedJob = {
+    id: 'job-new-0001',
+    title: 'Roofer',
+    location: 'El Paso, TX',
+    status: 'active',
+    shift_periods: ['night', 'day'],
+    public_listing_enabled: false,
+  };
+
+  async function postJob(
+    user: ReturnType<typeof userEvent.setup>,
+    props: {
+      onClose?: () => void;
+      onJobCreated?: () => void;
+      beforeSubmit?: () => Promise<void>;
+    } = {},
+  ) {
+    listJobTemplates.mockResolvedValue([withCity]);
+    getBilling.mockResolvedValue({
+      planCode: 'employer_pro', activeJobLimit: 10, templateLimit: 5, activeJobUsage: 0, subscription: null,
+      display_price_minor: 2000, currency: 'usd', billing_interval: 'month',
+    });
+    renderIntl(
+      <PostJobModal open onClose={props.onClose ?? vi.fn()} onJobCreated={props.onJobCreated ?? vi.fn()} />,
+    );
+    await waitFor(() => expect(screen.getByText(withCity.name)).toBeInTheDocument());
+    applyTemplate(withCity.id);
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    await user.click(next());
+    await user.click(next());
+    await waitFor(() => expect(submit()).toBeInTheDocument());
+    await props.beforeSubmit?.();
+    await user.click(submit());
+    await waitFor(() => expect(createJob).toHaveBeenCalledTimes(1));
+  }
+
+  beforeEach(() => {
+    createJob.mockResolvedValue(postedJob);
+    updateJobPublicListing.mockResolvedValue({
+      id: postedJob.id, public_code: 'AB12CD', public_listing_enabled: true,
+    });
+    shareEmployerJob.mockResolvedValue({ share_url: 'https://example.test/j/AB12CD?ref=test' });
+  });
+
+  it('shows the posted screen in the same dialog instead of closing', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const onJobCreated = vi.fn();
+    await postJob(user, { onClose, onJobCreated });
+
+    await waitFor(() => expect(postedHeading()).toBeInTheDocument());
+    expect(onJobCreated).toHaveBeenCalledWith(postedJob, undefined);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    // Title, place and shifts in one line; shifts in canonical order.
+    expect(screen.getByText('Roofer · El Paso, TX · Day, Night')).toBeInTheDocument();
+    expect(screen.getByText(message('employer_dashboard.job_posted.n1'))).toBeInTheDocument();
+    // The wizard's own controls are gone.
+    expect(screen.queryByRole('button', { name: message('employer_dashboard.post_job_docs.submit') })).not.toBeInTheDocument();
+    // The dialog is named for what it now says, once, and takes focus so the
+    // name is read out: the step form that held focus is gone.
+    const dialog = screen.getByRole('dialog', { name: message('employer_dashboard.job_posted.title') });
+    expect(screen.getAllByRole('heading', { name: message('employer_dashboard.job_posted.title') })).toHaveLength(1);
+    expect(dialog).toHaveFocus();
+  });
+
+  it('turns the share link on, then shows the link, Copy and the QR download', async () => {
+    const user = userEvent.setup();
+    await postJob(user);
+    await waitFor(() => expect(postedHeading()).toBeInTheDocument());
+
+    await user.click(turnOn());
+
+    await waitFor(() => expect(shareEmployerJob).toHaveBeenCalledTimes(1));
+    expect(updateJobPublicListing).toHaveBeenCalledWith('test-token', postedJob.id, true);
+    expect(shareEmployerJob).toHaveBeenCalledWith('test-token', postedJob.id);
+    expect(updateJobPublicListing.mock.invocationCallOrder[0])
+      .toBeLessThan(shareEmployerJob.mock.invocationCallOrder[0]);
+    expect(await screen.findByDisplayValue('https://example.test/j/AB12CD?ref=test')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: message('employer_job_listing.copy_link') })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: message('employer_job_listing.download_qr') })).toBeInTheDocument();
+    expect(screen.getByText(message('employer_dashboard.job_posted.crew'))).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: message('employer_dashboard.job_posted.turn_on') })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+  });
+
+  it('keeps the job private and says so inline when turning the link on fails', async () => {
+    const user = userEvent.setup();
+    updateJobPublicListing.mockRejectedValue(new ApiError(418, 'something_unexpected'));
+    await postJob(user);
+    await waitFor(() => expect(postedHeading()).toBeInTheDocument());
+
+    await user.click(turnOn());
+
+    expect(await screen.findByText(message('employer_job_listing.toggle_error'))).toBeInTheDocument();
+    expect(shareEmployerJob).not.toHaveBeenCalled();
+    expect(turnOn()).toBeEnabled();
+  });
+
+  it('offers to fetch the link again, without a second switch, when only the link failed', async () => {
+    const user = userEvent.setup();
+    shareEmployerJob.mockRejectedValueOnce(new ApiError(418, 'something_unexpected'));
+    await postJob(user);
+    await waitFor(() => expect(postedHeading()).toBeInTheDocument());
+
+    await user.click(turnOn());
+
+    expect(await screen.findByText(message('employer_job_listing.error_generic'))).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: message('employer_job_listing.get_link') }));
+
+    expect(await screen.findByDisplayValue('https://example.test/j/AB12CD?ref=test')).toBeInTheDocument();
+    expect(updateJobPublicListing).toHaveBeenCalledTimes(1);
+    expect(shareEmployerJob).toHaveBeenCalledTimes(2);
+  });
+
+  it('closes and goes to the dashboard from Back to dashboard', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    await postJob(user, { onClose });
+    await waitFor(() => expect(postedHeading()).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: message('employer_dashboard.job_posted.back') }));
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(routerPush).toHaveBeenCalledWith('/employer/dashboard');
+  });
+
+  it('only closes from Back to dashboard when the dashboard is already the page behind', async () => {
+    nav.pathname = '/employer/dashboard';
+    try {
+      const user = userEvent.setup();
+      const onClose = vi.fn();
+      await postJob(user, { onClose });
+      await waitFor(() => expect(postedHeading()).toBeInTheDocument());
+
+      await user.click(screen.getByRole('button', { name: message('employer_dashboard.job_posted.back') }));
+
+      expect(onClose).toHaveBeenCalledTimes(1);
+      // No second history entry for the page already on screen.
+      expect(routerPush).not.toHaveBeenCalled();
+    } finally {
+      nav.pathname = '/employer/applicants';
+    }
+  });
+
+  it('closes in place on Escape, without navigating', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    await postJob(user, { onClose });
+    await waitFor(() => expect(postedHeading()).toBeInTheDocument());
+
+    await user.keyboard('{Escape}');
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(routerPush).not.toHaveBeenCalled();
+  });
+
+  it('carries the template-not-saved note onto the posted screen', async () => {
+    const user = userEvent.setup();
+    saveJobTemplate.mockRejectedValue(
+      new ApiError(403, 'template_limit_reached', { template_limit: 5 }),
+    );
+    await postJob(user, {
+      beforeSubmit: async () => {
+        await user.click(screen.getByRole('checkbox', { name: message('employer_dashboard.modal.template_save_toggle') }));
+        await user.type(screen.getByPlaceholderText(message('employer_dashboard.modal.template_name_placeholder')), 'Roofer copy');
+      },
+    });
+    await waitFor(() => expect(postedHeading()).toBeInTheDocument());
+
+    expect(screen.getByText(message('employer_dashboard.jobs.template_not_saved_after_post').replace('{limit}', '5'))).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: message('employer_dashboard.templates.manage_link') }))
+      .toHaveAttribute('href', '/employer/templates');
   });
 });

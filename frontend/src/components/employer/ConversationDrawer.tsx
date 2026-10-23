@@ -34,6 +34,9 @@ import {
   startConversation,
 } from '@/lib/api/employer';
 import type { EmployerConversationResponse, InboxItem } from '@/lib/api/employer';
+import { messagesTutorialDone } from '@/lib/employer-tutorial-done';
+import { useOverlayPresence } from '@/lib/tutorials/overlay';
+import { useTutorial } from '@/lib/tutorials/use-tutorial';
 
 /**
  * The floating conversations drawer, mounted on EVERY page (by
@@ -100,6 +103,8 @@ export function ConversationDrawer() {
   const { openRequest } = useConversationDrawer();
 
   const [open, setOpen] = useState(false);
+  // Not a Modal or a Sheet, so it reports itself: no tutorial auto-opens over it.
+  useOverlayPresence(open);
   /** The selected APPLICATION, not conversation -- see the header note. */
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
@@ -125,6 +130,17 @@ export function ConversationDrawer() {
   const canFetch = open && isEmployer;
 
   /*
+   * The messages tutorial (E4) plays before the drawer opens, for an employer
+   * with no conversation yet (K1.5). Every way the drawer opens goes through
+   * `runBeforeHost`; closing it never does.
+   */
+  const messagesTutorial = useTutorial('employer_messages', {
+    done: isEmployer
+      ? messagesTutorialDone({ loading: inboxLoading, errorKind: inboxErrorKind, items })
+      : undefined,
+  });
+
+  /*
    * A request from elsewhere in the app ("Message" on an applicant row).
    * Applied by TOKEN rather than by target, so asking twice for the same
    * applicant re-opens a drawer the employer has since closed.
@@ -135,11 +151,12 @@ export function ConversationDrawer() {
     appliedRequestRef.current = openRequest.token;
     setDescribedTargets((prev) => rememberDescribedTarget(prev, openRequest.target));
     setSelectedKey(openRequest.target.application_id);
-    setOpen(true);
+    // Already open: the selection above is the whole request.
+    if (!open) messagesTutorial.runBeforeHost(() => setOpen(true));
     // The applicant may have applied since the last poll, or been messaged
     // from another device; ask before deciding they are unreachable.
     void refresh();
-  }, [openRequest, refresh]);
+  }, [messagesTutorial, open, openRequest, refresh]);
 
   const threads = useMemo(
     () => items.filter((item) => item.conversation_id && item.conversation_status === 'open'),
@@ -366,7 +383,10 @@ export function ConversationDrawer() {
        */}
       <button
         type="button"
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => {
+          if (open) setOpen(false);
+          else messagesTutorial.runBeforeHost(() => setOpen(true));
+        }}
         aria-expanded={open}
         className="fixed bottom-[calc(6.25rem+env(safe-area-inset-bottom))] right-5 z-30 inline-flex cursor-pointer items-center gap-2 rounded-full bg-[var(--jale-blue-900)] px-4 py-3 text-sm font-bold text-white shadow-[var(--shadow-modal)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)] lg:bottom-5"
       >

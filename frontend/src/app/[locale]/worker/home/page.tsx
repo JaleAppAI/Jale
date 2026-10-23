@@ -211,6 +211,9 @@ export default function WorkerHomePage() {
   // Set once a PATCH has landed, so a slow mount-time profile GET can't
   // resolve afterwards and clobber the list the user just saved.
   const savedOnceRef = useRef(false);
+  // The picker panel, so the empty feed's action can take the worker to it.
+  const citiesPanelRef = useRef<HTMLDivElement>(null);
+  const focusCitiesRef = useRef(false);
 
   useEffect(() => {
     const handle = window.setTimeout(() => {
@@ -472,6 +475,37 @@ export default function WorkerHomePage() {
   }
 
   /**
+   * The empty feed's action. Only ever OPENS the picker -- `toggleEditCities`
+   * would close it on a second press and throw away a half-built list -- and
+   * then takes the worker to it, because the picker sits above the list and
+   * may be off screen on a phone.
+   */
+  function openCityPicker() {
+    if (savingCities) return;
+    focusCitiesRef.current = true;
+    if (editingCities) {
+      focusCitiesPanel();
+      return;
+    }
+    setSaveCitiesError(null);
+    setEditingCities(true);
+  }
+
+  function focusCitiesPanel() {
+    const panel = citiesPanelRef.current;
+    if (!panel) return;
+    focusCitiesRef.current = false;
+    panel.scrollIntoView?.({ block: 'center' });
+    panel.querySelector<HTMLInputElement>('input')?.focus({ preventScroll: true });
+  }
+
+  // After the panel mounts: the field exists only once `editingCities` has
+  // rendered, so the move happens here rather than in the click handler.
+  useEffect(() => {
+    if (editingCities && focusCitiesRef.current) focusCitiesPanel();
+  }, [editingCities]);
+
+  /**
    * Resets BOTH filter inputs. `debouncedSearch` is cleared alongside the raw
    * box so the refetch starts immediately instead of 300ms later — the button
    * has to feel like it did something.
@@ -602,7 +636,10 @@ export default function WorkerHomePage() {
           </button>
         </div>
         {editingCities && (
-          <div className="mb-4 space-y-3 rounded-[var(--radius-input)] border border-[var(--jale-divider)] bg-[var(--jale-card)] p-3">
+          <div
+            ref={citiesPanelRef}
+            className="mb-4 scroll-mt-4 space-y-3 rounded-[var(--radius-input)] border border-[var(--jale-divider)] bg-[var(--jale-card)] p-3"
+          >
             {/* keyed so a save (or a cancel-then-reopen) remounts the field and
                 drops any typed-but-unpicked text — see CityMultiSelect docs */}
             <CityMultiSelect key={cityVersion} value={preferredCities} onChange={setPreferredCities} />
@@ -686,9 +723,18 @@ export default function WorkerHomePage() {
                     action={{ label: tCommon('empty_state.clear_filters'), onClick: clearFilters }}
                   />
                 ) : (
-                  /* No CTA on purpose: a worker cannot post a job, so any
-                     button here would be a dead end dressed as an action. */
-                  <EmptyState title={t('empty.title')} body={t('empty.body')} />
+                  /* The one thing a worker can do about an empty feed is look
+                     in more places, so the action opens the city picker. It
+                     says "pick" to a worker with no cities and "edit" to one
+                     who already has some. */
+                  <EmptyState
+                    title={t('empty.title')}
+                    body={t('empty.body')}
+                    action={{
+                      label: preferredCities.length === 0 ? t('empty.cta') : t('cities_edit'),
+                      onClick: openCityPicker,
+                    }}
+                  />
                 )}
               </DashboardPanel>
             ) : (
