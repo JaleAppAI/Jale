@@ -170,6 +170,10 @@ describe('database migrations', () => {
       '130',
       '131',
       '132',
+      '133',
+      '134',
+      '135',
+      '136',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -5376,6 +5380,510 @@ describe('database migrations', () => {
       }
       expect(sql).toContain("polname = 'jobs_cap_worker_lane_org_owner_select'");
       expect(sql).toContain("polname = 'job_applications_cap_worker_lane_org_owner_select'");
+    });
+  });
+
+  describe('133 team invites', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '133_org_team_invites.sql'), 'utf8');
+    const code = sql.replace(/--.*$/gm, '');
+    const FUNCTIONS = [
+      'org_team_locked_owner_org', 'org_team_invite_create', 'org_team_invite_resend', 'org_team_invite_revoke',
+      'org_team_invite_queue_email', 'org_team_invite_lookup', 'org_team_invite_accept', 'org_team_invite_accept_email',
+      'org_team_invite_mail_purge',
+    ];
+    const bodyOf = (name: string): string => {
+      const start = sql.indexOf(`CREATE FUNCTION jale_cap.${name}(`);
+      expect(start).toBeGreaterThan(0);
+      return sql.slice(start, sql.indexOf('\n$fn$;\n', start));
+    };
+
+    it('is one transaction, forward-only, after 132', () => {
+      expect(sql.startsWith('-- ============================================================\n-- 133_org_team_invites.sql\n'
+        + '-- Run manually AFTER 132_job_limit_increase.sql,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n')).toBe(true);
+      expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+      expect(sql).toContain("SET LOCAL lock_timeout = '5s';");
+      expect(sql.indexOf("SET LOCAL lock_timeout = '5s';")).toBeLessThan(sql.indexOf('-- ── 0. Preconditions'));
+    });
+
+    it('refuses a replay, and needs 129', () => {
+      expect(sql).toContain("IF to_regprocedure('jale_cap.org_team_invite_accept(bytea)') IS NOT NULL THEN\n"
+        + "    RAISE EXCEPTION 'migration 133: already applied (jale_cap.org_team_invite_accept exists); it is not re-runnable';");
+      expect(sql).toContain("IF to_regprocedure('public.jobs_assignee_must_be_active()') IS NULL THEN");
+    });
+
+    it('creates nine jale_cap functions, each a definer with the pinned search_path', () => {
+      expect(sql.match(/^CREATE FUNCTION /gm)).toHaveLength(9);
+      expect(sql).not.toMatch(/CREATE OR REPLACE FUNCTION|DROP FUNCTION/);
+      for (const name of FUNCTIONS) {
+        const body = bodyOf(name);
+        expect([name, body]).toEqual([name, expect.stringContaining('SECURITY DEFINER SET search_path = pg_catalog, pg_temp\n')]);
+        expect([name, body]).toEqual([name, expect.stringContaining('LANGUAGE plpgsql')]);
+      }
+    });
+
+    it('org_team_locked_owner_org takes the company lock FOR NO KEY UPDATE before it re-checks the owner', () => {
+      const body = bodyOf('org_team_locked_owner_org');
+      const lockAt = body.indexOf('PERFORM 1 FROM public.organizations o WHERE o.id = v_org FOR NO KEY UPDATE;');
+      const recheckAt = body.indexOf("PERFORM 1 FROM public.organization_members m\n   WHERE m.user_id = v_caller::uuid AND m.organization_id = v_org AND m.role = 'owner' AND m.status = 'active';");
+      expect(lockAt).toBeGreaterThan(0);
+      expect(recheckAt).toBeGreaterThan(lockAt);
+    });
+
+    it('takes no row lock but the company lock: no FOR UPDATE and no FOR SHARE anywhere in the file', () => {
+      // CREATE POLICY ... FOR UPDATE TO <role> names a command, not a row lock.
+      expect(code).not.toMatch(/\bFOR\s+UPDATE\b(?!\s+TO\b)/i);
+      expect(code).not.toMatch(/\bFOR\s+(KEY\s+)?SHARE\b/i);
+      expect(sql).not.toMatch(/SKIP LOCKED|NOWAIT/i);
+      // Every FOR NO KEY UPDATE locks an organizations row: the helper and the two accepts.
+      const locks = code.match(/FOR NO KEY UPDATE/g) ?? [];
+      expect(locks).toHaveLength(3);
+      expect(code.match(/FROM public\.organizations o WHERE o\.id = v_org FOR NO KEY UPDATE;/g)).toHaveLength(3);
+    });
+
+    it('accept re-reads its invite by token after the lock, so a token a resend rotated fails', () => {
+      for (const name of ['org_team_invite_accept']) {
+        const body = bodyOf(name);
+        const lockAt = body.indexOf('FOR NO KEY UPDATE;');
+        const reread = body.indexOf('WHERE i.organization_id = v_org AND i.token_hash = p_token_hash;');
+        expect(reread).toBeGreaterThan(lockAt);
+        expect(lockAt).toBeGreaterThan(0);
+      }
+      const acceptEmail = bodyOf('org_team_invite_accept_email');
+      expect(acceptEmail.indexOf('WHERE i.id = v_invite AND i.organization_id = v_org')).toBeGreaterThan(acceptEmail.indexOf('FOR NO KEY UPDATE;'));
+    });
+
+    it('every write path but accept and accept_email locks through the owner helper; every UPDATE checks its row count', () => {
+      for (const name of ['org_team_invite_create', 'org_team_invite_resend', 'org_team_invite_revoke', 'org_team_invite_queue_email']) {
+        expect([name, bodyOf(name)]).toEqual([name, expect.stringContaining('v_org := jale_cap.org_team_locked_owner_org();')]);
+      }
+      for (const name of FUNCTIONS) {
+        const body = bodyOf(name).replace(/--.*$/gm, '');
+        const updates = body.match(/^\s*UPDATE public\./gm) ?? [];
+        const counts = body.match(/GET DIAGNOSTICS v_n = ROW_COUNT;\n\s*IF v_n <> 1 THEN RAISE EXCEPTION '[^']+' USING ERRCODE = 'P0001'; END IF;/g) ?? [];
+        expect([name, counts.length]).toEqual([name, updates.length]);
+      }
+    });
+
+    it('creates twelve policies for jale_cap_org_team; members, users and the outbox come last', () => {
+      const policies = sql.match(/^CREATE POLICY \w+\s+ON public\.\w+ AS PERMISSIVE FOR \w+ TO \w+/gm) ?? [];
+      expect(policies).toHaveLength(12);
+      expect(sql.match(/^CREATE POLICY /gm)).toHaveLength(12);
+      for (const p of policies) expect(p).toMatch(/ TO jale_cap_org_team$/);
+      expect(sql).not.toMatch(/^(ALTER|DROP) POLICY/m);
+      const lastAt = sql.indexOf('-- ── 5. Last: members, users, outbox');
+      expect(lastAt).toBeGreaterThan(sql.indexOf('CREATE FUNCTION jale_cap.org_team_invite_mail_purge('));
+      const earlier = sql.slice(0, lastAt);
+      for (const table of ['organization_members', 'users', 'email_outbox']) {
+        expect(earlier).not.toMatch(new RegExp(`^(GRANT|CREATE POLICY|ALTER TABLE)[^;]*public\\.${table}\\b`, 'm'));
+      }
+      expect(sql.slice(lastAt).match(/^CREATE POLICY \w+ ON public\.(organization_members|users|email_outbox) /gm)).toHaveLength(7);
+    });
+
+    it('opens and closes the jale_cap_org_team window once, and grants every EXECUTE before the transfer', () => {
+      expect(sql.split("'GRANT %I TO %I WITH SET TRUE, INHERIT FALSE', 'jale_cap_org_team', current_user")).toHaveLength(2);
+      expect(sql.split("'REVOKE %I FROM %I GRANTED BY %I', 'jale_cap_org_team', current_user, current_user")).toHaveLength(2);
+      const firstTransfer = sql.indexOf('OWNER TO jale_cap_org_team;');
+      for (const grant of [
+        'GRANT EXECUTE ON FUNCTION jale_cap.org_team_invite_create(text, text, bytea, integer) TO jale_api;',
+        'GRANT EXECUTE ON FUNCTION jale_cap.org_team_invite_resend(uuid, bytea, integer) TO jale_api;',
+        'GRANT EXECUTE ON FUNCTION jale_cap.org_team_invite_revoke(uuid) TO jale_api;',
+        'GRANT EXECUTE ON FUNCTION jale_cap.org_team_invite_queue_email(uuid, text, text, text) TO jale_api;',
+        'GRANT EXECUTE ON FUNCTION jale_cap.org_team_invite_lookup(bytea) TO jale_api_public;',
+        'GRANT EXECUTE ON FUNCTION jale_cap.org_team_invite_accept(bytea) TO jale_api;',
+        'GRANT EXECUTE ON FUNCTION jale_cap.org_team_invite_accept_email() TO jale_api;',
+        'GRANT EXECUTE ON FUNCTION jale_cap.org_team_invite_mail_purge(integer) TO jale_billing;',
+      ]) {
+        expect([grant, sql.indexOf(grant)]).toEqual([grant, expect.any(Number)]);
+        expect(sql.indexOf(grant)).toBeGreaterThan(0);
+        expect(sql.indexOf(grant)).toBeLessThan(firstTransfer);
+      }
+      expect(sql).not.toContain('GRANT EXECUTE ON FUNCTION jale_cap.org_team_locked_owner_org');
+      expect(sql.match(/^REVOKE ALL ON FUNCTION jale_cap\.org_team_\w+\([^)]*\) FROM PUBLIC;$/gm)).toHaveLength(9);
+      expect(sql.match(/^ALTER FUNCTION jale_cap\.org_team_\w+\([^)]*\) OWNER TO jale_cap_org_team;$/gm)).toHaveLength(9);
+      expect(sql).toContain('GRANT USAGE ON SCHEMA jale_cap TO jale_cap_org_team, jale_billing;');
+      expect(sql).toContain('GRANT CREATE ON SCHEMA jale_cap TO jale_cap_org_team;');
+    });
+
+    it('accept and accept_email map only a members primary-key 23505 to already_member, and re-raise any other', () => {
+      expect(sql).toContain("AND c.contype = 'p' AND c.conname = 'organization_members_pkey'");
+      for (const name of ['org_team_invite_accept', 'org_team_invite_accept_email']) {
+        const body = bodyOf(name);
+        const handlers = body.match(/EXCEPTION WHEN unique_violation THEN\n\s*GET STACKED DIAGNOSTICS v_constraint = CONSTRAINT_NAME;\n\s*IF v_constraint = 'organization_members_pkey' THEN\n\s*RETURN QUERY SELECT 'already_member'::text, NULL::uuid; RETURN;\n\s*END IF;\n\s*RAISE;\n/g) ?? [];
+        expect([name, handlers.length]).toEqual([name, 1]);
+        expect([name, body.match(/EXCEPTION WHEN/g)?.length]).toEqual([name, 1]);
+        // The handler wraps the members insert only, before the invite is marked accepted.
+        expect(body.indexOf('INSERT INTO public.organization_members')).toBeLessThan(body.indexOf('EXCEPTION WHEN unique_violation'));
+        expect(body.indexOf('EXCEPTION WHEN unique_violation')).toBeLessThan(body.indexOf('SET accepted_at = pg_catalog.now()'));
+      }
+    });
+
+    it('revoke returns a removed member\'s cognito_sub of this company only, with no cross-company invite check', () => {
+      const body = bodyOf('org_team_invite_revoke').replace(/--.*$/gm, '');
+      expect(body).not.toContain('NOT EXISTS');
+      expect(body).toContain("AND m.organization_id = v_org AND m.status = 'removed';");
+    });
+
+    it('indexes the invite mail the send counts read, in the last section', () => {
+      const index = "CREATE INDEX email_outbox_organization_invite_sends ON public.email_outbox (source_id, created_at)\n  WHERE source_type = 'organization_invite';";
+      expect(sql).toContain(index);
+      expect(sql.indexOf(index)).toBeGreaterThan(sql.indexOf('-- ── 5. Last: members, users, outbox'));
+      expect(sql).toContain("indexname = 'email_outbox_organization_invite_sends'");
+      // The self-check refuses any request-login right on the outbox, DELETE included.
+      expect(sql).toContain("has_table_privilege('jale_api', 'public.email_outbox', 'DELETE, TRUNCATE')");
+      expect(sql).toContain("has_table_privilege('jale_api_public', 'public.email_outbox', 'DELETE, TRUNCATE')");
+    });
+
+    it('keeps the invite mail to the capability owner: fixed source type, the invite\'s own recipient', () => {
+      const body = bodyOf('org_team_invite_queue_email');
+      expect(body).toContain("RAISE EXCEPTION 'org_team_invite_queue_email: no invite was sent in this transaction' USING ERRCODE = 'insufficient_privilege';");
+      expect(body).toContain("'organization_invite'");
+      expect(body).toContain("'org-invite:' || v_inv.id::text || ':' || pg_catalog.encode(pg_catalog.substr(v_inv.token_hash, 1, 8), 'hex')");
+      expect(sql).toContain("CREATE POLICY email_outbox_cap_org_team_select ON public.email_outbox AS PERMISSIVE FOR SELECT TO jale_cap_org_team USING (source_type = 'organization_invite');");
+      expect(sql).not.toMatch(/ON public\.email_outbox TO jale_api\b/);
+    });
+  });
+
+  describe('134 team members', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '134_org_team_members.sql'), 'utf8');
+    const code = sql.replace(/--.*$/gm, '');
+    const FUNCTIONS = [
+      'org_team_remove_member', 'org_team_members', 'org_team_invites', 'org_team_membership', 'org_member_access',
+    ];
+    const bodyOf = (name: string): string => {
+      const start = sql.indexOf(`CREATE FUNCTION jale_cap.${name}(`);
+      expect(start).toBeGreaterThan(0);
+      return sql.slice(start, sql.indexOf('\n$fn$;\n', start));
+    };
+
+    it('is one transaction, forward-only, after 133', () => {
+      expect(sql.startsWith('-- ============================================================\n-- 134_org_team_members.sql\n'
+        + '-- Run manually AFTER 133_org_team_invites.sql,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n')).toBe(true);
+      expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+      expect(sql).toContain("SET LOCAL lock_timeout = '5s';");
+      expect(sql.indexOf("SET LOCAL lock_timeout = '5s';")).toBeLessThan(sql.indexOf('-- ── 0. Preconditions'));
+    });
+
+    it('refuses a replay, and needs 133', () => {
+      expect(sql).toContain("IF to_regprocedure('jale_cap.org_team_remove_member(uuid)') IS NOT NULL THEN\n"
+        + "    RAISE EXCEPTION 'migration 134: already applied (jale_cap.org_team_remove_member exists); it is not re-runnable';");
+      expect(sql).toContain("IF to_regprocedure('jale_cap.org_team_invite_accept(bytea)') IS NULL");
+      expect(sql).toContain("WHERE p.oid = to_regprocedure('jale_cap.org_team_locked_owner_org()')");
+    });
+
+    it('creates five jale_cap functions, each a definer with the pinned search_path', () => {
+      expect(sql.match(/^CREATE FUNCTION /gm)).toHaveLength(5);
+      expect(sql).not.toMatch(/CREATE OR REPLACE FUNCTION|DROP FUNCTION|ALTER TABLE/);
+      for (const name of FUNCTIONS) {
+        const body = bodyOf(name);
+        expect([name, body]).toEqual([name, expect.stringContaining('SECURITY DEFINER SET search_path = pg_catalog, pg_temp\n')]);
+        expect([name, body]).toEqual([name, expect.stringContaining('#variable_conflict use_column')]);
+      }
+      expect(sql).toContain('CREATE FUNCTION jale_cap.org_member_access(\n  p_organization_id UUID        DEFAULT NULL,\n'
+        + '  p_since           TIMESTAMPTZ DEFAULT NULL,\n  p_limit           INTEGER     DEFAULT NULL\n)');
+    });
+
+    it('takes no row lock: no FOR UPDATE and no FOR SHARE anywhere; removal locks the company through 133\'s helper', () => {
+      // CREATE POLICY ... FOR SELECT names a command, not a row lock.
+      expect(code).not.toMatch(/\bFOR\s+(NO\s+KEY\s+)?UPDATE\b/i);
+      expect(code).not.toMatch(/\bFOR\s+(KEY\s+)?SHARE\b/i);
+      expect(sql).not.toMatch(/SKIP LOCKED|NOWAIT/i);
+      const remove = bodyOf('org_team_remove_member');
+      const lockAt = remove.indexOf('v_org := jale_cap.org_team_locked_owner_org();');
+      expect(lockAt).toBeGreaterThan(0);
+      expect(remove.indexOf('FROM public.organization_members m')).toBeGreaterThan(lockAt);
+      expect(remove.indexOf('PERFORM 1 FROM public.jobs j WHERE j.employer_id = p_user_id LIMIT 1;')).toBeGreaterThan(lockAt);
+      for (const name of ['org_team_members', 'org_team_invites', 'org_team_membership', 'org_member_access']) {
+        expect([name, bodyOf(name)]).toEqual([name, expect.not.stringContaining('org_team_locked_owner_org')]);
+      }
+    });
+
+    it('removal updates only the classified foreman, clears the billing mark and checks its row count', () => {
+      const remove = bodyOf('org_team_remove_member').replace(/--.*$/gm, '');
+      expect(remove).toContain("SET status = 'removed', billing_suspended_at = NULL, status_changed_at = pg_catalog.now()\n"
+        + "   WHERE m.user_id = p_user_id AND m.organization_id = v_org AND m.role = 'foreman' AND m.status <> 'removed';");
+      expect(remove).toMatch(/GET DIAGNOSTICS v_n = ROW_COUNT;\n\s*IF v_n <> 1 THEN RAISE EXCEPTION '[^']+' USING ERRCODE = 'P0001'; END IF;/);
+      expect(remove.match(/^\s*UPDATE public\./gm)).toHaveLength(1);
+      for (const name of ['org_team_members', 'org_team_invites', 'org_team_membership', 'org_member_access']) {
+        expect([name, bodyOf(name)]).toEqual([name, expect.not.stringMatching(/\b(UPDATE|INSERT|DELETE)\s+(INTO\s+|FROM\s+)?public\./)]);
+      }
+      // The two owner lists refuse anyone else with 42501.
+      for (const name of ['org_team_members', 'org_team_invites']) {
+        expect([name, bodyOf(name)]).toEqual([name, expect.stringContaining(
+          "RAISE EXCEPTION 'org_team: the caller is not the active owner' USING ERRCODE = 'insufficient_privilege';")]);
+      }
+    });
+
+    it('member access takes exactly one key, its limit only with the window, and raises 22023 otherwise', () => {
+      const body = bodyOf('org_member_access');
+      expect(body).toContain('IF (p_organization_id IS NULL) = (p_since IS NULL) THEN');
+      expect(body).toContain('IF p_organization_id IS NOT NULL AND p_limit IS NOT NULL THEN');
+      expect(body).toContain('IF p_since IS NOT NULL AND (p_limit IS NULL OR p_limit < 1 OR p_limit > 1000) THEN');
+      expect(body.match(/USING ERRCODE = 'invalid_parameter_value'/g)).toHaveLength(3);
+      expect(body).toContain("WHERE m.role = 'foreman'");
+      expect(body).toContain('ORDER BY s.changed_at DESC, s.user_id\n   LIMIT p_limit;');
+    });
+
+    it('opens and closes the jale_cap_org_team window once, and grants every EXECUTE before the transfer', () => {
+      expect(sql.split("'GRANT %I TO %I WITH SET TRUE, INHERIT FALSE', 'jale_cap_org_team', current_user")).toHaveLength(2);
+      expect(sql.split("'REVOKE %I FROM %I GRANTED BY %I', 'jale_cap_org_team', current_user, current_user")).toHaveLength(2);
+      const firstTransfer = sql.indexOf('OWNER TO jale_cap_org_team;');
+      for (const grant of [
+        'GRANT EXECUTE ON FUNCTION jale_cap.org_team_remove_member(uuid) TO jale_api;',
+        'GRANT EXECUTE ON FUNCTION jale_cap.org_team_members() TO jale_api;',
+        'GRANT EXECUTE ON FUNCTION jale_cap.org_team_invites() TO jale_api;',
+        'GRANT EXECUTE ON FUNCTION jale_cap.org_team_membership() TO jale_api;',
+        'GRANT EXECUTE ON FUNCTION jale_cap.org_member_access(uuid, timestamptz, integer) TO jale_billing;',
+      ]) {
+        expect([grant, sql.indexOf(grant)]).toEqual([grant, expect.any(Number)]);
+        expect(sql.indexOf(grant)).toBeGreaterThan(0);
+        expect(sql.indexOf(grant)).toBeLessThan(firstTransfer);
+      }
+      expect(sql.match(/^GRANT EXECUTE /gm)).toHaveLength(5);
+      expect(sql.match(/^REVOKE ALL ON FUNCTION jale_cap\.org_\w+\([^)]*\) FROM PUBLIC;$/gm)).toHaveLength(5);
+      expect(sql.match(/^ALTER FUNCTION jale_cap\.org_\w+\([^)]*\) OWNER TO jale_cap_org_team;$/gm)).toHaveLength(5);
+    });
+
+    it('creates two open SELECT policies for jale_cap_org_team; profiles, jobs and users come last', () => {
+      expect(sql.match(/^CREATE POLICY /gm)).toHaveLength(2);
+      expect(sql).toContain('CREATE POLICY employer_profiles_cap_org_team_select ON public.employer_profiles AS PERMISSIVE FOR SELECT TO jale_cap_org_team USING (true);');
+      expect(sql).toContain('CREATE POLICY jobs_cap_org_team_select ON public.jobs AS PERMISSIVE FOR SELECT TO jale_cap_org_team USING (true);');
+      expect(sql).not.toMatch(/^(ALTER|DROP) POLICY/m);
+      const lastAt = sql.indexOf('-- ── 3. Last: profiles, jobs, users');
+      expect(lastAt).toBeGreaterThan(sql.indexOf('CREATE FUNCTION jale_cap.org_member_access('));
+      const earlier = sql.slice(0, lastAt);
+      for (const table of ['employer_profiles', 'jobs', 'users']) {
+        expect(earlier).not.toMatch(new RegExp(`^(GRANT|REVOKE|CREATE POLICY|CREATE INDEX)[^;]*public\\.${table}\\b`, 'm'));
+      }
+      const last = sql.slice(lastAt, sql.indexOf('-- ── 4. Self-check'));
+      expect(last.match(/^GRANT [^;]+;$/gm)).toEqual([
+        'GRANT SELECT (user_id, contact_name) ON public.employer_profiles TO jale_cap_org_team;',
+        'GRANT SELECT (id, employer_id, status) ON public.jobs TO jale_cap_org_team;',
+        'GRANT SELECT (full_name) ON public.users TO jale_cap_org_team;',
+      ]);
+    });
+
+    it('indexes organization_invites (organization_id, email) in 128\'s lock order: after the functions, before profiles, jobs and users', () => {
+      const index = 'CREATE INDEX organization_invites_by_org_email ON public.organization_invites (organization_id, email);';
+      expect(sql.match(/^CREATE (UNIQUE )?INDEX /gm)).toHaveLength(1);
+      expect(sql).toContain(index);
+      expect(sql.indexOf(index)).toBeGreaterThan(sql.indexOf('-- ── 2. The invites index'));
+      expect(sql.indexOf(index)).toBeGreaterThan(sql.indexOf('OWNER TO jale_cap_org_team;'));
+      expect(sql.indexOf(index)).toBeLessThan(sql.indexOf('-- ── 3. Last: profiles, jobs, users'));
+      // The self-check pins it, and the preconditions refuse it already present.
+      expect(sql).toContain("AND indexdef = 'CREATE INDEX organization_invites_by_org_email ON public.organization_invites USING btree (organization_id, email)'");
+      expect(sql).toContain("OR to_regclass('public.organization_invites_by_org_email') IS NOT NULL THEN");
+    });
+
+    it('lists no removed member, and refuses any membership of the capability owner before and after', () => {
+      expect(bodyOf('org_team_members')).toContain("WHERE m.organization_id = v_org AND m.status <> 'removed'\n");
+      const check = "EXISTS (SELECT 1 FROM pg_auth_members am WHERE am.member = 'jale_cap_org_team'::regrole)";
+      expect(sql.split(check)).toHaveLength(3);
+      expect(sql.indexOf(check)).toBeLessThan(sql.indexOf('-- ── 1. Functions'));
+      expect(sql.lastIndexOf(check)).toBeGreaterThan(sql.indexOf('-- ── 4. Self-check'));
+      // Policies are compared by regclass, never by a search_path-dependent name.
+      expect(sql).not.toContain('polrelid::regclass::text');
+    });
+  });
+
+  describe('135 team carry-overs', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '135_org_team_carry_overs.sql'), 'utf8');
+    const code = sql.replace(/--.*$/gm, '');
+    const lastAt = sql.indexOf('-- ── 3. Last: members, users, the digest tables, jobs, conversations');
+    const selfCheckAt = sql.indexOf('-- ── 4. Self-check');
+    const last = sql.slice(lastAt, selfCheckAt);
+    const FK = 'ALTER TABLE public.job_conversations\n'
+      + '  ADD CONSTRAINT job_conversations_job_employer_fkey FOREIGN KEY (job_id, employer_id)\n'
+      + '  REFERENCES public.jobs (id, employer_id) ON UPDATE CASCADE ON DELETE CASCADE;';
+
+    it('is one transaction, forward-only, after 134', () => {
+      expect(sql.startsWith('-- ============================================================\n-- 135_org_team_carry_overs.sql\n'
+        + '-- Run manually AFTER 134_org_team_members.sql,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n')).toBe(true);
+      expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+      expect(sql.indexOf("SET LOCAL lock_timeout = '5s';")).toBeGreaterThan(sql.indexOf('BEGIN;'));
+      expect(sql.indexOf("SET LOCAL lock_timeout = '5s';")).toBeLessThan(sql.indexOf('-- ── 0. Preconditions'));
+      expect(code).not.toMatch(/\b(DROP|TRUNCATE)\s+(TABLE|FUNCTION|POLICY|INDEX|CONSTRAINT)\b/i);
+    });
+
+    it('refuses a replay, needs 134 and 105\'s guard, and dry-runs the conversations through the analytics gate', () => {
+      expect(sql).toContain("RAISE EXCEPTION 'migration 135: already applied (job_conversations_job_employer_fkey exists); it is not re-runnable';");
+      expect(sql).toContain("WHERE p.oid = to_regprocedure('jale_cap.org_team_remove_member(uuid)')");
+      expect(sql).toContain("AND t.tgname = 'job_conversations_application_guard' AND t.tgenabled = 'O'");
+      expect(sql).toContain("AND t.tgfoid = to_regprocedure('jale_cap.job_conversation_application_guard()'))");
+      const open = sql.indexOf("PERFORM set_config('app.admin_analytics_read', 'on', true);");
+      const close = sql.indexOf("PERFORM set_config('app.admin_analytics_read', 'off', true);");
+      expect(open).toBeGreaterThan(0);
+      expect(close).toBeGreaterThan(open);
+      expect(close).toBeLessThan(sql.indexOf('-- ── 1. The nudge'));
+      expect(sql.split("set_config('app.admin_analytics_read'")).toHaveLength(3);
+      expect(sql).toContain("RAISE EXCEPTION 'migration 135: % conversation(s) name another employer than their job''s; fix them with support before applying', v_mismatched;");
+    });
+
+    it('adds the composite key and the cascading foreign key last, validated in the same statement', () => {
+      expect(last).toContain('CREATE UNIQUE INDEX jobs_id_employer_id_key ON public.jobs (id, employer_id);\n'
+        + 'ALTER TABLE public.jobs ADD CONSTRAINT jobs_id_employer_id_key UNIQUE USING INDEX jobs_id_employer_id_key;');
+      expect(last).toContain(FK);
+      expect(code).toMatch(/ON UPDATE CASCADE ON DELETE CASCADE/);
+      expect(code).not.toMatch(/\bNOT VALID\b|\bVALIDATE CONSTRAINT\b|\bDEFERRABLE\b|\bINITIALLY\b/);
+      expect(code.match(/^ALTER TABLE /gm)).toHaveLength(2);
+      expect(code.match(/^CREATE (UNIQUE )?INDEX /gm)).toHaveLength(2);
+      const index = 'CREATE INDEX job_conversations_job_id_employer_id_idx ON public.job_conversations (job_id, employer_id);';
+      expect(last).toContain(index);
+      expect(last.indexOf(index)).toBeGreaterThan(last.indexOf('ADD CONSTRAINT jobs_id_employer_id_key'));
+      expect(last.indexOf(index)).toBeLessThan(last.indexOf(FK));
+      expect(sql).toContain("AND indexdef = 'CREATE INDEX job_conversations_job_id_employer_id_idx ON public.job_conversations USING btree (job_id, employer_id)') THEN");
+      expect(sql).toContain("OR to_regclass('public.job_conversations_job_id_employer_id_idx') IS NOT NULL THEN");
+      // The foreign key is the last DDL before the self-check.
+      expect(last.trimEnd().endsWith(FK)).toBe(true);
+      expect(sql).toContain("pg_get_constraintdef(c.oid) = 'FOREIGN KEY (job_id, employer_id) REFERENCES public.jobs(id, employer_id) ON UPDATE CASCADE ON DELETE CASCADE'");
+    });
+
+    it('replaces only the nudge claim, as its 125 owner, keeping 125\'s single row lock and changing only the recipient', () => {
+      expect(sql.match(/^CREATE (OR REPLACE )?FUNCTION /gm)).toEqual(['CREATE OR REPLACE FUNCTION ']);
+      expect(sql).not.toMatch(/ALTER FUNCTION|GRANT EXECUTE ON FUNCTION jale_cap|REVOKE ALL ON FUNCTION/);
+      const body = sql.slice(sql.indexOf('CREATE OR REPLACE FUNCTION jale_cap.claim_hire_details_nudges('), sql.indexOf('\n$fn$;\n'));
+      expect(body).toContain('SECURITY DEFINER\nSET search_path = pg_catalog, pg_temp\n');
+      expect(body).toContain('#variable_conflict use_column');
+      // The only row lock in the file is 125's claim's own, unchanged.
+      expect(code.match(/\bFOR\s+(NO\s+KEY\s+)?UPDATE\b/gi)).toEqual(['FOR UPDATE']);
+      expect(code).toContain('       FOR UPDATE OF ja SKIP LOCKED\n  )');
+      expect(code).not.toMatch(/\bFOR\s+(KEY\s+)?SHARE\b|NOWAIT/i);
+      expect(body).toContain('    LEFT JOIN public.organization_members em ON em.user_id = j.employer_id\n'
+        + '    LEFT JOIN public.organization_members om\n'
+        + "           ON om.organization_id = em.organization_id AND om.role = 'owner' AND om.status = 'active'\n"
+        + '    JOIN public.users r\n'
+        + "      ON r.id = CASE WHEN em.user_id IS NULL OR em.status = 'active' THEN j.employer_id\n"
+        + '                     ELSE COALESCE(om.user_id, j.employer_id) END\n');
+      expect(body).toContain('  SELECT d.id, d.job_id, r.id, r.email,\n');
+      expect(body).not.toContain('JOIN public.users e ON e.id = j.employer_id');
+      const opens = sql.indexOf("'GRANT %I TO %I WITH SET TRUE, INHERIT FALSE', 'jale_cap_hire_nudges', current_user");
+      const setRole = sql.indexOf('SET LOCAL ROLE jale_cap_hire_nudges;');
+      expect(opens).toBeGreaterThan(0);
+      expect(setRole).toBeGreaterThan(opens);
+      expect(sql.indexOf('CREATE OR REPLACE FUNCTION jale_cap.claim_hire_details_nudges(')).toBeGreaterThan(setRole);
+      expect(sql.split("'REVOKE %I FROM %I GRANTED BY %I', 'jale_cap_hire_nudges', current_user, current_user")).toHaveLength(2);
+    });
+
+    it('grants the digest login the two org helpers inside the relationship reader\'s window', () => {
+      const start = sql.indexOf("'GRANT %I TO %I WITH SET TRUE, INHERIT FALSE', 'jale_rls_relationship_reader', current_user");
+      const end = sql.indexOf("'REVOKE %I FROM %I GRANTED BY %I', 'jale_rls_relationship_reader', current_user, current_user");
+      expect(start).toBeGreaterThan(0);
+      expect(end).toBeGreaterThan(start);
+      const window = sql.slice(start, end);
+      expect(window.match(/^GRANT [^;]+;$/gm)).toEqual([
+        'GRANT USAGE ON SCHEMA jale_internal TO jale_job_digest;',
+        'GRANT EXECUTE ON FUNCTION jale_internal.org_owner_scope(TEXT, BOOLEAN) TO jale_job_digest;',
+        'GRANT EXECUTE ON FUNCTION jale_internal.org_member_scope(TEXT) TO jale_job_digest;',
+      ]);
+      expect(code.match(/^GRANT /gm)).toHaveLength(4);
+    });
+
+    it('creates seven SELECT policies, all in the last section: two for the nudge owner, five for the digest login', () => {
+      const earlier = sql.slice(0, lastAt);
+      expect(earlier).not.toMatch(/^(CREATE POLICY|GRANT SELECT)/m);
+      expect(sql.match(/^CREATE POLICY /gm)).toHaveLength(7);
+      expect(last.match(/^CREATE POLICY \w+ ON public\.\w+/gm)).toEqual([
+        'CREATE POLICY organization_members_cap_hire_nudges_select ON public.organization_members',
+        'CREATE POLICY users_cap_hire_nudges_org_owner_select ON public.users',
+        'CREATE POLICY employer_candidate_rankings_job_digest_org_owner_read ON public.employer_candidate_rankings',
+        'CREATE POLICY worker_profiles_job_digest_org_owner_read ON public.worker_profiles',
+        'CREATE POLICY worker_skills_job_digest_org_owner_read ON public.worker_skills',
+        'CREATE POLICY applications_job_digest_org_owner_select ON public.job_applications',
+        'CREATE POLICY jobs_job_digest_org_owner_select ON public.jobs',
+      ]);
+      expect(last.match(/AS PERMISSIVE FOR SELECT TO (\w+)/g)).toEqual([
+        ...Array(2).fill('AS PERMISSIVE FOR SELECT TO jale_cap_hire_nudges'),
+        ...Array(5).fill('AS PERMISSIVE FOR SELECT TO jale_job_digest'),
+      ]);
+      expect(last).toContain('GRANT SELECT (user_id, organization_id, role, status) ON public.organization_members TO jale_cap_hire_nudges;');
+      expect(code).not.toMatch(/^(ALTER|DROP) POLICY/m);
+      // Every digest policy is 119's owner row check.
+      expect(last.match(/jale_internal\.org_owner_scope\(current_setting\('app\.current_internal_user_id', true\), false\)/g)).toHaveLength(5);
+      // Members before users, the digest tables, and jobs (128's order); conversations last.
+      const at = (needle: string) => last.indexOf(needle);
+      expect(at('ON public.organization_members')).toBeLessThan(at('ON public.users'));
+      expect(at('ON public.users')).toBeLessThan(at('ON public.job_applications'));
+      expect(at('ON public.job_applications')).toBeLessThan(at('CREATE POLICY jobs_job_digest_org_owner_select'));
+      expect(at('CREATE POLICY jobs_job_digest_org_owner_select')).toBeLessThan(at('CREATE UNIQUE INDEX'));
+    });
+
+    it('self-checks the keys, the claim, the policies, the helper grants and both windows', () => {
+      const check = sql.slice(selfCheckAt);
+      expect(check).toContain('AND c.contype = \'f\' AND c.convalidated AND NOT c.condeferrable');
+      expect(check).toContain("IF info.owner_name IS DISTINCT FROM 'jale_cap_hire_nudges'");
+      expect(check).toContain("(SELECT count(*) FROM pg_policy p WHERE 'jale_cap_hire_nudges'::regrole::oid = ANY (p.polroles)) <> 7");
+      expect(check).toContain("AND pg_get_expr(p.polqual, p.polrelid) = pg_get_expr(t.polqual, t.polrelid)) THEN");
+      expect(check).toContain("WHERE m.roleid IN ('jale_cap_hire_nudges'::regrole, 'jale_rls_relationship_reader'::regrole)\n                AND (m.set_option OR m.inherit_option))");
+      expect(sql).not.toContain('polrelid::regclass::text');
+    });
+  });
+
+  describe('136 retire per-person billing', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '136_retire_per_person_billing.sql'), 'utf8');
+    const code = sql.replace(/--.*$/gm, '');
+    const selfCheckAt = sql.indexOf('-- ── 2. Self-check');
+    const PAUSE = 'DROP FUNCTION jale_billing_internal.billing_pause_over_limit_jobs(uuid, integer);';
+    const RESUME = 'DROP FUNCTION jale_billing_internal.billing_resume_paused_jobs(uuid, integer);';
+
+    it('is one transaction, forward-only, after 135', () => {
+      expect(sql.startsWith('-- ============================================================\n-- 136_retire_per_person_billing.sql\n'
+        + '-- Run manually AFTER 135_org_team_carry_overs.sql,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n')).toBe(true);
+      expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+      expect(sql.indexOf("SET LOCAL lock_timeout = '5s';")).toBeGreaterThan(sql.indexOf('BEGIN;'));
+      expect(sql.indexOf("SET LOCAL lock_timeout = '5s';")).toBeLessThan(sql.indexOf('-- ── 0. Preconditions'));
+      expect(selfCheckAt).toBeGreaterThan(0);
+    });
+
+    it('drops exactly 125\'s two per-person functions, without CASCADE, and nothing else', () => {
+      expect(code.match(/\bDROP\s+FUNCTION\b/gi)).toHaveLength(2);
+      expect(code.match(/^DROP FUNCTION [^;]+;$/gm)).toEqual([PAUSE, RESUME]);
+      expect(code).not.toMatch(/\bCASCADE\b|\bDROP\s+FUNCTION\s+IF\s+EXISTS\b/i);
+      expect(code).not.toMatch(/\bDROP\s+(TABLE|POLICY|INDEX|ROLE|SCHEMA|TRIGGER|VIEW|PROCEDURE)\b/i);
+      expect(code).not.toMatch(/\bCREATE\s+(OR REPLACE\s+)?(FUNCTION|POLICY|TABLE|ROLE|INDEX)\b/i);
+      expect(code).not.toMatch(/\bALTER\s+(TABLE|FUNCTION|ROLE|POLICY)\b/i);
+      // The only GRANT/REVOKE are the enforcer window's own, run through format().
+      expect(code).not.toMatch(/^\s*(GRANT|REVOKE)\b/gm);
+    });
+
+    it('needs 135, 128\'s company pair and 125\'s exact pair, and refuses a replay', () => {
+      expect(sql).toContain("RAISE EXCEPTION 'migration 136: already applied (125''s per-person billing functions are gone); it is not re-runnable';");
+      expect(sql).toContain("RAISE EXCEPTION 'migration 136: apply 135 first (job_conversations_job_employer_fkey is missing)';");
+      // A database without 135 is told to apply 135, not that 136 already ran.
+      expect(sql.indexOf("'migration 136: apply 135 first")).toBeLessThan(sql.indexOf("'migration 136: already applied"));
+      expect(sql).toContain("AND pg_get_function_identity_arguments(p.oid) = 'p_user_id uuid, p_active_job_limit integer'");
+      expect(sql).toContain("AND pg_get_function_identity_arguments(p.oid) = 'p_organization_id uuid, p_active_job_limit integer, p_foreman_seat_limit integer'");
+      // By catalog row: jale_admin holds no USAGE on jale_billing_internal.
+      expect(code).not.toMatch(/to_regprocedure\('jale_billing_internal\./);
+    });
+
+    it('drops them as their owner, inside jale_billing_job_enforcer\'s window', () => {
+      const opens = sql.indexOf("'GRANT %I TO %I WITH SET TRUE, INHERIT FALSE', 'jale_billing_job_enforcer', current_user");
+      const setRole = sql.indexOf('SET LOCAL ROLE jale_billing_job_enforcer;');
+      const reset = sql.indexOf('RESET ROLE;');
+      const closes = sql.indexOf("'GRANT %I TO %I WITH SET FALSE, INHERIT FALSE', 'jale_billing_job_enforcer', current_user");
+      const revokes = sql.indexOf("'REVOKE %I FROM %I GRANTED BY %I', 'jale_billing_job_enforcer', current_user, current_user");
+      expect(opens).toBeGreaterThan(sql.indexOf('-- ── 1.'));
+      expect(setRole).toBeGreaterThan(opens);
+      expect(sql.indexOf(PAUSE)).toBeGreaterThan(setRole);
+      expect(sql.indexOf(RESUME)).toBeGreaterThan(sql.indexOf(PAUSE));
+      expect(reset).toBeGreaterThan(sql.indexOf(RESUME));
+      expect(closes).toBeGreaterThan(reset);
+      expect(revokes).toBeGreaterThan(closes);
+      expect(revokes).toBeLessThan(selfCheckAt);
+      expect(sql.match(/^SET LOCAL ROLE /gm)).toHaveLength(1);
+    });
+
+    it('self-checks by catalog row that both are gone, 128\'s pair is intact, and the window is closed', () => {
+      const check = sql.slice(selfCheckAt);
+      expect(check).toContain("AND p.proname IN ('billing_pause_over_limit_jobs', 'billing_resume_paused_jobs')");
+      expect(check).toContain("RAISE EXCEPTION 'migration 136: a per-person billing function is still present';");
+      expect(check).toContain("AND p.proname IN ('billing_enforce_org_limits', 'billing_restore_org')");
+      expect(check).toContain("RAISE EXCEPTION 'migration 136: 128''s billing_enforce_org_limits / billing_restore_org are not intact';");
+      expect(check).toContain("RAISE EXCEPTION 'migration 136: the jale_billing_job_enforcer window was left open';");
+      expect(check).toContain('JOIN pg_namespace n ON n.oid = p.pronamespace');
     });
   });
 

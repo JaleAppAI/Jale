@@ -302,13 +302,17 @@ describe('access manifest reviewed expressions', () => {
   it('records the USING and WITH CHECK of every copy source and every capability owner\'s policy, fragments included', () => {
     expect(reviewed.filter(([, p]) => p.using === undefined || p.with_check === undefined).map(([key]) => key)).toEqual([]);
     // 38 copy sources; 36 capability-owner policies in manifest.json, 28 in the report fragment,
-    // 12 in the analytics capture fragment, 16 in the hire-and-resume fragment and 14 in the
+    // 12 in the analytics capture fragment, 16 in the hire-and-resume fragment and 30 in the
     // organizations fragment (5 from 119; 6 from 128, the company usage owner's on organization_members,
     // organizations (two), organization_invites, employer_job_templates and jobs; 3 from 129, the
-    // hire-details owner's on jobs and job_applications). 118's go to jale_api, jale_admin and the
-    // relationship reader; 128's enforcer policies go to a helper role.
+    // hire-details owner's on jobs and job_applications; 12 from 133 (jale_cap_org_team), on
+    // organizations (two), organization_invites (three), organization_members (three), users and
+    // email_outbox (three); 2 from 134 (jale_cap_org_team), on employer_profiles and jobs; 2 from 135
+    // (jale_cap_hire_nudges, the nudge's recipient), on organization_members and users). 118's go
+    // to jale_api, jale_admin and the relationship reader; 128's enforcer policies go to a helper role;
+    // 135's five digest policies go to a login, jale_job_digest.
     expect(reviewed.filter(([key]) => sources.has(key))).toHaveLength(38);
-    expect(reviewed.filter(([, p]) => p.to.some((role) => owners.has(role)))).toHaveLength(106);
+    expect(reviewed.filter(([, p]) => p.to.some((role) => owners.has(role)))).toHaveLength(122);
   });
 
   it('refuses a copy source that does not record its expressions', () => {

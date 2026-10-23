@@ -139,6 +139,10 @@ const expectedBaselineMigrations = [
   '130_user_tutorial_progress.sql',
   '131_job_shift_periods.sql',
   '132_job_limit_increase.sql',
+  '133_org_team_invites.sql',
+  '134_org_team_members.sql',
+  '135_org_team_carry_overs.sql',
+  '136_retire_per_person_billing.sql',
 ];
 
 function migrationFiles(): string[] {
