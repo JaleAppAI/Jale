@@ -48,10 +48,11 @@ export function JobPostedPanel({
 
     const shareHeadId = useId();
     const nextHeadId = useId();
-    const headingRef = useRef<HTMLHeadingElement>(null);
-    // The step form the focus was in is gone; the outcome is what to read next.
+    const rootRef = useRef<HTMLDivElement>(null);
+    // The step form the focus was in is gone. Focus goes to the dialog itself,
+    // which the Modal now names "Your job is posted", so that is what is read.
     useEffect(() => {
-        headingRef.current?.focus();
+        rootRef.current?.closest<HTMLElement>('[role="dialog"]')?.focus();
     }, []);
 
     // The same widening adapter the job pages apply at this boundary.
@@ -90,7 +91,7 @@ export function JobPostedPanel({
     const failure = toggleError ?? share.error;
 
     return (
-        <div className="space-y-5">
+        <div ref={rootRef} className="space-y-5">
             <div className="flex flex-col items-center gap-2.5 text-center">
                 <span
                     aria-hidden="true"
@@ -98,14 +99,7 @@ export function JobPostedPanel({
                 >
                     <Icon name="check" />
                 </span>
-                <h3
-                    ref={headingRef}
-                    tabIndex={-1}
-                    className="text-xl font-extrabold text-[var(--jale-ink)] outline-none"
-                >
-                    {t('job_posted.title')}
-                </h3>
-                <p className="text-sm text-[var(--jale-ink-2)]">{summary}</p>
+                <p className="text-base font-bold text-[var(--jale-ink)]">{summary}</p>
             </div>
 
             {templateNotSavedLimit !== null ? (

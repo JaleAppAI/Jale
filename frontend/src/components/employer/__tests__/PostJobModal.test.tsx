@@ -525,7 +525,11 @@ describe('PostJobModal: the job posted screen', () => {
     expect(screen.getByText(message('employer_dashboard.job_posted.n1'))).toBeInTheDocument();
     // The wizard's own controls are gone.
     expect(screen.queryByRole('button', { name: message('employer_dashboard.post_job_docs.submit') })).not.toBeInTheDocument();
-    expect(postedHeading()).toHaveFocus();
+    // The dialog is named for what it now says, once, and takes focus so the
+    // name is read out: the step form that held focus is gone.
+    const dialog = screen.getByRole('dialog', { name: message('employer_dashboard.job_posted.title') });
+    expect(screen.getAllByRole('heading', { name: message('employer_dashboard.job_posted.title') })).toHaveLength(1);
+    expect(dialog).toHaveFocus();
   });
 
   it('turns the share link on, then shows the link, Copy and the QR download', async () => {

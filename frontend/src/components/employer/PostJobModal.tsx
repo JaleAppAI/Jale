@@ -573,7 +573,8 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     <Modal
       open={open}
       onClose={handleClose}
-      title={t('modal.title')}
+      // The posted screen names the dialog for what it now says.
+      title={posted ? t('job_posted.title') : t('modal.title')}
       size="md"
       // A half-filled three-step wizard must not evaporate on a stray backdrop
       // click -- the same guard TemplateEditModal and EditJobModal already
