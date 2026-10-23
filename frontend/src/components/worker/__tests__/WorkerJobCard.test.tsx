@@ -116,6 +116,19 @@ describe('WorkerJobCard — spots open', () => {
         expect(screen.getByText('2 de 5 lugares disponibles')).toBeInTheDocument();
     });
 
+    it('says one spot, not "1 spots", on a job that needs one worker', () => {
+        renderIntl(<WorkerJobCard job={job({ open_count: 1, number_of_workers_needed: 1 })} href="/worker/jobs/job-1" />);
+        expect(screen.getByText('1 of 1 spot open')).toBeInTheDocument();
+    });
+
+    it('says one spot in Spanish too', () => {
+        renderIntl(
+            <WorkerJobCard job={job({ open_count: 1, number_of_workers_needed: 1 })} href="/worker/jobs/job-1" />,
+            'es',
+        );
+        expect(screen.getByText('1 de 1 lugar disponible')).toBeInTheDocument();
+    });
+
     it('says nothing about spots when the job does not carry the counts', () => {
         renderIntl(<WorkerJobCard job={job({ open_count: null, number_of_workers_needed: 5 })} href="/worker/jobs/job-1" />);
         expect(screen.queryByText(/spots open/)).not.toBeInTheDocument();

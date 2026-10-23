@@ -109,6 +109,19 @@ const COUNT_CASES: Case[] = [
         en: '1 of 3 spots open',
         es: '1 de 3 lugares disponibles',
     },
+    // The same sentence on the feed card.
+    {
+        path: 'worker_home.openings_count',
+        values: { open: 1, total: 1 },
+        en: '1 of 1 spot open',
+        es: '1 de 1 lugar disponible',
+    },
+    {
+        path: 'worker_home.openings_count',
+        values: { open: 2, total: 5 },
+        en: '2 of 5 spots open',
+        es: '2 de 5 lugares disponibles',
+    },
     {
         path: 'worker_job_detail.what_you_need.to_apply_prompts',
         values: { count: 1, minutes: 2 },

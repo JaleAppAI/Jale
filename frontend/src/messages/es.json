@@ -1335,7 +1335,7 @@
       "part_time": "Medio tiempo",
       "contract": "Contrato"
     },
-    "openings_count": "{open} de {total} lugares disponibles",
+    "openings_count": "{open} de {total, plural, one {# lugar disponible} other {# lugares disponibles}}",
     "empty": {
       "title": "No hay trabajos publicados ahora",
       "body": "Los empleadores publican trabajos nuevos cada semana. Vuelve pronto, o mantén tu perfil y tus ciudades al día para que los mejores te lleguen primero.",

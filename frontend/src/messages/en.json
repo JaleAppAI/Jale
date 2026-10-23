@@ -1335,7 +1335,7 @@
       "part_time": "Part-time",
       "contract": "Contract"
     },
-    "openings_count": "{open} of {total} spots open",
+    "openings_count": "{open} of {total, plural, one {# spot} other {# spots}} open",
     "empty": {
       "title": "No jobs posted right now",
       "body": "Employers post new jobs every week. Check back soon, or keep your profile and cities up to date so the right ones reach you first.",
