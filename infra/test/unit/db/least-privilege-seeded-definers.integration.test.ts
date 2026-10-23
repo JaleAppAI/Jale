@@ -25,6 +25,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Client } from 'pg';
 import { loadManifest } from '../../../db/access/access-manifest';
 import { withLoginClient } from './helpers/login-pool';
+import { dropCompanies, ensureOwnerCompany } from './helpers/org-fixtures';
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
 if (!databaseUrl) {
@@ -72,6 +73,7 @@ maybeDescribe('seeded definers on the runtime logins', () => {
   };
   const ids: Record<keyof typeof subs, string> = { employer: '', workerA: '', workerB: '', workerC: '' };
   const employer = () => ({ sub: subs.employer, internalUserId: ids.employer });
+  let company = '';
 
   async function newJob(needed: number, status = 'active'): Promise<string> {
     return (await su.query<{ id: string }>(
@@ -94,6 +96,8 @@ maybeDescribe('seeded definers on the runtime logins', () => {
         `INSERT INTO public.users (cognito_sub, user_type) VALUES ($1, $2) RETURNING id`, [subs[name], type],
       )).rows[0].id;
     }
+    // The subscription_status_history case pays as this employer (127).
+    company = await ensureOwnerCompany(su, ids.employer);
   });
 
   afterAll(async () => {
@@ -104,6 +108,7 @@ maybeDescribe('seeded definers on the runtime logins', () => {
     await su.query('DELETE FROM public.worker_onboarding_state WHERE user_id = ANY($1::uuid[])', [workers]);
     await su.query('DELETE FROM public.jobs WHERE employer_id = $1', [ids.employer]);
     await su.query('DELETE FROM public.users WHERE cognito_sub = ANY($1::text[])', [Object.values(subs)]);
+    await dropCompanies(su, company ? [company] : []);
     await su.end();
   });
 

@@ -1,6 +1,7 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
-import { resolveEntitlements } from '../lib/entitlements';
+import { resolveCompanyEntitlements } from '../lib/entitlements';
+import { readCompanyUsage, CompanyUsageRefusedError } from '../lib/company-usage';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs, parseRequiredFields } from '../lib/job-fields';
 import { parseCityFields, parseCityFromLocation } from '../lib/city-fields';
@@ -158,16 +159,22 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'legal_required', requiredVersion: process.env.REQUIRED_TOS_VERSION }) };
     }
 
-    // Same serialization pattern as the active-job limit: lock the employer
-    // row (resolveEmployerActor's lockUser) so two concurrent saves cannot both
-    // pass the cap check. The cap stays per person in Phase 1.
-    const actorResult = await resolveEmployerActor(client, cognitoSub, { lockUser: true });
+    // Every template write takes the company lock below (Phase 2).
+    const actorResult = await resolveEmployerActor(client, cognitoSub);
     if (!actorResult.ok) {
       await client.query('ROLLBACK');
       return employerActorFailureResponse(actorResult, CORS_HEADERS);
     }
     const { actor } = actorResult;
     const employerId = actor.userId;
+
+    // One lock for every template write, create and update: the company's
+    // organizations row FOR NO KEY UPDATE (jale_cap.employer_org_usage, 128),
+    // held to COMMIT. Two members cannot both save the last allowed template,
+    // and a rename and a create in one company cannot race on a name.
+    const usage = await readCompanyUsage(client, { lock: true });
+    // The plan is resolved for the actor's company, so the count must be the same company's.
+    if (usage.organizationId !== actor.organizationId) throw new Error('company_usage_unavailable');
 
     if (body.id) {
       // Update path: rename and/or overwrite a template the caller may edit --
@@ -204,12 +211,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 200, headers: CORS_HEADERS, body: JSON.stringify(updated.rows[0]) };
     }
 
-    const entitlements = await resolveEntitlements(client, employerId);
-    const countResult = await client.query<{ template_count: number }>(
-      `SELECT COUNT(*)::int AS template_count FROM employer_job_templates WHERE employer_id = $1`,
-      [employerId],
-    );
-    if (countResult.rows[0].template_count >= entitlements.templateLimit) {
+    // Templates are a company asset and template_limit counts the company
+    // (Phase 2), under the lock taken above.
+    const entitlements = await resolveCompanyEntitlements(client, actor.organizationId);
+    if (usage.templates >= entitlements.templateLimit) {
       await client.query('ROLLBACK');
       return {
         statusCode: 403,
@@ -241,6 +246,20 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     return { statusCode: 201, headers: CORS_HEADERS, body: JSON.stringify(inserted.rows[0]) };
   } catch (err) {
     if (client) { try { await client.query('ROLLBACK'); } catch {} }
+    if (err instanceof CompanyUsageRefusedError) {
+      // The definer says the caller is no longer an active member: the answer resolveEmployerActor gives.
+      return employerActorFailureResponse({ ok: false, status: 403, error: 'membership_inactive' }, CORS_HEADERS);
+    }
+    // UNIQUE (employer_id, name) (069) -- Postgres names it
+    // employer_job_templates_employer_id_name_key -- is hit only by a save
+    // outside the company lock (a Lambda deployed before Phase 2) that took
+    // the name after the pre-check. The pre-check's answer. Any other 23505
+    // is not a name race and takes the generic path.
+    const dbErr = err as { code?: unknown; constraint?: unknown } | null;
+    if (dbErr?.code === '23505' && dbErr.constraint === 'employer_job_templates_employer_id_name_key') {
+      console.warn('employer-templates-save: name race (23505)');
+      return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'template_name_taken' }) };
+    }
     console.error('employer-templates-save error:', errorMessage(err));
     return { statusCode: 500, headers: CORS_HEADERS, body: JSON.stringify({ error: 'internal_error' }) };
   } finally {

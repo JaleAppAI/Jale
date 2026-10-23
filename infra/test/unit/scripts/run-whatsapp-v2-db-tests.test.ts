@@ -69,6 +69,10 @@ const EXCLUDED: Readonly<Record<string, string>> = {
     'It creates jale_admin itself, applies the chain through 117, seeds rows and then applies 118, '
     + 'and reads JALE_TEST_UPGRADE_DATABASE_URL, so it needs a bare cluster (bootstrap-testbed.sh --bare) '
     + "rather than the migrated bed. The database job's standard leg runs it alone with --suite.",
+  'test/unit/db/migrations/company-billing-127-upgrade.test.ts':
+    'It creates jale_admin itself, applies the chain up to 127, seeds billing rows written the pre-127 way and then applies 127, '
+    + 'and reads JALE_TEST_UPGRADE_DATABASE_URL, so it needs a bare cluster (bootstrap-testbed.sh --bare) '
+    + "rather than the migrated bed. The database job's standard leg runs it alone with --suite.",
   'test/unit/db/helpers/login-pool.test.ts':
     'Not a database suite: unit tests of helpers/login-pool.ts. It sets the URL variable to a '
     + 'fake loopback value to exercise the helper and never connects, so it runs with the other '

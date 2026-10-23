@@ -240,7 +240,7 @@ maybeDescribe('migration 119: owner-wide access', () => {
         expect(ok.rowCount).toBe(1);
         await rejects(c, `UPDATE jobs SET employer_id = $1 WHERE id = $2`, [w.stranger.id, w.jobB], '42501');
       });
-      // jobs_org_owner_update's WITH CHECK uses org_owner_scope(..., true).
+      // 129's jobs_assignee_must_be_active refuses a move to a suspended member.
       await su.query(`UPDATE organization_members SET status = 'suspended' WHERE user_id = $1`, [w.foremanB.id]);
       try {
         await asApi(w.owner, async (c) => {

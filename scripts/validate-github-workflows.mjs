@@ -322,6 +322,9 @@ const standardLegSteps = [
   ['Run employer organizations upgrade suite (bare cluster)', [
     '\n        run: bash infra/db/local/bootstrap-testbed.sh --ephemeral --ref none --bare --url-var JALE_TEST_UPGRADE_DATABASE_URL -- bash infra/scripts/run-whatsapp-v2-db-tests.sh --suite test/unit/db/migrations/employer-organizations-118-upgrade.test.ts\n',
   ]],
+  ['Run company billing upgrade suite (bare cluster)', [
+    '\n        run: bash infra/db/local/bootstrap-testbed.sh --ephemeral --ref none --bare --url-var JALE_TEST_UPGRADE_DATABASE_URL -- bash infra/scripts/run-whatsapp-v2-db-tests.sh --suite test/unit/db/migrations/company-billing-127-upgrade.test.ts\n',
+  ]],
   ['Setup admin dependencies', [
     '\n        uses: ./.github/actions/setup-node-cache\n',
     '\n          working-directory: admin\n',

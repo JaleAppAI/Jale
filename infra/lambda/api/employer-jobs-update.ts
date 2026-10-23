@@ -1,6 +1,7 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
-import { resolveEntitlements } from '../lib/entitlements';
+import { resolveCompanyEntitlements } from '../lib/entitlements';
+import { readCompanyUsage, CompanyUsageRefusedError } from '../lib/company-usage';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { formatPayRange, JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs, parseRequiredFields, WRITABLE_JOB_STATUSES } from '../lib/job-fields';
 import { setJobCoordinates } from '../lib/location';
@@ -78,6 +79,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
     const { actor } = actorResult;
 
+    // A7, per company (Phase 2): a move to 'active' may consume a slot of the
+    // company's plan, so it takes the company lock first -- before the job
+    // row lock below, in the same order as create and the billing enforcer
+    // (organizations, then jobs), so the two can never deadlock -- and counts
+    // every member's active jobs under it. Other moves take no company lock.
+    const usage = status === 'active' ? await readCompanyUsage(client, { lock: true }) : null;
+    // The plan is resolved for the actor's company, so the count must be the same company's.
+    if (usage && usage.organizationId !== actor.organizationId) throw new Error('company_usage_unavailable');
+
     // Fetch the current status + public listing state once, up front. This backs
     // two independent things: the A7 entitlement gate below (which only needs
     // currentStatus) and the visibility-event decision after the UPDATE (which
@@ -102,22 +112,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // paused→paused, paused→closed) consume no slot and bypass the gate entirely.
     if (status === 'active') {
       if (currentStatus !== 'active') {
-        // Non-active→active: this consumes a slot. Enforce the entitlement gate.
-        // Plan limits stay per person in Phase 1 and are the caller's, exactly
-        // as in create: an owner reactivating a member's job is counted against
-        // the owner until Phase 2 moves limits to the company.
-        // Lock the caller's own users row to serialize concurrent slot
-        // consumers. RLS lets a session lock only its own users row; Phase 2
-        // moves the lock to organizations FOR UPDATE.
-        await client.query(`SELECT id FROM users WHERE id = $1 FOR UPDATE`, [actor.userId]);
-
-        const entitlements = await resolveEntitlements(client, actor.userId);
-
-        const countResult = await client.query<{ active_jobs: number }>(
-          `SELECT COUNT(*)::int AS active_jobs FROM jobs WHERE employer_id = $1 AND status = 'active'`,
-          [actor.userId],
-        );
-        const activeJobs = countResult.rows[0].active_jobs;
+        // Non-active→active: this consumes a slot of the company's plan. The
+        // company lock is held since readCompanyUsage above. Never gate on a
+        // missing read: that would let the activation through uncounted.
+        if (!usage) throw new Error('company_usage_unavailable');
+        const entitlements = await resolveCompanyEntitlements(client, actor.organizationId);
+        const activeJobs = usage.activeJobs;
 
         if (activeJobs >= entitlements.activeJobLimit) {
           await client.query('ROLLBACK');
@@ -181,6 +181,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     };
   } catch (err) {
     if (client) { try { await client.query('ROLLBACK'); } catch (_) {} }
+    if (err instanceof CompanyUsageRefusedError) {
+      // The definer says the caller is no longer an active member: the answer resolveEmployerActor gives.
+      return employerActorFailureResponse({ ok: false, status: 403, error: 'membership_inactive' }, CORS_HEADERS);
+    }
     console.error('employer-jobs-update error:', errorMessage(err));
     return { statusCode: 500, headers: CORS_HEADERS, body: JSON.stringify({ error: 'internal_error' }) };
   } finally {
