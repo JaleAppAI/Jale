@@ -28,6 +28,10 @@
           "insert": ["user_id", "organization_id", "role", "status", "invited_by", "joined_at", "status_changed_at"],
           "update": ["status", "billing_suspended_at", "invited_by", "joined_at", "status_changed_at"],
           "reason": "The invite definers (130) classify an invitee's membership and count active foremen as held seats; accepting makes the caller an active foreman, or brings a removed foreman of the company back active."
+        },
+        "jale_cap_hire_nudges": {
+          "select": ["user_id", "organization_id", "role", "status"],
+          "reason": "claim_hire_details_nudges sends a suspended or removed member's nudge to their company's active owner (132)."
         }
       }
     },
@@ -147,6 +151,11 @@
       "command": "UPDATE", "permissive": true, "to": ["jale_cap_org_team"], "origin": "existing",
       "using": "(role = 'foreman'::text)", "with_check": "(role = 'foreman'::text)",
       "reason": "Only foremen change: a removed foreman who accepts a re-invite rejoins active; an owner's row never changes here (130)."
+    },
+    "public.organization_members.organization_members_cap_hire_nudges_select": {
+      "command": "SELECT", "permissive": true, "to": ["jale_cap_hire_nudges"], "origin": "existing",
+      "using": "true", "with_check": null,
+      "reason": "The nudge claim reads the job's member and their company's active owner; like 125's own policies it has no caller, and its due rows are the boundary (132)."
     }
   },
   "functions": {
@@ -167,16 +176,16 @@
     "jale_internal.org_owner_scope(text, boolean)": {
       "owner": "jale_rls_relationship_reader", "security": "definer", "search_path": "pg_catalog, pg_temp",
       "arguments": "p_caller_id text, p_active_only boolean", "returns": "uuid[]",
-      "execute": ["jale_admin", "jale_api", "jale_cap_upload_tokens", "jale_cap_worker_lane", "jale_cap_hire_details"],
+      "execute": ["jale_admin", "jale_api", "jale_cap_upload_tokens", "jale_cap_worker_lane", "jale_cap_hire_details", "jale_job_digest"],
       "created_by": "118",
-      "reason": "The active owner's company as member ids, evaluated once per statement by the owner row policies and once per call by the 119 applicant predicate (employer_has_applicant_relationship). The capability owners call it from their 119 policies."
+      "reason": "The active owner's company as member ids, evaluated once per statement by the owner row policies and once per call by the 119 applicant predicate (employer_has_applicant_relationship). The capability owners call it from their 119 policies; the digest login from its 132 owner policies."
     },
     "jale_internal.org_member_scope(text)": {
       "owner": "jale_rls_relationship_reader", "security": "definer", "search_path": "pg_catalog, pg_temp",
       "arguments": "p_caller_id text", "returns": "uuid[]",
-      "execute": ["jale_admin", "jale_api", "jale_cap_org_limits"],
+      "execute": ["jale_admin", "jale_api", "jale_cap_org_limits", "jale_job_digest"],
       "created_by": "118",
-      "reason": "An active member's company as member ids, for company-shared reads (templates, 119)."
+      "reason": "An active member's company as member ids, for company-shared reads (templates, 119); the digest producer skips a member whose scope is empty, a suspended or removed one (132)."
     },
     "public.employer_ensure_organization(text)": {
       "owner": "jale_admin", "security": "definer", "search_path": "pg_catalog, pg_temp",
@@ -458,9 +467,15 @@
           "command": "SELECT", "permissive": true, "to": ["jale_cap_org_team"], "origin": "existing",
           "using": "true", "with_check": null,
           "reason": "The team definers read the jobs of a company the caller owns (removal's has_jobs, the team list's counts): their caller checks are the boundary (131)."
+        },
+        "jobs_job_digest_org_owner_select": {
+          "command": "SELECT", "permissive": true, "to": ["jale_job_digest"], "origin": "existing",
+          "using": "(employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))",
+          "with_check": null,
+          "reason": "The owner's digest reads every member's jobs: 119's jobs_org_owner_select for the digest login (132)."
         }
       },
-      "reason": "Company owners act on every member's jobs (migration 119); the team definers' owner reads them (131)."
+      "reason": "Company owners act on every member's jobs (migration 119), and their digest reads them (132); the team definers' owner reads them (131)."
     },
     "public.job_applications": {
       "policies": {
@@ -493,9 +508,15 @@
           "using": "(job_id IN ( SELECT j.id\n   FROM jobs j\n  WHERE (j.employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))))",
           "with_check": "(job_id IN ( SELECT j.id\n   FROM jobs j\n  WHERE (j.employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))))",
           "reason": "employer_save_hire_details writes the details of a hire on a member's job for the company owner (129)."
+        },
+        "applications_job_digest_org_owner_select": {
+          "command": "SELECT", "permissive": true, "to": ["jale_job_digest"], "origin": "existing",
+          "using": "(job_id IN ( SELECT jobs.id\n   FROM jobs\n  WHERE (jobs.employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))))",
+          "with_check": null,
+          "reason": "The owner's digest reads the applications on every member's jobs: 119's applications_org_owner_select for the digest login (132)."
         }
       },
-      "reason": "Company owners act on the applications to every member's jobs (migration 119)."
+      "reason": "Company owners act on the applications to every member's jobs (migration 119), and their digest reads them (132)."
     },
     "public.job_conversations": {
       "policies": {
@@ -549,9 +570,15 @@
           "using": "(EXISTS ( SELECT 1\n   FROM jobs j\n  WHERE ((j.id = employer_candidate_rankings.job_id) AND (j.employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[])))))",
           "with_check": null,
           "reason": "The owner reads the candidate rankings on every member's jobs."
+        },
+        "employer_candidate_rankings_job_digest_org_owner_read": {
+          "command": "SELECT", "permissive": true, "to": ["jale_job_digest"], "origin": "existing",
+          "using": "(EXISTS ( SELECT 1\n   FROM jobs j\n  WHERE ((j.id = employer_candidate_rankings.job_id) AND (j.employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[])))))",
+          "with_check": null,
+          "reason": "The owner's digest reads the cached rankings on every member's jobs: 119's employer_candidate_rankings_org_owner_read for the digest login (132)."
         }
       },
-      "reason": "Company owners read the rankings on every member's jobs (migration 119)."
+      "reason": "Company owners read the rankings on every member's jobs (migration 119), their digest too (132)."
     },
     "public.job_visibility_events": {
       "policies": {
@@ -571,9 +598,15 @@
           "using": "(EXISTS ( SELECT 1\n   FROM (job_applications ja\n     JOIN jobs j ON ((j.id = ja.job_id)))\n  WHERE ((ja.worker_id = worker_profiles.user_id) AND (j.employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[])))))",
           "with_check": null,
           "reason": "The owner reads the profile of every worker who applied to a member's job."
+        },
+        "worker_profiles_job_digest_org_owner_read": {
+          "command": "SELECT", "permissive": true, "to": ["jale_job_digest"], "origin": "existing",
+          "using": "(EXISTS ( SELECT 1\n   FROM (job_applications ja\n     JOIN jobs j ON ((j.id = ja.job_id)))\n  WHERE ((ja.worker_id = worker_profiles.user_id) AND (j.employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[])))))",
+          "with_check": null,
+          "reason": "The owner's digest reads the profile (name, phone) of every worker who applied to a member's job: 119's worker_profiles_org_owner_read for the digest login (132)."
         }
       },
-      "reason": "Company owners read the profiles of every member's applicants (migration 119)."
+      "reason": "Company owners read the profiles of every member's applicants (migration 119), their digest too (132)."
     },
     "public.worker_skills": {
       "policies": {
@@ -582,9 +615,15 @@
           "using": "(EXISTS ( SELECT 1\n   FROM (job_applications ja\n     JOIN jobs j ON ((j.id = ja.job_id)))\n  WHERE ((ja.worker_id = worker_skills.worker_id) AND (j.employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[])))))",
           "with_check": null,
           "reason": "The owner reads the skills of every worker who applied to a member's job."
+        },
+        "worker_skills_job_digest_org_owner_read": {
+          "command": "SELECT", "permissive": true, "to": ["jale_job_digest"], "origin": "existing",
+          "using": "(EXISTS ( SELECT 1\n   FROM (job_applications ja\n     JOIN jobs j ON ((j.id = ja.job_id)))\n  WHERE ((ja.worker_id = worker_skills.worker_id) AND (j.employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[])))))",
+          "with_check": null,
+          "reason": "The owner's digest reads the skills of every worker who applied to a member's job: 119's worker_skills_org_owner_read for the digest login (132)."
         }
       },
-      "reason": "Company owners read the skills of every member's applicants (migration 119)."
+      "reason": "Company owners read the skills of every member's applicants (migration 119), their digest too (132)."
     },
     "public.worker_documents": {
       "policies": {
@@ -665,9 +704,15 @@
           "command": "SELECT", "permissive": true, "to": ["jale_cap_org_team"], "origin": "existing",
           "using": "(user_type = 'employer'::text)", "with_check": null,
           "reason": "Employer logins only (130)."
+        },
+        "users_cap_hire_nudges_org_owner_select": {
+          "command": "SELECT", "permissive": true, "to": ["jale_cap_hire_nudges"], "origin": "existing",
+          "using": "(id IN ( SELECT m.user_id\n   FROM organization_members m\n  WHERE ((m.role = 'owner'::text) AND (m.status = 'active'::text))))",
+          "with_check": null,
+          "reason": "The nudge claim addresses a suspended or removed member's nudge to their company's active owner, who may have no job of their own (outside 125's users_cap_hire_nudges_select); it reads only the columns 125 granted (132)."
         }
       },
-      "reason": "The company usage definer's owner reads templates (128); the team definers' owner reads employer logins (130, 131)."
+      "reason": "The company usage definer's owner reads templates (128); the team definers' owner reads employer logins (130, 131); the nudge owner reads active owners' logins (132)."
     },
     "public.employer_profiles": {
       "access": {
@@ -727,8 +772,8 @@
       "reason": "The company usage definer's owner (128) and the team-invite definers' owner (130) hold CREATE to own their functions; the team-invite owner holds USAGE to call its own internal helper, and jale_billing to call the invite mail purge (130)."
     },
     "jale_internal": {
-      "usage": ["jale_cap_org_limits", "jale_cap_hire_details"],
-      "reason": "Their policies and functions call the jale_internal org helpers (128, 129)."
+      "usage": ["jale_cap_org_limits", "jale_cap_hire_details", "jale_job_digest"],
+      "reason": "Their policies and functions call the jale_internal org helpers (128, 129); the digest producer calls org_member_scope by name to skip a suspended or removed member (132)."
     }
   }
 }

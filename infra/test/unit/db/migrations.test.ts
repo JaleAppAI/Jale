@@ -169,6 +169,7 @@ describe('database migrations', () => {
       '129',
       '130',
       '131',
+      '132',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -5678,6 +5679,139 @@ describe('database migrations', () => {
       expect(sql.indexOf(check)).toBeLessThan(sql.indexOf('-- ── 1. Functions'));
       expect(sql.lastIndexOf(check)).toBeGreaterThan(sql.indexOf('-- ── 4. Self-check'));
       // Policies are compared by regclass, never by a search_path-dependent name.
+      expect(sql).not.toContain('polrelid::regclass::text');
+    });
+  });
+
+  describe('132 team carry-overs', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '132_org_team_carry_overs.sql'), 'utf8');
+    const code = sql.replace(/--.*$/gm, '');
+    const lastAt = sql.indexOf('-- ── 3. Last: members, users, the digest tables, jobs, conversations');
+    const selfCheckAt = sql.indexOf('-- ── 4. Self-check');
+    const last = sql.slice(lastAt, selfCheckAt);
+    const FK = 'ALTER TABLE public.job_conversations\n'
+      + '  ADD CONSTRAINT job_conversations_job_employer_fkey FOREIGN KEY (job_id, employer_id)\n'
+      + '  REFERENCES public.jobs (id, employer_id) ON UPDATE CASCADE ON DELETE CASCADE;';
+
+    it('is one transaction, forward-only, after 131', () => {
+      expect(sql.startsWith('-- ============================================================\n-- 132_org_team_carry_overs.sql\n'
+        + '-- Run manually AFTER 131_org_team_members.sql,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n')).toBe(true);
+      expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+      expect(sql.indexOf("SET LOCAL lock_timeout = '5s';")).toBeGreaterThan(sql.indexOf('BEGIN;'));
+      expect(sql.indexOf("SET LOCAL lock_timeout = '5s';")).toBeLessThan(sql.indexOf('-- ── 0. Preconditions'));
+      expect(code).not.toMatch(/\b(DROP|TRUNCATE)\s+(TABLE|FUNCTION|POLICY|INDEX|CONSTRAINT)\b/i);
+    });
+
+    it('refuses a replay, needs 131 and 105\'s guard, and dry-runs the conversations through the analytics gate', () => {
+      expect(sql).toContain("RAISE EXCEPTION 'migration 132: already applied (job_conversations_job_employer_fkey exists); it is not re-runnable';");
+      expect(sql).toContain("WHERE p.oid = to_regprocedure('jale_cap.org_team_remove_member(uuid)')");
+      expect(sql).toContain("AND t.tgname = 'job_conversations_application_guard' AND t.tgenabled = 'O'");
+      expect(sql).toContain("AND t.tgfoid = to_regprocedure('jale_cap.job_conversation_application_guard()'))");
+      const open = sql.indexOf("PERFORM set_config('app.admin_analytics_read', 'on', true);");
+      const close = sql.indexOf("PERFORM set_config('app.admin_analytics_read', 'off', true);");
+      expect(open).toBeGreaterThan(0);
+      expect(close).toBeGreaterThan(open);
+      expect(close).toBeLessThan(sql.indexOf('-- ── 1. The nudge'));
+      expect(sql.split("set_config('app.admin_analytics_read'")).toHaveLength(3);
+      expect(sql).toContain("RAISE EXCEPTION 'migration 132: % conversation(s) name another employer than their job''s; fix them with support before applying', v_mismatched;");
+    });
+
+    it('adds the composite key and the cascading foreign key last, validated in the same statement', () => {
+      expect(last).toContain('CREATE UNIQUE INDEX jobs_id_employer_id_key ON public.jobs (id, employer_id);\n'
+        + 'ALTER TABLE public.jobs ADD CONSTRAINT jobs_id_employer_id_key UNIQUE USING INDEX jobs_id_employer_id_key;');
+      expect(last).toContain(FK);
+      expect(code).toMatch(/ON UPDATE CASCADE ON DELETE CASCADE/);
+      expect(code).not.toMatch(/\bNOT VALID\b|\bVALIDATE CONSTRAINT\b|\bDEFERRABLE\b|\bINITIALLY\b/);
+      expect(code.match(/^ALTER TABLE /gm)).toHaveLength(2);
+      expect(code.match(/^CREATE (UNIQUE )?INDEX /gm)).toHaveLength(2);
+      const index = 'CREATE INDEX job_conversations_job_id_employer_id_idx ON public.job_conversations (job_id, employer_id);';
+      expect(last).toContain(index);
+      expect(last.indexOf(index)).toBeGreaterThan(last.indexOf('ADD CONSTRAINT jobs_id_employer_id_key'));
+      expect(last.indexOf(index)).toBeLessThan(last.indexOf(FK));
+      expect(sql).toContain("AND indexdef = 'CREATE INDEX job_conversations_job_id_employer_id_idx ON public.job_conversations USING btree (job_id, employer_id)') THEN");
+      expect(sql).toContain("OR to_regclass('public.job_conversations_job_id_employer_id_idx') IS NOT NULL THEN");
+      // The foreign key is the last DDL before the self-check.
+      expect(last.trimEnd().endsWith(FK)).toBe(true);
+      expect(sql).toContain("pg_get_constraintdef(c.oid) = 'FOREIGN KEY (job_id, employer_id) REFERENCES public.jobs(id, employer_id) ON UPDATE CASCADE ON DELETE CASCADE'");
+    });
+
+    it('replaces only the nudge claim, as its 125 owner, keeping 125\'s single row lock and changing only the recipient', () => {
+      expect(sql.match(/^CREATE (OR REPLACE )?FUNCTION /gm)).toEqual(['CREATE OR REPLACE FUNCTION ']);
+      expect(sql).not.toMatch(/ALTER FUNCTION|GRANT EXECUTE ON FUNCTION jale_cap|REVOKE ALL ON FUNCTION/);
+      const body = sql.slice(sql.indexOf('CREATE OR REPLACE FUNCTION jale_cap.claim_hire_details_nudges('), sql.indexOf('\n$fn$;\n'));
+      expect(body).toContain('SECURITY DEFINER\nSET search_path = pg_catalog, pg_temp\n');
+      expect(body).toContain('#variable_conflict use_column');
+      // The only row lock in the file is 125's claim's own, unchanged.
+      expect(code.match(/\bFOR\s+(NO\s+KEY\s+)?UPDATE\b/gi)).toEqual(['FOR UPDATE']);
+      expect(code).toContain('       FOR UPDATE OF ja SKIP LOCKED\n  )');
+      expect(code).not.toMatch(/\bFOR\s+(KEY\s+)?SHARE\b|NOWAIT/i);
+      expect(body).toContain('    LEFT JOIN public.organization_members em ON em.user_id = j.employer_id\n'
+        + '    LEFT JOIN public.organization_members om\n'
+        + "           ON om.organization_id = em.organization_id AND om.role = 'owner' AND om.status = 'active'\n"
+        + '    JOIN public.users r\n'
+        + "      ON r.id = CASE WHEN em.user_id IS NULL OR em.status = 'active' THEN j.employer_id\n"
+        + '                     ELSE COALESCE(om.user_id, j.employer_id) END\n');
+      expect(body).toContain('  SELECT d.id, d.job_id, r.id, r.email,\n');
+      expect(body).not.toContain('JOIN public.users e ON e.id = j.employer_id');
+      const opens = sql.indexOf("'GRANT %I TO %I WITH SET TRUE, INHERIT FALSE', 'jale_cap_hire_nudges', current_user");
+      const setRole = sql.indexOf('SET LOCAL ROLE jale_cap_hire_nudges;');
+      expect(opens).toBeGreaterThan(0);
+      expect(setRole).toBeGreaterThan(opens);
+      expect(sql.indexOf('CREATE OR REPLACE FUNCTION jale_cap.claim_hire_details_nudges(')).toBeGreaterThan(setRole);
+      expect(sql.split("'REVOKE %I FROM %I GRANTED BY %I', 'jale_cap_hire_nudges', current_user, current_user")).toHaveLength(2);
+    });
+
+    it('grants the digest login the two org helpers inside the relationship reader\'s window', () => {
+      const start = sql.indexOf("'GRANT %I TO %I WITH SET TRUE, INHERIT FALSE', 'jale_rls_relationship_reader', current_user");
+      const end = sql.indexOf("'REVOKE %I FROM %I GRANTED BY %I', 'jale_rls_relationship_reader', current_user, current_user");
+      expect(start).toBeGreaterThan(0);
+      expect(end).toBeGreaterThan(start);
+      const window = sql.slice(start, end);
+      expect(window.match(/^GRANT [^;]+;$/gm)).toEqual([
+        'GRANT USAGE ON SCHEMA jale_internal TO jale_job_digest;',
+        'GRANT EXECUTE ON FUNCTION jale_internal.org_owner_scope(TEXT, BOOLEAN) TO jale_job_digest;',
+        'GRANT EXECUTE ON FUNCTION jale_internal.org_member_scope(TEXT) TO jale_job_digest;',
+      ]);
+      expect(code.match(/^GRANT /gm)).toHaveLength(4);
+    });
+
+    it('creates seven SELECT policies, all in the last section: two for the nudge owner, five for the digest login', () => {
+      const earlier = sql.slice(0, lastAt);
+      expect(earlier).not.toMatch(/^(CREATE POLICY|GRANT SELECT)/m);
+      expect(sql.match(/^CREATE POLICY /gm)).toHaveLength(7);
+      expect(last.match(/^CREATE POLICY \w+ ON public\.\w+/gm)).toEqual([
+        'CREATE POLICY organization_members_cap_hire_nudges_select ON public.organization_members',
+        'CREATE POLICY users_cap_hire_nudges_org_owner_select ON public.users',
+        'CREATE POLICY employer_candidate_rankings_job_digest_org_owner_read ON public.employer_candidate_rankings',
+        'CREATE POLICY worker_profiles_job_digest_org_owner_read ON public.worker_profiles',
+        'CREATE POLICY worker_skills_job_digest_org_owner_read ON public.worker_skills',
+        'CREATE POLICY applications_job_digest_org_owner_select ON public.job_applications',
+        'CREATE POLICY jobs_job_digest_org_owner_select ON public.jobs',
+      ]);
+      expect(last.match(/AS PERMISSIVE FOR SELECT TO (\w+)/g)).toEqual([
+        ...Array(2).fill('AS PERMISSIVE FOR SELECT TO jale_cap_hire_nudges'),
+        ...Array(5).fill('AS PERMISSIVE FOR SELECT TO jale_job_digest'),
+      ]);
+      expect(last).toContain('GRANT SELECT (user_id, organization_id, role, status) ON public.organization_members TO jale_cap_hire_nudges;');
+      expect(code).not.toMatch(/^(ALTER|DROP) POLICY/m);
+      // Every digest policy is 119's owner row check.
+      expect(last.match(/jale_internal\.org_owner_scope\(current_setting\('app\.current_internal_user_id', true\), false\)/g)).toHaveLength(5);
+      // Members before users, the digest tables, and jobs (128's order); conversations last.
+      const at = (needle: string) => last.indexOf(needle);
+      expect(at('ON public.organization_members')).toBeLessThan(at('ON public.users'));
+      expect(at('ON public.users')).toBeLessThan(at('ON public.job_applications'));
+      expect(at('ON public.job_applications')).toBeLessThan(at('CREATE POLICY jobs_job_digest_org_owner_select'));
+      expect(at('CREATE POLICY jobs_job_digest_org_owner_select')).toBeLessThan(at('CREATE UNIQUE INDEX'));
+    });
+
+    it('self-checks the keys, the claim, the policies, the helper grants and both windows', () => {
+      const check = sql.slice(selfCheckAt);
+      expect(check).toContain('AND c.contype = \'f\' AND c.convalidated AND NOT c.condeferrable');
+      expect(check).toContain("IF info.owner_name IS DISTINCT FROM 'jale_cap_hire_nudges'");
+      expect(check).toContain("(SELECT count(*) FROM pg_policy p WHERE 'jale_cap_hire_nudges'::regrole::oid = ANY (p.polroles)) <> 7");
+      expect(check).toContain("AND pg_get_expr(p.polqual, p.polrelid) = pg_get_expr(t.polqual, t.polrelid)) THEN");
+      expect(check).toContain("WHERE m.roleid IN ('jale_cap_hire_nudges'::regrole, 'jale_rls_relationship_reader'::regrole)\n                AND (m.set_option OR m.inherit_option))");
       expect(sql).not.toContain('polrelid::regclass::text');
     });
   });
