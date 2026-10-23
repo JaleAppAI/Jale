@@ -28,6 +28,17 @@ export function fakeShareCode(): string {
 /** The ToS version every fixture user has accepted; handlers read REQUIRED_TOS_VERSION. */
 export const FIXTURE_TOS_VERSION = 'fixture-tos-1';
 
+/**
+ * The minimal template payload employer-templates-save.ts accepts: title,
+ * location, a JOB_TYPES value and a TRADE_CATEGORIES value (parseJobFields).
+ */
+export const TEMPLATE_PAYLOAD = Object.freeze({
+  title: 'Fixture Template Job',
+  location: 'Fixture City',
+  job_type: 'full-time',
+  trade_category: 'electrician',
+});
+
 export interface UserFixture {
   id: string;
   sub: string;
@@ -116,6 +127,47 @@ export class World {
       await this.su.query(`DELETE FROM organizations WHERE id = $1`, [org]);
     });
     return { id, sub };
+  }
+
+  /**
+   * A foreman in ownerId's company (the owner's World.employer() company).
+   * Same users row shape as employer(); it creates no company. The owner's
+   * company cleanup deletes every member, and the users row goes after it.
+   */
+  async foreman(ownerId: string, opts: {
+    status?: 'active' | 'suspended' | 'removed';
+    billingSuspended?: boolean;
+    fullName?: string;
+    email?: string;
+  } = {}): Promise<UserFixture> {
+    const owner = await this.su.query<{ organization_id: string }>(
+      `SELECT organization_id FROM organization_members WHERE user_id = $1 AND role = 'owner'`,
+      [ownerId],
+    );
+    if (owner.rowCount !== 1) throw new Error('World.foreman: ownerId is not a company owner');
+    const id = randomUUID();
+    const sub = `fixture-employer-${randomUUID()}`;
+    await this.su.query(
+      `INSERT INTO users (id, cognito_sub, user_type, full_name, email, tos_version)
+       VALUES ($1, $2, 'employer', $3, $4, $5)`,
+      [id, sub, opts.fullName ?? 'Fixture Foreman', opts.email ?? `${id}@fixture.invalid`, FIXTURE_TOS_VERSION],
+    );
+    this.userIds.push(id);
+    await this.su.query(
+      `INSERT INTO organization_members (user_id, organization_id, role, status, billing_suspended_at)
+       VALUES ($1, $2, 'foreman', $3, CASE WHEN $4::boolean THEN now() END)`,
+      [id, owner.rows[0].organization_id, opts.status ?? 'active', opts.billingSuspended ?? false],
+    );
+    return { id, sub };
+  }
+
+  /** An employer_job_templates row (cascades away with its employer); returns its id. */
+  async template(employerId: string, name: string): Promise<string> {
+    const { rows } = await this.su.query<{ id: string }>(
+      `INSERT INTO employer_job_templates (employer_id, name, payload) VALUES ($1, $2, $3::jsonb) RETURNING id`,
+      [employerId, name, JSON.stringify(TEMPLATE_PAYLOAD)],
+    );
+    return rows[0].id;
   }
 
   async worker(opts: WorkerOptions = {}): Promise<UserFixture & { phone: string | null }> {
