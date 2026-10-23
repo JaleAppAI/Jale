@@ -10,8 +10,8 @@
  *    session;
  *  - every key is ACCOUNT-scoped (`lib/account-key`), so one person's failed
  *    save never hides a tutorial from the next person on the same phone;
- *  - with no account, nothing is read or written: an unscoped key would be
- *    exactly that leak;
+ *  - with no account, nothing is read or written: an unscoped key would show
+ *    one person's flag to the next;
  *  - every access is wrapped, because storage throws outright in some privacy
  *    modes. The progress provider keeps its own in-memory copy too, so the
  *    rule holds even when storage is unavailable.
