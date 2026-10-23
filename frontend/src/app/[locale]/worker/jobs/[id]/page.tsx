@@ -1016,10 +1016,18 @@ export default function WorkerJobDetailPage() {
                     up it is the ordinary card. Sticky, not fixed: it stays
                     the last block of the page, so whatever it grows to (an
                     apply error, a long hint in Spanish) the content above it
-                    is never covered once the worker reaches the end. */}
+                    is never covered once the worker reaches the end.
+                    It sticks at the tab bar's measured height
+                    (`--jale-tab-bar-offset`, see `BottomTabBar`), so it sits
+                    flush on the bar however tall a wrapped label makes it.
+                    `-mx-4` cancels `<main>`'s `px-4`, so the bar runs edge to
+                    edge, and `-mb-6` cancels the bottom half of its `py-6`,
+                    so at the end of the page the bar still rests on the tab
+                    bar instead of lifting off it by that padding. Change them
+                    with `<main>`. */}
                 <DashboardPanel
                   className={pinApply
-                    ? 'max-sm:sticky max-sm:-mx-4 max-sm:bottom-[calc(5rem+env(safe-area-inset-bottom))] max-sm:z-20 max-sm:rounded-none max-sm:border-x-0 max-sm:border-b-0 max-sm:shadow-[var(--shadow-dock)]'
+                    ? 'max-sm:sticky max-sm:-mx-4 max-sm:-mb-6 max-sm:bottom-[var(--jale-tab-bar-offset)] max-sm:z-20 max-sm:rounded-none max-sm:border-x-0 max-sm:border-b-0 max-sm:shadow-[var(--shadow-dock)]'
                     : ''}
                 >
                   <div className="flex flex-col gap-3 px-5 py-4 max-sm:px-4 max-sm:py-3 md:px-6">

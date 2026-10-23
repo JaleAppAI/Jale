@@ -179,7 +179,12 @@ describe('worker job page — after applying', () => {
  */
 describe('worker job page — Apply stays in view on phones', () => {
     const PINNED = 'max-sm:sticky';
-    const ABOVE_TAB_BAR = 'max-sm:bottom-[calc(5rem+env(safe-area-inset-bottom))]';
+    // The tab bar's measured outer height (see `BottomTabBar`), never a guess.
+    const ABOVE_TAB_BAR = 'max-sm:bottom-[var(--jale-tab-bar-offset)]';
+    // Cancels `<main>`'s bottom padding (`py-6`), the way `-mx-4` cancels its
+    // `px-4`: at the end of the page the bar rests on its sticky line, flush
+    // on the tab bar, instead of lifting off it by that padding.
+    const FLUSH_AT_END = 'max-sm:-mb-6';
 
     function applyPanel(): HTMLElement {
         return screen.getByRole('button', { name: t('apply') }).closest('section')!;
@@ -200,6 +205,8 @@ describe('worker job page — Apply stays in view on phones', () => {
         expect(panel.className).toContain(ABOVE_TAB_BAR);
         // Edge to edge on a phone: out over the page's own side padding.
         expect(panel.className).toContain('max-sm:-mx-4');
+        expect(panel.className).toContain(FLUSH_AT_END);
+        expect(panel.closest('main')!.className.split(/\s+/)).toEqual(expect.arrayContaining(['px-4', 'py-6']));
         // Never taken out of the page, at any width.
         expect(panel.className).not.toMatch(/(^|\s)(max-sm:)?fixed(\s|$)/);
         // Every pinning class is phone-only: nothing pins it from sm up.
