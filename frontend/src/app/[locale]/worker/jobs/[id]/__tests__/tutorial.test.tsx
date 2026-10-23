@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 
 import type { Application, ApplicationsPage, JobDetail } from '@/lib/api/worker';
 import type { TutorialHandle, UseTutorialOptions } from '@/lib/tutorials/types';
-import { renderIntl } from '@/components/worker/onboarding/__tests__/render-intl';
+import { message, renderIntl } from '@/components/worker/onboarding/__tests__/render-intl';
 
 /*
  * W2, the applying tutorial: how the job page asks for it.
@@ -250,6 +250,28 @@ describe('worker job page — the W2 tutorial', () => {
 
         expect(await screen.findByTestId('apply-flow')).toBeInTheDocument();
         await waitFor(() => expect(doneSequence()).toEqual([undefined, false]));
+        expect(tutorial.handle.maybeAutoOpen).not.toHaveBeenCalled();
+    });
+
+    it('never asks after an ?apply=1 arrival, even once the worker is back on the details', async () => {
+        // The read answers only after the worker has left the flow, so neither
+        // `applying` nor the apply view is still blocking at that moment: only
+        // the arrival itself can keep the tutorial shut.
+        const read = deferred<ApplicationsPage>();
+        getApplications.mockReturnValue(read.promise);
+        seed = job();
+        visit('?apply=1');
+
+        renderIntl(<WorkerJobDetailPage />);
+
+        fireEvent.click(await screen.findByRole('button', { name: 'back to details' }));
+        expect(await screen.findByRole('button', { name: message('worker_job_detail.apply') })).toBeInTheDocument();
+        expect(screen.queryByTestId('apply-flow')).toBeNull();
+        expect(tutorial.handle.maybeAutoOpen).not.toHaveBeenCalled();
+
+        await act(async () => { read.resolve(pageOf([])); });
+
+        expect(doneSequence()).toEqual([undefined, false]);
         expect(tutorial.handle.maybeAutoOpen).not.toHaveBeenCalled();
     });
 
