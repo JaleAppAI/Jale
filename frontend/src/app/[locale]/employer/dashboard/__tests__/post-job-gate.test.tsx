@@ -226,14 +226,18 @@ describe('post-a-job plan gate', () => {
             // The plan name is a bold noun in front of the sentence, not spliced
             // into it, so the paragraph's own text is the two joined.
             message('billing.plan_name.employer_free'),
-            interpolate(message('billing.limit_dialog.body_jobs_preflight'), { limit: 1, used: 1 }),
+            // Literal, not `interpolate()`: the sentence is an ICU plural, and a
+            // plan of one says "1 open job", never "1 open job(s)".
+            'You can’t post a job right now. Your plan allows 1 open job and you already have 1. '
+                + 'Pause, close or delete one to post another, or upgrade your plan.',
         ].join(' · ');
         // A function matcher, because the plan name sits in a nested `<strong>`
         // and the default text matcher only sees a node's OWN text children.
         expect(
             dialog.getByText((_text, el) => el?.tagName === 'P' && el.textContent === sentence),
         ).toBeInTheDocument();
-        expect(dialog.getByText(message('billing.limit_dialog.blocking_heading'))).toBeInTheDocument();
+        // One job holds the one slot: "slot", not "slot(s)".
+        expect(dialog.getByText('Using your active slot right now')).toBeInTheDocument();
         expect(dialog.getByRole('link', { name: activeJob.title })).toBeInTheDocument();
         expect(dialog.getByRole('link', { name: message('billing.limit_dialog.cta_pause_job') })).toBeInTheDocument();
         expect(
@@ -283,6 +287,84 @@ describe('post-a-job plan gate', () => {
         fireEvent.click(postJobButtons()[0]);
 
         expect(screen.getByTestId('post-job-wizard')).toBeInTheDocument();
+    });
+});
+
+/*
+ * The plan's numbers go into the copy as they are -- 15 active jobs and 2
+ * templates on Free today, 50 and 20 on Pro -- and the words agree with them,
+ * with no "posting(s)" or "template(s)" left for the reader to resolve.
+ */
+describe('plan limits in the copy', () => {
+    const freeToday: EmployerBilling = { ...freePlan, activeJobLimit: 15, templateLimit: 2, activeJobUsage: 1 };
+
+    it('states the Free plan banner with the plan\'s own numbers', () => {
+        seed = { jobs: [activeJob], billing: freeToday, templateCount: 0 };
+        renderDashboard();
+        expect(screen.getByText('Free includes 15 active job postings and 2 templates. Upgrade to post more at once.'))
+            .toBeInTheDocument();
+    });
+
+    it('says one posting and one template for a plan of one', () => {
+        renderDashboard();
+        expect(screen.getByText('Free includes 1 active job posting and 1 template. Upgrade to post more at once.'))
+            .toBeInTheDocument();
+    });
+
+    it('states the banner in Spanish, in the plural and the singular', () => {
+        seed = { jobs: [activeJob], billing: freeToday, templateCount: 0 };
+        const { unmount } = renderIntl(
+            <PostJobProvider>
+                <EmployerDashboardPage />
+            </PostJobProvider>,
+            'es',
+        );
+        expect(screen.getByText(
+            'El plan Gratis incluye 15 publicaciones de empleo activas y 2 plantillas. Mejore su plan para publicar más a la vez.',
+        )).toBeInTheDocument();
+        unmount();
+        localStorage.clear();
+        seed = { jobs: [activeJob], billing: freePlan, templateCount: 0 };
+        renderIntl(
+            <PostJobProvider>
+                <EmployerDashboardPage />
+            </PostJobProvider>,
+            'es',
+        );
+        expect(screen.getByText(
+            'El plan Gratis incluye 1 publicación de empleo activa y 1 plantilla. Mejore su plan para publicar más a la vez.',
+        )).toBeInTheDocument();
+    });
+
+    it('fills the limit dialog with the plan\'s number, in both languages', () => {
+        // The company holds 15 of 15: one own job plus 14 of other members.
+        seed = { jobs: [activeJob], billing: { ...freeToday, otherMembersActiveJobs: 14 }, templateCount: 0 };
+        const { unmount } = renderDashboard();
+        fireEvent.click(postJobButtons()[0]);
+        const sentence = (el: Element | null, text: string) => el?.tagName === 'P' && el.textContent === text;
+        expect(within(screen.getByRole('dialog')).getByText((_text, el) => sentence(
+            el,
+            'Free · You can’t post a job right now. Your plan allows 15 open jobs and you already have 15. '
+                + 'Pause, close or delete one to post another, or upgrade your plan.',
+        ))).toBeInTheDocument();
+        unmount();
+        localStorage.clear();
+        renderIntl(
+            <PostJobProvider>
+                <EmployerDashboardPage />
+            </PostJobProvider>,
+            'es',
+        );
+        fireEvent.click(screen.getAllByRole('button', { name: message('employer_dashboard.jobs.post_job', 'es') })[0]);
+        const dialog = within(screen.getByRole('dialog'));
+        expect(dialog.getByText((_text, el) => sentence(
+            el,
+            'Gratis · No puede publicar un trabajo ahora. Su plan permite 15 trabajos abiertos y ya tiene 15. '
+                + 'Pause, cierre o elimine uno para publicar otro, o mejore su plan.',
+        ))).toBeInTheDocument();
+        // Fifteen jobs hold the slots (one listed here, "and 14 more"), so the
+        // heading is plural: "sus espacios", not "su(s) espacio(s)".
+        expect(dialog.getByText('Ocupando sus espacios activos ahora')).toBeInTheDocument();
     });
 });
 

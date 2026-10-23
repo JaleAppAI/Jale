@@ -934,7 +934,7 @@
       "template_name_placeholder": "Nombre de la plantilla",
       "template_check_city": "Revise la ciudad antes de publicar",
       "template_name_taken": "Ya tiene una plantilla con ese nombre",
-      "template_not_saved": "Su plantilla no se guardará — su plan permite {limit} plantilla(s).",
+      "template_not_saved": "Su plantilla no se guardará — su plan permite {limit, plural, one {# plantilla} other {# plantillas}}.",
       "post_without_template": "Publicar sin guardar plantilla",
       "location_pick_helper": "Seleccione la ciudad de la lista para continuar."
     },
@@ -1975,11 +1975,11 @@
     },
     "limit_dialog": {
       "title": "Alcanzó el límite de su plan",
-      "body_jobs": "Su plan permite {limit} publicación(es) de empleo activa(s), y tiene {used} activa(s) ahora mismo.",
+      "body_jobs": "Su plan permite {limit, plural, one {# publicación de empleo activa} other {# publicaciones de empleo activas}}, y tiene {used, plural, one {# activa} other {# activas}} ahora mismo.",
       "body_jobs_zero": "Su plan actual no incluye publicaciones de empleo activas. Mejore su plan para publicar este empleo.",
-      "body_templates": "Su plan permite {limit} plantilla(s) guardada(s). Elimine una o mejore su plan para guardar esta.",
+      "body_templates": "Su plan permite {limit, plural, one {# plantilla guardada} other {# plantillas guardadas}}. Elimine una o mejore su plan para guardar esta.",
       "body_templates_zero": "Su plan actual no incluye plantillas guardadas.",
-      "blocking_heading": "Ocupando su(s) espacio(s) activo(s) ahora",
+      "blocking_heading": "{count, plural, one {Ocupando su espacio activo ahora} other {Ocupando sus espacios activos ahora}}",
       "and_more": "y {count} más",
       "hint_jobs": "Pausar o cerrar un empleo activo libera su espacio de inmediato.",
       "hint_templates": "Eliminar una plantilla guardada libera un espacio de inmediato.",
@@ -1987,15 +1987,15 @@
       "cta_pause_job": "Pausar otro empleo",
       "cta_manage_templates": "Administrar plantillas",
       "dismiss": "Ahora no",
-      "body_jobs_preflight": "No puede publicar un trabajo ahora. Su plan permite {limit} trabajo(s) abierto(s) y ya tiene {used}. Pause, cierre o elimine uno para publicar otro, o mejore su plan."
+      "body_jobs_preflight": "No puede publicar un trabajo ahora. Su plan permite {limit, plural, one {# trabajo abierto} other {# trabajos abiertos}} y ya tiene {used}. Pause, cierre o elimine uno para publicar otro, o mejore su plan."
     },
     "limit_reached": {
-      "modal_message": "Ha alcanzado el límite de su plan de {limit} publicación(es) de empleo activa(s). Mejore su plan para publicar más.",
+      "modal_message": "Ha alcanzado el límite de su plan de {limit, plural, one {# publicación de empleo activa} other {# publicaciones de empleo activas}}. Mejore su plan para publicar más.",
       "cta": "Mejorar plan"
     },
     "signage": {
       "free_title": "Está en el plan Gratis",
-      "free_body": "El plan Gratis incluye {jobLimit} publicación(es) de empleo activa(s) y {templateLimit} plantilla(s). Mejore su plan para publicar más a la vez.",
+      "free_body": "El plan Gratis incluye {jobLimit, plural, one {# publicación de empleo activa} other {# publicaciones de empleo activas}} y {templateLimit, plural, one {# plantilla} other {# plantillas}}. Mejore su plan para publicar más a la vez.",
       "free_cta": "Mejorar plan",
       "lapsed_title": "Su suscripción no está activa",
       "lapsed_body": "Estado de la suscripción: {status}. Vuelva a suscribirse para recuperar los límites del plan Pro.",

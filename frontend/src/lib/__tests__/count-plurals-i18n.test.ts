@@ -240,3 +240,134 @@ describe('counted copy agrees with its number', () => {
         });
     }
 });
+
+/**
+ * The plan-limit copy. These carry the plan's own numbers (15 active jobs and
+ * 2 templates on Free today, 50 and 20 on Pro), so each is checked at those
+ * numbers and at one -- the plan a limit change could leave someone on.
+ */
+const PLAN_CASES: Case[] = [
+    {
+        path: 'billing.signage.free_body',
+        values: { jobLimit: 15, templateLimit: 2 },
+        en: 'Free includes 15 active job postings and 2 templates. Upgrade to post more at once.',
+        es: 'El plan Gratis incluye 15 publicaciones de empleo activas y 2 plantillas. Mejore su plan para publicar más a la vez.',
+    },
+    {
+        path: 'billing.signage.free_body',
+        values: { jobLimit: 1, templateLimit: 1 },
+        en: 'Free includes 1 active job posting and 1 template. Upgrade to post more at once.',
+        es: 'El plan Gratis incluye 1 publicación de empleo activa y 1 plantilla. Mejore su plan para publicar más a la vez.',
+    },
+    {
+        path: 'billing.limit_dialog.body_jobs',
+        values: { limit: 50, used: 50 },
+        en: 'Your plan allows 50 active job postings, and you have 50 active right now.',
+        es: 'Su plan permite 50 publicaciones de empleo activas, y tiene 50 activas ahora mismo.',
+    },
+    {
+        path: 'billing.limit_dialog.body_jobs',
+        values: { limit: 1, used: 1 },
+        en: 'Your plan allows 1 active job posting, and you have 1 active right now.',
+        es: 'Su plan permite 1 publicación de empleo activa, y tiene 1 activa ahora mismo.',
+    },
+    {
+        path: 'billing.limit_dialog.body_jobs_preflight',
+        values: { limit: 15, used: 15 },
+        en: 'You can’t post a job right now. Your plan allows 15 open jobs and you already have 15. Pause, close or delete one to post another, or upgrade your plan.',
+        es: 'No puede publicar un trabajo ahora. Su plan permite 15 trabajos abiertos y ya tiene 15. Pause, cierre o elimine uno para publicar otro, o mejore su plan.',
+    },
+    {
+        path: 'billing.limit_dialog.body_jobs_preflight',
+        values: { limit: 1, used: 1 },
+        en: 'You can’t post a job right now. Your plan allows 1 open job and you already have 1. Pause, close or delete one to post another, or upgrade your plan.',
+        es: 'No puede publicar un trabajo ahora. Su plan permite 1 trabajo abierto y ya tiene 1. Pause, cierre o elimine uno para publicar otro, o mejore su plan.',
+    },
+    {
+        path: 'billing.limit_dialog.body_templates',
+        values: { limit: 20, used: 20 },
+        en: 'Your plan allows 20 saved templates. Delete one, or upgrade to save this one.',
+        es: 'Su plan permite 20 plantillas guardadas. Elimine una o mejore su plan para guardar esta.',
+    },
+    {
+        path: 'billing.limit_dialog.body_templates',
+        values: { limit: 1, used: 1 },
+        en: 'Your plan allows 1 saved template. Delete one, or upgrade to save this one.',
+        es: 'Su plan permite 1 plantilla guardada. Elimine una o mejore su plan para guardar esta.',
+    },
+    {
+        path: 'billing.limit_dialog.blocking_heading',
+        values: { count: 1 },
+        en: 'Using your active slot right now',
+        es: 'Ocupando su espacio activo ahora',
+    },
+    {
+        path: 'billing.limit_dialog.blocking_heading',
+        values: { count: 3 },
+        en: 'Using your active slots right now',
+        es: 'Ocupando sus espacios activos ahora',
+    },
+    // Nothing in the app renders this one today (`plan-limit-i18n-keys.test.ts`
+    // keeps it in the catalogue); its copy is held to the same rule.
+    {
+        path: 'billing.limit_reached.modal_message',
+        values: { limit: 15 },
+        en: 'You\'ve reached your plan\'s limit of 15 active job postings. Upgrade to post more.',
+        es: 'Ha alcanzado el límite de su plan de 15 publicaciones de empleo activas. Mejore su plan para publicar más.',
+    },
+    {
+        path: 'billing.limit_reached.modal_message',
+        values: { limit: 1 },
+        en: 'You\'ve reached your plan\'s limit of 1 active job posting. Upgrade to post more.',
+        es: 'Ha alcanzado el límite de su plan de 1 publicación de empleo activa. Mejore su plan para publicar más.',
+    },
+    {
+        path: 'employer_dashboard.modal.template_not_saved',
+        values: { limit: 2 },
+        en: 'Your template won\'t be saved — your plan allows 2 templates.',
+        es: 'Su plantilla no se guardará — su plan permite 2 plantillas.',
+    },
+    {
+        path: 'employer_dashboard.modal.template_not_saved',
+        values: { limit: 1 },
+        en: 'Your template won\'t be saved — your plan allows 1 template.',
+        es: 'Su plantilla no se guardará — su plan permite 1 plantilla.',
+    },
+];
+
+describe('plan-limit copy agrees with the plan\'s numbers', () => {
+    for (const locale of ['en', 'es'] as const) {
+        it.each(PLAN_CASES)(`${locale}: $path $values`, (entry) => {
+            const { text, errors } = format(locale, entry.path, entry.values);
+            expect(errors).toEqual([]);
+            expect(text).toBe(entry[locale]);
+        });
+    }
+});
+
+type MessageNode = string | { [key: string]: MessageNode };
+
+function* leaves(node: MessageNode, path: string): Generator<[string, string]> {
+    if (typeof node === 'string') {
+        yield [path, node];
+        return;
+    }
+    for (const [key, child] of Object.entries(node)) yield* leaves(child, path ? `${path}.${key}` : key);
+}
+
+/**
+ * "posting(s)", "publicación(es)", "activa(s)", "su(s)": a plural left for the
+ * reader to work out. An ICU plural says the right one instead.
+ */
+const PAREN_PLURAL = /\p{L}\((s|es|as|os|a|o)\)/u;
+
+describe('no "(s)" plurals anywhere in the catalogues', () => {
+    for (const locale of ['en', 'es'] as const) {
+        it(`${locale}.json has none`, () => {
+            const found = [...leaves(catalogues[locale] as MessageNode, '')]
+                .filter(([, value]) => PAREN_PLURAL.test(value))
+                .map(([path, value]) => `${path}: ${value}`);
+            expect(found).toEqual([]);
+        });
+    }
+});
