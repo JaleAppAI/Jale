@@ -35,6 +35,7 @@ import { randomUUID } from 'node:crypto';
 import type { Client, Pool } from 'pg';
 import { createCheckedPool } from '../../../lambda/lib/db';
 import { listEmployerInbox } from '../../../lambda/lib/employer-inbox';
+import { resolveEmployerActor } from '../../../lambda/lib/employer-actor';
 import { queueEmail } from '../../../lambda/lib/email-outbox';
 import { queueConversationMessageFromEmployer } from '../../../lambda/lib/job-messaging';
 import { apiEvent, FIXTURE_TOS_VERSION, parseResponse, World } from './r-paths-world';
@@ -434,7 +435,7 @@ describeInProfiles([...ALL_PROFILES], 'migration 125: the worker\'s web message 
       await client.query('BEGIN');
       await client.query(`SELECT set_config('app.current_user_id', $1, true)`, [employer.sub]);
       await client.query(`SELECT set_config('app.current_internal_user_id', $1, true)`, [employer.id]);
-      const inbox = await listEmployerInbox(client, employer.id);
+      const inbox = await listEmployerInbox(client, [employer.id]);
       await client.query('ROLLBACK');
       expect(inbox.unread_count).toBe(1);
       expect(inbox.items.find((item) => item.conversation_id === conversationId)?.unread).toBe(true);
@@ -1020,7 +1021,12 @@ describeInProfiles([...ALL_PROFILES], 'migration 125: the F19 handlers on real r
     const hired = await world.worker({ lifecycle: 'ready', whatsappLanguage: 'en', workflowLanguage: 'en' });
     const applicationId = await world.application(jobId, hired.id, 'hired');
     const reply = (conversationId: string, body: string) => asLogin('jale_api', { sub: employer.sub, internal: employer.id },
-      (c) => queueConversationMessageFromEmployer(c as any, conversationId, employer.id, body));
+      async (c) => {
+        // The caller as every employer route resolves it (Milestone B).
+        const resolved = await resolveEmployerActor(c as any, employer.sub);
+        if (!resolved.ok) throw new Error(`fixture employer did not resolve: ${resolved.error}`);
+        return queueConversationMessageFromEmployer(c as any, conversationId, resolved.actor, body);
+      });
     const templates = async (conversationId: string) => (await all(world, `SELECT send_kind, content_template
         FROM job_message_outbox WHERE conversation_id = $1 ORDER BY created_at, id`, [conversationId]));
 

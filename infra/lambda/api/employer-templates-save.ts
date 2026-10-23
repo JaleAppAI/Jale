@@ -6,6 +6,7 @@ import { JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs,
 import { parseCityFields, parseCityFromLocation } from '../lib/city-fields';
 import { parsePreApplicationPrompts } from '../lib/pre-application-prompts';
 import { checkCompliance } from '../legal/check-compliance';
+import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
 
 const CORS_HEADERS = corsHeaders();
 const MAX_NAME_LENGTH = 80;
@@ -162,24 +163,31 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     // Same serialization pattern as the active-job limit: lock the employer
-    // row so two concurrent saves cannot both pass the cap check.
-    const lockResult = await client.query<{ id: string }>(
-      `SELECT id FROM users WHERE cognito_sub = $1 FOR UPDATE`,
-      [cognitoSub],
-    );
-    const employerId = lockResult.rows[0]?.id;
-    if (!employerId) {
+    // row (resolveEmployerActor's lockUser) so two concurrent saves cannot both
+    // pass the cap check. The cap stays per person in Phase 1.
+    const actorResult = await resolveEmployerActor(client, cognitoSub, { lockUser: true });
+    if (!actorResult.ok) {
       await client.query('ROLLBACK');
-      return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_provisioned' }) };
+      return employerActorFailureResponse(actorResult, CORS_HEADERS);
     }
+    const { actor } = actorResult;
+    const employerId = actor.userId;
 
     if (body.id) {
-      // Update path: rename and/or overwrite an owned template. RLS scopes
-      // the UPDATE; rowCount 0 means unknown or unowned -- indistinguishable
-      // on purpose.
+      // Update path: rename and/or overwrite a template the caller may edit --
+      // their own, or (for the owner, whose scope covers every member) a
+      // member's. Names are unique per employer_id (UNIQUE (employer_id,
+      // name)), so the clash check runs within the edited template's own
+      // employer; a template outside the scope falls back to the caller's own
+      // names, exactly as before. RLS scopes the UPDATE; rowCount 0 means
+      // unknown or not editable -- indistinguishable on purpose.
       const nameConflict = await client.query(
-        `SELECT id FROM employer_job_templates WHERE employer_id = $1 AND name = $2 AND id <> $3`,
-        [employerId, name, body.id],
+        `SELECT id FROM employer_job_templates
+          WHERE employer_id = COALESCE(
+                  (SELECT employer_id FROM employer_job_templates WHERE id = $3 AND employer_id = ANY($1::uuid[])),
+                  $4::uuid)
+            AND name = $2 AND id <> $3`,
+        [actor.scopeUserIds, name, body.id, employerId],
       );
       if ((nameConflict.rowCount ?? 0) > 0) {
         await client.query('ROLLBACK');
@@ -188,9 +196,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       const updated = await client.query(
         `UPDATE employer_job_templates
             SET name = $1, payload = $2::jsonb, updated_at = NOW()
-          WHERE id = $3 AND employer_id = $4
+          WHERE id = $3 AND employer_id = ANY($4::uuid[])
         RETURNING id, name, payload, updated_at`,
-        [name, JSON.stringify(payload.value), body.id, employerId],
+        [name, JSON.stringify(payload.value), body.id, actor.scopeUserIds],
       );
       if (updated.rowCount === 0) {
         await client.query('ROLLBACK');

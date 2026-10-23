@@ -8,6 +8,22 @@ jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
 jest.mock('../../../../lambda/lib/application-stage-notify');
 
+import { resolveEmployerActor } from '../../../../lambda/lib/employer-actor';
+
+jest.mock('../../../../lambda/lib/employer-actor', () => ({
+  ...jest.requireActual('../../../../lambda/lib/employer-actor'),
+  resolveEmployerActor: jest.fn(),
+}));
+
+const mockResolveEmployerActor = resolveEmployerActor as jest.Mock;
+const ORG_ID = '99999999-9999-4999-8999-999999999999';
+const OWNER_ID = 'aaaaaaaa-1111-4111-8111-111111111111';
+const FOREMAN_ID = 'bbbbbbbb-2222-4222-8222-222222222222';
+const actorResult = (userId: string, scopeUserIds: string[] = [userId]) => ({
+  ok: true as const,
+  actor: { userId, organizationId: ORG_ID, role: 'owner' as const, scopeUserIds },
+});
+
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
 const mockSetInternalUserRlsContext = setInternalUserRlsContext as jest.Mock;
@@ -38,6 +54,7 @@ describe('employer-application-status-update', () => {
     delete process.env.FRONTEND_BASE_URL;
     mockGetDbPool.mockResolvedValue({ connect: jest.fn().mockResolvedValue({ query: mockQuery, release: mockRelease }) });
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    mockResolveEmployerActor.mockResolvedValue(actorResult(EMPLOYER_ID));
     mockNotify.mockResolvedValue({
       outcome: 'enqueued',
       intentId: 'intent-1',
@@ -123,8 +140,8 @@ describe('employer-application-status-update', () => {
     expect(mockSetRlsContext).toHaveBeenCalledWith(expect.anything(), 'e-sub');
     expect(mockCheckCompliance).toHaveBeenCalledWith(expect.anything(), 'e-sub', 'v1.0');
     expect(mockQuery).toHaveBeenCalledWith(
-      expect.stringContaining('JOIN users u ON u.id = jobs.employer_id'),
-      [JOB_ID, 'e-sub'],
+      expect.stringContaining('jobs.employer_id = ANY($2::uuid[])'),
+      [JOB_ID, [EMPLOYER_ID]],
     );
     expect(mockQuery).toHaveBeenCalledWith(
       expect.stringContaining('FOR UPDATE'),
@@ -327,7 +344,7 @@ describe('employer-application-status-update', () => {
     } = opts;
     return (q: string) => {
       // Pre-update job snapshot (ownership check + before-status read).
-      if (q.includes('JOIN users u ON u.id = jobs.employer_id')) {
+      if (q.includes('FOR UPDATE OF jobs')) {
         return Promise.resolve({
           rowCount: 1,
           rows: [{
@@ -445,7 +462,7 @@ describe('employer-application-status-update', () => {
     updateError?: unknown;
   }) {
     return (q: string) => {
-      if (q.includes('JOIN users u ON u.id = jobs.employer_id')) {
+      if (q.includes('FOR UPDATE OF jobs')) {
         return Promise.resolve({
           rowCount: 1,
           rows: [{
@@ -483,7 +500,7 @@ describe('employer-application-status-update', () => {
     };
   }
 
-  it("puts the EMPLOYER's users.id in app.current_internal_user_id, after the jobCheck and before the UPDATE", async () => {
+  it('leaves app.current_internal_user_id to resolveEmployerActor: the CALLER, resolved after compliance and before the job check, never re-pointed', async () => {
     mockQuery.mockImplementation(makeStageQueryMock({
       appStatusBefore: 'talking', appStatusRequested: 'details_requested',
     }));
@@ -491,18 +508,46 @@ describe('employer-application-status-update', () => {
     const res = await handler(makeEvent({ body: JSON.stringify({ status: 'details_requested' }) }));
 
     expect(res.statusCode).toBe(200);
-    // The employer's users.id is the caller context for the whole transaction.
-    expect(mockSetInternalUserRlsContext).toHaveBeenCalledTimes(1);
-    expect(mockSetInternalUserRlsContext).toHaveBeenCalledWith(expect.anything(), EMPLOYER_ID);
+    // resolveEmployerActor (mocked) binds the caller's users.id. The handler
+    // never sets the internal id itself: not to the job's employer, not to
+    // the worker.
+    expect(mockResolveEmployerActor).toHaveBeenCalledTimes(1);
+    expect(mockResolveEmployerActor).toHaveBeenCalledWith(expect.anything(), 'e-sub');
+    expect(mockSetInternalUserRlsContext).not.toHaveBeenCalled();
 
     const sqls = mockQuery.mock.calls.map(([sql]: [string]) => (typeof sql === 'string' ? sql : ''));
-    const jobCheckIdx = sqls.findIndex((q: string) => q.includes('JOIN users u ON u.id = jobs.employer_id'));
-    const updateIdx = sqls.findIndex((q: string) => q.includes('UPDATE job_applications'));
-    const gucOrder = mockSetInternalUserRlsContext.mock.invocationCallOrder[0];
-    expect(gucOrder).toBeGreaterThan(mockQuery.mock.invocationCallOrder[jobCheckIdx]);
-    expect(gucOrder).toBeLessThan(mockQuery.mock.invocationCallOrder[updateIdx]);
-    // ...and it is never re-pointed at the worker.
-    expect(mockSetInternalUserRlsContext).not.toHaveBeenCalledWith(expect.anything(), WORKER_ID);
+    const jobCheckIdx = sqls.findIndex((q: string) => q.includes('FOR UPDATE OF jobs'));
+    const resolveOrder = mockResolveEmployerActor.mock.invocationCallOrder[0];
+    expect(resolveOrder).toBeGreaterThan(mockCheckCompliance.mock.invocationCallOrder[0]);
+    expect(resolveOrder).toBeLessThan(mockQuery.mock.invocationCallOrder[jobCheckIdx]);
+  });
+
+  it('answers the actor failure with ROLLBACK and never reads the job', async () => {
+    mockResolveEmployerActor.mockResolvedValue({ ok: false, status: 403, error: 'membership_inactive' });
+    mockQuery.mockResolvedValue({});
+    const res = await handler(makeEvent());
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({ error: 'membership_inactive' });
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
+    expect(mockQuery.mock.calls.some(([q]) => String(q).includes('FROM jobs'))).toBe(false);
+  });
+
+  it("locks the job against an owner's whole scope and still names the JOB's employer for the company name", async () => {
+    // makeStageQueryMock's job row has employer_id EMPLOYER_ID: here that
+    // person is a member of the owner's company, not the caller.
+    mockResolveEmployerActor.mockResolvedValue(actorResult(OWNER_ID, [OWNER_ID, FOREMAN_ID]));
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'talking', appStatusRequested: 'details_requested',
+    }));
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'details_requested' }) }));
+    expect(res.statusCode).toBe(200);
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringContaining('jobs.employer_id = ANY($2::uuid[])'),
+      [JOB_ID, [OWNER_ID, FOREMAN_ID]],
+    );
+    expect(mockQuery).toHaveBeenCalledWith(expect.stringContaining('employer_display_name'), [EMPLOYER_ID]);
+    expect(mockSetInternalUserRlsContext).not.toHaveBeenCalled();
   });
 
   it("returns 409 details_incomplete (and rolls back) when 091's hire gate rejects the UPDATE", async () => {

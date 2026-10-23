@@ -1,10 +1,11 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
+import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { listEmployerApplicantsOverview } from '../lib/employer-applicants-overview';
 import { checkCompliance } from '../legal/check-compliance';
 import { auditCaller, type AuditCaller } from '../lib/audit/caller';
 import { recordAccess, recordAttempt, responseFieldNames } from '../lib/audit/record';
+import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
 
 
 const CORS_HEADERS = corsHeaders();
@@ -38,16 +39,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
-    const employerRes = await client.query<{ id: string }>('SELECT id FROM users WHERE cognito_sub = $1', [cognitoSub]);
-    const employerId = employerRes.rows[0]?.id;
-    if (!employerId) {
+    const resolved = await resolveEmployerActor(client, cognitoSub);
+    if (!resolved.ok) {
       await client.query('COMMIT');
-      return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_provisioned' }) };
+      return employerActorFailureResponse(resolved, CORS_HEADERS);
     }
-    await setInternalUserRlsContext(client, employerId);
-    caller = auditCaller(event, { kind: 'employer', id: employerId }, 'web');
+    const { actor } = resolved;
+    caller = auditCaller(event, { kind: 'employer', id: actor.userId }, 'web');
 
-    const overview = await listEmployerApplicantsOverview(client, employerId);
+    const overview = await listEmployerApplicantsOverview(client, actor.scopeUserIds);
     const items = overview.applicants;
     await recordAccess(client, caller, {
       surface: SURFACE,

@@ -40,7 +40,7 @@ describe('listEmployerApplicantsOverview', () => {
       baseRow({ application_id: 'app-2', worker_id: 'w-2', job_id: 'job-2', job_title: 'Dishwasher', job_city: 'Dallas', match_score: null, score_band: null }),
       baseRow({ application_id: 'app-3', worker_id: 'w-3' }),
     ]));
-    const overview = await listEmployerApplicantsOverview(client, EMPLOYER);
+    const overview = await listEmployerApplicantsOverview(client, [EMPLOYER]);
     expect(overview.total).toBe(3);
     expect(overview.applicants).toHaveLength(3);
     expect(overview.jobs).toEqual([
@@ -51,10 +51,10 @@ describe('listEmployerApplicantsOverview', () => {
 
   it('scopes to the employer, excludes dismissed applicants, and joins the ranking cache in SQL', async () => {
     mockQuery.mockResolvedValueOnce(rowsResult([]));
-    await listEmployerApplicantsOverview(client, EMPLOYER);
+    await listEmployerApplicantsOverview(client, [EMPLOYER]);
     const [sql, params] = mockQuery.mock.calls[0];
-    expect(params).toEqual([EMPLOYER]);
-    expect(sql).toMatch(/j\.employer_id = \$1/);
+    expect(params).toEqual([[EMPLOYER]]);
+    expect(sql).toMatch(/j\.employer_id = ANY\(\$1::uuid\[\]\)/);
     expect(sql).toMatch(/ja\.status NOT IN \('not_interested', 'rejected'\)/);
     expect(sql).toMatch(/LEFT JOIN employer_candidate_rankings ecr/);
     expect(sql).toMatch(/j\.city AS job_city/);
@@ -68,7 +68,7 @@ describe('listEmployerApplicantsOverview', () => {
 
   it("selects the worker's trust score the same way the per-job ranking query does", async () => {
     mockQuery.mockResolvedValueOnce(rowsResult([]));
-    await listEmployerApplicantsOverview(client, EMPLOYER);
+    await listEmployerApplicantsOverview(client, [EMPLOYER]);
     const [sql] = mockQuery.mock.calls[0];
     // users.trade_competency_score (012:122, INTEGER 0..100) aliased to
     // trust_score -- the same expression employer-candidate-ranking.ts:338
@@ -80,7 +80,7 @@ describe('listEmployerApplicantsOverview', () => {
     mockQuery.mockResolvedValueOnce(rowsResult([
       baseRow({ availability: 'weekends', years_experience: 9, trust_score: 64 }),
     ]));
-    const overview = await listEmployerApplicantsOverview(client, EMPLOYER);
+    const overview = await listEmployerApplicantsOverview(client, [EMPLOYER]);
     expect(overview.applicants[0]).toMatchObject({
       availability: 'weekends',
       years_experience: 9,
@@ -90,8 +90,15 @@ describe('listEmployerApplicantsOverview', () => {
 
   it('keeps a never-assessed worker\'s trust_score null rather than zero', async () => {
     mockQuery.mockResolvedValueOnce(rowsResult([baseRow({ trust_score: null })]));
-    const overview = await listEmployerApplicantsOverview(client, EMPLOYER);
+    const overview = await listEmployerApplicantsOverview(client, [EMPLOYER]);
     expect(overview.applicants[0].trust_score).toBeNull();
+  });
+
+  it("reads every job in the caller's scope through one uuid[] parameter", async () => {
+    const FOREMAN = 'eeeeeeee-0000-0000-0000-000000000002';
+    mockQuery.mockResolvedValueOnce(rowsResult([]));
+    await listEmployerApplicantsOverview(client, [EMPLOYER, FOREMAN]);
+    expect(mockQuery.mock.calls[0][1]).toEqual([[EMPLOYER, FOREMAN]]);
   });
 
   // F19 (K4.2): the overview row carries the same hire details and prompt
@@ -104,7 +111,7 @@ describe('listEmployerApplicantsOverview', () => {
       baseRow({ application_id: 'hired-without', application_status: 'hired' }),
       baseRow({ application_id: 'pending', application_status: 'pending' }),
     ]));
-    const { applicants } = await listEmployerApplicantsOverview(client, EMPLOYER);
+    const { applicants } = await listEmployerApplicantsOverview(client, [EMPLOYER]);
     expect(applicants.map((a: any) => [a.application_id, a.hire_details, a.hire_details_needed])).toEqual([
       ['hired-with', { start_date: null, report_location: null, contact_name: 'Site lead', contact_phone: '+1 555 0100',
         notes: null, updated_at: '2026-10-14T12:00:00.000Z' }, false],
@@ -170,7 +177,7 @@ describe('listEmployerApplicantsOverview', () => {
 
     async function statusById(rows: Record<string, unknown>[]) {
       mockQuery.mockResolvedValueOnce(rowsResult(rows));
-      const { applicants } = await listEmployerApplicantsOverview(client, EMPLOYER);
+      const { applicants } = await listEmployerApplicantsOverview(client, [EMPLOYER]);
       return new Map(applicants.map((a: any) => [a.application_id, a.details_status]));
     }
 
@@ -207,7 +214,7 @@ describe('listEmployerApplicantsOverview', () => {
 
     it('selects the stage timestamps and the job-scoped document types in SQL', async () => {
       mockQuery.mockResolvedValueOnce(rowsResult([]));
-      await listEmployerApplicantsOverview(client, EMPLOYER);
+      await listEmployerApplicantsOverview(client, [EMPLOYER]);
       const [sql] = mockQuery.mock.calls[0];
       expect(sql).toContain('ja.details_requested_at');
       expect(sql).toContain('ja.details_completed_at');
@@ -225,7 +232,7 @@ describe('listEmployerApplicantsOverview', () => {
 
     it('publishes details_status and none of the columns it is derived from', async () => {
       mockQuery.mockResolvedValueOnce(rowsResult([ROWS.requested]));
-      const { applicants } = await listEmployerApplicantsOverview(client, EMPLOYER);
+      const { applicants } = await listEmployerApplicantsOverview(client, [EMPLOYER]);
       const item = applicants[0] as Record<string, unknown>;
       expect(item.details_status).toBe('requested');
       for (const key of [

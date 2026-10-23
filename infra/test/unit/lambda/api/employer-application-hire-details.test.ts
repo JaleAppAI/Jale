@@ -14,12 +14,17 @@ import {
   handler,
   parseHireDetailsInput,
 } from '../../../../lambda/api/employer-application-hire-details';
-import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../../../../lambda/lib/db';
+import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
+import { resolveEmployerActor } from '../../../../lambda/lib/employer-actor';
 import { loadStageRecipient } from '../../../../lambda/lib/employer-worker-lane';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
+jest.mock('../../../../lambda/lib/employer-actor', () => ({
+  ...jest.requireActual('../../../../lambda/lib/employer-actor'),
+  resolveEmployerActor: jest.fn(),
+}));
 jest.mock('../../../../lambda/lib/employer-worker-lane', () => ({
   ...jest.requireActual('../../../../lambda/lib/employer-worker-lane'),
   loadStageRecipient: jest.fn(),
@@ -27,7 +32,7 @@ jest.mock('../../../../lambda/lib/employer-worker-lane', () => ({
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
-const mockSetInternal = setInternalUserRlsContext as jest.Mock;
+const mockResolveEmployerActor = resolveEmployerActor as jest.Mock;
 const mockCheckCompliance = checkCompliance as jest.Mock;
 const mockRecipient = loadStageRecipient as jest.Mock;
 const mockQuery = jest.fn();
@@ -37,6 +42,8 @@ const JOB_ID = '11111111-1111-4111-8111-111111111111';
 const WORKER_ID = '22222222-2222-4222-8222-222222222222';
 const APP_ID = '33333333-3333-4333-8333-333333333333';
 const EMPLOYER_ID = '44444444-4444-4444-8444-444444444444';
+const ORG_ID = '55555555-5555-4555-8555-555555555555';
+const MEMBER_ID = '66666666-6666-4666-8666-666666666666';
 const SAVED_AT = new Date('2026-10-14T12:00:00.000Z');
 
 const INPUT = {
@@ -76,7 +83,6 @@ let saveResult: Record<string, unknown> = savedRow();
 let noticeOutcome: unknown = { rows: [{ outcome: 'queued' }] };
 
 function defaultQuery(sql: string) {
-  if (/SELECT id FROM users WHERE cognito_sub/.test(sql)) return { rows: [{ id: EMPLOYER_ID }] };
   if (/jale_cap\.employer_save_hire_details/.test(sql)) return { rows: [saveResult] };
   if (/SELECT title FROM jobs/.test(sql)) return { rows: [{ title: 'Glazier' }] };
   if (/jale_cap\.employer_hire_details_notice/.test(sql)) {
@@ -99,7 +105,10 @@ describe('employer-application-hire-details', () => {
     mockGetDbPool.mockResolvedValue({ connect: jest.fn().mockResolvedValue({ query: mockQuery, release: mockRelease }) });
     mockQuery.mockImplementation(async (sql: string) => defaultQuery(sql));
     mockSetRlsContext.mockResolvedValue(undefined);
-    mockSetInternal.mockResolvedValue(undefined);
+    mockResolveEmployerActor.mockResolvedValue({
+      ok: true,
+      actor: { userId: EMPLOYER_ID, organizationId: ORG_ID, role: 'owner', scopeUserIds: [EMPLOYER_ID, MEMBER_ID] },
+    });
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
     mockRecipient.mockResolvedValue({ workerId: WORKER_ID, language: 'es', hasWhatsappNumber: true });
   });
@@ -172,7 +181,9 @@ describe('employer-application-hire-details', () => {
       },
     });
     expect(mockSetRlsContext).toHaveBeenCalledWith(expect.anything(), 'e-sub');
-    expect(mockSetInternal).toHaveBeenCalledWith(expect.anything(), EMPLOYER_ID);
+    expect(mockResolveEmployerActor).toHaveBeenCalledWith(expect.anything(), 'e-sub');
+    // No caller lookup of its own: resolveEmployerActor sets the caller the definer reads.
+    expect(sqlCalls().some((sql) => /FROM users/.test(sql))).toBe(false);
     const save = mockQuery.mock.calls.find(([sql]) => /employer_save_hire_details/.test(String(sql)));
     expect(save?.[1]).toEqual([JOB_ID, WORKER_ID, '2026-10-20', 'Gate 3, North lot', 'Site lead', '+1 555 0100', null]);
     expect(sqlCalls()).toContain('COMMIT');
@@ -189,6 +200,20 @@ describe('employer-application-hire-details', () => {
     // Nothing to tell the worker about.
     expect(mockRecipient).not.toHaveBeenCalled();
     expect(sqlCalls().some((sql) => /employer_hire_details_notice/.test(sql))).toBe(false);
+  });
+
+  it.each([
+    [409, 'user_not_provisioned'],
+    [403, 'no_organization'],
+    [403, 'membership_inactive'],
+  ] as const)('returns the actor failure %i %s, rolls back and never calls the definer', async (status, error) => {
+    mockResolveEmployerActor.mockResolvedValue({ ok: false, status, error });
+    const res = await handler(makeEvent());
+    expect(res.statusCode).toBe(status);
+    expect(JSON.parse(res.body)).toEqual({ error });
+    expect(sqlCalls()).toContain('ROLLBACK');
+    expect(sqlCalls()).not.toContain('COMMIT');
+    expect(sqlCalls().some((sql) => /employer_save_hire_details/.test(sql))).toBe(false);
   });
 
   it.each([

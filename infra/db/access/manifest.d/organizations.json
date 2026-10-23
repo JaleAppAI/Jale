@@ -54,9 +54,9 @@
     "jale_internal.is_org_owner_of(text, uuid)": {
       "owner": "jale_rls_relationship_reader", "security": "definer", "search_path": "pg_catalog, pg_temp",
       "arguments": "p_caller_id text, p_member_id uuid", "returns": "boolean",
-      "execute": ["jale_admin", "jale_api"],
+      "execute": ["jale_admin", "jale_api", "jale_cap_upload_tokens", "jale_cap_worker_lane"],
       "created_by": "118",
-      "reason": "Single-row owner predicate: is the caller the active owner of this member's company."
+      "reason": "Single-row owner predicate: is the caller the active owner of this member's company. The capability owners call it from their 119 functions."
     },
     "jale_internal.shares_org_with(text, uuid)": {
       "owner": "jale_rls_relationship_reader", "security": "definer", "search_path": "pg_catalog, pg_temp",
@@ -68,9 +68,9 @@
     "jale_internal.org_owner_scope(text, boolean)": {
       "owner": "jale_rls_relationship_reader", "security": "definer", "search_path": "pg_catalog, pg_temp",
       "arguments": "p_caller_id text, p_active_only boolean", "returns": "uuid[]",
-      "execute": ["jale_admin", "jale_api"],
+      "execute": ["jale_admin", "jale_api", "jale_cap_upload_tokens", "jale_cap_worker_lane"],
       "created_by": "118",
-      "reason": "The active owner's company as member ids, evaluated once per statement by the owner row policies."
+      "reason": "The active owner's company as member ids, evaluated once per statement by the owner row policies and once per call by the 119 applicant predicate (employer_has_applicant_relationship). The capability owners call it from their 119 policies."
     },
     "jale_internal.org_member_scope(text)": {
       "owner": "jale_rls_relationship_reader", "security": "definer", "search_path": "pg_catalog, pg_temp",
@@ -112,6 +112,193 @@
         }
       },
       "reason": "Companies are created by the sign-up bootstrap and the 118 / 119 back-fills."
+    },
+    "public.jobs": {
+      "policies": {
+        "jobs_org_owner_select": {
+          "command": "SELECT", "permissive": true, "to": ["jale_api"], "origin": "existing",
+          "using": "(employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))",
+          "with_check": null,
+          "reason": "A company's active owner reads every member's jobs."
+        },
+        "jobs_org_owner_update": {
+          "command": "UPDATE", "permissive": true, "to": ["jale_api"], "origin": "existing",
+          "using": "(employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))",
+          "with_check": "(employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), true) AS org_owner_scope)::uuid[]))",
+          "reason": "The owner edits any member's job and reassigns it only to an active member."
+        },
+        "jobs_org_owner_delete": {
+          "command": "DELETE", "permissive": true, "to": ["jale_api"], "origin": "existing",
+          "using": "(employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))",
+          "with_check": null,
+          "reason": "The owner deletes any member's job."
+        },
+        "jobs_cap_upload_tokens_org_owner_select": {
+          "command": "SELECT", "permissive": true, "to": ["jale_cap_upload_tokens"], "origin": "existing",
+          "using": "(employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))",
+          "with_check": null,
+          "reason": "upload_token_issue reads a member's job for the company owner."
+        },
+        "jobs_cap_worker_lane_org_owner_select": {
+          "command": "SELECT", "permissive": true, "to": ["jale_cap_worker_lane"], "origin": "existing",
+          "using": "(employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))",
+          "with_check": null,
+          "reason": "The worker-lane functions read a member's job for the company owner."
+        }
+      },
+      "reason": "Company owners act on every member's jobs (migration 119)."
+    },
+    "public.job_applications": {
+      "policies": {
+        "applications_org_owner_select": {
+          "command": "SELECT", "permissive": true, "to": ["jale_api"], "origin": "existing",
+          "using": "(job_id IN ( SELECT jobs.id\n   FROM jobs\n  WHERE (jobs.employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))))",
+          "with_check": null,
+          "reason": "The owner reads the applications on every member's jobs."
+        },
+        "applications_org_owner_update": {
+          "command": "UPDATE", "permissive": true, "to": ["jale_api"], "origin": "existing",
+          "using": "(job_id IN ( SELECT jobs.id\n   FROM jobs\n  WHERE (jobs.employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))))",
+          "with_check": "(job_id IN ( SELECT jobs.id\n   FROM jobs\n  WHERE (jobs.employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))))",
+          "reason": "The owner moves the applications on every member's jobs through their stages."
+        },
+        "job_applications_cap_worker_lane_org_owner_select": {
+          "command": "SELECT", "permissive": true, "to": ["jale_cap_worker_lane"], "origin": "existing",
+          "using": "(job_id IN ( SELECT j.id\n   FROM jobs j\n  WHERE (j.employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))))",
+          "with_check": null,
+          "reason": "employer_stage_recipient and employer_claim_worker_intent read an application on a member's job for the company owner."
+        }
+      },
+      "reason": "Company owners act on the applications to every member's jobs (migration 119)."
+    },
+    "public.job_conversations": {
+      "policies": {
+        "job_conversations_org_owner_all": {
+          "command": "ALL", "permissive": true, "to": ["jale_api"], "origin": "existing",
+          "using": "(employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))",
+          "with_check": "(employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))",
+          "reason": "The owner reads and writes the conversations on every member's jobs."
+        },
+        "job_conversations_cap_worker_lane_org_owner_select": {
+          "command": "SELECT", "permissive": true, "to": ["jale_cap_worker_lane"], "origin": "existing",
+          "using": "(employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))",
+          "with_check": null,
+          "reason": "employer_claim_worker_intent reads a member's conversation for the company owner."
+        }
+      },
+      "reason": "Company owners act on every member's conversations (migration 119)."
+    },
+    "public.job_conversation_messages": {
+      "policies": {
+        "job_messages_org_owner_all": {
+          "command": "ALL", "permissive": true, "to": ["jale_api"], "origin": "existing",
+          "using": "(EXISTS ( SELECT 1\n   FROM job_conversations jc\n  WHERE ((jc.id = job_conversation_messages.conversation_id) AND (jc.employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[])))))",
+          "with_check": "(EXISTS ( SELECT 1\n   FROM job_conversations jc\n  WHERE ((jc.id = job_conversation_messages.conversation_id) AND (jc.employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[])))))",
+          "reason": "The owner reads and writes the messages in every member's conversations."
+        },
+        "job_conversation_messages_cap_worker_lane_org_owner_select": {
+          "command": "SELECT", "permissive": true, "to": ["jale_cap_worker_lane"], "origin": "existing",
+          "using": "(conversation_id IN ( SELECT jc.id\n   FROM job_conversations jc\n  WHERE (jc.employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))))",
+          "with_check": null,
+          "reason": "employer_claim_worker_intent reads a message in a member's conversation for the company owner."
+        }
+      },
+      "reason": "Company owners act on the messages in every member's conversations (migration 119)."
+    },
+    "public.job_message_outbox": {
+      "policies": {
+        "job_outbox_org_owner_all": {
+          "command": "ALL", "permissive": true, "to": ["jale_api"], "origin": "existing",
+          "using": "(EXISTS ( SELECT 1\n   FROM job_conversations jc\n  WHERE ((jc.id = job_message_outbox.conversation_id) AND (jc.employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[])))))",
+          "with_check": "(EXISTS ( SELECT 1\n   FROM job_conversations jc\n  WHERE ((jc.id = job_message_outbox.conversation_id) AND (jc.employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[])))))",
+          "reason": "The owner reads and writes the outbox rows of every member's conversations."
+        }
+      },
+      "reason": "Company owners act on the outbox rows of every member's conversations (migration 119)."
+    },
+    "public.employer_candidate_rankings": {
+      "policies": {
+        "employer_candidate_rankings_org_owner_read": {
+          "command": "SELECT", "permissive": true, "to": ["jale_api"], "origin": "existing",
+          "using": "(EXISTS ( SELECT 1\n   FROM jobs j\n  WHERE ((j.id = employer_candidate_rankings.job_id) AND (j.employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[])))))",
+          "with_check": null,
+          "reason": "The owner reads the candidate rankings on every member's jobs."
+        }
+      },
+      "reason": "Company owners read the rankings on every member's jobs (migration 119)."
+    },
+    "public.job_visibility_events": {
+      "policies": {
+        "job_visibility_events_org_owner_read": {
+          "command": "SELECT", "permissive": true, "to": ["jale_api"], "origin": "existing",
+          "using": "(job_id IN ( SELECT jobs.id\n   FROM jobs\n  WHERE (jobs.employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))))",
+          "with_check": null,
+          "reason": "The owner's job edits read the visibility events of every member's jobs, beside job_visibility_events_dedupe_read__api."
+        }
+      },
+      "reason": "Company owners read the visibility events of every member's jobs (migration 119)."
+    },
+    "public.worker_profiles": {
+      "policies": {
+        "worker_profiles_org_owner_read": {
+          "command": "SELECT", "permissive": true, "to": ["jale_api"], "origin": "existing",
+          "using": "(EXISTS ( SELECT 1\n   FROM (job_applications ja\n     JOIN jobs j ON ((j.id = ja.job_id)))\n  WHERE ((ja.worker_id = worker_profiles.user_id) AND (j.employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[])))))",
+          "with_check": null,
+          "reason": "The owner reads the profile of every worker who applied to a member's job."
+        }
+      },
+      "reason": "Company owners read the profiles of every member's applicants (migration 119)."
+    },
+    "public.worker_skills": {
+      "policies": {
+        "worker_skills_org_owner_read": {
+          "command": "SELECT", "permissive": true, "to": ["jale_api"], "origin": "existing",
+          "using": "(EXISTS ( SELECT 1\n   FROM (job_applications ja\n     JOIN jobs j ON ((j.id = ja.job_id)))\n  WHERE ((ja.worker_id = worker_skills.worker_id) AND (j.employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[])))))",
+          "with_check": null,
+          "reason": "The owner reads the skills of every worker who applied to a member's job."
+        }
+      },
+      "reason": "Company owners read the skills of every member's applicants (migration 119)."
+    },
+    "public.worker_documents": {
+      "policies": {
+        "worker_documents_org_owner_select": {
+          "command": "SELECT", "permissive": true, "to": ["jale_api"], "origin": "existing",
+          "using": "((job_id IS NOT NULL) AND (EXISTS ( SELECT 1\n   FROM (job_applications ja\n     JOIN jobs j ON ((j.id = ja.job_id)))\n  WHERE ((ja.worker_id = worker_documents.worker_id) AND (ja.job_id = worker_documents.job_id) AND (j.employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))))))",
+          "with_check": null,
+          "reason": "The owner reads the job documents of every worker who applied to a member's job."
+        },
+        "worker_documents_org_owner_delete": {
+          "command": "DELETE", "permissive": true, "to": ["jale_api"], "origin": "existing",
+          "using": "(EXISTS ( SELECT 1\n   FROM jobs j\n  WHERE ((j.id = worker_documents.job_id) AND (j.employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[])))))",
+          "with_check": null,
+          "reason": "The owner deletes the documents on every member's jobs."
+        }
+      },
+      "reason": "Company owners read and delete the job documents on every member's jobs (migration 119)."
+    },
+    "public.employer_job_templates": {
+      "policies": {
+        "employer_job_templates_org_read": {
+          "command": "SELECT", "permissive": true, "to": ["jale_api"], "origin": "existing",
+          "using": "(employer_id = ANY (( SELECT jale_internal.org_member_scope(current_setting('app.current_internal_user_id'::text, true)) AS org_member_scope)::uuid[]))",
+          "with_check": null,
+          "reason": "Every active member reads the company's templates, a removed or suspended member's included."
+        },
+        "employer_job_templates_org_owner_update": {
+          "command": "UPDATE", "permissive": true, "to": ["jale_api"], "origin": "existing",
+          "using": "(employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))",
+          "with_check": "(employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))",
+          "reason": "The owner edits any member's template."
+        },
+        "employer_job_templates_org_owner_delete": {
+          "command": "DELETE", "permissive": true, "to": ["jale_api"], "origin": "existing",
+          "using": "(employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))",
+          "with_check": null,
+          "reason": "The owner deletes any member's template."
+        }
+      },
+      "reason": "Templates belong to the company: every active member reads them, the owner edits and deletes them (migration 119)."
     }
   }
 }

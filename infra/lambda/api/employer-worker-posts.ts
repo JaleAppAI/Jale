@@ -1,11 +1,12 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { getDbPool, setRlsContext, setInternalUserRlsContext } from '../lib/db';
+import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
 import { auditCaller, type AuditCaller } from '../lib/audit/caller';
 import { recordAccess, recordAttempt, responseFieldNames, type AttemptEvent } from '../lib/audit/record';
+import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
 
 const CORS_HEADERS = corsHeaders();
 const s3 = new S3Client({});
@@ -19,13 +20,14 @@ export const MEDIA_LINK_TTL_SECONDS = 900;
 /**
  * The posts read, exported so a database test runs this exact statement.
  * The statement names the caller itself: a post comes back only while the
- * worker has an application to one of the employer's jobs, read in the same
- * statement as the posts. The relationship and the posts therefore come from
- * one snapshot, even when the relationship ends after the handler's check.
+ * worker has an application to one of the jobs in the caller's scope
+ * (`scopeUserIds`), read in the same statement as the posts. The
+ * relationship and the posts therefore come from one snapshot, even when
+ * the relationship ends after the handler's check.
  */
 export function employerWorkerPostsQuery(input: {
   workerId: string;
-  employerId: string;
+  scopeUserIds: string[];
   before: string | null;
   beforeId: string | null;
   limit: number;
@@ -40,11 +42,11 @@ export function employerWorkerPostsQuery(input: {
                        FROM job_applications ja
                        JOIN jobs j ON j.id = ja.job_id
                       WHERE ja.worker_id = p.worker_id
-                        AND j.employer_id = $5)
+                        AND j.employer_id = ANY($5::uuid[]))
          AND ($2::timestamptz IS NULL OR (p.created_at, p.id) < ($2::timestamptz, $3::uuid))
        ORDER BY p.created_at DESC, p.id DESC
        LIMIT $4`,
-    values: [input.workerId, input.before, input.beforeId, input.limit, input.employerId],
+    values: [input.workerId, input.before, input.beforeId, input.limit, input.scopeUserIds],
   };
 }
 
@@ -114,30 +116,28 @@ export const handler = async (
       };
     }
 
-    // Resolve the employer's own internal id: the caller context is the
+    // Resolve the caller: resolveEmployerActor binds the caller context to the
     // employer's own id, never the worker's.
-    const employerRes = await client.query(`SELECT id FROM users WHERE cognito_sub = $1`, [cognitoSub]);
-    const employerId: string | undefined = employerRes.rows[0]?.id;
-    if (!employerId) {
+    const resolved = await resolveEmployerActor(client, cognitoSub);
+    if (!resolved.ok) {
       await client.query('COMMIT');
-      return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_provisioned' }) };
+      return employerActorFailureResponse(resolved, CORS_HEADERS);
     }
-    await setInternalUserRlsContext(client, employerId);
-    caller = auditCaller(event, { kind: 'employer', id: employerId }, 'web');
+    const { actor } = resolved;
+    caller = auditCaller(event, { kind: 'employer', id: actor.userId }, 'web');
     attempt = { surface: SURFACE, subjectUserIds: [workerId] };
 
-    // Relationship check: any application from this worker to any of the
-    // employer's jobs unlocks the board (relationship-scoped, not job-scoped).
+    // Relationship check: any application from this worker to any job in the
+    // caller's scope unlocks the board (relationship-scoped, not job-scoped).
     // This is the explicit 403 source — RLS above is defense-in-depth.
     const relationship = await client.query(
       `SELECT 1
        FROM job_applications ja
        JOIN jobs j ON j.id = ja.job_id
-       JOIN users employer ON employer.id = j.employer_id
        WHERE ja.worker_id = $1
-         AND employer.cognito_sub = $2
+         AND j.employer_id = ANY($2::uuid[])
        LIMIT 1`,
-      [workerId, cognitoSub],
+      [workerId, actor.scopeUserIds],
     );
     if (relationship.rows.length === 0) {
       await client.query('COMMIT');
@@ -149,7 +149,7 @@ export const handler = async (
     // employers — filtered in SQL so next_before/next_before_id (computed
     // below from this same result set) never skew against a client-side
     // filter removing rows after the page boundary was fixed.
-    const postsQuery = employerWorkerPostsQuery({ workerId, employerId, before, beforeId, limit });
+    const postsQuery = employerWorkerPostsQuery({ workerId, scopeUserIds: actor.scopeUserIds, before, beforeId, limit });
     const postsRes = await client.query(postsQuery.text, postsQuery.values);
 
     let mediaRows: { id: string; post_id: string; s3_key: string; s3_version_id: string | null; sort_order: number; moderation_status: string }[] = [];
