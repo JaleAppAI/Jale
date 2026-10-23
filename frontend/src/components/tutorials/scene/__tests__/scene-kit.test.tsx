@@ -258,7 +258,7 @@ describe('still frames', () => {
 });
 
 describe('motion', () => {
-    it('loops every animated piece on one shared clock', () => {
+    it('plays every animated piece once, on one shared clock, then rests on its final frame', () => {
         stubReducedMotion(false);
         const { calls } = stubAnimate();
 
@@ -273,7 +273,9 @@ describe('motion', () => {
         }
         for (const call of calls) {
             expect(call.options.duration).toBe(SCENE_LOOP_MS);
-            expect(call.options.iterations).toBe(Infinity);
+            // Once, then the markup (the final frame) shows: nothing keeps
+            // moving beside the slide's text (WCAG 2.2.2).
+            expect(call.options.iterations).toBe(1);
         }
     });
 
@@ -315,7 +317,7 @@ describe('motion', () => {
 });
 
 describe('CountUp', () => {
-    it('counts from the start value to the final value inside each loop', () => {
+    it('counts from the start value to the final value once, then holds it', () => {
         stubReducedMotion(false);
         const frames: FrameRequestCallback[] = [];
         vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
@@ -341,9 +343,10 @@ describe('CountUp', () => {
         expect(midway).toBeLessThan(80);
         tick(1000 + SCENE_LOOP_MS * 0.9);
         expect(shown()).toBe('80');
-        // The next loop starts over.
+        // No second pass: the final value stays, and no more frames are asked for.
         tick(1000 + SCENE_LOOP_MS * 1.01);
-        expect(shown()).toBe('0');
+        expect(shown()).toBe('80');
+        expect(frames).toHaveLength(0);
 
         unmount();
         expect(cancelFrame).toHaveBeenCalled();

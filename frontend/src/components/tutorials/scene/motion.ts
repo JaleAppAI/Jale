@@ -7,22 +7,26 @@ import type { RefObject } from 'react';
  * The motion core shared by every animated scene piece.
  *
  * THE RULE THE WHOLE KIT FOLLOWS (the `ConfettiBurst` rule): a piece's markup
- * alone is its FINAL frame, and motion is a looping Web Animation layered on
- * top. So a still stage, a person who asked for reduced motion, a runtime with
- * no `Element.animate` (jsdom, older mobile Safari) and a bundle that never
+ * alone is its FINAL frame, and motion is a Web Animation layered on top. So a
+ * still stage, a person who asked for reduced motion, a runtime with no
+ * `Element.animate` (jsdom, older mobile Safari) and a bundle that never
  * arrives all show the same finished picture, and no piece needs a second,
  * hand-written "reduced" layout.
  *
- * Every animation in a slide runs on one shared loop: the same duration, and
- * started in the same effect flush when the slide mounts, so a "step 2" piece
- * always lands after a "step 1" piece. The loop and the step timings are the
- * prototype's (`jt-*` keyframes, 4.8 s, items arriving at 18%, 38% and 58%).
+ * Every animation in a slide plays ONCE, on one shared clock: the same
+ * duration, started in the same effect flush when the slide mounts, so a
+ * "step 2" piece always lands after a "step 1" piece. Then the animation ends
+ * and the markup, the final frame, stays: nothing keeps moving beside the
+ * slide's text (WCAG 2.2.2). The player remounts a slide's scene when the
+ * slide is shown again, so revisiting a slide plays it again. The pass and the
+ * step timings are the prototype's (`jt-*` keyframes, 4.8 s, items arriving
+ * at 18%, 38% and 58%); the prototype loops, the product plays once.
  */
 
-/** One pass of a slide's animation, in ms. Every piece loops on this. */
+/** A slide's one pass of animation, in ms. Every piece times itself on this. */
 export const SCENE_LOOP_MS = 4800;
 
-/** When, as a fraction of the loop, a piece of step 1, 2 or 3 starts arriving. */
+/** When, as a fraction of the pass, a piece of step 1, 2 or 3 starts arriving. */
 export const STEP_STARTS = { 1: 0.18, 2: 0.38, 3: 0.58 } as const;
 
 /** Arrival order inside a slide: step 1 first, then 2, then 3. */
@@ -47,7 +51,8 @@ export function prefersReducedMotion(): boolean {
 }
 
 /**
- * Loops `frames` on `ref`'s element for as long as the stage moves.
+ * Plays `frames` once on `ref`'s element when the stage moves, then lets the
+ * markup (the final frame) show.
  *
  * `frames` must keep its identity between renders (build it in `useMemo` from
  * primitive inputs): a new array restarts the animation. A null `frames`
@@ -64,7 +69,7 @@ export function useSceneLoop(ref: RefObject<Element | null>, frames: readonly Ke
         // markup's final frame simply stays.
         const animation = element?.animate?.(frames as Keyframe[], {
             duration: SCENE_LOOP_MS,
-            iterations: Infinity,
+            iterations: 1,
         });
         return () => animation?.cancel?.();
     }, [ref, frames, still]);
@@ -97,7 +102,7 @@ export function arriveFrames(step: SceneStep, from: 'below' | 'left' | 'dim'): K
 /** The rgba components of `--jale-blue-500` (#0064d6), tracked by hand like `--shadow-btn`. */
 const RING = 'rgba(0,100,214,';
 
-/** A tap: an expanding ring (the default, near the end of the loop) or a quick press. */
+/** A tap: an expanding ring (the default, near the end of the pass) or a quick press. */
 export function tapFrames(kind: 'ring' | 'press', at: number): Keyframe[] {
     const land = clamp(at, 0, 0.8);
     if (kind === 'press') {
@@ -117,7 +122,7 @@ export function tapFrames(kind: 'ring' | 'press', at: number): Keyframe[] {
     ];
 }
 
-/** Text revealed left to right, as if typed, between 8% and 40% of the loop. */
+/** Text revealed left to right, as if typed, between 8% and 40% of the pass. */
 export function typeFrames(): Keyframe[] {
     return [
         { offset: 0, clipPath: 'inset(0 100% 0 0)' },
@@ -157,8 +162,8 @@ export function switchOnFrames(step: SceneStep): Keyframe[] {
 }
 
 /**
- * When each state of an `n`-state cycle takes over, as loop fractions. The
- * first change lands at a third of the loop and the last at two thirds, so
+ * When each state of an `n`-state cycle takes over, as fractions of the pass.
+ * The first change lands at a third of the pass and the last at two thirds, so
  * the final state (the one the slide's text describes) holds longest.
  */
 export function cycleTimes(count: number): number[] {
@@ -180,7 +185,7 @@ export function cycleFrames(index: number, count: number): Keyframe[] {
     return frames;
 }
 
-/** Segment `index` of `count` fills in turn, the whole row full by two thirds of the loop. */
+/** Segment `index` of `count` fills in turn, the whole row full by two thirds of the pass. */
 export function segmentFillFrames(index: number, count: number): Keyframe[] {
     const at = count <= 1 ? 1 / 3 : 0.08 + (index / (count - 1)) * (2 / 3 - 0.08);
     return [
@@ -190,7 +195,7 @@ export function segmentFillFrames(index: number, count: number): Keyframe[] {
     ];
 }
 
-/** A clock hand sweeping most of the way round during the second half of the loop. */
+/** A clock hand sweeping most of the way round during the second half of the pass. */
 export function clockFrames(): Keyframe[] {
     return [
         { offset: 0, transform: 'rotate(0deg)' },

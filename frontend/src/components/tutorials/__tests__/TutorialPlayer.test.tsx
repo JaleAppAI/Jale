@@ -384,6 +384,25 @@ describe('motion', () => {
         expect(slideWrapper(dialog)).toHaveClass('anim-fade-in');
     });
 
+    it('plays a slide’s scene once, and again when the slide is revisited', () => {
+        stubReducedMotion(false);
+        const animate = stubAnimate();
+        const options = () =>
+            (animate.mock.calls as unknown as Array<[Keyframe[], KeyframeAnimationOptions]>).map(([, value]) => value);
+
+        play();
+        const firstVisit = animate.mock.calls.length;
+        act(() => button('Next').click());
+        const secondSlide = animate.mock.calls.length;
+        act(() => button('Back').click());
+
+        expect(firstVisit).toBeGreaterThan(0);
+        expect(secondSlide).toBeGreaterThan(firstVisit);
+        // Back on slide 1: its scene starts over.
+        expect(animate.mock.calls.length).toBeGreaterThan(secondSlide);
+        expect(options().every((value) => value.iterations === 1)).toBe(true);
+    });
+
     it('works where there is no matchMedia at all', () => {
         expect(() => play()).not.toThrow();
         expect(sceneRenders.at(-1)?.still).toBe(false);

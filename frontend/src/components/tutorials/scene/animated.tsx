@@ -20,7 +20,7 @@ import {
 
 /**
  * The animated pieces of a tutorial scene. Each one renders its FINAL frame as
- * plain markup and, while the stage moves, loops a Web Animation on top (see
+ * plain markup and, while the stage moves, plays a Web Animation over it once (see
  * `./motion`). Every animated element carries `data-scene-motion`, so a test
  * can check that each one, and nothing else, was animated.
  */
@@ -63,8 +63,8 @@ export function SlideIn({
 
 /**
  * A tap on what it wraps: an expanding ring (`kind="ring"`, the default, as a
- * finger lands on a button near the end of the loop) or a quick press
- * (`kind="press"`). `at` moves the moment, as a fraction of the loop.
+ * finger lands on a button near the end of the pass) or a quick press
+ * (`kind="press"`). `at` moves the moment, as a fraction of the pass.
  */
 export function TapPulse({
     kind = 'ring',
@@ -111,9 +111,9 @@ export function TypeOn({ className, children }: { className?: string; children: 
 }
 
 /**
- * A number counting up from `from` to `to` during the first half of each
- * loop, then holding. Still, it shows `to`. `format` turns the number into
- * the text shown ("82", "3 of 7").
+ * A number counting up from `from` to `to` during the first half of the
+ * slide's one pass, then holding `to`. Still, it shows `to`. `format` turns
+ * the number into the text shown ("82", "3 of 7").
  */
 export function CountUp({
     to,
@@ -135,12 +135,14 @@ export function CountUp({
         let startedAt: number | null = null;
         const tick = (now: number) => {
             if (startedAt === null) startedAt = now;
-            const progress = ((now - startedAt) % SCENE_LOOP_MS) / SCENE_LOOP_MS;
-            // Counts between 8% and 50% of the loop, easing out as it lands.
+            const progress = (now - startedAt) / SCENE_LOOP_MS;
+            // Counts between 8% and 50% of the pass, easing out as it lands,
+            // then stops asking for frames: the count plays once, like the
+            // rest of the scene.
             const travel = Math.min(1, Math.max(0, (progress - 0.08) / 0.42));
             const eased = 1 - (1 - travel) ** 3;
             setShown(Math.round(from + (to - from) * eased));
-            frame = requestAnimationFrame(tick);
+            if (travel < 1) frame = requestAnimationFrame(tick);
         };
         frame = requestAnimationFrame(tick);
         return () => {
@@ -303,7 +305,7 @@ function FillingSegment({ index, count, className }: { index: number; count: num
 /**
  * A segmented progress bar: a wizard's steps or onboarding's questions.
  * `filled` segments are done. `fill="sequence"` fills them one by one across
- * the loop, `fill="pop"` brings each labelled step in on steps 1–3, and
+ * the pass, `fill="pop"` brings each labelled step in on steps 1–3, and
  * `labels` names each segment underneath.
  */
 export function SceneSegments({
