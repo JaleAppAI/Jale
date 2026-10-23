@@ -200,14 +200,39 @@ describe('production upgrade 020b/035-046 operator tooling', () => {
     const client = new Client({ connectionString: databaseUrl });
     await client.connect();
     try {
+      // Predicate 2 is 036's: it names billing_pause_over_limit_jobs, which
+      // migration 133 dropped (128's company pair replaced it). On the fully
+      // migrated schema it is false for that reason alone: the rest of what
+      // 036 left (role, schema, policies, grants) still holds, which a
+      // rolled-back stand-in for the function proves below.
+      const PREDICATE_036 = 2;
       for (const [predicateIndex, predicate] of predicates.entries()) {
         const result = await client.query<{ complete: boolean }>(
           `SELECT (${predicate}) AS complete`,
         );
+        if (predicateIndex === PREDICATE_036) {
+          expect(result.rows).toEqual([{ complete: false }]);
+          continue;
+        }
         if (result.rows[0]?.complete !== true) {
           throw new Error(`completion predicate ${predicateIndex} was false`);
         }
         expect(result.rows).toEqual([{ complete: true }]);
+      }
+
+      await client.query('BEGIN');
+      try {
+        await client.query(`CREATE FUNCTION jale_billing_internal.billing_pause_over_limit_jobs(uuid, integer)
+          RETURNS void LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS 'SELECT'`);
+        await client.query('ALTER FUNCTION jale_billing_internal.billing_pause_over_limit_jobs(uuid, integer) OWNER TO jale_billing_job_enforcer');
+        await client.query('REVOKE ALL ON FUNCTION jale_billing_internal.billing_pause_over_limit_jobs(uuid, integer) FROM PUBLIC');
+        await client.query('GRANT EXECUTE ON FUNCTION jale_billing_internal.billing_pause_over_limit_jobs(uuid, integer) TO jale_billing');
+        const standIn = await client.query<{ complete: boolean }>(
+          `SELECT (${predicates[PREDICATE_036]}) AS complete`,
+        );
+        expect(standIn.rows).toEqual([{ complete: true }]);
+      } finally {
+        await client.query('ROLLBACK');
       }
 
       await client.query('BEGIN');

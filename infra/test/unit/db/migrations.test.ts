@@ -170,6 +170,7 @@ describe('database migrations', () => {
       '130',
       '131',
       '132',
+      '133',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -5813,6 +5814,73 @@ describe('database migrations', () => {
       expect(check).toContain("AND pg_get_expr(p.polqual, p.polrelid) = pg_get_expr(t.polqual, t.polrelid)) THEN");
       expect(check).toContain("WHERE m.roleid IN ('jale_cap_hire_nudges'::regrole, 'jale_rls_relationship_reader'::regrole)\n                AND (m.set_option OR m.inherit_option))");
       expect(sql).not.toContain('polrelid::regclass::text');
+    });
+  });
+
+  describe('133 retire per-person billing', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '133_retire_per_person_billing.sql'), 'utf8');
+    const code = sql.replace(/--.*$/gm, '');
+    const selfCheckAt = sql.indexOf('-- ── 2. Self-check');
+    const PAUSE = 'DROP FUNCTION jale_billing_internal.billing_pause_over_limit_jobs(uuid, integer);';
+    const RESUME = 'DROP FUNCTION jale_billing_internal.billing_resume_paused_jobs(uuid, integer);';
+
+    it('is one transaction, forward-only, after 132', () => {
+      expect(sql.startsWith('-- ============================================================\n-- 133_retire_per_person_billing.sql\n'
+        + '-- Run manually AFTER 132_org_team_carry_overs.sql,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n')).toBe(true);
+      expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+      expect(sql.indexOf("SET LOCAL lock_timeout = '5s';")).toBeGreaterThan(sql.indexOf('BEGIN;'));
+      expect(sql.indexOf("SET LOCAL lock_timeout = '5s';")).toBeLessThan(sql.indexOf('-- ── 0. Preconditions'));
+      expect(selfCheckAt).toBeGreaterThan(0);
+    });
+
+    it('drops exactly 125\'s two per-person functions, without CASCADE, and nothing else', () => {
+      expect(code.match(/\bDROP\s+FUNCTION\b/gi)).toHaveLength(2);
+      expect(code.match(/^DROP FUNCTION [^;]+;$/gm)).toEqual([PAUSE, RESUME]);
+      expect(code).not.toMatch(/\bCASCADE\b|\bDROP\s+FUNCTION\s+IF\s+EXISTS\b/i);
+      expect(code).not.toMatch(/\bDROP\s+(TABLE|POLICY|INDEX|ROLE|SCHEMA|TRIGGER|VIEW|PROCEDURE)\b/i);
+      expect(code).not.toMatch(/\bCREATE\s+(OR REPLACE\s+)?(FUNCTION|POLICY|TABLE|ROLE|INDEX)\b/i);
+      expect(code).not.toMatch(/\bALTER\s+(TABLE|FUNCTION|ROLE|POLICY)\b/i);
+      // The only GRANT/REVOKE are the enforcer window's own, run through format().
+      expect(code).not.toMatch(/^\s*(GRANT|REVOKE)\b/gm);
+    });
+
+    it('needs 132, 128\'s company pair and 125\'s exact pair, and refuses a replay', () => {
+      expect(sql).toContain("RAISE EXCEPTION 'migration 133: already applied (125''s per-person billing functions are gone); it is not re-runnable';");
+      expect(sql).toContain("RAISE EXCEPTION 'migration 133: apply 132 first (job_conversations_job_employer_fkey is missing)';");
+      // A database without 132 is told to apply 132, not that 133 already ran.
+      expect(sql.indexOf("'migration 133: apply 132 first")).toBeLessThan(sql.indexOf("'migration 133: already applied"));
+      expect(sql).toContain("AND pg_get_function_identity_arguments(p.oid) = 'p_user_id uuid, p_active_job_limit integer'");
+      expect(sql).toContain("AND pg_get_function_identity_arguments(p.oid) = 'p_organization_id uuid, p_active_job_limit integer, p_foreman_seat_limit integer'");
+      // By catalog row: jale_admin holds no USAGE on jale_billing_internal.
+      expect(code).not.toMatch(/to_regprocedure\('jale_billing_internal\./);
+    });
+
+    it('drops them as their owner, inside jale_billing_job_enforcer\'s window', () => {
+      const opens = sql.indexOf("'GRANT %I TO %I WITH SET TRUE, INHERIT FALSE', 'jale_billing_job_enforcer', current_user");
+      const setRole = sql.indexOf('SET LOCAL ROLE jale_billing_job_enforcer;');
+      const reset = sql.indexOf('RESET ROLE;');
+      const closes = sql.indexOf("'GRANT %I TO %I WITH SET FALSE, INHERIT FALSE', 'jale_billing_job_enforcer', current_user");
+      const revokes = sql.indexOf("'REVOKE %I FROM %I GRANTED BY %I', 'jale_billing_job_enforcer', current_user, current_user");
+      expect(opens).toBeGreaterThan(sql.indexOf('-- ── 1.'));
+      expect(setRole).toBeGreaterThan(opens);
+      expect(sql.indexOf(PAUSE)).toBeGreaterThan(setRole);
+      expect(sql.indexOf(RESUME)).toBeGreaterThan(sql.indexOf(PAUSE));
+      expect(reset).toBeGreaterThan(sql.indexOf(RESUME));
+      expect(closes).toBeGreaterThan(reset);
+      expect(revokes).toBeGreaterThan(closes);
+      expect(revokes).toBeLessThan(selfCheckAt);
+      expect(sql.match(/^SET LOCAL ROLE /gm)).toHaveLength(1);
+    });
+
+    it('self-checks by catalog row that both are gone, 128\'s pair is intact, and the window is closed', () => {
+      const check = sql.slice(selfCheckAt);
+      expect(check).toContain("AND p.proname IN ('billing_pause_over_limit_jobs', 'billing_resume_paused_jobs')");
+      expect(check).toContain("RAISE EXCEPTION 'migration 133: a per-person billing function is still present';");
+      expect(check).toContain("AND p.proname IN ('billing_enforce_org_limits', 'billing_restore_org')");
+      expect(check).toContain("RAISE EXCEPTION 'migration 133: 128''s billing_enforce_org_limits / billing_restore_org are not intact';");
+      expect(check).toContain("RAISE EXCEPTION 'migration 133: the jale_billing_job_enforcer window was left open';");
+      expect(check).toContain('JOIN pg_namespace n ON n.oid = p.pronamespace');
     });
   });
 });

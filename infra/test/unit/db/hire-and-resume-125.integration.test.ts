@@ -20,11 +20,15 @@
  *   - the nudge sweep (jale_job_digest): jale_cap.claim_hire_details_nudges
  *     claims a hire once, 24 hours after it, while no details exist, and once
  *     more per worker reminder; and the sweep can queue only its own mail;
- *   - billing: the pause marks the jobs it pauses; the resume definer brings
- *     back only those, oldest first, up to the limit, never a closed or
- *     filled job; it records one job_status_events row per job and a
- *     visibility event for a public job; an employer's own status write
- *     clears the mark.
+ *   - billing: 125's mark (jobs.billing_paused_at) on what a billing pause
+ *     pauses; a resume brings back only those, oldest first, up to the limit,
+ *     never a closed or filled job, with one job_status_events row per job
+ *     and a visibility event for a public job; an employer's own status write
+ *     clears the mark; the console reads the resumes through its definer.
+ *     133 dropped 125's per-person pause/resume pair, so these cases drive
+ *     128's company pair (billing_enforce_org_limits / billing_restore_org)
+ *     on the employer's one-person company, with no seat for a foreman;
+ *     company-limits-128 covers the pair itself.
  *
  * Fixtures and every read that decides an assertion go through the
  * superuser URL; code under test runs on its own login (login-pool.ts).
@@ -121,8 +125,12 @@ const SENT_SQL = 'SELECT message_id, body, sent_at FROM jale_cap.worker_applicat
 const MARK_SQL = 'SELECT jale_cap.mark_hire_details_nudged($1) AS marked';
 const NUDGE_SQL = `SELECT application_id, job_id, employer_id, employer_email, worker_name, job_title, kind, requested_at
                      FROM jale_cap.claim_hire_details_nudges($1)`;
-const PAUSE_SQL = 'SELECT paused_count, employer_email, paused_titles FROM jale_billing_internal.billing_pause_over_limit_jobs($1, $2)';
-const RESUME_SQL = 'SELECT resumed_count, employer_email, resumed_titles FROM jale_billing_internal.billing_resume_paused_jobs($1, $2)';
+// 128's company pair, called with the employer's company and no foreman seat
+// (133 dropped 125's per-person pair); the columns keep 125's names.
+const PAUSE_SQL = `SELECT paused_count, owner_email AS employer_email, paused_titles
+                     FROM jale_billing_internal.billing_enforce_org_limits($1, $2, 0)`;
+const RESUME_SQL = `SELECT resumed_count, owner_email AS employer_email, resumed_titles
+                      FROM jale_billing_internal.billing_restore_org($1, $2, 0)`;
 
 describeInProfiles([...ALL_PROFILES], 'migration 125: the catalog', () => {
   let world: World;
@@ -182,15 +190,11 @@ describeInProfiles([...ALL_PROFILES], 'migration 125: the catalog', () => {
          'jale_cap.worker_application_sent_messages(uuid)'::regprocedure,
          'jale_cap.claim_hire_details_nudges(integer)'::regprocedure,
          'jale_cap.mark_hire_details_nudged(uuid)'::regprocedure,
-         'jale_billing_internal.billing_resume_paused_jobs(uuid, integer)'::regprocedure,
-         'jale_billing_internal.billing_pause_over_limit_jobs(uuid, integer)'::regprocedure,
          'public.admin_recent_job_resumes(integer)'::regprocedure])
        ORDER BY 1`);
     const pinned = ['search_path=pg_catalog, pg_temp'];
     expect(rows).toEqual([
       { fn: 'admin_recent_job_resumes(integer)', owner: 'jale_admin', prosecdef: true, proconfig: pinned, callers: ['jale_admin_console'], public_execute: false },
-      { fn: 'jale_billing_internal.billing_pause_over_limit_jobs(uuid,integer)', owner: 'jale_billing_job_enforcer', prosecdef: true, proconfig: pinned, callers: ['jale_billing'], public_execute: false },
-      { fn: 'jale_billing_internal.billing_resume_paused_jobs(uuid,integer)', owner: 'jale_billing_job_enforcer', prosecdef: true, proconfig: pinned, callers: ['jale_billing'], public_execute: false },
       { fn: 'jale_cap.claim_hire_details_nudges(integer)', owner: 'jale_cap_hire_nudges', prosecdef: true, proconfig: pinned, callers: ['jale_job_digest'], public_execute: false },
       { fn: 'jale_cap.employer_hire_details_notice(uuid,text)', owner: 'jale_cap_worker_lane', prosecdef: true, proconfig: pinned, callers: ['jale_api'], public_execute: false },
       { fn: 'jale_cap.employer_save_hire_details(uuid,uuid,date,text,text,text,text)', owner: 'jale_cap_hire_details', prosecdef: true, proconfig: pinned, callers: ['jale_api'], public_execute: false },
@@ -737,6 +741,8 @@ describeInProfiles([...ALL_PROFILES], 'migration 125: the nudge sweep', () => {
 describeInProfiles([...ALL_PROFILES], 'migration 125: billing pause and resume', () => {
   let world: World;
   let employer: { id: string; sub: string };
+  // The employer's one-person company: 128's pair takes the company (133).
+  let org: string;
   const jobs: Record<string, string> = {};
   const publicCodes: Record<string, string> = {};
   const queued: string[] = [];
@@ -753,6 +759,8 @@ describeInProfiles([...ALL_PROFILES], 'migration 125: billing pause and resume',
     world = new World(databaseUrl!);
     await world.connect();
     employer = await world.employer({ companyName: 'Fixture Billing Co' });
+    org = (await one<{ organization_id: string }>(world,
+      `SELECT organization_id FROM organization_members WHERE user_id = $1 AND role = 'owner'`, [employer.id])).organization_id;
     const spec: Array<[string, 'active' | 'paused' | 'filled' | 'closed', number, boolean]> = [
       ['oldest', 'active', 1, false],
       ['second', 'active', 2, true],
@@ -785,45 +793,60 @@ describeInProfiles([...ALL_PROFILES], 'migration 125: billing pause and resume',
   const billing = <T>(fn: (c: Client) => Promise<T>) => asLogin('jale_billing', {}, fn);
 
   it('marks what the pause pauses, and resumes only those, oldest first, up to the limit', async () => {
-    const paused = await billing((c) => c.query(PAUSE_SQL, [employer.id, 1]));
+    const paused = await billing((c) => c.query(PAUSE_SQL, [org, 1]));
     expect(paused.rows[0]).toMatchObject({ paused_count: 2, paused_titles: ['Fixture second', 'Fixture third'] });
     expect(await statuses()).toEqual({
       oldest: ['active', false], second: ['paused', true], third: ['paused', true],
       handPaused: ['paused', false], filled: ['filled', false], closed: ['closed', false],
     });
 
-    const first = await billing((c) => c.query(RESUME_SQL, [employer.id, 2]));
+    const first = await billing((c) => c.query(RESUME_SQL, [org, 2]));
     expect(first.rows[0]).toEqual({ resumed_count: 1, employer_email: `${employer.id}@fixture.invalid`, resumed_titles: ['Fixture second'] });
     expect((await statuses()).second).toEqual(['active', false]);
     expect((await statuses()).third).toEqual(['paused', true]);
 
     // No slot left: nothing moves, and repeating is a no-op.
-    expect((await billing((c) => c.query(RESUME_SQL, [employer.id, 2]))).rows[0]).toMatchObject({ resumed_count: 0, resumed_titles: [] });
+    expect((await billing((c) => c.query(RESUME_SQL, [org, 2]))).rows[0]).toMatchObject({ resumed_count: 0, resumed_titles: [] });
 
-    const rest = await billing((c) => c.query(RESUME_SQL, [employer.id, 10]));
+    const rest = await billing((c) => c.query(RESUME_SQL, [org, 10]));
     expect(rest.rows[0]).toMatchObject({ resumed_count: 1, resumed_titles: ['Fixture third'] });
     expect(await statuses()).toEqual({
       oldest: ['active', false], second: ['active', false], third: ['active', false],
       handPaused: ['paused', false], filled: ['filled', false], closed: ['closed', false],
     });
 
-    const events = await all(world, `SELECT job_id, employer_id, from_status, to_status, actor FROM job_status_events
-                                      WHERE employer_id = $1 ORDER BY changed_at, job_id`, [employer.id]);
-    expect(events).toEqual([
+    // 128's pause records each job it pauses too (125's did not): one row per paused job.
+    const pauses = await all(world, `SELECT job_id, employer_id, from_status, to_status, actor FROM job_status_events
+                                      WHERE employer_id = $1 AND from_status = 'active' AND to_status = 'paused'
+                                      ORDER BY job_id`, [employer.id]);
+    expect(pauses).toEqual([
+      { job_id: jobs.second, employer_id: employer.id, from_status: 'active', to_status: 'paused', actor: 'billing' },
+      { job_id: jobs.third, employer_id: employer.id, from_status: 'active', to_status: 'paused', actor: 'billing' },
+    ].sort((a, b) => (a.job_id < b.job_id ? -1 : 1)));
+    // The resumes, in the order they happened (two transactions).
+    const resumes = await all(world, `SELECT job_id, employer_id, from_status, to_status, actor FROM job_status_events
+                                       WHERE employer_id = $1 AND from_status = 'paused' AND to_status = 'active'
+                                       ORDER BY changed_at, job_id`, [employer.id]);
+    expect(resumes).toEqual([
       { job_id: jobs.second, employer_id: employer.id, from_status: 'paused', to_status: 'active', actor: 'billing' },
       { job_id: jobs.third, employer_id: employer.id, from_status: 'paused', to_status: 'active', actor: 'billing' },
     ]);
-    // Only the public job is announced to the visibility drain.
+    expect(await one(world, 'SELECT count(*)::int AS n FROM job_status_events WHERE employer_id = $1', [employer.id]))
+      .toEqual({ n: 4 });
+    // Only the public job is announced to the visibility drain: removed on the pause, published on the resume.
     expect(await all(world, `SELECT job_id, public_code, event_kind FROM job_visibility_events
                               WHERE job_id = ANY($1::uuid[]) ORDER BY created_at`, [[jobs.second, jobs.third]]))
-      .toEqual([{ job_id: jobs.second, public_code: publicCodes.second, event_kind: 'published' }]);
+      .toEqual([
+        { job_id: jobs.second, public_code: publicCodes.second, event_kind: 'removed' },
+        { job_id: jobs.second, public_code: publicCodes.second, event_kind: 'published' },
+      ]);
   });
 
   it('never resumes a closed or filled job, even one still carrying the mark', async () => {
-    await billing((c) => c.query(PAUSE_SQL, [employer.id, 1]));
+    await billing((c) => c.query(PAUSE_SQL, [org, 1]));
     await world.su.query(`UPDATE jobs SET status = 'closed' WHERE id = $1`, [jobs.second]);
     await world.su.query(`UPDATE jobs SET billing_paused_at = now() WHERE id = $1`, [jobs.filled]);
-    const result = await billing((c) => c.query(RESUME_SQL, [employer.id, 10]));
+    const result = await billing((c) => c.query(RESUME_SQL, [org, 10]));
     expect(result.rows[0]).toMatchObject({ resumed_count: 1, resumed_titles: ['Fixture third'] });
     const after = await statuses();
     expect(after.second[0]).toBe('closed');
@@ -831,7 +854,7 @@ describeInProfiles([...ALL_PROFILES], 'migration 125: billing pause and resume',
   });
 
   it('an employer\'s own status write clears the mark, so a later resume leaves that job alone', async () => {
-    await billing((c) => c.query(PAUSE_SQL, [employer.id, 1]));
+    await billing((c) => c.query(PAUSE_SQL, [org, 1]));
     const response = parseResponse(await jobsUpdateHandler(apiEvent({
       sub: employer.sub,
       httpMethod: 'PATCH',
@@ -842,15 +865,15 @@ describeInProfiles([...ALL_PROFILES], 'migration 125: billing pause and resume',
     expect(response.statusCode).toBe(200);
     expect((await statuses()).third).toEqual(['paused', false]);
 
-    const result = await billing((c) => c.query(RESUME_SQL, [employer.id, 10]));
+    const result = await billing((c) => c.query(RESUME_SQL, [org, 10]));
     expect(result.rows[0]).toMatchObject({ resumed_count: 1, resumed_titles: ['Fixture second'] });
     expect((await statuses()).third).toEqual(['paused', false]);
   });
 
   it('shows the console the resumes through its definer only: ids and times, newest first, limit clamped', async () => {
-    await billing((c) => c.query(PAUSE_SQL, [employer.id, 1]));
-    await billing((c) => c.query(RESUME_SQL, [employer.id, 2]));
-    await billing((c) => c.query(RESUME_SQL, [employer.id, 10]));
+    await billing((c) => c.query(PAUSE_SQL, [org, 1]));
+    await billing((c) => c.query(RESUME_SQL, [org, 2]));
+    await billing((c) => c.query(RESUME_SQL, [org, 10]));
     const ours = new Set([jobs.second, jobs.third]);
     const console = <T>(fn: (c: Client) => Promise<T>) => asLogin('jale_admin_console', {}, fn);
 
@@ -889,7 +912,7 @@ describeInProfiles([...ALL_PROFILES], 'migration 125: billing pause and resume',
     expect(await one(world, 'SELECT status, workers_hired FROM jobs WHERE id = $1', [full.id]))
       .toEqual({ status: 'paused', workers_hired: 1 });
 
-    const result = await billing((c) => c.query(RESUME_SQL, [employer.id, 1]));
+    const result = await billing((c) => c.query(RESUME_SQL, [org, 1]));
 
     expect(result.rows[0].resumed_titles).not.toContain('Fixture full');
     expect(await one(world, 'SELECT status, billing_paused_at IS NULL AS cleared FROM jobs WHERE id = $1', [full.id]))
@@ -900,7 +923,7 @@ describeInProfiles([...ALL_PROFILES], 'migration 125: billing pause and resume',
   });
 
   it('refuses a negative limit, keeps the event log closed to the billing login, and lets it queue only billing mail', async () => {
-    expect(await sqlState(billing((c) => c.query(RESUME_SQL, [employer.id, -1])))).toBe('22023');
+    expect(await sqlState(billing((c) => c.query(RESUME_SQL, [org, -1])))).toBe('22023');
     expect(await sqlState(billing((c) => c.query(RESUME_SQL, [randomUUID(), 1])))).toBe('P0002');
     expect(await sqlState(billing((c) => c.query('SELECT 1 FROM job_status_events LIMIT 1')))).toBe('42501');
 

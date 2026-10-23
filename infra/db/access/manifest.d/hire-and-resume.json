@@ -97,18 +97,6 @@
       "created_by": "125",
       "reason": "The nudge sweep finds and locks hires that still have no details, once a day after the hire and once per worker reminder; it stamps nothing."
     },
-    "jale_billing_internal.billing_resume_paused_jobs(uuid, integer)": {
-      "owner": "jale_billing_job_enforcer",
-      "security": "definer",
-      "search_path": "pg_catalog, pg_temp",
-      "arguments": "p_user_id uuid, p_active_job_limit integer",
-      "returns": "TABLE(resumed_count integer, employer_email text, resumed_titles text[])",
-      "execute": [
-        "jale_billing"
-      ],
-      "created_by": "125",
-      "reason": "Resumes the jobs billing paused, oldest first, up to the limit, when the subscription is entitled again."
-    },
     "public.admin_recent_job_resumes(integer)": {
       "owner": "jale_admin",
       "security": "definer",

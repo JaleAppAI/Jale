@@ -197,7 +197,7 @@ maybeDescribe('migration 128: company limits', () => {
       }]);
     });
 
-    it('the company enforcer functions are pinned definers for jale_billing alone; 125\'s per-person pair is unchanged', async () => {
+    it('the company enforcer functions are pinned definers for jale_billing alone; 133 dropped 125\'s per-person pair', async () => {
       const { rows } = await su.query(
         `SELECT p.proname::text AS fn, pg_catalog.pg_get_function_identity_arguments(p.oid) AS args,
                 pg_catalog.pg_get_userbyid(p.proowner) AS owner, p.prosecdef AS definer,
@@ -207,12 +207,9 @@ maybeDescribe('migration 128: company limits', () => {
           WHERE n.nspname = 'jale_billing_internal' ORDER BY 1`,
       );
       const company = 'p_organization_id uuid, p_active_job_limit integer, p_foreman_seat_limit integer';
-      const person = 'p_user_id uuid, p_active_job_limit integer';
       expect(rows).toEqual([
         { fn: 'billing_enforce_org_limits', args: company, owner: 'jale_billing_job_enforcer', definer: true, callers: ['jale_billing'] },
-        { fn: 'billing_pause_over_limit_jobs', args: person, owner: 'jale_billing_job_enforcer', definer: true, callers: ['jale_billing'] },
         { fn: 'billing_restore_org', args: company, owner: 'jale_billing_job_enforcer', definer: true, callers: ['jale_billing'] },
-        { fn: 'billing_resume_paused_jobs', args: person, owner: 'jale_billing_job_enforcer', definer: true, callers: ['jale_billing'] },
       ]);
     });
 

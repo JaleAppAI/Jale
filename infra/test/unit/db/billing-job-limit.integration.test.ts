@@ -62,54 +62,14 @@ maybeDescribe('billing job-limit enforcement migration 036', () => {
     } finally { await cleanup.end(); }
   });
 
-  it('keeps the oldest active job, pauses newer active jobs, and repeats as a no-op', async () => {
+  // 133 dropped 036's per-person billing_pause_over_limit_jobs (as 125 left
+  // it); 128's billing_enforce_org_limits replaces it, tested in
+  // company-limits-128. What 036 set up around it stays: the processor's login
+  // still reaches jobs and users only through the enforcer's definers.
+  it('rejects direct jale_billing job and user access with 42501', async () => {
     const billing = new Client({ connectionString: billingUrl });
     await billing.connect();
     try {
-      const first = await billing.query(
-        'SELECT * FROM jale_billing_internal.billing_pause_over_limit_jobs($1, $2)',
-        [employerId, 1],
-      );
-      expect(first.rows[0]).toEqual({
-        paused_count: 2,
-        employer_email: 'limit-employer@example.com',
-        paused_titles: ['Second active', 'Newest active'],
-      });
-      const second = await billing.query(
-        'SELECT * FROM jale_billing_internal.billing_pause_over_limit_jobs($1, $2)',
-        [employerId, 1],
-      );
-      expect(second.rows[0].paused_count).toBe(0);
-      expect(second.rows[0].paused_titles).toEqual([]);
-    } finally { await billing.end(); }
-
-    const verify = new Client({ connectionString: databaseUrl });
-    await verify.connect();
-    try {
-      const rows = await verify.query<{ title: string; status: string }>(
-        'SELECT title, status FROM jobs WHERE employer_id = $1 ORDER BY created_at',
-        [employerId],
-      );
-      expect(Object.fromEntries(rows.rows.map((row) => [row.title, row.status]))).toEqual({
-        'Oldest active': 'active',
-        'Second active': 'paused',
-        'Newest active': 'paused',
-        'Already paused': 'paused',
-        'Filled job': 'filled',
-        'Closed job': 'closed',
-      });
-    } finally { await verify.end(); }
-  });
-
-  it('rejects a negative limit and direct jale_billing job updates with 42501', async () => {
-    const billing = new Client({ connectionString: billingUrl });
-    await billing.connect();
-    try {
-      await expect(billing.query(
-        'SELECT * FROM jale_billing_internal.billing_pause_over_limit_jobs($1, -1)',
-        [employerId],
-      ))
-        .rejects.toMatchObject({ code: '22023' });
       await expect(billing.query("UPDATE jobs SET status = 'closed' WHERE employer_id = $1", [employerId]))
         .rejects.toMatchObject({ code: '42501' });
       await expect(billing.query('SELECT id FROM users WHERE id = $1', [employerId]))
@@ -119,7 +79,7 @@ maybeDescribe('billing job-limit enforcement migration 036', () => {
     } finally { await billing.end(); }
   });
 
-  it('keeps the enforcer role, schema, function, and creator row narrowly scoped', async () => {
+  it('keeps the enforcer role, schema, and creator row narrowly scoped', async () => {
     const client = new Client({ connectionString: databaseUrl });
     await client.connect();
     try {
@@ -142,12 +102,7 @@ maybeDescribe('billing job-limit enforcement migration 036', () => {
                 has_table_privilege('jale_billing', 'jobs', 'SELECT') AS billing_jobs_read,
                 has_table_privilege('jale_billing', 'jobs', 'UPDATE') AS billing_jobs_update,
                 has_schema_privilege('jale_billing', 'jale_billing_internal', 'USAGE') AS billing_usage,
-                has_schema_privilege('jale_billing', 'jale_billing_internal', 'CREATE') AS billing_create,
-                has_function_privilege(
-                  'jale_billing',
-                  'jale_billing_internal.billing_pause_over_limit_jobs(uuid, integer)',
-                  'EXECUTE'
-                ) AS billing_execute`,
+                has_schema_privilege('jale_billing', 'jale_billing_internal', 'CREATE') AS billing_create`,
       );
       expect(privileges.rows[0]).toEqual({
         email_read: true,
@@ -159,35 +114,21 @@ maybeDescribe('billing job-limit enforcement migration 036', () => {
         billing_jobs_update: false,
         billing_usage: true,
         billing_create: false,
-        billing_execute: true,
       });
       const objects = await client.query(
         `SELECT schema_owner.rolname AS schema_owner,
-                function_owner.rolname AS function_owner,
-                function.prosecdef, function.proconfig,
                 NOT EXISTS (
                   SELECT 1 FROM aclexplode(COALESCE(namespace.nspacl, acldefault('n', namespace.nspowner))) acl
                    WHERE acl.grantee = 0 AND acl.privilege_type = 'USAGE'
-                ) AS no_public_usage,
-                NOT EXISTS (
-                  SELECT 1 FROM aclexplode(COALESCE(function.proacl, acldefault('f', function.proowner))) acl
-                   WHERE acl.grantee = 0 AND acl.privilege_type = 'EXECUTE'
-                ) AS no_public_execute
+                ) AS no_public_usage
            FROM pg_namespace namespace
            JOIN pg_roles schema_owner ON schema_owner.oid = namespace.nspowner
-           JOIN pg_proc function ON function.pronamespace = namespace.oid
-             AND function.proname = 'billing_pause_over_limit_jobs'
-           JOIN pg_roles function_owner ON function_owner.oid = function.proowner
           WHERE namespace.nspname = 'jale_billing_internal'`,
       );
-      expect(objects.rows[0]).toEqual({
+      expect(objects.rows).toEqual([{
         schema_owner: 'jale_billing_job_enforcer',
-        function_owner: 'jale_billing_job_enforcer',
-        prosecdef: true,
-        proconfig: ['search_path=pg_catalog, pg_temp'],
         no_public_usage: true,
-        no_public_execute: true,
-      });
+      }]);
       const membership = await client.query(
         `SELECT member.rolname AS member, granted.rolname AS granted,
                 membership.admin_option, membership.inherit_option,
