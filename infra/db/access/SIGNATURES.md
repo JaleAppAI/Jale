@@ -249,6 +249,60 @@ proves each signature, owner and grant on a real database.
   longer retry (108's terms), oldest first, up to `p_batch`, and returns the
   count.
 
+## Team members (owner `jale_cap_org_team`, migration 131)
+
+| Function | Caller | Returns |
+|---|---|---|
+| `org_team_remove_member(p_user_id uuid)` | `jale_api` | `TABLE(outcome text, cognito_sub text)` |
+| `org_team_members()` | `jale_api` | `TABLE(user_id uuid, email text, display_name text, role text, status text, billing_suspended boolean, joined_at timestamp with time zone, status_changed_at timestamp with time zone, active_jobs integer, open_jobs integer)` |
+| `org_team_invites()` | `jale_api` | `TABLE(invite_id uuid, email text, contact_name text, created_at timestamp with time zone, expires_at timestamp with time zone, last_sent_at timestamp with time zone, expired boolean)` |
+| `org_team_membership()` | `jale_api` | `TABLE(user_id uuid, organization_id uuid, role text, status text, company_name text, has_live_invite boolean)` |
+| `org_member_access(p_organization_id uuid DEFAULT NULL, p_since timestamp with time zone DEFAULT NULL, p_limit integer DEFAULT NULL)` | `jale_billing` | `TABLE(user_id uuid, cognito_sub text, enabled boolean, changed_at timestamp with time zone)` |
+
+- **Caller context.** remove_member, members and invites read the caller
+  from `app.current_internal_user_id` and act only for the company's active
+  owner. remove_member takes the company lock through 130's
+  `org_team_locked_owner_org()` (anyone else gets `not_owner`); members and
+  invites only read, without the lock, and raise `42501` (`org_team: the
+  caller is not the active owner`) for anyone else. membership reads the
+  caller by `app.current_user_id` (unset raises `42501`). member_access reads
+  no caller: jale_billing names the company or the time window.
+- **No row locks.** remove_member reads the member plainly after the company
+  lock and updates only the row it classified, with a row count of 1
+  (`P0001` otherwise).
+- **remove_member outcomes:** `removed`, `not_owner`, `not_found` (no
+  member of the caller's company by that id), `is_owner`, `already_removed`,
+  `has_jobs` (any job, whatever its status, still names the member). It moves
+  no job: remove-with-reassign moves them first, in the same transaction and
+  under the same company lock. `removed` sets `status = 'removed'`, clears
+  `billing_suspended_at` and stamps `status_changed_at`, and returns the
+  member's `cognito_sub` for the handler to disable.
+- **members** lists the company's active and suspended members, the owner
+  first, then by `joined_at`. A removed member is never returned (their email
+  stays out of the owner's reach; a re-invite shows under invites). `display_name` is the member's own
+  trimmed `employer_profiles.contact_name`, else their trimmed
+  `users.full_name`, else their email. `billing_suspended` is
+  `billing_suspended_at IS NOT NULL`; `active_jobs` counts jobs `active`,
+  `open_jobs` jobs `active` or `paused`.
+- **invites** lists the company's pending invites (not accepted or revoked),
+  expired ones included with `expired = expires_at <= now()`, newest first.
+  The token hash is never returned.
+- **membership** returns the caller's own membership row in any status (zero
+  rows for a login with none, or a non-employer login), with `company_name =
+  employer_display_name(<the company's active owner>)` and `has_live_invite`
+  (a live invite of that company names the caller's `lower(btrim(email))`).
+- **member_access** lists foremen only, never owners. `enabled` is `status =
+  'active'`, or `status = 'removed'` with a live invite of the same company
+  to the member's `lower(btrim(email))`. `changed_at` is the latest of
+  `status_changed_at` and, over that company's invites for the email,
+  `created_at`, `last_sent_at`, `revoked_at` and `expires_at` once passed.
+  Exactly one key: `p_organization_id` (every foreman of the company,
+  `p_limit` NULL) or `p_since` (foremen with `changed_at > p_since`, ordered
+  `changed_at DESC, user_id`, with `p_limit` required in 1..1000). Anything
+  else raises `22023`. Both forms are ordered the same way. The invites are
+  read through `organization_invites_by_org_email (organization_id, email)`,
+  which 131 adds.
+
 ## Re-owned definers (no signature change)
 
 | Function | Caller | Owner | Returns |

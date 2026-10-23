@@ -74,7 +74,11 @@ const FUNCTIONS: Array<[string, string | null, string]> = [
   ['jale_cap.org_team_locked_owner_org()', null, 'uuid'],
 ];
 
-/** Step 3's sections 2, 3 and 5, as table:column:privilege, sorted (C collation). */
+/**
+ * Step 3's sections 2, 3 and 5, as table:column:privilege, sorted (C collation),
+ * on the five tables 130 touches; plus users.full_name, which 131 adds for the
+ * team list's display name (131's suite pins its other new rights).
+ */
 const REVIEWED_COLUMN_RIGHTS = [
   'email_outbox:attempt_count:SELECT', 'email_outbox:body_html:INSERT', 'email_outbox:body_text:INSERT',
   'email_outbox:created_at:SELECT', 'email_outbox:id:SELECT', 'email_outbox:idempotency_key:INSERT',
@@ -100,7 +104,7 @@ const REVIEWED_COLUMN_RIGHTS = [
   'organization_members:status_changed_at:UPDATE',
   'organization_members:user_id:INSERT', 'organization_members:user_id:SELECT',
   'organizations:id:SELECT', 'organizations:updated_at:UPDATE',
-  'users:cognito_sub:SELECT', 'users:email:SELECT', 'users:id:SELECT', 'users:user_type:SELECT',
+  'users:cognito_sub:SELECT', 'users:email:SELECT', 'users:full_name:SELECT', 'users:id:SELECT', 'users:user_type:SELECT',
 ];
 
 maybeDescribe('migration 130: team invites and acceptance', () => {

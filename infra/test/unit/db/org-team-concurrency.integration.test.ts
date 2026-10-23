@@ -19,7 +19,14 @@
  *     second's insert waits on the members primary key and, once the first
  *     commits, answers already_member instead of raising 23505;
  *  7. accept_email racing a start-company (employer_ensure_organization)
- *     for the same login: already_member, not 23505.
+ *     for the same login: already_member, not 23505;
+ *  8. the owner's removal of a foreman (131) waiting on that foreman's post
+ *     in flight (128's employer_org_usage lock plus the job insert): once
+ *     the post commits, the removal sees the job and gives has_jobs;
+ *  9. the removal waiting on a downgrade (128's enforcer) that suspends and
+ *     marks the foreman: once it commits, removed with the mark cleared;
+ *  10. the removal waiting on the owner's move of a job to the foreman:
+ *     has_jobs once the move commits.
  * Fixtures through the superuser URL (Task 1's World); afterAll removes them.
  *
  * Run: bash infra/db/local/bootstrap-testbed.sh --ephemeral --ref none --profile request \
@@ -359,6 +366,111 @@ maybeDescribe('team invites under concurrency', () => {
         await accepter.end();
       }
       expect(await membershipOf(invitee.id)).toEqual([{ organization_id: started }]);
+    });
+
+    it('remove waits for a post in flight and then refuses with has_jobs', async () => {
+      const owner = await world.employer();
+      const foreman = await world.foreman(owner.id);
+      const poster = loginClient('jale_api');
+      const remover = loginClient('jale_api');
+      await poster.connect();
+      await remover.connect();
+      try {
+        const removerPid = await pidOf(remover);
+        // The foreman's post (128's path): the company lock, then the job, uncommitted.
+        await begin(poster, foreman);
+        await poster.query('SELECT active_jobs FROM jale_cap.employer_org_usage(true)');
+        await poster.query(
+          `INSERT INTO jobs (employer_id, title, location, job_type, status)
+           VALUES ($1, 'Posted while removed', 'Austin', 'full-time', 'active')`, [foreman.id]);
+        // The owner's removal (131) asks for the same lock and waits.
+        await begin(remover, owner);
+        const removing = remover.query<{ outcome: string; cognito_sub: string | null }>(
+          'SELECT outcome, cognito_sub FROM jale_cap.org_team_remove_member($1)', [foreman.id]);
+        removing.catch(() => undefined); // observed below
+        await waitUntilBlocked(removerPid);
+        await poster.query('COMMIT');
+        expect((await removing).rows).toEqual([{ outcome: 'has_jobs', cognito_sub: null }]);
+        await remover.query('COMMIT');
+      } finally {
+        await poster.query('ROLLBACK').catch(() => undefined);
+        await remover.query('ROLLBACK').catch(() => undefined);
+        await poster.end();
+        await remover.end();
+        await world.su.query('DELETE FROM jobs WHERE employer_id = $1', [foreman.id]);
+      }
+      const { rows } = await world.su.query('SELECT status FROM organization_members WHERE user_id = $1', [foreman.id]);
+      expect(rows).toEqual([{ status: 'active' }]);
+    });
+
+    it('remove waiting on a downgrade that suspends the foreman: removed once it commits, the billing mark cleared', async () => {
+      const owner = await world.employer();
+      const org = await orgOf(owner);
+      const foreman = await world.foreman(owner.id);
+      const billing = loginClient('jale_billing');
+      const remover = loginClient('jale_api');
+      await billing.connect();
+      await remover.connect();
+      try {
+        const removerPid = await pidOf(remover);
+        // 128's enforcer, no seats: the foreman is suspended and marked, uncommitted.
+        await billing.query('BEGIN');
+        const enforced = await billing.query<{ suspended_count: number }>(
+          'SELECT suspended_count FROM jale_billing_internal.billing_enforce_org_limits($1, 10, 0)', [org]);
+        expect(enforced.rows).toEqual([{ suspended_count: 1 }]);
+        await begin(remover, owner);
+        const removing = remover.query<{ outcome: string; cognito_sub: string | null }>(
+          'SELECT outcome, cognito_sub FROM jale_cap.org_team_remove_member($1)', [foreman.id]);
+        removing.catch(() => undefined); // observed below
+        await waitUntilBlocked(removerPid);
+        await billing.query('COMMIT');
+        // The removal classifies the now-suspended row, and clears the mark 128's CHECK ties to 'suspended'.
+        expect((await removing).rows).toEqual([{ outcome: 'removed', cognito_sub: foreman.sub }]);
+        await remover.query('COMMIT');
+      } finally {
+        await billing.query('ROLLBACK').catch(() => undefined);
+        await remover.query('ROLLBACK').catch(() => undefined);
+        await billing.end();
+        await remover.end();
+      }
+      const { rows } = await world.su.query(
+        'SELECT status, billing_suspended_at FROM organization_members WHERE user_id = $1', [foreman.id]);
+      expect(rows).toEqual([{ status: 'removed', billing_suspended_at: null }]);
+    });
+
+    it('remove waiting on a move of a job to the foreman refuses with has_jobs once the move commits', async () => {
+      const owner = await world.employer();
+      const foreman = await world.foreman(owner.id);
+      const job = await world.job(owner.id, { status: 'active' });
+      const mover = loginClient('jale_api');
+      const remover = loginClient('jale_api');
+      await mover.connect();
+      await remover.connect();
+      try {
+        const removerPid = await pidOf(remover);
+        // The owner's reassignment (Task 9's path): the company lock, then the job moved, uncommitted.
+        await begin(mover, owner);
+        await mover.query('SELECT active_jobs FROM jale_cap.employer_org_usage(true)');
+        const moved = await mover.query('UPDATE jobs SET employer_id = $1 WHERE id = $2', [foreman.id, job.id]);
+        expect(moved.rowCount).toBe(1);
+        // The owner's removal of the foreman, from another session, waits for the lock.
+        await begin(remover, owner);
+        const removing = remover.query<{ outcome: string; cognito_sub: string | null }>(
+          'SELECT outcome, cognito_sub FROM jale_cap.org_team_remove_member($1)', [foreman.id]);
+        removing.catch(() => undefined); // observed below
+        await waitUntilBlocked(removerPid);
+        await mover.query('COMMIT');
+        expect((await removing).rows).toEqual([{ outcome: 'has_jobs', cognito_sub: null }]);
+        await remover.query('COMMIT');
+      } finally {
+        await mover.query('ROLLBACK').catch(() => undefined);
+        await remover.query('ROLLBACK').catch(() => undefined);
+        await mover.end();
+        await remover.end();
+      }
+      const { rows } = await world.su.query(
+        `SELECT m.status, j.employer_id FROM organization_members m, jobs j WHERE m.user_id = $1 AND j.id = $2`, [foreman.id, job.id]);
+      expect(rows).toEqual([{ status: 'active', employer_id: foreman.id }]);
     });
   });
 });

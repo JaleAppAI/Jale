@@ -6,7 +6,7 @@
     },
     "jale_cap_org_team": {
       "created_by": "130",
-      "reason": "Owns the team-invite definers (jale_cap.org_team_*): under the company lock it creates, re-sends and revokes a company's invites and queues their email, answers the public invite lookup, makes an accepting login a foreman, and purges sent invite mail. Its policies are open; each function's own caller check (the company's active owner, the invite's token or the caller's confirmed email) is the boundary, as for 128's enforcer."
+      "reason": "Owns the team-invite definers (jale_cap.org_team_*): under the company lock it creates, re-sends and revokes a company's invites and queues their email, answers the public invite lookup, makes an accepting login a foreman, and purges sent invite mail (130); removes a foreman with no job left, lists the company's members and pending invites for its owner, answers the caller's own membership and the Cognito state each foreman should have (131). Its policies are open; each function's own caller check (the company's active owner, the invite's token, the caller's own login or confirmed email, or jale_billing's company and time keys) is the boundary, as for 128's enforcer."
     }
   },
   "tables": {
@@ -305,6 +305,45 @@
       "execute": ["jale_billing"],
       "created_by": "130",
       "reason": "Deletes up to p_batch invite emails a day old that the sender will no longer retry (108's terms), so the raw tokens they carry do not stay in email_outbox."
+    },
+    "jale_cap.org_team_remove_member(uuid)": {
+      "owner": "jale_cap_org_team", "security": "definer", "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_user_id uuid", "returns": "TABLE(outcome text, cognito_sub text)",
+      "execute": ["jale_api"],
+      "created_by": "131",
+      "reason": "The owner removes a foreman of the company under the company lock, only once no job names them (remove-with-reassign moves the jobs first in the same transaction); clears the billing mark and returns the member's cognito_sub for the handler to disable."
+    },
+    "jale_cap.org_team_members()": {
+      "owner": "jale_cap_org_team", "security": "definer", "search_path": "pg_catalog, pg_temp",
+      "arguments": "",
+      "returns": "TABLE(user_id uuid, email text, display_name text, role text, status text, billing_suspended boolean, joined_at timestamp with time zone, status_changed_at timestamp with time zone, active_jobs integer, open_jobs integer)",
+      "execute": ["jale_api"],
+      "created_by": "131",
+      "reason": "The Team page: the active owner's company's active and suspended members (email, display name, role, status, billing mark, active and open job counts); removed members are never returned, so their emails stay out; anyone else gets 42501."
+    },
+    "jale_cap.org_team_invites()": {
+      "owner": "jale_cap_org_team", "security": "definer", "search_path": "pg_catalog, pg_temp",
+      "arguments": "",
+      "returns": "TABLE(invite_id uuid, email text, contact_name text, created_at timestamp with time zone, expires_at timestamp with time zone, last_sent_at timestamp with time zone, expired boolean)",
+      "execute": ["jale_api"],
+      "created_by": "131",
+      "reason": "The Team page: the active owner's company's pending invites, expired ones flagged, never the token hash; anyone else gets 42501."
+    },
+    "jale_cap.org_team_membership()": {
+      "owner": "jale_cap_org_team", "security": "definer", "search_path": "pg_catalog, pg_temp",
+      "arguments": "",
+      "returns": "TABLE(user_id uuid, organization_id uuid, role text, status text, company_name text, has_live_invite boolean)",
+      "execute": ["jale_api"],
+      "created_by": "131",
+      "reason": "The membership check: the calling employer login's own membership in any status, the company's name and whether a live invite of that company names the caller's email; zero rows without one."
+    },
+    "jale_cap.org_member_access(uuid, timestamp with time zone, integer)": {
+      "owner": "jale_cap_org_team", "security": "definer", "search_path": "pg_catalog, pg_temp",
+      "arguments": "p_organization_id uuid, p_since timestamp with time zone, p_limit integer",
+      "returns": "TABLE(user_id uuid, cognito_sub text, enabled boolean, changed_at timestamp with time zone)",
+      "execute": ["jale_billing"],
+      "created_by": "131",
+      "reason": "The Cognito state each foreman should have (enabled when active, or removed with a live re-invite of the company), by company or changed since a time (newest first, at most p_limit), for the billing processor and the catch-up sync to apply after COMMIT; owners are never listed."
     }
   },
   "table_additions": {
@@ -366,6 +405,10 @@
         "jale_cap_org_limits": {
           "select": ["id", "employer_id", "status"],
           "reason": "employer_org_usage counts the company's active jobs."
+        },
+        "jale_cap_org_team": {
+          "select": ["id", "employer_id", "status"],
+          "reason": "org_team_remove_member refuses a member any job still names, and org_team_members counts each member's active and open jobs (131)."
         }
       },
       "policies": {
@@ -410,9 +453,14 @@
           "using": "(employer_id = ANY (( SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id'::text, true), false) AS org_owner_scope)::uuid[]))",
           "with_check": null,
           "reason": "employer_save_hire_details reads a member's job for the company owner (129)."
+        },
+        "jobs_cap_org_team_select": {
+          "command": "SELECT", "permissive": true, "to": ["jale_cap_org_team"], "origin": "existing",
+          "using": "true", "with_check": null,
+          "reason": "The team definers read the jobs of a company the caller owns (removal's has_jobs, the team list's counts): their caller checks are the boundary (131)."
         }
       },
-      "reason": "Company owners act on every member's jobs (migration 119)."
+      "reason": "Company owners act on every member's jobs (migration 119); the team definers' owner reads them (131)."
     },
     "public.job_applications": {
       "policies": {
@@ -608,8 +656,8 @@
           "reason": "employer_job_templates_self (069, TO PUBLIC) is evaluated for every reader of templates and its sub-query reads these columns; the owner never returns them."
         },
         "jale_cap_org_team": {
-          "select": ["id", "cognito_sub", "user_type", "email"],
-          "reason": "The invite definers find the employer logins with an invite's email (and their cognito_sub, which create, resend and revoke return for a removed member) and the accepting caller by cognito_sub (130)."
+          "select": ["id", "cognito_sub", "user_type", "email", "full_name"],
+          "reason": "The invite definers find the employer logins with an invite's email (and their cognito_sub, which create, resend and revoke return for a removed member) and the accepting caller by cognito_sub (130). The team definers read the members' emails and cognito_sub, and full_name for the team list's display name (131)."
         }
       },
       "policies": {
@@ -619,7 +667,23 @@
           "reason": "Employer logins only (130)."
         }
       },
-      "reason": "The company usage definer's owner reads templates (128); the team-invite definers' owner reads employer logins (130)."
+      "reason": "The company usage definer's owner reads templates (128); the team definers' owner reads employer logins (130, 131)."
+    },
+    "public.employer_profiles": {
+      "access": {
+        "jale_cap_org_team": {
+          "select": ["user_id", "contact_name"],
+          "reason": "org_team_members names each member by their own contact name first (131)."
+        }
+      },
+      "policies": {
+        "employer_profiles_cap_org_team_select": {
+          "command": "SELECT", "permissive": true, "to": ["jale_cap_org_team"], "origin": "existing",
+          "using": "true", "with_check": null,
+          "reason": "The team list reads the contact names of the owner's company's members; its caller check (the active owner) is the boundary (131)."
+        }
+      },
+      "reason": "The team definers' owner reads members' contact names (131)."
     },
     "public.email_outbox": {
       "access": {
