@@ -276,6 +276,29 @@ describe('auto-open gate', () => {
         expect(dialogs()).toBe(0);
     });
 
+    it('keeps the page view when the overlay was up only while "done" was still unknown', async () => {
+        await readyEmployer();
+        function Page({ overlay, done }: { overlay: boolean; done: boolean | undefined }) {
+            return (
+                <>
+                    <OtherOverlay open={overlay} />
+                    <AutoPage done={done} />
+                </>
+            );
+        }
+        // A celebration is up while the page is still finding out whether the task was done.
+        const view = render(<Page overlay done={undefined} />, { wrapper: Providers });
+        await waitFor(() => expect(tutorialCalls()).toHaveLength(1));
+        await settle();
+
+        view.rerender(<Page overlay={false} done={undefined} />);
+        await settle();
+        view.rerender(<Page overlay={false} done={false} />);
+
+        await waitFor(() => expect(tutorialDialog('employer_welcome')).toBeInTheDocument());
+        expect(dialogs()).toBe(1);
+    });
+
     it('stands down when an overlay opens in the same commit as the tutorial would', async () => {
         await readyEmployer();
         function Page() {

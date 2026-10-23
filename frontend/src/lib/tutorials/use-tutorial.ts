@@ -19,8 +19,10 @@ import type { TutorialHandle, UseTutorialOptions } from './types';
  *  - `maybeAutoOpen` before the read has answered is HELD, not dropped: one
  *    request per handle, judged when the read succeeds, dropped when it fails
  *    or the page goes away first.
- *  - An overlay in the way drops the request for this page view: the
- *    tutorial waits for the next eligible visit rather than queueing.
+ *  - An overlay in the way drops an ELIGIBLE request for this page view:
+ *    the tutorial waits for the next eligible visit rather than queueing. A
+ *    request that could not play anyway (`done` still unknown, say) does not
+ *    count, so a later call on the same page can still open it.
  *  - `runBeforeHost` while the read is in flight, or whenever the tutorial
  *    may not play, opens the host at once, synchronously, from the caller's
  *    own handler. When it plays, the host opens from a post-commit effect
@@ -70,11 +72,16 @@ export function useTutorial(id: TutorialId, options: UseTutorialOptions): Tutori
         function autoPlay(vars: TutorialVars) {
             const { progress: current, done } = latest.current;
             if (current === null || declined.current) return;
+            // Only a request that could play spends the page view on the
+            // overlay rule: one made while `done` is still unknown (or the
+            // tutorial may not play for any other reason) leaves it for a
+            // later call, such as the host's effect re-running once `done` is
+            // known.
+            if (!mayAutoPlay(current, id, done)) return;
             if (current.isOverlayPresent()) {
                 declined.current = true;
                 return;
             }
-            if (!mayAutoPlay(current, id, done)) return;
             current.play({
                 id,
                 vars,
