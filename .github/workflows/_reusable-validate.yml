@@ -105,12 +105,12 @@ jobs:
   infra:
     name: Infra build, test, synth
     runs-on: ubuntu-latest
-    # Runtime under Node 24 has not been re-measured yet (CDK bundling no
-    # longer shells out to `npm install` at all -- zero `nodeModules`
-    # overrides remain, so the Lambda dependency sets ship as source and are
-    # bundled by esbuild). 45 minutes is carried over from the pre-Node-24
-    # budget; tighten after the first Node-24 run establishes a real number.
-    timeout-minutes: 45
+    # Measured under Node 24 (October 2026): the job takes 25-28 minutes on
+    # most runners and 45-47 minutes on slower ones, where every step (build,
+    # the in-band unit tests, synth) runs about 1.6 times longer on the same
+    # commit. 60 minutes covers the slower runners with room for the suite to
+    # grow; re-measure if runs approach it.
+    timeout-minutes: 60
     env:
       CDK_DEFAULT_ACCOUNT: '111111111111'
       CDK_DEFAULT_REGION: ${{ inputs.aws-region }}
