@@ -1,9 +1,5 @@
-import { render, renderHook, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { EMPLOYER_TUTORIAL_IDS, WORKER_TUTORIAL_IDS } from '@/lib/api/tutorials';
-import { OverlayPresenceProvider, useOverlayPresence } from '../overlay';
-import { TutorialProgressProvider } from '../progress';
-import { useTutorial } from '../use-tutorial';
 import type { TutorialDefinition } from '../types';
 import employerWelcome from '@/components/tutorials/content/employer-welcome';
 import employerPostJob from '@/components/tutorials/content/employer-post-job';
@@ -15,69 +11,12 @@ import workerDetails from '@/components/tutorials/content/worker-details';
 import workerProfile from '@/components/tutorials/content/worker-profile';
 
 /**
- * The placeholder contract the content lanes and host pages build against
- * before the tutorial framework lands: the hook and providers keep their
- * final signatures and do nothing, except that a "before the host" call opens
- * the host at once. The tutorial framework lane replaces these bodies and this
- * suite with its own. The content checks assert only ids, roles and
- * namespaces, so filling a content file with real slides keeps them green.
+ * The content files' shape, as the registry and Help rely on it. Only what
+ * stays true once the content lanes fill these files with real slides is
+ * checked: their own id, role and namespace. The framework's behaviour is
+ * covered by `use-tutorial.test.tsx`, `progress.test.tsx` and the player's
+ * own suite.
  */
-
-describe('useTutorial placeholder', () => {
-  it('runBeforeHost opens the host at once', () => {
-    const { result } = renderHook(() => useTutorial('employer_post_job', { done: false }));
-    const openHost = vi.fn();
-
-    result.current.runBeforeHost(openHost);
-
-    expect(openHost).toHaveBeenCalledTimes(1);
-    expect(openHost).toHaveBeenCalledWith();
-  });
-
-  it('maybeAutoOpen and replay open nothing', () => {
-    const { result } = renderHook(() => useTutorial('worker_apply', { done: false }));
-
-    result.current.maybeAutoOpen({ limit: 1 });
-    result.current.replay();
-
-    expect(document.querySelector('[role="dialog"]')).toBeNull();
-  });
-
-  it('returns the same handle on every render', () => {
-    const { result, rerender } = renderHook(
-      ({ done }: { done: boolean | undefined }) => useTutorial('employer_messages', { done }),
-      { initialProps: { done: undefined } as { done: boolean | undefined } },
-    );
-    const first = result.current;
-
-    rerender({ done: true });
-
-    expect(result.current).toBe(first);
-  });
-});
-
-describe('provider and overlay placeholders', () => {
-  it('render their children unchanged', () => {
-    render(
-      <OverlayPresenceProvider>
-        <TutorialProgressProvider>
-          <p>shell content</p>
-        </TutorialProgressProvider>
-      </OverlayPresenceProvider>,
-    );
-
-    expect(screen.getByText('shell content')).toBeInTheDocument();
-  });
-
-  it('useOverlayPresence accepts either state and does nothing', () => {
-    const { rerender, result } = renderHook(({ open }: { open: boolean }) => useOverlayPresence(open), {
-      initialProps: { open: true },
-    });
-    rerender({ open: false });
-
-    expect(result.current).toBeUndefined();
-  });
-});
 
 describe('tutorial content placeholders', () => {
   const CONTENT: ReadonlyArray<[string, TutorialDefinition, 'employer' | 'worker']> = [
