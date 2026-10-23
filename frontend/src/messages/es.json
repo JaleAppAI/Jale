@@ -2372,6 +2372,161 @@
       "close": "Cerrar",
       "help": "Ayuda",
       "help_title": "Cómo funciona Jale"
+    },
+    "worker_onboarding": {
+      "title": "Antes de empezar",
+      "cta_last": "Empecemos",
+      "slides": {
+        "minutes": {
+          "title": "Unos 2 minutos",
+          "body": "7 pasos cortos: los términos, sobre ti, tu oficio, tu trabajo y tres preguntas."
+        },
+        "questions": {
+          "title": "Tres preguntas que leen los empleadores",
+          "body": "Responde con tus propias palabras, escribiendo o con tu voz. Cada respuesta necesita al menos 15 caracteres; más detalle te ayuda a destacar."
+        },
+        "lock": {
+          "title": "Puedes regresar hasta la pregunta 3",
+          "body": "Puedes regresar y cambiar cualquier respuesta. Cuando terminas la pregunta 3, tus respuestas se bloquean y los empleadores pueden leerlas."
+        },
+        "jobs": {
+          "title": "Luego busca empleos cerca de ti",
+          "body": "Al terminar, ves empleos de tu oficio y puedes postularte con un toque."
+        }
+      },
+      "scene": {
+        "two_min": "Unos 2 minutos",
+        "st1": "Términos",
+        "st2": "Sobre ti",
+        "st3": "Tu oficio",
+        "st4": "Tu trabajo",
+        "st5": "3 preguntas",
+        "trade_eyebrow": "Concreto",
+        "question": "Cuéntanos de un trabajo que terminaste hace poco.",
+        "answer": "Colé y acabé una entrada de 40 pies…",
+        "cnt0": "0 / 15 mínimo",
+        "cnt1": "48 caracteres ✓",
+        "q1": "P1",
+        "q2": "P2",
+        "q3": "P3",
+        "can_back": "Puedes regresar antes de terminar",
+        "locked": "Después de la P3 tus respuestas se bloquean",
+        "job1": "Acabador de concreto",
+        "job1_meta": "El Paso, TX · $22/h",
+        "job2": "Ayudante de concreto",
+        "job2_meta": "Socorro, TX · $20/h",
+        "apply": "Postularme"
+      }
+    },
+    "worker_apply": {
+      "title": "Cómo postularte",
+      "slides": {
+        "apply": {
+          "title": "Postularte toma un minuto",
+          "body": "Toca Postularme y responde las preguntas rápidas del empleador, si tiene alguna."
+        },
+        "documents": {
+          "title": "Los documentos van después",
+          "body": "No necesitas subir nada para postularte. El empleador pide documentos solo si quiere contratarte."
+        },
+        "next": {
+          "title": "Qué sigue",
+          "body": "Tu postulación dice Aplicado mientras el empleador la revisa. Verás cuando te escriba o te pida tus datos."
+        },
+        "whatsapp": {
+          "title": "Las respuestas llegan por WhatsApp",
+          "body": "Cuando un empleador te escribe, el mensaje llega por WhatsApp. Respóndele ahí."
+        }
+      },
+      "scene": {
+        "apply": "Postularme",
+        "prompt": "¿Tienes tus propias herramientas?",
+        "yes": "Sí",
+        "no": "No",
+        "applied": "Postulación enviada",
+        "docs_head": "Documentos",
+        "doc1": "Licencia de manejo",
+        "doc2": "Permiso de trabajo",
+        "later": "Después",
+        "docs_note": "Solo si el empleador quiere contratarte.",
+        "st_applied": "Aplicado",
+        "h_applied": "Esperando al empleador",
+        "st_talking": "En conversación",
+        "h_talking": "El empleador te escribió",
+        "st_details": "Faltan tus datos",
+        "h_details": "Quieren contratarte",
+        "whatsapp": "WhatsApp · Jale",
+        "emp_msg": "Hola, ¿puedes empezar el lunes a las 7 a. m.?",
+        "my_reply": "Sí, ahí estaré"
+      }
+    },
+    "worker_details": {
+      "title": "Te pidieron tus datos",
+      "cta_last": "Empezar",
+      "slides": {
+        "request": {
+          "title": "Un empleador quiere contratarte",
+          "body": "Te pide unas preguntas y algunos documentos. Toma unos 5 minutos, en tres pasos cortos."
+        },
+        "saved": {
+          "title": "Tus documentos guardados se agregan solos",
+          "body": "Los archivos que guardaste antes se adjuntan automáticamente. Puedes cambiar cualquiera."
+        },
+        "send": {
+          "title": "Revisa y envía",
+          "body": "Revisa tus respuestas y envíalas. El empleador las ve al momento."
+        }
+      },
+      "scene": {
+        "company": "Concretos de Ejemplo",
+        "five_min": "Unos 5 min",
+        "step1": "Preguntas",
+        "step2": "Documentos",
+        "step3": "Revisión",
+        "slot_name": "Licencia de manejo",
+        "from_vault": "Agregado de tus documentos guardados",
+        "replace": "Cambiar",
+        "r1": "Fecha disponible",
+        "r2": "Contacto de emergencia",
+        "r3": "Licencia de manejo",
+        "send": "Enviar al empleador"
+      }
+    },
+    "worker_profile": {
+      "title": "Tu perfil",
+      "slides": {
+        "seen": {
+          "title": "Esto es lo que ven los empleadores",
+          "body": "Tu oficio, tu experiencia, tu disponibilidad y las respuestas que diste con tus propias palabras."
+        },
+        "documents": {
+          "title": "Agrega tus documentos una vez",
+          "body": "Guarda aquí tu licencia, tu permiso de trabajo o tus certificaciones. Se usan de nuevo en cada postulación, así nunca los subes dos veces."
+        },
+        "edit": {
+          "title": "Mantenlo al día",
+          "body": "Toca Editar cuando quieras para cambiar tus habilidades, tu disponibilidad o tus ciudades."
+        }
+      },
+      "scene": {
+        "sample_name": "Trabajador de ejemplo",
+        "sample_city": "El Paso, TX",
+        "trade": "Concreto",
+        "years": "6 años",
+        "avail": "Tiempo completo",
+        "quote": "“Hago acabado de losas y entradas, y armo mis propias cimbras.”",
+        "docs_head": "Documentos",
+        "license": "Licencia de manejo",
+        "upload": "Subir",
+        "replace": "Cambiar",
+        "reused": "Una foto de la tarjeta sirve. Se usa de nuevo en cada postulación.",
+        "skills": "Habilidades",
+        "edit": "Editar",
+        "sk1": "Losas",
+        "sk2": "Cimbrado",
+        "sk3": "Concreto estampado",
+        "saved": "Guardado"
+      }
     }
   }
 }
