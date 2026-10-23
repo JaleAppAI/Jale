@@ -2397,5 +2397,17 @@
       "image_failed_final": "La imagen no se envió y no se puede volver a enviar. Su reporte ya está guardado.",
       "image_paused": "Las imágenes están en pausa por ahora, así que solo se envió su reporte."
     }
+  },
+  "tutorial": {
+    "common": {
+      "back": "Atrás",
+      "next": "Siguiente",
+      "skip": "Omitir",
+      "got_it": "Entendido",
+      "counter": "{current} de {total}",
+      "close": "Cerrar",
+      "help": "Ayuda",
+      "help_title": "Cómo funciona Jale"
+    }
   }
 }
