@@ -79,11 +79,18 @@ export function DetailsRequestedBanner({
             <span className="block font-semibold text-[var(--jale-ink)]">{t('one_head')}</span>
           ) : null}
           <span className="block">{body}</span>
-          {/* One line: what is asked, then the time it takes. */}
+          {/* One line: what is asked, then the time it takes. The dot is drawn
+              for sight only; a screen reader gets a comma in its place, so the
+              parts are heard as a list rather than one run of words. */}
           <span className="block font-semibold text-[var(--jale-ink)]">
             {[...summary, t('about_time')].map((part, index) => (
               <span key={part}>
-                {index > 0 ? <span aria-hidden="true">{' · '}</span> : null}
+                {index > 0 ? (
+                  <>
+                    <span aria-hidden="true">{' · '}</span>
+                    <span className="sr-only">{', '}</span>
+                  </>
+                ) : null}
                 <span>{part}</span>
               </span>
             ))}

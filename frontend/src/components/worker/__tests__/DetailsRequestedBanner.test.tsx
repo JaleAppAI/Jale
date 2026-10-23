@@ -118,6 +118,44 @@ describe('DetailsRequestedBanner — what is asked and how long it takes', () =>
   });
 });
 
+/*
+ * The dots between the parts are decoration and hidden from assistive tech,
+ * so the parts need a separator a screen reader can hear; otherwise the line
+ * is announced as one run of words ("2 questions1 documentAbout 5 min").
+ */
+describe('DetailsRequestedBanner — summary read aloud', () => {
+  const COUNTS = { prompts: 1, fields: 1, certifications: 0, docs: 1 };
+
+  /** The text a screen reader reaches: everything except `aria-hidden` subtrees. */
+  function spokenText(node: Node): string {
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? '';
+    if (node instanceof Element && node.getAttribute('aria-hidden') === 'true') return '';
+    return Array.from(node.childNodes).map(spokenText).join('');
+  }
+
+  it('separates the parts in the text assistive tech reads', () => {
+    renderIntl(<DetailsRequestedBanner applicationId="app-1" companyName="Acme" counts={COUNTS} />);
+    expect(spokenText(screen.getByRole('alert'))).toContain('2 questions, 1 document, About 5 min');
+  });
+
+  it('separates the count and the time when only a total is known', () => {
+    renderIntl(<DetailsRequestedBanner applicationId="app-1" companyName="Acme" remainingCount={3} />);
+    const left = interpolate(message('worker_applications.details_banner.row_left'), { count: 3 });
+    expect(spokenText(screen.getByRole('alert'))).toContain(`${left}, About 5 min`);
+  });
+
+  it('separates the parts in Spanish too', () => {
+    renderIntl(<DetailsRequestedBanner applicationId="app-1" companyName="Acme" counts={COUNTS} />, 'es');
+    expect(spokenText(screen.getByRole('alert'))).toContain('2 preguntas, 1 documento, Unos 5 min');
+  });
+
+  it('keeps the visible dots', () => {
+    renderIntl(<DetailsRequestedBanner applicationId="app-1" companyName="Acme" counts={COUNTS} />);
+    const dots = screen.getByRole('alert').querySelectorAll('[aria-hidden="true"]');
+    expect(Array.from(dots).filter((dot) => dot.textContent?.includes('·'))).toHaveLength(2);
+  });
+});
+
 describe('DetailsRequestedMultiBanner', () => {
   it('counts the waiting applications and links to the list', () => {
     renderIntl(<DetailsRequestedMultiBanner count={2} />);
