@@ -277,6 +277,13 @@ for (const body of [
     const result = await post({ body: bad });
     assert.deepEqual([result.status, result.body], [400, { ok: false, error: 'invalid_input' }]);
   }
+  // A body over the shared 16 KiB action limit is refused unread: no
+  // statement runs and nothing is recorded.
+  {
+    const result = await post({ body: { ...body, padding: 'x'.repeat(16_384) } });
+    assert.deepEqual([result.status, result.body], [400, { ok: false, error: 'invalid_input' }]);
+    assert.deepEqual(result.log, []);
+  }
   // A body that names no known action has no surface: answered, not recorded.
   for (const raw of ['{', JSON.stringify({ action: 'reply_whatsapp', requestId: ACTION_ID }), JSON.stringify([1])]) {
     const result = await post({ raw });

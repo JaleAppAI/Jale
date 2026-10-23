@@ -23,6 +23,7 @@ const base: DescriptionHelperFields = {
   work_days: [],
   shift_start: '',
   shift_end: '',
+  shift_periods: [],
   description: '',
 };
 
@@ -176,6 +177,17 @@ describe('buildGenerateDescriptionPayload', () => {
       const form: DescriptionHelperFields = { ...base, shift_schedule: 'Mon-Fri, mornings' };
       const payload = buildGenerateDescriptionPayload(form);
       expect(payload.shift_schedule).toBe('Mon-Fri, mornings');
+    });
+
+    it('includes the chosen shift labels, the same text a save would write', () => {
+      const form = { ...base, work_days: ['mon'], shift_periods: ['night', 'day'], shift_schedule: 'legacy' } as DescriptionHelperFields;
+      const payload = buildGenerateDescriptionPayload(form);
+      expect(payload.shift_schedule).toBe('Mon · Day, Night');
+    });
+
+    it('a shift choice alone counts as a structured schedule', () => {
+      const form = { ...base, shift_periods: ['evening'], shift_schedule: 'legacy' } as DescriptionHelperFields;
+      expect(buildGenerateDescriptionPayload(form).shift_schedule).toBe('Evening');
     });
   });
 });

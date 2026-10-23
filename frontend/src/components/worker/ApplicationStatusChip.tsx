@@ -39,3 +39,25 @@ export function ApplicationStatusChip({
     </ApplicationStatusBadge>
   );
 }
+
+/**
+ * The one-line meaning of a status, for the worker: "Applied" alone does not
+ * say that the next move is the employer's. A sibling of the chip rather than
+ * part of it, because the two sit in different places -- the chip on the
+ * title line, the hint in the text column under it. Keyed off the normalized
+ * status, like the chip, so the legacy values read as what they became.
+ */
+export function ApplicationStatusHint({
+  status,
+  className,
+}: {
+  status: ApplicationStatus | LegacyApplicationStatus;
+  className?: string;
+}) {
+  const t = useTranslations('worker_applications.status_hint');
+  return (
+    <p className={['text-xs text-[var(--jale-ink-2)]', className].filter(Boolean).join(' ')}>
+      {t(normalizeApplicationStatus(status))}
+    </p>
+  );
+}

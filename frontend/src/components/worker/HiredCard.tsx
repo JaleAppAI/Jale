@@ -9,6 +9,7 @@ import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { Button } from '@/components/ui/button';
 import { DashboardPanel } from '@/components/ui/dashboard-panel';
+import { Icon } from '@/components/ui/icon';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { Textarea } from '@/components/ui/textarea';
 import { accountKeyFromIdToken } from '@/lib/account-key';
@@ -261,8 +262,14 @@ export function HiredCard({
         )}
 
         <form onSubmit={(event) => void handleSend(event)} noValidate className="grid gap-2 border-t border-[var(--jale-divider)] pt-5">
+          {/* Where the answer arrives, said BEFORE the box as its own note, so
+              a worker learns the reply comes on WhatsApp before typing rather
+              than while waiting on this page. Still the box's description. */}
+          <p className="mb-1 flex items-start gap-2 rounded-[var(--radius-input)] bg-[var(--jale-blue-50)] px-3 py-2.5 text-xs leading-relaxed text-[var(--jale-blue-700)]">
+            <span className="mt-px flex-none"><Icon name="message" /></span>
+            <span id={hintId}>{t('message_hint')}</span>
+          </p>
           <label htmlFor={messageId} className="text-sm font-bold text-[var(--jale-ink)]">{t('message_label')}</label>
-          <p id={hintId} className="text-xs text-[var(--jale-ink-2)]">{t('message_hint')}</p>
           <Textarea
             id={messageId}
             name="message"

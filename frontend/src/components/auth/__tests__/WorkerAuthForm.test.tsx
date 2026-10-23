@@ -144,6 +144,32 @@ afterEach(() => {
     vi.useRealTimers();
 });
 
+/*
+ * A worker who signs in with a different number from the one on WhatsApp ends
+ * up with two accounts. The hint sits under the phone field on both doors.
+ */
+describe('WorkerAuthForm — which number to use', () => {
+    it('says to use the WhatsApp number under the sign-in phone field', () => {
+        render(<WorkerAuthForm />);
+        expect(screen.getByText(message('auth.worker.phone_hint'))).toBeInTheDocument();
+    });
+
+    it('says it under the sign-up phone field too', async () => {
+        const user = userEvent.setup();
+        render(<WorkerAuthForm />);
+        await goToSignup(user);
+        expect(screen.getByText(message('auth.worker.signup_title'))).toBeInTheDocument();
+        expect(screen.getByText(message('auth.worker.phone_hint'))).toBeInTheDocument();
+    });
+
+    it('puts the hint after the phone field, not above it', () => {
+        render(<WorkerAuthForm />);
+        const field = screen.getByRole('textbox');
+        const hint = screen.getByText(message('auth.worker.phone_hint'));
+        expect(field.compareDocumentPosition(hint) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+});
+
 describe('WorkerAuthForm — signup is phone only', () => {
     it('asks for nothing but the phone number', async () => {
         const user = userEvent.setup();

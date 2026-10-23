@@ -3,6 +3,7 @@
 import * as React from 'react';
 import { useCallback, useEffect, useId, useRef, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
+import { useOverlayPresence } from '@/lib/tutorials/overlay';
 import { Icon } from './icon';
 
 /**
@@ -99,6 +100,10 @@ export function Sheet({
 
     // Portals need a DOM; render nothing on the server pass.
     const mounted = useInBrowser();
+
+    // Tells the tutorial coordinator a dialog is up, so no tutorial auto-opens
+    // over it. Does nothing outside the coordinator's provider.
+    useOverlayPresence(open);
 
     useEffect(() => {
         if (!open) return;

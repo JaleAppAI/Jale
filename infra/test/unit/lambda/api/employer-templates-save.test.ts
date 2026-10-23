@@ -4,6 +4,7 @@ import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
 import { resolveCompanyEntitlements } from '../../../../lambda/lib/entitlements';
 import { readCompanyUsage, CompanyUsageRefusedError } from '../../../../lambda/lib/company-usage';
+import { parseJobFields } from '../../../../lambda/lib/job-fields';
 import { resolveEmployerActor } from '../../../../lambda/lib/employer-actor';
 
 jest.mock('../../../../lambda/lib/db');
@@ -332,6 +333,40 @@ describe('employer-templates-save', () => {
     expect(body.keys).toEqual(['resume']);
   });
 
+  // Date of birth is no longer offered on new jobs; existing jobs keep it.
+  it('stores a new template without date_of_birth in either tier', async () => {
+    let res = await handler(makeEvent({
+      payload: { ...BASE_PAYLOAD, required_fields: ['work_authorization', 'date_of_birth'], optional_fields: ['education'] },
+    }));
+    expect(res.statusCode).toBe(201);
+    let insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO employer_job_templates'));
+    expect(JSON.parse(insertCall[1][2])).toMatchObject({ required_fields: ['work_authorization'], optional_fields: ['education'] });
+
+    mockQuery.mockClear();
+    res = await handler(makeEvent({ payload: { ...BASE_PAYLOAD, optional_fields: ['date_of_birth'] } }));
+    expect(res.statusCode).toBe(201);
+    insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO employer_job_templates'));
+    expect(JSON.parse(insertCall[1][2]).optional_fields).toEqual([]);
+  });
+
+  it('drops date_of_birth when an existing template is saved again', async () => {
+    mockQuery.mockImplementation((sql: string) => {
+      if (sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'emp-1' }] });
+      if (sql.includes('SELECT id FROM employer_job_templates')) return Promise.resolve({ rowCount: 0, rows: [] });
+      if (sql.includes('UPDATE employer_job_templates')) return Promise.resolve({ rowCount: 1, rows: [TEMPLATE_ROW] });
+      return Promise.resolve({});
+    });
+
+    const res = await handler(makeEvent({
+      id: '3f6d3a2e-8c4b-4a1e-9d2f-1b5e6c7a8d90',
+      payload: { ...BASE_PAYLOAD, required_fields: ['date_of_birth', 'home_address'] },
+    }));
+
+    expect(res.statusCode).toBe(200);
+    const updateCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('UPDATE employer_job_templates'));
+    expect(JSON.parse(updateCall[1][1]).required_fields).toEqual(['home_address']);
+  });
+
   it('rejects an invalid optional_docs entry with 400 invalid_optional_docs', async () => {
     const res = await handler(makeEvent({ payload: { ...BASE_PAYLOAD, optional_docs: ['bogus'] } }));
     expect(res.statusCode).toBe(400);
@@ -641,3 +676,56 @@ describe('employer-templates-save', () => {
     });
   });
 });
+
+// Shift choices (131, contract K2.2): templates carry them through
+// parseJobFields, the parser job create runs on the same payload.
+describe('employer-templates-save: shift_periods', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.REQUIRED_TOS_VERSION = 'v1.0';
+    mockGetDbPool.mockResolvedValue({
+      connect: jest.fn().mockResolvedValue({ query: mockQuery, release: mockRelease }),
+    });
+    mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_free', activeJobLimit: 15, templateLimit: 2, foremanSeatLimit: 0 });
+    mockReadCompanyUsage.mockResolvedValue(companyUsage(0));
+    mockResolveEmployerActor.mockResolvedValue(ownerActor());
+    mockQuery.mockImplementation((sql: string) => {
+      if (sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'emp-1' }] });
+      if (sql.includes('COUNT(*)')) return Promise.resolve({ rows: [{ template_count: 0 }] });
+      if (sql.includes('SELECT id FROM employer_job_templates')) return Promise.resolve({ rowCount: 0, rows: [] });
+      if (sql.includes('INSERT INTO employer_job_templates')) return Promise.resolve({ rows: [TEMPLATE_ROW] });
+      return Promise.resolve({});
+    });
+  });
+
+  const storedPayload = () => {
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO employer_job_templates'));
+    return JSON.parse(insertCall![1][2]) as Record<string, unknown>;
+  };
+
+  it('stores the periods canonical, and the stored payload parses back to the same periods for a new job', async () => {
+    const res = await handler(makeEvent({ payload: { ...BASE_PAYLOAD, shift_periods: ['night', 'day', 'day'] } }));
+    expect(res.statusCode).toBe(201);
+    const stored = storedPayload();
+    expect(stored.shift_periods).toEqual(['day', 'night']);
+
+    // Applying the template posts this payload to job create.
+    const reparsed = parseJobFields(stored);
+    expect(reparsed.ok && (reparsed.value as unknown as Record<string, unknown>).shift_periods).toEqual(['day', 'night']);
+  });
+
+  it('stores [] for a payload without the field', async () => {
+    const res = await handler(makeEvent({ payload: BASE_PAYLOAD }));
+    expect(res.statusCode).toBe(201);
+    expect(storedPayload().shift_periods).toEqual([]);
+  });
+
+  it('rejects an invalid value with the work_days error shape and stores nothing', async () => {
+    const res = await handler(makeEvent({ payload: { ...BASE_PAYLOAD, shift_periods: ['afternoon'] } }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'invalid_shift_periods', valid: ['day', 'evening', 'night', 'overnight'] });
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+});
+

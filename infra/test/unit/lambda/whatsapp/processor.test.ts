@@ -1773,6 +1773,53 @@ describe('Processor Lambda', () => {
       expect(esBody).toContain('Pago no especificado');
     });
 
+    // Shift choices (131, contract K2.4): one line right after the pay line,
+    // only when the job has shifts. The cases above (no shifts) keep their
+    // text exactly.
+    describe('shift choices in the job-details block', () => {
+      const shiftJob = (shift_periods: unknown) => ({
+        id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso',
+        pay_min: 15, pay_max: 20, pay_interval: 'hourly', pay_raw: null, shift_periods,
+      });
+
+      it('prints the Spanish shifts line after the pay line', async () => {
+        const body = await runTypedInfoAction('es', shiftJob(['night', 'day']));
+        expect(body).toBe(
+          'Detalles del trabajo\n\nElectrician\nABC\nEl Paso\n$15-$20/hora\nTurnos: Día, Noche\n\n'
+          + 'Responde "1 me interesa" para aplicar.',
+        );
+      });
+
+      it('prints the English shifts line after the pay line', async () => {
+        const body = await runTypedInfoAction('en', shiftJob(['night', 'day']));
+        expect(body).toBe(
+          'Job details\n\nElectrician\nABC\nEl Paso\n$15-$20/hour\nShifts: Day, Night\n\n'
+          + 'Reply "1 interested" to apply.',
+        );
+      });
+
+      it('reads the shifts in the job lookup', async () => {
+        await runTypedInfoAction('en', shiftJob(['evening']));
+        const lookup = mockQuery.mock.calls.find(([sql]) =>
+          /FROM jobs/i.test(sql as string) && /status = 'active'/i.test(sql as string));
+        expect(lookup![0]).toMatch(/\bshift_periods\b/);
+      });
+
+      // One reply per test: the helper reads the first matching outbox insert.
+      const PLAIN = {
+        es: 'Detalles del trabajo\n\nElectrician\nABC\nEl Paso\n$15-$20/hora\n\nResponde "1 me interesa" para aplicar.',
+        en: 'Job details\n\nElectrician\nABC\nEl Paso\n$15-$20/hour\n\nReply "1 interested" to apply.',
+      } as const;
+      it.each([
+        ['no shifts', [], 'es'],
+        ['no shifts', [], 'en'],
+        ['a row without the column', undefined, 'es'],
+        ['a row without the column', undefined, 'en'],
+      ] as const)('prints no shifts line for %s (%s, %s)', async (_label, periods, language) => {
+        expect(await runTypedInfoAction(language, shiftJob(periods))).toBe(PLAIN[language]);
+      });
+    });
+
     // §4.2a: relaying a non-OTP reply while awaiting_otp is CONVERSATION-SCOPED.
     // It must NOT bind identity (no user_id / conversation_state write) — account
     // access still requires a completed OTP. The reply is still relayed to the
@@ -5010,6 +5057,50 @@ describe('v2 routing branch', () => {
       expect(outboxBodies()).toEqual([]);
       expect(countQueryByPattern(/SELECT tos_version FROM users/i)).toBe(0);
       expect(mockListMatchedJobsForWorker).not.toHaveBeenCalled();
+    });
+
+    // Shift choices (131, contract K2.4): the approved job_alert template and
+    // its five variables stay exactly as they are; only the fallback text
+    // (the info reply) gains the shifts line.
+    it('sends the same job_alert variables for a job with shifts; only the fallback body gains the shifts line', async () => {
+      const cardFor = async (sid: string, shift_periods: string[]) => {
+        mockQuery.mockReset();
+        handoff({ referredJobId: JOB_ID });
+        routeQueries(sid, { conversation_state: 'new', user_id: null, language: 'es' }, (sql) => {
+          if (/FROM jobs/i.test(sql) && /status = 'active'/i.test(sql)) {
+            return {
+              rowCount: 1,
+              rows: [{
+                id: JOB_ID, title: 'Finish Carpenter', company: 'Jale', location: 'El Paso, TX',
+                pay_min: null, pay_max: null, pay_interval: null, pay_raw: '$25/hr', shift_periods,
+              }],
+            };
+          }
+          return undefined;
+        });
+        await handler(makeSqsEvent({ MessageSid: sid, From: FROM, Body: '123456' }), {} as any, {} as any);
+        const jobRead = mockQuery.mock.calls.find(([sql]) => /FROM jobs/i.test(sql as string));
+        const cardInsert = mockQuery.mock.calls.find(
+          ([sql]) => /INSERT INTO whatsapp_outbox/i.test(sql as string) && /content_template/i.test(sql as string),
+        )!;
+        const params = cardInsert[1] as unknown[];
+        return { sql: String(jobRead![0]), template: params[2], variables: params[3] as Record<string, string> };
+      };
+
+      const plain = await cardFor('SM-otp-card-plain', []);
+      const withShifts = await cardFor('SM-otp-card-shifts', ['night', 'day']);
+
+      expect(withShifts.sql).toMatch(/\bshift_periods\b/);
+      expect(withShifts.template).toBe('job_alert_es');
+      expect(withShifts.template).toBe(plain.template);
+      const { [FALLBACK_BODY_KEY]: plainFallback, ...plainVariables } = plain.variables;
+      const { [FALLBACK_BODY_KEY]: shiftFallback, ...shiftVariables } = withShifts.variables;
+      expect(Object.keys(shiftVariables)).toEqual(['1', '2', '3', '4', '5']);
+      expect(shiftVariables).toEqual(plainVariables);
+      expect(plainFallback).toBe('Detalles del trabajo\n\nFinish Carpenter\nJale\nEl Paso, TX\n$25/hr\n\nResponde "1 me interesa" para aplicar.');
+      expect(shiftFallback).toBe(
+        'Detalles del trabajo\n\nFinish Carpenter\nJale\nEl Paso, TX\n$25/hr\nTurnos: Día, Noche\n\nResponde "1 me interesa" para aplicar.',
+      );
     });
 
     it('with no referred job the code turn sends NOTHING -- not the idle help', async () => {

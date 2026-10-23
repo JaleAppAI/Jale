@@ -205,9 +205,9 @@ describe('verifyTwilioTemplates', () => {
     );
   });
 
-  // The unversioned pair stays mapped until the deploy that stops reading it,
-  // so before that deploy the check runs with `beforeDeploy` and reports the
-  // pair as a notice. Every other rule still fails the run.
+  // The unversioned pair is retired. Under `beforeDeploy` a mapped one is
+  // reported as a notice naming its removal; every other rule still fails
+  // the run.
   describe('beforeDeploy', () => {
     const allApproved = { 'ApprovalRequests': { ok: true, body: { whatsapp: { status: 'approved', category: 'UTILITY' } } } };
     const RETIRED = ['admin_support_reply_es', 'admin_support_reply_en'] as const;
@@ -223,11 +223,8 @@ describe('verifyTwilioTemplates', () => {
         beforeDeploy: true,
       });
       expect(result.failures).toEqual([]);
-      expect(result.notices).toEqual(RETIRED.map((key) => expect.stringContaining(key)));
-      for (const notice of result.notices) {
-        expect(notice).toContain('remove after the deploy');
-        expect(notice).toContain('--unset-template');
-      }
+      expect(result.notices).toEqual(RETIRED.map((key) => `${key}: still mapped; admin replies use `
+        + `admin_support_reply_v2_<lang>, so remove it with seed-whatsapp-twilio-templates.mjs --unset-template ${key}`));
       // The pair is still listed, informationally, like any other mapped key.
       expect(result.rows.map((row) => row.key)).toEqual(expect.arrayContaining([...RETIRED]));
     });

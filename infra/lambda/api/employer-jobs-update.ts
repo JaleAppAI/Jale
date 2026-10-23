@@ -3,7 +3,7 @@ import { getDbPool, setRlsContext } from '../lib/db';
 import { resolveCompanyEntitlements } from '../lib/entitlements';
 import { readCompanyUsage, CompanyUsageRefusedError } from '../lib/company-usage';
 import { corsHeaders, errorMessage } from '../lib/http';
-import { formatPayRange, JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs, parseRequiredFields, WRITABLE_JOB_STATUSES } from '../lib/job-fields';
+import { formatPayRange, JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs, parseRequiredFields, stripRetiredFields, WRITABLE_JOB_STATUSES } from '../lib/job-fields';
 import { setJobCoordinates } from '../lib/location';
 import { parseCityFields, parseCityFromLocation } from '../lib/city-fields';
 import { resolveJobLocationFields } from '../lib/job-location-parse';
@@ -218,6 +218,11 @@ const EDITABLE_COLUMNS = [
   // silently delete the questions, and with applicants present a
   // clear-on-omit would trip the lock on every unrelated edit.
   'pre_application_prompts',
+  // Sprint 29 (131): appended at the END for the same reason. PRESERVE-on-omit
+  // too (contract K2.2: an absent key leaves the stored choice alone, an array
+  // replaces it, [] clears it), and not part of the applicant lock: shifts
+  // describe the job, they are not something an applicant supplied.
+  'shift_periods',
 ] as const;
 
 async function handleFieldEdit(
@@ -277,6 +282,11 @@ async function handleFieldEdit(
     return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: promptsResult.error }) };
   }
   const preApplicationPromptsInput = promptsResult.value;
+
+  // Preserve-on-omit like the prompts above: parseJobFields validates the
+  // value and maps an absent key to [], which the flag below keeps from
+  // reading as a clear.
+  const hasShiftPeriodsKey = Object.prototype.hasOwnProperty.call(body, 'shift_periods');
 
   // Recomputed on every edit (location is always present in this full-replacement
   // payload); explicit city/state_region body fields win over the parse -- an
@@ -351,6 +361,7 @@ async function handleFieldEdit(
       city: string | null; state_region: string | null;
       certification_requirements: Array<{ name: string; tier: string; proof_required: boolean }> | null;
       pre_application_prompts: unknown;
+      shift_periods: string[] | null;
     }>(
       `SELECT jobs.job_type,
               jobs.required_docs,
@@ -362,6 +373,7 @@ async function handleFieldEdit(
               jobs.state_region,
               jobs.certification_requirements,
               jobs.pre_application_prompts,
+              jobs.shift_periods,
               (SELECT COUNT(*)::int FROM job_applications WHERE job_id = jobs.id) AS applicant_count
          FROM jobs
         WHERE jobs.id = $1 AND jobs.employer_id = ANY($2::uuid[])
@@ -381,14 +393,21 @@ async function handleFieldEdit(
     // pre-existing exact-replace semantics -- deliberately asymmetric, same
     // as the city/state_region clear-vs-preserve distinction commented below.
     const optional_docs = hasOptionalDocsKey ? optionalDocsInput : (cur.optional_docs ?? []);
-    const required_fields = hasRequiredFieldsKey ? requiredFieldsInput : (cur.required_fields ?? []);
-    const optional_fields = hasOptionalFieldsKey ? optionalFieldsInput : (cur.optional_fields ?? []);
+    // A retired field type (job-fields.ts) is kept when the stored job already
+    // asks for it, in either tier; a body that adds it to a job without it has
+    // it dropped.
+    const storedFields = [...(cur.required_fields ?? []), ...(cur.optional_fields ?? [])];
+    const required_fields = hasRequiredFieldsKey ? stripRetiredFields(requiredFieldsInput, storedFields) : (cur.required_fields ?? []);
+    const optional_fields = hasOptionalFieldsKey ? stripRetiredFields(optionalFieldsInput, storedFields) : (cur.optional_fields ?? []);
     // Written back verbatim when omitted, so the lock comparison below is
     // equal BY CONSTRUCTION and the UPDATE is a no-op round-trip on this
     // column rather than a clear.
     const pre_application_prompts = hasPreApplicationPromptsKey
       ? preApplicationPromptsInput
       : (Array.isArray(cur.pre_application_prompts) ? cur.pre_application_prompts : []);
+    const shift_periods = hasShiftPeriodsKey
+      ? f.shift_periods
+      : (Array.isArray(cur.shift_periods) ? cur.shift_periods : []);
 
     // Tier-overlap rejection BEFORE hitting the DB CHECK -- computed on the
     // EFFECTIVE (post-preserve-merge) values, not the raw body, so an
@@ -507,6 +526,7 @@ async function handleFieldEdit(
       // NOT NULL DEFAULT '[]' in 091 -- always a real array, so it never
       // needs the null-vs-"null" dance certification_requirements does above.
       pre_application_prompts: JSON.stringify(pre_application_prompts),
+      shift_periods,
       // Matching identity (city_key/state): an omitted triple replaces the
       // stored keys on purpose -- a fresh parse of the new location text, or
       // NULL when unparseable. A stale key must never keep matching the old
@@ -556,7 +576,7 @@ async function handleFieldEdit(
          trade_category, required_experience_years, required_experience_months, certifications,
          city_key, city, state, state_region,
          trade_category_other, expected_duration_bucket, work_days, shift_start, shift_end, certification_requirements,
-         pre_application_prompts,
+         pre_application_prompts, shift_periods,
          public_code, public_listing_enabled,
          (SELECT COUNT(*)::int FROM job_applications WHERE job_id = jobs.id) AS applicant_count`,
       [...params, jobId],

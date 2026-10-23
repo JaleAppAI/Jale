@@ -82,6 +82,13 @@ vi.mock('@/lib/api/worker', async (importOriginal) => ({
     updateWorkerProfile: vi.fn(),
     getVaultDocuments: vi.fn(async () => []),
     recordJobView: vi.fn(),
+    // The page reads one application for the W2 tutorial's "has applied"
+    // signal; stubbed so the real fetch never runs here.
+    getApplications: vi.fn(async () => ({
+        applications: [],
+        next_cursor: null,
+        attention: { details_requested: [], unacknowledged_hires: [] },
+    })),
 }));
 
 /** Assigned by each test before rendering; the fake hook serves it. */
@@ -200,12 +207,74 @@ describe('worker job detail — the facts card', () => {
             [t('shift_schedule'), 'Mon, Tue, Wed · 7:00 AM – 4:00 PM'],
             [t('expected_duration'), message('common.duration_bucket.1_3m')],
             [t('start_date'), 'June 15, 2026'],
-            [t('openings'), '1/3'],
+            [t('openings'), '1 of 3 spots open'],
             [t('facts.location'), 'Austin, TX'],
             [t('trade'), message('employer_dashboard.modal.trade.drywall')],
             [t('required_experience'), '3 years'],
             [t('language'), message('public_job.language_es')],
         ]);
+    });
+
+    /*
+     * The shift choices (contract K2) are part of the one schedule fact, read
+     * in the employer page's order: days · hours · shifts. A job with no
+     * choice (`[]`, or the key absent as in `fullJob`, which the locked-order
+     * test above already pins) adds nothing, not even a separator.
+     */
+    describe('the shift choices', () => {
+        const shiftTile = (container: HTMLElement) =>
+            tiles(container).find(([label]) => label === t('shift_schedule'));
+
+        it('adds them to the schedule tile, after the days and hours', () => {
+            seed = fullJob({ shift_periods: ['day', 'night'] });
+            const { container } = renderIntl(<WorkerJobDetailPage />);
+            expect(shiftTile(container)).toEqual([
+                t('shift_schedule'), 'Mon, Tue, Wed · 7:00 AM – 4:00 PM · Day, Night',
+            ]);
+        });
+
+        it('names them in Spanish', () => {
+            seed = sparseJob({ shift_periods: ['day', 'night'] });
+            const { container } = renderIntl(<WorkerJobDetailPage />, 'es');
+            expect(tiles(container)).toContainEqual([message('worker_job_detail.shift_schedule', 'es'), 'Día, Noche']);
+        });
+
+        it('adds them after the days and hours in Spanish too', () => {
+            seed = fullJob({ shift_periods: ['day', 'night'] });
+            const { container } = renderIntl(<WorkerJobDetailPage />, 'es');
+            const value = tiles(container)
+                .find(([label]) => label === message('worker_job_detail.shift_schedule', 'es'))?.[1];
+            expect(value?.startsWith(`${message('common.work_days.mon', 'es')}, `)).toBe(true);
+            expect(value?.endsWith(' · Día, Noche')).toBe(true);
+        });
+
+        it('adds nothing, and no stray separator, when none is chosen', () => {
+            seed = fullJob({ shift_periods: [] });
+            const { container } = renderIntl(<WorkerJobDetailPage />);
+            expect(shiftTile(container)).toEqual([t('shift_schedule'), 'Mon, Tue, Wed · 7:00 AM – 4:00 PM']);
+        });
+
+        it('makes the whole schedule tile when they are the only schedule', () => {
+            seed = sparseJob({ shift_periods: ['night', 'day'] });
+            const { container } = renderIntl(<WorkerJobDetailPage />);
+            expect(tiles(container)).toEqual([
+                [t('shift_schedule'), 'Day, Night'],
+                [t('start_date'), t('facts.start_unknown')],
+                [t('facts.location'), 'Austin, TX'],
+            ]);
+        });
+
+        it('stand in for the old free-text schedule', () => {
+            seed = sparseJob({ shift_schedule: 'Old free text', shift_periods: ['evening'] });
+            const { container } = renderIntl(<WorkerJobDetailPage />);
+            expect(shiftTile(container)).toEqual([t('shift_schedule'), 'Evening']);
+        });
+
+        it('leave the old free-text schedule alone when none is chosen', () => {
+            seed = sparseJob({ shift_schedule: 'Old free text', shift_periods: [] });
+            const { container } = renderIntl(<WorkerJobDetailPage />);
+            expect(shiftTile(container)).toEqual([t('shift_schedule'), 'Old free text']);
+        });
     });
 
     it('renders the two section labels as h3s under the panel title', () => {
@@ -263,7 +332,69 @@ describe('worker job detail — the facts card', () => {
         const documents = screen.getByRole('heading', { level: 3, name: t('facts.documents') })
             .parentElement!;
         expect(within(documents).getByText(message('doc_types.resume'))).toBeInTheDocument();
-        expect(within(documents).getByText(t('doc_missing'))).toBeInTheDocument();
+    });
+
+    /*
+     * Before the employer asks for anything, a document is never a reason not
+     * to apply: the section says they may ask later, marks each missing one
+     * "Later" in a neutral tone, and sends nobody off to upload. Only a real
+     * details request turns the same rows into "still missing".
+     */
+    describe('documents before a details request', () => {
+        const documentsSection = () => screen.getByRole('heading', { level: 3, name: t('facts.documents') })
+            .parentElement!;
+
+        it.each([
+            ['not applied yet', { already_applied: false }],
+            ['applied, nothing requested', { already_applied: true, application_status: 'pending', details_status: 'not_requested' }],
+            ['applied, details already sent', { already_applied: true, application_status: 'details_requested', details_status: 'complete' }],
+        ] as const)('says the employer may ask later, never "Missing" (%s)', (_label, over) => {
+            seed = fullJob({ required_docs: ['resume', 'driver_license'], missing_docs: ['resume'], ...over });
+            renderIntl(<WorkerJobDetailPage />);
+
+            const documents = documentsSection();
+            expect(within(documents).getByText(t('docs_later'))).toBeInTheDocument();
+            expect(within(documents).queryByText('Missing')).not.toBeInTheDocument();
+            expect(within(documents).queryByText(/Upload missing documents/)).not.toBeInTheDocument();
+            expect(within(documents).queryByRole('link', { name: t('upload_link') })).not.toBeInTheDocument();
+            expect(within(documents).getByText(t('doc_later'))).toBeInTheDocument();
+            // A saved document still says so.
+            expect(within(documents).getByText(t('doc_ok'))).toBeInTheDocument();
+            // The "Later" chip is neutral, not the danger tone.
+            expect(within(documents).getByText(t('doc_later')).closest('[class*="danger"]')).toBeNull();
+        });
+
+        it('says it in Spanish', () => {
+            seed = fullJob({ required_docs: ['resume'], missing_docs: ['resume'] });
+            renderIntl(<WorkerJobDetailPage />, 'es');
+            const documents = screen.getByRole('heading', {
+                level: 3, name: message('worker_job_detail.facts.documents', 'es'),
+            }).parentElement!;
+            expect(within(documents).getByText(message('worker_job_detail.docs_later', 'es'))).toBeInTheDocument();
+            expect(within(documents).getByText('Después')).toBeInTheDocument();
+            expect(within(documents).queryByText('Falta')).not.toBeInTheDocument();
+        });
+    });
+
+    describe('documents after a details request', () => {
+        it('still marks a missing one and sends the worker to upload it', () => {
+            seed = fullJob({
+                required_docs: ['resume'],
+                missing_docs: ['resume'],
+                already_applied: true,
+                application_status: 'details_requested',
+                details_status: 'requested',
+                application_id: 'app-1',
+            });
+            renderIntl(<WorkerJobDetailPage />);
+
+            const documents = screen.getByRole('heading', { level: 3, name: t('facts.documents') })
+                .parentElement!;
+            expect(within(documents).getByText(t('doc_missing'))).toBeInTheDocument();
+            expect(within(documents).getByText(t('upload_prompt'), { exact: false })).toBeInTheDocument();
+            expect(within(documents).getByRole('link', { name: t('upload_link') })).toHaveAttribute('href', '/worker/profile');
+            expect(within(documents).queryByText(t('docs_later'))).not.toBeInTheDocument();
+        });
     });
 
     it('renders the description under a plain About label, the date in the header', () => {

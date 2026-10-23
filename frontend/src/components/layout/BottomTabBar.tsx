@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useRef, type RefObject } from 'react';
 import { useTranslations } from 'next-intl';
 import { Link, usePathname } from '@/i18n/navigation';
 import { Icon } from '@/components/ui/icon';
@@ -36,11 +37,17 @@ export function BottomTabBar({
 }) {
     const tShell = useTranslations('app_shell');
     const pathname = usePathname();
+    const navRef = useRef<HTMLElement>(null);
+    useTabBarOffset(navRef);
 
     return (
         <nav
+            ref={navRef}
             aria-label={tShell('mobile_nav')}
-            className="fixed inset-x-0 bottom-0 z-20 border-t border-[var(--jale-divider)] bg-[color-mix(in_srgb,var(--jale-card)_95%,transparent)] backdrop-blur lg:hidden pb-[env(safe-area-inset-bottom)]"
+            // A MINIMUM of the nominal height, never a fixed one: a label that
+            // wraps grows the bar rather than being clipped, and the measured
+            // height is what `useTabBarOffset` hands on.
+            className="fixed inset-x-0 bottom-0 z-20 min-h-[calc(var(--jale-tab-bar-height)+env(safe-area-inset-bottom))] border-t border-[var(--jale-divider)] bg-[color-mix(in_srgb,var(--jale-card)_95%,transparent)] backdrop-blur lg:hidden pb-[env(safe-area-inset-bottom)]"
         >
             <ul className="mx-auto flex max-w-lg items-stretch justify-around">
                 {role === 'employer' ? (
@@ -51,6 +58,55 @@ export function BottomTabBar({
             </ul>
         </nav>
     );
+}
+
+const TAB_BAR_OFFSET = '--jale-tab-bar-offset';
+
+/**
+ * Keeps `--jale-tab-bar-offset` (see `globals.css`) equal to this bar's real
+ * outer height, so the shell's bottom padding and the job page's Apply bar
+ * meet it exactly even when a wrapped label has made it taller than nominal.
+ *
+ * - It watches the BORDER box: the safe-area padding and the top rule are part
+ *   of what the content above has to clear, and a change in the inset alone
+ *   (a phone rotating) leaves the content box as it was.
+ * - The value goes inline on <html>, which wins over the stylesheet's nominal
+ *   one. A hidden bar (`lg:hidden` measures 0) drops it, as does unmounting,
+ *   so the nominal value is back for the next bar. It only drops a value it
+ *   wrote itself, in case another bar has written since.
+ * - Where there is no ResizeObserver it does nothing, and the nominal value
+ *   stands.
+ */
+function useTabBarOffset(ref: RefObject<HTMLElement | null>) {
+    useEffect(() => {
+        const nav = ref.current;
+        if (!nav || typeof ResizeObserver === 'undefined') return;
+        const root = document.documentElement.style;
+        let written: string | null = null;
+        const drop = () => {
+            if (written !== null && root.getPropertyValue(TAB_BAR_OFFSET) === written) {
+                root.removeProperty(TAB_BAR_OFFSET);
+            }
+            written = null;
+        };
+        const observer = new ResizeObserver((entries) => {
+            const entry = entries[entries.length - 1];
+            if (!entry) return;
+            // Older engines give no box sizes; the element's own box is the same figure.
+            const height = entry.borderBoxSize?.[0]?.blockSize ?? entry.target.getBoundingClientRect().height;
+            if (height > 0) {
+                written = `${height}px`;
+                root.setProperty(TAB_BAR_OFFSET, written);
+            } else {
+                drop();
+            }
+        });
+        observer.observe(nav, { box: 'border-box' });
+        return () => {
+            observer.disconnect();
+            drop();
+        };
+    }, [ref]);
 }
 
 /*

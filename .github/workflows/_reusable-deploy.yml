@@ -480,6 +480,22 @@ jobs:
         shell: bash
         run: npx --no-install tsx scripts/check-prepared-login-secrets.ts 2>/dev/null
 
+      # The frontend and admin image builds copy the Lambda Web Adapter from
+      # ECR Public. An anonymous pull counts against a data allowance shared by
+      # everyone on the runner's address and is refused with 429 ("Data limit
+      # exceeded") when it runs out; a signed-in pull counts against this
+      # account instead. The deploy role needs ecr-public:GetAuthorizationToken
+      # and sts:GetServiceBearerToken. The token goes straight to docker on
+      # stdin. AWS error text names the account and the role, and the run log
+      # is public, so stderr is discarded and a failure is a fixed sentence.
+      - name: Sign in to ECR Public
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws ecr-public get-login-password --region us-east-1 2>/dev/null | docker login --username AWS --password-stdin public.ecr.aws >/dev/null 2>&1 \
+            || { echo "::error::Could not sign in to ECR Public. The deploy role needs ecr-public:GetAuthorizationToken and sts:GetServiceBearerToken."; exit 1; }
+          echo "Signed in to ECR Public."
+
       - name: Run CDK diff after approval
         working-directory: infra
         shell: bash
@@ -493,14 +509,20 @@ jobs:
       # Database posture, before and after the deploy (scripts/db-posture-gate.mjs).
       # Report-only until the posture metrics show a qualifying clean history,
       # then enforcing for good. The override and its reason reach the script
-      # through env only, never interpolated into the command.
+      # through env only, never interpolated into the command. Before the
+      # deploy, the database is checked against this release's own manifest
+      # and change log, which the writer puts in the runner's temp directory;
+      # if the writer fails, the step fails before the gate runs.
       - name: Database posture gate
         working-directory: infra
         shell: bash
         env:
           POSTURE_OVERRIDE: ${{ inputs.posture-override }}
           POSTURE_OVERRIDE_REASON: ${{ inputs.posture-override-reason }}
-        run: node scripts/db-posture-gate.mjs --phase pre
+        run: |
+          set -euo pipefail
+          npx --no-install tsx scripts/write-posture-expectation.ts "$RUNNER_TEMP/posture-expected.json"
+          node scripts/db-posture-gate.mjs --phase pre --expected "$RUNNER_TEMP/posture-expected.json"
 
       - name: Deploy CDK stacks
         working-directory: infra

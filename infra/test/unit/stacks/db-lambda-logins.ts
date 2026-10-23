@@ -37,6 +37,7 @@ export const EXPECTED_DB_LOGIN: Readonly<Record<string, string>> = {
   'JaleApiStack/EmployerJobCandidatesLambda': 'jale_api',
   'JaleApiStack/WorkerApplicationsListLambda': 'jale_api',
   'JaleApiStack/WorkerProfileUpdateLambda': 'jale_api',
+  'JaleApiStack/TutorialProgressFunction': 'jale_api',
   'JaleAuthStack/PostConfirmationLambda': 'jale_api',
   'JaleBillingStack/GetBillingLambda': 'jale_api',
   'JaleBillingStack/CheckoutLambda': 'jale_api',

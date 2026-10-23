@@ -230,12 +230,17 @@ elif ! docker ps --format '{{.Names}}' | grep -qx "$container"; then
   fi
 fi
 
+# Ready means the final server answers over TCP. On a new data directory the
+# image's entrypoint first runs a temporary server that listens on the Unix
+# socket only and also reports ready; a socket probe can pass against it just
+# before it shuts down, and the next command then meets "the database system is
+# shutting down".
 echo ">> Waiting for PostgreSQL readiness"
 for _ in $(seq 1 60); do
-  docker exec "$container" pg_isready -U "$superuser" -d "$db" >/dev/null 2>&1 && break
+  docker exec "$container" pg_isready -h 127.0.0.1 -p 5432 -U "$superuser" -d "$db" >/dev/null 2>&1 && break
   sleep 1
 done
-docker exec "$container" pg_isready -U "$superuser" -d "$db" >/dev/null 2>&1 \
+docker exec "$container" pg_isready -h 127.0.0.1 -p 5432 -U "$superuser" -d "$db" >/dev/null 2>&1 \
   || { echo "PostgreSQL did not become ready." >&2; exit 1; }
 
 # The emitted URL's user is a separate question from who APPLIES the migrations.

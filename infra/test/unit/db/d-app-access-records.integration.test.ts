@@ -405,10 +405,14 @@ describeInProfiles(['request', 'owner-unrestricted'], 'access records on the req
     const event = sweepEvent({ sub: employer.sub, resource: '/employer/applicants' });
     const response = await asLogin('jale_api', () => invoke(load('../../../lambda/api/employer-applicants-overview'), event));
     expectStatus(response, 200, logs);
-    await expectRead(s, event.requestContext.requestId, {
+    const row = await expectRead(s, event.requestContext.requestId, {
       surface: 'employer.applicants_overview', actorKind: 'employer', actorId: employer.id, subjects: [worker.id],
       records: [applicationId], resultCount: 1, purpose: null, links: false, login: 'jale_api',
     });
+    // details_status is derived from the application answers and the job's
+    // document records, so the record names both alongside the profile reads.
+    expect(sorted(row.categories)).toEqual(['application_answers', 'documents', 'profile', 'trust_assessments']);
+    expect(row.field_names).toContain('details_status');
   });
 
   it('employer.inbox: the inbox read is recorded with the conversation it lists', async () => {

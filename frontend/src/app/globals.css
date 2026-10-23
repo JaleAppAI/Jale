@@ -132,6 +132,15 @@
   --radius-input: 0.625rem;
   --radius-pill:  9999px;
 
+  /* Phone tab bar. Its nominal height is the tabs plus the one-pixel top
+     rule; `BottomTabBar` never renders shorter than that plus the safe-area
+     inset. The offset is the one edge everything above the bar meets (the
+     shell's bottom padding, the job page's Apply bar). The value here is the
+     nominal bar; `BottomTabBar` writes its measured height inline on <html>
+     whenever a wrapped label makes it taller, and that wins. */
+  --jale-tab-bar-height: 4rem;
+  --jale-tab-bar-offset: calc(var(--jale-tab-bar-height) + env(safe-area-inset-bottom));
+
   /* Typography */
   --font-sans: 'Lexend', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }

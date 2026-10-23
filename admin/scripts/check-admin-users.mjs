@@ -194,6 +194,17 @@ for (const [body, surface] of [
   assert.deepEqual(check.cognito.sent, []);
   const [event] = recordedEvents(log);
   assert.deepEqual([event.kind, event.outcome, event.surface, event.record_ids], ['attempt', 'denied', surface, []]);
+  // The route's lookup names the same surface the action records on.
+  assert.equal(adminUsers.adminUserActionSurface(body), event.surface, `${body.action}: the lookup matches the action's surface`);
+}
+
+// --- The surface lookup knows the five actions and nothing else ---------------
+for (const input of [
+  undefined, null, 42, 'deactivate', [], {}, [{ action: 'deactivate' }],
+  { action: 'delete' }, { action: 'Deactivate' }, { action: 42 }, { action: null },
+  { action: '__proto__' }, { action: 'constructor' }, { action: 'toString' }, { action: 'hasOwnProperty' },
+]) {
+  assert.equal(adminUsers.adminUserActionSurface(input), undefined, `no surface for ${JSON.stringify(input)}`);
 }
 
 // --- Input is checked before anything happens ----------------------------------
@@ -629,16 +640,31 @@ for (const [body, definer] of [
   assert.deepEqual([response.status, await bodyOf(response)], [400, { ok: false, error: 'invalid_input' }]);
 
   // A missing, malformed or wrong hash: 400 before the action, whatever the
-  // role, with nothing run or recorded and the directory untouched.
+  // role, with nothing run and the directory untouched. As on the Inbox
+  // route, a body that names a known action records a failed attempt on that
+  // action's surface; one that names none records nothing.
   const deactivate = { action: 'deactivate', requestId: ACTION_REQUEST, adminUserId: TARGET };
+  // The attempt's own write, and nothing else.
+  const ATTEMPT_ONLY = ['1: <connect>', '1: BEGIN', `1: ${RECORD_EVENT_SQL}`, '1: COMMIT', '1: <release>'];
   for (const role of ['admin_superadmin', 'admin_ops']) {
     for (const hash of [null, 'not-a-hash', sha256(JSON.stringify({ action: 'reactivate' })), ` ${'f'.repeat(64)}`]) {
       routeWorld(sessionRow(role));
       response = await post(deactivate, { hash });
       assert.deepEqual([response.status, await bodyOf(response)], [400, { ok: false, error: 'invalid_input' }], `${role}, hash ${hash}`);
-      assert.deepEqual(actionStatements(), [], `${role}, hash ${hash}: nothing runs`);
+      assert.deepEqual(actionStatements(), ATTEMPT_ONLY, `${role}, hash ${hash}: only the attempt is written`);
       assert.deepEqual(check.cognito.sent, [], `${role}, hash ${hash}: no pool call`);
+      assert.deepEqual(
+        recordedEvents(routeLog).map((event) => [event.kind, event.outcome, event.surface, event.categories, event.record_ids, event.field_names]),
+        [['attempt', 'failed', 'admin.admin_deactivate', ['admin_access'], [], []]],
+        `${role}, hash ${hash}: one failed attempt`,
+      );
     }
+  }
+  for (const [label, body] of [['no action', { requestId: ACTION_REQUEST }], ['an unknown action', { action: 'delete', adminUserId: TARGET }]]) {
+    routeWorld(sessionRow('admin_superadmin'));
+    response = await post(body, { hash: 'not-a-hash' });
+    assert.deepEqual([response.status, await bodyOf(response)], [400, { ok: false, error: 'invalid_input' }], label);
+    assert.deepEqual(actionStatements(), [], `${label}: nothing runs or is recorded`);
   }
 
   // The hash is compared as hex, in either case and with surrounding space:

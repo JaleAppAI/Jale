@@ -296,4 +296,33 @@ describe('public-job Lambda', () => {
     const res = await handler(makeEvent({ code: 'ABC123' }));
     expect(JSON.parse(res.body).pre_application_prompts).toBeUndefined();
   });
+
+  // ---------------------------------------------------------------------------
+  // shift_periods (131 grants it to jale_public_jobs, contract K2.4)
+  // ---------------------------------------------------------------------------
+
+  describe('shift_periods', () => {
+    it('selects the column and returns the stored periods for an active job', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ ...ACTIVE_JOB_ROW, shift_periods: ['day', 'night'] }] });
+      const res = await handler(makeEvent({ code: 'ABC123' }));
+      expect(res.statusCode).toBe(200);
+      expect(mockQuery.mock.calls[0][0]).toMatch(/\bshift_periods\b/);
+      expect(JSON.parse(res.body).shift_periods).toEqual(['day', 'night']);
+    });
+
+    it('returns [] when the row carries no array', async () => {
+      for (const shift_periods of [null, undefined]) {
+        mockQuery.mockReset();
+        mockQuery.mockResolvedValueOnce({ rows: [{ ...ACTIVE_JOB_ROW, shift_periods }] });
+        const res = await handler(makeEvent({ code: 'ABC123' }));
+        expect(JSON.parse(res.body).shift_periods).toEqual([]);
+      }
+    });
+
+    it('omits shift_periods from the closed-job minimal view', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ ...ACTIVE_JOB_ROW, status: 'filled', shift_periods: ['day'] }] });
+      const res = await handler(makeEvent({ code: 'ABC123' }));
+      expect(JSON.parse(res.body).shift_periods).toBeUndefined();
+    });
+  });
 });

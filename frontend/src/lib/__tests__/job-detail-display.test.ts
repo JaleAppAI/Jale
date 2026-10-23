@@ -496,6 +496,7 @@ describe('scheduleSummary', () => {
     const job: ScheduleFields = { shift_schedule: '  Mon-Fri 8am-4pm  ' };
     expect(scheduleSummary(job, 'en', fakeT)).toEqual({
       days: [],
+      periods: [],
       hours: null,
       legacy: 'Mon-Fri 8am-4pm',
     });
@@ -529,11 +530,40 @@ describe('scheduleSummary', () => {
   });
 
   it('nothing at all: everything null/empty', () => {
-    expect(scheduleSummary({}, 'en', fakeT)).toEqual({ days: [], hours: null, legacy: null });
+    expect(scheduleSummary({}, 'en', fakeT)).toEqual({ days: [], periods: [], hours: null, legacy: null });
   });
 
   it('a blank shift_start ("") does not count as structured data present', () => {
     const job: ScheduleFields = { shift_start: '', shift_schedule: 'Mon-Fri 8-4' };
-    expect(scheduleSummary(job, 'en', fakeT)).toEqual({ days: [], hours: null, legacy: 'Mon-Fri 8-4' });
+    expect(scheduleSummary(job, 'en', fakeT)).toEqual({ days: [], periods: [], hours: null, legacy: 'Mon-Fri 8-4' });
+  });
+
+  it('shift choices come back as labels, in canonical order, whatever order they arrive in', () => {
+    const job: ScheduleFields = { shift_periods: ['overnight', 'day', 'night'] };
+    expect(scheduleSummary(job, 'en', fakeT).periods).toEqual([
+      'shift_periods.day',
+      'shift_periods.night',
+      'shift_periods.overnight',
+    ]);
+  });
+
+  it('drops a shift value it does not know rather than printing a raw key', () => {
+    const job = { shift_periods: ['evening', 'swing'] } as unknown as ScheduleFields;
+    expect(scheduleSummary(job, 'en', fakeT).periods).toEqual(['shift_periods.evening']);
+  });
+
+  it('a job with only shift choices counts as structured, so the legacy string is suppressed', () => {
+    const job: ScheduleFields = { shift_periods: ['day'], shift_schedule: 'Mon-Fri · Day' };
+    expect(scheduleSummary(job, 'en', fakeT)).toEqual({
+      days: [],
+      periods: ['shift_periods.day'],
+      hours: null,
+      legacy: null,
+    });
+  });
+
+  it('an empty shift list does not count as structured data', () => {
+    const job: ScheduleFields = { shift_periods: [], shift_schedule: 'Mon-Fri 8-4' };
+    expect(scheduleSummary(job, 'en', fakeT).legacy).toBe('Mon-Fri 8-4');
   });
 });

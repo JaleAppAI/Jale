@@ -1059,7 +1059,8 @@
             "shift_start",
             "shift_end",
             "certification_requirements",
-            "pre_application_prompts"
+            "pre_application_prompts",
+            "shift_periods"
           ]
         },
         "jale_whatsapp": {

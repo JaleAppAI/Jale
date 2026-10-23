@@ -1,4 +1,5 @@
 'use client';
+import { useEffect, useEffectEvent, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
@@ -10,7 +11,13 @@ import { DetailPageSkeleton } from '@/components/ui/page-skeletons';
 import { HiredCard } from '@/components/worker/HiredCard';
 import { ApplicationRequirementsFlow } from '@/components/worker/application-requirements/ApplicationRequirementsFlow';
 import { realCompanyName } from '@/lib/employer-name';
-import { getApplicationRequirements, type ApplicationRequirementsState } from '@/lib/api/worker';
+import { terminalScreen } from '@/lib/application-requirements-flow';
+import { useTutorial } from '@/lib/tutorials/use-tutorial';
+import {
+  getApplicationRequirements,
+  getApplications,
+  type ApplicationRequirementsState,
+} from '@/lib/api/worker';
 
 export const dynamic = 'force-dynamic';
 
@@ -52,6 +59,48 @@ export default function WorkerApplicationDetailsPage() {
   // 'auth' means the token gate has not opened yet: nothing has been asked
   // for, so the page owes the reader the same skeleton `loading.tsx` painted.
   const showSkeleton = phase === 'auth' || phase === 'loading';
+
+  /*
+   * W3, the details tutorial. It explains the stepper, so it is asked for
+   * only when the stepper is what this page shows: not over the hired card,
+   * and not over a terminal panel (the same `terminalScreen` check the flow
+   * makes on this same first state). Its K1.5 signal -- any application with
+   * its details completed -- is read from the worker's applications (the 100
+   * the list serves at most; past that the answer covers the newest 100) and
+   * only in that case. `done` stays `undefined` until the read answers, and on
+   * a failure: no signal, no auto-open on this page view.
+   */
+  const showsStepper = Boolean(
+    phase === 'ready'
+    && data
+    && idToken
+    && !(data.application.status === 'hired' && data.hire)
+    && terminalScreen(data) === null,
+  );
+  const [detailsDoneBefore, setDetailsDoneBefore] = useState<boolean | undefined>(undefined);
+  const readApplications = useEffectEvent((signal: AbortSignal) => (
+    idToken ? getApplications(idToken, signal, { limit: 100 }) : null
+  ));
+  useEffect(() => {
+    if (!showsStepper) return;
+    const controller = new AbortController();
+    readApplications(controller.signal)
+      ?.then((page) => setDetailsDoneBefore(page.applications.some((a) => Boolean(a.details_completed_at))))
+      .catch(() => { /* no signal, no auto-open: `done` stays undefined */ });
+    return () => controller.abort();
+  }, [showsStepper]);
+  const detailsTutorial = useTutorial('worker_details', { done: detailsDoneBefore });
+
+  // Asked ONCE per page view, once the signal is known; whether it opens is
+  // the tutorial's decision (a record, the signal, another overlay).
+  const detailsTutorialAskedRef = useRef(false);
+  const askDetailsTutorial = useEffectEvent(() => detailsTutorial.maybeAutoOpen());
+  useEffect(() => {
+    if (detailsTutorialAskedRef.current) return;
+    if (!showsStepper || detailsDoneBefore === undefined) return;
+    detailsTutorialAskedRef.current = true;
+    askDetailsTutorial();
+  }, [showsStepper, detailsDoneBefore]);
 
   return (
     <AppShell role="worker" title={t('title')}>

@@ -3,15 +3,15 @@ import { useTranslations } from 'next-intl';
 import { PROGRESS_SEGMENTS, isTrustScreen, type ScreenKey } from '@/lib/onboarding-flow';
 
 /**
- * Eight thin segments, one per screen before the summary.
+ * Seven thin segments, one per screen before the summary.
  *
  * The three question segments are TEAL and the rest blue — not decoration:
  * the questions are the part of onboarding no other channel collects and the
  * part employers actually read, so the rail says "these three are different"
  * before the worker reaches them.
  *
- * `aria-hidden` on the rail with a `role="status"` label beside it: eight
- * abstract bars announce nothing useful, "Step 5 of 8" does.
+ * `aria-hidden` on the rail with a `role="status"` label beside it: seven
+ * abstract bars announce nothing useful, "Step 5 of 7" does.
  */
 export function ProgressSegments({ current }: { current: ScreenKey }) {
     const t = useTranslations('worker_onboarding.progress');

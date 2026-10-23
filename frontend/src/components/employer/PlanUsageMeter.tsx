@@ -24,7 +24,9 @@ import { companyActiveJobCount } from '@/lib/plan-limit';
  *    gate does.
  *
  * A billing fetch that failed degrades to the plain count rather than hiding:
- * "3 active jobs" is still true, and still useful.
+ * "3 active jobs" is still true, and still useful. The "View plan" link stays
+ * either way: the phone tab bar has no Billing tab, so this is how a phone
+ * reaches the plan page.
  */
 export function PlanUsageMeter({
   activeCount,
@@ -51,8 +53,23 @@ export function PlanUsageMeter({
     );
   }
 
+  const viewPlan = (
+    <Link
+      href="/employer/billing"
+      className="rounded font-bold text-[var(--jale-blue-700)] hover:underline focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
+    >
+      {t('usage.view_plan')}
+    </Link>
+  );
+
   if (billing === null) {
-    return <div className={wrapper}>{t('usage.jobs_plain', { used: activeCount })}</div>;
+    return (
+      <div className={wrapper}>
+        <span>{t('usage.jobs_plain', { used: activeCount })}</span>
+        <span aria-hidden="true">·</span>
+        {viewPlan}
+      </div>
+    );
   }
 
   // The limit is the company's: add the active jobs of members the list does
@@ -80,12 +97,7 @@ export function PlanUsageMeter({
       ) : null}
 
       <span aria-hidden="true">·</span>
-      <Link
-        href="/employer/billing"
-        className="rounded font-bold text-[var(--jale-blue-700)] hover:underline focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
-      >
-        {t('usage.view_plan')}
-      </Link>
+      {viewPlan}
     </div>
   );
 }

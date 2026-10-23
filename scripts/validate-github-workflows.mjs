@@ -148,6 +148,37 @@ requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'n
 // carries --maxWorkers=2 (dev-host OOM cap) and jest rejects combining
 // --maxWorkers with --runInBand in a single invocation.
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npm run test:ci -- --runInBand');
+// The unit tests run in the infra-tests job, one jest --shard per matrix
+// entry. The shard list must be exactly 1..N for the N in --shard=<i>/N, or
+// some test files would run in no shard (a list short of N) or a shard would
+// fail on an index above N.
+const infraTestsJob = sliceJobBlock('.github/workflows/_reusable-validate.yml', reusableValidate, '\n  infra-tests:\n', '\n  database:\n');
+{
+  const label = '.github/workflows/_reusable-validate.yml (infra-tests job)';
+  if (!infraTestsJob.includes('\n      fail-fast: false\n')) {
+    fail(`${label} must set fail-fast: false, so every shard reports its own result`);
+  }
+  const shardList = infraTestsJob.match(/\n {8}shard: \[([0-9, ]+)\]\n/);
+  const shardRun = infraTestsJob.match(/\n {8}run: npm run test:ci -- --runInBand --shard=\$\{\{ matrix\.shard \}\}\/([0-9]+)\n/);
+  if (shardList === null) {
+    fail(`${label} must list its shards as matrix shard: [1, 2, ...]`);
+  } else if (shardRun === null) {
+    fail(`${label} must run exactly: npm run test:ci -- --runInBand --shard=\${{ matrix.shard }}/<N>`);
+  } else {
+    const shards = shardList[1].split(',').map((value) => Number(value.trim()));
+    const total = Number(shardRun[1]);
+    const expected = Array.from({ length: total }, (_, index) => index + 1);
+    if (total < 2 || shards.join(',') !== expected.join(',')) {
+      fail(`${label} must list shards [${expected.join(', ')}] for --shard=<i>/${total} (found [${shards.join(', ')}])`);
+    }
+  }
+}
+// The infra job builds and synthesizes only: a second jest run there would
+// repeat every shard's work.
+const infraBuildJob = sliceJobBlock('.github/workflows/_reusable-validate.yml', reusableValidate, '\n  infra:\n', '\n  infra-tests:\n');
+if (infraBuildJob.includes('npm run test:ci') || /\bnpx jest\b/.test(infraBuildJob)) {
+  fail('.github/workflows/_reusable-validate.yml (infra job) must not run the unit tests; the infra-tests job runs them in shards');
+}
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npx cdk synth');
 // `--all` is not a valid `cdk synth` option in the CDK 2.1133+ CLI this repo
 // pins (it prints "Unknown option(s): --all" and is ignored); `cdk synth`
@@ -167,7 +198,7 @@ requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-
 // so the synth step sets AWS_REGION from the region input, as
 // _reusable-deploy.yml does. It is set in that step's own env, so no other step
 // of the infra job changes.
-const infraJob = sliceJobBlock('.github/workflows/_reusable-validate.yml', reusableValidate, '\n  infra:\n', '\n  database:\n');
+const infraJob = infraBuildJob;
 const synthStep = infraJob.split('\n      - name: ').find((block) => block.startsWith('CDK synth backend stacks\n'));
 if (synthStep === undefined) {
   fail('.github/workflows/_reusable-validate.yml (infra job) must have a step named CDK synth backend stacks');
@@ -293,6 +324,9 @@ const standardLegSteps = [
   ]],
   ['Run company billing upgrade suite (bare cluster)', [
     '\n        run: bash infra/db/local/bootstrap-testbed.sh --ephemeral --ref none --bare --url-var JALE_TEST_UPGRADE_DATABASE_URL -- bash infra/scripts/run-whatsapp-v2-db-tests.sh --suite test/unit/db/migrations/company-billing-127-upgrade.test.ts\n',
+  ]],
+  ['Run migration 119 apply-order suite (bare cluster)', [
+    '\n        run: bash infra/db/local/bootstrap-testbed.sh --ephemeral --ref none --bare --url-var JALE_TEST_UPGRADE_DATABASE_URL -- bash infra/scripts/run-whatsapp-v2-db-tests.sh --suite test/unit/db/migrations/migration-119-out-of-order.test.ts\n',
   ]],
   ['Setup admin dependencies', [
     '\n        uses: ./.github/actions/setup-node-cache\n',
@@ -450,6 +484,27 @@ for (const name of ['Database posture gate', 'Deploy CDK stacks', 'Database post
     fail(`.github/workflows/_reusable-deploy.yml (deploy job) must have exactly one step named ${name} (found ${count})`);
   }
 }
+// The gate before the deploy first writes this release's posture expectation
+// (infra/scripts/write-posture-expectation.ts) and checks against it, so its
+// run block is pinned whole too: the writer, then the gate with --expected,
+// under set -euo pipefail, so a failed writer stops the step before the gate.
+const POSTURE_EXPECTATION_FILE = '"$RUNNER_TEMP/posture-expected.json"';
+const postureRuns = {
+  pre: {
+    lines: [
+      '        run: |',
+      '          set -euo pipefail',
+      `          npx --no-install tsx scripts/write-posture-expectation.ts ${POSTURE_EXPECTATION_FILE}`,
+      `          node scripts/db-posture-gate.mjs --phase pre --expected ${POSTURE_EXPECTATION_FILE}`,
+    ],
+    described: 'a run block of exactly set -euo pipefail, then npx --no-install tsx scripts/write-posture-expectation.ts '
+      + `${POSTURE_EXPECTATION_FILE}, then node scripts/db-posture-gate.mjs --phase pre --expected ${POSTURE_EXPECTATION_FILE}`,
+  },
+  post: {
+    lines: ['        run: node scripts/db-posture-gate.mjs --phase post'],
+    described: 'the whole command node scripts/db-posture-gate.mjs --phase post',
+  },
+};
 for (const [name, phase] of [['Database posture gate', 'pre'], ['Database posture verification', 'post']]) {
   const step = deploySteps.find((candidate) => candidate.name === name);
   if (!step) continue;
@@ -460,12 +515,12 @@ for (const [name, phase] of [['Database posture gate', 'pre'], ['Database postur
     '        env:',
     '          POSTURE_OVERRIDE: ${{ inputs.posture-override }}',
     '          POSTURE_OVERRIDE_REASON: ${{ inputs.posture-override-reason }}',
-    `        run: node scripts/db-posture-gate.mjs --phase ${phase}`,
+    ...postureRuns[phase].lines,
   ].join('\n');
   if (stepText(step.block) !== pinned) {
     fail(
       `.github/workflows/_reusable-deploy.yml (deploy job, ${name}) must be exactly the pinned step: working-directory infra, `
-      + `shell bash, the two override variables and nothing else in env, and the whole command node scripts/db-posture-gate.mjs --phase ${phase}; `
+      + `shell bash, the two override variables and nothing else in env, and ${postureRuns[phase].described}; `
       + 'no condition and no continue-on-error',
     );
   }
@@ -548,6 +603,43 @@ if (secretsCheckSteps !== 1 || !secretsCheck) {
   }
   if (at > deployStepNames.indexOf('Deploy CDK stacks')) {
     fail(`${label} must come before the step Deploy CDK stacks`);
+  }
+}
+
+// ECR Public sign-in: the frontend and admin image builds copy the Lambda Web
+// Adapter from public.ecr.aws, and anonymous pulls are refused with 429 once
+// the runner address's shared allowance runs out. The deploy job signs in
+// first, on every deploy, after its credentials and before anything builds;
+// the token goes to docker on stdin and the AWS error text never reaches the
+// public log.
+const ECR_SIGN_IN = 'Sign in to ECR Public';
+const ECR_SIGN_IN_RUN = [
+  '\n        run: |\n',
+  '          set -euo pipefail\n',
+  '          aws ecr-public get-login-password --region us-east-1 2>/dev/null | docker login --username AWS --password-stdin public.ecr.aws >/dev/null 2>&1 \\\n',
+  '            || { echo "::error::Could not sign in to ECR Public. The deploy role needs ecr-public:GetAuthorizationToken and sts:GetServiceBearerToken."; exit 1; }\n',
+  '          echo "Signed in to ECR Public."\n',
+].join('');
+{
+  const label = `.github/workflows/_reusable-deploy.yml (deploy job, ${ECR_SIGN_IN})`;
+  const count = reusableDeploy.split(`\n      - name: ${ECR_SIGN_IN}\n`).length - 1;
+  const step = deploySteps.find((candidate) => candidate.name === ECR_SIGN_IN);
+  if (count !== 1 || !step) {
+    fail(`${label} must exist once, in the deploy job (found ${count}${step ? '' : ', none in the deploy job'})`);
+  } else {
+    if (!step.block.includes(ECR_SIGN_IN_RUN)) {
+      fail(`${label} must run exactly the pinned sign-in: the token on stdin, stderr discarded, a fixed error sentence`);
+    }
+    if (/\n {8}(if|continue-on-error|["']?if["']?|["']?continue-on-error["']?):/.test(step.block)) {
+      fail(`${label} must run on every deploy and fail the job when it fails`);
+    }
+    const at = deployStepNames.indexOf(ECR_SIGN_IN);
+    if (deployStepNames.indexOf('Configure AWS deploy credentials') > at) {
+      fail(`${label} must come after the step Configure AWS deploy credentials`);
+    }
+    if (at > deployStepNames.indexOf('Deploy CDK stacks')) {
+      fail(`${label} must come before the step Deploy CDK stacks`);
+    }
   }
 }
 

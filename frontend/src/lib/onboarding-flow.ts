@@ -14,12 +14,11 @@
 //    answered two questions on WhatsApp opens the web and lands on question 3
 //    with no client-side memory involved at all.
 //
-// 2. THE PHOTO SCREEN IS NOT AN ENGINE STEP. The state machine completes on
-//    the third trust answer (that response already carries
-//    `lifecycle: 'ready'`), and `profile.photo*` is a step key no handler can
-//    advance -- the API answers 422 `unknown_step` for it. So the photo prompt
-//    is shown once, client-side, out of `photoPending`, and skipping it is a
-//    local transition with no request behind it.
+// 2. THE RUN ENDS ON THE THIRD TRUST ANSWER. That response already carries
+//    `lifecycle: 'ready'`, so the next screen is the summary. There is no
+//    photo screen on the web: `profile.photo*` is a step key no handler can
+//    advance (the API answers 422 `unknown_step` for it) and there is no
+//    profile-photo upload here yet, so the step stays hidden until there is.
 //
 // 3. A BATCH IS A CONTIGUOUS RUN FORWARD FROM THE CURSOR. The engine applies
 //    the items in order and refuses any whose `stepKey` is not the step it is
@@ -50,13 +49,13 @@ import {
   type TradeKey,
 } from './worker-vocab';
 
-export type ScreenKey = 'terms' | 'about' | 'trade' | 'work' | 'q1' | 'q2' | 'q3' | 'photo' | 'done';
+export type ScreenKey = 'terms' | 'about' | 'trade' | 'work' | 'q1' | 'q2' | 'q3' | 'done';
 
 /**
- * The eight progress segments, in order. `done` is deliberately absent: the
+ * The seven progress segments, in order. `done` is deliberately absent: the
  * bar is a measure of what is LEFT, and on the summary screen nothing is.
  */
-export const PROGRESS_SEGMENTS = ['terms', 'about', 'trade', 'work', 'q1', 'q2', 'q3', 'photo'] as const;
+export const PROGRESS_SEGMENTS = ['terms', 'about', 'trade', 'work', 'q1', 'q2', 'q3'] as const;
 export type ProgressSegment = (typeof PROGRESS_SEGMENTS)[number];
 
 /** The three segments painted teal rather than blue — the answers employers read. */
@@ -212,9 +211,7 @@ export function screenForStepKey(stepKey: string): ScreenKey {
  * engine saying onboarding is over, whatever cursor it left behind — and it is
  * what the third trust answer's own response comes back with.
  *
- * A finished run therefore resumes straight to the summary. The photo prompt
- * is not re-offered on a reload: it is optional, it was already declined or
- * shown once, and asking again would just be nagging.
+ * A finished run therefore resumes straight to the summary.
  */
 export function screenForState(state: OnboardingState): ScreenKey {
   if (state.lifecycle === 'ready') return 'done';
@@ -385,11 +382,9 @@ function fullBatchForScreen(screen: ScreenKey, draft: OnboardingDraft): Onboardi
         ? []
         : [{ stepKey: `trust.question.${index}`, value: { text: draft.answers[index - 1].trim() } }];
     }
-    case 'photo':
     case 'done':
-      // Neither screen answers an engine step: the run is already complete by
-      // the time either is on screen, and `profile.photo` is not a step the
-      // API accepts. See this file's header.
+      // The summary answers no engine step: the run is already complete by
+      // the time it is on screen. See this file's header.
       return [];
   }
 }
@@ -435,7 +430,6 @@ export function answerAcceptable(text: string): boolean {
 function draftComplete(screen: ScreenKey, draft: OnboardingDraft): boolean {
   switch (screen) {
     case 'terms':
-    case 'photo':
     case 'done':
       return true;
     case 'about':
@@ -469,7 +463,7 @@ function draftComplete(screen: ScreenKey, draft: OnboardingDraft): boolean {
  */
 export function canContinue(screen: ScreenKey, draft: OnboardingDraft, stepKey: string): boolean {
   if (!draftComplete(screen, draft)) return false;
-  if (screen === 'photo' || screen === 'done') return true;
+  if (screen === 'done') return true;
   return answersForScreen(screen, draft, stepKey).length > 0;
 }
 
@@ -482,12 +476,6 @@ export type OnboardingBlock = 'suspended' | 'not_onboardable';
 export type OnboardingFlowState = {
   server: OnboardingState;
   draft: OnboardingDraft;
-  /**
-   * The photo prompt is waiting to be shown. Set only by `finished` — the
-   * third trust answer's response — and cleared by skipping it, so it appears
-   * exactly once per completion and never on a reload of a finished run.
-   */
-  photoPending: boolean;
   /** The engine refuses to onboard this worker at all; the flow stops. */
   blocked: OnboardingBlock | null;
   saving: boolean;
@@ -522,9 +510,6 @@ export type OnboardingFlowAction =
    * it knows which screen was on the page.
    */
   | { type: 'step_mismatch'; server: OnboardingState; sameScreen: boolean }
-  /** The last question landed and the run completed: offer the photo prompt. */
-  | { type: 'finished'; server: OnboardingState }
-  | { type: 'photo_skipped' }
   | { type: 'set_draft'; patch: Partial<OnboardingDraft> }
   | { type: 'set_answer'; index: 1 | 2 | 3; text: string }
   | { type: 'saving' }
@@ -537,7 +522,6 @@ export function initFlowState(server: OnboardingState): OnboardingFlowState {
   return {
     server,
     draft: draftFromState(server),
-    photoPending: false,
     blocked: server.lifecycle === 'suspended' ? 'suspended' : null,
     saving: false,
     rejection: null,
@@ -549,7 +533,6 @@ export function initFlowState(server: OnboardingState): OnboardingFlowState {
 
 /** The one place that answers "which screen is on screen right now". */
 export function currentScreen(state: OnboardingFlowState): ScreenKey {
-  if (state.photoPending) return 'photo';
   return screenForState(state.server);
 }
 
@@ -591,20 +574,6 @@ export function onboardingFlowReducer(
         failures: 0,
         notice: 'step_mismatch',
       };
-    case 'finished':
-      return {
-        ...state,
-        server: action.server,
-        draft: draftFromState(action.server),
-        photoPending: true,
-        saving: false,
-        rejection: null,
-        errorKind: null,
-        failures: 0,
-        notice: null,
-      };
-    case 'photo_skipped':
-      return { ...state, photoPending: false };
     case 'set_draft':
       return { ...state, draft: { ...state.draft, ...action.patch }, rejection: null, errorKind: null };
     case 'set_answer': {

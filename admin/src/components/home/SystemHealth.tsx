@@ -5,7 +5,7 @@ import { StatusBadge } from '@/components/ui/status-badge';
 import type { HealthItem } from '@/lib/server/admin-analytics';
 import { SECTION_HEADING } from './home-format';
 
-/** K3.4: five items, each state in words and colour (never colour alone). */
+/** K3.4: six items, each state in words and colour (never colour alone). */
 export function SystemHealth({ result }: { result: { items: HealthItem[]; windowLabel: string } | null }) {
   return (
     <section aria-labelledby="home-health" className="flex flex-col gap-3.5">

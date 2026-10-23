@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useEffectEvent, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { usePageData } from '@/hooks/usePageData';
@@ -23,6 +23,7 @@ import { PostLightbox } from '@/components/media-board/PostLightbox';
 import { NewPostModal } from '@/components/media-board/NewPostModal';
 import { getVaultDocuments, updateWorkerProfile, getWorkerPosts, deleteWorkerPost } from '@/lib/api/worker';
 import type { WorkerProfileData, WorkerProfilePatch, WorkerVaultDoc, DocType, WorkerPost } from '@/lib/api/worker';
+import { useTutorial } from '@/lib/tutorials/use-tutorial';
 
 export const dynamic = 'force-dynamic';
 
@@ -157,6 +158,26 @@ export default function WorkerProfilePage() {
     const showSkeleton = phase === 'auth' || phase === 'loading';
     const profile = data?.profile ?? null;
     const docs = data?.docs ?? [];
+
+    /*
+     * W4, the profile tutorial. Its K1.5 signal -- any saved document -- comes
+     * with the page's own data; `undefined` until it has loaded. Asked ONCE
+     * per page view, and not over the edit form or a media overlay; whether
+     * it opens is the tutorial's decision (a record, the signal, another
+     * overlay).
+     */
+    const hasSavedDocument = data ? data.docs.length > 0 : undefined;
+    const profileTutorial = useTutorial('worker_profile', { done: hasSavedDocument });
+    const profileTutorialAskedRef = useRef(false);
+    const askProfileTutorial = useEffectEvent(() => profileTutorial.maybeAutoOpen());
+    const overlayOpen = editing || composing || selectedPost !== null;
+    useEffect(() => {
+        if (profileTutorialAskedRef.current) return;
+        if (hasSavedDocument === undefined) return;
+        profileTutorialAskedRef.current = true;
+        if (overlayOpen) return;
+        askProfileTutorial();
+    }, [hasSavedDocument, overlayOpen]);
 
     /*
      * The facts card's chip-valued and numeric facts, derived once.

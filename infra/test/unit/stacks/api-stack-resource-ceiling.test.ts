@@ -169,7 +169,12 @@ const CEILING = 470;
 // and OPTIONS Methods and the Lambda::Permission, on the existing applicant
 // Lambda (no new Function): 4 resources, leaving 33 of headroom against the
 // 470 gate.
-const MEASURED_RESOURCES = 437;
+// → 453 once sprint 29's tutorial progress routes (GET and POST on
+// `/employer/tutorials` and `/worker/tutorials`) added their two Resources,
+// four Methods and two OPTIONS preflights, four Lambda::Permissions, and the
+// one function serving both (Function, execution Role, its default Policy and
+// log group): 16 resources, leaving 17 of headroom against the 470 gate.
+const MEASURED_RESOURCES = 453;
 
 /**
  * Every `AWS::ApiGateway::Method` in the template, grouped by the resource it
@@ -518,6 +523,12 @@ describe('JaleApiStack resource ceiling (real bin/jale-app.ts composition)', () 
     // that already serves the bare applicant's status change.
     ['PATCH', '/employer/jobs/{jobId}/applicants/{workerId}', 'EmployerAuthorizer'],
     ['PUT', '/employer/jobs/{jobId}/applicants/{workerId}/hire-details', 'EmployerAuthorizer'],
+    // Sprint 29 tutorial progress (contract K1): one function, a route per
+    // role, each behind its own pool's authorizer.
+    ['GET', '/employer/tutorials', 'EmployerAuthorizer'],
+    ['POST', '/employer/tutorials', 'EmployerAuthorizer'],
+    ['GET', '/worker/tutorials', 'WorkerAuthorizer'],
+    ['POST', '/worker/tutorials', 'WorkerAuthorizer'],
   ];
 
   /**
