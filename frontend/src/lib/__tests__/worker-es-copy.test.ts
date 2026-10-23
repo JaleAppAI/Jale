@@ -76,6 +76,9 @@ const TU_KEYS = [
     'worker_home.empty.cta',
     'worker_profile.documents.delete_confirm',
     'worker_application_details.terminal.already_complete_note',
+    // The app's first WhatsApp message to a worker, sent from the employer's
+    // "Message" button: employer copy, but the worker is its only reader.
+    'employer_messages.default_initial_message',
 ];
 
 /** Worker keys that name the worker's application. */
@@ -101,6 +104,8 @@ const POSTULACION_KEYS = [
     'header.my_applications',
     'app_shell.applications_attention_badge',
     'report_worker.categories.applying',
+    // Sent to the worker by the employer's "Message" button; the worker reads it.
+    'employer_messages.default_initial_message',
 ];
 
 /**

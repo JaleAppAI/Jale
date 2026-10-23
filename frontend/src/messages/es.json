@@ -596,7 +596,7 @@
     "starting": "Iniciando...",
     "message_start_failed": "No se pudo iniciar la conversación.",
     "worker_whatsapp_unavailable": "Este trabajador todavía no tiene número de WhatsApp.",
-    "default_initial_message": "Hola, te escribo sobre tu aplicación de {jobTitle}. Responde aquí cuando estés disponible.",
+    "default_initial_message": "Hola, te escribo sobre tu postulación de {jobTitle}. Responde aquí cuando estés disponible.",
     "tab_active": "Activas",
     "tab_closed": "Cerradas",
     "all_jobs": "Todos los empleos",
