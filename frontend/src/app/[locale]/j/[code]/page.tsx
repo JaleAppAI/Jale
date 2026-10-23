@@ -366,11 +366,17 @@ export default async function PublicJobPage({ params }: PageProps) {
   const durationText = durationLabel(active, tCommon);
   const schedule = scheduleSummary(active, locale, tCommon);
 
-  // The header location line: company, then whichever of the structured
-  // city/state_region pair and the free-text location field actually exist.
+  // The header location line: company, then the place. The signed-in job pages
+  // show the location text; this one also has the structured city/state_region
+  // pair, and a city picked from the list fills both with the same place. So
+  // the place is said once: the pair when the text is the same place, the text
+  // alone when it already names the pair and says more (a street), and both
+  // only when the text names something else.
   const cityState =
     active.city && active.state_region ? `${active.city}, ${active.state_region}` : null;
-  const headerLine = [active.company, cityState, active.location].filter(Boolean).join(' · ');
+  const headerLine = [active.company, ...headerPlaces(cityState, active.location)]
+    .filter(Boolean)
+    .join(' · ');
 
   /*
    * The job's facts, as the ONE card body all three job pages render.
@@ -617,4 +623,29 @@ function docLabel(t: Awaited<ReturnType<typeof getTranslations>>, doc: PublicJob
   if (doc === 'resume') return t('doc_resume');
   if (doc === 'driver_license') return t('doc_driver_license');
   return t('doc_ssn');
+}
+
+/** A place reduced for comparison: case and every space dropped. */
+function placeKey(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, '');
+}
+
+/**
+ * The place parts of the header line, each said once.
+ *
+ *  - Only one of the two exists: that one.
+ *  - The location text is the same place as the city/state pair: the pair.
+ *  - The location text contains the pair and says more ("1200 Main St, El
+ *    Paso, TX"): the text alone, which already names the city.
+ *  - Anything else: both, pair first, so a text like a bare street is kept.
+ */
+function headerPlaces(cityState: string | null, location: string | null | undefined): string[] {
+  const text = location && location.trim() !== '' ? location.trim() : null;
+  if (cityState === null) return text === null ? [] : [text];
+  if (text === null) return [cityState];
+  const pairKey = placeKey(cityState);
+  const textKey = placeKey(text);
+  if (textKey === pairKey) return [cityState];
+  if (textKey.includes(pairKey)) return [text];
+  return [cityState, text];
 }

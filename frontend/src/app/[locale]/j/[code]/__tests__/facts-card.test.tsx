@@ -160,6 +160,12 @@ function tiles(container: HTMLElement): [string, string][] {
 
 const t = (key: string) => message(`public_job.${key}`);
 
+/** The line under the job title: company and place. */
+function headerLine(): string {
+    const title = screen.getByRole('heading', { level: 1 });
+    return title.nextElementSibling?.textContent ?? '';
+}
+
 /** The chips in one labelled row, as their full accessible text. */
 function chipsUnder(label: string): string[] {
     const row = screen.getByRole('heading', { level: 3, name: label }).parentElement!;
@@ -172,7 +178,68 @@ describe('public job page — the facts card', () => {
 
         expect(screen.getByText(t('eyebrow'))).toBeInTheDocument();
         expect(screen.getByRole('heading', { level: 1, name: 'Drywall Finisher' })).toBeInTheDocument();
-        expect(screen.getByText('NB Construction · Austin, TX · Austin, TX')).toBeInTheDocument();
+        // The city/state pair and the location text name the same place: once.
+        expect(headerLine()).toBe('NB Construction · Austin, TX');
+    });
+
+    /*
+     * The line under the title: the company, then the place. A job posted from
+     * a picked city carries the place twice -- the city/state pair and a
+     * location text equal to it -- and the line said it twice ("Sample Employer
+     * Co · El Paso, TX · El Paso, TX"). The signed-in job pages show the
+     * location text; this one keeps the pair too, but never the same place
+     * twice, and never drops a location text that says more (a street).
+     */
+    describe('the header location line', () => {
+        it('says the place once when the location text matches the city and state', async () => {
+            await renderPage(fullJob({
+                company: 'Sample Employer Co',
+                location: 'El Paso, TX',
+                city: 'El Paso',
+                state_region: 'TX',
+            }));
+            expect(headerLine()).toBe('Sample Employer Co · El Paso, TX');
+        });
+
+        it('compares without case or spacing', async () => {
+            await renderPage(fullJob({
+                company: 'Sample Employer Co',
+                location: '  el paso ,TX ',
+                city: 'El Paso',
+                state_region: 'TX',
+            }));
+            expect(headerLine()).toBe('Sample Employer Co · El Paso, TX');
+        });
+
+        it('keeps a location text that adds a street, without repeating the city', async () => {
+            await renderPage(fullJob({
+                company: 'Sample Employer Co',
+                location: '1200 Main St, El Paso, TX',
+                city: 'El Paso',
+                state_region: 'TX',
+            }));
+            expect(headerLine()).toBe('Sample Employer Co · 1200 Main St, El Paso, TX');
+        });
+
+        it('keeps both when the location text names something else', async () => {
+            await renderPage(fullJob({
+                company: 'Sample Employer Co',
+                location: '1200 Main St',
+                city: 'El Paso',
+                state_region: 'TX',
+            }));
+            expect(headerLine()).toBe('Sample Employer Co · El Paso, TX · 1200 Main St');
+        });
+
+        it('falls back to the city and state when there is no location text', async () => {
+            await renderPage(fullJob({ company: 'Sample Employer Co', location: '', city: 'El Paso', state_region: 'TX' }));
+            expect(headerLine()).toBe('Sample Employer Co · El Paso, TX');
+        });
+
+        it('shows the location text alone on a job with no city and state', async () => {
+            await renderPage(sparseJob({ company: 'Sample Employer Co', location: 'El Paso, TX' }));
+            expect(headerLine()).toBe('Sample Employer Co · El Paso, TX');
+        });
     });
 
     it('sets pay as the one headline figure inside the card, not a hero strip', async () => {
