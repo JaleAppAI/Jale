@@ -2,6 +2,7 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
+import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
 
 const CORS_HEADERS = corsHeaders();
 
@@ -33,11 +34,19 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'legal_required', requiredVersion: process.env.REQUIRED_TOS_VERSION }) };
     }
 
+    const actorResult = await resolveEmployerActor(client, cognitoSub);
+    if (!actorResult.ok) {
+      await client.query('ROLLBACK');
+      return employerActorFailureResponse(actorResult, CORS_HEADERS);
+    }
+    const { actor } = actorResult;
+
+    // Only the creator, or the owner (whose scope covers every member), can
+    // delete a template.
     const deleted = await client.query(
       `DELETE FROM employer_job_templates t
-        USING users u
-        WHERE t.id = $1 AND u.id = t.employer_id AND u.cognito_sub = $2`,
-      [templateId, cognitoSub],
+        WHERE t.id = $1 AND t.employer_id = ANY($2::uuid[])`,
+      [templateId, actor.scopeUserIds],
     );
     if (deleted.rowCount === 0) {
       await client.query('ROLLBACK');

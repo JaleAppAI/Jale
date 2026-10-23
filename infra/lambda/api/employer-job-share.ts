@@ -3,6 +3,7 @@ import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage, requireAbsoluteBaseUrl } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
 import { generateShareCode } from '../lib/referral-codes';
+import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
 
 const CORS_HEADERS = corsHeaders();
 
@@ -74,34 +75,36 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'legal_required', requiredVersion: process.env.REQUIRED_TOS_VERSION, currentVersion: compliance.currentVersion }) };
     }
 
-    const employerRes = await client.query(`SELECT id, user_type FROM users WHERE cognito_sub = $1`, [cognitoSub]);
-    if (employerRes.rows.length === 0) {
+    const actorResult = await resolveEmployerActor(client, cognitoSub);
+    if (!actorResult.ok) {
       await client.query('COMMIT');
-      return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_provisioned' }) };
+      // Explicit choice: this endpoint mints rows keyed by referrer_employer_id,
+      // and referral reporting built on job_share_links assumes a referrer of
+      // the kind the endpoint declares. A worker authenticating here is not an
+      // intended "worker posting as employer" feature -- reject it rather than
+      // silently accepting a worker as an employer referrer. checkCompliance
+      // above already proved the users row exists, so the resolver's
+      // user_not_provisioned here means "not an employer".
+      if (actorResult.error === 'user_not_provisioned') {
+        return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'employer_only' }) };
+      }
+      return employerActorFailureResponse(actorResult, CORS_HEADERS);
     }
-    // Explicit choice: this endpoint mints rows keyed by referrer_employer_id,
-    // and referral reporting built on job_share_links assumes a referrer of
-    // the kind the endpoint declares. A worker authenticating here is not an
-    // intended "worker posting as employer" feature -- reject it rather than
-    // silently accepting a worker as an employer referrer.
-    if (employerRes.rows[0].user_type !== 'employer') {
-      await client.query('COMMIT');
-      return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'employer_only' }) };
-    }
-    const employerId: string = employerRes.rows[0].id;
+    const { actor } = actorResult;
+    // The share link's referrer is the person who shared it.
+    const employerId: string = actor.userId;
 
-    // Single combined predicate so a job the caller does not own, a
+    // Single combined predicate so a job outside the caller's scope, a
     // paused/filled/closed job, and a job with public_listing_enabled = false
     // all return the same generic 404 -- we must not leak which condition
     // failed.
     const jobRes = await client.query(
       `SELECT j.id, j.public_code FROM jobs j
-         JOIN users u ON u.id = j.employer_id
         WHERE j.id = $1
-          AND u.cognito_sub = $2
+          AND j.employer_id = ANY($2::uuid[])
           AND j.status = 'active'
           AND j.public_listing_enabled = true`,
-      [jobId, cognitoSub],
+      [jobId, actor.scopeUserIds],
     );
     if (jobRes.rows.length === 0) {
       await client.query('COMMIT');

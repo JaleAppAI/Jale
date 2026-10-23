@@ -15,6 +15,22 @@ jest.mock('../../../../lambda/lib/audit/record', () => ({
 }));
 jest.mock('../../../../lambda/lib/audit/context');
 
+import { resolveEmployerActor } from '../../../../lambda/lib/employer-actor';
+
+jest.mock('../../../../lambda/lib/employer-actor', () => ({
+  ...jest.requireActual('../../../../lambda/lib/employer-actor'),
+  resolveEmployerActor: jest.fn(),
+}));
+
+const mockResolveEmployerActor = resolveEmployerActor as jest.Mock;
+const ORG_ID = '99999999-9999-4999-8999-999999999999';
+const OWNER_ID = 'aaaaaaaa-1111-4111-8111-111111111111';
+const FOREMAN_ID = 'bbbbbbbb-2222-4222-8222-222222222222';
+const actorResult = (userId: string, scopeUserIds: string[] = [userId]) => ({
+  ok: true as const,
+  actor: { userId, organizationId: ORG_ID, role: 'owner' as const, scopeUserIds },
+});
+
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
 const mockCheckCompliance = checkCompliance as jest.Mock;
@@ -38,6 +54,7 @@ describe('employer-job-applicants Lambda', () => {
     });
     mockSetRlsContext.mockResolvedValue(undefined);
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    mockResolveEmployerActor.mockResolvedValue(actorResult('employer-id'));
   });
 
   it('returns 400 when jobId is not a valid UUID', async () => {
@@ -49,7 +66,6 @@ describe('employer-job-applicants Lambda', () => {
   it('reads ordered skills from worker_skills instead of worker_profiles.skills', async () => {
     mockQuery
       .mockResolvedValueOnce({}) // BEGIN
-      .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] }) // employer lookup
       .mockResolvedValueOnce({ rowCount: 1 }) // job ownership
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // applicants
       .mockResolvedValueOnce({}); // COMMIT
@@ -66,7 +82,6 @@ describe('employer-job-applicants Lambda', () => {
   it('filters skills with normalized worker_skills values', async () => {
     mockQuery
       .mockResolvedValueOnce({}) // BEGIN
-      .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] }) // employer lookup
       .mockResolvedValueOnce({ rowCount: 1 }) // job ownership
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // applicants
       .mockResolvedValueOnce({}); // COMMIT
@@ -83,7 +98,6 @@ describe('employer-job-applicants Lambda', () => {
   it('includes application_answers and a not_provided list of skipped optional fields/docs per applicant', async () => {
     mockQuery
       .mockResolvedValueOnce({}) // BEGIN
-      .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] }) // employer lookup
       .mockResolvedValueOnce({
         rows: [{ id: JOB_ID, optional_fields: ['date_available'], optional_docs: ['driver_license'] }],
         rowCount: 1,
@@ -125,7 +139,6 @@ describe('employer-job-applicants Lambda', () => {
   it('counts an optional document as provided only when it is attached to this job, never a vault-only copy', async () => {
     mockQuery
       .mockResolvedValueOnce({}) // BEGIN
-      .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] }) // employer lookup
       .mockResolvedValueOnce({ rows: [{ id: JOB_ID, optional_fields: [], optional_docs: ['resume'] }], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // applicants
       .mockResolvedValueOnce({}); // COMMIT
@@ -144,7 +157,6 @@ describe('employer-job-applicants Lambda', () => {
   it('reports an empty not_provided when the applicant answered every optional field and has every optional doc', async () => {
     mockQuery
       .mockResolvedValueOnce({}) // BEGIN
-      .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] }) // employer lookup
       .mockResolvedValueOnce({
         rows: [{ id: JOB_ID, optional_fields: ['date_available'], optional_docs: [] }],
         rowCount: 1,
@@ -211,7 +223,6 @@ describe('employer-job-applicants Lambda', () => {
     function mockRun(job: Record<string, unknown> = {}, applicants: Array<Record<string, unknown>> = [{}]) {
       mockQuery
         .mockResolvedValueOnce({}) // BEGIN
-        .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] })
         .mockResolvedValueOnce({ rows: [{ ...JOB_ROW, ...job }], rowCount: 1 })
         .mockResolvedValueOnce({
           rows: applicants.map((over) => ({ ...APPLICANT_ROW, ...over })),
@@ -371,7 +382,6 @@ describe('employer-job-applicants Lambda', () => {
       const rows = [row(1), row(2), row(3)];
       mockQuery
         .mockResolvedValueOnce({}) // BEGIN
-        .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] }) // employer lookup
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: JOB_ID }] }) // job ownership
         .mockResolvedValueOnce({ rows, rowCount: rows.length }) // applicants
         .mockResolvedValueOnce({}); // COMMIT
@@ -393,7 +403,6 @@ describe('employer-job-applicants Lambda', () => {
     it('answers 500 with no applicants when the record cannot be written', async () => {
       mockQuery
         .mockResolvedValueOnce({})
-        .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] })
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: JOB_ID }] })
         .mockResolvedValueOnce({ rows: [row(1)], rowCount: 1 })
         .mockResolvedValue({});
@@ -411,7 +420,6 @@ describe('employer-job-applicants Lambda', () => {
     it('records a denied attempt after the 403 for another employer\'s job', async () => {
       mockQuery
         .mockResolvedValueOnce({})
-        .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] })
         .mockResolvedValueOnce({ rowCount: 0, rows: [] })
         .mockResolvedValue({});
       const res = await handler(withRequestId(makeEvent()));
@@ -426,13 +434,40 @@ describe('employer-job-applicants Lambda', () => {
     it('records nothing for an invalid status filter (400)', async () => {
       mockQuery
         .mockResolvedValueOnce({})
-        .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] })
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: JOB_ID }] })
         .mockResolvedValue({});
       const res = await handler(withRequestId(makeEvent({ status: 'nonsense' })));
       expect(res.statusCode).toBe(400);
       expect(mockRecordAccess).not.toHaveBeenCalled();
       expect(mockRecordAttempt).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('caller scope (employer organizations)', () => {
+    it('answers the actor failure, ends the transaction with COMMIT, and runs no job query', async () => {
+      mockResolveEmployerActor.mockResolvedValueOnce({ ok: false, status: 403, error: 'membership_inactive' });
+      mockQuery.mockResolvedValue({});
+      const res = await handler(makeEvent());
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body)).toEqual({ error: 'membership_inactive' });
+      expect(mockQuery.mock.calls.map(([q]) => q)).toEqual(['BEGIN', 'COMMIT']);
+    });
+
+    it("passes an owner's whole scope as the uuid[] parameter of the job check and the applicant read", async () => {
+      mockResolveEmployerActor.mockResolvedValueOnce(actorResult(OWNER_ID, [OWNER_ID, FOREMAN_ID]));
+      mockQuery
+        .mockResolvedValueOnce({}) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: JOB_ID }] }) // job ownership
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // applicants
+        .mockResolvedValueOnce({}); // COMMIT
+      expect((await handler(makeEvent())).statusCode).toBe(200);
+      expect(mockResolveEmployerActor).toHaveBeenCalledWith(expect.objectContaining({ query: mockQuery }), 'employer-sub');
+      const [jobSql, jobParams] = mockQuery.mock.calls.find(([q]) => String(q).includes('FROM jobs WHERE id ='))!;
+      expect(jobSql).toContain('employer_id = ANY($2::uuid[])');
+      expect(jobParams).toEqual([JOB_ID, [OWNER_ID, FOREMAN_ID]]);
+      const [applicantSql, applicantParams] = mockQuery.mock.calls.find(([q]) => String(q).includes('FROM job_applications ja'))!;
+      expect(applicantSql).toContain('j.employer_id = ANY($2::uuid[])');
+      expect(applicantParams[1]).toEqual([OWNER_ID, FOREMAN_ID]);
     });
   });
 });

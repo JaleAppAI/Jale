@@ -203,6 +203,8 @@ import { sendTwilioWhatsAppMessage, AmbiguousTwilioSendError, TwilioTemplateInva
 
 const CONV_B2 = 'bbbbbbbb-0000-0000-0000-00000000000c';
 const EMPLOYER_ID = 'cccccccc-0000-0000-0000-0000000000e1';
+const OWNER_ID = 'cccccccc-0000-0000-0000-0000000000e2';
+const FOREMAN_ID = 'cccccccc-0000-0000-0000-0000000000e3';
 
 // A client that answers by statement, not by call order, and records the
 // transaction state at each Twilio send.
@@ -262,9 +264,26 @@ describe('sendPendingJobMessageOutbox hardening (R8)', () => {
     const { client, calls } = outboxClient([]);
     await sendPendingJobMessageOutbox(client, { conversationId: CONV_A, actorUserId: EMPLOYER_ID, actorKind: 'employer' });
     const select = calls.find((c) => /FROM job_message_outbox/.test(c.sql))!;
-    expect(select.sql).toMatch(/WHERE jc\.employer_id = \$1/);
+    expect(select.sql).toMatch(/WHERE jc\.employer_id = ANY\(\$1::uuid\[\]\)/);
     expect(select.sql).toMatch(/AND o\.conversation_id = \$2/);
-    expect(select.params).toEqual([EMPLOYER_ID, CONV_A]);
+    // No scope given: the flush covers the actor's own conversations only.
+    expect(select.params).toEqual([[EMPLOYER_ID], CONV_A]);
+  });
+
+  it("an owner's employer-mode flush matches the whole scope but sets only the owner as the caller", async () => {
+    const { client, calls } = outboxClient([freeformRow('o1', CONV_A, 'm1', 'a1')]);
+    (sendTwilioWhatsAppMessage as jest.Mock).mockResolvedValue('SMxx');
+    await sendPendingJobMessageOutbox(client, {
+      conversationId: CONV_A, actorUserId: OWNER_ID, actorKind: 'employer', scopeUserIds: [OWNER_ID, FOREMAN_ID],
+    });
+    const select = calls.find((c) => /FROM job_message_outbox o/.test(c.sql))!;
+    expect(select.params).toEqual([[OWNER_ID, FOREMAN_ID], CONV_A]);
+    const claim = calls.find((c) => /SET status = 'send_unknown'/.test(c.sql))!;
+    expect(claim.sql.replace(/\s+/g, ' ')).toContain('AND jc.employer_id = ANY($2::uuid[])');
+    expect(claim.params).toEqual(['o1', [OWNER_ID, FOREMAN_ID]]);
+    const settings = calls.filter((c) => /set_config/.test(c.sql));
+    expect(settings.length).toBeGreaterThan(0);
+    for (const s of settings) expect(s.params).toEqual([OWNER_ID]);
   });
 
   it('sets the actor only transaction-locally, inside its own transactions, and never across the Twilio call', async () => {
@@ -303,9 +322,9 @@ describe('sendPendingJobMessageOutbox hardening (R8)', () => {
   });
 
   it('claims each row before the provider call with a statement that names the caller', async () => {
-    for (const [actorKind, actorUserId, column] of [
-      ['worker', WORKER, 'jc.worker_id'],
-      ['employer', EMPLOYER_ID, 'jc.employer_id'],
+    for (const [actorKind, actorUserId, predicate, param] of [
+      ['worker', WORKER, 'jc.worker_id = $2', WORKER],
+      ['employer', EMPLOYER_ID, 'jc.employer_id = ANY($2::uuid[])', [EMPLOYER_ID]],
     ] as const) {
       const { client, calls } = outboxClient([freeformRow('o1', CONV_A, 'm1', 'a1')]);
       (sendTwilioWhatsAppMessage as jest.Mock).mockResolvedValue('SMxx');
@@ -314,8 +333,8 @@ describe('sendPendingJobMessageOutbox hardening (R8)', () => {
       const text = claim!.sql.replace(/\s+/g, ' ');
       expect(text).toContain("o.status IN ('pending', 'failed')");
       expect(text).toContain('o.attempt_count < 5');
-      expect(text).toContain(`AND ${column} = $2`);
-      expect(claim!.params).toEqual(['o1', actorUserId]);
+      expect(text).toContain(`AND ${predicate}`);
+      expect(claim!.params).toEqual(['o1', param]);
     }
   });
 
@@ -575,6 +594,11 @@ describe('sendPendingJobMessageOutbox hardening (R8)', () => {
 import { createApplicantConversation } from '../../../../lambda/lib/job-messaging';
 
 const EMPLOYER = 'cccccccc-0000-0000-0000-000000000001';
+const OWNER = 'cccccccc-0000-0000-0000-0000000000a1';
+const FOREMAN = 'cccccccc-0000-0000-0000-0000000000f1';
+const ORG = 'dddddddd-0000-0000-0000-000000000001';
+const ACTOR = { userId: EMPLOYER, organizationId: ORG, role: 'owner' as const, scopeUserIds: [EMPLOYER] };
+const OWNER_ACTOR = { userId: OWNER, organizationId: ORG, role: 'owner' as const, scopeUserIds: [OWNER, FOREMAN] };
 
 // Minimal row as returned by loadConversationForEmployer.
 function conversationAccessRow(overrides: any = {}) {
@@ -684,7 +708,7 @@ describe('queueConversationMessageFromEmployer: gate and languages through the d
 
   it('reads the gate through jale_cap.employer_worker_delivery_context, with no worker-lane SQL and no caller switch', async () => {
     const { client: c, calls } = employerClient({ lifecycle: 'ready' });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'hola');
+    await queueConversationMessageFromEmployer(c, CONV_A, ACTOR, 'hola');
 
     const context = calls.find((call) => /jale_cap\.employer_worker_delivery_context\(\$1\)/.test(call.sql));
     expect(context).toBeDefined();
@@ -699,7 +723,7 @@ describe('queueConversationMessageFromEmployer: gate and languages through the d
     // Migration 118's trigger job_messages_stamp_sender stamps sender_user_id
     // from app.current_internal_user_id; the INSERT must not name it.
     const { client: c, calls } = employerClient({ lifecycle: 'ready' });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'hola');
+    await queueConversationMessageFromEmployer(c, CONV_A, ACTOR, 'hola');
     const insert = calls.find((call) => /INSERT INTO job_conversation_messages/.test(call.sql));
     expect(insert).toBeDefined();
     expect(insert!.sql).toMatch(/\(conversation_id, sender_type, direction, body, status\)/);
@@ -709,7 +733,7 @@ describe('queueConversationMessageFromEmployer: gate and languages through the d
 
   it('an English worker outside the reply window gets the English resume template and fallback copy', async () => {
     const { client: c, calls } = employerClient({ lifecycle: 'ready', whatsappLanguage: 'en' });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'hello');
+    await queueConversationMessageFromEmployer(c, CONV_A, ACTOR, 'hello');
     const [template] = outboxInserts(calls);
     expect(template.params).toContain('employer_message_resume_en');
     expect(JSON.parse(template.params[4] as string).__fallback_body).toBe(
@@ -719,13 +743,13 @@ describe('queueConversationMessageFromEmployer: gate and languages through the d
 
   it('a Spanish worker gets the Spanish resume template', async () => {
     const { client: c, calls } = employerClient({ lifecycle: 'ready', whatsappLanguage: 'es' });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'hola');
+    await queueConversationMessageFromEmployer(c, CONV_A, ACTOR, 'hola');
     expect(outboxInserts(calls)[0].params).toContain('employer_message_resume_es');
   });
 
   it('a worker with no WhatsApp conversation language keeps the Spanish template, as before', async () => {
     const { client: c, calls } = employerClient({ lifecycle: 'ready', whatsappLanguage: null, workflowLanguage: 'en' });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'hola');
+    await queueConversationMessageFromEmployer(c, CONV_A, ACTOR, 'hola');
     expect(outboxInserts(calls)[0].params).toContain('employer_message_resume_es');
   });
 });
@@ -735,13 +759,13 @@ describe('queueConversationMessageFromEmployer template dedupe (R7)', () => {
 
   it('does not queue a second invite template while one is un-actioned', async () => {
     const { client: c, calls } = employerClient({ pendingTemplate: true });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'second overnight msg');
+    await queueConversationMessageFromEmployer(c, CONV_A, ACTOR, 'second overnight msg');
     expect(outboxInserts(calls).some((call) => /'template'/.test(call.sql))).toBe(false);
   });
 
   it('queues a template when none is pending yet', async () => {
     const { client: c, calls } = employerClient({ pendingTemplate: false });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'first overnight msg');
+    await queueConversationMessageFromEmployer(c, CONV_A, ACTOR, 'first overnight msg');
     expect(outboxInserts(calls).some((call) => /'template'/.test(call.sql))).toBe(true);
   });
 
@@ -751,7 +775,7 @@ describe('queueConversationMessageFromEmployer template dedupe (R7)', () => {
   // latest action, or an employer reply after it is never announced.
   it('counts the newest inbound message, web ones included, as the worker\'s last action', async () => {
     const { client: c, calls } = employerClient({ pendingTemplate: false });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'reply after a web message');
+    await queueConversationMessageFromEmployer(c, CONV_A, ACTOR, 'reply after a web message');
     const dedupeSql = calls.map((call) => call.sql).find((sql) => /send_kind = 'template'/.test(sql) && /SELECT EXISTS/.test(sql))!;
     const flat = dedupeSql.replace(/\s+/g, ' ');
     expect(flat).toContain('GREATEST(jc.accepted_at, jc.last_worker_message_at, '
@@ -760,7 +784,7 @@ describe('queueConversationMessageFromEmployer template dedupe (R7)', () => {
 
   it('ignores permanently-failed templates in the dedupe check (dead invites must not suppress new ones)', async () => {
     const { client: c, calls } = employerClient({ pendingTemplate: false });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'msg after dead template');
+    await queueConversationMessageFromEmployer(c, CONV_A, ACTOR, 'msg after dead template');
     const dedupeSql = calls.map((call) => call.sql).find((sql) => /send_kind = 'template'/.test(sql) && /SELECT EXISTS/.test(sql));
     expect(dedupeSql).toBeDefined();
     // A template that exhausted its send attempts was never delivered — it is
@@ -774,7 +798,7 @@ describe('createApplicantConversation', () => {
 
   it('assigns worker_thread_number via assign_worker_thread_number on create', async () => {
     const { client: c, calls } = employerClient();
-    await createApplicantConversation(c, EMPLOYER, 'job-1', WORKER, 'hola, te escribo sobre el trabajo');
+    await createApplicantConversation(c, ACTOR, 'job-1', WORKER, 'hola, te escribo sobre el trabajo');
 
     // Assertion (a): counter function was called with workerId
     const counter = calls.find((call) => /assign_worker_thread_number\s*\(\s*\$1\s*\)/.test(call.sql));
@@ -790,7 +814,7 @@ describe('createApplicantConversation', () => {
 
   it('queues the invite template in the WhatsApp language from the delivery context, with no worker-lane SQL', async () => {
     const { client: c, calls } = employerClient({ whatsappLanguage: 'en' });
-    const created = await createApplicantConversation(c, EMPLOYER, 'job-1', WORKER, 'hello about the job');
+    const created = await createApplicantConversation(c, ACTOR, 'job-1', WORKER, 'hello about the job');
     expect(created).toEqual({ conversationId: CONV_A });
     const [template] = outboxInserts(calls);
     expect(template.params).toContain('employer_message_invite_en');
@@ -799,13 +823,13 @@ describe('createApplicantConversation', () => {
 
   it('reuses an open conversation for the same applicant', async () => {
     const { client: c, calls } = employerClient({ openConversation: { id: CONV_B } });
-    const created = await createApplicantConversation(c, EMPLOYER, 'job-1', WORKER, 'hola');
+    const created = await createApplicantConversation(c, ACTOR, 'job-1', WORKER, 'hola');
     expect(created).toEqual({ conversationId: CONV_B });
     expect(calls.some((call) => /INSERT INTO job_conversations/.test(call.sql))).toBe(false);
   });
 
   it('refuses a worker who is not an applicant, and one with no number', async () => {
-    await expect(createApplicantConversation(employerClient({ access: null }).client, EMPLOYER, 'job-1', WORKER, 'hola'))
+    await expect(createApplicantConversation(employerClient({ access: null }).client, ACTOR, 'job-1', WORKER, 'hola'))
       .rejects.toThrow('applicant_not_found');
     const noPhone = employerClient({
       access: {
@@ -813,10 +837,81 @@ describe('createApplicantConversation', () => {
         worker_phone: null, company_name: 'ACME', job_title: 'Plomero',
       },
     });
-    await expect(createApplicantConversation(noPhone.client, EMPLOYER, 'job-1', WORKER, 'hola'))
+    await expect(createApplicantConversation(noPhone.client, ACTOR, 'job-1', WORKER, 'hola'))
       .rejects.toThrow('worker_whatsapp_unavailable');
   });
 });
+
+describe('employer conversations act for the caller scope (employer organizations)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  // The sender is not named by the INSERT: migration 118's trigger
+  // job_messages_stamp_sender stamps sender_user_id from
+  // app.current_internal_user_id, which resolveEmployerActor sets to the
+  // person acting (the owner here). The lib must not switch that caller.
+  it("an owner on a foreman's job: access by the whole scope; the new thread belongs to the JOB's employer; the sender is left to the database", async () => {
+    const { client: c, calls } = employerClient({
+      access: {
+        job_id: 'job-1', employer_id: FOREMAN, worker_id: WORKER, application_id: 'app-a',
+        worker_phone: '+15125551234', company_name: 'ACME', job_title: 'Plomero',
+      },
+      conversation: conversationAccessRow({ employer_id: FOREMAN }),
+    });
+    await createApplicantConversation(c, OWNER_ACTOR, 'job-1', WORKER, 'hola');
+
+    const access = calls.find((call) => /FROM jobs j JOIN job_applications ja/.test(call.sql.replace(/\s+/g, ' ')))!;
+    expect(access.sql).toMatch(/LEFT JOIN users employer ON employer\.id = j\.employer_id/);
+    expect(access.sql).toMatch(/j\.employer_id = ANY\(\$2::uuid\[\]\)/);
+    expect(access.params).toEqual(['job-1', [OWNER, FOREMAN], WORKER]);
+    const open = calls.find((call) => /jc\.job_id = \$1/.test(call.sql) && /jc\.status = 'open'/.test(call.sql))!;
+    expect(open.params).toEqual(['job-1', FOREMAN, WORKER]);
+    const insert = calls.find((call) => /INSERT INTO job_conversations/.test(call.sql))!;
+    expect(insert.params).toEqual(['job-1', FOREMAN, WORKER, 'app-a', 3]);
+    const cross = calls.find((call) => /last_worker_message_at > now\(\) - interval/.test(call.sql))!;
+    expect(cross.params[0]).toBe(FOREMAN);
+    const message = calls.find((call) => /INSERT INTO job_conversation_messages/.test(call.sql))!;
+    expect(message.sql).not.toMatch(/sender_user_id/);
+    expect(message.params).toHaveLength(3);
+    expect(calls.some((call) => /set_config/.test(call.sql))).toBe(false);
+  });
+
+  it("an owner replying on a foreman's thread: loaded by the whole scope (no inner join on the employer's users row), the sender is left to the database", async () => {
+    const { client: c, calls } = employerClient({ conversation: conversationAccessRow({ employer_id: FOREMAN }) });
+    await queueConversationMessageFromEmployer(c, CONV_A, OWNER_ACTOR, 'hola');
+    const load = calls.find((call) => /FROM job_conversations jc\s+JOIN jobs j/.test(call.sql) && /jc\.id = \$1/.test(call.sql))!;
+    expect(load.sql).toMatch(/LEFT JOIN users employer ON employer\.id = jc\.employer_id/);
+    expect(load.sql).toMatch(/jc\.employer_id = ANY\(\$2::uuid\[\]\)/);
+    expect(load.params).toEqual([CONV_A, [OWNER, FOREMAN]]);
+    const message = calls.find((call) => /INSERT INTO job_conversation_messages/.test(call.sql))!;
+    expect(message.sql).not.toMatch(/sender_user_id/);
+    expect(message.params).toHaveLength(3);
+    expect(calls.some((call) => /set_config/.test(call.sql))).toBe(false);
+  });
+
+  it('list, detail, close and mark-read take the scope as one uuid[] parameter', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    await listEmployerConversations(client, [OWNER, FOREMAN]);
+    expect(mockQuery.mock.calls[0][0]).toMatch(/WHERE jc\.employer_id = ANY\(\$1::uuid\[\]\)/);
+    expect(mockQuery.mock.calls[0][1]).toEqual([[OWNER, FOREMAN]]);
+
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    await getEmployerConversationDetail(client, 'conv-1', [OWNER, FOREMAN]);
+    expect(mockQuery.mock.calls[1][0]).toMatch(/AND jc\.employer_id = ANY\(\$2::uuid\[\]\)/);
+    expect(mockQuery.mock.calls[1][1]).toEqual(['conv-1', [OWNER, FOREMAN]]);
+
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+    await expect(closeEmployerConversation(client, 'conv-1', [OWNER, FOREMAN])).resolves.toBe(true);
+    expect(mockQuery.mock.calls[2][0]).toMatch(/AND employer_id = ANY\(\$2::uuid\[\]\)/);
+    expect(mockQuery.mock.calls[2][1]).toEqual(['conv-1', [OWNER, FOREMAN]]);
+
+    mockQuery.mockResolvedValueOnce({ rows: [{ employer_last_read_at: 't' }], rowCount: 1 });
+    await expect(markEmployerConversationRead(client, 'conv-1', [OWNER, FOREMAN])).resolves.toBe('t');
+    expect(mockQuery.mock.calls[3][0]).toMatch(/AND employer_id = ANY\(\$2::uuid\[\]\)/);
+    expect(mockQuery.mock.calls[3][1]).toEqual(['conv-1', [OWNER, FOREMAN]]);
+  });
+});
+
+import { closeEmployerConversation, markEmployerConversationRead } from '../../../../lambda/lib/job-messaging';
 
 describe('closeWorkerConversation', () => {
   beforeEach(() => jest.clearAllMocks());
@@ -878,7 +973,7 @@ describe('queueConversationMessageFromEmployer: a worker who is not ready gets t
       conversation: conversationAccessRow({ last_worker_message_at: new Date(), worker_thread_number: 1 }),
     });
 
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'te espero manana a las 8');
+    await queueConversationMessageFromEmployer(c, CONV_A, ACTOR, 'te espero manana a las 8');
 
     expect(calls.some((call) => /employer_claim_worker_intent/.test(call.sql))).toBe(false);
     const freeform = outboxInserts(calls).find((call) =>
@@ -891,7 +986,7 @@ describe('queueConversationMessageFromEmployer: a worker who is not ready gets t
 
   it('an ONBOARDING worker is claimed through jale_cap.employer_claim_worker_intent: the message is the source, with copy pre-rendered in the workflow language', async () => {
     const { client: c, calls } = employerClient({ lifecycle: 'onboarding', workflowLanguage: 'en' });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'hola');
+    await queueConversationMessageFromEmployer(c, CONV_A, ACTOR, 'hola');
 
     const claims = calls.filter((call) => /jale_cap\.employer_claim_worker_intent\(\$1, \$2, \$3, \$4::jsonb, \$5::jsonb\)/.test(call.sql));
     expect(claims).toHaveLength(1);
@@ -916,7 +1011,7 @@ describe('queueConversationMessageFromEmployer: a worker who is not ready gets t
 
   it('a Spanish onboarding worker gets the Spanish copy', async () => {
     const { client: c, calls } = employerClient({ lifecycle: 'onboarding', workflowLanguage: 'es' });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'hola');
+    await queueConversationMessageFromEmployer(c, CONV_A, ACTOR, 'hola');
     const claim = calls.find((call) => /employer_claim_worker_intent/.test(call.sql))!;
     expect(JSON.parse(claim.params[4] as string).body).toBe(
       'ACME quiere hablar contigo sobre el trabajo de Plomero. Responde MENSAJES para abrir el chat.',
@@ -928,7 +1023,7 @@ describe('queueConversationMessageFromEmployer: a worker who is not ready gets t
       lifecycle: null,
       conversation: conversationAccessRow({ last_worker_message_at: new Date() }),
     });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'hola');
+    await queueConversationMessageFromEmployer(c, CONV_A, ACTOR, 'hola');
     expect(calls.some((call) => /employer_claim_worker_intent/.test(call.sql))).toBe(true);
     const msgInsert = calls.find((call) => /INSERT INTO job_conversation_messages/.test(call.sql));
     expect(msgInsert!.params[2]).toBe('waiting_worker_reply');
@@ -939,28 +1034,28 @@ describe('queueConversationMessageFromEmployer: a worker who is not ready gets t
       lifecycle: 'onboarding',
       conversation: conversationAccessRow({ worker_phone: null, last_worker_message_at: new Date() }),
     });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'hola');
+    await queueConversationMessageFromEmployer(c, CONV_A, ACTOR, 'hola');
     expect(outboxInserts(calls)).toEqual([]);
     expect(calls.some((call) => /employer_claim_worker_intent/.test(call.sql))).toBe(true);
   });
 
   it('a suspended worker is a normal answer (reject/worker_suspended), as before', async () => {
     const { client: c } = employerClient({ lifecycle: 'suspended', claim: { action: 'reject', reason: 'worker_suspended' } });
-    await expect(queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'hola')).resolves.toEqual({
+    await expect(queueConversationMessageFromEmployer(c, CONV_A, ACTOR, 'hola')).resolves.toEqual({
       messageId: 'msg-1', queuedAsTemplate: true,
     });
   });
 
   it('an allowed claim with nothing to send throws, so the send rolls back as before', async () => {
     const { client: c, calls } = employerClient({ lifecycle: 'onboarding', claim: { action: 'reject', reason: 'renderer_unavailable' } });
-    await expect(queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'hola')).rejects.toThrow('renderer_unavailable:employer_chat');
+    await expect(queueConversationMessageFromEmployer(c, CONV_A, ACTOR, 'hola')).rejects.toThrow('renderer_unavailable:employer_chat');
     expect(calls.some((call) => /UPDATE job_conversations/.test(call.sql))).toBe(false);
   });
 
   it('each employer message gets its own claim, named by that message', async () => {
     const { client: c, calls } = employerClient({ lifecycle: 'onboarding', messageIds: ['msg-1', 'msg-2'] });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'hola');
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'hola de nuevo');
+    await queueConversationMessageFromEmployer(c, CONV_A, ACTOR, 'hola');
+    await queueConversationMessageFromEmployer(c, CONV_A, ACTOR, 'hola de nuevo');
     const sources = calls.filter((call) => /employer_claim_worker_intent/.test(call.sql)).map((call) => call.params[2]);
     expect(sources).toEqual(['msg-1', 'msg-2']);
   });
@@ -974,7 +1069,7 @@ describe('context header on employer freeform messages', () => {
     const { client: c, calls } = employerClient({
       conversation: conversationAccessRow({ worker_thread_number: 2, last_worker_message_at: new Date() }),
     });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'Hola, ¿puedes?');
+    await queueConversationMessageFromEmployer(c, CONV_A, ACTOR, 'Hola, ¿puedes?');
     const [outboxInsert] = outboxInserts(calls);
     // The body argument (one of the $N params) should start with 🏢
     const bodyParam = outboxInsert.params.find((p) => typeof p === 'string' && (p as string).startsWith('🏢')) as string;
@@ -988,7 +1083,7 @@ describe('context header on employer freeform messages', () => {
     const { client: c, calls } = employerClient({
       conversation: conversationAccessRow({ worker_thread_number: 1, last_worker_message_at: null }),
     });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'Hola');
+    await queueConversationMessageFromEmployer(c, CONV_A, ACTOR, 'Hola');
     const inserts = outboxInserts(calls);
     expect(inserts.length).toBeGreaterThan(0);
     inserts.forEach((call) => {
@@ -1001,7 +1096,7 @@ describe('template outbox visibility (spec 2026-08-13)', () => {
   it('queueWorkerInviteTemplate carries the message_id so failures mark the employer message', async () => {
     // Down the template path: ready worker, reply window closed, no pending invite.
     const { client: c, calls } = employerClient({ messageIds: ['msg-77'] });
-    await queueConversationMessageFromEmployer(c, CONV_A, EMPLOYER, 'hola');
+    await queueConversationMessageFromEmployer(c, CONV_A, ACTOR, 'hola');
     const [outboxInsert] = outboxInserts(calls);
     expect(outboxInsert).toBeDefined();
     expect(outboxInsert.sql).toContain('message_id');
@@ -1014,11 +1109,11 @@ describe('employer conversation list/detail — job city and state', () => {
 
   it('selects the job city and state for the employer list and detail', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-    await listEmployerConversations(client, EMPLOYER);
+    await listEmployerConversations(client, [EMPLOYER]);
     expect(mockQuery.mock.calls[0][0]).toMatch(/j\.city AS job_city/);
 
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-    await getEmployerConversationDetail(client, 'conv-1', EMPLOYER);
+    await getEmployerConversationDetail(client, 'conv-1', [EMPLOYER]);
     expect(mockQuery.mock.calls[1][0]).toMatch(/j\.city AS job_city/);
   });
 });
