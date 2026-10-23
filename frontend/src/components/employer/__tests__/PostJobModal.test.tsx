@@ -392,6 +392,20 @@ describe('PostJobModal: a refused step points at its field', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Add the end time too, or clear the start time');
   });
 
+  it('clears the end-time mark when the start time is cleared instead, as the sentence offers', async () => {
+    await openWithTemplates([withCity]);
+    applyTemplate(withCity.id);
+    fireEvent.click(nextButton());
+    await waitFor(() => expect(stepHeading()).toHaveTextContent(message('employer_dashboard.modal.steps.details')));
+    fireEvent.change(timeFields()[0], { target: { value: '07:00' } });
+    fireEvent.click(nextButton());
+    await waitFor(() => expect(timeFields()[1]).toHaveAttribute('aria-invalid', 'true'));
+
+    fireEvent.change(timeFields()[0], { target: { value: '' } });
+
+    expect(timeFields()[1]).not.toHaveAttribute('aria-invalid');
+  });
+
   it('lands on step 2 with the headcount focused when a jump past it is refused', async () => {
     const zeroWorkers: JobTemplate = { ...withCity, id: 'tpl-zero', payload: { ...withCity.payload, number_of_workers_needed: 0 } };
     await openWithTemplates([zeroWorkers]);

@@ -267,6 +267,10 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
   const update = <K extends keyof JobForm>(key: K, value: JobForm[K]) => {
     setForm((current) => ({ ...current, [key]: value }));
     clearFieldProblem(key as JobFormFieldProblem['field']);
+    // A half-filled shift is fixed from either side ("add the end time too,
+    // or clear the start time"), so a change to one time clears the other's mark.
+    if (key === 'shift_start') clearFieldProblem('shift_end');
+    if (key === 'shift_end') clearFieldProblem('shift_start');
   };
 
   const handleClose = () => {
