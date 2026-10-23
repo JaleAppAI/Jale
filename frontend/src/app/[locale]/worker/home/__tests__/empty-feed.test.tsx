@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import type { ReactNode } from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
@@ -81,6 +81,25 @@ import WorkerHomePage from '../page';
 
 const cityField = () => screen.queryByPlaceholderText(message('common.city_multi_placeholder'));
 
+/** jsdom's own `scrollIntoView` (it has none), as this file found it. */
+const SCROLL_INTO_VIEW = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView');
+
+/**
+ * jsdom has no `scrollIntoView`, so `vi.spyOn` has nothing to wrap: a
+ * stand-in goes on the prototype for one test and `afterEach` puts the
+ * prototype back exactly as it was.
+ */
+function stubScrollIntoView() {
+  const scrollIntoView = vi.fn();
+  Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, writable: true, value: scrollIntoView });
+  return scrollIntoView;
+}
+
+afterEach(() => {
+  if (SCROLL_INTO_VIEW) Object.defineProperty(Element.prototype, 'scrollIntoView', SCROLL_INTO_VIEW);
+  else Reflect.deleteProperty(Element.prototype, 'scrollIntoView');
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   searchParams.current = new URLSearchParams();
@@ -92,8 +111,7 @@ beforeEach(() => {
 describe('worker feed — empty, no filters', () => {
   it('offers to pick cities when the worker has none, and opens the picker there', async () => {
     const user = userEvent.setup();
-    const scrollIntoView = vi.fn();
-    Element.prototype.scrollIntoView = scrollIntoView;
+    const scrollIntoView = stubScrollIntoView();
     renderIntl(<WorkerHomePage />);
 
     const cta = await screen.findByRole('button', { name: message('worker_home.empty.cta') });
@@ -131,5 +149,13 @@ describe('worker feed — empty, no filters', () => {
   it('says it in Spanish', async () => {
     renderIntl(<WorkerHomePage />, 'es');
     expect(await screen.findByRole('button', { name: message('worker_home.empty.cta', 'es') })).toBeInTheDocument();
+  });
+});
+
+// Runs last in this file: the stand-in for the scroll call above is gone
+// again, so no later test sees a scroll function jsdom does not have.
+describe('worker feed — test environment', () => {
+  it('leaves Element.prototype.scrollIntoView as it found it', () => {
+    expect(Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView')).toEqual(SCROLL_INTO_VIEW);
   });
 });
