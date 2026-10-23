@@ -145,3 +145,35 @@ describe('flushing when storage cannot be trusted', () => {
     expect(updateEmployerProfile).not.toHaveBeenCalled();
   });
 });
+
+/*
+ * The dashboard's PATCH can still be in flight when the employer opens
+ * Profile. The profile load must not answer from a read served before that
+ * PATCH landed: it flushes (or joins the flush) first, and reads only when
+ * nothing was pending.
+ */
+describe('the profile load while the dashboard is still saving', () => {
+  it('answers with the saved answers, not a read served before the save landed', async () => {
+    sessionStorage.setItem('pendingEmployerProfile', JSON.stringify(PENDING));
+    let landPatch: (value: unknown) => void = () => {};
+    updateEmployerProfile.mockReturnValue(new Promise((resolve) => { landPatch = resolve; }));
+    let serveGet: (value: unknown) => void = () => {};
+    getEmployerProfile.mockReturnValue(new Promise((resolve) => { serveGet = resolve; }));
+
+    const fromDashboard = flushPending('tok');
+    const fromProfile = loadEmployerProfileWithPendingFlush('tok');
+    await Promise.resolve();
+    // The PATCH lands first, then a read the server answered before it.
+    landPatch({ id: 'e1', company_name: 'Prueba Co' });
+    await fromDashboard;
+    serveGet({ id: 'e1', company_name: null });
+
+    expect(await fromProfile).toEqual({ id: 'e1', company_name: 'Prueba Co' });
+    expect(updateEmployerProfile).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads the profile when nothing is pending', async () => {
+    expect(await loadEmployerProfileWithPendingFlush('tok')).toEqual({ id: 'e1', company_name: null });
+    expect(getEmployerProfile).toHaveBeenCalledTimes(1);
+  });
+});

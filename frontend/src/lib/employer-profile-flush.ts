@@ -81,16 +81,17 @@ export function flushPendingEmployerProfile(token: string): Promise<EmployerProf
 }
 
 /**
- * The profile page's load: the profile, then -- on the first visit after a
- * sign-up, if the dashboard has not already sent them -- the pending sign-up
- * answers (see `flushPendingEmployerProfile`). A failed save rejects the load,
- * as before, and leaves the answers for the next one.
+ * The profile page's load. The pending sign-up answers go first (or the load
+ * joins the dashboard's save of them already in flight), and the saved profile
+ * that comes back is the answer; the profile is read only when nothing was
+ * pending. Reading first could answer with data served before the save landed,
+ * and a later save from that form would write blanks over it. A failed save
+ * rejects the load, as before, and leaves the answers for the next one.
  */
 export async function loadEmployerProfileWithPendingFlush(
   token: string,
   signal?: AbortSignal,
 ): Promise<EmployerProfileData> {
-  const loaded = await getEmployerProfile(token, signal);
   const saved = await flushPendingEmployerProfile(token);
-  return saved ?? loaded;
+  return saved ?? getEmployerProfile(token, signal);
 }
