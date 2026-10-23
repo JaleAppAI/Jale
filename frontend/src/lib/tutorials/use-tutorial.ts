@@ -111,7 +111,14 @@ export function useTutorial(id: TutorialId, options: UseTutorialOptions): Tutori
                     mayAutoPlay(current, id, done) &&
                     !current.isOverlayPresent() &&
                     current.play({ id, vars, mode: 'auto', then: openHost, source });
-                if (!plays) openHost();
+                if (!plays) {
+                    // A tutorial this call site queued earlier that has not
+                    // shown yet (its player still on the way, so the person
+                    // pressed again) is dropped: the host opens now, once,
+                    // and nothing follows it when the player arrives.
+                    current.cancel(source);
+                    openHost();
+                }
             },
             replay(vars) {
                 const current = latest.current.progress;
