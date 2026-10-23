@@ -177,9 +177,8 @@ describe('alarm notifications (real composition)', () => {
   });
 
   it('leaves only the deliberately action-less alarms without an action', () => {
-    // The edge stacks' alarms are covered by the daily edge check, and the
-    // report capture share is report-only. Any other alarm without an action
-    // is one nobody would hear.
+    // The edge stacks' alarms are covered by the daily edge check. Any other
+    // alarm without an action is one nobody would hear.
     const edgeStacks = new Set<string>(Object.values(EDGE_STACK_IDS));
     const silent: string[] = [];
     let total = 0;
@@ -192,6 +191,6 @@ describe('alarm notifications (real composition)', () => {
       }
     }
     expect(total).toBeGreaterThan(100);
-    expect(silent).toEqual(['JaleReportsStack/ReportCaptureSuccessShare']);
+    expect(silent).toEqual([]);
   });
 });

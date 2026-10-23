@@ -3,19 +3,36 @@ import { handler } from '../../../../lambda/api/employer-jobs-create';
 import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
 import { setJobCoordinates } from '../../../../lambda/lib/location';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
-import { resolveEntitlements } from '../../../../lambda/lib/entitlements';
+import { resolveCompanyEntitlements } from '../../../../lambda/lib/entitlements';
+import { readCompanyUsage, CompanyUsageRefusedError } from '../../../../lambda/lib/company-usage';
 import { DOC_TYPES, REQUIRED_FIELD_TYPES } from '../../../../lambda/lib/job-fields';
+import { resolveEmployerActor } from '../../../../lambda/lib/employer-actor';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/lib/location');
 jest.mock('../../../../lambda/legal/check-compliance');
 jest.mock('../../../../lambda/lib/entitlements');
+jest.mock('../../../../lambda/lib/company-usage');
+jest.mock('../../../../lambda/lib/employer-actor', () => ({
+  ...jest.requireActual('../../../../lambda/lib/employer-actor'),
+  resolveEmployerActor: jest.fn(),
+}));
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
 const mockSetJobCoordinates = setJobCoordinates as jest.Mock;
 const mockCheckCompliance = checkCompliance as jest.Mock;
-const mockResolveEntitlements = resolveEntitlements as jest.Mock;
+const mockResolveEntitlements = resolveCompanyEntitlements as jest.Mock;
+const mockReadCompanyUsage = readCompanyUsage as jest.Mock;
+const companyUsage = (activeJobs: number, templates = 0) => ({ organizationId: ORG_ID, activeJobs, templates, activeForemen: 0, suspendedForemen: 0 });
+const mockResolveEmployerActor = resolveEmployerActor as jest.Mock;
+const EMPLOYER_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const ORG_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const FOREMAN_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const ownerActor = (scopeUserIds: string[] = [EMPLOYER_ID]) => ({
+  ok: true,
+  actor: { userId: EMPLOYER_ID, organizationId: ORG_ID, role: 'owner', scopeUserIds },
+});
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
 
@@ -42,13 +59,9 @@ describe('employer-jobs-create', () => {
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
     // Default: employer_free, 1 slot, 0 active jobs — allow create
     mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_free', activeJobLimit: 1 });
+    mockResolveEmployerActor.mockResolvedValue(ownerActor());
+    mockReadCompanyUsage.mockResolvedValue(companyUsage(0));
     mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('FOR UPDATE')) {
-        return Promise.resolve({ rows: [{ id: 'user-uuid-1' }] });
-      }
-      if (sql.includes('COUNT(*)')) {
-        return Promise.resolve({ rows: [{ active_jobs: 0 }] });
-      }
       if (sql.includes('INSERT INTO jobs')) {
         return Promise.resolve({
           rows: [{
@@ -158,8 +171,6 @@ describe('employer-jobs-create', () => {
   it('creates a job when employer_free plan has 0 active jobs (slot available)', async () => {
     mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_free', activeJobLimit: 1 });
     mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'user-uuid-1' }] });
-      if (sql.includes('COUNT(*)')) return Promise.resolve({ rows: [{ active_jobs: 0 }] });
       if (sql.includes('INSERT INTO jobs')) {
         return Promise.resolve({ rows: [{ id: 'job-1', title: 'Concrete Finisher', location: 'Columbus, OH', pay: null, job_type: 'contract', status: 'active', required_docs: [], created_at: 'now', pay_min: null, pay_max: null, start_date: null, expected_duration: null, shift_schedule: null, transportation_required: false, language_preference: ['any'], number_of_workers_needed: 1, hired_count: 0, open_count: 1, trade_category: 'concrete', required_experience_years: null, certifications: [] }] });
       }
@@ -172,32 +183,22 @@ describe('employer-jobs-create', () => {
     expect(mockQuery).toHaveBeenCalledWith('COMMIT');
   });
 
-  it('returns 403 job_limit_reached when employer_free plan is at its active job limit', async () => {
-    mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_free', activeJobLimit: 1 });
-    mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'user-uuid-1' }] });
-      if (sql.includes('COUNT(*)')) return Promise.resolve({ rows: [{ active_jobs: 1 }] }); // already at limit
-      return Promise.resolve({});
-    });
+  it('returns 403 job_limit_reached when the company is at its active job limit', async () => {
+    mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_free', activeJobLimit: 1, templateLimit: 2, foremanSeatLimit: 0 });
+    mockReadCompanyUsage.mockResolvedValue(companyUsage(1)); // another member's job holds the slot
 
     const res = await handler(makeEvent({}));
 
     expect(res.statusCode).toBe(403);
-    const body = JSON.parse(res.body);
-    expect(body.error).toBe('job_limit_reached');
-    expect(body.plan_code).toBe('employer_free');
-    expect(body.active_job_limit).toBe(1);
-    expect(body.active_jobs).toBe(1);
-    // Must roll back, must not insert
+    expect(JSON.parse(res.body)).toEqual({ error: 'job_limit_reached', plan_code: 'employer_free', active_job_limit: 1, active_jobs: 1 });
     expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
     expect(mockQuery).not.toHaveBeenCalledWith(expect.stringContaining('INSERT INTO jobs'), expect.anything());
   });
 
   it('creates a job when employer_pro plan has slots remaining', async () => {
-    mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_pro', activeJobLimit: 10 });
+    mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_pro', activeJobLimit: 10, templateLimit: 20, foremanSeatLimit: 3 });
+    mockReadCompanyUsage.mockResolvedValue(companyUsage(3)); // 3 of 10 used: under the limit
     mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'user-uuid-1' }] });
-      if (sql.includes('COUNT(*)')) return Promise.resolve({ rows: [{ active_jobs: 3 }] }); // under limit
       if (sql.includes('INSERT INTO jobs')) {
         return Promise.resolve({ rows: [{ id: 'job-2', title: 'Concrete Finisher', location: 'Columbus, OH', pay: null, job_type: 'contract', status: 'active', required_docs: [], created_at: 'now', pay_min: null, pay_max: null, start_date: null, expected_duration: null, shift_schedule: null, transportation_required: false, language_preference: ['any'], number_of_workers_needed: 1, hired_count: 0, open_count: 1, trade_category: 'concrete', required_experience_years: null, certifications: [] }] });
       }
@@ -210,12 +211,9 @@ describe('employer-jobs-create', () => {
     expect(mockQuery).toHaveBeenCalledWith('COMMIT');
   });
 
-  it('returns 500 when resolveEntitlements throws billing_plan_catalog_invalid', async () => {
+  it('returns 500 when resolveCompanyEntitlements throws billing_plan_catalog_invalid', async () => {
     mockResolveEntitlements.mockRejectedValue(new Error('billing_plan_catalog_invalid'));
-    mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'user-uuid-1' }] });
-      return Promise.resolve({});
-    });
+    mockQuery.mockResolvedValue({});
 
     const res = await handler(makeEvent({}));
 
@@ -225,33 +223,50 @@ describe('employer-jobs-create', () => {
     expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
   });
 
-  it('issues FOR UPDATE lock query before resolving entitlements', async () => {
+  it('takes the company lock, then the company plan, then inserts; no users lock', async () => {
     const callOrder: string[] = [];
-    mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('FOR UPDATE')) {
-        callOrder.push('for_update');
-        return Promise.resolve({ rows: [{ id: 'user-uuid-1' }] });
-      }
-      if (sql.includes('COUNT(*)')) {
-        callOrder.push('count');
-        return Promise.resolve({ rows: [{ active_jobs: 0 }] });
-      }
-      if (sql.includes('INSERT INTO jobs')) {
-        callOrder.push('insert');
-        return Promise.resolve({ rows: [{ id: 'job-1', title: 'Concrete Finisher', location: 'Columbus, OH', pay: null, job_type: 'contract', status: 'active', required_docs: [], created_at: 'now', pay_min: null, pay_max: null, start_date: null, expected_duration: null, shift_schedule: null, transportation_required: false, language_preference: ['any'], number_of_workers_needed: 1, hired_count: 0, open_count: 1, trade_category: 'concrete', required_experience_years: null, certifications: [] }] });
-      }
-      return Promise.resolve({});
-    });
-    mockResolveEntitlements.mockImplementation(() => {
+    mockReadCompanyUsage.mockImplementation(async () => { callOrder.push('company_lock'); return companyUsage(0); });
+    mockResolveEntitlements.mockImplementation(async () => {
       callOrder.push('resolve_entitlements');
-      return Promise.resolve({ planCode: 'employer_free', activeJobLimit: 1 });
+      return { planCode: 'employer_free', activeJobLimit: 1, templateLimit: 2, foremanSeatLimit: 0 };
+    });
+    const base = mockQuery.getMockImplementation()!;
+    mockQuery.mockImplementation((sql: string, params?: unknown[]) => {
+      if (typeof sql === 'string' && sql.includes('INSERT INTO jobs')) callOrder.push('insert');
+      return base(sql, params);
     });
 
-    await handler(makeEvent({}));
+    const res = await handler(makeEvent({}));
 
-    expect(callOrder.indexOf('for_update')).toBeLessThan(callOrder.indexOf('resolve_entitlements'));
-    expect(callOrder.indexOf('resolve_entitlements')).toBeLessThan(callOrder.indexOf('count'));
-    expect(callOrder.indexOf('count')).toBeLessThan(callOrder.indexOf('insert'));
+    expect(res.statusCode).toBe(201);
+    expect(mockResolveEmployerActor).toHaveBeenCalledWith(expect.anything(), 'employer-sub');
+    expect(mockReadCompanyUsage).toHaveBeenCalledWith(expect.anything(), { lock: true });
+    expect(mockResolveEntitlements).toHaveBeenCalledWith(expect.anything(), ORG_ID);
+    expect(callOrder).toEqual(['company_lock', 'resolve_entitlements', 'insert']);
+    expect(mockQuery.mock.calls.some(([sql]) => typeof sql === 'string' && /FROM users|COUNT\(\*\)/.test(sql))).toBe(false);
+  });
+
+  it('answers 403 membership_inactive and rolls back when the company lock refuses the caller', async () => {
+    mockReadCompanyUsage.mockRejectedValue(new CompanyUsageRefusedError());
+
+    const res = await handler(makeEvent({}));
+
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({ error: 'membership_inactive' });
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
+    expect(mockQuery).not.toHaveBeenCalledWith(expect.stringContaining('INSERT INTO jobs'), expect.anything());
+  });
+
+  it('returns 500 and rolls back when the usage read is for another company than the actor\'s', async () => {
+    mockReadCompanyUsage.mockResolvedValue({ ...companyUsage(0), organizationId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' });
+
+    const res = await handler(makeEvent({}));
+
+    expect(res.statusCode).toBe(500);
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
+    expect(mockQuery).not.toHaveBeenCalledWith(expect.stringContaining('INSERT INTO jobs'), expect.anything());
   });
 
   // INSERT positional params (0-based): 21 city_key, 22 city, 23 state, 24 state_region.
@@ -324,8 +339,6 @@ describe('employer-jobs-create', () => {
 
   it('persists and returns all four requirement arrays', async () => {
     mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'user-uuid-1' }] });
-      if (sql.includes('COUNT(*)')) return Promise.resolve({ rows: [{ active_jobs: 0 }] });
       if (sql.includes('INSERT INTO jobs')) {
         return Promise.resolve({
           rows: [{
@@ -419,6 +432,32 @@ describe('employer-jobs-create', () => {
     expect(mockGetDbPool).not.toHaveBeenCalled();
   });
 
+  // Date of birth is no longer offered on new jobs; existing jobs keep it.
+  // Bind params: 8 required_fields, 9 optional_fields.
+  it('creates the job without date_of_birth when it is sent as a required field', async () => {
+    const res = await handler(makeEvent({ required_fields: ['work_authorization', 'date_of_birth'], optional_fields: ['education'] }));
+    expect(res.statusCode).toBe(201);
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
+    expect(insertCall[1][8]).toEqual(['work_authorization']);
+    expect(insertCall[1][9]).toEqual(['education']);
+  });
+
+  it('creates the job without date_of_birth when it is sent as an optional field', async () => {
+    const res = await handler(makeEvent({ required_fields: ['work_authorization'], optional_fields: ['date_of_birth', 'education'] }));
+    expect(res.statusCode).toBe(201);
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
+    expect(insertCall[1][8]).toEqual(['work_authorization']);
+    expect(insertCall[1][9]).toEqual(['education']);
+  });
+
+  it('creates the job without date_of_birth when it is sent in both tiers', async () => {
+    const res = await handler(makeEvent({ required_fields: ['date_of_birth'], optional_fields: ['date_of_birth'] }));
+    expect(res.statusCode).toBe(201);
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
+    expect(insertCall[1][8]).toEqual([]);
+    expect(insertCall[1][9]).toEqual([]);
+  });
+
   it('derives work_authorization_required=true from required_fields, overriding a false legacy flag', async () => {
     const res = await handler(makeEvent({ required_fields: ['work_authorization'], work_authorization_required: false }));
     expect(res.statusCode).toBe(201);
@@ -463,8 +502,6 @@ describe('employer-jobs-create', () => {
 
   it('threads all six new fields through INSERT and RETURNING', async () => {
     mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'user-uuid-1' }] });
-      if (sql.includes('COUNT(*)')) return Promise.resolve({ rows: [{ active_jobs: 0 }] });
       if (sql.includes('INSERT INTO jobs')) {
         return Promise.resolve({
           rows: [{
@@ -627,8 +664,6 @@ describe('employer-jobs-create', () => {
 
   it('derives certifications from certification_requirements names, ignoring a stale client-supplied certifications value', async () => {
     mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'user-uuid-1' }] });
-      if (sql.includes('COUNT(*)')) return Promise.resolve({ rows: [{ active_jobs: 0 }] });
       if (sql.includes('INSERT INTO jobs')) {
         return Promise.resolve({ rows: [{ id: 'job-1', certifications: ['OSHA 30'] }] });
       }
@@ -706,8 +741,6 @@ describe('employer-jobs-create', () => {
 
     it('returns the stored list to the employer', async () => {
       mockQuery.mockImplementation((sql: string) => {
-        if (sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'user-uuid-1' }] });
-        if (sql.includes('COUNT(*)')) return Promise.resolve({ rows: [{ active_jobs: 0 }] });
         if (sql.includes('INSERT INTO jobs')) {
           return Promise.resolve({ rows: [{ id: 'job-1', pre_application_prompts: [{ id: 'p1', text: 'A' }] }] });
         }
@@ -719,10 +752,46 @@ describe('employer-jobs-create', () => {
     });
   });
 
+  describe('organization actor', () => {
+    it('resolves the actor after the compliance check and issues no users lookup of its own', async () => {
+      const res = await handler(makeEvent({}));
+
+      expect(res.statusCode).toBe(201);
+      expect(mockCheckCompliance.mock.invocationCallOrder[0])
+        .toBeLessThan(mockResolveEmployerActor.mock.invocationCallOrder[0]);
+      expect(mockQuery.mock.calls.some(([sql]) => typeof sql === 'string' && /FROM users/.test(sql))).toBe(false);
+    });
+
+    it('counts and limits the company while creating as the actor, whoever else is in scope', async () => {
+      mockResolveEmployerActor.mockResolvedValue(ownerActor([EMPLOYER_ID, FOREMAN_ID]));
+
+      const res = await handler(makeEvent({}));
+
+      expect(res.statusCode).toBe(201);
+      expect(mockResolveEntitlements).toHaveBeenCalledWith(expect.anything(), ORG_ID);
+      const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
+      // employer_id (first column) is the signed-in person.
+      expect((insertCall![1] as unknown[])[0]).toBe(EMPLOYER_ID);
+    });
+
+    it('returns the actor failure, rolls back, and runs no job query when the membership is inactive', async () => {
+      mockResolveEmployerActor.mockResolvedValue({ ok: false, status: 403, error: 'membership_inactive' });
+
+      const res = await handler(makeEvent({}));
+
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body)).toEqual({ error: 'membership_inactive' });
+      expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+      expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
+      expect(mockQuery.mock.calls.some(([sql]) => typeof sql === 'string' && /jobs/.test(sql))).toBe(false);
+      expect(mockResolveEntitlements).not.toHaveBeenCalled();
+    });
+  });
+
   // Sprint 28 (K3.6, item 18): the saved template the job started from.
   describe('template_id', () => {
     const TEMPLATE = '66666666-6666-4666-8666-666666666666';
-    const CHECK = 'SELECT 1 FROM employer_job_templates WHERE id = $1 AND employer_id = $2';
+    const CHECK = 'SELECT 1 FROM employer_job_templates WHERE id = $1 AND employer_id = ANY ((SELECT jale_internal.org_member_scope($2::text))::uuid[])';
     const insertCall = () => mockQuery.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO jobs'))!;
     const statements = () => mockQuery.mock.calls.map(([sql]) => String(sql).replace(/\s+/g, ' ').trim());
     const answerCheck = (answer: (sql: string) => Promise<unknown> | undefined) => {
@@ -730,18 +799,33 @@ describe('employer-jobs-create', () => {
       mockQuery.mockImplementation((sql: string, params?: unknown[]) => answer(sql) ?? base(sql, params));
     };
 
-    it('stores the id of a template the employer can see as its own, checked in the create transaction', async () => {
+    it('stores the id of a company template the caller can see, checked in the create transaction as the caller', async () => {
       answerCheck((sql) => (sql === CHECK ? Promise.resolve({ rows: [{ '?column?': 1 }], rowCount: 1 }) : undefined));
       const res = await handler(makeEvent({ template_id: TEMPLATE }));
 
       expect(res.statusCode).toBe(201);
-      expect(mockQuery).toHaveBeenCalledWith(CHECK, [TEMPLATE, 'user-uuid-1']);
+      expect(mockQuery).toHaveBeenCalledWith(CHECK, [TEMPLATE, EMPLOYER_ID]);
       const sql = String(insertCall()[0]);
-      expect(sql).toMatch(/pre_application_prompts,\s+created_from_template_id\s+\)/);
-      expect(sql).toMatch(/\$35::jsonb, \$36\s+\)/);
+      // shift_periods (131) follows it as the last column and parameter.
+      expect(sql).toMatch(/pre_application_prompts,\s+created_from_template_id,\s+shift_periods\s+\)/);
+      expect(sql).toMatch(/\$35::jsonb, \$36, \$37\s+\)/);
       expect(insertCall()[1][35]).toBe(TEMPLATE);
       const s = statements();
       expect(s.indexOf(CHECK)).toBeLessThan(s.findIndex((q) => q.startsWith('INSERT INTO jobs')));
+    });
+
+    it('checks a foreman\'s company template as the foreman (the member scope, not the owner\'s member list)', async () => {
+      mockResolveEmployerActor.mockResolvedValue({
+        ok: true,
+        actor: { userId: FOREMAN_ID, organizationId: ORG_ID, role: 'foreman', scopeUserIds: [FOREMAN_ID] },
+      });
+      answerCheck((sql) => (sql === CHECK ? Promise.resolve({ rows: [{ '?column?': 1 }], rowCount: 1 }) : undefined));
+      const res = await handler(makeEvent({ template_id: TEMPLATE }));
+
+      expect(res.statusCode).toBe(201);
+      expect(mockQuery).toHaveBeenCalledWith(CHECK, [TEMPLATE, FOREMAN_ID]);
+      expect(insertCall()[1][0]).toBe(FOREMAN_ID);
+      expect(insertCall()[1][35]).toBe(TEMPLATE);
     });
 
     it('stores no template for an id the employer cannot see (another employer\'s, or none), and still creates the job', async () => {
@@ -774,6 +858,55 @@ describe('employer-jobs-create', () => {
         'SAVEPOINT template_check', CHECK, 'ROLLBACK TO SAVEPOINT template_check', 'RELEASE SAVEPOINT template_check',
       ]);
       expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+    });
+  });
+
+  // Shift choices (131, contract K2.2): appended as the LAST column and bind
+  // parameter ($37, index 36), so every positional index above stays put.
+  describe('shift_periods (131)', () => {
+    const SHIFT_PERIODS_INDEX = 36;
+    const insertCall = () => mockQuery.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO jobs'))!;
+
+    it('stores the periods once each, in canonical order, as the last INSERT column and parameter', async () => {
+      const res = await handler(makeEvent({ shift_periods: ['night', 'day', 'night'] }));
+      expect(res.statusCode).toBe(201);
+      const [sql, params] = insertCall();
+      expect(String(sql)).toMatch(/created_from_template_id,\s+shift_periods\s+\)\s+VALUES/);
+      expect(String(sql)).toMatch(/\$36, \$37\s+\)\s+RETURNING/);
+      expect(params).toHaveLength(37);
+      expect(params[SHIFT_PERIODS_INDEX]).toEqual(['day', 'night']);
+      expect(String(sql).split('RETURNING')[1]).toMatch(/\bshift_periods\b/);
+    });
+
+    it('stores [] when the body omits the field', async () => {
+      const res = await handler(makeEvent({}));
+      expect(res.statusCode).toBe(201);
+      expect(insertCall()[1][SHIFT_PERIODS_INDEX]).toEqual([]);
+    });
+
+    it('needs no shift times, and stores times without periods', async () => {
+      await handler(makeEvent({ shift_periods: ['evening'] }));
+      expect(insertCall()[1][SHIFT_PERIODS_INDEX]).toEqual(['evening']);
+      expect(insertCall()[1][31]).toBeNull();
+      mockQuery.mockClear();
+      await handler(makeEvent({ shift_start: '07:00', shift_end: '15:00' }));
+      expect(insertCall()[1][SHIFT_PERIODS_INDEX]).toEqual([]);
+      expect(insertCall()[1][31]).toBe('07:00');
+    });
+
+    it.each([
+      ['an unknown value', ['day', 'afternoon']],
+      ['a non-array value', 'day'],
+      ['an explicit null', null],
+      ['five items', ['day', 'evening', 'night', 'overnight', 'day']],
+    ])('rejects %s with 400 before opening a DB connection, in the work_days error shape', async (_label, value) => {
+      const res = await handler(makeEvent({ shift_periods: value }));
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body)).toEqual({ error: 'invalid_shift_periods', valid: ['day', 'evening', 'night', 'overnight'] });
+      expect(mockGetDbPool).not.toHaveBeenCalled();
+
+      const workDays = await handler(makeEvent({ work_days: 'mon' }));
+      expect(Object.keys(JSON.parse(workDays.body)).sort()).toEqual(Object.keys(JSON.parse(res.body)).sort());
     });
   });
 });

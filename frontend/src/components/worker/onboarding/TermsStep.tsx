@@ -32,7 +32,8 @@ export function TermsStep({
 
     return (
         <StepLayout>
-            <StepHeader screen="terms" title={t('title')} subtitle={t('subtitle')} onBack={null} />
+            {/* How long the whole thing takes, before the first press. */}
+            <StepHeader screen="terms" eyebrow={t('time')} title={t('title')} subtitle={t('subtitle')} onBack={null} />
             <StepBody>
                 <div className="max-h-[240px] overflow-auto rounded-[14px] border border-[var(--jale-divider)] px-4 py-3.5 text-sm font-light leading-relaxed text-[var(--jale-ink-2)]">
                     <h2 className="mb-1.5 text-sm font-semibold text-[var(--jale-ink)]">{t('info_title')}</h2>

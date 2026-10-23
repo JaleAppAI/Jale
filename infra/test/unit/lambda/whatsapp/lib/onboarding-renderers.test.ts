@@ -1197,3 +1197,87 @@ describe('createReleaseRenderer — account_notice carries the intent payload', 
     expect(result.body).toContain('Actualizacion de cuenta (application_web_completion)');
   });
 });
+
+// ── Sprint 29: shift choices in the job alert text (131, contract K2.4) ──
+//
+// The multi-job digest line names the job's shifts. The approved job_alert_*
+// template and its five variables do not change, and a payload without the
+// field (a deferred intent queued before it existed, or the job_alert
+// producer's own payload) renders exactly as before.
+describe('job alert digest: shift choices', () => {
+  const digest = (language: PreferredLanguage, jobs: Array<Record<string, unknown>>) =>
+    createReleaseRenderer().render({ kind: 'job_alert_digest', workerId: WORKER_ID, language, jobs } as unknown as ReleaseRenderRequest);
+
+  const twoJobs = [
+    { jobId: 'job-1', title: 'Electricista', companyName: 'ACME', score: 2, shiftPeriods: ['night', 'day'] },
+    { jobId: 'job-2', title: 'Plomero', companyName: 'Fixture Co', score: 1, shiftPeriods: [] },
+  ];
+
+  it('appends the Spanish shifts to a job line that has them', async () => {
+    const result = await digest('es', twoJobs);
+    expect(result.contentTemplate).toBeNull();
+    expect(result.body).toBe(
+      'Tenemos 2 trabajo(s) para ti:\n1. Electricista - ACME (Día, Noche)\n2. Plomero - Fixture Co\n'
+      + 'Responde TRABAJOS (JOBS) para ver la lista completa.',
+    );
+  });
+
+  it('appends the English shifts to a job line that has them', async () => {
+    const result = await digest('en', twoJobs);
+    expect(result.body).toBe(
+      'We have 2 job(s) for you:\n1. Electricista - ACME (Day, Night)\n2. Plomero - Fixture Co\nReply JOBS to see the full list.',
+    );
+  });
+
+  it.each([
+    ['without the field', undefined],
+    ['with a null field', null],
+  ])('renders jobs %s exactly as before', async (_label, shiftPeriods) => {
+    const jobs = twoJobs.map(({ shiftPeriods: _omit, ...rest }) => (shiftPeriods === undefined ? rest : { ...rest, shiftPeriods }));
+    expect((await digest('es', jobs)).body).toBe(
+      'Tenemos 2 trabajo(s) para ti:\n1. Electricista - ACME\n2. Plomero - Fixture Co\nResponde TRABAJOS (JOBS) para ver la lista completa.',
+    );
+    expect((await digest('en', jobs)).body).toBe(
+      'We have 2 job(s) for you:\n1. Electricista - ACME\n2. Plomero - Fixture Co\nReply JOBS to see the full list.',
+    );
+  });
+
+  it('keeps the single-job template and its five variables; only the fallback text names the shifts', async () => {
+    const base = { jobId: 'job-9', title: 'Electricista', companyName: 'ACME', score: 1, location: 'El Paso, TX', pay: '$30/hr' };
+    for (const language of ['en', 'es'] as const) {
+      const plain = await digest(language, [base]);
+      const withShifts = await digest(language, [{ ...base, shiftPeriods: ['overnight'] }]);
+
+      expect(withShifts.body).toBeNull();
+      expect(withShifts.contentTemplate).toBe(language === 'en' ? 'job_alert_en' : 'job_alert_es');
+      expect(withShifts.contentTemplate).toBe(plain.contentTemplate);
+      const { [FALLBACK_BODY_KEY]: plainFallback, ...plainVariables } = plain.contentVariables!;
+      const { [FALLBACK_BODY_KEY]: shiftFallback, ...shiftVariables } = withShifts.contentVariables!;
+      expect(Object.keys(shiftVariables)).toEqual(['1', '2', '3', '4', '5']);
+      expect(shiftVariables).toEqual(plainVariables);
+      const label = language === 'en' ? 'Overnight' : 'Madrugada';
+      expect(shiftFallback).toBe(plainFallback.replace('1. Electricista - ACME', `1. Electricista - ACME (${label})`));
+      expect(shiftFallback).not.toBe(plainFallback);
+    }
+  });
+
+  it('a referred card with shifts is still the same message as the one-job digest, and its fallback names them', async () => {
+    const job = { jobId: 'job-ref', title: 'Finish Carpenter', companyName: 'Acme Builders', location: 'Austin, TX', pay: '$22-26/hr', shiftPeriods: ['night', 'day'] };
+    const renderer = createReleaseRenderer();
+    const card = await renderer.render({ kind: 'referred_job', workerId: WORKER_ID, language: 'es', job } as unknown as ReleaseRenderRequest);
+    const oneJobDigest = await digest('es', [{ ...job, score: 0 }]);
+    expect(card).toEqual(oneJobDigest);
+    expect(card.contentVariables![FALLBACK_BODY_KEY]).toContain('1. Finish Carpenter - Acme Builders (Día, Noche)');
+  });
+
+  it('the job_alert category renderer, fed a payload without the field, renders as before', async () => {
+    const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'es' });
+    const job = { jobId: 'job-9', title: 'Electricista', companyName: 'ACME', score: 1 };
+    const result = await categoryRenderers.job_alert(client, baseInput({
+      payload: { jobs: [job, { ...job, jobId: 'job-10', title: 'Plomero' }] },
+    }));
+    expect(result!.body).toBe(
+      'Tenemos 2 trabajo(s) para ti:\n1. Electricista - ACME\n2. Plomero - ACME\nResponde TRABAJOS (JOBS) para ver la lista completa.',
+    );
+  });
+});

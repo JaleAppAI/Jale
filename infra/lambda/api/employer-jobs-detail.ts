@@ -2,6 +2,7 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
+import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
 
 const CORS_HEADERS = corsHeaders();
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -44,6 +45,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
+    const actorResult = await resolveEmployerActor(client, cognitoSub);
+    if (!actorResult.ok) {
+      await client.query('COMMIT');
+      return employerActorFailureResponse(actorResult, CORS_HEADERS);
+    }
+    const { actor } = actorResult;
+
     const result = await client.query(
       `SELECT id, title, location, city, state_region, pay, job_type, status, description,
          required_docs, optional_docs, required_fields, optional_fields, created_at,
@@ -53,13 +61,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          GREATEST(number_of_workers_needed - workers_hired, 0) AS open_count,
          trade_category, required_experience_years, required_experience_months, certifications,
          trade_category_other, expected_duration_bucket, work_days, shift_start, shift_end, certification_requirements,
+         shift_periods,
          public_code, public_listing_enabled,
          city_key, city, state, latitude::float8 AS latitude, longitude::float8 AS longitude,
          (SELECT COUNT(*)::int FROM job_applications WHERE job_id = $1) AS applicant_count
        FROM jobs
        WHERE id = $1
-         AND employer_id = (SELECT id FROM users WHERE cognito_sub = $2)`,
-      [jobId, cognitoSub],
+         AND employer_id = ANY($2::uuid[])`,
+      [jobId, actor.scopeUserIds],
     );
 
     await client.query('COMMIT');
@@ -82,6 +91,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         optional_docs: Array.isArray(job.optional_docs) ? job.optional_docs : [],
         required_fields: Array.isArray(job.required_fields) ? job.required_fields : [],
         optional_fields: Array.isArray(job.optional_fields) ? job.optional_fields : [],
+        // Shift choices (131, contract K2.2): always an array, never null.
+        shift_periods: Array.isArray(job.shift_periods) ? job.shift_periods : [],
       }),
     };
   } catch (err) {

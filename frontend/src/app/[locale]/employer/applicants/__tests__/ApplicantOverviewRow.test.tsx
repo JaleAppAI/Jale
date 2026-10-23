@@ -406,3 +406,59 @@ describe('ApplicantOverviewRow — start details for a hire (F19)', () => {
     expect(screen.queryByRole('button', { name: key('add') })).not.toBeInTheDocument();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Sprint 29: the same hire gate as the applicant profile. The board used to
+// offer Hired to everyone and let the database refuse it with a pop-up; when
+// the list says the details are outstanding, Hired is greyed out up front with
+// the profile's own hint. When the list does not say (an older API), the gate
+// fails open, exactly like the profile page's.
+// ---------------------------------------------------------------------------
+
+describe('ApplicantOverviewRow hire gate', () => {
+  type Status = 'not_requested' | 'requested' | 'complete';
+  const withDetails = (details_status: Status, over: Partial<ApplicantOverviewItem> = {}) =>
+    ({ ...item, ...over, details_status }) as ApplicantOverviewItem;
+  const statusSelect = () =>
+    screen.getByRole('combobox', { name: message('employer_applicants.status_label') }) as HTMLSelectElement;
+  const hiredOption = () =>
+    Array.from(statusSelect().options).find((option) => option.value === 'hired') as HTMLOptionElement;
+
+  it('greys out Hired and says to request details first, when none were requested', () => {
+    renderIntl(<ApplicantOverviewRow item={withDetails('not_requested')} />);
+
+    expect(hiredOption()).toBeDisabled();
+    expect(hiredOption()).toHaveTextContent(message('employer_worker_profile.hire_option_blocked'));
+    expect(statusSelect()).toHaveAccessibleDescription(
+      expect.stringContaining(message('employer_worker_profile.hire_blocked_not_requested')),
+    );
+  });
+
+  it('says Hired opens once the details are complete, while they are requested', () => {
+    renderIntl(<ApplicantOverviewRow item={withDetails('requested', { application_status: 'details_requested' })} />);
+
+    expect(hiredOption()).toBeDisabled();
+    expect(statusSelect()).toHaveAccessibleDescription(
+      expect.stringContaining(message('employer_worker_profile.hire_blocked_requested_no_count')),
+    );
+  });
+
+  it('offers Hired once the details are complete', () => {
+    renderIntl(<ApplicantOverviewRow item={withDetails('complete', { application_status: 'details_requested' })} />);
+
+    expect(hiredOption()).not.toBeDisabled();
+    expect(hiredOption()).toHaveTextContent(message('employer_dashboard.applicants.status.hired'));
+    expect(screen.queryByText(message('employer_worker_profile.hire_blocked_not_requested'))).not.toBeInTheDocument();
+  });
+
+  it('fails open when the list does not say', () => {
+    renderIntl(<ApplicantOverviewRow item={item} />);
+    expect(hiredOption()).not.toBeDisabled();
+    expect(screen.queryByText(message('employer_worker_profile.hire_blocked_not_requested'))).not.toBeInTheDocument();
+  });
+
+  it('never greys out the status of someone already hired', () => {
+    renderIntl(<ApplicantOverviewRow item={withDetails('not_requested', { application_status: 'hired' })} />);
+    expect(hiredOption()).not.toBeDisabled();
+  });
+});

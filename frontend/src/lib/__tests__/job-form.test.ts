@@ -1,13 +1,17 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, expectTypeOf } from 'vitest';
 import {
   applyLocationToJobForm, initialForm, jobFormToCreatePayload, jobFormToEditPayload, jobToForm, validateJobLocationFields, jobFormFromTemplatePayload, templateRowSummary, setRequirementState, type JobForm,
   DURATION_BUCKETS, WORK_DAYS, DURATION_BUCKET_LABELS, type DurationBucket,
+  SHIFT_PERIODS, type ShiftPeriod, hasShiftStructure, toggleShiftPeriod,
+  firstInvalidField,
   deriveLegacyExpectedDuration, deriveLegacyShiftSchedule,
   payRangeExceeds, validateJobNumbers, validateStepBasics, validateStepDetails, validateFullJobForm,
   validateStepRequirements,
   type CertificationRequirement,
 } from '@/lib/job-form';
-import type { EmployerJobDetail } from '@/lib/api/employer';
+import type { EmployerJobDetail, Job as EmployerJob, JobWritePayload } from '@/lib/api/employer';
+import type { Job as WorkerJob } from '@/lib/api/worker';
+import type { PublicJobActive } from '@/lib/api/publicJob';
 
 const base: JobForm = { ...initialForm, title: 'Roofer', location: 'El Paso, TX', trade_category: 'other' };
 
@@ -404,6 +408,37 @@ describe('jobFormFromTemplatePayload', () => {
     const { form } = jobFormFromTemplatePayload({ ...payload, bogus_future_field: 'x' } as never);
     expect('bogus_future_field' in form).toBe(false);
   });
+
+  // A NEW job never asks for date of birth, so a template saved before it was
+  // retired loads without it: what the employer sees is what is saved.
+  it('drops a required date of birth from an old template, in the form and the create payload', () => {
+    const { form } = jobFormFromTemplatePayload({
+      ...payload, required_fields: ['date_of_birth', 'home_address'], optional_fields: [],
+    });
+    expect(form.requirements.date_of_birth).toBe('off');
+    expect(form.requirements.home_address).toBe('required');
+    const created = jobFormToCreatePayload(form);
+    expect(created.required_fields).toEqual(['home_address']);
+    expect(created.optional_fields).not.toContain('date_of_birth');
+  });
+
+  it('drops an optional date of birth from an old template too', () => {
+    const { form } = jobFormFromTemplatePayload({
+      ...payload, required_fields: [], optional_fields: ['date_of_birth', 'education'],
+    });
+    expect(form.requirements.date_of_birth).toBe('off');
+    const created = jobFormToCreatePayload(form);
+    expect(created.optional_fields).toEqual(['education']);
+    expect(created.required_fields).not.toContain('date_of_birth');
+  });
+});
+
+describe('date of birth on an existing job', () => {
+  it('stays in the form and in the edit payload', () => {
+    const form = jobToForm({ ...baseJob, required_fields: ['date_of_birth'], optional_fields: [] });
+    expect(form.requirements.date_of_birth).toBe('required');
+    expect(jobFormToEditPayload(form, { state_region: '' }).required_fields).toContain('date_of_birth');
+  });
 });
 
 describe('requirements mapper round-trip (three-state -> four arrays -> back)', () => {
@@ -537,6 +572,22 @@ describe('DURATION_BUCKETS / WORK_DAYS constants', () => {
   });
 });
 
+describe('SHIFT_PERIODS (contract K2.1)', () => {
+  it('lists the four shifts in canonical order', () => {
+    expect(SHIFT_PERIODS).toEqual(['day', 'evening', 'night', 'overnight']);
+  });
+
+  // The API modules re-declare the union instead of importing it (an import
+  // would be a cycle), so this is what keeps the copies identical.
+  it('is the same union every API type uses', () => {
+    expectTypeOf<ShiftPeriod>().toEqualTypeOf<(typeof SHIFT_PERIODS)[number]>();
+    expectTypeOf<NonNullable<EmployerJob['shift_periods']>[number]>().toEqualTypeOf<ShiftPeriod>();
+    expectTypeOf<NonNullable<JobWritePayload['shift_periods']>[number]>().toEqualTypeOf<ShiftPeriod>();
+    expectTypeOf<NonNullable<WorkerJob['shift_periods']>[number]>().toEqualTypeOf<ShiftPeriod>();
+    expectTypeOf<NonNullable<PublicJobActive['shift_periods']>[number]>().toEqualTypeOf<ShiftPeriod>();
+  });
+});
+
 describe('initialForm additive defaults', () => {
   it('defaults every FE-T3 field to its empty shape', () => {
     expect(initialForm.trade_category_other).toBe('');
@@ -545,6 +596,10 @@ describe('initialForm additive defaults', () => {
     expect(initialForm.shift_start).toBe('');
     expect(initialForm.shift_end).toBe('');
     expect(initialForm.certification_requirements).toEqual([]);
+  });
+
+  it('starts with no shift chosen', () => {
+    expect((initialForm as JobForm & { shift_periods?: unknown }).shift_periods).toEqual([]);
   });
 });
 
@@ -619,6 +674,25 @@ describe('deriveLegacyShiftSchedule', () => {
 
   it('tolerates a Postgres TIME value with seconds (HH:MM:SS)', () => {
     expect(deriveLegacyShiftSchedule([], '07:00:00', '16:00:30.5')).toBe('7:00 AM–4:00 PM');
+  });
+
+  // Contract K2.3: the derived text carries the shift labels, appended after
+  // the existing days and hours, in canonical order.
+  it('appends the shift labels after the days and hours', () => {
+    const derive = deriveLegacyShiftSchedule as (...args: unknown[]) => string;
+    expect(derive(['mon', 'tue', 'wed', 'thu', 'fri'], '07:00', '16:00', ['night', 'day']))
+      .toBe('Mon–Fri · 7:00 AM–4:00 PM · Day, Night');
+  });
+
+  it('writes the shift labels alone when nothing else is set', () => {
+    const derive = deriveLegacyShiftSchedule as (...args: unknown[]) => string;
+    expect(derive([], '', '', ['overnight', 'evening'])).toBe('Evening, Overnight');
+  });
+
+  it('drops the missing segment between days and shift labels', () => {
+    const derive = deriveLegacyShiftSchedule as (...args: unknown[]) => string;
+    expect(derive(['sat'], '', '', ['day'])).toBe('Sat · Day');
+    expect(derive([], '06:00', '', ['day'])).toBe('From 6:00 AM · Day');
   });
 
   it('returns an empty string when nothing is set', () => {
@@ -908,6 +982,105 @@ describe('jobFormToBasePayload (via jobFormToCreatePayload): work_days / shift_s
     expect(payload.shift_schedule).toBe('From 7:00 AM');
     expect(payload.shift_start).toBe('07:00');
     expect('shift_end' in payload).toBe(false);
+  });
+});
+
+describe('shift choices in the form and payloads (contract K2.2)', () => {
+  const base = { ...initialForm, title: 'Job', location: 'Reno, NV', trade_category: 'concrete' } as JobForm;
+  const withShifts = (periods: string[]) => ({ ...base, shift_periods: periods }) as unknown as JobForm;
+
+  it('create omits the key when no shift is chosen', () => {
+    expect('shift_periods' in jobFormToCreatePayload(withShifts([]))).toBe(false);
+  });
+
+  it('create sends the chosen shifts as a fresh copy', () => {
+    const periods = ['day', 'night'];
+    const payload = jobFormToCreatePayload(withShifts(periods));
+    expect(payload.shift_periods).toEqual(['day', 'night']);
+    expect(payload.shift_periods).not.toBe(periods);
+  });
+
+  it('edit always sends the exact array, so clearing every shift sends []', () => {
+    expect(jobFormToEditPayload(withShifts(['evening']), { state_region: '' }).shift_periods).toEqual(['evening']);
+    const cleared = jobFormToEditPayload(withShifts([]), { state_region: '' });
+    expect('shift_periods' in cleared).toBe(true);
+    expect(cleared.shift_periods).toEqual([]);
+  });
+
+  it('a shift choice alone derives the saved shift_schedule text', () => {
+    const payload = jobFormToCreatePayload({ ...withShifts(['night', 'day']), shift_schedule: 'old text' } as JobForm);
+    expect(payload.shift_schedule).toBe('Day, Night');
+  });
+
+  it('counts shift choices as schedule structure', () => {
+    expect(hasShiftStructure(withShifts(['day']))).toBe(true);
+    expect(hasShiftStructure(withShifts([]))).toBe(false);
+    expect(hasShiftStructure({ ...withShifts([]), shift_end: '16:00' } as JobForm)).toBe(true);
+  });
+
+  it('jobToForm restores the stored shifts, canonical, known values only', () => {
+    const form = jobToForm({ ...baseJob, shift_periods: ['overnight', 'swing', 'day'] } as unknown as EmployerJobDetail);
+    expect((form as JobForm & { shift_periods?: unknown }).shift_periods).toEqual(['day', 'overnight']);
+  });
+
+  it('jobToForm reads a job from before shift choices as none chosen', () => {
+    const form = jobToForm({ ...baseJob });
+    expect((form as JobForm & { shift_periods?: unknown }).shift_periods).toEqual([]);
+  });
+
+  it('round-trips through jobToForm and the edit payload unchanged', () => {
+    const form = jobToForm({ ...baseJob, shift_periods: ['evening', 'night'] });
+    expect(jobFormToEditPayload(form, { state_region: '' }).shift_periods).toEqual(['evening', 'night']);
+  });
+
+  it('a template restores its shifts', () => {
+    const { form } = jobFormFromTemplatePayload({
+      title: 'T', location: 'Reno, NV', job_type: 'contract' as const, trade_category: 'concrete', shift_periods: ['night'],
+    });
+    expect((form as JobForm & { shift_periods?: unknown }).shift_periods).toEqual(['night']);
+  });
+
+  /*
+   * K2 (2026-10-22): an explicit `null` is a 400 on create, update and
+   * template save. Every way stored data reaches a write -- a job opened for
+   * edit, a template applied to a new job, a template saved back -- must omit
+   * the key or send `[]`, whatever the stored value looked like.
+   */
+  describe('never sends shift_periods: null', () => {
+    const stored = [
+      ['missing', undefined],
+      ['null', null],
+      ['a non-array value', 'day'],
+    ] as const;
+
+    for (const [name, value] of stored) {
+      it(`edit sends [] for a job whose stored shifts are ${name}`, () => {
+        const job = { ...baseJob, shift_periods: value } as unknown as EmployerJobDetail;
+        const payload = jobFormToEditPayload(jobToForm(job), { state_region: '' });
+        expect(payload.shift_periods).toEqual([]);
+      });
+
+      it(`create and template save omit the key for a template whose stored shifts are ${name}`, () => {
+        const { form } = jobFormFromTemplatePayload({
+          title: 'T', location: 'Reno, NV', job_type: 'contract' as const, trade_category: 'concrete',
+          shift_periods: value,
+        } as unknown as Partial<JobWritePayload>);
+        expect('shift_periods' in jobFormToCreatePayload(form)).toBe(false);
+      });
+    }
+
+    it('no payload built from a blank form carries a null shift_periods', () => {
+      for (const payload of [jobFormToCreatePayload(base), jobFormToEditPayload(base, { state_region: '' })]) {
+        expect((payload as { shift_periods?: unknown }).shift_periods).not.toBeNull();
+      }
+    });
+  });
+
+  it('toggling keeps the list in canonical order', () => {
+    const toggle = toggleShiftPeriod as (list: readonly ShiftPeriod[], period: ShiftPeriod) => ShiftPeriod[];
+    expect(toggle([], 'night')).toEqual(['night']);
+    expect(toggle(['night'], 'day')).toEqual(['day', 'night']);
+    expect(toggle(['day', 'night'], 'day')).toEqual(['night']);
   });
 });
 
@@ -1248,5 +1421,76 @@ describe('validateFullJobForm: prompt codes', () => {
 
   it('passes a job that asks nothing', () => {
     expect(validateFullJobForm(valid)).toBeNull();
+  });
+});
+
+// The wizard names, marks and focuses the field that stopped it (sprint 29).
+// The step validators above still own the rules and return codes; this helper
+// only says WHICH field each code is about, in the same order.
+describe('firstInvalidField', () => {
+  const valid: JobForm = {
+    ...initialForm,
+    title: 'Roofer', location: 'El Paso, TX', trade_category: 'concrete',
+    city_key: 'el-paso-tx', city: 'El Paso', state: 'TX', state_region: 'TX',
+  };
+  const find = firstInvalidField as (form: JobForm, step: 1 | 2 | 3) => unknown;
+
+  it('is null for a valid step, exactly when the step validator is', () => {
+    expect(find(valid, 1)).toBeNull();
+    expect(find(valid, 2)).toBeNull();
+    expect(find(valid, 3)).toBeNull();
+  });
+
+  it('names title, then location, then trade, in that order', () => {
+    expect(find({ ...valid, title: ' ' }, 1)).toEqual({ field: 'title', code: 'required' });
+    expect(find({ ...valid, title: '', location: '' }, 1)).toEqual({ field: 'title', code: 'required' });
+    expect(find({ ...valid, location: '', city_key: null }, 1)).toEqual({ field: 'location', code: 'required' });
+    expect(find({ ...valid, trade_category: '' }, 1)).toEqual({ field: 'trade_category', code: 'required' });
+  });
+
+  it('names the other-trade text, the city pick and the state on the location field', () => {
+    expect(find({ ...valid, trade_category: 'other', trade_category_other: '' }, 1))
+      .toEqual({ field: 'trade_category_other', code: 'trade_category_other_required' });
+    expect(find({ ...valid, city_key: null }, 1)).toEqual({ field: 'location', code: 'location_pick_required' });
+    expect(find({ ...valid, state_region: 'Texas' }, 1)).toEqual({ field: 'location', code: 'state_region' });
+  });
+
+  it('names the pay field that is not a number, the range, the headcount and experience', () => {
+    expect(find({ ...valid, pay_min: 'abc' }, 2)).toEqual({ field: 'pay_min', code: 'number' });
+    expect(find({ ...valid, pay_max: '-1' }, 2)).toEqual({ field: 'pay_max', code: 'number' });
+    expect(find({ ...valid, pay_min: '30', pay_max: '20' }, 2)).toEqual({ field: 'pay_min', code: 'pay_range' });
+    expect(find({ ...valid, number_of_workers_needed: '0' }, 2))
+      .toEqual({ field: 'number_of_workers_needed', code: 'headcount' });
+    expect(find({ ...valid, required_experience_years: 'x' }, 2))
+      .toEqual({ field: 'required_experience_years', code: 'number' });
+  });
+
+  it('names the missing side of a half-filled shift, and has no end-before-start rule', () => {
+    expect(find({ ...valid, shift_start: '07:00' }, 2)).toEqual({ field: 'shift_end', code: 'shift_incomplete' });
+    expect(find({ ...valid, shift_end: '16:00' }, 2)).toEqual({ field: 'shift_start', code: 'shift_incomplete' });
+    // A night shift ends after midnight.
+    expect(find({ ...valid, shift_start: '22:00', shift_end: '06:00' }, 2)).toBeNull();
+  });
+
+  it('names the first question that is blank or too long, by position', () => {
+    const prompts = [{ id: 'a', text: 'Tools?' }, { id: 'b', text: ' ' }, { id: 'c', text: '' }];
+    expect(find({ ...valid, pre_application_prompts: prompts }, 3))
+      .toEqual({ field: 'prompt', code: 'prompt_blank', index: 1 });
+    const long = [{ id: 'a', text: 'Tools?' }, { id: 'b', text: 'x'.repeat(501) }];
+    expect(find({ ...valid, pre_application_prompts: long }, 3))
+      .toEqual({ field: 'prompt', code: 'prompt_too_long', index: 1 });
+  });
+
+  it('agrees with the step validators on whether a step passes', () => {
+    const cases: JobForm[] = [
+      valid, { ...valid, title: '' }, { ...valid, city_key: null }, { ...valid, pay_min: '9', pay_max: '1' },
+      { ...valid, shift_start: '07:00' }, { ...valid, number_of_workers_needed: '0' },
+      { ...valid, pre_application_prompts: [{ id: 'a', text: '' }] },
+    ];
+    for (const form of cases) {
+      expect(find(form, 1) === null).toBe(validateStepBasics(form) === null);
+      expect(find(form, 2) === null).toBe(validateStepDetails(form) === null);
+      expect(find(form, 3) === null).toBe(validateStepRequirements(form) === null);
+    }
   });
 });

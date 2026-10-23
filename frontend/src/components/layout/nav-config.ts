@@ -62,22 +62,23 @@ export const employerSettingsNav: NavItem = {
  * composition below, as the place a new item opts out of mobile — one set
  * membership check instead of a second copy of the exclusion logic.
  */
-const employerSidebarOnlyKeys = new Set(['templates', 'applicants']);
+const employerSidebarOnlyKeys = new Set(['templates']);
 
 /**
  * Employer mobile tab bar. Composed from the very same `NavItem`s the sidebar
  * renders — never a parallel list — so the two surfaces cannot drift apart on a
  * target, an icon or a label key. Four tabs is the practical ceiling for a
- * bottom bar at 360px, and they are taken in sidebar order: the two daily
- * destinations the sidebar leads with, then billing and settings.
+ * bottom bar at 360px, and they are taken in sidebar order: dashboard,
+ * messages and applicants, then settings.
+ *
+ * Applicants joined the bar in sprint 29: employers on phones had no way to
+ * reach the board. Billing left it to keep four tabs; on a phone the plan is
+ * reached from the dashboard's plan meter ("View plan").
  */
 export const employerMobileNav: NavItem[] = [
-    // Templates is a management surface, not a daily destination; applicants
-    // is a deep-dive/management view of the same data the dashboard and
-    // messages already surface day to day -- both stay sidebar-only so the
-    // bar keeps to its four-tab ceiling.
+    // Templates is a management surface, not a daily destination, so it stays
+    // sidebar-only.
     ...employerPrimaryNav.filter((item) => !employerSidebarOnlyKeys.has(item.key)),
-    employerBillingNav,
     employerSettingsNav,
 ];
 

@@ -103,7 +103,7 @@ function urlForRole(baseUrl: string, user: string, password: string): string {
 
 /**
  * The mark-read UPDATE, lifted out of `markEmployerConversationRead`.
- * `$1` conversation id, `$2` employer id -- the same binding the Lambda uses.
+ * `$1` conversation id, `$2` the caller's scope (uuid[]) -- the same binding the Lambda uses.
  *
  * Asserted UNIQUE, not just present: job-messaging.ts carries six other
  * `UPDATE job_conversations` statements, and a second writer of this column
@@ -294,7 +294,7 @@ maybeDescribe('employer conversation mark-read against real PostgreSQL', () => {
     expect(await readStamp(conversation)).toBeNull();
 
     const result = await asEmployer(employer, async () =>
-      client.query<{ employer_last_read_at: Date }>(markReadSql(), [conversation, employer.id]));
+      client.query<{ employer_last_read_at: Date }>(markReadSql(), [conversation, [employer.id]]));
 
     expect(result.rowCount).toBe(1);
     expect(result.rows[0].employer_last_read_at).toBeInstanceOf(Date);
@@ -312,7 +312,7 @@ maybeDescribe('employer conversation mark-read against real PostgreSQL', () => {
     expect(await readStamp(conversationB)).toBeNull();
 
     const result = await asEmployer(employerA, async () =>
-      client.query(markReadSql(), [conversationB, employerA.id]));
+      client.query(markReadSql(), [conversationB, [employerA.id]]));
 
     // No error: the policy FILTERS, it does not raise. rowCount 0 is the only
     // signal the handler gets, and it is what its 404 is built on.
@@ -323,7 +323,7 @@ maybeDescribe('employer conversation mark-read against real PostgreSQL', () => {
   it('touches ZERO rows for a conversation id that does not exist at all', async () => {
     const employer = await newEmployer();
     const result = await asEmployer(employer, async () =>
-      client.query(markReadSql(), [randomUUID(), employer.id]));
+      client.query(markReadSql(), [randomUUID(), [employer.id]]));
     // Indistinguishable from case 2 -- which is what keeps the endpoint from
     // being an existence oracle over every conversation id in the system.
     expect(result.rowCount).toBe(0);
@@ -358,7 +358,7 @@ maybeDescribe('employer conversation mark-read against real PostgreSQL', () => {
 
     const result = await asEmployer(
       employer,
-      async () => client.query(markReadSql(), [conversation, employer.id]),
+      async () => client.query(markReadSql(), [conversation, [employer.id]]),
       { withInternalUserContext: false },
     );
 
@@ -378,7 +378,7 @@ maybeDescribe('employer conversation mark-read against real PostgreSQL', () => {
       const untouched = await newConversation(employer.id, '2026-09-10T13:00:00Z');
 
       const before = await asEmployer(employer, async () =>
-        listEmployerInbox(client as unknown as PoolClient, employer.id));
+        listEmployerInbox(client as unknown as PoolClient, [employer.id]));
 
       expect(before.unread_count).toBe(2);
       expect(before.items.every((item) => item.unread)).toBe(true);
@@ -386,8 +386,8 @@ maybeDescribe('employer conversation mark-read against real PostgreSQL', () => {
       expect(Object.keys(before.items[0])).not.toContain('employer_last_read_at');
 
       const after = await asEmployer(employer, async () => {
-        await client.query(markReadSql(), [read, employer.id]);
-        return listEmployerInbox(client as unknown as PoolClient, employer.id);
+        await client.query(markReadSql(), [read, [employer.id]]);
+        return listEmployerInbox(client as unknown as PoolClient, [employer.id]);
       });
 
       expect(after.unread_count).toBe(1);
@@ -407,7 +407,7 @@ maybeDescribe('employer conversation mark-read against real PostgreSQL', () => {
       const conversation = await newConversation(employer.id, '2026-09-10T12:00:00Z');
 
       const inbox = await asEmployer(employer, async () => {
-        await client.query(markReadSql(), [conversation, employer.id]);
+        await client.query(markReadSql(), [conversation, [employer.id]]);
         await client.query(
           `INSERT INTO job_conversation_messages
              (conversation_id, sender_type, direction, body, status, created_at)
@@ -423,7 +423,7 @@ maybeDescribe('employer conversation mark-read against real PostgreSQL', () => {
             WHERE id = $1`,
           [conversation],
         );
-        return listEmployerInbox(client as unknown as PoolClient, employer.id);
+        return listEmployerInbox(client as unknown as PoolClient, [employer.id]);
       });
 
       expect(inbox.unread_count).toBe(1);
@@ -439,7 +439,7 @@ maybeDescribe('employer conversation mark-read against real PostgreSQL', () => {
       const conversation = await newConversation(employer.id, '2026-09-10T12:00:00Z');
 
       const inbox = await asEmployer(employer, async () => {
-        await client.query(markReadSql(), [conversation, employer.id]);
+        await client.query(markReadSql(), [conversation, [employer.id]]);
         await client.query(
           `UPDATE job_conversations
               SET last_worker_message_at = employer_last_read_at + interval '1 hour',
@@ -447,7 +447,7 @@ maybeDescribe('employer conversation mark-read against real PostgreSQL', () => {
             WHERE id = $1`,
           [conversation],
         );
-        return listEmployerInbox(client as unknown as PoolClient, employer.id);
+        return listEmployerInbox(client as unknown as PoolClient, [employer.id]);
       });
 
       expect(inbox.items[0].last_worker_message_at).not.toBeNull();
@@ -460,14 +460,14 @@ maybeDescribe('employer conversation mark-read against real PostgreSQL', () => {
       const conversation = await newConversation(employer.id, '2026-09-10T12:00:00Z');
 
       const inbox = await asEmployer(employer, async () => {
-        await client.query(markReadSql(), [conversation, employer.id]);
+        await client.query(markReadSql(), [conversation, [employer.id]]);
         await client.query(
           `UPDATE job_conversation_messages
               SET created_at = (SELECT employer_last_read_at FROM job_conversations WHERE id = $1)
             WHERE conversation_id = $1 AND direction = 'inbound'`,
           [conversation],
         );
-        return listEmployerInbox(client as unknown as PoolClient, employer.id);
+        return listEmployerInbox(client as unknown as PoolClient, [employer.id]);
       });
 
       expect(inbox.unread_count).toBe(0);
@@ -492,7 +492,7 @@ maybeDescribe('employer conversation mark-read against real PostgreSQL', () => {
       );
 
       const inbox = await asEmployer(employer, async () =>
-        listEmployerInbox(client as unknown as PoolClient, employer.id));
+        listEmployerInbox(client as unknown as PoolClient, [employer.id]));
 
       expect(inbox.items).toHaveLength(1);
       expect(inbox.items[0].conversation_id).toBeNull();
@@ -515,7 +515,7 @@ maybeDescribe('employer conversation mark-read against real PostgreSQL', () => {
       });
 
       const inbox = await asEmployer(employer, async () =>
-        listEmployerInbox(client as unknown as PoolClient, employer.id));
+        listEmployerInbox(client as unknown as PoolClient, [employer.id]));
 
       expect(inbox.items.map((item) => item.conversation_id)).toEqual([dismissed]);
       // Reachable...
@@ -546,7 +546,7 @@ maybeDescribe('employer conversation mark-read against real PostgreSQL', () => {
       );
 
       const inbox = await asEmployer(employer, async () =>
-        listEmployerInbox(client as unknown as PoolClient, employer.id));
+        listEmployerInbox(client as unknown as PoolClient, [employer.id]));
 
       expect(inbox.items).toHaveLength(0);
     });
@@ -561,7 +561,7 @@ maybeDescribe('employer conversation mark-read against real PostgreSQL', () => {
       });
 
       const inbox = await asEmployer(employer, async () =>
-        listEmployerInbox(client as unknown as PoolClient, employer.id));
+        listEmployerInbox(client as unknown as PoolClient, [employer.id]));
 
       expect(inbox.items.map((item) => item.conversation_id)).toEqual([opened]);
       // The column IS set -- this is openWorkerConversation's exact footprint.
@@ -578,7 +578,7 @@ maybeDescribe('employer conversation mark-read against real PostgreSQL', () => {
       const ownB = await newConversation(employerB.id, '2026-09-10T12:00:00Z');
 
       const inbox = await asEmployer(employerB, async () =>
-        listEmployerInbox(client as unknown as PoolClient, employerB.id));
+        listEmployerInbox(client as unknown as PoolClient, [employerB.id]));
 
       expect(inbox.items.map((item) => item.conversation_id)).toEqual([ownB]);
       expect(inbox.unread_count).toBe(1);
@@ -657,7 +657,7 @@ maybeDescribe('migration 096 backfills the employer read stamp', () => {
     try {
       await admin.query(`SELECT set_config('app.current_user_id', $1, true)`, [sub]);
       await admin.query(`SELECT set_config('app.current_internal_user_id', $1, true)`, [id]);
-      const inbox = await listEmployerInbox(admin as unknown as PoolClient, id);
+      const inbox = await listEmployerInbox(admin as unknown as PoolClient, [id]);
       expect(inbox.items).toHaveLength(1);
       expect(inbox.items[0].conversation_id).toBe(conversation);
       expect(inbox.unread_count).toBe(inbox.items[0].unread ? 1 : 0);

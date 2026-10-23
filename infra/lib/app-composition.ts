@@ -478,6 +478,10 @@ export function buildJaleApp(app: cdk.App, options: JaleAppOptions = {}): void {
     webAclArn: adminCert.webAclArn,
     // The same monitored ops topic the other stacks' alarms use.
     alarmTopicArn: app.node.tryGetContext('whatsappAlarmTopicArn'),
+    // NotificationsStack creates the SES feedback dead-letter queue only with
+    // the configuration set, named after it. Passed as that plain name, like
+    // the configuration set itself, so no export joins the two stacks.
+    ...(sesConfigurationSetName ? { sesFeedbackDlqName: `${sesConfigurationSetName}-feedback-dlq` } : {}),
   });
 
   // FrontendStack — Lambda + CloudFront + Route 53 for jaleapp.ai

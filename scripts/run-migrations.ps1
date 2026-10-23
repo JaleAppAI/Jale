@@ -176,6 +176,7 @@ $MigrationFiles = @(
     '115_admin_ops_health.sql'
     '117_admin_queues.sql'
     '118_employer_organizations.sql'
+    '119_employer_org_owner_access.sql'
     '120_admin_access.sql'
     '121_whatsapp_support_mode.sql'
     '122_admin_inbox.sql'
@@ -183,6 +184,12 @@ $MigrationFiles = @(
     '124_analytics_capture.sql'
     '125_hire_details_and_billing_resume.sql'
     '126_job_conversations_whatsapp_update_columns.sql'
+    '127_company_billing.sql'
+    '128_company_limits.sql'
+    '129_org_owner_carry_overs.sql'
+    '130_user_tutorial_progress.sql'
+    '131_job_shift_periods.sql'
+    '132_job_limit_increase.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path

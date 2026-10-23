@@ -195,8 +195,8 @@ export function DoneStep({
 /**
  * The bottom of the summary, one shape per `DoneNext`. The primary action is
  * always the full-width large button and a second way on, when there is one,
- * the quiet ghost under it -- the same pair `PhotoStep` uses one screen
- * earlier. For an open job the large button rides on the job's ticket.
+ * the quiet ghost under it. For an open job the large button rides on the
+ * job's ticket.
  */
 function DoneActions({ next, onFinish }: { next: DoneNext; onFinish: (action: DoneAction) => void }) {
     const t = useTranslations('worker_onboarding.done');

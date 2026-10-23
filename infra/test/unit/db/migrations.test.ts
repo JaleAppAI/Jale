@@ -156,6 +156,7 @@ describe('database migrations', () => {
       '115',
       '117',
       '118',
+      '119',
       '120',
       '121',
       '122',
@@ -163,6 +164,12 @@ describe('database migrations', () => {
       '124',
       '125',
       '126',
+      '127',
+      '128',
+      '129',
+      '130',
+      '131',
+      '132',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -2119,6 +2126,62 @@ describe('database migrations', () => {
     expect(backfillAt).toBeGreaterThan(sql.indexOf('CREATE TRIGGER job_messages_stamp_sender'));
     expect(backfillAt).toBeGreaterThan(sql.indexOf('CREATE OR REPLACE FUNCTION public.capture_job_application_status_event()'));
     expect(sql.indexOf('DROP POLICY users_org_bootstrap_read ON public.users;')).toBeLessThan(sql.indexOf('-- ── Self-check'));
+  });
+
+  it('119 adds owner access beside the per-person policies, in one transaction', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '119_employer_org_owner_access.sql'), 'utf8');
+    expect(sql).toContain('-- Run manually AFTER 126_job_conversations_whatsapp_update_columns.sql,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n');
+    expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+    expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+    expect(sql).toContain("SET LOCAL lock_timeout = '5s';");
+    // 22 owner policies, plus the catch-up's temporary users read, which is
+    // the only policy dropped again.
+    expect(sql.match(/^CREATE POLICY /gm)).toHaveLength(23);
+    expect(sql.match(/^CREATE POLICY \S+_org_owner_\S+ /gm)).toHaveLength(21);
+    expect(sql).toContain('CREATE POLICY employer_job_templates_org_read ON public.employer_job_templates');
+    expect(sql).toContain('CREATE POLICY job_visibility_events_org_owner_read ON public.job_visibility_events');
+    expect(sql.match(/^DROP POLICY .*$/gm)).toEqual(['DROP POLICY users_org_bootstrap_read ON public.users;']);
+    expect(sql).not.toMatch(/^ALTER POLICY/m);
+    // The catch-up back-fill (and its ACCESS EXCLUSIVE lock on users) comes
+    // after every other change, as in 118.
+    const catchupAt = sql.indexOf('CREATE POLICY users_org_bootstrap_read ON public.users');
+    expect(catchupAt).toBeGreaterThan(sql.indexOf('CREATE POLICY jobs_org_owner_select'));
+    expect(catchupAt).toBeGreaterThan(sql.indexOf('CREATE OR REPLACE FUNCTION jale_cap.employer_claim_worker_intent('));
+    expect(catchupAt).toBeLessThan(sql.indexOf('CREATE TEMP TABLE org_catchup ON COMMIT DROP AS'));
+    expect(sql.indexOf('DROP POLICY users_org_bootstrap_read ON public.users;')).toBeLessThan(sql.indexOf('-- ── Self-check'));
+    // The policies on jobs and job_applications (ACCESS EXCLUSIVE on the
+    // hottest tables) come after every other policy and function, just
+    // before the catch-up.
+    const policyAt = (name: string) => sql.indexOf(`CREATE POLICY ${name} ON public.`);
+    const hot = ['jobs_org_owner_select', 'jobs_org_owner_update', 'jobs_org_owner_delete',
+      'applications_org_owner_select', 'applications_org_owner_update', 'jobs_cap_upload_tokens_org_owner_select',
+      'jobs_cap_worker_lane_org_owner_select', 'job_applications_cap_worker_lane_org_owner_select'];
+    const otherPolicies = [...sql.matchAll(/^CREATE POLICY (\S+) ON public\.(\S+)/gm)]
+      .filter((m) => !hot.includes(m[1]) && m[1] !== 'users_org_bootstrap_read');
+    expect(otherPolicies).toHaveLength(14);
+    for (const m of otherPolicies) {
+      expect(['jobs', 'job_applications']).not.toContain(m[2]);
+    }
+    const lastOther = Math.max(...otherPolicies.map((m) => m.index!),
+      sql.indexOf('CREATE OR REPLACE FUNCTION jale_cap.employer_claim_worker_intent('),
+      sql.indexOf('CREATE OR REPLACE FUNCTION jale_internal.employer_has_applicant_relationship('));
+    for (const name of hot) {
+      expect(policyAt(name)).toBeGreaterThan(lastOther);
+      expect(policyAt(name)).toBeLessThan(catchupAt);
+    }
+    // Row policies use the array helpers, cast to uuid[] (without the cast,
+    // ANY ((SELECT ...)) is the subquery form); reassignment checks active members only.
+    expect(sql).toContain("WITH CHECK (employer_id = ANY ((SELECT jale_internal.org_owner_scope(current_setting('app.current_internal_user_id', true), true))::uuid[]));");
+    const code = sql.replace(/--.*$/gm, '');
+    // 28 in the row policies, plus the applicant predicate's owner case.
+    expect(code.match(/= ANY \(\(SELECT jale_internal\.org_(owner|member)_scope\(/g)).toHaveLength(29);
+    expect(sql).toContain('OR j.employer_id = ANY ((SELECT jale_internal.org_owner_scope(p_employer_internal_id, false))::uuid[]))');
+    expect(code.match(/= ANY \(\(SELECT jale_internal\.org_(owner|member)_scope\(current_setting\('app\.current_internal_user_id', true\)(, (true|false))?\)\)::uuid\[\]\)/g)).toHaveLength(28);
+    expect(sql).not.toMatch(/^\s*(USING|WITH CHECK) \(jale_internal\.is_org_owner_of\(/m);
+    // The capability owners' EXECUTE is granted by the helpers' owner, not as jale_admin.
+    expect(sql).toContain('SET LOCAL ROLE jale_rls_relationship_reader;\nGRANT EXECUTE ON FUNCTION jale_internal.is_org_owner_of(TEXT, UUID) TO jale_cap_upload_tokens, jale_cap_worker_lane;\nGRANT EXECUTE ON FUNCTION jale_internal.org_owner_scope(TEXT, BOOLEAN) TO jale_cap_upload_tokens, jale_cap_worker_lane;\n');
+    expect(sql.match(/-- 119$/gm)!.length).toBeGreaterThanOrEqual(6);
+    expect(sql).toContain('CREATE OR REPLACE FUNCTION jale_cap.employer_claim_worker_intent(');
   });
 
   // Sprint 28, analytics capture (items 16, 17, 18, 20, 21). On RDS the
@@ -5052,6 +5115,460 @@ describe('database migrations', () => {
       expect(sql).toContain('migration 126: jale_whatsapp cannot execute %');
       expect(sql).toContain('migration 126: PUBLIC can execute %');
       expect(sql.indexOf('-- \u2500\u2500 6. Closing check (part B)')).toBeLessThan(sql.indexOf('COMMIT;'));
+    });
+  });
+
+  describe('127 company billing', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '127_company_billing.sql'), 'utf8');
+
+    it('is one transaction, forward-only, after 126 and 119', () => {
+      expect(sql).toContain('-- Run manually AFTER 126_job_conversations_whatsapp_update_columns.sql\n-- and 119_employer_org_owner_access.sql (PR #105),\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n');
+      expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+      expect(sql).toContain("SET LOCAL lock_timeout = '5s';");
+    });
+
+    it('locks both billing tables ACCESS EXCLUSIVE first, creates the triggers before the back-fill, and drops every temporary policy again', () => {
+      const lockAt = sql.indexOf('\nLOCK TABLE public.billing_customers, public.subscriptions IN ACCESS EXCLUSIVE MODE;\n');
+      expect(lockAt).toBeGreaterThan(-1);
+      expect(lockAt).toBeLessThan(sql.indexOf('CREATE FUNCTION public.billing_stamp_organization()'));
+      expect(sql.match(/^LOCK TABLE /gm)).toHaveLength(1);
+      const triggerAt = sql.indexOf('CREATE TRIGGER subscriptions_stamp_organization');
+      expect(triggerAt).toBeGreaterThan(-1);
+      expect(triggerAt).toBeLessThan(sql.indexOf('UPDATE public.billing_customers bc'));
+      // The two back-fill policies, the seat seed, subscriptions_org_member_read
+      // and organization_members_trigger_read; none on users.
+      expect(sql.match(/^CREATE POLICY /gm)).toHaveLength(5);
+      expect(sql.match(/^DROP POLICY .*$/gm)).toEqual([
+        'DROP POLICY billing_customers_org_backfill ON public.billing_customers;',
+        'DROP POLICY subscriptions_org_backfill ON public.subscriptions;',
+        'DROP POLICY billing_plans_seat_seed ON public.billing_plans;',
+      ]);
+      // The statement itself: the header comment also says "SET NOT NULL".
+      expect(sql.indexOf('DROP POLICY subscriptions_org_backfill'))
+        .toBeLessThan(sql.indexOf('ALTER TABLE public.billing_customers ALTER COLUMN organization_id SET NOT NULL;'));
+    });
+
+    it('stamps on insert and refuses a change of payer or company on update', () => {
+      expect(sql).toContain('CREATE TRIGGER billing_customers_stamp_organization\n  BEFORE INSERT OR UPDATE OF organization_id, user_id ON public.billing_customers\n');
+      expect(sql).toContain('CREATE TRIGGER subscriptions_stamp_organization\n  BEFORE INSERT OR UPDATE OF organization_id, user_id ON public.subscriptions\n');
+      expect(sql).toContain("RAISE EXCEPTION '%: user_id never changes'");
+      expect(sql).toContain("RAISE EXCEPTION '%: organization_id never changes'");
+    });
+
+    it('takes the organization_members ACCESS EXCLUSIVE lock last, reads users through 089\'s pinned gate, and fails closed on an employer without a company', () => {
+      const code = sql.replace(/--.*$/gm, '');
+      const memberReadAt = code.indexOf('CREATE POLICY subscriptions_org_member_read');
+      expect(memberReadAt).toBeGreaterThan(code.indexOf('DROP POLICY billing_plans_seat_seed'));
+      expect(code.indexOf('ON public.organization_members')).toBeGreaterThan(memberReadAt);
+      // No policy is created on users; 089's users_admin_analytics_read is pinned in the preconditions.
+      expect(code).not.toContain('ON public.users');
+      expect(sql).toContain("AND p.polname = 'users_admin_analytics_read'");
+      expect(sql).toContain("AND pg_get_expr(p.polqual, p.polrelid) = $q$(current_setting('app.admin_analytics_read'::text, true) = 'on'::text)$q$");
+      expect(code.indexOf("AND p.polname = 'users_admin_analytics_read'")).toBeLessThan(code.indexOf('LOCK TABLE'));
+      // The count's gate opens after the last ACCESS EXCLUSIVE lock and closes before the self-check.
+      const countGateAt = code.lastIndexOf("SELECT set_config('app.admin_analytics_read', 'on', true);");
+      expect(countGateAt).toBeGreaterThan(code.indexOf('CREATE POLICY organization_members_trigger_read'));
+      expect(code.lastIndexOf("SELECT set_config('app.admin_analytics_read', 'off', true);")).toBeGreaterThan(countGateAt);
+      expect(sql).toContain('employer users have no company');
+      expect(sql).toContain("USING DETAIL = 'Employers (user_id, user_type; up to 20): ' || v_detail;");
+    });
+
+    it('moves the one-current rule to the company and fails closed on orphans and duplicates', () => {
+      expect(sql).toContain('ALTER TABLE public.billing_customers ALTER COLUMN organization_id SET NOT NULL;');
+      expect(sql).toContain('ALTER TABLE public.subscriptions ALTER COLUMN organization_id SET NOT NULL;');
+      expect(sql).toContain("CREATE UNIQUE INDEX subscriptions_one_current_per_organization\n  ON public.subscriptions (organization_id)\n  WHERE status NOT IN ('canceled', 'incomplete_expired');");
+      expect(sql).toContain('DROP INDEX public.subscriptions_one_current_per_user;');
+      expect(sql).toContain('billing_customers rows have a payer with no company');
+      expect(sql).toContain('subscriptions rows have a payer with no company');
+      expect(sql).toContain('companies have more than one Stripe customer');
+      expect(sql).toContain('companies have more than one current subscription');
+      // A worker payer is never told to get a company.
+      expect(sql).toContain("'A row whose payer is not an employer must be removed or re-assigned to an employer.'");
+      expect(sql).not.toContain('employer_ensure_organization');
+      // The not-owner check matches the trigger.
+      expect(sql).toContain("WHERE m.role <> 'owner' OR m.status <> 'active';");
+      // Every fail-closed RAISE in the back-fill and the employer count carries a DETAIL.
+      const checks = sql.slice(sql.indexOf('-- ── 2.'), sql.indexOf('-- ── Self-check'));
+      const raises = checks.match(/RAISE EXCEPTION 'migration 127: [\s\S]*?\n\s*END IF;/g) ?? [];
+      expect(raises.length).toBe(8);
+      for (const raise of raises) expect(raise).toContain('USING DETAIL = ');
+    });
+
+    it('self-checks enabled triggers, the pinned trigger-read gate and a seat limit on every employer plan', () => {
+      expect(sql).toContain("AND t.tgenabled <> 'D'");
+      expect(sql).toContain("AND pg_get_expr(polqual, polrelid) = $q$(current_setting('app.org_trigger_read'::text, true) = 'on'::text)$q$");
+      expect(sql).toContain("WHERE audience = 'employer' AND NOT (entitlements ? 'foreman_seat_limit')");
+      expect(sql).toContain("OR current_setting('app.admin_analytics_read', true) IS DISTINCT FROM 'off'");
+    });
+
+    it('documents why the INSERT branch never refuses an unchanged company (webhook upserts fire BEFORE INSERT)', () => {
+      expect(sql).toContain('INSERT ... ON\n  -- CONFLICT DO UPDATE fires BEFORE INSERT');
+    });
+
+    it('keys the member read on the company and casts the member scope to uuid[] (PG16 parses the uncast form as a sub-query)', () => {
+      expect(sql).toContain('USING (organization_id IN (SELECT m.organization_id FROM public.organization_members m\n');
+      expect(sql).toContain("WHERE m.user_id = ANY ((SELECT jale_internal.org_member_scope(current_setting('app.current_internal_user_id', true)))::uuid[])));");
+    });
+  });
+
+  describe('128 company limits', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '128_company_limits.sql'), 'utf8');
+
+    it('is one transaction, forward-only, after 127', () => {
+      expect(sql).toContain('-- Run manually AFTER 127_company_billing.sql,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n');
+      expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+      expect(sql).toContain("SET LOCAL lock_timeout = '5s';");
+    });
+
+    it('creates twelve policies and alters or drops none; organization_members, templates, users and jobs come last', () => {
+      expect(sql.match(/^CREATE POLICY /gm)).toHaveLength(12);
+      expect(sql).not.toMatch(/^(ALTER|DROP) POLICY/m);
+      const lastAt = sql.indexOf('-- ── 6. Last: organization_members, employer_job_templates, users, jobs');
+      expect(lastAt).toBeGreaterThan(sql.indexOf('CREATE FUNCTION jale_billing_internal.billing_restore_org('));
+      for (const statement of ['ALTER TABLE public.organization_members', 'ON public.organization_members TO jale_billing_job_enforcer;',
+        'GRANT SELECT (billing_suspended_at) ON public.organization_members TO jale_cap_org_limits;',
+        'CREATE POLICY organization_members_cap_org_limits_select ON public.organization_members',
+        'CREATE POLICY organization_members_billing_job_enforcer_select ON public.organization_members',
+        'CREATE POLICY organization_members_billing_job_enforcer_update ON public.organization_members',
+        'CREATE POLICY employer_job_templates_cap_org_limits_select ON public.employer_job_templates',
+        'GRANT SELECT (id, cognito_sub, user_type) ON public.users', 'GRANT SELECT (id, employer_id, status) ON public.jobs',
+        'CREATE POLICY jobs_cap_org_limits_select ON public.jobs']) {
+        expect(sql.indexOf(statement)).toBeGreaterThan(lastAt);
+      }
+      // Before section 6, policies go only on the two tables no request reads.
+      const earlier = sql.slice(0, lastAt).match(/^CREATE POLICY \w+ ON public\.\w+/gm)!.map((s) => s.replace(/^CREATE POLICY \w+ ON /, ''));
+      expect([...new Set(earlier)].sort()).toEqual(['public.organization_invites', 'public.organizations']);
+    });
+
+    it('marks a billing suspension, and restores only marked members, earliest marked then earliest joined', () => {
+      expect(sql).toContain("ADD CONSTRAINT organization_members_billing_mark_while_suspended\n    CHECK (billing_suspended_at IS NULL OR status = 'suspended');");
+      expect(sql).toContain("SET status = 'suspended', status_changed_at = now(), billing_suspended_at = now()");
+      expect(sql).toContain("SET status = 'active', status_changed_at = now(), billing_suspended_at = NULL");
+      expect(sql).toContain('ORDER BY m.billing_suspended_at ASC, m.joined_at ASC, m.user_id ASC');
+      // A still-suspended foreman's billing-paused jobs stay paused: both resume reads take active members only.
+      expect(sql.match(/WHERE j\.employer_id = ANY \(v_active_ids\)/g)).toHaveLength(2);
+    });
+
+    it('opens and closes each role window once, and grants employer_org_usage\'s EXECUTE before the transfer', () => {
+      for (const role of ['jale_rls_relationship_reader', 'jale_cap_org_limits', 'jale_billing_job_enforcer']) {
+        expect(sql.split(`'GRANT %I TO %I WITH SET TRUE, INHERIT FALSE', '${role}', current_user`)).toHaveLength(2);
+        expect(sql.split(`'REVOKE %I FROM %I GRANTED BY %I', '${role}', current_user, current_user`)).toHaveLength(2);
+      }
+      // The owner holds no USAGE on jale_cap, so jale_admin grants it first (105's pattern);
+      // ALTER ... OWNER TO makes the owner the grantor.
+      const granted = sql.indexOf('GRANT EXECUTE ON FUNCTION jale_cap.employer_org_usage(boolean) TO jale_api;');
+      expect(granted).toBeGreaterThan(sql.indexOf('REVOKE ALL ON FUNCTION jale_cap.employer_org_usage(boolean) FROM PUBLIC;'));
+      expect(granted).toBeLessThan(sql.indexOf('ALTER FUNCTION jale_cap.employer_org_usage(boolean) OWNER TO jale_cap_org_limits;'));
+      expect(sql).not.toContain('SET LOCAL ROLE jale_cap_org_limits;');
+      expect(sql).toContain('SET LOCAL ROLE jale_rls_relationship_reader;\nGRANT USAGE ON SCHEMA jale_internal TO jale_cap_org_limits;\nGRANT EXECUTE ON FUNCTION jale_internal.org_member_scope(TEXT) TO jale_cap_org_limits;\nRESET ROLE;');
+    });
+
+    it('takes the company lock FOR NO KEY UPDATE in all three definers and casts every scope to uuid[]', () => {
+      expect(sql.match(/FROM public\.organizations o WHERE o\.id = (v_org|p_organization_id) FOR NO KEY UPDATE;/g)).toHaveLength(3);
+      expect(sql).not.toMatch(/FROM public\.organizations o WHERE o\.id = \w+ FOR UPDATE/);
+      const code = sql.replace(/--.*$/gm, '');
+      // One each in the policies on organization_members, employer_job_templates, jobs and
+      // organization_invites and in organizations_cap_org_limits_select, two in
+      // organizations_cap_org_limits_lock.
+      expect(code.match(/= ANY \(\(SELECT jale_internal\.org_(member|owner)_scope\(/g)).toHaveLength(7);
+      expect(code.match(/= ANY \(\(SELECT jale_internal\.org_(member|owner)_scope\([^;]*?\)\)::uuid\[\]\)/g)).toHaveLength(7);
+    });
+
+    it('checks the usage caller again after the lock, in its own statement, for both p_lock values', () => {
+      const body = sql.slice(sql.indexOf('CREATE FUNCTION jale_cap.employer_org_usage('), sql.indexOf('REVOKE ALL ON FUNCTION jale_cap.employer_org_usage'));
+      const lockAt = body.indexOf('PERFORM 1 FROM public.organizations o WHERE o.id = v_org FOR NO KEY UPDATE;');
+      const lockEnd = body.indexOf('  END IF;\n', body.indexOf('  END IF;\n', lockAt) + 1);
+      const recheck = "PERFORM 1 FROM public.organization_members m\n   WHERE m.user_id = v_caller::uuid AND m.organization_id = v_org AND m.status = 'active';\n"
+        + "  IF NOT FOUND THEN\n    RAISE EXCEPTION 'employer_org_usage: the caller is not an active member of a company' USING ERRCODE = 'insufficient_privilege';";
+      // Outside the IF p_lock block (after its END IF), before the counts.
+      expect(body.indexOf(recheck)).toBeGreaterThan(lockEnd);
+      expect(lockEnd).toBeGreaterThan(lockAt);
+      expect(body.indexOf(recheck)).toBeLessThan(body.indexOf('RETURN QUERY'));
+    });
+
+    it('returns billing-suspended foremen and live invites, pending_invites last', () => {
+      expect(sql).toContain('  suspended_foremen INTEGER,\n  pending_invites   INTEGER\n)');
+      expect(sql).toContain("AND m.role = 'foreman' AND m.status = 'suspended'\n             AND m.billing_suspended_at IS NOT NULL),");
+      expect(sql).toContain('AND i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > now());\nEND;');
+    });
+
+    it('records each job the enforcer pauses: a status event with its own employer, and a removed event when public', () => {
+      const body = sql.slice(sql.indexOf('CREATE FUNCTION jale_billing_internal.billing_enforce_org_limits('),
+        sql.indexOf('CREATE FUNCTION jale_billing_internal.billing_restore_org('));
+      expect(body).toContain("VALUES (rec.id, rec.employer_id, 'active', 'paused', 'billing');");
+      expect(body).toContain("IF rec.public_listing_enabled AND rec.public_code IS NOT NULL THEN\n      PERFORM public.enqueue_job_visibility_event(rec.id, rec.public_code, 'removed');");
+      expect(body).toContain('WHERE j.id = ANY (v_paused_ids)');
+    });
+
+    it('enforce cuts seats before jobs, and keeps active members\' jobs first, oldest first', () => {
+      const body = sql.slice(sql.indexOf('CREATE FUNCTION jale_billing_internal.billing_enforce_org_limits('),
+        sql.indexOf('CREATE FUNCTION jale_billing_internal.billing_restore_org('));
+      const seatsAt = body.indexOf("SET status = 'suspended', status_changed_at = now(), billing_suspended_at = now()");
+      const activeAt = body.indexOf("COALESCE(array_agg(m.user_id) FILTER (WHERE m.status = 'active'), ARRAY[]::UUID[])\n    INTO v_members, v_active_ids");
+      const rankAt = body.indexOf('row_number() OVER (ORDER BY (j.employer_id = ANY (v_active_ids)) DESC, j.created_at ASC, j.id ASC) AS active_rank');
+      const pauseAt = body.indexOf("SET status = 'paused', updated_at = now(), billing_paused_at = now()");
+      expect(seatsAt).toBeGreaterThan(0);
+      expect(activeAt).toBeGreaterThan(seatsAt);
+      expect(rankAt).toBeGreaterThan(activeAt);
+      expect(pauseAt).toBeGreaterThan(rankAt);
+      expect(body).not.toContain('row_number() OVER (ORDER BY j.created_at ASC, j.id ASC)');
+    });
+
+    it('keeps 125\'s per-person functions untouched', () => {
+      expect(sql).not.toMatch(/(CREATE OR REPLACE|DROP) FUNCTION jale_billing_internal\.billing_(pause_over_limit_jobs|resume_paused_jobs)/);
+    });
+  });
+
+  describe('129 Phase 1 owner carry-overs', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '129_org_owner_carry_overs.sql'), 'utf8');
+
+    it('is one transaction, forward-only, after 128', () => {
+      expect(sql).toContain('-- Run manually AFTER 128_company_limits.sql,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n');
+      expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+      expect(sql).toContain("SET LOCAL lock_timeout = '5s';");
+    });
+
+    it('replaces both 125 functions under their owners with only the caller check widened', () => {
+      expect(sql).toContain('SET LOCAL ROLE jale_cap_hire_details;\n\nCREATE OR REPLACE FUNCTION jale_cap.employer_save_hire_details(');
+      expect(sql).toContain('SET LOCAL ROLE jale_cap_worker_lane;\n\nCREATE OR REPLACE FUNCTION jale_cap.employer_hire_details_notice(');
+      expect(sql.match(/AND \(j\.employer_id::text = v_caller OR jale_internal\.is_org_owner_of\(v_caller, j\.employer_id\)\)/g)).toHaveLength(2);
+      expect(sql).not.toMatch(/^\s+AND j\.employer_id::text = v_caller$/m);
+    });
+
+    it('adds three owner policies and relaxes jobs_org_owner_update, every scope through the array helper cast to uuid[]', () => {
+      expect(sql.match(/^CREATE POLICY /gm)).toHaveLength(3);
+      expect(sql.match(/^ALTER POLICY .*$/gm)).toEqual(['ALTER POLICY jobs_org_owner_update ON public.jobs']);
+      expect(sql).not.toMatch(/^DROP POLICY/m);
+      const code = sql.replace(/--.*$/gm, '');
+      // One in the jobs policy, one in the applications SELECT, two in the applications UPDATE, one in the ALTER POLICY.
+      expect(code.match(/= ANY \(\(SELECT jale_internal\.org_owner_scope\(current_setting\('app\.current_internal_user_id', true\), false\)\)::uuid\[\]\)/g)).toHaveLength(5);
+      // 119's active-only form is gone from what this migration writes.
+      expect(code).not.toContain('), true))::uuid[])');
+    });
+
+    it('guards job moves and reactivations with a trigger, and takes the jobs and job_applications locks last', () => {
+      expect(sql).toContain('CREATE TRIGGER jobs_assignee_must_be_active\n  BEFORE UPDATE OF employer_id, status ON public.jobs\n  FOR EACH ROW\n'
+        + "  WHEN (OLD.employer_id IS DISTINCT FROM NEW.employer_id\n        OR (OLD.status IS DISTINCT FROM 'active' AND NEW.status = 'active'))\n");
+      // One stable DETAIL per refusal reason, so callers can tell each from an RLS denial.
+      for (const detail of ['assignee_not_member', 'assignee_inactive', 'job_employer_not_member', 'assignee_other_company',
+        'employer_inactive_for_activation']) {
+        expect(sql).toContain(`DETAIL = '${detail}'`);
+      }
+      // 105's hired-count recount reopens a filled job to paused while the employer is not an active member,
+      // billing-marked only for a billing-suspended member; it is never let through as active.
+      expect(sql).toContain("IF OLD.status = 'filled' AND pg_catalog.pg_trigger_depth() > 1 THEN\n      NEW.status := 'paused';\n"
+        + '      IF v_billing IS NOT NULL THEN\n        NEW.billing_paused_at := pg_catalog.now();\n      END IF;\n      RETURN NEW;\n');
+      expect(sql).not.toContain('IS NOT TRUE THEN');
+      // The self-check pins the trigger's catalog definition and the function's callers.
+      expect(sql).toContain('pg_get_triggerdef(t.oid) INTO v_def');
+      // The drift precondition compares 119's exact WITH CHECK (active members only).
+      expect(sql).toContain("current_setting('app.current_internal_user_id'::text, true), true) AS org_owner_scope)::uuid[]))$q$");
+      const lastAt = sql.indexOf('-- ── 5. Last: jobs and job_applications');
+      expect(lastAt).toBeGreaterThan(sql.indexOf('CREATE FUNCTION public.jobs_assignee_must_be_active()'));
+      for (const statement of ['CREATE POLICY jobs_cap_hire_details_org_owner_select ON public.jobs',
+        'CREATE POLICY job_applications_cap_hire_details_org_owner_select ON public.job_applications',
+        'CREATE POLICY job_applications_cap_hire_details_org_owner_update ON public.job_applications',
+        'ALTER POLICY jobs_org_owner_update ON public.jobs', 'CREATE TRIGGER jobs_assignee_must_be_active']) {
+        expect(sql.indexOf(statement)).toBeGreaterThan(lastAt);
+      }
+      expect(sql).toContain("polname = 'jobs_cap_worker_lane_org_owner_select'");
+      expect(sql).toContain("polname = 'job_applications_cap_worker_lane_org_owner_select'");
+    });
+  });
+
+  // Sprint 29 (BE-1): tutorial progress. One row per account and tutorial,
+  // read and inserted by the request login for the caller only, keyed like
+  // 118's organization_members_self_read. No UPDATE or DELETE right: the
+  // first outcome stays, and a row leaves only with its users row. The DB
+  // pins are in user-tutorial-progress.integration.test.ts.
+  describe('130 adds user_tutorial_progress: the caller reads and inserts their own rows on the request login', () => {
+    const file = '130_user_tutorial_progress.sql';
+    const text = () => fs.readFileSync(path.join(migrationsDir, file), 'utf8');
+    const code = () => text().replace(/--[^\n]*/g, '');
+    const squash = (sql: string) => sql.replace(/\s+/g, ' ').trim();
+    const PREDICATE = "user_id = (SELECT users.id FROM public.users WHERE users.cognito_sub = current_setting('app.current_user_id', true))";
+
+    it('runs as jale_admin after 129 in one transaction, ASCII only, with a lock timeout first', () => {
+      const sql = text();
+      expect(sql).toContain('-- Run manually AFTER 129_org_owner_carry_overs.sql,\n');
+      expect(sql).toContain('-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n');
+      expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+      expect(code()).toMatch(/^[\x00-\x7F]*$/);
+      expect(sql.indexOf("SET LOCAL lock_timeout = '5s';")).toBeGreaterThan(sql.indexOf('BEGIN;'));
+      expect(sql.indexOf('DO $$')).toBeGreaterThan(sql.indexOf("SET LOCAL lock_timeout = '5s';"));
+      expect(code()).toContain("IF current_user <> 'jale_admin' THEN");
+      expect(sql).toContain('migration 130: connect as jale_admin (this session runs as %)');
+    });
+
+    it('refuses a replay once the table exists', () => {
+      const sql = code();
+      expect(sql).toContain("IF pg_catalog.to_regclass('public.user_tutorial_progress') IS NOT NULL THEN");
+      expect(sql).toContain('migration 130: already applied (public.user_tutorial_progress exists); it is not re-runnable');
+      expect(sql.indexOf('already applied')).toBeLessThan(sql.indexOf('CREATE TABLE'));
+    });
+
+    it('creates the table keyed on the account and the tutorial, cascading with users, with row security forced', () => {
+      const sql = squash(code());
+      expect(sql).toContain(squash(`CREATE TABLE public.user_tutorial_progress (
+        user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+        tutorial_id TEXT NOT NULL CHECK (tutorial_id ~ '^(employer|worker)_[a-z_]{1,40}$'),
+        outcome TEXT NOT NULL CHECK (outcome IN ('completed', 'skipped')),
+        recorded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (user_id, tutorial_id)
+      );`));
+      expect(code().match(/CREATE TABLE/g)).toHaveLength(1);
+      expect(sql).toContain('ALTER TABLE public.user_tutorial_progress ENABLE ROW LEVEL SECURITY;');
+      expect(sql).toContain('ALTER TABLE public.user_tutorial_progress FORCE ROW LEVEL SECURITY;');
+    });
+
+    it('grants the request login SELECT and INSERT only, and no other login anything', () => {
+      const sql = code();
+      expect(sql.match(/^\s*GRANT /gm)).toHaveLength(1);
+      expect(sql).toContain('GRANT SELECT, INSERT ON public.user_tutorial_progress TO jale_api;');
+      expect(sql).not.toMatch(/^\s*REVOKE /m);
+      expect(sql).not.toMatch(/GRANT[^;]*\b(UPDATE|DELETE|TRUNCATE|ALL)\b/);
+      expect(sql).not.toMatch(/CREATE (OR REPLACE )?FUNCTION|SECURITY DEFINER|DROP |ALTER DEFAULT PRIVILEGES/);
+    });
+
+    it("adds exactly the self-read and self-insert policies for jale_api, with 118's self-read predicate", () => {
+      const sql = squash(code());
+      expect(sql.match(/CREATE POLICY/g)).toHaveLength(2);
+      expect(sql).toContain(`CREATE POLICY user_tutorial_progress_self_read ON public.user_tutorial_progress AS PERMISSIVE FOR SELECT TO jale_api USING (${PREDICATE});`);
+      expect(sql).toContain(`CREATE POLICY user_tutorial_progress_self_insert ON public.user_tutorial_progress AS PERMISSIVE FOR INSERT TO jale_api WITH CHECK (${PREDICATE});`);
+      // The same predicate 118 wrote for a login's own membership row.
+      const precedent = squash(fs.readFileSync(path.join(migrationsDir, '118_employer_organizations.sql'), 'utf8'));
+      expect(precedent).toContain(`CREATE POLICY organization_members_self_read ON public.organization_members AS PERMISSIVE FOR SELECT TO jale_api USING (${PREDICATE});`);
+    });
+
+    it('closes by checking row security, the exact rights, both policies against the 118 predicate, and the cascade', () => {
+      const sql = text();
+      const closing = sql.slice(sql.indexOf('-- ── 4. Closing check'));
+      expect(closing.indexOf('DO $$')).toBeGreaterThan(-1);
+      expect(closing.indexOf('COMMIT;')).toBeGreaterThan(closing.indexOf('DO $$'));
+      expect(closing).toContain('c.relrowsecurity AND c.relforcerowsecurity');
+      expect(closing).toContain("NOT (a.grantee = 'jale_api'::regrole::oid AND a.privilege_type IN ('SELECT', 'INSERT'))");
+      expect(closing).toContain("p.polrelid = 'public.organization_members'::regclass AND p.polname = 'organization_members_self_read'");
+      expect(closing).toContain('pg_catalog.pg_get_expr(p.polqual, p.polrelid) = v_self');
+      expect(closing).toContain('pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid) = v_self');
+      expect(closing).toContain("k.confdeltype = 'c'");
+      for (const message of [
+        'migration 130: user_tutorial_progress must have row security enabled and forced',
+        'migration 130: jale_api cannot read and insert user_tutorial_progress',
+        'migration 130: an unexpected privilege on user_tutorial_progress: %',
+        'migration 130: user_tutorial_progress policy set drifted',
+        "migration 130: a user_tutorial_progress policy is not the caller''s own row for jale_api",
+        'migration 130: user_tutorial_progress.user_id must reference users(id) ON DELETE CASCADE',
+      ]) expect(closing).toContain(message);
+    });
+  });
+
+  // Sprint 29 (BE-2, contract K2): the job's shift choices. On RDS the
+  // migration's own DO blocks are the only runtime check; these literals pin
+  // that they stay strict. The DB pins are in
+  // job-shift-periods.integration.test.ts.
+  describe('131 adds jobs.shift_periods with its CHECK and the public page grant', () => {
+    const file = '131_job_shift_periods.sql';
+    const text = () => fs.readFileSync(path.join(migrationsDir, file), 'utf8');
+    const code = () => text().replace(/--[^\n]*/g, '');
+
+    it('runs after 130 as jale_admin in one transaction, ASCII only, with a lock timeout first', () => {
+      const sql = text();
+      expect(sql).toContain('-- Run manually AFTER 130,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n');
+      expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+      expect(code()).toMatch(/^[\x00-\x7F]*$/);
+      expect(sql.indexOf("SET LOCAL lock_timeout = '5s';")).toBeGreaterThan(sql.indexOf('BEGIN;'));
+      expect(sql.indexOf('DO $$')).toBeGreaterThan(sql.indexOf("SET LOCAL lock_timeout = '5s';"));
+      expect(code()).toContain("IF current_user <> 'jale_admin' THEN");
+      expect(sql).toContain('DEPLOY ORDER: apply this migration BEFORE deploying the code.');
+    });
+
+    it('adds the column NOT NULL with an empty default, and its one-dimension CHECK, idempotently', () => {
+      const sql = code();
+      expect(sql).toContain("ADD COLUMN IF NOT EXISTS shift_periods TEXT[] NOT NULL DEFAULT '{}';");
+      expect(sql).toContain('DROP CONSTRAINT IF EXISTS jobs_shift_periods_valid;');
+      expect(sql).toContain(
+        "ADD CONSTRAINT jobs_shift_periods_valid\n  CHECK (shift_periods <@ ARRAY['day', 'evening', 'night', 'overnight']::text[]\n"
+        + '         AND cardinality(shift_periods) <= 4\n'
+        + '         AND (array_ndims(shift_periods) IS NULL OR array_ndims(shift_periods) = 1));',
+      );
+      expect(sql.indexOf('DROP CONSTRAINT IF EXISTS jobs_shift_periods_valid;'))
+        .toBeLessThan(sql.indexOf('ADD CONSTRAINT jobs_shift_periods_valid'));
+    });
+
+    it('grants the column to the public page login only, and changes nothing else', () => {
+      const sql = code();
+      expect(sql.match(/^\s*GRANT /gm)).toHaveLength(1);
+      expect(sql).toContain('GRANT SELECT (shift_periods) ON public.jobs TO jale_public_jobs;');
+      expect(sql).not.toMatch(/^\s*REVOKE /m);
+      expect(sql).not.toMatch(/CREATE POLICY|DROP POLICY|CREATE TABLE|CREATE (OR REPLACE )?FUNCTION|SECURITY DEFINER|UPDATE public\.jobs|SET ROLE/);
+      expect(sql).not.toMatch(/jale_job_digest[^']*ON public\.jobs/);
+    });
+
+    it('closes by re-reading the column, the CHECK text and every reader of the column', () => {
+      const sql = text();
+      expect(sql).toContain("v_default IS DISTINCT FROM '''{}''::text[]'");
+      expect(sql).toContain(
+        "'CHECK (((shift_periods <@ ARRAY[''day''::text, ''evening''::text, ''night''::text, ''overnight''::text]) "
+        + "AND (cardinality(shift_periods) <= 4) "
+        + "AND ((array_ndims(shift_periods) IS NULL) OR (array_ndims(shift_periods) = 1))))'",
+      );
+      expect(sql).toContain("pg_catalog.has_column_privilege('jale_public_jobs', 'public.jobs', 'shift_periods', 'SELECT')");
+      expect(sql).toContain("pg_catalog.has_table_privilege('jale_public_jobs', 'public.jobs', 'SELECT')");
+      expect(sql).toContain("ARRAY['jale_api', 'jale_whatsapp', 'jale_matching']");
+      expect(sql).toContain("pg_catalog.has_column_privilege('jale_job_digest', 'public.jobs', 'shift_periods', 'SELECT')");
+      expect(sql).toContain('migration 131: jale_job_digest can read jobs.shift_periods');
+      expect(sql.indexOf('-- \u2500\u2500 4. Closing check')).toBeLessThan(sql.indexOf('COMMIT;'));
+    });
+  });
+
+  // Sprint 29 (BE-3): Free 15 and Pro 50 active jobs; template limits unchanged.
+  // billing_plans has read policies only, so the two UPDATEs run under a write
+  // policy that 132 creates and drops in its own transaction (069's pattern).
+  // The DB pins are in job-limits-132.integration.test.ts.
+  describe('132 raises the active-job limits to 15 (Free) and 50 (Pro) and nothing else', () => {
+    const file = '132_job_limit_increase.sql';
+    const sql = () => fs.readFileSync(path.join(migrationsDir, file), 'utf8');
+    const code = () => sql().replace(/--[^\n]*/g, '');
+
+    it('runs as jale_admin in one transaction, ASCII only, with a lock timeout first', () => {
+      const text = sql();
+      expect(text).toContain('-- Run manually AFTER 131,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n');
+      expect(text.match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(text.match(/^COMMIT;$/gm)).toHaveLength(1);
+      expect(code()).toMatch(/^[\x00-\x7F]*$/);
+      expect(text.indexOf("SET LOCAL lock_timeout = '5s';")).toBeGreaterThan(text.indexOf('BEGIN;'));
+      expect(text.indexOf('DO $$')).toBeGreaterThan(text.indexOf("SET LOCAL lock_timeout = '5s';"));
+      expect(code()).toContain("IF current_user <> 'jale_admin' THEN");
+    });
+
+    it('opens the write policy, updates the two plans, and drops the policy, in that order', () => {
+      const c = code();
+      const iCreate = c.indexOf('CREATE POLICY billing_plans_job_limit_seed\n  ON billing_plans FOR UPDATE TO jale_admin USING (true) WITH CHECK (true);');
+      const iFree = c.indexOf(`UPDATE billing_plans SET entitlements = entitlements || '{"active_job_limit": 15}' WHERE code = 'employer_free';`);
+      const iPro = c.indexOf(`UPDATE billing_plans SET entitlements = entitlements || '{"active_job_limit": 50}' WHERE code = 'employer_pro';`);
+      const iDrop = c.lastIndexOf('DROP POLICY IF EXISTS billing_plans_job_limit_seed ON billing_plans;');
+      expect(iCreate).toBeGreaterThan(-1);
+      expect(iFree).toBeGreaterThan(iCreate);
+      expect(iPro).toBeGreaterThan(iFree);
+      expect(iDrop).toBeGreaterThan(iPro);
+      expect(c.match(/^\s*CREATE POLICY /gm)).toHaveLength(1);
+      expect(c.match(/^\s*UPDATE /gm)).toHaveLength(2);
+      expect(c).not.toMatch(/template_limit"\s*:/);
+      expect(c).not.toMatch(/UPDATE (public\.)?jobs|GRANT |REVOKE |ALTER TABLE|CREATE TABLE|CREATE (OR REPLACE )?FUNCTION/);
+    });
+
+    it('closes by checking both limits, both template limits and that the write policy is gone', () => {
+      const c = code();
+      expect(c).toContain("v_free_jobs IS DISTINCT FROM '15'::jsonb OR v_pro_jobs IS DISTINCT FROM '50'::jsonb");
+      expect(c).toContain("v_free_templates IS DISTINCT FROM '2'::jsonb OR v_pro_templates IS DISTINCT FROM '20'::jsonb");
+      expect(c).toContain("policyname = 'billing_plans_job_limit_seed'");
+      expect(sql()).toContain('migration 132: the write policy billing_plans_job_limit_seed is still present');
+      expect(sql().indexOf('-- \u2500\u2500 3. Closing check')).toBeLessThan(sql().indexOf('COMMIT;'));
     });
   });
 });

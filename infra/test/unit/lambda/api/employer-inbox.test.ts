@@ -16,6 +16,21 @@ jest.mock('../../../../lambda/lib/audit/record', () => ({
   recordAttempt: jest.fn(),
 }));
 jest.mock('../../../../lambda/lib/audit/context');
+import { resolveEmployerActor } from '../../../../lambda/lib/employer-actor';
+
+jest.mock('../../../../lambda/lib/employer-actor', () => ({
+  ...jest.requireActual('../../../../lambda/lib/employer-actor'),
+  resolveEmployerActor: jest.fn(),
+}));
+
+const mockResolveEmployerActor = resolveEmployerActor as jest.Mock;
+const ORG_ID = '99999999-9999-4999-8999-999999999999';
+const OWNER_ID = 'aaaaaaaa-1111-4111-8111-111111111111';
+const FOREMAN_ID = 'bbbbbbbb-2222-4222-8222-222222222222';
+const actorResult = (userId: string, scopeUserIds: string[] = [userId]) => ({
+  ok: true as const,
+  actor: { userId, organizationId: ORG_ID, role: 'owner' as const, scopeUserIds },
+});
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
@@ -55,6 +70,7 @@ describe('employer-inbox handler', () => {
     mockSetRlsContext.mockResolvedValue(undefined);
     mockSetInternalUserRlsContext.mockResolvedValue(undefined);
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    mockResolveEmployerActor.mockResolvedValue(actorResult(EMPLOYER_ID));
     mockQuery.mockImplementation((sql: string) => {
       if (/FROM users WHERE cognito_sub/i.test(sql)) return { rowCount: 1, rows: [{ id: EMPLOYER_ID }] };
       return { rowCount: 1, rows: [] };
@@ -89,7 +105,7 @@ describe('employer-inbox handler', () => {
     expect(body.unread_count).toBe(1);
     expect(body.items.map((item: { unread: boolean }) => item.unread)).toEqual([true, false]);
     expect(body.jobs).toHaveLength(1);
-    expect(mockListEmployerInbox).toHaveBeenCalledWith(expect.anything(), EMPLOYER_ID);
+    expect(mockListEmployerInbox).toHaveBeenCalledWith(expect.anything(), [EMPLOYER_ID]);
     expect(mockQuery).toHaveBeenCalledWith('COMMIT');
   });
 
@@ -97,10 +113,10 @@ describe('employer-inbox handler', () => {
   // conversation columns it reads come from an RLS-governed table, so the
   // internal-user GUC has to be bound before the read the same way the
   // mark-read endpoint binds it.
-  it('binds both RLS contexts before reading the inbox', async () => {
+  it('binds the sub lane and resolves the actor (which binds the internal lane) before reading the inbox', async () => {
     const order: string[] = [];
     mockSetRlsContext.mockImplementation(async () => { order.push('setRlsContext'); });
-    mockSetInternalUserRlsContext.mockImplementation(async () => { order.push('setInternalUserRlsContext'); });
+    mockResolveEmployerActor.mockImplementation(async () => { order.push('resolveEmployerActor'); return actorResult(EMPLOYER_ID); });
     mockListEmployerInbox.mockImplementation(async () => {
       order.push('listEmployerInbox');
       return { items: [], jobs: [], unread_count: 0 };
@@ -108,7 +124,24 @@ describe('employer-inbox handler', () => {
 
     await handler(makeEvent());
 
-    expect(order).toEqual(['setRlsContext', 'setInternalUserRlsContext', 'listEmployerInbox']);
+    expect(order).toEqual(['setRlsContext', 'resolveEmployerActor', 'listEmployerInbox']);
+    expect(mockSetInternalUserRlsContext).not.toHaveBeenCalled();
+  });
+
+  it('answers the actor failure after COMMIT and reads nothing', async () => {
+    mockResolveEmployerActor.mockResolvedValue({ ok: false, status: 403, error: 'membership_inactive' });
+    const res = await handler(makeEvent());
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({ error: 'membership_inactive' });
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+    expect(mockListEmployerInbox).not.toHaveBeenCalled();
+  });
+
+  it("reads an owner's whole scope", async () => {
+    mockResolveEmployerActor.mockResolvedValue(actorResult(OWNER_ID, [OWNER_ID, FOREMAN_ID]));
+    mockListEmployerInbox.mockResolvedValue({ items: [], jobs: [], unread_count: 0 });
+    expect((await handler(makeEvent())).statusCode).toBe(200);
+    expect(mockListEmployerInbox).toHaveBeenCalledWith(expect.anything(), [OWNER_ID, FOREMAN_ID]);
   });
 
   it('reports unread_count 0 for an empty inbox rather than omitting it', async () => {

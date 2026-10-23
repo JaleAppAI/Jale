@@ -56,11 +56,18 @@ describe('dashboard hero', () => {
 
         expect(screen.getByText(message('employer_dashboard.hero.title'))).toBeInTheDocument();
         expect(screen.getByText(message('employer_dashboard.hero.body'))).toBeInTheDocument();
-        // Written by the render that showed it: seeing it once is what "seen"
-        // means, so a visit that never returns still counts.
-        // Against THIS account, never against the browser.
-        expect(localStorage.getItem(seenKeyFor(FIRST))).toBe('1');
-        expect(localStorage.getItem(SEEN_KEY)).toBeNull();
+        // Showing it writes nothing: only a dismiss marks it seen, so an
+        // employer who never acted on it gets it again next visit.
+        expect(localStorage.getItem(seenKeyFor(FIRST))).toBeNull();
+        expect(localStorage.length).toBe(0);
+    });
+
+    it('stays in full on the next visit when it was never dismissed', () => {
+        renderIntl(<DashboardHero />);
+        cleanup();
+        renderIntl(<DashboardHero />);
+
+        expect(screen.getByText(message('employer_dashboard.hero.title'))).toBeInTheDocument();
     });
 
     it('collapses to a one-line bar on later visits', () => {
@@ -82,11 +89,18 @@ describe('dashboard hero', () => {
 
         expect(screen.queryByText(message('employer_dashboard.hero.title'))).not.toBeInTheDocument();
         expect(screen.getByText(message('employer_dashboard.hero.slim_title'))).toBeInTheDocument();
+        // The dismiss is what writes the flag, against THIS account only.
+        expect(localStorage.getItem(seenKeyFor(FIRST))).toBe('1');
+        expect(localStorage.getItem(SEEN_KEY)).toBeNull();
+        expect(localStorage.getItem(seenKeyFor(SECOND))).toBeNull();
     });
 
     it('introduces the board to the colleague sharing the laptop', () => {
-        // The first employer has read it and collapsed their hero.
+        // The first employer has read it and dismissed their hero.
         renderIntl(<DashboardHero />);
+        fireEvent.click(
+            screen.getByRole('button', { name: message('employer_dashboard.hero.dismiss_aria') }),
+        );
         expect(localStorage.getItem(seenKeyFor(FIRST))).toBe('1');
         cleanup();
 

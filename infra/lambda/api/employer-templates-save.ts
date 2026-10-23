@@ -1,11 +1,13 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
-import { resolveEntitlements } from '../lib/entitlements';
+import { resolveCompanyEntitlements } from '../lib/entitlements';
+import { readCompanyUsage, CompanyUsageRefusedError } from '../lib/company-usage';
 import { corsHeaders, errorMessage } from '../lib/http';
-import { JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs, parseRequiredFields } from '../lib/job-fields';
+import { JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs, parseRequiredFields, stripRetiredFields } from '../lib/job-fields';
 import { parseCityFields, parseCityFromLocation } from '../lib/city-fields';
 import { parsePreApplicationPrompts } from '../lib/pre-application-prompts';
 import { checkCompliance } from '../legal/check-compliance';
+import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
 
 const CORS_HEADERS = corsHeaders();
 const MAX_NAME_LENGTH = 80;
@@ -39,6 +41,10 @@ function validateTemplatePayload(raw: Record<string, unknown>):
   if (!requiredFields.ok) return { ok: false, status: 400, error: 'invalid_required_fields', extra: { valid: requiredFields.valid } };
   const optionalFields = parseRequiredFields(raw.optional_fields);
   if (!optionalFields.ok) return { ok: false, status: 400, error: 'invalid_optional_fields', extra: { valid: optionalFields.valid } };
+  // Retired field types are no longer offered on new jobs (job-fields.ts), so
+  // a template drops them when it is saved.
+  requiredFields.value = stripRetiredFields(requiredFields.value);
+  optionalFields.value = stripRetiredFields(optionalFields.value);
 
   const jobFields = parseJobFields(raw);
   if (!jobFields.ok) return { ok: false, status: 400, error: jobFields.error, extra: jobFields.valid ? { valid: jobFields.valid } : undefined };
@@ -157,25 +163,38 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'legal_required', requiredVersion: process.env.REQUIRED_TOS_VERSION }) };
     }
 
-    // Same serialization pattern as the active-job limit: lock the employer
-    // row so two concurrent saves cannot both pass the cap check.
-    const lockResult = await client.query<{ id: string }>(
-      `SELECT id FROM users WHERE cognito_sub = $1 FOR UPDATE`,
-      [cognitoSub],
-    );
-    const employerId = lockResult.rows[0]?.id;
-    if (!employerId) {
+    // Every template write takes the company lock below (Phase 2).
+    const actorResult = await resolveEmployerActor(client, cognitoSub);
+    if (!actorResult.ok) {
       await client.query('ROLLBACK');
-      return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_provisioned' }) };
+      return employerActorFailureResponse(actorResult, CORS_HEADERS);
     }
+    const { actor } = actorResult;
+    const employerId = actor.userId;
+
+    // One lock for every template write, create and update: the company's
+    // organizations row FOR NO KEY UPDATE (jale_cap.employer_org_usage, 128),
+    // held to COMMIT. Two members cannot both save the last allowed template,
+    // and a rename and a create in one company cannot race on a name.
+    const usage = await readCompanyUsage(client, { lock: true });
+    // The plan is resolved for the actor's company, so the count must be the same company's.
+    if (usage.organizationId !== actor.organizationId) throw new Error('company_usage_unavailable');
 
     if (body.id) {
-      // Update path: rename and/or overwrite an owned template. RLS scopes
-      // the UPDATE; rowCount 0 means unknown or unowned -- indistinguishable
-      // on purpose.
+      // Update path: rename and/or overwrite a template the caller may edit --
+      // their own, or (for the owner, whose scope covers every member) a
+      // member's. Names are unique per employer_id (UNIQUE (employer_id,
+      // name)), so the clash check runs within the edited template's own
+      // employer; a template outside the scope falls back to the caller's own
+      // names, exactly as before. RLS scopes the UPDATE; rowCount 0 means
+      // unknown or not editable -- indistinguishable on purpose.
       const nameConflict = await client.query(
-        `SELECT id FROM employer_job_templates WHERE employer_id = $1 AND name = $2 AND id <> $3`,
-        [employerId, name, body.id],
+        `SELECT id FROM employer_job_templates
+          WHERE employer_id = COALESCE(
+                  (SELECT employer_id FROM employer_job_templates WHERE id = $3 AND employer_id = ANY($1::uuid[])),
+                  $4::uuid)
+            AND name = $2 AND id <> $3`,
+        [actor.scopeUserIds, name, body.id, employerId],
       );
       if ((nameConflict.rowCount ?? 0) > 0) {
         await client.query('ROLLBACK');
@@ -184,9 +203,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       const updated = await client.query(
         `UPDATE employer_job_templates
             SET name = $1, payload = $2::jsonb, updated_at = NOW()
-          WHERE id = $3 AND employer_id = $4
+          WHERE id = $3 AND employer_id = ANY($4::uuid[])
         RETURNING id, name, payload, updated_at`,
-        [name, JSON.stringify(payload.value), body.id, employerId],
+        [name, JSON.stringify(payload.value), body.id, actor.scopeUserIds],
       );
       if (updated.rowCount === 0) {
         await client.query('ROLLBACK');
@@ -196,12 +215,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 200, headers: CORS_HEADERS, body: JSON.stringify(updated.rows[0]) };
     }
 
-    const entitlements = await resolveEntitlements(client, employerId);
-    const countResult = await client.query<{ template_count: number }>(
-      `SELECT COUNT(*)::int AS template_count FROM employer_job_templates WHERE employer_id = $1`,
-      [employerId],
-    );
-    if (countResult.rows[0].template_count >= entitlements.templateLimit) {
+    // Templates are a company asset and template_limit counts the company
+    // (Phase 2), under the lock taken above.
+    const entitlements = await resolveCompanyEntitlements(client, actor.organizationId);
+    if (usage.templates >= entitlements.templateLimit) {
       await client.query('ROLLBACK');
       return {
         statusCode: 403,
@@ -233,6 +250,20 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     return { statusCode: 201, headers: CORS_HEADERS, body: JSON.stringify(inserted.rows[0]) };
   } catch (err) {
     if (client) { try { await client.query('ROLLBACK'); } catch {} }
+    if (err instanceof CompanyUsageRefusedError) {
+      // The definer says the caller is no longer an active member: the answer resolveEmployerActor gives.
+      return employerActorFailureResponse({ ok: false, status: 403, error: 'membership_inactive' }, CORS_HEADERS);
+    }
+    // UNIQUE (employer_id, name) (069) -- Postgres names it
+    // employer_job_templates_employer_id_name_key -- is hit only by a save
+    // outside the company lock (a Lambda deployed before Phase 2) that took
+    // the name after the pre-check. The pre-check's answer. Any other 23505
+    // is not a name race and takes the generic path.
+    const dbErr = err as { code?: unknown; constraint?: unknown } | null;
+    if (dbErr?.code === '23505' && dbErr.constraint === 'employer_job_templates_employer_id_name_key') {
+      console.warn('employer-templates-save: name race (23505)');
+      return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'template_name_taken' }) };
+    }
     console.error('employer-templates-save error:', errorMessage(err));
     return { statusCode: 500, headers: CORS_HEADERS, body: JSON.stringify({ error: 'internal_error' }) };
   } finally {

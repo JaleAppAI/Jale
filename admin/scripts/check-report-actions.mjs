@@ -9,8 +9,11 @@
 // generated at runtime and no network call.
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   RECORD_EVENT_SQL,
+  adminRoot,
   captureConsole,
   compileAdminSources,
   createFakePool,
@@ -250,6 +253,29 @@ for (const [label, raw] of [
   const result = await post({ session: ops, raw: JSON.stringify({ action: 'set_note', reportId: REPORT_ID, note: 'n'.repeat(70_000) }) });
   assert.equal(result.status, 400);
   assert.deepEqual(result.log, []);
+}
+
+// The Reports route reads bodies up to its own 64 KiB limit, above the
+// shared 16 KiB one: a 60 KiB body is read, checked and acted on.
+{
+  const body = { action: 'set_status', reportId: REPORT_ID, status: 'looking', padding: 'p'.repeat(60 * 1024) };
+  const result = await post({
+    session: ops,
+    body,
+    respond: (sql) => (sql === STATUS_SQL ? [{ outcome: 'ok', status: 'looking' }] : undefined),
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.ok, true);
+}
+
+// The body is read and its hash checked by the shared helper
+// (src/lib/server/payload-hash.ts), with the Reports limit passed to it:
+// this module keeps no reader or digest of its own.
+{
+  const source = readFileSync(join(adminRoot, 'src/lib/server/report-actions.ts'), 'utf8');
+  assert.match(source, /import \{ payloadHashMatches, readActionBody \} from '\.\/payload-hash';/);
+  assert.doesNotMatch(source, /createHash|x-amz-content-sha256|SHA256_HEX/);
+  assert.doesNotMatch(source, /function (readBody|payloadHashMatches)\b/);
 }
 
 // ---------------------------------------------------------------------------

@@ -44,6 +44,12 @@ export interface ReportsStackProps extends cdk.StackProps {
 export const REPORTS_METRIC_NAMESPACE = 'Jale/Reports';
 
 /**
+ * The daily screenshot-capture success share (%) below which
+ * ReportCaptureSuccessShare notifies the ops topic.
+ */
+export const REPORT_CAPTURE_SUCCESS_SHARE_THRESHOLD = 80;
+
+/**
  * The report-images bucket's fixed name in the calling stack's region, built
  * from account and region tokens only. The one place it is spelled: this stack
  * names its bucket with it, and the audit stack calls it to log object reads
@@ -370,17 +376,16 @@ export class ReportsStack extends cdk.Stack {
       metric('ReportRateLimited', cdk.Duration.minutes(15), 'Sum', { Scope: 'global' }),
     );
 
-    // Report-only until a week of data sets the threshold: no action.
     // The share of screenshot captures that produced an image, among the
     // captures that ran (ok, timeout, failed). A removed, attached or absent
-    // capture is a choice, not a capture result, so it is left out.
+    // capture is a choice, not a capture result, so it is left out. A day
+    // with no capture has no share, which is not a breach.
     const captureOutcome = (outcome: string) =>
       metric('ReportCapture', cdk.Duration.days(1), 'Sum', { Outcome: outcome });
     jaleAlarm(this, 'ReportCaptureSuccessShareAlarm', {
       alarmName: 'ReportCaptureSuccessShare',
       alarmDescription:
-        'Report-only: the daily share of screenshot captures that succeeded. '
-        + 'The threshold is provisional until a week of data sets it.',
+        `The daily share of screenshot captures that succeeded was under ${REPORT_CAPTURE_SUCCESS_SHARE_THRESHOLD}%.`,
       metric: new cloudwatch.MathExpression({
         label: 'Capture success share (%)',
         expression:
@@ -393,8 +398,10 @@ export class ReportsStack extends cdk.Stack {
         },
         period: cdk.Duration.days(1),
       }),
-      threshold: 80,
+      threshold: REPORT_CAPTURE_SUCCESS_SHARE_THRESHOLD,
       comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      actions,
     });
   }
 }

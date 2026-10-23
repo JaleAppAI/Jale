@@ -4,6 +4,7 @@ import { useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import { Skeleton } from '@/components/ui/skeleton';
 import type { EmployerBilling } from '@/lib/api/employer';
+import { companyActiveJobCount } from '@/lib/plan-limit';
 
 /**
  * "Active jobs 2/3 · Templates 1/1 · View plan" — the standing answer to "how
@@ -17,9 +18,15 @@ import type { EmployerBilling } from '@/lib/api/employer';
  *  - `activeCount` comes from the jobs list the page already renders, not from
  *    `billing.activeJobUsage`. The list is what a post or a delete updates, so
  *    the meter stays truthful without a second round-trip to billing.
+ *  - The count is the company's (Phase 2): that live own count plus
+ *    `billing.otherMembersActiveJobs`, the jobs of members the list does not
+ *    show. `companyActiveJobCount` computes it, the same way the post-a-job
+ *    gate does.
  *
  * A billing fetch that failed degrades to the plain count rather than hiding:
- * "3 active jobs" is still true, and still useful.
+ * "3 active jobs" is still true, and still useful. The "View plan" link stays
+ * either way: the phone tab bar has no Billing tab, so this is how a phone
+ * reaches the plan page.
  */
 export function PlanUsageMeter({
   activeCount,
@@ -46,20 +53,38 @@ export function PlanUsageMeter({
     );
   }
 
+  const viewPlan = (
+    <Link
+      href="/employer/billing"
+      className="rounded font-bold text-[var(--jale-blue-700)] hover:underline focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
+    >
+      {t('usage.view_plan')}
+    </Link>
+  );
+
   if (billing === null) {
-    return <div className={wrapper}>{t('usage.jobs_plain', { used: activeCount })}</div>;
+    return (
+      <div className={wrapper}>
+        <span>{t('usage.jobs_plain', { used: activeCount })}</span>
+        <span aria-hidden="true">·</span>
+        {viewPlan}
+      </div>
+    );
   }
 
+  // The limit is the company's: add the active jobs of members the list does
+  // not show (a foreman's; 0 for the owner and for an API without the figure).
+  const used = companyActiveJobCount(billing, activeCount);
   // `>=`, not `===`: a plan whose limit was lowered can leave an employer above
   // it, and that employer is the one who most needs the segment to stand out.
-  const atJobLimit = activeCount >= billing.activeJobLimit;
+  const atJobLimit = used >= billing.activeJobLimit;
   const atTemplateLimit = templateCount !== null && templateCount >= billing.templateLimit;
   const warn = 'text-[var(--jale-warning-text)]';
 
   return (
     <div className={wrapper}>
       <span className={atJobLimit ? warn : undefined}>
-        {t('usage.jobs', { used: activeCount, limit: billing.activeJobLimit })}
+        {t('usage.jobs', { used, limit: billing.activeJobLimit })}
       </span>
 
       {templateCount !== null ? (
@@ -72,12 +97,7 @@ export function PlanUsageMeter({
       ) : null}
 
       <span aria-hidden="true">·</span>
-      <Link
-        href="/employer/billing"
-        className="rounded font-bold text-[var(--jale-blue-700)] hover:underline focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
-      >
-        {t('usage.view_plan')}
-      </Link>
+      {viewPlan}
     </div>
   );
 }

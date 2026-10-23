@@ -71,6 +71,11 @@ export const EXPECTED_DURATION_BUCKETS = ['lt_1w', '1_2w', '2_4w', '1_3m', '3_6m
 // BE-T2: MUST byte-match the jobs_work_days_valid CHECK's ARRAY[...] literal
 // added by 077_jobs_structured_fields.sql.
 export const WORK_DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const;
+// Shift choices (contract K2.1), in canonical order. Identical to
+// SHIFT_PERIODS in frontend/src/lib/job-form.ts; MUST match the
+// jobs_shift_periods_valid CHECK's ARRAY[...] literal added by
+// 131_job_shift_periods.sql.
+export const SHIFT_PERIODS = ['day', 'evening', 'night', 'overnight'] as const;
 
 export type JobType = typeof JOB_TYPES[number];
 export type JobStatus = typeof JOB_STATUSES[number];
@@ -79,6 +84,7 @@ export type ApplicationStatus = typeof APPLICATION_STATUSES[number];
 export type PayInterval = typeof PAY_INTERVALS[number];
 export type ExpectedDurationBucket = typeof EXPECTED_DURATION_BUCKETS[number];
 export type WorkDay = typeof WORK_DAYS[number];
+export type ShiftPeriod = (typeof SHIFT_PERIODS)[number];
 export type CertificationTier = 'required' | 'optional';
 export type RequiredFieldType = typeof REQUIRED_FIELD_TYPES[number];
 
@@ -177,6 +183,10 @@ export interface ParsedJobFields {
   shift_start: string | null;
   shift_end: string | null;
   certification_requirements: CertificationRequirement[] | null;
+  // Shift choices (131, contract K2.2): never null. An absent key parses as
+  // [], so a create or template save without it stores none; the update
+  // handler decides on its own whether an absent key keeps the stored value.
+  shift_periods: ShiftPeriod[];
 }
 
 export type ParseJobFieldsResult =
@@ -268,6 +278,15 @@ export function parseRequiredFields(value: unknown): { ok: true; value: string[]
   return { ok: true, value: Array.from(new Set(value)) };
 }
 
+// No longer offered on new jobs; existing jobs keep it. They stay in
+// REQUIRED_FIELD_TYPES (and the 073 CHECK), so stored jobs remain valid.
+export const RETIRED_FIELD_TYPES = ['date_of_birth'] as const;
+
+/** Removes retired field types from a parsed tier, except those in `keep`: kept when the stored job already asks for it, in either tier. */
+export function stripRetiredFields(fields: readonly string[], keep: readonly string[] = []): string[] {
+  return fields.filter((field) => !(RETIRED_FIELD_TYPES as readonly string[]).includes(field) || keep.includes(field));
+}
+
 // BE-T2 (077): one-way, mirroring jobs_trade_category_other_valid -- forbidden
 // on any non-'other' category. Deliberately NOT required when tradeCategory
 // IS 'other': legacy 'other' rows (and their template re-saves) predate this
@@ -304,6 +323,24 @@ function parseShiftTime(value: unknown, fieldName: 'shift_start' | 'shift_end'):
     return { ok: false, error: `invalid_${fieldName}` };
   }
   return { ok: true, value };
+}
+
+// Shift choices (131, contract K2.2), with the same error shape as
+// parseWorkDays. Absent is [], an explicit null is not an array and is
+// refused. The length cap applies to the raw array (at most one entry per
+// period); duplicates within it are folded rather than refused, and the
+// result is in SHIFT_PERIODS order. jobs_shift_periods_valid accepts
+// duplicates, so this parser is what keeps the stored value canonical.
+function parseShiftPeriods(value: unknown): { ok: true; value: ShiftPeriod[] } | { ok: false; error: string; valid: readonly string[] } {
+  if (value === undefined) return { ok: true, value: [] };
+  if (
+    !Array.isArray(value)
+    || value.length > SHIFT_PERIODS.length
+    || value.some((period) => typeof period !== 'string' || !SHIFT_PERIODS.includes(period as ShiftPeriod))
+  ) {
+    return { ok: false, error: 'invalid_shift_periods', valid: SHIFT_PERIODS };
+  }
+  return { ok: true, value: SHIFT_PERIODS.filter((period) => value.includes(period)) };
 }
 
 // BE-T2 (077/078): shape-checked here, not in SQL (see 077's header). Caps
@@ -416,6 +453,8 @@ export function parseJobFields(body: Record<string, unknown>): ParseJobFieldsRes
   if (!shiftStart.ok) return shiftStart;
   const shiftEnd = parseShiftTime(body.shift_end, 'shift_end');
   if (!shiftEnd.ok) return shiftEnd;
+  const shiftPeriods = parseShiftPeriods(body.shift_periods);
+  if (!shiftPeriods.ok) return shiftPeriods;
 
   const certificationRequirements = parseCertificationRequirements(body.certification_requirements);
   if (!certificationRequirements.ok) return certificationRequirements;
@@ -475,6 +514,7 @@ export function parseJobFields(body: Record<string, unknown>): ParseJobFieldsRes
       shift_start: shiftStart.value,
       shift_end: shiftEnd.value,
       certification_requirements: certificationRequirements.value,
+      shift_periods: shiftPeriods.value,
     },
   };
 }
@@ -581,4 +621,24 @@ export function formatPayRangeLocalized(
  * render. Kept ASCII-only to match the rest of the outbound Spanish copy. */
 export function payNotSpecifiedLabel(locale: PayLocale): string {
   return locale === 'es' ? 'Pago no especificado' : 'Pay not specified';
+}
+
+/** Shift labels for the worker-facing WhatsApp text, exactly as contract
+ * K2.1 lists them. They are the web's labels too, so the Spanish keeps its
+ * accent ("Día"), unlike the ASCII pay suffixes above. */
+export const SHIFT_PERIOD_LABELS: Record<PayLocale, Record<ShiftPeriod, string>> = {
+  en: { day: 'Day', evening: 'Evening', night: 'Night', overnight: 'Overnight' },
+  es: { day: 'Día', evening: 'Tarde', night: 'Noche', overnight: 'Madrugada' },
+};
+
+/** "Day, Night" / "Día, Noche": the chosen shifts in SHIFT_PERIODS order,
+ * each once. Takes whatever a row or a stored payload carries: anything
+ * that is not an array, and any value outside the set, is skipped. Returns
+ * null when nothing is left, so callers print no shift text at all. */
+export function formatShiftPeriodsLocalized(value: unknown, locale: PayLocale): string | null {
+  if (!Array.isArray(value)) return null;
+  const labels = SHIFT_PERIODS
+    .filter((period) => value.includes(period))
+    .map((period) => SHIFT_PERIOD_LABELS[locale][period]);
+  return labels.length > 0 ? labels.join(', ') : null;
 }

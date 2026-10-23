@@ -103,14 +103,11 @@ jobs:
           }
 
   infra:
-    name: Infra build, test, synth
+    name: Infra build and synth
     runs-on: ubuntu-latest
-    # Runtime under Node 24 has not been re-measured yet (CDK bundling no
-    # longer shells out to `npm install` at all -- zero `nodeModules`
-    # overrides remain, so the Lambda dependency sets ship as source and are
-    # bundled by esbuild). 45 minutes is carried over from the pre-Node-24
-    # budget; tighten after the first Node-24 run establishes a real number.
-    timeout-minutes: 45
+    # Build and the two synths take 2-3 minutes; the unit tests run in the
+    # infra-tests job below.
+    timeout-minutes: 20
     env:
       CDK_DEFAULT_ACCOUNT: '111111111111'
       CDK_DEFAULT_REGION: ${{ inputs.aws-region }}
@@ -134,13 +131,6 @@ jobs:
       - name: Build infra TypeScript
         working-directory: infra
         run: npm run build
-
-      - name: Run infra unit tests
-        working-directory: infra
-        # test:ci is plain `jest` — the default `test` script carries
-        # --maxWorkers=2 (a dev-host OOM cap), and jest rejects combining
-        # --maxWorkers with --runInBand in one invocation.
-        run: npm run test:ci -- --runInBand
 
       - name: CDK synth backend stacks
         working-directory: infra
@@ -186,6 +176,43 @@ jobs:
             echo "::error::The production synth wrote $templates templates; expected 21."
             exit 1
           fi
+
+  infra-tests:
+    name: Infra unit tests (shard ${{ matrix.shard }} of 3)
+    runs-on: ubuntu-latest
+    # In one job the in-band unit tests took 29-43 minutes (October 2026,
+    # Node 24): most of the infra job, and about 1.6 times longer on slower
+    # runners. Jest's --shard splits the test files into three disjoint sets
+    # that together are the whole suite. Each shard runs on its own runner,
+    # still in band, so a file runs exactly as it did in the single job.
+    # Change the shard list and the --shard total together.
+    timeout-minutes: 30
+    strategy:
+      # Every shard reports its own result, even when another shard fails.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    # The infra job's environment, so a test sees what it saw there.
+    env:
+      CDK_DEFAULT_ACCOUNT: '111111111111'
+      CDK_DEFAULT_REGION: ${{ inputs.aws-region }}
+      NPM_CONFIG_AUDIT: 'false'
+      NPM_CONFIG_FUND: 'false'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup infra dependencies
+        uses: ./.github/actions/setup-node-cache
+        with:
+          working-directory: infra
+
+      - name: Run infra unit tests
+        working-directory: infra
+        # test:ci is plain `jest` — the default `test` script carries
+        # --maxWorkers=2 (a dev-host OOM cap), and jest rejects combining
+        # --maxWorkers with --runInBand in one invocation.
+        run: npm run test:ci -- --runInBand --shard=${{ matrix.shard }}/3
 
   database:
     name: Database suites (${{ matrix.profile }})
@@ -250,6 +277,22 @@ jobs:
           JALE_DB_TEST_RESULTS: ${{ runner.temp }}/db-results/employer-organizations-118-upgrade.json
           JALE_DB_TEST_PR_HEAD: ${{ github.event.pull_request.head.sha }}
         run: bash infra/db/local/bootstrap-testbed.sh --ephemeral --ref none --bare --url-var JALE_TEST_UPGRADE_DATABASE_URL -- bash infra/scripts/run-whatsapp-v2-db-tests.sh --suite test/unit/db/migrations/employer-organizations-118-upgrade.test.ts
+
+      - name: Run company billing upgrade suite (bare cluster)
+        if: ${{ !cancelled() && matrix.profile == 'standard' }}
+        shell: bash
+        env:
+          JALE_DB_TEST_RESULTS: ${{ runner.temp }}/db-results/company-billing-127-upgrade.json
+          JALE_DB_TEST_PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: bash infra/db/local/bootstrap-testbed.sh --ephemeral --ref none --bare --url-var JALE_TEST_UPGRADE_DATABASE_URL -- bash infra/scripts/run-whatsapp-v2-db-tests.sh --suite test/unit/db/migrations/company-billing-127-upgrade.test.ts
+
+      - name: Run migration 119 apply-order suite (bare cluster)
+        if: ${{ !cancelled() && matrix.profile == 'standard' }}
+        shell: bash
+        env:
+          JALE_DB_TEST_RESULTS: ${{ runner.temp }}/db-results/migration-119-out-of-order.json
+          JALE_DB_TEST_PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: bash infra/db/local/bootstrap-testbed.sh --ephemeral --ref none --bare --url-var JALE_TEST_UPGRADE_DATABASE_URL -- bash infra/scripts/run-whatsapp-v2-db-tests.sh --suite test/unit/db/migrations/migration-119-out-of-order.test.ts
 
       - name: Setup admin dependencies
         if: ${{ !cancelled() && matrix.profile == 'standard' }}

@@ -119,11 +119,16 @@ SUITES=(
   test/unit/db/application-stage-notify.integration.test.ts
   test/unit/db/application-web-completion.integration.test.ts
   test/unit/db/billing-rls.integration.test.ts
-  test/unit/db/entitlement-concurrency.integration.test.ts
+  test/unit/db/job-limits-132.integration.test.ts
   test/unit/db/billing-job-limit.integration.test.ts
   test/unit/db/billing-current-subscription.integration.test.ts
   test/unit/db/rls-relationship-repair.integration.test.ts
   test/unit/db/employer-organizations-118.integration.test.ts
+  test/unit/db/employer-org-owner-access-119.integration.test.ts
+  test/unit/db/company-billing-127.integration.test.ts
+  test/unit/db/company-limits-128.integration.test.ts
+  test/unit/db/company-limit-concurrency.integration.test.ts
+  test/unit/db/org-owner-carry-overs-129.integration.test.ts
   test/unit/db/whatsapp-support-039.integration.test.ts
   test/unit/db/whatsapp-delivery-040.integration.test.ts
   test/unit/db/referrals-rls.integration.test.ts
@@ -176,6 +181,8 @@ SUITES=(
   test/unit/db/least-privilege-denials.integration.test.ts
   test/unit/db/least-privilege-query-plans.integration.test.ts
   test/unit/db/hire-and-resume-125.integration.test.ts
+  test/unit/db/user-tutorial-progress.integration.test.ts
+  test/unit/db/job-shift-periods.integration.test.ts
   # 4. The tail, in this order. 093 leases worker_intent rows globally and
   #    advances the attempt count of every row it leases, so it follows every
   #    suite that could own one. Then each suite that re-applies its migration

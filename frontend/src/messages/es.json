@@ -75,6 +75,18 @@
       "sat": "Sáb",
       "sun": "Dom"
     },
+    "shift_periods": {
+      "day": "Día",
+      "evening": "Tarde",
+      "night": "Noche",
+      "overnight": "Madrugada"
+    },
+    "shift_period_help": {
+      "day": "Empieza en la mañana y termina a media tarde",
+      "evening": "Empieza en la tarde y termina en la noche",
+      "night": "Empieza en la noche y termina después de medianoche",
+      "overnight": "Toda la noche, termina en la mañana"
+    },
     "experience_years_unit": "{n, plural, one {# año} other {# años}}",
     "experience_months_unit": "{n, plural, one {# mes} other {# meses}}",
     "experience_none": "No se requiere experiencia"
@@ -123,7 +135,7 @@
     "profile": "Perfil",
     "home": "Inicio",
     "worker_home": "Trabajos",
-    "my_applications": "Mis aplicaciones",
+    "my_applications": "Mis postulaciones",
     "employer_jobs": "Trabajos",
     "messages": "Mensajes"
   },
@@ -276,6 +288,7 @@
     "worker": {
       "title": "Inicia sesión con tu teléfono",
       "phone_label": "Enviaremos un código de 6 dígitos por mensaje de texto.",
+      "phone_hint": "Usa el mismo número que usas en WhatsApp",
       "send_otp": "Enviar código",
       "otp_label": "Ingresa el código que te enviamos",
       "verify": "Verificar",
@@ -322,8 +335,9 @@
       "hide_password": "Ocultar contraseña",
       "sign_in": "Iniciar sesión",
       "hero": "Contrate trabajadores calificados rápido.",
-      "signup_title": "Bienvenido a Jale",
-      "signup_subtitle": "Verifiquemos su correo para que pueda empezar a contratar.",
+      "signup_title": "Cree su cuenta de empleador",
+      "signup_subtitle": "Después le enviaremos un código por correo para confirmar su dirección.",
+      "signup_confirm_subtitle": "Último paso: confirme su correo para que pueda empezar a contratar.",
       "confirm_subtitle": "Ingrese el código que enviamos a {email}.",
       "create_account": "Crear cuenta",
       "confirm_account": "Confirmar cuenta",
@@ -356,6 +370,7 @@
         "contact_name": "Nombre de contacto",
         "email": "Correo de trabajo",
         "password": "Contraseña",
+        "password_create": "Cree una contraseña",
         "password_confirm": "Confirmar contraseña",
         "phone": "Teléfono",
         "city": "Ciudad",
@@ -500,10 +515,10 @@
   },
   "employer_applicants": {
     "title": "Postulantes",
-    "subtitle": "Todos los que han aplicado a tus trabajos, en un solo lugar.",
+    "subtitle": "Todos los que se han postulado a sus trabajos, en un solo lugar.",
     "all_jobs": "Todos los trabajos",
     "empty_title": "Aún no hay postulantes",
-    "empty_body": "Los postulantes de todos tus trabajos aparecerán aquí.",
+    "empty_body": "Los postulantes de todos sus trabajos aparecerán aquí.",
     "applied_on": "Aplicó {date}",
     "unknown_worker": "Trabajador desconocido",
     "not_scored": "Sin puntaje aún",
@@ -511,11 +526,11 @@
     "skills_show_fewer": "Ver menos habilidades",
     "message_action": "Mensaje",
     "status_label": "Estado de la postulaci\u00f3n",
-    "hire_blocked": "No puedes marcar como contratado hasta que sus datos est\u00e9n completos. Abre su perfil para solicitarlos.",
+    "hire_blocked": "No puede marcarlo como contratado hasta que sus datos estén completos. Abra su perfil para solicitarlos.",
     "hire_details": {
       "add": "Agregar detalles de inicio",
       "edit": "Editar detalles de inicio",
-      "needed": "Agrega los detalles de inicio para que {name} sepa cuándo y dónde presentarse.",
+      "needed": "Agregue los detalles de inicio para que {name} sepa cuándo y dónde presentarse.",
       "summary_starts": "Inicia el {date}",
       "summary_location": "Presentarse en {location}",
       "summary_saved": "Detalles de inicio guardados",
@@ -532,13 +547,13 @@
       "save": "Guardar detalles de inicio",
       "cancel": "Cancelar",
       "saved": "Detalles de inicio guardados.",
-      "error_date": "Ingresa una fecha válida.",
-      "error_too_long": "Usa {max} caracteres o menos.",
-      "error_phone": "Usa solo números, espacios y + ( ) -.",
-      "error_field": "Revisa este campo e intenta de nuevo.",
-      "error_not_hired": "Solo los postulantes contratados pueden recibir detalles de inicio. Actualiza la lista e intenta de nuevo.",
-      "error_not_found": "Este postulante ya no está disponible. Actualiza la lista.",
-      "banner": "{count, plural, one {Agrega los detalles de inicio de # nueva contratación} other {Agrega los detalles de inicio de # nuevas contrataciones}}",
+      "error_date": "Ingrese una fecha válida.",
+      "error_too_long": "Use {max} caracteres o menos.",
+      "error_phone": "Use solo números, espacios y + ( ) -.",
+      "error_field": "Revise este campo e intente de nuevo.",
+      "error_not_hired": "Solo los postulantes contratados pueden recibir detalles de inicio. Actualice la lista e intente de nuevo.",
+      "error_not_found": "Este postulante ya no está disponible. Actualice la lista.",
+      "banner": "{count, plural, one {Agregue los detalles de inicio de # nueva contratación} other {Agregue los detalles de inicio de # nuevas contrataciones}}",
       "banner_cta": "Ir a postulantes"
     }
   },
@@ -559,7 +574,8 @@
     "waiting": "Esperando",
     "active": "Activas",
     "worker_replied": "Trabajador respondió",
-    "reply_window_open": "Ventana de 24h abierta",
+    "reply_window_open": "Ventana de respuesta abierta",
+    "whatsapp_window_caption": "Dentro de las 24 horas después del último mensaje del trabajador, el suyo le llega directo a su WhatsApp. Si no, Jale le envía primero una invitación y su mensaje espera hasta que responda.",
     "waiting_reply": "Esperando respuesta",
     "template_invite_sent": "Invitación enviada",
     "archived_conversations": "Conversaciones archivadas",
@@ -580,7 +596,7 @@
     "starting": "Iniciando...",
     "message_start_failed": "No se pudo iniciar la conversación.",
     "worker_whatsapp_unavailable": "Este trabajador todavía no tiene número de WhatsApp.",
-    "default_initial_message": "Hola, te escribo sobre tu aplicación de {jobTitle}. Responde aquí cuando estés disponible.",
+    "default_initial_message": "Hola, te escribo sobre tu postulación de {jobTitle}. Responde aquí cuando estés disponible.",
     "tab_active": "Activas",
     "tab_closed": "Cerradas",
     "all_jobs": "Todos los empleos",
@@ -629,10 +645,10 @@
       "total_applicants": "Total de candidatos",
       "workers_hired": "Trabajadores contratados",
       "paused_closed": "Pausados / Cerrados",
-      "active_hint": "{count} puestos aún disponibles",
+      "active_hint": "{count, plural, one {# puesto aún disponible} other {# puestos aún disponibles}}",
       "applicants_hint": "{count} promedio por empleo activo",
-      "hired_hint": "{hired} de {needed} puestos cubiertos",
-      "paused_closed_hint": "{paused} pausados, {filled} llenos, {closed} cerrados"
+      "hired_hint": "{hired} de {needed, plural, one {# puesto cubierto} other {# puestos cubiertos}}",
+      "paused_closed_hint": "{paused, plural, one {# pausado} other {# pausados}}, {filled, plural, one {# lleno} other {# llenos}}, {closed, plural, one {# cerrado} other {# cerrados}}"
     },
     "shell": {
       "title": "Panel",
@@ -649,7 +665,7 @@
       "unread_badge": "{count, plural, one {# mensaje sin leer} other {# mensajes sin leer}}"
     },
     "hero": {
-      "eyebrow": "Got Jale?",
+      "eyebrow": "¿Ya conoce Jale?",
       "title": "Mantenga cada empleo, candidato y conversación de WhatsApp en un solo lugar.",
       "body": "Cada empleo que publica, cada candidato que responde y cada conversación de WhatsApp con ellos — todo en una sola página.",
       "primary_cta": "Publique un empleo",
@@ -814,7 +830,7 @@
       "description_placeholder_notes": "Escriba una breve descripción — con una o dos frases basta. “Generar con IA” construirá la publicación completa a partir de ella, o puede trabajar solo con los datos básicos del empleo.",
       "description_helper": {
         "use_sample": "Usar un ejemplo",
-        "source_credit": "Fuente: O*NET",
+        "source_credit": "Basado en datos de empleo de EE. UU.",
         "generate": "Generar con IA",
         "generating": "Generando…",
         "replace_hint": "Esto reemplazará la descripción actual.",
@@ -841,6 +857,8 @@
       "trade_other_hint": "Los trabajadores que registraron este oficio se emparejarán con su empleo.",
       "pay_min": "Pago mínimo",
       "pay_max": "Pago máximo",
+      "pay_max_placeholder": "Opcional",
+      "pay_max_hint": "El máximo es opcional. Déjelo en blanco si el pago es negociable.",
       "pay_interval": "Intervalo de pago",
       "pay_interval_option": {
         "hourly": "Por hora",
@@ -860,6 +878,10 @@
       "shift_start_label": "Inicio del turno",
       "shift_end_label": "Fin del turno",
       "shift_to": "a",
+      "shifts_label": "Turnos",
+      "shifts_hint": "Elija todos los turnos en los que se puede trabajar.",
+      "shift_times_label": "Hora de entrada y salida (opcional)",
+      "shift_times_hint": "Déjelas vacías si el horario varía. Puede acordarlas con el trabajador.",
       "number_of_workers_needed": "Trabajadores necesarios",
       "required_experience_years": "Experiencia requerida",
       "experience_years_label": "Años de experiencia requeridos",
@@ -882,9 +904,22 @@
       "certifications_no_matches": "No hay certificaciones que coincidan",
       "certifications_already_added": "Ya agregada",
       "certifications_remove_aria": "Quitar {name}",
-      "certifications_picker_hint": "Elija de la lista o agregue la suya. En el siguiente paso marcará cada una como requerida u opcional.",
+      "certifications_picker_hint": "Agregue varias, de la lista o con sus propias palabras.",
       "legacy_value_note": "Ingresado originalmente como: {value}",
       "validation_required": "Complete los campos requeridos.",
+      "field_errors": {
+        "title": "Agregue un título para el empleo",
+        "location": "Agregue la ciudad donde es el empleo",
+        "trade": "Elija un oficio",
+        "trade_other": "Escriba el nombre del oficio",
+        "pay_min": "Ingrese el pago mínimo como número, 0 o más",
+        "pay_max": "Ingrese el pago máximo como número, 0 o más",
+        "experience": "Ingrese los años de experiencia como número, 0 o más",
+        "workers": "Indique cuántos trabajadores necesita, 1 o más",
+        "shift_start": "Agregue también la hora de entrada, o borre la de salida",
+        "shift_end": "Agregue también la hora de salida, o borre la de entrada",
+        "shift_periods": "Vuelva a elegir los turnos de esta lista"
+      },
       "validation_number": "Ingrese números válidos y no negativos.",
       "validation_pay_range": "El pago mínimo no puede ser mayor que el máximo.",
       "validation_headcount": "Trabajadores necesarios debe ser al menos 1.",
@@ -899,7 +934,7 @@
       "template_name_placeholder": "Nombre de la plantilla",
       "template_check_city": "Revise la ciudad antes de publicar",
       "template_name_taken": "Ya tiene una plantilla con ese nombre",
-      "template_not_saved": "Su plantilla no se guardará — su plan permite {limit} plantilla(s).",
+      "template_not_saved": "Su plantilla no se guardará — su plan permite {limit, plural, one {# plantilla} other {# plantillas}}.",
       "post_without_template": "Publicar sin guardar plantilla",
       "location_pick_helper": "Seleccione la ciudad de la lista para continuar."
     },
@@ -907,20 +942,34 @@
       "years_experience": "{years, plural, one {# año de experiencia} other {# años de experiencia}}"
     },
     "post_job_docs": {
-      "step_label": "Paso 2 de 2",
+      "step_label": "Paso 3 de 3 · Preguntas",
       "title": "Requisitos de documentos",
-      "subtitle": "Sus preguntas de postulación, y luego lo que pedirá cuando solicite los datos de alguien.",
+      "subtitle": "Preguntas rápidas al postularse y luego las preguntas para alguien que quiera contratar.",
       "optional_label": "Opcional",
       "required_label": "Requerido",
       "next": "Siguiente: Requisitos de documentos",
       "back": "Atrás",
       "submit": "Publicar empleo"
     },
+    "job_posted": {
+      "title": "Su empleo está publicado",
+      "share_head": "Compártalo con trabajadores",
+      "share_body": "Su empleo es privado hasta que lo comparta. Active el enlace para que cualquiera que lo tenga pueda ver el empleo y postularse, sin crear una cuenta.",
+      "turn_on": "Activar el enlace para compartir",
+      "link_label": "Enlace para compartir",
+      "crew": "Envíelo a sus encargados, o imprima el código QR para su próxima reunión de seguridad.",
+      "off_note": "Puede desactivar el enlace cuando quiera desde la página del empleo.",
+      "next_head": "Qué sigue",
+      "n1": "Los trabajadores abren el enlace y se postulan por WhatsApp o en la web.",
+      "n2": "Cada uno aparece en Postulantes, con su oficio, su experiencia y sus respuestas.",
+      "n3": "Escriba a los que le interesen desde Mensajes. Sus respuestas llegan por WhatsApp.",
+      "back": "Volver al panel"
+    },
     "templates": {
       "title": "Plantillas de empleo",
-      "meter": "{count} guardadas · {limit} permitidas en su plan",
-      "meter_empty": "Aún no hay plantillas · {limit} permitidas en su plan",
-      "meter_count": "{count} plantillas",
+      "meter": "{count, plural, one {# guardada} other {# guardadas}} · {limit, plural, one {# permitida} other {# permitidas}} en su plan",
+      "meter_empty": "Aún no hay plantillas · {limit, plural, one {# permitida} other {# permitidas}} en su plan",
+      "meter_count": "{count, plural, one {# plantilla} other {# plantillas}}",
       "new": "Nueva plantilla",
       "limit_note": "Límite de plantillas alcanzado — mejore su plan para más",
       "empty": "Aún no hay plantillas. Cree una aquí o marque “Guardar como plantilla” al publicar un empleo.",
@@ -943,7 +992,7 @@
     "usage": {
       "jobs": "Empleos activos {used}/{limit}",
       "templates": "Plantillas {used}/{limit}",
-      "jobs_plain": "{used} empleos activos",
+      "jobs_plain": "{used, plural, one {# empleo activo} other {# empleos activos}}",
       "view_plan": "Ver plan"
     }
   },
@@ -978,6 +1027,8 @@
     "fallback_applied": "Fecha no disponible",
     "trust_title": "Evaluación de confianza",
     "trust_score_label": "Puntaje de competencia",
+    "trust_caption": "El puntaje viene de sus respuestas a preguntas sobre su trabajo.",
+    "status_caption": "Solo “Solicitar datos” y “Contratado” le envían un mensaje al trabajador. Los demás estados son solo para usted.",
     "trust_dim_specific_knowledge": "Conocimiento específico",
     "trust_dim_practical_experience": "Experiencia práctica",
     "trust_dim_safety_awareness": "Conciencia de seguridad",
@@ -1028,8 +1079,8 @@
     "details_incomplete_certifications": "Certificaciones que aún faltan: {items}"
   },
   "upload_page": {
-    "title": "Suba sus documentos",
-    "explainer": "Un empleador necesita algunos documentos para continuar con su solicitud. Agregue los de abajo: este enlace se creó solo para usted, funciona una vez y luego vence.",
+    "title": "Sube tus documentos",
+    "explainer": "Un empleador necesita algunos documentos para continuar con tu postulación. Agrega los de abajo: este enlace se creó solo para ti, funciona una vez y luego vence.",
     "documents_heading": "Documentos solicitados",
     "progress": "{done} de {total} subidos",
     "for_job": "Para:",
@@ -1037,24 +1088,24 @@
     "uploaded": "Subido",
     "status_missing": "Sin subir",
     "replace": "Reemplazar",
-    "tap_to_upload": "Toque para subir",
+    "tap_to_upload": "Toca para subir",
     "file_hint": "JPG, PNG o PDF · Máx 10 MB",
-    "security_notice": "Sus documentos están encriptados y solo se comparten con el empleador al que postuló.",
+    "security_notice": "Tus documentos están encriptados y solo se comparten con el empleador al que te postulaste.",
     "submit": "Enviar documentos",
-    "submit_hint": "Puede enviar en cuanto haya subido al menos un documento.",
+    "submit_hint": "Puedes enviar en cuanto hayas subido al menos un documento.",
     "success_title": "¡Documentos enviados!",
     "success_body": "El empleador ha sido notificado.",
     "error_size": "El archivo debe pesar menos de 10 MB",
     "error_type": "Solo se aceptan archivos JPG, PNG o PDF",
-    "error_upload": "No se pudo subir el archivo. Intente de nuevo.",
-    "error_submit": "No se pudo enviar. Intente de nuevo.",
+    "error_upload": "No se pudo subir el archivo. Inténtalo de nuevo.",
+    "error_submit": "No se pudo enviar. Inténtalo de nuevo.",
     "error_already_received": "Ya recibimos este documento con este enlace.",
-    "error_confirm_required": "Suba al menos un documento antes de enviar.",
+    "error_confirm_required": "Sube al menos un documento antes de enviar.",
     "expired_title": "Este enlace ya no funciona",
-    "expired_body": "Los enlaces de subida se pueden usar una sola vez y vencen después de un tiempo. Pida al empleador que lo contactó que le envíe uno nuevo."
+    "expired_body": "Los enlaces de subida se pueden usar una sola vez y vencen después de un tiempo. Pídele al empleador que te contactó que te envíe uno nuevo."
   },
   "worker_applications": {
-    "title": "Mis aplicaciones",
+    "title": "Mis postulaciones",
     "applied": "Aplicado",
     "empty": "Aún no te has postulado a ningún trabajo.",
     "empty_body": "Los trabajos a los que te postules aparecen aquí, con el estado de cada uno.",
@@ -1075,16 +1126,30 @@
       "hired": "Contratado",
       "not_interested": "No seleccionado"
     },
+    "status_hint": {
+      "pending": "Esperando al empleador",
+      "contacted": "Revisa WhatsApp: el empleador te escribió",
+      "talking": "El empleador te escribió",
+      "details_requested": "Quieren contratarte",
+      "hired": "Conseguiste el trabajo. Revisa tus datos de inicio",
+      "not_interested": "El empleador eligió a otros candidatos"
+    },
     "details_banner": {
       "one_head": "Falta algo — completa tus datos.",
       "one_body": "{company} quiere seguir adelante.",
       "one_cta": "Completar datos",
-      "many_head": "{count} postulaciones necesitan tus datos",
-      "many_body": "{count} empleadores quieren seguir adelante contigo.",
+      "many_head": "{count, plural, one {# postulación necesita tus datos} other {# postulaciones necesitan tus datos}}",
+      "many_body": "{count, plural, one {# empleador quiere seguir adelante contigo.} other {# empleadores quieren seguir adelante contigo.}}",
       "many_cta": "Ver postulaciones",
       "multi_body": "Empieza por la de arriba.",
-      "row_left": "Faltan {count} cosas",
-      "row_body": "{company} te pidió tus datos."
+      "row_left": "{count, plural, one {Falta # cosa} other {Faltan # cosas}}",
+      "row_body": "{company} te pidió tus datos.",
+      "items": {
+        "questions": "{count, plural, one {# pregunta} other {# preguntas}}",
+        "certifications": "{count, plural, one {# certificación} other {# certificaciones}}",
+        "documents": "{count, plural, one {# documento} other {# documentos}}"
+      },
+      "about_time": "Unos 5 min"
     },
     "hired_celebration": {
       "modal": {
@@ -1099,10 +1164,10 @@
         "pay": "Pago",
         "schedule": "Horario",
         "body": "El empleador te enviará más detalles pronto (dónde presentarte, documentos, contacto). Si no recibes nada en los próximos días, no dudes en comunicarte con él.",
-        "reference": "Referencia de solicitud: {ref}",
+        "reference": "Referencia de postulación: {ref}",
         "cta": "¡Genial!",
-        "link": "Ver mi solicitud",
-        "body_details": "Tu empleador te envió los detalles de inicio. Abre tu solicitud para ver dónde presentarte y a quién contactar."
+        "link": "Ver mi postulación",
+        "body_details": "Tu empleador te envió los detalles de inicio. Abre tu postulación para ver dónde presentarte y a quién contactar."
       },
       "banner": {
         "title": "Te contrataron: {title} en {company}",
@@ -1111,7 +1176,7 @@
         "title_no_company": "Te contrataron: {title}",
         "body_dated": "Inicio {date} · El empleador te enviará más detalles; si no llegan, comunícate con él.",
         "body_undated": "Fecha de inicio por confirmar · El empleador te enviará más detalles; si no llegan, comunícate con él.",
-        "cta": "Ver solicitud",
+        "cta": "Ver postulación",
         "dismiss": "Cerrar el aviso de contratación de {title}",
         "body_details_dated": "Inicio {date} · Tu empleador te envió los detalles de inicio.",
         "body_details_undated": "Tu empleador te envió los detalles de inicio."
@@ -1138,9 +1203,9 @@
     "subtitle": "{company} te quiere contratar para {job}. Unas cosas más y quedas listo.",
     "subtitle_no_company": "El empleador te quiere contratar para {job}. Unas cosas más y quedas listo.",
     "progress": {
-      "left": "Faltan {count}",
+      "left": "{count, plural, one {Falta #} other {Faltan #}}",
       "none_left": "No falta nada",
-      "bits": "{fields} datos · {docs} documentos · {certs} certificaciones",
+      "bits": "{fields, plural, one {# dato} other {# datos}} · {docs, plural, one {# documento} other {# documentos}} · {certs, plural, one {# certificación} other {# certificaciones}}",
       "aria_label": "Tu avance"
     },
     "steps": {
@@ -1203,13 +1268,13 @@
       "hired": "¡Te contrataron para este empleo!",
       "hired_body": "{company} te seleccionó para este puesto. El empleador te enviará más detalles (dónde presentarte, documentos, contacto); si no llegan en los próximos días, no dudes en comunicarte con él.",
       "hired_body_no_company": "El empleador te seleccionó para este puesto y te enviará más detalles (dónde presentarte, documentos, contacto); si no llegan en los próximos días, no dudes en comunicarte con él.",
-      "not_interested": "Esta solicitud se cerró.",
+      "not_interested": "Esta postulación se cerró.",
       "not_interested_body": "{company} siguió con otros candidatos. Tu perfil guarda todo lo que ya contestaste para tu próxima postulación.",
       "not_interested_body_no_company": "El empleador siguió con otros candidatos. Tu perfil guarda todo lo que ya contestaste para tu próxima postulación.",
       "view_job": "Ver el empleo",
-      "view_applications": "Ver mis solicitudes",
+      "view_applications": "Ver mis postulaciones",
       "find_jobs": "Buscar otros empleos",
-      "already_complete_note": "Tu postulación ya se envió. Contacta al empleador por WhatsApp para cambiarla."
+      "already_complete_note": "Tu postulación ya se envió. Para cambiar algo, respóndele al empleador cuando te escriba por WhatsApp."
     },
     "cert_question": "¿Tienes {name}?",
     "cert_use_vault": "Usar {file} de tu bóveda",
@@ -1221,7 +1286,7 @@
     "legacy_doc_notice": "Esto no se puede subir en línea — el empleador puede pedírtelo en persona.",
     "unknown_doc_notice": "No reconocemos este requisito — pregúntale al empleador qué necesita.",
     "errors": {
-      "required_questions": "Contesta las preguntas obligatorias para seguir (faltan {count}).",
+      "required_questions": "Contesta las preguntas obligatorias para seguir ({count, plural, one {falta #} other {faltan #}}).",
       "required_doc": "{label} es obligatorio para este empleo.",
       "required_cert": "{name} es obligatoria para este empleo.",
       "cert_proof": "Adjunta el comprobante de {name} para seguir.",
@@ -1254,7 +1319,7 @@
       "message_too_long": "Los mensajes pueden tener hasta 2,000 caracteres.",
       "message_invalid": "No pudimos enviar ese mensaje. Revísalo e intenta de nuevo.",
       "message_rate_limited": "{minutes, plural, one {Enviaste varios mensajes en esta hora. Puedes enviar otro en # minuto.} other {Enviaste varios mensajes en esta hora. Puedes enviar otro en # minutos.}}",
-      "not_hired": "Esta solicitud ya no está marcada como contratada, así que no puedes enviar mensajes desde aquí."
+      "not_hired": "Esta postulación ya no está marcada como contratada, así que no puedes enviar mensajes desde aquí."
     }
   },
   "worker_home": {
@@ -1263,25 +1328,26 @@
     "cities_all": "Todas las ciudades",
     "cities_edit": "Editar ciudades",
     "cities_done": "Listo",
-    "other_jobs_header": "Otros trabajos fuera de sus ciudades",
+    "other_jobs_header": "Otros trabajos fuera de tus ciudades",
     "filter": {
       "all": "Todos",
       "full_time": "Tiempo completo",
       "part_time": "Medio tiempo",
       "contract": "Contrato"
     },
-    "openings_count": "{open}/{total} disponibles",
+    "openings_count": "{open} de {total, plural, one {# lugar disponible} other {# lugares disponibles}}",
     "empty": {
       "title": "No hay trabajos publicados ahora",
-      "body": "Los empleadores publican trabajos nuevos cada semana. Vuelva pronto, o mantenga su perfil y sus ciudades al día para que los mejores le lleguen primero."
+      "body": "Los empleadores publican trabajos nuevos cada semana. Vuelve pronto, o mantén tu perfil y tus ciudades al día para que los mejores te lleguen primero.",
+      "cta": "Elige tus ciudades"
     },
     "empty_filtered": {
       "title": "Ningún trabajo coincide con esta búsqueda",
-      "body": "Pruebe con una palabra más corta o con otro tipo de trabajo."
+      "body": "Prueba con una palabra más corta o con otro tipo de trabajo."
     },
-    "no_city_jobs": "Nada en sus ciudades en este momento.",
-    "applications_error": "No pudimos cargar sus solicitudes. Recargue la página para ver los avisos de sus empleadores.",
-    "required_docs_label": "Documentos necesarios",
+    "no_city_jobs": "Nada en tus ciudades en este momento.",
+    "applications_error": "No pudimos cargar tus postulaciones. Recarga la página para ver los avisos de tus empleadores.",
+    "docs_later_label": "El empleador puede pedirlos después",
     "results_count": "{count, plural, one {# empleo encontrado} other {# empleos encontrados}}",
     "job_type": {
       "full-time": "40 hrs/sem",
@@ -1297,11 +1363,13 @@
     "expected_duration": "Duración",
     "shift_schedule": "Horario",
     "openings": "Vacantes",
+    "openings_value": "{open} de {total, plural, one {# lugar disponible} other {# lugares disponibles}}",
     "required_experience": "Experiencia",
     "posted": "Publicado",
     "upload_prompt": "Sube los documentos que faltan en tu perfil.",
     "upload_link": "Ir al perfil",
     "apply": "Postularme",
+    "apply_hint": "Unos 2 min · documentos solo si quieren contratarte",
     "apply_success": "Postulación enviada. El empleador ya puede verla.",
     "already_applied": "Ya te postulaste",
     "errors": {
@@ -1324,8 +1392,10 @@
       "body": "El empleador dejó de aceptar postulaciones para esta publicación. Hay otros trabajos abiertos."
     },
     "page_title": "Detalles del empleo",
-    "doc_ok": "Subido",
+    "doc_ok": "Guardado",
     "doc_missing": "Falta",
+    "doc_later": "Después",
+    "docs_later": "El empleador puede pedirlos después, solo si quiere contratarte. No los necesitas para postularte.",
     "job_type": {
       "full-time": "Tiempo completo",
       "part-time": "Medio tiempo",
@@ -1350,15 +1420,15 @@
     },
     "what_you_need": {
       "title": "Qué necesitas",
-      "to_apply_prompts": "Para postularte: {count} preguntas cortas · unos {minutes} min",
+      "to_apply_prompts": "Para postularte: {count, plural, one {# pregunta corta} other {# preguntas cortas}} · unos {minutes} min",
       "to_apply_one_tap": "Para postularte: un toque — sin preguntas",
       "later_eyebrow": "Si el empleador te quiere contratar, te pedirá:",
-      "fields_row": "{count} datos ({required} obligatorios)",
+      "fields_row": "{count, plural, one {# dato} other {# datos}} ({required, plural, one {# obligatorio} other {# obligatorios}})",
       "after_they_ask": "Cuando lo pidan",
       "in_vault": "En tu bóveda",
       "proof_in_vault": "Comprobante en tu bóveda",
       "proof_needed": "Falta comprobante",
-      "not_yet": "Todavía no",
+      "not_yet": "Después",
       "required": "Obligatorio",
       "optional": "Opcional",
       "vault_note": "Lo que ya está en tu bóveda cuenta solo — no lo subes dos veces.",
@@ -1372,7 +1442,7 @@
     "apply_flow": {
       "back_to_details": "Volver al empleo",
       "title": "Postularte a {job}",
-      "intro_prompts": "{company} hace {count} preguntas rápidas. Contesta con tus propias palabras.",
+      "intro_prompts": "{company} hace {count, plural, one {# pregunta rápida} other {# preguntas rápidas}}. Contesta con tus propias palabras.",
       "intro_one_tap": "Este empleo no tiene preguntas — envía tu postulación con un toque.",
       "placeholder": "Como lo dirías en voz alta.",
       "chars": "{count}/{max}",
@@ -1383,7 +1453,7 @@
       "continue_button": "Seguir con la postulación",
       "progress_saved": "Guardamos lo que llevas.",
       "errors": {
-        "missing_prompt_answers": "Contesta todas las preguntas antes de enviar (faltan {count}).",
+        "missing_prompt_answers": "Contesta todas las preguntas antes de enviar ({count, plural, one {falta #} other {faltan #}}).",
         "invalid_prompt_answers": "No pudimos guardar una de tus respuestas. Revisa el largo e inténtalo de nuevo."
       }
     }
@@ -1411,7 +1481,8 @@
     "transportation": "Transporte",
     "work_authorization": "Autorización de trabajo",
     "yes": "Requerido",
-    "required_docs": "Documentos necesarios para postularte",
+    "docs_later": "El empleador puede pedirlos después",
+    "doc_later": "Después",
     "doc_resume": "Currículum",
     "doc_driver_license": "Licencia de conducir",
     "doc_ssn": "Tarjeta de seguro social / ITIN",
@@ -1429,7 +1500,6 @@
     "referred_banner_worker_anonymous": "Alguien te compartió este trabajo",
     "referred_banner_employer": "Compartido por el empleador",
     "requirements": "Lo que necesitas",
-    "experience_chip": "{years, plural, one {#+ año de experiencia} other {#+ años de experiencia}}",
     "openings_chip": "{count, plural, one {# vacante} other {# vacantes}}",
     "about_job": "Sobre el trabajo",
     "what_you_need": "Lo que necesitas",
@@ -1576,7 +1646,12 @@
   "job_requirements": {
     "picker": {
       "rule_line": "Los elementos Requeridos deben completarse cuando usted solicite los datos. Los Opcionales se pueden omitir. Los que están Desactivados no se piden.",
-      "after_request_note": "Estos se piden solo después de que usted solicite los datos a un postulante.",
+      "part_label": "Parte 2 · Antes de contratar",
+      "title": "Preguntas para postulantes",
+      "note_head": "Estas preguntas son para quienes se postulan, no para usted.",
+      "after_request_note": "Los postulantes las responden solo cuando usted solicita los datos de alguien que quiere contratar. Antes de eso, usted ve su oficio, su experiencia y sus respuestas sobre su trabajo.",
+      "note_lock": "Cuando alguien se postula, ninguna de las dos partes se puede cambiar.",
+      "retired_note": "Ya no se ofrece en empleos nuevos.",
       "count_badge": "{required, plural, one {# requerido} other {# requeridos}} · {optional, plural, one {# opcional} other {# opcionales}}",
       "locked_note": "Los requisitos están bloqueados — este trabajo ya tiene postulantes",
       "sensitive": "Sensible",
@@ -1592,8 +1667,9 @@
       "doc_hint_optional": "Los postulantes pueden adjuntarlo cuando usted solicite los datos — nunca es obligatorio."
     },
     "prompts": {
-      "section_title": "Preguntas de postulación",
-      "section_subtitle": "Se preguntan al postularse. El trabajador contesta con sus propias palabras — no se le pide nada más para postularse.",
+      "part_label": "Parte 1 · Al postularse",
+      "section_title": "Preguntas rápidas",
+      "section_subtitle": "Se preguntan cuando el trabajador se postula y las contesta con sus propias palabras. Le sugerimos 2 o menos.",
       "empty": "Aún no hay preguntas — los trabajadores se postulan con un toque.",
       "add": "Agregar una pregunta",
       "question_number": "Pregunta {number}",
@@ -1728,17 +1804,17 @@
     }
   },
   "job_share": {
-    "title": "Comparta este trabajo",
-    "subtitle": "Ayude a alguien a encontrar trabajo: comparta este empleo.",
+    "title": "Comparte este trabajo",
+    "subtitle": "Ayuda a alguien a encontrar trabajo: comparte este empleo.",
     "whatsapp": "WhatsApp",
     "sms": "Mensaje de texto",
     "facebook": "Facebook",
     "copy_link": "Copiar enlace",
     "copied": "¡Copiado!",
     "more": "Más...",
-    "error_misconfigured": "Compartir no está disponible en este momento. Intente más tarde.",
+    "error_misconfigured": "Compartir no está disponible en este momento. Inténtalo más tarde.",
     "error_not_public": "Este trabajo todavía no tiene página pública, así que no se puede compartir.",
-    "error_generic": "No pudimos compartir en este momento. Intente de nuevo."
+    "error_generic": "No pudimos compartir en este momento. Inténtalo de nuevo."
   },
   "worker_profile": {
     "title": "Mi perfil",
@@ -1753,7 +1829,7 @@
     "field_availability": "Disponibilidad",
     "field_years_experience": "Años de experiencia",
     "field_location": "Ubicación",
-    "field_bio": "Acerca de usted",
+    "field_bio": "Acerca de ti",
     "empty_name": "Nombre sin especificar",
     "empty_skills": "Sin habilidades registradas",
     "empty_certifications": "Sin certificaciones registradas",
@@ -1780,6 +1856,8 @@
       "upload": "Subir",
       "replace": "Reemplazar",
       "delete": "Eliminar",
+      "delete_cancel": "Cancelar",
+      "delete_confirm": "¿Eliminar este documento?",
       "view": "Ver"
     },
     "edit": {
@@ -1796,8 +1874,8 @@
       },
       "years_experience": "Años de experiencia",
       "location": "Ubicación",
-      "preferred_cities_label": "Ciudades donde quiere encontrar trabajo",
-      "bio": "Acerca de usted",
+      "preferred_cities_label": "Ciudades donde quieres encontrar trabajo",
+      "bio": "Acerca de ti",
       "certifications_placeholder": "OSHA 10, montacargas, CDL",
       "save": "Guardar",
       "cancel": "Cancelar"
@@ -1864,6 +1942,11 @@
       "label": "Publicaciones de empleo activas",
       "value": "{used} de {limit} usadas"
     },
+    "company": {
+      "owner_only": "Solo el propietario de su empresa puede cambiar el plan o administrar la facturación.",
+      "suspended_title": "Algunos miembros del equipo están suspendidos",
+      "suspended_body": "{count, plural, one {# capataz está suspendido y no puede} other {# capataces están suspendidos y no pueden}} usar la cuenta de su empresa mientras su plan tenga menos puestos que miembros. Cambie su plan para restablecerlos."
+    },
     "actions": {
       "upgrade": "Mejorar plan",
       "upgrade_loading": "Redirigiendo al pago...",
@@ -1892,11 +1975,11 @@
     },
     "limit_dialog": {
       "title": "Alcanzó el límite de su plan",
-      "body_jobs": "Su plan permite {limit} publicación(es) de empleo activa(s), y tiene {used} activa(s) ahora mismo.",
+      "body_jobs": "Su plan permite {limit, plural, one {# publicación de empleo activa} other {# publicaciones de empleo activas}}, y tiene {used, plural, one {# activa} other {# activas}} ahora mismo.",
       "body_jobs_zero": "Su plan actual no incluye publicaciones de empleo activas. Mejore su plan para publicar este empleo.",
-      "body_templates": "Su plan permite {limit} plantilla(s) guardada(s). Elimine una o mejore su plan para guardar esta.",
+      "body_templates": "Su plan permite {limit, plural, one {# plantilla guardada} other {# plantillas guardadas}}. Elimine una o mejore su plan para guardar esta.",
       "body_templates_zero": "Su plan actual no incluye plantillas guardadas.",
-      "blocking_heading": "Ocupando su(s) espacio(s) activo(s) ahora",
+      "blocking_heading": "{count, plural, one {Ocupando su espacio activo ahora} other {Ocupando sus espacios activos ahora}}",
       "and_more": "y {count} más",
       "hint_jobs": "Pausar o cerrar un empleo activo libera su espacio de inmediato.",
       "hint_templates": "Eliminar una plantilla guardada libera un espacio de inmediato.",
@@ -1904,15 +1987,15 @@
       "cta_pause_job": "Pausar otro empleo",
       "cta_manage_templates": "Administrar plantillas",
       "dismiss": "Ahora no",
-      "body_jobs_preflight": "No puede publicar un trabajo ahora. Su plan permite {limit} trabajo(s) abierto(s) y ya tiene {used}. Pause, cierre o elimine uno para publicar otro, o mejore su plan."
+      "body_jobs_preflight": "No puede publicar un trabajo ahora. Su plan permite {limit, plural, one {# trabajo abierto} other {# trabajos abiertos}} y ya tiene {used}. Pause, cierre o elimine uno para publicar otro, o mejore su plan."
     },
     "limit_reached": {
-      "modal_message": "Ha alcanzado el límite de su plan de {limit} publicación(es) de empleo activa(s). Mejore su plan para publicar más.",
+      "modal_message": "Ha alcanzado el límite de su plan de {limit, plural, one {# publicación de empleo activa} other {# publicaciones de empleo activas}}. Mejore su plan para publicar más.",
       "cta": "Mejorar plan"
     },
     "signage": {
       "free_title": "Está en el plan Gratis",
-      "free_body": "El plan Gratis incluye {jobLimit} publicación(es) de empleo activa(s) y {templateLimit} plantilla(s). Mejore su plan para publicar más a la vez.",
+      "free_body": "El plan Gratis incluye {jobLimit, plural, one {# publicación de empleo activa} other {# publicaciones de empleo activas}} y {templateLimit, plural, one {# plantilla} other {# plantillas}}. Mejore su plan para publicar más a la vez.",
       "free_cta": "Mejorar plan",
       "lapsed_title": "Su suscripción no está activa",
       "lapsed_body": "Estado de la suscripción: {status}. Vuelva a suscribirse para recuperar los límites del plan Pro.",
@@ -1922,7 +2005,7 @@
     }
   },
   "app_shell": {
-    "applications_attention_badge": "{count, plural, one {# solicitud necesita tu atención} other {# solicitudes necesitan tu atención}}",
+    "applications_attention_badge": "{count, plural, one {# postulación necesita tu atención} other {# postulaciones necesitan tu atención}}",
     "worker_workspace": "Espacio del trabajador",
     "worker_role": "Trabajador",
     "employer_role": "Empleador",
@@ -2015,9 +2098,10 @@
     },
     "terms": {
       "title": "Antes de empezar",
-      "subtitle": "Una lectura rápida. Tus respuestas se comparten solo con los empleadores a los que apliques.",
+      "subtitle": "Una lectura rápida. Tus respuestas se comparten solo con los empleadores a los que te postules.",
+      "time": "Unos 2 minutos",
       "info_title": "Cómo usa Jale tu información",
-      "info_body": "Tu nombre, oficio, ubicación y respuestas se muestran a los empleadores solo cuando aplicas a su trabajo. Nunca vendemos tus datos.",
+      "info_body": "Tu nombre, oficio, ubicación y respuestas se muestran a los empleadores solo cuando te postulas a su trabajo. Nunca vendemos tus datos.",
       "messages_title": "Mensajes",
       "messages_body": "Al continuar aceptas recibir mensajes de trabajo por SMS y WhatsApp. Responde STOP en cualquier momento.",
       "terms_title": "Términos de servicio",
@@ -2026,7 +2110,7 @@
     },
     "about": {
       "title": "Sobre ti",
-      "subtitle": "Los empleadores lo ven en tus aplicaciones.",
+      "subtitle": "Los empleadores lo ven en tus postulaciones.",
       "first_name": "Nombre",
       "last_name": "Apellido",
       "location": "Dónde vives",
@@ -2057,10 +2141,12 @@
     "question": {
       "eyebrow": "Pregunta {number} de 3",
       "intro": "Con tus propias palabras. Escribe o toca el micrófono.",
-      "placeholder": "Escribe tu respuesta aquí…",
+      "lock_note": "Puedes regresar y cambiar tus respuestas hasta terminar la pregunta 3. Después se bloquean.",
+      "placeholder": "Ejemplo: Colé y acabé una entrada de 40 pies. Armé las cimbras e hice un acabado escobillado.",
       "must": "Los empleadores leen estas tres respuestas para decidir a quién contratar — son obligatorias.",
       "too_short": "Un poco más, por favor — al menos {count} caracteres.",
       "chars": "{count} caracteres",
+      "counter_min": "{count} / {min} mínimo",
       "mic_label": "Grabar una nota de voz",
       "voice_note": "De tu nota de voz — corrige si algo está mal.",
       "cta": "Siguiente",
@@ -2085,13 +2171,6 @@
         "unsupported": "Este navegador no puede grabar. Escribe tu respuesta.",
         "uploading": "Enviando tu grabación…"
       }
-    },
-    "photo": {
-      "title": "¿Agregar una foto?",
-      "subtitle": "Opcional. Los trabajadores con foto reciben más respuestas.",
-      "add": "Elegir foto",
-      "finish": "Terminar",
-      "skip": "Por ahora no"
     },
     "referred_job": {
       "strip": "Postulándote a: <b>{title}</b> · {company}",
@@ -2219,7 +2298,7 @@
     "categories": {
       "sign_in": "No puedo entrar / no me llegó el código",
       "finding_jobs": "Buscar trabajos",
-      "applying": "Aplicar a un trabajo",
+      "applying": "Postularse a un trabajo",
       "uploads": "Subir documentos o fotos",
       "profile": "Mi perfil",
       "whatsapp": "Mensajes de WhatsApp",
@@ -2341,6 +2420,338 @@
       "image_failed": "La imagen no se envió. Su reporte ya está guardado.",
       "image_failed_final": "La imagen no se envió y no se puede volver a enviar. Su reporte ya está guardado.",
       "image_paused": "Las imágenes están en pausa por ahora, así que solo se envió su reporte."
+    }
+  },
+  "tutorial": {
+    "common": {
+      "back": "Atrás",
+      "next": "Siguiente",
+      "skip": "Omitir",
+      "got_it": "Entendido",
+      "counter": "{current} de {total}",
+      "close": "Cerrar",
+      "help": "Ayuda",
+      "help_title": "Cómo funciona Jale"
+    },
+    "worker_onboarding": {
+      "title": "Antes de empezar",
+      "cta_last": "Empecemos",
+      "slides": {
+        "minutes": {
+          "title": "Unos 2 minutos",
+          "body": "7 pasos cortos: los términos, sobre ti, tu oficio, tu trabajo y tres preguntas."
+        },
+        "questions": {
+          "title": "Tres preguntas que leen los empleadores",
+          "body": "Responde con tus propias palabras, escribiendo o con tu voz. Cada respuesta necesita al menos 15 caracteres; más detalle te ayuda a destacar."
+        },
+        "lock": {
+          "title": "Puedes regresar hasta la pregunta 3",
+          "body": "Puedes regresar y cambiar cualquier respuesta. Cuando terminas la pregunta 3, tus respuestas se bloquean y los empleadores pueden leerlas."
+        },
+        "jobs": {
+          "title": "Luego busca empleos cerca de ti",
+          "body": "Al terminar, ves empleos de tu oficio y puedes postularte con un toque."
+        }
+      },
+      "scene": {
+        "two_min": "Unos 2 minutos",
+        "st1": "Términos",
+        "st2": "Sobre ti",
+        "st3": "Tu oficio",
+        "st4": "Tu trabajo",
+        "st5": "3 preguntas",
+        "trade_eyebrow": "Concreto",
+        "question": "Cuéntanos de un trabajo que terminaste hace poco.",
+        "answer": "Colé y acabé una entrada de 40 pies…",
+        "cnt0": "0 / 15 mínimo",
+        "cnt1": "48 caracteres ✓",
+        "q1": "P1",
+        "q2": "P2",
+        "q3": "P3",
+        "can_back": "Puedes regresar antes de terminar",
+        "locked": "Después de la P3 tus respuestas se bloquean",
+        "job1": "Acabador de concreto",
+        "job1_meta": "El Paso, TX · $22/h",
+        "job2": "Ayudante de concreto",
+        "job2_meta": "Socorro, TX · $20/h",
+        "apply": "Postularme"
+      }
+    },
+    "worker_apply": {
+      "title": "Cómo postularte",
+      "slides": {
+        "apply": {
+          "title": "Postularte toma un minuto",
+          "body": "Toca Postularme y responde las preguntas rápidas del empleador, si tiene alguna."
+        },
+        "documents": {
+          "title": "Los documentos van después",
+          "body": "No necesitas subir nada para postularte. El empleador pide documentos solo si quiere contratarte."
+        },
+        "next": {
+          "title": "Qué sigue",
+          "body": "Tu postulación dice Aplicado mientras el empleador la revisa. Verás cuando te escriba o te pida tus datos."
+        },
+        "whatsapp": {
+          "title": "Las respuestas llegan por WhatsApp",
+          "body": "Cuando un empleador te escribe, el mensaje llega por WhatsApp. Respóndele ahí."
+        }
+      },
+      "scene": {
+        "apply": "Postularme",
+        "prompt": "¿Tienes tus propias herramientas?",
+        "yes": "Sí",
+        "no": "No",
+        "applied": "Postulación enviada",
+        "docs_head": "Documentos",
+        "doc1": "Licencia de manejo",
+        "doc2": "Permiso de trabajo",
+        "later": "Después",
+        "docs_note": "Solo si el empleador quiere contratarte.",
+        "st_applied": "Aplicado",
+        "h_applied": "Esperando al empleador",
+        "st_talking": "En conversación",
+        "h_talking": "El empleador te escribió",
+        "st_details": "Faltan tus datos",
+        "h_details": "Quieren contratarte",
+        "whatsapp": "WhatsApp · Jale",
+        "emp_msg": "Hola, ¿puedes empezar el lunes a las 7 a. m.?",
+        "my_reply": "Sí, ahí estaré"
+      }
+    },
+    "worker_details": {
+      "title": "Te pidieron tus datos",
+      "cta_last": "Empezar",
+      "slides": {
+        "request": {
+          "title": "Un empleador quiere contratarte",
+          "body": "Te pide unas preguntas y algunos documentos. Toma unos 5 minutos, en tres pasos cortos."
+        },
+        "saved": {
+          "title": "Tus documentos guardados se agregan solos",
+          "body": "Los archivos que guardaste antes se adjuntan automáticamente. Puedes cambiar cualquiera."
+        },
+        "send": {
+          "title": "Revisa y envía",
+          "body": "Revisa tus respuestas y envíalas. El empleador las ve al momento."
+        }
+      },
+      "scene": {
+        "company": "Concretos de Ejemplo",
+        "five_min": "Unos 5 min",
+        "step1": "Preguntas",
+        "step2": "Documentos",
+        "step3": "Revisión",
+        "slot_name": "Licencia de manejo",
+        "from_vault": "Agregado de tus documentos guardados",
+        "replace": "Cambiar",
+        "r1": "Fecha disponible",
+        "r2": "Contacto de emergencia",
+        "r3": "Licencia de manejo",
+        "send": "Enviar al empleador"
+      }
+    },
+    "worker_profile": {
+      "title": "Tu perfil",
+      "slides": {
+        "seen": {
+          "title": "Esto es lo que ven los empleadores",
+          "body": "Tu oficio, tu experiencia, tu disponibilidad y las respuestas que diste con tus propias palabras."
+        },
+        "documents": {
+          "title": "Agrega tus documentos una vez",
+          "body": "Guarda aquí tu licencia, tu permiso de trabajo o tus certificaciones. Se usan de nuevo en cada postulación, así nunca los subes dos veces."
+        },
+        "edit": {
+          "title": "Mantenlo al día",
+          "body": "Toca Editar cuando quieras para cambiar tus habilidades, tu disponibilidad o tus ciudades."
+        }
+      },
+      "scene": {
+        "sample_name": "Trabajador de ejemplo",
+        "sample_city": "El Paso, TX",
+        "trade": "Concreto",
+        "years": "6 años",
+        "avail": "Tiempo completo",
+        "quote": "“Hago acabado de losas y entradas, y armo mis propias cimbras.”",
+        "docs_head": "Documentos",
+        "license": "Licencia de manejo",
+        "upload": "Subir",
+        "replace": "Cambiar",
+        "reused": "Una foto de la tarjeta sirve. Se usa de nuevo en cada postulación.",
+        "skills": "Habilidades",
+        "edit": "Editar",
+        "sk1": "Losas",
+        "sk2": "Cimbrado",
+        "sk3": "Concreto estampado",
+        "saved": "Guardado"
+      }
+    },
+    "employer_welcome": {
+      "title": "Cómo funciona Jale",
+      "slides": {
+        "post": {
+          "title": "Publique un empleo en 3 pasos",
+          "body": "Agregue el título, el oficio, la ciudad y cuántos trabajadores necesita. Todo lo demás es opcional."
+        },
+        "share": {
+          "title": "Comparta el enlace de su empleo",
+          "body": "Active el enlace para compartir y envíelo a sus encargados, o imprima el código QR."
+        },
+        "apply": {
+          "title": "Los trabajadores se postulan por WhatsApp o en la web",
+          "body": "Cada persona que se postula aparece en Postulantes, con lo que nos contó de su trabajo."
+        },
+        "review": {
+          "title": "Revise y escriba",
+          "body": "Abra un postulante para ver su oficio, su experiencia y su puntaje de confianza. Sus mensajes le llegan por WhatsApp."
+        },
+        "hire": {
+          "title": "Solicite datos y luego contrate",
+          "body": "Cuando quiera contratar a alguien, solicite sus datos. Cuando estén completos, márquelo como contratado."
+        }
+      },
+      "scenes": {
+        "f_title": "Título del empleo",
+        "f_title_value": "Acabador de concreto",
+        "f_trade": "Oficio",
+        "f_trade_value": "Concreto",
+        "f_city": "Ciudad",
+        "f_next": "Siguiente",
+        "copy": "Copiar",
+        "copied": "Enlace copiado",
+        "crew": "Envíelo a sus encargados",
+        "wa_bubble": "Hola, quiero postularme",
+        "web": "Web",
+        "apply": "Postularme",
+        "applicants": "Postulantes",
+        "trade1": "Acabador · 6 años",
+        "trade2": "Ayudante · 2 años",
+        "trade3": "Acabador · 4 años",
+        "sample_name": "Trabajador de ejemplo",
+        "sample_meta": "Concreto · 6 años",
+        "trust": "Confianza",
+        "msg": "¿Puede empezar el lunes a las 7?",
+        "sent_wa": "Entregado por WhatsApp",
+        "st1": "Solicitar datos",
+        "st2": "Datos completos",
+        "st3": "Contratado",
+        "plan_line": "{limit, plural, =0 {Su plan no incluye empleos activos} one {Su plan: hasta # empleo activo} other {Su plan: hasta # empleos activos}}"
+      }
+    },
+    "employer_post_job": {
+      "title": "Publicar un empleo",
+      "slides": {
+        "steps": {
+          "title": "Tres pasos cortos",
+          "body": "Lo básico, pago y horario, y luego preguntas para los postulantes. Solo 4 datos son obligatorios: título, oficio, ciudad y número de trabajadores."
+        },
+        "city": {
+          "title": "Elija la ciudad de la lista",
+          "body": "Empiece a escribir y toque una opción. Una ciudad escrita que no se elige de la lista no cuenta."
+        },
+        "shifts": {
+          "title": "Elija los turnos",
+          "body": "Elija Día, Tarde, Noche o Madrugada, todos los que apliquen. Las horas exactas son opcionales; puede acordarlas con el trabajador."
+        },
+        "questions": {
+          "title": "Las preguntas tienen dos partes",
+          "body": "Unas preguntas rápidas al postularse y el resto solo cuando usted solicita sus datos. Cuando alguien se postula, ninguna de las dos partes se puede cambiar."
+        }
+      },
+      "scenes": {
+        "step1": "Lo básico",
+        "step2": "Pago y horario",
+        "step3": "Preguntas",
+        "required": "Solo esto es obligatorio",
+        "r1": "Título",
+        "r2": "Oficio",
+        "r3": "Ciudad",
+        "r4": "Trabajadores",
+        "shifts": "Turnos",
+        "day": "Día",
+        "evening": "Tarde",
+        "night": "Noche",
+        "overnight": "Madrugada",
+        "times_optional": "Hora de entrada y salida: opcional",
+        "questions": "Preguntas para postulantes",
+        "q1": "Permiso de trabajo",
+        "q2": "Historial laboral",
+        "q3": "Referencias",
+        "required_tag": "Obligatoria",
+        "optional_tag": "Opcional",
+        "off_tag": "No",
+        "lock_note": "Se bloquean cuando alguien se postula"
+      }
+    },
+    "employer_applicants": {
+      "title": "Sus postulantes",
+      "slides": {
+        "first_look": {
+          "title": "Lo que ve primero",
+          "body": "Cada postulante muestra su oficio, su experiencia y un puntaje de confianza. El puntaje viene de sus respuestas a preguntas sobre su trabajo."
+        },
+        "statuses": {
+          "title": "Los estados son para usted",
+          "body": "Nuevo, Contactado y En conversación le ayudan a llevar el control. Solo usted los ve; cambiarlos no le envía mensaje al trabajador."
+        },
+        "request": {
+          "title": "Solicite datos para contratar",
+          "body": "Solicitar datos le envía al trabajador un mensaje de WhatsApp con las preguntas y documentos que usted eligió. Contratado se habilita cuando estén completos."
+        },
+        "hired": {
+          "title": "Contratado y luego los datos de inicio",
+          "body": "Márquelo como contratado y agregue el día, la hora y el lugar de inicio, para que sepa a dónde presentarse."
+        }
+      },
+      "scenes": {
+        "sample_name": "Trabajador de ejemplo",
+        "sample_meta": "Concreto · 6 años · Tiene transporte",
+        "trust": "Confianza",
+        "own_words": "En sus propias palabras",
+        "quote": "“Hago acabado de losas y entradas, escobillado y liso, y armo mis propias cimbras.”",
+        "st_new": "Nuevo",
+        "st_contacted": "Contactado",
+        "st_talking": "En conversación",
+        "only_you": "Solo usted ve este estado. No se le envía mensaje al trabajador.",
+        "request": "Solicitar datos",
+        "wa_msg": "El empleador quiere contratarte. Por favor completa tus datos.",
+        "complete": "Datos completos",
+        "hired": "Contratado",
+        "start_head": "Datos de inicio",
+        "when": "Inicio",
+        "when_value": "Lun 7:00 a. m.",
+        "where": "Lugar",
+        "where_value": "Dirección de la obra",
+        "sent_wa": "Enviado al trabajador por WhatsApp"
+      }
+    },
+    "employer_messages": {
+      "title": "Mensajes",
+      "slides": {
+        "whatsapp": {
+          "title": "Los mensajes viajan por WhatsApp",
+          "body": "Usted escribe aquí. El trabajador lee y responde por WhatsApp, y sus respuestas aparecen en esta conversación."
+        },
+        "invitation": {
+          "title": "Su primer mensaje es una invitación",
+          "body": "WhatsApp solo permite que una empresa inicie un chat con una invitación aprobada. El trabajador toca Responder y el chat se abre."
+        },
+        "reply_window": {
+          "title": "Después puede escribir libremente",
+          "body": "Cuando el trabajador responde, usted puede contestar libremente. WhatsApp mantiene esa ventana abierta 24 horas después de su último mensaje."
+        }
+      },
+      "scenes": {
+        "m1": "Hola, ¿está libre el lunes?",
+        "m2": "Sí, puedo empezar el lunes",
+        "m3": "Perfecto, lo veo a las 7",
+        "invite_chip": "Invitación enviada",
+        "invite": "Un empleador en Jale quiere hablar contigo sobre un empleo de Acabador de concreto.",
+        "reply": "Responder",
+        "window_chip": "Ventana de respuesta abierta"
+      }
     }
   }
 }

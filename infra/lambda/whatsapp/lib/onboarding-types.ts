@@ -139,6 +139,8 @@ export type ReleaseRenderRequest =
         payMin?: number | null;
         payMax?: number | null;
         payInterval?: string | null;
+        /** Shift choices (131): `jobs.shift_periods` off the live job row. */
+        shiftPeriods?: string[] | null;
       };
     }
   | {
@@ -156,6 +158,8 @@ export type ReleaseRenderRequest =
         payMin?: number | null;
         payMax?: number | null;
         payInterval?: string | null;
+        /** Shift choices (131): `jobs.shift_periods` off the live job row. */
+        shiftPeriods?: string[] | null;
       }>;
     }
   | {

@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useReducer, useRef, useState } from 'react';
+import { useEffect, useEffectEvent, useReducer, useRef, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { usePathname, useRouter } from '@/i18n/navigation';
 import { classifyError, errorMessageKey } from '@/lib/api/errors';
@@ -25,6 +25,7 @@ import {
 } from '@/lib/onboarding-flow';
 import { clearPendingReferral, readPendingReferral, validateJobId } from '@/lib/referral-return';
 import { tradeLabel } from '@/lib/worker-vocab';
+import { useTutorial } from '@/lib/tutorials/use-tutorial';
 import { Button } from '@/components/ui/button';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { OnboardingShell, type LanguageChoice } from './OnboardingHeader';
@@ -35,7 +36,6 @@ import { TradeStep } from './TradeStep';
 import { WorkStep } from './WorkStep';
 import { transcribeVoiceAnswer } from '@/lib/onboarding-voice';
 import { TrustQuestionStep } from './TrustQuestionStep';
-import { PhotoStep } from './PhotoStep';
 import { DoneStep, type DoneAction, type DoneNext } from './DoneStep';
 import { ReferredJobStrip } from './ReferredJobStrip';
 
@@ -55,9 +55,9 @@ import { ReferredJobStrip } from './ReferredJobStrip';
  *     fighting for the run.
  *
  * WHERE THE RUN ENDS. The engine completes on the THIRD trust answer -- that
- * response already says `lifecycle: 'ready'`. The photo prompt after it is
- * client-side only (there is no photo step to post), so the flow shows it once
- * out of `photoPending` and then moves to the summary.
+ * response already says `lifecycle: 'ready'`, so the next screen is the
+ * summary. There is no photo screen on the web until a photo can actually be
+ * uploaded here.
  *
  * WHEN THE RUN IS SOMEWHERE THIS DOOR CANNOT GO. `run.stepKey` can name a
  * step this flow has no screen for -- the two retired photo steps that older
@@ -126,9 +126,25 @@ export function OnboardingFlow({
     // is checked first below and nothing ever clears it, so suspended runs
     // keep their own message.
     const stuck = flow.server.lifecycle !== 'ready'
-        && !flow.photoPending
         && !isAnswerableStepKey(flow.server.run.stepKey);
     const extractionStatus = flow.server.extraction?.status ?? 'pending';
+
+    /*
+     * W1, the onboarding tutorial (K1.5: done once the run is `ready`). It is
+     * asked for ONCE per page view, and only on the first screen -- a worker
+     * resuming later in the run, or stopped on an exit panel, is past the
+     * point it explains. Whether it opens is the tutorial's decision (a
+     * record, this signal, another overlay), not this flow's.
+     */
+    const tutorial = useTutorial('worker_onboarding', { done: flow.server.lifecycle === 'ready' });
+    const tutorialAskedRef = useRef(false);
+    const askTutorial = useEffectEvent(() => tutorial.maybeAutoOpen());
+    useEffect(() => {
+        if (tutorialAskedRef.current) return;
+        if (screen !== 'terms' || flow.blocked || stuck) return;
+        tutorialAskedRef.current = true;
+        askTutorial();
+    }, [screen, flow.blocked, stuck]);
 
     // The draft is parked under the run AND the step it belongs to: a worker
     // who toggles language on `profile.location` and is then moved forward by
@@ -272,12 +288,8 @@ export function OnboardingFlow({
                 return;
             }
 
-            // The third answer completes the run. Offer the (client-only)
-            // photo prompt once before the summary.
-            if (screen === 'q3' && result.state.lifecycle === 'ready') {
-                dispatch({ type: 'finished', server: result.state });
-                return;
-            }
+            // The third answer completes the run, and its response already
+            // says so: hydrating from it lands on the summary.
             dispatch({ type: 'hydrate', server: result.state });
         } catch (err) {
             dispatch({ type: 'save_failed', errorKind: classifyError(err).kind });
@@ -355,9 +367,9 @@ export function OnboardingFlow({
         </Button>
     ) : null;
     // Back walks the ENGINE, so it is only offered where the engine can walk:
-    // not on the first screen, and not once the run has completed (the photo
-    // prompt and the summary both sit after that point).
-    const backHandler = screen === 'terms' || screen === 'photo' || screen === 'done' ? null : goBack;
+    // not on the first screen, and not once the run has completed (the
+    // summary sits after that point).
+    const backHandler = screen === 'terms' || screen === 'done' ? null : goBack;
 
     return (
         <OnboardingShell
@@ -478,8 +490,6 @@ export function OnboardingFlow({
                     />
                 );
             }
-            case 'photo':
-                return <PhotoStep onSkip={() => dispatch({ type: 'photo_skipped' })} />;
             case 'done':
                 return (
                     <DoneStep

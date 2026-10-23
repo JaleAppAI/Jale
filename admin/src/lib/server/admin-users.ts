@@ -229,6 +229,16 @@ export async function loadAdmins(session: AdminSession): Promise<AdminsPageResul
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const ACTIONS = new Set<string>(Object.keys(SURFACES));
 
+/**
+ * The audit surface of the Admins page action a body names, or undefined when
+ * it names none. The route records an attempt on it when the body cannot be
+ * checked, before any action runs.
+ */
+export function adminUserActionSurface(input: unknown): AdminSurface | undefined {
+  const kind = input && typeof input === 'object' ? (input as Record<string, unknown>).action : undefined;
+  return typeof kind === 'string' && ACTIONS.has(kind) ? SURFACES[kind as AdminUserAction['action']] : undefined;
+}
+
 function isRole(value: unknown): value is AdminRole {
   return typeof value === 'string' && (ADMIN_ROLES as readonly string[]).includes(value);
 }

@@ -7,7 +7,12 @@ import { DatabaseStack } from '../../../lib/stacks/database-stack';
 import { AuthStack } from '../../../lib/stacks/auth-stack';
 import { AiStack } from '../../../lib/stacks/ai-stack';
 import { ApiStack } from '../../../lib/stacks/api-stack';
-import { PUBLIC_REPORTS_LOGIN, ReportsStack, publicIntakeReservedConcurrency } from '../../../lib/stacks/reports-stack';
+import {
+  PUBLIC_REPORTS_LOGIN,
+  REPORT_CAPTURE_SUCCESS_SHARE_THRESHOLD,
+  ReportsStack,
+  publicIntakeReservedConcurrency,
+} from '../../../lib/stacks/reports-stack';
 import { dbLoginSecretName } from '../../../lib/constructs/db-login-secrets';
 import { loadManifest, type AccessManifest } from '../../../db/access/access-manifest';
 
@@ -573,12 +578,22 @@ describe('ReportsStack', () => {
       }));
     });
 
-    it('computes the capture success share as metric math, report-only with no action', () => {
+    it('computes the capture success share as metric math and notifies the ops topic below its threshold', () => {
       const props = alarm('ReportCaptureSuccessShare');
-      expect(props.AlarmActions).toBeUndefined();
+      expect(props).toEqual(expect.objectContaining({
+        Threshold: REPORT_CAPTURE_SUCCESS_SHARE_THRESHOLD,
+        EvaluationPeriods: 1,
+        ComparisonOperator: 'LessThanThreshold',
+        // A day with no capture has no share: it is not a breach.
+        TreatMissingData: 'notBreaching',
+        ...notify,
+      }));
       expect(props.OKActions).toBeUndefined();
-      expect(props.ComparisonOperator).toBe('LessThanThreshold');
-      expect(props.TreatMissingData).toBe('notBreaching');
+      // A percentage, named once in the stack.
+      expect(REPORT_CAPTURE_SUCCESS_SHARE_THRESHOLD).toBeGreaterThan(0);
+      expect(REPORT_CAPTURE_SUCCESS_SHARE_THRESHOLD).toBeLessThan(100);
+      expect(props.AlarmDescription).toContain(`under ${REPORT_CAPTURE_SUCCESS_SHARE_THRESHOLD}%`);
+      expect(props.AlarmDescription).not.toMatch(/report-only|provisional/i);
       const queries: Json[] = props.Metrics;
       const outcomes = queries
         .filter((q) => q.MetricStat)
@@ -596,11 +611,10 @@ describe('ReportsStack', () => {
       expect(expression[0].ReturnData).not.toBe(false);
     });
 
-    it('sends every alarm but the report-only one to the ops topic', () => {
+    it('sends every alarm to the ops topic', () => {
       const alarms = Object.values(resources).filter((r) => r.Type === 'AWS::CloudWatch::Alarm');
       expect(alarms).toHaveLength(7);
       for (const a of alarms) {
-        if (a.Properties.AlarmName === 'ReportCaptureSuccessShare') continue;
         expect(a.Properties.AlarmActions).toEqual([ALARM_TOPIC_ARN]);
       }
     });

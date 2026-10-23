@@ -22,9 +22,10 @@
 #   bash scripts/run-migrations.sh --list-holds
 #   bash scripts/run-migrations.sh --release-hold STREAM SEQ [--yes]
 #   bash scripts/run-migrations.sh --redact-and-release SEQ [--yes]
+#   bash scripts/run-migrations.sh --report FILE
 #
 #   Every form also takes --without-command-log (see "Command output" below),
-#   and the last four --accept-posture-change.
+#   and the last five --accept-posture-change.
 #
 #   --dry-run         Resolve state and print the plan; change nothing. With
 #                     --prepare-logins: check every login, change nothing.
@@ -115,6 +116,19 @@
 #   --redact-and-release SEQ
 #                     Replace a held event's reason with '[redacted]' and
 #                     release it (jale_audit.redact_and_release). Events only.
+#   --report FILE     Run the queries in FILE as the master login and print
+#                     their results: a read-only report. FILE is checked here
+#                     before anything is sent. It holds SELECT, WITH, VALUES
+#                     and TABLE statements only, each ending with a
+#                     semicolon, and comments only on lines of their own that
+#                     start with --. Anything else is refused: a backslash
+#                     (psql commands), INSERT, UPDATE, DELETE, MERGE or INTO
+#                     anywhere, any other statement, any other comment. The
+#                     comment lines are not sent. The queries run in one
+#                     read-only transaction, in a session whose default is
+#                     read-only, and the transaction is rolled back. The
+#                     output is their results, never the queries. Changes
+#                     nothing.
 #   --without-command-log
 #                     Send this run's commands even though the ops-command log
 #                     group does not exist yet, so their output is not
@@ -252,6 +266,8 @@ RELEASE_HOLD=false
 REDACT_AND_RELEASE=false
 HOLD_STREAM=""
 HOLD_SEQ=""
+REPORT=false
+REPORT_FILE=""
 
 usage_error() { echo "!! $*" >&2; exit 2; }
 
@@ -285,6 +301,10 @@ while [[ $# -gt 0 ]]; do
     --redact-and-release)
       [[ $# -ge 2 ]] || usage_error "--redact-and-release needs a seq"
       REDACT_AND_RELEASE=true; HOLD_STREAM="events"; HOLD_SEQ="$2"; shift ;;
+    --report)
+      [[ $# -ge 2 ]] || usage_error "--report needs a SQL file"
+      if $REPORT; then usage_error "--report may be given once"; fi
+      REPORT=true; REPORT_FILE="$2"; shift ;;
     --yes|-y)         ASSUME_YES=true ;;
     # The usage block is the header up to the first "# ---" rule line.
     -h|--help)        awk 'NR > 1 && /^# ---/ { exit } NR > 1 { print }' "$0"; exit 0 ;;
@@ -392,17 +412,18 @@ elif [[ -n "$PREPARE_ONLY" ]]; then
   usage_error "--only needs --prepare-logins"
 fi
 
-# The engine audit modes and the audit operations are runs of their own: no
-# migration, no credential, and one of them at a time.
+# The engine audit modes and the audit operations (the read-only report among
+# them) are runs of their own: no migration, no credential, and one of them at
+# a time.
 AUDIT_OPERATION=false
-if $AUDIT_STATUS || $LIST_HOLDS || $RELEASE_HOLD || $REDACT_AND_RELEASE; then AUDIT_OPERATION=true; fi
+if $AUDIT_STATUS || $LIST_HOLDS || $RELEASE_HOLD || $REDACT_AND_RELEASE || $REPORT; then AUDIT_OPERATION=true; fi
 n_modes=0
 for mode in "$PREPARE_LOGINS" "$ENABLE_PGAUDIT" "$DISABLE_MASTER_AUDIT" \
-            "$AUDIT_STATUS" "$LIST_HOLDS" "$RELEASE_HOLD" "$REDACT_AND_RELEASE"; do
+            "$AUDIT_STATUS" "$LIST_HOLDS" "$RELEASE_HOLD" "$REDACT_AND_RELEASE" "$REPORT"; do
   if $mode; then n_modes=$((n_modes + 1)); fi
 done
 (( n_modes <= 1 )) \
-  || usage_error "--prepare-logins, --enable-pgaudit, --disable-master-audit, --audit-status, --list-holds, --release-hold and --redact-and-release are separate runs; give one of them"
+  || usage_error "--prepare-logins, --enable-pgaudit, --disable-master-audit, --audit-status, --list-holds, --release-hold, --redact-and-release and --report are separate runs; give one of them"
 if $ENABLE_PGAUDIT || $DISABLE_MASTER_AUDIT || $AUDIT_OPERATION; then
   if $ROTATE_SECRETS || [[ -n "$BASELINE_THROUGH" ]] || $FORCE_REPLAY || $SKIP_SECRETS; then
     usage_error "the engine audit and audit operation runs apply no migrations and change no password, so --rotate-secrets, --baseline-through, --force-replay and --skip-secrets do not apply to them"
@@ -415,7 +436,7 @@ if $AUDIT_SINCE_GIVEN && ! $AUDIT_STATUS; then
   usage_error "--since needs --audit-status"
 fi
 if $AUDIT_OPERATION && $DRY_RUN; then
-  usage_error "--dry-run does not apply to --audit-status, --list-holds, --release-hold or --redact-and-release: the first two change nothing, and --list-holds shows what the other two would act on"
+  usage_error "--dry-run does not apply to --audit-status, --list-holds, --report, --release-hold or --redact-and-release: the first three change nothing, and --list-holds shows what the other two would act on"
 fi
 
 # The audit operations' inputs, checked here: they reach the database only as
@@ -437,6 +458,69 @@ if $RELEASE_HOLD; then
 fi
 if $RELEASE_HOLD || $REDACT_AND_RELEASE; then
   is_hold_seq "$HOLD_SEQ" || usage_error "the seq must be a whole number from 1 to 9223372036854775807"
+fi
+
+# The read-only report's file, checked here, before anything is sent, and
+# refused unless it plainly only reads: SELECT, WITH, VALUES and TABLE
+# statements, each ending with a semicolon, with comments only on lines of
+# their own that start with --. Those lines are left empty, so line numbers
+# hold; a comment anywhere else is refused, so no comment can carry part of a
+# statement past this check. Statements are split at every semicolon, those
+# inside quotes included, so each statement psql would send starts one of the
+# pieces checked. A refusal names the rule and the line, never the text. Sets
+# REPORT_SQL to what is sent: exactly the text checked here.
+REPORT_SQL=""
+check_report_file() {
+  local LC_ALL=C file="$1" line upper text="" rest piece lead nl word
+  local n=0 at=1 start_line statements=0
+  local anywhere='[^A-Z0-9_](INSERT|UPDATE|DELETE|MERGE|INTO)[^A-Z0-9_]'
+  local first_word='^[[:space:](]*([A-Za-z_]+)'
+  [[ -f "$file" && -r "$file" ]] || usage_error "--report: the file does not exist or cannot be read"
+  [[ -s "$file" ]] || usage_error "--report: the file is empty"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    n=$((n + 1))
+    if [[ "$line" =~ ^[[:space:]]*-- ]]; then text+=$'\n'; continue; fi
+    if [[ "$line" == *\\* ]]; then
+      usage_error "--report: line $n holds a backslash; psql commands are refused"
+    fi
+    if [[ "$line" == *--* || "$line" == */\** || "$line" == *\*/* ]]; then
+      usage_error "--report: line $n holds a comment that is not on a line of its own; start each comment line with --"
+    fi
+    upper=" ${line^^} "
+    if [[ "$upper" =~ $anywhere ]]; then
+      usage_error "--report: line $n holds ${BASH_REMATCH[1]}; a report only reads, so INSERT, UPDATE, DELETE, MERGE and INTO are refused anywhere, a WITH query included"
+    fi
+    text+="$line"$'\n'
+  done < "$file"
+  rest="$text"
+  while [[ "$rest" == *';'* ]]; do
+    piece="${rest%%;*}"
+    rest="${rest#*;}"
+    if [[ ! "$piece" =~ ^[[:space:]]*$ ]]; then
+      lead="${piece%%[![:space:](]*}"
+      nl="${lead//[!$'\n']/}"
+      start_line=$((at + ${#nl}))
+      word=""
+      if [[ "$piece" =~ $first_word ]]; then word="${BASH_REMATCH[1]^^}"; fi
+      case "$word" in
+        SELECT|WITH|VALUES|TABLE) statements=$((statements + 1)) ;;
+        BEGIN|START|COMMIT|END|ROLLBACK|ABORT|SAVEPOINT|RELEASE|PREPARE|SET|RESET|DISCARD|LOCK|COPY|DO|CALL|VACUUM|ANALYZE|CHECKPOINT|LISTEN|NOTIFY)
+          usage_error "--report: the statement on line $start_line starts with $word; transaction control and session statements are refused (the report runs in a read-only transaction of its own)" ;;
+        INSERT|UPDATE|DELETE|MERGE|TRUNCATE|CREATE|ALTER|DROP|GRANT|REVOKE|COMMENT|SECURITY|REFRESH|REINDEX|CLUSTER|IMPORT)
+          usage_error "--report: the statement on line $start_line starts with $word; data and schema changes are refused" ;;
+        *)
+          usage_error "--report: the statement on line $start_line does not start with SELECT, WITH, VALUES or TABLE" ;;
+      esac
+    fi
+    nl="${piece//[!$'\n']/}"
+    at=$((at + ${#nl}))
+  done
+  [[ "$rest" =~ ^[[:space:]]*$ ]] || usage_error "--report: the last statement does not end with a semicolon"
+  (( statements > 0 )) || usage_error "--report: the file holds no statement"
+  REPORT_SQL="$text"
+}
+if $REPORT; then
+  check_report_file "$REPORT_FILE"
 fi
 
 # The posture control's baseline for the master's reading (see the header):
@@ -580,6 +664,7 @@ MIGRATIONS=(
   "115_admin_ops_health.sql"
   "117_admin_queues.sql"
   "118_employer_organizations.sql"
+  "119_employer_org_owner_access.sql"
   "120_admin_access.sql"
   "121_whatsapp_support_mode.sql"
   "122_admin_inbox.sql"
@@ -587,6 +672,12 @@ MIGRATIONS=(
   "124_analytics_capture.sql"
   "125_hire_details_and_billing_resume.sql"
   "126_job_conversations_whatsapp_update_columns.sql"
+  "127_company_billing.sql"
+  "128_company_limits.sql"
+  "129_org_owner_carry_overs.sql"
+  "130_user_tutorial_progress.sql"
+  "131_job_shift_periods.sql"
+  "132_job_limit_increase.sql"
 )
 
 WORKDIR="$(mktemp -d)"
@@ -1393,6 +1484,41 @@ AUDIT_OPS
   printf 'echo "%s"\n' "$SENTINEL"
 }
 
+# The read-only report (--report): the statements check_report_file accepted,
+# carried encoded and checksum-verified as a migration is, then run as the
+# master login in one read-only transaction that is rolled back, in a session
+# whose default is read-only, stopping at the first error. It prints the
+# results once the transaction ended without an error, and a status; a
+# failure is its SQLSTATE or kind. Never a statement, never psql's text.
+emit_report_ops() {
+  [[ -s "$WORKDIR/report.sql" ]] || die "the report's statements were not written"
+  printf "REPORT_SQL_B64='%s'\nREPORT_SQL_SUM='%s'\n" \
+    "$(encode_migration "$WORKDIR/report.sql")" "$(sha256_of "$WORKDIR/report.sql")"
+  cat <<'REPORT_OPS'
+REPORT_SQL="$AUDIT_DIR/report.sql"
+printf '%s' "$REPORT_SQL_B64" | base64 -d | gunzip > "$REPORT_SQL"
+[[ "$(sha256sum "$REPORT_SQL" | cut -d' ' -f1)" == "$REPORT_SQL_SUM" ]] \
+  || fail "the report failed checksum verification after transfer; nothing was run"
+
+report_failed() {
+  sql_error_code
+  case "$SQL_CODE" in
+    25006) fail "the report stopped (25006): the read-only transaction refused a statement; nothing was changed" ;;
+    "") psql_error_kind; fail "the report failed ($PSQL_KIND); nothing was changed" ;;
+    *) fail "the report failed ($SQL_CODE); nothing was changed" ;;
+  esac
+}
+
+{ printf '%s\n' 'BEGIN READ ONLY;'; cat "$REPORT_SQL"; printf '%s\n' 'ROLLBACK;'; } \
+  | PGOPTIONS='-c default_transaction_read_only=on' "${PG[@]}" -X -q -v ON_ERROR_STOP=1 -v VERBOSITY=sqlstate -f - >"$AUDIT_DIR/report.out" 2>"$ERR" \
+  || report_failed
+cat "$AUDIT_DIR/report.out"
+say "read-only report: complete; its transaction was rolled back"
+unset PGPASSWORD
+REPORT_OPS
+  printf 'echo "%s"\n' "$SENTINEL"
+}
+
 # ---------------------------------------------------------------------------
 # Preconditions.
 # ---------------------------------------------------------------------------
@@ -1705,16 +1831,22 @@ if $ENABLE_PGAUDIT || $DISABLE_MASTER_AUDIT; then
 fi
 
 # ---------------------------------------------------------------------------
-# The master's audit operations: one at a time, then stop. None reaches the
-# ledger, the migrations or --rotate-secrets.
+# The master's audit operations and the read-only report: one at a time, then
+# stop. None reaches the ledger, the migrations or --rotate-secrets.
 # ---------------------------------------------------------------------------
 if $AUDIT_OPERATION; then
   if $AUDIT_STATUS; then audit_ops_comment="audit status"
   elif $LIST_HOLDS; then audit_ops_comment="list audit holds"
   elif $RELEASE_HOLD; then audit_ops_comment="release an audit hold"
-  else audit_ops_comment="redact and release an audit hold"
+  elif $REDACT_AND_RELEASE; then audit_ops_comment="redact and release an audit hold"
+  else audit_ops_comment="read-only report"
   fi
-  { emit_pg_preamble; emit_master_ops_lib; emit_audit_ops; } > "$WORKDIR/audit-ops.sh"
+  if $REPORT; then
+    printf '%s' "$REPORT_SQL" > "$WORKDIR/report.sql"
+    { emit_pg_preamble; emit_master_ops_lib; emit_report_ops; } > "$WORKDIR/audit-ops.sh"
+  else
+    { emit_pg_preamble; emit_master_ops_lib; emit_audit_ops; } > "$WORKDIR/audit-ops.sh"
+  fi
 
   if ($RELEASE_HOLD || $REDACT_AND_RELEASE) && ! $ASSUME_YES; then
     echo

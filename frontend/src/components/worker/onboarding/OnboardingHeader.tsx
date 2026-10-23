@@ -2,6 +2,7 @@
 import type { ReactNode } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { ReportEntryButton } from '@/components/report/ReportEntryButton';
+import { HelpEntryButton } from '@/components/tutorials/HelpMenu';
 
 /*
  * ===== BRAND SURFACE ==================================================
@@ -19,6 +20,11 @@ const BRAND_NAVY = '#181855';
 export type LanguageChoice = 'en' | 'es';
 
 /**
+ * Onboarding is outside `AppShell`, so its band carries the two header
+ * entries the shell would: report a problem, and Help ("How Jale works"),
+ * which replays any worker tutorial, "Before you start" included. Each
+ * renders nothing outside its provider.
+ *
  * Language is a header toggle here, never a step: the WhatsApp engine opens
  * with `start.choose_language`, but a worker who is already reading a Spanish
  * page has answered that question by arriving. Picking one both switches the
@@ -47,6 +53,7 @@ export function OnboardingHeader({
             <span className="text-xl font-bold tracking-[-0.02em] text-white">Jale</span>
             <div className="flex items-center gap-2">
                 <ReportEntryButton tone="brand" size="sm" />
+                <HelpEntryButton tone="brand" size="sm" />
                 <div role="group" aria-label={t('language_group')} className="inline-flex overflow-hidden rounded-full border border-white/30">
                     {(['en', 'es'] as const).map((language) => (
                         <button

@@ -21,7 +21,7 @@ import {
   type JobFactRequirement,
   type JobFactTile,
 } from '@/components/jobs/JobFactsCard';
-import { ApplicationStatusChip } from '@/components/worker/ApplicationStatusChip';
+import { ApplicationStatusChip, ApplicationStatusHint } from '@/components/worker/ApplicationStatusChip';
 import { PayReferenceHint } from '@/components/PayReferenceHint';
 import { ShareJobPanel } from '@/components/worker/ShareJobPanel';
 import { WhatYouNeedPanel } from '@/components/worker/WhatYouNeedPanel';
@@ -46,10 +46,11 @@ import {
 } from '@/lib/job-detail-display';
 import { formatPay } from '@/lib/pay';
 import {
-  getJob, applyToJob, updateWorkerProfile, getVaultDocuments, recordJobView,
+  getJob, applyToJob, updateWorkerProfile, getVaultDocuments, recordJobView, getApplications,
   type JobDetail, type WorkerApiError, type WorkerVaultDoc,
 } from '@/lib/api/worker';
 import { visibleJobStatusBadge } from '@/lib/jobStatusDisplay';
+import { useTutorial } from '@/lib/tutorials/use-tutorial';
 
 export const dynamic = 'force-dynamic';
 
@@ -272,6 +273,9 @@ export default function WorkerJobDetailPage() {
    * URL only when it is handed a state that is not already its own.
    */
   const applyParamHandledForRef = useRef<string | null>(null);
+  // Set when this visit arrived with `?apply=1`, before the param is stripped,
+  // so the W2 tutorial below never opens over a worker already mid-apply.
+  const arrivedToApplyRef = useRef(false);
   const applyFromLink = useEffectEvent(() => {
     void handleApplyClick();
   });
@@ -280,10 +284,33 @@ export default function WorkerJobDetailPage() {
     applyParamHandledForRef.current = job.id;
     const url = new URL(window.location.href);
     if (url.searchParams.get('apply') !== '1') return;
+    arrivedToApplyRef.current = true;
     url.searchParams.delete('apply');
     window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
     if (!job.already_applied && (job.status ?? 'active') === 'active') applyFromLink();
   }, [job]);
+
+  /*
+   * W2, the applying tutorial. Its K1.5 signal -- the worker has any
+   * application -- is not on this page, so it reads ONE application of its
+   * own, once per signed-in visit (a token rotation does not re-read). Until
+   * that read answers `done` is `undefined`, and a failed read leaves it
+   * there: no signal means no auto-open on this page view.
+   */
+  const [hasApplied, setHasApplied] = useState<boolean | undefined>(undefined);
+  const signedIn = Boolean(idToken);
+  const readOneApplication = useEffectEvent((signal: AbortSignal) => (
+    idToken ? getApplications(idToken, signal, { limit: 1 }) : null
+  ));
+  useEffect(() => {
+    if (!signedIn) return;
+    const controller = new AbortController();
+    readOneApplication(controller.signal)
+      ?.then((page) => setHasApplied(page.applications.length > 0))
+      .catch(() => { /* no signal, no auto-open: `done` stays undefined */ });
+    return () => controller.abort();
+  }, [signedIn]);
+  const applyTutorial = useTutorial('worker_apply', { done: hasApplied });
 
   // One shared vault fetch, refetched on demand via `onVaultChanged` (after a
   // successful upload from inside `ApplyFlow`) and whenever the auth token
@@ -617,7 +644,37 @@ export default function WorkerJobDetailPage() {
   // in-page flow's Documents & Certifications step, which is the real doc/
   // cert gate (backed by a live vault fetch), with its own Submit action.
   const canApply = job ? !job.already_applied && (job.status ?? 'active') === 'active' : false;
+  // The employer has asked this worker for their details: the one state in
+  // which a missing document is really missing.
+  const docsRequested = Boolean(job?.already_applied && job.details_status === 'requested');
   const jobStatusBadge = job ? visibleJobStatusBadge(job.status) : null;
+  /*
+   * Under `sm` the Apply panel sticks above the bottom tab bar, so the button
+   * stays in view while the worker reads a long posting; from `sm` up it is an
+   * ordinary card. Only while the job can take an application: an applied or
+   * closed job has nothing to keep in reach. The details tree is the only
+   * place this panel renders, so `viewMode === 'details'` holds whenever it is
+   * on screen.
+   */
+  const pinApply = canApply;
+
+  /*
+   * Asked ONCE per page view, at the first moment both the job and the signal
+   * are known. Not over a worker who arrived with `?apply=1` (they are already
+   * applying), not over the profile gate or the in-page flow, and not on a
+   * job that can no longer take an application. Whether it then opens is the
+   * tutorial's decision (a record, the signal, another overlay).
+   */
+  const applyTutorialAskedRef = useRef(false);
+  const askApplyTutorial = useEffectEvent(() => applyTutorial.maybeAutoOpen());
+  const jobLoaded = Boolean(job);
+  useEffect(() => {
+    if (applyTutorialAskedRef.current) return;
+    if (!jobLoaded || hasApplied === undefined) return;
+    applyTutorialAskedRef.current = true;
+    if (arrivedToApplyRef.current || viewMode !== 'details' || !canApply || modalOpen || applying) return;
+    askApplyTutorial();
+  }, [jobLoaded, hasApplied, viewMode, canApply, modalOpen, applying]);
 
   /*
    * The job's facts, as the ONE card body all three job pages render.
@@ -631,13 +688,17 @@ export default function WorkerJobDetailPage() {
    * the answer a worker is deciding on.
    */
   const schedule = job ? scheduleSummary(job, locale, tCommonDisplay) : null;
-  // ONE Horario tile, not the two rows this page used to render: the days and
-  // the hours are one fact to a reader planning a ride. `legacy` is already
-  // mutually exclusive with the structured pair (see `scheduleSummary`), so
-  // this cannot show both.
+  // ONE Horario tile, not the two rows this page used to render: the days, the
+  // hours and the shift choices are one fact to a reader planning a ride, in
+  // the employer page's order. `legacy` is already mutually exclusive with the
+  // structured pieces (see `scheduleSummary`), so this cannot show both.
   const scheduleText = schedule
     ? (schedule.legacy
-      ?? ([schedule.days.length > 0 ? schedule.days.join(', ') : null, schedule.hours]
+      ?? ([
+        schedule.days.length > 0 ? schedule.days.join(', ') : null,
+        schedule.hours,
+        schedule.periods.length > 0 ? schedule.periods.join(', ') : null,
+      ]
         .filter(Boolean)
         .join(' · ') || null))
     : null;
@@ -680,7 +741,9 @@ export default function WorkerJobDetailPage() {
         key: 'openings',
         label: t('openings'),
         value: (
-          <span className="tabular-nums">{`${job.open_count ?? 0}/${job.number_of_workers_needed}`}</span>
+          <span className="tabular-nums">
+            {t('openings_value', { open: job.open_count ?? 0, total: job.number_of_workers_needed })}
+          </span>
         ),
       });
     }
@@ -782,6 +845,10 @@ export default function WorkerJobDetailPage() {
                 onBackToDetails={handleBackToDetails}
               />
             ) : (
+              /* No room is set aside here for the pinned Apply panel: it
+                 sticks rather than leaving the page, so it keeps its own place
+                 as the last block and the page always has room for all of it,
+                 feedback included. */
               <div className="space-y-5">
                 {refreshError ? (
                   <InlineFeedback tone="warning">{tCommon('feedback.refresh_failed')}</InlineFeedback>
@@ -848,17 +915,28 @@ export default function WorkerJobDetailPage() {
                         items: requirementItems,
                       }],
                     }}
-                    /* The vault rows stay EXACTLY as they were, badges and
-                       all: the worker page is the only one of the three that
-                       knows whether a document is already uploaded, so this
-                       section has no employer/public counterpart -- there the
-                       job's documents are Requirements chips instead. */
+                    /* The vault rows: the worker page is the only one of the
+                       three that knows whether a document is already saved, so
+                       this section has no employer/public counterpart -- there
+                       the job's documents are Requirements chips instead.
+
+                       Before the employer asks for anything, a document is
+                       never a reason not to apply: the section says they may
+                       ask later and marks each missing one "Later" in a
+                       neutral tone. Only a real details request
+                       (`details_status === 'requested'`) turns the same rows
+                       into "Missing" with the way to upload them. */
                     documents={
                       job.required_docs.length > 0
                         ? {
                           label: t('facts.documents'),
                           children: (
                             <>
+                              {docsRequested ? null : (
+                                <p className="mb-2 text-xs leading-relaxed text-[var(--jale-ink-2)]">
+                                  {t('docs_later')}
+                                </p>
+                              )}
                               <ul className="divide-y divide-[var(--jale-divider)] overflow-hidden rounded-[var(--radius-input)] border border-[var(--jale-divider)]">
                                 {job.required_docs.map((doc) => {
                                   const missing = job.missing_docs.includes(doc);
@@ -867,14 +945,18 @@ export default function WorkerJobDetailPage() {
                                       <span className="min-w-0 text-sm font-medium text-[var(--jale-ink)]">
                                         {docLabel(doc)}
                                       </span>
-                                      <Badge tone={missing ? 'danger' : 'success'}>
-                                        {missing ? t('doc_missing') : t('doc_ok')}
-                                      </Badge>
+                                      {!missing ? (
+                                        <Badge tone="success">{t('doc_ok')}</Badge>
+                                      ) : docsRequested ? (
+                                        <Badge tone="danger">{t('doc_missing')}</Badge>
+                                      ) : (
+                                        <Badge tone="neutral">{t('doc_later')}</Badge>
+                                      )}
                                     </li>
                                   );
                                 })}
                               </ul>
-                              {job.missing_docs.length > 0 ? (
+                              {docsRequested && job.missing_docs.length > 0 ? (
                                 <p className="mt-2 text-xs text-[var(--jale-ink-2)]">
                                   {t('upload_prompt')}{' '}
                                   <Link
@@ -915,10 +997,7 @@ export default function WorkerJobDetailPage() {
                   <DetailsRequestedBanner
                     applicationId={job.application_id}
                     companyName={job.company_name}
-                    remainingCount={job.remaining?.counts
-                      ? job.remaining.counts.prompts + job.remaining.counts.fields
-                        + job.remaining.counts.certifications + job.remaining.counts.docs
-                      : undefined}
+                    counts={job.remaining?.counts}
                   />
                 ) : null}
 
@@ -930,11 +1009,32 @@ export default function WorkerJobDetailPage() {
                   </DashboardPanel>
                 ) : null}
 
-                <DashboardPanel>
-                  <div className="flex flex-col gap-3 px-5 py-4 md:px-6">
+                {/* ONE Apply element at every width, moved by classes and
+                    never duplicated. Under `sm` this panel is the bar that
+                    sticks above the tab bar (edge to edge over the page's side
+                    padding, square, top rule and the dock shadow); from `sm`
+                    up it is the ordinary card. Sticky, not fixed: it stays
+                    the last block of the page, so whatever it grows to (an
+                    apply error, a long hint in Spanish) the content above it
+                    is never covered once the worker reaches the end.
+                    It sticks at the tab bar's measured height
+                    (`--jale-tab-bar-offset`, see `BottomTabBar`), so it sits
+                    flush on the bar however tall a wrapped label makes it.
+                    `-mx-4` cancels `<main>`'s `px-4`, so the bar runs edge to
+                    edge, and `-mb-6` cancels the bottom half of its `py-6`,
+                    so at the end of the page the bar still rests on the tab
+                    bar instead of lifting off it by that padding. Change them
+                    with `<main>`. */}
+                <DashboardPanel
+                  className={pinApply
+                    ? 'max-sm:sticky max-sm:-mx-4 max-sm:-mb-6 max-sm:bottom-[var(--jale-tab-bar-offset)] max-sm:z-20 max-sm:rounded-none max-sm:border-x-0 max-sm:border-b-0 max-sm:shadow-[var(--shadow-dock)]'
+                    : ''}
+                >
+                  <div className="flex flex-col gap-3 px-5 py-4 max-sm:px-4 max-sm:py-3 md:px-6">
                     {/* Anchored to the control that produced it -- never the
                         page top, where a worker who just tapped Apply would
-                        have to go looking for the answer. */}
+                        have to go looking for the answer. On a phone that is
+                        the pinned bar, right above the button. */}
                     {applyFeedback ? (
                       <InlineFeedback
                         tone={applyFeedback.tone}
@@ -951,20 +1051,32 @@ export default function WorkerJobDetailPage() {
                             {t('already_applied')}
                           </span>
                           <ApplicationStatusChip status={job.application_status ?? 'pending'} short />
+                          <ApplicationStatusHint
+                            status={job.application_status ?? 'pending'}
+                            className="basis-full text-right"
+                          />
                         </>
                       ) : (
-                        <Button
-                          onClick={handleApplyClick}
-                          disabled={!canApply}
-                          loading={applying}
-                          loadingLabel={tCommon('loading')}
-                        >
-                          {/* "Continue application" once the worker has left
-                              something behind in the flow (an answer, a visit
-                              past step 1, a cert claim) -- otherwise the
-                              plain "Apply" a first-time visitor sees. */}
-                          {flowHasProgress(applyState) ? tFlow('continue_button') : t('apply')}
-                        </Button>
+                        <div className="flex flex-col items-end gap-1.5 max-sm:w-full max-sm:items-stretch">
+                          <Button
+                            onClick={handleApplyClick}
+                            disabled={!canApply}
+                            loading={applying}
+                            loadingLabel={tCommon('loading')}
+                            className="max-sm:w-full"
+                          >
+                            {/* "Continue application" once the worker has left
+                                something behind in the flow (an answer, a visit
+                                past step 1, a cert claim) -- otherwise the
+                                plain "Apply" a first-time visitor sees. */}
+                            {flowHasProgress(applyState) ? tFlow('continue_button') : t('apply')}
+                          </Button>
+                          {/* What applying costs, said where the decision is
+                              made: a couple of minutes, and no documents. */}
+                          {canApply ? (
+                            <p className="text-xs text-[var(--jale-ink-2)] max-sm:text-center">{t('apply_hint')}</p>
+                          ) : null}
+                        </div>
                       )}
                     </div>
                   </div>

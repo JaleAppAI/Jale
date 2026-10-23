@@ -165,13 +165,14 @@ const QUICK_REPLY_DEFINITIONS = {
   // The bodies are pinned byte for byte by
   // test/unit/scripts/seed-whatsapp-twilio-templates.test.ts.
   //
-  // Why the support-reply pair is versioned: the current admin reply path
-  // queues `admin_support_reply_<lang>` and sendTwilioWhatsAppMessage sends
-  // the mapped ContentSid whenever that key is present in the secret, without
-  // consulting the session window. Mapping those unversioned keys would
-  // therefore change how today's replies are delivered, so this file never
-  // creates or maps them. The window-aware dispatcher (sprint 28 lane BE-2a)
-  // reads the `admin_support_reply_v2_<lang>` keys defined here instead.
+  // Why the support-reply pair is versioned: the earlier admin reply path
+  // queued `admin_support_reply_<lang>` and sendTwilioWhatsAppMessage sent
+  // the mapped ContentSid whenever that key was present in the secret,
+  // without consulting the session window. Mapping those unversioned keys
+  // would have changed how replies were delivered, so this file never creates
+  // or maps them. The window-aware dispatcher (sprint 28 lane BE-2a) reads the
+  // `admin_support_reply_v2_<lang>` keys defined here instead; the unversioned
+  // pair is retired (RETIRED_TEMPLATE_KEYS).
   admin_support_reply_v2_es: {
     language: 'es',
     body: 'Jale Soporte: «{{1}}». Responde a este mensaje si necesitas más ayuda.',
@@ -330,8 +331,6 @@ const SETTABLE_TEMPLATE_KEYS = new Set([
   'employer_message_invite_en',
   'employer_message_resume_es',
   'employer_message_resume_en',
-  'admin_support_reply_es',
-  'admin_support_reply_en',
   'admin_support_reply_v2_es',
   'admin_support_reply_v2_en',
   'application_update_es',

@@ -17,6 +17,7 @@
 import { Client } from 'pg';
 import { randomBytes } from 'node:crypto';
 import { describeInProfiles } from './helpers/login-pool';
+import { dropCompanies, ensureOwnerCompany } from './helpers/org-fixtures';
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
 
@@ -269,12 +270,15 @@ maybeDescribe('1d history capture (099–101)', () => {
     const PROVIDER_ID = 'sub_it_1d_a';
     let userId = '';
     let subscriptionId = '';
+    let companyId = '';
 
     beforeAll(async () => {
       await withClient(superUrl, async (su) => {
         userId = (await su.query(
           `INSERT INTO users (cognito_sub, user_type) VALUES ($1, 'employer') RETURNING id`, [SUB],
         )).rows[0].id;
+        // The billing login inserts as this payer; since 127 a payer owns a company.
+        companyId = await ensureOwnerCompany(su, userId);
         await su.query(
           `INSERT INTO billing_plans (code, audience, display_name, entitlements) VALUES
              ($1, 'employer', 'IT 1d Plan A', '{}'), ($2, 'employer', 'IT 1d Plan B', '{}')
@@ -290,6 +294,7 @@ maybeDescribe('1d history capture (099–101)', () => {
         await su.query(`DELETE FROM subscriptions WHERE user_id IN (SELECT id FROM users WHERE cognito_sub = $1)`, [SUB]);
         await su.query(`DELETE FROM billing_plans WHERE code = ANY($1)`, [[PLAN_A, PLAN_B]]);
         await su.query(`DELETE FROM users WHERE cognito_sub = $1`, [SUB]);
+        await dropCompanies(su, companyId ? [companyId] : []);
       });
     }, 60_000);
 

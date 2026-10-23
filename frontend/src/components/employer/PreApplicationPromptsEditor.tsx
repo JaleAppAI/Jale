@@ -21,8 +21,9 @@ import {
  * Sits ABOVE `RequirementsPicker` on step 3 of PostJobModal and in
  * JobFormFields (Edit/Template), because it is the only thing on that panel a
  * worker meets while applying: everything the picker below configures is now
- * asked later, once the employer requests details. The section's own subtitle
- * and the picker's new `after_request_note` are what carry that split.
+ * asked later, once the employer requests details. Sprint 29 names the split:
+ * this is "Part 1 · When they apply" and the picker is "Part 2 · Before you
+ * hire", under the picker's note that neither part changes once someone applies.
  *
  * Presentational and fully controlled -- every mutation goes through
  * `lib/pre-application-prompts.ts` and comes back as a whole new list on
@@ -39,10 +40,17 @@ export function PreApplicationPromptsEditor({
     prompts,
     onChange,
     locked = false,
+    fieldError,
 }: {
     prompts: PromptDraft[];
     onChange: (next: PromptDraft[]) => void;
     locked?: boolean;
+    /**
+     * The question a refused step is about, by position, with its sentence.
+     * Every question carries `data-field="prompt-<n>"` so the wizard can move
+     * focus to it.
+     */
+    fieldError?: { index: number; message: string } | null;
 }) {
     const t = useTranslations('job_requirements');
 
@@ -55,11 +63,12 @@ export function PreApplicationPromptsEditor({
 
     return (
         <div className="grid gap-3">
-            <div>
-                <p className="text-xs font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">
-                    {t('prompts.section_title')}
+            <div className="grid gap-1">
+                <p className="text-[11px] font-bold uppercase tracking-wider text-[var(--jale-blue-700)]">
+                    {t('prompts.part_label')}
                 </p>
-                <p className="mt-1 text-xs text-[var(--jale-ink-2)]">{t('prompts.section_subtitle')}</p>
+                <h4 className="text-base font-extrabold text-[var(--jale-ink)]">{t('prompts.section_title')}</h4>
+                <p className="text-xs text-[var(--jale-ink-2)]">{t('prompts.section_subtitle')}</p>
             </div>
 
             {/*
@@ -120,6 +129,9 @@ export function PreApplicationPromptsEditor({
 
                             <Textarea
                                 aria-labelledby={`prompt-label-${prompt.id}`}
+                                data-field={`prompt-${index}`}
+                                aria-invalid={fieldError?.index === index || undefined}
+                                aria-describedby={fieldError?.index === index ? `prompt-error-${prompt.id}` : undefined}
                                 rows={2}
                                 value={prompt.text}
                                 disabled={locked}
@@ -135,6 +147,12 @@ export function PreApplicationPromptsEditor({
                                 maxLength={MAX_PROMPT_CHARS}
                                 onChange={(event) => emit(updatePromptText(prompts, index, event.target.value))}
                             />
+
+                            {fieldError?.index === index && (
+                                <p id={`prompt-error-${prompt.id}`} className="text-xs font-medium text-[var(--jale-danger-text)]">
+                                    {fieldError.message}
+                                </p>
+                            )}
 
                             {!locked && (
                                 <p className="text-right text-[11px] tabular-nums text-[var(--jale-ink-2)]">

@@ -1,26 +1,30 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
-import { resolveEntitlements } from '../lib/entitlements';
+import { resolveCompanyEntitlements } from '../lib/entitlements';
+import { readCompanyUsage, CompanyUsageRefusedError } from '../lib/company-usage';
 import { corsHeaders, errorMessage } from '../lib/http';
-import { formatPayRange, JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs, parseRequiredFields } from '../lib/job-fields';
+import { formatPayRange, JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs, parseRequiredFields, stripRetiredFields } from '../lib/job-fields';
 import { resolveJobLocationFields } from '../lib/job-location-parse';
 import { parsePreApplicationPrompts } from '../lib/pre-application-prompts';
 import { setJobCoordinates } from '../lib/location';
 import { parseCityFields, parseCityFromLocation } from '../lib/city-fields';
 import { isUuid } from '../lib/uuid';
 import { checkCompliance } from '../legal/check-compliance';
+import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
 import type { PoolClient } from 'pg';
 
 const CORS_HEADERS = corsHeaders();
 
 /**
  * The saved template the job started from (contract K3.6, analytics item
- * 18), kept only when the caller sees it as its own template inside its own
- * RLS context; anything else is stored as no template. The check runs under
- * its own savepoint, so it can never fail the post.
+ * 18), kept only when it is one of the caller's company's templates (the
+ * set GET /employer/templates lists: the same jale_internal.org_member_scope
+ * array as 119's employer_job_templates_org_read policy), checked inside the
+ * caller's own RLS context; anything else is stored as no template. The
+ * check runs under its own savepoint, so it can never fail the post.
  */
-async function ownTemplateId(client: PoolClient, value: unknown, employerId: string | undefined): Promise<string | null> {
-  if (typeof value !== 'string' || !isUuid(value) || !employerId) return null;
+async function ownTemplateId(client: PoolClient, value: unknown, callerId: string | undefined): Promise<string | null> {
+  if (typeof value !== 'string' || !isUuid(value) || !callerId) return null;
   try {
     await client.query('SAVEPOINT template_check');
   } catch {
@@ -28,8 +32,8 @@ async function ownTemplateId(client: PoolClient, value: unknown, employerId: str
   }
   try {
     const found = await client.query(
-      'SELECT 1 FROM employer_job_templates WHERE id = $1 AND employer_id = $2',
-      [value, employerId],
+      'SELECT 1 FROM employer_job_templates WHERE id = $1 AND employer_id = ANY ((SELECT jale_internal.org_member_scope($2::text))::uuid[])',
+      [value, callerId],
     );
     await client.query('RELEASE SAVEPOINT template_check');
     return (found?.rowCount ?? 0) > 0 ? value : null;
@@ -84,6 +88,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       work_days?: string[] | null;
       shift_start?: string | null;
       shift_end?: string | null;
+      shift_periods?: string[];
       certification_requirements?: { name: string; tier: 'required' | 'optional'; proof_required: boolean }[] | null;
       pre_application_prompts?: { id?: string; text: string }[] | null;
       city_key?: string;
@@ -143,13 +148,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (!requiredFieldsResult.ok) {
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_required_fields', valid: requiredFieldsResult.valid }) };
     }
-    const required_fields = requiredFieldsResult.value;
+    // Retired field types are no longer offered on new jobs (job-fields.ts).
+    const required_fields = stripRetiredFields(requiredFieldsResult.value);
 
     const optionalFieldsResult = parseRequiredFields(body.optional_fields);
     if (!optionalFieldsResult.ok) {
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_optional_fields', valid: optionalFieldsResult.valid }) };
     }
-    const optional_fields = optionalFieldsResult.value;
+    const optional_fields = stripRetiredFields(optionalFieldsResult.value);
 
     // Tier-overlap rejection BEFORE hitting the DB CHECK (jobs_fields_tiers_disjoint /
     // jobs_docs_tiers_disjoint in 074_job_optional_requirements.sql enforce
@@ -251,24 +257,24 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
-    // A7: Lock the employer's users row to serialize concurrent slot consumers.
-    // SELECT … FOR UPDATE on users ensures two simultaneous creates for the same
-    // employer cannot both read "0 active jobs" and both insert.
-    const lockResult = await client.query<{ id: string }>(
-      `SELECT id FROM users WHERE cognito_sub = $1 FOR UPDATE`,
-      [cognitoSub],
-    );
-    const userId = lockResult.rows[0]?.id;
+    const actorResult = await resolveEmployerActor(client, cognitoSub);
+    if (!actorResult.ok) {
+      await client.query('ROLLBACK');
+      return employerActorFailureResponse(actorResult, CORS_HEADERS);
+    }
+    const userId = actorResult.actor.userId;
 
-    // Resolve entitlements AFTER acquiring the lock so the limit is authoritative.
-    const entitlements = await resolveEntitlements(client, userId);
-
-    // Count the employer's current active jobs while holding the lock.
-    const countResult = await client.query<{ active_jobs: number }>(
-      `SELECT COUNT(*)::int AS active_jobs FROM jobs WHERE employer_id = $1 AND status = 'active'`,
-      [userId],
-    );
-    const activeJobs = countResult.rows[0].active_jobs;
+    // A7, per company (Phase 2): the plan and its active-job limit are the
+    // company's. readCompanyUsage({ lock: true }) takes the company's
+    // organizations row FOR NO KEY UPDATE (jale_cap.employer_org_usage, 128)
+    // and counts every member's active jobs under it, so two members posting
+    // at once cannot both take the last slot, and a downgrade in flight waits.
+    const usage = await readCompanyUsage(client, { lock: true });
+    // The plan is resolved for the actor's company, so the count must be the same company's.
+    if (usage.organizationId !== actorResult.actor.organizationId) throw new Error('company_usage_unavailable');
+    // Resolved under the lock, so the limit is authoritative.
+    const entitlements = await resolveCompanyEntitlements(client, actorResult.actor.organizationId);
+    const activeJobs = usage.activeJobs;
 
     if (activeJobs >= entitlements.activeJobLimit) {
       await client.query('ROLLBACK');
@@ -294,6 +300,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       : JSON.stringify(jobFields.value.certification_requirements);
 
     // Sprint 28: appended last ($36), for the same positional reason as 077's.
+    // Sprint 29 (131): shift_periods follows it as $37, for the same reason.
     const templateId = await ownTemplateId(client, body.template_id, userId);
 
     const result = await client.query(
@@ -333,11 +340,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          shift_end,
          certification_requirements,
          pre_application_prompts,
-         created_from_template_id
+         created_from_template_id,
+         shift_periods
        )
        VALUES (
          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::date, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
-         $29, $30, $31, $32::time, $33::time, $34::jsonb, $35::jsonb, $36
+         $29, $30, $31, $32::time, $33::time, $34::jsonb, $35::jsonb, $36, $37
        )
        RETURNING id, title, location, pay, job_type, status, required_docs, optional_docs, required_fields, optional_fields, created_at,
          pay_min, pay_max, pay_interval, start_date, expected_duration, shift_schedule,
@@ -346,7 +354,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          GREATEST(number_of_workers_needed - workers_hired, 0) AS open_count,
          trade_category, required_experience_years, required_experience_months, certifications,
          city_key, city, state, state_region,
-         trade_category_other, expected_duration_bucket, work_days, shift_start, shift_end, certification_requirements, pre_application_prompts`,
+         trade_category_other, expected_duration_bucket, work_days, shift_start, shift_end, certification_requirements, pre_application_prompts,
+         shift_periods`,
       [
         userId,
         title.trim(),
@@ -390,6 +399,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         // certification_requirements has to dodge above cannot arise here.
         JSON.stringify(pre_application_prompts),
         templateId,
+        // NOT NULL DEFAULT '{}' (131): parseJobFields returns [] when the
+        // body omits it, never null.
+        jobFields.value.shift_periods,
       ],
     );
     const job = result.rows[0];
@@ -407,6 +419,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     };
   } catch (err) {
     if (client) { try { await client.query('ROLLBACK'); } catch (_) {} }
+    if (err instanceof CompanyUsageRefusedError) {
+      // The definer says the caller is no longer an active member: the answer resolveEmployerActor gives.
+      return employerActorFailureResponse({ ok: false, status: 403, error: 'membership_inactive' }, CORS_HEADERS);
+    }
     console.error('employer-jobs-create error:', errorMessage(err));
     return { statusCode: 500, headers: CORS_HEADERS, body: JSON.stringify({ error: 'internal_error' }) };
   } finally {

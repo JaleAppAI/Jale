@@ -54,6 +54,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
               GREATEST(j.number_of_workers_needed - j.workers_hired, 0) AS open_count,
               j.trade_category, j.required_experience_years, j.required_experience_months, j.certifications,
               j.trade_category_other, j.expected_duration_bucket, j.work_days, j.shift_start, j.shift_end, j.certification_requirements,
+              j.shift_periods,
               j.public_listing_enabled, j.city_key,
               j.required_fields, j.optional_fields, j.optional_docs,
               j.pre_application_prompts,
@@ -178,6 +179,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         required_fields: requiredFields,
         optional_fields: optionalFields,
         pre_application_prompts: parsePreApplicationPromptList(job.pre_application_prompts),
+        // Shift choices (131, contract K2.2): always an array, never null.
+        shift_periods: Array.isArray(job.shift_periods) ? job.shift_periods : [],
         already_applied,
         application_status,
         missing_docs,

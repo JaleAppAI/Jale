@@ -1,7 +1,8 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
+import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
+import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
 
 /**
  * GET   /employer/settings/digest
@@ -226,18 +227,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // FOR UPDATE only on the write path: it serializes two concurrent PATCHes
     // from the same employer (two browser tabs) against one another, which the
     // upsert's ON CONFLICT alone would resolve last-writer-wins per column.
-    const employerResult = await client.query<{ id: string }>(
-      method === 'PATCH'
-        ? 'SELECT id FROM users WHERE cognito_sub = $1 FOR UPDATE'
-        : 'SELECT id FROM users WHERE cognito_sub = $1',
-      [cognitoSub],
-    );
-    const employerId = employerResult.rows[0]?.id;
-    if (!employerId) {
+    // resolveEmployerActor takes that lock (lockUser) and sets the internal-id
+    // RLS context. Settings stay per person: actor.userId.
+    const actorResult = await resolveEmployerActor(client, cognitoSub, { lockUser: method === 'PATCH' });
+    if (!actorResult.ok) {
       await client.query('ROLLBACK');
-      return fail(409, 'user_not_provisioned');
+      return employerActorFailureResponse(actorResult, CORS_HEADERS);
     }
-    await setInternalUserRlsContext(client, employerId);
+    const employerId = actorResult.actor.userId;
 
     if (method === 'GET') {
       const existing = await client.query<DigestSettingsRow>(

@@ -2,9 +2,14 @@ import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { handler } from '../../../../lambda/api/employer-jobs-detail';
 import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
+import { resolveEmployerActor } from '../../../../lambda/lib/employer-actor';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
+jest.mock('../../../../lambda/lib/employer-actor', () => ({
+  ...jest.requireActual('../../../../lambda/lib/employer-actor'),
+  resolveEmployerActor: jest.fn(),
+}));
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
@@ -13,6 +18,14 @@ const mockQuery = jest.fn();
 const mockRelease = jest.fn();
 
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
+const mockResolveEmployerActor = resolveEmployerActor as jest.Mock;
+const EMPLOYER_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const ORG_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const FOREMAN_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const ownerActor = (scopeUserIds: string[] = [EMPLOYER_ID]) => ({
+  ok: true,
+  actor: { userId: EMPLOYER_ID, organizationId: ORG_ID, role: 'owner', scopeUserIds },
+});
 
 describe('employer-jobs-detail', () => {
   const originalEnv = process.env;
@@ -24,6 +37,7 @@ describe('employer-jobs-detail', () => {
       connect: jest.fn().mockResolvedValue({ query: mockQuery, release: mockRelease }),
     });
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    mockResolveEmployerActor.mockResolvedValue(ownerActor());
   });
 
   afterAll(() => {
@@ -76,6 +90,7 @@ describe('employer-jobs-detail', () => {
       optional_docs: [],
       required_fields: [],
       optional_fields: [],
+      shift_periods: [],
     });
     expect(JSON.parse(res.body).city).toBe('Houston');
     expect(JSON.parse(res.body).state_region).toBe('TX');
@@ -207,5 +222,62 @@ describe('employer-jobs-detail', () => {
 
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body).required_docs).toEqual([]);
+  });
+
+  // Shift choices (131, contract K2.4): returned wherever work_days is, as an
+  // array, never null.
+  describe('shift_periods', () => {
+    const jobSql = () => mockQuery.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('SELECT id, title, location'))?.[0] as string;
+    const respondWith = (row: Record<string, unknown>) => {
+      mockQuery.mockImplementation((sql: string) => {
+        if (sql.includes('SELECT id, title, location')) return Promise.resolve({ rows: [row] });
+        return Promise.resolve({});
+      });
+    };
+
+    it('selects the column and returns the stored periods', async () => {
+      respondWith({ id: JOB_ID, title: 'Night Crew', required_docs: [], shift_periods: ['day', 'night'] });
+      const res = await handler(baseEvent);
+      expect(res.statusCode).toBe(200);
+      expect(jobSql()).toMatch(/\bshift_periods\b/);
+      expect(JSON.parse(res.body).shift_periods).toEqual(['day', 'night']);
+    });
+
+    it('returns [] when the row carries no array', async () => {
+      for (const shift_periods of [null, undefined]) {
+        respondWith({ id: JOB_ID, title: 'Older Job', required_docs: [], shift_periods });
+        const res = await handler(baseEvent);
+        expect(JSON.parse(res.body).shift_periods).toEqual([]);
+      }
+    });
+  });
+
+  it("scopes the job to the caller's scopeUserIds and drops the cognito_sub lookup", async () => {
+    mockResolveEmployerActor.mockResolvedValue(ownerActor([EMPLOYER_ID, FOREMAN_ID]));
+    mockQuery.mockImplementation((sql: string) => {
+      if (sql.includes('SELECT id, title, location')) return Promise.resolve({ rows: [] });
+      return Promise.resolve({});
+    });
+
+    const res = await handler(baseEvent);
+
+    expect(res.statusCode).toBe(404);
+    expect(mockResolveEmployerActor).toHaveBeenCalledWith(expect.anything(), 'employer-sub-1');
+    const call = mockQuery.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('SELECT id, title, location'));
+    expect(call![0]).toContain('employer_id = ANY($2::uuid[])');
+    expect(call![0]).not.toContain('cognito_sub');
+    expect(call![1]).toEqual([JOB_ID, [EMPLOYER_ID, FOREMAN_ID]]);
+  });
+
+  it('returns the actor failure, commits, and reads no job when the membership is inactive', async () => {
+    mockResolveEmployerActor.mockResolvedValue({ ok: false, status: 403, error: 'membership_inactive' });
+    mockQuery.mockResolvedValue({});
+
+    const res = await handler(baseEvent);
+
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({ error: 'membership_inactive' });
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+    expect(mockQuery.mock.calls.some((c) => typeof c[0] === 'string' && c[0].includes('FROM jobs'))).toBe(false);
   });
 });

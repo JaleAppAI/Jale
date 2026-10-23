@@ -1,14 +1,16 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
-import { resolveEntitlements } from '../lib/entitlements';
+import { resolveCompanyEntitlements } from '../lib/entitlements';
+import { readCompanyUsage, CompanyUsageRefusedError } from '../lib/company-usage';
 import { corsHeaders, errorMessage } from '../lib/http';
-import { formatPayRange, JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs, parseRequiredFields, WRITABLE_JOB_STATUSES } from '../lib/job-fields';
+import { formatPayRange, JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs, parseRequiredFields, stripRetiredFields, WRITABLE_JOB_STATUSES } from '../lib/job-fields';
 import { setJobCoordinates } from '../lib/location';
 import { parseCityFields, parseCityFromLocation } from '../lib/city-fields';
 import { resolveJobLocationFields } from '../lib/job-location-parse';
 import { enqueueVisibilityPing, enqueueVisibilityTransition, isEffectivelyVisible } from '../lib/job-visibility';
 import { parsePreApplicationPrompts, promptsNormalized } from '../lib/pre-application-prompts';
 import { checkCompliance } from '../legal/check-compliance';
+import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
 
 const CORS_HEADERS = corsHeaders();
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -70,6 +72,22 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
+    const actorResult = await resolveEmployerActor(client, cognitoSub);
+    if (!actorResult.ok) {
+      await client.query('ROLLBACK');
+      return employerActorFailureResponse(actorResult, CORS_HEADERS);
+    }
+    const { actor } = actorResult;
+
+    // A7, per company (Phase 2): a move to 'active' may consume a slot of the
+    // company's plan, so it takes the company lock first -- before the job
+    // row lock below, in the same order as create and the billing enforcer
+    // (organizations, then jobs), so the two can never deadlock -- and counts
+    // every member's active jobs under it. Other moves take no company lock.
+    const usage = status === 'active' ? await readCompanyUsage(client, { lock: true }) : null;
+    // The plan is resolved for the actor's company, so the count must be the same company's.
+    if (usage && usage.organizationId !== actor.organizationId) throw new Error('company_usage_unavailable');
+
     // Fetch the current status + public listing state once, up front. This backs
     // two independent things: the A7 entitlement gate below (which only needs
     // currentStatus) and the visibility-event decision after the UPDATE (which
@@ -82,9 +100,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // stale currentStatus/public_listing_enabled snapshot (TOCTOU).
     const currentResult = await client.query<{ status: string; public_listing_enabled: boolean; public_code: string }>(
       `SELECT jobs.status, jobs.public_listing_enabled, jobs.public_code
-         FROM jobs JOIN users u ON u.id = jobs.employer_id WHERE jobs.id = $1 AND u.cognito_sub = $2
+         FROM jobs WHERE jobs.id = $1 AND jobs.employer_id = ANY($2::uuid[])
          FOR UPDATE OF jobs`,
-      [jobId, cognitoSub],
+      [jobId, actor.scopeUserIds],
     );
     const currentRow = currentResult.rows?.[0];
     const currentStatus = currentRow?.status;
@@ -94,21 +112,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // paused→paused, paused→closed) consume no slot and bypass the gate entirely.
     if (status === 'active') {
       if (currentStatus !== 'active') {
-        // Non-active→active: this consumes a slot. Enforce the entitlement gate.
-        // Lock the employer's users row to serialize all concurrent slot consumers.
-        const lockResult = await client.query<{ id: string }>(
-          `SELECT id FROM users WHERE cognito_sub = $1 FOR UPDATE`,
-          [cognitoSub],
-        );
-        const userId = lockResult.rows[0]?.id;
-
-        const entitlements = await resolveEntitlements(client, userId);
-
-        const countResult = await client.query<{ active_jobs: number }>(
-          `SELECT COUNT(*)::int AS active_jobs FROM jobs WHERE employer_id = $1 AND status = 'active'`,
-          [userId],
-        );
-        const activeJobs = countResult.rows[0].active_jobs;
+        // Non-active→active: this consumes a slot of the company's plan. The
+        // company lock is held since readCompanyUsage above. Never gate on a
+        // missing read: that would let the activation through uncounted.
+        if (!usage) throw new Error('company_usage_unavailable');
+        const entitlements = await resolveCompanyEntitlements(client, actor.organizationId);
+        const activeJobs = usage.activeJobs;
 
         if (activeJobs >= entitlements.activeJobLimit) {
           await client.query('ROLLBACK');
@@ -132,8 +141,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       `WITH employer_job AS (
          SELECT jobs.id
          FROM jobs
-         JOIN users u ON u.id = jobs.employer_id
-         WHERE jobs.id = $2 AND u.cognito_sub = $3
+         WHERE jobs.id = $2 AND jobs.employer_id = ANY($3::uuid[])
        )
        UPDATE jobs SET status = $1, billing_paused_at = NULL
        FROM employer_job
@@ -146,10 +154,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          jobs.trade_category, jobs.required_experience_years, jobs.required_experience_months, jobs.certifications,
          jobs.public_code, jobs.public_listing_enabled,
          (SELECT COUNT(*)::int FROM job_applications WHERE job_id = $2) AS applicant_count`,
-      [status, jobId, cognitoSub],
+      [status, jobId, actor.scopeUserIds],
     );
 
-    // Ownership is enforced by the users join above; rowCount === 0 means forbidden.
+    // Ownership is enforced by the scope predicate above; rowCount === 0 means forbidden.
     if (result.rowCount === 0) {
       await client.query('ROLLBACK');
       return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'forbidden' }) };
@@ -173,6 +181,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     };
   } catch (err) {
     if (client) { try { await client.query('ROLLBACK'); } catch (_) {} }
+    if (err instanceof CompanyUsageRefusedError) {
+      // The definer says the caller is no longer an active member: the answer resolveEmployerActor gives.
+      return employerActorFailureResponse({ ok: false, status: 403, error: 'membership_inactive' }, CORS_HEADERS);
+    }
     console.error('employer-jobs-update error:', errorMessage(err));
     return { statusCode: 500, headers: CORS_HEADERS, body: JSON.stringify({ error: 'internal_error' }) };
   } finally {
@@ -206,6 +218,11 @@ const EDITABLE_COLUMNS = [
   // silently delete the questions, and with applicants present a
   // clear-on-omit would trip the lock on every unrelated edit.
   'pre_application_prompts',
+  // Sprint 29 (131): appended at the END for the same reason. PRESERVE-on-omit
+  // too (contract K2.2: an absent key leaves the stored choice alone, an array
+  // replaces it, [] clears it), and not part of the applicant lock: shifts
+  // describe the job, they are not something an applicant supplied.
+  'shift_periods',
 ] as const;
 
 async function handleFieldEdit(
@@ -266,6 +283,11 @@ async function handleFieldEdit(
   }
   const preApplicationPromptsInput = promptsResult.value;
 
+  // Preserve-on-omit like the prompts above: parseJobFields validates the
+  // value and maps an absent key to [], which the flag below keeps from
+  // reading as a clear.
+  const hasShiftPeriodsKey = Object.prototype.hasOwnProperty.call(body, 'shift_periods');
+
   // Recomputed on every edit (location is always present in this full-replacement
   // payload); explicit city/state_region body fields win over the parse -- an
   // employer must always be able to correct a location the parser can't handle.
@@ -325,6 +347,13 @@ async function handleFieldEdit(
       return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'legal_required', requiredVersion: process.env.REQUIRED_TOS_VERSION }) };
     }
 
+    const actorResult = await resolveEmployerActor(client, cognitoSub);
+    if (!actorResult.ok) {
+      await client.query('ROLLBACK');
+      return employerActorFailureResponse(actorResult, CORS_HEADERS);
+    }
+    const { actor } = actorResult;
+
     const current = await client.query<{
       job_type: string; required_docs: string[] | null; optional_docs: string[] | null;
       required_fields: string[] | null; optional_fields: string[] | null;
@@ -332,6 +361,7 @@ async function handleFieldEdit(
       city: string | null; state_region: string | null;
       certification_requirements: Array<{ name: string; tier: string; proof_required: boolean }> | null;
       pre_application_prompts: unknown;
+      shift_periods: string[] | null;
     }>(
       `SELECT jobs.job_type,
               jobs.required_docs,
@@ -343,11 +373,12 @@ async function handleFieldEdit(
               jobs.state_region,
               jobs.certification_requirements,
               jobs.pre_application_prompts,
+              jobs.shift_periods,
               (SELECT COUNT(*)::int FROM job_applications WHERE job_id = jobs.id) AS applicant_count
-         FROM jobs JOIN users u ON u.id = jobs.employer_id
-        WHERE jobs.id = $1 AND u.cognito_sub = $2
+         FROM jobs
+        WHERE jobs.id = $1 AND jobs.employer_id = ANY($2::uuid[])
         FOR UPDATE OF jobs`,
-      [jobId, cognitoSub],
+      [jobId, actor.scopeUserIds],
     );
     if (current.rowCount === 0) {
       await client.query('ROLLBACK');
@@ -362,14 +393,21 @@ async function handleFieldEdit(
     // pre-existing exact-replace semantics -- deliberately asymmetric, same
     // as the city/state_region clear-vs-preserve distinction commented below.
     const optional_docs = hasOptionalDocsKey ? optionalDocsInput : (cur.optional_docs ?? []);
-    const required_fields = hasRequiredFieldsKey ? requiredFieldsInput : (cur.required_fields ?? []);
-    const optional_fields = hasOptionalFieldsKey ? optionalFieldsInput : (cur.optional_fields ?? []);
+    // A retired field type (job-fields.ts) is kept when the stored job already
+    // asks for it, in either tier; a body that adds it to a job without it has
+    // it dropped.
+    const storedFields = [...(cur.required_fields ?? []), ...(cur.optional_fields ?? [])];
+    const required_fields = hasRequiredFieldsKey ? stripRetiredFields(requiredFieldsInput, storedFields) : (cur.required_fields ?? []);
+    const optional_fields = hasOptionalFieldsKey ? stripRetiredFields(optionalFieldsInput, storedFields) : (cur.optional_fields ?? []);
     // Written back verbatim when omitted, so the lock comparison below is
     // equal BY CONSTRUCTION and the UPDATE is a no-op round-trip on this
     // column rather than a clear.
     const pre_application_prompts = hasPreApplicationPromptsKey
       ? preApplicationPromptsInput
       : (Array.isArray(cur.pre_application_prompts) ? cur.pre_application_prompts : []);
+    const shift_periods = hasShiftPeriodsKey
+      ? f.shift_periods
+      : (Array.isArray(cur.shift_periods) ? cur.shift_periods : []);
 
     // Tier-overlap rejection BEFORE hitting the DB CHECK -- computed on the
     // EFFECTIVE (post-preserve-merge) values, not the raw body, so an
@@ -488,6 +526,7 @@ async function handleFieldEdit(
       // NOT NULL DEFAULT '[]' in 091 -- always a real array, so it never
       // needs the null-vs-"null" dance certification_requirements does above.
       pre_application_prompts: JSON.stringify(pre_application_prompts),
+      shift_periods,
       // Matching identity (city_key/state): an omitted triple replaces the
       // stored keys on purpose -- a fresh parse of the new location text, or
       // NULL when unparseable. A stale key must never keep matching the old
@@ -537,7 +576,7 @@ async function handleFieldEdit(
          trade_category, required_experience_years, required_experience_months, certifications,
          city_key, city, state, state_region,
          trade_category_other, expected_duration_bucket, work_days, shift_start, shift_end, certification_requirements,
-         pre_application_prompts,
+         pre_application_prompts, shift_periods,
          public_code, public_listing_enabled,
          (SELECT COUNT(*)::int FROM job_applications WHERE job_id = jobs.id) AS applicant_count`,
       [...params, jobId],

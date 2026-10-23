@@ -63,10 +63,11 @@ export function AppShellSkeleton({ role, children }: AppShellSkeletonProps) {
                         </div>
                     </header>
 
-                    {/* Bottom padding on mobile reserves room for the tab bar
-                        (5rem bar + safe-area inset on notched devices). Both
-                        roles now have one, so both roles reserve the room. */}
-                    <div className="pb-[calc(5rem+env(safe-area-inset-bottom))] lg:pb-0">{children}</div>
+                    {/* Bottom padding on mobile reserves room for the tab bar:
+                        its measured outer height, safe-area inset included, from
+                        `--jale-tab-bar-offset` (see `BottomTabBar`). Both roles
+                        have the bar, so both roles reserve the room. */}
+                    <div className="pb-[var(--jale-tab-bar-offset)] lg:pb-0">{children}</div>
                 </section>
             </div>
 

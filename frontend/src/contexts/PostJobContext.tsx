@@ -10,14 +10,14 @@ import {
     useState,
 } from 'react';
 import type { ReactNode } from 'react';
-import { useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
-import { useToast } from '@/components/ui/toast';
 import { PlanLimitDialog } from '@/components/employer/PlanLimitDialog';
 import { PostJobModal } from '@/components/employer/PostJobModal';
 import { getBilling, getJobs } from '@/lib/api/employer';
 import type { EmployerBilling, Job, JobCreatedOutcome } from '@/lib/api/employer';
 import { activeJobsPreflightModel, type PlanLimitModel } from '@/lib/plan-limit';
+import { hasJobsDone } from '@/lib/employer-tutorial-done';
+import { useTutorial } from '@/lib/tutorials/use-tutorial';
 
 /**
  * "Post a job", from anywhere in the employer app.
@@ -93,8 +93,6 @@ function activeJobsIn(jobs: Job[]): number {
 
 export function PostJobProvider({ children }: { children: ReactNode }) {
     const { idToken, isAuthenticated, userType } = useAuth();
-    const t = useTranslations('employer_dashboard');
-    const toast = useToast();
 
     const [open, setOpen] = useState(false);
     const [opening, setOpening] = useState(false);
@@ -114,8 +112,32 @@ export function PostJobProvider({ children }: { children: ReactNode }) {
 
     const isEmployer = isAuthenticated && userType === 'employer';
 
+    /*
+     * The post-job tutorial (E2) plays before the wizard for an employer with
+     * no job yet (K1.5). Whether they have one is learned from the same jobs
+     * list the gate reads: a page's published snapshot, or this provider's own
+     * read. Unknown until one of them answers, and a failed read leaves it as
+     * it was rather than claiming "no jobs".
+     */
+    const [hasJobs, setHasJobs] = useState<boolean | undefined>(undefined);
+    const postJobTutorial = useTutorial('employer_post_job', {
+        done: isEmployer ? hasJobs : undefined,
+    });
+    /*
+     * A gate that let the employer through, waiting for the tutorial step.
+     * Counted, and handled in an effect after the commit that carries the jobs
+     * the gate just read, so the tutorial judges this press by them and not by
+     * whatever it knew before the read.
+     */
+    const [wizardRequest, setWizardRequest] = useState(0);
+    const handledWizardRequestRef = useRef(0);
+
     const registerSnapshot = useCallback((snapshot: PostJobSnapshot | null) => {
         pageSnapshotRef.current = snapshot;
+        // A page that withdraws its snapshot (it unmounted) takes what it said
+        // with it: the next press reads the jobs again rather than trusting an
+        // answer that may have gone stale since.
+        setHasJobs(snapshot ? hasJobsDone(snapshot.jobs) : undefined);
     }, []);
 
     const subscribeJobCreated = useCallback((listener: JobCreatedListener) => {
@@ -132,11 +154,31 @@ export function PostJobProvider({ children }: { children: ReactNode }) {
             snapshot?.jobs ?? null,
         );
         if (gate) {
+            // The limit dialog, and no tutorial: there is no wizard to explain.
             setPlanLimit(gate);
             return;
         }
-        setOpen(true);
+        setWizardRequest((count) => count + 1);
     }, []);
+
+    useEffect(() => {
+        if (wizardRequest === handledWizardRequestRef.current) return;
+        handledWizardRequestRef.current = wizardRequest;
+        /*
+         * On a page that had to read the plan first, the button was busy --
+         * and so disabled, and so blurred -- while it waited, leaving focus on
+         * <body>. It is usable again in this commit: hand focus back to it, so
+         * the tutorial and then the wizard return focus to the button that
+         * opened them rather than to the top of the page.
+         */
+        const opener = openerRef.current;
+        openerRef.current = null;
+        const active = document.activeElement;
+        if (opener?.isConnected && (active === null || active === document.body)) {
+            opener.focus();
+        }
+        postJobTutorial.runBeforeHost(() => setOpen(true));
+    }, [postJobTutorial, wizardRequest]);
 
     /**
      * The plan and the jobs list, for a page that does not already hold them.
@@ -147,10 +189,12 @@ export function PostJobProvider({ children }: { children: ReactNode }) {
      * means no named "pause this one instead" suggestions.
      */
     const fetchSnapshot = useCallback(async (token: string): Promise<PostJobSnapshot> => {
-        const [jobs, billing] = await Promise.all([
-            getJobs(token).catch(() => [] as Job[]),
+        const [read, billing] = await Promise.all([
+            getJobs(token).catch(() => null),
             getBilling(token).catch(() => null),
         ]);
+        if (read) setHasJobs(hasJobsDone(read));
+        const jobs = read ?? [];
         return { billing, jobs, activeCount: activeJobsIn(jobs) };
     }, []);
 
@@ -173,31 +217,39 @@ export function PostJobProvider({ children }: { children: ReactNode }) {
 
             const known = snapshot ?? pageSnapshotRef.current;
             if (known) {
-                // Synchronous whenever the page on screen is already holding
-                // the answer, so the wizard opens in the same frame as the
-                // click. That page keeps its own snapshot current; this
-                // context has no way to learn that a stored one went stale,
-                // which is exactly why it stores none.
+                // Decided without a request whenever the page on screen is
+                // already holding the answer, so the wizard opens in the same
+                // frame as the click. That page keeps its own snapshot current;
+                // this context has no way to learn that a stored one went
+                // stale, which is exactly why it stores none.
+                setHasJobs(hasJobsDone(known.jobs));
                 applySnapshot(known);
                 return;
             }
 
             setOpening(true);
             fetchSnapshot(idToken)
-                .then(applySnapshot)
+                .then((snapshot) => {
+                    // Not busy any more in the same commit as the request
+                    // below, so the effect that handles it finds the button
+                    // enabled and can give it focus back.
+                    setOpening(false);
+                    applySnapshot(snapshot);
+                })
                 .finally(() => setOpening(false));
         },
         [applySnapshot, fetchSnapshot, idToken],
     );
 
-    const handleJobCreated = useCallback(
-        (job: Job, outcome?: JobCreatedOutcome) => {
-            setOpen(false);
-            toast.success(t('jobs.post_success'));
-            for (const listener of listenersRef.current) listener(job, outcome);
-        },
-        [t, toast],
-    );
+    /*
+     * The wizard stays open on its own "Job posted" screen, which is the
+     * confirmation -- so no toast here, and no close: the employer leaves that
+     * screen themselves. Subscribers hear about the job now, not on close, so
+     * the page behind the dialog already shows the new row.
+     */
+    const handleJobCreated = useCallback((job: Job, outcome?: JobCreatedOutcome) => {
+        for (const listener of listenersRef.current) listener(job, outcome);
+    }, []);
 
     const handlePlanLimitClose = useCallback(() => {
         setPlanLimit(null);

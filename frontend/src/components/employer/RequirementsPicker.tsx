@@ -1,16 +1,20 @@
 'use client';
+import { useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { Badge } from '@/components/ui/badge';
 import { findCertificationByName, certificationLabel } from '@/lib/certifications';
 import {
   REQUIREMENT_DOC_KEYS,
   FIELD_GROUPS,
+  RETIRED_FIELD_KEYS,
+  retiredFieldsInUse,
   countRequirements,
   certificationHintNames,
   certificationHintKey,
   docHintKey,
   setRequirementState,
   type RequirementDocKey,
+  type RequirementFieldKey,
   type RequirementKey,
   type RequirementsMap,
   type RequirementState,
@@ -38,6 +42,13 @@ const CERT_TIERS: readonly CertificationTier[] = ['optional', 'required'];
  * `locked` freezes every control (jobs with applicants -- the same freeze
  * `JobFormFields` already applies to job_type/required docs) and shows the
  * existing locked note above the picker instead of duplicating it per row.
+ *
+ * Sprint 29: this is "Part 2 · Before you hire" of the questions step, under
+ * a heading and a note that says who answers these and when, and that neither
+ * part can change once someone applies. Retired keys (date of birth) are not
+ * offered; a job that already asks for one shows that row, with a note, under
+ * Identity -- and keeps showing it for as long as the picker is open, so
+ * switching it Off can be undone.
  */
 interface RequirementsPickerProps {
   requirements: RequirementsMap;
@@ -86,6 +97,14 @@ export function RequirementsPicker({
   const t = useTranslations('job_requirements');
   const locale = useLocale();
   const activeLocale: 'en' | 'es' = locale === 'es' ? 'es' : 'en';
+
+  // The retired rows this job asked for when the picker opened, kept so a row
+  // switched Off does not vanish under the cursor.
+  const [retiredAtOpen] = useState(() => retiredFieldsInUse(requirements));
+  const retiredInUse = retiredFieldsInUse(requirements);
+  const retiredShown: RequirementFieldKey[] = RETIRED_FIELD_KEYS.filter(
+    (key) => retiredAtOpen.includes(key) || retiredInUse.includes(key),
+  );
 
   const setState = (key: RequirementKey, state: RequirementState) => {
     if (locked) return;
@@ -145,17 +164,23 @@ export function RequirementsPicker({
 
   return (
     <div className="grid gap-4">
-      <div className="grid gap-1.5">
+      <div className="grid gap-2">
+        <p className="text-[11px] font-bold uppercase tracking-wider text-[var(--jale-blue-700)]">{t('picker.part_label')}</p>
         <div className="flex flex-wrap items-center justify-between gap-2">
-          {/*
-            The section's own framing line, above the per-state rule: as of
-            sprint 23 NONE of these rows is asked at apply time -- every one of
-            them waits until the employer requests details from an applicant.
-            The prompts editor above this picker is what an applicant actually
-            meets, and without this sentence the two sections read as one list.
-          */}
-          <p className="text-xs font-semibold text-[var(--jale-ink)]">{t('picker.after_request_note')}</p>
+          <h4 className="text-base font-extrabold text-[var(--jale-ink)]">{t('picker.title')}</h4>
           <Badge tone="info">{t('picker.count_badge', { required, optional })}</Badge>
+        </div>
+        {/*
+          Who answers these and when. NONE of these rows is asked at apply
+          time -- every one waits until the employer requests details from an
+          applicant -- and an employer in the demo read them as asking for
+          their OWN data. The last line covers both parts: once anyone has
+          applied, the questions are locked.
+        */}
+        <div role="note" className="grid gap-1 rounded-[var(--radius-card)] bg-[var(--jale-blue-50)] p-3 text-xs leading-relaxed">
+          <p className="font-bold text-[var(--jale-ink)]">{t('picker.note_head')}</p>
+          <p className="text-[var(--jale-ink-2)]">{t('picker.after_request_note')}</p>
+          <p className="font-semibold text-[var(--jale-warning)]">{t('picker.note_lock')}</p>
         </div>
         <p className="text-xs text-[var(--jale-ink-2)]">{t('picker.rule_line')}</p>
       </div>
@@ -224,6 +249,18 @@ export function RequirementsPicker({
                     state={requirements[key]}
                     onChange={(state) => setState(key, state)}
                     disabled={locked}
+                  />
+                </li>
+              ))}
+              {group === 'identity' && retiredShown.map((key) => (
+                <li key={key}>
+                  <RequirementRow
+                    rowKey={key}
+                    label={t(`fields.${key}`)}
+                    state={requirements[key]}
+                    onChange={(state) => setState(key, state)}
+                    disabled={locked}
+                    hint={t('picker.retired_note')}
                   />
                 </li>
               ))}

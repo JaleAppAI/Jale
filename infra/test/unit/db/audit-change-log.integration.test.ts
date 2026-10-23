@@ -25,6 +25,7 @@ import { Client } from 'pg';
 import { CHANGE_LOG_PATH, TRIGGER_EVENTS, loadChangeLog, triggerArgs, triggerName } from './helpers/audit-change-log';
 import { withLoginClient } from './helpers/login-pool';
 import { syntheticUuid } from './helpers/audit-events';
+import { ensureOwnerCompany } from './helpers/org-fixtures';
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
 if (!databaseUrl) {
@@ -74,6 +75,8 @@ async function seedBase(c: Client): Promise<Base> {
   )).rows;
   const worker = users.find((u) => u.user_type === 'worker')!.id;
   const employer = users.find((u) => u.user_type === 'employer')!.id;
+  // The billing cases pay as this employer: since 127 a payer must own a company.
+  await ensureOwnerCompany(c, employer, 'Synthetic Co');
   const jobs = (await c.query<{ id: string }>(
     `INSERT INTO public.jobs (employer_id, title, location, job_type)
      VALUES ($1, 'Synthetic job', 'Austin, TX', 'contract'), ($1, 'Synthetic job 2', 'Austin, TX', 'contract') RETURNING id`,
@@ -469,7 +472,6 @@ maybeDescribe('the change log', () => {
     it.each([
       ['public.worker_posts', 'worker_id'],
       ['public.worker_profile_media', 'user_id'],
-      ['public.subscriptions', 'user_id'],
     ])('%s: a statement that only moves a row to another user leaves one record naming both users', async (table, subjectColumn) => {
       const result = await inTx(async (c, b) => {
         const other = (await c.query<{ id: string }>(

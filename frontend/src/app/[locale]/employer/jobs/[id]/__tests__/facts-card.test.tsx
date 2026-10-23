@@ -49,6 +49,23 @@ vi.mock('@/contexts/AuthContext', () => ({
     useAuth: () => auth,
 }));
 
+// The page reads the session-wide inbox for the applicants tutorial; the app
+// mounts its provider in the root layout. Stubbed settled and empty here.
+const inboxValue = {
+    items: [],
+    unreadCount: 0,
+    unreadByConversation: {},
+    loading: false,
+    errorKind: null,
+    retry: vi.fn(),
+    refresh: vi.fn(),
+    markRead: vi.fn(),
+};
+vi.mock('@/contexts/UnreadMessagesContext', () => ({
+    useUnreadMessages: () => inboxValue,
+    useUnreadCount: () => 0,
+}));
+
 const requireAuth = {
     handleLegalWall: (err: unknown) => {
         throw err;
@@ -236,6 +253,26 @@ describe('employer job detail — the facts card', () => {
             [shared('modal.trade_category'), shared('modal.trade.drywall')],
             [shared('modal.required_experience_years'), '3 years'],
             [shared('modal.language_preference'), shared('modal.language.es')],
+        ]);
+    });
+
+    it('adds the shift choices to the schedule tile, after the days and hours', () => {
+        setSeed(fullJob({ shift_periods: ['night', 'day'] }));
+        const { container } = renderIntl(<EmployerJobDetailPage />);
+
+        expect(tiles(container)[0]).toEqual([
+            shared('modal.shift_schedule'),
+            `Mon, Tue, Wed · 7:00 AM – 4:00 PM · ${message('common.shift_periods.day')}, ${message('common.shift_periods.night')}`,
+        ]);
+    });
+
+    it('shows the schedule tile for a job whose only schedule is its shift choices', () => {
+        setSeed(sparseJob({ shift_periods: ['evening'], shift_schedule: 'Old free text' }));
+        const { container } = renderIntl(<EmployerJobDetailPage />);
+
+        expect(tiles(container)).toContainEqual([
+            shared('modal.shift_schedule'),
+            message('common.shift_periods.evening'),
         ]);
     });
 

@@ -366,11 +366,17 @@ export default async function PublicJobPage({ params }: PageProps) {
   const durationText = durationLabel(active, tCommon);
   const schedule = scheduleSummary(active, locale, tCommon);
 
-  // The header location line: company, then whichever of the structured
-  // city/state_region pair and the free-text location field actually exist.
+  // The header location line: company, then the place. The signed-in job pages
+  // show the location text; this one also has the structured city/state_region
+  // pair, and a city picked from the list fills both with the same place. So
+  // the place is said once: the pair when the text is the same place, the text
+  // alone when it already names the pair and says more (a street), and both
+  // only when the text names something else.
   const cityState =
     active.city && active.state_region ? `${active.city}, ${active.state_region}` : null;
-  const headerLine = [active.company, cityState, active.location].filter(Boolean).join(' · ');
+  const headerLine = [active.company, ...headerPlaces(cityState, active.location)]
+    .filter(Boolean)
+    .join(' · ');
 
   /*
    * The job's facts, as the ONE card body all three job pages render.
@@ -380,11 +386,16 @@ export default async function PublicJobPage({ params }: PageProps) {
    * pages too, so a stranger sent this link reads the same posting the signed-in
    * app shows. Every value is still built here, by this page's own formatters.
    */
-  // ONE Horario tile: the days and the hours are one fact to a reader planning
-  // a ride. `scheduleSummary` already suppresses `legacy` whenever any
-  // structured schedule data exists, so this cannot show both.
+  // ONE Horario tile: the days, the hours and the shift choices are one fact to
+  // a reader planning a ride, in the signed-in pages' order. `scheduleSummary`
+  // already suppresses `legacy` whenever any structured schedule data exists,
+  // so this cannot show both.
   const scheduleText = schedule.legacy
-    ?? ([schedule.days.length > 0 ? schedule.days.join(', ') : null, schedule.hours]
+    ?? ([
+      schedule.days.length > 0 ? schedule.days.join(', ') : null,
+      schedule.hours,
+      schedule.periods.length > 0 ? schedule.periods.join(', ') : null,
+    ]
       .filter(Boolean)
       .join(' · ') || null);
   const tradeText = tradeLabel(active, tTrade, tDetail);
@@ -491,11 +502,14 @@ export default async function PublicJobPage({ params }: PageProps) {
     });
   }
 
+  // Documents never stop anyone applying: the employer asks for them only if
+  // they want to hire. So each chip is in the quiet state and says "Later",
+  // under a heading that says the same thing in a sentence.
   const documentChips: JobFactRequirement[] = active.required_docs.map((doc, index) => ({
     key: `doc-${index}`,
     label: docLabel(t, doc),
-    state: 'required' as const,
-    stateLabel: requiredWord,
+    state: 'optional' as const,
+    stateLabel: t('doc_later'),
   }));
 
   return (
@@ -572,7 +586,7 @@ export default async function PublicJobPage({ params }: PageProps) {
                 chips: [
                   { key: 'policy', label: t('facts.requirements'), items: policyChips },
                   { key: 'certifications', label: t('certifications'), items: certificationChips },
-                  { key: 'documents', label: t('required_docs'), items: documentChips },
+                  { key: 'documents', label: t('docs_later'), items: documentChips },
                 ],
               }}
               /* A stranger has no document vault, so the job's documents are
@@ -609,4 +623,29 @@ function docLabel(t: Awaited<ReturnType<typeof getTranslations>>, doc: PublicJob
   if (doc === 'resume') return t('doc_resume');
   if (doc === 'driver_license') return t('doc_driver_license');
   return t('doc_ssn');
+}
+
+/** A place reduced for comparison: case and every space dropped. */
+function placeKey(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, '');
+}
+
+/**
+ * The place parts of the header line, each said once.
+ *
+ *  - Only one of the two exists: that one.
+ *  - The location text is the same place as the city/state pair: the pair.
+ *  - The location text contains the pair and says more ("1200 Main St, El
+ *    Paso, TX"): the text alone, which already names the city.
+ *  - Anything else: both, pair first, so a text like a bare street is kept.
+ */
+function headerPlaces(cityState: string | null, location: string | null | undefined): string[] {
+  const text = location && location.trim() !== '' ? location.trim() : null;
+  if (cityState === null) return text === null ? [] : [text];
+  if (text === null) return [cityState];
+  const pairKey = placeKey(cityState);
+  const textKey = placeKey(text);
+  if (textKey === pairKey) return [cityState];
+  if (textKey.includes(pairKey)) return [text];
+  return [cityState, text];
 }
