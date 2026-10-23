@@ -91,3 +91,13 @@ describe('ScheduleFields: refused shift choices', () => {
     }
   });
 });
+
+describe('ScheduleFields: shift choices show keyboard focus', () => {
+  it('asks each choice card for the focus ring', () => {
+    renderFields();
+    for (const period of ['day', 'evening', 'night', 'overnight']) {
+      const box = screen.getByRole('checkbox', { name: message(`common.shift_periods.${period}`) });
+      expect(box.closest('label')?.className).toContain('has-[:focus-visible]:shadow-[var(--shadow-focus)]');
+    }
+  });
+});

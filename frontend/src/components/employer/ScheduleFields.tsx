@@ -118,6 +118,7 @@ export function ScheduleFields({
               disabled={disabled}
               invalid={periodsMarked}
               errorId={periodsMarked ? periodsErrorId : undefined}
+              focusRing
             />
           ))}
         </div>
