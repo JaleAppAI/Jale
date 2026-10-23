@@ -32,14 +32,31 @@ const EMPLOYER_PREFIXES = [
   'job_requirements.picker.',
   'job_requirements.prompts.',
   'job_requirements.employer.',
+  'tutorial.employer_',
 ];
 
 /** Text the employer sends TO a worker, so it is written in the worker's register. */
 const WORKER_FACING = new Set(['employer_messages.default_initial_message']);
 
-const TU_WORDS = /\b(tu|tus|te|contigo|puedes|tienes|quieres|necesitas|debes|estás|eres)\b/i;
+// Letter lookarounds, not `\b`: in a JavaScript regex `\b` treats accented
+// letters as non-word characters, so `\btú\b` and `\bestás\b` never match.
+const TU_WORDS = /(?<!\p{L})(tu|tus|tú|ti|te|contigo|puedes|tienes|quieres|necesitas|debes|estás|eres)(?!\p{L})/iu;
 const TU_IMPERATIVE_OPENING =
   /(^|[.!?]\s+|\{[^{}]*\{)(Agrega|Ingresa|Usa|Revisa|Actualiza|Elige|Escribe|Toca|Sube|Completa|Selecciona|Intenta|Vuelve)\b/;
+
+describe('the tú pattern itself', () => {
+  it('catches the accented forms as whole words', () => {
+    for (const sample of ['Si tú quiere', 'Es para ti.', '¿Estás listo?', 'Tú decides']) {
+      expect(TU_WORDS.test(sample), sample).toBe(true);
+    }
+  });
+
+  it('leaves usted forms and words that merely contain the letters alone', () => {
+    for (const sample of ['Si usted quiere', 'Título del empleo', 'Está listo', 'su teléfono']) {
+      expect(TU_WORDS.test(sample), sample).toBe(false);
+    }
+  });
+});
 
 describe('employer Spanish copy register', () => {
   it('uses usted, never tú, in employer-facing strings', () => {
