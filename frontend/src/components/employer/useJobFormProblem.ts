@@ -40,6 +40,7 @@ export function useJobFormProblemMessage(): (problem: JobFormFieldProblem) => st
         case 'number_of_workers_needed': return t('modal.field_errors.workers');
         case 'shift_start': return t('modal.field_errors.shift_start');
         case 'shift_end': return t('modal.field_errors.shift_end');
+        case 'shift_periods': return t('modal.field_errors.shift_periods');
         default: return t('modal.validation_required');
       }
     },

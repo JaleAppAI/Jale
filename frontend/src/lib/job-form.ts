@@ -346,6 +346,8 @@ export function validateStepRequirements(form: JobForm): PromptValidationCode | 
 export type JobFormErrorCode =
   | StepBasicsErrorCode
   | 'number' | 'pay_range' | 'headcount' | 'shift_incomplete'
+  // Server-side only (K2): a shift value the backend does not know.
+  | 'invalid_shift_periods'
   | PromptValidationCode;
 
 /**
@@ -371,7 +373,7 @@ export function validateFullJobForm(
 export type JobFormField =
   | 'title' | 'location' | 'trade_category' | 'trade_category_other'
   | 'pay_min' | 'pay_max' | 'required_experience_years' | 'number_of_workers_needed'
-  | 'shift_start' | 'shift_end'
+  | 'shift_start' | 'shift_end' | 'shift_periods'
   | 'prompt';
 
 export type JobFormFieldProblem = {

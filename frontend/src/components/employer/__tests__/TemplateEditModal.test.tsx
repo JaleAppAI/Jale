@@ -42,6 +42,7 @@ vi.mock('@/lib/api/employer', async (importOriginal) => ({
 
 import { message, renderIntl } from './render-intl';
 import { TemplateEditModal } from '../TemplateEditModal';
+import { ApiError } from '@/lib/api/employer';
 import type { JobTemplate } from '@/lib/api/employer';
 
 const withCity: JobTemplate = {
@@ -196,4 +197,28 @@ describe('TemplateEditModal: a template with no shift choices', () => {
             expect('shift_periods' in sent.payload).toBe(false);
         });
     }
+});
+
+/*
+ * K2 (2026-10-22): a template save refused with 400 `invalid_shift_periods`
+ * says so and marks the shift choices, with focus on the first of them.
+ */
+describe('TemplateEditModal: refused shift choices', () => {
+    it('names and marks the shift choices', async () => {
+        saveJobTemplate.mockRejectedValue(
+            // The body also lists the valid values; the form does not need them.
+            new ApiError(400, 'invalid_shift_periods'),
+        );
+        renderIntl(<TemplateEditModal open template={withCity} onClose={vi.fn()} onSaved={vi.fn()} />);
+
+        fireEvent.click(screen.getByRole('button', { name: message('employer_dashboard.templates.save') }));
+
+        const day = () => screen.getByRole('checkbox', { name: message('common.shift_periods.day') });
+        await waitFor(() => expect(day()).toHaveFocus());
+        expect(day()).toHaveAttribute('aria-invalid', 'true');
+        expect(screen.getAllByText('Pick the shifts again from this list').length).toBeGreaterThan(0);
+
+        fireEvent.click(day());
+        expect(day()).not.toHaveAttribute('aria-invalid');
+    });
 });

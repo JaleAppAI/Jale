@@ -524,6 +524,10 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
         setError(tReq('errors.city_required'));
       } else if (err instanceof ApiError && err.code === 'requirements_tier_overlap') {
         setError(tReq('errors.tier_overlap'));
+      } else if (err instanceof ApiError && err.code === 'invalid_shift_periods') {
+        // K2: a shift value the server does not know. The choices on step 2
+        // are marked and focused, as for a refused step.
+        refuse({ field: 'shift_periods', code: 'invalid_shift_periods' }, 2);
       } else if (err instanceof ApiError && err.code === 'invalid_pre_application_prompts') {
         // The backend's own bound check on the prompt list. Reachable despite
         // `validateStepRequirements` above -- the two agree on today's rules,
@@ -883,10 +887,13 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
             onShiftStartChange={(value) => update('shift_start', value)}
             onShiftEndChange={(value) => update('shift_end', value)}
             shiftPeriods={form.shift_periods}
-            onToggleShiftPeriod={(period) =>
-              setForm((current) => ({ ...current, shift_periods: toggleShiftPeriod(current.shift_periods, period) }))}
+            onToggleShiftPeriod={(period) => {
+              setForm((current) => ({ ...current, shift_periods: toggleShiftPeriod(current.shift_periods, period) }));
+              clearFieldProblem('shift_periods');
+            }}
             fieldError={
               fieldProblem?.field === 'shift_start' || fieldProblem?.field === 'shift_end'
+                || fieldProblem?.field === 'shift_periods'
                 ? { field: fieldProblem.field, message: problemMessage(fieldProblem) }
                 : null
             }

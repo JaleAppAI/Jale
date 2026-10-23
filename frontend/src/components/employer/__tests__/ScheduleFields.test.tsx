@@ -63,3 +63,31 @@ describe('ScheduleFields: shift choices', () => {
     expect(screen.getByRole('checkbox', { name: message('common.shift_periods.overnight', 'es') })).toBeInTheDocument();
   });
 });
+
+/*
+ * K2 (2026-10-22): the server refuses an unknown shift value with 400
+ * `invalid_shift_periods`. The form marks the shift choices themselves.
+ */
+describe('ScheduleFields: refused shift choices', () => {
+  const MESSAGE = 'Pick the shifts again from this list';
+
+  it('marks every shift choice and describes it with the sentence', () => {
+    renderFields({ fieldError: { field: 'shift_periods', message: MESSAGE } });
+
+    for (const period of ['day', 'evening', 'night', 'overnight']) {
+      const box = screen.getByRole('checkbox', { name: message(`common.shift_periods.${period}`) });
+      expect(box).toHaveAttribute('aria-invalid', 'true');
+      expect(box).toHaveAccessibleDescription(expect.stringContaining(MESSAGE));
+    }
+    expect(screen.getByText(MESSAGE)).toBeInTheDocument();
+    expect(document.querySelector('[data-field="shift_periods"]')).not.toBeNull();
+  });
+
+  it('leaves the times unmarked', () => {
+    renderFields({ fieldError: { field: 'shift_periods', message: MESSAGE } });
+
+    for (const input of Array.from(document.querySelectorAll('input[type="time"]'))) {
+      expect(input).not.toHaveAttribute('aria-invalid');
+    }
+  });
+});

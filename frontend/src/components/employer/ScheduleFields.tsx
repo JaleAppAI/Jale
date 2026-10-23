@@ -35,8 +35,12 @@ interface ScheduleFieldsProps {
   shiftPeriods: ShiftPeriod[];
   onToggleShiftPeriod: (period: ShiftPeriod) => void;
   disabled?: boolean;
-  /** The time field a refused step is about, with the sentence shown under the times. */
-  fieldError?: { field: 'shift_start' | 'shift_end'; message: string } | null;
+  /**
+   * The field a refused step or save is about: a time (the sentence goes under
+   * the times) or the shift choices (it goes under the choices, and every
+   * choice is marked).
+   */
+  fieldError?: { field: 'shift_start' | 'shift_end' | 'shift_periods'; message: string } | null;
 }
 
 export function ScheduleFields({
@@ -51,8 +55,11 @@ export function ScheduleFields({
   const startId = useId();
   const endId = useId();
   const timeErrorId = useId();
+  const periodsErrorId = useId();
   const startMarked = fieldError?.field === 'shift_start';
   const endMarked = fieldError?.field === 'shift_end';
+  const periodsMarked = fieldError?.field === 'shift_periods';
+  const timeError = startMarked || endMarked ? fieldError : null;
 
   const showLegacyNote =
     workDays.length === 0 && shiftPeriods.length === 0 && shiftStart === '' && shiftEnd === ''
@@ -91,7 +98,11 @@ export function ScheduleFields({
         </div>
       </div>
 
-      <fieldset className="m-0 flex min-w-0 flex-col gap-1.5 border-0 p-0" aria-describedby={shiftsHintId}>
+      <fieldset
+        data-field="shift_periods"
+        className="m-0 flex min-w-0 flex-col gap-1.5 border-0 p-0"
+        aria-describedby={shiftsHintId}
+      >
         <legend className="mb-1.5 p-0 text-xs font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">
           {t('modal.shifts_label')}
         </legend>
@@ -105,9 +116,14 @@ export function ScheduleFields({
               description={tCommon(`shift_period_help.${period}`)}
               onChange={() => onToggleShiftPeriod(period)}
               disabled={disabled}
+              invalid={periodsMarked}
+              errorId={periodsMarked ? periodsErrorId : undefined}
             />
           ))}
         </div>
+        {periodsMarked && fieldError && (
+          <p id={periodsErrorId} className="text-xs font-medium text-[var(--jale-danger-text)]">{fieldError.message}</p>
+        )}
       </fieldset>
 
       <p className="-mb-1.5 text-xs font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">
@@ -146,8 +162,8 @@ export function ScheduleFields({
           />
         </div>
       </div>
-      {fieldError && (
-        <p id={timeErrorId} className="-mt-1.5 text-xs font-medium text-[var(--jale-danger-text)]">{fieldError.message}</p>
+      {timeError && (
+        <p id={timeErrorId} className="-mt-1.5 text-xs font-medium text-[var(--jale-danger-text)]">{timeError.message}</p>
       )}
       <p id={timesHintId} className="-mt-1.5 text-xs text-[var(--jale-ink-2)]">{t('modal.shift_times_hint')}</p>
 

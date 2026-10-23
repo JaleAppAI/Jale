@@ -7,7 +7,9 @@ import * as React from "react";
  * it is given, the checkbox is named by the label alone and described by that
  * line, so a screen reader says "Day, checkbox" and then the help, rather than
  * one long name. `disabled` (optional) greys the card and stops the toggle.
- * Without either prop the card renders exactly as before.
+ * `invalid` (optional) marks the checkbox `aria-invalid`, and `errorId`
+ * (optional) adds the id of the sentence saying why to its description.
+ * Without these props the card renders exactly as before.
  */
 export function CheckboxCard({
   checked,
@@ -15,12 +17,16 @@ export function CheckboxCard({
   onChange,
   description,
   disabled,
+  invalid,
+  errorId,
 }: {
   checked: boolean;
   label: string;
   onChange: () => void;
   description?: string;
   disabled?: boolean;
+  invalid?: boolean;
+  errorId?: string;
 }) {
   const labelId = React.useId();
   const descriptionId = React.useId();
@@ -62,7 +68,8 @@ export function CheckboxCard({
         disabled={disabled}
         className="sr-only"
         aria-labelledby={description ? labelId : undefined}
-        aria-describedby={description ? descriptionId : undefined}
+        aria-describedby={[description ? descriptionId : null, errorId ?? null].filter(Boolean).join(" ") || undefined}
+        aria-invalid={invalid || undefined}
       />
       {description ? (
         <span className="flex min-w-0 flex-col gap-0.5">

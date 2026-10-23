@@ -916,7 +916,8 @@
         "experience": "Ingrese los años de experiencia como número, 0 o más",
         "workers": "Indique cuántos trabajadores necesita, 1 o más",
         "shift_start": "Agregue también la hora de entrada, o borre la de salida",
-        "shift_end": "Agregue también la hora de salida, o borre la de entrada"
+        "shift_end": "Agregue también la hora de salida, o borre la de entrada",
+        "shift_periods": "Vuelva a elegir los turnos de esta lista"
       },
       "validation_number": "Ingrese números válidos y no negativos.",
       "validation_pay_range": "El pago mínimo no puede ser mayor que el máximo.",

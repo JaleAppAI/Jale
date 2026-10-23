@@ -419,6 +419,30 @@ describe('PostJobModal: a refused step points at its field', () => {
     expect(createJob).not.toHaveBeenCalled();
   });
 
+  it('points at the shift choices when the server refuses them (K2 invalid_shift_periods)', async () => {
+    createJob.mockRejectedValue(
+      // The body also lists the valid values; the form does not need them.
+      new ApiError(400, 'invalid_shift_periods'),
+    );
+    await openWithTemplates([withCity]);
+    applyTemplate(withCity.id);
+    fireEvent.click(nextButton());
+    await waitFor(() => expect(stepHeading()).toHaveTextContent(message('employer_dashboard.modal.steps.details')));
+    fireEvent.click(nextButton());
+    await waitFor(() => expect(stepHeading()).toHaveTextContent(message('employer_dashboard.modal.steps.documents')));
+    fireEvent.click(screen.getByRole('button', { name: message('employer_dashboard.post_job_docs.submit') }));
+
+    const day = () => screen.getByRole('checkbox', { name: message('common.shift_periods.day') });
+    await waitFor(() => expect(day()).toHaveFocus());
+    expect(stepHeading()).toHaveTextContent(message('employer_dashboard.modal.steps.details'));
+    expect(day()).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByRole('alert')).toHaveTextContent('Pick the shifts again from this list');
+
+    // Picking again clears the mark.
+    fireEvent.click(day());
+    expect(day()).not.toHaveAttribute('aria-invalid');
+  });
+
   it('clears the mark once the field is edited', async () => {
     await openEmpty();
     fireEvent.click(nextButton());
