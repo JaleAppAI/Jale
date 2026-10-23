@@ -55,13 +55,13 @@ describeInProfiles([...ALL_PROFILES], 'migration 132: the plan catalog', () => {
     await world.end();
   });
 
-  it('allows 15 active jobs on Free and 50 on Pro, and keeps the template limits at 2 and 20', async () => {
+  it('allows 15 active jobs on Free and 50 on Pro, and keeps the template limits (2, 20) and the foreman seats from 127 (0, 3)', async () => {
     const { rows } = await world.su.query<{ code: string; entitlements: Record<string, unknown> }>(
       `SELECT code, entitlements FROM billing_plans WHERE code IN ('employer_free', 'employer_pro') ORDER BY code`,
     );
     expect(rows).toEqual([
-      { code: 'employer_free', entitlements: { active_job_limit: 15, template_limit: 2 } },
-      { code: 'employer_pro', entitlements: { active_job_limit: 50, template_limit: 20 } },
+      { code: 'employer_free', entitlements: { active_job_limit: 15, template_limit: 2, foreman_seat_limit: 0 } },
+      { code: 'employer_pro', entitlements: { active_job_limit: 50, template_limit: 20, foreman_seat_limit: 3 } },
     ]);
   });
 
