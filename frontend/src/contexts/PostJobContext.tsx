@@ -164,6 +164,19 @@ export function PostJobProvider({ children }: { children: ReactNode }) {
     useEffect(() => {
         if (wizardRequest === handledWizardRequestRef.current) return;
         handledWizardRequestRef.current = wizardRequest;
+        /*
+         * On a page that had to read the plan first, the button was busy --
+         * and so disabled, and so blurred -- while it waited, leaving focus on
+         * <body>. It is usable again in this commit: hand focus back to it, so
+         * the tutorial and then the wizard return focus to the button that
+         * opened them rather than to the top of the page.
+         */
+        const opener = openerRef.current;
+        openerRef.current = null;
+        const active = document.activeElement;
+        if (opener?.isConnected && (active === null || active === document.body)) {
+            opener.focus();
+        }
         postJobTutorial.runBeforeHost(() => setOpen(true));
     }, [postJobTutorial, wizardRequest]);
 
@@ -216,7 +229,13 @@ export function PostJobProvider({ children }: { children: ReactNode }) {
 
             setOpening(true);
             fetchSnapshot(idToken)
-                .then(applySnapshot)
+                .then((snapshot) => {
+                    // Not busy any more in the same commit as the request
+                    // below, so the effect that handles it finds the button
+                    // enabled and can give it focus back.
+                    setOpening(false);
+                    applySnapshot(snapshot);
+                })
                 .finally(() => setOpening(false));
         },
         [applySnapshot, fetchSnapshot, idToken],
