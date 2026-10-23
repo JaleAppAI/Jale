@@ -439,6 +439,38 @@ describe('recording', () => {
         ]);
     });
 
+    it.each([
+        ['Skip', 'skipped', () => act(() => screen.getByRole('button', { name: 'Skip' }).click())],
+        [
+            'Got it',
+            'completed',
+            () => {
+                act(() => screen.getByRole('button', { name: 'Next' }).click());
+                act(() => screen.getByRole('button', { name: 'Next' }).click());
+                act(() => screen.getByRole('button', { name: 'Got it' }).click());
+            },
+        ],
+    ])('records %s pressed after the person has left the shell, and does not open it again on return', async (_way, outcome, dismiss) => {
+        await readyEmployer();
+        const view = render(<AutoPage done={false} />, { wrapper: Providers });
+        await waitFor(() => expect(tutorialDialog('employer_welcome')).toBeInTheDocument());
+
+        // Browser Back to the landing page while the tutorial is still up.
+        route.path = '/';
+        view.rerender(<p>landing</p>);
+        await settle();
+        dismiss();
+        await settle();
+
+        expect(posts()).toEqual([['POST', '/employer/tutorials', { tutorial_id: 'employer_welcome', outcome }]]);
+
+        route.path = '/employer/dashboard';
+        view.rerender(<AutoPage key="again" done={false} />);
+        await settle();
+        expect(dialogs()).toBe(0);
+        expect(tutorialCalls().filter(([method]) => method === 'GET')).toHaveLength(1);
+    });
+
     it('does not open the same tutorial again on the next page after it was dismissed', async () => {
         await readyEmployer();
         function Shell({ page }: { page: number }) {

@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { EMPLOYER_TUTORIAL_IDS, type TutorialId, type TutorialRole } from '@/lib/api/tutorials';
-import { useTutorialProgress, type TutorialProgressValue, type TutorialVars } from './progress';
+import type { TutorialId } from '@/lib/api/tutorials';
+import { roleOfTutorial, useTutorialProgress, type TutorialProgressValue, type TutorialVars } from './progress';
 import type { TutorialHandle, UseTutorialOptions } from './types';
 
 /**
@@ -35,15 +35,11 @@ import type { TutorialHandle, UseTutorialOptions } from './types';
  * inert: nothing opens, and `runBeforeHost` simply opens the host.
  */
 
-function roleOf(id: TutorialId): TutorialRole {
-    return (EMPLOYER_TUTORIAL_IDS as readonly TutorialId[]).includes(id) ? 'employer' : 'worker';
-}
-
 /** Everything but the overlay rule, which drops a request for the page view rather than for now. */
 function mayAutoPlay(progress: TutorialProgressValue, id: TutorialId, done: boolean | undefined): boolean {
     return (
         progress.status === 'ready' &&
-        progress.role === roleOf(id) &&
+        progress.role === roleOfTutorial(id) &&
         done === false &&
         !progress.hasRecord(id) &&
         !progress.isFlagged(id) &&

@@ -17,6 +17,7 @@ import { usePathname } from '@/i18n/navigation';
 import { locales } from '@/i18n/locales';
 import { accountKeyFromIdToken } from '@/lib/account-key';
 import {
+    EMPLOYER_TUTORIAL_IDS,
     getTutorialProgress,
     recordTutorialOutcome,
     type TutorialId,
@@ -214,6 +215,11 @@ export function shellRoleFromPath(pathname: string | null | undefined): Tutorial
     return null;
 }
 
+/** Whose tutorial `id` is: the contract's id lists, not the route it is shown on. */
+export function roleOfTutorial(id: TutorialId): TutorialRole {
+    return (EMPLOYER_TUTORIAL_IDS as readonly TutorialId[]).includes(id) ? 'employer' : 'worker';
+}
+
 function roleOfKey(key: string): string {
     return key.slice(0, key.indexOf(':'));
 }
@@ -245,9 +251,9 @@ export function TutorialProgressProvider({ children }: { children: ReactNode }) 
 
     // The latest of each, for callbacks that must not change identity (and so
     // re-render every consumer) on every token rotation.
-    const latest = useRef({ token: idToken, role, account, loadKey, entries });
+    const latest = useRef({ token: idToken, userType, role, account, loadKey, entries });
     useIsomorphicLayoutEffect(() => {
-        latest.current = { token: idToken, role, account, loadKey, entries };
+        latest.current = { token: idToken, userType, role, account, loadKey, entries };
     });
 
     /** Failed saves this page load knows about, whatever storage can hold. */
@@ -347,10 +353,17 @@ export function TutorialProgressProvider({ children }: { children: ReactNode }) 
     );
 
     const recordOutcome = useCallback((id: TutorialId, outcome: TutorialOutcome) => {
-        const { token, role: servingRole, account: servingAccount, loadKey: key } = latest.current;
-        // A tutorial of the other role is not this account's to record (the
-        // backend would refuse it as invalid_tutorial anyway).
-        if (servingRole === null || !id.startsWith(`${servingRole}_`)) return;
+        // The role comes from the tutorial, not from the route: the player
+        // stays up across a navigation, so Skip or Got it may be pressed on a
+        // page outside the shell (a browser Back to the landing page), and the
+        // outcome still belongs to the account that was shown it.
+        const role = roleOfTutorial(id);
+        const { token, userType: signedInAs, account: servingAccount } = latest.current;
+        // Only an account signed in as that role can record it (the backend
+        // would refuse anything else as invalid_tutorial).
+        if (signedInAs !== role) return;
+        // The same key the read stores this account's records under.
+        const key = token ? `${role}:${servingAccount ?? token}` : null;
 
         const markRecorded = (stored: TutorialRecord) =>
             setEntries((prev) => {
@@ -365,14 +378,14 @@ export function TutorialProgressProvider({ children }: { children: ReactNode }) 
         markRecorded({ tutorial_id: id, outcome, recorded_at: new Date().toISOString() });
 
         const flag = () => {
-            flagsRef.current.add(flagKey(servingRole, servingAccount, id));
+            flagsRef.current.add(flagKey(role, servingAccount, id));
             writeRecordFailed(id, servingAccount);
         };
         if (!token) {
             flag();
             return;
         }
-        recordTutorialOutcome(token, servingRole, id, outcome).then(markRecorded, flag);
+        recordTutorialOutcome(token, role, id, outcome).then(markRecorded, flag);
     }, []);
 
     const play = useCallback((request: PlayRequest) => plays.request(request), [plays]);
