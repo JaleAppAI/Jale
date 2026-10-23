@@ -1027,6 +1027,7 @@
     "trust_title": "Trust assessment",
     "trust_score_label": "Competency score",
     "trust_caption": "The score comes from their answers to questions about their work.",
+    "status_caption": "Only “Request details” and “Hired” message the worker. The other statuses are just for you.",
     "trust_dim_specific_knowledge": "Specific knowledge",
     "trust_dim_practical_experience": "Practical experience",
     "trust_dim_safety_awareness": "Safety awareness",

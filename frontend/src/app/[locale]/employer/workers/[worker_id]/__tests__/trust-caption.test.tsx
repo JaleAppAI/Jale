@@ -150,3 +150,26 @@ describe('trust score caption', () => {
     expect(screen.queryByText('The score comes from their answers to questions about their work.')).not.toBeInTheDocument();
   });
 });
+
+/*
+ * One line under the status select saying which statuses reach the worker
+ * (sprint 29, A11). Both "Request details" and "Hired" send a message
+ * (`employer-application-status-update.ts`), so the line names both.
+ */
+describe('status select caption', () => {
+  const EN = 'Only “Request details” and “Hired” message the worker. The other statuses are just for you.';
+  const ES = 'Solo “Solicitar datos” y “Contratado” le envían un mensaje al trabajador. Los demás estados son solo para usted.';
+
+  it('says which statuses message the worker, and describes the select with it', () => {
+    seedWith(profile());
+    renderIntl(<EmployerWorkerPage />);
+    expect(screen.getByText(EN)).toBeInTheDocument();
+    expect(screen.getByRole('combobox')).toHaveAccessibleDescription(expect.stringContaining(EN));
+  });
+
+  it('says it in Spanish', () => {
+    seedWith(profile());
+    renderIntl(<EmployerWorkerPage />, 'es');
+    expect(screen.getByText(ES)).toBeInTheDocument();
+  });
+});

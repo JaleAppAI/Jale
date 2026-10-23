@@ -1027,6 +1027,7 @@
     "trust_title": "Evaluación de confianza",
     "trust_score_label": "Puntaje de competencia",
     "trust_caption": "El puntaje viene de sus respuestas a preguntas sobre su trabajo.",
+    "status_caption": "Solo “Solicitar datos” y “Contratado” le envían un mensaje al trabajador. Los demás estados son solo para usted.",
     "trust_dim_specific_knowledge": "Conocimiento específico",
     "trust_dim_practical_experience": "Experiencia práctica",
     "trust_dim_safety_awareness": "Conciencia de seguridad",

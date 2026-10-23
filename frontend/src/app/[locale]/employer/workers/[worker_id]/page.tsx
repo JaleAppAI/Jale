@@ -934,6 +934,7 @@ export default function WorkerProfilePage() {
                                         </label>
                                         <Select
                                             id="applicant-status"
+                                            aria-describedby="applicant-status-caption"
                                             value={selectedStatus}
                                             disabled={saving}
                                             onChange={(event) =>
@@ -959,6 +960,16 @@ export default function WorkerProfilePage() {
                                         {hireHint ? (
                                             <p className="mt-1.5 text-xs text-[var(--jale-ink-2)]">{hireHint}</p>
                                         ) : null}
+                                        {/* Which statuses reach the worker: both
+                                            "Request details" and "Hired" send a
+                                            message, the rest are the employer's
+                                            own notes. */}
+                                        <p
+                                            id="applicant-status-caption"
+                                            className="mt-1.5 text-xs text-[var(--jale-ink-2)]"
+                                        >
+                                            {t('status_caption')}
+                                        </p>
                                     </div>
                                     <Button
                                         onClick={handleSaveStatus}
