@@ -195,6 +195,7 @@ describe('Help in the onboarding band', () => {
         const band = screen.getByRole('group', { name: en.worker_onboarding.header.language_group }).parentElement!;
         expect(band.contains(help)).toBe(true);
 
+        act(() => help.focus());
         act(() => help.click());
         const menu = await screen.findByRole('dialog', { name: 'How Jale works' });
         expect(within(menu).getAllByRole('listitem').map((item) => item.textContent)).toEqual([
@@ -212,6 +213,8 @@ describe('Help in the onboarding band', () => {
         await settle();
         expect(dialogs()).toBe(0);
         expect(posts()).toEqual([]);
+        // The replay hands focus back to the Help button in the band.
+        expect(document.activeElement).toBe(help);
     });
 
     it('is named in Spanish', async () => {
