@@ -28,6 +28,8 @@ import { EmptyThreadComposer } from '@/components/employer/EmptyThreadComposer';
 import { isLegalWallError } from '@/lib/api';
 import { ApiError } from '@/lib/api/errors';
 import { formatTimeOfDay } from '@/lib/date';
+import { messagesTutorialDone } from '@/lib/employer-tutorial-done';
+import { useTutorial } from '@/lib/tutorials/use-tutorial';
 import {
   closeConversation,
   getConversation,
@@ -137,8 +139,23 @@ export default function EmployerConversationsPage() {
    * its read lands. `openItem`'s local clear below is that same fallback, not
    * a duplicate to be tidied away.
    */
-  const { items: polledItems, refresh: refreshPolledInbox, unreadByConversation } =
-    useUnreadMessages();
+  const {
+    items: polledItems,
+    loading: polledLoading,
+    errorKind: polledErrorKind,
+    refresh: refreshPolledInbox,
+    unreadByConversation,
+  } = useUnreadMessages();
+
+  /*
+   * The messages tutorial (E4) plays before a conversation the employer picks
+   * opens, for an employer with no conversation yet (K1.5), judged by the
+   * session inbox as the drawer judges it. Arriving on a thread by link is not
+   * a pick and opens it directly.
+   */
+  const messagesTutorial = useTutorial('employer_messages', {
+    done: messagesTutorialDone({ loading: polledLoading, errorKind: polledErrorKind, items: polledItems }),
+  });
 
   const items = useMemo(() => inboxData?.items ?? [], [inboxData]);
   const jobs = inboxData?.jobs ?? [];
@@ -455,6 +472,11 @@ export default function EmployerConversationsPage() {
         <MetricCard variant="accent" tone="green" value={repliedCount} label={t('worker_replied')} hint={t('reply_window_open')} />
         <MetricCard variant="accent" tone="amber" value={waitingCount} label={t('waiting_reply')} hint={t('template_invite_sent')} />
         <MetricCard variant="accent" tone="navy" value={newApplicantCount} label={t('new_applicants')} hint={t('not_yet_messaged')} />
+        {/* What "Reply window open" and "Invitation sent" mean, in one line.
+            Traced in the messaging lambda: within 24 hours of the worker's last
+            message a free-form message goes straight through; otherwise an
+            invitation goes first and the message waits for the reply. */}
+        <p className="text-xs text-[var(--jale-ink-2)] md:col-span-4">{t('whatsapp_window_caption')}</p>
       </section>
 
       {/* One bordered container; every pane inside it is separated by dividers,
@@ -532,7 +554,7 @@ export default function EmployerConversationsPage() {
                   <InboxRow
                     item={item}
                     selected={selectedKey === item.application_id}
-                    onSelect={() => openItem(item.application_id)}
+                    onSelect={() => messagesTutorial.runBeforeHost(() => openItem(item.application_id))}
                     unread={
                       item.conversation_id && item.conversation_id in unreadByConversation
                         ? unreadByConversation[item.conversation_id]

@@ -73,24 +73,27 @@ describe('nav label keys', () => {
 
 describe('employerMobileNav', () => {
     it('is the sidebar items minus sidebar-only entries, reused rather than re-declared', () => {
-        // Templates is a management surface, not a daily destination, and
-        // applicants is a deep-dive view of data the dashboard/messages tabs
-        // already surface day to day -- both stay sidebar-only so the bar
-        // keeps to its four-tab ceiling.
+        // Templates is a management surface, not a daily destination, so it
+        // stays sidebar-only. Applicants is on the bar (sprint 29): employers
+        // on phones could not reach the board. Billing left the bar to keep it
+        // at four tabs; the dashboard's plan meter links to it.
         expect(employerMobileNav).toEqual([
-            ...employerPrimaryNav.filter((item) => item.key !== 'templates' && item.key !== 'applicants'),
-            employerBillingNav,
+            ...employerPrimaryNav.filter((item) => item.key !== 'templates'),
             employerSettingsNav,
         ]);
     });
 
-    it('gives an employer on a phone a route to dashboard, messages, billing and settings', () => {
+    it('gives an employer on a phone dashboard, messages, applicants and settings, in that order', () => {
         expect(employerMobileNav.map((item) => item.key)).toEqual([
             'dashboard',
             'messages',
-            'billing',
+            'applicants',
             'settings',
         ]);
+    });
+
+    it('keeps the bar at four tabs', () => {
+        expect(employerMobileNav).toHaveLength(4);
     });
 
     it('points settings at the employer profile page', () => {
@@ -127,7 +130,7 @@ describe('isNavItemActive on the employer tabs', () => {
         const paths = [
             '/employer/dashboard',
             '/employer/conversations',
-            '/employer/billing',
+            '/employer/applicants',
             '/employer/profile',
         ];
         for (const path of paths) {

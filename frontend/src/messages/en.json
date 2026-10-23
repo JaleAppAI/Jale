@@ -75,6 +75,18 @@
       "sat": "Sat",
       "sun": "Sun"
     },
+    "shift_periods": {
+      "day": "Day",
+      "evening": "Evening",
+      "night": "Night",
+      "overnight": "Overnight"
+    },
+    "shift_period_help": {
+      "day": "Starts in the morning, ends by late afternoon",
+      "evening": "Starts in the afternoon, ends by late evening",
+      "night": "Starts in the evening, ends after midnight",
+      "overnight": "Runs through the night, ends in the morning"
+    },
     "experience_years_unit": "{n, plural, one {# year} other {# years}}",
     "experience_months_unit": "{n, plural, one {# month} other {# months}}",
     "experience_none": "No experience required"
@@ -317,8 +329,9 @@
     "employer": {
       "hero": "Hire skilled workers, fast.",
       "title": "Employer sign in",
-      "signup_title": "Welcome to Jale",
-      "signup_subtitle": "Let's verify your email so you can start hiring.",
+      "signup_title": "Create your employer account",
+      "signup_subtitle": "Next, we’ll email you a code to confirm your address.",
+      "signup_confirm_subtitle": "Last step: confirm your email so you can start hiring.",
       "confirm_subtitle": "Enter the code we sent to {email}.",
       "email_label": "Email",
       "password_label": "Password",
@@ -356,6 +369,7 @@
         "contact_name": "Contact name",
         "email": "Work email",
         "password": "Password",
+        "password_create": "Create password",
         "password_confirm": "Confirm password",
         "phone": "Phone",
         "city": "City",
@@ -559,9 +573,10 @@
     "waiting": "Waiting",
     "active": "Active",
     "worker_replied": "Worker replied",
-    "reply_window_open": "24h reply window open",
+    "reply_window_open": "Reply window open",
+    "whatsapp_window_caption": "Within 24 hours of a worker’s last message, yours goes straight to their WhatsApp. Otherwise Jale sends them an invitation first, and your message waits until they reply.",
     "waiting_reply": "Waiting reply",
-    "template_invite_sent": "Template invite sent",
+    "template_invite_sent": "Invitation sent",
     "archived_conversations": "Archived conversations",
     "whatsapp_linked": "WhatsApp linked conversations",
     "thread_status": "Thread status",
@@ -814,7 +829,7 @@
       "description_placeholder_notes": "Write a brief description — a sentence or two is enough. Generate with AI will build the full posting around it, or work from the job basics alone.",
       "description_helper": {
         "use_sample": "Use a sample",
-        "source_credit": "Source: O*NET",
+        "source_credit": "Based on U.S. job data",
         "generate": "Generate with AI",
         "generating": "Generating…",
         "replace_hint": "This will replace the current description.",
@@ -841,6 +856,8 @@
       "trade_other_hint": "Workers who listed this trade will be matched to your job.",
       "pay_min": "Pay Min",
       "pay_max": "Pay Max",
+      "pay_max_placeholder": "Optional",
+      "pay_max_hint": "Max is optional. Leave it blank if pay is negotiable.",
       "pay_interval": "Pay Interval",
       "pay_interval_option": {
         "hourly": "Hourly",
@@ -860,6 +877,10 @@
       "shift_start_label": "Shift start",
       "shift_end_label": "Shift end",
       "shift_to": "to",
+      "shifts_label": "Shifts",
+      "shifts_hint": "Pick every shift this job can work.",
+      "shift_times_label": "Start and end times (optional)",
+      "shift_times_hint": "Leave them empty if hours vary. You can agree on hours with the worker.",
       "number_of_workers_needed": "Workers Needed",
       "required_experience_years": "Required Experience",
       "experience_years_label": "Required years of experience",
@@ -882,9 +903,22 @@
       "certifications_no_matches": "No matching certifications",
       "certifications_already_added": "Already added",
       "certifications_remove_aria": "Remove {name}",
-      "certifications_picker_hint": "Pick from the list or add your own. You’ll mark each one required or optional in the next step.",
+      "certifications_picker_hint": "Add several, from the list or in your own words.",
       "legacy_value_note": "Originally entered as: {value}",
       "validation_required": "Complete the required fields.",
+      "field_errors": {
+        "title": "Add a job title",
+        "location": "Add the city where the job is",
+        "trade": "Pick a trade",
+        "trade_other": "Type the name of the trade",
+        "pay_min": "Enter the minimum pay as a number, 0 or more",
+        "pay_max": "Enter the maximum pay as a number, 0 or more",
+        "experience": "Enter the years of experience as a number, 0 or more",
+        "workers": "Enter how many workers you need, 1 or more",
+        "shift_start": "Add the start time too, or clear the end time",
+        "shift_end": "Add the end time too, or clear the start time",
+        "shift_periods": "Pick the shifts again from this list"
+      },
       "validation_number": "Enter valid non-negative numbers.",
       "validation_pay_range": "Pay min cannot be greater than pay max.",
       "validation_headcount": "Workers needed must be at least 1.",
@@ -907,14 +941,28 @@
       "years_experience": "{years, plural, one {# yr exp} other {# yrs exp}}"
     },
     "post_job_docs": {
-      "step_label": "Step 2 of 2",
+      "step_label": "Step 3 of 3 · Questions",
       "title": "Document Requirements",
-      "subtitle": "Your apply-time questions, then what you'll ask for once you request someone's details.",
+      "subtitle": "Quick questions when they apply, then the questions for someone you want to hire.",
       "optional_label": "Optional",
       "required_label": "Required",
       "next": "Next: Document Requirements",
       "back": "Back",
       "submit": "Post Job"
+    },
+    "job_posted": {
+      "title": "Your job is posted",
+      "share_head": "Share it with workers",
+      "share_body": "Your job is private until you share it. Turn on the share link so anyone with it can see the job and apply, no account needed.",
+      "turn_on": "Turn on the share link",
+      "link_label": "Share link",
+      "crew": "Send it to your crew leads, or print the QR code for your next safety meeting.",
+      "off_note": "You can turn the link off any time on the job page.",
+      "next_head": "What happens next",
+      "n1": "Workers open the link and apply on WhatsApp or on the web.",
+      "n2": "Each one appears under Applicants, with their trade, experience and answers.",
+      "n3": "Message the ones you like from Messages. Their replies come in from WhatsApp.",
+      "back": "Back to dashboard"
     },
     "templates": {
       "title": "Job templates",
@@ -978,6 +1026,8 @@
     "fallback_applied": "Date unavailable",
     "trust_title": "Trust assessment",
     "trust_score_label": "Competency score",
+    "trust_caption": "The score comes from their answers to questions about their work.",
+    "status_caption": "Only “Request details” and “Hired” message the worker. The other statuses are just for you.",
     "trust_dim_specific_knowledge": "Specific knowledge",
     "trust_dim_practical_experience": "Practical experience",
     "trust_dim_safety_awareness": "Safety awareness",
@@ -1576,7 +1626,12 @@
   "job_requirements": {
     "picker": {
       "rule_line": "Required items must be completed when you request details. Optional items can be skipped. Off items are not asked.",
-      "after_request_note": "These are asked only after you request details from an applicant.",
+      "part_label": "Part 2 · Before you hire",
+      "title": "Questions for applicants",
+      "note_head": "These are for the people who apply, not for you.",
+      "after_request_note": "Applicants answer them only after you request details from someone you want to hire. Until then you see their trade, experience and answers about their work.",
+      "note_lock": "Once someone applies, neither part can change.",
+      "retired_note": "No longer offered on new jobs.",
       "count_badge": "{required} required · {optional} optional",
       "locked_note": "Requirements are locked — this job already has applicants",
       "sensitive": "Sensitive",
@@ -1592,8 +1647,9 @@
       "doc_hint_optional": "Applicants may attach this when you request details — never required."
     },
     "prompts": {
-      "section_title": "Pre-application questions",
-      "section_subtitle": "Asked at apply time. The worker answers in their own words — nothing else is asked to apply.",
+      "part_label": "Part 1 · When they apply",
+      "section_title": "Quick questions",
+      "section_subtitle": "Asked when the worker applies, answered in their own words. We suggest 2 or fewer.",
       "empty": "No questions yet — workers apply with one tap.",
       "add": "Add a question",
       "question_number": "Question {number}",
@@ -2353,6 +2409,171 @@
       "close": "Close",
       "help": "Help",
       "help_title": "How Jale works"
+    },
+    "employer_welcome": {
+      "title": "How Jale works",
+      "slides": {
+        "post": {
+          "title": "Post a job in 3 steps",
+          "body": "Add the title, trade, city and how many workers you need. Everything else is optional."
+        },
+        "share": {
+          "title": "Share your job link",
+          "body": "Turn on the share link, then send it to your crew leads or print the QR code."
+        },
+        "apply": {
+          "title": "Workers apply on WhatsApp or the web",
+          "body": "Everyone who applies lands in Applicants, with what they told us about their work."
+        },
+        "review": {
+          "title": "Review and message",
+          "body": "Open an applicant to see their trade, experience and trust score. Your messages reach them on WhatsApp."
+        },
+        "hire": {
+          "title": "Request details, then hire",
+          "body": "When you want to hire someone, request their details. Once they are complete, mark them hired."
+        }
+      },
+      "scenes": {
+        "f_title": "Job title",
+        "f_title_value": "Concrete finisher",
+        "f_trade": "Trade",
+        "f_trade_value": "Concrete",
+        "f_city": "City",
+        "f_next": "Next",
+        "copy": "Copy",
+        "copied": "Link copied",
+        "crew": "Send it to your crew leads",
+        "wa_bubble": "Hi, I want to apply",
+        "web": "Web",
+        "apply": "Apply",
+        "applicants": "Applicants",
+        "trade1": "Finisher · 6 yrs",
+        "trade2": "Laborer · 2 yrs",
+        "trade3": "Finisher · 4 yrs",
+        "sample_name": "Sample worker",
+        "sample_meta": "Concrete · 6 years",
+        "trust": "Trust",
+        "msg": "Can you start Monday at 7?",
+        "sent_wa": "Delivered on WhatsApp",
+        "st1": "Request details",
+        "st2": "Details complete",
+        "st3": "Hired",
+        "plan_line": "{limit, plural, =0 {Your plan does not include active jobs} one {Your plan: up to # active job} other {Your plan: up to # active jobs}}"
+      }
+    },
+    "employer_post_job": {
+      "title": "Posting a job",
+      "slides": {
+        "steps": {
+          "title": "Three short steps",
+          "body": "The basics, pay and schedule, then questions for applicants. Only 4 things are required: title, trade, city and workers needed."
+        },
+        "city": {
+          "title": "Pick the city from the list",
+          "body": "Start typing and tap a match. A city that is typed but not picked from the list does not count."
+        },
+        "shifts": {
+          "title": "Choose the shifts",
+          "body": "Pick Day, Evening, Night or Overnight, as many as apply. Exact times are optional; you can agree on hours with the worker."
+        },
+        "questions": {
+          "title": "Questions come in two parts",
+          "body": "A few quick questions when they apply, and the rest only after you request their details. Once someone applies, neither part can change."
+        }
+      },
+      "scenes": {
+        "step1": "The basics",
+        "step2": "Pay and schedule",
+        "step3": "Questions",
+        "required": "Only these are required",
+        "r1": "Title",
+        "r2": "Trade",
+        "r3": "City",
+        "r4": "Workers needed",
+        "shifts": "Shifts",
+        "day": "Day",
+        "evening": "Evening",
+        "night": "Night",
+        "overnight": "Overnight",
+        "times_optional": "Start and end times: optional",
+        "questions": "Questions for applicants",
+        "q1": "Work authorization",
+        "q2": "Work history",
+        "q3": "References",
+        "required_tag": "Required",
+        "optional_tag": "Optional",
+        "off_tag": "Off",
+        "lock_note": "Locked once someone applies"
+      }
+    },
+    "employer_applicants": {
+      "title": "Your applicants",
+      "slides": {
+        "first_look": {
+          "title": "What you see first",
+          "body": "Each applicant shows their trade, experience and a trust score. The score comes from their answers to questions about their work."
+        },
+        "statuses": {
+          "title": "Statuses are for you",
+          "body": "New, Contacted and In conversation help you keep track. Only you see them; changing one does not message the worker."
+        },
+        "request": {
+          "title": "Request details to hire",
+          "body": "Request details sends the worker a WhatsApp message asking for the questions and documents you chose. Hired opens up once they are complete."
+        },
+        "hired": {
+          "title": "Hired, then start details",
+          "body": "Mark them hired, then add the start day, time and place, so they know where to show up."
+        }
+      },
+      "scenes": {
+        "sample_name": "Sample worker",
+        "sample_meta": "Concrete · 6 years · Has transportation",
+        "trust": "Trust",
+        "own_words": "In their own words",
+        "quote": "“I finish slabs and driveways, broom and smooth, and I set my own forms.”",
+        "st_new": "New",
+        "st_contacted": "Contacted",
+        "st_talking": "In conversation",
+        "only_you": "Only you see this status. The worker is not messaged.",
+        "request": "Request details",
+        "wa_msg": "The employer wants to hire you. Please complete your details.",
+        "complete": "Details complete",
+        "hired": "Hired",
+        "start_head": "Start details",
+        "when": "Start",
+        "when_value": "Mon 7:00 AM",
+        "where": "Where",
+        "where_value": "Job site address",
+        "sent_wa": "Sent to the worker on WhatsApp"
+      }
+    },
+    "employer_messages": {
+      "title": "Messages",
+      "slides": {
+        "whatsapp": {
+          "title": "Messages travel over WhatsApp",
+          "body": "You write here. The worker reads and answers on WhatsApp, and their replies show up in this thread."
+        },
+        "invitation": {
+          "title": "Your first message is an invitation",
+          "body": "WhatsApp lets a business start a chat only with an approved invitation. The worker taps Reply and the chat opens."
+        },
+        "reply_window": {
+          "title": "Then you can write freely",
+          "body": "Once the worker replies, you can write back freely. WhatsApp keeps that window open for 24 hours after their last message."
+        }
+      },
+      "scenes": {
+        "m1": "Hi, are you free Monday?",
+        "m2": "Yes, I can start Monday",
+        "m3": "Great, see you at 7",
+        "invite_chip": "Invitation sent",
+        "invite": "An employer on Jale wants to talk to you about a Concrete finisher job.",
+        "reply": "Reply",
+        "window_chip": "Reply window open"
+      }
     }
   }
 }

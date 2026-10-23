@@ -9,7 +9,12 @@ vi.mock('@/lib/api/employer', async (importOriginal) => ({
   updateEmployerProfile: (...args: unknown[]) => updateEmployerProfile(...args),
 }));
 
+import * as flushModule from '../employer-profile-flush';
 import { loadEmployerProfileWithPendingFlush } from '../employer-profile-flush';
+
+type Flush = (token: string) => Promise<unknown>;
+const flushPending = (token: string) =>
+  (flushModule as unknown as { flushPendingEmployerProfile: Flush }).flushPendingEmployerProfile(token);
 
 const PENDING = { company_name: 'Prueba Co', hiring_trades: ['concrete'] };
 const STASH = { src: 'partner', entry: 'signup_page', capturedAt: '2026-10-14T00:00:00.000Z' };
@@ -58,5 +63,117 @@ describe('the first profile save after sign-up (K3.6)', () => {
     await expect(loadEmployerProfileWithPendingFlush('tok')).rejects.toThrow('offline');
     expect(sessionStorage.getItem('pendingEmployerProfile')).not.toBeNull();
     expect(sessionStorage.getItem('jale.signup-source')).not.toBeNull();
+  });
+});
+
+/*
+ * The dashboard flushes the same answers (a new employer now lands there, not
+ * on Profile), so the profile page and the dashboard can both ask at once --
+ * and StrictMode runs effects twice. One PATCH per pending payload, whoever
+ * asks first.
+ */
+describe('flushing the pending sign-up answers from anywhere', () => {
+  it('sends one PATCH for concurrent asks, and clears the store once it lands', async () => {
+    sessionStorage.setItem('pendingEmployerProfile', JSON.stringify(PENDING));
+    let land: (value: unknown) => void = () => {};
+    updateEmployerProfile.mockReturnValue(new Promise((resolve) => { land = resolve; }));
+
+    const first = flushPending('tok');
+    const second = flushPending('tok');
+    const fromProfile = loadEmployerProfileWithPendingFlush('tok');
+    await Promise.resolve();
+    land({ id: 'e1', company_name: 'Prueba Co' });
+    await Promise.all([first, second, fromProfile]);
+
+    expect(updateEmployerProfile).toHaveBeenCalledTimes(1);
+    expect(sessionStorage.getItem('pendingEmployerProfile')).toBeNull();
+    expect(await fromProfile).toEqual({ id: 'e1', company_name: 'Prueba Co' });
+  });
+
+  it('does nothing when there is nothing pending', async () => {
+    await expect(flushPending('tok')).resolves.toBeNull();
+    expect(updateEmployerProfile).not.toHaveBeenCalled();
+  });
+
+  it('keeps the store after a failure, and the next ask retries', async () => {
+    sessionStorage.setItem('pendingEmployerProfile', JSON.stringify(PENDING));
+    updateEmployerProfile.mockRejectedValueOnce(new Error('offline'));
+
+    await expect(flushPending('tok')).rejects.toThrow('offline');
+    expect(sessionStorage.getItem('pendingEmployerProfile')).not.toBeNull();
+
+    await flushPending('tok');
+    expect(updateEmployerProfile).toHaveBeenCalledTimes(2);
+    expect(sessionStorage.getItem('pendingEmployerProfile')).toBeNull();
+  });
+});
+
+/*
+ * The dashboard calls this from an effect and only handles a rejection, so it
+ * must never throw synchronously: storage can be blocked (some webviews, a
+ * "block all cookies" setting), and a stash can be unreadable.
+ */
+describe('flushing when storage cannot be trusted', () => {
+  it('resolves to null, without throwing, when storage access is blocked', async () => {
+    const blocked = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new DOMException('blocked', 'SecurityError');
+    });
+    try {
+      let result: Promise<unknown> | undefined;
+      expect(() => { result = flushPending('tok'); }).not.toThrow();
+      await expect(result).resolves.toBeNull();
+      expect(updateEmployerProfile).not.toHaveBeenCalled();
+    } finally {
+      blocked.mockRestore();
+    }
+  });
+
+  it('keeps an unreadable stash and sends nothing', async () => {
+    sessionStorage.setItem('pendingEmployerProfile', '{not json');
+
+    let result: Promise<unknown> | undefined;
+    expect(() => { result = flushPending('tok'); }).not.toThrow();
+    await expect(result).resolves.toBeNull();
+    expect(updateEmployerProfile).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem('pendingEmployerProfile')).toBe('{not json');
+  });
+
+  it('treats a stash that is not an object as unreadable', async () => {
+    sessionStorage.setItem('pendingEmployerProfile', '"just text"');
+
+    await expect(flushPending('tok')).resolves.toBeNull();
+    expect(updateEmployerProfile).not.toHaveBeenCalled();
+  });
+});
+
+/*
+ * The dashboard's PATCH can still be in flight when the employer opens
+ * Profile. The profile load must not answer from a read served before that
+ * PATCH landed: it flushes (or joins the flush) first, and reads only when
+ * nothing was pending.
+ */
+describe('the profile load while the dashboard is still saving', () => {
+  it('answers with the saved answers, not a read served before the save landed', async () => {
+    sessionStorage.setItem('pendingEmployerProfile', JSON.stringify(PENDING));
+    let landPatch: (value: unknown) => void = () => {};
+    updateEmployerProfile.mockReturnValue(new Promise((resolve) => { landPatch = resolve; }));
+    let serveGet: (value: unknown) => void = () => {};
+    getEmployerProfile.mockReturnValue(new Promise((resolve) => { serveGet = resolve; }));
+
+    const fromDashboard = flushPending('tok');
+    const fromProfile = loadEmployerProfileWithPendingFlush('tok');
+    await Promise.resolve();
+    // The PATCH lands first, then a read the server answered before it.
+    landPatch({ id: 'e1', company_name: 'Prueba Co' });
+    await fromDashboard;
+    serveGet({ id: 'e1', company_name: null });
+
+    expect(await fromProfile).toEqual({ id: 'e1', company_name: 'Prueba Co' });
+    expect(updateEmployerProfile).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads the profile when nothing is pending', async () => {
+    expect(await loadEmployerProfileWithPendingFlush('tok')).toEqual({ id: 'e1', company_name: null });
+    expect(getEmployerProfile).toHaveBeenCalledTimes(1);
   });
 });

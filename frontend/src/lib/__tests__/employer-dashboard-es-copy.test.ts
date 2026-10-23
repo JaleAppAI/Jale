@@ -43,6 +43,7 @@ const MUST_BE_TRANSLATED = [
     'employer_dashboard.jobs.status_change.resume_success',
     'employer_dashboard.jobs.status_change.error_generic',
     'billing.limit_dialog.body_jobs_preflight',
+    'employer_dashboard.hero.eyebrow',
 ] as const;
 
 describe('employer dashboard Spanish copy', () => {

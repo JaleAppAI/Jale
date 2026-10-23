@@ -114,9 +114,9 @@ export default async function RootLayout({
                             session) and above the job wizard and the conversation
                             drawer, whose tutorials play before they open. */}
                         <TutorialProgressProvider>
-                          {/* Inside ToastProvider (it toasts a posted job) and outside
-                              the pages, so "Post a job" is reachable from every employer
-                              surface rather than only from the dashboard. */}
+                          {/* Outside the pages, so "Post a job" is reachable from every
+                              employer surface rather than only from the dashboard. A
+                              post is confirmed on the wizard's own "Job posted" screen. */}
                           <PostJobProvider>
                             {/* Mounts the drawer itself, the way PostJobProvider
                                 mounts the wizard, so any surface can open a thread

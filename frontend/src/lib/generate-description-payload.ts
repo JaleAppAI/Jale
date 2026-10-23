@@ -1,4 +1,4 @@
-import { deriveLegacyExpectedDuration, deriveLegacyShiftSchedule, parseOptionalNumber, type JobForm } from './job-form';
+import { deriveLegacyExpectedDuration, deriveLegacyShiftSchedule, hasShiftStructure, parseOptionalNumber, type JobForm } from './job-form';
 import type { GenerateJobDescriptionPayload } from './api/employer';
 
 /**
@@ -21,7 +21,7 @@ export type DescriptionHelperFields = Pick<
   | 'title' | 'trade_category' | 'trade_category_other' | 'city' | 'state'
   | 'pay_min' | 'pay_max' | 'pay_interval'
   | 'expected_duration' | 'expected_duration_bucket'
-  | 'shift_schedule' | 'work_days' | 'shift_start' | 'shift_end'
+  | 'shift_schedule' | 'work_days' | 'shift_start' | 'shift_end' | 'shift_periods'
   | 'description'
 >;
 
@@ -55,14 +55,14 @@ function resolveExpectedDuration(form: DescriptionHelperFields): string {
 
 /**
  * `shift_schedule` string to send: derived from the structured
- * work_days/shift_start/shift_end fields when any of them is set, otherwise
- * the free-text field. Mirrors `jobFormToBasePayload`'s `hasShiftStructure`
- * precedence exactly, for the same reason as `resolveExpectedDuration` above.
+ * work_days/shift_start/shift_end/shift_periods fields when any of them is
+ * set, otherwise the free-text field. Uses the same `hasShiftStructure` test
+ * and derivation as `jobFormToBasePayload`, for the same reason as
+ * `resolveExpectedDuration` above.
  */
 function resolveShiftSchedule(form: DescriptionHelperFields): string {
-  const hasShiftStructure = form.work_days.length > 0 || form.shift_start !== '' || form.shift_end !== '';
-  return hasShiftStructure
-    ? deriveLegacyShiftSchedule(form.work_days, form.shift_start, form.shift_end)
+  return hasShiftStructure(form)
+    ? deriveLegacyShiftSchedule(form.work_days, form.shift_start, form.shift_end, form.shift_periods)
     : form.shift_schedule;
 }
 
