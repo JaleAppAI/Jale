@@ -40,9 +40,10 @@
  * its parsed content to createAuditPosture instead. A file that cannot be
  * read or parsed makes the run incomplete.
  */
+import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
-import type { AccessManifest } from './access-manifest';
+import { canonicalJson, type AccessManifest } from './access-manifest';
 import type { PostureCheck, PostureExtension, PostureQueryable, PostureViolation } from './posture';
 
 // ── The change-log file ─────────────────────────────────────
@@ -137,6 +138,16 @@ export function parseChangeLog(raw: unknown): ChangeLog {
 /** Reads and validates audit-change-log.json from `dir` (this directory by default). */
 export function loadChangeLog(dir: string = __dirname): ChangeLog {
   return parseChangeLog(JSON.parse(fs.readFileSync(path.join(dir, CHANGE_LOG_FILE), 'utf8')));
+}
+
+/**
+ * A stable identifier for a change log: the sha256, in hex, of its canonical
+ * JSON, exactly as manifestDigest() identifies a manifest. The posture report
+ * carries it, and the deploy gate compares it with the digest of the change
+ * log it sent, so both sides must compute it here.
+ */
+export function changeLogDigest(log: ChangeLog): string {
+  return createHash('sha256').update(canonicalJson(log)).digest('hex');
 }
 
 /** The events a covered table's triggers fire on: name suffix, tgtype bits and transition tables. */

@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -16,6 +17,11 @@ import * as path from 'node:path';
  * Metric history is described in completed UTC days counted back from the
  * end of the window the gate asks for (1 = the most recent completed day), so
  * no test depends on the wall clock.
+ *
+ * Before the deploy the gate sends the incoming release's expectation
+ * (`--expected <file>`, the posture expectation writer's output) and the fake
+ * answers that payload with the scenario's `supplied` report; any other
+ * payload gets `payload`, the report a function gives from its own bundle.
  */
 
 const SCRIPT = path.join(__dirname, '../../../scripts/db-posture-gate.mjs');
@@ -34,13 +40,23 @@ interface CliFailure {
 interface Scenario {
   metrics?: { error?: CliFailure; days?: Record<string, Day>; statusCode?: string };
   describe?: { error?: CliFailure; functionName?: string | null };
-  invoke?: { error?: CliFailure; payload?: unknown; functionError?: string };
+  /**
+   * `payload` answers an invoke without an expectation; `supplied` answers
+   * one with the incoming expectation. A scenario that sets only a
+   * report-shaped `payload` gets `supplied` filled in by runGate: the same
+   * findings, from a function that checked the expectation the gate sent.
+   */
+  invoke?: { error?: CliFailure; payload?: unknown; supplied?: unknown; functionError?: string };
 }
 
 interface CallRecord {
   service: string;
   operation: string;
   args: string[];
+  /** An invoke's payload, decoded by the fake while the call ran. */
+  payload?: unknown;
+  /** How the payload was passed: inline JSON or a fileb:// file. */
+  payloadSource?: 'inline' | 'fileb';
 }
 
 interface RunResult {
@@ -67,6 +83,51 @@ const TWO_VIOLATIONS = {
 };
 const CLEAN_REPORT = { complete: true, violations: [], serverVersion: '16.99' };
 const INCOMPLETE_REPORT = { complete: false, violations: [], serverVersion: null };
+
+const sha256 = (text: string) => createHash('sha256').update(text).digest('hex');
+
+/**
+ * The incoming release's expectation, as the writer writes it. The gate
+ * forwards the two files without reading them and compares only the
+ * digests, so small stand-ins do here. Neither may reach the summary or the
+ * log.
+ */
+const INCOMING = {
+  manifest: { version: 1, master: 'example_master', note: 'incoming manifest marker' },
+  change_log: { version: 1, description: 'incoming change log marker' },
+  manifest_sha256: sha256('incoming manifest'),
+  change_log_sha256: sha256('incoming change log'),
+};
+/** What the deployed function bundles: the expectation of the release before. */
+const BUNDLED_MANIFEST_SHA = sha256('bundled manifest');
+const BUNDLED_CHANGE_LOG_SHA = sha256('bundled change log');
+
+type Report = Record<string, unknown>;
+
+/** A current function's report on the incoming expectation. */
+function supplied(report: Report): Report {
+  return {
+    ...report,
+    expected_source: 'supplied',
+    manifest_sha256: INCOMING.manifest_sha256,
+    change_log_sha256: INCOMING.change_log_sha256,
+  };
+}
+
+/** A current function's report from its own bundle. */
+function bundled(report: Report): Report {
+  return { ...report, expected_source: 'bundled', manifest_sha256: BUNDLED_MANIFEST_SHA, change_log_sha256: BUNDLED_CHANGE_LOG_SHA };
+}
+
+/** A report from a function that predates supplied checks: no expected_source, its bundle's manifest digest. */
+function older(report: Report, manifestSha: string): Report {
+  return { ...report, manifest_sha256: manifestSha };
+}
+
+function isReportShaped(value: unknown): value is Report {
+  return typeof value === 'object' && value !== null
+    && typeof (value as Report).complete === 'boolean' && Array.isArray((value as Report).violations);
+}
 
 // An AccessDenied message the way AWS writes one: full of identifiers.
 const ACCESS_DENIED: CliFailure = {
@@ -124,8 +185,24 @@ const fs = require('node:fs');
 const scenario = JSON.parse(fs.readFileSync(process.env.FAKE_AWS_SCENARIO, 'utf8'));
 const args = process.argv.slice(2);
 const [service, operation] = args;
-fs.appendFileSync(process.env.FAKE_AWS_LOG, JSON.stringify({ service, operation, args }) + '\\n');
 const opt = (name) => { const i = args.indexOf(name); return i === -1 ? undefined : args[i + 1]; };
+const record = { service, operation, args };
+if (service === 'lambda' && operation === 'invoke') {
+  // Decoded now: the gate deletes its payload file once the call returns.
+  const raw = opt('--payload') ?? '';
+  try {
+    if (raw.startsWith('fileb://')) {
+      record.payload = JSON.parse(fs.readFileSync(raw.slice('fileb://'.length), 'utf8'));
+      record.payloadSource = 'fileb';
+    } else {
+      record.payload = JSON.parse(raw);
+      record.payloadSource = 'inline';
+    }
+  } catch {
+    record.payload = undefined;
+  }
+}
+fs.appendFileSync(process.env.FAKE_AWS_LOG, JSON.stringify(record) + '\\n');
 const fail = (failure) => { process.stderr.write(failure.stderr + '\\n'); process.exit(failure.exitCode ?? 254); };
 
 if (service === 'cloudwatch' && operation === 'get-metric-data') {
@@ -179,8 +256,14 @@ if (service === 'cloudformation' && operation === 'describe-stacks') {
 
 if (service === 'lambda' && operation === 'invoke') {
   const invoke = scenario.invoke ?? {};
+  if (record.payload === undefined) {
+    process.stderr.write('fake aws: unexpected invoke payload\\n');
+    process.exit(99);
+  }
   if (invoke.error) fail(invoke.error);
-  fs.writeFileSync(args[args.length - 1], JSON.stringify(invoke.payload));
+  const withExpectation = typeof record.payload === 'object' && record.payload !== null && 'expected' in record.payload;
+  const answer = withExpectation && 'supplied' in invoke ? invoke.supplied : invoke.payload;
+  fs.writeFileSync(args[args.length - 1], JSON.stringify(answer));
   const response = { StatusCode: 200, ExecutedVersion: '$LATEST' };
   if (invoke.functionError) response.FunctionError = invoke.functionError;
   process.stdout.write(JSON.stringify(response));
@@ -207,22 +290,48 @@ afterAll(() => {
 
 let runCount = 0;
 
-function runGate(
-  scenario: Scenario,
-  options: { phase?: string | null; override?: string; reason?: string; summarySeed?: string } = {},
-): RunResult {
+interface GateOptions {
+  phase?: string | null;
+  /**
+   * The expectation file: by default the INCOMING fixture for the pre phase
+   * and none for post; null passes none; an object is written as the file;
+   * a string is passed as the path.
+   */
+  expected?: unknown;
+  /** The whole argument list, in place of the one phase and expected build. */
+  args?: string[];
+  override?: string;
+  reason?: string;
+  summarySeed?: string;
+}
+
+function runGate(scenario: Scenario, options: GateOptions = {}): RunResult {
   runCount += 1;
   const dir = path.join(workDir, `run-${runCount}`);
   fs.mkdirSync(dir);
   const scenarioFile = path.join(dir, 'scenario.json');
   const logFile = path.join(dir, 'calls.log');
   const summaryFile = path.join(dir, 'summary.md');
-  fs.writeFileSync(scenarioFile, JSON.stringify(scenario));
+  const invoke = scenario.invoke;
+  const filled = invoke && !('supplied' in invoke) && isReportShaped(invoke.payload)
+    ? { ...scenario, invoke: { ...invoke, supplied: supplied(invoke.payload) } }
+    : scenario;
+  fs.writeFileSync(scenarioFile, JSON.stringify(filled));
   fs.writeFileSync(logFile, '');
   fs.writeFileSync(summaryFile, options.summarySeed ?? '');
 
   const phase = options.phase === undefined ? 'pre' : options.phase;
-  const args = [SCRIPT, ...(phase === null ? [] : ['--phase', phase])];
+  const expected = options.expected === undefined ? (phase === 'pre' ? INCOMING : null) : options.expected;
+  let expectedArgs: string[] = [];
+  if (typeof expected === 'string') {
+    expectedArgs = ['--expected', expected];
+  } else if (expected !== null) {
+    const expectedFile = path.join(dir, 'posture-expected.json');
+    fs.writeFileSync(expectedFile, JSON.stringify(expected));
+    expectedArgs = ['--expected', expectedFile];
+  }
+  const gateArgs = options.args ?? [...(phase === null ? [] : ['--phase', phase]), ...expectedArgs];
+  const args = [SCRIPT, ...gateArgs];
   const result = spawnSync(process.execPath, args, {
     encoding: 'utf8',
     env: {
@@ -274,6 +383,7 @@ const IDENTIFIER_PATTERNS: RegExp[] = [
   /jale_example_login|public\.example_table/, // violation objects
   /forbidden attribute|differs from the manifest/, // violation details
   /ExampleDeployRole/,
+  /incoming manifest marker|incoming change log marker/, // the expectation the gate sends
 ];
 
 function expectNoIdentifiers(run: RunResult): void {
@@ -533,8 +643,130 @@ describe('db-posture-gate.mjs', () => {
     });
   });
 
+  describe('before the deploy, against the incoming expectation', () => {
+    // A release that applies its migrations before it deploys: the database
+    // already matches the incoming expectation, and differs from the one the
+    // deployed function bundles.
+    const MIGRATED_FIRST: Scenario['invoke'] = { payload: bundled(TWO_VIOLATIONS), supplied: supplied(CLEAN_REPORT) };
+
+    it('passes when the database matches the incoming expectation but not the bundled one, while enforcing', () => {
+      const run = runGate({ metrics: { days: QUALIFIED }, describe: { functionName: FUNCTION_NAME }, invoke: MIGRATED_FIRST });
+      expect(run.status).toBe(0);
+      expect(run.summary).toMatch(/Mode: \*\*enforcing\*\*/);
+      expect(run.summary).toMatch(/Check: clean/);
+      expect(run.summary).toMatch(/Violations: 0\b/);
+      expect(run.summary).toMatch(/Expectation: checked against the incoming release/);
+      expect(run.summary).toMatch(/Result: \*\*passed\*\*/);
+      expectNoIdentifiers(run);
+    });
+
+    it('fails on violations against the incoming expectation, while enforcing', () => {
+      const run = runGate({
+        metrics: { days: QUALIFIED },
+        describe: { functionName: FUNCTION_NAME },
+        invoke: { payload: bundled(CLEAN_REPORT), supplied: supplied(TWO_VIOLATIONS) },
+      });
+      expect(run.status).toBe(1);
+      expect(run.summary).toMatch(/Check: violations found/);
+      expect(run.summary).toMatch(/Violations: 2\b/);
+      expectNoIdentifiers(run);
+    });
+
+    it('sends a release-sized expectation, larger than one command-line argument may be', () => {
+      const large = { ...INCOMING, manifest: { ...INCOMING.manifest, padding: 'x'.repeat(300 * 1024) } };
+      const run = runGate(scenario(QUALIFIED), { expected: large });
+      expect(run.status).toBe(0);
+      expect(run.calls[2].payloadSource).toBe('fileb');
+      expect(run.calls[2].payload).toEqual({
+        trigger: 'deploy',
+        phase: 'pre',
+        expected: { manifest: large.manifest, change_log: large.change_log },
+      });
+    });
+
+    describe('a posture function that predates supplied checks', () => {
+      // It ignores the expectation and reports from its bundle, without
+      // expected_source. Only R0's own deploy meets one.
+      it('accepts its report when its manifest digest is the incoming one, and says so', () => {
+        const run = runGate({
+          metrics: { days: QUALIFIED },
+          describe: { functionName: FUNCTION_NAME },
+          invoke: { payload: older(CLEAN_REPORT, INCOMING.manifest_sha256), supplied: older(CLEAN_REPORT, INCOMING.manifest_sha256) },
+        });
+        expect(run.status).toBe(0);
+        expect(run.summary).toMatch(/Check: clean/);
+        expect(run.summary).toContain('posture function predates supplied checks');
+        expect(run.summary).toMatch(/Result: \*\*passed\*\*/);
+      });
+
+      it('still counts its violations when its manifest digest is the incoming one', () => {
+        const report = older(TWO_VIOLATIONS, INCOMING.manifest_sha256);
+        const run = runGate({ metrics: { days: QUALIFIED }, describe: { functionName: FUNCTION_NAME }, invoke: { payload: report, supplied: report } });
+        expect(run.status).toBe(1);
+        expect(run.summary).toMatch(/Check: violations found/);
+        expect(run.summary).toContain('posture function predates supplied checks');
+      });
+
+      it.each([
+        ['another manifest', older(CLEAN_REPORT, BUNDLED_MANIFEST_SHA)],
+        ['no manifest digest', CLEAN_REPORT],
+      ])('treats its report on %s as unavailable (stale manifest): failing when enforcing', (_what, report) => {
+        const run = runGate({ metrics: { days: QUALIFIED }, describe: { functionName: FUNCTION_NAME }, invoke: { payload: report, supplied: report } });
+        expect(run.status).toBe(1);
+        expect(run.summary).toMatch(/Check: unavailable \(the posture function checked a manifest other than the incoming one\)/);
+        expect(run.summary).toMatch(/Violations: unknown/);
+        expect(run.summary).toMatch(/Expectation: not confirmed/);
+        expect(run.summary).toMatch(/Result: \*\*failed\*\*/);
+      });
+
+      it('treats its report on another manifest as a warning when report-only', () => {
+        const report = older(CLEAN_REPORT, BUNDLED_MANIFEST_SHA);
+        const run = runGate({ metrics: { days: span(5, 1, CLEAN) }, describe: { functionName: FUNCTION_NAME }, invoke: { payload: report, supplied: report } });
+        expect(run.status).toBe(0);
+        expect(run.summary).toMatch(/Mode: \*\*report-only\*\*/);
+        expect(run.summary).toMatch(/Check: unavailable \(the posture function checked a manifest other than the incoming one\)/);
+        expect(run.summary).toMatch(/Result: \*\*passed with a warning\*\*/);
+        expect(run.stdout).toMatch(/^::warning::/m);
+      });
+    });
+
+    describe('a report that does not match the expectation sent', () => {
+      it.each([
+        ['another manifest digest', { ...supplied(CLEAN_REPORT), manifest_sha256: BUNDLED_MANIFEST_SHA }],
+        ['another change-log digest', { ...supplied(CLEAN_REPORT), change_log_sha256: BUNDLED_CHANGE_LOG_SHA }],
+        ['no digests, as for an expectation the function refused', { ...supplied(INCOMPLETE_REPORT), manifest_sha256: null, change_log_sha256: null }],
+        ['the bundled source', bundled(CLEAN_REPORT)],
+      ])('treats a report with %s as unavailable (expectation mismatch): failing when enforcing', (_what, report) => {
+        const run = runGate({ metrics: { days: QUALIFIED }, describe: { functionName: FUNCTION_NAME }, invoke: { payload: report, supplied: report } });
+        expect(run.status).toBe(1);
+        expect(run.summary).toMatch(/Check: unavailable \(the report does not match the incoming expectation\)/);
+        expect(run.summary).toMatch(/Expectation: not confirmed/);
+        expect(run.summary).toMatch(/Result: \*\*failed\*\*/);
+        expectNoIdentifiers(run);
+      });
+
+      it('is a warning when report-only', () => {
+        const report = { ...supplied(CLEAN_REPORT), change_log_sha256: BUNDLED_CHANGE_LOG_SHA };
+        const run = runGate({ metrics: { days: span(5, 1, CLEAN) }, describe: { functionName: FUNCTION_NAME }, invoke: { payload: report, supplied: report } });
+        expect(run.status).toBe(0);
+        expect(run.summary).toMatch(/Check: unavailable \(the report does not match the incoming expectation\)/);
+        expect(run.summary).toMatch(/Result: \*\*passed with a warning\*\*/);
+      });
+
+      it('passes by override with a reason', () => {
+        const report = { ...supplied(CLEAN_REPORT), manifest_sha256: BUNDLED_MANIFEST_SHA };
+        const run = runGate(
+          { metrics: { days: QUALIFIED }, describe: { functionName: FUNCTION_NAME }, invoke: { payload: report, supplied: report } },
+          { override: 'true', reason: 'Expectation reviewed by hand for this release' },
+        );
+        expect(run.status).toBe(0);
+        expect(run.summary).toMatch(/Result: \*\*passed by override\*\*/);
+      });
+    });
+  });
+
   describe('the order of the calls', () => {
-    it('reads the history before the invoke, and invokes the stack-output function as a deploy run', () => {
+    it('reads the history before the invoke, and sends the incoming expectation as a pre-deploy run, through a file', () => {
       const run = runGate(scenario(QUALIFIED));
       const operations = run.calls.map((call) => `${call.service} ${call.operation}`);
       expect(operations).toEqual([
@@ -546,7 +778,25 @@ describe('db-posture-gate.mjs', () => {
       expect(describe[describe.indexOf('--stack-name') + 1]).toBe('JaleDatabaseStack');
       const invoke = run.calls[2].args;
       expect(invoke[invoke.indexOf('--function-name') + 1]).toBe(FUNCTION_NAME);
+      const payloadArg = invoke[invoke.indexOf('--payload') + 1];
+      expect(payloadArg.startsWith('fileb://')).toBe(true);
+      expect(run.calls[2].payloadSource).toBe('fileb');
+      // The two files only: the digests stay with the gate, to compare.
+      expect(run.calls[2].payload).toEqual({
+        trigger: 'deploy',
+        phase: 'pre',
+        expected: { manifest: INCOMING.manifest, change_log: INCOMING.change_log },
+      });
+      // The payload file lived in the gate's own temporary directory.
+      expect(fs.existsSync(payloadArg.slice('fileb://'.length))).toBe(false);
+    });
+
+    it('invokes the verification after the deploy as a plain deploy run, inline', () => {
+      const run = runGate(scenario(QUALIFIED), { phase: 'post' });
+      const invoke = run.calls[2].args;
       expect(JSON.parse(invoke[invoke.indexOf('--payload') + 1])).toEqual({ trigger: 'deploy' });
+      expect(run.calls[2].payloadSource).toBe('inline');
+      expect(run.summary).not.toMatch(/Expectation:/);
     });
 
     it('counts only completed UTC days: the window ends at the start of today', () => {
@@ -670,10 +920,67 @@ describe('db-posture-gate.mjs', () => {
   });
 
   describe('arguments', () => {
-    it.each([[null], ['during'], ['']])('refuses a phase of %j', (phase) => {
+    it.each([[null], ['during'], [''], ['constructor']])('refuses a phase of %j', (phase) => {
       const run = runGate(scenario(QUALIFIED), { phase });
       expect(run.status).toBe(2);
       expect(run.calls).toEqual([]);
+    });
+
+    it('refuses the gate before the deploy without --expected, before calling AWS', () => {
+      const run = runGate(scenario(QUALIFIED), { phase: 'pre', expected: null });
+      expect(run.status).toBe(2);
+      expect(run.stderr).toMatch(/usage: .*--expected/);
+      expect(run.calls).toEqual([]);
+    });
+
+    it('refuses --expected after the deploy: the verification checks the bundle only', () => {
+      const run = runGate(scenario(QUALIFIED), { phase: 'post', expected: INCOMING });
+      expect(run.status).toBe(2);
+      expect(run.calls).toEqual([]);
+    });
+
+    it.each([
+      ['--expected with no value', ['--phase', 'pre', '--expected']],
+      ['an empty --expected', ['--phase', 'pre', '--expected=']],
+      ['two phases', ['--phase', 'pre', '--phase', 'post', '--expected', 'x.json']],
+      ['two expectation files', ['--phase', 'pre', '--expected', 'x.json', '--expected', 'y.json']],
+      ['an unknown argument', ['--phase', 'pre', '--expected', 'x.json', '--skip']],
+    ])('refuses %s', (_what, args) => {
+      const run = runGate(scenario(QUALIFIED), { args });
+      expect(run.status).toBe(2);
+      expect(run.calls).toEqual([]);
+    });
+
+    it('accepts the = forms of both arguments', () => {
+      const file = path.join(workDir, 'equals-form-expected.json');
+      fs.writeFileSync(file, JSON.stringify(INCOMING));
+      const run = runGate(scenario(QUALIFIED), { args: ['--phase=pre', `--expected=${file}`] });
+      expect(run.status).toBe(0);
+      expect(run.calls[2].payload).toMatchObject({ phase: 'pre' });
+    });
+
+    it.each([
+      ['a missing file', 'missing-expected.json'],
+      ['a file that is not JSON', { raw: '{not json' }],
+      ['no manifest', { ...INCOMING, manifest: undefined }],
+      ['a change log that is not an object', { ...INCOMING, change_log: 'text' }],
+      ['a manifest digest that is not one', { ...INCOMING, manifest_sha256: 'abc' }],
+      ['no change-log digest', { ...INCOMING, change_log_sha256: undefined }],
+      ['an unknown field', { ...INCOMING, extra: true }],
+    ])('refuses an expectation file with %s, before calling AWS', (_what, content) => {
+      let expected: unknown = content;
+      if (typeof content === 'string') {
+        expected = path.join(workDir, content);
+      } else if (typeof content === 'object' && content !== null && 'raw' in content) {
+        const file = path.join(workDir, `raw-expected-${runCount}.json`);
+        fs.writeFileSync(file, String((content as { raw: string }).raw));
+        expected = file;
+      }
+      const run = runGate(scenario(QUALIFIED), { phase: 'pre', expected });
+      expect(run.status).toBe(2);
+      expect(run.stdout).toMatch(/^::error::The posture expectation file/m);
+      expect(run.calls).toEqual([]);
+      expectNoIdentifiers(run);
     });
   });
 });

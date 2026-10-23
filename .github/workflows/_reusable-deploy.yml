@@ -493,14 +493,20 @@ jobs:
       # Database posture, before and after the deploy (scripts/db-posture-gate.mjs).
       # Report-only until the posture metrics show a qualifying clean history,
       # then enforcing for good. The override and its reason reach the script
-      # through env only, never interpolated into the command.
+      # through env only, never interpolated into the command. Before the
+      # deploy, the database is checked against this release's own manifest
+      # and change log, which the writer puts in the runner's temp directory;
+      # if the writer fails, the step fails before the gate runs.
       - name: Database posture gate
         working-directory: infra
         shell: bash
         env:
           POSTURE_OVERRIDE: ${{ inputs.posture-override }}
           POSTURE_OVERRIDE_REASON: ${{ inputs.posture-override-reason }}
-        run: node scripts/db-posture-gate.mjs --phase pre
+        run: |
+          set -euo pipefail
+          npx --no-install tsx scripts/write-posture-expectation.ts "$RUNNER_TEMP/posture-expected.json"
+          node scripts/db-posture-gate.mjs --phase pre --expected "$RUNNER_TEMP/posture-expected.json"
 
       - name: Deploy CDK stacks
         working-directory: infra
