@@ -7,6 +7,7 @@ import es from '@/messages/es.json';
 import { SceneStage } from '@/components/tutorials/scene';
 import { expectNoRawMessageKeys } from '@/components/worker/onboarding/__tests__/render-intl';
 import type { TutorialDefinition } from '@/lib/tutorials/types';
+import { MIN_ANSWER_CHARS, PROGRESS_SEGMENTS } from '@/lib/onboarding-flow';
 import workerOnboarding from '../worker-onboarding';
 import workerApply from '../worker-apply';
 import workerDetails from '../worker-details';
@@ -113,7 +114,14 @@ describe('worker tutorial content', () => {
         expect(lookup('es', `${workerProfile.namespace}.cta_last`)).toBeUndefined();
     });
 
+    /*
+     * The board's numbers are copy, but they state product rules: the rail's
+     * step count and the answer minimum. Each is checked against the constant
+     * the onboarding flow runs on, so the copy fails here the day either rule
+     * changes.
+     */
     it('says W1 is about 2 minutes in 7 short steps, and draws all 7', () => {
+        expect(PROGRESS_SEGMENTS).toHaveLength(7);
         const first = workerOnboarding.slides[0];
         expect(text('en', workerOnboarding, first.titleKey)).toBe('About 2 minutes');
         expect(text('en', workerOnboarding, first.bodyKey)).toMatch(/^7 short steps/);
@@ -121,6 +129,14 @@ describe('worker tutorial content', () => {
 
         const { container } = renderScene(workerOnboarding, 0, 'en', true);
         expect(container.querySelectorAll('[data-scene-segment]')).toHaveLength(7);
+    });
+
+    it('states the answer minimum the onboarding flow enforces, 15 characters', () => {
+        expect(MIN_ANSWER_CHARS).toBe(15);
+        expect(text('en', workerOnboarding, 'slides.questions.body')).toContain('at least 15 characters');
+        expect(text('es', workerOnboarding, 'slides.questions.body')).toContain('al menos 15 caracteres');
+        expect(text('en', workerOnboarding, 'scene.cnt0')).toBe('0 / 15 minimum');
+        expect(text('es', workerOnboarding, 'scene.cnt0')).toBe('0 / 15 mínimo');
     });
 
     it('keeps slide titles and bodies free of placeholders, so a Help replay with no values reads whole', () => {
