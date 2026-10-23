@@ -3,6 +3,8 @@ import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 
+import type { ApplicationHire, ApplicationRequirementsState } from '@/lib/api/worker';
+
 vi.mock('next/navigation', () => ({ useParams: () => ({ id: 'app-1', locale: 'en' }) }));
 vi.mock('@/i18n/navigation', () => ({
   Link: ({ href, children, ...rest }: { href: string; children: ReactNode }) => <a href={href} {...rest}>{children}</a>,
@@ -30,7 +32,7 @@ vi.mock('@/lib/api/worker', async (importOriginal) => ({
   })),
 }));
 
-let seed: unknown;
+let seed: ApplicationRequirementsState | Partial<ApplicationRequirementsState> | undefined;
 vi.mock('@/hooks/usePageData', () => ({
   usePageData: () => ({ phase: 'ready' as const, data: seed, errorKind: null, retry: vi.fn() }),
 }));
@@ -38,12 +40,15 @@ vi.mock('@/hooks/usePageData', () => ({
 import { renderIntl } from '@/components/worker/onboarding/__tests__/render-intl';
 import WorkerApplicationDetailsPage from '../page';
 
-function state(application: Record<string, unknown>, hire: unknown = null) {
+function state(
+  application: Partial<ApplicationRequirementsState['application']>,
+  hire: ApplicationHire | null = null,
+): ApplicationRequirementsState {
   return {
     hire,
     sent_messages: [{ message_id: 'm1', body: 'Earlier note', sent_at: '2026-10-13T15:00:00Z' }],
     application: {
-      id: 'app-1', job_id: 'job-1', status: 'pending', details_status: 'not_requested', stage: 'applied',
+      id: 'app-1', job_id: 'job-1', status: 'pending', details_status: 'not_requested', stage: 'apply',
       details_requested_at: null, details_completed_at: null, applied_at: null, updated_at: null,
       ...application,
     },
@@ -55,13 +60,14 @@ function state(application: Record<string, unknown>, hire: unknown = null) {
     // The wire shape the door always sends, even when nothing is left.
     remaining: {
       prompts: [], fields: [], certifications: { unclaimed: [], unproven: [] }, docs: [],
-      counts: { prompts: 0, fields: 0, certifications: 0, docs: 0 }, complete: true, uncollectable_docs: [],
+      counts: { prompts: 0, fields: 0, certifications: 0, docs: 0 }, complete: true,
+      uncollectableDocs: [], optionalFields: [], optionalDocs: [],
     },
     next_step: { kind: 'complete' },
   };
 }
 
-const HIRE = {
+const HIRE: ApplicationHire = {
   hired_at: '2026-10-10T15:00:00.000Z', seen_at: null, acknowledged_at: null, start_date: null, location: null,
   shift_schedule: null, pay: null, pay_min: null, pay_max: null, pay_interval: null, details: null,
   employer_reminded_at: null,
@@ -79,7 +85,7 @@ describe('/worker/applications/[id] — the hired branch', () => {
   });
 
   it('keeps today\'s flow for a hired application from a backend that sends no hire', () => {
-    const legacy: Record<string, unknown> = state({ status: 'hired' });
+    const legacy: Partial<ApplicationRequirementsState> = state({ status: 'hired' });
     delete legacy.hire;
     seed = legacy;
     renderIntl(<WorkerApplicationDetailsPage />);

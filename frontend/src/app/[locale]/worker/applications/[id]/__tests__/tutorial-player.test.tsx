@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, screen, within } from '@testing-library/react';
 
-import type { Application, ApplicationsPage } from '@/lib/api/worker';
+import type { Application, ApplicationHire, ApplicationRequirementsState, ApplicationsPage } from '@/lib/api/worker';
 import { record, resetHarness, route, serveTutorials, signIn, watchDialogs } from '@/lib/tutorials/__tests__/harness';
 import {
   dialogCount,
@@ -54,19 +54,22 @@ vi.mock('@/lib/api/worker', async (importOriginal) => ({
   getApplications: (...args: unknown[]) => getApplications(...args),
 }));
 
-let seed: unknown;
+let seed: ApplicationRequirementsState | undefined;
 vi.mock('@/hooks/usePageData', () => ({
   usePageData: () => ({ phase: 'ready' as const, data: seed, errorKind: null, retry: vi.fn() }),
 }));
 
 import WorkerApplicationDetailsPage from '../page';
 
-function state(application: Record<string, unknown>, hire: unknown = null) {
+function state(
+  application: Partial<ApplicationRequirementsState['application']>,
+  hire: ApplicationHire | null = null,
+): ApplicationRequirementsState {
   return {
     hire,
     sent_messages: [],
     application: {
-      id: 'app-1', job_id: 'job-1', status: 'pending', details_status: 'not_requested', stage: 'applied',
+      id: 'app-1', job_id: 'job-1', status: 'pending', details_status: 'not_requested', stage: 'apply',
       details_requested_at: null, details_completed_at: null, applied_at: null, updated_at: null,
       ...application,
     },
@@ -77,14 +80,15 @@ function state(application: Record<string, unknown>, hire: unknown = null) {
     answers: {}, certifications: [], prompt_answers: {}, documents: [],
     remaining: {
       prompts: [], fields: [], certifications: { unclaimed: [], unproven: [] }, docs: [],
-      counts: { prompts: 0, fields: 0, certifications: 0, docs: 0 }, complete: true, uncollectable_docs: [],
+      counts: { prompts: 0, fields: 0, certifications: 0, docs: 0 }, complete: true,
+      uncollectableDocs: [], optionalFields: [], optionalDocs: [],
     },
     next_step: { kind: 'complete' },
   };
 }
 
 /** A details request with something still to do: the stepper is what shows. */
-function requested() {
+function requested(): ApplicationRequirementsState {
   const base = state({
     status: 'details_requested', details_status: 'requested', stage: 'details',
     details_requested_at: '2026-10-01T15:00:00Z',
@@ -93,13 +97,14 @@ function requested() {
     ...base,
     remaining: {
       prompts: [], fields: ['date_available'], certifications: { unclaimed: [], unproven: [] }, docs: [],
-      counts: { prompts: 0, fields: 1, certifications: 0, docs: 0 }, complete: false, uncollectable_docs: [],
+      counts: { prompts: 0, fields: 1, certifications: 0, docs: 0 }, complete: false,
+      uncollectableDocs: [], optionalFields: [], optionalDocs: [],
     },
     next_step: { kind: 'fields' },
   };
 }
 
-const HIRE = {
+const HIRE: ApplicationHire = {
   hired_at: '2026-10-10T15:00:00.000Z', seen_at: null, acknowledged_at: null, start_date: null, location: null,
   shift_schedule: null, pay: null, pay_min: null, pay_max: null, pay_interval: null, details: null,
   employer_reminded_at: null,
