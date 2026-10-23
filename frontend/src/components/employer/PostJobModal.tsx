@@ -13,12 +13,11 @@ import {
 import { planLimitModel, type PlanLimitModel } from '@/lib/plan-limit';
 import {
   LANGUAGE_OPTIONS,
-  type JobForm, type WorkDay,
-  initialForm, jobFormToCreatePayload, jobFormFromTemplatePayload,
-  validateStepBasics, validateStepDetails, validateFullJobForm, validateStepRequirements,
+  type JobForm, type JobFormFieldProblem, type WorkDay,
+  initialForm, jobFormToCreatePayload, jobFormFromTemplatePayload, toggleShiftPeriod,
+  firstInvalidField, validateStepBasics,
   applyLocationToJobForm,
 } from '@/lib/job-form';
-import { MAX_PROMPT_CHARS } from '@/lib/pre-application-prompts';
 import { Button } from '@/components/ui/button';
 import { CertificationsPicker } from '@/components/employer/CertificationsPicker';
 import { CheckboxCard } from '@/components/ui/checkbox-card';
@@ -27,6 +26,7 @@ import { DurationField } from '@/components/employer/DurationField';
 import { ExperienceStepper } from '@/components/employer/ExperienceStepper';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { Input } from '@/components/ui/input';
+import { JobPostedFooter, JobPostedPanel } from '@/components/employer/JobPostedPanel';
 import { LocationPicker } from '@/components/ui/LocationPicker';
 import { Modal } from '@/components/ui/modal';
 import { PayFields } from '@/components/employer/PayFields';
@@ -38,15 +38,16 @@ import { ScheduleFields } from '@/components/employer/ScheduleFields';
 import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { TradeCategoryField } from '@/components/employer/TradeCategoryField';
+import { useFocusJobFormProblem, useJobFormProblemMessage } from '@/components/employer/useJobFormProblem';
 
 interface Props {
   open: boolean;
   onClose: () => void;
   /**
-   * `outcome` reports what the post did NOT achieve. The only member today is
-   * `templateNotSaved`: the job posted, the modal closed on that success, and
-   * the template hit the plan cap on the way -- a shortfall the caller has to
-   * surface because this modal is gone by the time it is known.
+   * Called once the job exists, while this modal moves on to its "Job posted"
+   * screen. `outcome` reports what else the post did: `templateSaved` (a new
+   * template row) and `templateNotSaved` (the ticked template hit the plan
+   * cap). The posted screen tells the employer about the second itself.
    */
   onJobCreated: (job: Job, outcome?: JobCreatedOutcome) => void;
 }
@@ -144,9 +145,25 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
   const [templateName, setTemplateName] = useState('');
   const [templateNotice, setTemplateNotice] = useState<'' | 'limit' | 'name_taken'>('');
   const [templateLimit, setTemplateLimit] = useState<number | null>(null);
+  /*
+   * The field a refused Next or Post is about (sprint 29): named in the
+   * banner, marked `aria-invalid` with its sentence under it, and focused.
+   * `focusRequest` counts refusals, so the same field refused twice is focused
+   * twice. Cleared once the field is edited or the step passes.
+   */
+  const [fieldProblem, setFieldProblem] = useState<JobFormFieldProblem | null>(null);
+  const [focusRequest, setFocusRequest] = useState(0);
+  /*
+   * The job this run posted (sprint 29). While set, the dialog shows the
+   * "Job posted" screen instead of a step -- the same dialog, so nothing
+   * stacks and focus stays inside it. `templateNotSavedLimit` is the cap the
+   * ticked template ran into, or null when there is nothing to say about it.
+   */
+  const [posted, setPosted] = useState<{ job: Job; templateNotSavedLimit: number | null } | null>(null);
 
   const headingRef = useRef<HTMLHeadingElement>(null);
   const feedbackRef = useRef<HTMLDivElement>(null);
+  const formRef = useRef<HTMLFormElement>(null);
   /*
    * One `<form>` for whichever step is mounted, and the footer's primary
    * button reaches it by `form={formId}` rather than by containment.
@@ -161,6 +178,9 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
    */
   const formId = useId();
   const cityHelperId = useId();
+  const titleId = useId();
+  const workersId = useId();
+  const fieldErrorId = useId();
   // Once the template save succeeds, later submits of the SAME wizard run
   // (e.g. after a failed job post) carry this id so the backend overwrites
   // that template instead of 409ing against our own first save.
@@ -216,6 +236,11 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     feedbackRef.current?.scrollIntoView({ block: 'nearest' });
   }, [error, jobLimit]);
 
+  // A refused step moves focus to the field it is about. Declared AFTER the
+  // heading effect above, so when the refusal also changes the step (a jump
+  // that stops on an earlier step) the field wins over the step heading.
+  useFocusJobFormProblem(formRef, fieldProblem, focusRequest);
+
   /**
    * The template cap as a plan-limit model.
    *
@@ -235,8 +260,17 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     [templateNotice, templateLimit],
   );
 
+  const clearFieldProblem = (field: JobFormFieldProblem['field']) => {
+    setFieldProblem((current) => (current?.field === field ? null : current));
+  };
+
   const update = <K extends keyof JobForm>(key: K, value: JobForm[K]) => {
     setForm((current) => ({ ...current, [key]: value }));
+    clearFieldProblem(key as JobFormFieldProblem['field']);
+    // A half-filled shift is fixed from either side ("add the end time too,
+    // or clear the start time"), so a change to one time clears the other's mark.
+    if (key === 'shift_start') clearFieldProblem('shift_end');
+    if (key === 'shift_end') clearFieldProblem('shift_start');
   };
 
   const handleClose = () => {
@@ -252,6 +286,8 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     setTemplateNotice('');
     setTemplateLimit(null);
     setDescriptionGenerating(false);
+    setFieldProblem(null);
+    setPosted(null);
     savedTemplateIdRef.current = null;
     setAppliedTemplateId(null);
     onClose();
@@ -270,6 +306,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     // A template apply replaces the whole form; a stale verdict about the
     // previous one must not survive it.
     setError('');
+    setFieldProblem(null);
   };
 
   const toggleLanguage = (value: 'any' | 'en' | 'es') => {
@@ -308,55 +345,29 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     }));
   };
 
-  /**
-   * Maps `validateStepBasics`/`validateStepDetails`/`validateFullJobForm`'s
-   * error codes onto this modal's existing i18n keys. `trade_category_other_required`
-   * and `shift_incomplete` both fall back onto `validation_required` per
-   * those functions' own doc comments -- there is no dedicated key for
-   * either yet.
-   */
-  const validationMessage = (
-    code: ReturnType<typeof validateFullJobForm>,
-  ): string | null => {
-    switch (code) {
-      case null:
-        return null;
-      case 'required':
-      case 'trade_category_other_required':
-      case 'shift_incomplete':
-        return t('modal.validation_required');
-      case 'location_pick_required':
-        return t('modal.location_pick_required');
-      case 'state_region':
-        return t('modal.validation_state_region');
-      case 'number':
-        return t('modal.validation_number');
-      case 'pay_range':
-        return t('modal.validation_pay_range');
-      case 'headcount':
-        return t('modal.validation_headcount');
-      // Step 3's two, from the prompts editor. Unlike the codes above these
-      // DO get their own sentences: the employer has to know which of the two
-      // things is wrong with a question before they can fix it.
-      case 'prompt_blank':
-        return tReq('prompts.validation_blank');
-      case 'prompt_too_long':
-        return tReq('prompts.validation_too_long', { max: MAX_PROMPT_CHARS });
-      default:
-        return null;
-    }
-  };
+  const problemMessage = useJobFormProblemMessage();
 
   /**
-   * Step 1 -> `validateStepBasics`, step 2 -> `validateStepDetails`, step 3 ->
-   * the prompts editor. Returns the CODE, not the sentence: `goToStep` needs to
-   * know specifically about `location_pick_required` to light up the picker,
-   * and a flattened string cannot say which field failed.
+   * Shows a refused step: the banner names the field, the field is marked and
+   * described, and focus moves to it once `step` has landed.
    */
-  const validateStepAt = (n: Step): ReturnType<typeof validateFullJobForm> => {
-    if (n === 1) return validateStepBasics(form);
-    if (n === 2) return validateStepDetails(form);
-    return validateStepRequirements(form);
+  const refuse = (problem: JobFormFieldProblem, at: Step) => {
+    setError(problemMessage(problem));
+    setFieldProblem(problem);
+    // The sentence names the problem; the ring says WHERE. Without this the
+    // employer reads "select a city from the suggestions" under the footer
+    // with nothing on the field it is talking about.
+    if (problem.code === 'location_pick_required') setCityMissing(true);
+    setStep(at);
+    setFocusRequest((n) => n + 1);
+  };
+
+  /** The sentence under the marked field, when it is not already shown there. */
+  const underField = (field: JobFormFieldProblem['field']): string | null => {
+    if (fieldProblem?.field !== field) return null;
+    // The city's own helper and the live pay-range line already sit there.
+    if (fieldProblem.code === 'location_pick_required' || fieldProblem.code === 'pay_range') return null;
+    return problemMessage(fieldProblem);
   };
 
   /**
@@ -376,24 +387,20 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     if (target === step) return;
     if (target < step) {
       setError('');
+      setFieldProblem(null);
       setJobLimit(null);
       setStep(target);
       return;
     }
     for (let n: number = step; n < target; n++) {
-      const code = validateStepAt(n as Step);
-      const message = validationMessage(code);
-      if (message) {
-        setError(message);
-        // The sentence names the problem; the ring says WHERE. Without this the
-        // employer reads "select a city from the suggestions" under the footer
-        // with nothing on the field it is talking about.
-        if (code === 'location_pick_required') setCityMissing(true);
-        setStep(n as Step);
+      const problem = firstInvalidField(form, n as Step);
+      if (problem) {
+        refuse(problem, n as Step);
         return;
       }
     }
     setError('');
+    setFieldProblem(null);
     setJobLimit(null);
     setStep(target);
     setMaxVisitedStep((current) => (current > target ? current : target));
@@ -411,19 +418,17 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     const wantsTemplate = opts?.skipTemplate ? false : saveAsTemplate;
 
     setJobLimit(null);
-    const validationCode = validateFullJobForm(form);
-    const validationError = validationMessage(validationCode);
-    if (validationError) {
-      setError(validationError);
-      if (validationCode === 'location_pick_required') setCityMissing(true);
-      // Land on whichever step actually owns the failing field, same as a
-      // blocked forward jump, so the employer isn't left on step 3 staring
-      // at a message about step 1 -- or, now, on step 1 staring at one about
-      // a question they typed on step 3.
-      const promptFailure = validationCode === 'prompt_blank' || validationCode === 'prompt_too_long';
-      setStep(promptFailure ? 3 : validateStepBasics(form) ? 1 : 2);
-      return;
+    // Land on whichever step actually owns the failing field, same as a
+    // blocked forward jump, so the employer isn't left on step 3 staring at a
+    // message about step 1.
+    for (const n of STEPS) {
+      const problem = firstInvalidField(form, n);
+      if (problem) {
+        refuse(problem, n);
+        return;
+      }
     }
+    setFieldProblem(null);
 
     const name = templateName.trim();
     // Pre-check the template name against the loaded list BEFORE any network
@@ -457,8 +462,8 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     setError('');
     setTemplateNotice('');
 
-    // What the post did not achieve, carried past `handleClose` to the caller:
-    // the modal is gone by the time the dashboard can say anything about it.
+    // What the post did not achieve: shown on the posted screen, and reported
+    // to the caller with the job.
     let templateShortfall: JobCreatedOutcome['templateNotSaved'];
     let templateSavedNew = false;
 
@@ -496,7 +501,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       if (templateShortfall) outcome.templateNotSaved = templateShortfall;
       if (templateSavedNew) outcome.templateSaved = true;
       onJobCreated(job, templateShortfall || templateSavedNew ? outcome : undefined);
-      handleClose();
+      setPosted({ job, templateNotSavedLimit: templateShortfall?.templateLimit ?? null });
     } catch (err) {
       try {
         handleLegalWall(err, '/employer/dashboard');
@@ -523,6 +528,10 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
         setError(tReq('errors.city_required'));
       } else if (err instanceof ApiError && err.code === 'requirements_tier_overlap') {
         setError(tReq('errors.tier_overlap'));
+      } else if (err instanceof ApiError && err.code === 'invalid_shift_periods') {
+        // K2: a shift value the server does not know. The choices on step 2
+        // are marked and focused, as for a refused step.
+        refuse({ field: 'shift_periods', code: 'invalid_shift_periods' }, 2);
       } else if (err instanceof ApiError && err.code === 'invalid_pre_application_prompts') {
         // The backend's own bound check on the prompt list. Reachable despite
         // `validateStepRequirements` above -- the two agree on today's rules,
@@ -568,14 +577,15 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     <Modal
       open={open}
       onClose={handleClose}
-      title={t('modal.title')}
+      // The posted screen names the dialog for what it now says.
+      title={posted ? t('job_posted.title') : t('modal.title')}
       size="md"
       // A half-filled three-step wizard must not evaporate on a stray backdrop
       // click -- the same guard TemplateEditModal and EditJobModal already
       // carry, and the one this modal most needed: Escape and the header X are
       // deliberate, a mis-aimed click is not.
       closeOnOverlay={false}
-      footer={
+      footer={posted ? <JobPostedFooter onClose={handleClose} /> : (
         <div className="flex w-full items-center gap-2">
           {/* Every non-submit button here is EXPLICITLY type="button". They sit
               outside the step form, so the native submit default cannot reach
@@ -615,8 +625,16 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
             </Button>
           )}
         </div>
-      }
+      )}
     >
+      {posted ? (
+        <JobPostedPanel
+          job={posted.job}
+          templateNotSavedLimit={posted.templateNotSavedLimit}
+          onNavigate={handleClose}
+        />
+      ) : (
+      <>
       <nav aria-label={t('modal.steps.aria_label')} className="mb-5">
         <p className="sr-only">{t('modal.step_label', { current: step, total: STEPS.length })}</p>
         <ol className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
@@ -675,7 +693,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
         <p className="mt-1 text-sm text-[var(--jale-ink-2)]">{stepHint}</p>
       </div>
 
-      <form id={formId} onSubmit={handleStepSubmit}>
+      <form id={formId} ref={formRef} onSubmit={handleStepSubmit}>
       {/*
         The form's DEFAULT BUTTON, and the reason Enter works at all.
 
@@ -723,19 +741,32 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
               </Link>
             </div>
           )}
-          <Field label={t('modal.job_title')} required>
-            <Input value={form.title} onChange={(e) => update('title', e.target.value)} placeholder={t('modal.job_title_placeholder')} />
+          <Field label={t('modal.job_title')} htmlFor={titleId} required>
+            <Input
+              id={titleId}
+              data-field="title"
+              value={form.title}
+              onChange={(e) => update('title', e.target.value)}
+              placeholder={t('modal.job_title_placeholder')}
+              aria-invalid={underField('title') ? true : undefined}
+              aria-describedby={underField('title') ? fieldErrorId : undefined}
+            />
+            {underField('title') && <FieldMessage id={fieldErrorId}>{underField('title')}</FieldMessage>}
           </Field>
           <div className="grid gap-3 md:grid-cols-2">
             <Field label={t('modal.location')} required>
-              <div className={checkCity || cityMissing ? 'rounded-[10px] ring-2 ring-[var(--jale-warning)]' : undefined}>
+              <div
+                data-field="location"
+                className={checkCity || cityMissing ? 'rounded-[10px] ring-2 ring-[var(--jale-warning)]' : undefined}
+              >
                 <LocationPicker
                   value={form.location}
                   placeholder={t('modal.location_placeholder')}
-                  invalid={cityMissing}
-                  describedBy={cityMissing ? cityHelperId : undefined}
+                  invalid={cityMissing || underField('location') !== null}
+                  describedBy={cityMissing ? cityHelperId : underField('location') ? fieldErrorId : undefined}
                   onChange={(v) => {
                     setForm((c) => applyLocationToJobForm(c, v));
+                    clearFieldProblem('location');
                     // Any location edit resolves the "verify the
                     // prefilled city" nudge, same as clearing the error.
                     setCheckCity(false);
@@ -756,6 +787,9 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
               {cityMissing && (
                 <p id={cityHelperId} className="mt-1 rounded-md bg-[var(--jale-warning-bg)] px-2 py-1 text-xs font-semibold text-[var(--jale-warning)]">{t('modal.location_pick_helper')}</p>
               )}
+              {!cityMissing && underField('location') && (
+                <FieldMessage id={fieldErrorId}>{underField('location')}</FieldMessage>
+              )}
             </Field>
             <Field label={t('modal.job_type')}>
               <Select value={form.job_type} onChange={(e) => update('job_type', e.target.value as JobForm['job_type'])}>
@@ -770,6 +804,11 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
             tradeCategoryOther={form.trade_category_other}
             onTradeCategoryChange={(value) => update('trade_category', value)}
             onTradeCategoryOtherChange={(value) => update('trade_category_other', value)}
+            fieldError={
+              fieldProblem?.field === 'trade_category' || fieldProblem?.field === 'trade_category_other'
+                ? { field: fieldProblem.field, message: problemMessage(fieldProblem) }
+                : null
+            }
           />
           <Field label={t('modal.job_description')}>
             <Textarea
@@ -812,14 +851,31 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
             onPayMinChange={(value) => update('pay_min', value)}
             onPayMaxChange={(value) => update('pay_max', value)}
             onPayIntervalChange={(value) => update('pay_interval', value)}
+            fieldError={
+              fieldProblem?.field === 'pay_min' || fieldProblem?.field === 'pay_max'
+                ? { field: fieldProblem.field, message: underField(fieldProblem.field) }
+                : null
+            }
           />
           <PayReferenceHint trade={form.trade_category} cityKey={form.city_key} variant="employer" />
           <div className="grid gap-3 md:grid-cols-2">
             <Field label={t('modal.start_date')}>
               <Input type="date" value={form.start_date} onChange={(e) => update('start_date', e.target.value)} />
             </Field>
-            <Field label={t('modal.number_of_workers_needed')} required>
-              <Input type="number" min={1} value={form.number_of_workers_needed} onChange={(e) => update('number_of_workers_needed', e.target.value)} />
+            <Field label={t('modal.number_of_workers_needed')} htmlFor={workersId} required>
+              <Input
+                id={workersId}
+                data-field="number_of_workers_needed"
+                type="number"
+                min={1}
+                value={form.number_of_workers_needed}
+                onChange={(e) => update('number_of_workers_needed', e.target.value)}
+                aria-invalid={underField('number_of_workers_needed') ? true : undefined}
+                aria-describedby={underField('number_of_workers_needed') ? fieldErrorId : undefined}
+              />
+              {underField('number_of_workers_needed') && (
+                <FieldMessage id={fieldErrorId}>{underField('number_of_workers_needed')}</FieldMessage>
+              )}
             </Field>
           </div>
           <DurationField
@@ -835,11 +891,26 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
             onToggleDay={toggleWorkDay}
             onShiftStartChange={(value) => update('shift_start', value)}
             onShiftEndChange={(value) => update('shift_end', value)}
+            shiftPeriods={form.shift_periods}
+            onToggleShiftPeriod={(period) => {
+              setForm((current) => ({ ...current, shift_periods: toggleShiftPeriod(current.shift_periods, period) }));
+              clearFieldProblem('shift_periods');
+            }}
+            fieldError={
+              fieldProblem?.field === 'shift_start' || fieldProblem?.field === 'shift_end'
+                || fieldProblem?.field === 'shift_periods'
+                ? { field: fieldProblem.field, message: problemMessage(fieldProblem) }
+                : null
+            }
           />
-          <ExperienceStepper
-            value={form.required_experience_years}
-            onChange={(value) => update('required_experience_years', value)}
-          />
+          {/* No input of its own (two buttons around a number); the wrapper is
+              what a refused step focuses into. */}
+          <div data-field="required_experience_years">
+            <ExperienceStepper
+              value={form.required_experience_years}
+              onChange={(value) => update('required_experience_years', value)}
+            />
+          </div>
           <Field label={t('modal.language_preference')}>
             <div className="flex flex-wrap gap-2">
               {LANGUAGE_OPTIONS.map((lang) => {
@@ -900,7 +971,15 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
             below now waits for "Request details". */}
         <PreApplicationPromptsEditor
           prompts={form.pre_application_prompts}
-          onChange={(next) => setForm((current) => ({ ...current, pre_application_prompts: next }))}
+          onChange={(next) => {
+            setForm((current) => ({ ...current, pre_application_prompts: next }));
+            clearFieldProblem('prompt');
+          }}
+          fieldError={
+            fieldProblem?.field === 'prompt'
+              ? { index: fieldProblem.index ?? 0, message: problemMessage(fieldProblem) }
+              : null
+          }
         />
 
         <RequirementsPicker
@@ -975,14 +1054,20 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
           <PlanLimitNotice model={jobLimit} onNavigate={handleClose} />
         </div>
       ) : null}
+      </>
+      )}
     </Modal>
   );
 }
 
-function Field({ label, required, children }: { label: string; required?: boolean; children: React.ReactNode }) {
+function FieldMessage({ id, children }: { id: string; children: React.ReactNode }) {
+  return <p id={id} className="text-xs font-medium text-[var(--jale-danger-text)]">{children}</p>;
+}
+
+function Field({ label, htmlFor, required, children }: { label: string; htmlFor?: string; required?: boolean; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <label className="text-xs font-semibold uppercase tracking-wider text-[var(--jale-ink-2)]">
+      <label htmlFor={htmlFor} className="text-xs font-semibold uppercase tracking-wider text-[var(--jale-ink-2)]">
         {label}{required ? ' *' : ''}
       </label>
       {children}

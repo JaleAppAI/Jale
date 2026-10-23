@@ -5,6 +5,7 @@ import { useParams, useSearchParams } from 'next/navigation';
 import { useLocale, useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
+import { useUnreadMessages } from '@/contexts/UnreadMessagesContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { usePageData } from '@/hooks/usePageData';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
@@ -37,6 +38,8 @@ import {
 } from '@/lib/api/employer';
 import type { WorkerPost } from '@/lib/api/worker';
 import { normalizeApplicationStatus } from '@/lib/status';
+import { applicantsTutorialDone } from '@/lib/employer-tutorial-done';
+import { useTutorial } from '@/lib/tutorials/use-tutorial';
 import {
     canRequestDetails,
     canResendDetails,
@@ -204,6 +207,25 @@ export default function WorkerProfilePage() {
     );
 
     const savedStatus = profile ? normalizeApplicationStatus(profile.application_status) : 'pending';
+
+    /*
+     * The applicants tutorial (E3) also opens from an applicant: asked once per
+     * page view when the profile is on screen, and it opens only for an
+     * employer who has not yet moved any application past applied (K1.5) --
+     * this one, or any other as the inbox shows it.
+     */
+    const inbox = useUnreadMessages();
+    const applicantsDone = applicantsTutorialDone(
+        phase === 'ready' && profile ? [profile.application_status] : null,
+        inbox,
+    );
+    const applicantsTutorial = useTutorial('employer_applicants', { done: applicantsDone });
+    const applicantsAskedRef = useRef(false);
+    useEffect(() => {
+        if (applicantsAskedRef.current || applicantsDone === undefined) return;
+        applicantsAskedRef.current = true;
+        applicantsTutorial.maybeAutoOpen();
+    }, [applicantsDone, applicantsTutorial]);
     const selectedStatus = statusDraft ?? savedStatus;
 
     /*
@@ -806,6 +828,9 @@ export default function WorkerProfilePage() {
                                                     {trustAssessment.competency_score}/100
                                                 </span>
                                             </div>
+                                            {/* Where the number comes from, in one line:
+                                                it read as a black box in the employer demo. */}
+                                            <p className="-mt-2 text-xs text-[var(--jale-ink-2)]">{t('trust_caption')}</p>
                                             {(() => {
                                                 const components = trustAssessment.score_components;
                                                 const rubricVersion = trustAssessment.rubric_version;
@@ -909,6 +934,7 @@ export default function WorkerProfilePage() {
                                         </label>
                                         <Select
                                             id="applicant-status"
+                                            aria-describedby="applicant-status-caption"
                                             value={selectedStatus}
                                             disabled={saving}
                                             onChange={(event) =>
@@ -934,6 +960,16 @@ export default function WorkerProfilePage() {
                                         {hireHint ? (
                                             <p className="mt-1.5 text-xs text-[var(--jale-ink-2)]">{hireHint}</p>
                                         ) : null}
+                                        {/* Which statuses reach the worker: both
+                                            "Request details" and "Hired" send a
+                                            message, the rest are the employer's
+                                            own notes. */}
+                                        <p
+                                            id="applicant-status-caption"
+                                            className="mt-1.5 text-xs text-[var(--jale-ink-2)]"
+                                        >
+                                            {t('status_caption')}
+                                        </p>
                                     </div>
                                     <Button
                                         onClick={handleSaveStatus}

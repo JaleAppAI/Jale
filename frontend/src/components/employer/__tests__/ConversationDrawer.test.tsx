@@ -66,17 +66,58 @@ let unreadState: {
   items: import('@/lib/api/employer').InboxItem[];
   unreadCount: number;
   unreadByConversation: Record<string, boolean>;
+  loading?: boolean;
+  errorKind?: string | null;
 };
 vi.mock('@/contexts/UnreadMessagesContext', () => ({
   useUnreadMessages: () => ({
     ...unreadState,
-    loading: false,
-    errorKind: null,
+    loading: unreadState.loading ?? false,
+    errorKind: unreadState.errorKind ?? null,
     retry: vi.fn(),
     refresh: refreshInbox,
     markRead,
   }),
   useUnreadCount: () => unreadState.unreadCount,
+}));
+
+/*
+ * The messages tutorial (E4) as a recording handle. In 'pass' mode it opens
+ * the host at once, as the real hook does when a tutorial does not play; in
+ * 'hold' mode it keeps the host waiting, as a playing tutorial does, until the
+ * test lets it through.
+ */
+const tutorial = vi.hoisted(() => {
+  const state = {
+    mode: 'pass' as 'pass' | 'hold',
+    held: [] as (() => void)[],
+    latestDone: {} as Record<string, boolean | undefined>,
+    ids: new Set<string>(),
+  };
+  const handle = {
+    maybeAutoOpen: vi.fn(),
+    runBeforeHost: vi.fn((openHost: () => void) => {
+      if (state.mode === 'hold') state.held.push(openHost);
+      else openHost();
+    }),
+    replay: vi.fn(),
+  };
+  return { state, handle };
+});
+vi.mock('@/lib/tutorials/use-tutorial', () => ({
+  useTutorial: (id: string, options: { done: boolean | undefined }) => {
+    tutorial.state.ids.add(id);
+    tutorial.state.latestDone[id] = options.done;
+    return tutorial.handle;
+  },
+}));
+
+/** What the drawer last told the overlay coordinator about itself. */
+const overlay = vi.hoisted(() => ({ calls: [] as boolean[] }));
+vi.mock('@/lib/tutorials/overlay', () => ({
+  useOverlayPresence: (open: boolean) => {
+    overlay.calls.push(open);
+  },
 }));
 
 // Below the mocks (they hoist).
@@ -146,6 +187,12 @@ afterEach(() => {
 });
 
 beforeEach(() => {
+  tutorial.handle.runBeforeHost.mockClear();
+  tutorial.state.mode = 'pass';
+  tutorial.state.held.length = 0;
+  tutorial.state.ids.clear();
+  for (const id of Object.keys(tutorial.state.latestDone)) delete tutorial.state.latestDone[id];
+  overlay.calls.length = 0;
   markRead.mockReset();
   // The context reports whether the stamp landed; a receipt that is refused is
   // retried (see `useThreadReadReceipt`), so the stub has to answer.
@@ -564,5 +611,79 @@ describe('several applicants the inbox does not list', () => {
     const rowA = screen.getByRole('button', { name: /Ana Prueba/ });
     expect(within(rowA).queryByText(message('employer_messages.drawer_new_conversation'))).not.toBeInTheDocument();
     expect(within(rowA).getByText('See you Monday')).toBeInTheDocument();
+  });
+});
+
+/*
+ * E4 (sprint 29): the messages tutorial plays before the drawer opens, for an
+ * employer with no conversation yet (K1.5).
+ */
+describe('the messages tutorial', () => {
+  const launcher = () =>
+    screen.getByRole('button', { name: new RegExp(`${message('employer_messages.drawer_button')}|${message('employer_messages.drawer_close')}`) });
+
+  it('passes done from the inbox: unknown while it loads, true once a thread exists', () => {
+    unreadState = { items: [neverMessaged], unreadCount: 0, unreadByConversation: {}, loading: true };
+    const { rerender } = renderDrawer();
+    expect(tutorial.state.ids.has('employer_messages')).toBe(true);
+    expect(tutorial.state.latestDone.employer_messages).toBeUndefined();
+
+    unreadState = { items: [neverMessaged], unreadCount: 0, unreadByConversation: {} };
+    rerender(<ConversationDrawerProvider>{null}</ConversationDrawerProvider>);
+    expect(tutorial.state.latestDone.employer_messages).toBe(false);
+
+    unreadState = { items: [messaged, neverMessaged], unreadCount: 1, unreadByConversation: {} };
+    rerender(<ConversationDrawerProvider>{null}</ConversationDrawerProvider>);
+    expect(tutorial.state.latestDone.employer_messages).toBe(true);
+  });
+
+  it('holds a requested drawer until the tutorial lets it through', async () => {
+    tutorial.state.mode = 'hold';
+    const user = userEvent.setup();
+    renderDrawer(<OpenerPage target={{ application_id: 'app-1', worker_id: 'w-1', job_id: 'job-1' }} />);
+
+    await user.click(screen.getByRole('button', { name: 'open thread' }));
+
+    expect(tutorial.handle.runBeforeHost).toHaveBeenCalledTimes(1);
+    expect(launcher()).toHaveAttribute('aria-expanded', 'false');
+
+    act(() => tutorial.state.held[0]());
+
+    expect(launcher()).toHaveAttribute('aria-expanded', 'true');
+    await waitFor(() => expect(getConversation).toHaveBeenCalledWith('test-token', 'conv-1', expect.anything()));
+    await waitFor(() => expect(screen.getAllByText('I can start Monday')).toHaveLength(2));
+  });
+
+  it('asks before the launcher opens the drawer, and not when it closes it', async () => {
+    const user = userEvent.setup();
+    renderDrawer();
+
+    await user.click(launcher());
+    expect(tutorial.handle.runBeforeHost).toHaveBeenCalledTimes(1);
+    expect(launcher()).toHaveAttribute('aria-expanded', 'true');
+
+    await user.click(launcher());
+    expect(tutorial.handle.runBeforeHost).toHaveBeenCalledTimes(1);
+    expect(launcher()).toHaveAttribute('aria-expanded', 'false');
+  });
+});
+
+/*
+ * The drawer is not a Modal or a Sheet, so it reports its own open state to
+ * the overlay coordinator (sprint 29): no tutorial auto-opens on top of it.
+ */
+describe('overlay presence', () => {
+  it('tells the overlay coordinator whether the drawer is open', async () => {
+    const user = userEvent.setup();
+    renderDrawer();
+    const toggle = () =>
+      screen.getByRole('button', { name: new RegExp(`${message('employer_messages.drawer_button')}|${message('employer_messages.drawer_close')}`) });
+    expect(overlay.calls.at(-1)).toBe(false);
+
+    await user.click(toggle());
+    expect(overlay.calls.at(-1)).toBe(true);
+
+    await user.click(toggle());
+    expect(overlay.calls.at(-1)).toBe(false);
   });
 });

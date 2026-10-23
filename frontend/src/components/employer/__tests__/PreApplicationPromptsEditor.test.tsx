@@ -232,3 +232,22 @@ describe('PreApplicationPromptsEditor — Spanish', () => {
         ).toBeInTheDocument();
     });
 });
+
+// Step 3 is two labelled parts (sprint 29). Part 1 is what a worker meets
+// while applying. Copy from the approved applicant-questions board.
+describe('PreApplicationPromptsEditor — Part 1 heading', () => {
+    it('labels itself as the apply-time part', () => {
+        renderIntl(<PreApplicationPromptsEditor prompts={[]} onChange={() => {}} />);
+        expect(screen.getByText('Part 1 · When they apply')).toBeInTheDocument();
+        expect(screen.getByRole('heading', { name: 'Quick questions' })).toBeInTheDocument();
+        expect(
+            screen.getByText('Asked when the worker applies, answered in their own words. We suggest 2 or fewer.'),
+        ).toBeInTheDocument();
+    });
+
+    it('says the same in Spanish', () => {
+        renderIntl(<PreApplicationPromptsEditor prompts={[]} onChange={() => {}} />, 'es');
+        expect(screen.getByText('Parte 1 · Al postularse')).toBeInTheDocument();
+        expect(screen.getByRole('heading', { name: 'Preguntas rápidas' })).toBeInTheDocument();
+    });
+});

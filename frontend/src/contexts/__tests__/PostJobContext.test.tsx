@@ -36,6 +36,34 @@ vi.mock('@/components/ui/toast', () => ({
     useToast: () => ({ success: toastSuccess, error: vi.fn(), info: vi.fn() }),
 }));
 
+/*
+ * The post-job tutorial (E2) as a recording handle: which id the provider asks
+ * for, the `done` it passes on each render, and the `done` the handle held
+ * when the provider asked it to run before the wizard. `runBeforeHost` opens
+ * the host at once, as the real hook does whenever a tutorial does not play.
+ */
+const tutorial = vi.hoisted(() => {
+    const latestDone: Record<string, boolean | undefined> = {};
+    const doneAtRun: (boolean | undefined)[] = [];
+    const ids: string[] = [];
+    const handle = {
+        maybeAutoOpen: vi.fn(),
+        runBeforeHost: vi.fn((openHost: () => void) => {
+            doneAtRun.push(latestDone.employer_post_job);
+            openHost();
+        }),
+        replay: vi.fn(),
+    };
+    return { latestDone, doneAtRun, ids, handle };
+});
+vi.mock('@/lib/tutorials/use-tutorial', () => ({
+    useTutorial: (id: string, options: { done: boolean | undefined }) => {
+        tutorial.ids.push(id);
+        tutorial.latestDone[id] = options.done;
+        return tutorial.handle;
+    },
+}));
+
 const getJobs = vi.fn();
 const getBilling = vi.fn();
 vi.mock('@/lib/api/employer', async (importOriginal) => ({
@@ -63,7 +91,7 @@ vi.mock('@/components/employer/PostJobModal', () => ({
 
 import { message, renderIntl } from '@/components/employer/__tests__/render-intl';
 import { PostJobButton } from '@/components/employer/PostJobButton';
-import { PostJobProvider, useJobCreated, usePostJob } from '@/contexts/PostJobContext';
+import { PostJobProvider, useJobCreated, usePostJob, usePostJobSnapshot } from '@/contexts/PostJobContext';
 import type { EmployerBilling, Job } from '@/lib/api/employer';
 
 const activeJob: Job = {
@@ -147,6 +175,9 @@ const postJobButton = () =>
 
 beforeEach(() => {
     vi.clearAllMocks();
+    tutorial.doneAtRun.length = 0;
+    tutorial.ids.length = 0;
+    for (const id of Object.keys(tutorial.latestDone)) delete tutorial.latestDone[id];
     authState.idToken = 'test-token';
     authState.userType = 'employer';
     authState.isAuthenticated = true;
@@ -173,8 +204,10 @@ describe('post a job from any employer page', () => {
         fireEvent.click(screen.getByRole('button', { name: 'publish' }));
 
         await waitFor(() => expect(onCreated).toHaveBeenCalledWith(postedJob));
-        expect(toastSuccess).toHaveBeenCalledWith(message('employer_dashboard.jobs.post_success'));
-        expect(screen.queryByTestId('post-job-wizard')).not.toBeInTheDocument();
+        // The wizard stays open on its own "Job posted" screen, which is the
+        // confirmation; a toast on top of it would say the same thing twice.
+        expect(toastSuccess).not.toHaveBeenCalled();
+        expect(screen.getByTestId('post-job-wizard')).toBeInTheDocument();
     });
 
     it('shows the limit dialog instead of the wizard when the plan has no slot', async () => {
@@ -278,13 +311,16 @@ describe('with no session to post with', () => {
             }, [openPostJob]);
             return null;
         }
-        const tree = (
+        // A fresh element per render: the real `useAuth` is a context, so a
+        // session change re-renders the provider. The mock is a plain object,
+        // so the change is delivered by rendering the provider again.
+        const tree = () => (
             <PostJobProvider>
                 <Probe />
                 <ApplicantsLikePage />
             </PostJobProvider>
         );
-        const { rerender } = renderIntl(tree);
+        const { rerender } = renderIntl(tree());
 
         act(() => opener.current?.());
 
@@ -297,7 +333,7 @@ describe('with no session to post with', () => {
          */
         authState.idToken = 'test-token';
         authState.isAuthenticated = true;
-        rerender(tree);
+        rerender(tree());
 
         await waitFor(() => expect(postJobButton()).toBeEnabled());
         expect(screen.queryByTestId('post-job-wizard')).not.toBeInTheDocument();
@@ -312,5 +348,103 @@ describe('with no session to post with', () => {
         renderPage();
 
         expect(postJobButton()).toBeDisabled();
+    });
+});
+
+/*
+ * E2 (sprint 29): the post-job tutorial plays before the wizard, only once the
+ * plan gate has let the employer through, and only for an employer with no
+ * job yet (K1.5). The real tutorial lands with the framework; here the hook is
+ * a recording handle.
+ */
+describe('the post-job tutorial', () => {
+    const noJobsSnapshot = { billing: { ...freePlan, activeJobLimit: 3, activeJobUsage: 0 }, jobs: [], activeCount: 0 };
+
+    /** A page that already holds the plan and the jobs, as the dashboard does. */
+    function PageWithSnapshot({ snapshot }: { snapshot: Parameters<typeof usePostJobSnapshot>[0] }) {
+        usePostJobSnapshot(snapshot);
+        return <PostJobButton />;
+    }
+
+    it('asks for the post-job tutorial and knows nothing about jobs before any read', () => {
+        renderPage();
+
+        expect(tutorial.ids).toContain('employer_post_job');
+        expect(tutorial.latestDone.employer_post_job).toBeUndefined();
+        expect(tutorial.handle.runBeforeHost).not.toHaveBeenCalled();
+    });
+
+    it('plays before the wizard for an employer with no jobs, with done false', async () => {
+        getJobs.mockResolvedValue([]);
+        renderPage();
+        fireEvent.click(postJobButton());
+
+        await waitFor(() => expect(screen.getByTestId('post-job-wizard')).toBeInTheDocument());
+        expect(tutorial.handle.runBeforeHost).toHaveBeenCalledTimes(1);
+        // The read that answered the gate is the one the tutorial saw.
+        expect(tutorial.doneAtRun).toEqual([false]);
+    });
+
+    it('passes done true once the employer has a job', async () => {
+        renderPage();
+        fireEvent.click(postJobButton());
+
+        await waitFor(() => expect(screen.getByTestId('post-job-wizard')).toBeInTheDocument());
+        expect(tutorial.doneAtRun).toEqual([true]);
+    });
+
+    it('takes done from a page that already holds the jobs, with no request', async () => {
+        renderIntl(
+            <PostJobProvider>
+                <PageWithSnapshot snapshot={noJobsSnapshot} />
+            </PostJobProvider>,
+        );
+        expect(tutorial.latestDone.employer_post_job).toBe(false);
+
+        fireEvent.click(postJobButton());
+
+        await waitFor(() => expect(screen.getByTestId('post-job-wizard')).toBeInTheDocument());
+        expect(tutorial.doneAtRun).toEqual([false]);
+        expect(getJobs).not.toHaveBeenCalled();
+    });
+
+    it('never plays on the plan-gate path', async () => {
+        getBilling.mockResolvedValue(freePlan);
+        renderPage();
+        fireEvent.click(postJobButton());
+
+        await waitFor(() =>
+            expect(screen.getByText(message('billing.limit_dialog.title'))).toBeInTheDocument());
+        expect(tutorial.handle.runBeforeHost).not.toHaveBeenCalled();
+        expect(screen.queryByTestId('post-job-wizard')).not.toBeInTheDocument();
+    });
+
+    it('forgets what a page told it once that page is gone', () => {
+        const { rerender } = renderIntl(
+            <PostJobProvider>
+                <PageWithSnapshot snapshot={noJobsSnapshot} />
+            </PostJobProvider>,
+        );
+        expect(tutorial.latestDone.employer_post_job).toBe(false);
+
+        rerender(
+            <PostJobProvider>
+                <PostJobButton />
+            </PostJobProvider>,
+        );
+
+        // Back to unknown: the next press reads the jobs again.
+        expect(tutorial.latestDone.employer_post_job).toBeUndefined();
+    });
+
+    it('keeps done unknown for a session that is not an employer', () => {
+        authState.userType = 'worker';
+        renderIntl(
+            <PostJobProvider>
+                <PageWithSnapshot snapshot={noJobsSnapshot} />
+            </PostJobProvider>,
+        );
+
+        expect(tutorial.latestDone.employer_post_job).toBeUndefined();
     });
 });
