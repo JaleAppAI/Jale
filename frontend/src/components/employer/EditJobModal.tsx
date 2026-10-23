@@ -95,6 +95,22 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
      * default button, which is what makes Enter save. See PostJobModal.
      */
     const formId = useId();
+    /*
+     * The save was refused for a shift value the server does not know (K2
+     * `invalid_shift_periods`): the choices are marked and the first one is
+     * focused, as in the wizard and the template editor. Cleared as soon as a
+     * choice changes; `shiftFocusRequest` counts refusals so a second one
+     * focuses again.
+     */
+    const [shiftPeriodsRejected, setShiftPeriodsRejected] = useState(false);
+    const [shiftFocusRequest, setShiftFocusRequest] = useState(0);
+    const formRef = useRef<HTMLFormElement>(null);
+    useEffect(() => {
+        if (shiftFocusRequest === 0) return;
+        const first = formRef.current?.querySelector<HTMLElement>('[data-field="shift_periods"] input');
+        first?.scrollIntoView({ block: 'center' });
+        first?.focus();
+    }, [shiftFocusRequest]);
 
     /*
      * Re-prefill on OPEN, not on every `job` change.
@@ -112,13 +128,16 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
             setInitialForm(fresh);
             setError('');
             setCityMissing(validateStepBasics(fresh) === 'location_pick_required');
+            setShiftPeriodsRejected(false);
         }
         wasOpen.current = open;
     }, [open, job]);
 
     const locked = job.applicant_count > 0;
-    const update = <K extends keyof JobForm>(key: K, value: JobForm[K]) =>
+    const update = <K extends keyof JobForm>(key: K, value: JobForm[K]) => {
         setForm((current) => ({ ...current, [key]: value }));
+        if (key === 'shift_periods') setShiftPeriodsRejected(false);
+    };
 
     const handleSubmit = async () => {
         // `validateFullJobForm` replaces this modal's own inline checks --
@@ -158,6 +177,7 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
         }
         setLoading(true);
         setError('');
+        setShiftPeriodsRejected(false);
         try {
             const updated = await updateJob(idToken!, job.id, jobFormToEditPayload(form, initialForm));
             onJobUpdated(updated);
@@ -186,6 +206,10 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
                 setError(tReq('errors.city_required'));
             } else if (code === 'requirements_tier_overlap') {
                 setError(tReq('errors.tier_overlap'));
+            } else if (code === 'invalid_shift_periods') {
+                setError(t('modal.field_errors.shift_periods'));
+                setShiftPeriodsRejected(true);
+                setShiftFocusRequest((n) => n + 1);
             } else {
                 setError(errorMessage(err, { unknown: t('modal.edit_error') }));
             }
@@ -242,7 +266,7 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
                 </div>
             }
         >
-            <form id={formId} onSubmit={handleFormSubmit} className="grid gap-4">
+            <form id={formId} ref={formRef} onSubmit={handleFormSubmit} className="grid gap-4">
                 {/* The form's default button, so Enter in any field saves --
                     the footer's Save is not a descendant and cannot serve as
                     one everywhere. See PostJobModal for the full note. */}
@@ -264,6 +288,7 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
                     locationInvalid={cityMissing}
                     minWorkers={job.hired_count || 1}
                     titleRef={initialFocusRef}
+                    shiftPeriodsError={shiftPeriodsRejected ? t('modal.field_errors.shift_periods') : null}
                 />
             </form>
         </Modal>

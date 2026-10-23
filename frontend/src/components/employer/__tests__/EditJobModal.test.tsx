@@ -44,6 +44,7 @@ vi.mock('@/lib/api/employer', async (importOriginal) => ({
 
 import { message, renderIntl } from './render-intl';
 import { EditJobModal } from '../EditJobModal';
+import { ApiError } from '@/lib/api/employer';
 import type { EmployerJobDetail } from '@/lib/api/employer';
 
 const withCity = {
@@ -159,4 +160,27 @@ describe('EditJobModal: a job with no shift choices', () => {
             expect((updateJob.mock.calls[0][2] as Record<string, unknown>).shift_periods).toEqual([]);
         });
     }
+});
+
+/*
+ * K2 (2026-10-22): an update refused with 400 `invalid_shift_periods` says so
+ * and marks the shift choices, with focus on the first of them -- the same as
+ * the wizard and the template editor.
+ */
+describe('EditJobModal: refused shift choices', () => {
+    it('names and marks the shift choices', async () => {
+        // The body also lists the valid values; the form does not need them.
+        updateJob.mockRejectedValue(new ApiError(400, 'invalid_shift_periods'));
+        renderIntl(<EditJobModal open job={withCity} onClose={vi.fn()} onJobUpdated={vi.fn()} />);
+
+        fireEvent.click(screen.getByRole('button', { name: message('employer_dashboard.modal.edit_save') }));
+
+        const day = () => screen.getByRole('checkbox', { name: message('common.shift_periods.day') });
+        await waitFor(() => expect(day()).toHaveFocus());
+        expect(day()).toHaveAttribute('aria-invalid', 'true');
+        expect(screen.getAllByText('Pick the shifts again from this list').length).toBeGreaterThan(0);
+
+        fireEvent.click(day());
+        expect(day()).not.toHaveAttribute('aria-invalid');
+    });
 });
