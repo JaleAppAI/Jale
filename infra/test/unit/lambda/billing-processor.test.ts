@@ -23,9 +23,9 @@
  *  - unknown customer → terminal skip (row + SQS message both terminal)
  *  - handler(): SQS message disposition per outcome (delete vs. redeliver)
  *  - current-subscription recency: only checkout.session.completed and
- *      customer.subscription.created may retire a user's other current
+ *      customer.subscription.created may retire a company's other current
  *      rows (in the same transaction, BEFORE the upsert that would
- *      otherwise violate subscriptions_one_current_per_user); any other
+ *      otherwise violate subscriptions_one_current_per_organization); any other
  *      event arriving for a non-current subscription is skipped
  *  - customer.subscription.paused/resumed are mirrored (not silently
  *      skipped); trial_will_end is known-but-skipped and alarmed
@@ -50,7 +50,7 @@ const stripeMod = require('../../../lambda/lib/stripe-client');
 const mockGetStripe: jest.Mock = stripeMod.getStripe;
 const mockGetStripeSecret: jest.Mock = stripeMod.getStripeSecret;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const mockResolveEntitlements: jest.Mock = require('../../../lambda/lib/entitlements').resolveEntitlements;
+const mockResolveEntitlements: jest.Mock = require('../../../lambda/lib/entitlements').resolveCompanyEntitlements;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const mockQueueEmail: jest.Mock = require('../../../lambda/lib/email-outbox').queueEmail;
 
@@ -62,6 +62,7 @@ const SUB1 = 'sub_test000';
 const CUS1 = 'cus_test000';
 const PRICE_PRO = 'price_test000';
 const USER1 = 'user-uuid-0001';
+const ORG1 = 'org-uuid-0001';
 
 // ── Synthetic event factories (2026-06-24.dahlia shape) ────────────────────
 
@@ -174,8 +175,8 @@ function makeDbMock(queryResponses?: Map<string, unknown[]>) {
   // result. Calls still go through queryMock, so they stay assertable.
   const clientQuery = async (...args: unknown[]) => {
     const result = await queryMock(...args);
-    if (String(args[0]).includes('billing_resume_paused_jobs') && !(result as { rows?: unknown[] })?.rows?.length) {
-      return { rows: [{ resumed_count: 0, employer_email: null, resumed_titles: [] }] };
+    if (String(args[0]).includes('billing_restore_org') && !(result as { rows?: unknown[] })?.rows?.length) {
+      return { rows: [{ resumed_count: 0, resumed_titles: [], restored_count: 0, restored_emails: [], owner_email: null }] };
     }
     return result;
   };
@@ -233,7 +234,7 @@ describe('billing processor: processEnvelope()', () => {
     process.env.ALLOWED_ORIGIN = 'https://jaleapp.ai';
     // FIX 1: price comes from stripe secret, not env var
     mockGetStripeSecret.mockResolvedValue({ secretKey: 'rk_test_000', priceIdEmployerPro: PRICE_PRO });
-    mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_free', activeJobLimit: 1 });
+    mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_free', activeJobLimit: 1, templateLimit: 2, foremanSeatLimit: 0 });
     mockQueueEmail.mockResolvedValue('email-outbox-1');
   });
 
@@ -245,16 +246,19 @@ describe('billing processor: processEnvelope()', () => {
     const { queryMock } = makeDbMock();
     queryMock.mockImplementation((sql: string) => {
       if (sql.includes('INSERT INTO billing_webhook_events')) return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] });
-      if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1 }] });
+      if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1, organization_id: ORG1 }] });
       // Supersede lock-read: the only subscriptions lock-read filtering with IS
       // DISTINCT FROM. Empty = this user has no OTHER current subscription row.
       if (sql.includes('IS DISTINCT FROM')) return Promise.resolve({ rows: [] });
       if (sql.includes('FROM subscriptions') && sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [] });
       if (sql.includes('INSERT INTO subscriptions')) return Promise.resolve({ rows: [{ id: 'subscription-row-uuid' }] });
-      if (sql.includes('billing_pause_over_limit_jobs')) return Promise.resolve({ rows: [{
+      if (sql.includes('billing_enforce_org_limits')) return Promise.resolve({ rows: [{
         paused_count: pausedCount,
-        employer_email: employerEmail,
         paused_titles: pausedTitles,
+        suspended_count: 0,
+        suspended_emails: [],
+        revoked_invite_count: 0,
+        owner_email: employerEmail,
       }] });
       return Promise.resolve({ rows: [] });
     });
@@ -268,10 +272,10 @@ describe('billing processor: processEnvelope()', () => {
       mockStripe(makeStripeSubscription({ status }));
       const result = await processEnvelope(makeEnvelope(makeSubEvent({ status })));
       expect(result.outcome).toBe('processed');
-      expect(mockResolveEntitlements).toHaveBeenCalledWith(expect.anything(), USER1);
+      expect(mockResolveEntitlements).toHaveBeenCalledWith(expect.anything(), ORG1);
       expect(queryMock).toHaveBeenCalledWith(
-        expect.stringContaining('billing_pause_over_limit_jobs'),
-        [USER1, 1],
+        expect.stringContaining('billing_enforce_org_limits'),
+        [ORG1, 1, 0],
       );
       expect(mockQueueEmail).not.toHaveBeenCalled();
     },
@@ -284,7 +288,7 @@ describe('billing processor: processEnvelope()', () => {
       mockStripe(makeStripeSubscription({ status }));
       const result = await processEnvelope(makeEnvelope(makeSubEvent({ status })));
       expect(result.outcome).toBe('processed');
-      expect(queryMock.mock.calls.some(([sql]) => String(sql).includes('billing_pause_over_limit_jobs'))).toBe(false);
+      expect(queryMock.mock.calls.some(([sql]) => String(sql).includes('billing_enforce_org_limits'))).toBe(false);
       expect(mockQueueEmail.mock.calls.some(([, input]) => input.sourceType === 'billing_pause')).toBe(false);
     },
   );
@@ -294,8 +298,8 @@ describe('billing processor: processEnvelope()', () => {
   function setupResume(resumedCount: number, resumedTitles: string[] = [], employerEmail: string | null = 'employer@example.com') {
     const { queryMock } = setupEntitlementReduction(0);
     const base = queryMock.getMockImplementation()!;
-    queryMock.mockImplementation((sql: string, params?: unknown[]) => (sql.includes('billing_resume_paused_jobs')
-      ? Promise.resolve({ rows: [{ resumed_count: resumedCount, employer_email: employerEmail, resumed_titles: resumedTitles }] })
+    queryMock.mockImplementation((sql: string, params?: unknown[]) => (sql.includes('billing_restore_org')
+      ? Promise.resolve({ rows: [{ resumed_count: resumedCount, resumed_titles: resumedTitles, restored_count: 0, restored_emails: [], owner_email: employerEmail }] })
       : base(sql, params)));
     return { queryMock };
   }
@@ -303,13 +307,13 @@ describe('billing processor: processEnvelope()', () => {
   it.each(['active', 'trialing'])(
     'resumes the jobs billing paused when the subscription is %s again, and mails the employer once',
     async (status) => {
-      mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_pro', activeJobLimit: 10 });
+      mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_pro', activeJobLimit: 10, templateLimit: 20, foremanSeatLimit: 3 });
       const { queryMock } = setupResume(2, ['Older paused', 'Newer paused']);
       mockStripe(makeStripeSubscription({ status }));
       const result = await processEnvelope(makeEnvelope(makeSubEvent({ status })));
       expect(result.outcome).toBe('processed');
-      expect(mockResolveEntitlements).toHaveBeenCalledWith(expect.anything(), USER1);
-      expect(queryMock).toHaveBeenCalledWith(expect.stringContaining('billing_resume_paused_jobs'), [USER1, 10]);
+      expect(mockResolveEntitlements).toHaveBeenCalledWith(expect.anything(), ORG1);
+      expect(queryMock).toHaveBeenCalledWith(expect.stringContaining('billing_restore_org'), [ORG1, 10, 3]);
       expect(mockQueueEmail).toHaveBeenCalledTimes(1);
       expect(mockQueueEmail).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
         recipientEmail: 'employer@example.com',
@@ -320,7 +324,7 @@ describe('billing processor: processEnvelope()', () => {
         bodyText: expect.stringMatching(/Older paused[\s\S]*https:\/\/jaleapp\.ai\/en\/employer\/jobs[\s\S]*Su suscripción[\s\S]*https:\/\/jaleapp\.ai\/es\/employer\/jobs/),
       }));
       // Inside the processor's transaction, before it commits.
-      const resumeAt = queryMock.mock.calls.findIndex(([sql]) => String(sql).includes('billing_resume_paused_jobs'));
+      const resumeAt = queryMock.mock.calls.findIndex(([sql]) => String(sql).includes('billing_restore_org'));
       const commitAt = queryMock.mock.calls.map(([sql]) => sql).lastIndexOf('COMMIT');
       expect(resumeAt).toBeGreaterThan(-1);
       expect(commitAt).toBeGreaterThan(resumeAt);
@@ -338,7 +342,7 @@ describe('billing processor: processEnvelope()', () => {
     const { queryMock } = setupResume(1, ['Paused']);
     mockStripe(makeStripeSubscription({ status: 'past_due' }));
     await processEnvelope(makeEnvelope(makeSubEvent({ status: 'past_due' })));
-    expect(queryMock.mock.calls.some(([sql]) => String(sql).includes('billing_resume_paused_jobs'))).toBe(false);
+    expect(queryMock.mock.calls.some(([sql]) => String(sql).includes('billing_restore_org'))).toBe(false);
   });
 
   it.each([
@@ -373,7 +377,7 @@ describe('billing processor: processEnvelope()', () => {
     expect(queued.bodyHtml).toContain('<html');
     expect(queued.bodyHtml).toContain('href="https://jaleapp.ai/es/employer/billing"');
     expect(queued.bodyText).not.toMatch(/\btus?\b|\btienes\b/i);
-    expect(infoLog).toHaveBeenCalledWith('paused_over_limit_jobs', { userId: USER1, pausedCount: 2 });
+    expect(infoLog).toHaveBeenCalledWith('enforced_company_limits', { organizationId: ORG1, pausedCount: 2, suspendedCount: 0, revokedInvites: 0 });
     infoLog.mockRestore();
   });
 
@@ -397,13 +401,13 @@ describe('billing processor: processEnvelope()', () => {
     const { queryMock } = setupEntitlementReduction(0);
     queryMock.mockImplementation((sql: string) => {
       if (sql.includes('INSERT INTO billing_webhook_events')) return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] });
-      if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1 }] });
+      if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1, organization_id: ORG1 }] });
       // Supersede lock-read: the only subscriptions lock-read filtering with IS
       // DISTINCT FROM. Empty = this user has no OTHER current subscription row.
       if (sql.includes('IS DISTINCT FROM')) return Promise.resolve({ rows: [] });
       if (sql.includes('FROM subscriptions') && sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [] });
       if (sql.includes('INSERT INTO subscriptions')) return Promise.resolve({ rows: [{ id: 'subscription-row-uuid' }] });
-      if (sql.includes('billing_pause_over_limit_jobs')) return Promise.resolve({ rows: [] });
+      if (sql.includes('billing_enforce_org_limits')) return Promise.resolve({ rows: [] });
       return Promise.resolve({ rows: [] });
     });
     mockStripe(makeStripeSubscription({ status: 'canceled' }));
@@ -427,6 +431,232 @@ describe('billing processor: processEnvelope()', () => {
     expect(queueOrder).toBeLessThan(queryMock.mock.invocationCallOrder[rollbackCall]);
   });
 
+  // ── Phase 2: the company ────────────────────────────────────────────────
+
+  it('maps a customer created before Phase 2 to its company through billing_customers alone, never through Stripe metadata', async () => {
+    mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_pro', activeJobLimit: 10, templateLimit: 20, foremanSeatLimit: 3 });
+    const { queryMock } = setupEntitlementReduction(0);
+    // A pre-Phase-2 customer's Stripe metadata carries only userId; reading it at all fails the test.
+    const subscription = makeStripeSubscription({ status: 'active' }) as Record<string, unknown>;
+    Object.defineProperty(subscription, 'metadata', { get: () => { throw new Error('Stripe metadata must not be read'); } });
+    mockStripe(subscription);
+
+    const result = await processEnvelope(makeEnvelope(makeSubEvent({ status: 'active' })));
+
+    expect(result).toEqual({ outcome: 'processed' });
+    const lookup = queryMock.mock.calls.find(([sql]) => String(sql).includes('FROM billing_customers'));
+    expect(lookup![0]).toBe('SELECT user_id, organization_id FROM billing_customers WHERE provider_customer_id = $1');
+    expect(lookup![1]).toEqual([CUS1]);
+    const others = queryMock.mock.calls.find(([sql]) => String(sql).includes('IS DISTINCT FROM'));
+    expect(String(others![0])).toMatch(/WHERE organization_id = \$1/);
+    expect(others![1]).toEqual([ORG1, SUB1]);
+    const upsert = queryMock.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO subscriptions'));
+    expect(String(upsert![0])).toMatch(/grace_ends_at, updated_at, organization_id\s*\) VALUES/);
+    expect(String(upsert![0])).not.toMatch(/DO UPDATE SET[\s\S]*organization_id\s*=/);
+    expect((upsert![1] as unknown[])[0]).toBe(USER1);
+    expect((upsert![1] as unknown[])[8]).toBe(ORG1);
+    expect(mockResolveEntitlements).toHaveBeenCalledWith(expect.anything(), ORG1);
+    expect(queryMock).toHaveBeenCalledWith(expect.stringContaining('billing_restore_org'), [ORG1, 10, 3]);
+  });
+
+  it('fails, retryably, when the customer row names no company (127 not applied yet)', async () => {
+    const { queryMock } = setupEntitlementReduction(0);
+    const base = queryMock.getMockImplementation()!;
+    queryMock.mockImplementation((sql: string, params?: unknown[]) => (String(sql).includes('FROM billing_customers')
+      ? Promise.resolve({ rows: [{ user_id: USER1, organization_id: null }] })
+      : base(sql, params)));
+    mockStripe(makeStripeSubscription({ status: 'canceled' }));
+
+    await expect(processEnvelope(makeEnvelope(makeSubEvent({ status: 'canceled' }))))
+      .resolves.toEqual({ outcome: 'failed', errorCode: 'billing_customer_organization_missing' });
+    expect(queryMock.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO subscriptions'))).toBe(false);
+    // No company, no lock: the processor never locks on a user id.
+    expect(queryMock.mock.calls.some(([sql]) => String(sql).includes('pg_advisory_xact_lock'))).toBe(false);
+    expect(mockResolveEntitlements).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['canceled', 'billing_enforce_org_limits'],
+    ['active', 'billing_restore_org'],
+  ])('serialises a %s event per company: the advisory lock on the company id runs right after BEGIN, before the plan is read and %s runs', async (status, fn) => {
+    const { queryMock } = status === 'active' ? setupResume(0) : setupEntitlementReduction(0);
+    mockStripe(makeStripeSubscription({ status }));
+
+    await expect(processEnvelope(makeEnvelope(makeSubEvent({ status })))).resolves.toEqual({ outcome: 'processed' });
+
+    const sqls = queryMock.mock.calls.map(([sql]) => String(sql));
+    const lookupAt = sqls.findIndex((sql) => sql.includes('FROM billing_customers'));
+    const lockAt = sqls.findIndex((sql) => sql.includes('pg_advisory_xact_lock'));
+    const fnAt = sqls.findIndex((sql) => sql.includes(fn));
+    expect(sqls.filter((sql) => sql.includes('pg_advisory_xact_lock'))).toHaveLength(1);
+    expect(sqls[lockAt]).toBe("SELECT pg_advisory_xact_lock(hashtextextended('billing-org:' || $1::uuid::text, 0))");
+    expect(queryMock.mock.calls[lockAt][1]).toEqual([ORG1]);
+    // After the customer→company lookup, first thing inside the final transaction.
+    expect(lockAt).toBeGreaterThan(lookupAt);
+    expect(lockAt).toBe(sqls.lastIndexOf('BEGIN') + 1);
+    expect(lockAt).toBeLessThan(sqls.findIndex((sql) => sql.includes('FROM subscriptions') && sql.includes('FOR UPDATE')));
+    // Before the company's plan is read and before enforce/restore.
+    expect(queryMock.mock.invocationCallOrder[lockAt]).toBeLessThan(mockResolveEntitlements.mock.invocationCallOrder[0]);
+    expect(lockAt).toBeLessThan(fnAt);
+  });
+
+  it.each([
+    ['canceled', 'billing_enforce_org_limits'],
+    ['active', 'billing_restore_org'],
+  ])('a second company\'s customer (%s) runs %s for that company, never the first', async (status, fn) => {
+    const CUS2 = 'cus_test001';
+    const USER2 = 'user-uuid-0002';
+    const ORG2 = 'org-uuid-0002';
+    const { queryMock } = status === 'active' ? setupResume(0) : setupEntitlementReduction(0);
+    const base = queryMock.getMockImplementation()!;
+    // Each customer maps to its own company; only CUS2's event arrives.
+    queryMock.mockImplementation((sql: string, params?: unknown[]) => (String(sql).includes('FROM billing_customers')
+      ? Promise.resolve({ rows: [params?.[0] === CUS2 ? { user_id: USER2, organization_id: ORG2 } : { user_id: USER1, organization_id: ORG1 }] })
+      : base(sql, params)));
+    mockStripe(makeStripeSubscription({ status, customerId: CUS2 }));
+
+    const result = await processEnvelope(makeEnvelope(makeSubEvent({ status, cusId: CUS2 })));
+
+    expect(result).toEqual({ outcome: 'processed' });
+    expect(mockResolveEntitlements).toHaveBeenCalledWith(expect.anything(), ORG2);
+    expect(mockResolveEntitlements).not.toHaveBeenCalledWith(expect.anything(), ORG1);
+    const calls = queryMock.mock.calls.filter(([sql]) => String(sql).includes(fn));
+    expect(calls).toHaveLength(1);
+    expect(calls[0][1]).toEqual([ORG2, 1, 0]);
+    const upsert = queryMock.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO subscriptions'));
+    expect((upsert![1] as unknown[])[0]).toBe(USER2);
+    expect((upsert![1] as unknown[])[8]).toBe(ORG2);
+    const lock = queryMock.mock.calls.find(([sql]) => String(sql).includes('pg_advisory_xact_lock'));
+    expect(lock![1]).toEqual([ORG2]);
+  });
+
+  function setupCompanyEnforcement(
+    pausedTitles: string[],
+    suspendedEmails: string[],
+    revoked = 0,
+    suspendedCount = suspendedEmails.length,
+    ownerEmail: string | null = 'employer@example.com',
+  ) {
+    const { queryMock } = setupEntitlementReduction(pausedTitles.length, pausedTitles);
+    const base = queryMock.getMockImplementation()!;
+    queryMock.mockImplementation((sql: string, params?: unknown[]) => (String(sql).includes('billing_enforce_org_limits')
+      ? Promise.resolve({ rows: [{
+        paused_count: pausedTitles.length,
+        paused_titles: pausedTitles,
+        suspended_count: suspendedCount,
+        suspended_emails: suspendedEmails,
+        revoked_invite_count: revoked,
+        owner_email: ownerEmail,
+      }] })
+      : base(sql, params)));
+    return { queryMock };
+  }
+
+  it('enforces the company job and seat limits and lists the suspended members in the one pause email', async () => {
+    mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_free', activeJobLimit: 1, templateLimit: 2, foremanSeatLimit: 0 });
+    const { queryMock } = setupCompanyEnforcement(['Newest job'], ['f3@example.com', 'f2@example.com'], 1);
+    mockStripe(makeStripeSubscription({ status: 'canceled' }));
+
+    const result = await processEnvelope(makeEnvelope(makeSubEvent({ status: 'canceled' })));
+
+    expect(result).toEqual({ outcome: 'processed' });
+    expect(queryMock).toHaveBeenCalledWith(expect.stringContaining('billing_enforce_org_limits'), [ORG1, 1, 0]);
+    expect(mockQueueEmail).toHaveBeenCalledTimes(1);
+    const queued = mockQueueEmail.mock.calls[0][1];
+    expect(queued).toMatchObject({
+      recipientEmail: 'employer@example.com',
+      sourceType: 'billing_pause',
+      sourceId: 'subscription-row-uuid',
+      idempotencyKey: `billing-pause:subscription-row-uuid:${EVT1}`,
+      subject: 'Job postings paused · Empleos pausados',
+    });
+    expect(queued.bodyText).toContain('- Newest job');
+    expect(queued.bodyText).toContain('- f3@example.com');
+    expect(queued.bodyText).toContain('- f2@example.com');
+  });
+
+  it('mails the owner when only members were suspended', async () => {
+    setupCompanyEnforcement([], ['f2@example.com']);
+    mockStripe(makeStripeSubscription({ status: 'canceled' }));
+
+    await expect(processEnvelope(makeEnvelope(makeSubEvent({ status: 'canceled' })))).resolves.toEqual({ outcome: 'processed' });
+
+    expect(mockQueueEmail).toHaveBeenCalledTimes(1);
+    expect(mockQueueEmail.mock.calls[0][1].subject).toBe('Team members suspended · Miembros del equipo suspendidos');
+  });
+
+  it('queues no email when a repeated webhook finds nothing over the limits', async () => {
+    setupCompanyEnforcement([], [], 0);
+    mockStripe(makeStripeSubscription({ status: 'canceled' }));
+    await expect(processEnvelope(makeEnvelope(makeSubEvent({ status: 'canceled' })))).resolves.toEqual({ outcome: 'processed' });
+    expect(mockQueueEmail).not.toHaveBeenCalled();
+  });
+
+  it('rolls back when the suspended list does not match its count', async () => {
+    const { queryMock } = setupCompanyEnforcement([], ['only-one@example.com'], 0, 2);
+    mockStripe(makeStripeSubscription({ status: 'canceled' }));
+    await expect(processEnvelope(makeEnvelope(makeSubEvent({ status: 'canceled' }))))
+      .resolves.toEqual({ outcome: 'failed', errorCode: 'billing_seat_enforcement_invalid_members' });
+    expect(queryMock).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockQueueEmail).not.toHaveBeenCalled();
+  });
+
+  it('rolls back when members were suspended but the owner has no email address', async () => {
+    const { queryMock } = setupCompanyEnforcement([], ['f2@example.com'], 0, 1, null);
+    mockStripe(makeStripeSubscription({ status: 'canceled' }));
+    await expect(processEnvelope(makeEnvelope(makeSubEvent({ status: 'canceled' }))))
+      .resolves.toEqual({ outcome: 'failed', errorCode: 'billing_job_enforcement_invalid_email' });
+    expect(queryMock).toHaveBeenCalledWith('ROLLBACK');
+    // The final transaction never commits (the claim transaction before it does).
+    const sqls = queryMock.mock.calls.map(([sql]) => String(sql));
+    expect(sqls.lastIndexOf('COMMIT')).toBeLessThan(sqls.lastIndexOf('BEGIN'));
+    expect(mockQueueEmail).not.toHaveBeenCalled();
+  });
+
+  it('logs once and mails nothing when only invites were revoked', async () => {
+    const infoLog = jest.spyOn(console, 'info').mockImplementation(() => undefined);
+    setupCompanyEnforcement([], [], 2);
+    mockStripe(makeStripeSubscription({ status: 'canceled' }));
+    await expect(processEnvelope(makeEnvelope(makeSubEvent({ status: 'canceled' })))).resolves.toEqual({ outcome: 'processed' });
+    expect(mockQueueEmail).not.toHaveBeenCalled();
+    const logged = infoLog.mock.calls.filter(([label]) => label === 'enforced_company_limits');
+    expect(logged).toEqual([['enforced_company_limits', { organizationId: ORG1, pausedCount: 0, suspendedCount: 0, revokedInvites: 2 }]]);
+    infoLog.mockRestore();
+  });
+
+  it.each([-1, 'x'])('rolls back a restore whose restored_count is %p', async (restoredCount) => {
+    const { queryMock } = setupResume(1, ['Paused']);
+    const base = queryMock.getMockImplementation()!;
+    queryMock.mockImplementation((sql: string, params?: unknown[]) => (String(sql).includes('billing_restore_org')
+      ? Promise.resolve({ rows: [{
+        resumed_count: 1, resumed_titles: ['Paused'], restored_count: restoredCount, restored_emails: [], owner_email: 'employer@example.com',
+      }] })
+      : base(sql, params)));
+    mockStripe(makeStripeSubscription({ status: 'active' }));
+    await expect(processEnvelope(makeEnvelope(makeSubEvent({ status: 'active' }))))
+      .resolves.toEqual({ outcome: 'failed', errorCode: 'billing_job_resume_invalid_result' });
+    expect(queryMock).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockQueueEmail).not.toHaveBeenCalled();
+  });
+
+  it('fails with the database error\'s message when billing_restore_org raises (no owner)', async () => {
+    const { queryMock } = setupResume(0);
+    const base = queryMock.getMockImplementation()!;
+    // Shaped like pg's DatabaseError: an Error whose message is the RAISE text, with the SQLSTATE in code.
+    queryMock.mockImplementation((sql: string, params?: unknown[]) => (String(sql).includes('billing_restore_org')
+      ? Promise.reject(Object.assign(new Error('billing_owner_not_found'), { code: 'P0002' }))
+      : base(sql, params)));
+    mockStripe(makeStripeSubscription({ status: 'active' }));
+    await expect(processEnvelope(makeEnvelope(makeSubEvent({ status: 'active' }))))
+      .resolves.toEqual({ outcome: 'failed', errorCode: 'billing_owner_not_found' });
+    expect(queryMock).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockQueueEmail).not.toHaveBeenCalled();
+    // The inbox row is marked failed with the same code, so SQS redelivers it.
+    const failed = queryMock.mock.calls.find(([sql, params]) => String(sql).includes('UPDATE billing_webhook_events')
+      && Array.isArray(params) && params[1] === 'failed');
+    expect(failed![1]).toEqual([EVT1, 'failed', 'billing_owner_not_found', null]);
+  });
+
   afterAll(() => {
     process.env = originalEnv;
   });
@@ -435,7 +665,7 @@ describe('billing processor: processEnvelope()', () => {
 
   it('returns duplicate_terminal and does NOT call Stripe for an already-processed event', async () => {
     const responses = new Map<string, unknown[]>([
-      ['billing_customers', [{ user_id: USER1 }]],
+      ['billing_customers', [{ user_id: USER1, organization_id: ORG1 }]],
     ]);
     const { queryMock } = makeDbMock(responses);
 
@@ -535,7 +765,7 @@ describe('billing processor: processEnvelope()', () => {
           // matches -> 1 row updated, fresh lease set.
           return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] });
         }
-        if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1 }] });
+        if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1, organization_id: ORG1 }] });
         // Supersede lock-read: the only subscriptions lock-read filtering with IS
         // DISTINCT FROM. Empty = this user has no OTHER current subscription row.
         if (sql.includes('IS DISTINCT FROM')) return Promise.resolve({ rows: [] });
@@ -566,7 +796,7 @@ describe('billing processor: processEnvelope()', () => {
           claimCalls.push({ sql, params });
           return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] });
         }
-        if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1 }] });
+        if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1, organization_id: ORG1 }] });
         // Supersede lock-read: the only subscriptions lock-read filtering with IS
         // DISTINCT FROM. Empty = this user has no OTHER current subscription row.
         if (sql.includes('IS DISTINCT FROM')) return Promise.resolve({ rows: [] });
@@ -593,7 +823,7 @@ describe('billing processor: processEnvelope()', () => {
         if (sql.includes('UPDATE billing_webhook_events') && sql.includes('attempt_count')) {
           return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] });
         }
-        if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1 }] });
+        if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1, organization_id: ORG1 }] });
         // Supersede lock-read: the only subscriptions lock-read filtering with IS
         // DISTINCT FROM. Empty = this user has no OTHER current subscription row.
         if (sql.includes('IS DISTINCT FROM')) return Promise.resolve({ rows: [] });
@@ -635,7 +865,7 @@ describe('billing processor: processEnvelope()', () => {
         attemptUpdates.push(params);
         return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
       }
-      if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1 }] });
+      if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1, organization_id: ORG1 }] });
       // Supersede lock-read: the only subscriptions lock-read filtering with IS
       // DISTINCT FROM. Empty = this user has no OTHER current subscription row.
       if (sql.includes('IS DISTINCT FROM')) return Promise.resolve({ rows: [] });
@@ -667,7 +897,7 @@ describe('billing processor: processEnvelope()', () => {
         attemptUpdates.push({ sql, params });
         return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
       }
-      if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1 }] });
+      if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1, organization_id: ORG1 }] });
       // Supersede lock-read: the only subscriptions lock-read filtering with IS
       // DISTINCT FROM. Empty = this user has no OTHER current subscription row.
       if (sql.includes('IS DISTINCT FROM')) return Promise.resolve({ rows: [] });
@@ -740,7 +970,7 @@ describe('billing processor: processEnvelope()', () => {
       }
       // billing_customers lookup
       if (sql.includes('billing_customers')) {
-        return Promise.resolve({ rows: [{ user_id: USER1 }] });
+        return Promise.resolve({ rows: [{ user_id: USER1, organization_id: ORG1 }] });
       }
       // subscriptions FOR UPDATE (existing row check)
       // Supersede lock-read: the only subscriptions lock-read filtering with IS
@@ -783,7 +1013,7 @@ describe('billing processor: processEnvelope()', () => {
         return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
       }
       if (sql.includes('billing_customers')) {
-        return Promise.resolve({ rows: [{ user_id: USER1 }] });
+        return Promise.resolve({ rows: [{ user_id: USER1, organization_id: ORG1 }] });
       }
       // Supersede lock-read: the only subscriptions lock-read filtering with IS
       // DISTINCT FROM. Empty = this user has no OTHER current subscription row.
@@ -835,7 +1065,7 @@ describe('billing processor: processEnvelope()', () => {
         return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
       }
       if (sql.includes('billing_customers')) {
-        return Promise.resolve({ rows: [{ user_id: USER1 }] });
+        return Promise.resolve({ rows: [{ user_id: USER1, organization_id: ORG1 }] });
       }
       // Capture failed mark
       if (sql.includes('UPDATE billing_webhook_events') && sql.includes('processing_status')) {
@@ -1048,7 +1278,7 @@ describe('billing processor: processEnvelope()', () => {
         return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
       }
       if (sql.includes('billing_customers')) {
-        return Promise.resolve({ rows: [{ user_id: USER1 }] });
+        return Promise.resolve({ rows: [{ user_id: USER1, organization_id: ORG1 }] });
       }
       if (sql.includes('UPDATE billing_webhook_events') && sql.includes('processing_status')) {
         failedMarks.push(params);
@@ -1082,7 +1312,7 @@ describe('billing processor: processEnvelope()', () => {
       }
       if (sql.includes('UPDATE billing_webhook_events')) return Promise.resolve({ rows: [] });
       if (sql.includes('billing_customers')) {
-        return Promise.resolve({ rows: [{ user_id: USER1 }] });
+        return Promise.resolve({ rows: [{ user_id: USER1, organization_id: ORG1 }] });
       }
       return Promise.resolve({ rows: [] });
     });
@@ -1113,7 +1343,7 @@ describe('billing processor: processEnvelope()', () => {
         return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
       }
       if (sql.includes('billing_customers')) {
-        return Promise.resolve({ rows: [{ user_id: USER1 }] });
+        return Promise.resolve({ rows: [{ user_id: USER1, organization_id: ORG1 }] });
       }
       if (sql.includes('UPDATE billing_webhook_events') && sql.includes('processing_status')) {
         failedMarks.push(params);
@@ -1208,7 +1438,7 @@ describe('billing processor: processEnvelope()', () => {
           return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
         }
         if (sql.includes('billing_customers')) {
-          return Promise.resolve({ rows: [{ user_id: USER1 }] });
+          return Promise.resolve({ rows: [{ user_id: USER1, organization_id: ORG1 }] });
         }
         // Supersede lock-read: the only subscriptions lock-read filtering with IS
         // DISTINCT FROM. Empty = this user has no OTHER current subscription row.
@@ -1316,7 +1546,7 @@ describe('billing processor: processEnvelope()', () => {
         return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
       }
       if (sql.includes('billing_customers')) {
-        return Promise.resolve({ rows: [{ user_id: USER1 }] });
+        return Promise.resolve({ rows: [{ user_id: USER1, organization_id: ORG1 }] });
       }
       // Supersede lock-read: the only subscriptions lock-read filtering with IS
       // DISTINCT FROM. Empty = this user has no OTHER current subscription row.
@@ -1442,7 +1672,7 @@ describe('billing processor: processEnvelope()', () => {
     });
 
     it('throws (message redelivered → DLQ) for a failed outcome such as unknown_price', async () => {
-      setupInbox([{ user_id: USER1 }], 'price_different_999');
+      setupInbox([{ user_id: USER1, organization_id: ORG1 }], 'price_different_999');
 
       await expect(invoke(makeSubEvent({ id: EVT1, priceId: 'price_different_999' })))
         .rejects.toThrow('unknown_price');
@@ -1463,7 +1693,7 @@ describe('billing processor: processEnvelope()', () => {
         return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
       }
       if (sql.includes('billing_customers')) {
-        return Promise.resolve({ rows: [{ user_id: USER1 }] });
+        return Promise.resolve({ rows: [{ user_id: USER1, organization_id: ORG1 }] });
       }
       // Supersede lock-read: the only subscriptions lock-read filtering with IS
       // DISTINCT FROM. Empty = this user has no OTHER current subscription row.
@@ -1500,7 +1730,7 @@ describe('billing processor: processEnvelope()', () => {
         return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
       }
       if (sql.includes('billing_customers')) {
-        return Promise.resolve({ rows: [{ user_id: USER1 }] });
+        return Promise.resolve({ rows: [{ user_id: USER1, organization_id: ORG1 }] });
       }
       // Supersede lock-read: the only subscriptions lock-read filtering with IS
       // DISTINCT FROM. Empty = this user has no OTHER current subscription row.
@@ -1553,7 +1783,7 @@ describe('billing processor: processEnvelope()', () => {
         return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
       }
       if (sql.includes('billing_customers')) {
-        return Promise.resolve({ rows: [{ user_id: USER1 }] });
+        return Promise.resolve({ rows: [{ user_id: USER1, organization_id: ORG1 }] });
       }
       // Supersede lock-read: the only subscriptions lock-read filtering with IS
       // DISTINCT FROM. Empty = this user has no OTHER current subscription row.
@@ -1600,7 +1830,7 @@ describe('billing processor: processEnvelope()', () => {
       if (sql.includes('INSERT INTO billing_webhook_events')) {
         return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // fresh claim
       }
-      if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1 }] });
+      if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1, organization_id: ORG1 }] });
       // Supersede lock-read: the only subscriptions lock-read filtering with IS
       // DISTINCT FROM. Empty = this user has no OTHER current subscription row.
       if (sql.includes('IS DISTINCT FROM')) {
@@ -1615,11 +1845,14 @@ describe('billing processor: processEnvelope()', () => {
       if (sql.includes('INSERT INTO subscriptions')) {
         return Promise.resolve({ rows: [{ id: 'subscription-row-uuid' }] });
       }
-      if (sql.includes('billing_pause_over_limit_jobs')) {
+      if (sql.includes('billing_enforce_org_limits')) {
         return Promise.resolve({ rows: [{
           paused_count: opts.pausedCount ?? 0,
-          employer_email: 'employer@example.com',
           paused_titles: [],
+          suspended_count: 0,
+          suspended_emails: [],
+          revoked_invite_count: 0,
+          owner_email: 'employer@example.com',
         }] });
       }
       return Promise.resolve({ rows: [] });
@@ -1638,10 +1871,11 @@ describe('billing processor: processEnvelope()', () => {
 
   // ── B1: which subscription is the user's CURRENT one ───────────────────
   //
-  // subscriptions_one_current_per_user (migration 034) is a PARTIAL unique
-  // index on (user_id) WHERE status NOT IN ('canceled','incomplete_expired').
+  // subscriptions_one_current_per_organization (migration 127; 034's
+  // per-user index of the same shape before it) is a PARTIAL unique index on
+  // (organization_id) WHERE status NOT IN ('canceled','incomplete_expired').
   // The upsert conflicts on (provider_subscription_id), so a SECOND
-  // provider_subscription_id for a user who still holds a current row INSERTs
+  // provider_subscription_id for a company that still holds a current row INSERTs
   // and trips that index with a 23505.
   //
   // Retiring "the other rows" unconditionally is not the fix, because two
@@ -1652,7 +1886,7 @@ describe('billing processor: processEnvelope()', () => {
   // grace can legitimately subscribe again — and Stripe goes on dunning the
   // old one for weeks. Recency therefore cannot be read off the status; it
   // comes from the EVENT TYPE. Only checkout.session.completed and
-  // customer.subscription.created may retire a user's other current rows.
+  // customer.subscription.created may retire a company's other current rows.
   // Any other event, when another current row exists, is skipped rather than
   // allowed to demote a paying employer to free entitlements.
 
@@ -1710,7 +1944,7 @@ describe('billing processor: processEnvelope()', () => {
       // The lock-read scopes by user and excludes both the incoming
       // subscription and already-terminal rows.
       const [readSql, readParams] = queryMock.mock.calls[readIdx];
-      expect(readParams).toEqual([USER1, SUB_NEW]);
+      expect(readParams).toEqual([ORG1, SUB_NEW]);
       expect(readSql).toMatch(/provider_subscription_id IS DISTINCT FROM \$2/);
       expect(readSql).toMatch(/status NOT IN \('canceled', 'incomplete_expired'\)/);
       expect(readSql).toContain('FOR UPDATE');
@@ -1730,13 +1964,14 @@ describe('billing processor: processEnvelope()', () => {
 
       expect(infoLog).toHaveBeenCalledWith('superseded_prior_subscription', {
         userId: USER1,
+        organizationId: ORG1,
         supersededCount: 1,
         newProviderSubId: SUB_NEW,
       });
 
       // Superseding must NOT run job enforcement for the retired rows: the
       // NEW subscription's status decides enforcement, and it is active here.
-      expect(sqlIndex(queryMock, 'billing_pause_over_limit_jobs')).toBe(-1);
+      expect(sqlIndex(queryMock, 'billing_enforce_org_limits')).toBe(-1);
       expect(mockQueueEmail).not.toHaveBeenCalled();
       infoLog.mockRestore();
     });
@@ -1761,6 +1996,7 @@ describe('billing processor: processEnvelope()', () => {
       expect(retireIdx).toBeLessThan(sqlIndex(queryMock, 'INSERT INTO subscriptions'));
       expect(infoLog).toHaveBeenCalledWith('superseded_prior_subscription', {
         userId: USER1,
+        organizationId: ORG1,
         supersededCount: 1,
         newProviderSubId: SUB_NEW,
       });
@@ -1819,7 +2055,7 @@ describe('billing processor: processEnvelope()', () => {
         expect.anything(),
       );
       expect(sqlIndex(queryMock, 'INSERT INTO subscriptions')).toBeGreaterThan(-1);
-      expect(sqlIndex(queryMock, 'billing_pause_over_limit_jobs')).toBe(-1);
+      expect(sqlIndex(queryMock, 'billing_enforce_org_limits')).toBe(-1);
       expect(mockQueueEmail).not.toHaveBeenCalled();
       expect(queryMock).toHaveBeenCalledWith('COMMIT');
       expect(sqlList(queryMock)).not.toContain('ROLLBACK');
@@ -1891,6 +2127,7 @@ describe('billing processor: processEnvelope()', () => {
       // BillingStack greps this literal into BillingKnownEventSkipped.
       expect(warn).toHaveBeenCalledWith('billing_superseded_subscription_event', {
         userId: USER1,
+        organizationId: ORG1,
         eventType,
         providerSubId: SUB1,
         currentProviderSubId: SUB_NEW,
@@ -1933,10 +2170,10 @@ describe('billing processor: processEnvelope()', () => {
       expect(retrieve).toHaveBeenCalledWith(SUB1);
       expect(sqlIndex(queryMock, 'INSERT INTO subscriptions')).toBeGreaterThan(-1);
       // 'paused' is a reducing status, so enforcement must actually run.
-      expect(mockResolveEntitlements).toHaveBeenCalledWith(expect.anything(), USER1);
+      expect(mockResolveEntitlements).toHaveBeenCalledWith(expect.anything(), ORG1);
       expect(queryMock).toHaveBeenCalledWith(
-        expect.stringContaining('billing_pause_over_limit_jobs'),
-        [USER1, 1],
+        expect.stringContaining('billing_enforce_org_limits'),
+        [ORG1, 1, 0],
       );
     });
 
@@ -1952,10 +2189,10 @@ describe('billing processor: processEnvelope()', () => {
       expect(result.outcome).toBe('processed');
       expect(retrieve).toHaveBeenCalledWith(SUB1);
       expect(sqlIndex(queryMock, 'INSERT INTO subscriptions')).toBeGreaterThan(-1);
-      expect(sqlIndex(queryMock, 'billing_pause_over_limit_jobs')).toBe(-1);
+      expect(sqlIndex(queryMock, 'billing_enforce_org_limits')).toBe(-1);
       // Sprint 28 (K4.5): an active subscription brings back billing's paused
       // jobs; none were paused here, so nothing is mailed.
-      expect(sqlIndex(queryMock, 'billing_resume_paused_jobs')).toBeGreaterThan(-1);
+      expect(sqlIndex(queryMock, 'billing_restore_org')).toBeGreaterThan(-1);
       expect(mockQueueEmail).not.toHaveBeenCalled();
     });
 

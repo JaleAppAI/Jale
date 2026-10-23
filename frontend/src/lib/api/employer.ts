@@ -1307,11 +1307,20 @@ export type EmployerBilling = {
   planCode: string;
   activeJobLimit: number;
   templateLimit: number;
+  /** Company-wide since Phase 2: every member's active jobs. */
   activeJobUsage: number;
   subscription: BillingSubscription;
   display_price_minor: number;
   currency: string;
   billing_interval: string;
+  // Company billing (Phase 2). Optional: an API from before the release omits them.
+  foremanSeatLimit?: number;
+  templateUsage?: number;
+  /** Company active jobs that are not in the caller's own jobs list (0 for the owner, who lists every member's). */
+  otherMembersActiveJobs?: number;
+  role?: 'owner' | 'foreman';
+  /** The owner only: foreman seats in use, the plan's seats, and foremen suspended by a downgrade. */
+  seats?: { used: number; limit: number; suspended: number } | null;
 };
 
 export async function getBilling(

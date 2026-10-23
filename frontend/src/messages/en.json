@@ -1864,6 +1864,11 @@
       "label": "Active job postings",
       "value": "{used} of {limit} used"
     },
+    "company": {
+      "owner_only": "Only your company's owner can change the plan or manage billing.",
+      "suspended_title": "Some team members are suspended",
+      "suspended_body": "{count, plural, one {# foreman is suspended and can't} other {# foremen are suspended and can't}} use your company's account while your plan has fewer seats than members. Change your plan to bring them back."
+    },
     "actions": {
       "upgrade": "Upgrade plan",
       "upgrade_loading": "Redirecting to checkout...",

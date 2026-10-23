@@ -2,12 +2,14 @@ import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { handler } from '../../../../lambda/api/employer-templates-save';
 import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
-import { resolveEntitlements } from '../../../../lambda/lib/entitlements';
+import { resolveCompanyEntitlements } from '../../../../lambda/lib/entitlements';
+import { readCompanyUsage, CompanyUsageRefusedError } from '../../../../lambda/lib/company-usage';
 import { resolveEmployerActor } from '../../../../lambda/lib/employer-actor';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
 jest.mock('../../../../lambda/lib/entitlements');
+jest.mock('../../../../lambda/lib/company-usage');
 jest.mock('../../../../lambda/lib/employer-actor', () => ({
   ...jest.requireActual('../../../../lambda/lib/employer-actor'),
   resolveEmployerActor: jest.fn(),
@@ -16,7 +18,9 @@ jest.mock('../../../../lambda/lib/employer-actor', () => ({
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
 const mockCheckCompliance = checkCompliance as jest.Mock;
-const mockResolveEntitlements = resolveEntitlements as jest.Mock;
+const mockResolveEntitlements = resolveCompanyEntitlements as jest.Mock;
+const mockReadCompanyUsage = readCompanyUsage as jest.Mock;
+const companyUsage = (templates: number) => ({ organizationId: ORG_ID, activeJobs: 0, templates, activeForemen: 0, suspendedForemen: 0 });
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
 const mockResolveEmployerActor = resolveEmployerActor as jest.Mock;
@@ -58,13 +62,8 @@ describe('employer-templates-save', () => {
     // Default: employer_free, 2 template slots, 0 used -- allow create
     mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_free', activeJobLimit: 1, templateLimit: 2 });
     mockResolveEmployerActor.mockResolvedValue(ownerActor());
+    mockReadCompanyUsage.mockResolvedValue(companyUsage(0));
     mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('FOR UPDATE')) {
-        return Promise.resolve({ rows: [{ id: 'emp-1' }] });
-      }
-      if (sql.includes('COUNT(*)')) {
-        return Promise.resolve({ rows: [{ template_count: 0 }] });
-      }
       if (sql.includes('SELECT id FROM employer_job_templates')) {
         return Promise.resolve({ rowCount: 0, rows: [] });
       }
@@ -86,25 +85,20 @@ describe('employer-templates-save', () => {
     expect(parsed.title).toBe('Concrete Finisher');
   });
 
-  it('rejects at the template cap with plan context (403)', async () => {
-    mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_free', activeJobLimit: 1, templateLimit: 2 });
-    mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'emp-1' }] });
-      if (sql.includes('COUNT(*)')) return Promise.resolve({ rows: [{ template_count: 2 }] });
-      return Promise.resolve({});
-    });
+  it('rejects at the company template cap with plan context (403)', async () => {
+    mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_free', activeJobLimit: 1, templateLimit: 2, foremanSeatLimit: 0 });
+    mockReadCompanyUsage.mockResolvedValue(companyUsage(2)); // two templates across the company
 
     const res = await handler(makeEvent());
 
     expect(res.statusCode).toBe(403);
     expect(JSON.parse(res.body)).toEqual({ error: 'template_limit_reached', plan_code: 'employer_free', template_limit: 2 });
+    expect(mockReadCompanyUsage).toHaveBeenCalledWith(expect.anything(), { lock: true });
     expect(mockQuery).not.toHaveBeenCalledWith(expect.stringContaining('INSERT INTO employer_job_templates'), expect.anything());
   });
 
   it('rejects a duplicate name (409 template_name_taken)', async () => {
     mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'emp-1' }] });
-      if (sql.includes('COUNT(*)')) return Promise.resolve({ rows: [{ template_count: 0 }] });
       if (sql.includes('SELECT id FROM employer_job_templates')) return Promise.resolve({ rowCount: 1, rows: [{ id: 'tpl-other' }] });
       return Promise.resolve({});
     });
@@ -116,9 +110,93 @@ describe('employer-templates-save', () => {
     expect(mockQuery).not.toHaveBeenCalledWith(expect.stringContaining('INSERT INTO employer_job_templates'), expect.anything());
   });
 
+  it('takes the company lock on the update path too, before its name check, without a cap check', async () => {
+    mockQuery.mockImplementation((sql: string) => {
+      if (sql.includes('SELECT id FROM employer_job_templates')) return Promise.resolve({ rowCount: 0, rows: [] });
+      if (sql.includes('UPDATE employer_job_templates')) return Promise.resolve({ rowCount: 1, rows: [TEMPLATE_ROW] });
+      return Promise.resolve({});
+    });
+
+    const res = await handler(makeEvent({ id: TEMPLATE_ROW.id }));
+
+    expect(res.statusCode).toBe(200);
+    expect(mockReadCompanyUsage).toHaveBeenCalledWith(expect.anything(), { lock: true });
+    const nameCheckAt = mockQuery.mock.calls.findIndex(([sql]) => typeof sql === 'string' && sql.includes('SELECT id FROM employer_job_templates'));
+    expect(mockReadCompanyUsage.mock.invocationCallOrder[0]).toBeLessThan(mockQuery.mock.invocationCallOrder[nameCheckAt]);
+    expect(mockResolveEntitlements).not.toHaveBeenCalled();
+  });
+
+  const NAME_KEY = 'employer_job_templates_employer_id_name_key';
+  const failWrite = (write: string, dbError: Record<string, unknown>) => {
+    mockQuery.mockImplementation((sql: string) => {
+      if (sql.includes('SELECT id FROM employer_job_templates')) return Promise.resolve({ rowCount: 0, rows: [] });
+      if (sql.includes(write)) {
+        return Promise.reject(Object.assign(new Error('duplicate key value violates unique constraint'), dbError));
+      }
+      return Promise.resolve({});
+    });
+  };
+
+  it.each([
+    ['a create', {}, 'INSERT INTO employer_job_templates'],
+    ['a rename', { id: TEMPLATE_ROW.id }, 'UPDATE employer_job_templates'],
+  ])('answers 409 template_name_taken, and logs it, when %s loses a name race on the name key (23505)', async (_name, body, write) => {
+    failWrite(write, { code: '23505', constraint: NAME_KEY });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const res = await handler(makeEvent(body));
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body)).toEqual({ error: 'template_name_taken' });
+    expect(warn).toHaveBeenCalledWith('employer-templates-save: name race (23505)');
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
+    warn.mockRestore();
+  });
+
+  it.each([
+    ['another constraint', { code: '23505', constraint: 'employer_job_templates_pkey' }],
+    ['no constraint name', { code: '23505' }],
+  ])('keeps a 23505 on %s on the generic 500 path', async (_name, dbError) => {
+    failWrite('INSERT INTO employer_job_templates', dbError);
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const error = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const res = await handler(makeEvent({}));
+
+    expect(res.statusCode).toBe(500);
+    expect(JSON.parse(res.body)).toEqual({ error: 'internal_error' });
+    expect(warn).not.toHaveBeenCalled();
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    warn.mockRestore();
+    error.mockRestore();
+  });
+
+  it('answers 403 membership_inactive and rolls back when the company lock refuses the caller', async () => {
+    mockReadCompanyUsage.mockRejectedValue(new CompanyUsageRefusedError());
+
+    const res = await handler(makeEvent());
+
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({ error: 'membership_inactive' });
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
+    expect(mockQuery).not.toHaveBeenCalledWith(expect.stringContaining('INSERT INTO employer_job_templates'), expect.anything());
+  });
+
+  it('returns 500 and rolls back when the usage read is for another company than the actor\'s', async () => {
+    mockReadCompanyUsage.mockResolvedValue({ ...companyUsage(0), organizationId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' });
+
+    const res = await handler(makeEvent());
+
+    expect(res.statusCode).toBe(500);
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
+    expect(mockQuery).not.toHaveBeenCalledWith(expect.stringContaining('INSERT INTO employer_job_templates'), expect.anything());
+  });
+
   it('updates an owned template by id without a cap check (200)', async () => {
     mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'emp-1' }] });
       if (sql.includes('SELECT id FROM employer_job_templates')) return Promise.resolve({ rowCount: 0, rows: [] });
       if (sql.includes('UPDATE employer_job_templates')) return Promise.resolve({ rowCount: 1, rows: [TEMPLATE_ROW] });
       return Promise.resolve({});
@@ -132,7 +210,6 @@ describe('employer-templates-save', () => {
 
   it("rejects renaming onto ANOTHER template's name (409)", async () => {
     mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'emp-1' }] });
       if (sql.includes('SELECT id FROM employer_job_templates')) return Promise.resolve({ rowCount: 1, rows: [{ id: 'tpl-other' }] });
       return Promise.resolve({});
     });
@@ -146,7 +223,6 @@ describe('employer-templates-save', () => {
 
   it('allows renaming a template to its own current name (200)', async () => {
     mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'emp-1' }] });
       if (sql.includes('SELECT id FROM employer_job_templates')) return Promise.resolve({ rowCount: 0, rows: [] });
       if (sql.includes('UPDATE employer_job_templates')) return Promise.resolve({ rowCount: 1, rows: [TEMPLATE_ROW] });
       return Promise.resolve({});
@@ -159,7 +235,6 @@ describe('employer-templates-save', () => {
 
   it('returns 403 for an unowned/unknown id', async () => {
     mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'emp-1' }] });
       if (sql.includes('SELECT id FROM employer_job_templates')) return Promise.resolve({ rowCount: 0, rows: [] });
       if (sql.includes('UPDATE employer_job_templates')) return Promise.resolve({ rowCount: 0, rows: [] });
       return Promise.resolve({});
@@ -493,7 +568,6 @@ describe('employer-templates-save', () => {
 
   it('derives the triple on the UPDATE path too, not just create', async () => {
     mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'emp-1' }] });
       if (sql.includes('SELECT id FROM employer_job_templates')) return Promise.resolve({ rowCount: 0, rows: [] });
       if (sql.includes('UPDATE employer_job_templates')) return Promise.resolve({ rowCount: 1, rows: [TEMPLATE_ROW] });
       return Promise.resolve({});
@@ -509,24 +583,23 @@ describe('employer-templates-save', () => {
     expect(JSON.parse(updateCall[1][1])).toMatchObject({ city_key: 'austin-tx', city: 'Austin', state: 'TX' });
   });
 
-  describe('organization actor (Phase 1)', () => {
+  describe('organization actor', () => {
     const TEMPLATE_ID = '3f6d3a2e-8c4b-4a1e-9d2f-1b5e6c7a8d90';
 
-    it('locks the caller through resolveEmployerActor and creates, counts and limits as the actor', async () => {
+    it('creates as the actor and counts and limits the company under the company lock', async () => {
       mockResolveEmployerActor.mockResolvedValue(ownerActor([EMPLOYER_ID, FOREMAN_ID]));
 
       const res = await handler(makeEvent());
 
       expect(res.statusCode).toBe(201);
-      expect(mockResolveEmployerActor).toHaveBeenCalledWith(expect.anything(), 'employer-sub', { lockUser: true });
+      expect(mockResolveEmployerActor).toHaveBeenCalledWith(expect.anything(), 'employer-sub');
       expect(mockCheckCompliance.mock.invocationCallOrder[0])
         .toBeLessThan(mockResolveEmployerActor.mock.invocationCallOrder[0]);
-      expect(mockResolveEntitlements).toHaveBeenCalledWith(expect.anything(), EMPLOYER_ID);
-      const countCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('COUNT(*)'));
-      expect(countCall[1]).toEqual([EMPLOYER_ID]);
+      expect(mockReadCompanyUsage).toHaveBeenCalledWith(expect.anything(), { lock: true });
+      expect(mockResolveEntitlements).toHaveBeenCalledWith(expect.anything(), ORG_ID);
       const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO employer_job_templates'));
       expect(insertCall[1][0]).toBe(EMPLOYER_ID);
-      expect(mockQuery.mock.calls.some(([sql]) => typeof sql === 'string' && /FROM users/.test(sql))).toBe(false);
+      expect(mockQuery.mock.calls.some(([sql]) => typeof sql === 'string' && /FROM users|COUNT\(\*\)/.test(sql))).toBe(false);
     });
 
     it("lets the owner's scope reach a member's template on the update path, checking names within that template's employer", async () => {
@@ -550,6 +623,8 @@ describe('employer-templates-save', () => {
       expect(update[1][2]).toBe(TEMPLATE_ID);
       expect(update[1][3]).toEqual([EMPLOYER_ID, FOREMAN_ID]);
       expect(mockResolveEntitlements).not.toHaveBeenCalled();
+      // One lock for every template write; an update checks no limit.
+      expect(mockReadCompanyUsage).toHaveBeenCalledWith(expect.anything(), { lock: true });
     });
 
     it('returns the actor failure, rolls back, and runs no template query when the membership is inactive', async () => {
