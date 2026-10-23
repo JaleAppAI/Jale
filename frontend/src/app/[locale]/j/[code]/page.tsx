@@ -380,11 +380,16 @@ export default async function PublicJobPage({ params }: PageProps) {
    * pages too, so a stranger sent this link reads the same posting the signed-in
    * app shows. Every value is still built here, by this page's own formatters.
    */
-  // ONE Horario tile: the days and the hours are one fact to a reader planning
-  // a ride. `scheduleSummary` already suppresses `legacy` whenever any
-  // structured schedule data exists, so this cannot show both.
+  // ONE Horario tile: the days, the hours and the shift choices are one fact to
+  // a reader planning a ride, in the signed-in pages' order. `scheduleSummary`
+  // already suppresses `legacy` whenever any structured schedule data exists,
+  // so this cannot show both.
   const scheduleText = schedule.legacy
-    ?? ([schedule.days.length > 0 ? schedule.days.join(', ') : null, schedule.hours]
+    ?? ([
+      schedule.days.length > 0 ? schedule.days.join(', ') : null,
+      schedule.hours,
+      schedule.periods.length > 0 ? schedule.periods.join(', ') : null,
+    ]
       .filter(Boolean)
       .join(' · ') || null);
   const tradeText = tradeLabel(active, tTrade, tDetail);

@@ -688,13 +688,17 @@ export default function WorkerJobDetailPage() {
    * the answer a worker is deciding on.
    */
   const schedule = job ? scheduleSummary(job, locale, tCommonDisplay) : null;
-  // ONE Horario tile, not the two rows this page used to render: the days and
-  // the hours are one fact to a reader planning a ride. `legacy` is already
-  // mutually exclusive with the structured pair (see `scheduleSummary`), so
-  // this cannot show both.
+  // ONE Horario tile, not the two rows this page used to render: the days, the
+  // hours and the shift choices are one fact to a reader planning a ride, in
+  // the employer page's order. `legacy` is already mutually exclusive with the
+  // structured pieces (see `scheduleSummary`), so this cannot show both.
   const scheduleText = schedule
     ? (schedule.legacy
-      ?? ([schedule.days.length > 0 ? schedule.days.join(', ') : null, schedule.hours]
+      ?? ([
+        schedule.days.length > 0 ? schedule.days.join(', ') : null,
+        schedule.hours,
+        schedule.periods.length > 0 ? schedule.periods.join(', ') : null,
+      ]
         .filter(Boolean)
         .join(' · ') || null))
     : null;

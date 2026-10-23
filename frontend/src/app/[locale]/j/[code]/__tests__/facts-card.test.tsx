@@ -202,6 +202,61 @@ describe('public job page — the facts card', () => {
         ]);
     });
 
+    /*
+     * The shift choices (contract K2) are part of the one schedule fact, read
+     * in the employer page's order: days · hours · shifts. A job with no
+     * choice (`[]`, or the key absent as in `fullJob`, which the locked-order
+     * test above already pins) adds nothing, not even a separator.
+     */
+    describe('the shift choices', () => {
+        const shiftTile = (container: HTMLElement) =>
+            tiles(container).find(([label]) => label === t('shift_schedule'));
+
+        it('adds them to the schedule tile, after the days and hours', async () => {
+            const { container } = await renderPage(fullJob({ shift_periods: ['day', 'night'] }));
+            expect(shiftTile(container)).toEqual([
+                t('shift_schedule'), 'Mon, Tue, Wed · 7:00 AM – 4:00 PM · Day, Night',
+            ]);
+        });
+
+        it('names them in Spanish', async () => {
+            const { container } = await renderPage(sparseJob({ shift_periods: ['day', 'night'] }), 'es');
+            expect(tiles(container)).toContainEqual([message('public_job.shift_schedule', 'es'), 'Día, Noche']);
+        });
+
+        it('adds them after the days and hours in Spanish too', async () => {
+            const { container } = await renderPage(fullJob({ shift_periods: ['day', 'night'] }), 'es');
+            const value = tiles(container)
+                .find(([label]) => label === message('public_job.shift_schedule', 'es'))?.[1];
+            expect(value?.startsWith(`${message('common.work_days.mon', 'es')}, `)).toBe(true);
+            expect(value?.endsWith(' · Día, Noche')).toBe(true);
+        });
+
+        it('adds nothing, and no stray separator, when none is chosen', async () => {
+            const { container } = await renderPage(fullJob({ shift_periods: [] }));
+            expect(shiftTile(container)).toEqual([t('shift_schedule'), 'Mon, Tue, Wed · 7:00 AM – 4:00 PM']);
+        });
+
+        it('makes the whole schedule tile when they are the only schedule', async () => {
+            const { container } = await renderPage(sparseJob({ shift_periods: ['night', 'day'] }));
+            expect(tiles(container)).toEqual([
+                [t('shift_schedule'), 'Day, Night'],
+                [t('start_date'), t('facts.start_unknown')],
+                [t('facts.location'), 'Austin, TX'],
+            ]);
+        });
+
+        it('stand in for the old free-text schedule', async () => {
+            const { container } = await renderPage(sparseJob({ shift_schedule: 'Old free text', shift_periods: ['evening'] }));
+            expect(shiftTile(container)).toEqual([t('shift_schedule'), 'Evening']);
+        });
+
+        it('leave the old free-text schedule alone when none is chosen', async () => {
+            const { container } = await renderPage(sparseJob({ shift_schedule: 'Old free text', shift_periods: [] }));
+            expect(shiftTile(container)).toEqual([t('shift_schedule'), 'Old free text']);
+        });
+    });
+
     it('renders the section labels as h3s under one panel title', async () => {
         await renderPage(fullJob());
 
