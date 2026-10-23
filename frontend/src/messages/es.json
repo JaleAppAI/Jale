@@ -645,10 +645,10 @@
       "total_applicants": "Total de candidatos",
       "workers_hired": "Trabajadores contratados",
       "paused_closed": "Pausados / Cerrados",
-      "active_hint": "{count} puestos aún disponibles",
+      "active_hint": "{count, plural, one {# puesto aún disponible} other {# puestos aún disponibles}}",
       "applicants_hint": "{count} promedio por empleo activo",
-      "hired_hint": "{hired} de {needed} puestos cubiertos",
-      "paused_closed_hint": "{paused} pausados, {filled} llenos, {closed} cerrados"
+      "hired_hint": "{hired} de {needed, plural, one {# puesto cubierto} other {# puestos cubiertos}}",
+      "paused_closed_hint": "{paused, plural, one {# pausado} other {# pausados}}, {filled, plural, one {# lleno} other {# llenos}}, {closed, plural, one {# cerrado} other {# cerrados}}"
     },
     "shell": {
       "title": "Panel",
@@ -967,9 +967,9 @@
     },
     "templates": {
       "title": "Plantillas de empleo",
-      "meter": "{count} guardadas · {limit} permitidas en su plan",
-      "meter_empty": "Aún no hay plantillas · {limit} permitidas en su plan",
-      "meter_count": "{count} plantillas",
+      "meter": "{count, plural, one {# guardada} other {# guardadas}} · {limit, plural, one {# permitida} other {# permitidas}} en su plan",
+      "meter_empty": "Aún no hay plantillas · {limit, plural, one {# permitida} other {# permitidas}} en su plan",
+      "meter_count": "{count, plural, one {# plantilla} other {# plantillas}}",
       "new": "Nueva plantilla",
       "limit_note": "Límite de plantillas alcanzado — mejore su plan para más",
       "empty": "Aún no hay plantillas. Cree una aquí o marque “Guardar como plantilla” al publicar un empleo.",
@@ -992,7 +992,7 @@
     "usage": {
       "jobs": "Empleos activos {used}/{limit}",
       "templates": "Plantillas {used}/{limit}",
-      "jobs_plain": "{used} empleos activos",
+      "jobs_plain": "{used, plural, one {# empleo activo} other {# empleos activos}}",
       "view_plan": "Ver plan"
     }
   },
@@ -1138,11 +1138,11 @@
       "one_head": "Falta algo — completa tus datos.",
       "one_body": "{company} quiere seguir adelante.",
       "one_cta": "Completar datos",
-      "many_head": "{count} postulaciones necesitan tus datos",
-      "many_body": "{count} empleadores quieren seguir adelante contigo.",
+      "many_head": "{count, plural, one {# postulación necesita tus datos} other {# postulaciones necesitan tus datos}}",
+      "many_body": "{count, plural, one {# empleador quiere seguir adelante contigo.} other {# empleadores quieren seguir adelante contigo.}}",
       "many_cta": "Ver postulaciones",
       "multi_body": "Empieza por la de arriba.",
-      "row_left": "Faltan {count} cosas",
+      "row_left": "{count, plural, one {Falta # cosa} other {Faltan # cosas}}",
       "row_body": "{company} te pidió tus datos.",
       "items": {
         "questions": "{count, plural, one {# pregunta} other {# preguntas}}",
@@ -1203,9 +1203,9 @@
     "subtitle": "{company} te quiere contratar para {job}. Unas cosas más y quedas listo.",
     "subtitle_no_company": "El empleador te quiere contratar para {job}. Unas cosas más y quedas listo.",
     "progress": {
-      "left": "Faltan {count}",
+      "left": "{count, plural, one {Falta #} other {Faltan #}}",
       "none_left": "No falta nada",
-      "bits": "{fields} datos · {docs} documentos · {certs} certificaciones",
+      "bits": "{fields, plural, one {# dato} other {# datos}} · {docs, plural, one {# documento} other {# documentos}} · {certs, plural, one {# certificación} other {# certificaciones}}",
       "aria_label": "Tu avance"
     },
     "steps": {
@@ -1286,7 +1286,7 @@
     "legacy_doc_notice": "Esto no se puede subir en línea — el empleador puede pedírtelo en persona.",
     "unknown_doc_notice": "No reconocemos este requisito — pregúntale al empleador qué necesita.",
     "errors": {
-      "required_questions": "Contesta las preguntas obligatorias para seguir (faltan {count}).",
+      "required_questions": "Contesta las preguntas obligatorias para seguir ({count, plural, one {falta #} other {faltan #}}).",
       "required_doc": "{label} es obligatorio para este empleo.",
       "required_cert": "{name} es obligatoria para este empleo.",
       "cert_proof": "Adjunta el comprobante de {name} para seguir.",
@@ -1363,7 +1363,7 @@
     "expected_duration": "Duración",
     "shift_schedule": "Horario",
     "openings": "Vacantes",
-    "openings_value": "{open} de {total} lugares disponibles",
+    "openings_value": "{open} de {total, plural, one {# lugar disponible} other {# lugares disponibles}}",
     "required_experience": "Experiencia",
     "posted": "Publicado",
     "upload_prompt": "Sube los documentos que faltan en tu perfil.",
@@ -1420,10 +1420,10 @@
     },
     "what_you_need": {
       "title": "Qué necesitas",
-      "to_apply_prompts": "Para postularte: {count} preguntas cortas · unos {minutes} min",
+      "to_apply_prompts": "Para postularte: {count, plural, one {# pregunta corta} other {# preguntas cortas}} · unos {minutes} min",
       "to_apply_one_tap": "Para postularte: un toque — sin preguntas",
       "later_eyebrow": "Si el empleador te quiere contratar, te pedirá:",
-      "fields_row": "{count} datos ({required} obligatorios)",
+      "fields_row": "{count, plural, one {# dato} other {# datos}} ({required, plural, one {# obligatorio} other {# obligatorios}})",
       "after_they_ask": "Cuando lo pidan",
       "in_vault": "En tu bóveda",
       "proof_in_vault": "Comprobante en tu bóveda",
@@ -1442,7 +1442,7 @@
     "apply_flow": {
       "back_to_details": "Volver al empleo",
       "title": "Postularte a {job}",
-      "intro_prompts": "{company} hace {count} preguntas rápidas. Contesta con tus propias palabras.",
+      "intro_prompts": "{company} hace {count, plural, one {# pregunta rápida} other {# preguntas rápidas}}. Contesta con tus propias palabras.",
       "intro_one_tap": "Este empleo no tiene preguntas — envía tu postulación con un toque.",
       "placeholder": "Como lo dirías en voz alta.",
       "chars": "{count}/{max}",
@@ -1453,7 +1453,7 @@
       "continue_button": "Seguir con la postulación",
       "progress_saved": "Guardamos lo que llevas.",
       "errors": {
-        "missing_prompt_answers": "Contesta todas las preguntas antes de enviar (faltan {count}).",
+        "missing_prompt_answers": "Contesta todas las preguntas antes de enviar ({count, plural, one {falta #} other {faltan #}}).",
         "invalid_prompt_answers": "No pudimos guardar una de tus respuestas. Revisa el largo e inténtalo de nuevo."
       }
     }

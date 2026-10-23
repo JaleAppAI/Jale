@@ -129,3 +129,85 @@ describe('employer templates — the meter', () => {
         });
     });
 });
+
+/* One saved, a plan that allows one: each count agrees with its own number. */
+describe('employer templates — the meter, in the singular', () => {
+    it('says one template, not "1 templates", when billing is down', async () => {
+        listJobTemplates.mockResolvedValue([template('a')]);
+        getBilling.mockRejectedValue(new Error('billing down'));
+
+        renderIntl(
+            <PostJobProvider>
+                <EmployerTemplatesPage />
+            </PostJobProvider>,
+        );
+
+        await waitFor(() => {
+            expect(screen.getByText('1 template')).toBeInTheDocument();
+        });
+    });
+
+    it('says it in Spanish too, with billing down', async () => {
+        listJobTemplates.mockResolvedValue([template('a')]);
+        getBilling.mockRejectedValue(new Error('billing down'));
+
+        renderIntl(
+            <PostJobProvider>
+                <EmployerTemplatesPage />
+            </PostJobProvider>,
+            'es',
+        );
+
+        await waitFor(() => {
+            expect(screen.getByText('1 plantilla')).toBeInTheDocument();
+        });
+    });
+
+    it('agrees "guardada" and "permitida" with one in Spanish', async () => {
+        listJobTemplates.mockResolvedValue([template('a')]);
+        getBilling.mockResolvedValue(billing(1));
+
+        renderIntl(
+            <PostJobProvider>
+                <EmployerTemplatesPage />
+            </PostJobProvider>,
+            'es',
+        );
+
+        await waitFor(() => {
+            expect(screen.getByText('1 guardada · 1 permitida en su plan')).toBeInTheDocument();
+        });
+    });
+
+    it('agrees "permitida" with one in the empty Spanish meter', async () => {
+        listJobTemplates.mockResolvedValue([]);
+        getBilling.mockResolvedValue(billing(1));
+
+        renderIntl(
+            <PostJobProvider>
+                <EmployerTemplatesPage />
+            </PostJobProvider>,
+            'es',
+        );
+
+        await waitFor(() => {
+            expect(screen.getByText('Aún no hay plantillas · 1 permitida en su plan')).toBeInTheDocument();
+        });
+    });
+
+    it('keeps the Spanish plural for more than one', async () => {
+        listJobTemplates.mockResolvedValue([template('a'), template('b')]);
+        getBilling.mockResolvedValue(billing(3));
+
+        renderIntl(
+            <PostJobProvider>
+                <EmployerTemplatesPage />
+            </PostJobProvider>,
+            'es',
+        );
+
+        await waitFor(() => {
+            expect(screen.getByText('2 guardadas · 3 permitidas en su plan')).toBeInTheDocument();
+        });
+    });
+});

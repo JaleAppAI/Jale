@@ -32,9 +32,23 @@ describe('DetailsRequestedBanner', () => {
 
   it('shows the remaining count when the caller knows it', () => {
     renderIntl(<DetailsRequestedBanner applicationId="app-1" companyName="Acme" remainingCount={3} />);
-    expect(screen.getByText(
-      interpolate(message('worker_applications.details_banner.row_left'), { count: 3 }),
-    )).toBeInTheDocument();
+    expect(screen.getByText('3 items left')).toBeInTheDocument();
+  });
+
+  it('says one item, not "1 items", when one is left', () => {
+    renderIntl(<DetailsRequestedBanner applicationId="app-1" companyName="Sample Employer" remainingCount={1} />);
+    expect(screen.getByText('1 item left')).toBeInTheDocument();
+  });
+
+  it('says one item in Spanish too, and many as many', () => {
+    const { unmount } = renderIntl(
+      <DetailsRequestedBanner applicationId="app-1" companyName="Sample Employer" remainingCount={1} />,
+      'es',
+    );
+    expect(screen.getByText('Falta 1 cosa')).toBeInTheDocument();
+    unmount();
+    renderIntl(<DetailsRequestedBanner applicationId="app-1" companyName="Sample Employer" remainingCount={3} />, 'es');
+    expect(screen.getByText('Faltan 3 cosas')).toBeInTheDocument();
   });
 
   it('claims NO count when the caller does not have one', () => {
@@ -93,9 +107,7 @@ describe('DetailsRequestedBanner — what is asked and how long it takes', () =>
     unmount();
     renderIntl(<DetailsRequestedBanner applicationId="app-1" companyName="Acme" remainingCount={3} />);
     expect(screen.getByText('About 5 min')).toBeInTheDocument();
-    expect(screen.getByText(
-      interpolate(message('worker_applications.details_banner.row_left'), { count: 3 }),
-    )).toBeInTheDocument();
+    expect(screen.getByText('3 items left')).toBeInTheDocument();
   });
 
   it('still names the employer in the compact row variant', () => {
@@ -140,8 +152,7 @@ describe('DetailsRequestedBanner — summary read aloud', () => {
 
   it('separates the count and the time when only a total is known', () => {
     renderIntl(<DetailsRequestedBanner applicationId="app-1" companyName="Acme" remainingCount={3} />);
-    const left = interpolate(message('worker_applications.details_banner.row_left'), { count: 3 });
-    expect(spokenText(screen.getByRole('alert'))).toContain(`${left}, About 5 min`);
+    expect(spokenText(screen.getByRole('alert'))).toContain('3 items left, About 5 min');
   });
 
   it('separates the parts in Spanish too', () => {
@@ -159,11 +170,22 @@ describe('DetailsRequestedBanner — summary read aloud', () => {
 describe('DetailsRequestedMultiBanner', () => {
   it('counts the waiting applications and links to the list', () => {
     renderIntl(<DetailsRequestedMultiBanner count={2} />);
-    expect(screen.getByText(
-      interpolate(message('worker_applications.details_banner.many_head'), { count: 2 }),
-    )).toBeInTheDocument();
+    expect(screen.getByText('2 applications need your details')).toBeInTheDocument();
+    expect(screen.getByText('2 employers want to move forward with you.')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: message('worker_applications.details_banner.many_cta') }))
       .toHaveAttribute('href', '/worker/applications');
+  });
+
+  it('agrees with its count in both languages, one included', () => {
+    // The pages render this banner only for two or more, but the sentence
+    // itself must not depend on that to be grammatical.
+    const { unmount } = renderIntl(<DetailsRequestedMultiBanner count={1} />);
+    expect(screen.getByText('1 application needs your details')).toBeInTheDocument();
+    expect(screen.getByText('1 employer wants to move forward with you.')).toBeInTheDocument();
+    unmount();
+    renderIntl(<DetailsRequestedMultiBanner count={3} />, 'es');
+    expect(screen.getByText('3 postulaciones necesitan tus datos')).toBeInTheDocument();
+    expect(screen.getByText('3 empleadores quieren seguir adelante contigo.')).toBeInTheDocument();
   });
 
   it('drops the link ON the list -- there is nowhere to send them', () => {

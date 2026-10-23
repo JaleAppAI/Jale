@@ -227,9 +227,6 @@ describe('worker applications — notices come from the summary', () => {
 
     renderIntl(<WorkerApplicationsPage />);
 
-    await waitFor(() => expect(screen.getByText(interpolate(
-      message('worker_applications.details_banner.many_head'),
-      { count: 3 },
-    ))).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('3 applications need your details')).toBeInTheDocument());
   });
 });

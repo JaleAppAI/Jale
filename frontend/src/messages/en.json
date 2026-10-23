@@ -645,9 +645,9 @@
       "total_applicants": "Total Applicants",
       "workers_hired": "Workers Hired",
       "paused_closed": "Paused / Closed",
-      "active_hint": "{count} openings still available",
+      "active_hint": "{count, plural, one {# opening still available} other {# openings still available}}",
       "applicants_hint": "{count} avg per active job",
-      "hired_hint": "{hired} of {needed} positions filled",
+      "hired_hint": "{hired} of {needed, plural, one {# position} other {# positions}} filled",
       "paused_closed_hint": "{paused} paused, {filled} filled, {closed} closed"
     },
     "shell": {
@@ -969,7 +969,7 @@
       "title": "Job templates",
       "meter": "{count} saved · {limit} allowed on your plan",
       "meter_empty": "No templates yet · {limit} allowed on your plan",
-      "meter_count": "{count} templates",
+      "meter_count": "{count, plural, one {# template} other {# templates}}",
       "new": "New template",
       "limit_note": "Template limit reached — upgrade for more",
       "empty": "No templates yet. Create one here, or tick “Save as template” when posting a job.",
@@ -992,7 +992,7 @@
     "usage": {
       "jobs": "Active jobs {used}/{limit}",
       "templates": "Templates {used}/{limit}",
-      "jobs_plain": "{used} active jobs",
+      "jobs_plain": "{used, plural, one {# active job} other {# active jobs}}",
       "view_plan": "View plan"
     }
   },
@@ -1138,11 +1138,11 @@
       "one_head": "Action needed — complete your details.",
       "one_body": "{company} wants to move forward.",
       "one_cta": "Complete details",
-      "many_head": "{count} applications need your details",
-      "many_body": "{count} employers want to move forward with you.",
+      "many_head": "{count, plural, one {# application needs your details} other {# applications need your details}}",
+      "many_body": "{count, plural, one {# employer wants to move forward with you.} other {# employers want to move forward with you.}}",
       "many_cta": "See applications",
       "multi_body": "Start with the one at the top.",
-      "row_left": "{count} items left",
+      "row_left": "{count, plural, one {# item left} other {# items left}}",
       "row_body": "{company} asked for your details.",
       "items": {
         "questions": "{count, plural, one {# question} other {# questions}}",
@@ -1205,7 +1205,7 @@
     "progress": {
       "left": "{count} left",
       "none_left": "Nothing left",
-      "bits": "{fields} details · {docs} documents · {certs} certifications",
+      "bits": "{fields, plural, one {# detail} other {# details}} · {docs, plural, one {# document} other {# documents}} · {certs, plural, one {# certification} other {# certifications}}",
       "aria_label": "Your progress"
     },
     "steps": {
@@ -1363,7 +1363,7 @@
     "expected_duration": "Duration",
     "shift_schedule": "Shift",
     "openings": "Openings",
-    "openings_value": "{open} of {total} spots open",
+    "openings_value": "{open} of {total, plural, one {# spot} other {# spots}} open",
     "required_experience": "Experience",
     "posted": "Posted",
     "upload_prompt": "Upload missing documents in your profile.",
@@ -1420,10 +1420,10 @@
     },
     "what_you_need": {
       "title": "What you’ll need",
-      "to_apply_prompts": "To apply: {count} short questions · about {minutes} min",
+      "to_apply_prompts": "To apply: {count, plural, one {# short question} other {# short questions}} · about {minutes} min",
       "to_apply_one_tap": "To apply: one tap — no questions",
       "later_eyebrow": "If the employer wants to hire you, they’ll ask for:",
-      "fields_row": "{count} details ({required} required)",
+      "fields_row": "{count, plural, one {# detail} other {# details}} ({required} required)",
       "after_they_ask": "After they ask",
       "in_vault": "In your vault",
       "proof_in_vault": "Proof in your vault",
@@ -1442,7 +1442,7 @@
     "apply_flow": {
       "back_to_details": "Back to the job",
       "title": "Apply to {job}",
-      "intro_prompts": "{company} asks {count} quick questions. Answer in your own words.",
+      "intro_prompts": "{company} asks {count, plural, one {# quick question} other {# quick questions}}. Answer in your own words.",
       "intro_one_tap": "No questions for this job — send your application with one tap.",
       "placeholder": "However you’d say it out loud.",
       "chars": "{count}/{max}",

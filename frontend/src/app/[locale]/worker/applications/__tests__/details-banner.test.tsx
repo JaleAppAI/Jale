@@ -139,10 +139,11 @@ function requested(overrides: Partial<Application> = {}): Application {
  * those finds two elements and throws.
  */
 const ONE_HEAD = message('worker_applications.details_banner.one_head');
-const MULTI_HEAD = (count: number) => interpolate(
-  message('worker_applications.details_banner.many_head'),
-  { count },
-);
+// Literal, not `interpolate()`: `many_head` is an ICU plural, which a plain
+// `{name}` substitution cannot format.
+const MULTI_HEAD = (count: number) => (count === 1
+  ? '1 application needs your details'
+  : `${count} applications need your details`);
 const ROW_BODY = (company: string) => interpolate(
   message('worker_applications.details_banner.row_body'),
   { company },
