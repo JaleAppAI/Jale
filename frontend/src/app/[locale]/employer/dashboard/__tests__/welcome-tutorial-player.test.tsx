@@ -141,7 +141,6 @@ function renderDashboard(locale: Locale = 'en') {
     );
 }
 
-/** Two separate acts: the second commits whatever the first one's promises woke up. */
 /**
  * Several separate acts, each a short real wait: long enough for the lazily
  * loaded player to arrive, so "stays shut" means it was never asked for.
