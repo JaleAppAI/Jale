@@ -148,6 +148,37 @@ requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'n
 // carries --maxWorkers=2 (dev-host OOM cap) and jest rejects combining
 // --maxWorkers with --runInBand in a single invocation.
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npm run test:ci -- --runInBand');
+// The unit tests run in the infra-tests job, one jest --shard per matrix
+// entry. The shard list must be exactly 1..N for the N in --shard=<i>/N, or
+// some test files would run in no shard (a list short of N) or a shard would
+// fail on an index above N.
+const infraTestsJob = sliceJobBlock('.github/workflows/_reusable-validate.yml', reusableValidate, '\n  infra-tests:\n', '\n  database:\n');
+{
+  const label = '.github/workflows/_reusable-validate.yml (infra-tests job)';
+  if (!infraTestsJob.includes('\n      fail-fast: false\n')) {
+    fail(`${label} must set fail-fast: false, so every shard reports its own result`);
+  }
+  const shardList = infraTestsJob.match(/\n {8}shard: \[([0-9, ]+)\]\n/);
+  const shardRun = infraTestsJob.match(/\n {8}run: npm run test:ci -- --runInBand --shard=\$\{\{ matrix\.shard \}\}\/([0-9]+)\n/);
+  if (shardList === null) {
+    fail(`${label} must list its shards as matrix shard: [1, 2, ...]`);
+  } else if (shardRun === null) {
+    fail(`${label} must run exactly: npm run test:ci -- --runInBand --shard=\${{ matrix.shard }}/<N>`);
+  } else {
+    const shards = shardList[1].split(',').map((value) => Number(value.trim()));
+    const total = Number(shardRun[1]);
+    const expected = Array.from({ length: total }, (_, index) => index + 1);
+    if (total < 2 || shards.join(',') !== expected.join(',')) {
+      fail(`${label} must list shards [${expected.join(', ')}] for --shard=<i>/${total} (found [${shards.join(', ')}])`);
+    }
+  }
+}
+// The infra job builds and synthesizes only: a second jest run there would
+// repeat every shard's work.
+const infraBuildJob = sliceJobBlock('.github/workflows/_reusable-validate.yml', reusableValidate, '\n  infra:\n', '\n  infra-tests:\n');
+if (infraBuildJob.includes('npm run test:ci') || /\bnpx jest\b/.test(infraBuildJob)) {
+  fail('.github/workflows/_reusable-validate.yml (infra job) must not run the unit tests; the infra-tests job runs them in shards');
+}
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npx cdk synth');
 // `--all` is not a valid `cdk synth` option in the CDK 2.1133+ CLI this repo
 // pins (it prints "Unknown option(s): --all" and is ignored); `cdk synth`
@@ -167,7 +198,7 @@ requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-
 // so the synth step sets AWS_REGION from the region input, as
 // _reusable-deploy.yml does. It is set in that step's own env, so no other step
 // of the infra job changes.
-const infraJob = sliceJobBlock('.github/workflows/_reusable-validate.yml', reusableValidate, '\n  infra:\n', '\n  database:\n');
+const infraJob = infraBuildJob;
 const synthStep = infraJob.split('\n      - name: ').find((block) => block.startsWith('CDK synth backend stacks\n'));
 if (synthStep === undefined) {
   fail('.github/workflows/_reusable-validate.yml (infra job) must have a step named CDK synth backend stacks');
