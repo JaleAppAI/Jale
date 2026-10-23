@@ -82,6 +82,10 @@ const ONCE_PIN = '(deploy job) must have exactly one step named Database posture
 const WRITER_LINE = '          npx --no-install tsx scripts/write-posture-expectation.ts "$RUNNER_TEMP/posture-expected.json"\n';
 const GATE_LINE = '          node scripts/db-posture-gate.mjs --phase pre --expected "$RUNNER_TEMP/posture-expected.json"\n';
 
+const ECR_EXISTS_PIN = '(deploy job, Sign in to ECR Public) must exist once';
+const ECR_EVERY_PIN = '(deploy job, Sign in to ECR Public) must run on every deploy';
+const ECR_RUN_PIN = '(deploy job, Sign in to ECR Public) must run exactly the pinned sign-in';
+
 const GATE_STEP = [
   '      - name: Database posture gate',
   '        working-directory: infra',
@@ -129,6 +133,11 @@ const MUTATIONS = [
   ['the gate after the deploy',
     (text) => replaceOnce(GATE_STEP, '')(text).replace('      - name: Database posture verification\n', `${GATE_STEP}      - name: Database posture verification\n`),
     ORDER_PIN],
+  ['the ECR Public sign-in renamed away', replaceOnce('      - name: Sign in to ECR Public\n', '      - name: Sign in to ECR Public later\n'), ECR_EXISTS_PIN],
+  ['a condition on the ECR Public sign-in', addToStep('Sign in to ECR Public', 'if: false'), ECR_EVERY_PIN],
+  ['continue-on-error on the ECR Public sign-in', addToStep('Sign in to ECR Public', 'continue-on-error: true'), ECR_EVERY_PIN],
+  ['the sign-in\'s AWS error text let through',
+    replaceOnce('get-login-password --region us-east-1 2>/dev/null |', 'get-login-password --region us-east-1 |'), ECR_RUN_PIN],
   ['a second gate step, later in the job',
     replaceOnce('      - name: Deployment summary\n', `${GATE_STEP}\n      - name: Deployment summary\n`), ONCE_PIN],
 ];

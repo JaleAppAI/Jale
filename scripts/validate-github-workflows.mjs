@@ -606,6 +606,43 @@ if (secretsCheckSteps !== 1 || !secretsCheck) {
   }
 }
 
+// ECR Public sign-in: the frontend and admin image builds copy the Lambda Web
+// Adapter from public.ecr.aws, and anonymous pulls are refused with 429 once
+// the runner address's shared allowance runs out. The deploy job signs in
+// first, on every deploy, after its credentials and before anything builds;
+// the token goes to docker on stdin and the AWS error text never reaches the
+// public log.
+const ECR_SIGN_IN = 'Sign in to ECR Public';
+const ECR_SIGN_IN_RUN = [
+  '\n        run: |\n',
+  '          set -euo pipefail\n',
+  '          aws ecr-public get-login-password --region us-east-1 2>/dev/null | docker login --username AWS --password-stdin public.ecr.aws >/dev/null 2>&1 \\\n',
+  '            || { echo "::error::Could not sign in to ECR Public. The deploy role needs ecr-public:GetAuthorizationToken and sts:GetServiceBearerToken."; exit 1; }\n',
+  '          echo "Signed in to ECR Public."\n',
+].join('');
+{
+  const label = `.github/workflows/_reusable-deploy.yml (deploy job, ${ECR_SIGN_IN})`;
+  const count = reusableDeploy.split(`\n      - name: ${ECR_SIGN_IN}\n`).length - 1;
+  const step = deploySteps.find((candidate) => candidate.name === ECR_SIGN_IN);
+  if (count !== 1 || !step) {
+    fail(`${label} must exist once, in the deploy job (found ${count}${step ? '' : ', none in the deploy job'})`);
+  } else {
+    if (!step.block.includes(ECR_SIGN_IN_RUN)) {
+      fail(`${label} must run exactly the pinned sign-in: the token on stdin, stderr discarded, a fixed error sentence`);
+    }
+    if (/\n {8}(if|continue-on-error|["']?if["']?|["']?continue-on-error["']?):/.test(step.block)) {
+      fail(`${label} must run on every deploy and fail the job when it fails`);
+    }
+    const at = deployStepNames.indexOf(ECR_SIGN_IN);
+    if (deployStepNames.indexOf('Configure AWS deploy credentials') > at) {
+      fail(`${label} must come after the step Configure AWS deploy credentials`);
+    }
+    if (at > deployStepNames.indexOf('Deploy CDK stacks')) {
+      fail(`${label} must come before the step Deploy CDK stacks`);
+    }
+  }
+}
+
 // The two "Resolve frontend configuration" steps (plan and deploy) read the
 // Cognito pools and the API URL. The run logs are public and AWS error text
 // names the account and the role, so each AWS call there keeps its stdout
