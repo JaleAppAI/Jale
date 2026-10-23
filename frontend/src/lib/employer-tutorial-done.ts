@@ -43,9 +43,9 @@ export function applicantsTutorialDone(
     inbox: InboxSignal,
 ): boolean | undefined {
     if (pageStatuses === null) return undefined;
+    if (inbox.loading) return undefined;
     const pageDone = pageStatuses.some(isPastApplied);
     if (inbox.errorKind) return pageDone;
-    if (inbox.loading) return undefined;
     return pageDone || inbox.items.some((item) => isPastApplied(item.application_status));
 }
 

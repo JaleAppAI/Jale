@@ -59,6 +59,10 @@ describe('applicantsTutorialDone', () => {
         expect(applicantsTutorialDone(['pending'], inbox({ items: [row('talking'), row('hired')] }))).toBe(true);
     });
 
+    it('is unknown while the inbox retries after a failure', () => {
+        expect(applicantsTutorialDone(['pending'], inbox({ loading: true, errorKind: 'network' }))).toBeUndefined();
+    });
+
     it('uses the page data alone when the inbox read failed', () => {
         expect(applicantsTutorialDone(['pending'], inbox({ errorKind: 'network' }))).toBe(false);
         expect(applicantsTutorialDone(['hired'], inbox({ errorKind: 'network' }))).toBe(true);
