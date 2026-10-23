@@ -8,6 +8,7 @@
 // do not add fields the API cannot return (e.g. employer contact details).
 
 import { recordFetch, recordRequest } from '../report/context';
+import type { ShiftPeriod } from '../job-form';
 
 export type JobLanguagePreference = 'any' | 'en' | 'es';
 export type PublicJobDocType = 'resume' | 'driver_license' | 'ssn';
@@ -56,6 +57,8 @@ export interface PublicJobActive {
   trade_category_other?: string | null;
   expected_duration_bucket?: string | null;
   work_days?: string[] | null;
+  /** Shift choices (contract K2.2), canonical order; `[]` when none is chosen. */
+  shift_periods?: ShiftPeriod[];
   shift_start?: string | null;
   shift_end?: string | null;
   certification_requirements?: Array<{

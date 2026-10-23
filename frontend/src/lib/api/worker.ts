@@ -161,6 +161,13 @@ export type ApplicationRequirementsRemaining = RequirementsRemaining & {
   optionalDocs: string[];
 };
 
+/**
+ * Identical to `ShiftPeriod` in `lib/job-form.ts` (contract K2.1). Re-declared
+ * rather than imported because `lib/job-form.ts` reaches this module through
+ * the employer API types.
+ */
+type ShiftPeriod = 'day' | 'evening' | 'night' | 'overnight';
+
 export type Job = {
   id: string;
   title: string;
@@ -202,6 +209,8 @@ export type Job = {
   trade_category_other?: string | null;
   expected_duration_bucket?: 'lt_1w' | '1_2w' | '2_4w' | '1_3m' | '3_6m' | '6m_plus' | 'ongoing' | null;
   work_days?: Array<'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun'> | null;
+  /** Shift choices (contract K2.2), canonical order; `[]` when none is chosen. */
+  shift_periods?: ShiftPeriod[];
   /** 'HH:MM', 24h. */
   shift_start?: string | null;
   /** 'HH:MM', 24h. */

@@ -87,6 +87,27 @@ beforeEach(() => {
   localStorage.clear();
 });
 
+/*
+ * Where the employer's answer arrives is said BEFORE the box, as its own note:
+ * a worker who reads top to bottom learns that the reply comes on WhatsApp
+ * before they type, not after they have sent and are waiting on this page.
+ */
+describe('HiredCard — replies come on WhatsApp', () => {
+  it('says where the reply arrives above the message box, not between label and box', () => {
+    renderCard();
+    const note = screen.getByText(message('worker_application_details.hired_card.message_hint'));
+    const label = screen.getByText(message('worker_application_details.hired_card.message_label'));
+    expect(note.compareDocumentPosition(label) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(note.compareDocumentPosition(messageBox()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('still describes the box with the note', () => {
+    renderCard();
+    const note = screen.getByText(message('worker_application_details.hired_card.message_hint'));
+    expect(messageBox().getAttribute('aria-describedby')?.split(' ')).toContain(note.id);
+  });
+});
+
 describe('HiredCard — start details', () => {
   it('shows the start details and drops the reach-out copy (T-a)', () => {
     renderCard(hire({ details: DETAILS }));

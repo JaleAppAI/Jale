@@ -11,6 +11,7 @@ import { useWorkerAttentionCount } from '@/contexts/WorkerAttentionContext';
 import { Button } from '@/components/ui/button';
 import { ThemeToggle } from '@/components/ui/theme-toggle';
 import { ReportEntryButton } from '@/components/report/ReportEntryButton';
+import { HelpEntryButton } from '@/components/tutorials/HelpMenu';
 import { Sidebar } from './Sidebar';
 import { BottomTabBar } from './BottomTabBar';
 import type { ShellRole } from './nav-config';
@@ -90,6 +91,7 @@ export function AppShell({ role, title, subtitle, actions, children }: AppShellP
                             <div className="flex flex-wrap items-center gap-2">
                                 {actions}
                                 <ReportEntryButton />
+                                <HelpEntryButton />
                                 <Link
                                     href={pathname}
                                     locale={otherLocale}
@@ -118,10 +120,11 @@ export function AppShell({ role, title, subtitle, actions, children }: AppShellP
                         </div>
                     </header>
 
-                    {/* Bottom padding on mobile reserves room for the tab bar
-                        (5rem bar + safe-area inset on notched devices). Both
-                        roles now have one, so both roles reserve the room. */}
-                    <div className="pb-[calc(5rem+env(safe-area-inset-bottom))] lg:pb-0">{children}</div>
+                    {/* Bottom padding on mobile reserves room for the tab bar:
+                        its measured outer height, safe-area inset included, from
+                        `--jale-tab-bar-offset` (see `BottomTabBar`). Both roles
+                        have the bar, so both roles reserve the room. */}
+                    <div className="pb-[var(--jale-tab-bar-offset)] lg:pb-0">{children}</div>
                 </section>
             </div>
 

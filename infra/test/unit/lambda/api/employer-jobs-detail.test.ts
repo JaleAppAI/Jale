@@ -90,6 +90,7 @@ describe('employer-jobs-detail', () => {
       optional_docs: [],
       required_fields: [],
       optional_fields: [],
+      shift_periods: [],
     });
     expect(JSON.parse(res.body).city).toBe('Houston');
     expect(JSON.parse(res.body).state_region).toBe('TX');
@@ -221,6 +222,34 @@ describe('employer-jobs-detail', () => {
 
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body).required_docs).toEqual([]);
+  });
+
+  // Shift choices (131, contract K2.4): returned wherever work_days is, as an
+  // array, never null.
+  describe('shift_periods', () => {
+    const jobSql = () => mockQuery.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('SELECT id, title, location'))?.[0] as string;
+    const respondWith = (row: Record<string, unknown>) => {
+      mockQuery.mockImplementation((sql: string) => {
+        if (sql.includes('SELECT id, title, location')) return Promise.resolve({ rows: [row] });
+        return Promise.resolve({});
+      });
+    };
+
+    it('selects the column and returns the stored periods', async () => {
+      respondWith({ id: JOB_ID, title: 'Night Crew', required_docs: [], shift_periods: ['day', 'night'] });
+      const res = await handler(baseEvent);
+      expect(res.statusCode).toBe(200);
+      expect(jobSql()).toMatch(/\bshift_periods\b/);
+      expect(JSON.parse(res.body).shift_periods).toEqual(['day', 'night']);
+    });
+
+    it('returns [] when the row carries no array', async () => {
+      for (const shift_periods of [null, undefined]) {
+        respondWith({ id: JOB_ID, title: 'Older Job', required_docs: [], shift_periods });
+        const res = await handler(baseEvent);
+        expect(JSON.parse(res.body).shift_periods).toEqual([]);
+      }
+    });
   });
 
   it("scopes the job to the caller's scopeUserIds and drops the cognito_sub lookup", async () => {

@@ -19,7 +19,7 @@ import {
  * headline must not change size or weight under them mid-journey.
  *
  * FOCUS MOVES TO THE HEADING on every step change. Nothing navigates here --
- * the URL is the same eight screens deep -- so a screen reader would otherwise
+ * the URL is the same seven screens deep -- so a screen reader would otherwise
  * announce nothing at all when Continue swapped the entire page, and a keyboard
  * user would be left tabbing from wherever the old Continue button was.
  * `tabIndex={-1}` makes the h1 focusable programmatically without adding it to
@@ -45,7 +45,7 @@ export function StepHeader({
     title: string;
     subtitle?: string;
     eyebrow?: string;
-    /** Overrides the "3 / 8" counter — the questions show "Question 2 of 3" instead. */
+    /** Overrides the "3 / 7" counter — the questions show "Question 2 of 3" instead. */
     counterLabel?: string;
     /** `null` on the first screen and on the summary: there is nowhere to go back to. */
     onBack: (() => void) | null;

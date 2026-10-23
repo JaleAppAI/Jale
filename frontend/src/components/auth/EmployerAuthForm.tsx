@@ -1,7 +1,6 @@
 'use client';
 import { useEffect, useState, type FormEvent, type InputHTMLAttributes, type ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
-import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { employerConfirmSignUp, employerSignIn, employerSignUp, employerForgotPassword, employerConfirmNewPassword, employerResendConfirmationCode } from '@/lib/cognito';
 import { captureSignupSource } from '@/lib/signup-source';
@@ -58,7 +57,9 @@ const FIELD_LABEL_KEY: Record<EmployerSignupField, string> = {
     company_name: 'fields.company_name',
     contact_name: 'fields.contact_name',
     email: 'fields.email',
-    password: 'fields.password',
+    // The signup step labels this field "Create password" (sign-in keeps
+    // "Password"), and this map only feeds the signup summary.
+    password: 'fields.password_create',
     password_confirm: 'fields.password_confirm',
     phone: 'fields.phone',
     city: 'fields.city',
@@ -68,7 +69,6 @@ const FIELD_LABEL_KEY: Record<EmployerSignupField, string> = {
 };
 
 export default function EmployerAuthForm() {
-    const router = useRouter();
     const t = useTranslations('auth.employer');
     const tCommon = useTranslations('common');
     const { setTokens } = useAuth();
@@ -244,8 +244,9 @@ export default function EmployerAuthForm() {
         setIsLoading(true);
         try {
             const tokens = await employerSignIn(email, password);
+            // No navigation here: the auth page lands every fresh session (the
+            // dashboard, or `returnUrl`). A push from the form raced it.
             setTokens(tokens, 'employer');
-            router.push('/employer/profile');
         } catch (err) {
             // Never console.error the raw exception: a Cognito error object
             // carries the submitted email and the request context, and the
@@ -429,8 +430,9 @@ export default function EmployerAuthForm() {
 
         try {
             const tokens = await employerSignIn(email, password);
+            // No navigation here: the auth page lands every fresh session (the
+            // dashboard, or `returnUrl`). A push from the form raced it.
             setTokens(tokens, 'employer');
-            router.push('/employer/profile');
         } catch (err) {
             // The code has been spent, so leaving the user on the confirm step
             // would strand them behind an input that can never succeed again.
@@ -547,8 +549,8 @@ export default function EmployerAuthForm() {
     };
 
     // A recovery confirm is not a signup, so it must not be greeted with
-    // "Welcome to Jale" and "let's verify your email so you can start hiring" —
-    // this user already has an account and is trying to get back into it.
+    // "Create your employer account" — this user already has an account and is
+    // trying to get back into it.
     const isRecoveryConfirm = step === 'confirm' && confirmOrigin === 'signin';
     const heading =
         step === 'login' ? t('hero')
@@ -563,7 +565,10 @@ export default function EmployerAuthForm() {
         step === 'login' ? t('title')
             : step === 'forgot_request' || step === 'forgot_confirm' ? ''
                 : isRecoveryConfirm ? t('recovery_subtitle')
-                    : t('signup_subtitle');
+                    // The signup's own code step: the code has arrived, so the
+                    // "we'll email you a code" line no longer fits.
+                    : step === 'confirm' ? t('signup_confirm_subtitle')
+                        : t('signup_subtitle');
 
     return (
         <div className="flex w-full flex-col">
@@ -657,7 +662,7 @@ export default function EmployerAuthForm() {
                         <Field label={t('fields.email')} error={missingFields.includes('email') ? t('errors.required') : undefined}>
                             <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" />
                         </Field>
-                        <Field label={t('fields.password')} error={missingFields.includes('password') ? t('errors.required') : undefined}>
+                        <Field label={t('fields.password_create')} error={missingFields.includes('password') ? t('errors.required') : undefined}>
                             <PasswordInput
                                 value={password}
                                 onChange={(e) => setPassword(e.target.value)}

@@ -42,6 +42,26 @@ describe('PlanUsageMeter', () => {
         expect(screen.getByText('Active jobs 3/10')).not.toHaveClass('text-[var(--jale-warning-text)]');
     });
 
+    describe('with billing unavailable: the plain count', () => {
+        it('says one active job, not "1 active jobs"', () => {
+            renderIntl(<PlanUsageMeter activeCount={1} billing={null} templateCount={null} />);
+            expect(screen.getByText('1 active job')).toBeInTheDocument();
+        });
+
+        it('keeps the plural for more than one', () => {
+            renderIntl(<PlanUsageMeter activeCount={3} billing={null} templateCount={null} />);
+            expect(screen.getByText('3 active jobs')).toBeInTheDocument();
+        });
+
+        it('agrees with the count in Spanish', () => {
+            const { unmount } = renderIntl(<PlanUsageMeter activeCount={1} billing={null} templateCount={null} />, 'es');
+            expect(screen.getByText('1 empleo activo')).toBeInTheDocument();
+            unmount();
+            renderIntl(<PlanUsageMeter activeCount={3} billing={null} templateCount={null} />, 'es');
+            expect(screen.getByText('3 empleos activos')).toBeInTheDocument();
+        });
+    });
+
     it('shows the live count alone when the API sends no company figure (the owner, or an older API)', () => {
         renderIntl(<PlanUsageMeter activeCount={2} billing={billing} templateCount={null} />);
         expect(screen.getByText('Active jobs 2/10')).toBeInTheDocument();

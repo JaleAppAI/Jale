@@ -1102,6 +1102,76 @@ describe('employer-jobs-update', () => {
     expect(body.keys).toEqual(['resume']);
   });
 
+  // Date of birth is no longer offered on new jobs; existing jobs keep it.
+  // It is kept when the stored job already asks for it, in either tier.
+  describe('date_of_birth on an existing job', () => {
+    it('drops a newly added date_of_birth from required_fields', async () => {
+      mockCurrentJob({ required_fields: ['work_authorization'] });
+      const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, required_fields: ['work_authorization', 'date_of_birth'] }) }));
+      expect(res.statusCode).toBe(200);
+      expect((findUpdateCall()![1] as unknown[])[7]).toEqual(['work_authorization']);
+    });
+
+    it('drops a newly added date_of_birth from optional_fields', async () => {
+      mockCurrentJob();
+      const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, optional_fields: ['date_of_birth', 'education'] }) }));
+      expect(res.statusCode).toBe(200);
+      expect((findUpdateCall()![1] as unknown[])[8]).toEqual(['education']);
+    });
+
+    it('keeps date_of_birth in each tier that already has it', async () => {
+      mockCurrentJob({ required_fields: ['date_of_birth'] });
+      let res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, required_fields: ['date_of_birth', 'work_authorization'] }) }));
+      expect(res.statusCode).toBe(200);
+      expect((findUpdateCall()![1] as unknown[])[7]).toEqual(['date_of_birth', 'work_authorization']);
+
+      mockQuery.mockClear();
+      mockCurrentJob({ optional_fields: ['date_of_birth'] });
+      res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, optional_fields: ['date_of_birth'] }) }));
+      expect(res.statusCode).toBe(200);
+      expect((findUpdateCall()![1] as unknown[])[8]).toEqual(['date_of_birth']);
+    });
+
+    it('keeps date_of_birth, in required_fields only, when it moves there from optional_fields', async () => {
+      mockCurrentJob({ optional_fields: ['date_of_birth', 'education'] });
+      const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, required_fields: ['date_of_birth'], optional_fields: ['education'] }) }));
+      expect(res.statusCode).toBe(200);
+      const params = findUpdateCall()![1] as unknown[];
+      expect(params[7]).toEqual(['date_of_birth']);
+      expect(params[8]).toEqual(['education']);
+    });
+
+    it('keeps date_of_birth, in optional_fields only, when it moves there from required_fields', async () => {
+      mockCurrentJob({ required_fields: ['date_of_birth'] });
+      const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, required_fields: [], optional_fields: ['date_of_birth'] }) }));
+      expect(res.statusCode).toBe(200);
+      const params = findUpdateCall()![1] as unknown[];
+      expect(params[7]).toEqual([]);
+      expect(params[8]).toEqual(['date_of_birth']);
+    });
+
+    it('still refuses date_of_birth in both tiers of a job that has it with 400 requirements_tier_overlap', async () => {
+      mockCurrentJob({ optional_fields: ['date_of_birth'] });
+      const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, required_fields: ['date_of_birth'], optional_fields: ['date_of_birth'] }) }));
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body)).toEqual({ error: 'requirements_tier_overlap', keys: ['date_of_birth'] });
+    });
+
+    it('saves a job with applicants unchanged when the edit only adds date_of_birth', async () => {
+      mockCurrentJob({ applicant_count: 1, required_fields: ['work_authorization'] });
+      const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, required_fields: ['work_authorization', 'date_of_birth'] }) }));
+      expect(res.statusCode).toBe(200);
+      expect((findUpdateCall()![1] as unknown[])[7]).toEqual(['work_authorization']);
+    });
+
+    it('still locks the requirement arrays of a job with applicants that has date_of_birth', async () => {
+      mockCurrentJob({ applicant_count: 1, required_fields: ['date_of_birth'] });
+      const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, required_fields: [] }) }));
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body)).toMatchObject({ error: 'field_locked', fields: ['required_fields'] });
+    });
+  });
+
   it('lists exactly optional_docs in 409 field_locked when only optional_docs changes with applicants', async () => {
     mockCurrentJob({ applicant_count: 1, optional_docs: ['driver_license'] });
     // VALID_EDIT's required_docs is ['resume'] -- pick a non-overlapping
@@ -1574,6 +1644,96 @@ describe('employer-jobs-update', () => {
       }));
       expect(res.statusCode).toBe(409);
       expect(JSON.parse(res.body).fields).toContain('pre_application_prompts');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // shift_periods (131, contract K2.2), field-edit path
+  // ---------------------------------------------------------------------------
+  //
+  // Appended at the END of EDITABLE_COLUMNS (index 34), so every positional
+  // index above is undisturbed; WHERE id is now bind $36. PRESERVE-on-omit,
+  // like pre_application_prompts: an absent key keeps the stored value, an
+  // array replaces it exactly, and [] clears it.
+
+  describe('shift_periods (131)', () => {
+    const SHIFT_PERIODS_INDEX = 34;
+    const withStored = (shift_periods: string[], extra: Record<string, unknown> = {}) =>
+      mockCurrentJob({ ...extra, shift_periods } as unknown as Parameters<typeof mockCurrentJob>[0]);
+    const params = () => findUpdateCall()![1] as unknown[];
+
+    it('threads the canonical value through UPDATE and RETURNING, with the column read into cur', async () => {
+      withStored([]);
+      const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, shift_periods: ['overnight', 'day', 'day'] }) }));
+      expect(res.statusCode).toBe(200);
+      const [sql] = findUpdateCall()!;
+      expect(String(sql).split('SET')[1].split('WHERE')[0]).toMatch(/shift_periods = \$35(?!::)/);
+      expect(String(sql)).toMatch(/WHERE id = \$36/);
+      expect(String(sql).split('RETURNING')[1]).toMatch(/\bshift_periods\b/);
+      expect(params()).toHaveLength(36);
+      expect(params()[SHIFT_PERIODS_INDEX]).toEqual(['day', 'overnight']);
+      const curCall = mockQuery.mock.calls.find(
+        (c) => typeof c[0] === 'string' && c[0].includes('applicant_count') && !c[0].includes('UPDATE jobs'),
+      );
+      expect(curCall![0]).toContain('jobs.shift_periods');
+    });
+
+    it('keeps the stored value when the body omits the key', async () => {
+      withStored(['evening', 'night']);
+      const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+      expect(res.statusCode).toBe(200);
+      expect(params()[SHIFT_PERIODS_INDEX]).toEqual(['evening', 'night']);
+    });
+
+    it('keeps [] when the body omits the key on a row that predates the column read', async () => {
+      mockCurrentJob();
+      const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+      expect(res.statusCode).toBe(200);
+      expect(params()[SHIFT_PERIODS_INDEX]).toEqual([]);
+    });
+
+    it('replaces the stored value exactly when the key is sent', async () => {
+      withStored(['evening', 'night']);
+      const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, shift_periods: ['day'] }) }));
+      expect(res.statusCode).toBe(200);
+      expect(params()[SHIFT_PERIODS_INDEX]).toEqual(['day']);
+    });
+
+    it('clears the stored value on an explicit empty array', async () => {
+      withStored(['evening', 'night']);
+      const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, shift_periods: [] }) }));
+      expect(res.statusCode).toBe(200);
+      expect(params()[SHIFT_PERIODS_INDEX]).toEqual([]);
+    });
+
+    it('is not one of the fields locked once the job has applicants', async () => {
+      withStored(['day'], { applicant_count: 3 });
+      const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, shift_periods: ['night'] }) }));
+      expect(res.statusCode).toBe(200);
+      expect(params()[SHIFT_PERIODS_INDEX]).toEqual(['night']);
+    });
+
+    it.each([
+      ['an unknown value', ['day', 'afternoon']],
+      ['a non-array value', 'day'],
+      ['an explicit null', null],
+      ['five items', ['day', 'evening', 'night', 'overnight', 'day']],
+    ])('rejects %s with 400 before opening a DB connection', async (_label, value) => {
+      const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, shift_periods: value }) }));
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body)).toEqual({ error: 'invalid_shift_periods', valid: ['day', 'evening', 'night', 'overnight'] });
+      expect(mockGetDbPool).not.toHaveBeenCalled();
+    });
+
+    it('leaves the status-only update untouched', async () => {
+      mockQuery.mockImplementation((q: string) => {
+        if (q.includes('UPDATE jobs')) return Promise.resolve({ rowCount: 1, rows: [{ id: JOB_ID, status: 'paused' }] });
+        return Promise.resolve({ rowCount: 1, rows: [{ status: 'active', public_listing_enabled: false, public_code: null }] });
+      });
+      const res = await handler(makeEvent({ body: JSON.stringify({ status: 'paused' }) }));
+      expect(res.statusCode).toBe(200);
+      const statusUpdate = mockQuery.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('UPDATE jobs SET status'));
+      expect(statusUpdate![0]).not.toContain('shift_periods');
     });
   });
 

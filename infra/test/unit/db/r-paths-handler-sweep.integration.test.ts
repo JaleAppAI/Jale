@@ -925,17 +925,41 @@ describeInProfiles(['request', 'owner-unrestricted'], 'handler sweep: every list
     })]);
   });
 
-  it('EmployerApplicantsOverviewLambda on jale_api: 200 listing the applicant', async () => {
+  it('EmployerApplicantsOverviewLambda on jale_api: 200 listing the applicants', async () => {
     const s = await openWorld();
-    const { employer, worker, job, applicationId } = await seed(() => applicantScene(s));
+    // Details requested from two applicants of a job that requires one
+    // document. The first attached it to this job, so nothing is outstanding
+    // and details_status reads complete before details_completed_at is
+    // stamped, as the per-job list reads it. The second holds it only in the
+    // vault, which does not count for this job, so it reads requested.
+    const { employer, worker, job, applicationId, vaultOnly } = await seed(async () => {
+      const a = await applicantScene(s, { status: 'details_requested', job: { requiredDocs: ['resume'] } });
+      const other = await sweepWorker(s);
+      const otherApplicationId = await s.world.application(a.job.id, other.id, 'details_requested');
+      await s.world.su.query(
+        `UPDATE job_applications SET details_requested_at = now() WHERE id = ANY($1::uuid[])`,
+        [[a.applicationId, otherApplicationId]],
+      );
+      await s.world.document({ workerId: a.worker.id, jobId: a.job.id, docType: 'resume' });
+      await s.world.document({ workerId: other.id, jobId: null, docType: 'resume' });
+      return { ...a, vaultOnly: { worker: other, applicationId: otherApplicationId } };
+    });
     const response = await asLogin('jale_api', () => invoke(load('../../../lambda/api/employer-applicants-overview'), sweepEvent({
       sub: employer.sub, resource: '/employer/applicants',
     })));
     expectStatus(response, 200, logs);
-    expect(response.body.total).toBe(1);
-    expect(response.body.applicants).toEqual([expect.objectContaining({
-      application_id: applicationId, worker_id: worker.id, job_id: job.id,
-    })]);
+    expect(response.body.total).toBe(2);
+    const byId = new Map(response.body.applicants.map((item: { application_id: string }) => [item.application_id, item]));
+    expect(byId.get(applicationId)).toEqual(expect.objectContaining({
+      worker_id: worker.id, job_id: job.id, details_status: 'complete',
+    }));
+    expect(byId.get(vaultOnly.applicationId)).toEqual(expect.objectContaining({
+      worker_id: vaultOnly.worker.id, job_id: job.id, details_status: 'requested',
+    }));
+    for (const item of response.body.applicants) {
+      expect(item).not.toHaveProperty('have_docs');
+      expect(item).not.toHaveProperty('details_requested_at');
+    }
   });
 
   it('EmployerTemplatesListLambda on jale_api: 200 listing the template', async () => {
@@ -1002,7 +1026,7 @@ describeInProfiles(['request', 'owner-unrestricted'], 'handler sweep: every list
     })));
     expectStatus(response, 200, logs);
     expect(response.body).toEqual(expect.objectContaining({
-      planCode: 'employer_pro', activeJobLimit: 10, templateLimit: 20, activeJobUsage: 0,
+      planCode: 'employer_pro', activeJobLimit: 50, templateLimit: 20, activeJobUsage: 0,
       subscription: expect.objectContaining({ plan_code: 'employer_pro', status: 'active' }),
     }));
   });

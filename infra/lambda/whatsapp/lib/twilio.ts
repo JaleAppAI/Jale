@@ -145,12 +145,11 @@ export interface TwilioSecret {
     employer_message_invite_en?: string;
     employer_message_resume_es?: string;
     employer_message_resume_en?: string;
-    admin_support_reply_es?: string;
-    admin_support_reply_en?: string;
     // Sprint 28 support reply, read by the window-aware dispatcher. ONE
     // variable, no buttons: {{1}} the admin's reply. Defined (and its body
-    // pinned) in scripts/seed-whatsapp-twilio-templates.mjs, which never maps
-    // the unversioned pair above.
+    // pinned) in scripts/seed-whatsapp-twilio-templates.mjs. The unversioned
+    // admin_support_reply_<lang> pair is retired: nothing reads it, and the
+    // seed script can only remove it (--unset-template).
     admin_support_reply_v2_es?: string;
     admin_support_reply_v2_en?: string;
     // Sprint 23 application stages. Both pairs carry FOUR variables --

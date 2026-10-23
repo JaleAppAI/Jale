@@ -168,6 +168,12 @@ export function isDefinitiveError(err: unknown): boolean {
   return true;
 }
 
+/**
+ * Identical to `ShiftPeriod` in `lib/job-form.ts` (contract K2.1). Re-declared
+ * rather than imported because `lib/job-form.ts` imports this module's types.
+ */
+type ShiftPeriod = 'day' | 'evening' | 'night' | 'overnight';
+
 export type Job = {
   id: string;
   title: string;
@@ -217,6 +223,11 @@ export type Job = {
   expected_duration_bucket?: string | null;
   /** Day abbreviations, e.g. ['mon', 'wed', 'fri']. */
   work_days?: string[] | null;
+  /**
+   * Shift choices (contract K2.2), canonical order; `[]` when none is chosen.
+   * Optional only so an older cached payload still type-checks.
+   */
+  shift_periods?: ShiftPeriod[];
   /** Postgres TIME -- may arrive as 'HH:MM' or 'HH:MM:SS'. */
   shift_start?: string | null;
   shift_end?: string | null;
@@ -391,6 +402,12 @@ export type ApplicantOverviewItem = {
   hire_details: HireDetails | null;
   /** K4.2: hired with no start details yet. Drives the "Add start details" prompt. */
   hire_details_needed: boolean;
+  /**
+   * Where the details request stands, derived the same way as the per-job
+   * applicants list. Optional: an overview API that does not send it yet
+   * leaves the hire gate open (`hireBlockReason` fails open), as before.
+   */
+  details_status?: ApplicationDetailsStatus;
 };
 
 export type ApplicantsOverviewResponse = {
@@ -648,6 +665,8 @@ export type JobWritePayload = {
   trade_category_other?: string;
   expected_duration_bucket?: string;
   work_days?: string[];
+  /** Contract K2.2: omit to keep the stored value on update; an array replaces it; `[]` clears it. */
+  shift_periods?: ShiftPeriod[];
   shift_start?: string;
   shift_end?: string;
   certification_requirements?: Array<{ name: string; tier: 'required' | 'optional'; proof_required: boolean }>;

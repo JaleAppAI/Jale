@@ -110,7 +110,7 @@ vi.mock('@/hooks/usePageData', async () => {
     };
 });
 
-import { interpolate, message, renderIntl } from '@/components/employer/__tests__/render-intl';
+import { message, renderIntl } from '@/components/employer/__tests__/render-intl';
 import { PostJobProvider } from '@/contexts/PostJobContext';
 import EmployerDashboardPage from '../page';
 
@@ -185,9 +185,6 @@ describe('dashboard stat hints', () => {
             </PostJobProvider>,
         );
 
-        expect(hintUnder(stat('workers_hired'))).toBe(
-            interpolate(stat('hired_hint'), { hired: 1, needed: 5 }),
-        );
         expect(hintUnder(stat('workers_hired'))).toBe('1 of 5 positions filled');
     });
 
@@ -198,9 +195,51 @@ describe('dashboard stat hints', () => {
             </PostJobProvider>,
         );
 
-        expect(hintUnder(stat('active_jobs'))).toBe(
-            interpolate(stat('active_hint'), { count: 4 }),
-        );
         expect(hintUnder(stat('active_jobs'))).toBe('4 openings still available');
+    });
+});
+
+/*
+ * A board with one of each: every hint has to agree with its own number,
+ * "1 opening", "of 1 position", and in Spanish "1 pausado".
+ */
+describe('dashboard stat hints — one of each', () => {
+    beforeEach(() => {
+        seed = {
+            jobs: [
+                job({ id: 'job-1', hired_count: 0, open_count: 1, number_of_workers_needed: 1 }),
+                job({ id: 'job-2', status: 'paused', hired_count: 0, open_count: 0, number_of_workers_needed: 0 }),
+                job({ id: 'job-3', status: 'filled', hired_count: 0, open_count: 0, number_of_workers_needed: 0 }),
+                job({ id: 'job-4', status: 'closed', hired_count: 0, open_count: 0, number_of_workers_needed: 0 }),
+            ],
+            billing: paidPlan,
+            templateCount: 0,
+        };
+    });
+
+    it('says one opening and one position in English', () => {
+        renderIntl(
+            <PostJobProvider>
+                <EmployerDashboardPage />
+            </PostJobProvider>,
+        );
+
+        expect(hintUnder(stat('active_jobs'))).toBe('1 opening still available');
+        expect(hintUnder(stat('workers_hired'))).toBe('0 of 1 position filled');
+        expect(hintUnder(stat('paused_closed'))).toBe('1 paused, 1 filled, 1 closed');
+    });
+
+    it('agrees with every count in Spanish', () => {
+        renderIntl(
+            <PostJobProvider>
+                <EmployerDashboardPage />
+            </PostJobProvider>,
+            'es',
+        );
+
+        const esStat = (key: string) => message(`employer_dashboard.stats.${key}`, 'es');
+        expect(hintUnder(esStat('active_jobs'))).toBe('1 puesto aún disponible');
+        expect(hintUnder(esStat('workers_hired'))).toBe('0 de 1 puesto cubierto');
+        expect(hintUnder(esStat('paused_closed'))).toBe('1 pausado, 1 lleno, 1 cerrado');
     });
 });

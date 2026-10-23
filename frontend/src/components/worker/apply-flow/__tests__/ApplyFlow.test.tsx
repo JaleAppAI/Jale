@@ -203,6 +203,34 @@ describe('ApplyFlow — feedback', () => {
       .toBeInTheDocument();
   });
 
+  it('counts one question as one question in the intro, in both languages', () => {
+    const one = { company_name: 'Sample Employer', pre_application_prompts: [PROMPTS[0]] };
+    const { unmount } = renderFlow({ job: one });
+    expect(screen.getByText('Sample Employer asks 1 quick question. Answer in your own words.'))
+      .toBeInTheDocument();
+    unmount();
+    renderIntl(
+      <ApplyFlow
+        job={job(one)}
+        state={initialApplyFlowState()}
+        dispatch={vi.fn()}
+        onSubmit={vi.fn()}
+        submitting={false}
+        submitError={null}
+        onBackToDetails={vi.fn()}
+      />,
+      'es',
+    );
+    expect(screen.getByText('Sample Employer hace 1 pregunta rápida. Contesta con tus propias palabras.'))
+      .toBeInTheDocument();
+  });
+
+  it('keeps the plural intro for more than one question', () => {
+    renderFlow({ job: { company_name: 'Sample Employer' } });
+    expect(screen.getByText('Sample Employer asks 2 quick questions. Answer in your own words.'))
+      .toBeInTheDocument();
+  });
+
   it('focuses the FIRST prompt box on arrival, and only that one', () => {
     renderFlow();
     expect(screen.getByLabelText(PROMPTS[0].text)).toHaveFocus();

@@ -16,7 +16,7 @@ import { MetricCard } from '@/components/ui/metric-card';
 import { ListPageSkeleton } from '@/components/ui/page-skeletons';
 import { PanelHeader } from '@/components/ui/panel-header';
 import { Skeleton } from '@/components/ui/skeleton';
-import { ApplicationStatusChip } from '@/components/worker/ApplicationStatusChip';
+import { ApplicationStatusChip, ApplicationStatusHint } from '@/components/worker/ApplicationStatusChip';
 import {
   DetailsRequestedBanner,
   DetailsRequestedMultiBanner,
@@ -319,13 +319,13 @@ export default function WorkerApplicationsPage() {
                           : [];
                         return (
                           <li key={a.application_id}>
-                            {/* The row keeps pointing at the JOB. The banner
-                                below it is the only thing that leads to the
-                                details form -- a row whose whole surface
-                                silently changed destination would strand a
-                                worker who just wanted to re-read the posting. */}
+                            {/* A row that needs details opens the details form
+                                -- the one thing to do with it (sprint 29). The
+                                form names the job, and every other row still
+                                opens the posting. The banner below keeps its
+                                own link as a SIBLING, never nested. */}
                             <Link
-                              href={`/worker/jobs/${a.job_id}`}
+                              href={needsDetails ? `/worker/applications/${a.application_id}` : `/worker/jobs/${a.job_id}`}
                               className="flex items-start gap-3 px-4 py-4 transition-colors hover:bg-[var(--jale-paper-2)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)] md:px-5"
                             >
                               <InitialsAvatar
@@ -347,6 +347,7 @@ export default function WorkerApplicationsPage() {
                                 <p className="mt-0.5 text-xs font-medium text-[var(--jale-ink-2)]">
                                   {a.company_name}
                                 </p>
+                                <ApplicationStatusHint status={a.status} className="mt-1" />
                                 {jobStatusBadge ? (
                                   <p className="mt-1">
                                     <JobStatusBadge status={jobStatusBadge}>
@@ -392,6 +393,7 @@ export default function WorkerApplicationsPage() {
                                   applicationId={a.application_id}
                                   companyName={a.company_name}
                                   remainingCount={a.remaining_count}
+                                  counts={a.remaining?.counts}
                                   compact
                                 />
                               </div>

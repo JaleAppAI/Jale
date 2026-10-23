@@ -1,6 +1,7 @@
 'use client';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
+import { Lock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Icon } from '@/components/ui/icon';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
@@ -256,6 +257,21 @@ export function TrustQuestionStep({
                 fieldTakesFocus
             />
             <StepBody>
+                {/* Question 1 says up front when the answers lock, so the
+                    warning on question 3 is not the first time a worker hears
+                    it. Above the box, so it is read before typing. A `note`,
+                    not an `alert`: a standing condition of the screen, and it
+                    must not talk over the question on arrival. Quieter than
+                    the question 3 callout on purpose -- nothing is final yet. */}
+                {index === 1 ? (
+                    <div
+                        role="note"
+                        className="flex items-start gap-2 rounded-[var(--radius-input)] bg-[var(--jale-warning-bg)] px-3.5 py-3 text-[var(--jale-warning-text)]"
+                    >
+                        <Lock aria-hidden="true" className="mt-0.5 size-4 flex-none" strokeWidth={2} />
+                        <span className="text-[13px] leading-snug">{t('lock_note')}</span>
+                    </div>
+                ) : null}
                 <div className="flex items-stretch gap-2.5">
                     <Textarea
                         id={`${fieldId}-answer`}
@@ -338,8 +354,27 @@ export function TrustQuestionStep({
                                     : ''}
                         </span>
                     )}
-                    <span className="text-xs tabular-nums text-[var(--jale-ink-2)]">
-                        {t('chars', { count: trimmed.length })}
+                    {/* The minimum is on screen from the first frame -- "0 / 15
+                        minimum" -- so it never appears for the first time as
+                        the thing blocking the button. Once it is met, the count
+                        is said in words and the check mark only decorates it.
+                        Polite: a screen-reader user hears it settle without
+                        leaving the box, and it never talks over the question. */}
+                    <span
+                        aria-live="polite"
+                        className={[
+                            'flex-none text-xs tabular-nums',
+                            ready
+                                ? 'font-bold text-[var(--jale-success)]'
+                                : 'font-semibold text-[var(--jale-ink-2)]',
+                        ].join(' ')}
+                    >
+                        {answerLongEnough(answer) ? (
+                            <>
+                                <span>{t('chars', { count: trimmed.length })}</span>
+                                {ready ? <span aria-hidden="true">{' ✓'}</span> : null}
+                            </>
+                        ) : t('counter_min', { count: trimmed.length, min: MIN_ANSWER_CHARS })}
                     </span>
                 </div>
 

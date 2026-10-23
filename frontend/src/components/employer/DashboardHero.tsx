@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
@@ -17,8 +17,9 @@ import { accountKeyFromIdToken, accountScopedKey } from '@/lib/account-key';
  * pushing the job list — the reason a returning employer opened the page — a
  * third of the way down the viewport on every visit.
  *
- * So it is shown once and then collapses to a one-line bar that keeps the one
- * control worth keeping. `localStorage`, not session: "I have seen the
+ * So it is shown until the employer dismisses it, and then collapses to a
+ * one-line bar that keeps the one control worth keeping. `localStorage`, not
+ * session: "I have seen the
  * introduction" is a fact about the person, not about the tab -- and so the key
  * carries WHICH person (see `lib/account-key`). Storage is per browser, and
  * without that an employer sharing a laptop would never be introduced to their
@@ -68,11 +69,12 @@ export function DashboardHero() {
      */
     const [seen, setSeen] = useState(() => readSeen(account));
 
-    // Seeing it once is what "seen" means, so the flag is written by the render
-    // that showed it -- not by the dismiss button, which is an accelerator.
-    useEffect(() => {
-        if (!seen) rememberSeen(account);
-    }, [account, seen]);
+    // Only a dismiss marks it seen. Writing the flag on render collapsed the
+    // card for anyone who merely landed here once, before they had read it.
+    const dismiss = () => {
+        rememberSeen(account);
+        setSeen(true);
+    };
 
     if (seen) {
         return (
@@ -89,12 +91,10 @@ export function DashboardHero() {
                 <p className="mb-3 inline-flex rounded-full bg-[color-mix(in_srgb,var(--primary-fg)_12%,transparent)] px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-[color-mix(in_srgb,var(--primary-fg)_80%,transparent)]">
                     {t('hero.eyebrow')}
                 </p>
-                {/* Collapses to the slim bar now rather than on the next visit.
-                    The flag is already written by the effect above, so this
-                    control only changes WHEN the collapse happens. */}
+                {/* Collapses to the slim bar now, and for every later visit. */}
                 <button
                     type="button"
-                    onClick={() => setSeen(true)}
+                    onClick={dismiss}
                     aria-label={t('hero.dismiss_aria')}
                     className="-mr-1 shrink-0 cursor-pointer rounded p-1 leading-none text-[color-mix(in_srgb,var(--primary-fg)_72%,transparent)] transition-colors hover:text-[var(--primary-fg)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
                 >

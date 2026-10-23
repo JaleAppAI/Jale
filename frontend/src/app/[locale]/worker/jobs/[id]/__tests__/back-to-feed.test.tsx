@@ -73,6 +73,13 @@ vi.mock('@/lib/api/worker', async (importOriginal) => ({
     updateWorkerProfile: vi.fn(),
     getVaultDocuments: vi.fn(async () => []),
     recordJobView: vi.fn(),
+    // The page reads one application for the W2 tutorial's "has applied"
+    // signal; stubbed so the real fetch never runs here.
+    getApplications: vi.fn(async () => ({
+        applications: [],
+        next_cursor: null,
+        attention: { details_requested: [], unacknowledged_hires: [] },
+    })),
 }));
 
 const job: JobDetail = {

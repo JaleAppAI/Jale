@@ -8,18 +8,18 @@ import { createHash } from 'node:crypto';
 
 export const PAYLOAD_HASH_HEADER = 'x-amz-content-sha256';
 const SHA256_HEX = /^[0-9a-f]{64}$/;
-/** The largest action body a route reads. */
+/** The largest action body a route reads, unless the route passes its own limit. */
 export const MAX_ACTION_BODY_LENGTH = 16_384;
 
-/** The body as text, or null when it is over the limit or cannot be read. */
-export async function readActionBody(request: Request): Promise<string | null> {
+/** The body as text, or null when it is over `maxLength` or cannot be read. */
+export async function readActionBody(request: Request, maxLength: number = MAX_ACTION_BODY_LENGTH): Promise<string | null> {
   const declared = Number(request.headers.get('content-length'));
-  if (Number.isFinite(declared) && declared > MAX_ACTION_BODY_LENGTH) {
+  if (Number.isFinite(declared) && declared > maxLength) {
     return null;
   }
   try {
     const text = await request.text();
-    return text.length > MAX_ACTION_BODY_LENGTH ? null : text;
+    return text.length > maxLength ? null : text;
   } catch {
     return null;
   }

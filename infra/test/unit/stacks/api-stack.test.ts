@@ -1140,6 +1140,77 @@ describe('ApiStack', () => {
     // addPropertyOverride('MethodSettings').
     expect(Object.keys(template.findResources('AWS::ApiGateway::Stage'))).toHaveLength(1);
   });
+
+  // ── Sprint 29 BE-1: tutorial progress (contract K1) ──────────────────────
+  // GET and POST on /employer/tutorials and /worker/tutorials, each behind its
+  // own pool's authorizer, both served by one function on the request login.
+  describe('tutorial progress routes', () => {
+    const resources = () => template.findResources('AWS::ApiGateway::Resource') as Record<
+      string, { Properties: Record<string, any> }
+    >;
+    const pathOf = (id: string): string => {
+      const resource = resources()[id];
+      if (!resource) return '';
+      const parentRef: string | undefined = resource.Properties?.ParentId?.Ref;
+      return `${parentRef ? pathOf(parentRef) : ''}/${resource.Properties.PathPart}`;
+    };
+    const methodsOn = (route: string) => {
+      const ids = Object.keys(resources()).filter((id) => pathOf(id) === route);
+      expect(ids).toHaveLength(1);
+      return Object.values(
+        template.findResources('AWS::ApiGateway::Method') as Record<string, { Properties: Record<string, any> }>,
+      ).filter((m) => m.Properties?.ResourceId?.Ref === ids[0]);
+    };
+    const tutorialFunctionId = (): string => {
+      const fns = template.findResources('AWS::Lambda::Function', {
+        Properties: { Description: 'Tutorial progress endpoint' },
+      });
+      expect(Object.keys(fns)).toHaveLength(1);
+      return Object.keys(fns)[0];
+    };
+
+    test.each([
+      ['/employer/tutorials', 'EmployerAuthorizer'],
+      ['/worker/tutorials', 'WorkerAuthorizer'],
+    ])('%s serves GET and POST behind the %s, with its CORS preflight', (route, authorizer) => {
+      const methods = methodsOn(route);
+      expect(methods.map((m) => m.Properties.HttpMethod).sort()).toEqual(['GET', 'OPTIONS', 'POST']);
+      const functionId = tutorialFunctionId();
+      for (const method of methods.filter((m) => m.Properties.HttpMethod !== 'OPTIONS')) {
+        expect(method.Properties.AuthorizationType).toBe('COGNITO_USER_POOLS');
+        expect(method.Properties.AuthorizerId.Ref).toMatch(new RegExp(`^${authorizer}`));
+        expect(method.Properties.Integration.Type).toBe('AWS_PROXY');
+        expect(JSON.stringify(method.Properties.Integration.Uri)).toContain(`"${functionId}"`);
+      }
+    });
+
+    test('both routes are served by one function on the request login, with no terms-of-service setting', () => {
+      const fn = template.toJSON().Resources[tutorialFunctionId()];
+      const env = fn.Properties.Environment.Variables;
+      expect(env.DB_EXPECTED_LOGIN).toBe('jale_api');
+      expect(env.DB_SECRET_ARN).toBeDefined();
+      expect(env.ALLOWED_ORIGIN).toBe('https://jaleapp.ai');
+      expect(env.REQUIRED_TOS_VERSION).toBeUndefined();
+      expect(fn.Properties.VpcConfig).toBeDefined();
+    });
+
+    test('grants API Gateway one stage-scoped invoke per method, and no test-invoke permission', () => {
+      const functionId = tutorialFunctionId();
+      const permissions = Object.values(template.findResources('AWS::Lambda::Permission') as Record<string, any>)
+        .filter((p) => JSON.stringify(p.Properties.FunctionName).includes(`"${functionId}"`));
+      expect(permissions).toHaveLength(4);
+      for (const permission of permissions) {
+        expect(permission.Properties.Principal).toBe('apigateway.amazonaws.com');
+        expect(JSON.stringify(permission.Properties.SourceArn)).not.toContain('test-invoke-stage');
+      }
+    });
+
+    test('adds no throttle of its own: the stage default covers it, like the neighbouring routes', () => {
+      const stages = template.findResources('AWS::ApiGateway::Stage');
+      const methodSettings: any[] = (Object.values(stages)[0] as any).Properties.MethodSettings;
+      expect(methodSettings.filter((s) => /tutorials/.test(s.ResourcePath))).toEqual([]);
+    });
+  });
 });
 
 describe('ApiStack phase-1 rename deploy (-c workerJobsRenamePhase1=true)', () => {

@@ -82,7 +82,7 @@ export function PlanLimitBody({
   /**
    * False when the surrounding surface has already said it in its own words.
    * `PlanLimitNotice`'s `title` override is the only case: "Your template won't
-   * be saved — your plan allows 3 template(s)" and `body_templates` are the
+   * be saved — your plan allows 3 templates" and `body_templates` are the
    * same sentence twice, in both locales.
    */
   showSentence?: boolean;
@@ -114,7 +114,11 @@ export function PlanLimitBody({
       {model.blockingJobs.length > 0 ? (
         <div className="flex flex-col gap-1.5">
           <p className="text-xs font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">
-            {tBilling('limit_dialog.blocking_heading')}
+            {/* Counted so the heading agrees with the jobs holding the slots:
+                the ones listed plus the "and N more" below them. */}
+            {tBilling('limit_dialog.blocking_heading', {
+              count: model.blockingJobs.length + model.overflowCount,
+            })}
           </p>
           <ul className="flex flex-col gap-1.5">
             {model.blockingJobs.map((blocking) => (

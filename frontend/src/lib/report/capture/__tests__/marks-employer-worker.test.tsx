@@ -28,6 +28,23 @@ vi.mock('@/i18n/navigation', () => ({
     ),
 }));
 vi.mock('@/contexts/AuthContext', () => ({ useAuth: () => ({ idToken: 'test-token' }) }));
+
+// The page reads the session-wide inbox for the applicants tutorial; the app
+// mounts its provider in the root layout. Stubbed settled and empty here.
+const inboxValue = {
+    items: [],
+    unreadCount: 0,
+    unreadByConversation: {},
+    loading: false,
+    errorKind: null,
+    retry: vi.fn(),
+    refresh: vi.fn(),
+    markRead: vi.fn(),
+};
+vi.mock('@/contexts/UnreadMessagesContext', () => ({
+    useUnreadMessages: () => inboxValue,
+    useUnreadCount: () => 0,
+}));
 vi.mock('@/hooks/useRequireAuth', () => ({
     useRequireAuth: () => ({
         handleLegalWall: (err: unknown) => {

@@ -1,3 +1,5 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as acm from 'aws-cdk-lib/aws-certificatemanager';
@@ -5,6 +7,7 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import { Template, Match } from 'aws-cdk-lib/assertions';
+import { buildJaleApp } from '../../../lib/app-composition';
 import { AdminStack, getAdminDurability } from '../../../lib/stacks/admin-stack';
 
 const describeIfDocker = process.env.SKIP_DOCKER_TESTS ? describe.skip : describe;
@@ -20,7 +23,11 @@ interface BuiltAdmin {
   supportMediaKey: kms.Key;
 }
 
-function buildAdmin(alarmTopicArn?: string, extraContext: Record<string, unknown> = {}): BuiltAdmin {
+function buildAdmin(
+  alarmTopicArn?: string,
+  extraContext: Record<string, unknown> = {},
+  extraProps: Record<string, unknown> = {},
+): BuiltAdmin {
   const app = new cdk.App({ context: { environment: 'prod', ...extraContext } });
   const support = new cdk.Stack(app, 'AdminSupportStack', {
     env: { account: '111111111111', region: 'us-east-1' },
@@ -53,6 +60,7 @@ function buildAdmin(alarmTopicArn?: string, extraContext: Record<string, unknown
     certificate,
     webAclArn: 'arn:aws:wafv2:us-east-1:111111111111:global/webacl/admin/00000000-0000-0000-0000-000000000000',
     alarmTopicArn,
+    ...extraProps,
   });
 
   return {
@@ -210,8 +218,8 @@ describeIfDocker('AdminStack', () => {
   // ── Report images: read the attached images, nothing else ──
 
   /** Every Allow statement on the admin Lambda's role, flattened per action. */
-  function adminRolePermissions(): Array<{ action: string; resource: string }> {
-    const resources = template.toJSON().Resources as Record<string, any>;
+  function adminRolePermissions(t: Template = template): Array<{ action: string; resource: string }> {
+    const resources = t.toJSON().Resources as Record<string, any>;
     const fn = Object.values(resources).find((r) => r.Type === 'AWS::Lambda::Function'
       && r.Properties.FunctionName === 'jale-admin-nextjs');
     const roleId = fn.Properties.Role['Fn::GetAtt'][0];
@@ -297,6 +305,41 @@ describeIfDocker('AdminStack', () => {
       url: `https://sqs.${stack.region}.amazonaws.com/${stack.account}/${name}`,
     })));
     for (const { label } of queues) expect(label).not.toMatch(/dlq|arn:|https?:/i);
+  });
+
+  // ── The SES feedback dead-letter queue (Home health, K3.4) ──
+  // It exists only when the employer email configuration set is named, so
+  // the stack is told its name only then.
+
+  const FEEDBACK_DLQ = 'jale-test-employer-email-feedback-dlq';
+  const adminFunctionOf = (t: Template): any => Object.values(t.toJSON().Resources as Record<string, any>)
+    .find((r) => r.Type === 'AWS::Lambda::Function' && r.Properties.FunctionName === 'jale-admin-nextjs');
+
+  test('without the SES feedback queue, the admin Lambda is told no such queue', () => {
+    expect(adminFunctionOf(template).Properties.Environment.Variables).not.toHaveProperty('ADMIN_SES_FEEDBACK_DLQ_URL');
+    expect(JSON.stringify(adminRolePermissions())).not.toContain('feedback');
+  });
+
+  test('with the SES feedback queue, the admin Lambda is told its address and may read its depth too', () => {
+    const built = buildAdmin(ALARM_TOPIC_ARN, {}, { sesFeedbackDlqName: FEEDBACK_DLQ });
+    const resolve = (value: unknown) => JSON.stringify(cdk.Stack.of(built.stack).resolve(value));
+    expect(adminFunctionOf(built.template).Properties.Environment.Variables.ADMIN_SES_FEEDBACK_DLQ_URL)
+      .toBe(`https://sqs.${built.stack.region}.amazonaws.com/${built.stack.account}/${FEEDBACK_DLQ}`);
+    expect(adminRolePermissions(built.template).filter((p) => p.action.startsWith('sqs:'))).toEqual(
+      [...DLQ.map(([name]) => name), FEEDBACK_DLQ].map((name) => ({
+        action: 'sqs:GetQueueAttributes',
+        resource: resolve(built.stack.formatArn({ service: 'sqs', resource: name })),
+      })),
+    );
+    // The Ops page's list is unchanged: the feedback queue is a Home tile of its own.
+    const queues = JSON.parse(adminFunctionOf(built.template).Properties.Environment.Variables.ADMIN_DLQ_QUEUES);
+    expect(queues.map((q: { label: string }) => q.label)).toEqual(DLQ.map(([, label]) => label));
+  });
+
+  test('refuses an SES feedback queue name SQS would not accept', () => {
+    for (const name of ['', 'has space', 'x'.repeat(81), 'a.fifo']) {
+      expect(() => buildAdmin(ALARM_TOPIC_ARN, {}, { sesFeedbackDlqName: name })).toThrow(/sesFeedbackDlqName/);
+    }
   });
 
   test('the admin Lambda is told the report images bucket', () => {
@@ -497,5 +540,90 @@ describeIfDocker('AdminStack Cognito DeletionProtection', () => {
       expect(props.DeletionProtection === undefined || props.DeletionProtection === 'INACTIVE')
         .toBe(true);
     }
+  });
+});
+
+/**
+ * The composed app passes the SES feedback queue's name to AdminStack only
+ * when NotificationsStack creates that queue, and by the name it is created
+ * with: a plain string, so no export joins the two stacks.
+ */
+describeIfDocker('AdminStack in the composed app: the SES feedback queue', () => {
+  const INFRA_ROOT = path.join(__dirname, '../../..');
+  const PRODUCTION_LIKE_CONTEXT: Record<string, unknown> = {
+    environment: 'production',
+    deletionProtection: 'true',
+    emailFromAddress: 'billing@example.com',
+    sesVerifiedIdentityArn: 'arn:aws:ses:us-east-2:111122223333:identity/example.com',
+    sesEmailFromAddress: 'no-reply@example.com',
+    sesEmailRegion: 'us-east-1',
+    whatsappStatusCallbackUrl: 'https://example.com/whatsapp/status-callback',
+    whatsappAlarmTopicArn: 'arn:aws:sns:us-east-2:111122223333:jale-alarms',
+    billingAlarmTopicArn: 'arn:aws:sns:us-east-2:111122223333:jale-alarms',
+    whatsappInboundV2TransportEnabled: 'true',
+    publicSiteBaseUrl: 'https://jaleapp.ai',
+    whatsappBusinessNumber: '15551234567',
+    guardDutyMode: 'create',
+    securityHubMode: 'create',
+    configMode: 'create',
+    dbSharedPreloadLibrariesDefault: 'pg_stat_statements',
+    'aws:cdk:bundling-stacks': [],
+  };
+
+  function compose(sesConfigurationSetName: string): Record<string, any> {
+    const readJson = (file: string): Record<string, unknown> => {
+      const full = path.join(INFRA_ROOT, file);
+      return fs.existsSync(full) ? JSON.parse(fs.readFileSync(full, 'utf8')) : {};
+    };
+    const saved = {
+      account: process.env.CDK_DEFAULT_ACCOUNT,
+      region: process.env.CDK_DEFAULT_REGION,
+      configurationSet: process.env.JALE_SES_CONFIGURATION_SET_NAME,
+    };
+    process.env.CDK_DEFAULT_ACCOUNT = '111111111111';
+    process.env.CDK_DEFAULT_REGION = 'us-east-2';
+    delete process.env.JALE_SES_CONFIGURATION_SET_NAME;
+    try {
+      const app = new cdk.App({
+        context: {
+          ...(readJson('cdk.json').context as Record<string, unknown> ?? {}),
+          ...readJson('cdk.context.json'),
+          ...PRODUCTION_LIKE_CONTEXT,
+          sesConfigurationSetName,
+        },
+      });
+      buildJaleApp(app);
+      return Object.fromEntries(app.synth().stacks.map((s) => [s.stackName, s.template]));
+    } finally {
+      for (const [key, name] of [
+        ['account', 'CDK_DEFAULT_ACCOUNT'], ['region', 'CDK_DEFAULT_REGION'], ['configurationSet', 'JALE_SES_CONFIGURATION_SET_NAME'],
+      ] as const) {
+        if (saved[key] === undefined) delete process.env[name];
+        else process.env[name] = saved[key];
+      }
+    }
+  }
+
+  const adminVariables = (templates: Record<string, any>): Record<string, unknown> => (Object.values(templates.JaleAdminStack.Resources) as any[])
+    .find((r) => r.Type === 'AWS::Lambda::Function' && r.Properties.FunctionName === 'jale-admin-nextjs')
+    .Properties.Environment.Variables;
+  const feedbackQueues = (templates: Record<string, any>): any[] => Object.entries(templates.JaleNotificationsStack.Resources as Record<string, any>)
+    .filter(([id, r]) => r.Type === 'AWS::SQS::Queue' && /^SesFeedbackHandlerDlq[0-9A-F]{8}$/.test(id))
+    .map(([, r]) => r);
+
+  test('with the configuration set, the admin Lambda reads the queue NotificationsStack creates', () => {
+    const templates = compose('jale-test-employer-email');
+    const [queue] = feedbackQueues(templates);
+    expect(feedbackQueues(templates)).toHaveLength(1);
+    expect(typeof queue.Properties.QueueName).toBe('string');
+    expect(adminVariables(templates).ADMIN_SES_FEEDBACK_DLQ_URL)
+      .toBe(`https://sqs.us-east-2.amazonaws.com/111111111111/${queue.Properties.QueueName}`);
+    expect(JSON.stringify(templates.JaleAdminStack)).not.toMatch(/Fn::ImportValue[^}]*Notifications/);
+  });
+
+  test('without it, there is no queue and the admin Lambda is told none', () => {
+    const templates = compose('');
+    expect(feedbackQueues(templates)).toEqual([]);
+    expect(adminVariables(templates)).not.toHaveProperty('ADMIN_SES_FEEDBACK_DLQ_URL');
   });
 });

@@ -160,6 +160,12 @@ function tiles(container: HTMLElement): [string, string][] {
 
 const t = (key: string) => message(`public_job.${key}`);
 
+/** The line under the job title: company and place. */
+function headerLine(): string {
+    const title = screen.getByRole('heading', { level: 1 });
+    return title.nextElementSibling?.textContent ?? '';
+}
+
 /** The chips in one labelled row, as their full accessible text. */
 function chipsUnder(label: string): string[] {
     const row = screen.getByRole('heading', { level: 3, name: label }).parentElement!;
@@ -172,7 +178,68 @@ describe('public job page — the facts card', () => {
 
         expect(screen.getByText(t('eyebrow'))).toBeInTheDocument();
         expect(screen.getByRole('heading', { level: 1, name: 'Drywall Finisher' })).toBeInTheDocument();
-        expect(screen.getByText('NB Construction · Austin, TX · Austin, TX')).toBeInTheDocument();
+        // The city/state pair and the location text name the same place: once.
+        expect(headerLine()).toBe('NB Construction · Austin, TX');
+    });
+
+    /*
+     * The line under the title: the company, then the place. A job posted from
+     * a picked city carries the place twice -- the city/state pair and a
+     * location text equal to it -- and the line said it twice ("Sample Employer
+     * Co · El Paso, TX · El Paso, TX"). The signed-in job pages show the
+     * location text; this one keeps the pair too, but never the same place
+     * twice, and never drops a location text that says more (a street).
+     */
+    describe('the header location line', () => {
+        it('says the place once when the location text matches the city and state', async () => {
+            await renderPage(fullJob({
+                company: 'Sample Employer Co',
+                location: 'El Paso, TX',
+                city: 'El Paso',
+                state_region: 'TX',
+            }));
+            expect(headerLine()).toBe('Sample Employer Co · El Paso, TX');
+        });
+
+        it('compares without case or spacing', async () => {
+            await renderPage(fullJob({
+                company: 'Sample Employer Co',
+                location: '  el paso ,TX ',
+                city: 'El Paso',
+                state_region: 'TX',
+            }));
+            expect(headerLine()).toBe('Sample Employer Co · El Paso, TX');
+        });
+
+        it('keeps a location text that adds a street, without repeating the city', async () => {
+            await renderPage(fullJob({
+                company: 'Sample Employer Co',
+                location: '1200 Main St, El Paso, TX',
+                city: 'El Paso',
+                state_region: 'TX',
+            }));
+            expect(headerLine()).toBe('Sample Employer Co · 1200 Main St, El Paso, TX');
+        });
+
+        it('keeps both when the location text names something else', async () => {
+            await renderPage(fullJob({
+                company: 'Sample Employer Co',
+                location: '1200 Main St',
+                city: 'El Paso',
+                state_region: 'TX',
+            }));
+            expect(headerLine()).toBe('Sample Employer Co · El Paso, TX · 1200 Main St');
+        });
+
+        it('falls back to the city and state when there is no location text', async () => {
+            await renderPage(fullJob({ company: 'Sample Employer Co', location: '', city: 'El Paso', state_region: 'TX' }));
+            expect(headerLine()).toBe('Sample Employer Co · El Paso, TX');
+        });
+
+        it('shows the location text alone on a job with no city and state', async () => {
+            await renderPage(sparseJob({ company: 'Sample Employer Co', location: 'El Paso, TX' }));
+            expect(headerLine()).toBe('Sample Employer Co · El Paso, TX');
+        });
     });
 
     it('sets pay as the one headline figure inside the card, not a hero strip', async () => {
@@ -200,6 +267,61 @@ describe('public job page — the facts card', () => {
             [t('required_experience'), '3 years'],
             [t('language_preference'), t('language_es')],
         ]);
+    });
+
+    /*
+     * The shift choices (contract K2) are part of the one schedule fact, read
+     * in the employer page's order: days · hours · shifts. A job with no
+     * choice (`[]`, or the key absent as in `fullJob`, which the locked-order
+     * test above already pins) adds nothing, not even a separator.
+     */
+    describe('the shift choices', () => {
+        const shiftTile = (container: HTMLElement) =>
+            tiles(container).find(([label]) => label === t('shift_schedule'));
+
+        it('adds them to the schedule tile, after the days and hours', async () => {
+            const { container } = await renderPage(fullJob({ shift_periods: ['day', 'night'] }));
+            expect(shiftTile(container)).toEqual([
+                t('shift_schedule'), 'Mon, Tue, Wed · 7:00 AM – 4:00 PM · Day, Night',
+            ]);
+        });
+
+        it('names them in Spanish', async () => {
+            const { container } = await renderPage(sparseJob({ shift_periods: ['day', 'night'] }), 'es');
+            expect(tiles(container)).toContainEqual([message('public_job.shift_schedule', 'es'), 'Día, Noche']);
+        });
+
+        it('adds them after the days and hours in Spanish too', async () => {
+            const { container } = await renderPage(fullJob({ shift_periods: ['day', 'night'] }), 'es');
+            const value = tiles(container)
+                .find(([label]) => label === message('public_job.shift_schedule', 'es'))?.[1];
+            expect(value?.startsWith(`${message('common.work_days.mon', 'es')}, `)).toBe(true);
+            expect(value?.endsWith(' · Día, Noche')).toBe(true);
+        });
+
+        it('adds nothing, and no stray separator, when none is chosen', async () => {
+            const { container } = await renderPage(fullJob({ shift_periods: [] }));
+            expect(shiftTile(container)).toEqual([t('shift_schedule'), 'Mon, Tue, Wed · 7:00 AM – 4:00 PM']);
+        });
+
+        it('makes the whole schedule tile when they are the only schedule', async () => {
+            const { container } = await renderPage(sparseJob({ shift_periods: ['night', 'day'] }));
+            expect(tiles(container)).toEqual([
+                [t('shift_schedule'), 'Day, Night'],
+                [t('start_date'), t('facts.start_unknown')],
+                [t('facts.location'), 'Austin, TX'],
+            ]);
+        });
+
+        it('stand in for the old free-text schedule', async () => {
+            const { container } = await renderPage(sparseJob({ shift_schedule: 'Old free text', shift_periods: ['evening'] }));
+            expect(shiftTile(container)).toEqual([t('shift_schedule'), 'Evening']);
+        });
+
+        it('leave the old free-text schedule alone when none is chosen', async () => {
+            const { container } = await renderPage(sparseJob({ shift_schedule: 'Old free text', shift_periods: [] }));
+            expect(shiftTile(container)).toEqual([t('shift_schedule'), 'Old free text']);
+        });
     });
 
     it('renders the section labels as h3s under one panel title', async () => {
@@ -230,7 +352,17 @@ describe('public job page — the facts card', () => {
             `OSHA 10 · ${message('worker_job_detail.what_you_need.proof_needed')}, ${required}`,
             `Scaffold, ${message('job_requirements.states.optional')}`,
         ]);
-        expect(chipsUnder(t('required_docs'))).toEqual([`${t('doc_resume')}, ${required}`]);
+        // Documents never stop anyone applying: the row says the employer may
+        // ask for them later, and each one reads "Later", not "Required".
+        expect(chipsUnder(t('docs_later'))).toEqual([`${t('doc_resume')}, ${t('doc_later')}`]);
+    });
+
+    it('states the documents as a later ask in Spanish too', async () => {
+        await renderPage(fullJob(), 'es');
+        const row = screen.getByRole('heading', { level: 3, name: message('public_job.docs_later', 'es') }).parentElement!;
+        expect(Array.from(row.querySelectorAll('li')).map((chip) => chip.textContent)).toEqual([
+            `${message('public_job.doc_resume', 'es')}, ${message('public_job.doc_later', 'es')}`,
+        ]);
     });
 
     it('renders the description under a plain About label, the date in the header', async () => {
@@ -281,7 +413,7 @@ describe('public job page — the facts card', () => {
             expect(screen.queryByText(t('pay_range'))).toBeNull();
             expect(screen.queryByRole('heading', { level: 3, name: t('facts.requirements') })).toBeNull();
             expect(screen.queryByRole('heading', { level: 3, name: t('certifications') })).toBeNull();
-            expect(screen.queryByRole('heading', { level: 3, name: t('required_docs') })).toBeNull();
+            expect(screen.queryByRole('heading', { level: 3, name: t('docs_later') })).toBeNull();
             expect(screen.queryByRole('heading', { level: 3, name: t('about_job') })).toBeNull();
         });
 
