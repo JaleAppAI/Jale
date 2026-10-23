@@ -1,5 +1,5 @@
 -- ============================================================
--- 127_user_tutorial_progress.sql
+-- 130_user_tutorial_progress.sql
 -- Run manually AFTER 126_job_conversations_whatsapp_update_columns.sql,
 -- connected as jale_admin. Forward-only (ADR-005). ONE transaction.
 --
@@ -45,16 +45,16 @@ SET LOCAL lock_timeout = '5s';
 DO $$
 BEGIN
   IF current_user <> 'jale_admin' THEN
-    RAISE EXCEPTION 'migration 127: connect as jale_admin (this session runs as %)', current_user;
+    RAISE EXCEPTION 'migration 130: connect as jale_admin (this session runs as %)', current_user;
   END IF;
   IF pg_catalog.to_regclass('public.users') IS NULL THEN
-    RAISE EXCEPTION 'migration 127: public.users is missing';
+    RAISE EXCEPTION 'migration 130: public.users is missing';
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'jale_api') THEN
-    RAISE EXCEPTION 'migration 127: role jale_api is missing';
+    RAISE EXCEPTION 'migration 130: role jale_api is missing';
   END IF;
   IF pg_catalog.to_regclass('public.user_tutorial_progress') IS NOT NULL THEN
-    RAISE EXCEPTION 'migration 127: already applied (public.user_tutorial_progress exists); it is not re-runnable';
+    RAISE EXCEPTION 'migration 130: already applied (public.user_tutorial_progress exists); it is not re-runnable';
   END IF;
   -- The closing check compares both policies with this one.
   IF pg_catalog.to_regclass('public.organization_members') IS NULL
@@ -63,7 +63,7 @@ BEGIN
         WHERE p.polrelid = 'public.organization_members'::regclass
           AND p.polname = 'organization_members_self_read'
      ) THEN
-    RAISE EXCEPTION 'migration 127: policy organization_members_self_read (118) is missing';
+    RAISE EXCEPTION 'migration 130: policy organization_members_self_read (118) is missing';
   END IF;
 END;
 $$;
@@ -105,14 +105,14 @@ BEGIN
     SELECT 1 FROM pg_catalog.pg_class c
      WHERE c.oid = v_rel AND c.relrowsecurity AND c.relforcerowsecurity
   ) THEN
-    RAISE EXCEPTION 'migration 127: user_tutorial_progress must have row security enabled and forced';
+    RAISE EXCEPTION 'migration 130: user_tutorial_progress must have row security enabled and forced';
   END IF;
 
   -- The request login reads and inserts; no role but the owner holds any
   -- other right, on the table or on a column.
   IF NOT pg_catalog.has_table_privilege('jale_api', v_rel, 'SELECT')
      OR NOT pg_catalog.has_table_privilege('jale_api', v_rel, 'INSERT') THEN
-    RAISE EXCEPTION 'migration 127: jale_api cannot read and insert user_tutorial_progress';
+    RAISE EXCEPTION 'migration 130: jale_api cannot read and insert user_tutorial_progress';
   END IF;
   SELECT string_agg(DISTINCT
            CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(a.grantee) END
@@ -131,7 +131,7 @@ BEGIN
      AND a.grantee <> c.relowner
      AND NOT (a.grantee = 'jale_api'::regrole::oid AND a.privilege_type IN ('SELECT', 'INSERT'));
   IF v_offender IS NOT NULL THEN
-    RAISE EXCEPTION 'migration 127: an unexpected privilege on user_tutorial_progress: %', v_offender;
+    RAISE EXCEPTION 'migration 130: an unexpected privilege on user_tutorial_progress: %', v_offender;
   END IF;
 
   -- Exactly the two policies, for jale_api only, each the caller's own row:
@@ -139,7 +139,7 @@ BEGIN
   IF (SELECT pg_catalog.array_agg(p.polname::TEXT ORDER BY p.polname)
         FROM pg_catalog.pg_policy p WHERE p.polrelid = v_rel)
      IS DISTINCT FROM ARRAY['user_tutorial_progress_self_insert', 'user_tutorial_progress_self_read']::TEXT[] THEN
-    RAISE EXCEPTION 'migration 127: user_tutorial_progress policy set drifted';
+    RAISE EXCEPTION 'migration 130: user_tutorial_progress policy set drifted';
   END IF;
   SELECT pg_catalog.pg_get_expr(p.polqual, p.polrelid) INTO v_self
     FROM pg_catalog.pg_policy p
@@ -162,7 +162,7 @@ BEGIN
           AND p.polroles = ARRAY['jale_api'::regrole::oid]
           AND p.polqual IS NULL
           AND pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid) = v_self) THEN
-    RAISE EXCEPTION 'migration 127: a user_tutorial_progress policy is not the caller''s own row for jale_api';
+    RAISE EXCEPTION 'migration 130: a user_tutorial_progress policy is not the caller''s own row for jale_api';
   END IF;
 
   -- A row leaves with its account.
@@ -175,7 +175,7 @@ BEGIN
        AND k.conkey = ARRAY[(SELECT att.attnum FROM pg_catalog.pg_attribute att
                               WHERE att.attrelid = v_rel AND att.attname = 'user_id')]
   ) THEN
-    RAISE EXCEPTION 'migration 127: user_tutorial_progress.user_id must reference users(id) ON DELETE CASCADE';
+    RAISE EXCEPTION 'migration 130: user_tutorial_progress.user_id must reference users(id) ON DELETE CASCADE';
   END IF;
 END;
 $$;

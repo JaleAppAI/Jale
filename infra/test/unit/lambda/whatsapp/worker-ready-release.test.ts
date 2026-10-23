@@ -1049,7 +1049,7 @@ describe('releaseWorkerReady', () => {
       expect(outboxRows.map((r) => r.params[1] ?? r.params[2])).toEqual([t('v2_ready_jobs_one', 'es'), 'job_alert_es']);
     });
 
-    // Shift choices (128, contract K2.4): the card's fallback text names the
+    // Shift choices (131, contract K2.4): the card's fallback text names the
     // job's shifts, read off the live job row; the approved job_alert template
     // and its five variables are the same with and without them.
     describe('shift choices on the card', () => {
@@ -1529,7 +1529,7 @@ describe('releaseWorkerReady', () => {
     });
   });
 
-  // Shift choices (128, contract K2.4): the digest reads them off the live job
+  // Shift choices (131, contract K2.4): the digest reads them off the live job
   // row, like every other field it prints, so the multi-job text names them.
   describe('shift choices in the job alert digest', () => {
     const alertIntents = () => [

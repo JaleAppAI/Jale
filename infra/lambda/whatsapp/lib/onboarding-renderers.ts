@@ -237,7 +237,7 @@ interface DigestJob {
   payMin?: string | number | null;
   payMax?: string | number | null;
   payInterval?: string | null;
-  /** Shift choices (128): `jobs.shift_periods` off the live job row. Optional
+  /** Shift choices (131): `jobs.shift_periods` off the live job row. Optional
    * and nullable because a payload enqueued without it (the job_alert
    * producer's, or a deferred intent from before the field) must render
    * exactly as before. */

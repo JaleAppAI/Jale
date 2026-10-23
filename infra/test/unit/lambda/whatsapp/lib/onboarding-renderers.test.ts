@@ -1198,7 +1198,7 @@ describe('createReleaseRenderer — account_notice carries the intent payload', 
   });
 });
 
-// ── Sprint 29: shift choices in the job alert text (128, contract K2.4) ──
+// ── Sprint 29: shift choices in the job alert text (131, contract K2.4) ──
 //
 // The multi-job digest line names the job's shifts. The approved job_alert_*
 // template and its five variables do not change, and a payload without the

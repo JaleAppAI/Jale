@@ -635,8 +635,8 @@ describe('EXPECTED_DURATION_BUCKETS / WORK_DAYS (077 CHECK byte-match)', () => {
     expect(WORK_DAYS).toEqual(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']);
   });
 
-  it('SHIFT_PERIODS matches the jobs_shift_periods_valid CHECK of 128', () => {
-    const sql = fs.readFileSync(path.join(__dirname, '../../../../db/migrations/128_job_shift_periods.sql'), 'utf8');
+  it('SHIFT_PERIODS matches the jobs_shift_periods_valid CHECK of 131', () => {
+    const sql = fs.readFileSync(path.join(__dirname, '../../../../db/migrations/131_job_shift_periods.sql'), 'utf8');
     const literal = `ARRAY[${SHIFT_PERIODS.map((p) => `'${p}'`).join(', ')}]::text[]`;
     expect(sql).toContain(literal);
     expect(sql).toContain(`cardinality(shift_periods) <= ${SHIFT_PERIODS.length}`);

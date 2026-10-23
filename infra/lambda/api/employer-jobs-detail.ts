@@ -91,7 +91,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         optional_docs: Array.isArray(job.optional_docs) ? job.optional_docs : [],
         required_fields: Array.isArray(job.required_fields) ? job.required_fields : [],
         optional_fields: Array.isArray(job.optional_fields) ? job.optional_fields : [],
-        // Shift choices (128, contract K2.2): always an array, never null.
+        // Shift choices (131, contract K2.2): always an array, never null.
         shift_periods: Array.isArray(job.shift_periods) ? job.shift_periods : [],
       }),
     };

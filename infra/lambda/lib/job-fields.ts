@@ -74,7 +74,7 @@ export const WORK_DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as co
 // Shift choices (contract K2.1), in canonical order. Identical to
 // SHIFT_PERIODS in frontend/src/lib/job-form.ts; MUST match the
 // jobs_shift_periods_valid CHECK's ARRAY[...] literal added by
-// 128_job_shift_periods.sql.
+// 131_job_shift_periods.sql.
 export const SHIFT_PERIODS = ['day', 'evening', 'night', 'overnight'] as const;
 
 export type JobType = typeof JOB_TYPES[number];
@@ -183,7 +183,7 @@ export interface ParsedJobFields {
   shift_start: string | null;
   shift_end: string | null;
   certification_requirements: CertificationRequirement[] | null;
-  // Shift choices (128, contract K2.2): never null. An absent key parses as
+  // Shift choices (131, contract K2.2): never null. An absent key parses as
   // [], so a create or template save without it stores none; the update
   // handler decides on its own whether an absent key keeps the stored value.
   shift_periods: ShiftPeriod[];
@@ -325,7 +325,7 @@ function parseShiftTime(value: unknown, fieldName: 'shift_start' | 'shift_end'):
   return { ok: true, value };
 }
 
-// Shift choices (128, contract K2.2), with the same error shape as
+// Shift choices (131, contract K2.2), with the same error shape as
 // parseWorkDays. Absent is [], an explicit null is not an array and is
 // refused. The length cap applies to the raw array (at most one entry per
 // period); duplicates within it are folded rather than refused, and the

@@ -302,7 +302,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       : JSON.stringify(jobFields.value.certification_requirements);
 
     // Sprint 28: appended last ($36), for the same positional reason as 077's.
-    // Sprint 29 (128): shift_periods follows it as $37, for the same reason.
+    // Sprint 29 (131): shift_periods follows it as $37, for the same reason.
     const templateId = await ownTemplateId(client, body.template_id, userId);
 
     const result = await client.query(
@@ -401,7 +401,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         // certification_requirements has to dodge above cannot arise here.
         JSON.stringify(pre_application_prompts),
         templateId,
-        // NOT NULL DEFAULT '{}' (128): parseJobFields returns [] when the
+        // NOT NULL DEFAULT '{}' (131): parseJobFields returns [] when the
         // body omits it, never null.
         jobFields.value.shift_periods,
       ],

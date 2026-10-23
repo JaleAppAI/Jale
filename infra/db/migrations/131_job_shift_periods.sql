@@ -1,6 +1,6 @@
 -- ============================================================
--- 128_job_shift_periods.sql
--- Run manually AFTER 127,
+-- 131_job_shift_periods.sql
+-- Run manually AFTER 130,
 -- connected as jale_admin. Forward-only (ADR-005). ONE transaction.
 --
 -- Shift choices (sprint 29, contract K2). An employer marks a job as one or
@@ -43,13 +43,13 @@ SET LOCAL lock_timeout = '5s';
 DO $$
 BEGIN
   IF current_user <> 'jale_admin' THEN
-    RAISE EXCEPTION 'migration 128: connect as jale_admin (this session runs as %)', current_user;
+    RAISE EXCEPTION 'migration 131: connect as jale_admin (this session runs as %)', current_user;
   END IF;
   IF pg_catalog.to_regclass('public.jobs') IS NULL THEN
-    RAISE EXCEPTION 'migration 128: public.jobs is missing';
+    RAISE EXCEPTION 'migration 131: public.jobs is missing';
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'jale_public_jobs') THEN
-    RAISE EXCEPTION 'migration 128: role jale_public_jobs is missing';
+    RAISE EXCEPTION 'migration 131: role jale_public_jobs is missing';
   END IF;
 END;
 $$;
@@ -91,7 +91,7 @@ BEGIN
   IF v_type IS DISTINCT FROM 'text[]'
      OR v_not_null IS DISTINCT FROM true
      OR v_default IS DISTINCT FROM '''{}''::text[]' THEN
-    RAISE EXCEPTION 'migration 128: jobs.shift_periods is % (not null: %, default: %), expected text[] NOT NULL DEFAULT ''{}''',
+    RAISE EXCEPTION 'migration 131: jobs.shift_periods is % (not null: %, default: %), expected text[] NOT NULL DEFAULT ''{}''',
       COALESCE(v_type, '<absent>'), COALESCE(v_not_null::text, '<absent>'), COALESCE(v_default, '<none>');
   END IF;
 
@@ -103,30 +103,30 @@ BEGIN
      AND c.convalidated;
   IF v_check IS DISTINCT FROM
      'CHECK (((shift_periods <@ ARRAY[''day''::text, ''evening''::text, ''night''::text, ''overnight''::text]) AND (cardinality(shift_periods) <= 4) AND ((array_ndims(shift_periods) IS NULL) OR (array_ndims(shift_periods) = 1))))' THEN
-    RAISE EXCEPTION 'migration 128: jobs_shift_periods_valid is missing or reads %', COALESCE(v_check, '<absent>');
+    RAISE EXCEPTION 'migration 131: jobs_shift_periods_valid is missing or reads %', COALESCE(v_check, '<absent>');
   END IF;
 
   -- The public page's login reads the column through its own column grant,
   -- and still holds no table-wide SELECT.
   IF NOT pg_catalog.has_column_privilege('jale_public_jobs', 'public.jobs', 'shift_periods', 'SELECT') THEN
-    RAISE EXCEPTION 'migration 128: jale_public_jobs cannot read jobs.shift_periods';
+    RAISE EXCEPTION 'migration 131: jale_public_jobs cannot read jobs.shift_periods';
   END IF;
   IF pg_catalog.has_table_privilege('jale_public_jobs', 'public.jobs', 'SELECT') THEN
-    RAISE EXCEPTION 'migration 128: jale_public_jobs holds a table-level SELECT on jobs';
+    RAISE EXCEPTION 'migration 131: jale_public_jobs holds a table-level SELECT on jobs';
   END IF;
 
   -- The table-level readers see it through the rights they already hold.
   FOREACH v_login IN ARRAY ARRAY['jale_api', 'jale_whatsapp', 'jale_matching'] LOOP
     IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = v_login)
        AND NOT pg_catalog.has_column_privilege(v_login, 'public.jobs', 'shift_periods', 'SELECT') THEN
-      RAISE EXCEPTION 'migration 128: % cannot read jobs.shift_periods', v_login;
+      RAISE EXCEPTION 'migration 131: % cannot read jobs.shift_periods', v_login;
     END IF;
   END LOOP;
 
   -- The employer digest keeps its column list.
   IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'jale_job_digest')
      AND pg_catalog.has_column_privilege('jale_job_digest', 'public.jobs', 'shift_periods', 'SELECT') THEN
-    RAISE EXCEPTION 'migration 128: jale_job_digest can read jobs.shift_periods';
+    RAISE EXCEPTION 'migration 131: jale_job_digest can read jobs.shift_periods';
   END IF;
 END;
 $$;

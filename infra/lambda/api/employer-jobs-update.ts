@@ -214,7 +214,7 @@ const EDITABLE_COLUMNS = [
   // silently delete the questions, and with applicants present a
   // clear-on-omit would trip the lock on every unrelated edit.
   'pre_application_prompts',
-  // Sprint 29 (128): appended at the END for the same reason. PRESERVE-on-omit
+  // Sprint 29 (131): appended at the END for the same reason. PRESERVE-on-omit
   // too (contract K2.2: an absent key leaves the stored choice alone, an array
   // replaces it, [] clears it), and not part of the applicant lock: shifts
   // describe the job, they are not something an applicant supplied.

@@ -1,6 +1,6 @@
 -- ============================================================
--- 129_job_limit_increase.sql
--- Run manually AFTER 128,
+-- 132_job_limit_increase.sql
+-- Run manually AFTER 131,
 -- connected as jale_admin. Forward-only (ADR-005). ONE transaction.
 --
 -- Raises the active-job limits in the plan catalog: Free from 1 to 15
@@ -31,10 +31,10 @@ SET LOCAL lock_timeout = '5s';
 DO $$
 BEGIN
   IF current_user <> 'jale_admin' THEN
-    RAISE EXCEPTION 'migration 129: connect as jale_admin (this session runs as %)', current_user;
+    RAISE EXCEPTION 'migration 132: connect as jale_admin (this session runs as %)', current_user;
   END IF;
   IF pg_catalog.to_regclass('public.billing_plans') IS NULL THEN
-    RAISE EXCEPTION 'migration 129: public.billing_plans is missing';
+    RAISE EXCEPTION 'migration 132: public.billing_plans is missing';
   END IF;
 END;
 $$;
@@ -67,11 +67,11 @@ BEGIN
    WHERE p.code = 'employer_pro';
 
   IF v_free_jobs IS DISTINCT FROM '15'::jsonb OR v_pro_jobs IS DISTINCT FROM '50'::jsonb THEN
-    RAISE EXCEPTION 'migration 129: active_job_limit is % (employer_free) and % (employer_pro), expected 15 and 50',
+    RAISE EXCEPTION 'migration 132: active_job_limit is % (employer_free) and % (employer_pro), expected 15 and 50',
       v_free_jobs, v_pro_jobs;
   END IF;
   IF v_free_templates IS DISTINCT FROM '2'::jsonb OR v_pro_templates IS DISTINCT FROM '20'::jsonb THEN
-    RAISE EXCEPTION 'migration 129: template_limit is % (employer_free) and % (employer_pro), expected 2 and 20',
+    RAISE EXCEPTION 'migration 132: template_limit is % (employer_free) and % (employer_pro), expected 2 and 20',
       v_free_templates, v_pro_templates;
   END IF;
   IF EXISTS (
@@ -79,7 +79,7 @@ BEGIN
       FROM pg_catalog.pg_policies
      WHERE schemaname = 'public' AND tablename = 'billing_plans' AND policyname = 'billing_plans_job_limit_seed'
   ) THEN
-    RAISE EXCEPTION 'migration 129: the write policy billing_plans_job_limit_seed is still present';
+    RAISE EXCEPTION 'migration 132: the write policy billing_plans_job_limit_seed is still present';
   END IF;
 END;
 $$;

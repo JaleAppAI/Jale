@@ -1,11 +1,11 @@
 /**
- * job-limits-129.integration.test.ts
+ * job-limits-132.integration.test.ts
  *
- * Migration 129 on a real PostgreSQL 16 bed:
+ * Migration 132 on a real PostgreSQL 16 bed:
  *
  *   - the plan catalog allows 15 active jobs on Free and 50 on Pro, and the
  *     template limits stay 2 and 20;
- *   - billing_plans keeps read policies only (129's write policy lasts for
+ *   - billing_plans keeps read policies only (132's write policy lasts for
  *     its own transaction);
  *   - the create handler (lambda/api/employer-jobs-create.ts), on the request
  *     login jale_api, creates a free employer's 15th active job and refuses
@@ -32,7 +32,7 @@ jest.mock('../../../lambda/lib/db', () => {
 const { handler: createJob } = require('../../../lambda/api/employer-jobs-create');
 
 if (!databaseUrl) {
-  test('CONCERN: the migration 129 DB suite was not run (JALE_TEST_DATABASE_URL unset)', () => {
+  test('CONCERN: the migration 132 DB suite was not run (JALE_TEST_DATABASE_URL unset)', () => {
     expect(databaseUrl).toBeUndefined();
   });
 }
@@ -45,7 +45,7 @@ async function create(sub: string) {
   return parseResponse(await createJob(apiEvent({ sub, httpMethod: 'POST', resource: '/employer/jobs', body: CREATE_BODY })));
 }
 
-describeInProfiles([...ALL_PROFILES], 'migration 129: the plan catalog', () => {
+describeInProfiles([...ALL_PROFILES], 'migration 132: the plan catalog', () => {
   let world: World;
   beforeAll(async () => {
     world = new World(databaseUrl!);
@@ -75,7 +75,7 @@ describeInProfiles([...ALL_PROFILES], 'migration 129: the plan catalog', () => {
   });
 });
 
-describeInProfiles([...ALL_PROFILES], 'migration 129: job create on jale_api honours the plan limits', () => {
+describeInProfiles([...ALL_PROFILES], 'migration 132: job create on jale_api honours the plan limits', () => {
   let world: World;
 
   beforeAll(async () => {

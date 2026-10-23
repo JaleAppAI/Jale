@@ -1670,7 +1670,7 @@ describe('employer-jobs-update', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // shift_periods (128, contract K2.2), field-edit path
+  // shift_periods (131, contract K2.2), field-edit path
   // ---------------------------------------------------------------------------
   //
   // Appended at the END of EDITABLE_COLUMNS (index 34), so every positional
@@ -1678,7 +1678,7 @@ describe('employer-jobs-update', () => {
   // like pre_application_prompts: an absent key keeps the stored value, an
   // array replaces it exactly, and [] clears it.
 
-  describe('shift_periods (128)', () => {
+  describe('shift_periods (131)', () => {
     const SHIFT_PERIODS_INDEX = 34;
     const withStored = (shift_periods: string[], extra: Record<string, unknown> = {}) =>
       mockCurrentJob({ ...extra, shift_periods } as unknown as Parameters<typeof mockCurrentJob>[0]);

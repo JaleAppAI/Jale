@@ -1,7 +1,7 @@
 /**
  * user-tutorial-progress.integration.test.ts
  *
- * Migration 127 (tutorial progress, contract K1) on a real PostgreSQL 16
+ * Migration 130 (tutorial progress, contract K1) on a real PostgreSQL 16
  * bed, through the real logins:
  *
  *   - the request login (jale_api) reads and inserts the caller's own rows
@@ -41,7 +41,7 @@ jest.mock('../../../lambda/lib/db', () => {
 });
 
 if (!databaseUrl) {
-  test('CONCERN: the migration 127 DB suite was not run (JALE_TEST_DATABASE_URL unset)', () => {
+  test('CONCERN: the migration 130 DB suite was not run (JALE_TEST_DATABASE_URL unset)', () => {
     expect(databaseUrl).toBeUndefined();
   });
 }
@@ -88,7 +88,7 @@ function apiState(caller: Person, sql: string, params: unknown[] = []): Promise<
   return sqlState(asLogin('jale_api', caller.sub, (c) => c.query(sql, params)));
 }
 
-describeInProfiles([...ALL_PROFILES], 'migration 127: user_tutorial_progress', () => {
+describeInProfiles([...ALL_PROFILES], 'migration 130: user_tutorial_progress', () => {
   let su: Client;
   const placeholderIds: string[] = [];
 

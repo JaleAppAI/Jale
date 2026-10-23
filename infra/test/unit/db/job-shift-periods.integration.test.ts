@@ -1,7 +1,7 @@
 /**
  * job-shift-periods.integration.test.ts
  *
- * Migration 128 (contract K2, shift choices) on a real PostgreSQL 16 bed,
+ * Migration 131 (contract K2, shift choices) on a real PostgreSQL 16 bed,
  * through the real logins:
  *
  *   - jobs.shift_periods is NOT NULL DEFAULT '{}', so a job written without
@@ -60,7 +60,7 @@ const { handler: templatesSave } = require('../../../lambda/api/employer-templat
 const { handler: templatesList } = require('../../../lambda/api/employer-templates-list');
 
 if (!databaseUrl) {
-  test('CONCERN: the migration 128 DB suite was not run (JALE_TEST_DATABASE_URL unset)', () => {
+  test('CONCERN: the migration 131 DB suite was not run (JALE_TEST_DATABASE_URL unset)', () => {
     expect(databaseUrl).toBeUndefined();
   });
 }
@@ -83,7 +83,7 @@ async function storedPeriods(world: World, jobId: string): Promise<unknown> {
   return rows[0]?.shift_periods;
 }
 
-describeInProfiles([...ALL_PROFILES], 'migration 128: the column and its CHECK', () => {
+describeInProfiles([...ALL_PROFILES], 'migration 131: the column and its CHECK', () => {
   let world: World;
   let jobId: string;
 
@@ -141,7 +141,7 @@ describeInProfiles([...ALL_PROFILES], 'migration 128: the column and its CHECK',
   });
 });
 
-describeInProfiles([...ALL_PROFILES], 'migration 128: who can read the column', () => {
+describeInProfiles([...ALL_PROFILES], 'migration 131: who can read the column', () => {
   let world: World;
   let publicCode: string;
 
@@ -194,7 +194,7 @@ describeInProfiles([...ALL_PROFILES], 'migration 128: who can read the column', 
   });
 });
 
-describeInProfiles([...ALL_PROFILES], 'migration 128: the handlers on real rows', () => {
+describeInProfiles([...ALL_PROFILES], 'migration 131: the handlers on real rows', () => {
   let world: World;
   let employer: { id: string; sub: string };
   let apiPool: Pool;

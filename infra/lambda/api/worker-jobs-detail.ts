@@ -179,7 +179,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         required_fields: requiredFields,
         optional_fields: optionalFields,
         pre_application_prompts: parsePreApplicationPromptList(job.pre_application_prompts),
-        // Shift choices (128, contract K2.2): always an array, never null.
+        // Shift choices (131, contract K2.2): always an array, never null.
         shift_periods: Array.isArray(job.shift_periods) ? job.shift_periods : [],
         already_applied,
         application_status,

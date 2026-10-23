@@ -119,7 +119,7 @@ SUITES=(
   test/unit/db/application-stage-notify.integration.test.ts
   test/unit/db/application-web-completion.integration.test.ts
   test/unit/db/billing-rls.integration.test.ts
-  test/unit/db/job-limits-129.integration.test.ts
+  test/unit/db/job-limits-132.integration.test.ts
   test/unit/db/entitlement-concurrency.integration.test.ts
   test/unit/db/billing-job-limit.integration.test.ts
   test/unit/db/billing-current-subscription.integration.test.ts

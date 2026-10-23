@@ -403,7 +403,7 @@ describe('worker-jobs-detail', () => {
     });
   });
 
-  // Shift choices (128, contract K2.4): returned wherever work_days is, as an
+  // Shift choices (131, contract K2.4): returned wherever work_days is, as an
   // array, never null.
   describe('shift_periods', () => {
     const respondWith = (job: Record<string, unknown>) => {

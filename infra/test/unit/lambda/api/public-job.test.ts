@@ -298,7 +298,7 @@ describe('public-job Lambda', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // shift_periods (128 grants it to jale_public_jobs, contract K2.4)
+  // shift_periods (131 grants it to jale_public_jobs, contract K2.4)
   // ---------------------------------------------------------------------------
 
   describe('shift_periods', () => {

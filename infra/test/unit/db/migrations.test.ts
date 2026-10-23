@@ -164,9 +164,9 @@ describe('database migrations', () => {
       '124',
       '125',
       '126',
-      '127',
-      '128',
-      '129',
+      '130',
+      '131',
+      '132',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -5120,8 +5120,8 @@ describe('database migrations', () => {
   // 118's organization_members_self_read. No UPDATE or DELETE right: the
   // first outcome stays, and a row leaves only with its users row. The DB
   // pins are in user-tutorial-progress.integration.test.ts.
-  describe('127 adds user_tutorial_progress: the caller reads and inserts their own rows on the request login', () => {
-    const file = '127_user_tutorial_progress.sql';
+  describe('130 adds user_tutorial_progress: the caller reads and inserts their own rows on the request login', () => {
+    const file = '130_user_tutorial_progress.sql';
     const text = () => fs.readFileSync(path.join(migrationsDir, file), 'utf8');
     const code = () => text().replace(/--[^\n]*/g, '');
     const squash = (sql: string) => sql.replace(/\s+/g, ' ').trim();
@@ -5137,13 +5137,13 @@ describe('database migrations', () => {
       expect(sql.indexOf("SET LOCAL lock_timeout = '5s';")).toBeGreaterThan(sql.indexOf('BEGIN;'));
       expect(sql.indexOf('DO $$')).toBeGreaterThan(sql.indexOf("SET LOCAL lock_timeout = '5s';"));
       expect(code()).toContain("IF current_user <> 'jale_admin' THEN");
-      expect(sql).toContain('migration 127: connect as jale_admin (this session runs as %)');
+      expect(sql).toContain('migration 130: connect as jale_admin (this session runs as %)');
     });
 
     it('refuses a replay once the table exists', () => {
       const sql = code();
       expect(sql).toContain("IF pg_catalog.to_regclass('public.user_tutorial_progress') IS NOT NULL THEN");
-      expect(sql).toContain('migration 127: already applied (public.user_tutorial_progress exists); it is not re-runnable');
+      expect(sql).toContain('migration 130: already applied (public.user_tutorial_progress exists); it is not re-runnable');
       expect(sql.indexOf('already applied')).toBeLessThan(sql.indexOf('CREATE TABLE'));
     });
 
@@ -5192,12 +5192,12 @@ describe('database migrations', () => {
       expect(closing).toContain('pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid) = v_self');
       expect(closing).toContain("k.confdeltype = 'c'");
       for (const message of [
-        'migration 127: user_tutorial_progress must have row security enabled and forced',
-        'migration 127: jale_api cannot read and insert user_tutorial_progress',
-        'migration 127: an unexpected privilege on user_tutorial_progress: %',
-        'migration 127: user_tutorial_progress policy set drifted',
-        "migration 127: a user_tutorial_progress policy is not the caller''s own row for jale_api",
-        'migration 127: user_tutorial_progress.user_id must reference users(id) ON DELETE CASCADE',
+        'migration 130: user_tutorial_progress must have row security enabled and forced',
+        'migration 130: jale_api cannot read and insert user_tutorial_progress',
+        'migration 130: an unexpected privilege on user_tutorial_progress: %',
+        'migration 130: user_tutorial_progress policy set drifted',
+        "migration 130: a user_tutorial_progress policy is not the caller''s own row for jale_api",
+        'migration 130: user_tutorial_progress.user_id must reference users(id) ON DELETE CASCADE',
       ]) expect(closing).toContain(message);
     });
   });
@@ -5206,14 +5206,14 @@ describe('database migrations', () => {
   // migration's own DO blocks are the only runtime check; these literals pin
   // that they stay strict. The DB pins are in
   // job-shift-periods.integration.test.ts.
-  describe('128 adds jobs.shift_periods with its CHECK and the public page grant', () => {
-    const file = '128_job_shift_periods.sql';
+  describe('131 adds jobs.shift_periods with its CHECK and the public page grant', () => {
+    const file = '131_job_shift_periods.sql';
     const text = () => fs.readFileSync(path.join(migrationsDir, file), 'utf8');
     const code = () => text().replace(/--[^\n]*/g, '');
 
-    it('runs after 127 as jale_admin in one transaction, ASCII only, with a lock timeout first', () => {
+    it('runs after 130 as jale_admin in one transaction, ASCII only, with a lock timeout first', () => {
       const sql = text();
-      expect(sql).toContain('-- Run manually AFTER 127,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n');
+      expect(sql).toContain('-- Run manually AFTER 130,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n');
       expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
       expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
       expect(code()).toMatch(/^[\x00-\x7F]*$/);
@@ -5257,23 +5257,23 @@ describe('database migrations', () => {
       expect(sql).toContain("pg_catalog.has_table_privilege('jale_public_jobs', 'public.jobs', 'SELECT')");
       expect(sql).toContain("ARRAY['jale_api', 'jale_whatsapp', 'jale_matching']");
       expect(sql).toContain("pg_catalog.has_column_privilege('jale_job_digest', 'public.jobs', 'shift_periods', 'SELECT')");
-      expect(sql).toContain('migration 128: jale_job_digest can read jobs.shift_periods');
+      expect(sql).toContain('migration 131: jale_job_digest can read jobs.shift_periods');
       expect(sql.indexOf('-- \u2500\u2500 4. Closing check')).toBeLessThan(sql.indexOf('COMMIT;'));
     });
   });
 
   // Sprint 29 (BE-3): Free 15 and Pro 50 active jobs; template limits unchanged.
   // billing_plans has read policies only, so the two UPDATEs run under a write
-  // policy that 129 creates and drops in its own transaction (069's pattern).
-  // The DB pins are in job-limits-129.integration.test.ts.
-  describe('129 raises the active-job limits to 15 (Free) and 50 (Pro) and nothing else', () => {
-    const file = '129_job_limit_increase.sql';
+  // policy that 132 creates and drops in its own transaction (069's pattern).
+  // The DB pins are in job-limits-132.integration.test.ts.
+  describe('132 raises the active-job limits to 15 (Free) and 50 (Pro) and nothing else', () => {
+    const file = '132_job_limit_increase.sql';
     const sql = () => fs.readFileSync(path.join(migrationsDir, file), 'utf8');
     const code = () => sql().replace(/--[^\n]*/g, '');
 
     it('runs as jale_admin in one transaction, ASCII only, with a lock timeout first', () => {
       const text = sql();
-      expect(text).toContain('-- Run manually AFTER 128,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n');
+      expect(text).toContain('-- Run manually AFTER 131,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n');
       expect(text.match(/^BEGIN;$/gm)).toHaveLength(1);
       expect(text.match(/^COMMIT;$/gm)).toHaveLength(1);
       expect(code()).toMatch(/^[\x00-\x7F]*$/);
@@ -5303,7 +5303,7 @@ describe('database migrations', () => {
       expect(c).toContain("v_free_jobs IS DISTINCT FROM '15'::jsonb OR v_pro_jobs IS DISTINCT FROM '50'::jsonb");
       expect(c).toContain("v_free_templates IS DISTINCT FROM '2'::jsonb OR v_pro_templates IS DISTINCT FROM '20'::jsonb");
       expect(c).toContain("policyname = 'billing_plans_job_limit_seed'");
-      expect(sql()).toContain('migration 129: the write policy billing_plans_job_limit_seed is still present');
+      expect(sql()).toContain('migration 132: the write policy billing_plans_job_limit_seed is still present');
       expect(sql().indexOf('-- \u2500\u2500 3. Closing check')).toBeLessThan(sql().indexOf('COMMIT;'));
     });
   });

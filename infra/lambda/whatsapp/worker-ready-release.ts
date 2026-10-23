@@ -35,7 +35,7 @@ export interface ReleaseJobSummary {
   payMin?: number | null;
   payMax?: number | null;
   payInterval?: string | null;
-  /** Shift choices (128), off the same live row, as on onboarding-types.ts's
+  /** Shift choices (131), off the same live row, as on onboarding-types.ts's
    * job_alert_digest entries. */
   shiftPeriods?: string[] | null;
 }

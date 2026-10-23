@@ -2718,7 +2718,7 @@ async function handleJobAction(
  * with, and the text a job card degrades to without its ContentSid
  * (`queueReferredJobCard`). `commandIndex` is the job's 1-based position in
  * `state_context.recent_jobs`, which is what "<n> me interesa" resolves
- * against. A job with shift choices (128) gets one line right after the pay
+ * against. A job with shift choices (131) gets one line right after the pay
  * line ("Shifts: Day, Night" / "Turnos: Día, Noche"); a job without them
  * reads exactly as before.
  */

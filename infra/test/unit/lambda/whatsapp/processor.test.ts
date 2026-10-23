@@ -1773,7 +1773,7 @@ describe('Processor Lambda', () => {
       expect(esBody).toContain('Pago no especificado');
     });
 
-    // Shift choices (128, contract K2.4): one line right after the pay line,
+    // Shift choices (131, contract K2.4): one line right after the pay line,
     // only when the job has shifts. The cases above (no shifts) keep their
     // text exactly.
     describe('shift choices in the job-details block', () => {
@@ -5059,7 +5059,7 @@ describe('v2 routing branch', () => {
       expect(mockListMatchedJobsForWorker).not.toHaveBeenCalled();
     });
 
-    // Shift choices (128, contract K2.4): the approved job_alert template and
+    // Shift choices (131, contract K2.4): the approved job_alert template and
     // its five variables stay exactly as they are; only the fallback text
     // (the info reply) gains the shifts line.
     it('sends the same job_alert variables for a job with shifts; only the fallback body gains the shifts line', async () => {

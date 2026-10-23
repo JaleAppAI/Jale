@@ -602,7 +602,7 @@ describe('employer-templates-save', () => {
   });
 });
 
-// Shift choices (128, contract K2.2): templates carry them through
+// Shift choices (131, contract K2.2): templates carry them through
 // parseJobFields, the parser job create runs on the same payload.
 describe('employer-templates-save: shift_periods', () => {
   beforeEach(() => {

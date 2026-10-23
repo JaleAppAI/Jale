@@ -6,7 +6,7 @@
         "enabled": true,
         "forced": true
       },
-      "reason": "Which first-time tutorials each account has finished or skipped, one row per account and tutorial (migration 127). UI progress flags; no personal data beyond the account link.",
+      "reason": "Which first-time tutorials each account has finished or skipped, one row per account and tutorial (migration 130). UI progress flags; no personal data beyond the account link.",
       "access": {
         "jale_api": {
           "select": "*",

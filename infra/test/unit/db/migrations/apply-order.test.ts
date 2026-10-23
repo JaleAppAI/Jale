@@ -133,9 +133,9 @@ const expectedBaselineMigrations = [
   '124_analytics_capture.sql',
   '125_hire_details_and_billing_resume.sql',
   '126_job_conversations_whatsapp_update_columns.sql',
-  '127_user_tutorial_progress.sql',
-  '128_job_shift_periods.sql',
-  '129_job_limit_increase.sql',
+  '130_user_tutorial_progress.sql',
+  '131_job_shift_periods.sql',
+  '132_job_limit_increase.sql',
 ];
 
 function migrationFiles(): string[] {

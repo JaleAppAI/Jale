@@ -6,7 +6,7 @@ import { corsHeaders, errorMessage } from '../lib/http';
 /**
  * GET/POST /employer/tutorials and /worker/tutorials -- tutorial progress
  * (contract K1.2 and K1.3): which first-time tutorials this account has
- * finished or skipped, kept in public.user_tutorial_progress (migration 127),
+ * finished or skipped, kept in public.user_tutorial_progress (migration 130),
  * one row per account and tutorial.
  *
  * The role comes from the path. Each path has the authorizer of one user

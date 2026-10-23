@@ -818,7 +818,7 @@ describe('employer-jobs-create', () => {
       expect(res.statusCode).toBe(201);
       expect(mockQuery).toHaveBeenCalledWith(CHECK, [TEMPLATE, EMPLOYER_ID]);
       const sql = String(insertCall()[0]);
-      // shift_periods (128) follows it as the last column and parameter.
+      // shift_periods (131) follows it as the last column and parameter.
       expect(sql).toMatch(/pre_application_prompts,\s+created_from_template_id,\s+shift_periods\s+\)/);
       expect(sql).toMatch(/\$35::jsonb, \$36, \$37\s+\)/);
       expect(insertCall()[1][35]).toBe(TEMPLATE);
@@ -873,9 +873,9 @@ describe('employer-jobs-create', () => {
     });
   });
 
-  // Shift choices (128, contract K2.2): appended as the LAST column and bind
+  // Shift choices (131, contract K2.2): appended as the LAST column and bind
   // parameter ($37, index 36), so every positional index above stays put.
-  describe('shift_periods (128)', () => {
+  describe('shift_periods (131)', () => {
     const SHIFT_PERIODS_INDEX = 36;
     const insertCall = () => mockQuery.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO jobs'))!;
 

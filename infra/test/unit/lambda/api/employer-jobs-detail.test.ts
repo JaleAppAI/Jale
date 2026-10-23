@@ -224,7 +224,7 @@ describe('employer-jobs-detail', () => {
     expect(JSON.parse(res.body).required_docs).toEqual([]);
   });
 
-  // Shift choices (128, contract K2.4): returned wherever work_days is, as an
+  // Shift choices (131, contract K2.4): returned wherever work_days is, as an
   // array, never null.
   describe('shift_periods', () => {
     const jobSql = () => mockQuery.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('SELECT id, title, location'))?.[0] as string;
