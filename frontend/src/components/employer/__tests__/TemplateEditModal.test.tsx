@@ -174,3 +174,26 @@ describe('TemplateEditModal: a template that asked for date of birth', () => {
         expect(sent.payload.optional_fields).not.toContain('date_of_birth');
     });
 });
+
+/*
+ * K2 (2026-10-22): an explicit `shift_periods: null` is a 400 on template save.
+ * A template stored with no shift choice, or with a null, saves without the key.
+ */
+describe('TemplateEditModal: a template with no shift choices', () => {
+    for (const [name, payload] of [
+        ['none stored', { ...withCity.payload }],
+        ['a stored null', { ...withCity.payload, shift_periods: null }],
+    ] as const) {
+        it(`saves without a shift_periods key (${name})`, async () => {
+            saveJobTemplate.mockResolvedValue({ ...withCity });
+            const template = { ...withCity, id: 'tpl-shifts', payload } as unknown as JobTemplate;
+            renderIntl(<TemplateEditModal open template={template} onClose={vi.fn()} onSaved={vi.fn()} />);
+
+            fireEvent.click(screen.getByRole('button', { name: message('employer_dashboard.templates.save') }));
+
+            await waitFor(() => expect(saveJobTemplate).toHaveBeenCalledTimes(1));
+            const sent = saveJobTemplate.mock.calls[0][1] as { payload: Record<string, unknown> };
+            expect('shift_periods' in sent.payload).toBe(false);
+        });
+    }
+});

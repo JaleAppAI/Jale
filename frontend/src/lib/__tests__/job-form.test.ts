@@ -1040,6 +1040,42 @@ describe('shift choices in the form and payloads (contract K2.2)', () => {
     expect((form as JobForm & { shift_periods?: unknown }).shift_periods).toEqual(['night']);
   });
 
+  /*
+   * K2 (2026-10-22): an explicit `null` is a 400 on create, update and
+   * template save. Every way stored data reaches a write -- a job opened for
+   * edit, a template applied to a new job, a template saved back -- must omit
+   * the key or send `[]`, whatever the stored value looked like.
+   */
+  describe('never sends shift_periods: null', () => {
+    const stored = [
+      ['missing', undefined],
+      ['null', null],
+      ['a non-array value', 'day'],
+    ] as const;
+
+    for (const [name, value] of stored) {
+      it(`edit sends [] for a job whose stored shifts are ${name}`, () => {
+        const job = { ...baseJob, shift_periods: value } as unknown as EmployerJobDetail;
+        const payload = jobFormToEditPayload(jobToForm(job), { state_region: '' });
+        expect(payload.shift_periods).toEqual([]);
+      });
+
+      it(`create and template save omit the key for a template whose stored shifts are ${name}`, () => {
+        const { form } = jobFormFromTemplatePayload({
+          title: 'T', location: 'Reno, NV', job_type: 'contract' as const, trade_category: 'concrete',
+          shift_periods: value,
+        } as unknown as Partial<JobWritePayload>);
+        expect('shift_periods' in jobFormToCreatePayload(form)).toBe(false);
+      });
+    }
+
+    it('no payload built from a blank form carries a null shift_periods', () => {
+      for (const payload of [jobFormToCreatePayload(base), jobFormToEditPayload(base, { state_region: '' })]) {
+        expect((payload as { shift_periods?: unknown }).shift_periods).not.toBeNull();
+      }
+    });
+  });
+
   it('toggling keeps the list in canonical order', () => {
     const toggle = toggleShiftPeriod as (list: readonly ShiftPeriod[], period: ShiftPeriod) => ShiftPeriod[];
     expect(toggle([], 'night')).toEqual(['night']);

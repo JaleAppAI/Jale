@@ -291,6 +291,21 @@ describe('PostJobModal template id', () => {
     expect(createJob.mock.calls[0][1]).toMatchObject({ template_id: 'tpl-city-2' });
   });
 
+  it('posts a job from a template stored with a null shift list without the key (K2)', async () => {
+    const user = userEvent.setup();
+    const nullShifts = {
+      ...withCity,
+      id: 'tpl-null-shifts',
+      payload: { ...withCity.payload, shift_periods: null },
+    } as unknown as JobTemplate;
+    await openWithTemplates([nullShifts]);
+    applyTemplate(nullShifts.id);
+
+    await walkToSubmit(user);
+
+    expect('shift_periods' in createJob.mock.calls[0][1]).toBe(false);
+  });
+
   it('never puts template_id into a template it saves', async () => {
     const user = userEvent.setup();
     // Not `openWithTemplates`: its billing fixture caps templates at 1, and with

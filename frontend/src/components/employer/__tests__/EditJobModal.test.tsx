@@ -136,3 +136,27 @@ describe('EditJobModal city gap', () => {
         expect(updateJob).not.toHaveBeenCalled();
     });
 });
+
+/*
+ * K2 (2026-10-22): an explicit `shift_periods: null` is a 400 on update, and an
+ * omitted key keeps the stored value. A job with no shift choice, or a stored
+ * null, saves with the exact array: `[]`.
+ */
+describe('EditJobModal: a job with no shift choices', () => {
+    for (const [name, job] of [
+        ['none stored', { ...withCity }],
+        ['a stored null', { ...withCity, shift_periods: null }],
+    ] as const) {
+        it(`saves shift_periods as [] (${name})`, async () => {
+            updateJob.mockResolvedValue({ ...withCity });
+            renderIntl(
+                <EditJobModal open job={job as unknown as EmployerJobDetail} onClose={vi.fn()} onJobUpdated={vi.fn()} />,
+            );
+
+            fireEvent.click(screen.getByRole('button', { name: message('employer_dashboard.modal.edit_save') }));
+
+            await waitFor(() => expect(updateJob).toHaveBeenCalledTimes(1));
+            expect((updateJob.mock.calls[0][2] as Record<string, unknown>).shift_periods).toEqual([]);
+        });
+    }
+});

@@ -898,7 +898,9 @@ export function jobToForm(job: EmployerJobDetail): JobForm {
     work_days: (job.work_days ?? []).filter((day): day is WorkDay => (WORK_DAYS as readonly string[]).includes(day)),
     shift_start: normalizeShiftTime(job.shift_start),
     shift_end: normalizeShiftTime(job.shift_end),
-    shift_periods: canonicalShiftPeriods(job.shift_periods ?? []),
+    // Anything but an array (missing, null, a stray string) reads as no shift
+    // chosen, so no later write can carry it back (K2: `null` is a 400).
+    shift_periods: canonicalShiftPeriods(Array.isArray(job.shift_periods) ? job.shift_periods : []),
     certification_requirements: seedCertificationRequirements(job),
     // Ids preserved verbatim; malformed/absent lists degrade to no prompts.
     // NEVER re-minted here -- see `lib/pre-application-prompts.ts`'s header.
