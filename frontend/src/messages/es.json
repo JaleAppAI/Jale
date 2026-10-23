@@ -2409,6 +2409,171 @@
       "close": "Cerrar",
       "help": "Ayuda",
       "help_title": "Cómo funciona Jale"
+    },
+    "employer_welcome": {
+      "title": "Cómo funciona Jale",
+      "slides": {
+        "post": {
+          "title": "Publique un empleo en 3 pasos",
+          "body": "Agregue el título, el oficio, la ciudad y cuántos trabajadores necesita. Todo lo demás es opcional."
+        },
+        "share": {
+          "title": "Comparta el enlace de su empleo",
+          "body": "Active el enlace para compartir y envíelo a sus encargados, o imprima el código QR."
+        },
+        "apply": {
+          "title": "Los trabajadores se postulan por WhatsApp o en la web",
+          "body": "Cada persona que se postula aparece en Postulantes, con lo que nos contó de su trabajo."
+        },
+        "review": {
+          "title": "Revise y escriba",
+          "body": "Abra un postulante para ver su oficio, su experiencia y su puntaje de confianza. Sus mensajes le llegan por WhatsApp."
+        },
+        "hire": {
+          "title": "Solicite datos y luego contrate",
+          "body": "Cuando quiera contratar a alguien, solicite sus datos. Cuando estén completos, márquelo como contratado."
+        }
+      },
+      "scenes": {
+        "f_title": "Título del empleo",
+        "f_title_value": "Acabador de concreto",
+        "f_trade": "Oficio",
+        "f_trade_value": "Concreto",
+        "f_city": "Ciudad",
+        "f_next": "Siguiente",
+        "copy": "Copiar",
+        "copied": "Enlace copiado",
+        "crew": "Envíelo a sus encargados",
+        "wa_bubble": "Hola, quiero postularme",
+        "web": "Web",
+        "apply": "Postularme",
+        "applicants": "Postulantes",
+        "trade1": "Acabador · 6 años",
+        "trade2": "Ayudante · 2 años",
+        "trade3": "Acabador · 4 años",
+        "sample_name": "Trabajador de ejemplo",
+        "sample_meta": "Concreto · 6 años",
+        "trust": "Confianza",
+        "msg": "¿Puede empezar el lunes a las 7?",
+        "sent_wa": "Entregado por WhatsApp",
+        "st1": "Solicitar datos",
+        "st2": "Datos completos",
+        "st3": "Contratado",
+        "plan_line": "{limit, plural, =0 {Su plan no incluye empleos activos} one {Su plan: hasta # empleo activo} other {Su plan: hasta # empleos activos}}"
+      }
+    },
+    "employer_post_job": {
+      "title": "Publicar un empleo",
+      "slides": {
+        "steps": {
+          "title": "Tres pasos cortos",
+          "body": "Lo básico, pago y horario, y luego preguntas para los postulantes. Solo 4 datos son obligatorios: título, oficio, ciudad y número de trabajadores."
+        },
+        "city": {
+          "title": "Elija la ciudad de la lista",
+          "body": "Empiece a escribir y toque una opción. Una ciudad escrita que no se elige de la lista no cuenta."
+        },
+        "shifts": {
+          "title": "Elija los turnos",
+          "body": "Elija Día, Tarde, Noche o Madrugada, todos los que apliquen. Las horas exactas son opcionales; puede acordarlas con el trabajador."
+        },
+        "questions": {
+          "title": "Las preguntas tienen dos partes",
+          "body": "Unas preguntas rápidas al postularse y el resto solo cuando usted solicita sus datos. Cuando alguien se postula, ninguna de las dos partes se puede cambiar."
+        }
+      },
+      "scenes": {
+        "step1": "Lo básico",
+        "step2": "Pago y horario",
+        "step3": "Preguntas",
+        "required": "Solo esto es obligatorio",
+        "r1": "Título",
+        "r2": "Oficio",
+        "r3": "Ciudad",
+        "r4": "Trabajadores",
+        "shifts": "Turnos",
+        "day": "Día",
+        "evening": "Tarde",
+        "night": "Noche",
+        "overnight": "Madrugada",
+        "times_optional": "Hora de entrada y salida: opcional",
+        "questions": "Preguntas para postulantes",
+        "q1": "Permiso de trabajo",
+        "q2": "Historial laboral",
+        "q3": "Referencias",
+        "required_tag": "Obligatoria",
+        "optional_tag": "Opcional",
+        "off_tag": "No",
+        "lock_note": "Se bloquean cuando alguien se postula"
+      }
+    },
+    "employer_applicants": {
+      "title": "Sus postulantes",
+      "slides": {
+        "first_look": {
+          "title": "Lo que ve primero",
+          "body": "Cada postulante muestra su oficio, su experiencia y un puntaje de confianza. El puntaje viene de sus respuestas a preguntas sobre su trabajo."
+        },
+        "statuses": {
+          "title": "Los estados son para usted",
+          "body": "Nuevo, Contactado y En conversación le ayudan a llevar el control. Solo usted los ve; cambiarlos no le envía mensaje al trabajador."
+        },
+        "request": {
+          "title": "Solicite datos para contratar",
+          "body": "Solicitar datos le envía al trabajador un mensaje de WhatsApp con las preguntas y documentos que usted eligió. Contratado se habilita cuando estén completos."
+        },
+        "hired": {
+          "title": "Contratado y luego los datos de inicio",
+          "body": "Márquelo como contratado y agregue el día, la hora y el lugar de inicio, para que sepa a dónde presentarse."
+        }
+      },
+      "scenes": {
+        "sample_name": "Trabajador de ejemplo",
+        "sample_meta": "Concreto · 6 años · Tiene transporte",
+        "trust": "Confianza",
+        "own_words": "En sus propias palabras",
+        "quote": "“Hago acabado de losas y entradas, escobillado y liso, y armo mis propias cimbras.”",
+        "st_new": "Nuevo",
+        "st_contacted": "Contactado",
+        "st_talking": "En conversación",
+        "only_you": "Solo usted ve este estado. No se le envía mensaje al trabajador.",
+        "request": "Solicitar datos",
+        "wa_msg": "El empleador quiere contratarte. Por favor completa tus datos.",
+        "complete": "Datos completos",
+        "hired": "Contratado",
+        "start_head": "Datos de inicio",
+        "when": "Inicio",
+        "when_value": "Lun 7:00 a. m.",
+        "where": "Lugar",
+        "where_value": "Dirección de la obra",
+        "sent_wa": "Enviado al trabajador por WhatsApp"
+      }
+    },
+    "employer_messages": {
+      "title": "Mensajes",
+      "slides": {
+        "whatsapp": {
+          "title": "Los mensajes viajan por WhatsApp",
+          "body": "Usted escribe aquí. El trabajador lee y responde por WhatsApp, y sus respuestas aparecen en esta conversación."
+        },
+        "invitation": {
+          "title": "Su primer mensaje es una invitación",
+          "body": "WhatsApp solo permite que una empresa inicie un chat con una invitación aprobada. El trabajador toca Responder y el chat se abre."
+        },
+        "reply_window": {
+          "title": "Después puede escribir libremente",
+          "body": "Cuando el trabajador responde, usted puede contestar libremente. WhatsApp mantiene esa ventana abierta 24 horas después de su último mensaje."
+        }
+      },
+      "scenes": {
+        "m1": "Hola, ¿está libre el lunes?",
+        "m2": "Sí, puedo empezar el lunes",
+        "m3": "Perfecto, lo veo a las 7",
+        "invite_chip": "Invitación enviada",
+        "invite": "Un empleador en Jale quiere hablar contigo sobre un empleo de Acabador de concreto.",
+        "reply": "Responder",
+        "window_chip": "Ventana de respuesta abierta"
+      }
     }
   }
 }

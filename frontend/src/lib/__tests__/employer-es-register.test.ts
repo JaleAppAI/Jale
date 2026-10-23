@@ -35,8 +35,17 @@ const EMPLOYER_PREFIXES = [
   'tutorial.employer_',
 ];
 
-/** Text the employer sends TO a worker, so it is written in the worker's register. */
-const WORKER_FACING = new Set(['employer_messages.default_initial_message']);
+/**
+ * Text the employer sends TO a worker, so it is written in the worker's
+ * register. The two tutorial lines draw the WhatsApp messages the worker
+ * receives (E3's details request, E4's invitation), so they read as the
+ * worker would see them.
+ */
+const WORKER_FACING = new Set([
+  'employer_messages.default_initial_message',
+  'tutorial.employer_applicants.scenes.wa_msg',
+  'tutorial.employer_messages.scenes.invite',
+]);
 
 // Letter lookarounds, not `\b`: in a JavaScript regex `\b` treats accented
 // letters as non-word characters, so `\btú\b` and `\bestás\b` never match.
