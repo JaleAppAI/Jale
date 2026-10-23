@@ -11,6 +11,7 @@ import { useWorkerAttentionCount } from '@/contexts/WorkerAttentionContext';
 import { Button } from '@/components/ui/button';
 import { ThemeToggle } from '@/components/ui/theme-toggle';
 import { ReportEntryButton } from '@/components/report/ReportEntryButton';
+import { HelpEntryButton } from '@/components/tutorials/HelpMenu';
 import { Sidebar } from './Sidebar';
 import { BottomTabBar } from './BottomTabBar';
 import type { ShellRole } from './nav-config';
@@ -90,6 +91,7 @@ export function AppShell({ role, title, subtitle, actions, children }: AppShellP
                             <div className="flex flex-wrap items-center gap-2">
                                 {actions}
                                 <ReportEntryButton />
+                                <HelpEntryButton />
                                 <Link
                                     href={pathname}
                                     locale={otherLocale}
