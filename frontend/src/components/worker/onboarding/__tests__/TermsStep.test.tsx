@@ -22,6 +22,14 @@ describe('TermsStep', () => {
         expect(screen.getByRole('button', { name: message('worker_onboarding.terms.cta', 'es') })).toBeInTheDocument();
     });
 
+    it('says up front that onboarding takes about 2 minutes', () => {
+        const { unmount } = renderIntl(<TermsStep saving={false} onSubmit={vi.fn()} />);
+        expect(screen.getByText(message('worker_onboarding.terms.time'))).toBeInTheDocument();
+        unmount();
+        renderIntl(<TermsStep saving={false} onSubmit={vi.fn()} />, 'es');
+        expect(screen.getByText(message('worker_onboarding.terms.time', 'es'))).toBeInTheDocument();
+    });
+
     it('offers no Back: this is the first screen of the flow', () => {
         renderIntl(<TermsStep saving={false} onSubmit={vi.fn()} />);
         expect(screen.queryByRole('button', { name: /Back/ })).not.toBeInTheDocument();

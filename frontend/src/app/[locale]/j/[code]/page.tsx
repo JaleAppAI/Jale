@@ -380,11 +380,16 @@ export default async function PublicJobPage({ params }: PageProps) {
    * pages too, so a stranger sent this link reads the same posting the signed-in
    * app shows. Every value is still built here, by this page's own formatters.
    */
-  // ONE Horario tile: the days and the hours are one fact to a reader planning
-  // a ride. `scheduleSummary` already suppresses `legacy` whenever any
-  // structured schedule data exists, so this cannot show both.
+  // ONE Horario tile: the days, the hours and the shift choices are one fact to
+  // a reader planning a ride, in the signed-in pages' order. `scheduleSummary`
+  // already suppresses `legacy` whenever any structured schedule data exists,
+  // so this cannot show both.
   const scheduleText = schedule.legacy
-    ?? ([schedule.days.length > 0 ? schedule.days.join(', ') : null, schedule.hours]
+    ?? ([
+      schedule.days.length > 0 ? schedule.days.join(', ') : null,
+      schedule.hours,
+      schedule.periods.length > 0 ? schedule.periods.join(', ') : null,
+    ]
       .filter(Boolean)
       .join(' · ') || null);
   const tradeText = tradeLabel(active, tTrade, tDetail);
@@ -491,11 +496,14 @@ export default async function PublicJobPage({ params }: PageProps) {
     });
   }
 
+  // Documents never stop anyone applying: the employer asks for them only if
+  // they want to hire. So each chip is in the quiet state and says "Later",
+  // under a heading that says the same thing in a sentence.
   const documentChips: JobFactRequirement[] = active.required_docs.map((doc, index) => ({
     key: `doc-${index}`,
     label: docLabel(t, doc),
-    state: 'required' as const,
-    stateLabel: requiredWord,
+    state: 'optional' as const,
+    stateLabel: t('doc_later'),
   }));
 
   return (
@@ -572,7 +580,7 @@ export default async function PublicJobPage({ params }: PageProps) {
                 chips: [
                   { key: 'policy', label: t('facts.requirements'), items: policyChips },
                   { key: 'certifications', label: t('certifications'), items: certificationChips },
-                  { key: 'documents', label: t('required_docs'), items: documentChips },
+                  { key: 'documents', label: t('docs_later'), items: documentChips },
                 ],
               }}
               /* A stranger has no document vault, so the job's documents are

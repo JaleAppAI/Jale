@@ -288,6 +288,7 @@
     "worker": {
       "title": "Sign in with your phone",
       "phone_label": "We'll text you a 6-digit code to sign in.",
+      "phone_hint": "Use the same number you use on WhatsApp",
       "signup_title": "Create your worker profile",
       "signup_subtitle": "Enter your phone number. We'll text you a code, then set up your profile together.",
       "signup_prompt": "New to Jale?",
@@ -1125,6 +1126,14 @@
       "hired": "Hired",
       "not_interested": "Not selected"
     },
+    "status_hint": {
+      "pending": "Waiting for the employer",
+      "contacted": "Check WhatsApp: the employer messaged you",
+      "talking": "The employer wrote to you",
+      "details_requested": "They want to hire you",
+      "hired": "You got the job. Check your start details",
+      "not_interested": "The employer chose other candidates"
+    },
     "details_banner": {
       "one_head": "Action needed — complete your details.",
       "one_body": "{company} wants to move forward.",
@@ -1134,7 +1143,13 @@
       "many_cta": "See applications",
       "multi_body": "Start with the one at the top.",
       "row_left": "{count} items left",
-      "row_body": "{company} asked for your details."
+      "row_body": "{company} asked for your details.",
+      "items": {
+        "questions": "{count, plural, one {# question} other {# questions}}",
+        "certifications": "{count, plural, one {# certification} other {# certifications}}",
+        "documents": "{count, plural, one {# document} other {# documents}}"
+      },
+      "about_time": "About 5 min"
     },
     "hired_celebration": {
       "modal": {
@@ -1259,7 +1274,7 @@
       "view_job": "View job",
       "view_applications": "View my applications",
       "find_jobs": "Find other jobs",
-      "already_complete_note": "Your application was sent. Contact the employer through WhatsApp to change it."
+      "already_complete_note": "Your application was sent. To change something, answer the employer when they message you on WhatsApp."
     },
     "cert_question": "Do you have {name}?",
     "cert_use_vault": "Use {file} from your vault",
@@ -1320,10 +1335,11 @@
       "part_time": "Part-time",
       "contract": "Contract"
     },
-    "openings_count": "{open}/{total} open",
+    "openings_count": "{open} of {total} spots open",
     "empty": {
       "title": "No jobs posted right now",
-      "body": "Employers post new jobs every week. Check back soon, or keep your profile and cities up to date so the right ones reach you first."
+      "body": "Employers post new jobs every week. Check back soon, or keep your profile and cities up to date so the right ones reach you first.",
+      "cta": "Pick your cities"
     },
     "empty_filtered": {
       "title": "No jobs match this search",
@@ -1331,7 +1347,7 @@
     },
     "no_city_jobs": "Nothing in your cities right now.",
     "applications_error": "We couldn't load your applications. Reload the page to see notices from your employers.",
-    "required_docs_label": "Documents needed",
+    "docs_later_label": "The employer may ask for these later",
     "results_count": "{count, plural, one {# job found} other {# jobs found}}",
     "job_type": {
       "full-time": "40 hrs/wk",
@@ -1347,11 +1363,13 @@
     "expected_duration": "Duration",
     "shift_schedule": "Shift",
     "openings": "Openings",
+    "openings_value": "{open} of {total} spots open",
     "required_experience": "Experience",
     "posted": "Posted",
     "upload_prompt": "Upload missing documents in your profile.",
     "upload_link": "Go to profile",
     "apply": "Apply",
+    "apply_hint": "About 2 min · documents only if they want to hire you",
     "apply_success": "Application sent. The employer can see it now.",
     "already_applied": "Already applied",
     "errors": {
@@ -1374,8 +1392,10 @@
       "body": "The employer stopped accepting applications for this posting. Other jobs are still open."
     },
     "page_title": "Job details",
-    "doc_ok": "Uploaded",
+    "doc_ok": "Saved",
     "doc_missing": "Missing",
+    "doc_later": "Later",
+    "docs_later": "The employer may ask for these later, only if they want to hire you. You don’t need them to apply.",
     "job_type": {
       "full-time": "Full-time",
       "part-time": "Part-time",
@@ -1408,7 +1428,7 @@
       "in_vault": "In your vault",
       "proof_in_vault": "Proof in your vault",
       "proof_needed": "Proof needed",
-      "not_yet": "Not yet",
+      "not_yet": "Later",
       "required": "Required",
       "optional": "Optional",
       "vault_note": "Anything already in your vault counts on its own — you won’t upload it twice.",
@@ -1461,7 +1481,8 @@
     "transportation": "Transportation",
     "work_authorization": "Work authorization",
     "yes": "Required",
-    "required_docs": "Documents needed to apply",
+    "docs_later": "The employer may ask for these later",
+    "doc_later": "Later",
     "doc_resume": "Resume",
     "doc_driver_license": "Driver's License",
     "doc_ssn": "SSN Card / ITIN",
@@ -1836,6 +1857,8 @@
       "upload": "Upload",
       "replace": "Replace",
       "delete": "Delete",
+      "delete_cancel": "Cancel",
+      "delete_confirm": "Delete this document?",
       "view": "View"
     },
     "edit": {
@@ -2072,6 +2095,7 @@
     "terms": {
       "title": "Before we start",
       "subtitle": "A quick read. Your answers are shared only with employers you apply to.",
+      "time": "About 2 minutes",
       "info_title": "How Jale uses your information",
       "info_body": "Your name, trade, location and answers are shown to employers only when you apply to their job. We never sell your data.",
       "messages_title": "Messages",
@@ -2113,10 +2137,12 @@
     "question": {
       "eyebrow": "Question {number} of 3",
       "intro": "In your own words. Type or tap the mic.",
-      "placeholder": "Write your answer here…",
+      "lock_note": "You can go back and change your answers until you finish question 3. After that they lock.",
+      "placeholder": "Example: I poured and finished a 40 ft driveway. I set the forms and did a broom finish.",
       "must": "Employers read these three answers to decide who to hire — they're required.",
       "too_short": "A little more, please — at least {count} characters.",
       "chars": "{count} characters",
+      "counter_min": "{count} / {min} minimum",
       "mic_label": "Record a voice note",
       "voice_note": "From your voice note — edit if anything is wrong.",
       "cta": "Next",
@@ -2141,13 +2167,6 @@
         "unsupported": "This browser cannot record. Type your answer instead.",
         "uploading": "Sending your recording…"
       }
-    },
-    "photo": {
-      "title": "Add a photo?",
-      "subtitle": "Optional. Workers with a photo get more replies.",
-      "add": "Choose a photo",
-      "finish": "Finish",
-      "skip": "Skip for now"
     },
     "referred_job": {
       "strip": "Applying to: <b>{title}</b> · {company}",
@@ -2409,6 +2428,161 @@
       "close": "Close",
       "help": "Help",
       "help_title": "How Jale works"
+    },
+    "worker_onboarding": {
+      "title": "Before you start",
+      "cta_last": "Let’s start",
+      "slides": {
+        "minutes": {
+          "title": "About 2 minutes",
+          "body": "7 short steps: the terms, about you, your trade, your work and three questions."
+        },
+        "questions": {
+          "title": "Three questions employers read",
+          "body": "Answer in your own words, typed or by voice. Each needs at least 15 characters; more detail helps you stand out."
+        },
+        "lock": {
+          "title": "Go back until question 3",
+          "body": "You can go back and change any answer. When you finish question 3, your answers lock and employers can read them."
+        },
+        "jobs": {
+          "title": "Then find jobs near you",
+          "body": "When you finish, you see jobs for your trade and can apply in a tap."
+        }
+      },
+      "scene": {
+        "two_min": "About 2 minutes",
+        "st1": "Terms",
+        "st2": "About you",
+        "st3": "Your trade",
+        "st4": "Your work",
+        "st5": "3 questions",
+        "trade_eyebrow": "Concrete",
+        "question": "Tell us about a job you finished recently.",
+        "answer": "I poured and finished a 40 ft driveway…",
+        "cnt0": "0 / 15 minimum",
+        "cnt1": "48 characters ✓",
+        "q1": "Q1",
+        "q2": "Q2",
+        "q3": "Q3",
+        "can_back": "Go back any time before you finish",
+        "locked": "After Q3 your answers lock",
+        "job1": "Concrete finisher",
+        "job1_meta": "El Paso, TX · $22/h",
+        "job2": "Concrete laborer",
+        "job2_meta": "Socorro, TX · $20/h",
+        "apply": "Apply"
+      }
+    },
+    "worker_apply": {
+      "title": "How applying works",
+      "slides": {
+        "apply": {
+          "title": "Applying takes a minute",
+          "body": "Tap Apply and answer the employer’s quick questions, if they have any."
+        },
+        "documents": {
+          "title": "Documents come later",
+          "body": "You don’t need to upload anything to apply. The employer asks for documents only if they want to hire you."
+        },
+        "next": {
+          "title": "What happens next",
+          "body": "Your application shows Applied while the employer reviews it. You’ll see when they write to you or ask for your details."
+        },
+        "whatsapp": {
+          "title": "Replies come on WhatsApp",
+          "body": "When an employer writes to you, the message arrives on WhatsApp. Answer them there."
+        }
+      },
+      "scene": {
+        "apply": "Apply",
+        "prompt": "Do you have your own tools?",
+        "yes": "Yes",
+        "no": "No",
+        "applied": "Applied",
+        "docs_head": "Documents",
+        "doc1": "Driver license",
+        "doc2": "Work authorization",
+        "later": "Later",
+        "docs_note": "Only if the employer wants to hire you.",
+        "st_applied": "Applied",
+        "h_applied": "Waiting for the employer",
+        "st_talking": "In conversation",
+        "h_talking": "The employer wrote to you",
+        "st_details": "Details needed",
+        "h_details": "They want to hire you",
+        "whatsapp": "WhatsApp · Jale",
+        "emp_msg": "Hi, can you start Monday at 7 AM?",
+        "my_reply": "Yes, I’ll be there"
+      }
+    },
+    "worker_details": {
+      "title": "Details requested",
+      "cta_last": "Start",
+      "slides": {
+        "request": {
+          "title": "An employer wants to hire you",
+          "body": "They ask a few questions and some documents. It takes about 5 minutes, in three short steps."
+        },
+        "saved": {
+          "title": "Saved documents are added for you",
+          "body": "Files you saved before are attached automatically. You can replace any of them."
+        },
+        "send": {
+          "title": "Review and send",
+          "body": "Check your answers, then send. The employer sees them right away."
+        }
+      },
+      "scene": {
+        "company": "Sample Concrete Co.",
+        "five_min": "About 5 min",
+        "step1": "Questions",
+        "step2": "Documents",
+        "step3": "Review",
+        "slot_name": "Driver license",
+        "from_vault": "Added from your saved documents",
+        "replace": "Replace",
+        "r1": "Date available",
+        "r2": "Emergency contact",
+        "r3": "Driver license",
+        "send": "Send to employer"
+      }
+    },
+    "worker_profile": {
+      "title": "Your profile",
+      "slides": {
+        "seen": {
+          "title": "This is what employers see",
+          "body": "Your trade, experience, availability and the answers you gave in your own words."
+        },
+        "documents": {
+          "title": "Add documents once",
+          "body": "Save your license, work permit or certifications here. They’re used again on every application, so you never upload twice."
+        },
+        "edit": {
+          "title": "Keep it up to date",
+          "body": "Tap Edit any time to change your skills, availability or cities."
+        }
+      },
+      "scene": {
+        "sample_name": "Sample worker",
+        "sample_city": "El Paso, TX",
+        "trade": "Concrete",
+        "years": "6 years",
+        "avail": "Full-time",
+        "quote": "“I finish slabs and driveways and set my own forms.”",
+        "docs_head": "Documents",
+        "license": "Driver license",
+        "upload": "Upload",
+        "replace": "Replace",
+        "reused": "A photo of the card is fine. Used again on every application.",
+        "skills": "Skills",
+        "edit": "Edit",
+        "sk1": "Flatwork",
+        "sk2": "Forming",
+        "sk3": "Stamped concrete",
+        "saved": "Saved"
+      }
     },
     "employer_welcome": {
       "title": "How Jale works",

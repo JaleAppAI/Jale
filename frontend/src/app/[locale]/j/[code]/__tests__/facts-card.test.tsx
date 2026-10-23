@@ -202,6 +202,61 @@ describe('public job page — the facts card', () => {
         ]);
     });
 
+    /*
+     * The shift choices (contract K2) are part of the one schedule fact, read
+     * in the employer page's order: days · hours · shifts. A job with no
+     * choice (`[]`, or the key absent as in `fullJob`, which the locked-order
+     * test above already pins) adds nothing, not even a separator.
+     */
+    describe('the shift choices', () => {
+        const shiftTile = (container: HTMLElement) =>
+            tiles(container).find(([label]) => label === t('shift_schedule'));
+
+        it('adds them to the schedule tile, after the days and hours', async () => {
+            const { container } = await renderPage(fullJob({ shift_periods: ['day', 'night'] }));
+            expect(shiftTile(container)).toEqual([
+                t('shift_schedule'), 'Mon, Tue, Wed · 7:00 AM – 4:00 PM · Day, Night',
+            ]);
+        });
+
+        it('names them in Spanish', async () => {
+            const { container } = await renderPage(sparseJob({ shift_periods: ['day', 'night'] }), 'es');
+            expect(tiles(container)).toContainEqual([message('public_job.shift_schedule', 'es'), 'Día, Noche']);
+        });
+
+        it('adds them after the days and hours in Spanish too', async () => {
+            const { container } = await renderPage(fullJob({ shift_periods: ['day', 'night'] }), 'es');
+            const value = tiles(container)
+                .find(([label]) => label === message('public_job.shift_schedule', 'es'))?.[1];
+            expect(value?.startsWith(`${message('common.work_days.mon', 'es')}, `)).toBe(true);
+            expect(value?.endsWith(' · Día, Noche')).toBe(true);
+        });
+
+        it('adds nothing, and no stray separator, when none is chosen', async () => {
+            const { container } = await renderPage(fullJob({ shift_periods: [] }));
+            expect(shiftTile(container)).toEqual([t('shift_schedule'), 'Mon, Tue, Wed · 7:00 AM – 4:00 PM']);
+        });
+
+        it('makes the whole schedule tile when they are the only schedule', async () => {
+            const { container } = await renderPage(sparseJob({ shift_periods: ['night', 'day'] }));
+            expect(tiles(container)).toEqual([
+                [t('shift_schedule'), 'Day, Night'],
+                [t('start_date'), t('facts.start_unknown')],
+                [t('facts.location'), 'Austin, TX'],
+            ]);
+        });
+
+        it('stand in for the old free-text schedule', async () => {
+            const { container } = await renderPage(sparseJob({ shift_schedule: 'Old free text', shift_periods: ['evening'] }));
+            expect(shiftTile(container)).toEqual([t('shift_schedule'), 'Evening']);
+        });
+
+        it('leave the old free-text schedule alone when none is chosen', async () => {
+            const { container } = await renderPage(sparseJob({ shift_schedule: 'Old free text', shift_periods: [] }));
+            expect(shiftTile(container)).toEqual([t('shift_schedule'), 'Old free text']);
+        });
+    });
+
     it('renders the section labels as h3s under one panel title', async () => {
         await renderPage(fullJob());
 
@@ -230,7 +285,17 @@ describe('public job page — the facts card', () => {
             `OSHA 10 · ${message('worker_job_detail.what_you_need.proof_needed')}, ${required}`,
             `Scaffold, ${message('job_requirements.states.optional')}`,
         ]);
-        expect(chipsUnder(t('required_docs'))).toEqual([`${t('doc_resume')}, ${required}`]);
+        // Documents never stop anyone applying: the row says the employer may
+        // ask for them later, and each one reads "Later", not "Required".
+        expect(chipsUnder(t('docs_later'))).toEqual([`${t('doc_resume')}, ${t('doc_later')}`]);
+    });
+
+    it('states the documents as a later ask in Spanish too', async () => {
+        await renderPage(fullJob(), 'es');
+        const row = screen.getByRole('heading', { level: 3, name: message('public_job.docs_later', 'es') }).parentElement!;
+        expect(Array.from(row.querySelectorAll('li')).map((chip) => chip.textContent)).toEqual([
+            `${message('public_job.doc_resume', 'es')}, ${message('public_job.doc_later', 'es')}`,
+        ]);
     });
 
     it('renders the description under a plain About label, the date in the header', async () => {
@@ -281,7 +346,7 @@ describe('public job page — the facts card', () => {
             expect(screen.queryByText(t('pay_range'))).toBeNull();
             expect(screen.queryByRole('heading', { level: 3, name: t('facts.requirements') })).toBeNull();
             expect(screen.queryByRole('heading', { level: 3, name: t('certifications') })).toBeNull();
-            expect(screen.queryByRole('heading', { level: 3, name: t('required_docs') })).toBeNull();
+            expect(screen.queryByRole('heading', { level: 3, name: t('docs_later') })).toBeNull();
             expect(screen.queryByRole('heading', { level: 3, name: t('about_job') })).toBeNull();
         });
 

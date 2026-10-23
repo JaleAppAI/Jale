@@ -119,7 +119,7 @@ describe('the per-test reset', () => {
 });
 
 describe('OnboardingFlow — a fresh worker walks the whole flow', () => {
-    it('goes terms → about → trade → work → q1 → q2 → q3 → photo → done', async () => {
+    it('goes terms → about → trade → work → q1 → q2 → q3 → done', async () => {
         const user = userEvent.setup({ delay: null });
         api.postOnboardingAnswers
             .mockImplementationOnce(advancesTo('profile.name'))
@@ -202,14 +202,10 @@ describe('OnboardingFlow — a fresh worker walks the whole flow', () => {
             });
         }
 
-        // 8 — photo: shown once, client-side, and posts NOTHING
-        await screen.findByRole('heading', { name: message('worker_onboarding.photo.title') });
-        const postsBeforePhoto = api.postOnboardingAnswers.mock.calls.length;
-        await user.click(screen.getByRole('button', { name: message('worker_onboarding.photo.skip') }));
-        expect(api.postOnboardingAnswers).toHaveBeenCalledTimes(postsBeforePhoto);
-
-        // Done
+        // Done, straight after the third answer: there is no photo screen on
+        // the web until a photo can actually be uploaded here.
         expect(await screen.findByText(message('worker_onboarding.done.title'))).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Skip for now' })).not.toBeInTheDocument();
         expect(api.postOnboardingAnswers).toHaveBeenCalledTimes(7);
     });
 });
@@ -418,8 +414,6 @@ describe('OnboardingFlow — a finished run', () => {
         renderIntl(<OnboardingFlow token={TOKEN} initialState={at('trust.question.3', { lifecycle: 'ready' })} />);
         expect(screen.getByText(message('worker_onboarding.done.title'))).toBeInTheDocument();
         expect(screen.queryByRole('button', { name: message('worker_onboarding.common.back') })).not.toBeInTheDocument();
-        // And no photo prompt on a reload — it is optional and already past.
-        expect(screen.queryByRole('heading', { name: message('worker_onboarding.photo.title') })).not.toBeInTheDocument();
     });
 
     it('lets a worker walk back into an earlier question BEFORE the last answer', async () => {
@@ -756,7 +750,7 @@ describe('OnboardingFlow — changing an earlier answer before the last one is s
 });
 
 describe('OnboardingFlow — after the last answer there is no way back', () => {
-    it('offers no Back on the photo prompt or the summary, and calls /back from neither', async () => {
+    it('offers no Back on the summary, and never calls /back from it', async () => {
         const user = userEvent.setup({ delay: null });
         const backLabel = message('worker_onboarding.common.back');
         api.postOnboardingAnswers.mockResolvedValue({
@@ -771,13 +765,8 @@ describe('OnboardingFlow — after the last answer there is no way back', () => 
         await user.type(screen.getByPlaceholderText(message('worker_onboarding.question.placeholder')), LONG_ANSWER);
         await user.click(screen.getByRole('button', { name: message('worker_onboarding.trust.complete_cta') }));
 
-        // Photo: the run is complete, and `back` only walks an active run.
-        await screen.findByRole('heading', { name: message('worker_onboarding.photo.title') });
-        expect(screen.queryByRole('button', { name: backLabel })).not.toBeInTheDocument();
-
-        await user.click(screen.getByRole('button', { name: message('worker_onboarding.photo.finish') }));
-
-        // Summary: same.
+        // Summary, straight away: the run is complete, and `back` only walks
+        // an active run.
         expect(await screen.findByText(message('worker_onboarding.done.title'))).toBeInTheDocument();
         expect(screen.queryByRole('button', { name: backLabel })).not.toBeInTheDocument();
         expect(api.postOnboardingBack).not.toHaveBeenCalled();

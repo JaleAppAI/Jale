@@ -148,8 +148,9 @@ describe('step key → screen mapping', () => {
       .toBe('done');
   });
 
-  it('keeps the progress bar to the eight pre-summary screens, questions marked as trust', () => {
-    expect(PROGRESS_SEGMENTS).toEqual(['terms', 'about', 'trade', 'work', 'q1', 'q2', 'q3', 'photo']);
+  it('keeps the progress bar to the seven pre-summary screens, questions marked as trust', () => {
+    // No photo screen on the web until a photo can actually be uploaded here.
+    expect(PROGRESS_SEGMENTS).toEqual(['terms', 'about', 'trade', 'work', 'q1', 'q2', 'q3']);
     expect(PROGRESS_SEGMENTS.filter(isTrustScreen)).toEqual(['q1', 'q2', 'q3']);
   });
 });
@@ -230,8 +231,7 @@ describe('what each screen posts', () => {
       .toEqual([{ stepKey: 'trust.question.2', value: { text: 'I frame houses all day long' } }]);
   });
 
-  it('photo posts NOTHING — it is a client-side prompt, not an engine step', () => {
-    expect(answersForScreen('photo', emptyDraft, 'trust.question.3')).toEqual([]);
+  it('the summary posts NOTHING — the run is already complete', () => {
     expect(answersForScreen('done', emptyDraft, 'trust.question.3')).toEqual([]);
   });
 
@@ -373,9 +373,8 @@ describe('when Next is allowed', () => {
     expect(canContinue('trade', { ...emptyDraft, trade: 'other', customTrade: 'welder' }, 'profile.custom_trade')).toBe(true);
   });
 
-  it('never blocks terms, photo or done', () => {
+  it('never blocks terms or done', () => {
     expect(canContinue('terms', emptyDraft, 'legal.review')).toBe(true);
-    expect(canContinue('photo', emptyDraft, 'trust.question.3')).toBe(true);
     expect(canContinue('done', emptyDraft, 'trust.question.3')).toBe(true);
   });
 });
@@ -432,7 +431,6 @@ describe('reducer', () => {
     const flow = initFlowState(state({ run: { ...state().run, stepKey: 'trust.question.2' } }));
     expect(currentScreen(flow)).toBe('q2');
     expect(flow.saving).toBe(false);
-    expect(flow.photoPending).toBe(false);
   });
 
   it('hydrate advances the screen, refreshes the lock and rebuilds the draft', () => {
@@ -536,19 +534,14 @@ describe('reducer', () => {
     expect(flow.rejection).toBeNull();
   });
 
-  it('offers the photo prompt once when the last answer completes the run', () => {
+  it('goes straight to the summary when the last answer completes the run', () => {
     let flow = initFlowState(state({ run: { ...state().run, stepKey: 'trust.question.3' } }));
-    flow = onboardingFlowReducer(flow, { type: 'finished', server: state({ lifecycle: 'ready' }) });
-    expect(flow.photoPending).toBe(true);
-    expect(currentScreen(flow)).toBe('photo');
-
-    flow = onboardingFlowReducer(flow, { type: 'photo_skipped' });
+    flow = onboardingFlowReducer(flow, { type: 'hydrate', server: state({ lifecycle: 'ready' }) });
     expect(currentScreen(flow)).toBe('done');
   });
 
-  it('does not re-offer the photo prompt when a finished run is reloaded', () => {
+  it('lands a reloaded finished run on the summary', () => {
     const flow = initFlowState(state({ lifecycle: 'ready' }));
-    expect(flow.photoPending).toBe(false);
     expect(currentScreen(flow)).toBe('done');
   });
 
