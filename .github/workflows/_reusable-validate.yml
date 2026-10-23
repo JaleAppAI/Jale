@@ -103,14 +103,11 @@ jobs:
           }
 
   infra:
-    name: Infra build, test, synth
+    name: Infra build and synth
     runs-on: ubuntu-latest
-    # Measured under Node 24 (October 2026): the job takes 25-28 minutes on
-    # most runners and 45-47 minutes on slower ones, where every step (build,
-    # the in-band unit tests, synth) runs about 1.6 times longer on the same
-    # commit. 60 minutes covers the slower runners with room for the suite to
-    # grow; re-measure if runs approach it.
-    timeout-minutes: 60
+    # Build and the two synths take 2-3 minutes; the unit tests run in the
+    # infra-tests job below.
+    timeout-minutes: 20
     env:
       CDK_DEFAULT_ACCOUNT: '111111111111'
       CDK_DEFAULT_REGION: ${{ inputs.aws-region }}
@@ -134,13 +131,6 @@ jobs:
       - name: Build infra TypeScript
         working-directory: infra
         run: npm run build
-
-      - name: Run infra unit tests
-        working-directory: infra
-        # test:ci is plain `jest` — the default `test` script carries
-        # --maxWorkers=2 (a dev-host OOM cap), and jest rejects combining
-        # --maxWorkers with --runInBand in one invocation.
-        run: npm run test:ci -- --runInBand
 
       - name: CDK synth backend stacks
         working-directory: infra
@@ -186,6 +176,43 @@ jobs:
             echo "::error::The production synth wrote $templates templates; expected 21."
             exit 1
           fi
+
+  infra-tests:
+    name: Infra unit tests (shard ${{ matrix.shard }} of 3)
+    runs-on: ubuntu-latest
+    # In one job the in-band unit tests took 29-43 minutes (October 2026,
+    # Node 24): most of the infra job, and about 1.6 times longer on slower
+    # runners. Jest's --shard splits the test files into three disjoint sets
+    # that together are the whole suite. Each shard runs on its own runner,
+    # still in band, so a file runs exactly as it did in the single job.
+    # Change the shard list and the --shard total together.
+    timeout-minutes: 30
+    strategy:
+      # Every shard reports its own result, even when another shard fails.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    # The infra job's environment, so a test sees what it saw there.
+    env:
+      CDK_DEFAULT_ACCOUNT: '111111111111'
+      CDK_DEFAULT_REGION: ${{ inputs.aws-region }}
+      NPM_CONFIG_AUDIT: 'false'
+      NPM_CONFIG_FUND: 'false'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup infra dependencies
+        uses: ./.github/actions/setup-node-cache
+        with:
+          working-directory: infra
+
+      - name: Run infra unit tests
+        working-directory: infra
+        # test:ci is plain `jest` — the default `test` script carries
+        # --maxWorkers=2 (a dev-host OOM cap), and jest rejects combining
+        # --maxWorkers with --runInBand in one invocation.
+        run: npm run test:ci -- --runInBand --shard=${{ matrix.shard }}/3
 
   database:
     name: Database suites (${{ matrix.profile }})
