@@ -104,6 +104,48 @@ const POSTULACION_KEYS = [
 ];
 
 /**
+ * The four worker tutorials. Every string in them is read by a worker, so here
+ * the whole namespace is checked rather than a list of keys, and copy added
+ * later is covered without anyone remembering to list it.
+ */
+const TUTORIAL_NAMESPACES = [
+    'tutorial.worker_onboarding',
+    'tutorial.worker_apply',
+    'tutorial.worker_details',
+    'tutorial.worker_profile',
+];
+
+/**
+ * Tutorial strings that match `USTED_FORMS` without addressing the worker as
+ * "usted", each with the reason. Anything else that matches fails.
+ */
+const TUTORIAL_TU_EXCEPTIONS: Record<string, string> = {
+    'tutorial.worker_onboarding.slides.jobs.body': '"con un toque" is the noun (a tap), not the usted verb',
+    'tutorial.worker_apply.slides.documents.body': '"quiere" has the employer as its subject',
+    'tutorial.worker_apply.slides.next.body': '"te pida" has the employer as its subject',
+    'tutorial.worker_apply.scene.docs_note': '"quiere" has the employer as its subject',
+    'tutorial.worker_details.slides.request.title': '"quiere" has the employer as its subject',
+};
+
+/** Every leaf message under a namespace, as `[path, value]`. */
+function leaves(path: string): Array<[string, string]> {
+    let node: MessageNode = es as MessageNode;
+    for (const segment of path.split('.')) {
+        if (typeof node === 'string' || !(segment in node)) throw new Error(`No es.json namespace at "${path}"`);
+        node = node[segment];
+    }
+    const out: Array<[string, string]> = [];
+    const walk = (at: string, value: MessageNode) => {
+        if (typeof value === 'string') out.push([at, value]);
+        else for (const [key, child] of Object.entries(value)) walk(`${at}.${key}`, child);
+    };
+    walk(path, node);
+    return out;
+}
+
+const TUTORIAL_LEAVES = TUTORIAL_NAMESPACES.flatMap(leaves);
+
+/**
  * "Aplicado" stays the STATUS word, as on every approved board: it names the
  * state, and the noun for the thing itself is still "postulación".
  */
@@ -126,5 +168,24 @@ describe('worker Spanish copy', () => {
 
     it.each(STATUS_KEYS)('%s keeps "Aplicado" as the status word', (path) => {
         expect(resolve(path)).toBe('Aplicado');
+    });
+
+    it('walks every worker tutorial string', () => {
+        expect(TUTORIAL_LEAVES.length).toBeGreaterThan(0);
+        for (const namespace of TUTORIAL_NAMESPACES) {
+            expect(TUTORIAL_LEAVES.some(([path]) => path.startsWith(`${namespace}.`))).toBe(true);
+        }
+        // An exception for a string that is gone would hide nothing; keep the list true.
+        const paths = new Set(TUTORIAL_LEAVES.map(([path]) => path));
+        for (const path of Object.keys(TUTORIAL_TU_EXCEPTIONS)) expect(paths.has(path)).toBe(true);
+    });
+
+    it.each(TUTORIAL_LEAVES)('%s speaks to the worker as tú', (path, value) => {
+        if (path in TUTORIAL_TU_EXCEPTIONS) return;
+        expect(value).not.toMatch(USTED_FORMS);
+    });
+
+    it.each(TUTORIAL_LEAVES)('%s never calls the application anything but a postulación', (_path, value) => {
+        expect(value).not.toMatch(OTHER_NOUNS);
     });
 });
