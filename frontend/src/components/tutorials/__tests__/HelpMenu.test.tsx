@@ -174,7 +174,9 @@ describe('HelpEntryButton', () => {
         act(() => within(menu).getByRole('button', { name: titleOf('employer_applicants') }).click());
         const tutorial = await screen.findByRole('dialog', { name: titleOf('employer_applicants') });
         expect(screen.queryByRole('dialog', { name: 'How Jale works' })).toBeNull();
-        expect(tutorial.contains(document.activeElement)).toBe(true);
+        // The replay opens outside the click's act, so the dialog can be found in
+        // the commit before its focus effect has run; focus moves in just after.
+        await waitFor(() => expect(tutorial.contains(document.activeElement)).toBe(true));
 
         act(() => screen.getByRole('button', { name: 'Skip' }).click());
         await settle();
