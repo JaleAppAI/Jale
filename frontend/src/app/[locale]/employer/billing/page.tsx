@@ -202,10 +202,14 @@ export default function EmployerBillingPage() {
 
     // "Manage" needs an existing Stripe customer (any subscription history, even
     // canceled) — the portal lets them resubscribe or review invoices. "Upgrade"
-    // is offered whenever the employer isn't currently entitled to the paid
-    // plan, independent of past subscription history.
-    const canManage = !!billing?.subscription;
-    const canUpgrade = billing ? billing.planCode !== EMPLOYER_PRO_PLAN_CODE : false;
+    // is offered whenever the company isn't currently entitled to the paid
+    // plan, independent of past subscription history. Both are the owner's
+    // (the API answers 403 owner_required to a foreman); an API without a role
+    // predates companies, where every employer was their own owner.
+    const isOwner = billing?.role !== 'foreman';
+    const canManage = isOwner && !!billing?.subscription;
+    const canUpgrade = isOwner && (billing ? billing.planCode !== EMPLOYER_PRO_PLAN_CODE : false);
+    const suspendedForemen = isOwner ? billing?.seats?.suspended ?? 0 : 0;
     const usagePercent = billing && billing.activeJobLimit > 0
         ? Math.min(100, Math.round((billing.activeJobUsage / billing.activeJobLimit) * 100))
         : 0;
@@ -269,6 +273,14 @@ export default function EmployerBillingPage() {
                             </DashboardPanel>
                         ) : (
                             <div className="space-y-5">
+                                {suspendedForemen > 0 && (
+                                    <InlineFeedback tone="warning">
+                                        <span className="block font-bold">{t('company.suspended_title')}</span>
+                                        <span className="mt-1 block">
+                                            {t('company.suspended_body', { count: suspendedForemen })}
+                                        </span>
+                                    </InlineFeedback>
+                                )}
                                 <DashboardPanel>
                                     <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[var(--jale-divider)] px-5 py-4">
                                         <div className="min-w-0">
@@ -336,6 +348,12 @@ export default function EmployerBillingPage() {
                                                     date: formatLongDate(billing.subscription.grace_ends_at, locale)
                                                         ?? billing.subscription.grace_ends_at,
                                                 })}
+                                            </InlineFeedback>
+                                        )}
+
+                                        {!isOwner && (
+                                            <InlineFeedback tone="info" className="mb-4">
+                                                {t('company.owner_only')}
                                             </InlineFeedback>
                                         )}
 

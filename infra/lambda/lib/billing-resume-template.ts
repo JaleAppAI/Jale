@@ -1,7 +1,8 @@
 /**
  * Pure rendering for the billing-resume notice -- sprint 28 (contract K4.5):
- * the email an employer receives when their subscription is active again and
- * `billing_resume_paused_jobs` brings back the job postings billing paused.
+ * the email a company's owner receives when its subscription is active again
+ * and `billing_restore_org` (migration 128) brings back the job postings
+ * billing paused.
  * The twin of `billing-pause-template.ts`, with the same limits and rules:
  * titles clipped and capped (an over-long body would be a 23514 that loops
  * the Stripe event through SQS), escaped in bodyHtml, raw in bodyText,

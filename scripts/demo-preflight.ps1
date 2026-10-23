@@ -39,9 +39,17 @@ $env:JALE_TEST_DATABASE_URL = $databaseUrl
 try {
   Write-Host 'Applying migrations from an empty database...'
   Invoke-InDirectory 'infra' { npx jest test/unit/db/migrations/apply-order.test.ts -t 'applies migrations' }
+  # Step 8 of infra/db/local/bootstrap-testbed.sh: give every access-manifest
+  # login its fixed test password (test-<name>-pw), so suites that sign in as
+  # jale_api / jale_billing (company-limit-concurrency) pass scram auth here.
+  Write-Host 'Setting login test passwords...'
+  $passwordsSql = & node (Join-Path $repoRoot 'infra/db/local/testbed-login-passwords.mjs') (Join-Path $repoRoot 'infra/db/access')
+  if ($LASTEXITCODE -ne 0) { throw 'testbed-login-passwords.mjs failed to read the access manifest.' }
+  $passwordsSql | & docker exec -i jale-test-pg psql -v ON_ERROR_STOP=1 -U postgres -d jale | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw 'Setting the login test passwords failed.' }
   Write-Host 'Running billing database integration tests...'
   Invoke-InDirectory 'infra' {
-    npx jest test/unit/db/billing-rls.integration.test.ts test/unit/db/entitlement-concurrency.integration.test.ts --runInBand
+    npx jest test/unit/db/billing-rls.integration.test.ts test/unit/db/company-limit-concurrency.integration.test.ts --runInBand
   }
 } finally {
   Remove-Item Env:JALE_TEST_DATABASE_URL -ErrorAction SilentlyContinue

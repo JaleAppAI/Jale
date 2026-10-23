@@ -1,6 +1,9 @@
 import {
+  BILLING_PAUSE_MAX_MEMBERS,
   BILLING_PAUSE_MAX_TITLES,
+  BILLING_PAUSE_NO_EMAIL_PLACEHOLDER,
   BILLING_PAUSE_SUBJECT,
+  BILLING_SEATS_SUBJECT,
   renderBillingPauseEmail,
   type BillingPauseModel,
 } from '../../../../lambda/lib/billing-pause-template';
@@ -174,5 +177,98 @@ describe('billing pause template', () => {
   it('is deterministic for the same model', () => {
     const input = model({ pausedTitles: longTitles(120) });
     expect(renderBillingPauseEmail(input)).toEqual(renderBillingPauseEmail(input));
+  });
+
+  // ── Suspended team members (Phase 2) ──────────────────────────────────────
+
+  describe('suspended team members', () => {
+    // Phase 2: a suspended foreman can still sign in (the API refuses their
+    // company actions; the Cognito disable is Phase 3), so the copy must not
+    // claim they cannot sign in.
+    const EN_MEMBERS = "Your plan now has fewer foreman seats, so these team members were suspended and can't use your company's account until you change your plan:";
+    const ES_MEMBERS = 'Su plan ahora tiene menos puestos de capataz, por lo que estos miembros del equipo fueron suspendidos y no pueden usar la cuenta de su empresa hasta que cambie su plan:';
+
+    it('adds the members after the jobs, in both language blocks', () => {
+      const { subject, bodyText, bodyHtml } = renderBillingPauseEmail(model({ suspendedMembers: ['f3@example.com', 'f2@example.com'] }));
+      expect(subject).toBe(BILLING_PAUSE_SUBJECT);
+      expect(bodyText).toContain(EN_MEMBERS);
+      expect(bodyText).toContain(ES_MEMBERS);
+      expect(occurrences(bodyText, '- f3@example.com')).toBe(2);
+      expect(occurrences(bodyText, '- f2@example.com')).toBe(2);
+      expect(bodyText.indexOf('- Older overflow')).toBeLessThan(bodyText.indexOf('- f3@example.com'));
+      expect(bodyText.indexOf('- f3@example.com')).toBeLessThan(bodyText.indexOf(`Manage billing: ${EN_BILLING_URL}`));
+      expect(occurrences(bodyHtml, 'f3@example.com')).toBe(2);
+      expect(bodyText).not.toMatch(/\btus?\b|\btienes\b/i);
+    });
+
+    it('never says a suspended member cannot sign in', () => {
+      const { bodyText, bodyHtml } = renderBillingPauseEmail(model({ suspendedMembers: ['f2@example.com'] }));
+      for (const body of [bodyText, bodyHtml]) {
+        expect(body).not.toMatch(/sign in|iniciar sesi/i);
+      }
+      expect(bodyHtml).toContain(EN_MEMBERS);
+    });
+
+    it('stands alone, under the seats subject, when no job was paused', () => {
+      const { subject, bodyText } = renderBillingPauseEmail(model({ pausedTitles: [], suspendedMembers: ['f2@example.com'] }));
+      expect(subject).toBe(BILLING_SEATS_SUBJECT);
+      expect(BILLING_SEATS_SUBJECT.length).toBeLessThanOrEqual(200);
+      expect(bodyText).not.toContain('these job postings were paused');
+      expect(bodyText).toContain(EN_MEMBERS);
+      expect(bodyText).toContain(`Manage billing: ${EN_BILLING_URL}`);
+    });
+
+    it('is byte-identical to the jobs-only email when nobody was suspended', () => {
+      expect(renderBillingPauseEmail(model({ suspendedMembers: [] }))).toEqual(renderBillingPauseEmail(model()));
+    });
+
+    it('lists at most BILLING_PAUSE_MAX_MEMBERS members, then a "+N more" line in each language', () => {
+      const all = Array.from({ length: BILLING_PAUSE_MAX_MEMBERS + 3 }, (_, i) => `m${i}@example.com`);
+      const { bodyText, bodyHtml } = renderBillingPauseEmail(model({ pausedTitles: [], suspendedMembers: all }));
+      expect(occurrences(bodyText, `- m${BILLING_PAUSE_MAX_MEMBERS - 1}@example.com`)).toBe(2);
+      expect(bodyText).not.toContain(`m${BILLING_PAUSE_MAX_MEMBERS}@example.com`);
+      expect(occurrences(bodyText, '+ 3 more team members')).toBe(1);
+      expect(occurrences(bodyText, '+ 3 miembros más')).toBe(1);
+      expect(bodyText.indexOf('+ 3 more team members')).toBeLessThan(bodyText.indexOf(`Manage billing: ${EN_BILLING_URL}`));
+      expect(bodyHtml).toContain('+ 3 more team members');
+      expect(bodyHtml).toContain('+ 3 miembros más');
+      // The preheader counts every suspended member, not only the listed ones.
+      expect(bodyHtml).toContain(`${BILLING_PAUSE_MAX_MEMBERS + 3} team members suspended`);
+    });
+
+    it('uses the singular member overflow forms for exactly one hidden member', () => {
+      const all = Array.from({ length: BILLING_PAUSE_MAX_MEMBERS + 1 }, (_, i) => `m${i}@example.com`);
+      const { bodyText } = renderBillingPauseEmail(model({ suspendedMembers: all }));
+      expect(bodyText).toContain('+ 1 more team member\n');
+      expect(bodyText).toContain('+ 1 miembro más');
+      expect(bodyText).not.toContain('+ 1 miembros más');
+    });
+
+    it('adds no member overflow line at exactly BILLING_PAUSE_MAX_MEMBERS', () => {
+      const all = Array.from({ length: BILLING_PAUSE_MAX_MEMBERS }, (_, i) => `m${i}@example.com`);
+      const { bodyText } = renderBillingPauseEmail(model({ suspendedMembers: all }));
+      expect(bodyText).not.toMatch(/more team member|miembros? más/);
+    });
+
+    it('shows 128\'s no-email placeholder as is in English and in Spanish form in the Spanish block', () => {
+      expect(BILLING_PAUSE_NO_EMAIL_PLACEHOLDER).toBe('(no email on file)');
+      const { bodyText, bodyHtml } = renderBillingPauseEmail(model({ suspendedMembers: ['f2@example.com', BILLING_PAUSE_NO_EMAIL_PLACEHOLDER] }));
+      const esStart = bodyText.indexOf('Su suscripción');
+      expect(occurrences(bodyText, '- (no email on file)')).toBe(1);
+      expect(bodyText.indexOf('- (no email on file)')).toBeLessThan(esStart);
+      expect(occurrences(bodyText, '- (sin correo registrado)')).toBe(1);
+      expect(bodyText.indexOf('- (sin correo registrado)')).toBeGreaterThan(esStart);
+      expect(occurrences(bodyText, '- f2@example.com')).toBe(2);
+      expect(occurrences(bodyHtml, '(no email on file)')).toBe(1);
+      expect(occurrences(bodyHtml, '(sin correo registrado)')).toBe(1);
+      expect(bodyHtml.indexOf('(no email on file)')).toBeLessThan(bodyHtml.indexOf('(sin correo registrado)'));
+    });
+
+    it('escapes a member address in HTML and leaves it raw in the text body', () => {
+      const { bodyText, bodyHtml } = renderBillingPauseEmail(model({ suspendedMembers: ['<b>x</b>@example.com'] }));
+      expect(bodyText).toContain('- <b>x</b>@example.com');
+      expect(bodyHtml).not.toContain('<b>x</b>@example.com');
+      expect(bodyHtml).toContain('&lt;b&gt;x&lt;/b&gt;@example.com');
+    });
   });
 });

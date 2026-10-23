@@ -80,8 +80,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const stripe = await getStripe();
     let customerId = prepared.existingProviderCustomerId;
     if (!customerId) {
+      // organizationId is for people reading Stripe; the processor maps a
+      // customer through billing_customers.organization_id, never metadata.
       const customer = await stripe.customers.create(
-        { email: prepared.email ?? undefined, metadata: { userId: prepared.userId } },
+        { email: prepared.email ?? undefined, metadata: { userId: prepared.userId, organizationId: prepared.organizationId } },
         { idempotencyKey: prepared.customerIdempotencyKey },
       );
       try {
@@ -89,6 +91,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           client,
           cognitoSub,
           prepared.userId,
+          prepared.organizationId,
           customer.id,
           auditCaller(event, { kind: 'employer', id: prepared.userId }, 'web'),
         );
@@ -113,7 +116,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         success_url: body.successUrl,
         cancel_url: body.cancelUrl,
         client_reference_id: prepared.userId,
-        metadata: { userId: prepared.userId, planCode: prepared.planCode, operationId },
+        metadata: { userId: prepared.userId, organizationId: prepared.organizationId, planCode: prepared.planCode, operationId },
       },
       { idempotencyKey: prepared.checkoutIdempotencyKey },
     );
