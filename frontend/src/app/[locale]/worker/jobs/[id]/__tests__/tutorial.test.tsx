@@ -128,7 +128,7 @@ vi.mock('@/hooks/usePageData', () => ({
 import WorkerJobDetailPage from '../page';
 
 const COMPLETE_PROFILE = {
-    full_name: 'Alex Rivera',
+    full_name: 'Test Worker',
     skills: ['framing'],
     availability: 'full_time',
     location: 'San Antonio, TX',
