@@ -1500,7 +1500,6 @@
     "referred_banner_worker_anonymous": "Alguien te compartió este trabajo",
     "referred_banner_employer": "Compartido por el empleador",
     "requirements": "Lo que necesitas",
-    "experience_chip": "{years, plural, one {#+ año de experiencia} other {#+ años de experiencia}}",
     "openings_chip": "{count, plural, one {# vacante} other {# vacantes}}",
     "about_job": "Sobre el trabajo",
     "what_you_need": "Lo que necesitas",
