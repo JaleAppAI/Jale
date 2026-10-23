@@ -2,7 +2,7 @@
 
 import { useEffect, useId, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { Link, useRouter } from '@/i18n/navigation';
+import { Link, usePathname, useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { Button } from '@/components/ui/button';
@@ -204,10 +204,15 @@ export function JobPostedPanel({
     );
 }
 
-/** The posted screen's footer: close the dialog, then go to the dashboard. */
+/**
+ * The posted screen's footer: close the dialog, then go to the dashboard --
+ * unless the dashboard is already the page behind it, which needs no second
+ * history entry (its list already holds the new job).
+ */
 export function JobPostedFooter({ onClose }: { onClose: () => void }) {
     const t = useTranslations('employer_dashboard');
     const router = useRouter();
+    const pathname = usePathname();
     return (
         <Button
             type="button"
@@ -215,7 +220,7 @@ export function JobPostedFooter({ onClose }: { onClose: () => void }) {
             className="w-full"
             onClick={() => {
                 onClose();
-                router.push('/employer/dashboard');
+                if (pathname !== '/employer/dashboard') router.push('/employer/dashboard');
             }}
         >
             {t('job_posted.back')}

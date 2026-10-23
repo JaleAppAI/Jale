@@ -18,11 +18,14 @@ import userEvent from '@testing-library/user-event';
  */
 
 const routerPush = vi.fn();
+/** The page the wizard was opened from (locale-free, as next-intl reports it). */
+const nav = vi.hoisted(() => ({ pathname: '/employer/applicants' }));
 vi.mock('@/i18n/navigation', () => ({
   Link: ({ href, children, ...rest }: { href: string; children: ReactNode }) => (
     <a href={href} {...rest}>{children}</a>
   ),
   useRouter: () => ({ push: routerPush, replace: vi.fn() }),
+  usePathname: () => nav.pathname,
 }));
 
 vi.mock('@/contexts/AuthContext', () => ({
@@ -591,6 +594,24 @@ describe('PostJobModal: the job posted screen', () => {
 
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(routerPush).toHaveBeenCalledWith('/employer/dashboard');
+  });
+
+  it('only closes from Back to dashboard when the dashboard is already the page behind', async () => {
+    nav.pathname = '/employer/dashboard';
+    try {
+      const user = userEvent.setup();
+      const onClose = vi.fn();
+      await postJob(user, { onClose });
+      await waitFor(() => expect(postedHeading()).toBeInTheDocument());
+
+      await user.click(screen.getByRole('button', { name: message('employer_dashboard.job_posted.back') }));
+
+      expect(onClose).toHaveBeenCalledTimes(1);
+      // No second history entry for the page already on screen.
+      expect(routerPush).not.toHaveBeenCalled();
+    } finally {
+      nav.pathname = '/employer/applicants';
+    }
   });
 
   it('closes in place on Escape, without navigating', async () => {
