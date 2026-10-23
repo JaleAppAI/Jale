@@ -291,8 +291,9 @@ maybeDescribe('billing RLS integration (migration 034)', () => {
         expect(forceResult.rows[0].relforcerowsecurity).toBe(true);
 
         // No app policies: 118's sign-up bootstrap gate for jale_admin, and
-        // 128's company lock for two NOLOGIN roles (the usage definer's owner
-        // and the billing enforcer). No app role sees a row.
+        // the company lock for three NOLOGIN roles (128's usage definer's owner
+        // and billing enforcer, 130's team-invite definers' owner). No app role
+        // sees a row.
         const policyResult = await client.query<{ policyname: string; roles: string[] }>(
           `SELECT policyname, roles::text[] AS roles FROM pg_policies
            WHERE schemaname = 'public' AND tablename = 'organizations' ORDER BY policyname`,
@@ -302,6 +303,8 @@ maybeDescribe('billing RLS integration (migration 034)', () => {
           { policyname: 'organizations_billing_job_enforcer_select', roles: ['jale_billing_job_enforcer'] },
           { policyname: 'organizations_cap_org_limits_lock', roles: ['jale_cap_org_limits'] },
           { policyname: 'organizations_cap_org_limits_select', roles: ['jale_cap_org_limits'] },
+          { policyname: 'organizations_cap_org_team_lock', roles: ['jale_cap_org_team'] },
+          { policyname: 'organizations_cap_org_team_select', roles: ['jale_cap_org_team'] },
           { policyname: 'organizations_org_bootstrap', roles: ['jale_admin'] },
         ]);
       } finally {

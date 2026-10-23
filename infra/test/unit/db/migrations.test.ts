@@ -167,6 +167,7 @@ describe('database migrations', () => {
       '127',
       '128',
       '129',
+      '130',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -5373,6 +5374,167 @@ describe('database migrations', () => {
       }
       expect(sql).toContain("polname = 'jobs_cap_worker_lane_org_owner_select'");
       expect(sql).toContain("polname = 'job_applications_cap_worker_lane_org_owner_select'");
+    });
+  });
+
+  describe('130 team invites', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '130_org_team_invites.sql'), 'utf8');
+    const code = sql.replace(/--.*$/gm, '');
+    const FUNCTIONS = [
+      'org_team_locked_owner_org', 'org_team_invite_create', 'org_team_invite_resend', 'org_team_invite_revoke',
+      'org_team_invite_queue_email', 'org_team_invite_lookup', 'org_team_invite_accept', 'org_team_invite_accept_email',
+      'org_team_invite_mail_purge',
+    ];
+    const bodyOf = (name: string): string => {
+      const start = sql.indexOf(`CREATE FUNCTION jale_cap.${name}(`);
+      expect(start).toBeGreaterThan(0);
+      return sql.slice(start, sql.indexOf('\n$fn$;\n', start));
+    };
+
+    it('is one transaction, forward-only, after 129', () => {
+      expect(sql.startsWith('-- ============================================================\n-- 130_org_team_invites.sql\n'
+        + '-- Run manually AFTER 129_org_owner_carry_overs.sql,\n-- connected as jale_admin. Forward-only (ADR-005). ONE transaction.\n')).toBe(true);
+      expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+      expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
+      expect(sql).toContain("SET LOCAL lock_timeout = '5s';");
+      expect(sql.indexOf("SET LOCAL lock_timeout = '5s';")).toBeLessThan(sql.indexOf('-- ── 0. Preconditions'));
+    });
+
+    it('refuses a replay, and needs 129', () => {
+      expect(sql).toContain("IF to_regprocedure('jale_cap.org_team_invite_accept(bytea)') IS NOT NULL THEN\n"
+        + "    RAISE EXCEPTION 'migration 130: already applied (jale_cap.org_team_invite_accept exists); it is not re-runnable';");
+      expect(sql).toContain("IF to_regprocedure('public.jobs_assignee_must_be_active()') IS NULL THEN");
+    });
+
+    it('creates nine jale_cap functions, each a definer with the pinned search_path', () => {
+      expect(sql.match(/^CREATE FUNCTION /gm)).toHaveLength(9);
+      expect(sql).not.toMatch(/CREATE OR REPLACE FUNCTION|DROP FUNCTION/);
+      for (const name of FUNCTIONS) {
+        const body = bodyOf(name);
+        expect([name, body]).toEqual([name, expect.stringContaining('SECURITY DEFINER SET search_path = pg_catalog, pg_temp\n')]);
+        expect([name, body]).toEqual([name, expect.stringContaining('LANGUAGE plpgsql')]);
+      }
+    });
+
+    it('org_team_locked_owner_org takes the company lock FOR NO KEY UPDATE before it re-checks the owner', () => {
+      const body = bodyOf('org_team_locked_owner_org');
+      const lockAt = body.indexOf('PERFORM 1 FROM public.organizations o WHERE o.id = v_org FOR NO KEY UPDATE;');
+      const recheckAt = body.indexOf("PERFORM 1 FROM public.organization_members m\n   WHERE m.user_id = v_caller::uuid AND m.organization_id = v_org AND m.role = 'owner' AND m.status = 'active';");
+      expect(lockAt).toBeGreaterThan(0);
+      expect(recheckAt).toBeGreaterThan(lockAt);
+    });
+
+    it('takes no row lock but the company lock: no FOR UPDATE and no FOR SHARE anywhere in the file', () => {
+      // CREATE POLICY ... FOR UPDATE TO <role> names a command, not a row lock.
+      expect(code).not.toMatch(/\bFOR\s+UPDATE\b(?!\s+TO\b)/i);
+      expect(code).not.toMatch(/\bFOR\s+(KEY\s+)?SHARE\b/i);
+      expect(sql).not.toMatch(/SKIP LOCKED|NOWAIT/i);
+      // Every FOR NO KEY UPDATE locks an organizations row: the helper and the two accepts.
+      const locks = code.match(/FOR NO KEY UPDATE/g) ?? [];
+      expect(locks).toHaveLength(3);
+      expect(code.match(/FROM public\.organizations o WHERE o\.id = v_org FOR NO KEY UPDATE;/g)).toHaveLength(3);
+    });
+
+    it('accept re-reads its invite by token after the lock, so a token a resend rotated fails', () => {
+      for (const name of ['org_team_invite_accept']) {
+        const body = bodyOf(name);
+        const lockAt = body.indexOf('FOR NO KEY UPDATE;');
+        const reread = body.indexOf('WHERE i.organization_id = v_org AND i.token_hash = p_token_hash;');
+        expect(reread).toBeGreaterThan(lockAt);
+        expect(lockAt).toBeGreaterThan(0);
+      }
+      const acceptEmail = bodyOf('org_team_invite_accept_email');
+      expect(acceptEmail.indexOf('WHERE i.id = v_invite AND i.organization_id = v_org')).toBeGreaterThan(acceptEmail.indexOf('FOR NO KEY UPDATE;'));
+    });
+
+    it('every write path but accept and accept_email locks through the owner helper; every UPDATE checks its row count', () => {
+      for (const name of ['org_team_invite_create', 'org_team_invite_resend', 'org_team_invite_revoke', 'org_team_invite_queue_email']) {
+        expect([name, bodyOf(name)]).toEqual([name, expect.stringContaining('v_org := jale_cap.org_team_locked_owner_org();')]);
+      }
+      for (const name of FUNCTIONS) {
+        const body = bodyOf(name).replace(/--.*$/gm, '');
+        const updates = body.match(/^\s*UPDATE public\./gm) ?? [];
+        const counts = body.match(/GET DIAGNOSTICS v_n = ROW_COUNT;\n\s*IF v_n <> 1 THEN RAISE EXCEPTION '[^']+' USING ERRCODE = 'P0001'; END IF;/g) ?? [];
+        expect([name, counts.length]).toEqual([name, updates.length]);
+      }
+    });
+
+    it('creates twelve policies for jale_cap_org_team; members, users and the outbox come last', () => {
+      const policies = sql.match(/^CREATE POLICY \w+\s+ON public\.\w+ AS PERMISSIVE FOR \w+ TO \w+/gm) ?? [];
+      expect(policies).toHaveLength(12);
+      expect(sql.match(/^CREATE POLICY /gm)).toHaveLength(12);
+      for (const p of policies) expect(p).toMatch(/ TO jale_cap_org_team$/);
+      expect(sql).not.toMatch(/^(ALTER|DROP) POLICY/m);
+      const lastAt = sql.indexOf('-- ── 5. Last: members, users, outbox');
+      expect(lastAt).toBeGreaterThan(sql.indexOf('CREATE FUNCTION jale_cap.org_team_invite_mail_purge('));
+      const earlier = sql.slice(0, lastAt);
+      for (const table of ['organization_members', 'users', 'email_outbox']) {
+        expect(earlier).not.toMatch(new RegExp(`^(GRANT|CREATE POLICY|ALTER TABLE)[^;]*public\\.${table}\\b`, 'm'));
+      }
+      expect(sql.slice(lastAt).match(/^CREATE POLICY \w+ ON public\.(organization_members|users|email_outbox) /gm)).toHaveLength(7);
+    });
+
+    it('opens and closes the jale_cap_org_team window once, and grants every EXECUTE before the transfer', () => {
+      expect(sql.split("'GRANT %I TO %I WITH SET TRUE, INHERIT FALSE', 'jale_cap_org_team', current_user")).toHaveLength(2);
+      expect(sql.split("'REVOKE %I FROM %I GRANTED BY %I', 'jale_cap_org_team', current_user, current_user")).toHaveLength(2);
+      const firstTransfer = sql.indexOf('OWNER TO jale_cap_org_team;');
+      for (const grant of [
+        'GRANT EXECUTE ON FUNCTION jale_cap.org_team_invite_create(text, text, bytea, integer) TO jale_api;',
+        'GRANT EXECUTE ON FUNCTION jale_cap.org_team_invite_resend(uuid, bytea, integer) TO jale_api;',
+        'GRANT EXECUTE ON FUNCTION jale_cap.org_team_invite_revoke(uuid) TO jale_api;',
+        'GRANT EXECUTE ON FUNCTION jale_cap.org_team_invite_queue_email(uuid, text, text, text) TO jale_api;',
+        'GRANT EXECUTE ON FUNCTION jale_cap.org_team_invite_lookup(bytea) TO jale_api_public;',
+        'GRANT EXECUTE ON FUNCTION jale_cap.org_team_invite_accept(bytea) TO jale_api;',
+        'GRANT EXECUTE ON FUNCTION jale_cap.org_team_invite_accept_email() TO jale_api;',
+        'GRANT EXECUTE ON FUNCTION jale_cap.org_team_invite_mail_purge(integer) TO jale_billing;',
+      ]) {
+        expect([grant, sql.indexOf(grant)]).toEqual([grant, expect.any(Number)]);
+        expect(sql.indexOf(grant)).toBeGreaterThan(0);
+        expect(sql.indexOf(grant)).toBeLessThan(firstTransfer);
+      }
+      expect(sql).not.toContain('GRANT EXECUTE ON FUNCTION jale_cap.org_team_locked_owner_org');
+      expect(sql.match(/^REVOKE ALL ON FUNCTION jale_cap\.org_team_\w+\([^)]*\) FROM PUBLIC;$/gm)).toHaveLength(9);
+      expect(sql.match(/^ALTER FUNCTION jale_cap\.org_team_\w+\([^)]*\) OWNER TO jale_cap_org_team;$/gm)).toHaveLength(9);
+      expect(sql).toContain('GRANT USAGE ON SCHEMA jale_cap TO jale_cap_org_team, jale_billing;');
+      expect(sql).toContain('GRANT CREATE ON SCHEMA jale_cap TO jale_cap_org_team;');
+    });
+
+    it('accept and accept_email map only a members primary-key 23505 to already_member, and re-raise any other', () => {
+      expect(sql).toContain("AND c.contype = 'p' AND c.conname = 'organization_members_pkey'");
+      for (const name of ['org_team_invite_accept', 'org_team_invite_accept_email']) {
+        const body = bodyOf(name);
+        const handlers = body.match(/EXCEPTION WHEN unique_violation THEN\n\s*GET STACKED DIAGNOSTICS v_constraint = CONSTRAINT_NAME;\n\s*IF v_constraint = 'organization_members_pkey' THEN\n\s*RETURN QUERY SELECT 'already_member'::text, NULL::uuid; RETURN;\n\s*END IF;\n\s*RAISE;\n/g) ?? [];
+        expect([name, handlers.length]).toEqual([name, 1]);
+        expect([name, body.match(/EXCEPTION WHEN/g)?.length]).toEqual([name, 1]);
+        // The handler wraps the members insert only, before the invite is marked accepted.
+        expect(body.indexOf('INSERT INTO public.organization_members')).toBeLessThan(body.indexOf('EXCEPTION WHEN unique_violation'));
+        expect(body.indexOf('EXCEPTION WHEN unique_violation')).toBeLessThan(body.indexOf('SET accepted_at = pg_catalog.now()'));
+      }
+    });
+
+    it('revoke returns a removed member\'s cognito_sub of this company only, with no cross-company invite check', () => {
+      const body = bodyOf('org_team_invite_revoke').replace(/--.*$/gm, '');
+      expect(body).not.toContain('NOT EXISTS');
+      expect(body).toContain("AND m.organization_id = v_org AND m.status = 'removed';");
+    });
+
+    it('indexes the invite mail the send counts read, in the last section', () => {
+      const index = "CREATE INDEX email_outbox_organization_invite_sends ON public.email_outbox (source_id, created_at)\n  WHERE source_type = 'organization_invite';";
+      expect(sql).toContain(index);
+      expect(sql.indexOf(index)).toBeGreaterThan(sql.indexOf('-- ── 5. Last: members, users, outbox'));
+      expect(sql).toContain("indexname = 'email_outbox_organization_invite_sends'");
+      // The self-check refuses any request-login right on the outbox, DELETE included.
+      expect(sql).toContain("has_table_privilege('jale_api', 'public.email_outbox', 'DELETE, TRUNCATE')");
+      expect(sql).toContain("has_table_privilege('jale_api_public', 'public.email_outbox', 'DELETE, TRUNCATE')");
+    });
+
+    it('keeps the invite mail to the capability owner: fixed source type, the invite\'s own recipient', () => {
+      const body = bodyOf('org_team_invite_queue_email');
+      expect(body).toContain("RAISE EXCEPTION 'org_team_invite_queue_email: no invite was sent in this transaction' USING ERRCODE = 'insufficient_privilege';");
+      expect(body).toContain("'organization_invite'");
+      expect(body).toContain("'org-invite:' || v_inv.id::text || ':' || pg_catalog.encode(pg_catalog.substr(v_inv.token_hash, 1, 8), 'hex')");
+      expect(sql).toContain("CREATE POLICY email_outbox_cap_org_team_select ON public.email_outbox AS PERMISSIVE FOR SELECT TO jale_cap_org_team USING (source_type = 'organization_invite');");
+      expect(sql).not.toMatch(/ON public\.email_outbox TO jale_api\b/);
     });
   });
 });

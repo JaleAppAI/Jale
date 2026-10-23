@@ -187,6 +187,7 @@ $MigrationFiles = @(
     '127_company_billing.sql'
     '128_company_limits.sql'
     '129_org_owner_carry_overs.sql'
+    '130_org_team_invites.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path

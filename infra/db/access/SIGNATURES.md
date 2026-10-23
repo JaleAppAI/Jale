@@ -178,6 +178,77 @@ proves each signature, owner and grant on a real database.
   NO KEY UPDATE conflicts with itself but not with the `FOR KEY SHARE` of a
   foreign-key check, so an insert that names the company never waits for it.
 
+## Team invites (owner `jale_cap_org_team`, migration 130)
+
+| Function | Caller | Returns |
+|---|---|---|
+| `org_team_invite_create(p_email text, p_contact_name text, p_token_hash bytea, p_seat_limit integer)` | `jale_api` | `TABLE(outcome text, invite_id uuid, email text, contact_name text, created_at timestamp with time zone, expires_at timestamp with time zone, last_sent_at timestamp with time zone, company_name text, cognito_sub text)` |
+| `org_team_invite_resend(p_invite_id uuid, p_token_hash bytea, p_seat_limit integer)` | `jale_api` | create's columns + `retry_after_seconds integer` |
+| `org_team_invite_revoke(p_invite_id uuid)` | `jale_api` | `TABLE(outcome text, cognito_sub text)` |
+| `org_team_invite_queue_email(p_invite_id uuid, p_subject text, p_body_text text, p_body_html text)` | `jale_api` | `uuid` (the outbox id) |
+| `org_team_invite_lookup(p_token_hash bytea)` | `jale_api_public` | `TABLE(outcome text, company_name text, email text, contact_name text, existing_account boolean, expires_at timestamp with time zone)` |
+| `org_team_invite_accept(p_token_hash bytea)` | `jale_api` | `TABLE(outcome text, organization_id uuid)` |
+| `org_team_invite_accept_email()` | `jale_api` | `TABLE(outcome text, organization_id uuid)` |
+| `org_team_invite_mail_purge(p_batch integer)` | `jale_billing` | `integer` (rows deleted) |
+| `org_team_locked_owner_org()` | none (internal) | `uuid` |
+
+- **Caller context.** create, resend, revoke and queue_email read the caller
+  from `app.current_internal_user_id` and act only for the active owner of a
+  company, through `org_team_locked_owner_org()`: it takes the company's
+  `organizations` row `FOR NO KEY UPDATE` (128's lock, held to the end of the
+  caller's transaction) and checks the owner again once it is held. Anyone
+  else gets `not_owner` (queue_email raises `42501`). accept and accept_email
+  read the caller by `app.current_user_id` (unset raises `42501`). The lookup
+  and the purge read no caller.
+- **No row locks.** After the company lock the functions read invites and
+  memberships with plain reads and update only a row they classified, with a
+  row count of 1 (`P0001` otherwise). Every writer of invites and memberships
+  holds the company lock.
+- **Outcomes.**
+  create: `created`, `not_owner`, `invalid_email`, `already_member`,
+  `email_in_use`, `invite_pending`, `rate_limited`, `seat_limit_reached`.
+  resend: `resent`, `not_owner`, `not_found`, `closed`, `too_soon`,
+  `rate_limited`, `email_in_use`, `already_member`, `seat_limit_reached`.
+  revoke: `revoked`, `not_owner`, `not_found`, `closed`.
+  lookup: `valid`, `not_found`, `expired`, `revoked`, `used`.
+  accept: `accepted`, `rejoined`, `not_found`, `expired`, `revoked`, `used`,
+  `not_employer`, `email_mismatch`, `already_member`.
+  accept_email: `accepted`, `none`, `ambiguous`, `not_employer`,
+  `already_member`.
+- **Values.** An invite expires 7 days after it is created or re-sent. The
+  email is `lower(btrim())`, at most 254 characters, one `@` and a dot after
+  it. `contact_name` is trimmed, empty is NULL, at most 120 characters. The
+  token hash is the 32-byte SHA-256 of the raw token (`22023` otherwise;
+  accept and lookup answer `not_found`). `p_seat_limit` NULL or negative and
+  `p_batch` outside 1..1000 raise `22023`.
+- **Sends.** Every create and resend writes one `email_outbox` row through
+  queue_email (`source_type = 'organization_invite'`, `source_id` the invite,
+  idempotency key `org-invite:<id>:<first 8 bytes of the token hash, hex>`),
+  which refuses (`42501`) an invite not created or re-sent in the caller's
+  transaction. A company may send 20 in any 24 hours, an invite may be
+  re-sent 5 times in any 24 hours (`rate_limited`), and not within 60 seconds
+  of its last send (`too_soon`, with `retry_after_seconds`).
+- **Seats.** Active foremen plus live pending invites (not accepted, revoked
+  or expired) hold seats; a billing-suspended foreman holds none. create, and
+  resend of an expired invite, give `seat_limit_reached` at the limit. An
+  expired pending invite is revoked when a new one is created for its email.
+- **Cognito.** `cognito_sub` is set only when a login's sign-in must change:
+  create and resend return a removed member of the company invited by email
+  (enable); revoke returns that member of the company (disable). No other
+  live invite of the company for that email can remain (one pending invite
+  per company and email), and another company's invite never re-enables
+  the login (create and resend answer it `email_in_use`).
+- **accept** re-reads the invite by its token after the lock, so a token a
+  resend rotated meanwhile is `not_found`. A closed invite is `used`,
+  `revoked` or `expired` before the caller's email is compared.
+- **accept and accept_email** answer `already_member` when a concurrent
+  accept in another company, or a start-company, for the same login commits
+  first (a `23505` on `organization_members_pkey`, caught around the members
+  insert); any other unique violation is raised.
+- **mail_purge** deletes invite mail a day old that the sender will no
+  longer retry (108's terms), oldest first, up to `p_batch`, and returns the
+  count.
+
 ## Re-owned definers (no signature change)
 
 | Function | Caller | Owner | Returns |
