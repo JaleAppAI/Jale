@@ -59,8 +59,26 @@ export function DocumentSlot(props: {
   const pendingFocusRef = useRef<'upload' | 'delete' | 'cancel' | null>(null);
   const busy = busyAction !== null;
 
+  // The question is about one document. When that document goes (deleted from
+  // another tab, or the list read again without it) or is replaced, the
+  // question goes with it, so the next document here never opens on it. Keyed
+  // on the id: a refetch that hands back the same document keeps it open.
+  const existingId = props.existing?.id ?? null;
+  const [questionFor, setQuestionFor] = useState(existingId);
+  if (questionFor !== existingId) {
+    setQuestionFor(existingId);
+    setConfirming(false);
+  }
+
+  const wasConfirmingRef = useRef(false);
   useEffect(() => {
-    const target = pendingFocusRef.current;
+    const closed = wasConfirmingRef.current && !confirming;
+    wasConfirmingRef.current = confirming;
+    let target = pendingFocusRef.current;
+    // Closed under the worker with nothing asked for: the focused button went
+    // with the question, so focus lands on this slot's upload button rather
+    // than falling back to the top of the page.
+    if (!target && closed && document.activeElement === document.body) target = 'upload';
     if (!target || busy) return;
     pendingFocusRef.current = null;
     const ref = target === 'cancel' ? cancelButtonRef : target === 'delete' ? deleteButtonRef : uploadButtonRef;

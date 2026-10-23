@@ -112,3 +112,64 @@ describe('DocumentSlot — delete asks first', () => {
         expect(deleteVaultDocument).not.toHaveBeenCalled();
     });
 });
+
+/*
+ * The question is about one document. If that document goes while it is
+ * open -- deleted from another tab, or the list refetched without it -- the
+ * question goes with it, so the next document saved here starts on the
+ * ordinary actions rather than on "Delete this document?".
+ */
+describe('DocumentSlot — the question follows its document', () => {
+    const LATER: WorkerVaultDoc = { ...SAVED, id: 'v2', file_name: 'fake-license-file-2.jpg' } as WorkerVaultDoc;
+
+    function slot(existing?: WorkerVaultDoc) {
+        return (
+            <ToastProvider>
+                <DocumentSlot token="test-token" doc_type="driver_license" existing={existing} onChange={vi.fn()} />
+            </ToastProvider>
+        );
+    }
+
+    it('closes when the document goes, and a later document opens on the ordinary actions', async () => {
+        const user = userEvent.setup();
+        const { rerender } = renderIntl(slot(SAVED));
+        await user.click(screen.getByRole('button', { name: d('delete') }));
+        expect(screen.getByRole('group', { name: d('delete_confirm') })).toBeInTheDocument();
+
+        rerender(slot(undefined));
+        expect(screen.queryByRole('group', { name: d('delete_confirm') })).toBeNull();
+
+        rerender(slot(LATER));
+        expect(screen.queryByRole('group', { name: d('delete_confirm') })).toBeNull();
+        expect(screen.getByRole('button', { name: d('delete') })).toBeInTheDocument();
+        expect(deleteVaultDocument).not.toHaveBeenCalled();
+    });
+
+    it('closes when the document is replaced while it is open', async () => {
+        const user = userEvent.setup();
+        const { rerender } = renderIntl(slot(SAVED));
+        await user.click(screen.getByRole('button', { name: d('delete') }));
+
+        rerender(slot(LATER));
+        expect(screen.queryByRole('group', { name: d('delete_confirm') })).toBeNull();
+    });
+
+    it('stays open when the list is read again with the same document', async () => {
+        const user = userEvent.setup();
+        const { rerender } = renderIntl(slot(SAVED));
+        await user.click(screen.getByRole('button', { name: d('delete') }));
+
+        rerender(slot({ ...SAVED } as WorkerVaultDoc));
+        expect(screen.getByRole('group', { name: d('delete_confirm') })).toBeInTheDocument();
+    });
+
+    it('puts focus on the upload button when the question closes under it', async () => {
+        const user = userEvent.setup();
+        const { rerender } = renderIntl(slot(SAVED));
+        await user.click(screen.getByRole('button', { name: d('delete') }));
+        expect(screen.getByRole('button', { name: d('delete_cancel') })).toHaveFocus();
+
+        rerender(slot(undefined));
+        expect(screen.getByRole('button', { name: d('upload') })).toHaveFocus();
+    });
+});
