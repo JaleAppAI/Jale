@@ -53,6 +53,13 @@ beforeAll(() => {
 });
 afterAll(() => rectsSpy.mockRestore());
 
+// The player's own chunk, fetched up front as the provider's preload does in
+// the app, so a play is decided within one `settle()` and a check that
+// nothing opened is not passed just because the chunk was still on its way.
+beforeAll(async () => {
+    await import('@/components/tutorials/TutorialHost');
+});
+
 beforeEach(() => {
     resetHarness();
     window.sessionStorage.clear();
@@ -75,10 +82,13 @@ function Providers({ children }: { children: ReactNode }) {
     );
 }
 
+/** Two separate acts: the second commits whatever the first one's promises woke up (the player's chunk). */
 async function settle() {
-    await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    for (let turn = 0; turn < 2; turn += 1) {
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+    }
 }
 
 function deferred<T>() {

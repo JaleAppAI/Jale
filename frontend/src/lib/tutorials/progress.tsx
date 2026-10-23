@@ -1,7 +1,9 @@
 'use client';
 
 import {
+    Suspense,
     createContext,
+    lazy,
     use,
     useCallback,
     useEffect,
@@ -25,9 +27,7 @@ import {
     type TutorialRecord,
     type TutorialRole,
 } from '@/lib/api/tutorials';
-import { TutorialPlayer } from '@/components/tutorials/TutorialPlayer';
 import { useOverlayRegistry } from './overlay';
-import { getTutorial } from './registry';
 import { clearRecordFailed, readRecordFailed, writeRecordFailed } from './storage';
 import type { TutorialSceneProps } from './types';
 
@@ -73,6 +73,14 @@ import type { TutorialSceneProps } from './types';
  *    scroll lock and the focus back, so the host opens from the real button
  *    and locks the page afresh;
  *  - only AUTO plays record their outcome. Replays never do.
+ *
+ * THE PLAYER'S OWN CHUNK. The player, every tutorial's content and the scene
+ * kit load with `React.lazy` (`TutorialHost`), first when the progress read
+ * succeeds (a tutorial may auto-open on this page) and at the latest when a
+ * play is asked for. Public pages never fetch them. A pending play waits for
+ * the chunk, unseen, and the last check above runs once it has arrived, right
+ * before the dialog mounts. A chunk that cannot be fetched refuses the play,
+ * so a "before the host" host simply opens, and the next play asks again.
  */
 
 export type TutorialProgressStatus =
@@ -192,6 +200,21 @@ function createPlayStore() {
         },
     };
 }
+
+type TutorialHostModule = typeof import('@/components/tutorials/TutorialHost');
+
+let hostModule: Promise<TutorialHostModule> | null = null;
+
+/** The player's chunk, fetched once; a failed fetch is forgotten so the next play retries. */
+function loadTutorialHost(): Promise<TutorialHostModule> {
+    hostModule ??= import('@/components/tutorials/TutorialHost').catch((error: unknown) => {
+        hostModule = null;
+        throw error;
+    });
+    return hostModule;
+}
+
+const TutorialHost = lazy(loadTutorialHost);
 
 const TutorialProgressContext = createContext<TutorialProgressValue | null>(null);
 
@@ -317,22 +340,40 @@ export function TutorialProgressProvider({ children }: { children: ReactNode }) 
         plays.reset();
     }, [sessionCleared, plays]);
 
-    // THE LAST CHECK before a pending play shows. A passive effect, so every
-    // overlay that opened in the commit that queued the play (wherever it
-    // sits in the tree) has already registered in its layout phase.
+    // A tutorial may auto-open on this page: fetch the player now, so it
+    // opens without a wait. A failure here is retried when a play asks.
+    useEffect(() => {
+        if (status === 'ready') loadTutorialHost().catch(() => {});
+    }, [status]);
+
+    // THE LAST CHECK before a pending play shows. It starts from a passive
+    // effect, so every overlay that opened in the commit that queued the
+    // play (wherever it sits in the tree) has already registered in its
+    // layout phase, and it is made only once the player's chunk is in, so an
+    // overlay that opened while the chunk loaded counts too. A play
+    // cancelled or replaced meanwhile is left alone.
     const pending = playState.pending;
     useEffect(() => {
         if (pending === null) return;
-        const refused = plays.settle(
-            (play) =>
-                !getTutorial(play.id)?.slides.length ||
-                (play.mode === 'auto' && (overlays?.isPresent() ?? false)),
+        let current = true;
+        const decide = (loaded: boolean) => {
+            if (!current) return;
+            const refused = plays.settle(
+                (play) => !loaded || (play.mode === 'auto' && (overlays?.isPresent() ?? false)),
+            );
+            if (refused) {
+                refused.onRefused?.();
+                // Nothing showed, so the host it was to play before opens now.
+                refused.then?.();
+            }
+        };
+        loadTutorialHost().then(
+            () => decide(true),
+            () => decide(false),
         );
-        if (refused) {
-            refused.onRefused?.();
-            // Nothing showed, so the host it was to play before opens now.
-            refused.then?.();
-        }
+        return () => {
+            current = false;
+        };
     }, [pending, plays, overlays]);
 
     // A host waiting on the play that just ended. This runs after the commit
@@ -405,6 +446,11 @@ export function TutorialProgressProvider({ children }: { children: ReactNode }) 
         [plays, recordOutcome],
     );
 
+    // A tutorial with nothing to show: the play ends, recording nothing.
+    const onUnavailable = useCallback(() => {
+        plays.finish();
+    }, [plays]);
+
     const value = useMemo<TutorialProgressValue>(
         () => ({
             shellRole,
@@ -424,18 +470,20 @@ export function TutorialProgressProvider({ children }: { children: ReactNode }) 
     );
 
     const active = playState.active;
-    const activeDefinition = active !== null ? getTutorial(active.id) : undefined;
 
     return (
         <TutorialProgressContext value={value}>
             {children}
-            {active !== null && activeDefinition ? (
-                <TutorialPlayer
-                    key={active.seq}
-                    definition={activeDefinition}
-                    vars={active.vars}
-                    onDismiss={onDismiss}
-                />
+            {active !== null ? (
+                <Suspense fallback={null}>
+                    <TutorialHost
+                        key={active.seq}
+                        id={active.id}
+                        vars={active.vars}
+                        onDismiss={onDismiss}
+                        onUnavailable={onUnavailable}
+                    />
+                </Suspense>
             ) : null}
         </TutorialProgressContext>
     );
