@@ -73,6 +73,8 @@ describe('ApiStack', () => {
       employerResource: api.employerResource,
       employerUserPoolId: auth.employerPool.userPool.userPoolId,
       employerUserPoolArn: auth.employerPool.userPool.userPoolArn,
+      teamManagementEnabled: false,
+      publicSiteBaseUrl: 'https://jaleapp.ai',
     });
     // ReferralsStack must be created so its routes (and the /public/jobs
     // throttle entries) are visible in the ApiStack template.
@@ -1027,6 +1029,57 @@ describe('ApiStack', () => {
         }),
       },
     });
+  });
+
+  // Phase 3 (Task 10): the handler resolves the caller's employer actor
+  // before the cap check, so the Lambda connects as the request login. The
+  // shared lambdaSg is the one RdsSg admits on 5432 (NetworkStack).
+  test('generate-description has the jale_api env', () => {
+    const fns = Object.entries(template.findResources('AWS::Lambda::Function', {
+      Properties: { Description: 'Employer generate description endpoint' },
+    })) as Array<[string, any]>;
+    expect(fns).toHaveLength(1);
+    const [, fn] = fns[0];
+    expect(fn.Properties.Environment.Variables).toEqual(expect.objectContaining({
+      DB_SECRET_ARN: 'jale/api/db',
+      DB_EXPECTED_LOGIN: 'jale_api',
+    }));
+    expect(JSON.stringify(fn.Properties.VpcConfig.SecurityGroupIds)).toMatch(/LambdaSg/);
+    expect(JSON.stringify(fn.Properties.VpcConfig.SecurityGroupIds)).not.toMatch(/BillingLambdaSg/);
+
+    const roleRef = fn.Properties.Role['Fn::GetAtt'][0];
+    const secretStatements = (Object.values(template.findResources('AWS::IAM::Policy')) as any[])
+      .filter((policy) => JSON.stringify(policy.Properties.Roles).includes(`"Ref":"${roleRef}"`))
+      .flatMap((policy) => policy.Properties.PolicyDocument.Statement)
+      .filter((statement: any) => JSON.stringify(statement.Action).includes('secretsmanager:GetSecretValue'));
+    expect(JSON.stringify(secretStatements.map((statement: any) => statement.Resource))).toContain('secret:jale/api/db');
+  });
+
+  test('the three team throttles are in the one MethodSettings override', () => {
+    const stages = template.findResources('AWS::ApiGateway::Stage');
+    const methodSettings: any[] = (Object.values(stages)[0] as any).Properties.MethodSettings;
+
+    // Membership is served by the team dispatcher, so its POST throttle IS
+    // the /employer/team/{action} POST entry (the plan's 5 / 2 for both).
+    const expected: Array<[string, string, number, number]> = [
+      ['/employer/team/{action}', 'POST', 5, 2],
+      // Unauthenticated, and reaches the database on every call: Ivan's
+      // ruling, 5 rps with a burst of 10.
+      ['/employer/invites/{token}', 'GET', 10, 5],
+      ['/employer/invites/{token}', 'POST', 10, 5],
+    ];
+    for (const [resourcePath, httpMethod, burst, rate] of expected) {
+      const matches = methodSettings.filter(
+        (s) => s.ResourcePath === resourcePath && s.HttpMethod === httpMethod,
+      );
+      expect(matches).toEqual([{
+        ResourcePath: resourcePath,
+        HttpMethod: httpMethod,
+        ThrottlingBurstLimit: burst,
+        ThrottlingRateLimit: rate,
+      }]);
+    }
+    expect(methodSettings.filter((s) => s.ResourcePath === '/employer/membership')).toEqual([]);
   });
 
   // ── S20 T-2b: employer digest settings (migration 082) ───────────────────

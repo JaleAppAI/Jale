@@ -345,11 +345,11 @@ async function joinOrStartCompany(
     } else if (code === LOCK_NOT_AVAILABLE) {
       console.warn(JSON.stringify({ event: 'post_confirmation_invite_deferred', step, reason: 'lock_timeout', cognitoSub }));
     } else if (code === UNDEFINED_FUNCTION) {
-      console.error(
-        `[PostConfirm] CRITICAL: employer ${cognitoSub} joined no company: `
+      // One line with the console call: AuthStack's PostConfirmationInviteFailed
+      // filter matches "joined no company" (metric-filter-patterns.test.ts).
+      console.error(`[PostConfirm] CRITICAL: employer ${cognitoSub} joined no company: `
         + `jale_cap.org_team_invite_accept${step === 'email' ? '_email' : ''} is missing (migration 133 not applied). `
-        + 'The users row is kept; the person can accept from the invite link or start a company.',
-      );
+        + 'The users row is kept; the person can accept from the invite link or start a company.');
     } else {
       console.error(JSON.stringify({ event: 'post_confirmation_invite_failed', step, code: errorCode(err), cognitoSub }));
     }

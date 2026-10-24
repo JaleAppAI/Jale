@@ -8,9 +8,11 @@ import { checkCompliance } from '../legal/check-compliance';
 import { isMembershipConflict, isTeamManagementEnabled } from '../lib/org-team';
 
 /**
- * /employer/membership, for any employer login.
+ * /employer/team/membership, for any employer login. Served through the team
+ * dispatcher (employer-team.ts), which answers 404 for every route while the
+ * team-management flag is off; this handler reads nothing from the path.
  *
- * GET (not flagged): the caller's own membership from 134's
+ * GET (not flagged here): the caller's own membership from 134's
  * org_team_membership(). None: 403 no_organization. Suspended or removed:
  * 403 membership_inactive with the status and whether a live invite of the
  * same company waits for them. Active: 200 { userId, organizationId, role,

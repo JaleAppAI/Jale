@@ -54,6 +54,25 @@ export interface JaleAppOptions {
   readonly accessManifest?: AccessManifest;
 }
 
+/**
+ * A context value, else the environment variable, else ''. The one lookup
+ * the composition's operator-set values go through (`ctx` below).
+ */
+function contextOrEnv(app: cdk.App, key: string, envVar?: string): string {
+  return app.node.tryGetContext(key) ?? (envVar ? process.env[envVar] : undefined) ?? '';
+}
+
+/**
+ * Team management (employer organizations, Phase 3): `-c
+ * teamManagementEnabled=true` or JALE_TEAM_MANAGEMENT_ENABLED=true, context
+ * first. Anything but 'true' (an unset GitHub variable is '') is off, the
+ * default. The deploy workflow passes the GitHub environment's variable on
+ * every deploy, so the value persists from one deploy to the next.
+ */
+export function resolveTeamManagementEnabled(app: cdk.App): boolean {
+  return String(contextOrEnv(app, 'teamManagementEnabled', 'JALE_TEAM_MANAGEMENT_ENABLED')).trim() === 'true';
+}
+
 export function buildJaleApp(app: cdk.App, options: JaleAppOptions = {}): void {
   const accessManifest = options.accessManifest ?? defaultAccessManifest();
   // Before any stack: each `dedicatedDbLogin` in this app checks its login
@@ -225,6 +244,18 @@ export function buildJaleApp(app: cdk.App, options: JaleAppOptions = {}): void {
   );
 
   if (!bastionOnly) {
+  // Operator-set values: CDK context first, then the JALE_* environment
+  // variable the deploy workflow exports, else ''. FrontendStack's NEXT_PUBLIC_*
+  // values below come through it too:
+  //   1. CDK context: -c workerPoolId=us-east-1_xxx -c workerClientId=xxx ...
+  //   2. Process env: $env:JALE_WORKER_POOL_ID = '...'
+  // For local Docker smoke tests, set them via $env:* in PowerShell.
+  const ctx = (key: string, envVar?: string): string => contextOrEnv(app, key, envVar);
+
+  // Resolved ONCE, before the first stack that reads it, so the trigger, the
+  // team Lambdas and the frontend bundle can never disagree.
+  const teamManagementEnabled = resolveTeamManagementEnabled(app);
+
   const auth = new AuthStack(app, 'JaleAuthStack', {
     env,
     vpc: network.vpc,
@@ -232,6 +263,8 @@ export function buildJaleApp(app: cdk.App, options: JaleAppOptions = {}): void {
     lambdaSg: network.lambdaSg,
     // The same monitored ops topic the other stacks' alarms use.
     alarmTopicArn: app.node.tryGetContext('whatsappAlarmTopicArn'),
+    // Post-confirmation's invite accept at sign-up.
+    teamManagementEnabled,
   });
 
   const ai = new AiStack(app, 'JaleAiStack', {
@@ -295,6 +328,11 @@ export function buildJaleApp(app: cdk.App, options: JaleAppOptions = {}): void {
     // depends on nothing in BillingStack, so this adds an edge, not a cycle.
     employerUserPoolId: auth.employerPool.userPool.userPoolId,
     employerUserPoolArn: auth.employerPool.userPool.userPoolArn,
+    // Team management (Phase 3): the team, invite lookup and accept Lambdas.
+    // It does not gate the processor or the sync.
+    teamManagementEnabled,
+    // The invite link's origin; BillingStack fails the synth unless https.
+    publicSiteBaseUrl: ctx('publicSiteBaseUrl', 'JALE_PUBLIC_SITE_BASE_URL'),
   });
 
   new ReferralsStack(app, 'JaleReferralsStack', {
@@ -493,13 +531,7 @@ export function buildJaleApp(app: cdk.App, options: JaleAppOptions = {}): void {
   // Pass surveyOriginDomain via context to enable /survey/* routing to Amplify.
   //
   // NEXT_PUBLIC_* values must be present at build time (baked into JS bundle).
-  // They can come from:
-  //   1. CDK context: -c workerPoolId=us-east-1_xxx -c workerClientId=xxx ...
-  //   2. Process env: $env:JALE_WORKER_POOL_ID = '...'
-  // For local Docker smoke tests, set them via $env:* in PowerShell.
-  const ctx = (key: string, envVar?: string): string =>
-    app.node.tryGetContext(key) ?? (envVar ? process.env[envVar] : undefined) ?? '';
-
+  // They come through `ctx` (declared above AuthStack).
   if (!skipFrontend) {
     const apiOriginDomainName = ctx('apiOriginDomainName', 'JALE_API_ORIGIN_DOMAIN_NAME')
       || `${api.api.restApiId}.execute-api.${env.region}.amazonaws.com`;
@@ -532,6 +564,8 @@ export function buildJaleApp(app: cdk.App, options: JaleAppOptions = {}): void {
       // CloudFront publishes its metrics. With skipFrontend there is no such
       // alarm.
       adminDistributionId: adminStack.distribution.distributionId,
+      // NEXT_PUBLIC_TEAM_MANAGEMENT_ENABLED, the same value as the backend's.
+      teamManagementEnabled,
       crossRegionReferences: true,
     });
   }

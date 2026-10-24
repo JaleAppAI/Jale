@@ -174,7 +174,16 @@ const CEILING = 470;
 // four Methods and two OPTIONS preflights, four Lambda::Permissions, and the
 // one function serving both (Function, execution Role, its default Policy and
 // log group): 16 resources, leaving 17 of headroom against the 470 gate.
-const MEASURED_RESOURCES = 453;
+// → 467 once Phase 3's team, invites and membership routes (employer
+// organizations, JaleBillingStack's Lambdas) added the path-only `team` and
+// `invites` (one Resource each), `{action}` and `{token}` with their OPTIONS
+// preflights, GET + POST on each, and four Lambda::Permissions: 14 resources.
+// Membership is NOT a resource of its own — it is `/employer/team/membership`
+// on the team dispatcher — because `/employer/membership` (Resource, OPTIONS,
+// GET, POST, two Permissions) measured 473, over the gate. Identical with the
+// team-management flag on and off. 3 of headroom left: the next route needs
+// the planned JaleApiStack split, not a bump of the gate.
+const MEASURED_RESOURCES = 467;
 
 /**
  * Every `AWS::ApiGateway::Method` in the template, grouped by the resource it
@@ -252,7 +261,8 @@ describe('JaleApiStack resource ceiling (real bin/jale-app.ts composition)', () 
   let apiTemplate: Template;
   let producerTemplates: Record<string, Template>;
   let stackIds: string[];
-  let savedEnv: { account?: string; region?: string; renamePhase1?: string };
+  let offApp: cdk.App;
+  let savedEnv: { account?: string; region?: string; renamePhase1?: string; teamManagement?: string };
 
   beforeAll(() => {
     // Pinned, not inherited: a developer with a different account/region
@@ -267,16 +277,13 @@ describe('JaleApiStack resource ceiling (real bin/jale-app.ts composition)', () 
     // api-stack.ts gates the legacy `/worker/jobs/{jobId}` routes on this flag;
     // a developer with it exported would measure 12 resources fewer.
     delete process.env.JALE_WORKER_JOBS_RENAME_PHASE1;
+    // Measured with team management OFF, the production default; the flag-on
+    // synth below must match it.
+    savedEnv.teamManagement = process.env.JALE_TEAM_MANAGEMENT_ENABLED;
+    delete process.env.JALE_TEAM_MANAGEMENT_ENABLED;
 
-    const app = new cdk.App({
-      context: cliContext(),
-      // The CLI turns version reporting on by default, which adds one
-      // `AWS::CDK::Metadata` resource to every stack. `new cdk.App()` does
-      // not — without this the count is 417 where the deploy sees 418, and
-      // the gate would be measuring a template that never ships.
-      analyticsReporting: true,
-    });
-    buildJaleApp(app);
+    const app = composeApp();
+    offApp = app;
 
     stackIds = app.node.children
       .filter((child): child is cdk.Stack => cdk.Stack.isStack(child))
@@ -298,6 +305,45 @@ describe('JaleApiStack resource ceiling (real bin/jale-app.ts composition)', () 
     else process.env.CDK_DEFAULT_REGION = savedEnv.region;
     if (savedEnv.renamePhase1 === undefined) delete process.env.JALE_WORKER_JOBS_RENAME_PHASE1;
     else process.env.JALE_WORKER_JOBS_RENAME_PHASE1 = savedEnv.renamePhase1;
+    if (savedEnv.teamManagement === undefined) delete process.env.JALE_TEAM_MANAGEMENT_ENABLED;
+    else process.env.JALE_TEAM_MANAGEMENT_ENABLED = savedEnv.teamManagement;
+  });
+
+  /** The real composition with the CI production context (plus `extra`). */
+  function composeApp(extra: Record<string, unknown> = {}): cdk.App {
+    const app = new cdk.App({
+      context: { ...cliContext(), ...extra },
+      // The CLI turns version reporting on by default, which adds one
+      // `AWS::CDK::Metadata` resource to every stack. `new cdk.App()` does
+      // not — without this the count is 417 where the deploy sees 418, and
+      // the gate would be measuring a template that never ships.
+      analyticsReporting: true,
+    });
+    buildJaleApp(app);
+    return app;
+  }
+
+  /** TEAM_MANAGEMENT_ENABLED of every Lambda in `stackId` that carries it. */
+  function teamFlags(app: cdk.App, stackId: string): string[] {
+    const template = Template.fromStack(app.node.findChild(stackId) as cdk.Stack);
+    return (Object.values(template.findResources('AWS::Lambda::Function')) as any[])
+      .map((fn) => fn.Properties.Environment?.Variables?.TEAM_MANAGEMENT_ENABLED)
+      .filter((value): value is string => value !== undefined);
+  }
+
+  it('the resource count is identical with the flag on and off', () => {
+    const flagOn = composeApp({ teamManagementEnabled: 'true' });
+    const onTemplate = Template.fromStack(flagOn.node.findChild('JaleApiStack') as cdk.Stack);
+    const count = (template: Template) => Object.keys(template.toJSON().Resources).length;
+    expect(count(onTemplate)).toBe(count(apiTemplate));
+    expect(count(onTemplate)).toBe(MEASURED_RESOURCES);
+
+    // And the one resolved value reaches every consumer: the three team
+    // Lambdas, the post-confirmation trigger, each the same way.
+    expect(teamFlags(flagOn, 'JaleBillingStack')).toEqual(['true', 'true', 'true']);
+    expect(teamFlags(flagOn, 'JaleAuthStack')).toEqual(['true']);
+    expect(teamFlags(offApp, 'JaleBillingStack')).toEqual(['false', 'false', 'false']);
+    expect(teamFlags(offApp, 'JaleAuthStack')).toEqual(['false']);
   });
 
   it('composes the full app, not a subset', () => {
@@ -529,6 +575,19 @@ describe('JaleApiStack resource ceiling (real bin/jale-app.ts composition)', () 
     ['POST', '/employer/tutorials', 'EmployerAuthorizer'],
     ['GET', '/worker/tutorials', 'WorkerAuthorizer'],
     ['POST', '/worker/tutorials', 'WorkerAuthorizer'],
+    // Phase 3 team management (JaleBillingStack's Lambdas): every owner
+    // operation and the caller's membership on one `{action}` node, and the
+    // invite link's public read beside its signed-in accept.
+    ['GET', '/employer/team/members', 'EmployerAuthorizer'],
+    ['GET', '/employer/team/membership', 'EmployerAuthorizer'],
+    ['POST', '/employer/team/membership', 'EmployerAuthorizer'],
+    ['POST', '/employer/team/invite', 'EmployerAuthorizer'],
+    ['POST', '/employer/team/resend', 'EmployerAuthorizer'],
+    ['POST', '/employer/team/revoke', 'EmployerAuthorizer'],
+    ['POST', '/employer/team/remove', 'EmployerAuthorizer'],
+    ['POST', '/employer/team/reassign', 'EmployerAuthorizer'],
+    ['GET', '/employer/invites/{token}', 'NONE'],
+    ['POST', '/employer/invites/{token}', 'EmployerAuthorizer'],
   ];
 
   /**

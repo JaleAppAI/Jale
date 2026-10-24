@@ -184,8 +184,9 @@ export async function applyMemberAccess(
     if (done) {
       result.converged += 1;
     } else {
-      console.error(JSON.stringify({
-        event: 'member_access_failed',
+      // `event` on the console line: BillingStack's TeamMemberAccessFailed
+      // filter matches it (metric-filter-patterns.test.ts).
+      console.error(JSON.stringify({ event: 'member_access_failed',
         cognitoSub: change.cognitoSub,
         enabled: change.enabled,
         error: errorName(lastError),

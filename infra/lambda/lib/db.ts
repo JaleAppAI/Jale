@@ -326,9 +326,44 @@ export function rdsSslConfig(): PoolConfig['ssl'] {
 let pool: Pool | undefined;
 let pendingPool: Promise<Pool> | undefined;
 
+const MAX_SESSION_TIMEOUT_MS = 60_000;
+
+/**
+ * Optional per-Lambda session timeouts for the request pool, sent by pg as
+ * startup parameters so they hold for every statement on the connection:
+ *
+ *   DB_STATEMENT_TIMEOUT_MS  -> statement_timeout
+ *   DB_LOCK_TIMEOUT_MS       -> lock_timeout
+ *
+ * Unset means today's behaviour exactly (no setting is sent; the login's own
+ * defaults apply). A Lambda behind API Gateway's 29 s cap sets them so a
+ * statement, or a wait on a company lock, ends with an error well before
+ * the Lambda or the gateway times out. A value that is not a whole number of
+ * milliseconds from 1 to 60000 fails the pool build, before any secret is read,
+ * rather than being silently ignored.
+ */
+function sessionTimeouts(env: NodeJS.ProcessEnv): Pick<PoolConfig, 'statement_timeout' | 'lock_timeout'> {
+  const read = (name: string): number | undefined => {
+    const raw = env[name];
+    if (raw === undefined) return undefined;
+    const value = /^[0-9]+$/.test(raw) ? Number(raw) : NaN;
+    if (!Number.isInteger(value) || value < 1 || value > MAX_SESSION_TIMEOUT_MS) {
+      throw new Error(`DB_TIMEOUT_INVALID: ${name} must be a whole number of milliseconds from 1 to ${MAX_SESSION_TIMEOUT_MS}`);
+    }
+    return value;
+  };
+  const statementTimeout = read('DB_STATEMENT_TIMEOUT_MS');
+  const lockTimeout = read('DB_LOCK_TIMEOUT_MS');
+  return {
+    ...(statementTimeout === undefined ? {} : { statement_timeout: statementTimeout }),
+    ...(lockTimeout === undefined ? {} : { lock_timeout: lockTimeout }),
+  };
+}
+
 export async function getDbPool(): Promise<Pool> {
   if (pool) return pool;
   pendingPool ??= (async () => {
+    const timeouts = sessionTimeouts(process.env);
     const expectedLogin = requireExpectedLogin(process.env.DB_EXPECTED_LOGIN, 'app');
     const secret = await getDbSecret();
     requireSecretLogin(secret.username, expectedLogin, 'app');
@@ -342,6 +377,7 @@ export async function getDbPool(): Promise<Pool> {
       idleTimeoutMillis: 10000,
       connectionTimeoutMillis: 2000,
       ssl: rdsSslConfig(),
+      ...timeouts,
     }, expectedLogin, 'app');
 
     // Prevent unhandled promise rejections on idle client errors
