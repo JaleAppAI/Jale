@@ -6,17 +6,26 @@ function clientWith(rows: unknown[]) {
   return { query: jest.fn().mockResolvedValue({ rows }) } as unknown as import('pg').PoolClient & { query: jest.Mock };
 }
 
-const ROW = { organization_id: ORG, active_jobs: 3, templates: 2, active_foremen: 1, suspended_foremen: 1 };
+const ROW = { organization_id: ORG, active_jobs: 3, templates: 2, active_foremen: 1, suspended_foremen: 1, pending_invites: 0 };
 
 describe('readCompanyUsage', () => {
   it('reads the caller\'s company usage through the definer, without the lock by default', async () => {
     const client = clientWith([ROW]);
     expect(await readCompanyUsage(client)).toEqual({
-      organizationId: ORG, activeJobs: 3, templates: 2, activeForemen: 1, suspendedForemen: 1,
+      organizationId: ORG, activeJobs: 3, templates: 2, activeForemen: 1, suspendedForemen: 1, pendingInvites: 0,
     });
     const [sql, params] = client.query.mock.calls[0];
     expect(String(sql)).toContain('FROM jale_cap.employer_org_usage($1)');
     expect(params).toEqual([false]);
+  });
+
+  it('reads pending_invites strictly', async () => {
+    const client = clientWith([{ ...ROW, pending_invites: '2' }]);
+    expect((await readCompanyUsage(client)).pendingInvites).toBe(2);
+    expect(String(client.query.mock.calls[0][0])).toMatch(/\bpending_invites\b/);
+    await expect(readCompanyUsage(clientWith([{ ...ROW, pending_invites: null }]))).rejects.toThrow('company_usage_unavailable');
+    const { pending_invites: _omitted, ...withoutPending } = ROW;
+    await expect(readCompanyUsage(clientWith([withoutPending]))).rejects.toThrow('company_usage_unavailable');
   });
 
   it('accepts digit-string counts (pg bigint)', async () => {

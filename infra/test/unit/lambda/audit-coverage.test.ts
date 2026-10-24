@@ -43,6 +43,20 @@ const COVERAGE_EXCLUSIONS: Readonly<Record<string, string>> = {
   'api/worker-doc-confirm.ts': 'The link holder confirms an upload; the document read stays inside jale_cap.upload_token_confirm, which returns only an outcome code and the document id, so nothing personal is returned to the caller.',
   'auth/worker-web-signup.ts': 'Web sign-up; the contact lookup stays inside public.reconcile_worker_signup, which returns only the user id, so nothing personal is returned to the caller.',
   'whatsapp/status-callback.ts': 'The delivery status callback; the message lookup stays inside jale_twilio_callback.record_twilio_delivery_status, which returns only two flags and a source code, so nothing personal is returned to the caller.',
+  // Team management (employer organizations, Phase 3). The org-team definers
+  // (migrations 133, 134) read users.email to classify; what reaches the
+  // handler is listed per entry. The owner's member list is outside the
+  // covered set (Open decision 23).
+  'api/employer-team-invite-create.ts': 'The owner\'s own input comes back; the users lookup stays inside jale_cap.org_team_invite_create, which returns an outcome, the typed email and a sub.',
+  'api/employer-team-invite-resend.ts': 'The owner\'s own input comes back; the users lookup stays inside jale_cap.org_team_invite_resend, which returns an outcome, the typed email and a sub.',
+  'api/employer-team-invite-revoke.ts': 'The users lookup stays inside jale_cap.org_team_invite_revoke, which returns an outcome and a sub only.',
+  'api/employer-invite-lookup.ts': 'The link holder sees the invite\'s own email and company; the users check inside jale_cap.org_team_invite_lookup returns only a flag.',
+  'api/employer-invite-accept.ts': 'The email match stays inside jale_cap.org_team_invite_accept, which returns an outcome and the company id.',
+  'api/employer-membership.ts': 'The caller\'s own role, status and company name, and a flag, from jale_cap.org_team_membership.',
+  'api/employer-team-list.ts': 'The owner reads their own company\'s members\' names and work emails (jale_cap.org_team_members); outside the covered set (Open decision 23).',
+  // The team dispatcher (api/employer-team.ts) needs no entry: the scan stops
+  // at modules that export `handler`, so a dispatcher reaches none of its
+  // delegates' reads (as for every other *-dispatch.ts).
 };
 
 const registered = new Map<string, string>();
