@@ -14,7 +14,30 @@ jest.mock('@aws-sdk/client-dynamodb', () => ({
   UpdateItemCommand: jest.fn().mockImplementation((input) => input),
 }));
 
+jest.mock('../../../../lambda/lib/db');
+jest.mock('../../../../lambda/lib/employer-actor', () => ({
+  ...jest.requireActual('../../../../lambda/lib/employer-actor'),
+  resolveEmployerActor: jest.fn(),
+}));
+
 import { handler, checkGenerationCap } from '../../../../lambda/api/employer-generate-description';
+import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
+import { resolveEmployerActor } from '../../../../lambda/lib/employer-actor';
+
+const mockGetDbPool = getDbPool as jest.Mock;
+const mockSetRlsContext = setRlsContext as jest.Mock;
+const mockResolveEmployerActor = resolveEmployerActor as jest.Mock;
+const mockDbQuery = jest.fn();
+const mockDbRelease = jest.fn();
+const ACTIVE_ACTOR = {
+  ok: true,
+  actor: {
+    userId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    organizationId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    role: 'foreman',
+    scopeUserIds: ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'],
+  },
+};
 
 const bilingualBedrockResult = (en: string, es: string) => ({
   output: { message: { content: [{ text: JSON.stringify({ description_en: en, description_es: es }) }] } },
@@ -34,6 +57,97 @@ describe('employer-generate-description', () => {
     process.env.ALLOWED_ORIGIN = 'https://jaleapp.ai';
     // Default: cap check always allows unless a test overrides it.
     mockDynamoSend.mockResolvedValue({ Attributes: { count: { N: '1' } } });
+    // Default: an active member of a company.
+    mockDbQuery.mockReset().mockResolvedValue({ rows: [] });
+    mockGetDbPool.mockResolvedValue({ connect: jest.fn().mockResolvedValue({ query: mockDbQuery, release: mockDbRelease }) });
+    mockResolveEmployerActor.mockResolvedValue(ACTIVE_ACTOR);
+  });
+
+  // ── Phase 3: only an active member of a company drafts descriptions ────
+
+  describe('membership check', () => {
+    it.each([
+      ['a removed member', { ok: false, status: 403, error: 'membership_inactive', membershipStatus: 'removed' },
+        { error: 'membership_inactive', membershipStatus: 'removed' }],
+      ['a suspended member', { ok: false, status: 403, error: 'membership_inactive', membershipStatus: 'suspended' },
+        { error: 'membership_inactive', membershipStatus: 'suspended' }],
+      ['a login with no company', { ok: false, status: 403, error: 'no_organization' }, { error: 'no_organization' }],
+    ])('%s: 403 with the actor failure and no Bedrock or cap call', async (_label, failure, body) => {
+      mockResolveEmployerActor.mockResolvedValue(failure);
+
+      const result = await handler(makeEvent({ trade_category: 'plumber' }));
+
+      expect(result.statusCode).toBe(403);
+      expect(JSON.parse(result.body)).toEqual(body);
+      expect(mockDynamoSend).not.toHaveBeenCalled();
+      expect(mockBedrockSend).not.toHaveBeenCalled();
+      expect(mockDbQuery).toHaveBeenCalledWith('COMMIT');
+      expect(mockDbRelease).toHaveBeenCalledTimes(1);
+    });
+
+    // The brief's case: a removed member whose Cognito user a re-invite
+    // enabled can sign in, but must not reach Bedrock before accepting.
+    it('a removed member: 403 membership_inactive and no Bedrock or cap call', async () => {
+      mockResolveEmployerActor.mockResolvedValue({ ok: false, status: 403, error: 'membership_inactive', membershipStatus: 'removed' });
+
+      const result = await handler(makeEvent({ trade_category: 'plumber' }));
+
+      expect(result.statusCode).toBe(403);
+      expect(JSON.parse(result.body).error).toBe('membership_inactive');
+      expect(mockDynamoSend).not.toHaveBeenCalled();
+      expect(mockBedrockSend).not.toHaveBeenCalled();
+    });
+
+    it('a user row that is not an employer: 409 user_not_provisioned, no Bedrock or cap call', async () => {
+      mockResolveEmployerActor.mockResolvedValue({ ok: false, status: 409, error: 'user_not_provisioned' });
+
+      const result = await handler(makeEvent({ trade_category: 'plumber' }));
+
+      expect(result.statusCode).toBe(409);
+      expect(JSON.parse(result.body)).toEqual({ error: 'user_not_provisioned' });
+      expect(mockDynamoSend).not.toHaveBeenCalled();
+      expect(mockBedrockSend).not.toHaveBeenCalled();
+    });
+
+    it('an active member: unchanged flow', async () => {
+      mockBedrockSend.mockResolvedValueOnce(bilingualBedrockResult('EN posting.', 'ES publicacion.'));
+
+      const result = await handler(makeEvent({ trade_category: 'plumber' }));
+
+      expect(result.statusCode).toBe(200);
+      expect(JSON.parse(result.body)).toEqual({ description_en: 'EN posting.', description_es: 'ES publicacion.' });
+      // BEGIN, the caller's RLS context, the actor, COMMIT -- and the client is
+      // back in the pool before the cap check and the model call.
+      expect(mockDbQuery.mock.calls.map(([sql]) => sql)).toEqual(['BEGIN', 'COMMIT']);
+      expect(mockSetRlsContext).toHaveBeenCalledWith(expect.anything(), 'employer-sub-1');
+      expect(mockResolveEmployerActor).toHaveBeenCalledWith(expect.anything(), 'employer-sub-1');
+      expect(mockSetRlsContext.mock.invocationCallOrder[0]).toBeLessThan(mockResolveEmployerActor.mock.invocationCallOrder[0]);
+      expect(mockDbRelease).toHaveBeenCalledTimes(1);
+      expect(mockDbRelease.mock.invocationCallOrder[0]).toBeLessThan(mockDynamoSend.mock.invocationCallOrder[0]);
+      expect(mockDynamoSend).toHaveBeenCalledTimes(1);
+      expect(mockBedrockSend).toHaveBeenCalledTimes(1);
+    });
+
+    it('an invalid body is answered 400 before the database is touched', async () => {
+      const result = await handler(makeEvent({ trade_category: 'roofer' }));
+      expect(result.statusCode).toBe(400);
+      expect(mockGetDbPool).not.toHaveBeenCalled();
+    });
+
+    it('a database failure: 500 internal_error, rolled back and released, no Bedrock or cap call', async () => {
+      const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      mockResolveEmployerActor.mockRejectedValue(new Error('connection reset'));
+
+      const result = await handler(makeEvent({ trade_category: 'plumber' }));
+      errorSpy.mockRestore();
+
+      expect(result.statusCode).toBe(500);
+      expect(JSON.parse(result.body)).toEqual({ error: 'internal_error' });
+      expect(mockDbQuery).toHaveBeenCalledWith('ROLLBACK');
+      expect(mockDbRelease).toHaveBeenCalledTimes(1);
+      expect(mockDynamoSend).not.toHaveBeenCalled();
+      expect(mockBedrockSend).not.toHaveBeenCalled();
+    });
   });
 
   // ── 401 / validation-before-side-effects ──────────────────────────────
