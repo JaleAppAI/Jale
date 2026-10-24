@@ -92,6 +92,15 @@ export class World {
     return this.userIds;
   }
 
+  /**
+   * Adopts a users row or a job that a handler created (a sign-up through
+   * post-confirmation, a job posted through employer-jobs-create), so
+   * cleanup() removes it like a fixture of its own.
+   */
+  track(kind: 'user' | 'job', id: string): void {
+    (kind === 'user' ? this.userIds : this.jobIds).push(id);
+  }
+
   async employer(opts: { companyName?: string; fullName?: string } = {}): Promise<UserFixture> {
     const id = randomUUID();
     const sub = `fixture-employer-${randomUUID()}`;

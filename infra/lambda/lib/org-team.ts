@@ -101,6 +101,36 @@ export function isJobMoveRace(err: unknown): boolean {
   return false;
 }
 
+/**
+ * The team Lambdas run with a session lock_timeout and statement_timeout
+ * (DB_LOCK_TIMEOUT_MS / DB_STATEMENT_TIMEOUT_MS, lambda/lib/db.ts). A request
+ * that waited too long for the company lock (55P03 lock_not_available) or ran
+ * past the statement limit (57014 query_canceled) changed nothing: its
+ * transaction is rolled back. It is answered 503 busy, retryable, never 500.
+ */
+const DB_BUSY_CODES: ReadonlySet<string> = new Set(['55P03', '57014']);
+export const DB_BUSY_RETRY_AFTER_SECONDS = 2;
+
+export function isRetryableDbBusy(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null | undefined)?.code;
+  return typeof code === 'string' && DB_BUSY_CODES.has(code);
+}
+
+/**
+ * 503 { error: 'busy', retryable: true, retryAfterSeconds } with Retry-After,
+ * beside the handler's own headers. The wait is in the body too: the API sends
+ * no Access-Control-Expose-Headers, so a browser cannot read Retry-After.
+ */
+export function dbBusyResponse(headers: Record<string, string>): {
+  statusCode: number; headers: Record<string, string>; body: string;
+} {
+  return {
+    statusCode: 503,
+    headers: { ...headers, 'Retry-After': String(DB_BUSY_RETRY_AFTER_SECONDS) },
+    body: JSON.stringify({ error: 'busy', retryable: true, retryAfterSeconds: DB_BUSY_RETRY_AFTER_SECONDS }),
+  };
+}
+
 export type TeamOutcomeResponse = { statusCode: number; error?: string; retryAfterSeconds?: number };
 
 type OutcomeMap = Readonly<Record<string, TeamOutcomeResponse>>;

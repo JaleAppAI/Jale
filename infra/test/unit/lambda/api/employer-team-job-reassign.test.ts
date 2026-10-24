@@ -228,4 +228,27 @@ describe('employer-team-job-reassign', () => {
     expect(res.statusCode).toBe(403);
     expect(JSON.parse(res.body)).toEqual({ error: 'membership_inactive' });
   });
+
+  it.each(['55P03', '57014'])('the company lock busy (%s): 503 busy, Retry-After 2, ROLLBACK, nothing moved', async (code) => {
+    mockReadCompanyUsage.mockRejectedValue(Object.assign(new Error('lock timeout'), { code }));
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await handler(makeEvent(validBody));
+    warn.mockRestore();
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body)).toEqual({ error: 'busy', retryable: true, retryAfterSeconds: 2 });
+    expect(res.headers).toEqual(expect.objectContaining({ 'Retry-After': '2' }));
+    expect(order).toEqual(['BEGIN', 'ROLLBACK']);
+  });
+
+  it.each(['55P03', '57014'])('the move busy (%s): 503 busy, ROLLBACK', async (code) => {
+    updateResult = Object.assign(new Error('canceling statement'), { code });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await handler(makeEvent(validBody));
+    warn.mockRestore();
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body)).toEqual({ error: 'busy', retryable: true, retryAfterSeconds: 2 });
+    expect(res.headers).toEqual(expect.objectContaining({ 'Retry-After': '2' }));
+    expect(order).not.toContain('COMMIT');
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+  });
 });

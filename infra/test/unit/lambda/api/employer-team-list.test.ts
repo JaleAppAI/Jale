@@ -213,6 +213,19 @@ describe('employer-team-list', () => {
     expect(JSON.parse(res.body)).toEqual({ error: 'owner_required' });
   });
 
+  it.each(['55P03', '57014'])('the company read busy (%s): 503 busy, Retry-After 2, ROLLBACK', async (code) => {
+    mockReadCompanyUsage.mockRejectedValue(Object.assign(new Error('canceling statement'), { code }));
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await handler(makeEvent());
+    const warned = warn.mock.calls;
+    warn.mockRestore();
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body)).toEqual({ error: 'busy', retryable: true, retryAfterSeconds: 2 });
+    expect(res.headers).toEqual(expect.objectContaining({ 'Retry-After': '2' }));
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(warned).toEqual([['employer-team-list busy:', code]]);
+  });
+
   it('a usage read for another company: 500', async () => {
     mockReadCompanyUsage.mockResolvedValue({
       organizationId: 'ffffffff-ffff-4fff-8fff-ffffffffffff', activeJobs: 0, templates: 0, activeForemen: 0, suspendedForemen: 0, pendingInvites: 0,

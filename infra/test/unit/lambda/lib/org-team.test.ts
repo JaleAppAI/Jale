@@ -11,8 +11,11 @@ import {
   inviteReadResponse,
   inviteUrl,
   inviteWriteResponse,
+  DB_BUSY_RETRY_AFTER_SECONDS,
+  dbBusyResponse,
   isAssigneeRefusal,
   isJobMoveRace,
+  isRetryableDbBusy,
   isMembershipConflict,
   isTeamManagementEnabled,
   mintInviteToken,
@@ -153,6 +156,42 @@ describe('isJobMoveRace', () => {
     expect(isJobMoveRace(pgError('23514', { message: 'new row violates check constraint "x"', constraint: 'x' }))).toBe(false);
     expect(isJobMoveRace(pgError('23505', { constraint: 'job_conversations_job_employer_fkey' }))).toBe(false);
     expect(isJobMoveRace(null)).toBe(false);
+  });
+});
+
+describe('isRetryableDbBusy', () => {
+  const pgError = (code: unknown) => Object.assign(new Error('x'), { code });
+
+  it('a lock wait past lock_timeout (55P03) and a statement past statement_timeout (57014) are busy', () => {
+    expect(isRetryableDbBusy(pgError('55P03'))).toBe(true);
+    expect(isRetryableDbBusy(pgError('57014'))).toBe(true);
+  });
+
+  it('nothing else is: other SQLSTATEs, a deadlock, no code, a non-error', () => {
+    for (const code of ['40P01', '40001', '23505', '42501', 'P0001', '55P0', '57014 ', 57014, undefined]) {
+      expect(isRetryableDbBusy(pgError(code))).toBe(false);
+    }
+    expect(isRetryableDbBusy(null)).toBe(false);
+    expect(isRetryableDbBusy(undefined)).toBe(false);
+    expect(isRetryableDbBusy('55P03')).toBe(false);
+  });
+});
+
+describe('dbBusyResponse', () => {
+  it('503 { error: busy, retryable: true } with Retry-After: 2 beside the given headers', () => {
+    expect(DB_BUSY_RETRY_AFTER_SECONDS).toBe(2);
+    const res = dbBusyResponse({ 'Access-Control-Allow-Origin': 'https://app.example.test' });
+    expect(res).toEqual({
+      statusCode: 503,
+      headers: { 'Access-Control-Allow-Origin': 'https://app.example.test', 'Retry-After': '2' },
+      body: JSON.stringify({ error: 'busy', retryable: true, retryAfterSeconds: 2 }),
+    });
+  });
+
+  it('does not change the headers object it is given', () => {
+    const headers = { 'Cache-Control': 'no-store' };
+    dbBusyResponse(headers);
+    expect(headers).toEqual({ 'Cache-Control': 'no-store' });
   });
 });
 

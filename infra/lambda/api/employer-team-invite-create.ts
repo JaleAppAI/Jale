@@ -5,7 +5,9 @@ import { checkCompliance } from '../legal/check-compliance';
 import { resolveCompanyEntitlements } from '../lib/entitlements';
 import { readCompanyUsage, CompanyUsageRefusedError } from '../lib/company-usage';
 import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
-import { inviteUrl, inviteWriteResponse, isTeamManagementEnabled, mintInviteToken } from '../lib/org-team';
+import {
+  dbBusyResponse, inviteUrl, inviteWriteResponse, isRetryableDbBusy, isTeamManagementEnabled, mintInviteToken,
+} from '../lib/org-team';
 import { applyMemberAccess } from '../lib/member-access';
 import { renderOrgInviteEmail } from '../lib/org-invite-email-template';
 
@@ -242,6 +244,11 @@ async function createInvite(cognitoSub: string, request: InviteRequest, baseUrl:
         kind: 'response',
         response: employerActorFailureResponse({ ok: false, status: 403, error: 'membership_inactive' }, CORS_HEADERS),
       };
+    }
+    if (isRetryableDbBusy(err)) {
+      // A lock or statement timeout: nothing was written. Retryable.
+      console.warn('employer-team-invite-create busy:', (err as { code: string }).code);
+      return { kind: 'response', response: dbBusyResponse(CORS_HEADERS) };
     }
     logError(err, token);
     return { kind: 'response', response: response(500, { error: 'internal_error' }) };

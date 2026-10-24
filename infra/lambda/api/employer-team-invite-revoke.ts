@@ -4,7 +4,7 @@ import { corsHeaders, errorMessage } from '../lib/http';
 import { isUuid } from '../lib/uuid';
 import { checkCompliance } from '../legal/check-compliance';
 import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
-import { inviteWriteResponse, isTeamManagementEnabled } from '../lib/org-team';
+import { dbBusyResponse, inviteWriteResponse, isRetryableDbBusy, isTeamManagementEnabled } from '../lib/org-team';
 import { applyMemberAccess } from '../lib/member-access';
 
 /**
@@ -105,6 +105,11 @@ async function revokeInvite(cognitoSub: string, inviteId: string): Promise<Outco
     return { kind: 'revoked', cognitoSub: row.cognito_sub ?? null };
   } catch (err) {
     if (client) { try { await client.query('ROLLBACK'); } catch (_) { /* the connection is gone */ } }
+    if (isRetryableDbBusy(err)) {
+      // A lock or statement timeout: nothing was written. Retryable.
+      console.warn('employer-team-invite-revoke busy:', (err as { code: string }).code);
+      return { kind: 'response', response: dbBusyResponse(CORS_HEADERS) };
+    }
     logError(err);
     return { kind: 'response', response: response(500, { error: 'internal_error' }) };
   } finally {

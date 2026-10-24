@@ -5,7 +5,7 @@ import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
 import { readCompanyUsage, CompanyUsageRefusedError } from '../lib/company-usage';
 import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
-import { isAssigneeRefusal, isTeamManagementEnabled } from '../lib/org-team';
+import { dbBusyResponse, isAssigneeRefusal, isRetryableDbBusy, isTeamManagementEnabled } from '../lib/org-team';
 import { isUuid } from '../lib/uuid';
 
 /**
@@ -137,6 +137,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return employerActorFailureResponse({ ok: false, status: 403, error: 'membership_inactive' }, CORS_HEADERS);
     }
     if (isAssigneeRefusal(err)) return response(409, { error: 'invalid_assignee' });
+    if (isRetryableDbBusy(err)) {
+      // A lock or statement timeout: nothing was moved. Retryable.
+      console.warn('employer-team-job-reassign busy:', (err as { code: string }).code);
+      return dbBusyResponse(CORS_HEADERS);
+    }
     console.error('employer-team-job-reassign error:', errorMessage(err));
     return response(500, { error: 'internal_error' });
   } finally {

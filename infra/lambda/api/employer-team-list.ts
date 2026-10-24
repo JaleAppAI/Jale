@@ -6,7 +6,7 @@ import { checkCompliance } from '../legal/check-compliance';
 import { resolveCompanyEntitlements } from '../lib/entitlements';
 import { readCompanyUsage, CompanyUsageRefusedError } from '../lib/company-usage';
 import { employerActorFailureResponse, resolveEmployerActor } from '../lib/employer-actor';
-import { isTeamManagementEnabled } from '../lib/org-team';
+import { dbBusyResponse, isRetryableDbBusy, isTeamManagementEnabled } from '../lib/org-team';
 
 /**
  * GET /employer/team/members (a delegate of the team dispatcher): the Team
@@ -139,6 +139,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (e?.code === '42501' && typeof e.message === 'string' && e.message.includes(NOT_ACTIVE_OWNER)) {
       // The caller stopped being the active owner after resolveEmployerActor read them.
       return response(403, { error: 'owner_required' });
+    }
+    if (isRetryableDbBusy(err)) {
+      // A lock or statement timeout on a read: retryable.
+      console.warn('employer-team-list busy:', (err as { code: string }).code);
+      return dbBusyResponse(CORS_HEADERS);
     }
     console.error('employer-team-list error:', errorMessage(err));
     return response(500, { error: 'internal_error' });

@@ -344,12 +344,37 @@ describe('employer-team-member-remove', () => {
   });
 
   it('an unexpected database error: 500, ROLLBACK, no Cognito call', async () => {
-    jobsUpdateError = Object.assign(new Error('lock timeout'), { code: '55P03' });
+    jobsUpdateError = Object.assign(new Error('internal'), { code: 'XX000' });
     const res = await handler(makeEvent(validBody));
     expect(res.statusCode).toBe(500);
     expect(JSON.parse(res.body)).toEqual({ error: 'internal_error' });
     expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
     expect(mockApplyMemberAccess).not.toHaveBeenCalled();
     expect(mockRelease).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['55P03', '57014'])('the company lock busy (%s): 503 busy, Retry-After 2, ROLLBACK, nothing moved, no Cognito', async (code) => {
+    mockReadCompanyUsage.mockRejectedValue(Object.assign(new Error('lock timeout'), { code }));
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await handler(makeEvent(validBody));
+    warn.mockRestore();
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body)).toEqual({ error: 'busy', retryable: true, retryAfterSeconds: 2 });
+    expect(res.headers).toEqual(expect.objectContaining({ 'Retry-After': '2' }));
+    expect(order).toEqual(['BEGIN', 'actor', 'ROLLBACK', 'release']);
+    expect(mockApplyMemberAccess).not.toHaveBeenCalled();
+  });
+
+  it.each(['55P03', '57014'])('the job move busy (%s): 503 busy, ROLLBACK, the member not removed, no Cognito', async (code) => {
+    jobsUpdateError = Object.assign(new Error('canceling statement due to statement timeout'), { code });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await handler(makeEvent(validBody));
+    warn.mockRestore();
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body)).toEqual({ error: 'busy', retryable: true, retryAfterSeconds: 2 });
+    expect(res.headers).toEqual(expect.objectContaining({ 'Retry-After': '2' }));
+    expect(order).not.toContain('remove');
+    expect(order).not.toContain('COMMIT');
+    expect(mockApplyMemberAccess).not.toHaveBeenCalled();
   });
 });

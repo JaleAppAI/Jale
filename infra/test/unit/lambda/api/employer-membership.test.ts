@@ -254,6 +254,20 @@ describe('employer-membership', () => {
       expect(res.statusCode).toBe(500);
     });
 
+    it.each(['55P03', '57014'])('the start busy (%s): 503 busy, Retry-After 2, ROLLBACK, nothing written', async (code) => {
+      membershipReads = [[]];
+      ensureResult = Object.assign(new Error('lock timeout'), { code });
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const res = await handler(makeEvent('POST', { companyName: 'Acme' }));
+      warn.mockRestore();
+      expect(res.statusCode).toBe(503);
+      expect(JSON.parse(res.body)).toEqual({ error: 'busy', retryable: true, retryAfterSeconds: 2 });
+      expect(res.headers).toEqual(expect.objectContaining({ 'Retry-After': '2' }));
+      expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+      expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
+      expect(order).not.toContain('profile');
+    });
+
     it('a login that is not an employer: 403 employer_required', async () => {
       membershipReads = [[]];
       ensureResult = Object.assign(new Error('employer_ensure_organization: only an employer login has a company'), { code: '42501' });

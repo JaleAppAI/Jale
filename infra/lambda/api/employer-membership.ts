@@ -5,7 +5,7 @@ import { setAuditContext } from '../lib/audit/context';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
-import { isMembershipConflict, isTeamManagementEnabled } from '../lib/org-team';
+import { dbBusyResponse, isMembershipConflict, isRetryableDbBusy, isTeamManagementEnabled } from '../lib/org-team';
 
 /**
  * /employer/team/membership, for any employer login. Served through the team
@@ -164,6 +164,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   } catch (err) {
     if (client) { try { await client.query('ROLLBACK'); } catch (_) { /* already failed */ } }
     if (isMembershipConflict(err)) return response(409, { error: 'already_member' });
+    if (isRetryableDbBusy(err)) {
+      // A lock or statement timeout: nothing was written. Retryable.
+      console.warn('employer-membership busy:', (err as { code: string }).code);
+      return dbBusyResponse(CORS_HEADERS);
+    }
     const e = err as { code?: unknown; message?: unknown } | null;
     if (e?.code === '42501' && typeof e.message === 'string' && e.message.includes(NOT_AN_EMPLOYER)) {
       return response(403, { error: 'employer_required' });

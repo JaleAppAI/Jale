@@ -4,7 +4,9 @@ import { checkCompliance } from '../legal/check-compliance';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders } from '../lib/http';
 import { applyMemberAccess } from '../lib/member-access';
-import { acceptResponse, hashInviteToken, isMembershipConflict, isTeamManagementEnabled } from '../lib/org-team';
+import {
+  acceptResponse, dbBusyResponse, hashInviteToken, isMembershipConflict, isRetryableDbBusy, isTeamManagementEnabled,
+} from '../lib/org-team';
 
 /**
  * POST /employer/invites/{token} — employer authorizer.
@@ -103,6 +105,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     console.log(JSON.stringify({ event: 'invite_accept_succeeded', outcome: row.outcome, cognitoSub }));
   } catch (err) {
     if (client) { try { await client.query('ROLLBACK'); } catch { /* the connection is gone */ } }
+    if (isRetryableDbBusy(err)) {
+      // A lock or statement timeout: nothing was accepted. Retryable, and not
+      // an invite_accept_failed (that line pages through InviteAcceptFailed).
+      console.warn(JSON.stringify({ event: 'invite_accept_busy', error: loggableError(err) }));
+      return dbBusyResponse(corsHeaders());
+    }
     console.error(JSON.stringify({ event: 'invite_accept_failed', error: loggableError(err) }));
     return respond(500, { error: 'internal_error' });
   } finally {

@@ -282,4 +282,24 @@ describe('POST /employer/invites/{token} (employer-invite-accept)', () => {
       spies.forEach((spy) => spy.mockRestore());
     }
   });
+
+  it.each(['55P03', '57014'])('the company lock busy (%s): 503 busy, Retry-After 2, ROLLBACK, not logged as a failure, no Cognito', async (code) => {
+    mockQuery.mockImplementation((sql: string) => (ACCEPT_SQL.test(String(sql))
+      ? Promise.reject(Object.assign(new Error('lock timeout'), { code }))
+      : Promise.resolve({ rows: [] })));
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await handler(event());
+    const errors = errorSpy.mock.calls.map((c) => c.join(' '));
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body)).toEqual({ error: 'busy', retryable: true, retryAfterSeconds: 2 });
+    expect(res.headers).toEqual(expect.objectContaining({ 'Retry-After': '2' }));
+    expect(sqls()).toContain('ROLLBACK');
+    expect(sqls()).not.toContain('COMMIT');
+    expect(errors.some((line) => line.includes('invite_accept_failed'))).toBe(false);
+    expect(mockApplyMemberAccess).not.toHaveBeenCalled();
+    expect(mockRelease).toHaveBeenCalledTimes(1);
+  });
 });

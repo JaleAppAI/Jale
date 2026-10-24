@@ -439,4 +439,19 @@ describe('employer-team-invite-create', () => {
       for (const s of spies) s.mockRestore();
     }
   });
+
+  it.each(['55P03', '57014'])('the company lock busy (%s): 503 busy, Retry-After 2, ROLLBACK, nothing written, no Cognito', async (code) => {
+    usageError = Object.assign(new Error('canceling statement'), { code });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await handler(event(validBody));
+    warn.mockRestore();
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body)).toEqual({ error: 'busy', retryable: true, retryAfterSeconds: 2 });
+    expect(res.headers).toEqual(expect.objectContaining({ 'Retry-After': '2' }));
+    expect(sqlCalls()).toContain('ROLLBACK');
+    expect(sqlCalls()).not.toContain('COMMIT');
+    expect(callIndex('org_team_invite_create')).toBe(-1);
+    expect(mockApplyMemberAccess).not.toHaveBeenCalled();
+    expect(mockRelease).toHaveBeenCalled();
+  });
 });

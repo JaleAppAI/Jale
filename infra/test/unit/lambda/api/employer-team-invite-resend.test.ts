@@ -279,4 +279,22 @@ describe('employer-team-invite-resend', () => {
     expect(at).toBeLessThan(callIndex('org_team_invite_queue_email'));
     expect(String(queueParams()[2])).toContain('Invitación enviada por Luis Owner.');
   });
+
+  it.each(['55P03', '57014'])('the company lock busy (%s): 503 busy, Retry-After 2, ROLLBACK, nothing sent, no Cognito', async (code) => {
+    mockQuery.mockImplementation((sql: string) => (sql.includes('employer_org_usage')
+      ? Promise.reject(Object.assign(new Error('lock timeout'), { code }))
+      : Promise.resolve({ rows: [{}] })));
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await handler(event(validBody));
+    warn.mockRestore();
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body)).toEqual({ error: 'busy', retryable: true, retryAfterSeconds: 2 });
+    expect(res.headers).toEqual(expect.objectContaining({ 'Retry-After': '2' }));
+    const sqls = mockQuery.mock.calls.map((c) => String(c[0]));
+    expect(sqls).toContain('ROLLBACK');
+    expect(sqls).not.toContain('COMMIT');
+    expect(sqls.some((s) => s.includes('org_team_invite_resend'))).toBe(false);
+    expect(mockApplyMemberAccess).not.toHaveBeenCalled();
+    expect(mockRelease).toHaveBeenCalled();
+  });
 });
