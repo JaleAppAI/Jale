@@ -43,6 +43,31 @@ export interface BillingStackProps extends cdk.StackProps {
    * Absent   => today's behaviour exactly: mail sends, nothing listens.
    */
   readonly emailConfigurationSetName?: string;
+  /**
+   * The employer user pool (AuthStack), for member access (Phase 3): the
+   * processor and the member-access sync make its users' sign-in follow
+   * billing suspension, restore, removal and invite revocation. Passed from
+   * `auth.employerPool.userPool`; AuthStack depends on nothing here, so the
+   * reference adds no cycle.
+   */
+  readonly employerUserPoolId: string;
+  readonly employerUserPoolArn: string;
+}
+
+/**
+ * What lambda/lib/member-access.ts calls, on the employer pool's own ARN only
+ * (never userpool/*): read a user, then enable, or sign out and disable.
+ */
+function memberAccessStatement(employerUserPoolArn: string): iam.PolicyStatement {
+  return new iam.PolicyStatement({
+    actions: [
+      'cognito-idp:AdminGetUser',
+      'cognito-idp:AdminEnableUser',
+      'cognito-idp:AdminDisableUser',
+      'cognito-idp:AdminUserGlobalSignOut',
+    ],
+    resources: [employerUserPoolArn],
+  });
 }
 
 export function validateBillingEmailConfiguration(
@@ -69,7 +94,13 @@ export function validateBillingEmailConfiguration(
  *   portal      : DB_SECRET_ARN (request login) + STRIPE_SECRET_ARN
  *   webhook     : WEBHOOK_SECRET_ARN + QUEUE_URL (no DB, no Stripe API key)
  *   processor   : DB_SECRET_ARN (billing service login) + STRIPE_SECRET_ARN (SQS consumer)
+ *                 + EMPLOYER_USER_POOL_ID (member access)
  *   sweeper     : DB_SECRET_ARN (the email-sender job login) + SES send
+ *   member sync : DB_SECRET_ARN (billing service login) + EMPLOYER_USER_POOL_ID
+ *
+ * Member access (Phase 3): the processor and the member-access sync, and no
+ * other Lambda here, may get, enable, disable and globally sign out users of
+ * the employer pool, and of no other pool.
  *
  * DB login split: jale_billing is a processor-only service login (migration
  * 034) — granted billing_plans/billing_customers/subscriptions/
@@ -212,10 +243,12 @@ export class BillingStack extends cdk.Stack {
         DB_EXPECTED_LOGIN: 'jale_billing',
         STRIPE_SECRET_ARN: stripeApiSecret.secretArn,
         ALLOWED_ORIGIN: allowedOrigin,
+        EMPLOYER_USER_POOL_ID: props.employerUserPoolId,
       },
     });
     props.billingDbSecret.grantRead(processorLambda.function);
     stripeApiSecret.grantRead(processorLambda.function);
+    processorLambda.function.addToRolePolicy(memberAccessStatement(props.employerUserPoolArn));
 
     webhookQueue.grantConsumeMessages(processorLambda.function);
     processorLambda.function.addEventSource(
@@ -270,6 +303,33 @@ export class BillingStack extends cdk.Stack {
     new events.Rule(this, 'EmailOutboxSweepSchedule', {
       schedule: events.Schedule.rate(cdk.Duration.minutes(5)),
       targets: [new eventTargets.LambdaFunction(emailSweeperLambda.function)],
+    });
+
+    // ── Lambda: member-access sync (Phase 3) ──
+    // Every 15 minutes, as the billing service login: re-applies the Cognito
+    // state of every foreman whose access changed in the last 7 days (a failed
+    // or late call after COMMIT, an expired re-invite) and purges sent invite
+    // mail. The handler stops calling Cognito 5 s before the timeout.
+    const memberAccessSyncLambda = new JaleLambdaFunction(this, 'MemberAccessSyncLambda', {
+      entry: path.join(__dirname, '../../lambda/billing/member-access-sync.ts'),
+      description: 'Converges employer Cognito sign-in with team membership every 15 minutes',
+      vpc: props.vpc,
+      securityGroups: [props.billingLambdaSg],
+      timeout: 300,
+      // No retries, neither Lambda's async ones nor EventBridge's: the next
+      // 15-minute run is the retry, and a retried failure would only page twice.
+      retryAttempts: 0,
+      environment: {
+        DB_SECRET_ARN: props.billingDbSecret.secretArn,
+        DB_EXPECTED_LOGIN: 'jale_billing',
+        EMPLOYER_USER_POOL_ID: props.employerUserPoolId,
+      },
+    });
+    props.billingDbSecret.grantRead(memberAccessSyncLambda.function);
+    memberAccessSyncLambda.function.addToRolePolicy(memberAccessStatement(props.employerUserPoolArn));
+    new events.Rule(this, 'MemberAccessSyncSchedule', {
+      schedule: events.Schedule.rate(cdk.Duration.minutes(15)),
+      targets: [new eventTargets.LambdaFunction(memberAccessSyncLambda.function, { retryAttempts: 0 })],
     });
 
     // ── Routes ──
@@ -493,6 +553,39 @@ export class BillingStack extends cdk.Stack {
     knownEventSkipAlarm.addAlarmAction(alarmAction);
     knownEventSkipAlarm.addOkAction(alarmAction);
 
+    // ── Member access (Phase 3): the sync cannot reach the employer pool ──
+    // lambda/lib/member-access.ts logs member_access_pool_missing (no
+    // EMPLOYER_USER_POOL_ID) or member_access_pool_unavailable (access denied,
+    // pool not found, bad credentials) once per batch and fails the rest of
+    // it without throwing, so the sync Lambda's Errors metric never moves. On
+    // the SYNC's log group: it runs every 15 minutes, so a broken pool shows
+    // up here within one period whatever the billing traffic.
+    const memberAccessPoolFilter = new logs.MetricFilter(this, 'MemberAccessPoolUnavailableMetricFilter', {
+      logGroup: memberAccessSyncLambda.logGroup,
+      metricNamespace: 'Jale/Billing',
+      metricName: 'MemberAccessPoolUnavailable',
+      filterPattern: logs.FilterPattern.anyTerm('member_access_pool_unavailable', 'member_access_pool_missing'),
+      metricValue: '1',
+    });
+    const memberAccessPoolAlarm = jaleAlarm(this, 'MemberAccessPoolUnavailableAlarm', {
+      metric: memberAccessPoolFilter.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      alarmName: 'MemberAccessPoolUnavailable',
+      actions: [alarmAction],
+    });
+    memberAccessPoolAlarm.addOkAction(alarmAction);
+
+    // More changes in 7 days than one sync run reads (500): a metric for
+    // dashboards, no alarm (the newest changes still converge first).
+    new logs.MetricFilter(this, 'MemberAccessSyncSaturatedMetricFilter', {
+      logGroup: memberAccessSyncLambda.logGroup,
+      metricNamespace: 'Jale/Billing',
+      metricName: 'MemberAccessSyncSaturated',
+      filterPattern: logs.FilterPattern.literal('"member_access_sync_saturated"'),
+      metricValue: '1',
+    });
+
     // ── 1c: the webhook verifier's silent failures (roadmap 2026-10-01) ──
     // The verifier catches everything: a bad signature returns 400 (and logs
     // a bare BillingWebhookInvalidSignature line), any other error returns
@@ -520,13 +613,15 @@ export class BillingStack extends cdk.Stack {
       verifierAlarm.addOkAction(alarmAction);
     }
 
-    // Uncaught failures in either billing Lambda: the processor throws on a
+    // Uncaught failures in the billing Lambdas: the processor throws on a
     // retryable error so SQS redelivers; the verifier catches every handler
     // error, so its Errors metric only moves on an init failure, a timeout,
     // or running out of memory.
     for (const [id, fn, alarmName] of [
       ['BillingWebhookLambdaErrorsAlarm', webhookVerifierLambda, 'BillingWebhookLambdaErrors'],
       ['BillingProcessorLambdaErrorsAlarm', processorLambda, 'BillingProcessorLambdaErrors'],
+      // The sync throws only on a database failure (read or purge).
+      ['MemberAccessSyncLambdaErrorsAlarm', memberAccessSyncLambda, 'MemberAccessSyncLambdaErrors'],
     ] as const) {
       const errorsAlarm = jaleAlarm(this, id, {
         metric: fn.function.metricErrors({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),

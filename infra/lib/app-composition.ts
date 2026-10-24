@@ -291,6 +291,10 @@ export function buildJaleApp(app: cdk.App, options: JaleAppOptions = {}): void {
     employerAuthorizer: api.employerAuthorizer,
     employerResource: api.employerResource,
     emailConfigurationSetName: sesConfigurationSetName,
+    // Member access (Phase 3). AuthStack is upstream of ApiStack already and
+    // depends on nothing in BillingStack, so this adds an edge, not a cycle.
+    employerUserPoolId: auth.employerPool.userPool.userPoolId,
+    employerUserPoolArn: auth.employerPool.userPool.userPoolArn,
   });
 
   new ReferralsStack(app, 'JaleReferralsStack', {

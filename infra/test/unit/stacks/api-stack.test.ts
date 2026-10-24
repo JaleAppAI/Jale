@@ -71,6 +71,8 @@ describe('ApiStack', () => {
       api: api.api,
       employerAuthorizer: api.employerAuthorizer,
       employerResource: api.employerResource,
+      employerUserPoolId: auth.employerPool.userPool.userPoolId,
+      employerUserPoolArn: auth.employerPool.userPool.userPoolArn,
     });
     // ReferralsStack must be created so its routes (and the /public/jobs
     // throttle entries) are visible in the ApiStack template.

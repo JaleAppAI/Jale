@@ -30,7 +30,12 @@
  *   SELECT billing_plans, billing_customers
  *   SELECT/INSERT/UPDATE subscriptions, billing_webhook_events
  *   EXECUTE on the company enforcer functions (migration 128)
+ *   EXECUTE on jale_cap.org_member_access (migration 134)
  *   NO users-table access — correlate via billing_customers.provider_customer_id
+ *
+ * Cognito follows billing (Phase 3): after an enforce that suspended foremen
+ * or revoked invites, or a restore that restored foremen, the employer pool
+ * is made to match org_member_access after COMMIT (EMPLOYER_USER_POOL_ID).
  *
  * A company pays one subscription (Phase 2): a customer maps to its company
  * through billing_customers.organization_id (127), never through Stripe
@@ -44,6 +49,7 @@ import { resolveCompanyEntitlements } from '../lib/entitlements';
 import { queueEmail } from '../lib/email-outbox';
 import { renderBillingPauseEmail } from '../lib/billing-pause-template';
 import { renderBillingResumeEmail } from '../lib/billing-resume-template';
+import { applyMemberAccess, type MemberAccessChange } from '../lib/member-access';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -158,7 +164,15 @@ export interface ProcessResult {
   errorCode?: string;
 }
 
-export async function processEnvelope(envelope: WebhookEnvelope): Promise<ProcessResult> {
+export interface ProcessOptions {
+  /**
+   * Epoch ms after which no Cognito call is made (member-access DEADLINE):
+   * the handler passes `Date.now() + context.getRemainingTimeInMillis() - 5000`.
+   */
+  deadlineAt?: number;
+}
+
+export async function processEnvelope(envelope: WebhookEnvelope, options: ProcessOptions = {}): Promise<ProcessResult> {
   const { eventId, eventType } = envelope;
 
   // Decode and parse the raw body to get the full event object
@@ -235,7 +249,7 @@ export async function processEnvelope(envelope: WebhookEnvelope): Promise<Proces
   }
 
   try {
-    const result = await handleSubscriptionEvent(stripeEvent, eventId, eventType);
+    const result = await handleSubscriptionEvent(stripeEvent, eventId, eventType, options);
     return result;
   } catch (err) {
     const code = err instanceof Error ? err.message : 'unknown_processor_error';
@@ -250,6 +264,7 @@ async function handleSubscriptionEvent(
   stripeEvent: Stripe.Event,
   eventId: string,
   eventType: string,
+  options: ProcessOptions,
 ): Promise<ProcessResult> {
   let subscriptionId: string | undefined;
 
@@ -385,6 +400,11 @@ async function handleSubscriptionEvent(
   const status = subscription.status;
   const providerSubId = subscription.id;
   const cancelAtPeriodEnd = subscription.cancel_at_period_end ?? false;
+
+  // Phase 3: the Cognito state the company's foremen should have, read inside
+  // the transaction after an enforce or a restore changed it, applied after
+  // COMMIT with the client released (see convergeMemberAccess).
+  let memberAccess: MemberAccessChange[] = [];
 
   const client = await pool.connect();
   try {
@@ -637,6 +657,12 @@ async function handleSubscriptionEvent(
       } else if (revokedInvites > 0) {
         console.info('enforced_company_limits', { organizationId, pausedCount, suspendedCount, revokedInvites });
       }
+      // A suspended foreman must lose their sign-in. A revoked invite matters
+      // too: a removed member whose re-invite was enabled at send (Deviation
+      // 1) is disabled again once the enforcer revokes that invite.
+      if (suspendedCount > 0 || revokedInvites > 0) {
+        memberAccess = await readMemberAccess(client, organizationId);
+      }
     }
 
     // Sprint 28 (K4.5), per company since Phase 2: an entitled subscription
@@ -665,7 +691,10 @@ async function handleSubscriptionEvent(
       if (![resumedCount, restoredCount].every((n) => Number.isInteger(n) && n >= 0)) {
         throw new Error('billing_job_resume_invalid_result');
       }
-      if (restoredCount > 0) console.info('restored_company_members', { organizationId, restoredCount });
+      if (restoredCount > 0) {
+        console.info('restored_company_members', { organizationId, restoredCount });
+        memberAccess = await readMemberAccess(client, organizationId);
+      }
       if (resumedCount > 0) {
         if (!persistedSubscriptionId) throw new Error('subscription_upsert_missing_id');
         if (typeof resumed.owner_email !== 'string'
@@ -700,17 +729,90 @@ async function handleSubscriptionEvent(
 
     await markInboxStatusWithClient(client, eventId, 'processed', null, new Date());
     await client.query('COMMIT');
-    return { outcome: 'processed' };
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     throw err;
   } finally {
     client.release();
   }
+
+  // Committed and released: from here on nothing may turn the event into a
+  // failure, since a redelivery would find it processed and never retry.
+  await convergeMemberAccess(memberAccess, { organizationId, eventId, deadlineAt: options.deadlineAt });
+  return { outcome: 'processed' };
 }
 
 /** Statuses that entitle the employer again, so billing's paused jobs come back (K4.5). */
 const RESUMING_STATUSES: ReadonlySet<string> = new Set(['active', 'trialing']);
+
+// ── Member access (Phase 3) ───────────────────────────────────────────────────
+
+/**
+ * Every foreman of the company with the Cognito state they should have
+ * (migration 134; jale_billing alone may execute it). Read in the enforce or
+ * restore transaction, so it sees what that transaction just wrote.
+ *
+ * Under a savepoint: a failed read (a missing grant, a statement error) must
+ * not undo the billing enforcement around it. It rolls back to the savepoint,
+ * logs member_access_read_failed, and answers no changes; the billing change
+ * still commits, and the 15-minute member-access sync converges Cognito.
+ */
+async function readMemberAccess(
+  client: import('pg').PoolClient,
+  organizationId: string,
+): Promise<MemberAccessChange[]> {
+  await client.query('SAVEPOINT member_access_read');
+  try {
+    const res = await client.query<{ cognito_sub: string; enabled: boolean }>(
+      'SELECT cognito_sub, enabled FROM jale_cap.org_member_access($1)',
+      [organizationId],
+    );
+    await client.query('RELEASE SAVEPOINT member_access_read');
+    return res.rows.map((row) => ({ cognitoSub: row.cognito_sub, enabled: row.enabled }));
+  } catch (err) {
+    // If this rollback fails too, the transaction is unusable: let it throw.
+    await client.query('ROLLBACK TO SAVEPOINT member_access_read');
+    const code = (err as { code?: unknown } | null)?.code;
+    console.error(JSON.stringify({
+      event: 'member_access_read_failed',
+      organizationId,
+      code: typeof code === 'string' ? code : 'unknown',
+    }));
+    return [];
+  }
+}
+
+/**
+ * Applies member access after COMMIT. A Cognito failure never fails the event:
+ * the billing change is committed, and the 15-minute member-access sync
+ * (member-access-sync.ts) converges whatever is left from the database. The
+ * same sync heals a stale apply: a team change that commits and reaches
+ * Cognito between this COMMIT and this call can be overwritten here, and the
+ * database's membership check holds until the next run (see that file).
+ */
+async function convergeMemberAccess(
+  changes: MemberAccessChange[],
+  ctx: { organizationId: string; eventId: string; deadlineAt?: number },
+): Promise<void> {
+  if (changes.length === 0) return;
+  let failed: number;
+  try {
+    const result = await applyMemberAccess(changes, { deadlineAt: ctx.deadlineAt });
+    failed = result.failed.length;
+  } catch {
+    // applyMemberAccess never throws by contract; this only keeps a broken
+    // contract from turning a committed event into a failure.
+    failed = changes.length;
+  }
+  if (failed > 0) {
+    console.warn(JSON.stringify({
+      event: 'member_access_deferred',
+      organizationId: ctx.organizationId,
+      eventId: ctx.eventId,
+      failed,
+    }));
+  }
+}
 
 // ── DB helpers ─────────────────────────────────────────────────────────────────
 
@@ -874,13 +976,18 @@ async function persistInboxFailure(
 
 // ── SQS Lambda handler ────────────────────────────────────────────────────────
 
-export const handler: SQSHandler = async (sqsEvent) => {
+export const handler: SQSHandler = async (sqsEvent, context) => {
   for (const record of sqsEvent.Records) {
-    await processSqsRecord(record);
+    // Member access stops calling Cognito 5 s before the Lambda times out;
+    // the sync picks up what is left.
+    const deadlineAt = typeof context?.getRemainingTimeInMillis === 'function'
+      ? Date.now() + context.getRemainingTimeInMillis() - 5000
+      : undefined;
+    await processSqsRecord(record, { deadlineAt });
   }
 };
 
-async function processSqsRecord(record: SQSRecord): Promise<void> {
+async function processSqsRecord(record: SQSRecord, options: ProcessOptions): Promise<void> {
   let envelope: WebhookEnvelope;
   try {
     envelope = JSON.parse(record.body) as WebhookEnvelope;
@@ -891,7 +998,7 @@ async function processSqsRecord(record: SQSRecord): Promise<void> {
     throw new Error('malformed_sqs_record');
   }
 
-  const result = await processEnvelope(envelope);
+  const result = await processEnvelope(envelope, options);
   if (result.outcome === 'failed') {
     // Re-throw to let SQS retry/DLQ handle it
     throw new Error(result.errorCode ?? 'processor_failed');

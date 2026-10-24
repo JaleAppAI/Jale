@@ -79,6 +79,8 @@ describe('BillingStack', () => {
       api: api.api,
       employerAuthorizer: api.employerAuthorizer,
       employerResource: api.employerResource,
+      employerUserPoolId: auth.employerPool.userPool.userPoolId,
+      employerUserPoolArn: auth.employerPool.userPool.userPoolArn,
     });
     template = Template.fromStack(app.node.findChild('TestBillingStack') as cdk.Stack);
     dbTemplate = Template.fromStack(database);
@@ -264,6 +266,7 @@ describe('BillingStack', () => {
     for (const [alarmName, functionIdPrefix] of [
       ['BillingWebhookLambdaErrors', 'BillingWebhookLambda'],
       ['BillingProcessorLambdaErrors', 'BillingProcessorLambda'],
+      ['MemberAccessSyncLambdaErrors', 'MemberAccessSyncLambda'],
     ]) {
       template.hasResourceProperties('AWS::CloudWatch::Alarm', {
         AlarmName: alarmName,
@@ -407,6 +410,148 @@ describe('BillingStack', () => {
     expect(getBillingArn).not.toEqual(processorArn);
     expect(checkoutArn).not.toEqual(processorArn);
     expect(portalArn).not.toEqual(processorArn);
+  });
+
+  // ── Phase 3: Cognito follows billing; the member-access sync ────────────
+
+  const PROCESSOR_DESCRIPTION = 'Processes verified Stripe webhook events from SQS';
+  const SYNC_DESCRIPTION = 'Converges employer Cognito sign-in with team membership every 15 minutes';
+
+  function lambdaByDescription(description: string): { id: string; props: any } {
+    const fns = Object.entries(template.findResources('AWS::Lambda::Function', {
+      Properties: { Description: description },
+    }));
+    expect(fns).toHaveLength(1);
+    return { id: fns[0][0], props: (fns[0][1] as any).Properties };
+  }
+
+  test('the processor and the sync may call the four Cognito admin actions on the employer pool only', () => {
+    const grants: { roles: string; statement: any }[] = [];
+    for (const policy of Object.values(template.findResources('AWS::IAM::Policy')) as any[]) {
+      for (const statement of policy.Properties.PolicyDocument.Statement) {
+        if (JSON.stringify(statement.Action).includes('cognito-idp:')) {
+          grants.push({ roles: JSON.stringify(policy.Properties.Roles), statement });
+        }
+      }
+    }
+    expect(grants).toHaveLength(2);
+    expect(grants.map((g) => g.roles).sort()).toEqual([
+      expect.stringMatching(/"Ref":"BillingProcessorLambda/),
+      expect.stringMatching(/"Ref":"MemberAccessSyncLambda/),
+    ]);
+    for (const { statement } of grants) {
+      expect(statement.Effect).toBe('Allow');
+      expect([...statement.Action].sort()).toEqual([
+        'cognito-idp:AdminDisableUser',
+        'cognito-idp:AdminEnableUser',
+        'cognito-idp:AdminGetUser',
+        'cognito-idp:AdminUserGlobalSignOut',
+      ]);
+      // One resource: the employer pool's ARN, imported from the auth stack.
+      expect(Array.isArray(statement.Resource)).toBe(false);
+      const resource = JSON.stringify(statement.Resource);
+      expect(resource).toMatch(/Fn::ImportValue/);
+      expect(resource).toMatch(/EmployerPoolUserPool[0-9A-F]+Arn/);
+      expect(resource).not.toMatch(/WorkerPool/);
+      expect(resource).not.toContain('*');
+    }
+  });
+
+  test('the sync runs every 15 minutes', () => {
+    const sync = lambdaByDescription(SYNC_DESCRIPTION);
+    const rules = Object.values(template.findResources('AWS::Events::Rule', {
+      Properties: { ScheduleExpression: 'rate(15 minutes)' },
+    })) as any[];
+    expect(rules).toHaveLength(1);
+    expect(rules[0].Properties.Targets).toEqual([
+      expect.objectContaining({
+        Arn: { 'Fn::GetAtt': [sync.id, 'Arn'] },
+        // The next run is the retry: EventBridge does not retry the target...
+        RetryPolicy: { MaximumRetryAttempts: 0 },
+      }),
+    ]);
+    expect(sync.id).toMatch(/^MemberAccessSyncLambda/);
+    // ...and Lambda does not retry the async invocation.
+    template.hasResourceProperties('AWS::Lambda::EventInvokeConfig', {
+      FunctionName: { Ref: sync.id },
+      MaximumRetryAttempts: 0,
+    });
+  });
+
+  test('the sync runs in the VPC with the billing security group, like the processor', () => {
+    const sync = lambdaByDescription(SYNC_DESCRIPTION).props.VpcConfig;
+    const processor = lambdaByDescription(PROCESSOR_DESCRIPTION).props.VpcConfig;
+    expect(sync.SecurityGroupIds).toHaveLength(1);
+    expect(JSON.stringify(sync.SecurityGroupIds)).toMatch(/BillingLambdaSg/);
+    expect(sync.SecurityGroupIds).toEqual(processor.SecurityGroupIds);
+    expect(sync.SubnetIds).toEqual(processor.SubnetIds);
+  });
+
+  test('the sync role can read the jale/billing/db secret', () => {
+    const billingSecretIds = Object.keys(dbTemplate.findResources('AWS::SecretsManager::Secret', {
+      Properties: { Name: 'jale/billing/db' },
+    }));
+    expect(billingSecretIds).toHaveLength(1);
+    const syncPolicies = (Object.values(template.findResources('AWS::IAM::Policy')) as any[])
+      .filter((policy) => JSON.stringify(policy.Properties.Roles).includes('"Ref":"MemberAccessSyncLambda'));
+    const readsSecret = syncPolicies
+      .flatMap((policy) => policy.Properties.PolicyDocument.Statement)
+      .some((statement: any) => JSON.stringify(statement.Action).includes('secretsmanager:GetSecretValue')
+        && JSON.stringify(statement.Resource).includes(billingSecretIds[0]));
+    expect(readsSecret).toBe(true);
+  });
+
+  test('the employer pool being unusable from the sync alarms to the ops topic, with recovery', () => {
+    const filters = Object.values(template.findResources('AWS::Logs::MetricFilter', {
+      Properties: { FilterPattern: '?"member_access_pool_unavailable" ?"member_access_pool_missing"' },
+    })) as any[];
+    expect(filters).toHaveLength(1);
+    expect(filters[0].Properties.LogGroupName).toEqual({ Ref: expect.stringMatching(/^MemberAccessSyncLambda/) });
+    expect(filters[0].Properties.MetricTransformations).toEqual([expect.objectContaining({
+      MetricNamespace: 'Jale/Billing', MetricName: 'MemberAccessPoolUnavailable', MetricValue: '1',
+    })]);
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'MemberAccessPoolUnavailable',
+      Namespace: 'Jale/Billing',
+      MetricName: 'MemberAccessPoolUnavailable',
+      Statistic: 'Sum',
+      Period: 300,
+      Threshold: 1,
+      EvaluationPeriods: 1,
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      TreatMissingData: 'notBreaching',
+      AlarmActions: Match.anyValue(),
+      OKActions: Match.anyValue(),
+    });
+  });
+
+  test('a saturated sync publishes a metric on the sync log group and has no alarm', () => {
+    const filters = Object.values(template.findResources('AWS::Logs::MetricFilter', {
+      Properties: { FilterPattern: '"member_access_sync_saturated"' },
+    })) as any[];
+    expect(filters).toHaveLength(1);
+    expect(filters[0].Properties.LogGroupName).toEqual({ Ref: expect.stringMatching(/^MemberAccessSyncLambda/) });
+    expect(filters[0].Properties.MetricTransformations).toEqual([expect.objectContaining({
+      MetricNamespace: 'Jale/Billing', MetricName: 'MemberAccessSyncSaturated', MetricValue: '1',
+    })]);
+    const alarms = Object.values(template.findResources('AWS::CloudWatch::Alarm')) as any[];
+    expect(alarms.filter((alarm) => alarm.Properties.MetricName === 'MemberAccessSyncSaturated')).toEqual([]);
+  });
+
+  test('both get EMPLOYER_USER_POOL_ID', () => {
+    for (const description of [PROCESSOR_DESCRIPTION, SYNC_DESCRIPTION]) {
+      const poolId = JSON.stringify(lambdaByDescription(description).props.Environment.Variables.EMPLOYER_USER_POOL_ID);
+      expect(poolId).toMatch(/Fn::ImportValue/);
+      expect(poolId).toMatch(/EmployerPoolUserPool[0-9A-F]+/);
+      expect(poolId).not.toMatch(/WorkerPool/);
+    }
+  });
+
+  test('the sync connects as the billing service login, as the processor does, with no Stripe key', () => {
+    const sync = lambdaByDescription(SYNC_DESCRIPTION);
+    expect(sync.props.Environment.Variables.DB_EXPECTED_LOGIN).toBe('jale_billing');
+    expect(dbSecretArnFor(SYNC_DESCRIPTION)).toEqual(dbSecretArnFor(PROCESSOR_DESCRIPTION));
+    expect(sync.props.Environment.Variables).not.toHaveProperty('STRIPE_SECRET_ARN');
   });
 
   test('get-billing, checkout, and portal Lambda roles have NO IAM grant on the jale/billing/db secret', () => {
@@ -756,6 +901,8 @@ describe('BillingStack — alarm email subscription', () => {
       api: api.api,
       employerAuthorizer: api.employerAuthorizer,
       employerResource: api.employerResource,
+      employerUserPoolId: auth.employerPool.userPool.userPoolId,
+      employerUserPoolArn: auth.employerPool.userPool.userPoolArn,
     });
     template = Template.fromStack(app.node.findChild('TestBillingStackEmail') as cdk.Stack);
   });
@@ -820,6 +967,8 @@ describe('BillingStack — imported alarm topic', () => {
       api: api.api,
       employerAuthorizer: api.employerAuthorizer,
       employerResource: api.employerResource,
+      employerUserPoolId: auth.employerPool.userPool.userPoolId,
+      employerUserPoolArn: auth.employerPool.userPool.userPoolArn,
     });
     template = Template.fromStack(
       app.node.findChild('TestBillingStackImportedTopic') as cdk.Stack,
@@ -903,6 +1052,8 @@ describe('BillingStack — SES configuration set threaded in', () => {
       api: api.api,
       employerAuthorizer: api.employerAuthorizer,
       employerResource: api.employerResource,
+      employerUserPoolId: auth.employerPool.userPool.userPoolId,
+      employerUserPoolArn: auth.employerPool.userPool.userPoolArn,
       emailConfigurationSetName: CONFIGURATION_SET,
     });
     template = Template.fromStack(app.node.findChild('TestBillingStackConfigSet') as cdk.Stack);

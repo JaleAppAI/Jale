@@ -184,6 +184,8 @@ function buildStacks(): Record<string, cdk.Stack> {
     api: api.api,
     employerAuthorizer: api.employerAuthorizer,
     employerResource: api.employerResource,
+    employerUserPoolId: auth.employerPool.userPool.userPoolId,
+    employerUserPoolArn: auth.employerPool.userPool.userPoolArn,
   });
 
   const referrals = new ReferralsStack(app, 'TestReferralsStack', {
