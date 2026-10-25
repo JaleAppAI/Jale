@@ -35,6 +35,7 @@ import { ApiError, deleteJob, getBilling, getJobs, listJobTemplates, updateJobSt
 import { flushPendingEmployerProfile } from '@/lib/employer-profile-flush';
 import { hasJobsDone } from '@/lib/employer-tutorial-done';
 import { useTutorial } from '@/lib/tutorials/use-tutorial';
+import { useAppTour } from '@/lib/tutorials/use-app-tour';
 import type { EmployerBilling, Job, JobCreatedOutcome } from '@/lib/api/employer';
 import { errorMessageKey } from '@/lib/api/errors';
 import { isHealthyPaidPlan, planLimitModel, subscriptionSignage } from '@/lib/plan-limit';
@@ -301,16 +302,28 @@ export default function EmployerDashboardPage() {
     const welcomeTutorial = useTutorial('employer_welcome', {
         done: phase === 'ready' ? hasJobsDone(data?.jobs) : undefined,
     });
+    /*
+     * The app tour comes first, for the same new employer (no job ever): it
+     * shows where everything is, and E1 is asked once it has gone. When the
+     * tour is not eligible (it already has an outcome, say), E1 is asked
+     * straight away, exactly as before the tour existed.
+     */
+    const appTour = useAppTour('employer_app_tour');
     const welcomeAskedRef = useRef(false);
     useEffect(() => {
         if (welcomeAskedRef.current || phase !== 'ready' || !data) return;
         welcomeAskedRef.current = true;
-        if (data.billing) {
-            welcomeTutorial.maybeAutoOpen({ activeJobLimit: data.billing.activeJobLimit });
-        } else {
-            welcomeTutorial.maybeAutoOpen();
-        }
-    }, [data, phase, welcomeTutorial]);
+        const billing = data.billing;
+        const askWelcome = () => {
+            if (billing) {
+                welcomeTutorial.maybeAutoOpen({ activeJobLimit: billing.activeJobLimit });
+            } else {
+                welcomeTutorial.maybeAutoOpen();
+            }
+        };
+        if (hasJobsDone(data.jobs) === false) appTour.playFirst(askWelcome);
+        else askWelcome();
+    }, [data, phase, welcomeTutorial, appTour]);
 
     const recentJob = jobs[0];
     const timeToFillJob = jobs.find((job) =>
@@ -486,7 +499,9 @@ export default function EmployerDashboardPage() {
     // so the page owes the reader a skeleton rather than a screen of dashes.
     const showSkeleton = phase === 'auth' || phase === 'loading';
 
-    const postJobButton = <PostJobButton className="h-10" />;
+    // The page's one primary "Post a job", always in the sticky header, and the
+    // control the app tour points at for its "Post a job" step.
+    const postJobButton = <PostJobButton className="h-10" tourTarget="post-job" />;
 
     return (
         <>
