@@ -2433,8 +2433,40 @@
       "help": "Help",
       "help_title": "How Jale works"
     },
+    "help_center": {
+      "title": "Help",
+      "subtitle": "Short guides for each part of Jale.",
+      "helper_off": "Off: each guide shows only the first time.",
+      "tour_again": "Take the app tour again",
+      "tour_again_sub": "A one-minute look at every tab.",
+      "guides": "Guides",
+      "off_tag": "Off",
+      "play": "Play",
+      "play_label": "Play: {title}",
+      "show_again": "Show again",
+      "show_again_label": "Show again: {title}",
+      "mute": "Don’t show this again",
+      "employer": {
+        "switch": "Show guides every time I start a task",
+        "helper_on": "On: each guide opens every time you start its task. You can turn one off from inside it.",
+        "muted_title": "Guides you turned off",
+        "muted_empty": "None yet. A guide you turn off shows up here.",
+        "muted_toast": "Turned off. You can turn it back on in Help.",
+        "save_failed": "Couldn’t save that. Try again."
+      },
+      "worker": {
+        "switch": "Show guides every time I start a task",
+        "helper_on": "On: each guide opens every time you start its task. You can turn one off from inside it.",
+        "muted_title": "Guides you turned off",
+        "muted_empty": "None yet. A guide you turn off shows up here.",
+        "muted_toast": "Turned off. You can turn it back on in Help.",
+        "save_failed": "Couldn’t save that. Try again."
+      }
+    },
     "worker_onboarding": {
       "title": "Before you start",
+      "description": "The 7 short steps and the three questions.",
+      "duration": "1 min",
       "cta_last": "Let’s start",
       "slides": {
         "minutes": {
@@ -2480,6 +2512,8 @@
     },
     "worker_apply": {
       "title": "How applying works",
+      "description": "Applying, documents and what happens next.",
+      "duration": "1 min",
       "slides": {
         "apply": {
           "title": "Applying takes a minute",
@@ -2522,6 +2556,8 @@
     },
     "worker_details": {
       "title": "Details requested",
+      "description": "What to do when an employer wants to hire you.",
+      "duration": "1 min",
       "cta_last": "Start",
       "slides": {
         "request": {
@@ -2554,6 +2590,8 @@
     },
     "worker_profile": {
       "title": "Your profile",
+      "description": "What employers see, and your documents.",
+      "duration": "1 min",
       "slides": {
         "seen": {
           "title": "This is what employers see",
@@ -2590,6 +2628,8 @@
     },
     "employer_welcome": {
       "title": "How Jale works",
+      "description": "From posting a job to hiring, in five steps.",
+      "duration": "1 min",
       "slides": {
         "post": {
           "title": "Post a job in 3 steps",
@@ -2642,6 +2682,8 @@
     },
     "employer_post_job": {
       "title": "Posting a job",
+      "description": "The three steps and the 4 required fields.",
+      "duration": "1 min",
       "slides": {
         "steps": {
           "title": "Three short steps",
@@ -2687,6 +2729,8 @@
     },
     "employer_applicants": {
       "title": "Your applicants",
+      "description": "Trust scores, statuses and how to hire.",
+      "duration": "1 min",
       "slides": {
         "first_look": {
           "title": "What you see first",
@@ -2729,6 +2773,8 @@
     },
     "employer_messages": {
       "title": "Messages",
+      "description": "How your messages reach workers on WhatsApp.",
+      "duration": "1 min",
       "slides": {
         "whatsapp": {
           "title": "Messages travel over WhatsApp",

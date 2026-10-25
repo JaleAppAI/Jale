@@ -26,7 +26,7 @@ export interface TutorialDefinition {
 
 /** What a host page gets from useTutorial(id, …). */
 export interface TutorialHandle {
-  /** Auto-open once if allowed (no record, not done, no other overlay). Call it from an effect when the page is ready. */
+  /** Auto-open if allowed (see the rule in `use-tutorial.ts`). Call it once per page view, from an effect when the page is ready. */
   maybeAutoOpen(vars?: TutorialSceneProps['vars']): void;
   /** For tutorials that play before a host (E2, E4): auto-plays if allowed, then calls openHost on dismiss; otherwise calls openHost at once. */
   runBeforeHost(openHost: () => void, vars?: TutorialSceneProps['vars']): void;

@@ -3,10 +3,13 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { useTranslations } from 'next-intl';
+import { EyeOff } from 'lucide-react';
 import { Modal } from '@/components/ui/modal';
 import { Button } from '@/components/ui/button';
 import { Icon } from '@/components/ui/icon';
-import type { TutorialOutcome } from '@/lib/api/tutorials';
+import { useToast } from '@/components/ui/toast';
+import type { TutorialOutcome, TutorialRole } from '@/lib/api/tutorials';
+import type { PlayMode } from '@/lib/tutorials/progress';
 import type { TutorialDefinition, TutorialSceneProps } from '@/lib/tutorials/types';
 import { SceneStage, prefersReducedMotion } from './scene';
 
@@ -27,6 +30,10 @@ import { SceneStage, prefersReducedMotion } from './scene';
  *    Back or Skip disappears from under focus, focus moves to it as well.
  *  - The X, Escape and a backdrop press are all Skip.
  *  - ←/→ move between slides, and so does a horizontal swipe on touch.
+ *  - "Don't show this again" only in an `always` play (a guide shown because
+ *    of the "every time" setting, K1-v2): it turns this guide off for the
+ *    account and closes it as a skip, so a host it plays before still opens.
+ *    First-time plays and replays never offer it.
  *
  * OUTCOMES. `onDismiss('completed')` from the last slide's button and
  * `onDismiss('skipped')` from every other way out, exactly once. The player
@@ -63,10 +70,16 @@ const SWIPE_PX = 40;
 export function TutorialPlayer({
     definition,
     vars,
+    mode,
+    onMute,
     onDismiss,
 }: {
     definition: TutorialDefinition;
     vars?: TutorialSceneProps['vars'];
+    /** Why it is playing; only an `always` play offers "Don't show this again". */
+    mode?: PlayMode;
+    /** Turns this guide off for the account; resolves false when that was not saved. */
+    onMute?: () => Promise<boolean>;
     onDismiss: (outcome: TutorialOutcome) => void;
 }) {
     const t = useTranslations(definition.namespace);
@@ -259,7 +272,56 @@ export function TutorialPlayer({
                         </Button>
                     </div>
                 </div>
+
+                {mode === 'always' && onMute ? (
+                    <MuteControl role={definition.role} onMute={onMute} onSkip={skip} />
+                ) : null}
             </div>
         </Modal>
+    );
+}
+
+/**
+ * "Don't show this again". The change shows at once (the store saves it
+ * optimistically), the guide closes, and a toast says where to turn it back
+ * on; a save that fails says so in a second toast.
+ */
+function MuteControl({
+    role,
+    onMute,
+    onSkip,
+}: {
+    role: TutorialRole;
+    onMute: () => Promise<boolean>;
+    onSkip: () => void;
+}) {
+    const t = useTranslations('tutorial.help_center');
+    const toast = useToast();
+
+    const turnOff = () => {
+        const failed = t(`${role}.save_failed`);
+        toast.success(t(`${role}.muted_toast`));
+        void onMute().then((saved) => {
+            if (!saved) toast.error(failed);
+        });
+        onSkip();
+    };
+
+    return (
+        <div className="-mt-1 flex justify-center border-t border-[var(--jale-divider)] pt-1">
+            <button
+                type="button"
+                onClick={turnOff}
+                className={[
+                    'inline-flex h-11 cursor-pointer items-center gap-2 rounded-full px-3',
+                    'text-[13px] font-medium text-[var(--jale-ink-2)] transition-colors',
+                    'hover:bg-[var(--jale-paper-2)] hover:text-[var(--jale-ink)]',
+                    'focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]',
+                ].join(' ')}
+            >
+                <EyeOff aria-hidden="true" className="h-4 w-4 shrink-0" />
+                {t('mute')}
+            </button>
+        </div>
     );
 }

@@ -2433,8 +2433,40 @@
       "help": "Ayuda",
       "help_title": "Cómo funciona Jale"
     },
+    "help_center": {
+      "title": "Ayuda",
+      "subtitle": "Guías cortas para cada parte de Jale.",
+      "helper_off": "Apagado: cada guía se muestra solo la primera vez.",
+      "tour_again": "Volver a ver el recorrido",
+      "tour_again_sub": "Un recorrido de un minuto por cada pestaña.",
+      "guides": "Guías",
+      "off_tag": "Apagada",
+      "play": "Ver",
+      "play_label": "Ver: {title}",
+      "show_again": "Volver a mostrar",
+      "show_again_label": "Volver a mostrar: {title}",
+      "mute": "No volver a mostrar",
+      "employer": {
+        "switch": "Mostrar las guías cada vez que empiece una tarea",
+        "helper_on": "Encendido: cada guía se abre cada vez que empieza su tarea. Puede apagar una desde la misma guía.",
+        "muted_title": "Guías que apagó",
+        "muted_empty": "Ninguna por ahora. Una guía que apague aparecerá aquí.",
+        "muted_toast": "Guía apagada. Puede volver a activarla en Ayuda.",
+        "save_failed": "No se pudo guardar. Inténtelo de nuevo."
+      },
+      "worker": {
+        "switch": "Mostrar las guías cada vez que empieces una tarea",
+        "helper_on": "Encendido: cada guía se abre cada vez que empiezas su tarea. Puedes apagar una desde la misma guía.",
+        "muted_title": "Guías que apagaste",
+        "muted_empty": "Ninguna por ahora. Una guía que apagues aparecerá aquí.",
+        "muted_toast": "Guía apagada. Puedes volver a activarla en Ayuda.",
+        "save_failed": "No se pudo guardar. Inténtalo de nuevo."
+      }
+    },
     "worker_onboarding": {
       "title": "Antes de empezar",
+      "description": "Los 7 pasos cortos y las tres preguntas.",
+      "duration": "1 min",
       "cta_last": "Empecemos",
       "slides": {
         "minutes": {
@@ -2480,6 +2512,8 @@
     },
     "worker_apply": {
       "title": "Cómo postularte",
+      "description": "Cómo postularte, los documentos y qué sigue.",
+      "duration": "1 min",
       "slides": {
         "apply": {
           "title": "Postularte toma un minuto",
@@ -2522,6 +2556,8 @@
     },
     "worker_details": {
       "title": "Te pidieron tus datos",
+      "description": "Qué hacer cuando un empleador quiere contratarte.",
+      "duration": "1 min",
       "cta_last": "Empezar",
       "slides": {
         "request": {
@@ -2554,6 +2590,8 @@
     },
     "worker_profile": {
       "title": "Tu perfil",
+      "description": "Lo que ven los empleadores y tus documentos.",
+      "duration": "1 min",
       "slides": {
         "seen": {
           "title": "Esto es lo que ven los empleadores",
@@ -2590,6 +2628,8 @@
     },
     "employer_welcome": {
       "title": "Cómo funciona Jale",
+      "description": "De publicar un empleo a contratar, en cinco pasos.",
+      "duration": "1 min",
       "slides": {
         "post": {
           "title": "Publique un empleo en 3 pasos",
@@ -2642,6 +2682,8 @@
     },
     "employer_post_job": {
       "title": "Publicar un empleo",
+      "description": "Los tres pasos y los 4 datos obligatorios.",
+      "duration": "1 min",
       "slides": {
         "steps": {
           "title": "Tres pasos cortos",
@@ -2687,6 +2729,8 @@
     },
     "employer_applicants": {
       "title": "Sus postulantes",
+      "description": "Puntajes de confianza, estados y cómo contratar.",
+      "duration": "1 min",
       "slides": {
         "first_look": {
           "title": "Lo que ve primero",
@@ -2729,6 +2773,8 @@
     },
     "employer_messages": {
       "title": "Mensajes",
+      "description": "Cómo les llegan sus mensajes a los trabajadores por WhatsApp.",
+      "duration": "1 min",
       "slides": {
         "whatsapp": {
           "title": "Los mensajes viajan por WhatsApp",
