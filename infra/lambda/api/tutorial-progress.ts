@@ -24,6 +24,9 @@ import { corsHeaders, errorMessage } from '../lib/http';
  *          settings, read in one transaction. With no stored settings row
  *          the answer is { always_show: false, muted: [] }. `muted` is
  *          answered filtered to the role's tutorial ids, in their list order.
+ *          A failed settings read answers those defaults with the progress
+ *          (outcome code read_without_settings); a failed progress read is a
+ *          500.
  *   POST   { tutorial_id, outcome } records how an auto-opened tutorial or
  *          the role's app tour was dismissed. The first outcome recorded for
  *          an id is kept: the row is inserted with ON CONFLICT DO NOTHING and
@@ -276,9 +279,24 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     if (!record) {
       const { rows } = await client.query<StoredRow>(READ_SQL, [userId, RECORD_IDS_BY_ROLE[role]]);
-      const stored = await client.query<Settings>(SETTINGS_SQL, [userId]);
+      // Settings are read under a savepoint: when that read fails (the
+      // settings table not there yet, a missing grant), progress still
+      // answers, with the default settings, so first-time tutorials keep
+      // working; the failure is logged under its own outcome code.
+      await client.query('SAVEPOINT settings_read');
+      let stored: Settings | undefined;
+      let settingsError: string | null = null;
+      try {
+        stored = (await client.query<Settings>(SETTINGS_SQL, [userId])).rows[0];
+        await client.query('RELEASE SAVEPOINT settings_read');
+      } catch (err) {
+        settingsError = errorMessage(err);
+        await client.query('ROLLBACK TO SAVEPOINT settings_read');
+      }
       await client.query('COMMIT');
-      return respond(200, { tutorials: rows.map(toRecord), settings: toSettings(stored.rows[0], role) }, 'read');
+      const body = { tutorials: rows.map(toRecord), settings: toSettings(stored, role) };
+      if (settingsError !== null) return respond(200, body, 'read_without_settings', { error: settingsError });
+      return respond(200, body, 'read');
     }
 
     const { tutorialId, outcome } = record;

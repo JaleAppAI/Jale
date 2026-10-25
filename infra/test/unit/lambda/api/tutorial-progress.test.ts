@@ -54,6 +54,7 @@ async function fakeQuery(sql: string, params: unknown[] = []): Promise<{ rows: u
   statements.push(text);
   if (failOn && failOn.test(text)) throw new Error('connection lost');
   if (text === 'BEGIN' || text === 'COMMIT' || text === 'ROLLBACK') return { rows: [], rowCount: 0 };
+  if (/^(SAVEPOINT|RELEASE SAVEPOINT|ROLLBACK TO SAVEPOINT) settings_read$/.test(text)) return { rows: [], rowCount: 0 };
   if (text === 'SELECT id FROM users WHERE cognito_sub = $1') {
     const id = users.get(params[0] as string);
     return id ? { rows: [{ id }], rowCount: 1 } : { rows: [], rowCount: 0 };
@@ -257,11 +258,45 @@ describe('GET tutorial progress', () => {
     expect(mockSetRlsContext).toHaveBeenCalledTimes(1);
     expect(mockSetRlsContext.mock.calls[0][1]).toBe(EMPLOYER_SUB);
     expect(statements.slice(0, 3)).toEqual(['BEGIN', 'SET CALLER', 'SELECT id FROM users WHERE cognito_sub = $1']);
-    expect(statements.slice(3, 5).map((s) => s.split(' FROM ')[1]?.split(' ')[0])).toEqual([
-      'user_tutorial_progress', 'user_tutorial_settings',
-    ]);
-    expect(statements.slice(5)).toEqual(['COMMIT']);
+    expect(statements[3].split(' FROM ')[1]?.split(' ')[0]).toBe('user_tutorial_progress');
+    expect(statements[4]).toBe('SAVEPOINT settings_read');
+    expect(statements[5].split(' FROM ')[1]?.split(' ')[0]).toBe('user_tutorial_settings');
+    expect(statements.slice(6)).toEqual(['RELEASE SAVEPOINT settings_read', 'COMMIT']);
     expect(mockRelease).toHaveBeenCalledTimes(1);
+  });
+
+  it('still answers the progress, with the default settings, when the settings read fails', async () => {
+    // The settings table missing or not granted must not take the progress
+    // read down with it: the first-time tutorials keep working.
+    seed(EMPLOYER_USER_ID, 'employer_welcome', 'completed', '2026-10-22T14:00:00.000Z');
+    settings.set(EMPLOYER_USER_ID, { always_show: true, muted: ['employer_post_job'] });
+    failOn = /^SELECT always_show, muted FROM user_tutorial_settings/;
+
+    const res = await handler(makeEvent());
+
+    expect(parsed(res)).toEqual({
+      status: 200,
+      body: {
+        tutorials: [{ tutorial_id: 'employer_welcome', outcome: 'completed', recorded_at: '2026-10-22T14:00:00.000Z' }],
+        settings: DEFAULT_SETTINGS,
+      },
+    });
+    expect(statements.slice(-3)).toEqual([
+      'SELECT always_show, muted FROM user_tutorial_settings WHERE user_id = $1',
+      'ROLLBACK TO SAVEPOINT settings_read',
+      'COMMIT',
+    ]);
+    expect(progressLines()).toEqual([
+      { event: 'TutorialProgress', role: 'employer', method: 'GET', outcome: 'read_without_settings', error: 'connection lost' },
+    ]);
+    expect(mockRelease).toHaveBeenCalledTimes(1);
+  });
+
+  it('answers 500 internal_error when the progress read itself fails', async () => {
+    failOn = /^SELECT tutorial_id, outcome, recorded_at FROM user_tutorial_progress/;
+
+    expect(parsed(await handler(makeEvent()))).toEqual({ status: 500, body: { error: 'internal_error' } });
+    expect(statements[statements.length - 1]).toBe('ROLLBACK');
   });
 
   it('answers 404 not_found when the caller has no users row', async () => {
