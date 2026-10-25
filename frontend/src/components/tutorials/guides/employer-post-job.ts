@@ -62,6 +62,9 @@ function wizardScreen(): string | null {
 
 const posted = () => up('post.posted');
 
+/** Post was pressed and refused at least once in this draft. */
+const postRefused = () => guideTarget('post.form')?.getAttribute('data-post-refused') === 'true';
+
 /** No field inside `control` is marked invalid (a live pay range line, say). */
 const noneInvalid = (control: Element) => control.querySelector('[aria-invalid="true"]') === null;
 
@@ -283,9 +286,16 @@ const WIZARD: readonly SpotlightStep[] = [
     {
         id: 'post_again',
         target: { guide: 'post.submit' },
-        // On the last screen, not posted, and not stopped by a limit Post cannot get past.
+        // After Post was refused (the form says so), on the last screen, not
+        // posted, and not stopped by a limit Post cannot get past. Never
+        // before the first press, so it is not counted on the way there.
         when: () =>
-            inWizard() && wizardScreen() === '3' && !posted() && !up('post.job_limit') && !up('post.template_limit'),
+            inWizard() &&
+            wizardScreen() === '3' &&
+            postRefused() &&
+            !posted() &&
+            !up('post.job_limit') &&
+            !up('post.template_limit'),
         mode: 'action',
         placement: 'top',
         advanceWhen: () => posted() || up('post.job_limit'),

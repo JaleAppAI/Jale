@@ -240,6 +240,19 @@ describe('the post-job guide: the main path through every screen', () => {
         expect(applying).toBe(16);
     });
 
+    it('keeps the same total from the first screen to the last step: "post again" is not counted before a refused Post', async () => {
+        openWizard();
+        await toSubmit();
+        await press('next');
+        await reach('submit');
+        // Title, city, trade, Next; pay, workers, shifts, times, certifications,
+        // Next; questions, requirements, Save as template, Post; share, done.
+        expect(counter()).toBe('Posting a job · 14 of 16');
+        await post();
+        await reach('share');
+        expect(counter()).toBe('Posting a job · 15 of 16');
+    });
+
     it('keeps Next off on the title until there is a title', async () => {
         openWizard();
         await reach('intro');

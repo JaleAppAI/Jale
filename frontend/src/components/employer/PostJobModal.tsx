@@ -168,6 +168,13 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
    * would only tell them it was lost. Cleared by typing a name or unticking.
    */
   const [templateNameMissing, setTemplateNameMissing] = useState(false);
+  /**
+   * Post has been pressed and refused at least once in this draft (a name to
+   * fix, a server error, a limit). Only the step-by-step guide reads it, from
+   * the form's `data-post-refused`: its "post again" step applies after a
+   * refusal, not before the first press, so its step count stays honest.
+   */
+  const [postRefused, setPostRefused] = useState(false);
   const templateNameRef = useRef<HTMLInputElement>(null);
   const templateNameErrorId = useId();
 
@@ -295,6 +302,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     setTemplateName('');
     setTemplateNotice('');
     setTemplateNameMissing(false);
+    setPostRefused(false);
     setTemplateLimit(null);
     setDescriptionGenerating(false);
     setFieldProblem(null);
@@ -444,6 +452,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     const name = templateName.trim();
     if (wantsTemplate && !name) {
       setTemplateNameMissing(true);
+      setPostRefused(true);
       templateNameRef.current?.focus();
       return;
     }
@@ -456,6 +465,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       templates.some((tpl) => tpl.name === name && tpl.id !== savedTemplateIdRef.current)
     ) {
       setTemplateNotice('name_taken');
+      setPostRefused(true);
       return;
     }
     // And pre-check the CAP the same way, for the same reason: the template
@@ -472,6 +482,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       templateLimit !== null && templates.length >= templateLimit
     ) {
       setTemplateNotice('limit');
+      setPostRefused(true);
       return;
     }
     setLoading(true);
@@ -534,6 +545,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       } catch {
         // Not a legal wall — fall through to the normal failure paths.
       }
+      setPostRefused(true);
 
       // The typed `job_limit_reached` code is the one failure with its own
       // story: the plan's ceiling, the jobs holding the slots, and the two ways
@@ -721,7 +733,14 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
         <p className="mt-1 text-sm text-[var(--jale-ink-2)]">{stepHint}</p>
       </div>
 
-      <form id={formId} ref={formRef} onSubmit={handleStepSubmit} data-guide="post.form" data-step={step}>
+      <form
+        id={formId}
+        ref={formRef}
+        onSubmit={handleStepSubmit}
+        data-guide="post.form"
+        data-step={step}
+        data-post-refused={postRefused ? 'true' : undefined}
+      >
       {/*
         The form's DEFAULT BUTTON, and the reason Enter works at all.
 
