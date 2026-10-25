@@ -65,7 +65,12 @@ const OPEN_POPUP_OWNER = [
     '[aria-haspopup][aria-expanded="true"]:not([aria-haspopup="false"])',
 ].join(', ');
 
-function inOpenPopupOwner(node: EventTarget | Element | null): boolean {
+/**
+ * Whether `node` is, or sits in, a control with its popup open (see above).
+ * Shared with the step-by-step guides, which leave such an Escape to the
+ * control too (`components/tutorials/spotlight`).
+ */
+export function inOpenPopupOwner(node: EventTarget | Element | null): boolean {
     return node instanceof Element && node.closest(OPEN_POPUP_OWNER) !== null;
 }
 

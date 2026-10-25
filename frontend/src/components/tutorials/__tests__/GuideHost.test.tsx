@@ -63,7 +63,7 @@ function renderInWizard({ saved = true }: { saved?: boolean } = {}) {
         const [playing, setPlaying] = useState(true);
         return (
             <>
-                <Modal open onClose={() => {}} title="Post a Job" footer={<button type="button">Next</button>}>
+                <Modal open onClose={() => {}} title="Post a Job" data-guide="post.wizard" footer={<button type="button">Next</button>}>
                     <div data-guide="post.title">
                         <input aria-label="Job title" />
                     </div>
