@@ -2770,8 +2770,8 @@
         "steps": {
           "prompts": {
             "title": "Las preguntas del empleador",
-            "body": "Contesta cada pregunta en el recuadro, con tus propias palabras. Hasta 1000 caracteres cada una.",
-            "wait": "Contesta todas las preguntas para seguir."
+            "body": "Contesta esta pregunta en el recuadro, con tus propias palabras. Hasta 1000 caracteres.",
+            "wait": "Escribe una respuesta (hasta 1000 caracteres) para seguir."
           },
           "prompts_save": {
             "title": "Guarda tus respuestas",
@@ -2873,9 +2873,9 @@
             "wait": "Agrega una certificación para seguir."
           },
           "certifications": {
-            "title": "Tus certificaciones",
-            "body": "En cada una, {input, select, touch {toca} other {haz clic en}} Sí o No. Las que dicen Requerido necesitan Sí para seguir, y si una pide comprobante, {input, select, touch {toca} other {haz clic en}} Subir otro y elige un PDF o una foto. Las que dicen Opcional nunca te detienen.",
-            "wait": "Contesta Sí en las certificaciones requeridas, con comprobante donde lo pidan, para seguir."
+            "title": "Una certificación que pide el empleador",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Sí si la tienes; con No no puedes seguir. Si pide comprobante, {input, select, touch {toca} other {haz clic en}} Subir otro y elige un PDF o una foto.",
+            "wait": "Contesta Sí, con comprobante si lo pide, para seguir."
           },
           "documents_continue": {
             "title": "Al último paso",
@@ -2923,6 +2923,15 @@
             "body": "{input, select, touch {Toca} other {Haz clic en}} Subir y elige tu documento de autorización de trabajo: un PDF o una foto (JPG o PNG). Si no se sube, vuelve a intentarlo.",
             "body_optional": "Es opcional: puedes seguir sin esto. Para agregarlo, {input, select, touch {toca} other {haz clic en}} Subir y elige un PDF o una foto (JPG o PNG).",
             "wait": "Sube tu documento de autorización de trabajo para seguir."
+          },
+          "prompt_more": {
+            "title": "Una pregunta más",
+            "body": "Contesta esta igual, con tus propias palabras.",
+            "wait": "Escribe una respuesta (hasta 1000 caracteres) para seguir."
+          },
+          "certification_optional": {
+            "title": "Una certificación opcional",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Sí o No. Nunca te impide terminar."
           }
         }
       }

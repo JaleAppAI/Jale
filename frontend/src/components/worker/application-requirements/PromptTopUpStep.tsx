@@ -66,25 +66,28 @@ export function PromptTopUpStep({
         </p>
       </div>
 
-      {/* One box per question; the step-by-step guide points at all of them at once. */}
+      {/* One box per question. The step-by-step guide points at each one in
+          turn (`details.prompt.<n>`): ten boxes together would not fit a
+          phone screen. */}
       <div className="grid gap-5" data-guide="details.prompts">
-        {prompts.map((prompt) => {
+        {prompts.map((prompt, index) => {
           const value = answers[prompt.id] ?? '';
           return (
-            <PromptAnswerField
-              key={prompt.id}
-              question={prompt.text}
-              value={value}
-              touched={touched.has(prompt.id)}
-              disabled={saving}
-              onChange={(text) => set(prompt.id, text)}
-              labels={{
-                placeholder: tApply('placeholder'),
-                chars: tApply('chars', { count: value.trim().length, max: MAX_PROMPT_ANSWER_CHARS }),
-                tooLong: tApply('too_long', { max: MAX_PROMPT_ANSWER_CHARS }),
-                blankHint: tApply('blank_hint'),
-              }}
-            />
+            <div key={prompt.id} data-guide={`details.prompt.${index + 1}`}>
+              <PromptAnswerField
+                question={prompt.text}
+                value={value}
+                touched={touched.has(prompt.id)}
+                disabled={saving}
+                onChange={(text) => set(prompt.id, text)}
+                labels={{
+                  placeholder: tApply('placeholder'),
+                  chars: tApply('chars', { count: value.trim().length, max: MAX_PROMPT_ANSWER_CHARS }),
+                  tooLong: tApply('too_long', { max: MAX_PROMPT_ANSWER_CHARS }),
+                  blankHint: tApply('blank_hint'),
+                }}
+              />
+            </div>
           );
         })}
       </div>

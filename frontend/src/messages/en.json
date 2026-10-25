@@ -2770,8 +2770,8 @@
         "steps": {
           "prompts": {
             "title": "The employer’s questions",
-            "body": "Answer each question in its box, in your own words. Up to 1000 characters each.",
-            "wait": "Answer every question to continue."
+            "body": "Answer this question in its box, in your own words. Up to 1000 characters.",
+            "wait": "Write an answer (up to 1000 characters) to continue."
           },
           "prompts_save": {
             "title": "Save your answers",
@@ -2873,9 +2873,9 @@
             "wait": "Add a certification to continue."
           },
           "certifications": {
-            "title": "Your certifications",
-            "body": "For each one, {input, select, touch {tap} other {click}} Yes or No. Ones marked Required need Yes to continue, and if one asks for proof, {input, select, touch {tap} other {click}} Upload new and pick a PDF or a photo. Ones marked Optional never stop you.",
-            "wait": "Answer Yes to the required certifications, with proof where asked, to continue."
+            "title": "A certification the employer needs",
+            "body": "{input, select, touch {Tap} other {Click}} Yes if you have it; with No you can’t continue. If it asks for proof, {input, select, touch {tap} other {click}} Upload new and pick a PDF or a photo.",
+            "wait": "Answer Yes, with proof if it asks for it, to continue."
           },
           "documents_continue": {
             "title": "On to the last step",
@@ -2923,6 +2923,15 @@
             "body": "{input, select, touch {Tap} other {Click}} Upload and pick your work authorization document: a PDF or a photo (JPG or PNG). If it doesn’t go up, try again.",
             "body_optional": "This one is optional: you can go on without it. To add it, {input, select, touch {tap} other {click}} Upload and pick a PDF or a photo (JPG or PNG).",
             "wait": "Upload your work authorization document to continue."
+          },
+          "prompt_more": {
+            "title": "One more question",
+            "body": "Answer this one the same way, in your own words.",
+            "wait": "Write an answer (up to 1000 characters) to continue."
+          },
+          "certification_optional": {
+            "title": "An optional certification",
+            "body": "{input, select, touch {Tap} other {Click}} Yes or No. It never stops you from finishing."
           }
         }
       }

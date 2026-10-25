@@ -350,9 +350,10 @@ export function DocumentsCertificationsStep({
           <p className="text-xs font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">
             {t('groups.certifications')}
           </p>
-          {certs.map((cert) => (
+          {certs.map((cert, index) => (
             <CertClaimRow
               key={cert.name}
+              guide={`details.cert.${index + 1}`}
               cert={cert}
               claim={certClaims[cert.name] ?? { has: null }}
               onSetHas={(has) => dispatch({ type: 'set_cert_claim', name: cert.name, has })}
@@ -516,8 +517,10 @@ function CertificationDocRow({
  * want a photo of my card?".
  */
 export function CertClaimRow({
-  cert, claim, onSetHas, vaultDocs, uploading, onUpload, missingClaim, missingProof,
+  guide, cert, claim, onSetHas, vaultDocs, uploading, onUpload, missingClaim, missingProof,
 }: {
+  /** The step-by-step guide's hook for this row (one step per certification). */
+  guide?: string;
   cert: CertRequirement;
   claim: CertClaim;
   onSetHas: (has: boolean) => void;
@@ -560,7 +563,12 @@ export function CertClaimRow({
   const ready = cert.tier !== 'required' || (claim.has === true && (!cert.proof_required || Boolean(match)));
 
   return (
-    <div className="rounded-[var(--radius-input)] border border-[var(--jale-divider)] p-4" data-cert-ready={ready ? 'true' : 'false'}>
+    <div
+      className="rounded-[var(--radius-input)] border border-[var(--jale-divider)] p-4"
+      data-guide={guide}
+      data-required={cert.tier === 'required' ? 'true' : 'false'}
+      data-cert-ready={ready ? 'true' : 'false'}
+    >
       {/* THE EMPLOYER'S TEXT, VERBATIM, AS THE HEADING. It used to be
           interpolated into "Do you have {name}?", which reads as broken
           English for the long official names employers type ("Do you have

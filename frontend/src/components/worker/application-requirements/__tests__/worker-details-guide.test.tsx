@@ -281,10 +281,17 @@ describe('worker_details guide — where it starts', () => {
       remaining: remaining({ prompts: ['p1', 'p2'], fields: ['work_authorization'] }),
     }));
 
-    await expectStep('prompts');
+    // One box per step: ten together would not fit a phone screen.
+    await expectStep('prompt_1');
+    expect(callout()).toHaveTextContent('Answer this question in its box');
     expect(calloutButton('Next')).toBeDisabled();
     const boxes = screen.getAllByRole('textbox');
     await typeIn(boxes[0], 'Yes, a full set');
+    expect(calloutButton('Next')).toBeEnabled();
+    await next();
+
+    await expectStep('prompt_2');
+    expect(callout()).toHaveTextContent('One more question');
     expect(calloutButton('Next')).toBeDisabled();
     await typeIn(boxes[1], 'x'.repeat(1001));
     expect(calloutButton('Next')).toBeDisabled();
@@ -307,7 +314,7 @@ describe('worker_details guide — where it starts', () => {
     });
     api.postApplicationPromptAnswers.mockResolvedValue({ kind: 'saved', state: notRequested([]) });
     await start(notRequested(['p1']));
-    await expectStep('prompts');
+    await expectStep('prompt_1');
     await typeIn(screen.getByRole('textbox'), 'Yes');
     await next();
     await press(screen.getByRole('button', { name: 'Save and continue' }));
@@ -324,7 +331,7 @@ describe('worker_details guide — where it starts', () => {
       job: { pre_application_prompts: [{ id: 'p1', text: 'Do you have your own tools?' }] },
       remaining: remaining({ prompts: ['p1'] }),
     }));
-    await expectStep('prompts');
+    await expectStep('prompt_1');
     await typeIn(screen.getByRole('textbox'), 'Yes');
     await next();
     await press(screen.getByRole('button', { name: 'Save and continue' }));
@@ -709,16 +716,29 @@ describe('worker_details guide — Documents & certifications', () => {
       remaining: remaining({ certifications: { unclaimed: ['OSHA 10', 'Forklift'], unproven: [] } }),
     }));
     await next();
-    await expectStep('certifications');
+    // One row per step: twenty together would not fit a phone screen.
+    await expectStep('cert_1');
+    expect(callout()).toHaveTextContent('A certification the employer needs');
     expect(calloutButton('Next')).toBeDisabled();
-    const certs = document.querySelector('[data-guide="details.certs"]') as HTMLElement;
-    await press(within(certs).getByRole('radiogroup', { name: 'Do you have OSHA 10?' }).querySelector('[role="radio"]') as HTMLElement);
+    const osha = document.querySelector('[data-guide="details.cert.1"]') as HTMLElement;
+    await press(within(osha).getByRole('radiogroup', { name: 'Do you have OSHA 10?' }).querySelector('[role="radio"]') as HTMLElement);
+    expect(within(osha).getByText('Use osha.pdf from your vault')).toBeInTheDocument();
+    expect(calloutButton('Next')).toBeEnabled();
+    await next();
+
+    await expectStep('cert_2');
+    const forklift = document.querySelector('[data-guide="details.cert.2"]') as HTMLElement;
     expect(calloutButton('Next')).toBeDisabled();
     // A required certification answered No still holds the step.
-    await press(within(within(certs).getByRole('radiogroup', { name: 'Do you have Forklift?' })).getByRole('radio', { name: 'No' }));
+    await press(within(within(forklift).getByRole('radiogroup', { name: 'Do you have Forklift?' })).getByRole('radio', { name: 'No' }));
     expect(calloutButton('Next')).toBeDisabled();
-    await press(within(within(certs).getByRole('radiogroup', { name: 'Do you have Forklift?' })).getByRole('radio', { name: 'Yes' }));
-    expect(within(certs).getByText('Use osha.pdf from your vault')).toBeInTheDocument();
+    await press(within(within(forklift).getByRole('radiogroup', { name: 'Do you have Forklift?' })).getByRole('radio', { name: 'Yes' }));
+    expect(calloutButton('Next')).toBeEnabled();
+    await next();
+
+    // An optional one never holds the step.
+    await expectStep('cert_3_optional');
+    expect(callout()).toHaveTextContent('An optional certification');
     expect(calloutButton('Next')).toBeEnabled();
   });
 
@@ -731,8 +751,8 @@ describe('worker_details guide — Documents & certifications', () => {
       remaining: remaining({ certifications: { unclaimed: ['OSHA 10'], unproven: [] } }),
     }));
     await next();
-    await expectStep('certifications');
-    const certs = document.querySelector('[data-guide="details.certs"]') as HTMLElement;
+    await expectStep('cert_1');
+    const certs = document.querySelector('[data-guide="details.cert.1"]') as HTMLElement;
     await press(within(certs).getByRole('radio', { name: 'Yes' }));
     expect(within(certs).getByText('Upload new')).toBeInTheDocument();
     expect(within(certs).queryByText(/osha30\.pdf/)).not.toBeInTheDocument();
@@ -745,8 +765,8 @@ describe('worker_details guide — Documents & certifications', () => {
       remaining: remaining({ certifications: { unclaimed: ['OSHA 10'], unproven: [] } }),
     }));
     await next();
-    await expectStep('certifications');
-    const certs = document.querySelector('[data-guide="details.certs"]') as HTMLElement;
+    await expectStep('cert_1');
+    const certs = document.querySelector('[data-guide="details.cert.1"]') as HTMLElement;
     await press(within(certs).getByRole('radio', { name: 'Yes' }));
     expect(within(certs).getByText('Upload new')).toBeInTheDocument();
     expect(calloutButton('Next')).toBeDisabled();

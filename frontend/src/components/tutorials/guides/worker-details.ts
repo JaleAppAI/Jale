@@ -15,8 +15,9 @@ import type { WalkthroughGuide } from './types';
  * step) is passed over at once, and an `action` step on a panel's button
  * moves on when the next panel replaces it.
  *
- *  - Top-up (only for employer questions left from applying on WhatsApp): the
- *    answer boxes, Next once every one holds 1 to 1000 characters; then
+ *  - Top-up (only for employer questions left from applying on WhatsApp): each
+ *    answer box in turn (up to 10; all of them together would not fit a
+ *    phone screen), Next once it holds 1 to 1000 characters; then
  *    "Save and continue", done when the stepper shows.
  *  - The overview: the bar and the three steps. Its Next waits for the saved
  *    files to load, so the document steps after it read the vault's real state.
@@ -28,8 +29,9 @@ import type { WalkthroughGuide } from './types';
  *    not be read; the notices for documents that cannot be uploaded here; one
  *    step per document (already saved: nothing to do; not saved: Upload, and
  *    the step moves on once the file is saved); the legacy certification row;
- *    the named certifications, ready once every required one lets Continue
- *    through; then "Continue", done when Check & finish shows.
+ *    each named certification in turn (up to 20, one row per step for the
+ *    same reason), a required one ready once it lets Continue through; then
+ *    "Continue", done when Check & finish shows.
  *  - Check & finish: the summary; the way back when something is still
  *    missing (the guide ends there: it cannot walk the earlier steps again);
  *    Finish, done when the completion screen shows; then the way back to
@@ -173,6 +175,51 @@ function docSteps(docType: (typeof DOC_TYPES)[number]): SpotlightStep[] {
     ];
 }
 
+/** The employer asks at most this many questions (`MAX_PROMPTS`). */
+const MAX_PROMPTS = 10;
+
+/** A job names at most this many certifications (the server's cap). */
+const MAX_CERTIFICATIONS = 20;
+
+function promptStep(number: number): SpotlightStep {
+    const name = `details.prompt.${number}`;
+    return {
+        id: `prompt_${number}`,
+        target: { guide: name },
+        when: () => onPanel('topup') && guideTarget(name) !== null,
+        mode: 'next',
+        ready: (control) => {
+            const length = control.querySelector('textarea')?.value.trim().length ?? 0;
+            return length > 0 && length <= MAX_PROMPT_ANSWER_CHARS;
+        },
+        ...copy(number === 1 ? 'prompts' : 'prompt_more'),
+    };
+}
+
+function certSteps(number: number): SpotlightStep[] {
+    const name = `details.cert.${number}`;
+    const showing = (required: 'true' | 'false') =>
+        onPanel('documents') && attribute(name, 'data-required') === required;
+    return [
+        {
+            id: `cert_${number}`,
+            target: { guide: name },
+            when: () => showing('true'),
+            mode: 'next',
+            // Yes, and the proof when the employer asks for it: what lets Continue through.
+            ready: (control) => control.getAttribute('data-cert-ready') === 'true',
+            ...copy('certifications'),
+        },
+        {
+            id: `cert_${number}_optional`,
+            target: { guide: name },
+            when: () => showing('false'),
+            mode: 'next',
+            ...copy('certification_optional', false),
+        },
+    ];
+}
+
 const guide: WalkthroughGuide = {
     intro: {
         eyebrowKey: 'tutorial.worker_details.title',
@@ -182,23 +229,7 @@ const guide: WalkthroughGuide = {
     counterKey: `${KEY}.counter`,
     steps: [
         // The employer's questions from applying, when some are unanswered.
-        {
-            id: 'prompts',
-            target: { guide: 'details.prompts' },
-            when: () => onPanel('topup'),
-            mode: 'next',
-            ready: (control) => {
-                const boxes = Array.from(control.querySelectorAll('textarea'));
-                return (
-                    boxes.length > 0 &&
-                    boxes.every((box) => {
-                        const length = box.value.trim().length;
-                        return length > 0 && length <= MAX_PROMPT_ANSWER_CHARS;
-                    })
-                );
-            },
-            ...copy('prompts'),
-        },
+        ...Array.from({ length: MAX_PROMPTS }, (_, index) => promptStep(index + 1)),
         {
             id: 'prompts_save',
             target: { guide: 'details.prompts.save' },
@@ -265,14 +296,7 @@ const guide: WalkthroughGuide = {
                 control.getAttribute('data-required') !== 'true' || Number(control.getAttribute('data-count')) > 0,
             ...copy('certification_doc'),
         },
-        {
-            id: 'certifications',
-            target: { guide: 'details.certs' },
-            when: () => onPanel('documents') && guideTarget('details.certs') !== null,
-            mode: 'next',
-            ready: (control) => control.querySelector('[data-cert-ready="false"]') === null,
-            ...copy('certifications'),
-        },
+        ...Array.from({ length: MAX_CERTIFICATIONS }, (_, index) => certSteps(index + 1)).flat(),
         {
             id: 'documents_continue',
             target: { guide: 'details.documents.continue' },
