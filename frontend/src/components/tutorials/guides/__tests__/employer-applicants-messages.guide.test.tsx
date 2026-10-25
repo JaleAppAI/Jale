@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { render, screen } from '@testing-library/react';
 
 /*
  * The applicants guide (E3) and the messages guide (E4), drawn by the real
@@ -387,6 +388,31 @@ describe('the messages guide', () => {
         );
         const seen = await walk('list');
         expect(seen).toEqual(['list', 'put_away']);
+    });
+
+    it('points the list step at the first conversation in the drawer, or at the list when it is empty', () => {
+        const list = messagesGuide.steps.find((step) => step.id === 'list');
+        const resolve = () => (list?.target as () => HTMLElement | null)();
+        const view = render(
+            <div data-guide="msg.drawer">
+                <aside data-guide="msg.list">
+                    <ul>
+                        <li data-testid="first">Test Worker Two</li>
+                        <li>Test Worker Three</li>
+                    </ul>
+                </aside>
+            </div>,
+        );
+        expect(resolve()).toBe(screen.getByTestId('first'));
+        view.unmount();
+        render(
+            <div data-guide="msg.drawer">
+                <aside data-guide="msg.list" data-testid="list">
+                    No open conversations yet.
+                </aside>
+            </div>,
+        );
+        expect(resolve()).toBe(screen.getByTestId('list'));
     });
 
     it('shows the drawer’s Close without letting it be pressed: putting the drawer away would end the guide’s page', async () => {

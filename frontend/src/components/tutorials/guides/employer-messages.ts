@@ -45,8 +45,14 @@ const target = (name: string) => () => inScope(name);
 const STEPS: readonly SpotlightStep[] = [
     {
         id: 'list',
-        // The drawer opened from its launcher, with nothing picked yet.
-        target: target('msg.list'),
+        // The drawer opened from its launcher, with nothing picked yet. The
+        // first conversation in the list (the list itself when it is empty):
+        // on a phone the list fills the drawer, and a callout beside a target
+        // that tall would have to cover it.
+        target: () => {
+            const list = inScope('msg.list');
+            return Array.from(list?.querySelectorAll<HTMLElement>('li') ?? []).find(isRendered) ?? list;
+        },
         when: () => drawerOpen() && !threadOpen(),
         mode: 'next',
         ...keys('list'),
