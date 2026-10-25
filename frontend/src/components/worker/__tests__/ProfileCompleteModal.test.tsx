@@ -96,6 +96,17 @@ describe('ProfileCompleteModal — nothing is saved that the worker did not choo
         expect(lastValues(onSubmit)).toMatchObject({ years_experience: 80 });
     });
 
+    it('does not clear a stored number of years: it asks for a number (0 if none)', () => {
+        const { onSubmit } = renderGate({ ...SPARSE, availability: 'flexible', years_experience: 6 });
+        fireEvent.change(field(m('skills_placeholder')), { target: { value: 'finishing' } });
+        fireEvent.change(field(m('years_experience')), { target: { value: '' } });
+        submit();
+
+        expect(onSubmit).not.toHaveBeenCalled();
+        expect(screen.getAllByText('Enter your years of experience (0 if none).').length).toBeGreaterThan(0);
+        expect(field(m('years_experience'))).toHaveAttribute('aria-invalid', 'true');
+    });
+
     it('offers the empty choice in Spanish, in tú', () => {
         renderGate(SPARSE, 'es');
         const availability = field(m('availability_label', 'es')) as HTMLSelectElement;

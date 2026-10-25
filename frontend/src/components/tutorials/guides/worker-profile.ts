@@ -54,10 +54,14 @@ function formUp(): boolean {
     return guideTarget('profile.form') !== null;
 }
 
-/** Empty, or a whole number of years from 0 to 80 (what the server accepts). */
+/**
+ * Empty (unless the profile had a number, which cannot be cleared), or a whole
+ * number of years from 0 to 80 (what the server accepts).
+ */
 function yearsAcceptable(control: Element): boolean {
-    const raw = fieldIn(control)?.value.trim() ?? '';
-    if (raw === '') return true;
+    const field = fieldIn(control);
+    const raw = field?.value.trim() ?? '';
+    if (raw === '') return !(field?.hasAttribute('data-stored') ?? false);
     const years = Number(raw);
     return Number.isInteger(years) && years >= 0 && years <= 80;
 }

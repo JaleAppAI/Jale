@@ -111,6 +111,10 @@ export function ProfileCompleteModal(props: {
   // A stored availability is shown as it is; only an unset one offers the
   // empty "choose" option, which must then be replaced before saving.
   const availabilityStored = isAvailability(initial?.availability);
+  // A stored number of years cannot be cleared (the server keeps a value it is
+  // not sent); an emptied box asks for a number instead (0 if none).
+  const yearsStored = typeof initial?.years_experience === 'number';
+  const [yearsMissing, setYearsMissing] = useState(false);
   useEffect(() => {
     if (!open || !initial) return;
     setFullName(initial.full_name ?? '');
@@ -150,6 +154,12 @@ export function ProfileCompleteModal(props: {
     };
     const missing = validateWorkerProfileFields(values);
     setMissingFields(missing);
+    const clearedYears = yearsStored && yearsExp.trim() === '';
+    setYearsMissing(clearedYears);
+    if (missing.length === 0 && clearedYears) {
+      setError(tFields('edit.years_required'));
+      return;
+    }
     if (missing.length > 0) {
       setError(tFields('errors.missing_summary', {
         fields: missing.map((field) => t(FIELD_LABEL_KEY[field])).join(', '),
@@ -278,10 +288,17 @@ export function ProfileCompleteModal(props: {
           />
         </Field>
 
-        <Field id={yearsId} label={t('years_experience')}>
+        <Field
+          id={yearsId}
+          label={t('years_experience')}
+          error={yearsMissing ? tFields('edit.years_required') : null}
+        >
           <Input
             id={yearsId}
             data-guide="apply.gate.years"
+            data-stored={yearsStored ? '' : undefined}
+            aria-invalid={yearsMissing || undefined}
+            aria-describedby={yearsMissing ? `${yearsId}-error` : undefined}
             type="number"
             inputMode="numeric"
             min={0}

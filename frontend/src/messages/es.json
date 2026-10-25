@@ -1885,7 +1885,8 @@
       "trade_other_label": "Tu oficio",
       "trade_other_placeholder": "Escribe tu oficio, p. ej. soldador, drywall, techador",
       "trade_other_length": "Escribe tu oficio en {min} a {max} caracteres.",
-      "availability_choose": "Elige tu disponibilidad"
+      "availability_choose": "Elige tu disponibilidad",
+      "years_required": "Escribe tus años de experiencia (0 si no tienes)."
     },
     "complete_modal": {
       "title": "Completa tu perfil",
@@ -2744,7 +2745,8 @@
           },
           "gate_years": {
             "title": "Años de experiencia",
-            "body": "Opcional. Escribe cuántos años has trabajado en Años de experiencia, o déjalo como está."
+            "body": "Opcional. Escribe cuántos años has trabajado en Años de experiencia, o déjalo como está. Un número ya guardado se puede cambiar pero no borrar (usa 0 si no tienes).",
+            "wait": "Escribe un número (0 si no tienes) para seguir."
           },
           "gate_save": {
             "title": "Guarda tu perfil",
@@ -3038,8 +3040,8 @@
           },
           "years": {
             "title": "Años de experiencia",
-            "body": "Opcional. Escribe cuántos años has trabajado, en número entero de 0 a 80, o déjalo como está.",
-            "wait": "Usa un número entero de 0 a 80, o déjalo vacío, para continuar."
+            "body": "Opcional. Escribe cuántos años has trabajado, en número entero de 0 a 80, o déjalo como está. Un número ya guardado se puede cambiar pero no borrar (usa 0 si no tienes).",
+            "wait": "Usa un número entero de 0 a 80 para continuar."
           },
           "location": {
             "title": "Tu ubicación",

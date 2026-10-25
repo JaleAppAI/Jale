@@ -1885,7 +1885,8 @@
       "trade_other_label": "Your trade",
       "trade_other_placeholder": "Type your trade, e.g. welder, drywall, roofer",
       "trade_other_length": "Tell us your trade in {min}–{max} characters.",
-      "availability_choose": "Choose your availability"
+      "availability_choose": "Choose your availability",
+      "years_required": "Enter your years of experience (0 if none)."
     },
     "complete_modal": {
       "title": "Complete your profile",
@@ -2744,7 +2745,8 @@
           },
           "gate_years": {
             "title": "Years of experience",
-            "body": "Optional. Type how many years you’ve worked in Years of experience, or leave it as it is."
+            "body": "Optional. Type how many years you’ve worked in Years of experience, or leave it as it is. A number already saved can be changed but not cleared (use 0 if none).",
+            "wait": "Type a number (0 if none) to continue."
           },
           "gate_save": {
             "title": "Save your profile",
@@ -3038,8 +3040,8 @@
           },
           "years": {
             "title": "Years of experience",
-            "body": "Optional. Type how many years you’ve worked, as a whole number from 0 to 80, or leave it as it is.",
-            "wait": "Use a whole number from 0 to 80, or leave it empty, to continue."
+            "body": "Optional. Type how many years you’ve worked, as a whole number from 0 to 80, or leave it as it is. A number already saved can be changed but not cleared (use 0 if none).",
+            "wait": "Use a whole number from 0 to 80 to continue."
           },
           "location": {
             "title": "Your location",

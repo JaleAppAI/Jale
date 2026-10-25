@@ -123,7 +123,11 @@ const guide: WalkthroughGuide = {
         }),
         gateStep('gate_availability', 'availability'),
         gateStep('gate_location', 'location'),
-        gateStep('gate_years', 'years', { ready: () => true, wait: false }),
+        gateStep('gate_years', 'years', {
+            // Optional, but a stored number cannot be cleared.
+            ready: (control) =>
+                !(control.hasAttribute('data-stored') && control instanceof HTMLInputElement && control.value.trim() === ''),
+        }),
         {
             id: 'gate_save',
             target: { guide: 'apply.gate.save' },

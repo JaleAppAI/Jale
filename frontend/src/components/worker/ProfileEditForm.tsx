@@ -17,18 +17,19 @@ import { AVAILABILITY_KEYS, TRADE_KEYS, isAvailabilityKey, isTradeKey, tradeLabe
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 
 /** What the Save gate can name: the four required fields, plus the Other trade's box. */
-type FormField = WorkerProfileField | 'trade_other';
+type FormField = WorkerProfileField | 'trade_other' | 'years';
 
 const FIELD_LABEL_KEY: Record<FormField, string> = {
   full_name: 'full_name',
   trade_other: 'trade_other_label',
+  years: 'years_experience',
   skills: 'skills_label',
   availability: 'availability_label',
   location: 'location',
 };
 
 /** The order the form shows them in, so "Please add: …" reads top to bottom. */
-const FIELD_ORDER: readonly FormField[] = ['full_name', 'trade_other', 'skills', 'availability', 'location'];
+const FIELD_ORDER: readonly FormField[] = ['full_name', 'trade_other', 'skills', 'availability', 'years', 'location'];
 
 /**
  * What the form has to say about the last save attempt.
@@ -63,7 +64,14 @@ function tradePatch(trade: TradeKey | '', other: string): Pick<WorkerProfilePatc
  *
  * The trade offers the same six choices as onboarding. Other opens a box held
  * to the same rule as there: 2 to 60 characters once trimmed, said while
- * typing and checked again on Save.
+ * typing and checked again on Save. The trade is sent, and that rule
+ * applied, ONLY when the worker changed it: a stored trade (whatever its
+ * length, from WhatsApp or voice) is never re-sent, so an edit to anything
+ * else neither trips over it nor has it reworded by the server.
+ *
+ * A stored number of years cannot be cleared: the server keeps a value it is
+ * not sent, so an emptied box would look saved and not be. Save asks for a
+ * number instead (0 if none).
  *
  * `data-guide="profile.*"` marks the controls the profile's step-by-step guide
  * points at (`components/tutorials/guides/worker-profile.ts`).
@@ -86,6 +94,13 @@ export function ProfileEditForm(props: {
   const [availabilityStored] = useState(() => isAvailabilityKey(props.initial.availability));
   const [trade, setTrade] = useState<TradeKey | ''>(isTradeKey(props.initial.main_trade) ? props.initial.main_trade : '');
   const [tradeOther, setTradeOther] = useState(props.initial.main_trade_other ?? '');
+  // The trade as the profile came with it: what "changed" is measured against.
+  const [initialTrade] = useState<TradeKey | ''>(() => (isTradeKey(props.initial.main_trade) ? props.initial.main_trade : ''));
+  const [initialTradeOther] = useState(() => (props.initial.main_trade_other ?? '').trim());
+  const tradeChanged = trade !== initialTrade || (trade === 'other' && tradeOther.trim() !== initialTradeOther);
+  const [yearsStored] = useState(
+    () => props.initial.years_experience !== null && props.initial.years_experience !== undefined,
+  );
   const [skills, setSkills] = useState((props.initial.skills ?? []).join(', '));
   const [availability, setAvailability] = useState<string>(
     isAvailabilityKey(props.initial.availability) ? props.initial.availability : '',
@@ -115,7 +130,8 @@ export function ProfileEditForm(props: {
         location: location.trim(),
       }),
     );
-    if (trade === 'other' && !customTradeAcceptable(tradeOther)) blocked.add('trade_other');
+    if (tradeChanged && trade === 'other' && !customTradeAcceptable(tradeOther)) blocked.add('trade_other');
+    if (yearsStored && yearsExp.trim() === '') blocked.add('years');
     const missing = FIELD_ORDER.filter((field) => blocked.has(field));
     setMissingFields(missing);
     if (missing.length > 0) {
@@ -132,7 +148,7 @@ export function ProfileEditForm(props: {
     try {
       await props.onSave({
         full_name: fullName.trim() || null,
-        ...tradePatch(trade, tradeOther),
+        ...(tradeChanged ? tradePatch(trade, tradeOther) : {}),
         skills: skillsList,
         availability: availability as WorkerAvailability,
         ...(years === '' ? {} : { years_experience: Number(years) }),
@@ -155,6 +171,7 @@ export function ProfileEditForm(props: {
   // The Other box's rule, said as soon as typed text breaks it, and for an
   // empty box once Save has asked for it.
   const tradeOtherError =
+    tradeChanged &&
     trade === 'other' &&
     !customTradeAcceptable(tradeOther) &&
     (tradeOther.length > 0 || missingFields.includes('trade_other'))
@@ -239,10 +256,16 @@ export function ProfileEditForm(props: {
         </Select>
       </LabeledField>
 
-      <LabeledField label={t('years_experience')} htmlFor={`${fieldId}-years`}>
+      <LabeledField
+        label={t('years_experience')}
+        htmlFor={`${fieldId}-years`}
+        error={missingFields.includes('years') ? t('years_required') : undefined}
+      >
         <Input
           id={`${fieldId}-years`}
           data-guide="profile.years"
+          // For the profile guide: a stored number cannot be cleared.
+          data-stored={yearsStored ? '' : undefined}
           type="number"
           min={0}
           max={80}

@@ -381,6 +381,18 @@ describe('worker_profile guide — the other fields', () => {
         expect(action('next')?.disabled).toBe(false);
     });
 
+    it('holds the years step when a saved number is cleared (it can be changed, not cleared)', async () => {
+        renderGuide(FULL);
+        await startAndEdit();
+        await nextUntil('years');
+        expect(action('next')?.disabled).toBe(false);
+        await set('profile.years', '');
+        expect(action('next')?.disabled).toBe(true);
+        expect(callout()).toHaveTextContent('Use a whole number from 0 to 80 to continue.');
+        await set('profile.years', '0');
+        expect(action('next')?.disabled).toBe(false);
+    });
+
     it('holds the location step until there is a location, and asks for one picked from the list', async () => {
         renderGuide({ ...FULL, location: null });
         await startAndEdit();

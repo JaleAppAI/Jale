@@ -246,3 +246,88 @@ describe('ProfileEditForm — Edit trade', () => {
         expect(Array.from(select.options).find((option) => option.value === 'other')?.textContent).toBe('Otro');
     });
 });
+
+describe('ProfileEditForm — the trade is sent only when the worker changes it', () => {
+    const bioOnlySave = async (stored: string) => {
+        const { onSave } = renderForm({ ...BASE, main_trade: 'other', main_trade_other: stored });
+        // Whatever its length, the stored trade says nothing on open.
+        expect(screen.queryByText(lengthMessage())).not.toBeInTheDocument();
+        fireEvent.change(field(e('bio')), { target: { value: 'Ten years on commercial slabs.' } });
+        save();
+        await vi.waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+        return lastPatch(onSave);
+    };
+
+    it('saves a bio-only edit with a 1-character stored trade, sending no trade fields', async () => {
+        const patch = await bioOnlySave('W');
+        expect(patch.bio).toBe('Ten years on commercial slabs.');
+        expect(patch).not.toHaveProperty('main_trade');
+        expect(patch).not.toHaveProperty('main_trade_other');
+    });
+
+    it('saves a bio-only edit with an 80-character stored trade, sending no trade fields', async () => {
+        const patch = await bioOnlySave('x'.repeat(80));
+        expect(patch).not.toHaveProperty('main_trade');
+        expect(patch).not.toHaveProperty('main_trade_other');
+    });
+
+    it('never re-sends a stored trade in the worker’s own words (so the server cannot reword it)', async () => {
+        const patch = await bioOnlySave('Soldador');
+        expect(patch).not.toHaveProperty('main_trade_other');
+    });
+
+    it('validates and sends a trade the worker changed', async () => {
+        const { onSave } = renderForm({ ...BASE, main_trade: 'other', main_trade_other: 'W' });
+        fireEvent.change(otherBox() as HTMLInputElement, { target: { value: 'Wx' } });
+        fireEvent.change(otherBox() as HTMLInputElement, { target: { value: 'W' } });
+        // Back to what was stored: unchanged, so nothing to check or send.
+        save();
+        await vi.waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+        expect(lastPatch(onSave)).not.toHaveProperty('main_trade_other');
+
+        fireEvent.change(otherBox() as HTMLInputElement, { target: { value: 'x'.repeat(61) } });
+        save();
+        expect(onSave).toHaveBeenCalledTimes(1);
+        expect(screen.getByText(lengthMessage())).toBeInTheDocument();
+
+        fireEvent.change(otherBox() as HTMLInputElement, { target: { value: '  Welder ' } });
+        save();
+        await vi.waitFor(() => expect(onSave).toHaveBeenCalledTimes(2));
+        expect(lastPatch(onSave)).toMatchObject({ main_trade: 'other', main_trade_other: 'Welder' });
+    });
+
+    it('sends a switch from a stored custom trade to a standard one', async () => {
+        const { onSave } = renderForm({ ...BASE, main_trade: 'other', main_trade_other: 'x'.repeat(80) });
+        fireEvent.change(tradeSelect(), { target: { value: 'plumber' } });
+        save();
+        await vi.waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+        expect(lastPatch(onSave)).toMatchObject({ main_trade: 'plumber', main_trade_other: null });
+    });
+});
+
+describe('ProfileEditForm — a stored number of years cannot be cleared', () => {
+    it('asks for a number (0 if none) instead of saving an emptied box', () => {
+        const { onSave } = renderForm(BASE);
+        fireEvent.change(field(e('years_experience')), { target: { value: '' } });
+        save();
+
+        expect(onSave).not.toHaveBeenCalled();
+        expect(screen.getByText('Enter your years of experience (0 if none).')).toBeInTheDocument();
+        expect(screen.getByRole('alert')).toHaveTextContent(`Please add: ${e('years_experience')}`);
+    });
+
+    it('saves 0 typed in its place', async () => {
+        const { onSave } = renderForm(BASE);
+        fireEvent.change(field(e('years_experience')), { target: { value: '0' } });
+        save();
+        await vi.waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+        expect(lastPatch(onSave)).toMatchObject({ years_experience: 0 });
+    });
+
+    it('says it in Spanish, in tú', () => {
+        renderForm(BASE, 'es');
+        fireEvent.change(screen.getByLabelText(e('years_experience', 'es')), { target: { value: '' } });
+        save('es');
+        expect(screen.getByText('Escribe tus años de experiencia (0 si no tienes).')).toBeInTheDocument();
+    });
+});
