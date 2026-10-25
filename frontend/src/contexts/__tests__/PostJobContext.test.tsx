@@ -38,28 +38,34 @@ vi.mock('@/components/ui/toast', () => ({
 
 /*
  * The post-job tutorial (E2) as a recording handle: which id the provider asks
- * for, the `done` it passes on each render, and the `done` the handle held
- * when the provider asked it to run before the wizard. `runBeforeHost` opens
- * the host at once, as the real hook does whenever a tutorial does not play.
+ * for, the `done` and `walkthrough` it passes on each render, and the `done`
+ * the handle held when the provider asked it to run with the wizard (and
+ * whether as a replay). `runWithHost` opens the host at once, as the real
+ * hook always does, before any guide.
  */
 const tutorial = vi.hoisted(() => {
     const latestDone: Record<string, boolean | undefined> = {};
+    const walkthrough: Record<string, boolean | undefined> = {};
     const doneAtRun: (boolean | undefined)[] = [];
+    const replays: (boolean | undefined)[] = [];
     const ids: string[] = [];
     const handle = {
         maybeAutoOpen: vi.fn(),
-        runBeforeHost: vi.fn((openHost: () => void) => {
+        runBeforeHost: vi.fn((openHost: () => void) => openHost()),
+        runWithHost: vi.fn((openHost: () => void, _vars?: unknown, options?: { replay?: boolean }) => {
             doneAtRun.push(latestDone.employer_post_job);
+            replays.push(options?.replay);
             openHost();
         }),
         replay: vi.fn(),
     };
-    return { latestDone, doneAtRun, ids, handle };
+    return { latestDone, walkthrough, doneAtRun, replays, ids, handle };
 });
 vi.mock('@/lib/tutorials/use-tutorial', () => ({
-    useTutorial: (id: string, options: { done: boolean | undefined }) => {
+    useTutorial: (id: string, options: { done: boolean | undefined; walkthrough?: boolean }) => {
         tutorial.ids.push(id);
         tutorial.latestDone[id] = options.done;
+        tutorial.walkthrough[id] = options.walkthrough;
         return tutorial.handle;
     },
 }));
@@ -176,6 +182,7 @@ const postJobButton = () =>
 beforeEach(() => {
     vi.clearAllMocks();
     tutorial.doneAtRun.length = 0;
+    tutorial.replays.length = 0;
     tutorial.ids.length = 0;
     for (const id of Object.keys(tutorial.latestDone)) delete tutorial.latestDone[id];
     authState.idToken = 'test-token';
@@ -352,10 +359,11 @@ describe('with no session to post with', () => {
 });
 
 /*
- * E2 (sprint 29): the post-job tutorial plays before the wizard, only once the
- * plan gate has let the employer through, and only for an employer with no
- * job yet (K1.5). The real tutorial lands with the framework; here the hook is
- * a recording handle.
+ * E2: the post-job tutorial is a step-by-step guide that runs INSIDE the
+ * wizard: the wizard opens first, and the guide is asked for with it
+ * (`runWithHost`), only once the plan gate has let the employer through, and
+ * auto-plays only for an employer with no job yet (K1.5). Help's "Guide me
+ * through it" asks for it as a replay. Here the hook is a recording handle.
  */
 describe('the post-job tutorial', () => {
     const noJobsSnapshot = { billing: { ...freePlan, activeJobLimit: 3, activeJobUsage: 0 }, jobs: [], activeCount: 0 };
@@ -370,19 +378,23 @@ describe('the post-job tutorial', () => {
         renderPage();
 
         expect(tutorial.ids).toContain('employer_post_job');
+        expect(tutorial.walkthrough.employer_post_job).toBe(true);
         expect(tutorial.latestDone.employer_post_job).toBeUndefined();
+        expect(tutorial.handle.runWithHost).not.toHaveBeenCalled();
         expect(tutorial.handle.runBeforeHost).not.toHaveBeenCalled();
     });
 
-    it('plays before the wizard for an employer with no jobs, with done false', async () => {
+    it('runs the guide with the wizard for an employer with no jobs, with done false', async () => {
         getJobs.mockResolvedValue([]);
         renderPage();
         fireEvent.click(postJobButton());
 
         await waitFor(() => expect(screen.getByTestId('post-job-wizard')).toBeInTheDocument());
-        expect(tutorial.handle.runBeforeHost).toHaveBeenCalledTimes(1);
+        expect(tutorial.handle.runWithHost).toHaveBeenCalledTimes(1);
+        expect(tutorial.handle.runBeforeHost).not.toHaveBeenCalled();
         // The read that answered the gate is the one the tutorial saw.
         expect(tutorial.doneAtRun).toEqual([false]);
+        expect(tutorial.replays).toEqual([false]);
     });
 
     it('passes done true once the employer has a job', async () => {
@@ -415,8 +427,58 @@ describe('the post-job tutorial', () => {
 
         await waitFor(() =>
             expect(screen.getByText(message('billing.limit_dialog.title'))).toBeInTheDocument());
-        expect(tutorial.handle.runBeforeHost).not.toHaveBeenCalled();
+        expect(tutorial.handle.runWithHost).not.toHaveBeenCalled();
         expect(screen.queryByTestId('post-job-wizard')).not.toBeInTheDocument();
+    });
+
+    it('asks for the guide as a replay when Help opens the wizard with it, through the same gate', async () => {
+        function HelpLikePage() {
+            const { openPostJob } = usePostJob();
+            return (
+                <>
+                    <PostJobButton />
+                    <button type="button" onClick={() => openPostJob(undefined, { guide: 'replay' })}>
+                        guide me
+                    </button>
+                </>
+            );
+        }
+        renderIntl(
+            <PostJobProvider>
+                <HelpLikePage />
+            </PostJobProvider>,
+        );
+        fireEvent.click(screen.getByRole('button', { name: 'guide me' }));
+        await waitFor(() => expect(screen.getByTestId('post-job-wizard')).toBeInTheDocument());
+        expect(tutorial.replays).toEqual([true]);
+
+        // The next plain press is not a replay.
+        fireEvent.click(postJobButton());
+        await waitFor(() => expect(tutorial.replays).toEqual([true, false]));
+    });
+
+    it('never runs the guide when the plan gate refuses a replay', async () => {
+        getBilling.mockResolvedValueOnce(freePlan);
+        function HelpLikePage() {
+            const { openPostJob } = usePostJob();
+            return (
+                <>
+                    <PostJobButton />
+                    <button type="button" onClick={() => openPostJob(undefined, { guide: 'replay' })}>
+                        guide me
+                    </button>
+                </>
+            );
+        }
+        renderIntl(
+            <PostJobProvider>
+                <HelpLikePage />
+            </PostJobProvider>,
+        );
+        fireEvent.click(screen.getByRole('button', { name: 'guide me' }));
+        await waitFor(() =>
+            expect(screen.getByText(message('billing.limit_dialog.title'))).toBeInTheDocument());
+        expect(tutorial.handle.runWithHost).not.toHaveBeenCalled();
     });
 
     it('forgets what a page told it once that page is gone', () => {
