@@ -24,7 +24,12 @@ export interface ProfileCompleteValues {
   skills: string[];  // comma-separated in UI, split here
   availability: Availability;
   location: string;
-  years_experience: number;
+  /** Absent when the box was left empty: the stored value (if any) stays. */
+  years_experience?: number;
+}
+
+function isAvailability(value: unknown): value is Availability {
+  return typeof value === 'string' && (AVAILABILITY as readonly string[]).includes(value);
 }
 
 /**
@@ -90,9 +95,11 @@ export function ProfileCompleteModal(props: {
   const fieldId = useId();
   const [fullName, setFullName] = useState('');
   const [skills, setSkills] = useState('');
-  const [availability, setAvailability] = useState<Availability>('full_time');
+  // Empty until the profile says otherwise: never a choice the worker did not
+  // make (Full-time used to be preselected, and "Save and apply" saved it).
+  const [availability, setAvailability] = useState<Availability | ''>('');
   const [location, setLocation] = useState('');
-  const [yearsExp, setYearsExp] = useState('0');
+  const [yearsExp, setYearsExp] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [missingFields, setMissingFields] = useState<WorkerProfileField[]>([]);
@@ -101,11 +108,14 @@ export function ProfileCompleteModal(props: {
   // so they only fill in what's actually missing (e.g. WhatsApp-onboarded
   // workers already have name/availability/location).
   const { open, initial, onClose, onSubmit } = props;
+  // A stored availability is shown as it is; only an unset one offers the
+  // empty "choose" option, which must then be replaced before saving.
+  const availabilityStored = isAvailability(initial?.availability);
   useEffect(() => {
     if (!open || !initial) return;
     setFullName(initial.full_name ?? '');
     setSkills((initial.skills ?? []).join(', '));
-    if (initial.availability && (AVAILABILITY as readonly string[]).includes(initial.availability)) {
+    if (isAvailability(initial.availability)) {
       setAvailability(initial.availability);
     }
     setLocation(initial.location ?? '');
@@ -146,13 +156,18 @@ export function ProfileCompleteModal(props: {
       }));
       return;
     }
+    const years = yearsExp.trim();
     setSubmitting(true);
     try {
       await onSubmit({
         ...values,
+        availability: availability as Availability,
         // Clamp to [0, 80] to mirror the backend cap (max= on the input is not a
-        // complete guard when submit goes through a custom handler).
-        years_experience: Math.min(Math.max(Number(yearsExp) || 0, 0), 80),
+        // complete guard when submit goes through a custom handler). An empty
+        // box sends nothing, so a stored value is kept rather than zeroed.
+        ...(years === ''
+          ? {}
+          : { years_experience: Math.min(Math.max(Number(years) || 0, 0), 80) }),
       });
     } catch (e) {
       // Never `err.message`: that is a backend error CODE, untranslated and
@@ -220,12 +235,21 @@ export function ProfileCompleteModal(props: {
           />
         </Field>
 
-        <Field id={availabilityId} label={t('availability_label')}>
+        <Field
+          id={availabilityId}
+          label={t('availability_label')}
+          error={missingFields.includes('availability') ? requiredError : null}
+        >
           <Select
             id={availabilityId}
             value={availability}
-            onChange={(e) => setAvailability(e.target.value as Availability)}
+            onChange={(e) => setAvailability(isAvailability(e.target.value) ? e.target.value : '')}
+            aria-invalid={missingFields.includes('availability') || undefined}
+            aria-describedby={missingFields.includes('availability') ? `${availabilityId}-error` : undefined}
           >
+            {availabilityStored ? null : (
+              <option value="" disabled>{tFields('edit.availability_choose')}</option>
+            )}
             {AVAILABILITY.map((a) => (
               <option key={a} value={a}>{t(`availability.${a}`)}</option>
             ))}
