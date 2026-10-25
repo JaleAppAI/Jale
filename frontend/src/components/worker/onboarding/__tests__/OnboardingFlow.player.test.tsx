@@ -171,8 +171,20 @@ describe('OnboardingFlow with the real W1 tutorial', () => {
         expect(posts()).toEqual([]);
     });
 
-    it('does not open for a worker who resumes past the first screen', async () => {
+    it('opens the guide for a worker who resumes at question 2 with no record, at that step', async () => {
         serveTutorials([]);
+        renderFlow(at('trust.question.2'));
+
+        const intro = await screen.findByRole('dialog', { name: en.tutorial.worker_onboarding.guide.intro_title });
+        act(() => within(intro).getByRole('button', { name: en.tutorial.common.guide.worker.start }).click());
+        await vi.waitFor(() => {
+            const step = document.querySelector('[data-spotlight="worker_onboarding"] [data-step]')?.getAttribute('data-step');
+            expect(['q2_answer', 'q2_answer_voice']).toContain(step);
+        });
+    });
+
+    it('does not open for a worker who resumes mid-way but already has a record', async () => {
+        serveTutorials([record('worker_onboarding', 'skipped')]);
         renderFlow(at('trust.question.2'));
         await settle();
 
