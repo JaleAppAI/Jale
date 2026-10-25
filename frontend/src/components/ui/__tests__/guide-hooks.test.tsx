@@ -97,12 +97,14 @@ describe('data-guide on the primitives', () => {
     });
 });
 
-describe('Modal and an Escape a layer above it handled', () => {
-    it('does not close on an Escape already marked handled, and still closes on a plain one', () => {
+describe('Modal and an Escape a guide inside it handled', () => {
+    it('does not close on an Escape a guide drawn inside it marked handled, and still closes on a plain one', () => {
         const onClose = vi.fn();
         intl(
             <Modal open onClose={onClose} title="Post a Job">
                 <input aria-label="City" />
+                {/* A step-by-step guide's layer, drawn inside the panel. */}
+                <div data-spotlight="employer_post_job" />
             </Modal>,
         );
         const mark = (event: KeyboardEvent) => {
@@ -114,6 +116,23 @@ describe('Modal and an Escape a layer above it handled', () => {
         expect(onClose).not.toHaveBeenCalled();
 
         screen.getByLabelText('City').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    it('still closes on an Escape another layer marked handled, with no guide inside it', () => {
+        const onClose = vi.fn();
+        intl(
+            <Modal open onClose={onClose} title="Post a Job">
+                <input aria-label="City" />
+            </Modal>,
+        );
+        // A layer under the dialog (a Sheet, say) that handled the key first.
+        const mark = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') event.preventDefault();
+        };
+        window.addEventListener('keydown', mark, true);
+        screen.getByLabelText('City').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        window.removeEventListener('keydown', mark, true);
         expect(onClose).toHaveBeenCalledTimes(1);
     });
 });

@@ -9,8 +9,22 @@ import { useOverlayPresence } from '@/lib/tutorials/overlay';
 import { focusableWithin } from '@/components/ui/modal';
 import { prefersReducedMotion } from '../scene/motion';
 import { DoneCard, IntroCard, StepCallout, type StepPrimary } from './cards';
-import { cutoutFor, placeCallout, unionBox, type Band, type Box, type Placement } from './geometry';
-import { dialogOf, openPopupsOf, ownsOpenPopup, scrollIntoContainer, scrollParentWithin } from './scope';
+import { clipToBand, cutoutFor, placeCallout, unionBox, type Band, type Box, type Placement } from './geometry';
+import { holdPageScroll } from './page-lock';
+import {
+    dialogOf,
+    modalOver,
+    openPopupsOf,
+    outOfContainer,
+    outOfPageBand,
+    ownsOpenPopup,
+    revealOnPage,
+    scrollIntoContainer,
+    scrollParentWithin,
+    scrollToFitCallout,
+    tallerThanPage,
+    visiblePageBand,
+} from './scope';
 import {
     applies,
     buildSteps,
@@ -25,6 +39,7 @@ import {
     type SpotlightDone,
     type SpotlightIntro,
     type SpotlightStep,
+    type SpotlightTarget,
 } from './steps';
 
 /**
@@ -71,12 +86,31 @@ import {
  * ahead of the dialog's `document` one): Tab stays in the callout and the
  * control, and Escape ends the walkthrough only, never the dialog under it.
  * The one exception is an Escape meant for a control's open list: it is left
- * to the control and marked handled, which `Modal` honours. If the dialog
- * goes away, the walkthrough ends as skipped.
+ * to the control and marked handled, which `Modal` honours.
+ *
+ * MOVING BETWEEN THE PAGE AND A DIALOG. Each step's control is looked for
+ * wherever it is, and the layer follows it: a step on the page after one in a
+ * dialog (or the other way round, or in another dialog) carries on there. If
+ * the dialog holding the current step goes away, the walkthrough looks for
+ * that step's control or the next step's, the lazy way (up to `waitMs`), and
+ * carries on with whichever shows; if neither does, it ends as skipped. The
+ * intro ends as skipped with its dialog; the closing card moves to the page.
+ * Only on the page does the walkthrough hold the page's scroll, by a property
+ * no dialog touches (`./page-lock`), so the two never undo each other.
+ *
+ * ANOTHER DIALOG ON TOP. While a modal dialog that is not the walkthrough's
+ * own (a confirm or a form the step's control opened) is open, the
+ * walkthrough steps aside: nothing drawn, no keys taken, no hold on the
+ * page's scroll, no waits running out and no step moving on. The dialog's
+ * Escape and Tab are its own. When it closes, the walkthrough picks up on the
+ * same step: measured again, focus as the step's mode has it, and a condition
+ * that came to hold meanwhile moves the step on then.
  *
  * ENDING. The last step done is `completed` (after the closing card, if there
  * is one); "not now", the end button, Escape and "Don't show this again" are
- * `skipped`.
+ * `skipped`, and so is a lazy walkthrough whose last step reached was passed
+ * over because its control never came. A change of page (pathname) ends it
+ * at once as `skipped`.
  *
  * Copy: the client gives every key, resolved from the catalogue's root. Step
  * copy, the intro's body and wait lines get an `input` value, `touch` or
@@ -110,6 +144,13 @@ export type SpotlightProps = {
     endKey?: string;
     /** Offers "Don't show this again" on the intro; the walkthrough then ends as skipped. */
     onMute?: () => void;
+    /**
+     * Lazy: what the walkthrough runs in, when its caller opens it together
+     * with the walkthrough (the post-job wizard). If it shows and goes away
+     * before the first step's control does, the walkthrough is unavailable at
+     * once rather than after `waitMs`.
+     */
+    host?: SpotlightTarget;
 };
 
 /** Lazy walkthroughs wait this long for a step's control before skipping it. */
@@ -122,7 +163,8 @@ type Phase =
     | { kind: 'step'; index: number }
     | { kind: 'done' };
 
-type Layout = { hole: Box; placement: Placement };
+/** `tall`: a control on the page taller than what the page shows at once, which the person scrolls. */
+type Layout = { hole: Box; placement: Placement; tall: boolean };
 
 /** The viewport, or the box the layer covers inside a dialog, in viewport px. */
 type Frame = { top: number; left: number; width: number; height: number };
@@ -143,12 +185,23 @@ function sameLayout(a: Layout | null, b: Layout | null): boolean {
         a.placement.side === b.placement.side &&
         a.placement.top === b.placement.top &&
         a.placement.left === b.placement.left &&
-        a.placement.arrow === b.placement.arrow
+        a.placement.arrow === b.placement.arrow &&
+        a.tall === b.tall
     );
 }
 
 function isOnScreen(step: SpotlightStep): boolean {
     return resolveTarget(step.target) !== null;
+}
+
+/**
+ * Whether an `auto` or `action` step is done by its own condition, as asked
+ * of `control` now; `wasMet` is how it stood before. As everywhere, a
+ * condition that already held does not move the step on by itself.
+ */
+function completes(step: SpotlightStep, control: HTMLElement, wasMet: boolean): boolean {
+    if ((step.mode !== 'auto' && step.mode !== 'action') || !step.advanceWhen) return false;
+    return !wasMet && step.advanceWhen(control);
 }
 
 /** `touch` when the main pointer is a finger, for copy that says "Tap" rather than "Click". */
@@ -158,41 +211,50 @@ function pointerKind(): 'touch' | 'mouse' {
 }
 
 /**
- * Calls `onFound` as soon as `find` returns an element: at once when it is
- * already there, otherwise on the first change to the page that brings it.
- * Calls `onTimeout` instead when `ms` pass first. Returns the cancel.
+ * Runs what `check` returns as soon as it returns something: at once when it
+ * already does, otherwise on the first change to the page that makes it.
+ * Calls `onTimeout` instead when `ms` pass first (never, with `ms` null).
+ * Returns the cancel.
  */
-function waitFor(
-    find: () => HTMLElement | null,
-    onFound: (element: HTMLElement) => void,
-    onTimeout: () => void,
-    ms: number,
-): () => void {
-    const now = find();
+function waitFor(check: () => (() => void) | null, onTimeout: () => void, ms: number | null): () => void {
+    const now = check();
     if (now) {
-        onFound(now);
+        now();
         return () => {};
     }
     let settled = false;
     const observer = new MutationObserver(() => {
         if (settled) return;
-        const element = find();
-        if (!element) return;
+        const then = check();
+        if (!then) return;
         stop();
-        onFound(element);
+        then();
     });
-    const timer = setTimeout(() => {
-        if (settled) return;
-        stop();
-        onTimeout();
-    }, ms);
+    const timer =
+        ms === null
+            ? null
+            : setTimeout(() => {
+                  if (settled) return;
+                  stop();
+                  onTimeout();
+              }, ms);
     function stop() {
         settled = true;
         observer.disconnect();
-        clearTimeout(timer);
+        if (timer !== null) clearTimeout(timer);
     }
     observer.observe(document.body, { childList: true, subtree: true, attributes: true });
     return stop;
+}
+
+/** Runs `callback` on the next animation frame (or soon after, without one). Returns the cancel. */
+function nextFrame(callback: () => void): () => void {
+    if (typeof requestAnimationFrame === 'function') {
+        const id = requestAnimationFrame(callback);
+        return () => cancelAnimationFrame(id);
+    }
+    const id = setTimeout(callback, 16);
+    return () => clearTimeout(id);
 }
 
 /** The pointer-catching rectangles around (and, unless interactive, over) the cutout. */
@@ -224,6 +286,7 @@ export function Spotlight({
     counterKey = 'tutorial.common.counter',
     endKey = 'tutorial.common.skip',
     onMute,
+    host,
 }: SpotlightProps) {
     const t = useTranslations();
     const titleId = useId();
@@ -231,6 +294,7 @@ export function Spotlight({
     // `url(#…)` needs an id with no punctuation in it.
     const maskId = `spotlight-mask-${useId().replace(/[^A-Za-z0-9_-]/g, '')}`;
     const lazy = resolve === 'lazy';
+    const hasIntro = intro !== undefined;
 
     // The tour's steps are cut to the ones on screen as it starts, and fixed
     // from then on, so the counter's total does not move under the person.
@@ -268,19 +332,41 @@ export function Spotlight({
     const metRef = useRef(false);
     /** What had focus when the walkthrough first showed; undefined until then. */
     const openerRef = useRef<HTMLElement | null | undefined>(undefined);
+    /** `found`, kept up to date at once: the page watchers read it between renders. */
+    const controlRef = useRef<HTMLElement | null>(null);
+    /** The dialog that held the current step has gone (see MOVING BETWEEN THE PAGE AND A DIALOG). */
+    const orphanRef = useRef(false);
+    /** The control the current step lost, and whether its condition held then. */
+    const lostRef = useRef<{ at: number; control: HTMLElement; wasMet: boolean } | null>(null);
+    /** Lazy: the last step reached was passed over because its control never came. */
+    const timedOutRef = useRef(false);
+    /** Measures again after a change of layout, and scrolls the control back into view if it took it out. */
+    const relayoutRef = useRef<(() => void) | null>(null);
+    /** Another modal dialog is open over the walkthrough (see ANOTHER DIALOG ON TOP). */
+    const [suspended, setSuspended] = useState(false);
+    /** `suspended`, at once: a wait that runs out before the render that holds it does not count. */
+    const suspendedRef = useRef(false);
+    /** Lazy: the declared host, and whether it has been on screen yet. */
+    const hostRef = useRef(host);
+    const hostSeenRef = useRef(false);
 
     const step = phase.kind === 'step' ? (steps[phase.index] ?? null) : null;
     const index = phase.kind === 'step' ? phase.index : -1;
     const shown =
         available &&
+        !suspended &&
         (phase.kind === 'intro' || phase.kind === 'done' || (step !== null && (!lazy || found !== null)));
     /** Started and not over: from the intro (or first step) on, waits between steps included. */
     const running = available && phase.kind !== 'locating';
+    /** Running and not stepped aside for another dialog: takes the keys and holds the page. */
+    const engaged = running && !suspended;
     const inDialog = scope !== null && typeof document !== 'undefined' && scope !== document.body;
 
+    // `scopeRef` and `controlRef` are set where their state is, so a watcher
+    // never reads a value a render has not caught up with.
     useEffect(() => {
         phaseRef.current = phase;
-        scopeRef.current = scope;
+        hostRef.current = host;
     });
 
     useOverlayPresence(shown);
@@ -290,14 +376,18 @@ export function Spotlight({
         if (!available) onUnavailable();
     }, [available, onUnavailable]);
 
-    const end = useCallback(
-        (outcome: TutorialOutcome) => {
-            if (endedRef.current) return;
-            endedRef.current = true;
-            onDismiss(outcome);
-        },
-        [onDismiss],
-    );
+    // The latest `onDismiss`, so `end` (and every watcher that can end the
+    // walkthrough) stays the same across the host's renders: a watcher set up
+    // again on a render would miss the change to the page that render made.
+    const onDismissRef = useRef(onDismiss);
+    useEffect(() => {
+        onDismissRef.current = onDismiss;
+    });
+    const end = useCallback((outcome: TutorialOutcome) => {
+        if (endedRef.current) return;
+        endedRef.current = true;
+        onDismissRef.current(outcome);
+    }, []);
 
     /** The current step's control now: lazy ones as found, tour ones looked up afresh. */
     const controlOf = useCallback(
@@ -309,16 +399,39 @@ export function Spotlight({
     );
 
     const show = useCallback((next: Phase) => {
+        controlRef.current = null;
         setFound(null);
         setLayout(null);
         setPhase(next);
     }, []);
 
+    const moveTo = useCallback((host: HTMLElement) => {
+        scopeRef.current = host;
+        setScope(host);
+    }, []);
+
+    /** Step `at` is up at `control`, wherever that is: the layer goes with it. */
+    const place = useCallback(
+        (at: number, control: HTMLElement) => {
+            moveTo(dialogOf(control) ?? document.body);
+            controlRef.current = control;
+            setFound(control);
+            orphanRef.current = false;
+            lostRef.current = null;
+            timedOutRef.current = false;
+            setShownSteps((seen) => (seen.has(at) ? seen : new Set(seen).add(at)));
+        },
+        [moveTo],
+    );
+
     /** After the last step: the closing card, or the end. */
+    const hasDone = done !== undefined;
     const finish = useCallback(() => {
-        if (done) show({ kind: 'done' });
+        // The last step reached never showed: the task was not done with it.
+        if (timedOutRef.current) end('skipped');
+        else if (hasDone) show({ kind: 'done' });
         else end('completed');
-    }, [done, end, show]);
+    }, [hasDone, end, show]);
 
     /** Moves on from step `from` (-1 is the intro). Ignored when that step is no longer the current one. */
     const advanceFrom = useCallback(
@@ -372,21 +485,31 @@ export function Spotlight({
             return;
         }
         const begin = (control: HTMLElement) => {
-            setScope(dialogOf(control) ?? document.body);
-            const next: Phase = intro ? { kind: 'intro' } : { kind: 'step', index: first };
+            const next: Phase = hasIntro ? { kind: 'intro' } : { kind: 'step', index: first };
             phaseRef.current = next;
             setPhase(next);
-            if (!intro) {
-                setFound(control);
-                setShownSteps((seen) => new Set(seen).add(first));
-            }
+            if (hasIntro) moveTo(dialogOf(control) ?? document.body);
+            else place(first, control);
         };
-        return waitFor(() => resolveTarget(steps[first].target), begin, () => setGaveUp(true), waitMs);
-    }, [lazy, phase, steps, intro, waitMs]);
+        const check = () => {
+            const control = resolveTarget(steps[first].target);
+            if (control) return () => begin(control);
+            // The host, once seen, going away first: the play is over.
+            const declared = hostRef.current;
+            if (declared === undefined) return null;
+            if (resolveTarget(declared) !== null) hostSeenRef.current = true;
+            else if (hostSeenRef.current) return () => setGaveUp(true);
+            return null;
+        };
+        return waitFor(check, () => setGaveUp(true), waitMs);
+    }, [lazy, phase, steps, hasIntro, waitMs, moveTo, place]);
 
     // LAZY, ON EACH STEP: skip it when it does not apply; otherwise find its
     // control, waiting for it when it is not there yet, and skip it if it
-    // never comes. Runs again whenever the control is lost (`found` null).
+    // never comes. Runs again whenever the control is lost (`found` null):
+    // then the step is also done if its own condition comes to hold without
+    // it. After the dialog that held it went away, the next step's control
+    // will do as well, and if neither shows the walkthrough ends.
     useEffect(() => {
         if (!lazy || phase.kind !== 'step' || found !== null) return;
         const at = phase.index;
@@ -395,13 +518,61 @@ export function Spotlight({
             advanceFrom(at);
             return;
         }
-        const accept = (control: HTMLElement) => {
-            setScope(dialogOf(control) ?? document.body);
-            setFound(control);
-            setShownSteps((seen) => (seen.has(at) ? seen : new Set(seen).add(at)));
+        const check = (): (() => void) | null => {
+            const lost = lostRef.current;
+            if (lost !== null && lost.at === at && completes(current, lost.control, lost.wasMet)) {
+                return () => advanceFrom(at);
+            }
+            const own = resolveTarget(current.target);
+            if (own) return () => place(at, own);
+            if (!orphanRef.current) return null;
+            const next = steps.findIndex((candidate, position) => position > at && applies(candidate));
+            const control = next === -1 ? null : resolveTarget(steps[next].target);
+            if (!control) return null;
+            return () => {
+                const moved: Phase = { kind: 'step', index: next };
+                phaseRef.current = moved;
+                setPhase(moved);
+                place(next, control);
+            };
         };
-        return waitFor(() => resolveTarget(current.target), accept, () => advanceFrom(at), waitMs);
-    }, [lazy, phase, found, steps, waitMs, advanceFrom]);
+        const giveUp = () => {
+            // Run out while another dialog came up: held, and asked again once it closes.
+            if (suspendedRef.current) return;
+            if (orphanRef.current) {
+                end('skipped');
+                return;
+            }
+            timedOutRef.current = true;
+            advanceFrom(at);
+        };
+        // No running out while another dialog is up: the person is busy there.
+        return waitFor(check, giveUp, suspended ? null : waitMs);
+    }, [lazy, phase, found, steps, waitMs, advanceFrom, place, end, suspended]);
+
+    /** Step `at`'s control went, or stopped being drawn. */
+    const lose = useCallback(
+        (at: number, current: SpotlightStep, control: HTMLElement) => {
+            const wasMet = metRef.current;
+            // It went because the page moved on: the step is done (a submit
+            // button replaced by the screen it led to).
+            if (completes(current, control, wasMet)) {
+                advanceFrom(at);
+                return;
+            }
+            lostRef.current = { at, control, wasMet };
+            const host = scopeRef.current;
+            if (host !== null && host !== document.body && !host.isConnected) orphanRef.current = true;
+            const again = resolveTarget(current.target);
+            if (again) {
+                place(at, again);
+                return;
+            }
+            controlRef.current = null;
+            setFound(null);
+        },
+        [advanceFrom, place],
+    );
 
     // Whether the step's own condition already held when it was reached: an
     // `auto` step someone came Back to does not move on by itself until they
@@ -411,18 +582,68 @@ export function Spotlight({
         metRef.current = step?.advanceWhen && control ? step.advanceWhen(control) : false;
     }, [step, controlOf]);
 
-    // THE HOST WENT AWAY (the dialog was closed under the walkthrough): there
-    // is nothing left to point at, and a play that stayed up would keep every
-    // other tutorial from opening.
+    // THE DIALOG WENT AWAY under the walkthrough (closed by the step's own
+    // action, by its host, or by a route change). The intro ends as skipped.
+    // The closing card moves to the page. A step whose control is up loses it
+    // with the dialog (the page watch below calls `lose`); one still waiting
+    // for its control keeps waiting, for it or the next step's, and ends the
+    // walkthrough if neither shows: a play that stayed up with nothing to
+    // point at would keep every other tutorial from opening.
     useEffect(() => {
         if (!inDialog || scope === null) return;
         const host = scope;
-        const observer = new MutationObserver(() => {
-            if (!host.isConnected) end(phaseRef.current.kind === 'done' ? 'completed' : 'skipped');
-        });
+        const check = () => {
+            if (host.isConnected || endedRef.current || scopeRef.current !== host) return;
+            const now = phaseRef.current;
+            if (now.kind === 'intro') end('skipped');
+            else if (now.kind === 'done') moveTo(document.body);
+            else if (now.kind === 'step' && controlRef.current === null) orphanRef.current = true;
+        };
+        // Asked at once too: the dialog may have gone in the render that set
+        // this watcher up.
+        check();
+        const observer = new MutationObserver(check);
         observer.observe(document.body, { childList: true, subtree: true });
         return () => observer.disconnect();
-    }, [inDialog, scope, end]);
+    }, [inDialog, scope, end, moveTo]);
+
+    // THE PAGE CHANGED under the walkthrough (a link, a redirect, Back): its
+    // steps belong to the page it started on, so it ends there and then, as
+    // skipped, rather than waiting out each step on a page that has none.
+    useEffect(() => {
+        if (!running) return;
+        const start = window.location.pathname;
+        const check = () => {
+            if (window.location.pathname !== start) end('skipped');
+        };
+        const observer = new MutationObserver(check);
+        observer.observe(document.body, { childList: true, subtree: true });
+        window.addEventListener('popstate', check);
+        return () => {
+            observer.disconnect();
+            window.removeEventListener('popstate', check);
+        };
+    }, [running, end]);
+
+    // ANOTHER DIALOG ON TOP: asked on every dialog coming or going, and when
+    // the walkthrough moves (into a dialog, it is no longer another's).
+    useEffect(() => {
+        if (!running) return;
+        const check = () => {
+            const over = modalOver(scopeRef.current);
+            suspendedRef.current = over;
+            setSuspended(over);
+        };
+        check();
+        const observer = new MutationObserver(check);
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['aria-modal', 'role'],
+        });
+        return () => observer.disconnect();
+    }, [running, scope]);
 
     // Focus goes back to whatever had it when the walkthrough first showed,
     // or, inside a dialog whose opener has gone (the wizard moved on a
@@ -464,18 +685,20 @@ export function Spotlight({
         if (dialog.contains(active) && !(active instanceof HTMLButtonElement && active.disabled)) return;
         const primary = primaryRef.current;
         (primary && !primary.disabled ? primary : dialog).focus();
-    }, [phase, shown, step, found]);
+    }, [phase, shown, step, found, scope]);
 
-    // The page behind stays put, as under a Modal. Inside a dialog, the
-    // dialog already holds the lock and is the one to release it.
+    // The page behind stays put, as under a Modal, while the walkthrough is on
+    // the page. Inside a dialog, the dialog holds the lock. Held by its own
+    // property (`./page-lock`), so moving between the two in any order leaves
+    // the page as the dialogs and the walkthrough each found it. Not on a step
+    // whose control is taller than the page shows: the person scrolls it (the
+    // ring follows, and nothing scrolls it back on them); the next step holds
+    // the page again.
+    const scrollsItself = !inDialog && (layout?.tall ?? false);
     useEffect(() => {
-        if (!running || inDialog) return;
-        const previous = document.body.style.overflow;
-        document.body.style.overflow = 'hidden';
-        return () => {
-            document.body.style.overflow = previous;
-        };
-    }, [running, inDialog]);
+        if (!engaged || inDialog || scrollsItself) return;
+        return holdPageScroll();
+    }, [engaged, inDialog, scrollsItself]);
 
     const interactive = step !== null && isInteractive(step);
 
@@ -486,9 +709,15 @@ export function Spotlight({
     // while a lazy walkthrough waits between steps with nothing drawn: an
     // Escape then still ends the walkthrough, not the dialog.
     useEffect(() => {
-        if (!running) return;
+        if (!engaged) return;
         function onKeyDown(event: KeyboardEvent) {
             if (event.key === 'Escape') {
+                // Waiting, unseen, after the dialog it was in went away: the
+                // walkthrough ends, and the key is left to the page.
+                if (orphanRef.current) {
+                    end('skipped');
+                    return;
+                }
                 // An open list in the control closes first. The control gets
                 // the key; marking it handled keeps the dialog underneath
                 // from closing on it (`Modal` skips a handled Escape).
@@ -528,7 +757,7 @@ export function Spotlight({
         }
         window.addEventListener('keydown', onKeyDown, true);
         return () => window.removeEventListener('keydown', onKeyDown, true);
-    }, [running, end, interactive, step, controlOf]);
+    }, [engaged, end, interactive, step, controlOf]);
 
     /** The box the layer covers: the viewport, or inside a dialog, wherever the layer's root ended up. */
     const frame = useCallback((): Frame => {
@@ -562,58 +791,108 @@ export function Spotlight({
         });
         const box = local(control.getBoundingClientRect());
         const popups = isInteractive(step) ? openPopupsOf(control).map((popup) => local(popup.getBoundingClientRect())) : [];
-        const hole = cutoutFor(popups.length > 0 ? unionBox(box, ...popups) : box);
+        let hole = cutoutFor(popups.length > 0 ? unionBox(box, ...popups) : box);
         let band: Band | undefined;
+        let outer: Band | undefined;
+        let tall = false;
         if (inDialog && scope) {
             // The callout keeps to the dialog's scrolling body (clear of its
             // header and pinned footer), or to the dialog for a control
-            // outside that body (a footer button).
+            // outside that body (a footer button). Where it fits nowhere in
+            // there, it goes over the header or footer, inside the panel or
+            // the viewport, rather than over the control.
             const body = scrollParentWithin(control, scope);
             const rect = (body ?? scope).getBoundingClientRect();
             band = { top: rect.top - origin.top, bottom: rect.bottom - origin.top };
+            outer = { top: 0, bottom: origin.height };
+            // The ring shows what the body shows of the control, no more (a
+            // control taller than the body does not ring the footer).
+            hole = clipToBand(hole, band);
+        } else if (tallerThanPage(control)) {
+            // Taller than what the page shows (a long row on a phone): the
+            // person scrolls it, the ring keeps to the part in view, and the
+            // callout to an edge clear of that part where there is one.
+            tall = true;
+            const visible = visiblePageBand();
+            band = { top: visible.top - origin.top, bottom: visible.bottom - origin.top };
+            outer = { top: 0, bottom: origin.height };
+            hole = clipToBand(hole, band);
         }
         const size = callout.getBoundingClientRect();
         const next: Layout = {
             hole,
+            tall,
             placement: placeCallout(
-                box,
+                // Pointing at the part of the control in view.
+                band ? clipToBand(box, band) : box,
                 { width: size.width, height: size.height },
                 { width: origin.width, height: origin.height },
                 step.placement,
                 band,
                 hole,
+                outer,
             ),
         };
         setLayout((previous) => (sameLayout(previous, next) ? previous : next));
     }, [step, controlOf, frame, inDialog, scope]);
 
-    // Measured before paint on every step, and again whenever the viewport,
-    // a scroll position, the control or the callout changes size, or the
-    // dialog it sits in finishes animating in.
+    // Scrolled into view and measured before paint on every step, and
+    // measured again whenever the viewport, a scroll position, the control,
+    // the callout or the page changes size, or the dialog it sits in finishes
+    // animating in. A change of layout (a refetch growing the page above the
+    // control) can carry the control out of view after it was scrolled to:
+    // then it is scrolled back, at most once a frame and only when it is
+    // really out. A scroll alone (the person's own) only measures.
     useLayoutEffect(() => {
         if (!shown || step === null) return;
         const control = controlOf(step);
-        if (control) {
-            const body = inDialog && scope ? scrollParentWithin(control, scope) : null;
-            if (body) scrollIntoContainer(control, body);
-            // Optional call: jsdom has no scrollIntoView. A fixed tab bar or a
-            // sticky header is already in view, and this does nothing to them.
-            else if (!inDialog) control.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
-        }
+        const body = control && inDialog && scope ? scrollParentWithin(control, scope) : null;
+        const reveal = () => {
+            if (!control) return;
+            if (body) {
+                scrollIntoContainer(control, body);
+                // And on, so the callout fits beside it in the body as well.
+                const callout = dialogRef.current;
+                if (callout) scrollToFitCallout(control, body, callout.getBoundingClientRect().height);
+            }
+            // Clear of the phone tab bar and a sticky header; a control in
+            // that chrome (the app tour's tab-bar stops) stays where it is.
+            else if (!inDialog) revealOnPage(control, dialogRef.current?.getBoundingClientRect().height ?? 0);
+        };
+        reveal();
         measure();
-        window.addEventListener('resize', measure);
+        let cancelFrame: (() => void) | null = null;
+        const relayout = () => {
+            measure();
+            if (cancelFrame !== null || !control) return;
+            cancelFrame = nextFrame(() => {
+                cancelFrame = null;
+                if (!control.isConnected) return;
+                const out = body ? outOfContainer(control, body) : !inDialog && outOfPageBand(control);
+                if (!out) return;
+                reveal();
+                measure();
+            });
+        };
+        relayoutRef.current = relayout;
+        window.addEventListener('resize', relayout);
         window.addEventListener('scroll', measure, true);
         const host = inDialog ? scope : null;
         host?.addEventListener('animationend', measure);
         let observer: ResizeObserver | null = null;
         if (typeof ResizeObserver !== 'undefined') {
-            observer = new ResizeObserver(() => measure());
+            observer = new ResizeObserver(() => relayout());
             if (control) observer.observe(control);
             if (dialogRef.current) observer.observe(dialogRef.current);
             if (inDialog && rootRef.current) observer.observe(rootRef.current);
+            if (body) observer.observe(body);
+            observer.observe(document.documentElement);
+            observer.observe(document.body);
         }
         return () => {
-            window.removeEventListener('resize', measure);
+            relayoutRef.current = null;
+            cancelFrame?.();
+            window.removeEventListener('resize', relayout);
             window.removeEventListener('scroll', measure, true);
             host?.removeEventListener('animationend', measure);
             observer?.disconnect();
@@ -626,7 +905,7 @@ export function Spotlight({
     // click that opens a select is not a pick). An `action` step with no
     // condition completes on a click on its control.
     useEffect(() => {
-        if (step === null || (step.mode !== undefined && step.mode !== 'auto' && step.mode !== 'action')) return;
+        if (suspended || step === null || (step.mode !== undefined && step.mode !== 'auto' && step.mode !== 'action')) return;
         const control = controlOf(step);
         if (!control) return;
         const at = index;
@@ -648,7 +927,7 @@ export function Spotlight({
         return () => {
             for (const type of ADVANCE_EVENTS) control.removeEventListener(type, check);
         };
-    }, [step, index, controlOf, advanceFrom]);
+    }, [suspended, step, index, controlOf, advanceFrom]);
 
     // LAZY, WHILE A STEP IS UP: the page is watched. A control that went is
     // looked for again (and waited for); an `auto` or `action` step moves on
@@ -657,34 +936,46 @@ export function Spotlight({
     // screen is no event at all); the cutout follows an opening list; and the
     // callout is drawn again for the live counter and readiness.
     useEffect(() => {
-        if (!lazy || step === null || found === null) return;
+        if (!lazy || step === null || found === null || suspended) return;
         const control = found;
         const current = step;
         const at = index;
         const root = rootRef.current;
+        /** Moves the step on when its condition has just come to hold; true if it did. */
+        const settled = (): boolean => {
+            if (!current.advanceWhen || (current.mode !== 'auto' && current.mode !== 'action')) return false;
+            const met = current.advanceWhen(control);
+            const wasMet = metRef.current;
+            metRef.current = met;
+            if (!met || wasMet) return false;
+            advanceFrom(at);
+            return true;
+        };
+        // Asked at once too: the control may have gone, or the condition
+        // come to hold, in the render that set this watcher up (or while
+        // another dialog was on top).
+        if (!control.isConnected || !isRendered(control)) {
+            lose(at, current, control);
+            return;
+        }
+        if (settled()) return;
         const observer = new MutationObserver((records) => {
+            const now = phaseRef.current;
+            if (now.kind !== 'step' || now.index !== at || controlRef.current !== control) return;
             // The walkthrough's own redraws are not the page changing.
             if (root && records.every((record) => root.contains(record.target))) return;
             if (!control.isConnected || !isRendered(control)) {
-                const again = resolveTarget(current.target);
-                setFound(again);
+                lose(at, current, control);
                 return;
             }
-            if (current.advanceWhen && (current.mode === 'auto' || current.mode === 'action')) {
-                const met = current.advanceWhen(control);
-                const wasMet = metRef.current;
-                metRef.current = met;
-                if (met && !wasMet) {
-                    advanceFrom(at);
-                    return;
-                }
-            }
-            measure();
+            if (settled()) return;
+            if (relayoutRef.current) relayoutRef.current();
+            else measure();
             refresh();
         });
         observer.observe(document.body, { childList: true, subtree: true, attributes: true, characterData: true });
         return () => observer.disconnect();
-    }, [lazy, step, found, index, advanceFrom, measure]);
+    }, [lazy, step, found, index, advanceFrom, measure, lose, suspended]);
 
     // Typing into a field changes no attribute: the callout is drawn again on
     // each input and change too, for a `next` step's readiness and the counter.
@@ -715,7 +1006,9 @@ export function Spotlight({
 
     let callout: ReactNode = null;
     let announcement = '';
-    if (phase.kind === 'intro' && intro) {
+    if (suspended) {
+        // Stepped aside for another dialog: nothing drawn until it closes.
+    } else if (phase.kind === 'intro' && intro) {
         callout = (
             <IntroCard
                 dialogRef={dialogRef}

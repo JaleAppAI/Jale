@@ -46,6 +46,9 @@ const guide: WalkthroughGuide = {
         bodyKey: `${KEY}.intro_body`,
     },
     counterKey: `${KEY}.counter`,
+    // Opened together with the guide: closed before the title field shows,
+    // the play is over at once.
+    host: { guide: 'post.wizard' },
     steps: [
         {
             id: 'title',
