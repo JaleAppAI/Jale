@@ -2431,7 +2431,17 @@
       "counter": "{current} de {total}",
       "close": "Cerrar",
       "help": "Ayuda",
-      "help_title": "Cómo funciona Jale"
+      "help_title": "Cómo funciona Jale",
+      "guide": {
+        "employer": {
+          "start": "Guíeme"
+        },
+        "worker": {
+          "start": "Guíame"
+        },
+        "self": "Lo hago por mi cuenta",
+        "end": "Terminar guía"
+      }
     },
     "help_center": {
       "title": "Ayuda",
@@ -2452,7 +2462,9 @@
         "muted_title": "Guías que apagó",
         "muted_empty": "Ninguna por ahora. Una guía que apague aparecerá aquí.",
         "muted_toast": "Guía apagada. Puede volver a activarla en Ayuda.",
-        "save_failed": "No se pudo guardar. Inténtelo de nuevo."
+        "save_failed": "No se pudo guardar. Inténtelo de nuevo.",
+        "guide_me": "Guíeme paso a paso",
+        "guide_me_label": "Guíeme paso a paso: {title}"
       },
       "worker": {
         "switch": "Mostrar las guías cada vez que empieces una tarea",
@@ -2460,7 +2472,9 @@
         "muted_title": "Guías que apagaste",
         "muted_empty": "Ninguna por ahora. Una guía que apagues aparecerá aquí.",
         "muted_toast": "Guía apagada. Puedes volver a activarla en Ayuda.",
-        "save_failed": "No se pudo guardar. Inténtalo de nuevo."
+        "save_failed": "No se pudo guardar. Inténtalo de nuevo.",
+        "guide_me": "Guíame paso a paso",
+        "guide_me_label": "Guíame paso a paso: {title}"
       }
     },
     "worker_onboarding": {
@@ -2725,6 +2739,43 @@
         "optional_tag": "Opcional",
         "off_tag": "No",
         "lock_note": "Se bloquean cuando alguien se postula"
+      },
+      "guide": {
+        "intro_title": "¿Le ayudamos a publicar este empleo?",
+        "intro_body": "{input, select, touch {Le mostramos cada campo, uno por uno: qué tocar, qué elegir y qué escribir. Unos 2 minutos.} other {Le mostramos cada campo, uno por uno: dónde hacer clic, qué elegir y qué escribir. Unos 2 minutos.}}",
+        "counter": "Publicar un empleo · {current} de {total}",
+        "steps": {
+          "title": {
+            "title": "Escriba el puesto",
+            "body": "{input, select, touch {Toque} other {Haga clic en}} el recuadro Título del puesto y escriba el título, como “Operador de montacargas” o “Acabador de concreto”.",
+            "wait": "Escriba un título para continuar."
+          },
+          "city": {
+            "title": "Elija la ciudad de la lista",
+            "body": "{input, select, touch {Empiece a escribir la ciudad en Ubicación y tóquela en la lista.} other {Empiece a escribir la ciudad en Ubicación y haga clic en ella en la lista.}} Una ciudad escrita que no se elige de la lista no cuenta.",
+            "wait": "{input, select, touch {Toque una ciudad de la lista} other {Haga clic en una ciudad de la lista}} para continuar."
+          },
+          "trade": {
+            "title": "Elija el oficio",
+            "body": "Abra la lista Oficio y elija el oficio. Los trabajadores con ese oficio se emparejan con su empleo. Si no aparece, elija Otro.",
+            "wait": "Elija uno para continuar."
+          },
+          "trade_other": {
+            "title": "Escriba el oficio",
+            "body": "Eligió Otro, así que apareció un recuadro nuevo. Escriba ahí el oficio, como “Soldador”.",
+            "wait": "Escriba el oficio para continuar."
+          },
+          "next": {
+            "title": "Eso es todo lo de esta pantalla",
+            "body": "Título, ciudad y oficio son los datos obligatorios aquí; el tipo de empleo y la descripción son opcionales. {input, select, touch {Toque} other {Haga clic en}} Siguiente para pasar al pago y el horario.",
+            "wait": "{input, select, touch {Toque} other {Haga clic en}} Siguiente para continuar."
+          },
+          "workers": {
+            "title": "¿Cuántos trabajadores?",
+            "body": "Escriba cuántas personas necesita en el sitio. Empieza en 1.",
+            "wait": "Escriba 1 o más para continuar."
+          }
+        }
       }
     },
     "employer_applicants": {

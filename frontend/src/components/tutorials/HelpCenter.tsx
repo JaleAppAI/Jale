@@ -17,6 +17,7 @@ import {
     type TutorialRole,
     type TutorialSettingsPatch,
 } from '@/lib/api/tutorials';
+import { useGuideLaunchers, type GuideLauncher } from '@/lib/tutorials/launchers';
 import { useTutorialProgress } from '@/lib/tutorials/progress';
 import { tutorialsForRole } from '@/lib/tutorials/registry';
 
@@ -25,7 +26,10 @@ import { tutorialsForRole } from '@/lib/tutorials/registry';
  * role's shell, where the header's Help link leads. Top to bottom:
  *  - "Show guides every time I start a task", the account's `always_show`;
  *  - the role's app tour, played again;
- *  - every guide of the role, each replayable, a muted one tagged Off;
+ *  - every guide of the role, each replayable, a muted one tagged Off; a
+ *    guide whose task can start its step-by-step guide from here (its host
+ *    registered a launcher, `lib/tutorials/launchers`) also gets "Guide me
+ *    through it", which opens the task with that guide;
  *  - the guides turned off with "Don't show this again", each with
  *    "Show again".
  *
@@ -54,6 +58,7 @@ export function HelpCenter({ role }: { role: TutorialRole }) {
     const mutedHeadingId = useId();
     const mutedHeadingRef = useRef<HTMLHeadingElement>(null);
     const [saving, setSaving] = useState(false);
+    const launchers = useGuideLaunchers();
 
     const tutorials = tutorialsForRole(role);
     const settings = progress?.settings ?? DEFAULT_TUTORIAL_SETTINGS;
@@ -73,6 +78,11 @@ export function HelpCenter({ role }: { role: TutorialRole }) {
     function replay(event: MouseEvent<HTMLButtonElement>, id: TutorialId) {
         event.currentTarget.focus();
         progress?.play({ id, mode: 'replay', vars: progress.varsFor(id) });
+    }
+
+    function guideMe(event: MouseEvent<HTMLButtonElement>, launch: GuideLauncher) {
+        event.currentTarget.focus();
+        launch();
     }
 
     function playTour(event: MouseEvent<HTMLButtonElement>) {
@@ -179,6 +189,7 @@ export function HelpCenter({ role }: { role: TutorialRole }) {
                         {tutorials.map((tutorial) => {
                             const title = tAll(`${tutorial.namespace}.${tutorial.titleKey}`);
                             const muted = settings.muted.includes(tutorial.id);
+                            const launch = launchers.get(tutorial.id);
                             return (
                                 <li key={tutorial.id}>
                                     <DashboardPanel as="div" className="flex h-full items-center gap-3.5 py-4 pl-5 pr-4">
@@ -191,6 +202,20 @@ export function HelpCenter({ role }: { role: TutorialRole }) {
                                                 <span>{tAll(`${tutorial.namespace}.duration`)}</span>
                                                 {muted ? <Badge tone="warning">{t('off_tag')}</Badge> : null}
                                             </div>
+                                            {launch ? (
+                                                <button
+                                                    type="button"
+                                                    aria-label={t(`${role}.guide_me_label`, { title })}
+                                                    onClick={(event) => guideMe(event, launch)}
+                                                    className={[
+                                                        'mt-1 inline-flex h-11 w-fit shrink-0 cursor-pointer items-center rounded-full border border-[var(--jale-divider)] bg-[var(--jale-card)] px-4',
+                                                        'text-sm font-semibold text-[var(--jale-blue-700)] transition-colors hover:bg-[var(--jale-paper-2)]',
+                                                        FOCUS_RING,
+                                                    ].join(' ')}
+                                                >
+                                                    {t(`${role}.guide_me`)}
+                                                </button>
+                                            ) : null}
                                         </div>
                                         <button
                                             type="button"

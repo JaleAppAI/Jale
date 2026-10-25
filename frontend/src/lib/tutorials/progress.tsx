@@ -35,6 +35,7 @@ import {
     type TutorialSettings,
     type TutorialSettingsPatch,
 } from '@/lib/api/tutorials';
+import { GuideLaunchersProvider } from './launchers';
 import { useOverlayRegistry } from './overlay';
 import { clearRecordFailed, readRecordFailed, writeRecordFailed } from './storage';
 import type { TutorialSceneProps } from './types';
@@ -90,8 +91,12 @@ import type { TutorialSceneProps } from './types';
  *    every time, K1-v2) record one only when the account has none yet, so
  *    the first outcome still wins. Replays never record;
  *  - a tour id (`EMPLOYER_TOUR_IDS`, `WORKER_TOUR_IDS`) plays in the app
- *    tour overlay (`AppTourHost`), every other id in the slide player. Each
- *    has its own lazy chunk.
+ *    tour overlay (`AppTourHost`); a tutorial plays in the slide player
+ *    (`TutorialHost`), or, when the request asks for its `walkthrough`, in the
+ *    step-by-step guide (`GuideHost`). Each has its own lazy chunk;
+ *  - a play `inHost` runs inside a host its caller has just opened (the guide
+ *    of the post-job wizard): that host is the overlay the last check sees,
+ *    so the overlay rule does not refuse it. One play at a time still holds.
  *
  * THE PLAYER'S OWN CHUNK. The player, every tutorial's content and the scene
  * kit load with `React.lazy` (`TutorialHost`), first when the progress read
@@ -149,7 +154,7 @@ export type TutorialProgressValue = {
 export type TutorialVars = TutorialSceneProps['vars'];
 
 export type PlayRequest = {
-    /** A tutorial plays in the slide player; a tour id plays in the app tour overlay. */
+    /** A tutorial plays in the slide player or as a walkthrough; a tour id plays in the app tour overlay. */
     id: ProgressId;
     vars?: TutorialVars;
     /**
@@ -164,6 +169,18 @@ export type PlayRequest = {
     onRefused?: () => void;
     /** Who asked, for `cancel`. */
     source?: object;
+    /**
+     * How a tutorial is drawn: its slides (the default) or its step-by-step
+     * guide over the real controls (`components/tutorials/guides`). Ignored
+     * for a tour id.
+     */
+    renderer?: 'slides' | 'walkthrough';
+    /**
+     * This play runs inside a host its caller has just opened (`runWithHost`):
+     * the last check does not refuse it for that host being up. `isBusy`
+     * still refuses it.
+     */
+    inHost?: true;
 };
 
 export type PlayMode = 'auto' | 'always' | 'replay';
@@ -240,9 +257,11 @@ function createPlayStore() {
 
 type TutorialHostModule = typeof import('@/components/tutorials/TutorialHost');
 type AppTourHostModule = typeof import('@/components/tutorials/AppTourHost');
+type GuideHostModule = typeof import('@/components/tutorials/GuideHost');
 
 let hostModule: Promise<TutorialHostModule> | null = null;
 let tourModule: Promise<AppTourHostModule> | null = null;
+let guideModule: Promise<GuideHostModule> | null = null;
 
 /** The player's chunk, fetched once; a failed fetch is forgotten so the next play retries. */
 function loadTutorialHost(): Promise<TutorialHostModule> {
@@ -262,8 +281,18 @@ function loadAppTourHost(): Promise<AppTourHostModule> {
     return tourModule;
 }
 
+/** The step-by-step guides' chunk, on the same terms as the player's. */
+function loadGuideHost(): Promise<GuideHostModule> {
+    guideModule ??= import('@/components/tutorials/GuideHost').catch((error: unknown) => {
+        guideModule = null;
+        throw error;
+    });
+    return guideModule;
+}
+
 const TutorialHost = lazy(loadTutorialHost);
 const AppTourHost = lazy(loadAppTourHost);
+const GuideHost = lazy(loadGuideHost);
 
 const TOUR_IDS: readonly ProgressId[] = [...EMPLOYER_TOUR_IDS, ...WORKER_TOUR_IDS];
 
@@ -272,9 +301,10 @@ export function isTourId(id: ProgressId): id is TourId {
     return TOUR_IDS.includes(id);
 }
 
-/** The chunk that draws `id`'s play. */
-function loadRendererFor(id: ProgressId): Promise<unknown> {
-    return isTourId(id) ? loadAppTourHost() : loadTutorialHost();
+/** The chunk that draws a play. */
+function loadRendererFor(play: Pick<PlayRequest, 'id' | 'renderer'>): Promise<unknown> {
+    if (isTourId(play.id)) return loadAppTourHost();
+    return play.renderer === 'walkthrough' ? loadGuideHost() : loadTutorialHost();
 }
 
 const TutorialProgressContext = createContext<TutorialProgressValue | null>(null);
@@ -435,7 +465,8 @@ export function TutorialProgressProvider({ children }: { children: ReactNode }) 
         const decide = (loaded: boolean) => {
             if (!current) return;
             const refused = plays.settle(
-                (play) => !loaded || (play.mode !== 'replay' && (overlays?.isPresent() ?? false)),
+                (play) =>
+                    !loaded || (play.mode !== 'replay' && !play.inHost && (overlays?.isPresent() ?? false)),
             );
             if (refused) {
                 refused.onRefused?.();
@@ -443,7 +474,7 @@ export function TutorialProgressProvider({ children }: { children: ReactNode }) 
                 refused.then?.();
             }
         };
-        loadRendererFor(pending.id).then(
+        loadRendererFor(pending).then(
             () => decide(true),
             () => decide(false),
         );
@@ -631,13 +662,22 @@ export function TutorialProgressProvider({ children }: { children: ReactNode }) 
 
     return (
         <TutorialProgressContext value={value}>
-            {children}
+            <GuideLaunchersProvider>{children}</GuideLaunchersProvider>
             {active !== null ? (
                 <Suspense fallback={null}>
                     {isTourId(active.id) ? (
                         <AppTourHost
                             key={active.seq}
                             id={active.id}
+                            onDismiss={onDismiss}
+                            onUnavailable={onUnavailable}
+                        />
+                    ) : active.renderer === 'walkthrough' ? (
+                        <GuideHost
+                            key={active.seq}
+                            id={active.id}
+                            mode={active.mode}
+                            onMute={muteTutorial}
                             onDismiss={onDismiss}
                             onUnavailable={onUnavailable}
                         />

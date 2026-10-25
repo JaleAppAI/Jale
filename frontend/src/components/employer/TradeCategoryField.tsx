@@ -32,11 +32,14 @@ interface TradeCategoryFieldProps {
    * controls carry `data-field`, so the wizard can move focus to them.
    */
   fieldError?: { field: 'trade_category' | 'trade_category_other'; message: string } | null;
+  /** Step-by-step guide hooks (`data-guide`) on the trade field and on the Other box, label included. */
+  tradeGuide?: string;
+  otherGuide?: string;
 }
 
 export function TradeCategoryField({
   tradeCategory, tradeCategoryOther, onTradeCategoryChange, onTradeCategoryOtherChange, disabled,
-  fieldError,
+  fieldError, tradeGuide, otherGuide,
 }: TradeCategoryFieldProps) {
   const t = useTranslations('employer_dashboard');
   const selectId = useId();
@@ -47,7 +50,7 @@ export function TradeCategoryField({
 
   return (
     <div className="grid gap-4">
-      <Field label={t('modal.trade_category')} htmlFor={selectId} required>
+      <Field label={t('modal.trade_category')} htmlFor={selectId} required guide={tradeGuide}>
         <Select
           id={selectId}
           data-field="trade_category"
@@ -66,7 +69,7 @@ export function TradeCategoryField({
       </Field>
 
       {tradeCategory === 'other' && (
-        <Field label={t('modal.trade_other_label')} htmlFor={otherId} required>
+        <Field label={t('modal.trade_other_label')} htmlFor={otherId} required guide={otherGuide}>
           <Input
             id={otherId}
             data-field="trade_category_other"
@@ -89,9 +92,9 @@ function FieldMessage({ id, children }: { id: string; children: React.ReactNode 
   return <p id={id} className="text-xs font-medium text-[var(--jale-danger-text)]">{children}</p>;
 }
 
-function Field({ label, htmlFor, required, children }: { label: string; htmlFor: string; required?: boolean; children: React.ReactNode }) {
+function Field({ label, htmlFor, required, guide, children }: { label: string; htmlFor: string; required?: boolean; guide?: string; children: React.ReactNode }) {
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex flex-col gap-1.5" data-guide={guide}>
       <label htmlFor={htmlFor} className="text-xs font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">
         {label}{required ? ' *' : ''}
       </label>

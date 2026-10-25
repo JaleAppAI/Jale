@@ -154,28 +154,36 @@ export function renderWithIntl(ui: ReactElement, locale: 'en' | 'es' = 'en', ext
     return render(ui, { wrapper: intlWrapper(locale, extra) });
 }
 
-function dialogsIn(node: Node): number {
-    if (!(node instanceof Element)) return 0;
-    return (node.matches('[role="dialog"]') ? 1 : 0) + node.querySelectorAll('[role="dialog"]').length;
+/** Whether `dialog` sits inside another dialog, looking no further up than `within`. */
+function nestedIn(dialog: Element, within: Element): boolean {
+    for (let parent = dialog.parentElement; parent && within.contains(parent); parent = parent.parentElement) {
+        if (parent.matches('[role="dialog"]')) return true;
+    }
+    return false;
 }
 
 /**
- * The most dialogs the page held at any moment while watching. It replays
- * every DOM mutation in order with a running count, rather than sampling the
- * count when the observer is notified: one `act()` can commit several times
- * before that, and a second dialog that came and went in between must not
- * hide.
+ * The TOP-LEVEL dialogs a change added or removed under `parent`: a dialog
+ * drawn inside another (a step-by-step guide's callout inside the wizard it
+ * guides) is part of that one dialog on screen, not a second one stacked.
  */
+function dialogsIn(node: Node, parent: Node | null): number {
+    if (!(node instanceof Element)) return 0;
+    if (parent instanceof Element && parent.closest('[role="dialog"]')) return 0;
+    const found = [...(node.matches('[role="dialog"]') ? [node] : []), ...Array.from(node.querySelectorAll('[role="dialog"]'))];
+    return found.filter((dialog) => !nestedIn(dialog, node)).length;
+}
+
 export function watchDialogs() {
     let count = document.querySelectorAll('[role="dialog"]').length;
     let most = count;
     const observer = new MutationObserver((records) => {
         for (const change of records) {
             change.removedNodes.forEach((node) => {
-                count -= dialogsIn(node);
+                count -= dialogsIn(node, change.target);
             });
             change.addedNodes.forEach((node) => {
-                count += dialogsIn(node);
+                count += dialogsIn(node, change.target);
                 most = Math.max(most, count);
             });
         }
@@ -185,10 +193,10 @@ export function watchDialogs() {
         most: () => {
             for (const change of observer.takeRecords()) {
                 change.removedNodes.forEach((node) => {
-                    count -= dialogsIn(node);
+                    count -= dialogsIn(node, change.target);
                 });
                 change.addedNodes.forEach((node) => {
-                    count += dialogsIn(node);
+                    count += dialogsIn(node, change.target);
                     most = Math.max(most, count);
                 });
             }

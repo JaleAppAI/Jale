@@ -17,6 +17,7 @@ import { getBilling, getJobs } from '@/lib/api/employer';
 import type { EmployerBilling, Job, JobCreatedOutcome } from '@/lib/api/employer';
 import { activeJobsPreflightModel, type PlanLimitModel } from '@/lib/plan-limit';
 import { hasJobsDone } from '@/lib/employer-tutorial-done';
+import { useRegisterGuideLauncher } from '@/lib/tutorials/launchers';
 import { useTutorial } from '@/lib/tutorials/use-tutorial';
 
 /**
@@ -66,9 +67,17 @@ export type PostJobSnapshot = {
 
 export type JobCreatedListener = (job: Job, outcome?: JobCreatedOutcome) => void;
 
+export type OpenPostJobOptions = {
+    /**
+     * `replay`: open the wizard with its step-by-step guide whatever the
+     * account's history (Help's "Guide me through it"). Recorded nowhere.
+     */
+    guide?: 'replay';
+};
+
 type PostJobValue = {
     /** Opens the wizard, or the limit dialog when the plan has no slot left. */
-    openPostJob: (snapshot?: PostJobSnapshot) => void;
+    openPostJob: (snapshot?: PostJobSnapshot, options?: OpenPostJobOptions) => void;
     /**
      * Whether there is anything for `openPostJob` to do: an employer session
      * this provider is actually serving. False during the restore window on a
@@ -113,16 +122,22 @@ export function PostJobProvider({ children }: { children: ReactNode }) {
     const isEmployer = isAuthenticated && userType === 'employer';
 
     /*
-     * The post-job tutorial (E2) plays before the wizard for an employer with
-     * no job yet (K1.5). Whether they have one is learned from the same jobs
+     * The post-job tutorial (E2) is a step-by-step guide that plays INSIDE the
+     * wizard, for an employer with no job yet (K1.5): the wizard opens first,
+     * from the press, and the guide starts once its first field shows
+     * (`runWithHost`). Whether they have a job is learned from the same jobs
      * list the gate reads: a page's published snapshot, or this provider's own
      * read. Unknown until one of them answers, and a failed read leaves it as
-     * it was rather than claiming "no jobs".
+     * it was rather than claiming "no jobs". Help's Play still shows E2's
+     * slides; its "Guide me through it" comes here (the launcher below).
      */
     const [hasJobs, setHasJobs] = useState<boolean | undefined>(undefined);
     const postJobTutorial = useTutorial('employer_post_job', {
         done: isEmployer ? hasJobs : undefined,
+        walkthrough: true,
     });
+    /** The guide asked for with the press waiting on the gate: a Help replay, or null. */
+    const guideRequestRef = useRef<OpenPostJobOptions['guide'] | null>(null);
     /*
      * A gate that let the employer through, waiting for the tutorial step.
      * Counted, and handled in an effect after the commit that carries the jobs
@@ -155,6 +170,7 @@ export function PostJobProvider({ children }: { children: ReactNode }) {
         );
         if (gate) {
             // The limit dialog, and no tutorial: there is no wizard to explain.
+            guideRequestRef.current = null;
             setPlanLimit(gate);
             return;
         }
@@ -168,8 +184,8 @@ export function PostJobProvider({ children }: { children: ReactNode }) {
          * On a page that had to read the plan first, the button was busy --
          * and so disabled, and so blurred -- while it waited, leaving focus on
          * <body>. It is usable again in this commit: hand focus back to it, so
-         * the tutorial and then the wizard return focus to the button that
-         * opened them rather than to the top of the page.
+         * the wizard returns focus to the button that opened it rather than
+         * to the top of the page.
          */
         const opener = openerRef.current;
         openerRef.current = null;
@@ -177,7 +193,9 @@ export function PostJobProvider({ children }: { children: ReactNode }) {
         if (opener?.isConnected && (active === null || active === document.body)) {
             opener.focus();
         }
-        postJobTutorial.runBeforeHost(() => setOpen(true));
+        const guide = guideRequestRef.current;
+        guideRequestRef.current = null;
+        postJobTutorial.runWithHost(() => setOpen(true), undefined, { replay: guide === 'replay' });
     }, [postJobTutorial, wizardRequest]);
 
     /**
@@ -199,9 +217,10 @@ export function PostJobProvider({ children }: { children: ReactNode }) {
     }, []);
 
     const openPostJob = useCallback(
-        (snapshot?: PostJobSnapshot) => {
+        (snapshot?: PostJobSnapshot, options?: OpenPostJobOptions) => {
             openerRef.current =
                 document.activeElement instanceof HTMLElement ? document.activeElement : null;
+            guideRequestRef.current = options?.guide ?? null;
 
             /*
              * No token, nothing to open. There are two ordinary ways to be
@@ -275,6 +294,11 @@ export function PostJobProvider({ children }: { children: ReactNode }) {
      */
 
     const canOpen = isEmployer && idToken !== null;
+
+    // Help's "Guide me through it" for posting a job: the same press as the
+    // Post a job button (the plan gate first), with the guide as a replay.
+    const replayGuide = useCallback(() => openPostJob(undefined, { guide: 'replay' }), [openPostJob]);
+    useRegisterGuideLauncher('employer_post_job', canOpen ? replayGuide : null);
 
     const value = useMemo<PostJobValue>(
         () => ({ openPostJob, canOpen, opening, subscribeJobCreated, registerSnapshot }),

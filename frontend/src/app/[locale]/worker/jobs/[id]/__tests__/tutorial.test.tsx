@@ -26,6 +26,7 @@ const { apiFetch, getApplications, tutorial } = vi.hoisted(() => {
     const handle = {
         maybeAutoOpen: vi.fn(),
         runBeforeHost: vi.fn((openHost: () => void) => openHost()),
+        runWithHost: vi.fn((openHost: () => void) => openHost()),
         replay: vi.fn(),
     };
     return {

@@ -2431,7 +2431,17 @@
       "counter": "{current} of {total}",
       "close": "Close",
       "help": "Help",
-      "help_title": "How Jale works"
+      "help_title": "How Jale works",
+      "guide": {
+        "employer": {
+          "start": "Guide me"
+        },
+        "worker": {
+          "start": "Guide me"
+        },
+        "self": "I’ll do it myself",
+        "end": "End guide"
+      }
     },
     "help_center": {
       "title": "Help",
@@ -2452,7 +2462,9 @@
         "muted_title": "Guides you turned off",
         "muted_empty": "None yet. A guide you turn off shows up here.",
         "muted_toast": "Turned off. You can turn it back on in Help.",
-        "save_failed": "Couldn’t save that. Try again."
+        "save_failed": "Couldn’t save that. Try again.",
+        "guide_me": "Guide me through it",
+        "guide_me_label": "Guide me through it: {title}"
       },
       "worker": {
         "switch": "Show guides every time I start a task",
@@ -2460,7 +2472,9 @@
         "muted_title": "Guides you turned off",
         "muted_empty": "None yet. A guide you turn off shows up here.",
         "muted_toast": "Turned off. You can turn it back on in Help.",
-        "save_failed": "Couldn’t save that. Try again."
+        "save_failed": "Couldn’t save that. Try again.",
+        "guide_me": "Guide me through it",
+        "guide_me_label": "Guide me through it: {title}"
       }
     },
     "worker_onboarding": {
@@ -2725,6 +2739,43 @@
         "optional_tag": "Optional",
         "off_tag": "Off",
         "lock_note": "Locked once someone applies"
+      },
+      "guide": {
+        "intro_title": "Want a hand posting this job?",
+        "intro_body": "{input, select, touch {We’ll show you each field, one at a time: what to tap, what to pick and what to type. About 2 minutes.} other {We’ll show you each field, one at a time: what to click, what to pick and what to type. About 2 minutes.}}",
+        "counter": "Posting a job · {current} of {total}",
+        "steps": {
+          "title": {
+            "title": "Name the job",
+            "body": "{input, select, touch {Tap} other {Click}} the Job Title box and type the job title, like “Forklift operator” or “Concrete finisher”.",
+            "wait": "Type a title to continue."
+          },
+          "city": {
+            "title": "Pick the city from the list",
+            "body": "{input, select, touch {Start typing the city in Location, then tap it in the list.} other {Start typing the city in Location, then click it in the list.}} A city you type but don’t pick doesn’t count.",
+            "wait": "{input, select, touch {Tap} other {Click}} a city in the list to continue."
+          },
+          "trade": {
+            "title": "Pick the trade",
+            "body": "Open the Trade list and choose the trade. Workers with that trade are matched to your job. If it isn’t there, pick Other.",
+            "wait": "Pick one to continue."
+          },
+          "trade_other": {
+            "title": "Type the trade",
+            "body": "You picked Other, so a new box appeared. Type the trade there, like “Welder”.",
+            "wait": "Type the trade to continue."
+          },
+          "next": {
+            "title": "That’s all this screen needs",
+            "body": "Title, city and trade are the required fields here; job type and description are optional. {input, select, touch {Tap} other {Click}} Next to go on to pay and schedule.",
+            "wait": "{input, select, touch {Tap} other {Click}} Next to continue."
+          },
+          "workers": {
+            "title": "How many workers?",
+            "body": "Type how many people you need on site. It starts at 1.",
+            "wait": "Enter 1 or more to continue."
+          }
+        }
       }
     },
     "employer_applicants": {
