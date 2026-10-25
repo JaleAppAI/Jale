@@ -104,12 +104,15 @@ describe('spotlight engine', () => {
         const blockerKeys = () =>
             Array.from(document.querySelectorAll('[data-spotlight-blocker]')).map((node) => node.getAttribute('data-spotlight-blocker'));
         expect(blockerKeys()).toEqual(['above', 'below', 'left', 'right']);
+        // The control is outside the callout, so the page is not declared inert.
+        expect(screen.getByRole('dialog')).not.toHaveAttribute('aria-modal');
 
         act(() => {
             fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Next' }));
         });
         expect(screen.getByRole('dialog')).toHaveAttribute('data-step', 'trade');
         expect(blockerKeys()).toEqual(['above', 'below', 'left', 'right', 'hole']);
+        expect(screen.getByRole('dialog')).toHaveAttribute('aria-modal', 'true');
     });
 
     it('lets Tab reach the control on an interactive step', () => {

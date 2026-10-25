@@ -422,7 +422,10 @@ export function Spotlight({ steps: allSteps, intro, onDismiss, onUnavailable, na
                 <div
                     ref={dialogRef}
                     role="dialog"
-                    aria-modal="true"
+                    // On an interactive step the control the person uses sits
+                    // outside the callout, so the rest of the page is not
+                    // declared inert to assistive technology.
+                    aria-modal={interactive ? undefined : 'true'}
                     aria-labelledby={titleId}
                     aria-describedby={bodyId}
                     tabIndex={-1}
