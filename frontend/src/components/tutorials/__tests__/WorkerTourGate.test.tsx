@@ -58,13 +58,16 @@ function OtherOverlay({ initiallyOpen }: { initiallyOpen: boolean }) {
     return open ? <div data-testid="other-overlay" /> : null;
 }
 
-function WorkerShell() {
+/** The worker shell's tabs and Help button; without Help it is the route's loading skeleton. */
+function WorkerShell({ help }: { help: boolean }) {
     return (
         <>
             <header>
-                <button type="button" data-tour="help">
-                    Help
-                </button>
+                {help ? (
+                    <button type="button" data-tour="help">
+                        Help
+                    </button>
+                ) : null}
             </header>
             <nav aria-label="Mobile navigation">
                 <a href="#jobs" data-nav-key="find_jobs">Jobs</a>
@@ -75,12 +78,12 @@ function WorkerShell() {
     );
 }
 
-function App({ overlay = false }: { overlay?: boolean }) {
+function App({ overlay = false, help = true }: { overlay?: boolean; help?: boolean }) {
     return (
         <NextIntlClientProvider locale="en" messages={catalogues.en} onError={() => {}}>
             <OverlayPresenceProvider>
                 <TutorialProgressProvider>
-                    <WorkerShell />
+                    <WorkerShell help={help} />
                     <OtherOverlay initiallyOpen={overlay} />
                     <WorkerTourGate />
                 </TutorialProgressProvider>
@@ -206,13 +209,26 @@ describe('worker tour gate', () => {
         expect(await screen.findByRole('dialog', { name: tourTitle() })).toBeTruthy();
     });
 
-    it('does not play for a worker who already has a tour outcome', async () => {
+    it('waits for the real shell: not over the loading skeleton, which has no Help button', async () => {
+        markWorkerTourDue(ACCOUNT);
+        const view = render(<App help={false} />);
+        await settle();
+        expect(tourDialog()).toBeNull();
+        expect(isWorkerTourDue(ACCOUNT)).toBe(true);
+
+        // The page replaces its skeleton; nothing announces it, the gate looks again.
+        view.rerender(<App />);
+        expect(await screen.findByRole('dialog', { name: tourTitle() }, { timeout: 2000 })).toBeTruthy();
+    });
+
+    it('does not play for a worker who already has a tour outcome, and drops the marker', async () => {
         markWorkerTourDue(ACCOUNT);
         serveTutorials([record('worker_app_tour', 'completed')]);
         render(<App />);
         await settle();
         expect(tourDialog()).toBeNull();
         expect(posts()).toEqual([]);
+        expect(isWorkerTourDue(ACCOUNT)).toBe(false);
     });
 
     it('does not play for an employer session', async () => {
