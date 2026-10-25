@@ -161,6 +161,21 @@ describe('Help: "Guide me through it"', () => {
         expect(guideMe()).toBeNull();
     });
 
+    it('is never on the worker’s Help: a launcher only shows on its own role’s rows', async () => {
+        route.path = '/worker/help';
+        signIn('worker');
+        serveTutorialsWithSettings();
+        render(
+            <>
+                <PostJobLauncher launch={vi.fn()} />
+                <WorkerHelpPage />
+            </>,
+            { wrapper: providers() },
+        );
+        await settle();
+        expect(screen.queryAllByRole('button', { name: /^Guide me through it/ })).toEqual([]);
+    });
+
     it('reads "Guíeme paso a paso" for the employer in Spanish', async () => {
         route.path = '/employer/help';
         signIn('employer');
