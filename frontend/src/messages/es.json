@@ -1839,7 +1839,7 @@
     "empty_preferred_cities": "Sin ciudades seleccionadas",
     "empty_bio": "Sin descripción",
     "documents_title": "Documentos",
-    "documents_subtitle": "Los documentos cargados se reutilizan automáticamente cuando postula a un trabajo.",
+    "documents_subtitle": "Los documentos cargados se reutilizan automáticamente cuando postulas a un trabajo.",
     "documents": {
       "types": {
         "resume": "Currículum",
@@ -1878,7 +1878,13 @@
       "bio": "Acerca de ti",
       "certifications_placeholder": "OSHA 10, montacargas, CDL",
       "save": "Guardar",
-      "cancel": "Cancelar"
+      "cancel": "Cancelar",
+      "trade_label": "Oficio",
+      "trade_choose": "Elige tu oficio",
+      "trade_other_label": "Tu oficio",
+      "trade_other_placeholder": "Escribe tu oficio, p. ej. soldador, drywall, techador",
+      "trade_other_length": "Escribe tu oficio en {min} a {max} caracteres.",
+      "availability_choose": "Elige tu disponibilidad"
     },
     "complete_modal": {
       "title": "Completa tu perfil",
@@ -1906,7 +1912,9 @@
     "errors": {
       "required": "Obligatorio.",
       "missing_summary": "Por favor agrega: {fields}"
-    }
+    },
+    "field_trade": "Oficio",
+    "empty_trade": "Oficio sin especificar"
   },
   "billing": {
     "title": "Facturación",
@@ -2761,16 +2769,16 @@
       "duration": "1 min",
       "slides": {
         "seen": {
-          "title": "Esto es lo que ven los empleadores",
-          "body": "Tu oficio, tu experiencia, tu disponibilidad y las respuestas que diste con tus propias palabras."
+          "title": "Lo que ven los empleadores",
+          "body": "Cuando postulas, los empleadores ven tu oficio, tus habilidades, tu experiencia y tu disponibilidad, y también las respuestas que diste con tus propias palabras al registrarte. Esas respuestas no aparecen en esta página."
         },
         "documents": {
           "title": "Agrega tus documentos una vez",
-          "body": "Guarda aquí tu licencia, tu permiso de trabajo o tus certificaciones. Se usan de nuevo en cada postulación, así nunca los subes dos veces."
+          "body": "Guarda aquí tu Currículum, tu Licencia de conducir o tu Documento de autorización de trabajo. Se usan de nuevo en cada postulación, así no los subes dos veces. Las certificaciones no se suben aquí."
         },
         "edit": {
           "title": "Mantenlo al día",
-          "body": "Toca Editar cuando quieras para cambiar tus habilidades, tu disponibilidad o tus ciudades."
+          "body": "Toca Editar cuando quieras para cambiar tu nombre, oficio, habilidades, disponibilidad, años de experiencia, ubicación, ciudades, Acerca de ti o certificaciones."
         }
       },
       "scene": {
@@ -2781,9 +2789,9 @@
         "avail": "Tiempo completo",
         "quote": "“Hago acabado de losas y entradas, y armo mis propias cimbras.”",
         "docs_head": "Documentos",
-        "license": "Licencia de manejo",
+        "license": "Licencia de conducir",
         "upload": "Subir",
-        "replace": "Cambiar",
+        "replace": "Reemplazar",
         "reused": "Una foto de la tarjeta sirve. Se usa de nuevo en cada postulación.",
         "skills": "Habilidades",
         "edit": "Editar",
@@ -2791,6 +2799,70 @@
         "sk2": "Cimbrado",
         "sk3": "Concreto estampado",
         "saved": "Guardado"
+      },
+      "guide": {
+        "intro_title": "¿Te ayudamos con tu perfil?",
+        "intro_body": "{input, select, touch {Te mostramos cada parte, una por una: qué tocar, qué elegir y qué escribir. Unos 2 minutos.} other {Te mostramos cada parte, una por una: dónde hacer clic, qué elegir y qué escribir. Unos 2 minutos.}}",
+        "counter": "Tu perfil · {current} de {total}",
+        "steps": {
+          "edit": {
+            "title": "Abre el formulario",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Editar para abrir el formulario con tus datos.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Editar para continuar."
+          },
+          "name": {
+            "title": "Tu nombre",
+            "body": "Escribe tu nombre completo en Nombre completo.",
+            "wait": "Escribe tu nombre para continuar."
+          },
+          "trade": {
+            "title": "Elige tu oficio",
+            "body": "Abre la lista Oficio y elige el que más haces. Si el tuyo no está, elige Otro. ¿Ya está bien? {input, select, touch {Toca} other {Haz clic en}} Siguiente.",
+            "wait": "Elige uno para continuar."
+          },
+          "trade_other": {
+            "title": "Escribe tu oficio",
+            "body": "Elegiste Otro, así que apareció un recuadro. Escribe tu oficio en Tu oficio, como “Soldador”, con 2 a 60 caracteres.",
+            "wait": "Escribe de 2 a 60 caracteres para continuar."
+          },
+          "skills": {
+            "title": "Escribe tus habilidades",
+            "body": "Escribe lo que sabes hacer en Habilidades, con una coma entre cada una, como “marcos, drywall, molduras”.",
+            "wait": "Agrega al menos una habilidad para continuar."
+          },
+          "availability": {
+            "title": "¿Cuándo puedes trabajar?",
+            "body": "Elige Tiempo completo, Medio tiempo, Fines de semana o Flexible en Disponibilidad. Si nunca la elegiste, ahora está vacía y tienes que elegir una para guardar.",
+            "wait": "Elige una para continuar."
+          },
+          "years": {
+            "title": "Años de experiencia",
+            "body": "Opcional. Escribe cuántos años has trabajado, en número entero de 0 a 80, o déjalo como está.",
+            "wait": "Usa un número entero de 0 a 80, o déjalo vacío, para continuar."
+          },
+          "location": {
+            "title": "Tu ubicación",
+            "body": "Empieza a escribir tu ciudad o código postal en Ubicación y luego elige tu ciudad de la lista. Una ciudad que escribes pero no eliges se guarda solo como texto, sin un punto en el mapa.",
+            "wait": "Agrega tu ubicación para continuar."
+          },
+          "cities": {
+            "title": "Ciudades donde quieres trabajar",
+            "body": "Opcional. Escribe una ciudad o código postal en Ciudades donde quieres encontrar trabajo y elígela de la lista para agregarla. Solo escribirla no la agrega. Puedes agregar hasta 10."
+          },
+          "documents": {
+            "title": "Tus documentos",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Subir para agregar un Currículum, una Licencia de conducir o un Documento de autorización de trabajo, o Reemplazar para cambiar uno. Usa un PDF, JPG o PNG. Cada uno lleva un solo archivo y se guarda en cuanto se sube. Las certificaciones no se suben aquí."
+          },
+          "save": {
+            "title": "Guarda tus cambios",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Guardar. Si en cambio aparece “Por favor agrega:”, termina la guía y completa lo que indica.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Guardar para terminar."
+          }
+        },
+        "done": {
+          "title": "Perfil guardado",
+          "body": "Tus cambios quedaron guardados. {input, select, touch {Toca} other {Haz clic en}} Editar cuando quieras para volver a cambiarlos."
+        }
       }
     },
     "employer_welcome": {

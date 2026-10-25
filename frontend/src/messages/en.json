@@ -1878,7 +1878,13 @@
       "bio": "About you",
       "certifications_placeholder": "OSHA 10, forklift, CDL",
       "save": "Save",
-      "cancel": "Cancel"
+      "cancel": "Cancel",
+      "trade_label": "Trade",
+      "trade_choose": "Choose your trade",
+      "trade_other_label": "Your trade",
+      "trade_other_placeholder": "Type your trade, e.g. welder, drywall, roofer",
+      "trade_other_length": "Tell us your trade in {min}–{max} characters.",
+      "availability_choose": "Choose your availability"
     },
     "complete_modal": {
       "title": "Complete your profile",
@@ -1906,7 +1912,9 @@
     "errors": {
       "required": "Required.",
       "missing_summary": "Please add: {fields}"
-    }
+    },
+    "field_trade": "Trade",
+    "empty_trade": "Trade not added"
   },
   "billing": {
     "title": "Billing",
@@ -2761,16 +2769,16 @@
       "duration": "1 min",
       "slides": {
         "seen": {
-          "title": "This is what employers see",
-          "body": "Your trade, experience, availability and the answers you gave in your own words."
+          "title": "What employers see",
+          "body": "When you apply, employers see your trade, skills, experience and availability, plus the answers you gave in your own words when you signed up. Those answers aren’t shown on this page."
         },
         "documents": {
           "title": "Add documents once",
-          "body": "Save your license, work permit or certifications here. They’re used again on every application, so you never upload twice."
+          "body": "Save your Resume, Driver's License or Work Authorization Document here. They’re used again on every application, so you don’t upload them twice. Certifications aren’t uploaded here."
         },
         "edit": {
           "title": "Keep it up to date",
-          "body": "Tap Edit any time to change your skills, availability or cities."
+          "body": "Tap Edit any time to change your name, trade, skills, availability, years of experience, location, cities, About you or certifications."
         }
       },
       "scene": {
@@ -2781,7 +2789,7 @@
         "avail": "Full-time",
         "quote": "“I finish slabs and driveways and set my own forms.”",
         "docs_head": "Documents",
-        "license": "Driver license",
+        "license": "Driver's License",
         "upload": "Upload",
         "replace": "Replace",
         "reused": "A photo of the card is fine. Used again on every application.",
@@ -2791,6 +2799,70 @@
         "sk2": "Forming",
         "sk3": "Stamped concrete",
         "saved": "Saved"
+      },
+      "guide": {
+        "intro_title": "Want a hand with your profile?",
+        "intro_body": "{input, select, touch {We’ll show you each part, one at a time: what to tap, what to pick and what to type. About 2 minutes.} other {We’ll show you each part, one at a time: what to click, what to pick and what to type. About 2 minutes.}}",
+        "counter": "Your profile · {current} of {total}",
+        "steps": {
+          "edit": {
+            "title": "Open the form",
+            "body": "{input, select, touch {Tap} other {Click}} Edit to open the form with your details.",
+            "wait": "{input, select, touch {Tap} other {Click}} Edit to continue."
+          },
+          "name": {
+            "title": "Your name",
+            "body": "Type your full name in Full name.",
+            "wait": "Type your name to continue."
+          },
+          "trade": {
+            "title": "Pick your trade",
+            "body": "Open the Trade list and pick the one you do most. If yours isn’t there, pick Other. Already right? {input, select, touch {Tap} other {Click}} Next.",
+            "wait": "Pick one to continue."
+          },
+          "trade_other": {
+            "title": "Type your trade",
+            "body": "You picked Other, so a box appeared. Type your trade in Your trade, like “Welder”, in 2 to 60 characters.",
+            "wait": "Type 2 to 60 characters to continue."
+          },
+          "skills": {
+            "title": "List your skills",
+            "body": "Type what you can do in Skills, with a comma between each one, like “framing, drywall, trim”.",
+            "wait": "Add at least one skill to continue."
+          },
+          "availability": {
+            "title": "When can you work?",
+            "body": "Pick Full-time, Part-time, Weekends or Flexible in Availability. If you never set it, it’s empty now, and you need to pick one to save.",
+            "wait": "Pick one to continue."
+          },
+          "years": {
+            "title": "Years of experience",
+            "body": "Optional. Type how many years you’ve worked, as a whole number from 0 to 80, or leave it as it is.",
+            "wait": "Use a whole number from 0 to 80, or leave it empty, to continue."
+          },
+          "location": {
+            "title": "Your location",
+            "body": "Start typing your city or ZIP in Location, then pick your city from the list. A city you type but don’t pick is saved as text only, without its spot on the map.",
+            "wait": "Add your location to continue."
+          },
+          "cities": {
+            "title": "Cities where you want to work",
+            "body": "Optional. Type a city or ZIP under Cities where you want to find work, then pick it from the list to add it. Typing alone doesn’t add a city. You can add up to 10."
+          },
+          "documents": {
+            "title": "Your documents",
+            "body": "{input, select, touch {Tap} other {Click}} Upload to add a Resume, Driver's License or Work Authorization Document, or Replace to change one. Use a PDF, JPG or PNG. Each one holds one file and is saved as soon as it uploads. Certifications aren’t uploaded here."
+          },
+          "save": {
+            "title": "Save your changes",
+            "body": "{input, select, touch {Tap} other {Click}} Save. If “Please add:” shows instead, end the guide and fill in what it names.",
+            "wait": "{input, select, touch {Tap} other {Click}} Save to finish."
+          }
+        },
+        "done": {
+          "title": "Profile saved",
+          "body": "Your changes are saved. {input, select, touch {Tap} other {Click}} Edit any time to change them again."
+        }
       }
     },
     "employer_welcome": {
