@@ -194,6 +194,8 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
       initialFocusRef={nameRef}
       // A half-typed template must not evaporate on a stray backdrop click.
       closeOnOverlay={false}
+      // The step-by-step guide's hooks (`components/tutorials/guides/employer-post-job.ts`).
+      data-guide="tpl.dialog"
       footer={
         <div className="flex w-full flex-col gap-3">
           {error ? (
@@ -215,6 +217,7 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
               loading={loading}
               loadingLabel={tCommon('loading')}
               className="flex-1"
+              data-guide="tpl.save"
             >
               {t('templates.save')}
             </Button>
@@ -227,7 +230,7 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
             PostJobModal's copy of this comment for why it cannot simply be
             the footer's Save. */}
         <button type="submit" hidden aria-hidden tabIndex={-1} />
-        <div className="flex flex-col gap-1.5">
+        <div className="flex flex-col gap-1.5" data-guide="tpl.name">
           <label className="text-xs font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">{t('templates.name_label')} *</label>
           <Input ref={nameRef} value={name} onChange={(e) => setName(e.target.value)} maxLength={80} />
           {nameError && <p className="text-xs font-semibold text-[var(--jale-danger)]">{nameError}</p>}
@@ -246,6 +249,7 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
             }
           }}
           showStartDate={false}
+          guide="tpl"
           locationInvalid={cityMissing}
           shiftPeriodsError={shiftPeriodsRejected ? t('modal.field_errors.shift_periods') : null}
         />

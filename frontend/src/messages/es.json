@@ -2752,14 +2752,24 @@
         "lock_note": "Se bloquean cuando alguien se postula"
       },
       "guide": {
-        "intro_title": "¿Le ayudamos a publicar este empleo?",
-        "intro_body": "{input, select, touch {Le mostramos cada campo, uno por uno: qué tocar, qué elegir y qué escribir. Unos 2 minutos.} other {Le mostramos cada campo, uno por uno: dónde hacer clic, qué elegir y qué escribir. Unos 2 minutos.}}",
+        "intro_title": "¿Le ayudamos con esto?",
+        "intro_body": "{input, select, touch {Le mostramos cada parte, una por una: qué tocar, qué elegir y qué escribir. Unos 2 minutos.} other {Le mostramos cada parte, una por una: dónde hacer clic, qué elegir y qué escribir. Unos 2 minutos.}}",
         "counter": "Publicar un empleo · {current} de {total}",
         "steps": {
+          "template": {
+            "title": "Empezar desde una plantilla (opcional)",
+            "body": "Si este empleo se parece a uno que guardó, elíjalo en Empezar desde una plantilla. Llena todo el formulario y reemplaza lo que haya escrito. O sáltelo.",
+            "wait": "Elija una plantilla, o siga."
+          },
           "title": {
             "title": "Escriba el puesto",
             "body": "{input, select, touch {Toque} other {Haga clic en}} el recuadro Título del puesto y escriba el título, como “Operador de montacargas” o “Acabador de concreto”.",
             "wait": "Escriba un título para continuar."
+          },
+          "city_check": {
+            "title": "Revise la ciudad",
+            "body": "Esta ciudad vino de su plantilla. Si es correcta, siga. Si la cambia, elija la nueva ciudad de la lista: escribirla no basta.",
+            "wait": "{input, select, touch {Toque una ciudad de la lista} other {Haga clic en una ciudad de la lista}} para continuar."
           },
           "city": {
             "title": "Elija la ciudad de la lista",
@@ -2781,10 +2791,145 @@
             "body": "Título, ciudad y oficio son los datos obligatorios aquí; el tipo de empleo y la descripción son opcionales. {input, select, touch {Toque} other {Haga clic en}} Siguiente para pasar al pago y el horario.",
             "wait": "{input, select, touch {Toque} other {Haga clic en}} Siguiente para continuar."
           },
+          "pay": {
+            "title": "Pago (opcional)",
+            "body": "Escriba el pago más bajo en Pago mínimo y el más alto en Pago máximo, y elija el Intervalo de pago. Deje Pago máximo en blanco si el pago es negociable. El Pago mínimo no puede ser mayor que el Pago máximo.",
+            "wait": "El Pago mínimo no puede ser mayor que el máximo."
+          },
           "workers": {
             "title": "¿Cuántos trabajadores?",
             "body": "Escriba cuántas personas necesita en el sitio. Empieza en 1.",
             "wait": "Escriba 1 o más para continuar."
+          },
+          "shifts": {
+            "title": "Turnos (opcional)",
+            "body": "Marque todos los turnos en los que se puede trabajar: Día, Tarde, Noche o Madrugada. Puede elegir varios, o ninguno.",
+            "wait": "Elija turnos, o siga."
+          },
+          "times": {
+            "title": "Hora de entrada y salida (opcional)",
+            "body": "Déjelas vacías si el horario varía. Si llena una, llene también la otra: una hora de entrada sin hora de salida, o al revés, detiene Siguiente.",
+            "wait": "Llene las dos horas, o bórrelas."
+          },
+          "certifications": {
+            "title": "Certificaciones (opcional)",
+            "body": "Si los trabajadores necesitan una tarjeta como OSHA 10, escríbala y elíjala de la lista, o elija Agregar “…” para usar sus propias palabras. No presione Enter sin haber elegido nada: pasa a la siguiente pantalla y se pierde lo escrito.",
+            "wait": "Agregue certificaciones, o siga."
+          },
+          "next_details": {
+            "title": "Listo el pago y el horario",
+            "body": "Fecha de inicio, Duración esperada, Días de trabajo, años de experiencia, idioma y transporte también son opcionales. {input, select, touch {Toque} other {Haga clic en}} Siguiente para las preguntas.",
+            "wait": "{input, select, touch {Toque} other {Haga clic en}} Siguiente para continuar."
+          },
+          "questions": {
+            "title": "Preguntas rápidas (opcional)",
+            "body": "Se hacen cuando los trabajadores se postulan y las contestan con sus propias palabras. Le sugerimos 2 o menos; puede agregar hasta 10. Una pregunta que agrega y deja vacía detiene Publicar empleo: escríbala, o presione Quitar en ella.",
+            "wait": "Escriba la pregunta vacía, o quítela."
+          },
+          "requirements": {
+            "title": "Preguntas para postulantes",
+            "body": "En cada fila, elija Desactivado, Opcional o Requerido. Todo empieza Desactivado. Los postulantes las responden solo cuando usted solicita sus datos. Cuando alguien se postula, ninguna de las dos partes se puede cambiar.",
+            "wait": "Ajuste las filas, o siga."
+          },
+          "template_save": {
+            "title": "Guardar como plantilla (opcional)",
+            "body": "Marque Guardar como plantilla para volver a usar este empleo la próxima vez. Necesitará un nombre.",
+            "wait": "Márquelo, o siga."
+          },
+          "template_name": {
+            "title": "Póngale nombre a la plantilla",
+            "body": "Escriba un nombre que reconozca, como “Operador de montacargas, Oakland”. El nombre es obligatorio: Publicar empleo no avanza sin él, a menos que desmarque la casilla.",
+            "wait": "Escriba un nombre para continuar."
+          },
+          "submit": {
+            "title": "Publique el empleo",
+            "body": "{input, select, touch {Toque} other {Haga clic en}} Publicar empleo para publicarlo. Si algo falla, sus respuestas se quedan aquí.",
+            "wait": "{input, select, touch {Toque} other {Haga clic en}} Publicar empleo para continuar."
+          },
+          "post_error": {
+            "title": "No se pudo publicar",
+            "body": "El mensaje en rojo arriba de los botones dice por qué. Sus respuestas siguen aquí: {input, select, touch {toque} other {haga clic en}} Publicar empleo para intentarlo de nuevo.",
+            "wait": "{input, select, touch {Toque} other {Haga clic en}} Publicar empleo para intentarlo de nuevo."
+          },
+          "job_limit": {
+            "title": "Alcanzó el límite de su plan",
+            "body": "Su plan no tiene espacio para otro empleo activo. Los enlaces de este recuadro cierran el formulario y se pierde lo escrito. Para conservar sus respuestas, marque Guardar como plantilla, póngale nombre y publique de nuevo: la plantilla se guarda aunque el empleo no.",
+            "wait": ""
+          },
+          "template_taken": {
+            "title": "Ese nombre ya existe",
+            "body": "Ya tiene una plantilla con ese nombre. Escriba otro nombre, o desmarque Guardar como plantilla.",
+            "wait": "Cambie el nombre para continuar."
+          },
+          "template_limit": {
+            "title": "Sus plantillas están llenas",
+            "body": "Su plan ya no tiene espacio para plantillas, así que esta no se guardará. {input, select, touch {Toque} other {Haga clic en}} Publicar sin guardar plantilla para publicar el empleo ahora. Administrar plantillas y Mejorar plan cierran el formulario y se pierde lo escrito.",
+            "wait": "{input, select, touch {Toque} other {Haga clic en}} Publicar sin guardar plantilla para continuar."
+          },
+          "post_again": {
+            "title": "Publíquelo ahora",
+            "body": "{input, select, touch {Toque} other {Haga clic en}} Publicar empleo otra vez.",
+            "wait": "{input, select, touch {Toque} other {Haga clic en}} Publicar empleo para continuar."
+          },
+          "template_not_saved": {
+            "title": "Su plantilla no se guardó",
+            "body": "Su empleo está publicado. La nota amarilla dice por qué no se guardó la plantilla, y Administrar plantillas abre sus plantillas.",
+            "wait": ""
+          },
+          "share": {
+            "title": "Compártalo con trabajadores",
+            "body": "Su empleo es privado hasta que lo comparta. {input, select, touch {Toque} other {Haga clic en}} Activar el enlace para compartir para obtener un enlace y un código QR para enviar a los trabajadores. También puede hacerlo después en la página del empleo.",
+            "wait": ""
+          },
+          "done": {
+            "title": "Su empleo está publicado",
+            "body": "Volver al panel cierra esto y muestra su empleo nuevo. Los trabajadores que se postulen aparecen en Postulantes.",
+            "wait": ""
+          },
+          "limit": {
+            "title": "Alcanzó el límite de su plan",
+            "body": "Su plan no tiene espacio para otro empleo activo, así que el formulario no se abrió. Los empleos de la lista son los que ocupan sus espacios: abra uno para pausarlo o cerrarlo, y su espacio se libera de inmediato.",
+            "wait": ""
+          },
+          "limit_actions": {
+            "title": "Lo que puede hacer",
+            "body": "Pausar otro empleo lo lleva a su panel, donde cada empleo tiene Pausar. Mejorar plan abre Facturación para tener más espacios. Ahora no cierra esto.",
+            "wait": ""
+          },
+          "edit_form": {
+            "title": "Edite este empleo",
+            "body": "Todo está en un solo formulario, no en tres pantallas. Cambie lo que necesite, como el pago o los turnos.",
+            "wait": ""
+          },
+          "edit_locked": {
+            "title": "Algunas partes están bloqueadas",
+            "body": "Este empleo ya tiene postulantes, así que el tipo de empleo, las certificaciones y las dos partes de las preguntas no se pueden cambiar: todos los que se postulan contestan las mismas preguntas. Para preguntar algo distinto, publique un empleo nuevo.",
+            "wait": ""
+          },
+          "edit_workers": {
+            "title": "Trabajadores necesarios",
+            "body": "Este número no puede ser menor que los trabajadores que ya contrató.",
+            "wait": "Escriba al menos los trabajadores ya contratados."
+          },
+          "edit_save": {
+            "title": "Guarde sus cambios",
+            "body": "{input, select, touch {Toque} other {Haga clic en}} Guardar cambios cuando termine. Si falta algo, una línea en rojo arriba de los botones dice qué; corríjalo y guarde de nuevo.",
+            "wait": ""
+          },
+          "tpl_name": {
+            "title": "Póngale nombre a la plantilla",
+            "body": "Escriba un nombre que reconozca, de hasta 80 caracteres. El nombre es obligatorio.",
+            "wait": "Escriba un nombre para continuar."
+          },
+          "tpl_form": {
+            "title": "Llene el empleo",
+            "body": "Los mismos datos que al publicar un empleo, en un solo formulario y sin fecha de inicio. Son obligatorios un título, un oficio y una ciudad elegida de la lista.",
+            "wait": ""
+          },
+          "tpl_save": {
+            "title": "Guarde la plantilla",
+            "body": "{input, select, touch {Toque} other {Haga clic en}} Guardar plantilla cuando termine. Si falta algo, una línea en rojo arriba de los botones dice qué.",
+            "wait": ""
           }
         }
       }

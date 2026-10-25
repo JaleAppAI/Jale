@@ -236,6 +236,12 @@ export default function JobDetailPage() {
         inbox,
     );
     const applicantsTutorial = useTutorial('employer_applicants', { done: applicantsDone });
+    /*
+     * The edit dialog's part of the post-job guide (E2): it opens with the
+     * dialog in the "every time" setting. Never as a first-time play
+     * (`done: true`): that one belongs to posting a job.
+     */
+    const editGuide = useTutorial('employer_post_job', { done: true, walkthrough: true });
     const applicantsAskedRef = useRef(false);
     const hasApplicants = applicants.length > 0;
     useEffect(() => {
@@ -961,7 +967,7 @@ export default function JobDetailPage() {
                                     <Button
                                         variant="outline"
                                         size="sm"
-                                        onClick={() => setEditOpen(true)}
+                                        onClick={() => editGuide.runWithHost(() => setEditOpen(true))}
                                         disabled={statusBusy}
                                     >
                                         {t('actions.edit')}

@@ -101,7 +101,7 @@ export function JobPostedPanel({
     const failure = toggleError ?? share.error;
 
     return (
-        <div ref={rootRef} className="space-y-5">
+        <div ref={rootRef} className="space-y-5" data-guide="post.posted">
             <div className="flex flex-col items-center gap-2.5 text-center">
                 <span
                     aria-hidden="true"
@@ -143,7 +143,7 @@ export function JobPostedPanel({
                 </InlineFeedback>
             ) : null}
 
-            <section aria-labelledby={shareHeadId} className="space-y-3 border-t border-[var(--jale-divider)] pt-4">
+            <section aria-labelledby={shareHeadId} className="space-y-3 border-t border-[var(--jale-divider)] pt-4" data-guide="post.share">
                 <h4 id={shareHeadId} className="text-base font-bold text-[var(--jale-ink)]">
                     {t('job_posted.share_head')}
                 </h4>
@@ -234,6 +234,7 @@ export function JobPostedFooter({ onClose }: { onClose: () => void }) {
             type="button"
             variant="outline"
             className="w-full"
+            data-guide="post.back"
             onClick={() => {
                 onClose();
                 if (pathname !== '/employer/dashboard') router.push('/employer/dashboard');

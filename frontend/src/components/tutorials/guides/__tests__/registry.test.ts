@@ -46,20 +46,55 @@ describe('guides registry', () => {
         }
     });
 
-    it('walks the post-job wizard in the order it shows its fields', () => {
+    it('walks the post-job wizard in the order it shows its fields, then its other places', () => {
         const guide = getGuide('employer_post_job');
         expect(guide).not.toBeNull();
         expect(guide?.steps.map((step) => [step.id, step.mode, step.target])).toEqual([
+            // Screen 1
+            ['template', 'next', { guide: 'post.template' }],
             ['title', 'next', { guide: 'post.title' }],
+            ['city_check', 'next', { guide: 'post.city' }],
             ['city', 'auto', { guide: 'post.city' }],
             ['trade', 'auto', { guide: 'post.trade' }],
             ['trade_other', 'next', { guide: 'post.trade_other' }],
             ['next', 'action', { guide: 'post.next' }],
+            // Screen 2
+            ['pay', 'next', { guide: 'post.pay' }],
             ['workers', 'next', { guide: 'post.workers' }],
+            ['shifts', 'next', { guide: 'post.shifts' }],
+            ['times', 'next', { guide: 'post.times' }],
+            ['certifications', 'next', { guide: 'post.certifications' }],
+            ['next_details', 'action', { guide: 'post.next' }],
+            // Screen 3, Post and what Post can answer
+            ['questions', 'next', { guide: 'post.questions' }],
+            ['requirements', 'next', { guide: 'post.requirements' }],
+            ['template_save', 'next', { guide: 'post.template_save' }],
+            ['template_name', 'next', { guide: 'post.template_name' }],
+            ['submit', 'action', { guide: 'post.submit' }],
+            ['post_error', 'action', { guide: 'post.submit' }],
+            ['job_limit', 'next', { guide: 'post.job_limit' }],
+            ['template_taken', 'next', { guide: 'post.template_save' }],
+            ['template_limit', 'action', { guide: 'post.template_limit' }],
+            ['post_again', 'action', { guide: 'post.submit' }],
+            // The posted screen
+            ['template_not_saved', 'next', { guide: 'post.template_not_saved' }],
+            ['share', 'next', { guide: 'post.share' }],
+            ['done', 'next', { guide: 'post.back' }],
+            // The plan-limit dialog, the edit dialog, the template editor
+            ['limit', 'next', { guide: 'limit.body' }],
+            ['limit_actions', 'next', { guide: 'limit.actions' }],
+            ['edit_form', 'next', { guide: 'edit.title' }],
+            ['edit_locked', 'next', { guide: 'edit.questions' }],
+            ['edit_workers', 'next', { guide: 'edit.workers' }],
+            ['edit_save', 'next', { guide: 'edit.save' }],
+            ['tpl_name', 'next', { guide: 'tpl.name' }],
+            ['tpl_form', 'next', { guide: 'tpl.title' }],
+            ['tpl_save', 'next', { guide: 'tpl.save' }],
         ]);
-        // Only the Other box is conditional; the wizard's Next completes on the screen changing.
-        expect(guide?.steps.filter((step) => step.when).map((step) => step.id)).toEqual(['trade_other']);
+        // Every step names the place it belongs to; the wizard's Next steps complete on the screen changing.
+        expect(guide?.steps.every((step) => typeof step.when === 'function')).toBe(true);
         expect(guide?.steps.find((step) => step.id === 'next')?.advanceWhen).toBeTypeOf('function');
+        expect(guide?.steps.find((step) => step.id === 'next_details')?.advanceWhen).toBeTypeOf('function');
     });
 
     it('speaks usted to the employer, and says Tap or Click by the pointer', () => {

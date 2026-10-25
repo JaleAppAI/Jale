@@ -2752,14 +2752,24 @@
         "lock_note": "Locked once someone applies"
       },
       "guide": {
-        "intro_title": "Want a hand posting this job?",
-        "intro_body": "{input, select, touch {We’ll show you each field, one at a time: what to tap, what to pick and what to type. About 2 minutes.} other {We’ll show you each field, one at a time: what to click, what to pick and what to type. About 2 minutes.}}",
+        "intro_title": "Want a hand with this?",
+        "intro_body": "{input, select, touch {We’ll show you each part, one at a time: what to tap, what to pick and what to type. About 2 minutes.} other {We’ll show you each part, one at a time: what to click, what to pick and what to type. About 2 minutes.}}",
         "counter": "Posting a job · {current} of {total}",
         "steps": {
+          "template": {
+            "title": "Start from a template (optional)",
+            "body": "If this job is like one you saved, choose it in Start from a template. It fills in the whole form and replaces anything you typed. Or skip it.",
+            "wait": "Choose a template, or go on."
+          },
           "title": {
             "title": "Name the job",
             "body": "{input, select, touch {Tap} other {Click}} the Job Title box and type the job title, like “Forklift operator” or “Concrete finisher”.",
             "wait": "Type a title to continue."
+          },
+          "city_check": {
+            "title": "Check the city",
+            "body": "This city came from your template. If it’s right, go on. If you change it, pick the new city from the list: typing alone doesn’t count.",
+            "wait": "{input, select, touch {Tap} other {Click}} a city in the list to continue."
           },
           "city": {
             "title": "Pick the city from the list",
@@ -2781,10 +2791,145 @@
             "body": "Title, city and trade are the required fields here; job type and description are optional. {input, select, touch {Tap} other {Click}} Next to go on to pay and schedule.",
             "wait": "{input, select, touch {Tap} other {Click}} Next to continue."
           },
+          "pay": {
+            "title": "Pay (optional)",
+            "body": "Type the lowest pay in Pay Min and the highest in Pay Max, and choose the Pay Interval. Leave Pay Max blank if pay is negotiable. Pay Min can’t be more than Pay Max.",
+            "wait": "Pay Min can’t be more than Pay Max."
+          },
           "workers": {
             "title": "How many workers?",
             "body": "Type how many people you need on site. It starts at 1.",
             "wait": "Enter 1 or more to continue."
+          },
+          "shifts": {
+            "title": "Shifts (optional)",
+            "body": "Tick every shift this job can work: Day, Evening, Night or Overnight. You can pick more than one, or none.",
+            "wait": "Pick shifts, or go on."
+          },
+          "times": {
+            "title": "Start and end times (optional)",
+            "body": "Leave both empty if the hours vary. If you fill one, fill the other too: a start time without an end time, or the other way round, stops Next.",
+            "wait": "Fill both times, or clear both."
+          },
+          "certifications": {
+            "title": "Certifications (optional)",
+            "body": "If workers need a card like OSHA 10, type it and pick it from the list, or pick Add “…” to use your own words. Don’t press Enter with nothing picked: it goes to the next screen and drops what you typed.",
+            "wait": "Add certifications, or go on."
+          },
+          "next_details": {
+            "title": "That’s pay and schedule",
+            "body": "Start Date, Expected Duration, Work days, years of experience, language and transportation are optional too. {input, select, touch {Tap} other {Click}} Next for the questions.",
+            "wait": "{input, select, touch {Tap} other {Click}} Next to continue."
+          },
+          "questions": {
+            "title": "Quick questions (optional)",
+            "body": "Asked when workers apply, answered in their own words. We suggest 2 or fewer; you can add up to 10. A question you add but leave empty stops Post Job: type it, or press Remove on it.",
+            "wait": "Type the empty question, or remove it."
+          },
+          "requirements": {
+            "title": "Questions for applicants",
+            "body": "For each row, pick Off, Optional or Required. Everything starts Off. Applicants answer these only after you request their details. Once someone applies, neither part can change.",
+            "wait": "Set the rows, or go on."
+          },
+          "template_save": {
+            "title": "Save as template (optional)",
+            "body": "Tick Save as template to reuse this job next time. It will need a name.",
+            "wait": "Tick it, or go on."
+          },
+          "template_name": {
+            "title": "Name the template",
+            "body": "Type a name you’ll recognize, like “Forklift operator, Oakland”. A name is required: Post Job won’t go without one, unless you untick the box.",
+            "wait": "Type a name to continue."
+          },
+          "submit": {
+            "title": "Post the job",
+            "body": "{input, select, touch {Tap} other {Click}} Post Job to publish it. If anything goes wrong, your answers stay here.",
+            "wait": "{input, select, touch {Tap} other {Click}} Post Job to continue."
+          },
+          "post_error": {
+            "title": "That didn’t go through",
+            "body": "The red message above the buttons says why. Your answers are still here: {input, select, touch {tap} other {click}} Post Job to try again.",
+            "wait": "{input, select, touch {Tap} other {Click}} Post Job to try again."
+          },
+          "job_limit": {
+            "title": "Plan limit reached",
+            "body": "Your plan has no free slot for another active job. The links in this box close the form and lose what you typed. To keep your answers, tick Save as template, name it and post again: the template is saved even though the job isn’t.",
+            "wait": ""
+          },
+          "template_taken": {
+            "title": "That name is taken",
+            "body": "You already have a template with that name. Type a different name, or untick Save as template.",
+            "wait": "Change the name to continue."
+          },
+          "template_limit": {
+            "title": "Your templates are full",
+            "body": "Your plan’s templates are full, so this one won’t be saved. {input, select, touch {Tap} other {Click}} Post without saving template to publish the job now. Manage templates and Upgrade plan close the form and lose what you typed.",
+            "wait": "{input, select, touch {Tap} other {Click}} Post without saving template to continue."
+          },
+          "post_again": {
+            "title": "Post it now",
+            "body": "{input, select, touch {Tap} other {Click}} Post Job again.",
+            "wait": "{input, select, touch {Tap} other {Click}} Post Job to continue."
+          },
+          "template_not_saved": {
+            "title": "Your template wasn’t saved",
+            "body": "Your job is posted. The yellow note says why the template wasn’t saved, and Manage templates opens your templates.",
+            "wait": ""
+          },
+          "share": {
+            "title": "Share it with workers",
+            "body": "Your job is private until you share it. {input, select, touch {Tap} other {Click}} Turn on the share link to get a link and a QR code to send to workers. You can do it later on the job’s page too.",
+            "wait": ""
+          },
+          "done": {
+            "title": "Your job is posted",
+            "body": "Back to dashboard closes this and shows your new job. Workers who apply show up under Applicants.",
+            "wait": ""
+          },
+          "limit": {
+            "title": "Plan limit reached",
+            "body": "Your plan has no free slot for another active job, so the form didn’t open. Any jobs listed are the ones using your slots: open one to pause or close it, which frees its slot at once.",
+            "wait": ""
+          },
+          "limit_actions": {
+            "title": "What you can do",
+            "body": "Pause another job goes to your dashboard, where each job has Pause. Upgrade plan opens Billing for more slots. Not now closes this.",
+            "wait": ""
+          },
+          "edit_form": {
+            "title": "Edit this job",
+            "body": "Everything is on one form, not three screens. Change what you need, like the pay or the shifts.",
+            "wait": ""
+          },
+          "edit_locked": {
+            "title": "Some parts are locked",
+            "body": "This job already has applicants, so its job type, certifications and both parts of the questions can’t change: everyone who applies answers the same questions. To ask something different, post a new job.",
+            "wait": ""
+          },
+          "edit_workers": {
+            "title": "Workers needed",
+            "body": "This number can’t go below the workers you’ve already hired.",
+            "wait": "Enter at least the workers already hired."
+          },
+          "edit_save": {
+            "title": "Save your changes",
+            "body": "{input, select, touch {Tap} other {Click}} Save changes when you’re done. If something is missing, one red line above the buttons says what; fix it and save again.",
+            "wait": ""
+          },
+          "tpl_name": {
+            "title": "Name the template",
+            "body": "Type a name you’ll recognize, up to 80 characters. A name is required.",
+            "wait": "Type a name to continue."
+          },
+          "tpl_form": {
+            "title": "Fill in the job",
+            "body": "The same fields as posting a job, on one form, with no start date. A title, a trade and a city picked from the list are required.",
+            "wait": ""
+          },
+          "tpl_save": {
+            "title": "Save the template",
+            "body": "{input, select, touch {Tap} other {Click}} Save template when you’re done. If something is missing, a red line above the buttons says what.",
+            "wait": ""
           }
         }
       }

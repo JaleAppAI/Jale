@@ -647,6 +647,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
               loading={loading}
               loadingLabel={tCommon('loading')}
               className="flex-1"
+              data-guide="post.submit"
             >
               {t('post_job_docs.submit')}
             </Button>
@@ -742,7 +743,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       {step === 1 && (
         <div className="grid gap-4">
           {templates.length > 0 ? (
-            <Field label={t('modal.template_select_label')}>
+            <Field label={t('modal.template_select_label')} guide="post.template">
               <div className="flex items-center gap-2">
                 <Select
                   value=""
@@ -810,7 +811,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
                 />
               </div>
               {checkCity && (
-                <p className="mt-1 rounded-md bg-[var(--jale-warning-bg)] px-2 py-1 text-xs font-semibold text-[var(--jale-warning)]">{t('modal.template_check_city')}</p>
+                <p data-guide="post.city_check" className="mt-1 rounded-md bg-[var(--jale-warning-bg)] px-2 py-1 text-xs font-semibold text-[var(--jale-warning)]">{t('modal.template_check_city')}</p>
               )}
               {cityMissing && (
                 <p id={cityHelperId} className="mt-1 rounded-md bg-[var(--jale-warning-bg)] px-2 py-1 text-xs font-semibold text-[var(--jale-warning)]">{t('modal.location_pick_helper')}</p>
@@ -874,6 +875,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
 
       {step === 2 && (
         <div className="grid gap-4">
+          <div data-guide="post.pay">
           <PayFields
             payMin={form.pay_min}
             payMax={form.pay_max}
@@ -887,6 +889,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
                 : null
             }
           />
+          </div>
           <PayReferenceHint trade={form.trade_category} cityKey={form.city_key} variant="employer" />
           <div className="grid gap-3 md:grid-cols-2">
             <Field label={t('modal.start_date')}>
@@ -914,6 +917,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
             onChange={(value) => update('expected_duration_bucket', value)}
           />
           <ScheduleFields
+            guide="post"
             workDays={form.work_days}
             shiftStart={form.shift_start}
             shiftEnd={form.shift_end}
@@ -977,6 +981,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
               onChange={() => update('transportation_required', !form.transportation_required)}
             />
           </div>
+          <div data-guide="post.certifications">
           <CertificationsPicker
             certificationRequirements={form.certification_requirements}
             legacyCertifications={form.certifications}
@@ -991,6 +996,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
             // the legacy field the moment it's touched.
             onChange={(next) => setForm((current) => ({ ...current, certification_requirements: next, certifications: '' }))}
           />
+          </div>
         </div>
       )}
 
@@ -999,6 +1005,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
         {/* ABOVE the picker, deliberately: these are the only questions an
             applicant meets while applying. Everything the picker configures
             below now waits for "Request details". */}
+        <div data-guide="post.questions">
         <PreApplicationPromptsEditor
           prompts={form.pre_application_prompts}
           onChange={(next) => {
@@ -1011,7 +1018,9 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
               : null
           }
         />
+        </div>
 
+        <div data-guide="post.requirements">
         <RequirementsPicker
           requirements={form.requirements}
           onChange={(next) => setForm((current) => ({ ...current, requirements: next }))}
@@ -1020,8 +1029,9 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
           onCertificationTierChange={setCertificationTier}
           onCertificationProofToggle={toggleCertificationProof}
         />
+        </div>
 
-        <div className="rounded-[10px] border border-[var(--jale-divider)] p-4">
+        <div className="rounded-[10px] border border-[var(--jale-divider)] p-4" data-guide="post.template_save">
           <label className="flex items-center gap-2 text-sm font-medium text-[var(--jale-ink)]">
             <input
               type="checkbox"
@@ -1041,6 +1051,9 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
                 onChange={(e) => {
                   setTemplateName(e.target.value);
                   if (e.target.value.trim()) setTemplateNameMissing(false);
+                  // "You already have a template with that name" is about the
+                  // name that was there; a new one answers it.
+                  setTemplateNotice((current) => (current === 'name_taken' ? '' : current));
                 }}
                 placeholder={t('modal.template_name_placeholder')}
                 aria-label={t('modal.template_name_placeholder')}
@@ -1054,11 +1067,13 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
             </div>
           )}
           {templateNotice === 'name_taken' && (
-            <p className="mt-2 text-xs font-semibold text-[var(--jale-danger)]">{t('modal.template_name_taken')}</p>
+            <p data-guide="post.template_taken" className="mt-2 text-xs font-semibold text-[var(--jale-danger)]">{t('modal.template_name_taken')}</p>
           )}
           {/* Deliberately NOT "Plan limit reached": the job still posts. The
               only thing at stake is the template, and the button beside the
               CTAs is the one-click way to accept that and carry on. */}
+          {templateLimitModel ? (
+          <div data-guide="post.template_limit">
           <PlanLimitNotice
             model={templateLimitModel}
             className="mt-2"
@@ -1082,6 +1097,8 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
               </Button>
             }
           />
+          </div>
+          ) : null}
         </div>
         </div>
       )}
@@ -1090,11 +1107,15 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       {error || jobLimit ? (
         <div ref={feedbackRef} className="mt-5 flex flex-col gap-2">
           {error ? (
-            <InlineFeedback tone="danger">
+            <InlineFeedback tone="danger" data-guide="post.error">
               <span className="block">{error}</span>
             </InlineFeedback>
           ) : null}
-          <PlanLimitNotice model={jobLimit} onNavigate={handleClose} />
+          {jobLimit ? (
+            <div data-guide="post.job_limit">
+              <PlanLimitNotice model={jobLimit} onNavigate={handleClose} />
+            </div>
+          ) : null}
         </div>
       ) : null}
       </>

@@ -238,6 +238,8 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
             initialFocusRef={initialFocusRef}
             // A half-typed edit must not evaporate on a stray backdrop click.
             closeOnOverlay={false}
+            // The step-by-step guide's hooks (`components/tutorials/guides/employer-post-job.ts`).
+            data-guide="edit.dialog"
             footer={
                 <div className="flex w-full flex-col gap-3">
                     {/* Anchored to the submit control, not floated to the top of a
@@ -259,6 +261,7 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
                             loading={loading}
                             loadingLabel={tCommon('loading')}
                             className="flex-1"
+                            data-guide="edit.save"
                         >
                             {t('modal.edit_save')}
                         </Button>
@@ -285,6 +288,7 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
                         }
                     }}
                     locked={locked}
+                    guide="edit"
                     locationInvalid={cityMissing}
                     minWorkers={job.hired_count || 1}
                     titleRef={initialFocusRef}

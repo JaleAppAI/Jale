@@ -18,7 +18,8 @@ import type { EmployerBilling, Job, JobCreatedOutcome } from '@/lib/api/employer
 import { activeJobsPreflightModel, type PlanLimitModel } from '@/lib/plan-limit';
 import { hasJobsDone } from '@/lib/employer-tutorial-done';
 import { useRegisterGuideLauncher } from '@/lib/tutorials/launchers';
-import { useTutorial } from '@/lib/tutorials/use-tutorial';
+import { useTutorialProgress } from '@/lib/tutorials/progress';
+import { autoPlayMode, useTutorial } from '@/lib/tutorials/use-tutorial';
 
 /**
  * "Post a job", from anywhere in the employer app.
@@ -136,6 +137,12 @@ export function PostJobProvider({ children }: { children: ReactNode }) {
         done: isEmployer ? hasJobs : undefined,
         walkthrough: true,
     });
+    // The store as of the last render, for the plan gate's "every time" check.
+    const tutorialProgress = useTutorialProgress();
+    const progressRef = useRef(tutorialProgress);
+    useEffect(() => {
+        progressRef.current = tutorialProgress;
+    });
     /** The guide asked for with the press waiting on the gate: a Help replay, or null. */
     const guideRequestRef = useRef<OpenPostJobOptions['guide'] | null>(null);
     /*
@@ -169,13 +176,26 @@ export function PostJobProvider({ children }: { children: ReactNode }) {
             snapshot?.jobs ?? null,
         );
         if (gate) {
-            // The limit dialog, and no tutorial: there is no wizard to explain.
+            /*
+             * The limit dialog instead of the wizard. Its guide (the post-job
+             * guide's plan-limit steps) plays only when asked for (Help's
+             * "Guide me through it") or in the "every time" setting: a new
+             * employer's one automatic play of E2 is kept for the wizard
+             * itself, not spent on a refusal.
+             */
+            const guide = guideRequestRef.current;
             guideRequestRef.current = null;
-            setPlanLimit(gate);
+            const progress = progressRef.current;
+            const always = progress !== null && autoPlayMode(progress, 'employer_post_job', true) === 'always';
+            if (guide === 'replay' || always) {
+                postJobTutorial.runWithHost(() => setPlanLimit(gate), undefined, { replay: guide === 'replay' });
+            } else {
+                setPlanLimit(gate);
+            }
             return;
         }
         setWizardRequest((count) => count + 1);
-    }, []);
+    }, [postJobTutorial]);
 
     useEffect(() => {
         if (wizardRequest === handledWizardRequestRef.current) return;
