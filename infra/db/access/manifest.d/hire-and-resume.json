@@ -10,7 +10,7 @@
     },
     "jale_cap_hire_nudges": {
       "created_by": "125",
-      "reason": "Owns the hire-details nudge claim and stamp: reads hired applications with no details and the two names and the address a nudge needs, and stamps a hire once its nudge is queued."
+      "reason": "Owns the hire-details nudge claim and stamp: reads hired applications with no details and the two names and the address a nudge needs, and stamps a hire once its nudge is queued; and, since 135, the job member's status and their company's active owner, to whom a suspended or removed member's nudge goes."
     }
   },
   "tables": {
@@ -96,18 +96,6 @@
       ],
       "created_by": "125",
       "reason": "The nudge sweep finds and locks hires that still have no details, once a day after the hire and once per worker reminder; it stamps nothing."
-    },
-    "jale_billing_internal.billing_resume_paused_jobs(uuid, integer)": {
-      "owner": "jale_billing_job_enforcer",
-      "security": "definer",
-      "search_path": "pg_catalog, pg_temp",
-      "arguments": "p_user_id uuid, p_active_job_limit integer",
-      "returns": "TABLE(resumed_count integer, employer_email text, resumed_titles text[])",
-      "execute": [
-        "jale_billing"
-      ],
-      "created_by": "125",
-      "reason": "Resumes the jobs billing paused, oldest first, up to the limit, when the subscription is entitled again."
     },
     "public.admin_recent_job_resumes(integer)": {
       "owner": "jale_admin",

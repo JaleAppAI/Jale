@@ -5077,17 +5077,6 @@
     }
   },
   "functions": {
-    "jale_billing_internal.billing_pause_over_limit_jobs(uuid, integer)": {
-      "owner": "jale_billing_job_enforcer",
-      "security": "definer",
-      "search_path": "pg_catalog, pg_temp",
-      "arguments": "p_user_id uuid, p_active_job_limit integer",
-      "returns": "TABLE(paused_count integer, employer_email text, paused_titles text[])",
-      "execute": [
-        "jale_billing"
-      ],
-      "reason": "SECURITY DEFINER owned by jale_billing_job_enforcer; EXECUTE as granted by its migration."
-    },
     "jale_cap.apply_ses_feedback(text)": {
       "owner": "jale_cap_ses_feedback",
       "security": "definer",

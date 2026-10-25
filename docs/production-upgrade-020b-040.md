@@ -5,6 +5,8 @@ the migration-034 baseline to the Sprint 16 schema. Do not run
 `scripts/run-migrations.ps1` or `.sh` against production: they replay older
 migrations and there is no migration ledger yet.
 
+Retired for schemas at migration 136 or later: 136 drops 036's per-person function, so 036's completion predicate is false by design and the tool stops with PARTIAL_STATE (exit 22) before any apply.
+
 ## 1. Release configuration
 
 Confirm the AWS identity and region, then discover a verified `jaleapp.ai` SES
