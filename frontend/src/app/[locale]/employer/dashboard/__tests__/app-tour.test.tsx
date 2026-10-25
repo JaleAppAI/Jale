@@ -23,8 +23,12 @@ import {
  * shell is a stand-in that still renders the page's header action, a nav and
  * a Help button, so the tour has real controls to point at.
  *
- *  - A new employer (no job ever, no tour outcome) gets the tour, then the
- *    dashboard: E1's slides do not follow it (hotfix 2026-10-24).
+ *  - A new employer (an empty board, an account created since the tour's
+ *    release, no tour outcome) gets the tour, then the dashboard: E1's
+ *    slides do not follow it (hotfix 2026-10-24).
+ *  - An older account with an empty board (never posted, or deleted every
+ *    job) gets no tour, and is asked about E1 as before; so is one whose
+ *    profile read fails.
  *  - With a tour outcome on record, E1 does not auto-play either; it stays in
  *    Help. An account with no tour outcome is asked about E1 as before.
  *  - An employer with a job gets neither.
@@ -90,6 +94,7 @@ vi.mock('@/lib/api/employer', async (importOriginal) => ({
     getJobs: vi.fn(),
     getBilling: vi.fn(),
     listJobTemplates: vi.fn(),
+    getEmployerProfile: vi.fn(),
 }));
 
 vi.mock('@/contexts/UnreadMessagesContext', () => ({
@@ -142,6 +147,8 @@ vi.mock('@/hooks/usePageData', async () => {
     };
 });
 
+import { getEmployerProfile } from '@/lib/api/employer';
+import type { EmployerProfileData } from '@/lib/api/employer';
 import { OverlayPresenceProvider } from '@/lib/tutorials/overlay';
 import { TutorialProgressProvider } from '@/lib/tutorials/progress';
 import { PostJobProvider } from '@/contexts/PostJobContext';
@@ -198,6 +205,16 @@ const anyJob = {
     created_at: '2026-08-01T00:00:00Z',
 } as unknown as Job;
 
+/*
+ * Account creation dates either side of the tour's release (midnight
+ * Mountain time on 2026-10-25, i.e. 06:00 UTC). Written out, not imported,
+ * so these tests also run against a page that predates the rule.
+ */
+const CREATED_AFTER_RELEASE = '2026-10-25T06:00:00.000Z';
+const CREATED_BEFORE_RELEASE = '2026-10-25T05:59:59.000Z';
+const profileRead = vi.mocked(getEmployerProfile);
+const profile = (created_at: string) => ({ id: 'e1', user_type: 'employer', created_at }) as unknown as EmployerProfileData;
+
 const welcomeTitle = () => message('tutorial.employer_welcome.title');
 const welcomeDialog = () => screen.queryByRole('dialog', { name: welcomeTitle() });
 const tourDialog = () => screen.queryByRole('dialog', { name: message('tutorial.tour.employer.welcome_title') });
@@ -226,6 +243,8 @@ beforeEach(() => {
     page.set({ phase: 'loading', data: null });
     signIn('employer');
     serveTutorials([]);
+    profileRead.mockReset();
+    profileRead.mockResolvedValue(profile(CREATED_AFTER_RELEASE));
 });
 
 describe('dashboard: the employer app tour', () => {
@@ -334,5 +353,58 @@ describe('dashboard: the employer app tour', () => {
             answer(jsonResponse(200, { tutorials: [] }));
         });
         expect(await screen.findByRole('dialog', { name: message('tutorial.tour.employer.welcome_title') })).toBeTruthy();
+    });
+});
+
+describe('dashboard: the app tour is for accounts created since its release', () => {
+    it('waits for the profile read before playing the tour for a new account', async () => {
+        let answer: (value: EmployerProfileData) => void = () => {};
+        profileRead.mockImplementation(
+            () => new Promise<EmployerProfileData>((resolve) => {
+                answer = resolve;
+            }),
+        );
+        renderDashboard();
+        act(() => page.set({ phase: 'ready', data: { jobs: [], billing: plan(7), templateCount: 0 } }));
+        await settle();
+        expect(tourDialog()).toBeNull();
+        expect(welcomeDialog()).toBeNull();
+        expect(profileRead).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+            answer(profile(CREATED_AFTER_RELEASE));
+        });
+        expect(await screen.findByRole('dialog', { name: message('tutorial.tour.employer.welcome_title') })).toBeTruthy();
+        act(() => {
+            fireEvent.click(screen.getByRole('button', { name: message('tutorial.tour.employer.not_now') }));
+        });
+        await settle();
+        expect(welcomeDialog()).toBeNull();
+    });
+
+    it('gives an older account with an empty board no tour, and asks about the welcome slides as before', async () => {
+        profileRead.mockResolvedValue(profile(CREATED_BEFORE_RELEASE));
+        renderDashboard();
+        act(() => page.set({ phase: 'ready', data: { jobs: [], billing: plan(7), templateCount: 0 } }));
+
+        expect(await screen.findByRole('dialog', { name: welcomeTitle() }, { timeout: 5000 })).toBeTruthy();
+        expect(tourDialog()).toBeNull();
+        expect(posts()).toEqual([]);
+    });
+
+    it('plays no tour when the profile read fails, and asks about the welcome slides as before', async () => {
+        profileRead.mockRejectedValue(new Error('profile_fetch_failed'));
+        renderDashboard();
+        act(() => page.set({ phase: 'ready', data: { jobs: [], billing: plan(7), templateCount: 0 } }));
+
+        expect(await screen.findByRole('dialog', { name: welcomeTitle() }, { timeout: 5000 })).toBeTruthy();
+        expect(tourDialog()).toBeNull();
+    });
+
+    it('reads no profile for an employer with a job', async () => {
+        renderDashboard();
+        act(() => page.set({ phase: 'ready', data: { jobs: [anyJob], billing: plan(7), templateCount: 0 } }));
+        await settle();
+        expect(profileRead).not.toHaveBeenCalled();
     });
 });

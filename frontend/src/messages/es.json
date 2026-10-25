@@ -2992,7 +2992,7 @@
           },
           "board_message": {
             "title": "Escríbales",
-            "body": "Mensaje abre una conversación con esta persona en el panel de Mensajes. La lee y le contesta por WhatsApp."
+            "body": "Después de la guía, {input, select, touch {toque} other {haga clic en}} Mensaje para abrir una conversación con esta persona en el panel de Mensajes. La lee y le contesta por WhatsApp."
           },
           "job_filters": {
             "title": "Reduzca la lista",
@@ -3013,11 +3013,11 @@
           },
           "job_message": {
             "title": "Mensaje",
-            "body": "Mensaje envía de inmediato un saludo ya escrito por WhatsApp, sin vista previa, y abre la conversación en Mensajes."
+            "body": "Después de la guía, {input, select, touch {toque} other {haga clic en}} Mensaje para enviar de inmediato un saludo ya escrito por WhatsApp, sin vista previa. La conversación se abre en Mensajes."
           },
           "job_profile": {
             "title": "Ver perfil",
-            "body": "Ver perfil abre todo lo que esta persona envió, con el cuadro de estado y Guardar."
+            "body": "Después de la guía, {input, select, touch {toque} other {haga clic en}} Ver perfil para ver todo lo que esta persona envió, con el cuadro de estado y Guardar."
           },
           "profile_status": {
             "title": "Su estado",
@@ -3108,7 +3108,7 @@
           },
           "put_away": {
             "title": "Guarde los mensajes",
-            "body": "{input, select, touch {Toque} other {Haga clic en}} Cerrar (u Ocultar, en un teléfono) para guardar los mensajes. Vuelva a abrirlos con el botón Mensajes."
+            "body": "Al terminar la guía, {input, select, touch {toque} other {haga clic en}} Cerrar (u Ocultar, en un teléfono) para guardar los mensajes. Vuelva a abrirlos con el botón Mensajes."
           },
           "list": {
             "title": "Sus conversaciones abiertas",

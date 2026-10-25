@@ -51,6 +51,11 @@ async function walk(first: string): Promise<string[]> {
     await reach('intro');
     await press('start');
     await reach(first);
+    return nextToTheEnd();
+}
+
+/** Presses Next from the step on screen until the guide ends (or stops moving); returns the steps shown. */
+async function nextToTheEnd(): Promise<string[]> {
     const seen: string[] = [];
     for (let turn = 0; turn < 20 && currentStep() !== null; turn += 1) {
         const at = currentStep() as string;
@@ -62,6 +67,24 @@ async function walk(first: string): Promise<string[]> {
         if (currentStep() === at) break;
     }
     return seen;
+}
+
+/** The cutout lets the pointer through to the control (an interactive step), or blocks it. */
+const pressable = () => document.querySelector('[data-spotlight-blocker="hole"]') === null;
+
+/** Walks to `id` with Next and reports whether its control can be pressed. */
+async function pressableAt(first: string, id: string): Promise<boolean> {
+    await reach('intro');
+    await press('start');
+    await reach(first);
+    while (currentStep() !== id) {
+        const at = currentStep();
+        await press('next');
+        const until = Date.now() + 5000;
+        while (currentStep() === at && Date.now() < until) await flush(10);
+        if (currentStep() === at || currentStep() === null) throw new Error(`never reached ${id}`);
+    }
+    return pressable();
 }
 
 const row: ApplicantOverviewItem = {
@@ -121,6 +144,26 @@ describe('the applicants guide on the board', () => {
         expect(seen).toEqual(['board_row', 'board_status', 'board_hire_blocked', 'board_message']);
     });
 
+    it('shows Message without letting it be pressed (the drawer it opens is under the guide); the status stays pressable', async () => {
+        renderWithGuide(<Board items={[row]} />, { id: 'employer_applicants' });
+        await reach('intro');
+        await press('start');
+        await reach('board_row');
+        await press('next');
+        await reach('board_status');
+        expect(pressable()).toBe(true);
+        await press('next');
+        await reach('board_message');
+        expect(pressable()).toBe(false);
+    });
+
+    it('ends on the board after Message, with no other page’s steps waited for', async () => {
+        const view = renderWithGuide(<Board items={[row]} />, { id: 'employer_applicants' });
+        await walk('board_row');
+        expect(currentStep()).toBeNull();
+        expect(view.onDismiss).toHaveBeenCalledWith('completed');
+    });
+
     it('points at start details only on a Hired row', async () => {
         renderWithGuide(<Board items={[{ ...row, application_status: 'hired' }]} />, { id: 'employer_applicants' });
         const seen = await walk('board_row');
@@ -170,6 +213,28 @@ describe('the applicants guide on a job’s page', () => {
         renderWithGuide(<JobPanel />, { id: 'employer_applicants' });
         const seen = await walk('job_filters');
         expect(seen).toEqual(['job_filters', 'job_row', 'job_request', 'job_message', 'job_profile']);
+    });
+
+    it('counts this page’s steps only, and ends here: the profile’s steps are not waited for', async () => {
+        const view = renderWithGuide(<JobPanel />, { id: 'employer_applicants' });
+        await reach('intro');
+        await press('start');
+        await reach('job_filters');
+        expect(counter()).toMatch(/1 of 5$/);
+        expect(await nextToTheEnd()).toHaveLength(5);
+        expect(currentStep()).toBeNull();
+        expect(view.onDismiss).toHaveBeenCalledWith('completed');
+    });
+
+    it('shows Message Worker and View profile without letting them be pressed (both leave the page)', async () => {
+        renderWithGuide(<JobPanel />, { id: 'employer_applicants' });
+        expect(await pressableAt('job_filters', 'job_request')).toBe(true);
+        await press('next');
+        await reach('job_message');
+        expect(pressable()).toBe(false);
+        await press('next');
+        await reach('job_profile');
+        expect(pressable()).toBe(false);
     });
 
     it('leaves out Request details for someone hired, not selected or complete (no button)', async () => {
@@ -322,6 +387,35 @@ describe('the messages guide', () => {
         );
         const seen = await walk('list');
         expect(seen).toEqual(['list', 'put_away']);
+    });
+
+    it('shows the drawer’s Close without letting it be pressed: putting the drawer away would end the guide’s page', async () => {
+        renderWithGuide(
+            <main>
+                <button type="button" data-guide="msg.launcher">
+                    Close
+                </button>
+                <div data-guide="msg.drawer">
+                    <aside data-guide="msg.list">No open conversations yet.</aside>
+                </div>
+            </main>,
+            { id: 'employer_messages' },
+        );
+        expect(await pressableAt('list', 'put_away')).toBe(false);
+    });
+
+    it('keeps Send, Not interested and Close pressable in a thread (they stay on the page or ask first)', async () => {
+        renderWithGuide(
+            <ConversationThread conversation={conversation} messages={messages} onSend={vi.fn()} onClose={vi.fn()} onDismiss={vi.fn()} />,
+            { id: 'employer_messages' },
+        );
+        expect(await pressableAt('thread', 'send')).toBe(true);
+        await press('next');
+        await reach('not_interested');
+        expect(pressable()).toBe(true);
+        await press('next');
+        await reach('close');
+        expect(pressable()).toBe(true);
     });
 
     it('names the real labels, and only the static delivery rule', () => {

@@ -118,6 +118,8 @@ const STEPS: readonly SpotlightStep[] = [
         target: () => inScope('msg.hide') ?? Array.from(document.querySelectorAll<HTMLElement>(guideSelector('msg.launcher'))).find(isRendered) ?? null,
         when: drawerOpen,
         mode: 'next',
+        // Said, not pressed: putting the drawer away would take the guide's page with it.
+        interactive: false,
         placement: 'top',
         ...keys('put_away'),
     },

@@ -2992,7 +2992,7 @@
           },
           "board_message": {
             "title": "Write to them",
-            "body": "Message opens a chat with this person in the Messages panel. They read it and answer on WhatsApp."
+            "body": "After the guide, {input, select, touch {tap} other {click}} Message to open a chat with this person in the Messages panel. They read it and answer on WhatsApp."
           },
           "job_filters": {
             "title": "Narrow the list",
@@ -3013,11 +3013,11 @@
           },
           "job_message": {
             "title": "Message Worker",
-            "body": "Message Worker sends a ready-made hello on WhatsApp right away, with no preview, and opens the chat in Messages."
+            "body": "After the guide, {input, select, touch {tap} other {click}} Message Worker to send a ready-made hello on WhatsApp right away, with no preview. The chat opens in Messages."
           },
           "job_profile": {
             "title": "View profile",
-            "body": "View profile opens everything this person sent, with the status box and Save."
+            "body": "After the guide, {input, select, touch {tap} other {click}} View profile to see everything this person sent, with the status box and Save."
           },
           "profile_status": {
             "title": "Their status",
@@ -3108,7 +3108,7 @@
           },
           "put_away": {
             "title": "Put messages away",
-            "body": "{input, select, touch {Tap} other {Click}} Close (or Hide, on a phone) to put the messages away. Open them again from the Messages button."
+            "body": "When you finish this guide, {input, select, touch {tap} other {click}} Close (or Hide, on a phone) to put the messages away. Open them again from the Messages button."
           },
           "list": {
             "title": "Your open conversations",

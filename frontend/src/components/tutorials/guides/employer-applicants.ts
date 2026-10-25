@@ -21,7 +21,17 @@ import type { WalkthroughGuide } from './types';
  *
  * A step whose control is not on the page (no applicant row with Request
  * details, no hired row) does not apply, so the guide never points at a
- * control the page does not have. The marks are `data-guide="apps.*"`.
+ * control the page does not have. Each page's steps apply on that page only
+ * (a `when` on the page's own mark), so a guide started on one page ends
+ * there: it never waits for another page's steps.
+ *
+ * A control that would take the person away from the guide is shown, not
+ * pressed (`interactive: false`): Message opens the conversation drawer,
+ * which the guide covers, and a job's Message Worker and View profile leave
+ * the page. The copy says to use them after the guide. A control that opens
+ * a dialog (Hired asks first; start details) stays pressable.
+ *
+ * The marks are `data-guide="apps.*"`.
  */
 
 const KEY = 'tutorial.employer_applicants.guide';
@@ -50,7 +60,8 @@ const BOARD: readonly SpotlightStep[] = [
     { id: 'board_hire_blocked', target: { guide: 'apps.row_hint' }, when: () => onBoard() && up('apps.row_hint'), mode: 'next', ...keys('board_hire_blocked') },
     { id: 'board_hire_banner', target: { guide: 'apps.hire_banner' }, when: () => onBoard() && up('apps.hire_banner'), mode: 'next', ...keys('board_hire_banner') },
     { id: 'board_start', target: { guide: 'apps.row_start' }, when: () => onBoard() && up('apps.row_start'), mode: 'next', ...keys('board_start') },
-    { id: 'board_message', target: { guide: 'apps.row_message' }, when: () => onBoard() && up('apps.row_message'), mode: 'next', ...keys('board_message') },
+    // Said, not pressed: Message opens the drawer, which the guide covers.
+    { id: 'board_message', target: { guide: 'apps.row_message' }, when: () => onBoard() && up('apps.row_message'), mode: 'next', interactive: false, ...keys('board_message') },
 ];
 
 const JOB_PAGE: readonly SpotlightStep[] = [
@@ -66,8 +77,9 @@ const JOB_PAGE: readonly SpotlightStep[] = [
     },
     { id: 'job_row', target: { guide: 'apps.job_row' }, when: () => onJobPage() && up('apps.job_row'), mode: 'next', ...keys('job_row') },
     { id: 'job_request', target: { guide: 'apps.request' }, when: () => onJobPage() && up('apps.request'), mode: 'next', ...keys('job_request') },
-    { id: 'job_message', target: { guide: 'apps.job_message' }, when: () => onJobPage() && up('apps.job_message'), mode: 'next', ...keys('job_message') },
-    { id: 'job_profile', target: { guide: 'apps.job_profile' }, when: () => onJobPage() && up('apps.job_profile'), mode: 'next', ...keys('job_profile') },
+    // Said, not pressed: both leave this page, and the guide stays with it.
+    { id: 'job_message', target: { guide: 'apps.job_message' }, when: () => onJobPage() && up('apps.job_message'), mode: 'next', interactive: false, ...keys('job_message') },
+    { id: 'job_profile', target: { guide: 'apps.job_profile' }, when: () => onJobPage() && up('apps.job_profile'), mode: 'next', interactive: false, ...keys('job_profile') },
 ];
 
 /** The applicant's saved status, as the profile's status panel says. */
