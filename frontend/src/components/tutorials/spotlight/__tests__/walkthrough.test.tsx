@@ -8,6 +8,7 @@ import type { TutorialOutcome } from '@/lib/api/tutorials';
 import { OverlayPresenceProvider } from '@/lib/tutorials/overlay';
 import { Modal } from '@/components/ui/modal';
 import { VIEWPORT_GUTTER } from '../geometry';
+import { modalOver } from '../scope';
 import { Spotlight } from '../Spotlight';
 import type { SpotlightDone, SpotlightIntro, SpotlightStep } from '../steps';
 
@@ -64,6 +65,12 @@ beforeEach(() => {
 afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+    // What a hit-testing test set up, even when it failed before undoing it.
+    delete (document as unknown as { elementsFromPoint?: unknown }).elementsFromPoint;
+    document.documentElement.style.removeProperty('--jale-tab-bar-offset');
+    Object.defineProperty(window, 'scrollY', { configurable: true, value: 0 });
+    delete (document.documentElement as unknown as { scrollHeight?: unknown }).scrollHeight;
+    delete (document.documentElement as unknown as { clientHeight?: unknown }).clientHeight;
 });
 
 /** Lets the page-watching observers and short waits run. */
@@ -1229,6 +1236,7 @@ function stubHitTesting(): () => void {
     Object.defineProperty(document, 'elementsFromPoint', { configurable: true, value: at });
     const scroll = vi.spyOn(window, 'scrollBy').mockImplementation(((x: number | ScrollToOptions, y?: number) => {
         pageScroll += typeof x === 'number' ? (y ?? 0) : (x.top ?? 0);
+        Object.defineProperty(window, 'scrollY', { configurable: true, value: pageScroll });
     }) as typeof window.scrollBy);
     return () => {
         scroll.mockRestore();
@@ -1331,6 +1339,65 @@ describe('a control the page moves after it was scrolled to', () => {
     });
 });
 
+describe('a control whose list opens under the phone tab bar', () => {
+    it('is scrolled with its list above the bar, so an option can be tapped', async () => {
+        const restore = stubHitTesting();
+        document.documentElement.style.setProperty('--jale-tab-bar-offset', '64px');
+        const CITY_FIELD: SpotlightStep = { id: 'city', target: { guide: 'r.city' }, mode: 'auto', advanceWhen: () => false, ...copy('city') };
+        render(
+            <>
+                <div data-guide="r.city" data-box="680,40,300,40">
+                    <input aria-label="City" role="combobox" aria-expanded="false" aria-controls="city-options" />
+                </div>
+                <nav data-fixed="" style={{ position: 'fixed' }} data-box="736,0,1280,64">
+                    <button type="button" data-box="736,0,200,64">
+                        Home
+                    </button>
+                </nav>
+            </>,
+        );
+        render(
+            <Intl>
+                <Spotlight
+                    name="test-guide"
+                    resolve="lazy"
+                    steps={[CITY_FIELD]}
+                    waitMs={50}
+                    counterKey={COUNTER}
+                    onDismiss={() => {}}
+                    onUnavailable={() => {}}
+                />
+            </Intl>,
+        );
+        await flush();
+        expect(stepOf()).toBe('city');
+        expect(vi.mocked(window.scrollBy)).not.toHaveBeenCalled();
+
+        // The person types: the suggestions open below the field, the first one under the bar.
+        act(() => {
+            const list = document.createElement('ul');
+            list.id = 'city-options';
+            list.setAttribute('role', 'listbox');
+            list.setAttribute('data-box', `${724 + pageScroll},40,300,200`);
+            const option = document.createElement('li');
+            option.setAttribute('role', 'option');
+            option.setAttribute('data-box', `${724 + pageScroll},40,300,40`);
+            option.textContent = 'El Paso, TX';
+            list.append(option);
+            document.querySelector('[data-guide="r.city"]')?.append(list);
+            const input = screen.getByRole('combobox', { name: 'City' });
+            input.setAttribute('aria-expanded', 'true');
+            input.setAttribute('aria-controls', 'city-options');
+        });
+        await flush(50);
+        const option = screen.getByRole('option', { name: 'El Paso, TX' });
+        const list = screen.getByRole('listbox');
+        expect(list.getBoundingClientRect().bottom).toBeLessThanOrEqual(736);
+        expect(option.contains(onTopAtMiddle(option))).toBe(true);
+        restore();
+    });
+});
+
 describe('a control taller than the page shows', () => {
     it('leaves the page free to scroll on its step, the ring following, and the next step holds the page again', async () => {
         const restore = stubHitTesting();
@@ -1428,3 +1495,198 @@ describe('ending on the page it started on', () => {
         expect(onDismiss).toHaveBeenCalledWith('skipped');
     });
 });
+
+describe('review follow-ups', () => {
+    it('a control that stays but no longer is what the step names is lost (the footer button moving from Next to Post)', async () => {
+        const NEXT_BUTTON: SpotlightStep = { id: 'next', target: { guide: 't.submit' }, mode: 'next', ready: () => true, ...copy('next') };
+        const { onDismiss } = renderGuide([NEXT_BUTTON], {}, { waitMs: 40 });
+        await flush();
+        expect(stepOf()).toBe('next');
+        // The same button takes another hook.
+        act(() => {
+            document.querySelector('[data-guide="t.submit"]')?.setAttribute('data-guide', 't.post');
+        });
+        await flush();
+        expect(stepOf()).toBeNull();
+        await flush(80);
+        expect(onDismiss).toHaveBeenCalledWith('skipped');
+    });
+
+    it('an action step whose condition already holds when it is reached is done at once', async () => {
+        const DONE_ALREADY: SpotlightStep = {
+            id: 'next',
+            target: { guide: 't.submit' },
+            mode: 'action',
+            advanceWhen: () => true,
+            ...copy('next'),
+        };
+        const { onDismiss } = renderGuide([DONE_ALREADY], {}, { waitMs: 10_000 });
+        await flush();
+        await flush();
+        expect(onDismiss).toHaveBeenCalledWith('completed');
+    });
+
+    it('one band for what is too tall: a control the page cannot show whole is never scrolled back on the person', async () => {
+        const restore = stubHitTesting();
+        Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 });
+        Object.defineProperty(window, 'innerHeight', { configurable: true, value: 844 });
+        Object.defineProperty(document.documentElement, 'scrollHeight', { configurable: true, value: 3000 });
+        Object.defineProperty(document.documentElement, 'clientHeight', { configurable: true, value: 844 });
+        document.documentElement.style.setProperty('--jale-tab-bar-offset', '64px');
+        const ROWS: SpotlightStep = { id: 'rows', target: { guide: 'r.rows' }, mode: 'next', ready: () => true, ...copy('title') };
+        render(
+            <>
+                <header data-fixed="" style={{ position: 'fixed' }} data-box="0,0,390,56">
+                    Profile
+                </header>
+                <div data-guide="r.rows" data-box="300,20,350,750">
+                    <input aria-label="Work history" />
+                </div>
+                <nav data-fixed="" style={{ position: 'fixed' }} data-box="780,0,390,64">
+                    <button type="button">Home</button>
+                </nav>
+            </>,
+        );
+        render(
+            <Intl>
+                <Spotlight
+                    name="test-guide"
+                    resolve="lazy"
+                    steps={[ROWS]}
+                    waitMs={50}
+                    counterKey={COUNTER}
+                    onDismiss={() => {}}
+                    onUnavailable={() => {}}
+                />
+            </Intl>,
+        );
+        await flush();
+        expect(stepOf()).toBe('rows');
+        // 750px under a 56px header and above a 64px bar (724px between): too tall, so the page is not held.
+        expect(document.documentElement.style.overflow).toBe('');
+        // The person scrolls down through it; then the page changes under it.
+        act(() => {
+            pageScroll += 400;
+            Object.defineProperty(window, 'scrollY', { configurable: true, value: pageScroll });
+            window.dispatchEvent(new Event('scroll'));
+        });
+        await flush();
+        const calls = vi.mocked(window.scrollBy).mock.calls.length;
+        act(() => {
+            document.querySelector('[data-guide="r.rows"]')?.setAttribute('data-changed', '');
+        });
+        await flush(50);
+        expect(vi.mocked(window.scrollBy).mock.calls.length).toBe(calls);
+        restore();
+    });
+
+    it('Escape on a plain show/hide toggle still ends the guide; only an open list or menu keeps it', async () => {
+        const SKILLS: SpotlightStep = { id: 'skills', target: { guide: 'd.skills' }, mode: 'next', ready: () => true, ...copy('title') };
+        const onDismiss = vi.fn();
+        render(
+            <>
+                <div data-guide="d.skills" data-box="100,40,300,120">
+                    <button type="button" aria-expanded="true" aria-controls="all-skills">
+                        Show all skills
+                    </button>
+                    <ul id="all-skills">
+                        <li>Framing</li>
+                    </ul>
+                </div>
+            </>,
+        );
+        render(
+            <Intl>
+                <Spotlight
+                    name="test-guide"
+                    resolve="lazy"
+                    steps={[SKILLS]}
+                    waitMs={50}
+                    counterKey={COUNTER}
+                    onDismiss={onDismiss}
+                    onUnavailable={() => {}}
+                />
+            </Intl>,
+        );
+        await flush();
+        const toggle = screen.getByRole('button', { name: 'Show all skills' });
+        act(() => toggle.focus());
+        act(() => {
+            fireEvent.keyDown(toggle, { key: 'Escape' });
+        });
+        expect(onDismiss).toHaveBeenCalledWith('skipped');
+    });
+
+    it('a guide whose declared host closes is over at once: skipped before its last step', async () => {
+        const { onDismiss, close } = renderInHost([TITLE, TRADE]);
+        await flush();
+        expect(stepOf()).toBe('title');
+        close();
+        await flush();
+        expect(onDismiss).toHaveBeenCalledWith('skipped');
+    });
+
+    it('… and completed on its last step', async () => {
+        const { onDismiss, close } = renderInHost([TITLE, TRADE]);
+        await flush();
+        type('#title', 'Framer');
+        press('next');
+        await flush();
+        expect(stepOf()).toBe('trade');
+        close();
+        await flush();
+        expect(onDismiss).toHaveBeenCalledWith('completed');
+    });
+
+    it('a dialog that is the guide’s own host is never another dialog on top of it', () => {
+        const host = document.createElement('div');
+        host.setAttribute('role', 'dialog');
+        host.setAttribute('aria-modal', 'true');
+        host.setAttribute('data-guide', 'h.wizard');
+        document.body.append(host);
+        expect(modalOver(document.body)).toBe(true);
+        expect(modalOver(document.body, { guide: 'h.wizard' })).toBe(false);
+        host.remove();
+    });
+});
+
+/** The stand-in form inside a host the guide declares (a real Modal), with a way to close it from outside. */
+function renderInHost(steps: SpotlightStep[]) {
+    const onDismiss = vi.fn<(outcome: TutorialOutcome) => void>();
+    function Page() {
+        const [open, set] = useState(true);
+        return (
+            <>
+                <button type="button" onClick={() => set(false)}>
+                    Close the wizard
+                </button>
+                <Modal open={open} onClose={() => set(false)} title="Post a Job" data-guide="t.wizard">
+                    <Form />
+                </Modal>
+                <Spotlight
+                    name="test-guide"
+                    resolve="lazy"
+                    steps={steps}
+                    host={{ guide: 't.wizard' }}
+                    waitMs={10_000}
+                    counterKey={COUNTER}
+                    endKey="tutorial.common.guide.end"
+                    onDismiss={onDismiss}
+                    onUnavailable={() => {}}
+                />
+            </>
+        );
+    }
+    render(
+        <Intl>
+            <Page />
+        </Intl>,
+    );
+    return {
+        onDismiss,
+        close: () =>
+            act(() => {
+                fireEvent.click(screen.getByRole('button', { name: 'Close the wizard' }));
+            }),
+    };
+}

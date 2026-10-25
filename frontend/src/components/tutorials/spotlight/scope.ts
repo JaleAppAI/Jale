@@ -1,5 +1,15 @@
-import { cutoutFor, scrollToFit, type Band } from './geometry';
-import { isRendered } from './steps';
+import {
+    CALLOUT_GAP,
+    VIEWPORT_GUTTER,
+    cutoutFor,
+    outOfBandWith,
+    scrollToFit,
+    scrollToShow,
+    unionBox,
+    type Band,
+    type Box,
+} from './geometry';
+import { isRendered, targetSelector, type SpotlightTarget } from './steps';
 
 /**
  * Where a spotlight lives: on the page, or inside the dialog its control sits
@@ -33,6 +43,17 @@ export function scrollParentWithin(element: Element, scope: Element): HTMLElemen
     return null;
 }
 
+/** An element's box, in viewport px. */
+function boxOf(element: Element): Box {
+    const rect = element.getBoundingClientRect();
+    return { top: rect.top, left: rect.left, width: rect.width, height: rect.height };
+}
+
+/** The box a control takes together with its open popups (a combobox's list). */
+function extentOf(control: Element, popups: readonly Element[]): Box {
+    return unionBox(boxOf(control), ...popups.map(boxOf));
+}
+
 /** Room kept between a scrolled-to control and the edge of its scrolling box, in px. */
 const SCROLL_MARGIN = 12;
 
@@ -41,8 +62,14 @@ const SCROLL_MARGIN = 12;
  * the way `scrollIntoView({ block: 'nearest' })` would, but without touching
  * any other scroller: the page behind a dialog stays where it is.
  */
-export function scrollIntoContainer(element: Element, container: HTMLElement): void {
+export function scrollIntoContainer(element: Element, container: HTMLElement, popups: readonly Element[] = []): void {
     const box = container.getBoundingClientRect();
+    if (popups.length > 0) {
+        // With its open list: the two together, the list as far as it fits.
+        const band = { top: box.top, bottom: box.bottom };
+        container.scrollTop += scrollToShow(extentOf(element, popups), boxOf(element), band, SCROLL_MARGIN);
+        return;
+    }
     const rect = element.getBoundingClientRect();
     const above = box.top + SCROLL_MARGIN - rect.top;
     const below = rect.bottom - (box.bottom - SCROLL_MARGIN);
@@ -69,9 +96,14 @@ export function openPopupsOf(target: Element): HTMLElement[] {
     return popups;
 }
 
-/** True when focus is in a control whose popup is open: Escape closes that first. */
-export function ownsOpenPopup(element: Element | null): boolean {
-    return element instanceof HTMLElement && element.getAttribute('aria-expanded') === 'true';
+/**
+ * Whether `element` is still what `target` names. A control can stay in the
+ * page while its hook moves to another one: the wizard's one footer button is
+ * `post.next` on one screen and `post.submit` on the last.
+ */
+export function stillTarget(element: Element, target: SpotlightTarget): boolean {
+    if (typeof target === 'function') return target() === element;
+    return element.matches(targetSelector(target));
 }
 
 /** A modal dialog, of any kind. */
@@ -79,14 +111,16 @@ const MODAL_DIALOG = '[role="dialog"][aria-modal="true"], [role="alertdialog"][a
 
 /**
  * Whether a modal dialog other than the walkthrough's own is open: one that
- * is not a walkthrough's callout, and does not hold `scope` (the dialog the
- * walkthrough runs in, if any). A confirm or a form opened over the step.
+ * is not a walkthrough's callout, does not hold `scope` (the dialog the
+ * walkthrough runs in, if any), and is not its declared `host`. A confirm or
+ * a form opened over the step.
  */
-export function modalOver(scope: HTMLElement | null): boolean {
+export function modalOver(scope: HTMLElement | null, host?: SpotlightTarget): boolean {
     const own = scope !== null && scope !== document.body ? scope : null;
     for (const dialog of Array.from(document.querySelectorAll(MODAL_DIALOG))) {
         if (dialog.closest('[data-spotlight]') !== null) continue;
         if (own !== null && dialog.contains(own)) continue;
+        if (host !== undefined && stillTarget(dialog, host)) continue;
         return true;
     }
     return false;
@@ -155,7 +189,7 @@ function pageElementAt(x: number, y: number): Element | null {
  * on a phone) is scrolled to show its top, under room for the callout of
  * `calloutHeight`, and the person scrolls the rest.
  */
-export function revealOnPage(control: HTMLElement, calloutHeight = 0): void {
+export function revealOnPage(control: HTMLElement, calloutHeight = 0, popups: readonly Element[] = []): void {
     if (fixedOrSticky(control) !== null) return;
     const scroller = scrollParentWithin(control, document.body);
     const scrollBy = (dy: number) => {
@@ -172,25 +206,34 @@ export function revealOnPage(control: HTMLElement, calloutHeight = 0): void {
         scrollBy(scrollToFit(hole, calloutHeight, visiblePageBand(), { min: -at, max: Math.max(0, end - at) }));
         return;
     }
-    // Optional call: jsdom has no scrollIntoView.
-    control.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
-    const bar = tabBarOffset();
-    if (bar > 0) {
-        const rect = control.getBoundingClientRect();
-        const limit = window.innerHeight - bar - CHROME_MARGIN;
-        if (rect.bottom > limit) scrollBy(Math.min(rect.bottom - limit, Math.max(0, rect.top - CHROME_MARGIN)));
+    if (popups.length > 0) {
+        // With its open list (a combobox's suggestions): the two together
+        // above the tab bar and below a header, the list as far as it fits,
+        // so its options can be tapped.
+        scrollBy(scrollToShow(extentOf(control, popups), boxOf(control), visiblePageBand(), CHROME_MARGIN));
+    } else {
+        // Optional call: jsdom has no scrollIntoView.
+        control.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+        const bar = tabBarOffset();
+        if (bar > 0) {
+            const rect = control.getBoundingClientRect();
+            const limit = window.innerHeight - bar - CHROME_MARGIN;
+            if (rect.bottom > limit) scrollBy(Math.min(rect.bottom - limit, Math.max(0, rect.top - CHROME_MARGIN)));
+        }
     }
-    const rect = control.getBoundingClientRect();
+    const parts = [control, ...popups];
+    const rect = extentOf(control, popups);
+    const rectBottom = rect.top + rect.height;
     const middle = rect.top + rect.height / 2;
     const x = rect.left + rect.width / 2;
-    for (const y of [middle, rect.bottom - 2, rect.top + 2]) {
+    for (const y of [middle, rectBottom - 2, rect.top + 2]) {
         const top = pageElementAt(x, y);
-        if (top === null || control.contains(top)) continue;
+        if (top === null || parts.some((part) => part.contains(top))) continue;
         const cover = fixedOrSticky(top);
         if (cover === null) continue;
         const box = cover.getBoundingClientRect();
         // In the lower half of the viewport: a bar from below; else a header from above.
-        if (box.top + box.height / 2 > window.innerHeight / 2) scrollBy(rect.bottom - box.top + CHROME_MARGIN);
+        if (box.top + box.height / 2 > window.innerHeight / 2) scrollBy(rectBottom - box.top + CHROME_MARGIN);
         else scrollBy(-(box.bottom - rect.top + CHROME_MARGIN));
         return;
     }
@@ -201,19 +244,24 @@ export function revealOnPage(control: HTMLElement, calloutHeight = 0): void {
  * part of the viewport it can be seen in: above it, below it or the phone tab
  * bar, or under fixed chrome. A control taller than that part never counts.
  */
-export function outOfPageBand(control: HTMLElement): boolean {
-    if (fixedOrSticky(control) !== null) return false;
+export function outOfPageBand(control: HTMLElement, popups: readonly Element[] = []): boolean {
+    // Taller than the page shows: the person scrolls it, and it is never
+    // scrolled back on them. The same band as for every other rule here.
+    if (fixedOrSticky(control) !== null || tallerThanPage(control)) return false;
+    const band = visiblePageBand();
+    if (popups.length > 0) return outOfBandWith(extentOf(control, popups), boxOf(control), band);
     const rect = control.getBoundingClientRect();
-    const bottom = window.innerHeight - tabBarOffset();
-    if (rect.height > bottom) return false;
-    if (rect.top < 0 || rect.bottom > bottom) return true;
+    if (rect.top < band.top || rect.bottom > band.bottom) return true;
     const top = pageElementAt(rect.left + rect.width / 2, rect.top + rect.height / 2);
     return top !== null && !control.contains(top) && fixedOrSticky(top) !== null;
 }
 
 /** The same for a control in a dialog's scrolling body. */
-export function outOfContainer(element: Element, container: HTMLElement): boolean {
+export function outOfContainer(element: Element, container: HTMLElement, popups: readonly Element[] = []): boolean {
     const box = container.getBoundingClientRect();
+    if (popups.length > 0) {
+        return outOfBandWith(extentOf(element, popups), boxOf(element), { top: box.top, bottom: box.bottom });
+    }
     const rect = element.getBoundingClientRect();
     if (rect.height > box.height) return false;
     return rect.top < box.top || rect.bottom > box.bottom;
@@ -225,14 +273,22 @@ export function outOfContainer(element: Element, container: HTMLElement): boolea
  * `calloutHeight`, fits above or below the control inside the body too,
  * rather than being drawn over it (`scrollToFit`).
  */
-export function scrollToFitCallout(control: HTMLElement, container: HTMLElement, calloutHeight: number): void {
-    const rect = control.getBoundingClientRect();
+export function scrollToFitCallout(
+    control: HTMLElement,
+    container: HTMLElement,
+    calloutHeight: number,
+    popups: readonly Element[] = [],
+): void {
+    const rect = extentOf(control, popups);
     const box = container.getBoundingClientRect();
     const range = {
         min: -container.scrollTop,
         max: Math.max(0, container.scrollHeight - container.clientHeight - container.scrollTop),
     };
     const hole = cutoutFor({ top: rect.top, left: rect.left, width: rect.width, height: rect.height });
+    // A control with an open list that leaves no room for the callout keeps
+    // the list in view: the callout goes past the body instead.
+    if (popups.length > 0 && hole.height + calloutHeight + CALLOUT_GAP + VIEWPORT_GUTTER > box.height) return;
     const scroll = scrollToFit(hole, calloutHeight, { top: box.top, bottom: box.bottom }, range);
     if (scroll !== 0) container.scrollTop += scroll;
 }

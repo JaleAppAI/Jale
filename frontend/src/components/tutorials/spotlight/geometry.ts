@@ -199,3 +199,30 @@ export function scrollToFit(hole: Box, calloutHeight: number, band: Band, range:
     }
     return best ?? 0;
 }
+
+/**
+ * How far to scroll (positive: the content moves up) so `extent` (a control
+ * with its open popup, a combobox's list) sits inside `band`, `margin` in
+ * from its edges. One taller than the band keeps `anchor` (the control) in,
+ * at the edge its popup opens away from, so as much of the popup as fits
+ * shows beside it. 0 when it is in already.
+ */
+export function scrollToShow(extent: Box, anchor: Box, band: Band, margin: number): number {
+    const top = band.top + margin;
+    const bottom = band.bottom - margin;
+    const extentBottom = extent.top + extent.height;
+    if (extent.height <= bottom - top) {
+        if (extent.top < top) return extent.top - top;
+        if (extentBottom > bottom) return extentBottom - bottom;
+        return 0;
+    }
+    // Opens below the control: the control at the top edge; above it: at the bottom edge.
+    if (extent.top >= anchor.top) return anchor.top - top;
+    return anchor.top + anchor.height - bottom;
+}
+
+/** Whether `extent` (or, when it is taller than `band`, its `anchor`) runs out of `band`. */
+export function outOfBandWith(extent: Box, anchor: Box, band: Band): boolean {
+    const box = extent.height <= band.bottom - band.top ? extent : anchor;
+    return box.top < band.top || box.top + box.height > band.bottom;
+}
