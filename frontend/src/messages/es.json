@@ -1382,7 +1382,8 @@
       "account_not_ready": "Tu cuenta todavía se está preparando. Cierra sesión, vuelve a iniciar sesión e inténtalo de nuevo.",
       "already_applied": "Ya te postulaste a este trabajo.",
       "server_error": "No pudimos enviar esta postulación ahora. Inténtalo de nuevo en unos minutos.",
-      "apply_failed": "No pudimos enviar esta postulación. Revisa tu perfil y tus documentos, e inténtalo de nuevo."
+      "apply_failed": "No pudimos enviar esta postulación. Revisa tu perfil y tus documentos, e inténtalo de nuevo.",
+      "job_paused": "El empleador pausó este trabajo. Vuelve a revisarlo más tarde."
     },
     "not_found": {
       "title": "Trabajo no encontrado",
@@ -2745,7 +2746,7 @@
           },
           "gate_years": {
             "title": "Años de experiencia",
-            "body": "Opcional. Escribe cuántos años has trabajado en Años de experiencia, o déjalo como está. Un número ya guardado se puede cambiar pero no borrar (usa 0 si no tienes).",
+            "body": "Opcional. Escribe cuántos años has trabajado en Años de experiencia, o déjalo como está. Si ya hay un número guardado, cámbialo pero no lo borres (usa 0 si no tienes).",
             "wait": "Escribe un número (0 si no tienes) para seguir."
           },
           "gate_save": {
@@ -3040,7 +3041,7 @@
           },
           "years": {
             "title": "Años de experiencia",
-            "body": "Opcional. Escribe cuántos años has trabajado, en número entero de 0 a 80, o déjalo como está. Un número ya guardado se puede cambiar pero no borrar (usa 0 si no tienes).",
+            "body": "Opcional. Escribe cuántos años has trabajado, en número entero de 0 a 80, o déjalo como está. Si ya hay un número guardado, cámbialo pero no lo borres (usa 0 si no tienes).",
             "wait": "Usa un número entero de 0 a 80 para continuar."
           },
           "location": {

@@ -311,13 +311,22 @@ describe('worker job page — a greyed Apply says why', () => {
         expect(button.parentElement!.contains(reason)).toBe(true);
     });
 
-    it('names it for a paused job too, which has no notice at the top', () => {
+    it('says a paused job is paused, not closed (it has no notice at the top)', () => {
         seed = fullJob({ status: 'paused' });
         renderIntl(<WorkerJobDetailPage />);
         const button = applyButton();
         expect(button).toBeDisabled();
-        expect(screen.getAllByText(t('errors.job_closed'))).toHaveLength(1);
-        expect(document.getElementById(button.getAttribute('aria-describedby')!)).toHaveTextContent(t('errors.job_closed'));
+        const reason = document.getElementById(button.getAttribute('aria-describedby')!);
+        expect(reason).toHaveTextContent('The employer paused this job. Check back later.');
+        expect(screen.queryByText(t('errors.job_closed'))).toBeNull();
+    });
+
+    it('says a paused job is paused in Spanish, with tú', () => {
+        seed = fullJob({ status: 'paused' });
+        renderIntl(<WorkerJobDetailPage />, 'es');
+        const button = screen.getByRole('button', { name: message('worker_job_detail.apply', 'es') });
+        expect(document.getElementById(button.getAttribute('aria-describedby')!))
+            .toHaveTextContent('El empleador pausó este trabajo. Vuelve a revisarlo más tarde.');
     });
 
     it('says it in Spanish', () => {

@@ -1125,13 +1125,14 @@ export default function WorkerJobDetailPage() {
                           ) : (
                             /* Why Apply is greyed, said beside it: the notice
                                at the top of the page may be screens away, and
-                               a paused job has no notice at all. */
+                               a paused job has no notice at all (and is not
+                               closed: the employer may open it again). */
                             <p
                               id={closedReasonId}
                               data-guide="apply.closed"
                               className="text-xs font-medium text-[var(--jale-ink-2)] max-sm:text-center"
                             >
-                              {t('errors.job_closed')}
+                              {job.status === 'paused' ? t('errors.job_paused') : t('errors.job_closed')}
                             </p>
                           )}
                         </div>
