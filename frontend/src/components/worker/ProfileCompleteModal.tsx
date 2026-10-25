@@ -188,17 +188,21 @@ export function ProfileCompleteModal(props: {
   const requiredError = tFields('errors.required');
 
   return (
+    // `data-guide="apply.gate*"`: the hooks the applying guide
+    // (`components/tutorials/guides/worker-apply.ts`) points at, from the gate
+    // through "Save and apply" to the apply screen it opens.
     <Modal
       open={open}
       onClose={handleClose}
       title={t('title')}
       size="sm"
+      data-guide="apply.gate"
       footer={
         <>
           <Button variant="outline" onClick={handleClose} disabled={submitting}>
             {t('cancel')}
           </Button>
-          <Button onClick={submit} loading={submitting} loadingLabel={tCommon('loading')}>
+          <Button onClick={submit} loading={submitting} loadingLabel={tCommon('loading')} data-guide="apply.gate.save">
             {t('submit')}
           </Button>
         </>
@@ -214,6 +218,7 @@ export function ProfileCompleteModal(props: {
         >
           <Input
             id={nameId}
+            data-guide="apply.gate.name"
             value={fullName}
             onChange={(e) => setFullName(e.target.value)}
             aria-invalid={missingFields.includes('full_name') || undefined}
@@ -228,6 +233,7 @@ export function ProfileCompleteModal(props: {
         >
           <Input
             id={skillsId}
+            data-guide="apply.gate.skills"
             value={skills}
             onChange={(e) => setSkills(e.target.value)}
             aria-invalid={missingFields.includes('skills') || undefined}
@@ -242,6 +248,7 @@ export function ProfileCompleteModal(props: {
         >
           <Select
             id={availabilityId}
+            data-guide="apply.gate.availability"
             value={availability}
             onChange={(e) => setAvailability(isAvailability(e.target.value) ? e.target.value : '')}
             aria-invalid={missingFields.includes('availability') || undefined}
@@ -263,6 +270,7 @@ export function ProfileCompleteModal(props: {
         >
           <Input
             id={locationId}
+            data-guide="apply.gate.location"
             value={location}
             onChange={(e) => setLocation(e.target.value)}
             aria-invalid={missingFields.includes('location') || undefined}
@@ -273,6 +281,7 @@ export function ProfileCompleteModal(props: {
         <Field id={yearsId} label={t('years_experience')}>
           <Input
             id={yearsId}
+            data-guide="apply.gate.years"
             type="number"
             inputMode="numeric"
             min={0}

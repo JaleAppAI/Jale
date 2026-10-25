@@ -2689,7 +2689,7 @@
         "steps": {
           "from_gate": {
             "title": "Tu perfil está guardado",
-            "body": "Todavía no te has postulado. Contesta abajo y luego {input, select, touch {toca} other {haz clic en}} Enviar postulación para postularte."
+            "body": "Todavía no te has postulado. Termina en esta pantalla y luego {input, select, touch {toca} other {haz clic en}} Enviar postulación para postularte."
           },
           "answer_first": {
             "title": "Contesta con tus propias palabras",
@@ -2726,6 +2726,35 @@
             "title": "Tus respuestas se guardan",
             "body": "Lo que escribiste se queda aquí mientras estés en esta página. {input, select, touch {Toca} other {Haz clic en}} este botón cuando quieras terminar y enviar.",
             "wait": "{input, select, touch {Toca} other {Haz clic en}} el botón para volver a tu postulación."
+          },
+          "gate_name": {
+            "title": "Tu nombre",
+            "body": "Los empleadores necesitan algunos datos antes de que puedas postularte. Escribe tu nombre completo en Nombre completo.",
+            "wait": "Escribe tu nombre para seguir."
+          },
+          "gate_skills": {
+            "title": "Tus habilidades",
+            "body": "Escribe lo que sabes hacer en Habilidades (separadas por comas), con una coma entre cada una, como “marcos, tablaroca”.",
+            "wait": "Agrega al menos una habilidad para seguir."
+          },
+          "gate_availability": {
+            "title": "¿Cuándo puedes trabajar?",
+            "body": "Elige Tiempo completo, Medio tiempo, Fines de semana o Flexible en Disponibilidad.",
+            "wait": "Elige una para seguir."
+          },
+          "gate_location": {
+            "title": "Dónde vives",
+            "body": "Escribe tu ciudad en Ubicación, como “El Paso, TX”.",
+            "wait": "Escribe tu ciudad para seguir."
+          },
+          "gate_years": {
+            "title": "Años de experiencia",
+            "body": "Opcional. Escribe cuántos años has trabajado en Años de experiencia, o déjalo como está."
+          },
+          "gate_save": {
+            "title": "Guarda tu perfil",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Guardar y postular. Guarda tu perfil y abre tu postulación; la envías en la siguiente pantalla.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Guardar y postular para seguir."
           }
         }
       }

@@ -2689,7 +2689,7 @@
         "steps": {
           "from_gate": {
             "title": "Your profile is saved",
-            "body": "You haven’t applied yet. Answer below, then {input, select, touch {tap} other {click}} Send application to apply."
+            "body": "You haven’t applied yet. Finish on this screen, then {input, select, touch {tap} other {click}} Send application to apply."
           },
           "answer_first": {
             "title": "Answer in your own words",
@@ -2726,6 +2726,35 @@
             "title": "Your answers are kept",
             "body": "What you typed stays here while you’re on this page. {input, select, touch {Tap} other {Click}} this button when you’re ready to finish and send.",
             "wait": "{input, select, touch {Tap} other {Click}} the button to go back to your application."
+          },
+          "gate_name": {
+            "title": "Your name",
+            "body": "Employers need a few details before you can apply. Type your full name in Full name.",
+            "wait": "Type your name to continue."
+          },
+          "gate_skills": {
+            "title": "Your skills",
+            "body": "Type what you can do in Skills (comma separated), with a comma between each one, like “framing, drywall”.",
+            "wait": "Add at least one skill to continue."
+          },
+          "gate_availability": {
+            "title": "When can you work?",
+            "body": "Pick Full-time, Part-time, Weekends or Flexible in Availability.",
+            "wait": "Pick one to continue."
+          },
+          "gate_location": {
+            "title": "Where you live",
+            "body": "Type your city in Location, like “El Paso, TX”.",
+            "wait": "Type your city to continue."
+          },
+          "gate_years": {
+            "title": "Years of experience",
+            "body": "Optional. Type how many years you’ve worked in Years of experience, or leave it as it is."
+          },
+          "gate_save": {
+            "title": "Save your profile",
+            "body": "{input, select, touch {Tap} other {Click}} Save and apply. It saves your profile and opens your application; you send it on the next screen.",
+            "wait": "{input, select, touch {Tap} other {Click}} Save and apply to go on."
           }
         }
       }

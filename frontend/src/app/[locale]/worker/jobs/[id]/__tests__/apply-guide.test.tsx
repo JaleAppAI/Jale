@@ -14,13 +14,16 @@ import { recordsPosted, settle, workerProviders } from '@/components/tutorials/c
 import { WorkerTourGate } from '@/components/tutorials/WorkerTourGate';
 
 /*
- * W2's step-by-step guide over the REAL job page, the REAL apply screen and
- * the real progress store and guide host: it plays inside the apply screen as
- * it opens, on every way in (Apply, the profile gate's save, an `?apply=1`
- * arrival), and walks the branches: questions or none, the 1 to 1000
- * character rule, "documents come later", Send, applied, a failed send, a job
- * that closed meanwhile, and "Back to the job" before sending. After an
- * `?apply=1` arrival the app tour waits for the guide and never overlaps it.
+ * W2's step-by-step guide over the REAL job page, the REAL profile gate, the
+ * REAL apply screen and the real progress store and guide host: it plays
+ * where applying starts (the gate for an incomplete profile, carrying on
+ * through "Save and apply" into the apply screen; otherwise the apply screen
+ * as it opens), on every way in (Apply, an `?apply=1` arrival), and walks the
+ * branches: the gate's fields, a failed or cancelled gate, questions or none,
+ * the 1 to 1000 character rule, "documents come later", Send, applied, a
+ * failed send, a job that closed meanwhile, and "Back to the job" before
+ * sending. After an `?apply=1` arrival the app tour waits for the guide and
+ * never overlaps it.
  */
 
 const { worker, profile } = vi.hoisted(() => ({
@@ -54,16 +57,6 @@ vi.mock('@/components/layout/AppShell', () => ({
 }));
 vi.mock('@/components/PayReferenceHint', () => ({ PayReferenceHint: () => null }));
 vi.mock('@/components/worker/ShareJobPanel', () => ({ ShareJobPanel: () => null }));
-// The gate: its save is all this suite needs from it.
-vi.mock('@/components/worker/ProfileCompleteModal', () => ({
-    ProfileCompleteModal: ({ open, onSubmit }: { open: boolean; onSubmit: (values: unknown) => Promise<void> }) => (open ? (
-        <div role="dialog" aria-label="Complete your profile">
-            <button type="button" onClick={() => void onSubmit({ full_name: 'Test Worker', skills: ['framing'], availability: 'full_time', location: 'San Antonio, TX' })}>
-                Save and apply
-            </button>
-        </div>
-    ) : null),
-}));
 vi.mock('@/lib/api', async (importOriginal) => {
     const harness = await import('@/lib/tutorials/__tests__/harness');
     return {
@@ -108,9 +101,12 @@ vi.mock('@/hooks/usePageData', async () => {
     };
 });
 
+import { updateWorkerProfile } from '@/lib/api/worker';
 import WorkerJobDetailPage from '../page';
 
 const COMPLETE_PROFILE = { full_name: 'Test Worker', skills: ['framing'], availability: 'full_time', location: 'San Antonio, TX' };
+/** What the gate opens for: no skills, no availability, no location (the name is there). */
+const INCOMPLETE_PROFILE = { full_name: 'Test Worker', skills: [], availability: null, location: null, years_experience: null };
 
 function job(over: Partial<JobDetail> = {}): JobDetail {
     return {
@@ -261,19 +257,100 @@ describe('W2 guide: applying, inside the apply screen', () => {
         expect(worker.applyToJob).toHaveBeenCalledWith(expect.any(String), 'job-1', { p1: 'Driveways and slabs.', p2: 'Monday' });
     });
 
-    it('after the profile gate, says the profile is saved and nothing is sent yet', async () => {
-        profile.current = { full_name: 'Test Worker', skills: [], availability: null, location: null };
+    it('walks the profile gate, then "Save and apply", then the apply screen through Send', async () => {
+        profile.current = INCOMPLETE_PROFILE;
         render(<WorkerJobDetailPage />, { wrapper: workerProviders() });
         await settle();
         fireEvent.click(screen.getByRole('button', { name: en.worker_job_detail.apply }));
-        fireEvent.click(await screen.findByRole('button', { name: 'Save and apply' }));
         await startGuide();
 
+        // The name is there, so the gate starts at the skills; the screen's steps are counted ahead.
+        await expectStep('gate_skills');
+        expect(callout()).toHaveTextContent('Applying · 1 of 10');
+        expect(guideButton('Next')).toBeDisabled();
+        fireEvent.change(guided('apply.gate.skills'), { target: { value: ' , ' } });
+        expect(guideButton('Next')).toBeDisabled();
+        fireEvent.change(guided('apply.gate.skills'), { target: { value: 'framing, drywall' } });
+        act(() => guideButton('Next').click());
+
+        // An unset availability starts empty and holds the step until one is picked.
+        await expectStep('gate_availability');
+        expect((guided('apply.gate.availability') as HTMLSelectElement).value).toBe('');
+        expect(guideButton('Next')).toBeDisabled();
+        fireEvent.change(guided('apply.gate.availability'), { target: { value: 'weekends' } });
+        act(() => guideButton('Next').click());
+
+        await expectStep('gate_location');
+        expect(guideButton('Next')).toBeDisabled();
+        fireEvent.change(guided('apply.gate.location'), { target: { value: 'San Antonio, TX' } });
+        act(() => guideButton('Next').click());
+
+        await expectStep('gate_years');
+        expect(guideButton('Next')).toBeEnabled();
+        act(() => guideButton('Next').click());
+
+        await expectStep('gate_save');
+        expect(within(callout()!).getByText(/you send it on the next screen/)).toBeInTheDocument();
+        await act(async () => { guided('apply.gate.save').click(); });
+
+        // Saved, not applied: the screen says so, and Send is still to come.
         await expectStep('from_gate');
+        expect(updateWorkerProfile).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+            skills: ['framing', 'drywall'], availability: 'weekends', location: 'San Antonio, TX',
+        }));
+        expect(vi.mocked(updateWorkerProfile).mock.calls[0][1]).not.toHaveProperty('years_experience');
         expect(within(callout()!).getByText(/Send application to apply/)).toBeInTheDocument();
         expect(worker.applyToJob).not.toHaveBeenCalled();
         act(() => guideButton('Next').click());
         await expectStep('no_questions');
+        act(() => guideButton('Next').click());
+        await expectStep('later');
+        act(() => guideButton('Next').click());
+        await expectStep('send');
+        act(() => guided('apply.send').click());
+        await expectStep('sent');
+        expect(callout()).toHaveTextContent('Applying · 10 of 10');
+        expect(worker.applyToJob).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the Save and apply step up when the profile save fails, with the gate and its error', async () => {
+        // Only the name is missing, so the gate opens on it and the rest is already filled in.
+        profile.current = { full_name: '', skills: ['framing'], availability: 'part_time', location: 'Austin, TX', years_experience: null };
+        vi.mocked(updateWorkerProfile).mockRejectedValueOnce(new ApiError(500, 'internal'));
+        render(<WorkerJobDetailPage />, { wrapper: workerProviders() });
+        await settle();
+        fireEvent.click(screen.getByRole('button', { name: en.worker_job_detail.apply }));
+        await startGuide();
+        await expectStep('gate_name');
+        fireEvent.change(guided('apply.gate.name'), { target: { value: 'Ana Ruiz' } });
+        act(() => guideButton('Next').click());
+        for (const step of ['gate_skills', 'gate_availability', 'gate_location', 'gate_years']) {
+            await expectStep(step);
+            act(() => guideButton('Next').click());
+        }
+        await expectStep('gate_save');
+        await act(async () => { guided('apply.gate.save').click(); });
+        await settle();
+        expect(updateWorkerProfile).toHaveBeenCalledTimes(1);
+        expect(document.querySelector('[data-guide="apply.gate"]')).not.toBeNull();
+        expect(callout()?.getAttribute('data-step')).toBe('gate_save');
+        expect(document.querySelector('[data-guide="apply.screen"]')).toBeNull();
+    });
+
+    it('ends when the gate is closed without saving, with no step left over', async () => {
+        profile.current = INCOMPLETE_PROFILE;
+        render(<WorkerJobDetailPage />, { wrapper: workerProviders() });
+        await settle();
+        fireEvent.click(screen.getByRole('button', { name: en.worker_job_detail.apply }));
+        await startGuide();
+        await expectStep('gate_skills');
+        act(() => screen.getByRole('button', { name: en.worker_profile.complete_modal.cancel }).click());
+
+        await vi.waitFor(() => expect(callout()).toBeNull(), { timeout: 3000 });
+        await settle();
+        expect(callout()).toBeNull();
+        expect(updateWorkerProfile).not.toHaveBeenCalled();
+        expect(worker.applyToJob).not.toHaveBeenCalled();
     });
 
     it('keeps the Send step up when the send fails, with the screen and its error', async () => {
@@ -324,6 +401,15 @@ describe('W2 guide: applying, inside the apply screen', () => {
 });
 
 describe('W2 guide: ?apply=1 after onboarding, and the app tour', () => {
+    it('starts at the gate when the arrival finds the profile incomplete', async () => {
+        profile.current = INCOMPLETE_PROFILE;
+        visit('?apply=1');
+        render(<WorkerJobDetailPage />, { wrapper: workerProviders() });
+        await startGuide();
+        await expectStep('gate_skills');
+        expect(document.querySelector('[data-guide="apply.gate"]')).not.toBeNull();
+    });
+
     it('plays the guide inside the flow the arrival opens, and the tour only after it, never both', async () => {
         markWorkerTourDue(accountKeyFromIdToken(auth.state.idToken));
         visit('?apply=1');

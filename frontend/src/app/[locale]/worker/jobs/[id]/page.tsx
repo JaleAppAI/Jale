@@ -305,13 +305,14 @@ export default function WorkerJobDetailPage() {
    * that read answers `done` is `undefined`, and a failed read leaves it
    * there: no signal means the guide does not open on its own.
    *
-   * The guide plays INSIDE the apply screen, once per opening of it: from
-   * the Apply button, from the profile gate's save and from an `?apply=1`
-   * arrival alike, so a worker sees it at the moment they start applying, and
+   * The guide plays where applying starts, once per start: in the profile
+   * gate when Apply (or an `?apply=1` arrival) opens it, carrying on through
+   * "Save and apply" into the apply screen; otherwise in the apply screen as
+   * it opens. So a worker sees it at the moment they start applying, and
    * never as slides over the job page first. The slides stay in Help as the
-   * overview. An `?apply=1` arrival (or a quick tap) can open the screen
-   * before this page knows `done` or the progress store has read; the ask
-   * then waits for both, while the screen is still up (`guideDueRef`).
+   * overview. An `?apply=1` arrival (or a quick tap) can open the gate or the
+   * screen before this page knows `done` or the progress store has read; the
+   * ask then waits for both, while its host is still up (`guideDueRef`).
    */
   const [hasApplied, setHasApplied] = useState<boolean | undefined>(undefined);
   const signedIn = Boolean(idToken);
@@ -328,18 +329,25 @@ export default function WorkerJobDetailPage() {
   }, [signedIn]);
   const applyTutorial = useTutorial('worker_apply', { done: hasApplied, walkthrough: true });
   const progressStatus = useTutorialProgress()?.status;
-  /** The apply screen opened and the guide has not been asked for yet. */
+  /** The gate or the apply screen opened and the guide has not been asked for yet. */
   const guideDueRef = useRef(false);
+  /** The guide was asked for in the gate: it carries on into the screen the gate opens. */
+  const guideAskedAtGateRef = useRef(false);
   useEffect(() => {
-    if (viewMode !== 'apply') {
+    const hostUp = viewMode === 'apply' || modalOpen;
+    if (!hostUp) {
       guideDueRef.current = false;
       return;
     }
     if (!guideDueRef.current || hasApplied === undefined || progressStatus === 'loading') return;
     guideDueRef.current = false;
-    // The screen is already up: it is the host the guide plays in.
+    guideAskedAtGateRef.current = modalOpen && viewMode !== 'apply';
+    // The gate or the screen is already up: it is the host the guide plays in.
     applyTutorial.runWithHost(() => {});
-  }, [viewMode, hasApplied, progressStatus, applyTutorial]);
+  }, [viewMode, modalOpen, hasApplied, progressStatus, applyTutorial]);
+
+  /** The worker went "Back to the job" from the apply screen without sending. */
+  const [leftApplyScreen, setLeftApplyScreen] = useState(false);
 
   // One shared vault fetch, refetched on demand via `onVaultChanged` (after a
   // successful upload from inside `ApplyFlow`) and whenever the auth token
@@ -403,8 +411,11 @@ export default function WorkerJobDetailPage() {
    */
   function openApplyFlow(fromGate = false) {
     setCameFromGate(fromGate);
-    // The screen first; the effect above then asks for the guide inside it.
-    guideDueRef.current = true;
+    setLeftApplyScreen(false);
+    // The screen first; the effect above then asks for the guide inside it,
+    // unless it was asked for in the gate this screen comes from.
+    guideDueRef.current = !(fromGate && guideAskedAtGateRef.current);
+    guideAskedAtGateRef.current = false;
     setViewMode('apply');
   }
 
@@ -416,6 +427,8 @@ export default function WorkerJobDetailPage() {
       const profile = await fetchProfile();
       if (!profileIsComplete(profile)) {
         setProfilePrefill(profile);
+        // The gate first; the effect above then asks for the guide inside it.
+        guideDueRef.current = true;
         setModalOpen(true);
         return;
       }
@@ -433,6 +446,7 @@ export default function WorkerJobDetailPage() {
    * off. */
   function handleBackToDetails() {
     setViewMode('details');
+    setLeftApplyScreen(true);
     // Clear whatever the banner slot last held (a stale danger message from
     // before the flow opened, or a leftover success/info note) before
     // possibly writing the progress-saved note -- otherwise backing out with
@@ -1078,6 +1092,11 @@ export default function WorkerJobDetailPage() {
                         <div className="flex flex-col items-end gap-1.5 max-sm:w-full max-sm:items-stretch">
                           <Button
                             data-guide="apply.button"
+                            // For the applying guide: how many questions the apply
+                            // screen will ask (counted from the gate), and whether
+                            // the worker came back here from it without sending.
+                            data-questions={(job.pre_application_prompts ?? []).length}
+                            data-left={leftApplyScreen ? '' : undefined}
                             onClick={handleApplyClick}
                             disabled={!canApply}
                             aria-describedby={canApply ? undefined : closedReasonId}
@@ -1122,7 +1141,10 @@ export default function WorkerJobDetailPage() {
               <ProfileCompleteModal
                 open={modalOpen}
                 initial={profilePrefill ?? undefined}
-                onClose={() => setModalOpen(false)}
+                onClose={() => {
+                  guideAskedAtGateRef.current = false;
+                  setModalOpen(false);
+                }}
                 onSubmit={handleModalSubmit}
               />
             ) : null}

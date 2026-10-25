@@ -257,15 +257,19 @@ describe('worker job page — the W2 guide', () => {
         expect(tutorial.handle.maybeAutoOpen).not.toHaveBeenCalled();
     });
 
-    it('asks for it after the profile gate, and marks the screen as opened by the gate', async () => {
+    it('asks for it as the profile gate opens, and carries it into the screen the gate opens', async () => {
         getApplications.mockResolvedValue(pageOf([]));
         apiFetch.mockResolvedValue(profileResponse({ full_name: 'Test Worker', skills: [], availability: null, location: null }));
         seed = job();
         renderIntl(<WorkerJobDetailPage />);
 
         fireEvent.click(screen.getByRole('button', { name: message('worker_job_detail.apply') }));
-        fireEvent.click(await screen.findByRole('button', { name: 'save and apply' }));
+        const save = await screen.findByRole('button', { name: 'save and apply' });
+        // Asked in the gate, where applying starts.
+        await vi.waitFor(() => expect(tutorial.handle.runWithHost).toHaveBeenCalledTimes(1));
+        fireEvent.click(save);
         expect(await screen.findByTestId('apply-flow')).toHaveAttribute('data-from-gate');
+        // The same play carries on into the screen: not asked a second time.
         expect(tutorial.handle.runWithHost).toHaveBeenCalledTimes(1);
     });
 
