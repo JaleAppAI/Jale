@@ -42,7 +42,9 @@ export type WalkthroughGuide = {
     /**
      * What the guide runs in, when its page opens that together with the
      * guide (the post-job wizard, `{ guide: 'post.wizard' }`). Closed before
-     * the first step's control shows, the play ends at once, with no outcome.
+     * the first step's control shows, the play ends at once, with no outcome;
+     * closed later, it ends at once too, completed on the last step and
+     * skipped before it.
      */
     host?: SpotlightTarget;
 };

@@ -6,7 +6,7 @@ import { createPortal } from 'react-dom';
 import { useTranslations } from 'next-intl';
 import type { TutorialOutcome } from '@/lib/api/tutorials';
 import { useOverlayPresence } from '@/lib/tutorials/overlay';
-import { focusableWithin } from '@/components/ui/modal';
+import { focusableWithin, inOpenPopupOwner } from '@/components/ui/modal';
 import { prefersReducedMotion } from '../scene/motion';
 import { DoneCard, IntroCard, StepCallout, type StepPrimary } from './cards';
 import { clipToBand, cutoutFor, placeCallout, unionBox, type Band, type Box, type Placement } from './geometry';
@@ -17,11 +17,11 @@ import {
     openPopupsOf,
     outOfContainer,
     outOfPageBand,
-    ownsOpenPopup,
     revealOnPage,
     scrollIntoContainer,
     scrollParentWithin,
     scrollToFitCallout,
+    stillTarget,
     tallerThanPage,
     visiblePageBand,
 } from './scope';
@@ -95,6 +95,8 @@ import {
  * that step's control or the next step's, the lazy way (up to `waitMs`), and
  * carries on with whichever shows; if neither does, it ends as skipped. The
  * intro ends as skipped with its dialog; the closing card moves to the page.
+ * A walkthrough with a declared `host` (the post-job wizard) does not cross:
+ * it ends when that host closes, completed on its last step, else skipped.
  * Only on the page does the walkthrough hold the page's scroll, by a property
  * no dialog touches (`./page-lock`), so the two never undo each other.
  *
@@ -148,7 +150,9 @@ export type SpotlightProps = {
      * Lazy: what the walkthrough runs in, when its caller opens it together
      * with the walkthrough (the post-job wizard). If it shows and goes away
      * before the first step's control does, the walkthrough is unavailable at
-     * once rather than after `waitMs`.
+     * once rather than after `waitMs`; once it has started, it ends when the
+     * host goes (completed on its last step, skipped before). A dialog that
+     * is the host is never another dialog on top of it.
      */
     host?: SpotlightTarget;
 };
@@ -576,10 +580,11 @@ export function Spotlight({
 
     // Whether the step's own condition already held when it was reached: an
     // `auto` step someone came Back to does not move on by itself until they
-    // change their answer.
+    // change their answer. An `action` step's condition is a fact about the
+    // page (the wizard on its next screen): one that holds already is done.
     useEffect(() => {
         const control = step ? controlOf(step) : null;
-        metRef.current = step?.advanceWhen && control ? step.advanceWhen(control) : false;
+        metRef.current = step?.mode !== 'action' && step?.advanceWhen && control ? step.advanceWhen(control) : false;
     }, [step, controlOf]);
 
     // THE DIALOG WENT AWAY under the walkthrough (closed by the step's own
@@ -625,12 +630,39 @@ export function Spotlight({
         };
     }, [running, end]);
 
+    // ITS HOST CLOSED: a walkthrough that runs in a host opened with it (the
+    // post-job wizard, `host`) is over when that host goes, at once:
+    // completed if it had reached its last step, skipped otherwise. It does
+    // not wait to carry on in the next one. A walkthrough with no declared
+    // host follows its controls between the page and dialogs instead.
+    const hasHost = host !== undefined;
+    useEffect(() => {
+        if (!lazy || !running || !hasHost) return;
+        const check = () => {
+            const declared = hostRef.current;
+            if (declared === undefined || endedRef.current) return;
+            // Only a host that was there goes away (one never seen is no host).
+            if (resolveTarget(declared) !== null) {
+                hostSeenRef.current = true;
+                return;
+            }
+            if (!hostSeenRef.current) return;
+            const now = phaseRef.current;
+            const last = now.kind === 'done' || (now.kind === 'step' && isLastApplicable(steps, now.index));
+            end(last ? 'completed' : 'skipped');
+        };
+        check();
+        const observer = new MutationObserver(check);
+        observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+        return () => observer.disconnect();
+    }, [lazy, running, hasHost, steps, end]);
+
     // ANOTHER DIALOG ON TOP: asked on every dialog coming or going, and when
     // the walkthrough moves (into a dialog, it is no longer another's).
     useEffect(() => {
         if (!running) return;
         const check = () => {
-            const over = modalOver(scopeRef.current);
+            const over = modalOver(scopeRef.current, hostRef.current);
             suspendedRef.current = over;
             setSuspended(over);
         };
@@ -721,7 +753,7 @@ export function Spotlight({
                 // An open list in the control closes first. The control gets
                 // the key; marking it handled keeps the dialog underneath
                 // from closing on it (`Modal` skips a handled Escape).
-                if (ownsOpenPopup(document.activeElement)) {
+                if (inOpenPopupOwner(event.target) || inOpenPopupOwner(document.activeElement)) {
                     event.preventDefault();
                     return;
                 }
@@ -956,10 +988,14 @@ export function Spotlight({
             advanceFrom(at);
             return true;
         };
+        // Gone from the page, no longer drawn, or no longer what the step
+        // names (the wizard's footer button, kept across screens, takes
+        // another hook): the step has lost its control.
+        const lost = () => !control.isConnected || !isRendered(control) || !stillTarget(control, current.target);
         // Asked at once too: the control may have gone, or the condition
         // come to hold, in the render that set this watcher up (or while
         // another dialog was on top).
-        if (!control.isConnected || !isRendered(control)) {
+        if (lost()) {
             lose(at, current, control);
             return;
         }
@@ -969,7 +1005,7 @@ export function Spotlight({
             if (now.kind !== 'step' || now.index !== at || controlRef.current !== control) return;
             // The walkthrough's own redraws are not the page changing.
             if (root && records.every((record) => root.contains(record.target))) return;
-            if (!control.isConnected || !isRendered(control)) {
+            if (lost()) {
                 lose(at, current, control);
                 return;
             }
