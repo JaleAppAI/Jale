@@ -26,6 +26,8 @@ import {
 import { clearPendingReferral, readPendingReferral, validateJobId } from '@/lib/referral-return';
 import { tradeLabel } from '@/lib/worker-vocab';
 import { useTutorial } from '@/lib/tutorials/use-tutorial';
+import { markWorkerTourDue } from '@/lib/tutorials/tour-marker';
+import { accountKeyFromIdToken } from '@/lib/account-key';
 import { Button } from '@/components/ui/button';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { OnboardingShell, type LanguageChoice } from './OnboardingHeader';
@@ -340,6 +342,10 @@ export function OnboardingFlow({
         // Done is where the stash's job is used up, whichever way the worker
         // goes. (The mid-flow exits below leave it alone on purpose.)
         clearPendingReferral();
+        // Onboarding is over: the app tour is due for this account, and the
+        // tour gate plays it on the first worker page where nothing else is up
+        // (after the apply flow, if that is where the worker goes now).
+        markWorkerTourDue(accountKeyFromIdToken(token));
         const applyTo = action === 'apply' && referredJob?.open ? validateJobId(referredJob.id) : null;
         if (applyTo) {
             // Straight into the apply flow: the job page opens it from `apply=1`

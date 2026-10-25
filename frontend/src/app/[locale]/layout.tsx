@@ -15,6 +15,7 @@ import { WorkerAttentionProvider } from "@/contexts/WorkerAttentionContext";
 import { ReportProblemProvider } from "@/contexts/ReportProblemContext";
 import { OverlayPresenceProvider } from "@/lib/tutorials/overlay";
 import { TutorialProgressProvider } from "@/lib/tutorials/progress";
+import { WorkerTourGate } from "@/components/tutorials/WorkerTourGate";
 
 const lexend = Lexend({
   subsets: ["latin"],
@@ -127,6 +128,10 @@ export default async function RootLayout({
                               {children}
                             </ConversationDrawerProvider>
                           </PostJobProvider>
+                          {/* Plays the worker app tour once, at the first
+                              worker page after onboarding where nothing else
+                              is up. Renders nothing. */}
+                          <WorkerTourGate />
                         </TutorialProgressProvider>
                       </WorkerAttentionProvider>
                     </UnreadMessagesProvider>

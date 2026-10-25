@@ -51,6 +51,7 @@ import {
 } from '@/lib/api/worker';
 import { visibleJobStatusBadge } from '@/lib/jobStatusDisplay';
 import { useTutorial } from '@/lib/tutorials/use-tutorial';
+import { useOverlayPresence } from '@/lib/tutorials/overlay';
 
 export const dynamic = 'force-dynamic';
 
@@ -196,6 +197,12 @@ export default function WorkerJobDetailPage() {
   const [applyState, applyDispatch] = useReducer(applyFlowReducer, undefined, initialApplyFlowState);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<ApplyFlowSubmitError | null>(null);
+  // An application in progress -- the profile check in flight, then the
+  // in-page flow -- counts as an open overlay, like the profile gate's dialog
+  // does: nothing auto-opens over a worker who is applying (the app tour
+  // after onboarding waits for it). The in-page takeover is not a Modal, so
+  // it reports itself here.
+  useOverlayPresence(applying || viewMode === 'apply');
   // The vault fetch now serves `WhatYouNeedPanel` alone: stage 1 asks for no
   // documents, so `ApplyFlow` no longer needs it. `null` means "failed or not
   // yet loaded", which the panel already degrades on.
