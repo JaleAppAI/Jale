@@ -25,6 +25,7 @@ import {
     WORKER_TOUR_IDS,
     getTutorialProgress,
     recordTutorialOutcome,
+    updateTutorialSettings,
     type ProgressId,
     type TourId,
     type TutorialId,
@@ -67,6 +68,12 @@ import type { TutorialSceneProps } from './types';
  *    (`./storage`, account-scoped), plus an in-memory copy for when storage is
  *    unavailable or the account cannot be read. The save is never retried.
  *  - Nothing is ever written on render.
+ *
+ * THE GUIDE SETTINGS (K1-v2) come with the same read and are kept with the
+ * records, so they go when the records go. A change shows at once and is
+ * then saved; while any save for the account is in flight the screen keeps
+ * the latest change, and once none is, it shows what the server last
+ * confirmed, so a save that failed is put back.
  *
  * PLAYS. The store also renders the ONE tutorial player, and owns the rule
  * that keeps a single dialog on screen (ruling R4):
@@ -120,8 +127,12 @@ export type TutorialProgressValue = {
      * the read answers, and whenever it failed.
      */
     settings: TutorialSettings;
-    /** Saves a settings change (optimistic; rolled back if the save fails). */
-    updateSettings(patch: TutorialSettingsPatch): void;
+    /**
+     * Saves a settings change: shown at once, put back if the save fails.
+     * Resolves true once saved, false when it was not (nothing is sent before
+     * the read has succeeded).
+     */
+    updateSettings(patch: TutorialSettingsPatch): Promise<boolean>;
     /** Queues a play; false (and nothing queued) when another is already pending or up. */
     play(request: PlayRequest): boolean;
     /** Drops a play `source` queued that has not shown yet (its page went away). */
@@ -273,9 +284,16 @@ export function useTutorialProgress(): TutorialProgressValue | null {
     return use(TutorialProgressContext);
 }
 
-type Entry =
-    | { state: 'ready'; records: ReadonlyMap<ProgressId, TutorialRecord> }
-    | { state: 'failed' };
+type ReadyEntry = {
+    state: 'ready';
+    records: ReadonlyMap<ProgressId, TutorialRecord>;
+    /** What the screen shows, including a change still being saved. */
+    settings: TutorialSettings;
+    /** What the server last answered with. */
+    confirmed: TutorialSettings;
+};
+
+type Entry = ReadyEntry | { state: 'failed' };
 
 /** The shell a route belongs to, from its locale-free path. */
 export function shellRoleFromPath(pathname: string | null | undefined): TutorialRole | null {
@@ -362,7 +380,13 @@ export function TutorialProgressProvider({ children }: { children: ReactNode }) 
             });
         };
         getTutorialProgress(token, role, controller.signal).then(
-            (records) => settle({ state: 'ready', records: new Map(records.map((item) => [item.tutorial_id, item])) }),
+            ({ tutorials, settings }) =>
+                settle({
+                    state: 'ready',
+                    records: new Map(tutorials.map((item) => [item.tutorial_id, item])),
+                    settings,
+                    confirmed: settings,
+                }),
             () => settle({ state: 'failed' }),
         );
         return () => controller.abort();
@@ -464,7 +488,7 @@ export function TutorialProgressProvider({ children }: { children: ReactNode }) 
                 if (key === null || current?.state !== 'ready') return prev;
                 const records = new Map(current.records);
                 records.set(id, stored);
-                return { ...prev, [key]: { state: 'ready', records } };
+                return { ...prev, [key]: { ...current, records } };
             });
         // Optimistic: the tutorial counts as done for the rest of this page
         // load whatever the save does, so it cannot re-open on the next page.
@@ -490,13 +514,60 @@ export function TutorialProgressProvider({ children }: { children: ReactNode }) 
     }, []);
     const varsFor = useCallback((id: TutorialId) => varsRef.current.get(id), []);
 
-    // The settings (K1-v2). Contract stub from the hotfix base: the
-    // defaults, and a save that does nothing. The settings lane reads them
-    // with the progress and saves them with PATCH.
-    const settings: TutorialSettings = DEFAULT_TUTORIAL_SETTINGS;
-    const updateSettings = useCallback((patch: TutorialSettingsPatch) => {
-        void patch;
+    // THE SETTINGS (K1-v2): this account's, once the read has succeeded.
+    const settings: TutorialSettings = entry?.state === 'ready' ? entry.settings : DEFAULT_TUTORIAL_SETTINGS;
+
+    /** Saves in flight, per role + account. */
+    const savingRef = useRef(new Map<string, number>());
+
+    const updateSettings = useCallback((patch: TutorialSettingsPatch): Promise<boolean> => {
+        const { token, role: servingRole, loadKey: key, entries: known } = latest.current;
+        // Nothing to change before the read: the screen would show settings
+        // the account may not have.
+        if (servingRole === null || key === null || !token || known[key]?.state !== 'ready') {
+            return Promise.resolve(false);
+        }
+        const change: TutorialSettingsPatch = {};
+        if (patch.always_show !== undefined) change.always_show = patch.always_show;
+        if (patch.muted !== undefined) change.muted = Array.from(new Set(patch.muted));
+        if (Object.keys(change).length === 0) return Promise.resolve(false);
+
+        const update = (next: (current: ReadyEntry) => ReadyEntry) =>
+            setEntries((prev) => {
+                const current = prev[key];
+                if (current?.state !== 'ready') return prev;
+                return { ...prev, [key]: next(current) };
+            });
+        update((current) => ({ ...current, settings: { ...current.settings, ...change } }));
+        const saving = savingRef.current;
+        saving.set(key, (saving.get(key) ?? 0) + 1);
+
+        const finish = (stored: TutorialSettings | null): boolean => {
+            const left = (saving.get(key) ?? 1) - 1;
+            if (left > 0) saving.set(key, left);
+            else saving.delete(key);
+            update((current) => {
+                const confirmed = stored ?? current.confirmed;
+                // Another save is still on its way: keep the latest change on
+                // screen until it answers too.
+                return { ...current, confirmed, settings: left > 0 ? current.settings : confirmed };
+            });
+            return stored !== null;
+        };
+        return updateTutorialSettings(token, servingRole, change).then(finish, () => finish(null));
     }, []);
+
+    /** "Don't show this again" from the player: adds `id` to this account's muted guides. */
+    const muteTutorial = useCallback(
+        (id: TutorialId): Promise<boolean> => {
+            const { role: servingRole, loadKey: key, entries: known } = latest.current;
+            const current = key !== null ? known[key] : undefined;
+            if (servingRole !== roleOfTutorial(id) || current?.state !== 'ready') return Promise.resolve(false);
+            if (current.settings.muted.includes(id)) return Promise.resolve(true);
+            return updateSettings({ muted: [...current.settings.muted, id] });
+        },
+        [updateSettings],
+    );
 
     /** True when this account already has an outcome for `id`, as of this instant. */
     const recordedNow = useCallback((id: ProgressId) => {
@@ -575,6 +646,8 @@ export function TutorialProgressProvider({ children }: { children: ReactNode }) 
                             key={active.seq}
                             id={active.id}
                             vars={active.vars}
+                            mode={active.mode}
+                            onMute={muteTutorial}
                             onDismiss={onDismiss}
                             onUnavailable={onUnavailable}
                         />

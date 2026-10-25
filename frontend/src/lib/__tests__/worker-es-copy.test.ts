@@ -130,6 +130,7 @@ const TUTORIAL_TU_EXCEPTIONS: Record<string, string> = {
     'tutorial.worker_apply.slides.next.body': '"te pida" has the employer as its subject',
     'tutorial.worker_apply.scene.docs_note': '"quiere" has the employer as its subject',
     'tutorial.worker_details.slides.request.title': '"quiere" has the employer as its subject',
+    'tutorial.worker_details.description': '"quiere" has the employer as its subject',
 };
 
 /** Every leaf message under a namespace, as `[path, value]`. */

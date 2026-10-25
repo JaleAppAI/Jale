@@ -4,6 +4,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import type { MouseEvent } from 'react';
 import { useTranslations } from 'next-intl';
 import { ChevronRight, CircleHelp } from 'lucide-react';
+import { Link } from '@/i18n/navigation';
 import { Modal } from '@/components/ui/modal';
 import { Icon } from '@/components/ui/icon';
 import type { TutorialId, TutorialRole } from '@/lib/api/tutorials';
@@ -11,9 +12,16 @@ import { useTutorialProgress, type TutorialProgressValue } from '@/lib/tutorials
 import { tutorialsForRole } from '@/lib/tutorials/registry';
 
 /**
- * Help in a signed-in header: "How Jale works", the list of this role's
- * tutorials, any of which can be replayed at any time (ruling R10). A replay
- * never records anything and works even when the progress read failed.
+ * Help in a signed-in header.
+ *
+ * In the shell (`AppShell`), Help is a link to the role's Help center
+ * (`HelpCenterLink`, K1-v2): the guides, the "every time" setting and the
+ * guides turned off. The worker onboarding band has no shell, and keeps the
+ * small dialog below (`HelpEntryButton`).
+ *
+ * The dialog is "How Jale works", the list of this role's tutorials, any of
+ * which can be replayed at any time (ruling R10). A replay never records
+ * anything and works even when the progress read failed.
  *
  * There is no popover primitive, so the menu is a `Modal` with a list.
  * Choosing a tutorial closes Help FIRST and replays from a post-commit effect,
@@ -45,6 +53,42 @@ const SIZES = {
 
 /** Icon only on phones (a square, like the controls beside it); icon and label from 640px. */
 const PHONE_SQUARE = { md: 'max-sm:w-10 max-sm:px-0', sm: 'max-sm:w-8 max-sm:px-0' } as const;
+
+function entryClasses(tone: keyof typeof TONES, size: keyof typeof SIZES): string {
+    return [
+        'relative inline-flex shrink-0 cursor-pointer items-center justify-center whitespace-nowrap rounded-full font-bold',
+        'transition-colors focus-visible:outline-none',
+        "after:absolute after:left-1/2 after:top-1/2 after:h-11 after:min-w-11 after:w-full after:-translate-x-1/2 after:-translate-y-1/2 after:content-['']",
+        TONES[tone],
+        SIZES[size],
+        PHONE_SQUARE[size],
+    ].join(' ');
+}
+
+/**
+ * The shell's Help: a link to `/{role}/help`, drawn like the button it
+ * replaced. `data-tour="help"` is what the app tour points at. Renders
+ * nothing outside the tutorial provider, as the button did.
+ */
+export function HelpCenterLink({ role, current = false }: { role: TutorialRole; current?: boolean }) {
+    const tCommon = useTranslations('tutorial.common');
+    const progress = useTutorialProgress();
+    if (!progress) return null;
+    const label = tCommon('help');
+    return (
+        <Link
+            href={`/${role}/help`}
+            aria-label={label}
+            title={label}
+            aria-current={current ? 'page' : undefined}
+            data-tour="help"
+            className={entryClasses('default', 'md')}
+        >
+            <CircleHelp aria-hidden="true" className="h-4 w-4 shrink-0" />
+            <span className="hidden sm:inline">{label}</span>
+        </Link>
+    );
+}
 
 export function HelpEntryButton({
     tone = 'default',
@@ -99,14 +143,7 @@ function HelpEntry({
                 aria-haspopup="dialog"
                 data-tour="help"
                 onClick={onOpen}
-                className={[
-                    'relative inline-flex shrink-0 cursor-pointer items-center justify-center whitespace-nowrap rounded-full font-bold',
-                    'transition-colors focus-visible:outline-none',
-                    "after:absolute after:left-1/2 after:top-1/2 after:h-11 after:min-w-11 after:w-full after:-translate-x-1/2 after:-translate-y-1/2 after:content-['']",
-                    TONES[tone],
-                    SIZES[size],
-                    PHONE_SQUARE[size],
-                ].join(' ')}
+                className={entryClasses(tone, size)}
             >
                 <CircleHelp aria-hidden="true" className="h-4 w-4 shrink-0" />
                 <span className="hidden sm:inline">{label}</span>
