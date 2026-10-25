@@ -64,6 +64,11 @@ export function cutoutFor(target: Box): Box {
  *
  * `hole` is the cutout to keep clear when it is bigger than the target's own
  * (a combobox whose list is open); the arrow still points at the target.
+ *
+ * `outer` is the room the callout may take when it fits on no side within
+ * `band` (inside a dialog: the whole panel or viewport, over the dialog's
+ * header or footer), rather than be drawn over the cutout. Without it the
+ * callout never leaves the band.
  */
 export function placeCallout(
     target: Box,
@@ -72,30 +77,41 @@ export function placeCallout(
     hint?: Side,
     band: Band = { top: 0, bottom: viewport.height },
     hole: Box = cutoutFor(target),
+    outer: Band = band,
 ): Placement {
     const holeBottom = hole.top + hole.height;
     const holeRight = hole.left + hole.width;
     const centerX = target.left + target.width / 2;
     const centerY = target.top + target.height / 2;
-    const bandHeight = band.bottom - band.top;
 
-    const fits: Record<Side, boolean> = {
-        top: hole.top - CALLOUT_GAP - callout.height >= band.top + VIEWPORT_GUTTER,
-        bottom: holeBottom + CALLOUT_GAP + callout.height <= band.bottom - VIEWPORT_GUTTER,
-        right: holeRight + CALLOUT_GAP + callout.width <= viewport.width - VIEWPORT_GUTTER,
-    };
+    const fitsIn = (room: Band): Record<Side, boolean> => ({
+        top: hole.top - CALLOUT_GAP - callout.height >= room.top + VIEWPORT_GUTTER,
+        bottom: holeBottom + CALLOUT_GAP + callout.height <= room.bottom - VIEWPORT_GUTTER,
+        right:
+            holeRight + CALLOUT_GAP + callout.width <= viewport.width - VIEWPORT_GUTTER &&
+            callout.height <= room.bottom - room.top - VIEWPORT_GUTTER * 2,
+    });
+    // The band first; past it only when nothing fits there.
+    let room = band;
+    let fits = fitsIn(band);
+    if (!fits.top && !fits.bottom && !fits.right) {
+        room = outer;
+        fits = fitsIn(outer);
+    }
+    const roomHeight = room.bottom - room.top;
     const inLeftRail = centerX < viewport.width / 3 && target.width < viewport.width / 3;
 
     let side: Side;
     if (hint && fits[hint]) side = hint;
-    else if (centerY - band.top > bandHeight * 0.6 && fits.top) side = 'top';
+    else if (centerY - room.top > roomHeight * 0.6 && fits.top) side = 'top';
     else if (inLeftRail && fits.right) side = 'right';
     else if (fits.bottom) side = 'bottom';
     else if (fits.top) side = 'top';
-    else side = band.bottom - holeBottom >= hole.top - band.top ? 'bottom' : 'top';
+    else if (fits.right) side = 'right';
+    else side = room.bottom - holeBottom >= hole.top - room.top ? 'bottom' : 'top';
 
-    const minTop = band.top + VIEWPORT_GUTTER;
-    const maxTop = band.bottom - VIEWPORT_GUTTER - callout.height;
+    const minTop = room.top + VIEWPORT_GUTTER;
+    const maxTop = room.bottom - VIEWPORT_GUTTER - callout.height;
     const maxLeft = viewport.width - VIEWPORT_GUTTER - callout.width;
 
     if (side === 'right') {
@@ -131,4 +147,55 @@ export function unionBox(first: Box, ...rest: Box[]): Box {
         right = Math.max(right, box.left + box.width);
     }
     return { top, left, width: right - left, height: bottom - top };
+}
+
+/**
+ * The part of `hole` inside `band`: what a dialog's scrolling body shows of
+ * a cutout, so the ring is not drawn over the dialog's header or footer.
+ * The whole hole when none of it is inside.
+ */
+export function clipToBand(hole: Box, band: Band): Box {
+    const top = Math.max(hole.top, band.top);
+    const bottom = Math.min(hole.top + hole.height, band.bottom);
+    if (bottom <= top) return hole;
+    return { top, left: hole.left, width: hole.width, height: bottom - top };
+}
+
+/** How far a scrolling box can scroll from where it is: `min` up (negative), `max` down. */
+export type ScrollRange = { min: number; max: number };
+
+/**
+ * How far to scroll a dialog's body (positive: its content moves up) so a
+ * cutout and its callout both fit in `band`, the callout above or below the
+ * cutout: the smallest scroll in `range` that does it. A cutout taller than
+ * the band gets room for the callout above its top, or else below its
+ * bottom. 0 when nothing needs to move, or nothing in `range` helps.
+ */
+export function scrollToFit(hole: Box, calloutHeight: number, band: Band, range: ScrollRange): number {
+    const need = calloutHeight + CALLOUT_GAP + VIEWPORT_GUTTER;
+    const holeBottom = hole.top + hole.height;
+    // Each way, as the scrolls that do it: [from, to].
+    const ways: Array<[number, number]> =
+        hole.height + need <= band.bottom - band.top
+            ? [
+                  // The callout above it, the cutout's bottom still in the band.
+                  [holeBottom - band.bottom, hole.top - band.top - need],
+                  // The callout below it, the cutout's top still in the band.
+                  [holeBottom + need - band.bottom, hole.top - band.top],
+              ]
+            : [
+                  // Taller than the band: its top under the callout, or else its bottom over it.
+                  [hole.top - band.top - need, hole.top - band.top - need],
+                  [holeBottom + need - band.bottom, holeBottom + need - band.bottom],
+              ];
+    let best: number | null = null;
+    for (const [from, to] of ways) {
+        const lo = Math.max(from, range.min);
+        const hi = Math.min(to, range.max);
+        if (lo > hi) continue;
+        const scroll = lo > 0 ? lo : hi < 0 ? hi : 0;
+        if (hole.height + need > band.bottom - band.top) return scroll;
+        if (best === null || Math.abs(scroll) < Math.abs(best)) best = scroll;
+    }
+    return best ?? 0;
 }

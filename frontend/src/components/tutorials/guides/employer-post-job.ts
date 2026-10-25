@@ -415,6 +415,10 @@ const guide: WalkthroughGuide = {
         bodyKey: `${KEY}.intro_body`,
     },
     counterKey: `${KEY}.counter`,
+    // What the wizard's play runs in, opened together with the guide: closed
+    // before the first field shows, the play is over at once. The other three
+    // places never show the wizard, so this does not touch them.
+    host: { guide: 'post.wizard' },
     steps: [...WIZARD, ...LIMIT_DIALOG, ...EDIT, ...TEMPLATE_EDITOR],
 };
 

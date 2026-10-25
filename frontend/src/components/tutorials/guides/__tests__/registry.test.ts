@@ -95,6 +95,8 @@ describe('guides registry', () => {
         expect(guide?.steps.every((step) => typeof step.when === 'function')).toBe(true);
         expect(guide?.steps.find((step) => step.id === 'next')?.advanceWhen).toBeTypeOf('function');
         expect(guide?.steps.find((step) => step.id === 'next_details')?.advanceWhen).toBeTypeOf('function');
+        // It runs in the wizard, opened with it.
+        expect(guide?.host).toEqual({ guide: 'post.wizard' });
     });
 
     it('speaks usted to the employer, and says Tap or Click by the pointer', () => {

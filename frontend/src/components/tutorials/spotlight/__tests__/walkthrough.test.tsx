@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
@@ -7,6 +7,7 @@ import en from '@/messages/en.json';
 import type { TutorialOutcome } from '@/lib/api/tutorials';
 import { OverlayPresenceProvider } from '@/lib/tutorials/overlay';
 import { Modal } from '@/components/ui/modal';
+import { VIEWPORT_GUTTER } from '../geometry';
 import { Spotlight } from '../Spotlight';
 import type { SpotlightDone, SpotlightIntro, SpotlightStep } from '../steps';
 
@@ -23,11 +24,14 @@ import type { SpotlightDone, SpotlightIntro, SpotlightStep } from '../steps';
 const KEY = 'tutorial.employer_post_job.guide';
 const COUNTER = `${KEY}.counter`;
 
+/** How far the page has been scrolled (a `window.scrollBy` stub moves it); fixed chrome stays put. */
+let pageScroll = 0;
+
 function boxOf(element: Element): { top: number; left: number; width: number; height: number } {
     const raw = element.getAttribute('data-box');
     if (raw) {
         const [top, left, width, height] = raw.split(',').map(Number);
-        return { top, left, width, height };
+        return { top: top - (element.closest('[data-fixed]') ? 0 : pageScroll), left, width, height };
     }
     if (element.getAttribute('role') === 'dialog' && element.closest('[data-spotlight]')) {
         return { top: 0, left: 0, width: 326, height: 160 };
@@ -53,6 +57,8 @@ beforeEach(() => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1280 });
     Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 });
     document.body.style.overflow = '';
+    document.documentElement.style.overflow = '';
+    pageScroll = 0;
 });
 
 afterEach(() => {
@@ -319,6 +325,64 @@ describe('lazy walkthrough: conditional steps and the live counter', () => {
     });
 });
 
+/**
+ * A page whose Post button is replaced by the posted screen (marked
+ * `data-posted`) when pressed, at once or, with `later`, a moment after.
+ */
+function Posting({ later }: { later: boolean }) {
+    const [posted, setPosted] = useState(false);
+    const [marked, setMarked] = useState(false);
+    useEffect(() => {
+        if (!posted || !later) return;
+        const timer = setTimeout(() => setMarked(true), 20);
+        return () => clearTimeout(timer);
+    }, [posted, later]);
+    if (!posted) {
+        return (
+            <button type="button" data-guide="t.post" data-box="700,40,120,44" onClick={() => setPosted(true)}>
+                Post
+            </button>
+        );
+    }
+    return (
+        <div data-posted={!later || marked ? '' : undefined}>
+            <div data-guide="t.after" data-box="100,40,300,70">
+                <input aria-label="Workers" />
+            </div>
+        </div>
+    );
+}
+
+const POST: SpotlightStep = {
+    id: 'next',
+    target: { guide: 't.post' },
+    mode: 'action',
+    advanceWhen: () => document.querySelector('[data-posted]') !== null,
+    ...copy('next'),
+};
+const AFTER: SpotlightStep = { id: 'workers', target: { guide: 't.after' }, mode: 'next', ready: () => true, ...copy('workers') };
+
+/** POST then AFTER over `Posting`, with a wait long enough that a re-wait would still be waiting. */
+function renderPosting({ later = false }: { later?: boolean } = {}) {
+    const onDismiss = vi.fn<(outcome: TutorialOutcome) => void>();
+    render(
+        <Intl>
+            <Posting later={later} />
+            <Spotlight
+                name="test-guide"
+                resolve="lazy"
+                steps={[POST, AFTER]}
+                waitMs={10_000}
+                counterKey={COUNTER}
+                endKey="tutorial.common.guide.end"
+                onDismiss={onDismiss}
+                onUnavailable={() => {}}
+            />
+        </Intl>,
+    );
+    return { onDismiss };
+}
+
 describe('lazy walkthrough: the three modes', () => {
     it('next: Next waits for `ready`, with the wait line, then moves on', async () => {
         renderGuide([TITLE, TRADE]);
@@ -409,6 +473,31 @@ describe('lazy walkthrough: the three modes', () => {
         await flush();
         document.body.removeAttribute('data-moved-on');
         expect(onDismiss).toHaveBeenCalledWith('completed');
+    });
+
+    it('action: a control the page replaces as it moves on completes the step, with no wait', async () => {
+        const { onDismiss } = renderPosting();
+        await flush();
+        expect(stepOf()).toBe('next');
+        act(() => {
+            fireEvent.click(screen.getByRole('button', { name: 'Post' }));
+        });
+        await flush();
+        // The button left in the same change that marked the page posted.
+        expect(stepOf()).toBe('workers');
+        expect(onDismiss).not.toHaveBeenCalled();
+    });
+
+    it('action: a control that went before the page moved on completes the step once it does', async () => {
+        renderPosting({ later: true });
+        await flush();
+        act(() => {
+            fireEvent.click(screen.getByRole('button', { name: 'Post' }));
+        });
+        await flush();
+        expect(stepOf()).toBeNull();
+        await flush(40);
+        expect(stepOf()).toBe('workers');
     });
 
     it('Back never crosses an action step', async () => {
@@ -645,7 +734,7 @@ describe('inside a dialog', () => {
         expect(document.activeElement).toBe(action('end'));
     });
 
-    it('ends as skipped when the dialog is closed under it', async () => {
+    it('ends as skipped when the dialog is closed under it and no next step shows', async () => {
         const { onDismiss } = renderInDialog([TITLE, TRADE]);
         await flush();
         expect(callout()).not.toBeNull();
@@ -656,7 +745,64 @@ describe('inside a dialog', () => {
         });
         await flush();
         expect(panel()).toBeNull();
+        // It looks for this step's control or the next one's, the lazy way, first.
+        expect(onDismiss).not.toHaveBeenCalled();
+        await flush(80);
         expect(onDismiss).toHaveBeenCalledWith('skipped');
+        expect(document.body.style.overflow).toBe('');
+        expect(document.documentElement.style.overflow).toBe('');
+    });
+
+    /** The callout's box and the ring's, as drawn (the callout measures 326 x 160 here). */
+    const drawn = () => {
+        const card = callout() as HTMLElement;
+        const ring = document.querySelector<HTMLElement>('[data-spotlight-ring]') as HTMLElement;
+        const px = (value: string) => Number.parseFloat(value);
+        return {
+            card: { top: px(card.style.top), left: px(card.style.left), width: 326, height: 160 },
+            ring: { top: px(ring.style.top), left: px(ring.style.left), width: px(ring.style.width), height: px(ring.style.height) },
+        };
+    };
+    const runInto = (a: { top: number; left: number; width: number; height: number }, b: typeof a) =>
+        Math.max(
+            0,
+            Math.min(
+                Math.min(a.left + a.width, b.left + b.width) - Math.max(a.left, b.left),
+                Math.min(a.top + a.height, b.top + b.height) - Math.max(a.top, b.top),
+            ),
+        );
+    /** Gives the dialog's scrolling body a box, and the title field another, and lets the guide measure again. */
+    const layOut = async (body: string, title: string) => {
+        act(() => {
+            const scroller = panel()?.querySelector<HTMLElement>('.overflow-y-auto');
+            // jsdom has no stylesheet: the body says it scrolls itself.
+            scroller?.style.setProperty('overflow-y', 'auto');
+            scroller?.setAttribute('data-box', body);
+            document.querySelector('[data-guide="t.title"]')?.setAttribute('data-box', title);
+        });
+        await flush();
+        await flush();
+    };
+
+    it('with no room in the body that cannot scroll, the callout goes past it rather than over the field', async () => {
+        renderInDialog([TITLE]);
+        await flush();
+        // A 200px body; the field in its middle; the callout fits neither above nor below in it.
+        await layOut('250,320,640,200', '300,330,590,50');
+        const { card, ring } = drawn();
+        expect(runInto(card, ring)).toBeLessThanOrEqual(4);
+        expect(card.top).toBeGreaterThanOrEqual(VIEWPORT_GUTTER);
+        expect(card.top + card.height).toBeLessThanOrEqual(800 - VIEWPORT_GUTTER);
+    });
+
+    it('a field taller than the body: the ring keeps to the body, and the callout keeps off it', async () => {
+        renderInDialog([TITLE]);
+        await flush();
+        await layOut('250,320,640,200', '200,330,590,700');
+        const { card, ring } = drawn();
+        expect(ring.top).toBeGreaterThanOrEqual(250);
+        expect(ring.top + ring.height).toBeLessThanOrEqual(450);
+        expect(runInto(card, ring)).toBeLessThanOrEqual(4);
     });
 
     it('the intro sits inside the dialog too', async () => {
@@ -665,5 +811,620 @@ describe('inside a dialog', () => {
         expect(stepOf()).toBe('intro');
         expect(panel()?.contains(callout())).toBe(true);
         expect(document.activeElement).toBe(action('start'));
+    });
+});
+
+/**
+ * A page with a button that opens a dialog and a field of its own; the
+ * dialog has a field and a Save that closes it. The walkthrough is drawn
+ * until it ends, as the progress provider draws a play.
+ */
+function renderCrossing(steps: SpotlightStep[], { open = false, done }: { open?: boolean; done?: SpotlightDone } = {}) {
+    const onDismiss = vi.fn<(outcome: TutorialOutcome) => void>();
+    function Page() {
+        const [dialog, setDialog] = useState(open);
+        const [playing, setPlaying] = useState(true);
+        return (
+            <>
+                <button type="button" data-guide="x.open" data-box="20,40,140,44" onClick={() => setDialog(true)}>
+                    Open the form
+                </button>
+                <div data-guide="x.page" data-box="500,40,300,70">
+                    <input aria-label="Page field" />
+                </div>
+                <button type="button" onClick={() => setDialog(false)}>
+                    Close from outside
+                </button>
+                <Modal
+                    open={dialog}
+                    onClose={() => setDialog(false)}
+                    title="Edit details"
+                    data-guide="x.dialog"
+                    footer={
+                        <button type="button" data-guide="x.save" data-box="700,40,120,44" onClick={() => setDialog(false)}>
+                            Save
+                        </button>
+                    }
+                >
+                    <div data-guide="x.inside" data-box="100,40,300,70">
+                        <input aria-label="Inside field" />
+                    </div>
+                </Modal>
+                {playing ? (
+                    <Spotlight
+                        name="test-guide"
+                        resolve="lazy"
+                        steps={steps}
+                        done={done}
+                        waitMs={50}
+                        counterKey={COUNTER}
+                        endKey="tutorial.common.guide.end"
+                        onDismiss={(outcome) => {
+                            onDismiss(outcome);
+                            setPlaying(false);
+                        }}
+                        onUnavailable={() => {}}
+                    />
+                ) : null}
+            </>
+        );
+    }
+    render(
+        <Intl>
+            <Page />
+        </Intl>,
+    );
+    return { onDismiss };
+}
+
+const OPEN: SpotlightStep = { id: 'open', target: { guide: 'x.open' }, mode: 'action', ...copy('next') };
+const INSIDE: SpotlightStep = { id: 'inside', target: { guide: 'x.inside' }, mode: 'next', ready: () => true, ...copy('title') };
+const SAVE: SpotlightStep = { id: 'save', target: { guide: 'x.save' }, mode: 'action', ...copy('next') };
+const ON_PAGE: SpotlightStep = { id: 'on_page', target: { guide: 'x.page' }, mode: 'next', ready: () => true, ...copy('workers') };
+
+const crossingDialog = () => document.querySelector<HTMLElement>('[data-guide="x.dialog"]');
+/** Where the walkthrough's layer is drawn. */
+const layerIn = () => {
+    const layer = document.querySelector('[data-spotlight]');
+    if (layer === null) return null;
+    return crossingDialog()?.contains(layer) ? 'dialog' : 'page';
+};
+/** The body's lock (a dialog's) and the root's (the walkthrough's on the page). */
+const locks = () => ({ body: document.body.style.overflow, page: document.documentElement.style.overflow });
+const click = (name: string) =>
+    act(() => {
+        fireEvent.click(screen.getByRole('button', { name }));
+    });
+
+describe('moving between the page and a dialog', () => {
+    it('page → dialog → page: carries on in each, and leaves the page as it found it', async () => {
+        const { onDismiss } = renderCrossing([OPEN, INSIDE, SAVE, ON_PAGE]);
+        await flush();
+        expect(stepOf()).toBe('open');
+        expect(layerIn()).toBe('page');
+        expect(locks()).toEqual({ body: '', page: 'hidden' });
+
+        click('Open the form');
+        await flush();
+        expect(stepOf()).toBe('inside');
+        expect(layerIn()).toBe('dialog');
+        // The dialog holds the page's lock; the walkthrough holds none inside it.
+        expect(locks()).toEqual({ body: 'hidden', page: '' });
+
+        press('next');
+        await flush();
+        expect(stepOf()).toBe('save');
+        click('Save');
+        await flush();
+        expect(crossingDialog()).toBeNull();
+        expect(onDismiss).not.toHaveBeenCalled();
+        expect(stepOf()).toBe('on_page');
+        expect(layerIn()).toBe('page');
+        expect(locks()).toEqual({ body: '', page: 'hidden' });
+
+        press('next');
+        await flush();
+        expect(onDismiss).toHaveBeenCalledWith('completed');
+        expect(locks()).toEqual({ body: '', page: '' });
+    });
+
+    it('dialog → page: carries on on the page once the dialog closes, and leaves the page as it found it', async () => {
+        const { onDismiss } = renderCrossing([INSIDE, SAVE, ON_PAGE], { open: true });
+        await flush();
+        expect(stepOf()).toBe('inside');
+        expect(layerIn()).toBe('dialog');
+        expect(locks()).toEqual({ body: 'hidden', page: '' });
+
+        press('next');
+        await flush();
+        click('Save');
+        await flush();
+        expect(crossingDialog()).toBeNull();
+        expect(onDismiss).not.toHaveBeenCalled();
+        expect(stepOf()).toBe('on_page');
+        expect(layerIn()).toBe('page');
+        expect(locks()).toEqual({ body: '', page: 'hidden' });
+
+        press('next');
+        await flush();
+        expect(onDismiss).toHaveBeenCalledWith('completed');
+        expect(locks()).toEqual({ body: '', page: '' });
+    });
+
+    it('a dialog closed under its step: carries on at the next step when that one shows on the page', async () => {
+        const { onDismiss } = renderCrossing([INSIDE, ON_PAGE], { open: true });
+        await flush();
+        expect(stepOf()).toBe('inside');
+        click('Close from outside');
+        await flush();
+        expect(onDismiss).not.toHaveBeenCalled();
+        expect(stepOf()).toBe('on_page');
+        expect(layerIn()).toBe('page');
+        expect(locks()).toEqual({ body: '', page: 'hidden' });
+    });
+
+    it('a dialog closed under its step with no next step on show: ends as skipped after the wait', async () => {
+        const { onDismiss } = renderCrossing([INSIDE, SAVE], { open: true });
+        await flush();
+        click('Close from outside');
+        await flush();
+        expect(onDismiss).not.toHaveBeenCalled();
+        expect(locks()).toEqual({ body: '', page: '' });
+        await flush(80);
+        expect(onDismiss).toHaveBeenCalledWith('skipped');
+        expect(locks()).toEqual({ body: '', page: '' });
+    });
+
+    it('while it waits after its dialog closed, Escape ends it and is left to the page', async () => {
+        const { onDismiss } = renderCrossing([INSIDE, SAVE], { open: true });
+        await flush();
+        click('Close from outside');
+        await flush();
+        let reached: KeyboardEvent | null = null;
+        const listen = (event: KeyboardEvent) => {
+            reached = event;
+        };
+        document.addEventListener('keydown', listen);
+        act(() => {
+            fireEvent.keyDown(document.body, { key: 'Escape' });
+        });
+        document.removeEventListener('keydown', listen);
+        expect(onDismiss).toHaveBeenCalledWith('skipped');
+        expect(reached).not.toBeNull();
+        expect((reached as unknown as KeyboardEvent).defaultPrevented).toBe(false);
+    });
+
+    it('the closing card moves to the page when the last step’s action closes the dialog', async () => {
+        const { onDismiss } = renderCrossing([SAVE], {
+            open: true,
+            done: { titleKey: `${KEY}.intro_title`, bodyKey: `${KEY}.intro_body` },
+        });
+        await flush();
+        click('Save');
+        await flush();
+        expect(crossingDialog()).toBeNull();
+        expect(onDismiss).not.toHaveBeenCalled();
+        expect(stepOf()).toBe('done');
+        expect(layerIn()).toBe('page');
+        press('done');
+        await flush();
+        expect(onDismiss).toHaveBeenCalledWith('completed');
+        expect(locks()).toEqual({ body: '', page: '' });
+    });
+});
+
+describe('a host opened with the walkthrough', () => {
+    it('closed before the first control shows: the play is over at once, with no outcome', async () => {
+        const onUnavailable = vi.fn();
+        const onDismiss = vi.fn();
+        function Page() {
+            const [open, setOpen] = useState(true);
+            return (
+                <>
+                    <button type="button" onClick={() => setOpen(false)}>
+                        Close the host
+                    </button>
+                    {open ? (
+                        <div data-guide="h.host" data-box="0,0,400,400">
+                            <p>Loading</p>
+                        </div>
+                    ) : null}
+                    <Spotlight
+                        name="test-guide"
+                        resolve="lazy"
+                        steps={[TITLE]}
+                        host={{ guide: 'h.host' }}
+                        waitMs={10_000}
+                        counterKey={COUNTER}
+                        onDismiss={onDismiss}
+                        onUnavailable={onUnavailable}
+                    />
+                </>
+            );
+        }
+        render(
+            <Intl>
+                <Page />
+            </Intl>,
+        );
+        await flush();
+        expect(onUnavailable).not.toHaveBeenCalled();
+        click('Close the host');
+        await flush();
+        expect(onUnavailable).toHaveBeenCalledTimes(1);
+        expect(onDismiss).not.toHaveBeenCalled();
+        expect(document.querySelector('[data-spotlight]')).toBeNull();
+    });
+});
+
+/**
+ * A page step on a status control whose button opens a confirm (a `Modal`
+ * that is not the walkthrough's); Confirm marks the status hired.
+ */
+function renderWithConfirm(steps: SpotlightStep[]) {
+    const onDismiss = vi.fn<(outcome: TutorialOutcome) => void>();
+    function Page() {
+        const [confirming, setConfirming] = useState(false);
+        const [status, setStatus] = useState('new');
+        const [playing, setPlaying] = useState(true);
+        return (
+            <>
+                <div data-guide="c.status" data-box="100,40,300,70" data-status={status}>
+                    <button type="button" onClick={() => setConfirming(true)}>
+                        Mark hired
+                    </button>
+                </div>
+                <div data-guide="c.next" data-box="300,40,300,70">
+                    <input aria-label="Start date" />
+                </div>
+                <Modal
+                    open={confirming}
+                    onClose={() => setConfirming(false)}
+                    title="Mark as hired?"
+                    footer={
+                        <>
+                            <button type="button" onClick={() => setConfirming(false)}>
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setStatus('hired');
+                                    setConfirming(false);
+                                }}
+                            >
+                                Confirm
+                            </button>
+                        </>
+                    }
+                >
+                    <p>The other applicants hear back.</p>
+                </Modal>
+                {playing ? (
+                    <Spotlight
+                        name="test-guide"
+                        resolve="lazy"
+                        steps={steps}
+                        waitMs={50}
+                        counterKey={COUNTER}
+                        endKey="tutorial.common.guide.end"
+                        onDismiss={(outcome) => {
+                            onDismiss(outcome);
+                            setPlaying(false);
+                        }}
+                        onUnavailable={() => {}}
+                    />
+                ) : null}
+            </>
+        );
+    }
+    render(
+        <Intl>
+            <Page />
+        </Intl>,
+    );
+    return { onDismiss };
+}
+
+const STATUS: SpotlightStep = {
+    id: 'status',
+    target: { guide: 'c.status' },
+    mode: 'auto',
+    advanceWhen: (target) => target.getAttribute('data-status') === 'hired',
+    ...copy('trade'),
+};
+const START: SpotlightStep = { id: 'start', target: { guide: 'c.next' }, mode: 'next', ready: () => true, ...copy('workers') };
+
+const confirmDialog = () => screen.queryByRole('dialog', { name: 'Mark as hired?' });
+
+describe('another dialog opened over the walkthrough', () => {
+    it('steps aside: Tab and Escape are the dialog’s, Cancel picks up the same step, and the page lock comes out even', async () => {
+        const { onDismiss } = renderWithConfirm([STATUS, START]);
+        await flush();
+        expect(stepOf()).toBe('status');
+        expect(locks()).toEqual({ body: '', page: 'hidden' });
+
+        click('Mark hired');
+        await flush();
+        const confirm = confirmDialog() as HTMLElement;
+        expect(confirm).not.toBeNull();
+        // Nothing of the walkthrough is drawn, and the dialog holds the page.
+        expect(callout()).toBeNull();
+        expect(locks()).toEqual({ body: 'hidden', page: '' });
+
+        // Tab stays in the dialog, by the dialog's own trap.
+        const last = screen.getByRole('button', { name: 'Confirm' });
+        act(() => last.focus());
+        act(() => {
+            fireEvent.keyDown(last, { key: 'Tab' });
+        });
+        expect(confirm.contains(document.activeElement)).toBe(true);
+
+        // Escape cancels the dialog, not the walkthrough.
+        act(() => {
+            fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Escape' });
+        });
+        await flush();
+        expect(confirmDialog()).toBeNull();
+        expect(onDismiss).not.toHaveBeenCalled();
+        expect(stepOf()).toBe('status');
+        expect(locks()).toEqual({ body: '', page: 'hidden' });
+
+        // Picked up again, Escape is the walkthrough's.
+        act(() => {
+            fireEvent.keyDown(document.body, { key: 'Escape' });
+        });
+        await flush();
+        expect(onDismiss).toHaveBeenCalledWith('skipped');
+        expect(locks()).toEqual({ body: '', page: '' });
+    });
+
+    it('Cancel picks up the same step; Confirm, having made its condition hold, moves it on', async () => {
+        renderWithConfirm([STATUS, START]);
+        await flush();
+        click('Mark hired');
+        await flush();
+        click('Cancel');
+        await flush();
+        expect(confirmDialog()).toBeNull();
+        expect(stepOf()).toBe('status');
+
+        click('Mark hired');
+        await flush();
+        click('Confirm');
+        await flush();
+        expect(stepOf()).toBe('start');
+        expect(locks()).toEqual({ body: '', page: 'hidden' });
+    });
+
+    it('does not run out a wait while the dialog is up', async () => {
+        const MARK: SpotlightStep = { id: 'mark', target: { guide: 'c.status' }, mode: 'action', ...copy('next') };
+        const LATER: SpotlightStep = { ...START, id: 'later', target: { guide: 'c.later' } };
+        const { onDismiss } = renderWithConfirm([MARK, LATER]);
+        await flush();
+        // The click completes the step and opens the confirm; the next
+        // step's control is not there, and its wait (50 ms) is held.
+        click('Mark hired');
+        await flush(120);
+        expect(confirmDialog()).not.toBeNull();
+        expect(onDismiss).not.toHaveBeenCalled();
+        click('Cancel');
+        await flush();
+        await flush(120);
+        // With the dialog gone the wait ran out: the last step never showed.
+        expect(onDismiss).toHaveBeenCalledWith('skipped');
+    });
+});
+
+/** `document.elementsFromPoint` over the `data-box` boxes: fixed chrome on top, the innermost element first. */
+function stubHitTesting(): () => void {
+    const at = (x: number, y: number): Element[] => {
+        const hits = Array.from(document.querySelectorAll<HTMLElement>('[data-box]')).filter((element) => {
+            const r = element.getBoundingClientRect();
+            return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+        });
+        const fixed = (element: Element) => Number(element.closest('[data-fixed]') !== null);
+        return hits.sort((a, b) => fixed(b) - fixed(a) || (a.contains(b) ? 1 : b.contains(a) ? -1 : 0));
+    };
+    Object.defineProperty(document, 'elementsFromPoint', { configurable: true, value: at });
+    const scroll = vi.spyOn(window, 'scrollBy').mockImplementation(((x: number | ScrollToOptions, y?: number) => {
+        pageScroll += typeof x === 'number' ? (y ?? 0) : (x.top ?? 0);
+    }) as typeof window.scrollBy);
+    return () => {
+        scroll.mockRestore();
+        delete (document as unknown as { elementsFromPoint?: unknown }).elementsFromPoint;
+        document.documentElement.style.removeProperty('--jale-tab-bar-offset');
+    };
+}
+
+/** A field near the bottom of an 800px viewport, under a fixed 64px bar; and a tab in that bar. */
+function renderUnderBar(steps: SpotlightStep[], resolve: 'lazy' | 'start' = 'lazy') {
+    // The page first: a tour cuts its steps to what is on screen as it starts.
+    render(
+        <>
+            <div data-guide="r.field" data-box="760,40,300,40">
+                <input aria-label="Near the bottom" />
+            </div>
+            <nav data-fixed="" style={{ position: 'fixed' }} data-box="736,0,1280,64">
+                <button type="button" data-tour="tab.home" data-box="736,0,200,64">
+                    Home
+                </button>
+            </nav>
+        </>,
+    );
+    render(
+        <Intl>
+            <Spotlight
+                name="test-guide"
+                resolve={resolve}
+                steps={steps}
+                waitMs={50}
+                counterKey={COUNTER}
+                onDismiss={() => {}}
+                onUnavailable={() => {}}
+            />
+        </Intl>,
+    );
+}
+
+const FIELD: SpotlightStep = { id: 'field', target: { guide: 'r.field' }, mode: 'next', ready: () => true, ...copy('title') };
+
+/** What is on top at the middle of `element`, as the page draws it. */
+const onTopAtMiddle = (element: Element) => {
+    const r = element.getBoundingClientRect();
+    return document.elementsFromPoint(r.left + r.width / 2, r.top + r.height / 2)[0] ?? null;
+};
+
+describe('a control on the page, under the phone tab bar', () => {
+    it('is scrolled clear of the bar the page says it has', async () => {
+        const restore = stubHitTesting();
+        document.documentElement.style.setProperty('--jale-tab-bar-offset', '64px');
+        renderUnderBar([FIELD]);
+        await flush();
+        const field = document.querySelector('[data-guide="r.field"]') as HTMLElement;
+        expect(stepOf()).toBe('field');
+        expect(field.getBoundingClientRect().bottom).toBeLessThanOrEqual(800 - 64);
+        expect(field.contains(onTopAtMiddle(field))).toBe(true);
+        restore();
+    });
+
+    it('is scrolled clear of a fixed bar found on top of it, with no offset given', async () => {
+        const restore = stubHitTesting();
+        renderUnderBar([FIELD]);
+        await flush();
+        const field = document.querySelector('[data-guide="r.field"]') as HTMLElement;
+        expect(field.contains(onTopAtMiddle(field))).toBe(true);
+        expect(field.getBoundingClientRect().bottom).toBeLessThanOrEqual(736);
+        restore();
+    });
+
+    it('leaves a control in the bar itself where it is (the app tour’s tab-bar stops)', async () => {
+        const restore = stubHitTesting();
+        const scrollBy = vi.mocked(window.scrollBy);
+        renderUnderBar([{ id: 'home', target: { tour: 'tab.home' }, titleKey: `${KEY}.intro_title`, bodyKey: `${KEY}.intro_body` }], 'start');
+        await flush();
+        expect(stepOf()).toBe('home');
+        expect(scrollBy).not.toHaveBeenCalled();
+        restore();
+    });
+});
+
+describe('a control the page moves after it was scrolled to', () => {
+    it('is scrolled back into view when the page grows above it', async () => {
+        const restore = stubHitTesting();
+        document.documentElement.style.setProperty('--jale-tab-bar-offset', '64px');
+        renderUnderBar([FIELD]);
+        await flush();
+        const field = document.querySelector('[data-guide="r.field"]') as HTMLElement;
+        expect(field.getBoundingClientRect().bottom).toBeLessThanOrEqual(736);
+        // A refetch draws more above it: it is now below the viewport.
+        act(() => {
+            field.setAttribute('data-box', `${1100 + pageScroll},40,300,40`);
+        });
+        expect(field.getBoundingClientRect().top).toBeGreaterThan(800);
+        await flush(50);
+        const rect = field.getBoundingClientRect();
+        expect(rect.top).toBeGreaterThanOrEqual(0);
+        expect(rect.bottom).toBeLessThanOrEqual(736);
+        expect(field.contains(onTopAtMiddle(field))).toBe(true);
+        restore();
+    });
+});
+
+describe('a control taller than the page shows', () => {
+    it('leaves the page free to scroll on its step, the ring following, and the next step holds the page again', async () => {
+        const restore = stubHitTesting();
+        Object.defineProperty(window, 'innerHeight', { configurable: true, value: 844 });
+        const LONG: SpotlightStep = { id: 'long', target: { guide: 'r.long' }, mode: 'next', ready: () => true, ...copy('title') };
+        const SHORT: SpotlightStep = { id: 'short', target: { guide: 'r.short' }, mode: 'next', ready: () => true, ...copy('workers') };
+        render(
+            <>
+                <div data-guide="r.long" data-box="100,40,300,1200">
+                    <input aria-label="Work history" />
+                </div>
+                <div data-guide="r.short" data-box="1400,40,300,60">
+                    <input aria-label="Phone" />
+                </div>
+            </>,
+        );
+        render(
+            <Intl>
+                <Spotlight
+                    name="test-guide"
+                    resolve="lazy"
+                    steps={[LONG, SHORT]}
+                    waitMs={50}
+                    counterKey={COUNTER}
+                    onDismiss={() => {}}
+                    onUnavailable={() => {}}
+                />
+            </Intl>,
+        );
+        await flush();
+        expect(stepOf()).toBe('long');
+        // 1200px in an 844px viewport: the person scrolls it, so the page is not held.
+        expect(document.documentElement.style.overflow).toBe('');
+        const ring = () => {
+            const style = (document.querySelector('[data-spotlight-ring]') as HTMLElement).style;
+            return { top: Number.parseFloat(style.top), bottom: Number.parseFloat(style.top) + Number.parseFloat(style.height) };
+        };
+        // The ring keeps to the part in view: from the control's top to the viewport's bottom.
+        expect(ring()).toEqual({ top: 94, bottom: 844 });
+
+        // The person scrolls on, to the control's end: the ring follows it.
+        act(() => {
+            pageScroll = 806;
+            window.dispatchEvent(new Event('scroll'));
+        });
+        await flush();
+        expect(ring()).toEqual({ top: 0, bottom: 1306 - 806 });
+        // With room beside the part in view, the callout is there, off the ring.
+        const card = callout() as HTMLElement;
+        const at = { top: Number.parseFloat(card.style.top), left: Number.parseFloat(card.style.left) };
+        const ringBox = document.querySelector('[data-spotlight-ring]') as HTMLElement;
+        const ringRight = Number.parseFloat(ringBox.style.left) + Number.parseFloat(ringBox.style.width);
+        expect(at.top >= ring().bottom || at.left >= ringRight || at.top + 160 <= ring().top).toBe(true);
+        // Nothing scrolled it back on them.
+        expect(vi.mocked(window.scrollBy)).not.toHaveBeenCalled();
+
+        press('next');
+        await flush();
+        expect(stepOf()).toBe('short');
+        expect(document.documentElement.style.overflow).toBe('hidden');
+        restore();
+    });
+});
+
+describe('ending on the page it started on', () => {
+    afterEach(() => {
+        window.history.replaceState(null, '', '/');
+    });
+
+    it('a change of page ends it at once, as skipped', async () => {
+        const { onDismiss, show } = renderGuide([TITLE, TRADE], {}, { waitMs: 10_000 });
+        await flush();
+        expect(stepOf()).toBe('title');
+        // A link: the address changes and the new page draws.
+        act(() => {
+            window.history.pushState(null, '', '/elsewhere');
+        });
+        show({ fields: { trade: true } });
+        await flush();
+        expect(onDismiss).toHaveBeenCalledTimes(1);
+        expect(onDismiss).toHaveBeenCalledWith('skipped');
+    });
+
+    it('a last step passed over because its control never came ends it as skipped, with no closing card', async () => {
+        const MISSING: SpotlightStep = { ...TRADE, id: 'missing', target: { guide: 't.missing' } };
+        const { onDismiss } = renderGuide([TITLE, MISSING], {}, {
+            waitMs: 30,
+            done: { titleKey: `${KEY}.intro_title`, bodyKey: `${KEY}.intro_body` },
+        });
+        await flush();
+        type('#title', 'Framer');
+        press('next');
+        await flush(60);
+        expect(stepOf()).toBeNull();
+        expect(onDismiss).toHaveBeenCalledWith('skipped');
     });
 });
