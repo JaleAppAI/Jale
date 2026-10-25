@@ -54,6 +54,21 @@ export function focusableWithin(root: HTMLElement): HTMLElement[] {
     );
 }
 
+/**
+ * A control with an Escape of its own while its popup is open: an expanded
+ * combobox (`LocationPicker`, `CertificationsPicker`), or a button that owns
+ * an open menu or list (`aria-haspopup`). A disclosure (a plain
+ * `aria-expanded` button) has no Escape of its own and is not one.
+ */
+const OPEN_POPUP_OWNER = [
+    '[role="combobox"][aria-expanded="true"]',
+    '[aria-haspopup][aria-expanded="true"]:not([aria-haspopup="false"])',
+].join(', ');
+
+function inOpenPopupOwner(node: EventTarget | Element | null): boolean {
+    return node instanceof Element && node.closest(OPEN_POPUP_OWNER) !== null;
+}
+
 export function Modal({
     open,
     onClose,
@@ -146,12 +161,22 @@ export function Modal({
 
         function onKeyDown(event: KeyboardEvent) {
             if (event.key === 'Escape') {
-                // An Escape a layer above the dialog already handled is not
-                // the dialog's: a step-by-step guide drawn inside this panel
-                // marks the one it leaves to a combobox closing its own list
+                // An Escape a step-by-step guide drawn inside this panel
+                // already handled is not the dialog's: the guide marks the one
+                // it leaves to a combobox closing its own list
                 // (`components/tutorials/spotlight/Spotlight.tsx`), and that
                 // must not also close the dialog and discard what was typed.
-                if (event.defaultPrevented) return;
+                // Only the guide's: an Escape handled by any other layer is
+                // the dialog's as it always was.
+                if (event.defaultPrevented && panelRef.current?.querySelector('[data-spotlight]')) return;
+                // An Escape for an open list closes the list, not the dialog
+                // (and the form in it). This listener runs in the capture
+                // phase, ahead of the control's own handler and whatever it
+                // does to stop the key, so it has to ask: the key's target, or
+                // the focused element, is or sits in a control with its popup
+                // open. Once the list is closed, the next Escape is the
+                // dialog's.
+                if (inOpenPopupOwner(event.target) || inOpenPopupOwner(document.activeElement)) return;
                 if (!closeOnEscape) return;
                 event.preventDefault();
                 event.stopPropagation();

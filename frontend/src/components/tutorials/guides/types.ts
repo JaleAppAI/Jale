@@ -1,4 +1,4 @@
-import type { SpotlightDone, SpotlightStep } from '../spotlight/steps';
+import type { SpotlightDone, SpotlightStep, SpotlightTarget } from '../spotlight/steps';
 
 /**
  * A task's step-by-step guide (a "walkthrough"): data for the spotlight
@@ -39,4 +39,10 @@ export type WalkthroughGuide = {
     steps: readonly SpotlightStep[];
     /** An optional closing card after the last step. */
     done?: SpotlightDone;
+    /**
+     * What the guide runs in, when its page opens that together with the
+     * guide (the post-job wizard, `{ guide: 'post.wizard' }`). Closed before
+     * the first step's control shows, the play ends at once, with no outcome.
+     */
+    host?: SpotlightTarget;
 };
