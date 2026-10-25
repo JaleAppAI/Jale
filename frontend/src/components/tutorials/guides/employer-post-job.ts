@@ -20,7 +20,15 @@ import type { WalkthroughGuide } from './types';
  *
  * The wizard is the default place: its steps apply whenever none of the other
  * three is up, so a guide started with the wizard waits for the wizard's
- * first field like before.
+ * first field like before. Each wizard step also belongs to its screen, and
+ * applies only until the wizard has left that screen (`upToScreen`): Enter
+ * in a field moves the wizard on like its Next, and the guide follows to the
+ * next screen's first step instead of waiting on fields that are gone.
+ *
+ * A place's last step is finished by that place's own way out (Back to
+ * dashboard, Save changes, Save template, the limit dialog's buttons): an
+ * `action` step that completes when the dialog closes, so finishing there is
+ * recorded as completed, not skipped.
  *
  * Each step that the wizard could refuse at Next is a `next` step whose
  * `ready` holds only once the wizard would accept it (both shift times or
@@ -36,7 +44,7 @@ import type { WalkthroughGuide } from './types';
 const KEY = 'tutorial.employer_post_job.guide';
 
 /** The steps that say what they wait for (a step that is always ready shows no wait line). */
-const WAITS: ReadonlySet<string> = new Set(['city', 'city_check', 'edit_workers', 'next', 'next_details', 'pay', 'post_again', 'post_error', 'questions', 'submit', 'template_limit', 'template_name', 'template_taken', 'times', 'title', 'tpl_name', 'trade', 'trade_other', 'workers']);
+const WAITS: ReadonlySet<string> = new Set(['city', 'city_check', 'done', 'edit_save', 'edit_workers', 'limit_actions', 'next', 'next_details', 'pay', 'post_again', 'post_error', 'questions', 'submit', 'template_limit', 'template_name', 'template_taken', 'times', 'title', 'tpl_name', 'tpl_save', 'trade', 'trade_other', 'workers']);
 
 function keys(id: string) {
     return {
@@ -61,6 +69,23 @@ function wizardScreen(): string | null {
 }
 
 const posted = () => up('post.posted');
+
+/**
+ * The wizard is on screen `n` or an earlier one: a step of screen `n` is up or
+ * still ahead. Enter in a field moves the wizard on just like its Next, so the
+ * steps of a screen it has left stop applying instead of waiting for fields
+ * that are gone. Before the wizard has drawn its form it counts as screen 1;
+ * once the job is posted, no screen applies.
+ */
+function upToScreen(n: number): boolean {
+    if (posted()) return false;
+    const screen = wizardScreen();
+    return screen === null || Number(screen) <= n;
+}
+
+const onScreen1 = () => inWizard() && upToScreen(1);
+const onScreen2 = () => inWizard() && upToScreen(2);
+const onScreen3 = () => inWizard() && upToScreen(3);
 
 /** Post was pressed and refused at least once in this draft. */
 const postRefused = () => guideTarget('post.form')?.getAttribute('data-post-refused') === 'true';
@@ -99,14 +124,14 @@ const WIZARD: readonly SpotlightStep[] = [
         id: 'template',
         target: { guide: 'post.template' },
         // The picker is there only when the employer has saved templates.
-        when: () => inWizard() && up('post.template'),
+        when: () => onScreen1() && up('post.template'),
         mode: 'next',
         ...keys('template'),
     },
     {
         id: 'title',
         target: { guide: 'post.title' },
-        when: inWizard,
+        when: onScreen1,
         mode: 'next',
         ready: hasText,
         ...keys('title'),
@@ -115,7 +140,7 @@ const WIZARD: readonly SpotlightStep[] = [
         id: 'city_check',
         target: { guide: 'post.city' },
         // A template brought its city: the wizard asks to check it.
-        when: () => inWizard() && up('post.city_check'),
+        when: () => onScreen1() && up('post.city_check'),
         mode: 'next',
         ready: (control) => isPicked(control) || (locationDatasetFailed() && hasText(control)),
         ...keys('city_check'),
@@ -123,7 +148,7 @@ const WIZARD: readonly SpotlightStep[] = [
     {
         id: 'city',
         target: { guide: 'post.city' },
-        when: () => inWizard() && !up('post.city_check'),
+        when: () => onScreen1() && !up('post.city_check'),
         mode: 'auto',
         // Above the field, so the suggestion list opening below it stays clear.
         placement: 'top',
@@ -134,7 +159,7 @@ const WIZARD: readonly SpotlightStep[] = [
     {
         id: 'trade',
         target: { guide: 'post.trade' },
-        when: inWizard,
+        when: onScreen1,
         mode: 'auto',
         advanceWhen: hasText,
         ...keys('trade'),
@@ -142,7 +167,7 @@ const WIZARD: readonly SpotlightStep[] = [
     {
         id: 'trade_other',
         target: { guide: 'post.trade_other' },
-        when: () => inWizard() && valueOf('post.trade') === 'other',
+        when: () => onScreen1() && valueOf('post.trade') === 'other',
         mode: 'next',
         ready: hasText,
         ...keys('trade_other'),
@@ -150,7 +175,7 @@ const WIZARD: readonly SpotlightStep[] = [
     {
         id: 'next',
         target: { guide: 'post.next' },
-        when: inWizard,
+        when: onScreen1,
         mode: 'action',
         placement: 'top',
         advanceWhen: () => wizardScreen() === '2',
@@ -160,7 +185,7 @@ const WIZARD: readonly SpotlightStep[] = [
     {
         id: 'pay',
         target: { guide: 'post.pay' },
-        when: inWizard,
+        when: onScreen2,
         mode: 'next',
         ready: noneInvalid,
         ...keys('pay'),
@@ -168,7 +193,7 @@ const WIZARD: readonly SpotlightStep[] = [
     {
         id: 'workers',
         target: { guide: 'post.workers' },
-        when: inWizard,
+        when: onScreen2,
         mode: 'next',
         ready: workersReady,
         ...keys('workers'),
@@ -176,14 +201,14 @@ const WIZARD: readonly SpotlightStep[] = [
     {
         id: 'shifts',
         target: { guide: 'post.shifts' },
-        when: inWizard,
+        when: onScreen2,
         mode: 'next',
         ...keys('shifts'),
     },
     {
         id: 'times',
         target: { guide: 'post.times' },
-        when: inWizard,
+        when: onScreen2,
         mode: 'next',
         ready: shiftTimesPaired,
         ...keys('times'),
@@ -191,7 +216,7 @@ const WIZARD: readonly SpotlightStep[] = [
     {
         id: 'certifications',
         target: { guide: 'post.certifications' },
-        when: inWizard,
+        when: onScreen2,
         mode: 'next',
         placement: 'top',
         ...keys('certifications'),
@@ -199,7 +224,7 @@ const WIZARD: readonly SpotlightStep[] = [
     {
         id: 'next_details',
         target: { guide: 'post.next' },
-        when: inWizard,
+        when: onScreen2,
         mode: 'action',
         placement: 'top',
         advanceWhen: () => wizardScreen() === '3',
@@ -209,7 +234,7 @@ const WIZARD: readonly SpotlightStep[] = [
     {
         id: 'questions',
         target: { guide: 'post.questions' },
-        when: inWizard,
+        when: onScreen3,
         mode: 'next',
         ready: noEmptyQuestion,
         ...keys('questions'),
@@ -217,14 +242,14 @@ const WIZARD: readonly SpotlightStep[] = [
     {
         id: 'requirements',
         target: { guide: 'post.requirements' },
-        when: inWizard,
+        when: onScreen3,
         mode: 'next',
         ...keys('requirements'),
     },
     {
         id: 'template_save',
         target: { guide: 'post.template_save' },
-        when: inWizard,
+        when: onScreen3,
         mode: 'next',
         ...keys('template_save'),
     },
@@ -232,7 +257,7 @@ const WIZARD: readonly SpotlightStep[] = [
         id: 'template_name',
         target: { guide: 'post.template_name' },
         // Only once "Save as template" is ticked: then a name is required.
-        when: () => inWizard() && up('post.template_name'),
+        when: () => onScreen3() && up('post.template_name'),
         mode: 'next',
         ready: hasText,
         ...keys('template_name'),
@@ -240,10 +265,9 @@ const WIZARD: readonly SpotlightStep[] = [
     {
         id: 'submit',
         target: { guide: 'post.submit' },
-        // Not once posted: the posted screen replaces this button in the
-        // same change that completes the step, and a step whose control has
-        // gone is waited for, not passed, unless it no longer applies.
-        when: () => inWizard() && !posted(),
+        // On the last screen, not once posted: the posted screen replaces
+        // this button in the same change that completes the step.
+        when: onScreen3,
         mode: 'action',
         placement: 'top',
         advanceWhen: postAnswered,
@@ -253,7 +277,7 @@ const WIZARD: readonly SpotlightStep[] = [
     {
         id: 'post_error',
         target: { guide: 'post.submit' },
-        when: () => inWizard() && up('post.error') && !posted(),
+        when: () => onScreen3() && up('post.error'),
         mode: 'action',
         placement: 'top',
         advanceWhen: () => posted() || up('post.job_limit'),
@@ -262,14 +286,14 @@ const WIZARD: readonly SpotlightStep[] = [
     {
         id: 'job_limit',
         target: { guide: 'post.job_limit' },
-        when: () => inWizard() && up('post.job_limit'),
+        when: () => onScreen3() && up('post.job_limit'),
         mode: 'next',
         ...keys('job_limit'),
     },
     {
         id: 'template_taken',
         target: { guide: 'post.template_save' },
-        when: () => inWizard() && up('post.template_taken'),
+        when: () => onScreen3() && up('post.template_taken'),
         mode: 'next',
         // The line goes once the name changes (or the box is unticked).
         ready: () => !up('post.template_taken') && (!up('post.template_name') || hasText(guideTarget('post.template_name') as Element)),
@@ -278,7 +302,7 @@ const WIZARD: readonly SpotlightStep[] = [
     {
         id: 'template_limit',
         target: { guide: 'post.template_limit' },
-        when: () => inWizard() && up('post.template_limit'),
+        when: () => onScreen3() && up('post.template_limit'),
         mode: 'action',
         advanceWhen: () => posted() || up('post.error') || up('post.job_limit'),
         ...keys('template_limit'),
@@ -320,8 +344,11 @@ const WIZARD: readonly SpotlightStep[] = [
         id: 'done',
         target: { guide: 'post.back' },
         when: () => inWizard() && !up('post.job_limit'),
-        mode: 'next',
+        // Finished by the posted screen's own way out (Back to dashboard, or
+        // its X): pressing it is the end of the guide, not a skip.
+        mode: 'action',
         placement: 'top',
+        advanceWhen: () => !posted(),
         ...keys('done'),
     },
 ];
@@ -338,7 +365,9 @@ const LIMIT_DIALOG: readonly SpotlightStep[] = [
         id: 'limit_actions',
         target: { guide: 'limit.actions' },
         when: inLimitDialog,
-        mode: 'next',
+        // Finished by any of the dialog's buttons: each one closes it.
+        mode: 'action',
+        advanceWhen: () => !inLimitDialog(),
         placement: 'top',
         ...keys('limit_actions'),
     },
@@ -376,7 +405,9 @@ const EDIT: readonly SpotlightStep[] = [
         id: 'edit_save',
         target: { guide: 'edit.save' },
         when: inEdit,
-        mode: 'next',
+        // Finished by the dialog closing: Save changes once it saves (or Cancel).
+        mode: 'action',
+        advanceWhen: () => !inEdit(),
         placement: 'top',
         ...keys('edit_save'),
     },
@@ -402,7 +433,9 @@ const TEMPLATE_EDITOR: readonly SpotlightStep[] = [
         id: 'tpl_save',
         target: { guide: 'tpl.save' },
         when: inTemplateEditor,
-        mode: 'next',
+        // Finished by the editor closing: Save template once it saves (or Cancel).
+        mode: 'action',
+        advanceWhen: () => !inTemplateEditor(),
         placement: 'top',
         ...keys('tpl_save'),
     },

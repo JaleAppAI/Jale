@@ -2875,7 +2875,8 @@
           },
           "done": {
             "title": "Su empleo está publicado",
-            "body": "Volver al panel cierra esto y muestra su empleo nuevo. Los trabajadores que se postulen aparecen en Postulantes."
+            "body": "{input, select, touch {Toque} other {Haga clic en}} Volver al panel para cerrar esto y ver su empleo nuevo. Los trabajadores que se postulen aparecen en Postulantes.",
+            "wait": "{input, select, touch {Toque} other {Haga clic en}} Volver al panel para terminar."
           },
           "limit": {
             "title": "Alcanzó el límite de su plan",
@@ -2883,7 +2884,8 @@
           },
           "limit_actions": {
             "title": "Lo que puede hacer",
-            "body": "Pausar otro empleo lo lleva a su panel, donde cada empleo tiene Pausar. Mejorar plan abre Facturación para tener más espacios. Ahora no cierra esto."
+            "body": "Pausar otro empleo lo lleva a su panel, donde cada empleo tiene Pausar. Mejorar plan abre Facturación para tener más espacios. Ahora no cierra esto.",
+            "wait": "Elija una de estas opciones para terminar."
           },
           "edit_form": {
             "title": "Edite este empleo",
@@ -2900,7 +2902,8 @@
           },
           "edit_save": {
             "title": "Guarde sus cambios",
-            "body": "{input, select, touch {Toque} other {Haga clic en}} Guardar cambios cuando termine. Si falta algo, una línea en rojo arriba de los botones dice qué; corríjalo y guarde de nuevo."
+            "body": "{input, select, touch {Toque} other {Haga clic en}} Guardar cambios cuando termine. Si falta algo, una línea en rojo arriba de los botones dice qué; corríjalo y guarde de nuevo.",
+            "wait": "{input, select, touch {Toque} other {Haga clic en}} Guardar cambios para terminar, o en Cancelar para salir sin guardar."
           },
           "tpl_name": {
             "title": "Póngale nombre a la plantilla",
@@ -2913,7 +2916,8 @@
           },
           "tpl_save": {
             "title": "Guarde la plantilla",
-            "body": "{input, select, touch {Toque} other {Haga clic en}} Guardar plantilla cuando termine. Si falta algo, una línea en rojo arriba de los botones dice qué."
+            "body": "{input, select, touch {Toque} other {Haga clic en}} Guardar plantilla cuando termine. Si falta algo, una línea en rojo arriba de los botones dice qué.",
+            "wait": "{input, select, touch {Toque} other {Haga clic en}} Guardar plantilla para terminar."
           }
         }
       }
@@ -2988,7 +2992,7 @@
           },
           "board_start": {
             "title": "Detalles de inicio",
-            "body": "Para alguien contratado, Agregar detalles de inicio le dice cuándo y dónde presentarse, y por quién preguntar. Llene al menos un recuadro para guardar."
+            "body": "Para alguien contratado, Agregar detalles de inicio (Editar detalles de inicio cuando ya los agregó) le dice cuándo y dónde presentarse, y por quién preguntar. Llene al menos un recuadro para guardar."
           },
           "board_message": {
             "title": "Escríbales",
@@ -3037,7 +3041,7 @@
           },
           "profile_hired": {
             "title": "Contratado: ahora los detalles de inicio",
-            "body": "Agregue sus detalles de inicio en la página de Postulantes: ahí su fila tiene Agregar detalles de inicio."
+            "body": "Agregue sus detalles de inicio en la página de Postulantes: ahí su fila tiene Agregar detalles de inicio (o Editar detalles de inicio si ya los agregó)."
           }
         }
       }

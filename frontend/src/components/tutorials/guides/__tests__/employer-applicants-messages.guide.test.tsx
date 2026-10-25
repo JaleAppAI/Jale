@@ -302,6 +302,9 @@ describe('the applicants guide’s copy', () => {
         expect(step('board_row')).toContain(message('employer_dashboard.applicants.view_profile', locale));
         expect(step('board_message')).toContain(message('employer_applicants.message_action', locale));
         expect(step('board_start')).toContain(message('employer_applicants.hire_details.add', locale));
+        // A row whose start details are in reads Edit Start Details instead.
+        expect(step('board_start')).toContain(message('employer_applicants.hire_details.edit', locale));
+        expect(step('profile_hired')).toContain(message('employer_applicants.hire_details.edit', locale));
         expect(step('job_request')).toContain(message('employer_job_listing.applicants.request_details', locale));
         expect(step('job_request')).toContain(message('employer_job_listing.applicants.request_details_resend', locale));
         expect(step('job_message')).toContain(message('employer_messages.message_worker', locale));

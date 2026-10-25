@@ -2875,7 +2875,8 @@
           },
           "done": {
             "title": "Your job is posted",
-            "body": "Back to dashboard closes this and shows your new job. Workers who apply show up under Applicants."
+            "body": "{input, select, touch {Tap} other {Click}} Back to dashboard to close this and see your new job. Workers who apply show up under Applicants.",
+            "wait": "{input, select, touch {Tap} other {Click}} Back to dashboard to finish."
           },
           "limit": {
             "title": "Plan limit reached",
@@ -2883,7 +2884,8 @@
           },
           "limit_actions": {
             "title": "What you can do",
-            "body": "Pause another job goes to your dashboard, where each job has Pause. Upgrade plan opens Billing for more slots. Not now closes this."
+            "body": "Pause another job goes to your dashboard, where each job has Pause. Upgrade plan opens Billing for more slots. Not now closes this.",
+            "wait": "Pick one of these to finish."
           },
           "edit_form": {
             "title": "Edit this job",
@@ -2900,7 +2902,8 @@
           },
           "edit_save": {
             "title": "Save your changes",
-            "body": "{input, select, touch {Tap} other {Click}} Save changes when you’re done. If something is missing, one red line above the buttons says what; fix it and save again."
+            "body": "{input, select, touch {Tap} other {Click}} Save changes when you’re done. If something is missing, one red line above the buttons says what; fix it and save again.",
+            "wait": "{input, select, touch {Tap} other {Click}} Save changes to finish, or Cancel to leave without saving."
           },
           "tpl_name": {
             "title": "Name the template",
@@ -2913,7 +2916,8 @@
           },
           "tpl_save": {
             "title": "Save the template",
-            "body": "{input, select, touch {Tap} other {Click}} Save template when you’re done. If something is missing, a red line above the buttons says what."
+            "body": "{input, select, touch {Tap} other {Click}} Save template when you’re done. If something is missing, a red line above the buttons says what.",
+            "wait": "{input, select, touch {Tap} other {Click}} Save template to finish."
           }
         }
       }
@@ -2988,7 +2992,7 @@
           },
           "board_start": {
             "title": "Start details",
-            "body": "For someone hired, Add Start Details tells them when and where to show up, and who to ask for. Fill in at least one box to save."
+            "body": "For someone hired, Add Start Details (Edit Start Details once they’re added) tells them when and where to show up, and who to ask for. Fill in at least one box to save."
           },
           "board_message": {
             "title": "Write to them",
@@ -3037,7 +3041,7 @@
           },
           "profile_hired": {
             "title": "Hired: now the start details",
-            "body": "Add their start details on the Applicants page: their row there has Add Start Details."
+            "body": "Add their start details on the Applicants page: their row there has Add Start Details (or Edit Start Details once they’re added)."
           }
         }
       }

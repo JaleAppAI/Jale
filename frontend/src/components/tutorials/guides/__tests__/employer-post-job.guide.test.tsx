@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-import type { ReactNode } from 'react';
+import type { ReactElement, ReactNode } from 'react';
+import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 
@@ -121,8 +122,26 @@ afterEach(() => {
     vi.restoreAllMocks();
 });
 
+/** A dialog the way its page holds it: open until its own way out closes it. */
+function Closable({ dialog }: { dialog: (open: boolean, close: () => void) => ReactElement }) {
+    const [open, setOpen] = useState(true);
+    return dialog(open, () => setOpen(false));
+}
+
 function openWizard(locale: Locale = 'en') {
-    return renderWithGuide(<PostJobModal open onClose={vi.fn()} onJobCreated={vi.fn()} />, { id: 'employer_post_job', locale });
+    return renderWithGuide(
+        <Closable dialog={(open, close) => <PostJobModal open={open} onClose={close} onJobCreated={vi.fn()} />} />,
+        { id: 'employer_post_job', locale },
+    );
+}
+
+/** Enter in a wizard field, the way a person presses it: the form submits. */
+function enterIn(name: string) {
+    const input = field(name);
+    act(() => {
+        fireEvent.keyDown(input, { key: 'Enter' });
+        fireEvent.submit(input.form as HTMLFormElement);
+    });
 }
 
 const field = (name: string) => mark(name)?.querySelector<HTMLInputElement>('input, select, textarea') as HTMLInputElement;
@@ -200,7 +219,7 @@ async function post() {
 }
 
 describe('the post-job guide: the main path through every screen', () => {
-    it('walks screen 1, 2 and 3, Post and the posted screen, and completes on Got it', async () => {
+    it('walks screen 1, 2 and 3, Post and the posted screen, and completes on Back to dashboard', async () => {
         const view = openWizard();
         await throughScreenOne();
         await reach('next');
@@ -220,12 +239,16 @@ describe('the post-job guide: the main path through every screen', () => {
         await post();
         await waitFor(() => expect(createJob).toHaveBeenCalledTimes(1));
         await reach('share');
+        expect(screen.getByRole('heading', { name: message('employer_dashboard.job_posted.title') })).toBeInTheDocument();
         await press('next');
         await reach('done');
-        expect(action('next')).toHaveTextContent(message('tutorial.common.got_it'));
-        await press('next');
-        expect(view.onDismiss).toHaveBeenCalledWith('completed');
-        expect(screen.getByRole('heading', { name: message('employer_dashboard.job_posted.title') })).toBeInTheDocument();
+        // The posted screen's own way out finishes the guide.
+        expect(action('next')).toBeNull();
+        act(() => {
+            fireEvent.click(mark('post.back') as HTMLElement);
+        });
+        await waitFor(() => expect(view.onDismiss).toHaveBeenCalledWith('completed'));
+        expect(view.onDismiss).not.toHaveBeenCalledWith('skipped');
     });
 
     it('counts only the steps that apply: no template picker, no Other box, no template name', async () => {
@@ -294,6 +317,49 @@ describe('the post-job guide: the main path through every screen', () => {
         await wizardNext();
         expect(mark('post.form')).toHaveAttribute('data-step', '1');
         expect(currentStep()).toBe('next');
+    });
+});
+
+describe('the post-job guide: Enter submits the step (inventory Part A §7)', () => {
+    it('Enter in the Other box on screen 1: the guide follows to screen 2’s first step, and the count stays true', async () => {
+        openWizard();
+        await throughScreenOne('other');
+        await reach('trade_other');
+        type('post.trade_other', 'Welder');
+        await flush();
+        const before = counter();
+        enterIn('post.trade_other');
+        expect(mark('post.form')).toHaveAttribute('data-step', '2');
+        await reach('pay');
+        // Title, city, trade, the Other box; then pay: the skipped Next step is not counted.
+        expect(before).toBe('Posting a job · 4 of 17');
+        expect(counter()).toBe('Posting a job · 5 of 16');
+    });
+
+    it('Enter in Workers needed on screen 2: the guide follows to screen 3’s first step', async () => {
+        openWizard();
+        await throughScreenOne();
+        await reach('next');
+        await wizardNext();
+        await reach('pay');
+        await press('next');
+        await reach('workers');
+        enterIn('post.workers');
+        expect(mark('post.form')).toHaveAttribute('data-step', '3');
+        await reach('questions');
+        // Five shown so far (title, city, trade, Next, pay, workers = 6), then questions.
+        expect(counter()).toBe('Posting a job · 7 of 12');
+    });
+
+    it('Enter in Pay Min on screen 2: the same, from the pay step', async () => {
+        openWizard();
+        await throughScreenOne();
+        await reach('next');
+        await wizardNext();
+        await reach('pay');
+        enterIn('post.pay');
+        expect(mark('post.form')).toHaveAttribute('data-step', '3');
+        await reach('questions', 3000);
     });
 });
 
@@ -610,13 +676,14 @@ const job = (over: Partial<EmployerJobDetail> = {}) =>
 
 describe('the post-job guide in the edit dialog', () => {
     function openEdit(over: Partial<EmployerJobDetail> = {}) {
-        return renderWithGuide(<EditJobModal open job={job(over)} onClose={vi.fn()} onJobUpdated={vi.fn()} />, {
-            id: 'employer_post_job',
-            mode: 'always',
-        });
+        return renderWithGuide(
+            <Closable dialog={(open, close) => <EditJobModal open={open} job={job(over)} onClose={close} onJobUpdated={vi.fn()} />} />,
+            { id: 'employer_post_job', mode: 'always' },
+        );
     }
 
-    it('shows the one-form layout and Save changes, with nothing about locks before anyone applies', async () => {
+    it('shows the one-form layout and Save changes, with nothing about locks before anyone applies; Save changes finishes it', async () => {
+        updateJob.mockResolvedValue(job());
         const view = openEdit();
         await reach('intro');
         await press('start');
@@ -624,8 +691,25 @@ describe('the post-job guide in the edit dialog', () => {
         expect(counter()).toMatch(/1 of 2$/);
         await press('next');
         await reach('edit_save');
+        expect(action('next')).toBeNull();
+        act(() => {
+            fireEvent.click(mark('edit.save') as HTMLElement);
+        });
+        await waitFor(() => expect(view.onDismiss).toHaveBeenCalledWith('completed'));
+        expect(updateJob).toHaveBeenCalledTimes(1);
+    });
+
+    it('is finished by Cancel too: the dialog’s way out ends it as completed', async () => {
+        const view = openEdit();
+        await reach('intro');
+        await press('start');
+        await reach('edit_form');
         await press('next');
-        expect(view.onDismiss).toHaveBeenCalledWith('completed');
+        await reach('edit_save');
+        act(() => {
+            fireEvent.click(screen.getByRole('button', { name: message('employer_dashboard.modal.cancel') }));
+        });
+        await waitFor(() => expect(view.onDismiss).toHaveBeenCalledWith('completed'));
     });
 
     it('says why the questions are locked once someone applied, and the hired floor on workers', async () => {
@@ -651,10 +735,10 @@ describe('the post-job guide in the edit dialog', () => {
 
 describe('the post-job guide in the template editor', () => {
     it('asks for the name first, then the job, then Save template', async () => {
-        renderWithGuide(<TemplateEditModal open template={null} onClose={vi.fn()} onSaved={vi.fn()} />, {
-            id: 'employer_post_job',
-            mode: 'always',
-        });
+        const view = renderWithGuide(
+            <Closable dialog={(open, close) => <TemplateEditModal open={open} template={null} onClose={close} onSaved={vi.fn()} />} />,
+            { id: 'employer_post_job', mode: 'always' },
+        );
         await reach('intro');
         await press('start');
         await reach('tpl_name');
@@ -665,7 +749,12 @@ describe('the post-job guide in the template editor', () => {
         await reach('tpl_form');
         await press('next');
         await reach('tpl_save');
-        expect(action('next')).toHaveTextContent(message('tutorial.common.got_it'));
+        // Save template is the way out: no Got it of its own.
+        expect(action('next')).toBeNull();
+        act(() => {
+            fireEvent.click(screen.getByRole('button', { name: message('employer_dashboard.modal.cancel') }));
+        });
+        await waitFor(() => expect(view.onDismiss).toHaveBeenCalledWith('completed'));
     });
 });
 
@@ -677,18 +766,22 @@ describe('the post-job guide over the plan-limit dialog', () => {
             [job()],
         );
         expect(model).not.toBeNull();
-        const view = renderWithGuide(<PlanLimitDialog open model={model} onClose={vi.fn()} />, {
-            id: 'employer_post_job',
-            mode: 'replay',
-        });
+        const view = renderWithGuide(
+            <Closable dialog={(open, close) => <PlanLimitDialog open={open} model={model} onClose={close} />} />,
+            { id: 'employer_post_job', mode: 'replay' },
+        );
         await reach('intro');
         await press('start');
         await reach('limit');
         expect(counter()).toMatch(/1 of 2$/);
         await press('next');
         await reach('limit_actions');
-        await press('next');
-        expect(view.onDismiss).toHaveBeenCalledWith('completed');
+        // Any of the dialog's buttons finishes it: here Not now.
+        expect(action('next')).toBeNull();
+        act(() => {
+            fireEvent.click(screen.getByRole('button', { name: message('billing.limit_dialog.dismiss') }));
+        });
+        await waitFor(() => expect(view.onDismiss).toHaveBeenCalledWith('completed'));
     });
 
     it('is the same model the wizard’s late refusal shows', () => {
