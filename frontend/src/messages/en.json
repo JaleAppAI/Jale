@@ -2758,8 +2758,7 @@
         "steps": {
           "template": {
             "title": "Start from a template (optional)",
-            "body": "If this job is like one you saved, choose it in Start from a template. It fills in the whole form and replaces anything you typed. Or skip it.",
-            "wait": "Choose a template, or go on."
+            "body": "If this job is like one you saved, choose it in Start from a template. It fills in the whole form and replaces anything you typed. Or skip it."
           },
           "title": {
             "title": "Name the job",
@@ -2803,8 +2802,7 @@
           },
           "shifts": {
             "title": "Shifts (optional)",
-            "body": "Tick every shift this job can work: Day, Evening, Night or Overnight. You can pick more than one, or none.",
-            "wait": "Pick shifts, or go on."
+            "body": "Tick every shift this job can work: Day, Evening, Night or Overnight. You can pick more than one, or none."
           },
           "times": {
             "title": "Start and end times (optional)",
@@ -2813,8 +2811,7 @@
           },
           "certifications": {
             "title": "Certifications (optional)",
-            "body": "If workers need a card like OSHA 10, type it and pick it from the list, or pick Add “…” to use your own words. Don’t press Enter with nothing picked: it goes to the next screen and drops what you typed.",
-            "wait": "Add certifications, or go on."
+            "body": "If workers need a card like OSHA 10, type it and pick it from the list, or pick Add “…” to use your own words. Don’t press Enter with nothing picked: it goes to the next screen and drops what you typed."
           },
           "next_details": {
             "title": "That’s pay and schedule",
@@ -2828,13 +2825,11 @@
           },
           "requirements": {
             "title": "Questions for applicants",
-            "body": "For each row, pick Off, Optional or Required. Everything starts Off. Applicants answer these only after you request their details. Once someone applies, neither part can change.",
-            "wait": "Set the rows, or go on."
+            "body": "For each row, pick Off, Optional or Required. Everything starts Off. Applicants answer these only after you request their details. Once someone applies, neither part can change."
           },
           "template_save": {
             "title": "Save as template (optional)",
-            "body": "Tick Save as template to reuse this job next time. It will need a name.",
-            "wait": "Tick it, or go on."
+            "body": "Tick Save as template to reuse this job next time. It will need a name."
           },
           "template_name": {
             "title": "Name the template",
@@ -2853,8 +2848,7 @@
           },
           "job_limit": {
             "title": "Plan limit reached",
-            "body": "Your plan has no free slot for another active job. The links in this box close the form and lose what you typed. To keep your answers, tick Save as template, name it and post again: the template is saved even though the job isn’t.",
-            "wait": ""
+            "body": "Your plan has no free slot for another active job. The links in this box close the form and lose what you typed. To keep your answers, tick Save as template, name it and post again: the template is saved even though the job isn’t."
           },
           "template_taken": {
             "title": "That name is taken",
@@ -2873,38 +2867,31 @@
           },
           "template_not_saved": {
             "title": "Your template wasn’t saved",
-            "body": "Your job is posted. The yellow note says why the template wasn’t saved, and Manage templates opens your templates.",
-            "wait": ""
+            "body": "Your job is posted. The yellow note says why the template wasn’t saved, and Manage templates opens your templates."
           },
           "share": {
             "title": "Share it with workers",
-            "body": "Your job is private until you share it. {input, select, touch {Tap} other {Click}} Turn on the share link to get a link and a QR code to send to workers. You can do it later on the job’s page too.",
-            "wait": ""
+            "body": "Your job is private until you share it. {input, select, touch {Tap} other {Click}} Turn on the share link to get a link and a QR code to send to workers. You can do it later on the job’s page too."
           },
           "done": {
             "title": "Your job is posted",
-            "body": "Back to dashboard closes this and shows your new job. Workers who apply show up under Applicants.",
-            "wait": ""
+            "body": "Back to dashboard closes this and shows your new job. Workers who apply show up under Applicants."
           },
           "limit": {
             "title": "Plan limit reached",
-            "body": "Your plan has no free slot for another active job, so the form didn’t open. Any jobs listed are the ones using your slots: open one to pause or close it, which frees its slot at once.",
-            "wait": ""
+            "body": "Your plan has no free slot for another active job, so the form didn’t open. Any jobs listed are the ones using your slots: open one to pause or close it, which frees its slot at once."
           },
           "limit_actions": {
             "title": "What you can do",
-            "body": "Pause another job goes to your dashboard, where each job has Pause. Upgrade plan opens Billing for more slots. Not now closes this.",
-            "wait": ""
+            "body": "Pause another job goes to your dashboard, where each job has Pause. Upgrade plan opens Billing for more slots. Not now closes this."
           },
           "edit_form": {
             "title": "Edit this job",
-            "body": "Everything is on one form, not three screens. Change what you need, like the pay or the shifts.",
-            "wait": ""
+            "body": "Everything is on one form, not three screens. Change what you need, like the pay or the shifts."
           },
           "edit_locked": {
             "title": "Some parts are locked",
-            "body": "This job already has applicants, so its job type, certifications and both parts of the questions can’t change: everyone who applies answers the same questions. To ask something different, post a new job.",
-            "wait": ""
+            "body": "This job already has applicants, so its job type, certifications and both parts of the questions can’t change: everyone who applies answers the same questions. To ask something different, post a new job."
           },
           "edit_workers": {
             "title": "Workers needed",
@@ -2913,8 +2900,7 @@
           },
           "edit_save": {
             "title": "Save your changes",
-            "body": "{input, select, touch {Tap} other {Click}} Save changes when you’re done. If something is missing, one red line above the buttons says what; fix it and save again.",
-            "wait": ""
+            "body": "{input, select, touch {Tap} other {Click}} Save changes when you’re done. If something is missing, one red line above the buttons says what; fix it and save again."
           },
           "tpl_name": {
             "title": "Name the template",
@@ -2923,13 +2909,11 @@
           },
           "tpl_form": {
             "title": "Fill in the job",
-            "body": "The same fields as posting a job, on one form, with no start date. A title, a trade and a city picked from the list are required.",
-            "wait": ""
+            "body": "The same fields as posting a job, on one form, with no start date. A title, a trade and a city picked from the list are required."
           },
           "tpl_save": {
             "title": "Save the template",
-            "body": "{input, select, touch {Tap} other {Click}} Save template when you’re done. If something is missing, a red line above the buttons says what.",
-            "wait": ""
+            "body": "{input, select, touch {Tap} other {Click}} Save template when you’re done. If something is missing, a red line above the buttons says what."
           }
         }
       }
@@ -2976,6 +2960,86 @@
         "where": "Where",
         "where_value": "Job site address",
         "sent_wa": "Sent to the worker on WhatsApp"
+      },
+      "guide": {
+        "intro_title": "Want a hand with your applicants?",
+        "intro_body": "{input, select, touch {We’ll show you what’s on this page and what each button does, one at a time. About a minute.} other {We’ll show you what’s on this page and what each button does, one at a time. About a minute.}}",
+        "counter": "Your applicants · {current} of {total}",
+        "steps": {
+          "board_row": {
+            "title": "Everyone who applied",
+            "body": "Each row is one person: the job they applied to, their status, how well they match and their trust score. View Profile opens their answers and documents."
+          },
+          "board_jobs": {
+            "title": "One job at a time",
+            "body": "{input, select, touch {Tap} other {Click}} a job to see only its applicants. {input, select, touch {Tap} other {Click}} it again, or All jobs, to see everyone."
+          },
+          "board_status": {
+            "title": "Move them along",
+            "body": "Pick a status here; it saves as soon as you pick it. New, Contacted, In conversation and Not selected are just for you. Hired tells the worker, so it asks you to confirm first."
+          },
+          "board_hire_blocked": {
+            "title": "Why Hired is greyed out",
+            "body": "To hire someone, their details must be complete. This page has no Request details button: open View Profile to request them."
+          },
+          "board_hire_banner": {
+            "title": "Hires waiting for start details",
+            "body": "This counts the people you hired who don’t have start details yet. Someone you just marked hired is counted after you reload the page."
+          },
+          "board_start": {
+            "title": "Start details",
+            "body": "For someone hired, Add Start Details tells them when and where to show up, and who to ask for. Fill in at least one box to save."
+          },
+          "board_message": {
+            "title": "Write to them",
+            "body": "Message opens a chat with this person in the Messages panel. They read it and answer on WhatsApp."
+          },
+          "job_filters": {
+            "title": "Narrow the list",
+            "body": "Filter by Status, Skills, Availability or Min experience (years). The list updates a moment after you stop typing. Clear filters shows everyone again."
+          },
+          "job_filtered_empty": {
+            "title": "No one matches",
+            "body": "The filters are hiding everyone. {input, select, touch {Tap} other {Click}} Clear filters to see everyone who applied.",
+            "wait": "Clear the filters to continue."
+          },
+          "job_row": {
+            "title": "One applicant",
+            "body": "Their status, whether you asked for their details, how well they match and their answers. This page has no status box: to change a status or hire, open View profile."
+          },
+          "job_request": {
+            "title": "Request details",
+            "body": "Request details asks this person on WhatsApp for what you marked Required. Hired unlocks once they’re complete. Once asked, the button reads Resend request. The page doesn’t refresh by itself: reload it to see their progress."
+          },
+          "job_message": {
+            "title": "Message Worker",
+            "body": "Message Worker sends a ready-made hello on WhatsApp right away, with no preview, and opens the chat in Messages."
+          },
+          "job_profile": {
+            "title": "View profile",
+            "body": "View profile opens everything this person sent, with the status box and Save."
+          },
+          "profile_status": {
+            "title": "Their status",
+            "body": "Pick a status, then {input, select, touch {tap} other {click}} Save. Only Request details and Hired message the worker; the other statuses are just for you."
+          },
+          "profile_hire_blocked": {
+            "title": "Why Hired is greyed out",
+            "body": "Their details aren’t complete yet. Request them with Request details; Hired unlocks once they’re done."
+          },
+          "profile_request": {
+            "title": "Request details",
+            "body": "Request details asks this person on WhatsApp for what you marked Required. Once asked, the button reads Resend request. Reload the page later to see their progress."
+          },
+          "profile_docs": {
+            "title": "Their documents",
+            "body": "View or download what they uploaded. Share Upload Link and Request only copy a link for you to send; they don’t message anyone."
+          },
+          "profile_hired": {
+            "title": "Hired: now the start details",
+            "body": "Add their start details on the Applicants page: their row there has Add Start Details."
+          }
+        }
       }
     },
     "employer_messages": {
@@ -3004,6 +3068,53 @@
         "invite": "An employer on Jale wants to talk to you about a Concrete finisher job.",
         "reply": "Reply",
         "window_chip": "Reply window open"
+      },
+      "guide": {
+        "intro_title": "Want a hand with messages?",
+        "intro_body": "{input, select, touch {We’ll show you how a message reaches the worker and where to write, one step at a time. About a minute.} other {We’ll show you how a message reaches the worker and where to write, one step at a time. About a minute.}}",
+        "counter": "Messages · {current} of {total}",
+        "steps": {
+          "first": {
+            "title": "A new conversation",
+            "body": "You haven’t written to this person yet. When you send, they get your message on WhatsApp, and their replies show up here."
+          },
+          "thread": {
+            "title": "The conversation",
+            "body": "Your messages are on the right, with a word under each: Sent, Delivered, Waiting for worker reply, or Failed. Theirs are on the left. A failed message can’t be retried: send a new one."
+          },
+          "window": {
+            "title": "When your message arrives",
+            "body": "Within 24 hours of a worker’s last message, yours goes straight to their WhatsApp. Otherwise Jale sends them an invitation first, and your message waits until they reply."
+          },
+          "write": {
+            "title": "Write your message",
+            "body": "Type it here, up to 2,000 characters. Enter sends; Shift+Enter starts a new line."
+          },
+          "send": {
+            "title": "Send it",
+            "body": "{input, select, touch {Tap} other {Click}} Send. If it doesn’t go through, a red line above the box says why, and your words stay in the box."
+          },
+          "closed": {
+            "title": "This conversation is closed",
+            "body": "Nobody can send new messages here, and a closed conversation can’t be reopened. The history stays on this page."
+          },
+          "not_interested": {
+            "title": "Not interested",
+            "body": "Not interested removes this person from your list, and they get no more messages about this job. It asks you to confirm first."
+          },
+          "close": {
+            "title": "Close",
+            "body": "Close ends the WhatsApp conversation: neither of you can send new messages. It asks you to confirm first, and the history stays."
+          },
+          "put_away": {
+            "title": "Put messages away",
+            "body": "{input, select, touch {Tap} other {Click}} Close (or Hide, on a phone) to put the messages away. Open them again from the Messages button."
+          },
+          "list": {
+            "title": "Your open conversations",
+            "body": "Open conversations are listed here, newest first. Pick one to read it and reply. To write to someone new, use Message on their row under Applicants."
+          }
+        }
       }
     },
     "tour": {

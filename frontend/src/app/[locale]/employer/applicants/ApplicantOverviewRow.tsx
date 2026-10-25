@@ -227,7 +227,7 @@ export function ApplicantOverviewRow({
     : null;
 
   return (
-    <div className="flex flex-wrap items-center gap-3 px-4 py-3">
+    <div className="flex flex-wrap items-center gap-3 px-4 py-3" data-guide="apps.row">
       <span className="avatar-initials h-9 w-9 shrink-0 text-[11px]">{initialsFor(name)}</span>
 
       <div className="min-w-0 flex-1 basis-48">
@@ -294,7 +294,7 @@ export function ApplicantOverviewRow({
           The two things an employer does after reading a row now happen in
           it; everything deeper still lives on the profile. */}
       <div className="flex shrink-0 flex-wrap items-center gap-2">
-        <div className="w-40">
+        <div className="w-40" data-guide="apps.row_status">
           {/* The label is the accessible name, not a visible one: the row is a
               scan surface and a "Status" caption over every select would
               triple the vertical space it costs.
@@ -332,6 +332,7 @@ export function ApplicantOverviewRow({
           type="button"
           variant="outline"
           size="sm"
+          data-guide="apps.row_message"
           /* The ids say WHO, and the four display fields say who they are.
              This board has no job-status filter, so it lists applicants of
              paused, filled and closed jobs; the drawer resolves an application
@@ -363,7 +364,7 @@ export function ApplicantOverviewRow({
       </div>
 
       {hireHint ? (
-        <p id={hireHintId} className="basis-full text-xs text-[var(--jale-ink-2)]">{hireHint}</p>
+        <p id={hireHintId} data-guide="apps.row_hint" className="basis-full text-xs text-[var(--jale-ink-2)]">{hireHint}</p>
       ) : null}
 
       {status === 'hired' && hireDetailsSupported ? (
@@ -380,6 +381,7 @@ export function ApplicantOverviewRow({
             type="button"
             variant={showsDetails ? 'ghost' : 'outline'}
             onClick={() => setHireFormOpen(true)}
+            data-guide="apps.row_start"
           >
             {showsDetails ? tHire('edit') : tHire('add')}
           </Button>

@@ -235,7 +235,8 @@ export default function JobDetailPage() {
         phase === 'ready' && data ? data.applicants.map((row) => row.status) : null,
         inbox,
     );
-    const applicantsTutorial = useTutorial('employer_applicants', { done: applicantsDone });
+    // A step-by-step guide over this page's own applicants (E3's walkthrough).
+    const applicantsTutorial = useTutorial('employer_applicants', { done: applicantsDone, walkthrough: true });
     /*
      * The edit dialog's part of the post-job guide (E2): it opens with the
      * dialog in the "every time" setting. Never as a first-time play
@@ -993,7 +994,7 @@ export default function JobDetailPage() {
                                 onEnabledChange={handlePublicListingChange}
                             />
 
-                            <DashboardPanel>
+                            <DashboardPanel data-guide="apps.job_panel">
                                 <PanelHeader
                                     title={t('applicants.title')}
                                     action={
@@ -1003,7 +1004,9 @@ export default function JobDetailPage() {
                                     }
                                 />
 
-                                <ApplicantFilterPanel filters={filters} onChange={applyFilters} />
+                                <div data-guide="apps.filters">
+                                    <ApplicantFilterPanel filters={filters} onChange={applyFilters} />
+                                </div>
 
                                 {applicants.length > 0 ? (
                                     <RankingNotice
@@ -1023,15 +1026,17 @@ export default function JobDetailPage() {
                                         // Reads differently on purpose: rows exist, the
                                         // filters are hiding them, and the only useful
                                         // action is undoing the filters.
-                                        <EmptyState
-                                            variant="filtered"
-                                            title={t('applicants.filtered_title')}
-                                            body={t('applicants.filtered_body')}
-                                            action={{
-                                                label: t('applicants.clear_filters'),
-                                                onClick: () => applyFilters(EMPTY_APPLICANT_FILTERS),
-                                            }}
-                                        />
+                                        <div data-guide="apps.filtered_empty">
+                                            <EmptyState
+                                                variant="filtered"
+                                                title={t('applicants.filtered_title')}
+                                                body={t('applicants.filtered_body')}
+                                                action={{
+                                                    label: t('applicants.clear_filters'),
+                                                    onClick: () => applyFilters(EMPTY_APPLICANT_FILTERS),
+                                                }}
+                                            />
+                                        </div>
                                     ) : (
                                         <EmptyState
                                             icon="user"
@@ -1338,7 +1343,7 @@ function ApplicantRow({
     }
 
     return (
-        <li className="flex flex-col gap-3 px-5 py-4">
+        <li className="flex flex-col gap-3 px-5 py-4" data-guide="apps.job_row">
             <div className="flex items-start gap-3">
                 <InitialsAvatar name={displayName} size={36} />
 
@@ -1498,6 +1503,7 @@ function ApplicantRow({
                         onClick={() => void handleRequestDetails()}
                         loading={requesting}
                         loadingLabel={tCommon('loading')}
+                        data-guide="apps.request"
                     >
                         {resendingDetails
                             ? t('applicants.request_details_resend')
@@ -1506,6 +1512,7 @@ function ApplicantRow({
                 ) : null}
                 <Link
                     href={`/employer/workers/${applicant.worker_id}?job_id=${jobId}`}
+                    data-guide="apps.job_profile"
                     className="inline-flex h-9 items-center justify-center rounded-full border border-[var(--jale-divider)] px-4 text-xs font-semibold leading-none text-[var(--jale-ink)] transition-colors duration-150 hover:bg-[var(--jale-paper-2)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
                 >
                     {t('applicants.view_profile')}
@@ -1517,6 +1524,7 @@ function ApplicantRow({
                     onClick={() => void handleMessageWorker()}
                     loading={starting}
                     loadingLabel={tMessages('starting')}
+                    data-guide="apps.job_message"
                 >
                     {tMessages('message_worker')}
                 </Button>

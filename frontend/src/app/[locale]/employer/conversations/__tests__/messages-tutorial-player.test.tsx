@@ -175,7 +175,10 @@ async function settle() {
 }
 
 const tourTitle = () => message('tutorial.employer_messages.title');
-const tourDialog = () => screen.queryByRole('dialog', { name: tourTitle() });
+/** The slides player (E4 no longer plays them here) or the guide's callout. */
+const tourDialog = () => screen.queryByRole('dialog', { name: tourTitle() }) ?? guideCard();
+/** The step-by-step guide's callout, when one is drawn. */
+const guideCard = () => document.querySelector<HTMLElement>('[data-spotlight] [role="dialog"]');
 const nothingPicked = () => screen.queryAllByText(message('employer_messages.empty_select')).length > 0;
 const posts = () => tutorialCalls().filter(([method]) => method === 'POST');
 
@@ -186,6 +189,12 @@ function rowFor(name: string): HTMLButtonElement {
     if (!button) throw new Error(`no row for ${name}`);
     return button;
 }
+
+beforeAll(async () => {
+    // The guides' lazy chunk, fetched once up front: a cold first import
+    // would otherwise spend the first test's wait on module transforms.
+    await import('@/components/tutorials/GuideHost');
+});
 
 let rectsSpy: ReturnType<typeof vi.spyOn>;
 beforeAll(() => {
@@ -207,26 +216,36 @@ beforeEach(() => {
 });
 
 describe('the Messages board with the real messages tour', () => {
-    it('plays the tour before the picked thread opens, then opens it with focus on the row', async () => {
+    it('opens the picked thread at once, then the messages guide starts over it', async () => {
         renderBoard();
         await waitFor(() => expect(rowFor('Test Worker')).toBeTruthy());
         await settle();
         const dialogs = watchDialogs();
 
-        const picked = rowFor('Test Worker');
-        picked.focus();
         act(() => {
-            fireEvent.click(picked);
+            fireEvent.click(rowFor('Test Worker'));
         });
-        const tour = await screen.findByRole('dialog', { name: tourTitle() });
-        expect(nothingPicked()).toBe(true);
-
+        // The host first: E4 is a step-by-step guide over the conversation just opened.
+        expect(nothingPicked()).toBe(false);
+        const intro = await waitFor(() => {
+            const card = guideCard();
+            expect(card?.getAttribute('data-step')).toBe('intro');
+            return card as HTMLElement;
+        }, { timeout: 4000 });
         act(() => {
-            fireEvent.click(within(tour).getByRole('button', { name: message('tutorial.common.skip') }));
+            fireEvent.click(within(intro).getByRole('button', { name: message('tutorial.common.guide.employer.start') }));
         });
-        await waitFor(() => expect(nothingPicked()).toBe(false));
-        expect(tourDialog()).toBeNull();
-        expect(document.activeElement).toBe(rowFor('Test Worker'));
+        // A new applicant: the first-message composer, then the delivery rule under the cards.
+        await waitFor(() => expect(guideCard()?.getAttribute('data-step')).toBe('first'));
+        act(() => {
+            fireEvent.click(within(guideCard() as HTMLElement).getByRole('button', { name: message('tutorial.common.next') }));
+        });
+        await waitFor(() => expect(guideCard()?.getAttribute('data-step')).toBe('window'));
+        act(() => {
+            fireEvent.click(within(guideCard() as HTMLElement).getByRole('button', { name: message('tutorial.common.guide.end') }));
+        });
+        await settle();
+        expect(guideCard()).toBeNull();
         expect(posts().map(([, , body]) => body)).toEqual([{ tutorial_id: 'employer_messages', outcome: 'skipped' }]);
         expect(dialogs.most()).toBe(1);
         dialogs.stop();

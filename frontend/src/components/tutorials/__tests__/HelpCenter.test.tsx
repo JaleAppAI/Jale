@@ -104,7 +104,7 @@ const PAGES = { employer: EmployerHelpPage, worker: WorkerHelpPage } as const;
 const GUIDES = {
     employer: [
         ['How Jale works', 'From posting a job to hiring, in five steps.'],
-        ['Posting a job', 'The three steps and the 4 required fields.'],
+        ['Posting a job', 'The three steps and what you must fill in.'],
         ['Your applicants', 'Trust scores, statuses and how to hire.'],
         ['Messages', 'How your messages reach workers on WhatsApp.'],
     ],

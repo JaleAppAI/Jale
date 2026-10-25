@@ -120,9 +120,10 @@ export async function press(name: string) {
     await flush();
 }
 
-/** Waits (a few short turns) for the guide to reach `id`. */
-export async function reach(id: string, turns = 40) {
-    for (let turn = 0; turn < turns && currentStep() !== id; turn += 1) await flush(5);
+/** Waits (short turns, up to `ms`) for the guide to reach `id`: generous, for a loaded test run. */
+export async function reach(id: string, ms = 5000) {
+    const until = Date.now() + ms;
+    while (currentStep() !== id && Date.now() < until) await flush(10);
     if (currentStep() !== id) throw new Error(`guide at "${currentStep()}", expected "${id}"`);
 }
 

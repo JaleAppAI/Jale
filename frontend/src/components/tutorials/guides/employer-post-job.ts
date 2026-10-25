@@ -35,11 +35,14 @@ import type { WalkthroughGuide } from './types';
 
 const KEY = 'tutorial.employer_post_job.guide';
 
+/** The steps that say what they wait for (a step that is always ready shows no wait line). */
+const WAITS: ReadonlySet<string> = new Set(['city', 'city_check', 'edit_workers', 'next', 'next_details', 'pay', 'post_again', 'post_error', 'questions', 'submit', 'template_limit', 'template_name', 'template_taken', 'times', 'title', 'tpl_name', 'trade', 'trade_other', 'workers']);
+
 function keys(id: string) {
     return {
         titleKey: `${KEY}.steps.${id}.title`,
         bodyKey: `${KEY}.steps.${id}.body`,
-        waitKey: `${KEY}.steps.${id}.wait`,
+        ...(WAITS.has(id) ? { waitKey: `${KEY}.steps.${id}.wait` } : {}),
     };
 }
 

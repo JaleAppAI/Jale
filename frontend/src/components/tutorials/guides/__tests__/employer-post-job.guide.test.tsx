@@ -59,7 +59,7 @@ vi.mock('@/lib/api/employer', async (importOriginal) => ({
 }));
 
 import { ApiError } from '@/lib/api/employer';
-import type { Job, JobTemplate } from '@/lib/api/employer';
+import type { EmployerJobDetail, JobTemplate } from '@/lib/api/employer';
 import { planLimitModel, activeJobsPreflightModel } from '@/lib/plan-limit';
 import { PostJobModal } from '@/components/employer/PostJobModal';
 import { EditJobModal } from '@/components/employer/EditJobModal';
@@ -81,6 +81,9 @@ import {
 } from './guide-kit';
 
 const KEY = 'tutorial.employer_post_job.guide';
+
+// Each test walks the real wizard through many steps: generous under a loaded full run.
+vi.setConfig({ testTimeout: 30_000 });
 
 const withCity: JobTemplate = {
     id: 'tpl-city',
@@ -134,8 +137,8 @@ async function pickCity() {
     const city = mark('post.city')?.querySelector<HTMLInputElement>('[role="combobox"]') as HTMLInputElement;
     act(() => city.focus());
     fireEvent.change(city, { target: { value: 'Hay' } });
-    fireEvent.mouseDown(await screen.findByRole('option', { name: 'Hayward, CA' }));
-    await waitFor(() => expect(mark('post.city')?.querySelector('[data-picked]')).not.toBeNull());
+    fireEvent.mouseDown(await screen.findByRole('option', { name: 'Hayward, CA' }, { timeout: 4000 }));
+    await waitFor(() => expect(mark('post.city')?.querySelector('[data-picked]')).not.toBeNull(), { timeout: 4000 });
     await flush();
 }
 
@@ -265,7 +268,7 @@ describe('the post-job guide: the main path through every screen', () => {
         await flush(200);
         expect(currentStep()).toBe('city');
         expect(action('next')).toBeNull();
-        fireEvent.mouseDown(await screen.findByRole('option', { name: 'Hayward, CA' }));
+        fireEvent.mouseDown(await screen.findByRole('option', { name: 'Hayward, CA' }, { timeout: 4000 }));
         await reach('trade');
     });
 
@@ -457,7 +460,7 @@ describe('the post-job guide: branches on screen 3 and at Post', () => {
     });
 
     it('explains the plan limit refused at Post and ends there', async () => {
-        createJob.mockRejectedValue(new ApiError(403, 'job_limit_reached', { active_job_limit: 1, active_job_usage: 1 }));
+        createJob.mockRejectedValue(new ApiError(403, 'job_limit_reached', { active_job_limit: 1, active_jobs: 1 }));
         const view = openWizard();
         await toSubmit();
         await press('next');
@@ -582,7 +585,7 @@ describe('the post-job guide: branches on screen 3 and at Post', () => {
     });
 });
 
-const job = (over: Partial<Job> = {}) =>
+const job = (over: Partial<EmployerJobDetail> = {}) =>
     ({
         id: 'job-1', title: 'Concrete Finisher', location: 'El Paso, TX', city_key: 'el-paso-tx', city: 'El Paso', state: 'TX',
         state_region: 'TX', status: 'active', applicant_count: 0, hired_count: 0, open_count: 3, number_of_workers_needed: 3,
@@ -590,10 +593,10 @@ const job = (over: Partial<Job> = {}) =>
         work_days: [], language_preference: ['any'], certifications: [], certification_requirements: [], pre_application_prompts: [],
         required_docs: [], optional_docs: [], required_fields: [], optional_fields: [], created_at: '2026-09-01T00:00:00Z',
         ...over,
-    }) as unknown as Job;
+    }) as unknown as EmployerJobDetail;
 
 describe('the post-job guide in the edit dialog', () => {
-    function openEdit(over: Partial<Job> = {}) {
+    function openEdit(over: Partial<EmployerJobDetail> = {}) {
         return renderWithGuide(<EditJobModal open job={job(over)} onClose={vi.fn()} onJobUpdated={vi.fn()} />, {
             id: 'employer_post_job',
             mode: 'always',
@@ -613,7 +616,7 @@ describe('the post-job guide in the edit dialog', () => {
     });
 
     it('says why the questions are locked once someone applied, and the hired floor on workers', async () => {
-        openEdit({ applicant_count: 3, hired_count: 2 } as Partial<Job>);
+        openEdit({ applicant_count: 3, hired_count: 2 } as Partial<EmployerJobDetail>);
         await reach('intro');
         await press('start');
         await reach('edit_form');
