@@ -9,7 +9,7 @@ import {
     type Band,
     type Box,
 } from './geometry';
-import { isRendered } from './steps';
+import { isRendered, targetSelector, type SpotlightTarget } from './steps';
 
 /**
  * Where a spotlight lives: on the page, or inside the dialog its control sits
@@ -96,9 +96,14 @@ export function openPopupsOf(target: Element): HTMLElement[] {
     return popups;
 }
 
-/** True when focus is in a control whose popup is open: Escape closes that first. */
-export function ownsOpenPopup(element: Element | null): boolean {
-    return element instanceof HTMLElement && element.getAttribute('aria-expanded') === 'true';
+/**
+ * Whether `element` is still what `target` names. A control can stay in the
+ * page while its hook moves to another one: the wizard's one footer button is
+ * `post.next` on one screen and `post.submit` on the last.
+ */
+export function stillTarget(element: Element, target: SpotlightTarget): boolean {
+    if (typeof target === 'function') return target() === element;
+    return element.matches(targetSelector(target));
 }
 
 /** A modal dialog, of any kind. */
@@ -106,14 +111,16 @@ const MODAL_DIALOG = '[role="dialog"][aria-modal="true"], [role="alertdialog"][a
 
 /**
  * Whether a modal dialog other than the walkthrough's own is open: one that
- * is not a walkthrough's callout, and does not hold `scope` (the dialog the
- * walkthrough runs in, if any). A confirm or a form opened over the step.
+ * is not a walkthrough's callout, does not hold `scope` (the dialog the
+ * walkthrough runs in, if any), and is not its declared `host`. A confirm or
+ * a form opened over the step.
  */
-export function modalOver(scope: HTMLElement | null): boolean {
+export function modalOver(scope: HTMLElement | null, host?: SpotlightTarget): boolean {
     const own = scope !== null && scope !== document.body ? scope : null;
     for (const dialog of Array.from(document.querySelectorAll(MODAL_DIALOG))) {
         if (dialog.closest('[data-spotlight]') !== null) continue;
         if (own !== null && dialog.contains(own)) continue;
+        if (host !== undefined && stillTarget(dialog, host)) continue;
         return true;
     }
     return false;
@@ -238,14 +245,13 @@ export function revealOnPage(control: HTMLElement, calloutHeight = 0, popups: re
  * bar, or under fixed chrome. A control taller than that part never counts.
  */
 export function outOfPageBand(control: HTMLElement, popups: readonly Element[] = []): boolean {
-    if (fixedOrSticky(control) !== null) return false;
-    if (popups.length > 0 && !tallerThanPage(control)) {
-        return outOfBandWith(extentOf(control, popups), boxOf(control), visiblePageBand());
-    }
+    // Taller than the page shows: the person scrolls it, and it is never
+    // scrolled back on them. The same band as for every other rule here.
+    if (fixedOrSticky(control) !== null || tallerThanPage(control)) return false;
+    const band = visiblePageBand();
+    if (popups.length > 0) return outOfBandWith(extentOf(control, popups), boxOf(control), band);
     const rect = control.getBoundingClientRect();
-    const bottom = window.innerHeight - tabBarOffset();
-    if (rect.height > bottom) return false;
-    if (rect.top < 0 || rect.bottom > bottom) return true;
+    if (rect.top < band.top || rect.bottom > band.bottom) return true;
     const top = pageElementAt(rect.left + rect.width / 2, rect.top + rect.height / 2);
     return top !== null && !control.contains(top) && fixedOrSticky(top) !== null;
 }
