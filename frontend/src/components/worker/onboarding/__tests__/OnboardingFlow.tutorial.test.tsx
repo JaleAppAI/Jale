@@ -83,6 +83,11 @@ describe('OnboardingFlow — the W1 tutorial', () => {
         expect(tutorial.handle.maybeAutoOpen).toHaveBeenCalledTimes(1);
     });
 
+    it('asks for the step-by-step guide, not the slides', () => {
+        renderIntl(<OnboardingFlow token="id-token" initialState={at('legal.review')} />);
+        expect(tutorial.useTutorial.mock.calls.every(([, options]) => options.walkthrough === true)).toBe(true);
+    });
+
     it('asks only once however often the flow renders', () => {
         const { rerender } = renderIntl(<OnboardingFlow token="id-token" initialState={at('legal.review')} />);
         rerender(<OnboardingFlow token="id-token" initialState={at('legal.review')} />);

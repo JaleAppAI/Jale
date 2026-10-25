@@ -21,10 +21,11 @@ import {
 
 /*
  * W1 with the real tutorial: the providers as the app layout mounts them, the
- * real progress store, player and content. The onboarding flow opens "Before
- * you start" on its first screen for a worker who has no record and has not
- * finished onboarding (K1.5), alone, and its last button reads "Let's start".
- * The band carries Help, which replays any worker tutorial.
+ * real progress store, guide host and content. The onboarding flow opens the
+ * step-by-step guide on its first screen for a worker who has no record and
+ * has not finished onboarding (K1.5), alone; the slides ("Before you start")
+ * stay in Help as the overview. The band carries Help, which replays any
+ * worker tutorial's slides.
  */
 
 const { api, router } = vi.hoisted(() => ({
@@ -100,22 +101,13 @@ async function settle() {
 const dialogs = () => document.querySelectorAll('[role="dialog"]').length;
 const posts = () => tutorialCalls().filter(([method]) => method === 'POST');
 
-/** Presses the dialog's primary button until it reads `last`, then returns it. */
-function walkToLast(dialog: HTMLElement, next: string, last: string): HTMLElement {
-    for (let guard = 0; guard < 10; guard += 1) {
-        const done = within(dialog).queryByRole('button', { name: last });
-        if (done) return done;
-        act(() => within(dialog).getByRole('button', { name: next }).click());
-    }
-    throw new Error(`never reached "${last}"`);
-}
-
 let rectsSpy: ReturnType<typeof vi.spyOn>;
 beforeAll(async () => {
     rectsSpy = vi.spyOn(Element.prototype, 'getClientRects').mockImplementation(() => [{}] as unknown as DOMRectList);
     // The player's own chunk, fetched up front as the provider's preload does
     // in the app, so "nothing opened" is never passed by a chunk still loading.
     await import('@/components/tutorials/TutorialHost');
+    await import('@/components/tutorials/GuideHost');
 });
 afterAll(() => rectsSpy.mockRestore());
 
@@ -129,32 +121,36 @@ beforeEach(() => {
 });
 
 describe('OnboardingFlow with the real W1 tutorial', () => {
-    it('opens "Before you start" over the terms screen, alone, and ends on "Let’s start"', async () => {
+    it('opens the step-by-step guide over the terms screen, alone, instead of the slides', async () => {
         serveTutorials([]);
         const watch = watchDialogs();
         renderFlow(at('legal.review'));
 
-        const dialog = await screen.findByRole('dialog', { name: 'Before you start' });
-        expect(within(dialog).getByRole('heading', { name: 'About 2 minutes' })).toBeInTheDocument();
-        expect(within(dialog).getByText(/^7 short steps/)).toBeInTheDocument();
+        const intro = await screen.findByRole('dialog', { name: en.tutorial.worker_onboarding.guide.intro_title });
+        expect(screen.queryByRole('dialog', { name: 'Before you start' })).toBeNull();
+        act(() => within(intro).getByRole('button', { name: en.tutorial.common.guide.worker.start }).click());
 
-        const start = walkToLast(dialog, 'Next', 'Let’s start');
-        act(() => start.click());
+        // The first step points at the terms screen's own button.
+        await vi.waitFor(() => {
+            const layer = document.querySelector('[data-spotlight="worker_onboarding"]');
+            expect(layer?.querySelector('[data-step="terms"]')).not.toBeNull();
+        });
+        act(() => screen.getByRole('button', { name: 'End guide' }).click());
         await settle();
         watch.stop();
 
         expect(dialogs()).toBe(0);
         expect(watch.most()).toBe(1);
-        expect(posts().map(([, , body]) => body)).toEqual([{ tutorial_id: 'worker_onboarding', outcome: 'completed' }]);
+        expect(posts().map(([, , body]) => body)).toEqual([{ tutorial_id: 'worker_onboarding', outcome: 'skipped' }]);
     });
 
-    it('says it in Spanish, ending on "Empecemos"', async () => {
+    it('says it in Spanish, with tú', async () => {
         serveTutorials([]);
         renderFlow(at('legal.review'), 'es');
 
-        const dialog = await screen.findByRole('dialog', { name: 'Antes de empezar' });
-        expect(within(dialog).getByRole('heading', { name: 'Unos 2 minutos' })).toBeInTheDocument();
-        expect(walkToLast(dialog, 'Siguiente', 'Empecemos')).toBeInTheDocument();
+        const intro = await screen.findByRole('dialog', { name: es.tutorial.worker_onboarding.guide.intro_title });
+        expect(within(intro).getByRole('button', { name: 'Guíame' })).toBeInTheDocument();
+        expect(within(intro).getByRole('button', { name: es.tutorial.common.guide.self })).toBeInTheDocument();
     });
 
     it('does not open again once the account has a record for it', async () => {

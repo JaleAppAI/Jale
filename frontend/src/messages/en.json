@@ -2121,7 +2121,8 @@
       "confirm_title": "Did you mean {city}, {state}?",
       "confirm_yes": "Yes, that's right",
       "confirm_no": "No, let me change it",
-      "cta": "Continue"
+      "cta": "Continue",
+      "location_pick": "Pick your city from the list to continue, or type a 5-digit ZIP."
     },
     "trade": {
       "title": "What's your trade?",
@@ -2522,6 +2523,113 @@
         "job2": "Concrete laborer",
         "job2_meta": "Socorro, TX · $20/h",
         "apply": "Apply"
+      },
+      "guide": {
+        "intro_title": "Want help setting up your profile?",
+        "intro_body": "{input, select, touch {We’ll show you what to tap and what to write on each screen, one step at a time. About 2 minutes.} other {We’ll show you what to click and what to write on each screen, one step at a time. About 2 minutes.}}",
+        "counter": "Your profile · {current} of {total}",
+        "steps": {
+          "terms": {
+            "title": "Read and accept",
+            "body": "This short page says how Jale uses your information and that job messages come by SMS and WhatsApp. {input, select, touch {Tap} other {Click}} I accept and continue when you’re ready.",
+            "wait": "{input, select, touch {Tap} other {Click}} I accept and continue to go on."
+          },
+          "name": {
+            "title": "Your name",
+            "body": "Type your first name and your last name. Both are needed. Employers see this name on your applications.",
+            "wait": "Type both names to continue."
+          },
+          "location": {
+            "title": "Where you live",
+            "body": "{input, select, touch {Start typing your city, then tap it in the list.} other {Start typing your city, then click it in the list.}} Or type your 5-digit ZIP. A city you type but don’t pick doesn’t count.",
+            "wait": "Pick your city from the list, or type a 5-digit ZIP."
+          },
+          "about_continue": {
+            "title": "Go on",
+            "body": "{input, select, touch {Tap} other {Click}} Continue.",
+            "wait": "{input, select, touch {Tap} other {Click}} Continue to go on."
+          },
+          "location_confirm": {
+            "title": "Is this your city?",
+            "body": "We found a city that looks close. {input, select, touch {Tap} other {Click}} Yes, that's right if it’s yours. If not, {input, select, touch {tap} other {click}} No, let me change it, pick your city from the list again and {input, select, touch {tap} other {click}} Continue.",
+            "wait": "Answer Yes or No to go on."
+          },
+          "trade": {
+            "title": "Your trade",
+            "body": "{input, select, touch {Tap} other {Click}} the trade you do the most. If yours isn’t on the list, {input, select, touch {tap} other {click}} Other.",
+            "wait": "Pick a trade to continue."
+          },
+          "trade_other": {
+            "title": "Type your trade",
+            "body": "You picked Other, so a box opened under the list. {input, select, touch {Tap} other {Click}} it and type your trade, like welder or roofer: 2 to 60 characters.",
+            "wait": "Type your trade in 2 to 60 characters to continue."
+          },
+          "trade_back": {
+            "title": "Tap Back first",
+            "body": "Your typed trade is waiting to be saved, so to pick one from the list, {input, select, touch {tap} other {click}} Back at the top first. Then pick your trade and {input, select, touch {tap} other {click}} Continue.",
+            "wait": "{input, select, touch {Tap} other {Click}} Back, then pick your trade."
+          },
+          "trade_continue": {
+            "title": "Go on",
+            "body": "{input, select, touch {Tap} other {Click}} Continue.",
+            "wait": "{input, select, touch {Tap} other {Click}} Continue to go on."
+          },
+          "years": {
+            "title": "Time in this trade",
+            "body": "{input, select, touch {Tap} other {Click}} how long you’ve worked in your trade.",
+            "wait": "Pick one to continue."
+          },
+          "transport": {
+            "title": "Your own transportation",
+            "body": "{input, select, touch {Tap} other {Click}} Yes if you have your own way to get to work, or No. No is a fine answer.",
+            "wait": "Pick Yes or No to continue."
+          },
+          "availability": {
+            "title": "When you can work",
+            "body": "{input, select, touch {Tap} other {Click}} when you can work: Full-time, Part-time, Weekends or Flexible.",
+            "wait": "Pick one to continue."
+          },
+          "work_continue": {
+            "title": "Go on",
+            "body": "That’s the three answers this screen needs. {input, select, touch {Tap} other {Click}} Continue.",
+            "wait": "{input, select, touch {Tap} other {Click}} Continue to go on."
+          },
+          "q1_lock": {
+            "title": "Three questions employers read",
+            "body": "Next come three questions, answered in your own words. Until you finish question 3 you can go back and change them; after that they lock.",
+            "wait": ""
+          },
+          "answer": {
+            "title": "Answer in your own words",
+            "body": "Type your answer in the box: at least 15 characters. More detail helps employers choose you.",
+            "wait": "Write at least 15 characters to continue."
+          },
+          "answer_voice": {
+            "title": "Answer in your own words",
+            "body": "Type your answer in the box, or {input, select, touch {tap} other {click}} the microphone, say it, and {input, select, touch {tap} other {click}} it again to stop. Then check the text. At least 15 characters.",
+            "wait": "Write or say at least 15 characters to continue."
+          },
+          "question_next": {
+            "title": "Next question",
+            "body": "{input, select, touch {Tap} other {Click}} Next.",
+            "wait": "{input, select, touch {Tap} other {Click}} Next to go on."
+          },
+          "q3_lock": {
+            "title": "This is the last one",
+            "body": "After you {input, select, touch {tap} other {click}} Complete your questions, your three answers lock and you can’t change them.",
+            "wait": ""
+          },
+          "q3_complete": {
+            "title": "Finish your questions",
+            "body": "{input, select, touch {Tap} other {Click}} Complete your questions to finish.",
+            "wait": "{input, select, touch {Tap} other {Click}} Complete your questions to finish."
+          },
+          "done": {
+            "title": "You’re all set",
+            "body": "This is what employers see. We’re reading your answers to find your skills; you don’t have to wait. Use the button below to go on.",
+            "wait": ""
+          }
+        }
       }
     },
     "worker_apply": {

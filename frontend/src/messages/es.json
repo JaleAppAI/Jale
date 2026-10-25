@@ -2121,7 +2121,8 @@
       "confirm_title": "¿Quisiste decir {city}, {state}?",
       "confirm_yes": "Sí, es correcto",
       "confirm_no": "No, quiero cambiarlo",
-      "cta": "Continuar"
+      "cta": "Continuar",
+      "location_pick": "Elige tu ciudad de la lista para continuar, o escribe un código postal de 5 dígitos."
     },
     "trade": {
       "title": "¿Cuál es tu oficio?",
@@ -2522,6 +2523,113 @@
         "job2": "Ayudante de concreto",
         "job2_meta": "Socorro, TX · $20/h",
         "apply": "Postularme"
+      },
+      "guide": {
+        "intro_title": "¿Te ayudamos a crear tu perfil?",
+        "intro_body": "{input, select, touch {Te mostramos qué tocar y qué escribir en cada pantalla, paso a paso. Unos 2 minutos.} other {Te mostramos dónde hacer clic y qué escribir en cada pantalla, paso a paso. Unos 2 minutos.}}",
+        "counter": "Tu perfil · {current} de {total}",
+        "steps": {
+          "terms": {
+            "title": "Lee y acepta",
+            "body": "Esta página corta dice cómo usa Jale tu información y que los mensajes de trabajo llegan por SMS y WhatsApp. {input, select, touch {Toca} other {Haz clic en}} Acepto y continúo cuando estés listo.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Acepto y continúo para seguir."
+          },
+          "name": {
+            "title": "Tu nombre",
+            "body": "Escribe tu nombre y tu apellido. Se necesitan los dos. Los empleadores ven este nombre en tus postulaciones.",
+            "wait": "Escribe los dos para continuar."
+          },
+          "location": {
+            "title": "Dónde vives",
+            "body": "{input, select, touch {Empieza a escribir tu ciudad y tócala en la lista.} other {Empieza a escribir tu ciudad y haz clic en ella en la lista.}} O escribe tu código postal de 5 dígitos. Una ciudad que escribes pero no eliges de la lista no cuenta.",
+            "wait": "Elige tu ciudad de la lista o escribe un código postal de 5 dígitos."
+          },
+          "about_continue": {
+            "title": "Sigue",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Continuar.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Continuar para seguir."
+          },
+          "location_confirm": {
+            "title": "¿Es tu ciudad?",
+            "body": "Encontramos una ciudad parecida. {input, select, touch {Toca} other {Haz clic en}} Sí, es correcto si es la tuya. Si no, {input, select, touch {toca} other {haz clic en}} No, quiero cambiarlo, elige tu ciudad de la lista otra vez y {input, select, touch {toca} other {haz clic en}} Continuar.",
+            "wait": "Contesta Sí o No para seguir."
+          },
+          "trade": {
+            "title": "Tu oficio",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} el oficio que más haces. Si el tuyo no está en la lista, {input, select, touch {toca} other {haz clic en}} Otro.",
+            "wait": "Elige un oficio para continuar."
+          },
+          "trade_other": {
+            "title": "Escribe tu oficio",
+            "body": "Elegiste Otro, así que se abrió un recuadro debajo de la lista. {input, select, touch {Tócalo} other {Haz clic en él}} y escribe tu oficio, como soldador o techador: de 2 a 60 caracteres.",
+            "wait": "Escribe tu oficio en 2 a 60 caracteres para continuar."
+          },
+          "trade_back": {
+            "title": "Primero toca Atrás",
+            "body": "Tu oficio escrito está esperando a guardarse, así que para elegir uno de la lista, primero {input, select, touch {toca} other {haz clic en}} Atrás arriba. Luego elige tu oficio y {input, select, touch {toca} other {haz clic en}} Continuar.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Atrás y luego elige tu oficio."
+          },
+          "trade_continue": {
+            "title": "Sigue",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Continuar.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Continuar para seguir."
+          },
+          "years": {
+            "title": "Tiempo en este oficio",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} cuánto tiempo llevas en tu oficio.",
+            "wait": "Elige una opción para continuar."
+          },
+          "transport": {
+            "title": "Transporte propio",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Sí si tienes cómo llegar al trabajo por tu cuenta, o No. No también es una respuesta válida.",
+            "wait": "Elige Sí o No para continuar."
+          },
+          "availability": {
+            "title": "Cuándo puedes trabajar",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} cuándo puedes trabajar: Tiempo completo, Medio tiempo, Fines de semana o Flexible.",
+            "wait": "Elige una opción para continuar."
+          },
+          "work_continue": {
+            "title": "Sigue",
+            "body": "Son las tres respuestas que necesita esta pantalla. {input, select, touch {Toca} other {Haz clic en}} Continuar.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Continuar para seguir."
+          },
+          "q1_lock": {
+            "title": "Tres preguntas que leen los empleadores",
+            "body": "Ahora vienen tres preguntas que contestas con tus propias palabras. Hasta terminar la pregunta 3 puedes regresar y cambiarlas; después se bloquean.",
+            "wait": ""
+          },
+          "answer": {
+            "title": "Contesta con tus propias palabras",
+            "body": "Escribe tu respuesta en el recuadro: al menos 15 caracteres. Con más detalle, los empleadores te eligen más fácil.",
+            "wait": "Escribe al menos 15 caracteres para continuar."
+          },
+          "answer_voice": {
+            "title": "Contesta con tus propias palabras",
+            "body": "Escribe tu respuesta en el recuadro, o {input, select, touch {toca} other {haz clic en}} el micrófono, dila y {input, select, touch {tócalo} other {haz clic en él}} otra vez para detener. Luego revisa el texto. Al menos 15 caracteres.",
+            "wait": "Escribe o di al menos 15 caracteres para continuar."
+          },
+          "question_next": {
+            "title": "Siguiente pregunta",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Siguiente.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Siguiente para seguir."
+          },
+          "q3_lock": {
+            "title": "Es la última",
+            "body": "Cuando {input, select, touch {toques} other {hagas clic en}} Completa tus preguntas, tus tres respuestas se bloquean y ya no puedes cambiarlas.",
+            "wait": ""
+          },
+          "q3_complete": {
+            "title": "Termina tus preguntas",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Completa tus preguntas para terminar.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Completa tus preguntas para terminar."
+          },
+          "done": {
+            "title": "Todo listo",
+            "body": "Esto es lo que ven los empleadores. Estamos leyendo tus respuestas para encontrar tus habilidades; no tienes que esperar. Usa el botón de abajo para seguir.",
+            "wait": ""
+          }
+        }
       }
     },
     "worker_apply": {

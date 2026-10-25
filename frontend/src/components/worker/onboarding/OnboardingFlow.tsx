@@ -137,8 +137,13 @@ export function OnboardingFlow({
      * resuming later in the run, or stopped on an exit panel, is past the
      * point it explains. Whether it opens is the tutorial's decision (a
      * record, this signal, another overlay), not this flow's.
+     *
+     * What opens is the step-by-step guide (`walkthrough`), not the slides:
+     * it points at each screen's real controls as the worker reaches them,
+     * so the worker sees one thing, not a slide deck and then a guide. The
+     * slides stay in Help as the overview.
      */
-    const tutorial = useTutorial('worker_onboarding', { done: flow.server.lifecycle === 'ready' });
+    const tutorial = useTutorial('worker_onboarding', { done: flow.server.lifecycle === 'ready', walkthrough: true });
     const tutorialAskedRef = useRef(false);
     const askTutorial = useEffectEvent(() => tutorial.maybeAutoOpen());
     useEffect(() => {
@@ -400,7 +405,11 @@ export function OnboardingFlow({
                                     <InlineFeedback tone="info">{tOnboarding(`rejection.${flow.notice}`)}</InlineFeedback>
                                 </div>
                             ) : null}
-                            {renderScreen()}
+                            {/* Which screen this is, for the step-by-step guide:
+                                the address never changes between screens. */}
+                            <div data-guide="onb.screen" data-screen={screen} className="flex flex-1 flex-col">
+                                {renderScreen()}
+                            </div>
                         </>
                     )}
         </OnboardingShell>
