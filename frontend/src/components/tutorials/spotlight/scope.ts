@@ -1,4 +1,4 @@
-import { cutoutFor, scrollToFit } from './geometry';
+import { cutoutFor, scrollToFit, type Band } from './geometry';
 import { isRendered } from './steps';
 
 /**
@@ -113,6 +113,30 @@ function tabBarOffset(): number {
     return Number.isFinite(value) ? value : 0;
 }
 
+/**
+ * The part of the viewport the page's content shows in: below a fixed or
+ * sticky header, above the phone tab bar or other fixed chrome at the bottom.
+ */
+export function visiblePageBand(): Band {
+    let top = 0;
+    let bottom = window.innerHeight - tabBarOffset();
+    const x = window.innerWidth / 2;
+    const header = pageElementAt(x, 1);
+    const above = header ? fixedOrSticky(header) : null;
+    if (above) top = Math.max(top, above.getBoundingClientRect().bottom);
+    const footer = pageElementAt(x, window.innerHeight - 1);
+    const below = footer ? fixedOrSticky(footer) : null;
+    if (below) bottom = Math.min(bottom, below.getBoundingClientRect().top);
+    return bottom > top ? { top, bottom } : { top: 0, bottom: window.innerHeight };
+}
+
+/** Whether a control on the page is taller than what the page shows of itself at once (a long row on a phone). */
+export function tallerThanPage(control: HTMLElement): boolean {
+    if (fixedOrSticky(control) !== null) return false;
+    const band = visiblePageBand();
+    return control.getBoundingClientRect().height > band.bottom - band.top;
+}
+
 /** The page's own element on top at (x, y): the walkthrough's layer is left out. */
 function pageElementAt(x: number, y: number): Element | null {
     if (typeof document.elementsFromPoint !== 'function') return null;
@@ -127,18 +151,29 @@ function pageElementAt(x: number, y: number): Element | null {
  * for the bar, and then whatever fixed or sticky element is still on top of
  * the control (a sticky header above, a bar below) is scrolled clear of it.
  * A control that is itself in the chrome (the app tour's tab-bar stops) is
- * left where it is.
+ * left where it is. A control taller than what the page shows (a long row
+ * on a phone) is scrolled to show its top, under room for the callout of
+ * `calloutHeight`, and the person scrolls the rest.
  */
-export function revealOnPage(control: HTMLElement): void {
+export function revealOnPage(control: HTMLElement, calloutHeight = 0): void {
     if (fixedOrSticky(control) !== null) return;
-    // Optional call: jsdom has no scrollIntoView.
-    control.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
     const scroller = scrollParentWithin(control, document.body);
     const scrollBy = (dy: number) => {
         if (dy === 0) return;
         if (scroller !== null) scroller.scrollTop += dy;
         else window.scrollBy(0, dy);
     };
+    if (tallerThanPage(control)) {
+        const page = scroller ?? document.scrollingElement;
+        const at = scroller !== null ? scroller.scrollTop : window.scrollY;
+        const end = page ? page.scrollHeight - page.clientHeight : 0;
+        const rect = control.getBoundingClientRect();
+        const hole = cutoutFor({ top: rect.top, left: rect.left, width: rect.width, height: rect.height });
+        scrollBy(scrollToFit(hole, calloutHeight, visiblePageBand(), { min: -at, max: Math.max(0, end - at) }));
+        return;
+    }
+    // Optional call: jsdom has no scrollIntoView.
+    control.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
     const bar = tabBarOffset();
     if (bar > 0) {
         const rect = control.getBoundingClientRect();

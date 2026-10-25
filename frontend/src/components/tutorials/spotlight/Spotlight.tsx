@@ -22,6 +22,8 @@ import {
     scrollIntoContainer,
     scrollParentWithin,
     scrollToFitCallout,
+    tallerThanPage,
+    visiblePageBand,
 } from './scope';
 import {
     applies,
@@ -161,7 +163,8 @@ type Phase =
     | { kind: 'step'; index: number }
     | { kind: 'done' };
 
-type Layout = { hole: Box; placement: Placement };
+/** `tall`: a control on the page taller than what the page shows at once, which the person scrolls. */
+type Layout = { hole: Box; placement: Placement; tall: boolean };
 
 /** The viewport, or the box the layer covers inside a dialog, in viewport px. */
 type Frame = { top: number; left: number; width: number; height: number };
@@ -182,7 +185,8 @@ function sameLayout(a: Layout | null, b: Layout | null): boolean {
         a.placement.side === b.placement.side &&
         a.placement.top === b.placement.top &&
         a.placement.left === b.placement.left &&
-        a.placement.arrow === b.placement.arrow
+        a.placement.arrow === b.placement.arrow &&
+        a.tall === b.tall
     );
 }
 
@@ -686,11 +690,15 @@ export function Spotlight({
     // The page behind stays put, as under a Modal, while the walkthrough is on
     // the page. Inside a dialog, the dialog holds the lock. Held by its own
     // property (`./page-lock`), so moving between the two in any order leaves
-    // the page as the dialogs and the walkthrough each found it.
+    // the page as the dialogs and the walkthrough each found it. Not on a step
+    // whose control is taller than the page shows: the person scrolls it (the
+    // ring follows, and nothing scrolls it back on them); the next step holds
+    // the page again.
+    const scrollsItself = !inDialog && (layout?.tall ?? false);
     useEffect(() => {
-        if (!engaged || inDialog) return;
+        if (!engaged || inDialog || scrollsItself) return;
         return holdPageScroll();
-    }, [engaged, inDialog]);
+    }, [engaged, inDialog, scrollsItself]);
 
     const interactive = step !== null && isInteractive(step);
 
@@ -786,6 +794,7 @@ export function Spotlight({
         let hole = cutoutFor(popups.length > 0 ? unionBox(box, ...popups) : box);
         let band: Band | undefined;
         let outer: Band | undefined;
+        let tall = false;
         if (inDialog && scope) {
             // The callout keeps to the dialog's scrolling body (clear of its
             // header and pinned footer), or to the dialog for a control
@@ -799,12 +808,23 @@ export function Spotlight({
             // The ring shows what the body shows of the control, no more (a
             // control taller than the body does not ring the footer).
             hole = clipToBand(hole, band);
+        } else if (tallerThanPage(control)) {
+            // Taller than what the page shows (a long row on a phone): the
+            // person scrolls it, the ring keeps to the part in view, and the
+            // callout to an edge clear of that part where there is one.
+            tall = true;
+            const visible = visiblePageBand();
+            band = { top: visible.top - origin.top, bottom: visible.bottom - origin.top };
+            outer = { top: 0, bottom: origin.height };
+            hole = clipToBand(hole, band);
         }
         const size = callout.getBoundingClientRect();
         const next: Layout = {
             hole,
+            tall,
             placement: placeCallout(
-                box,
+                // Pointing at the part of the control in view.
+                band ? clipToBand(box, band) : box,
                 { width: size.width, height: size.height },
                 { width: origin.width, height: origin.height },
                 step.placement,
@@ -837,7 +857,7 @@ export function Spotlight({
             }
             // Clear of the phone tab bar and a sticky header; a control in
             // that chrome (the app tour's tab-bar stops) stays where it is.
-            else if (!inDialog) revealOnPage(control);
+            else if (!inDialog) revealOnPage(control, dialogRef.current?.getBoundingClientRect().height ?? 0);
         };
         reveal();
         measure();

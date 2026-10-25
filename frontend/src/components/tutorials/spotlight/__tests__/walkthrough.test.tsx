@@ -1331,6 +1331,70 @@ describe('a control the page moves after it was scrolled to', () => {
     });
 });
 
+describe('a control taller than the page shows', () => {
+    it('leaves the page free to scroll on its step, the ring following, and the next step holds the page again', async () => {
+        const restore = stubHitTesting();
+        Object.defineProperty(window, 'innerHeight', { configurable: true, value: 844 });
+        const LONG: SpotlightStep = { id: 'long', target: { guide: 'r.long' }, mode: 'next', ready: () => true, ...copy('title') };
+        const SHORT: SpotlightStep = { id: 'short', target: { guide: 'r.short' }, mode: 'next', ready: () => true, ...copy('workers') };
+        render(
+            <>
+                <div data-guide="r.long" data-box="100,40,300,1200">
+                    <input aria-label="Work history" />
+                </div>
+                <div data-guide="r.short" data-box="1400,40,300,60">
+                    <input aria-label="Phone" />
+                </div>
+            </>,
+        );
+        render(
+            <Intl>
+                <Spotlight
+                    name="test-guide"
+                    resolve="lazy"
+                    steps={[LONG, SHORT]}
+                    waitMs={50}
+                    counterKey={COUNTER}
+                    onDismiss={() => {}}
+                    onUnavailable={() => {}}
+                />
+            </Intl>,
+        );
+        await flush();
+        expect(stepOf()).toBe('long');
+        // 1200px in an 844px viewport: the person scrolls it, so the page is not held.
+        expect(document.documentElement.style.overflow).toBe('');
+        const ring = () => {
+            const style = (document.querySelector('[data-spotlight-ring]') as HTMLElement).style;
+            return { top: Number.parseFloat(style.top), bottom: Number.parseFloat(style.top) + Number.parseFloat(style.height) };
+        };
+        // The ring keeps to the part in view: from the control's top to the viewport's bottom.
+        expect(ring()).toEqual({ top: 94, bottom: 844 });
+
+        // The person scrolls on, to the control's end: the ring follows it.
+        act(() => {
+            pageScroll = 806;
+            window.dispatchEvent(new Event('scroll'));
+        });
+        await flush();
+        expect(ring()).toEqual({ top: 0, bottom: 1306 - 806 });
+        // With room beside the part in view, the callout is there, off the ring.
+        const card = callout() as HTMLElement;
+        const at = { top: Number.parseFloat(card.style.top), left: Number.parseFloat(card.style.left) };
+        const ringBox = document.querySelector('[data-spotlight-ring]') as HTMLElement;
+        const ringRight = Number.parseFloat(ringBox.style.left) + Number.parseFloat(ringBox.style.width);
+        expect(at.top >= ring().bottom || at.left >= ringRight || at.top + 160 <= ring().top).toBe(true);
+        // Nothing scrolled it back on them.
+        expect(vi.mocked(window.scrollBy)).not.toHaveBeenCalled();
+
+        press('next');
+        await flush();
+        expect(stepOf()).toBe('short');
+        expect(document.documentElement.style.overflow).toBe('hidden');
+        restore();
+    });
+});
+
 describe('ending on the page it started on', () => {
     afterEach(() => {
         window.history.replaceState(null, '', '/');
