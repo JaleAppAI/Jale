@@ -21,12 +21,15 @@ import type { WalkthroughGuide } from './types';
  *  - each employer question (up to 10), Next once it holds 1 to 1000
  *    characters (trimmed), as the screen's own Send rule; or, for a job with
  *    no questions, a word that there is nothing to answer;
+ *  - "Back to the job", shown and not pressed (the guide goes on to Send):
+ *    what was typed stays while the worker is on this page;
  *  - "documents come later";
  *  - Send application: completes when the screen gives way (a failed send
  *    keeps the screen, and the step, up);
- *  - then whichever the job page shows: applied (the status), or closed (the
- *    reason beside the greyed Apply, when the job closed meanwhile), or, for a
- *    worker who went "Back to the job" before sending, the way back in.
+ *  - then whichever the job page shows: applied (the status, also when the
+ *    send finds the worker had applied already), or closed (the reason beside
+ *    the greyed Apply, when the job closed meanwhile). The page shows either
+ *    at once, before its confirming refresh.
  * A gate closed without saving leaves no step that applies, so the guide
  * ends there. A closed or filled job, or one already applied to, never opens
  * the gate or the screen, so the guide never starts there.
@@ -149,6 +152,15 @@ const guide: WalkthroughGuide = {
             when: () => (screenUp() ? guideTarget('apply.answer.1') === null : gateUp() && questionsAhead() === 0),
             ...copy('no_questions', { wait: false }),
         },
+        // Look only: the guide carries on to Send, so the link is shown, not pressed.
+        {
+            id: 'back',
+            target: { guide: 'apply.back' },
+            mode: 'next',
+            interactive: false,
+            when: () => screenUp() || gateUp(),
+            ...copy('back', { wait: false }),
+        },
         {
             id: 'later',
             target: { guide: 'apply.later' },
@@ -183,16 +195,6 @@ const guide: WalkthroughGuide = {
             mode: 'next',
             when: () => !screenUp() && !gateUp() && !applied() && guideTarget('apply.closed') !== null,
             ...copy('closed', { wait: false }),
-        },
-        // "Back to the job" before sending: what was typed is kept on this page.
-        {
-            id: 'left',
-            target: { guide: 'apply.button' },
-            mode: 'action',
-            placement: 'top',
-            when: () =>
-                !screenUp() && !gateUp() && !applied() && (guideTarget('apply.button')?.hasAttribute('data-left') ?? false),
-            ...copy('left'),
         },
     ],
 };

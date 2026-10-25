@@ -2722,11 +2722,6 @@
             "title": "Este trabajo se cerró",
             "body": "El empleador dejó de recibir postulaciones para este trabajo, así que tu postulación no se envió. Hay otros trabajos abiertos."
           },
-          "left": {
-            "title": "Tus respuestas se guardan",
-            "body": "Lo que escribiste se queda aquí mientras estés en esta página. {input, select, touch {Toca} other {Haz clic en}} este botón cuando quieras terminar y enviar.",
-            "wait": "{input, select, touch {Toca} other {Haz clic en}} el botón para volver a tu postulación."
-          },
           "gate_name": {
             "title": "Tu nombre",
             "body": "Los empleadores necesitan algunos datos antes de que puedas postularte. Escribe tu nombre completo en Nombre completo.",
@@ -2755,6 +2750,10 @@
             "title": "Guarda tu perfil",
             "body": "{input, select, touch {Toca} other {Haz clic en}} Guardar y postular. Guarda tu perfil y abre tu postulación; la envías en la siguiente pantalla.",
             "wait": "{input, select, touch {Toca} other {Haz clic en}} Guardar y postular para seguir."
+          },
+          "back": {
+            "title": "¿Necesitas parar?",
+            "body": "Volver al empleo guarda lo que escribiste mientras sigas en esta página. Para regresar, {input, select, touch {toca} other {haz clic en}} Seguir con la postulación."
           }
         }
       }

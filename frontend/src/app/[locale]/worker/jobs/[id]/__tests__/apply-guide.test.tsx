@@ -78,7 +78,7 @@ vi.mock('@/lib/api/worker', async (importOriginal) => ({
 }));
 
 /** The page's data: a real state, so the page's own local updates (applied) show. */
-const page = { seed: null as unknown as JobDetail, afterRefresh: null as Partial<JobDetail> | null };
+const page = { seed: null as unknown as JobDetail, afterRefresh: null as Partial<JobDetail> | null, refreshMs: 400 };
 vi.mock('@/hooks/usePageData', async () => {
     const React = await import('react');
     return {
@@ -92,6 +92,7 @@ vi.mock('@/hooks/usePageData', async () => {
                 refreshError: false,
                 retry: vi.fn(),
                 refresh: async () => {
+                    await new Promise((resolve) => setTimeout(resolve, page.refreshMs));
                     const next = page.afterRefresh;
                     if (next) setData((current) => ({ ...current, ...next }));
                 },
@@ -144,6 +145,15 @@ function callout(): HTMLElement | null {
 
 async function expectStep(id: string) {
     await vi.waitFor(() => expect(callout()?.getAttribute('data-step')).toBe(id), { timeout: 3000 });
+}
+
+/** Next, until the guide is on `id` (Send is an action step: it has no Next). */
+async function nextUntil(id: string) {
+    for (let guard = 0; guard < 6 && callout()?.getAttribute('data-step') !== id; guard += 1) {
+        act(() => guideButton('Next').click());
+        await settle();
+    }
+    await expectStep(id);
 }
 
 function guideButton(name: string): HTMLElement {
@@ -213,16 +223,18 @@ describe('W2 guide: applying, inside the apply screen', () => {
         await openAndStart();
         await expectStep('no_questions');
         // "You applied!" is counted from the start: the total never ends on Send.
-        expect(callout()).toHaveTextContent('Applying · 1 of 4');
+        expect(callout()).toHaveTextContent('Applying · 1 of 5');
+        act(() => guideButton('Next').click());
+        await expectStep('back');
         act(() => guideButton('Next').click());
         await expectStep('later');
         act(() => guideButton('Next').click());
         await expectStep('send');
-        expect(callout()).toHaveTextContent('Applying · 3 of 4');
+        expect(callout()).toHaveTextContent('Applying · 4 of 5');
         act(() => guided('apply.send').click());
 
         await expectStep('sent');
-        expect(callout()).toHaveTextContent('Applying · 4 of 4');
+        expect(callout()).toHaveTextContent('Applying · 5 of 5');
         expect(guided('apply.applied')).toHaveTextContent(en.worker_job_detail.already_applied);
         act(() => guideButton('Got it').click());
         await settle();
@@ -248,6 +260,8 @@ describe('W2 guide: applying, inside the apply screen', () => {
         expect(within(callout()!).getByText(en.tutorial.worker_apply.guide.steps.answer_more.title)).toBeInTheDocument();
         fireEvent.change(within(guided('apply.answer.2')).getByRole('textbox'), { target: { value: 'Monday' } });
         act(() => guideButton('Next').click());
+        await expectStep('back');
+        act(() => guideButton('Next').click());
         await expectStep('later');
         act(() => guideButton('Next').click());
         await expectStep('send');
@@ -266,7 +280,7 @@ describe('W2 guide: applying, inside the apply screen', () => {
 
         // The name is there, so the gate starts at the skills; the screen's steps are counted ahead.
         await expectStep('gate_skills');
-        expect(callout()).toHaveTextContent('Applying · 1 of 10');
+        expect(callout()).toHaveTextContent('Applying · 1 of 11');
         expect(guideButton('Next')).toBeDisabled();
         fireEvent.change(guided('apply.gate.skills'), { target: { value: ' , ' } });
         expect(guideButton('Next')).toBeDisabled();
@@ -304,12 +318,14 @@ describe('W2 guide: applying, inside the apply screen', () => {
         act(() => guideButton('Next').click());
         await expectStep('no_questions');
         act(() => guideButton('Next').click());
+        await expectStep('back');
+        act(() => guideButton('Next').click());
         await expectStep('later');
         act(() => guideButton('Next').click());
         await expectStep('send');
         act(() => guided('apply.send').click());
         await expectStep('sent');
-        expect(callout()).toHaveTextContent('Applying · 10 of 10');
+        expect(callout()).toHaveTextContent('Applying · 11 of 11');
         expect(worker.applyToJob).toHaveBeenCalledTimes(1);
     });
 
@@ -357,9 +373,7 @@ describe('W2 guide: applying, inside the apply screen', () => {
         worker.applyToJob.mockRejectedValueOnce(new ApiError(500, 'internal'));
         await openAndStart();
         await expectStep('no_questions');
-        act(() => guideButton('Next').click());
-        act(() => guideButton('Next').click());
-        await expectStep('send');
+        await nextUntil('send');
         await act(async () => { guided('apply.send').click(); });
         await settle();
         expect(callout()?.getAttribute('data-step')).toBe('send');
@@ -371,25 +385,46 @@ describe('W2 guide: applying, inside the apply screen', () => {
         page.afterRefresh = { status: 'closed' };
         await openAndStart();
         await expectStep('no_questions');
-        act(() => guideButton('Next').click());
-        act(() => guideButton('Next').click());
-        await expectStep('send');
+        await nextUntil('send');
         await act(async () => { guided('apply.send').click(); });
 
         await expectStep('closed');
         expect(guided('apply.closed')).toHaveTextContent(en.worker_job_detail.errors.job_closed);
     });
 
-    it('points back at the application after "Back to the job", with what was typed kept', async () => {
+    it('says "You applied!" when the send finds the worker had applied already', async () => {
+        worker.applyToJob.mockRejectedValueOnce(new ApiError(409, 'already_applied'));
+        page.afterRefresh = { already_applied: true, application_status: 'pending' };
+        await openAndStart();
+        await expectStep('no_questions');
+        await nextUntil('send');
+        await act(async () => { guided('apply.send').click(); });
+
+        // Shown before the confirming refresh lands (it takes 400 ms here).
+        await expectStep('sent');
+        expect(guided('apply.applied')).toHaveTextContent(en.worker_job_detail.already_applied);
+        act(() => guideButton('Got it').click());
+        await settle();
+        expect(recordsPosted()).toEqual([{ tutorial_id: 'worker_apply', outcome: 'completed' }]);
+    });
+
+    it('shows "Back to the job" without letting it be pressed, and goes on to Send', async () => {
         page.seed = job({ pre_application_prompts: TWO_QUESTIONS });
         await openAndStart();
         await expectStep('answer_1');
         fireEvent.change(within(guided('apply.answer.1')).getByRole('textbox'), { target: { value: 'Driveways.' } });
-        // The screen's own way back.
-        act(() => screen.getByRole('button', { name: en.worker_job_detail.apply_flow.back_to_details }).click());
+        act(() => guideButton('Next').click());
+        await expectStep('answer_2');
+        fireEvent.change(within(guided('apply.answer.2')).getByRole('textbox'), { target: { value: 'Monday' } });
+        act(() => guideButton('Next').click());
 
-        await expectStep('left');
-        expect(guided('apply.button')).toHaveTextContent(en.worker_job_detail.apply_flow.continue_button);
+        await expectStep('back');
+        expect(callout()).toHaveTextContent('Back to the job keeps what you typed while you stay on this page');
+        // Look only: a blocker covers the cutout too, so the guide is never left mid-way.
+        expect(document.querySelector('[data-spotlight-blocker="hole"]')).not.toBeNull();
+        act(() => guideButton('Next').click());
+        await expectStep('later');
+        expect(document.querySelector('[data-guide="apply.screen"]')).not.toBeNull();
     });
 
     it('speaks Spanish with tú', async () => {

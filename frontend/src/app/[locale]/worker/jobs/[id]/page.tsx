@@ -346,8 +346,6 @@ export default function WorkerJobDetailPage() {
     applyTutorial.runWithHost(() => {});
   }, [viewMode, modalOpen, hasApplied, progressStatus, applyTutorial]);
 
-  /** The worker went "Back to the job" from the apply screen without sending. */
-  const [leftApplyScreen, setLeftApplyScreen] = useState(false);
 
   // One shared vault fetch, refetched on demand via `onVaultChanged` (after a
   // successful upload from inside `ApplyFlow`) and whenever the auth token
@@ -411,7 +409,6 @@ export default function WorkerJobDetailPage() {
    */
   function openApplyFlow(fromGate = false) {
     setCameFromGate(fromGate);
-    setLeftApplyScreen(false);
     // The screen first; the effect above then asks for the guide inside it,
     // unless it was asked for in the gate this screen comes from.
     guideDueRef.current = !(fromGate && guideAskedAtGateRef.current);
@@ -446,7 +443,6 @@ export default function WorkerJobDetailPage() {
    * off. */
   function handleBackToDetails() {
     setViewMode('details');
-    setLeftApplyScreen(true);
     // Clear whatever the banner slot last held (a stale danger message from
     // before the flow opened, or a leftover success/info note) before
     // possibly writing the progress-saved note -- otherwise backing out with
@@ -601,15 +597,29 @@ export default function WorkerJobDetailPage() {
       reportProblem(t('errors.legal_required'));
       return;
     }
+    // Both arms below reflect the outcome locally BEFORE leaving the apply
+    // screen, as a successful send does: the page then shows what the server
+    // said (applied, or closed) at once, not the old Apply button until the
+    // confirming refresh lands -- and so does the applying guide, which reads
+    // the page as the screen gives way.
     if (applyErr.status === 409) {
-      if (applyErr.code === 'user_not_provisioned') showApplyError(t('errors.account_not_ready'));
-      else showApplyError(t('errors.already_applied'));
+      if (applyErr.code === 'user_not_provisioned') {
+        showApplyError(t('errors.account_not_ready'));
+      } else {
+        showApplyError(t('errors.already_applied'));
+        setData((prev) => ({
+          ...prev,
+          already_applied: true,
+          application_status: prev.application_status ?? 'pending',
+        }));
+      }
       if (fromFlow) setViewMode('details');
       await refresh();
       return;
     }
     if (applyErr.status === 410 || applyErr.status === 404) {
       showApplyError(t('errors.job_closed'));
+      setData((prev) => ({ ...prev, status: 'closed' }));
       if (fromFlow) setViewMode('details');
       await refresh();
       return;
@@ -1093,10 +1103,8 @@ export default function WorkerJobDetailPage() {
                           <Button
                             data-guide="apply.button"
                             // For the applying guide: how many questions the apply
-                            // screen will ask (counted from the gate), and whether
-                            // the worker came back here from it without sending.
+                            // screen will ask (counted from the gate).
                             data-questions={(job.pre_application_prompts ?? []).length}
-                            data-left={leftApplyScreen ? '' : undefined}
                             onClick={handleApplyClick}
                             disabled={!canApply}
                             aria-describedby={canApply ? undefined : closedReasonId}

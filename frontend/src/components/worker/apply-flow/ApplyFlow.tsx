@@ -79,6 +79,7 @@ export function ApplyFlow({
       <div className="space-y-5 p-5 md:p-6">
         <button
           type="button"
+          data-guide="apply.back"
           onClick={onBackToDetails}
           className="inline-block text-left text-xs font-bold uppercase tracking-wide text-[var(--jale-ink-2)] transition-colors hover:text-[var(--jale-ink)]"
         >
