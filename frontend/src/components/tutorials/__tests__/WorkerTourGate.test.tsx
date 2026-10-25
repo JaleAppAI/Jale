@@ -67,9 +67,9 @@ function WorkerShell() {
                 </button>
             </header>
             <nav aria-label="Mobile navigation">
-                <a href="/worker/home" data-nav-key="find_jobs">Jobs</a>
-                <a href="/worker/applications" data-nav-key="applications">My Applications</a>
-                <a href="/worker/profile" data-nav-key="profile">Profile</a>
+                <a href="#jobs" data-nav-key="find_jobs">Jobs</a>
+                <a href="#applications" data-nav-key="applications">My Applications</a>
+                <a href="#profile" data-nav-key="profile">Profile</a>
             </nav>
         </>
     );
@@ -100,6 +100,12 @@ async function settle() {
 const tourTitle = () => catalogues.en.tutorial.tour.worker.welcome_title;
 const tourDialog = () => screen.queryByRole('dialog', { name: tourTitle() });
 const posts = () => tutorialCalls().filter(([method]) => method === 'POST').map(([, , body]) => body);
+
+beforeAll(async () => {
+    // The tour's lazy chunk, fetched once up front: a cold first import
+    // would otherwise spend the first test's wait on module transforms.
+    await import('@/components/tutorials/AppTourHost');
+});
 
 let rectsSpy: ReturnType<typeof vi.spyOn>;
 beforeAll(() => {

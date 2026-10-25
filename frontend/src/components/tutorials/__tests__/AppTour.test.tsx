@@ -422,9 +422,9 @@ describe('app tour: a dialog the page cannot be used behind', () => {
 
     it('draws a ringed cutout around the current control, and none on the welcome card', () => {
         renderTour(pages.employerDesktop);
-        expect(document.querySelector('[data-tour-ring]')).toBeNull();
+        expect(document.querySelector('[data-spotlight-ring]')).toBeNull();
         press('Show me around');
-        const ring = document.querySelector<HTMLElement>('[data-tour-ring]');
+        const ring = document.querySelector<HTMLElement>('[data-spotlight-ring]');
         expect(ring).not.toBeNull();
         // The sidebar's Dashboard link (80,16,248,44), padded by 6.
         expect(ring?.style.top).toBe('74px');
@@ -437,16 +437,16 @@ describe('app tour: a dialog the page cannot be used behind', () => {
     it('moves without transitions when reduced motion is asked for', () => {
         reducedMotion = true;
         renderTour(pages.employerDesktop);
-        expect(document.querySelector('[data-app-tour]')).toHaveAttribute('data-motion', 'reduced');
+        expect(document.querySelector('[data-spotlight]')).toHaveAttribute('data-motion', 'reduced');
         expect(dialog().className).not.toContain('anim-fade-in');
         press('Show me around');
         expect(dialog().style.transition).toBe('none');
-        expect(document.querySelector<HTMLElement>('[data-tour-ring]')?.style.transition).toBe('none');
+        expect(document.querySelector<HTMLElement>('[data-spotlight-ring]')?.style.transition).toBe('none');
     });
 
     it('glides between steps otherwise', () => {
         renderTour(pages.employerDesktop);
-        expect(document.querySelector('[data-app-tour]')).toHaveAttribute('data-motion', 'full');
+        expect(document.querySelector('[data-spotlight]')).toHaveAttribute('data-motion', 'full');
         press('Show me around');
         expect(dialog().style.transition).toContain('top');
     });
@@ -486,7 +486,7 @@ describe('app tour: placement', () => {
         });
         // Centred on the link: 400 + 22 - 80.
         expect(dialog().style.top).toBe('342px');
-        expect(document.querySelector<HTMLElement>('[data-tour-ring]')?.style.top).toBe('394px');
+        expect(document.querySelector<HTMLElement>('[data-spotlight-ring]')?.style.top).toBe('394px');
     });
 
     it('centres itself, with no cutout, while its control is missing', () => {
@@ -497,6 +497,6 @@ describe('app tour: placement', () => {
             window.dispatchEvent(new Event('resize'));
         });
         expect(dialog()).toHaveAttribute('data-side', 'center');
-        expect(document.querySelector('[data-tour-ring]')).toBeNull();
+        expect(document.querySelector('[data-spotlight-ring]')).toBeNull();
     });
 });

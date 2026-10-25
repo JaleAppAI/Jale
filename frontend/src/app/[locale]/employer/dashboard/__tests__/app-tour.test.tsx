@@ -68,8 +68,8 @@ vi.mock('@/components/layout/AppShell', () => ({
                 <button type="button" data-tour="help">Help</button>
             </header>
             <nav aria-label="Main navigation">
-                <a href="/employer/dashboard" data-nav-key="dashboard">Dashboard</a>
-                <a href="/employer/conversations" data-nav-key="messages">Messages</a>
+                <a href="#dashboard" data-nav-key="dashboard">Dashboard</a>
+                <a href="#messages" data-nav-key="messages">Messages</a>
             </nav>
             {children}
         </div>
@@ -202,6 +202,12 @@ const welcomeDialog = () => screen.queryByRole('dialog', { name: welcomeTitle() 
 const tourDialog = () => screen.queryByRole('dialog', { name: message('tutorial.tour.employer.welcome_title') });
 
 const posts = () => tutorialCalls().filter(([method]) => method === 'POST').map(([, , body]) => body);
+
+beforeAll(async () => {
+    // The tour's lazy chunk, fetched once up front: a cold first import
+    // would otherwise spend the first test's wait on module transforms.
+    await import('@/components/tutorials/AppTourHost');
+});
 
 let rectsSpy: ReturnType<typeof vi.spyOn>;
 beforeAll(() => {

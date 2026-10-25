@@ -1,27 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import {
-    ARROW_INSET,
-    CALLOUT_GAP,
-    CUTOUT_PAD,
-    TOUR_STEPS,
-    VIEWPORT_GUTTER,
-    buildSteps,
-    nextAvailable,
-    placeCallout,
-    targetSelector,
-    type TourStep,
-} from '../app-tour-model';
+import { ARROW_INSET, CALLOUT_GAP, CUTOUT_PAD, VIEWPORT_GUTTER, placeCallout } from '../geometry';
+import { buildSteps, nextAvailable, targetSelector, type SpotlightStep } from '../steps';
+import { TOUR_STEPS } from '../../app-tour-steps';
 
 /*
- * The app tour's pure rules: which steps a screen gets, how a vanished
- * control is passed over, and where the callout goes beside its control.
+ * The spotlight engine's pure rules (which steps a screen gets, how a vanished
+ * control is passed over, where the callout goes beside its control), and the
+ * app tour's step lists.
  */
 
 const phone = { width: 390, height: 844 };
 const desktop = { width: 1280, height: 800 };
 const callout = { width: 358, height: 160 };
 
-const keys = (steps: readonly TourStep[]) => steps.map((step) => step.key);
+const keys = (steps: readonly SpotlightStep[]) => steps.map((step) => step.id);
 
 describe('app tour steps', () => {
     it('lists the employer tour in order: dashboard, post a job, the nav, then Help', () => {
@@ -38,14 +30,15 @@ describe('app tour steps', () => {
         expect(keys(TOUR_STEPS.worker_app_tour)).toEqual(['find_jobs', 'applications', 'profile', 'help']);
     });
 
-    it('points nav steps at their nav key and the rest at a data-tour mark', () => {
+    it('points nav steps at their nav key and the rest at a data-tour mark or a selector', () => {
         expect(targetSelector({ nav: 'messages' })).toBe('[data-nav-key="messages"]');
         expect(targetSelector({ tour: 'post-job' })).toBe('[data-tour="post-job"]');
+        expect(targetSelector({ selector: '#title' })).toBe('#title');
     });
 
     it('keeps only the steps whose control is on screen', () => {
         const onPhone = new Set(['dashboard', 'post_job', 'messages', 'applicants', 'settings', 'help']);
-        expect(keys(buildSteps(TOUR_STEPS.employer_app_tour, (step) => onPhone.has(step.key)))).toEqual([
+        expect(keys(buildSteps(TOUR_STEPS.employer_app_tour, (step) => onPhone.has(step.id)))).toEqual([
             'dashboard',
             'post_job',
             'messages',
@@ -58,7 +51,7 @@ describe('app tour steps', () => {
     it('passes over a step whose control has gone, in either direction', () => {
         const steps = TOUR_STEPS.worker_app_tour;
         const gone = new Set(['applications']);
-        const available = (step: TourStep) => !gone.has(step.key);
+        const available = (step: SpotlightStep) => !gone.has(step.id);
         expect(nextAvailable(steps, 0, 1, available)).toBe(2);
         expect(nextAvailable(steps, 2, -1, available)).toBe(0);
         expect(nextAvailable(steps, 3, 1, available)).toBe(-1);
@@ -93,6 +86,15 @@ describe('callout placement', () => {
         // The arrow still points at the button, short of the rounded corner.
         expect(placement.left + placement.arrow).toBe(help.left + help.width / 2);
         expect(placement.arrow).toBeLessThanOrEqual(callout.width - ARROW_INSET);
+    });
+
+    it('takes a step\'s preferred side when the callout fits there', () => {
+        const button = { top: 300, left: 600, width: 120, height: 40 };
+        expect(placeCallout(button, callout, desktop).side).toBe('bottom');
+        expect(placeCallout(button, callout, desktop, 'top').side).toBe('top');
+        expect(placeCallout(button, callout, desktop, 'right').side).toBe('right');
+        // No room above a header button: the hint gives way.
+        expect(placeCallout({ top: 20, left: 600, width: 120, height: 40 }, callout, desktop, 'top').side).toBe('bottom');
     });
 
     it('flips above a low control when there is no room below', () => {
