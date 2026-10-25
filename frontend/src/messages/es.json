@@ -1245,7 +1245,8 @@
       "saved_note": "Guardado en tu perfil para que la próxima vez sea más rápido.",
       "finish": "Terminar",
       "still_missing": "Todavía falta: {items}",
-      "go_fix": "Ir a Documentos y certificaciones"
+      "go_fix": "Ir a Documentos y certificaciones",
+      "go_fix_details": "Ir a Datos"
     },
     "complete": {
       "chip": "Todo listo",
@@ -2741,26 +2742,189 @@
         },
         "saved": {
           "title": "Tus documentos guardados se agregan solos",
-          "body": "Los archivos que guardaste antes se adjuntan automáticamente. Puedes cambiar cualquiera."
+          "body": "Los archivos que guardaste antes cuentan automáticamente: aparecen como Subido. Puedes reemplazar cualquiera."
         },
         "send": {
-          "title": "Revisa y envía",
-          "body": "Revisa tus respuestas y envíalas. El empleador las ve al momento."
+          "title": "Revisa y termina",
+          "body": "Revisa tus respuestas y toca Terminar. El empleador las recibe al momento."
         }
       },
       "scene": {
         "company": "Concretos de Ejemplo",
         "five_min": "Unos 5 min",
-        "step1": "Preguntas",
-        "step2": "Documentos",
-        "step3": "Revisión",
-        "slot_name": "Licencia de manejo",
-        "from_vault": "Agregado de tus documentos guardados",
-        "replace": "Cambiar",
-        "r1": "Fecha disponible",
+        "step1": "Datos",
+        "step2": "Documentos y certificaciones",
+        "step3": "Revisar y terminar",
+        "slot_name": "Licencia de conducir",
+        "from_vault": "Subido",
+        "replace": "Reemplazar",
+        "r1": "Fecha de disponibilidad",
         "r2": "Contacto de emergencia",
-        "r3": "Licencia de manejo",
-        "send": "Enviar al empleador"
+        "r3": "Licencia de conducir",
+        "send": "Terminar"
+      },
+      "guide": {
+        "intro_title": "¿Te ayudamos con tus datos?",
+        "intro_body": "{input, select, touch {Te mostramos cada parte, una por una: qué contestar, qué archivos agregar y dónde tocar Terminar. Unos 5 minutos.} other {Te mostramos cada parte, una por una: qué contestar, qué archivos agregar y dónde hacer clic en Terminar. Unos 5 minutos.}}",
+        "counter": "Tus datos · {current} de {total}",
+        "steps": {
+          "prompts": {
+            "title": "Las preguntas del empleador",
+            "body": "Contesta cada pregunta en el recuadro, con tus propias palabras. Hasta 1000 caracteres cada una.",
+            "wait": "Contesta todas las preguntas para seguir."
+          },
+          "prompts_save": {
+            "title": "Guarda tus respuestas",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Guardar y seguir. Después vienen los datos que pidió el empleador.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Guardar y seguir para continuar."
+          },
+          "overview": {
+            "title": "Tres pasos",
+            "body": "Datos, Documentos y certificaciones, y al final Revisar y terminar. La barra muestra lo que falta. Algunas respuestas de tu última postulación ya pueden estar puestas: revísalas en el camino.",
+            "wait": "Un momento: estamos revisando tus archivos guardados."
+          },
+          "field_work_authorization": {
+            "title": "¿Puedes trabajar en EE. UU.?",
+            "body": "En “¿Autorizado para trabajar en EE. UU.?”, {input, select, touch {toca} other {haz clic en}} Sí o No.",
+            "body_optional": "Es opcional. En “¿Autorizado para trabajar en EE. UU.?”, {input, select, touch {toca} other {haz clic en}} Sí o No, o {input, select, touch {toca} other {haz clic en}} Omitir para dejarla fuera.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Sí o No para seguir."
+          },
+          "field_date_available": {
+            "title": "¿Cuándo puedes empezar?",
+            "body": "En Fecha de disponibilidad, elige el primer día en que puedes empezar.",
+            "body_optional": "Es opcional. En Fecha de disponibilidad, elige el primer día en que puedes empezar, o {input, select, touch {toca} other {haz clic en}} Omitir para dejarla fuera.",
+            "wait": "Elige una fecha para seguir."
+          },
+          "field_desired_pay": {
+            "title": "El pago que quieres",
+            "body": "En Pago deseado, escribe la cantidad en dólares enteros, sin centavos. Luego elige Por hora, Diario, Semanal, Mensual o Fijo (tarifa plana).",
+            "body_optional": "Es opcional. En Pago deseado, escribe la cantidad en dólares enteros, sin centavos, y elige cada cuánto; o {input, select, touch {toca} other {haz clic en}} Omitir para dejarla fuera.",
+            "wait": "Escribe una cantidad en dólares enteros para seguir."
+          },
+          "field_home_address": {
+            "title": "Tu dirección",
+            "body": "Escribe tu calle y número, tu ciudad, el estado en 2 letras (como TX) y el código postal de 5 dígitos. El recuadro del apartamento es opcional.",
+            "body_optional": "Es opcional. Escribe tu calle y número, ciudad, estado en 2 letras (como TX) y código postal de 5 dígitos, o {input, select, touch {toca} other {haz clic en}} Omitir para dejarla fuera.",
+            "wait": "Llena calle, ciudad, estado en 2 letras y código postal de 5 dígitos para seguir."
+          },
+          "field_date_of_birth": {
+            "title": "Tu fecha de nacimiento",
+            "body": "En Fecha de nacimiento, elige el día en que naciste.",
+            "body_optional": "Es opcional. En Fecha de nacimiento, elige el día en que naciste, o {input, select, touch {toca} other {haz clic en}} Omitir para dejarla fuera.",
+            "wait": "Elige una fecha para seguir."
+          },
+          "field_emergency_contact": {
+            "title": "A quién llamar en una emergencia",
+            "body": "Escribe el nombre y el teléfono de alguien a quien llamar si te pasa algo en el trabajo.",
+            "body_optional": "Es opcional. Escribe el nombre y el teléfono de alguien a quien llamar si te pasa algo en el trabajo, o {input, select, touch {toca} other {haz clic en}} Omitir para dejarlo fuera.",
+            "wait": "Escribe un nombre y un teléfono para seguir."
+          },
+          "field_worked_here_before": {
+            "title": "¿Ya trabajaste aquí?",
+            "body": "En “¿Ha trabajado aquí antes?”, {input, select, touch {toca} other {haz clic en}} Sí o No. Si eliges Sí, puedes escribir cuándo en el recuadro que aparece.",
+            "body_optional": "Es opcional. En “¿Ha trabajado aquí antes?”, {input, select, touch {toca} other {haz clic en}} Sí o No, o {input, select, touch {toca} other {haz clic en}} Omitir para dejarla fuera.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Sí o No para seguir."
+          },
+          "field_education": {
+            "title": "Tus estudios",
+            "body": "En Educación, abre la lista y elige tu nivel de estudios. Si eliges algo que no sea Ninguna, contesta también Sí o No en “¿Se graduó?”.",
+            "body_optional": "Es opcional. En Educación, elige tu nivel de estudios de la lista, o {input, select, touch {toca} other {haz clic en}} Omitir para dejarla fuera.",
+            "wait": "Elige un nivel de estudios para seguir."
+          },
+          "field_references": {
+            "title": "Tus referencias",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Agregar referencia y escribe el nombre, de qué conoces a la persona y el teléfono. La empresa es opcional. Puedes agregar hasta 3.",
+            "body_optional": "Es opcional. {input, select, touch {Toca} other {Haz clic en}} Agregar referencia y escribe el nombre, de qué conoces a la persona y el teléfono, o {input, select, touch {toca} other {haz clic en}} Omitir para dejarla fuera.",
+            "wait": "Agrega una referencia con nombre, relación y teléfono para seguir."
+          },
+          "field_work_history": {
+            "title": "Tus trabajos anteriores",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Agregar empleo anterior y escribe la empresa y tu puesto. Los demás recuadros son opcionales. Puedes agregar hasta 3.",
+            "body_optional": "Es opcional. {input, select, touch {Toca} other {Haz clic en}} Agregar empleo anterior y escribe la empresa y tu puesto, o {input, select, touch {toca} other {haz clic en}} Omitir para dejarlo fuera.",
+            "wait": "Agrega un empleo con la empresa y tu puesto para seguir."
+          },
+          "field_military_service": {
+            "title": "Servicio militar",
+            "body": "En Servicio militar, {input, select, touch {toca} other {haz clic en}} Sí o No. Si eliges Sí, los recuadros que aparecen son opcionales.",
+            "body_optional": "Es opcional. En Servicio militar, {input, select, touch {toca} other {haz clic en}} Sí o No, o {input, select, touch {toca} other {haz clic en}} Omitir para dejarlo fuera.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Sí o No para seguir."
+          },
+          "details_continue": {
+            "title": "Guarda este paso",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Guardar y seguir. Si después una pregunta dice “Falta responder esto”, arréglala y vuelve a tocarlo.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Guardar y seguir para continuar."
+          },
+          "vault_retry": {
+            "title": "No vemos tus archivos guardados",
+            "body": "No pudimos revisar tus archivos guardados, así que todos aparecen como no subidos. {input, select, touch {Toca} other {Haz clic en}} el botón de al lado para volver a revisarlos.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} el botón para volver a revisar."
+          },
+          "doc_notice_legacy": {
+            "title": "Esto no se sube aquí",
+            "body": "El empleador te lo pedirá en persona si lo necesita. No te impide terminar."
+          },
+          "doc_notice_unknown": {
+            "title": "No reconocemos este requisito",
+            "body": "Pregúntale al empleador qué necesita. No te impide terminar."
+          },
+          "certification_doc": {
+            "title": "Tu certificación",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Agregar certificación y elige un PDF o una foto (JPG o PNG). Puedes agregar hasta 5. Si dice Opcional, puedes seguir sin esto.",
+            "wait": "Agrega una certificación para seguir."
+          },
+          "certifications": {
+            "title": "Tus certificaciones",
+            "body": "En cada una, {input, select, touch {toca} other {haz clic en}} Sí o No. Las que dicen Requerido necesitan Sí para seguir, y si una pide comprobante, {input, select, touch {toca} other {haz clic en}} Subir otro y elige un PDF o una foto. Las que dicen Opcional nunca te detienen.",
+            "wait": "Contesta Sí en las certificaciones requeridas, con comprobante donde lo pidan, para seguir."
+          },
+          "documents_continue": {
+            "title": "Al último paso",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Seguir. Si después algo queda marcado en rojo, arréglalo y vuelve a tocarlo.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Seguir para continuar."
+          },
+          "review_summary": {
+            "title": "Revisa lo que vamos a enviar",
+            "body": "Cada pregunta debe decir Contestado o Saltado, y aquí se cuentan tus documentos."
+          },
+          "review_missing": {
+            "title": "Todavía falta algo",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} el enlace debajo del aviso para abrir el paso que lo necesita. Ahí termina la guía: arréglalo, vuelve a Revisar y terminar y {input, select, touch {toca} other {haz clic en}} Terminar.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} el enlace para ir a arreglarlo."
+          },
+          "review_finish": {
+            "title": "Envíalo",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Terminar para enviarle todo al empleador.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Terminar para enviar."
+          },
+          "complete": {
+            "title": "Listo",
+            "body": "El empleador ya tiene tus datos. Te avisamos cuando cambien tu postulación. Volver a mis postulaciones te lleva a las demás."
+          },
+          "doc_resume": {
+            "saved_title": "Tu currículum ya está guardado",
+            "saved_body": "Aparece como Subido, así que cuenta automáticamente: no tienes que hacer nada. {input, select, touch {Toca} other {Haz clic en}} Ver para revisarlo, y Reemplazar solo si es el archivo equivocado.",
+            "title": "Agrega tu currículum",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Subir y elige tu currículum: un PDF o una foto (JPG o PNG). Si no se sube, vuelve a intentarlo.",
+            "body_optional": "Es opcional: puedes seguir sin esto. Para agregarlo, {input, select, touch {toca} other {haz clic en}} Subir y elige un PDF o una foto (JPG o PNG).",
+            "wait": "Sube tu currículum para seguir."
+          },
+          "doc_driver_license": {
+            "saved_title": "Tu licencia de conducir ya está guardada",
+            "saved_body": "Aparece como Subido, así que cuenta automáticamente: no tienes que hacer nada. {input, select, touch {Toca} other {Haz clic en}} Ver para revisarlo, y Reemplazar solo si es el archivo equivocado.",
+            "title": "Agrega tu licencia de conducir",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Subir y elige tu licencia de conducir: un PDF o una foto (JPG o PNG). Si no se sube, vuelve a intentarlo.",
+            "body_optional": "Es opcional: puedes seguir sin esto. Para agregarlo, {input, select, touch {toca} other {haz clic en}} Subir y elige un PDF o una foto (JPG o PNG).",
+            "wait": "Sube tu licencia de conducir para seguir."
+          },
+          "doc_work_auth_doc": {
+            "saved_title": "Tu documento de autorización de trabajo ya está guardado",
+            "saved_body": "Aparece como Subido, así que cuenta automáticamente: no tienes que hacer nada. {input, select, touch {Toca} other {Haz clic en}} Ver para revisarlo, y Reemplazar solo si es el archivo equivocado.",
+            "title": "Agrega tu documento de autorización de trabajo",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Subir y elige tu documento de autorización de trabajo: un PDF o una foto (JPG o PNG). Si no se sube, vuelve a intentarlo.",
+            "body_optional": "Es opcional: puedes seguir sin esto. Para agregarlo, {input, select, touch {toca} other {haz clic en}} Subir y elige un PDF o una foto (JPG o PNG).",
+            "wait": "Sube tu documento de autorización de trabajo para seguir."
+          }
+        }
       }
     },
     "worker_profile": {

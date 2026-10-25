@@ -66,31 +66,35 @@ export function PromptTopUpStep({
         </p>
       </div>
 
-      {prompts.map((prompt) => {
-        const value = answers[prompt.id] ?? '';
-        return (
-          <PromptAnswerField
-            key={prompt.id}
-            question={prompt.text}
-            value={value}
-            touched={touched.has(prompt.id)}
-            disabled={saving}
-            onChange={(text) => set(prompt.id, text)}
-            labels={{
-              placeholder: tApply('placeholder'),
-              chars: tApply('chars', { count: value.trim().length, max: MAX_PROMPT_ANSWER_CHARS }),
-              tooLong: tApply('too_long', { max: MAX_PROMPT_ANSWER_CHARS }),
-              blankHint: tApply('blank_hint'),
-            }}
-          />
-        );
-      })}
+      {/* One box per question; the step-by-step guide points at all of them at once. */}
+      <div className="grid gap-5" data-guide="details.prompts">
+        {prompts.map((prompt) => {
+          const value = answers[prompt.id] ?? '';
+          return (
+            <PromptAnswerField
+              key={prompt.id}
+              question={prompt.text}
+              value={value}
+              touched={touched.has(prompt.id)}
+              disabled={saving}
+              onChange={(text) => set(prompt.id, text)}
+              labels={{
+                placeholder: tApply('placeholder'),
+                chars: tApply('chars', { count: value.trim().length, max: MAX_PROMPT_ANSWER_CHARS }),
+                tooLong: tApply('too_long', { max: MAX_PROMPT_ANSWER_CHARS }),
+                blankHint: tApply('blank_hint'),
+              }}
+            />
+          );
+        })}
+      </div>
 
       {error ? <InlineFeedback tone="danger">{error}</InlineFeedback> : null}
 
       <Button
         className="w-full"
         size="lg"
+        data-guide="details.prompts.save"
         disabled={!canSubmit}
         loading={saving}
         loadingLabel={tCommon('loading')}

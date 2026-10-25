@@ -285,7 +285,7 @@ export function DocumentsCertificationsStep({
         <InlineFeedback tone="warning">
           <span className="flex flex-wrap items-center gap-2">
             <span>{tWhatYouNeed('vault_check_failed')}</span>
-            <Button variant="outline" size="sm" onClick={() => void handleRetryVault()} loading={retryingVault} loadingLabel={tCommon('loading')}>
+            <Button variant="outline" size="sm" data-guide="details.vault_retry" onClick={() => void handleRetryVault()} loading={retryingVault} loadingLabel={tCommon('loading')}>
               {tCommon('retry')}
             </Button>
           </span>
@@ -297,7 +297,7 @@ export function DocumentsCertificationsStep({
           renders nothing, so a notice nested inside it would be invisible
           exactly when it is the only explanation the worker gets. */}
       {nameableUnsupported.length > 0 ? (
-        <InlineFeedback tone="warning">
+        <InlineFeedback tone="warning" data-guide="details.doc_notice.legacy">
           <span className="font-semibold">{nameableUnsupported.join(', ')}</span>
           {/* A colon, not another em dash: the sentence itself already carries
               one, and two in one line read as a broken clause. */}
@@ -307,7 +307,7 @@ export function DocumentsCertificationsStep({
       ) : null}
 
       {unnameableUnsupported.length > 0 ? (
-        <InlineFeedback tone="danger">
+        <InlineFeedback tone="danger" data-guide="details.doc_notice.unknown">
           <span className="font-semibold">{unnameableUnsupported.join(', ')}</span>
           {': '}
           {tFlow('unknown_doc_notice')}
@@ -346,7 +346,7 @@ export function DocumentsCertificationsStep({
       ) : null}
 
       {hasCerts ? (
-        <div className="grid gap-3">
+        <div className="grid gap-3" data-guide="details.certs">
           <p className="text-xs font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">
             {t('groups.certifications')}
           </p>
@@ -370,7 +370,7 @@ export function DocumentsCertificationsStep({
         <InlineFeedback tone="danger" onDismiss={() => setUploadError(null)}>{uploadError}</InlineFeedback>
       ) : null}
 
-      <Button className="w-full" size="lg" onClick={handleContinue}>
+      <Button className="w-full" size="lg" data-guide="details.documents.continue" onClick={handleContinue}>
         {tFlow('documents_continue')}
       </Button>
     </div>
@@ -404,8 +404,14 @@ function SingleDocRow({
     satisfied: Boolean(existing),
     blockingError: missing,
   });
+  // The step-by-step guide's hook: one row per document, saved or not.
   return (
-    <div className="flex items-center justify-between gap-3">
+    <div
+      className="flex items-center justify-between gap-3"
+      data-guide={`details.doc.${docType}`}
+      data-required={required ? 'true' : 'false'}
+      data-saved={existing ? 'true' : 'false'}
+    >
       <div className="min-w-0">
         <p className="text-sm font-semibold text-[var(--jale-ink)]">
           {docLabel(docType)}
@@ -458,7 +464,12 @@ function CertificationDocRow({
   const tFlow = useTranslations('worker_application_details');
   const atMax = count >= LEGACY_MAX_CERTIFICATION_FILES;
   return (
-    <div className="flex items-center justify-between gap-3">
+    <div
+      className="flex items-center justify-between gap-3"
+      data-guide="details.doc.certification_doc"
+      data-required={required ? 'true' : 'false'}
+      data-count={count}
+    >
       <div className="min-w-0">
         <p className="text-sm font-semibold text-[var(--jale-ink)]">
           {docLabel('certification_doc')}
@@ -543,8 +554,13 @@ export function CertClaimRow({
     blockingError: missingProof,
   });
 
+  // Whether this row lets Continue through: an optional certification always
+  // does; a required one needs a Yes, and a file when the employer asks for
+  // one. Read by the step-by-step guide.
+  const ready = cert.tier !== 'required' || (claim.has === true && (!cert.proof_required || Boolean(match)));
+
   return (
-    <div className="rounded-[var(--radius-input)] border border-[var(--jale-divider)] p-4">
+    <div className="rounded-[var(--radius-input)] border border-[var(--jale-divider)] p-4" data-cert-ready={ready ? 'true' : 'false'}>
       {/* THE EMPLOYER'S TEXT, VERBATIM, AS THE HEADING. It used to be
           interpolated into "Do you have {name}?", which reads as broken
           English for the long official names employers type ("Do you have
