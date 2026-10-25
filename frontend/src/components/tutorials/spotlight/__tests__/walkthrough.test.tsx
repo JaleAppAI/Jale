@@ -7,6 +7,7 @@ import en from '@/messages/en.json';
 import type { TutorialOutcome } from '@/lib/api/tutorials';
 import { OverlayPresenceProvider } from '@/lib/tutorials/overlay';
 import { Modal } from '@/components/ui/modal';
+import { VIEWPORT_GUTTER } from '../geometry';
 import { Spotlight } from '../Spotlight';
 import type { SpotlightDone, SpotlightIntro, SpotlightStep } from '../steps';
 
@@ -750,6 +751,58 @@ describe('inside a dialog', () => {
         expect(onDismiss).toHaveBeenCalledWith('skipped');
         expect(document.body.style.overflow).toBe('');
         expect(document.documentElement.style.overflow).toBe('');
+    });
+
+    /** The callout's box and the ring's, as drawn (the callout measures 326 x 160 here). */
+    const drawn = () => {
+        const card = callout() as HTMLElement;
+        const ring = document.querySelector<HTMLElement>('[data-spotlight-ring]') as HTMLElement;
+        const px = (value: string) => Number.parseFloat(value);
+        return {
+            card: { top: px(card.style.top), left: px(card.style.left), width: 326, height: 160 },
+            ring: { top: px(ring.style.top), left: px(ring.style.left), width: px(ring.style.width), height: px(ring.style.height) },
+        };
+    };
+    const runInto = (a: { top: number; left: number; width: number; height: number }, b: typeof a) =>
+        Math.max(
+            0,
+            Math.min(
+                Math.min(a.left + a.width, b.left + b.width) - Math.max(a.left, b.left),
+                Math.min(a.top + a.height, b.top + b.height) - Math.max(a.top, b.top),
+            ),
+        );
+    /** Gives the dialog's scrolling body a box, and the title field another, and lets the guide measure again. */
+    const layOut = async (body: string, title: string) => {
+        act(() => {
+            const scroller = panel()?.querySelector<HTMLElement>('.overflow-y-auto');
+            // jsdom has no stylesheet: the body says it scrolls itself.
+            scroller?.style.setProperty('overflow-y', 'auto');
+            scroller?.setAttribute('data-box', body);
+            document.querySelector('[data-guide="t.title"]')?.setAttribute('data-box', title);
+        });
+        await flush();
+        await flush();
+    };
+
+    it('with no room in the body that cannot scroll, the callout goes past it rather than over the field', async () => {
+        renderInDialog([TITLE]);
+        await flush();
+        // A 200px body; the field in its middle; the callout fits neither above nor below in it.
+        await layOut('250,320,640,200', '300,330,590,50');
+        const { card, ring } = drawn();
+        expect(runInto(card, ring)).toBeLessThanOrEqual(4);
+        expect(card.top).toBeGreaterThanOrEqual(VIEWPORT_GUTTER);
+        expect(card.top + card.height).toBeLessThanOrEqual(800 - VIEWPORT_GUTTER);
+    });
+
+    it('a field taller than the body: the ring keeps to the body, and the callout keeps off it', async () => {
+        renderInDialog([TITLE]);
+        await flush();
+        await layOut('250,320,640,200', '200,330,590,700');
+        const { card, ring } = drawn();
+        expect(ring.top).toBeGreaterThanOrEqual(250);
+        expect(ring.top + ring.height).toBeLessThanOrEqual(450);
+        expect(runInto(card, ring)).toBeLessThanOrEqual(4);
     });
 
     it('the intro sits inside the dialog too', async () => {

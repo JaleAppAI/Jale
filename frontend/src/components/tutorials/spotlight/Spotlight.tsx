@@ -9,7 +9,7 @@ import { useOverlayPresence } from '@/lib/tutorials/overlay';
 import { focusableWithin } from '@/components/ui/modal';
 import { prefersReducedMotion } from '../scene/motion';
 import { DoneCard, IntroCard, StepCallout, type StepPrimary } from './cards';
-import { cutoutFor, placeCallout, unionBox, type Band, type Box, type Placement } from './geometry';
+import { clipToBand, cutoutFor, placeCallout, unionBox, type Band, type Box, type Placement } from './geometry';
 import { holdPageScroll } from './page-lock';
 import {
     dialogOf,
@@ -21,6 +21,7 @@ import {
     revealOnPage,
     scrollIntoContainer,
     scrollParentWithin,
+    scrollToFitCallout,
 } from './scope';
 import {
     applies,
@@ -782,15 +783,22 @@ export function Spotlight({
         });
         const box = local(control.getBoundingClientRect());
         const popups = isInteractive(step) ? openPopupsOf(control).map((popup) => local(popup.getBoundingClientRect())) : [];
-        const hole = cutoutFor(popups.length > 0 ? unionBox(box, ...popups) : box);
+        let hole = cutoutFor(popups.length > 0 ? unionBox(box, ...popups) : box);
         let band: Band | undefined;
+        let outer: Band | undefined;
         if (inDialog && scope) {
             // The callout keeps to the dialog's scrolling body (clear of its
             // header and pinned footer), or to the dialog for a control
-            // outside that body (a footer button).
+            // outside that body (a footer button). Where it fits nowhere in
+            // there, it goes over the header or footer, inside the panel or
+            // the viewport, rather than over the control.
             const body = scrollParentWithin(control, scope);
             const rect = (body ?? scope).getBoundingClientRect();
             band = { top: rect.top - origin.top, bottom: rect.bottom - origin.top };
+            outer = { top: 0, bottom: origin.height };
+            // The ring shows what the body shows of the control, no more (a
+            // control taller than the body does not ring the footer).
+            hole = clipToBand(hole, band);
         }
         const size = callout.getBoundingClientRect();
         const next: Layout = {
@@ -802,6 +810,7 @@ export function Spotlight({
                 step.placement,
                 band,
                 hole,
+                outer,
             ),
         };
         setLayout((previous) => (sameLayout(previous, next) ? previous : next));
@@ -820,7 +829,12 @@ export function Spotlight({
         const body = control && inDialog && scope ? scrollParentWithin(control, scope) : null;
         const reveal = () => {
             if (!control) return;
-            if (body) scrollIntoContainer(control, body);
+            if (body) {
+                scrollIntoContainer(control, body);
+                // And on, so the callout fits beside it in the body as well.
+                const callout = dialogRef.current;
+                if (callout) scrollToFitCallout(control, body, callout.getBoundingClientRect().height);
+            }
             // Clear of the phone tab bar and a sticky header; a control in
             // that chrome (the app tour's tab-bar stops) stays where it is.
             else if (!inDialog) revealOnPage(control);

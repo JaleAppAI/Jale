@@ -1,3 +1,4 @@
+import { cutoutFor, scrollToFit } from './geometry';
 import { isRendered } from './steps';
 
 /**
@@ -181,4 +182,22 @@ export function outOfContainer(element: Element, container: HTMLElement): boolea
     const rect = element.getBoundingClientRect();
     if (rect.height > box.height) return false;
     return rect.top < box.top || rect.bottom > box.bottom;
+}
+
+/**
+ * After the control is in view in a dialog's scrolling body: scrolls the body
+ * on (as little as it takes, and as far as it can) so the callout, of
+ * `calloutHeight`, fits above or below the control inside the body too,
+ * rather than being drawn over it (`scrollToFit`).
+ */
+export function scrollToFitCallout(control: HTMLElement, container: HTMLElement, calloutHeight: number): void {
+    const rect = control.getBoundingClientRect();
+    const box = container.getBoundingClientRect();
+    const range = {
+        min: -container.scrollTop,
+        max: Math.max(0, container.scrollHeight - container.clientHeight - container.scrollTop),
+    };
+    const hole = cutoutFor({ top: rect.top, left: rect.left, width: rect.width, height: rect.height });
+    const scroll = scrollToFit(hole, calloutHeight, { top: box.top, bottom: box.bottom }, range);
+    if (scroll !== 0) container.scrollTop += scroll;
 }
