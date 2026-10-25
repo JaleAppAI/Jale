@@ -23,9 +23,10 @@ import {
  * shell is a stand-in that still renders the page's header action, a nav and
  * a Help button, so the tour has real controls to point at.
  *
- *  - A new employer (no job ever, no tour outcome) gets the tour first, then
- *    E1 once the tour has gone.
- *  - With a tour outcome on record, E1 opens on its own, as before the tour.
+ *  - A new employer (no job ever, no tour outcome) gets the tour, then the
+ *    dashboard: E1's slides do not follow it (hotfix 2026-10-24).
+ *  - With a tour outcome on record, E1 does not auto-play either; it stays in
+ *    Help. An account with no tour outcome is asked about E1 as before.
  *  - An employer with a job gets neither.
  */
 
@@ -228,7 +229,7 @@ beforeEach(() => {
 });
 
 describe('dashboard: the employer app tour', () => {
-    it('plays for a new employer once the board is ready, then hands over to the welcome tutorial', async () => {
+    it('plays for a new employer once the board is ready, then leaves them on the dashboard with no welcome slides', async () => {
         renderDashboard();
         await settle();
         expect(tourDialog()).toBeNull();
@@ -252,8 +253,22 @@ describe('dashboard: the employer app tour', () => {
             fireEvent.click(screen.getByRole('button', { name: message('tutorial.common.skip') }));
         });
 
-        expect(await screen.findByRole('dialog', { name: welcomeTitle() })).toBeTruthy();
+        await settle();
         expect(tourDialog()).toBeNull();
+        expect(welcomeDialog()).toBeNull();
+        expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(0);
+        expect(posts()).toEqual([{ tutorial_id: 'employer_app_tour', outcome: 'skipped' }]);
+    });
+
+    it('leaves the welcome slides out after a tour the person finished, too', async () => {
+        renderDashboard();
+        act(() => page.set({ phase: 'ready', data: { jobs: [], billing: plan(7), templateCount: 0 } }));
+        await screen.findByRole('dialog', { name: message('tutorial.tour.employer.welcome_title') });
+        act(() => {
+            fireEvent.click(screen.getByRole('button', { name: message('tutorial.tour.employer.not_now') }));
+        });
+        await settle();
+        expect(welcomeDialog()).toBeNull();
         expect(posts()).toEqual([{ tutorial_id: 'employer_app_tour', outcome: 'skipped' }]);
     });
 
@@ -267,15 +282,29 @@ describe('dashboard: the employer app tour', () => {
         expect(marked[0].closest('header')).not.toBeNull();
     });
 
-    it('opens the welcome tutorial on its own when the tour already has an outcome', async () => {
+    it('keeps the welcome slides shut when the tour already has an outcome', async () => {
         serveTutorials([record('employer_app_tour', 'completed')]);
         renderDashboard();
         act(() => page.set({ phase: 'ready', data: { jobs: [], billing: plan(7), templateCount: 0 } }));
 
-        expect(await screen.findByRole('dialog', { name: welcomeTitle() })).toBeTruthy();
         await settle();
+        expect(welcomeDialog()).toBeNull();
         expect(tourDialog()).toBeNull();
+        expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(0);
         expect(posts()).toEqual([]);
+    });
+
+    it('keeps the welcome slides shut in "every time" mode once the tour has an outcome', async () => {
+        serveTutorials({
+            status: 200,
+            body: { tutorials: [record('employer_app_tour', 'skipped')], settings: { always_show: true, muted: [] } },
+        });
+        renderDashboard();
+        act(() => page.set({ phase: 'ready', data: { jobs: [], billing: plan(7), templateCount: 0 } }));
+
+        await settle();
+        expect(welcomeDialog()).toBeNull();
+        expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(0);
     });
 
     it('plays neither for an employer who has a job', async () => {

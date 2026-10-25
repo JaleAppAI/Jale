@@ -22,14 +22,24 @@ import { shiftPeriodLabels, type Translator } from '@/lib/job-detail-display';
  * public listing on and then fetches the tracked link -- `createJob`'s answer
  * carries no public code to build a link from.
  */
+/**
+ * Why the ticked template was not saved while the job posted: the plan's
+ * template cap (`limit`), a name the server found taken (a list gone stale
+ * under a second tab), or any other failure of the template save.
+ */
+export type TemplateNotSaved =
+    | { reason: 'limit'; limit: number }
+    | { reason: 'name_taken' }
+    | { reason: 'failed' };
+
 export function JobPostedPanel({
     job,
-    templateNotSavedLimit,
+    templateNotSaved,
     onNavigate,
 }: {
     job: Job;
-    /** The template cap the post ran into, when the ticked template was not saved. */
-    templateNotSavedLimit: number | null;
+    /** The ticked template, when it was not saved; null when there is nothing to say. */
+    templateNotSaved: TemplateNotSaved | null;
     /** Called before a link inside the panel navigates, so the dialog closes first. */
     onNavigate: () => void;
 }) {
@@ -102,10 +112,14 @@ export function JobPostedPanel({
                 <p className="text-base font-bold text-[var(--jale-ink)]">{summary}</p>
             </div>
 
-            {templateNotSavedLimit !== null ? (
-                <InlineFeedback tone="warning">
+            {templateNotSaved !== null ? (
+                <InlineFeedback tone="warning" data-guide="post.template_not_saved">
                     <span className="block">
-                        {t('jobs.template_not_saved_after_post', { limit: templateNotSavedLimit })}
+                        {templateNotSaved.reason === 'limit'
+                            ? t('jobs.template_not_saved_after_post', { limit: templateNotSaved.limit })
+                            : templateNotSaved.reason === 'name_taken'
+                              ? t('jobs.template_not_saved_name_taken')
+                              : t('jobs.template_not_saved_failed')}
                     </span>
                     <span className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
                         <Link
@@ -115,14 +129,16 @@ export function JobPostedPanel({
                         >
                             {t('templates.manage_link')}
                         </Link>
-                        <Link
-                            href="/employer/billing"
-                            onClick={onNavigate}
-                            className="inline-flex items-center gap-1.5 text-xs font-bold underline underline-offset-2"
-                        >
-                            <Icon name="spark" />
-                            {tBilling('limit_reached.cta')}
-                        </Link>
+                        {templateNotSaved.reason === 'limit' ? (
+                            <Link
+                                href="/employer/billing"
+                                onClick={onNavigate}
+                                className="inline-flex items-center gap-1.5 text-xs font-bold underline underline-offset-2"
+                            >
+                                <Icon name="spark" />
+                                {tBilling('limit_reached.cta')}
+                            </Link>
+                        ) : null}
                     </span>
                 </InlineFeedback>
             ) : null}

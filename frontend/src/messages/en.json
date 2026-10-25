@@ -554,8 +554,17 @@
       "error_not_hired": "Only hired applicants can get start details. Refresh the list and try again.",
       "error_not_found": "This applicant is no longer available. Refresh the list.",
       "banner": "{count, plural, one {Add start details for # new hire} other {Add start details for # new hires}}",
-      "banner_cta": "Go to Applicants"
-    }
+      "banner_cta": "Go to Applicants",
+      "error_empty": "Fill in at least one box to save, or press Cancel."
+    },
+    "hire_confirm": {
+      "title": "Mark {name} as hired?",
+      "body": "This tells {name} they’re hired. Next, add their start details so they know when and where to show up.",
+      "confirm": "Mark as hired",
+      "cancel": "Cancel"
+    },
+    "hired_saved": "{name} is marked hired.",
+    "hired_saved_details": "{name} is marked hired. Next, add their start details below."
   },
   "employer_messages": {
     "title": "Messages",
@@ -762,7 +771,9 @@
         "pause_success": "Job paused",
         "resume_success": "Job resumed",
         "error_generic": "Couldn’t update this job. Please try again."
-      }
+      },
+      "template_not_saved_name_taken": "Job posted. Your template wasn’t saved: you already have a template with that name.",
+      "template_not_saved_failed": "Job posted. Your template couldn’t be saved. Try again from Manage templates."
     },
     "filter": {
       "title": "Filter Applicants",
@@ -2696,12 +2707,12 @@
     },
     "employer_post_job": {
       "title": "Posting a job",
-      "description": "The three steps and the 4 required fields.",
+      "description": "The three steps and what you must fill in.",
       "duration": "1 min",
       "slides": {
         "steps": {
           "title": "Three short steps",
-          "body": "The basics, pay and schedule, then questions for applicants. Only 4 things are required: title, trade, city and workers needed."
+          "body": "The basics, pay and schedule, then questions for applicants. Required: a title, a trade, a city picked from the list, and workers needed, which starts at 1. If the trade is Other, type it too."
         },
         "city": {
           "title": "Pick the city from the list",
@@ -2720,11 +2731,11 @@
         "step1": "The basics",
         "step2": "Pay and schedule",
         "step3": "Questions",
-        "required": "Only these are required",
+        "required": "Required",
         "r1": "Title",
         "r2": "Trade",
         "r3": "City",
-        "r4": "Workers needed",
+        "r4": "Workers (starts at 1)",
         "shifts": "Shifts",
         "day": "Day",
         "evening": "Evening",
@@ -2858,7 +2869,7 @@
         "not_now": "Not now",
         "dashboard_body": "Your jobs at a glance: what is open and who applied.",
         "post_job_title": "Post a job",
-        "post_job_body": "Start here. Only 4 things are required: title, trade, city and workers needed.",
+        "post_job_body": "Start here. A job needs a title, a trade and a city picked from the list. Pay, schedule and questions come next.",
         "messages_body": "Write to workers here. They answer on WhatsApp, and their replies show up in the thread.",
         "applicants_body": "Everyone who applied to your jobs, with their trade, experience and trust score.",
         "templates_body": "Save a job you post often and reuse it.",

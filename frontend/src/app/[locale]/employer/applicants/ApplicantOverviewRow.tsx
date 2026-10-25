@@ -1,6 +1,6 @@
 'use client';
 
-import { useId, useState } from 'react';
+import { useId, useRef, useState } from 'react';
 import { useFormatter, useLocale, useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
@@ -9,6 +9,7 @@ import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { ApplicationStatusBadge, Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { MatchScoreBadge } from '@/components/ui/match-signals';
+import { Modal } from '@/components/ui/modal';
 import { Select } from '@/components/ui/select';
 import { useToast } from '@/components/ui/toast';
 import { initialsFor } from '@/components/employer/ConversationThread';
@@ -96,6 +97,14 @@ export function ApplicantOverviewRow({
   const [savedStatus, setSavedStatus] = useState<ApplicationStatus | null>(null);
   const [saving, setSaving] = useState(false);
   /*
+   * Hired is the one status this select sends to the worker, so it is asked
+   * first, in the app's confirm dialog (the safe action focused), rather than
+   * saved on the pick like the employer-only notes beside it. No undo after:
+   * the worker has been told by then, so the confirmation comes before.
+   */
+  const [confirmingHire, setConfirmingHire] = useState(false);
+  const hireCancelRef = useRef<HTMLButtonElement>(null);
+  /*
    * ...and this is what makes "a refreshed list simply takes over" true.
    *
    * The local write outlives the response that committed it -- the parent
@@ -155,7 +164,14 @@ export function ApplicantOverviewRow({
     try {
       const updated = await updateApplicantStatus(idToken, item.job_id, item.worker_id, next);
       // The API is the authority on what was committed.
-      setSavedStatus(updated.status ?? next);
+      const committed = updated.status ?? next;
+      setSavedStatus(committed);
+      if (committed === 'hired') {
+        // Said, not left to the badge: the start-details strip it points at
+        // only exists where the API sends the hire fields.
+        const pointsAtDetails = 'hire_details' in item || 'hire_details_needed' in item;
+        toast.success(t(pointsAtDetails ? 'hired_saved_details' : 'hired_saved', { name: item.worker_name ?? t('unknown_worker') }));
+      }
     } catch (err) {
       setSavedStatus(previous === item.application_status ? null : previous);
       /*
@@ -293,7 +309,13 @@ export function ApplicantOverviewRow({
             aria-describedby={hireHint ? hireHintId : undefined}
             value={status}
             disabled={saving || !idToken}
-            onChange={(event) => void handleStatusChange(event.target.value as ApplicationStatus)}
+            onChange={(event) => {
+              const next = event.target.value as ApplicationStatus;
+              // The select stays on the saved status (it is controlled)
+              // until the dialog below says yes.
+              if (next === 'hired' && status !== 'hired') setConfirmingHire(true);
+              else void handleStatusChange(next);
+            }}
           >
             {statusSelectOptions(status).map((option) => {
               const blocked = option === 'hired' && hireOptionDisabled;
@@ -363,6 +385,32 @@ export function ApplicantOverviewRow({
           </Button>
         </div>
       ) : null}
+      <Modal
+        open={confirmingHire}
+        onClose={() => setConfirmingHire(false)}
+        title={t('hire_confirm.title', { name })}
+        size="sm"
+        initialFocusRef={hireCancelRef}
+        footer={
+          <>
+            <Button ref={hireCancelRef} type="button" variant="ghost" onClick={() => setConfirmingHire(false)}>
+              {t('hire_confirm.cancel')}
+            </Button>
+            <Button
+              type="button"
+              variant="primary"
+              onClick={() => {
+                setConfirmingHire(false);
+                void handleStatusChange('hired');
+              }}
+            >
+              {t('hire_confirm.confirm')}
+            </Button>
+          </>
+        }
+      >
+        <p className="text-sm text-[var(--jale-ink-2)]">{t('hire_confirm.body', { name })}</p>
+      </Modal>
       {hireFormOpen ? (
         <HireDetailsForm
           open

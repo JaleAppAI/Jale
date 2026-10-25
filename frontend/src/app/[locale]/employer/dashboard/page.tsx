@@ -36,6 +36,7 @@ import { flushPendingEmployerProfile } from '@/lib/employer-profile-flush';
 import { hasJobsDone } from '@/lib/employer-tutorial-done';
 import { useTutorial } from '@/lib/tutorials/use-tutorial';
 import { useAppTour } from '@/lib/tutorials/use-app-tour';
+import { useTutorialProgress } from '@/lib/tutorials/progress';
 import type { EmployerBilling, Job, JobCreatedOutcome } from '@/lib/api/employer';
 import { errorMessageKey } from '@/lib/api/errors';
 import { isHealthyPaidPlan, planLimitModel, subscriptionSignage } from '@/lib/plan-limit';
@@ -303,11 +304,20 @@ export default function EmployerDashboardPage() {
         done: phase === 'ready' ? hasJobsDone(data?.jobs) : undefined,
     });
     /*
-     * The app tour comes first, for the same new employer (no job ever): it
-     * shows where everything is, and E1 is asked once it has gone. When the
-     * tour is not eligible (it already has an outcome, say), E1 is asked
-     * straight away, exactly as before the tour existed.
+     * The app tour comes first, for the same new employer (no job ever), and
+     * then the dashboard itself: the tour is their welcome. E1's slides no
+     * longer follow it, and do not auto-play at all once the account has an
+     * outcome for the tour (or a failed save of one, which means it was
+     * shown); E1 stays in Help. An account the tour never reached (no outcome)
+     * is asked about E1 exactly as before the tour existed.
      */
+    // Declared before `useAppTour`, so the ref is current when the tour's own
+    // effect (a held request judged once the read answers) calls back.
+    const tutorialProgress = useTutorialProgress();
+    const progressRef = useRef(tutorialProgress);
+    useEffect(() => {
+        progressRef.current = tutorialProgress;
+    });
     const appTour = useAppTour('employer_app_tour');
     const welcomeAskedRef = useRef(false);
     useEffect(() => {
@@ -315,6 +325,8 @@ export default function EmployerDashboardPage() {
         welcomeAskedRef.current = true;
         const billing = data.billing;
         const askWelcome = () => {
+            const progress = progressRef.current;
+            if (progress && (progress.hasRecord('employer_app_tour') || progress.isFlagged('employer_app_tour'))) return;
             if (billing) {
                 welcomeTutorial.maybeAutoOpen({ activeJobLimit: billing.activeJobLimit });
             } else {

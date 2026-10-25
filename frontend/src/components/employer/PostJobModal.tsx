@@ -26,7 +26,7 @@ import { DurationField } from '@/components/employer/DurationField';
 import { ExperienceStepper } from '@/components/employer/ExperienceStepper';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { Input } from '@/components/ui/input';
-import { JobPostedFooter, JobPostedPanel } from '@/components/employer/JobPostedPanel';
+import { JobPostedFooter, JobPostedPanel, type TemplateNotSaved } from '@/components/employer/JobPostedPanel';
 import { LocationPicker } from '@/components/ui/LocationPicker';
 import { Modal } from '@/components/ui/modal';
 import { PayFields } from '@/components/employer/PayFields';
@@ -156,10 +156,20 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
   /*
    * The job this run posted (sprint 29). While set, the dialog shows the
    * "Job posted" screen instead of a step -- the same dialog, so nothing
-   * stacks and focus stays inside it. `templateNotSavedLimit` is the cap the
-   * ticked template ran into, or null when there is nothing to say about it.
+   * stacks and focus stays inside it. `templateNotSaved` says why the ticked
+   * template was not saved, or is null when there is nothing to say about it.
    */
-  const [posted, setPosted] = useState<{ job: Job; templateNotSavedLimit: number | null } | null>(null);
+  const [posted, setPosted] = useState<{ job: Job; templateNotSaved: TemplateNotSaved | null } | null>(null);
+  /*
+   * "Save as template" ticked with no name (hotfix 2026-10-24). It used to
+   * post the job and save nothing, silently. Post is now refused at the name
+   * box: the employer asked for a template, and a block keeps that fixable
+   * (type a name, or untick the box) where reporting "skipped" afterwards
+   * would only tell them it was lost. Cleared by typing a name or unticking.
+   */
+  const [templateNameMissing, setTemplateNameMissing] = useState(false);
+  const templateNameRef = useRef<HTMLInputElement>(null);
+  const templateNameErrorId = useId();
 
   const headingRef = useRef<HTMLHeadingElement>(null);
   const feedbackRef = useRef<HTMLDivElement>(null);
@@ -284,6 +294,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     setSaveAsTemplate(false);
     setTemplateName('');
     setTemplateNotice('');
+    setTemplateNameMissing(false);
     setTemplateLimit(null);
     setDescriptionGenerating(false);
     setFieldProblem(null);
@@ -431,6 +442,11 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     setFieldProblem(null);
 
     const name = templateName.trim();
+    if (wantsTemplate && !name) {
+      setTemplateNameMissing(true);
+      templateNameRef.current?.focus();
+      return;
+    }
     // Pre-check the template name against the loaded list BEFORE any network
     // call: once the job posts, the modal closes and a failed template save
     // has nowhere left to surface. Catching the collision here keeps it
@@ -465,6 +481,8 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     // What the post did not achieve: shown on the posted screen, and reported
     // to the caller with the job.
     let templateShortfall: JobCreatedOutcome['templateNotSaved'];
+    // Why the template was not saved, for the posted screen.
+    let templateNotSaved: TemplateNotSaved | null = null;
     let templateSavedNew = false;
 
     if (wantsTemplate && name) {
@@ -489,8 +507,14 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
           setTemplateNotice('limit');
           setTemplateLimit(limit);
           templateShortfall = { templateLimit: limit };
+          templateNotSaved = { reason: 'limit', limit };
         } else if (err instanceof ApiError && err.code === 'template_name_taken') {
+          // The server's backstop for a list gone stale: the job still posts,
+          // and the posted screen says the template did not.
           setTemplateNotice('name_taken');
+          templateNotSaved = { reason: 'name_taken' };
+        } else {
+          templateNotSaved = { reason: 'failed' };
         }
       }
     }
@@ -501,7 +525,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       if (templateShortfall) outcome.templateNotSaved = templateShortfall;
       if (templateSavedNew) outcome.templateSaved = true;
       onJobCreated(job, templateShortfall || templateSavedNew ? outcome : undefined);
-      setPosted({ job, templateNotSavedLimit: templateShortfall?.templateLimit ?? null });
+      setPosted({ job, templateNotSaved });
     } catch (err) {
       try {
         handleLegalWall(err, '/employer/dashboard');
@@ -633,7 +657,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       {posted ? (
         <JobPostedPanel
           job={posted.job}
-          templateNotSavedLimit={posted.templateNotSavedLimit}
+          templateNotSaved={posted.templateNotSaved}
           onNavigate={handleClose}
         />
       ) : (
@@ -1002,18 +1026,31 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
             <input
               type="checkbox"
               checked={saveAsTemplate}
-              onChange={(e) => setSaveAsTemplate(e.target.checked)}
+              onChange={(e) => {
+                setSaveAsTemplate(e.target.checked);
+                if (!e.target.checked) setTemplateNameMissing(false);
+              }}
             />
             {t('modal.template_save_toggle')}
           </label>
           {saveAsTemplate && (
-            <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
+            <div className="mt-3 flex flex-col gap-1.5" data-guide="post.template_name">
               <Input
+                ref={templateNameRef}
                 value={templateName}
-                onChange={(e) => setTemplateName(e.target.value)}
+                onChange={(e) => {
+                  setTemplateName(e.target.value);
+                  if (e.target.value.trim()) setTemplateNameMissing(false);
+                }}
                 placeholder={t('modal.template_name_placeholder')}
+                aria-label={t('modal.template_name_placeholder')}
+                aria-invalid={templateNameMissing ? true : undefined}
+                aria-describedby={templateNameMissing ? templateNameErrorId : undefined}
                 className="flex-1"
               />
+              {templateNameMissing ? (
+                <FieldMessage id={templateNameErrorId}>{t('templates.name_required')}</FieldMessage>
+              ) : null}
             </div>
           )}
           {templateNotice === 'name_taken' && (

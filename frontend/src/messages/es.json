@@ -554,8 +554,17 @@
       "error_not_hired": "Solo los postulantes contratados pueden recibir detalles de inicio. Actualice la lista e intente de nuevo.",
       "error_not_found": "Este postulante ya no está disponible. Actualice la lista.",
       "banner": "{count, plural, one {Agregue los detalles de inicio de # nueva contratación} other {Agregue los detalles de inicio de # nuevas contrataciones}}",
-      "banner_cta": "Ir a postulantes"
-    }
+      "banner_cta": "Ir a postulantes",
+      "error_empty": "Llene al menos un recuadro para guardar, o presione Cancelar."
+    },
+    "hire_confirm": {
+      "title": "¿Marcar a {name} como contratado?",
+      "body": "Esto le avisa a {name} que está contratado. Después, agregue sus detalles de inicio para que sepa cuándo y dónde presentarse.",
+      "confirm": "Marcar como contratado",
+      "cancel": "Cancelar"
+    },
+    "hired_saved": "Se marcó a {name} como contratado.",
+    "hired_saved_details": "Se marcó a {name} como contratado. Ahora agregue sus detalles de inicio abajo."
   },
   "employer_messages": {
     "title": "Mensajes",
@@ -762,7 +771,9 @@
         "pause_success": "Empleo pausado",
         "resume_success": "Empleo reanudado",
         "error_generic": "No se pudo actualizar el empleo. Inténtelo de nuevo."
-      }
+      },
+      "template_not_saved_name_taken": "Empleo publicado. Su plantilla no se guardó: ya tiene una plantilla con ese nombre.",
+      "template_not_saved_failed": "Empleo publicado. No se pudo guardar su plantilla. Inténtelo de nuevo desde Administrar plantillas."
     },
     "filter": {
       "title": "Filtrar candidatos",
@@ -2696,12 +2707,12 @@
     },
     "employer_post_job": {
       "title": "Publicar un empleo",
-      "description": "Los tres pasos y los 4 datos obligatorios.",
+      "description": "Los tres pasos y lo que debe llenar.",
       "duration": "1 min",
       "slides": {
         "steps": {
           "title": "Tres pasos cortos",
-          "body": "Lo básico, pago y horario, y luego preguntas para los postulantes. Solo 4 datos son obligatorios: título, oficio, ciudad y número de trabajadores."
+          "body": "Lo básico, pago y horario, y luego preguntas para los postulantes. Obligatorio: un título, un oficio, una ciudad elegida de la lista y el número de trabajadores, que empieza en 1. Si el oficio es Otro, escríbalo también."
         },
         "city": {
           "title": "Elija la ciudad de la lista",
@@ -2720,11 +2731,11 @@
         "step1": "Lo básico",
         "step2": "Pago y horario",
         "step3": "Preguntas",
-        "required": "Solo esto es obligatorio",
+        "required": "Obligatorio",
         "r1": "Título",
         "r2": "Oficio",
         "r3": "Ciudad",
-        "r4": "Trabajadores",
+        "r4": "Trabajadores (empieza en 1)",
         "shifts": "Turnos",
         "day": "Día",
         "evening": "Tarde",
@@ -2858,7 +2869,7 @@
         "not_now": "Ahora no",
         "dashboard_body": "Sus empleos de un vistazo: lo que está abierto y quién se postuló.",
         "post_job_title": "Publicar un empleo",
-        "post_job_body": "Empiece aquí. Solo 4 datos son obligatorios: título, oficio, ciudad y número de trabajadores.",
+        "post_job_body": "Empiece aquí. Un empleo necesita un título, un oficio y una ciudad elegida de la lista. Después vienen el pago, el horario y las preguntas.",
         "messages_body": "Escriba aquí a los trabajadores. Responden por WhatsApp y sus respuestas aparecen en la conversación.",
         "applicants_body": "Todas las personas que se postularon a sus empleos, con su oficio, su experiencia y su puntaje de confianza.",
         "templates_body": "Guarde un empleo que publica seguido y vuelva a usarlo.",
