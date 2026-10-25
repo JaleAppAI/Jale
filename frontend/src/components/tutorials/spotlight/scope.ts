@@ -90,3 +90,95 @@ export function modalOver(scope: HTMLElement | null): boolean {
     }
     return false;
 }
+
+/** Room kept between a revealed control and the page's fixed chrome, in px. */
+const CHROME_MARGIN = 12;
+
+/** The fixed or sticky element `element` is, or sits in; null for plain page content. */
+function fixedOrSticky(element: Element): HTMLElement | null {
+    for (let node: Element | null = element; node !== null && node !== document.body; node = node.parentElement) {
+        const { position } = window.getComputedStyle(node);
+        if (position === 'fixed' || position === 'sticky') return node as HTMLElement;
+    }
+    return null;
+}
+
+/**
+ * The phone tab bar's height, as the bar writes it on `<html>` while it shows
+ * (`BottomTabBar`); 0 where it is hidden.
+ */
+function tabBarOffset(): number {
+    const value = parseFloat(document.documentElement.style.getPropertyValue('--jale-tab-bar-offset'));
+    return Number.isFinite(value) ? value : 0;
+}
+
+/** The page's own element on top at (x, y): the walkthrough's layer is left out. */
+function pageElementAt(x: number, y: number): Element | null {
+    if (typeof document.elementsFromPoint !== 'function') return null;
+    return document.elementsFromPoint(x, y).find((element) => element.closest('[data-spotlight]') === null) ?? null;
+}
+
+/**
+ * Scrolls a control on the page into view clear of the page's fixed chrome.
+ * `scrollIntoView({ block: 'nearest' })` alone can leave it at the very
+ * bottom of the viewport, under the phone tab bar, where its cutout would
+ * show the bar and a tap on it would follow a tab. So the bottom keeps room
+ * for the bar, and then whatever fixed or sticky element is still on top of
+ * the control (a sticky header above, a bar below) is scrolled clear of it.
+ * A control that is itself in the chrome (the app tour's tab-bar stops) is
+ * left where it is.
+ */
+export function revealOnPage(control: HTMLElement): void {
+    if (fixedOrSticky(control) !== null) return;
+    // Optional call: jsdom has no scrollIntoView.
+    control.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    const scroller = scrollParentWithin(control, document.body);
+    const scrollBy = (dy: number) => {
+        if (dy === 0) return;
+        if (scroller !== null) scroller.scrollTop += dy;
+        else window.scrollBy(0, dy);
+    };
+    const bar = tabBarOffset();
+    if (bar > 0) {
+        const rect = control.getBoundingClientRect();
+        const limit = window.innerHeight - bar - CHROME_MARGIN;
+        if (rect.bottom > limit) scrollBy(Math.min(rect.bottom - limit, Math.max(0, rect.top - CHROME_MARGIN)));
+    }
+    const rect = control.getBoundingClientRect();
+    const middle = rect.top + rect.height / 2;
+    const x = rect.left + rect.width / 2;
+    for (const y of [middle, rect.bottom - 2, rect.top + 2]) {
+        const top = pageElementAt(x, y);
+        if (top === null || control.contains(top)) continue;
+        const cover = fixedOrSticky(top);
+        if (cover === null) continue;
+        const box = cover.getBoundingClientRect();
+        // In the lower half of the viewport: a bar from below; else a header from above.
+        if (box.top + box.height / 2 > window.innerHeight / 2) scrollBy(rect.bottom - box.top + CHROME_MARGIN);
+        else scrollBy(-(box.bottom - rect.top + CHROME_MARGIN));
+        return;
+    }
+}
+
+/**
+ * Whether a change of layout has carried a control on the page out of the
+ * part of the viewport it can be seen in: above it, below it or the phone tab
+ * bar, or under fixed chrome. A control taller than that part never counts.
+ */
+export function outOfPageBand(control: HTMLElement): boolean {
+    if (fixedOrSticky(control) !== null) return false;
+    const rect = control.getBoundingClientRect();
+    const bottom = window.innerHeight - tabBarOffset();
+    if (rect.height > bottom) return false;
+    if (rect.top < 0 || rect.bottom > bottom) return true;
+    const top = pageElementAt(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    return top !== null && !control.contains(top) && fixedOrSticky(top) !== null;
+}
+
+/** The same for a control in a dialog's scrolling body. */
+export function outOfContainer(element: Element, container: HTMLElement): boolean {
+    const box = container.getBoundingClientRect();
+    const rect = element.getBoundingClientRect();
+    if (rect.height > box.height) return false;
+    return rect.top < box.top || rect.bottom > box.bottom;
+}

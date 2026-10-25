@@ -11,7 +11,17 @@ import { prefersReducedMotion } from '../scene/motion';
 import { DoneCard, IntroCard, StepCallout, type StepPrimary } from './cards';
 import { cutoutFor, placeCallout, unionBox, type Band, type Box, type Placement } from './geometry';
 import { holdPageScroll } from './page-lock';
-import { dialogOf, modalOver, openPopupsOf, ownsOpenPopup, scrollIntoContainer, scrollParentWithin } from './scope';
+import {
+    dialogOf,
+    modalOver,
+    openPopupsOf,
+    outOfContainer,
+    outOfPageBand,
+    ownsOpenPopup,
+    revealOnPage,
+    scrollIntoContainer,
+    scrollParentWithin,
+} from './scope';
 import {
     applies,
     buildSteps,
@@ -95,7 +105,9 @@ import {
  *
  * ENDING. The last step done is `completed` (after the closing card, if there
  * is one); "not now", the end button, Escape and "Don't show this again" are
- * `skipped`.
+ * `skipped`, and so is a lazy walkthrough whose last step reached was passed
+ * over because its control never came. A change of page (pathname) ends it
+ * at once as `skipped`.
  *
  * Copy: the client gives every key, resolved from the catalogue's root. Step
  * copy, the intro's body and wait lines get an `input` value, `touch` or
@@ -230,6 +242,16 @@ function waitFor(check: () => (() => void) | null, onTimeout: () => void, ms: nu
     return stop;
 }
 
+/** Runs `callback` on the next animation frame (or soon after, without one). Returns the cancel. */
+function nextFrame(callback: () => void): () => void {
+    if (typeof requestAnimationFrame === 'function') {
+        const id = requestAnimationFrame(callback);
+        return () => cancelAnimationFrame(id);
+    }
+    const id = setTimeout(callback, 16);
+    return () => clearTimeout(id);
+}
+
 /** The pointer-catching rectangles around (and, unless interactive, over) the cutout. */
 function blockers(hole: Box | null, interactive: boolean): Array<{ key: string; style: CSSProperties }> {
     if (hole === null) return [{ key: 'all', style: { inset: 0 } }];
@@ -311,6 +333,10 @@ export function Spotlight({
     const orphanRef = useRef(false);
     /** The control the current step lost, and whether its condition held then. */
     const lostRef = useRef<{ at: number; control: HTMLElement; wasMet: boolean } | null>(null);
+    /** Lazy: the last step reached was passed over because its control never came. */
+    const timedOutRef = useRef(false);
+    /** Measures again after a change of layout, and scrolls the control back into view if it took it out. */
+    const relayoutRef = useRef<(() => void) | null>(null);
     /** Another modal dialog is open over the walkthrough (see ANOTHER DIALOG ON TOP). */
     const [suspended, setSuspended] = useState(false);
     /** `suspended`, at once: a wait that runs out before the render that holds it does not count. */
@@ -387,6 +413,7 @@ export function Spotlight({
             setFound(control);
             orphanRef.current = false;
             lostRef.current = null;
+            timedOutRef.current = false;
             setShownSteps((seen) => (seen.has(at) ? seen : new Set(seen).add(at)));
         },
         [moveTo],
@@ -395,7 +422,9 @@ export function Spotlight({
     /** After the last step: the closing card, or the end. */
     const hasDone = done !== undefined;
     const finish = useCallback(() => {
-        if (hasDone) show({ kind: 'done' });
+        // The last step reached never showed: the task was not done with it.
+        if (timedOutRef.current) end('skipped');
+        else if (hasDone) show({ kind: 'done' });
         else end('completed');
     }, [hasDone, end, show]);
 
@@ -505,8 +534,12 @@ export function Spotlight({
         const giveUp = () => {
             // Run out while another dialog came up: held, and asked again once it closes.
             if (suspendedRef.current) return;
-            if (orphanRef.current) end('skipped');
-            else advanceFrom(at);
+            if (orphanRef.current) {
+                end('skipped');
+                return;
+            }
+            timedOutRef.current = true;
+            advanceFrom(at);
         };
         // No running out while another dialog is up: the person is busy there.
         return waitFor(check, giveUp, suspended ? null : waitMs);
@@ -568,6 +601,24 @@ export function Spotlight({
         observer.observe(document.body, { childList: true, subtree: true });
         return () => observer.disconnect();
     }, [inDialog, scope, end, moveTo]);
+
+    // THE PAGE CHANGED under the walkthrough (a link, a redirect, Back): its
+    // steps belong to the page it started on, so it ends there and then, as
+    // skipped, rather than waiting out each step on a page that has none.
+    useEffect(() => {
+        if (!running) return;
+        const start = window.location.pathname;
+        const check = () => {
+            if (window.location.pathname !== start) end('skipped');
+        };
+        const observer = new MutationObserver(check);
+        observer.observe(document.body, { childList: true, subtree: true });
+        window.addEventListener('popstate', check);
+        return () => {
+            observer.disconnect();
+            window.removeEventListener('popstate', check);
+        };
+    }, [running, end]);
 
     // ANOTHER DIALOG ON TOP: asked on every dialog coming or going, and when
     // the walkthrough moves (into a dialog, it is no longer another's).
@@ -756,33 +807,58 @@ export function Spotlight({
         setLayout((previous) => (sameLayout(previous, next) ? previous : next));
     }, [step, controlOf, frame, inDialog, scope]);
 
-    // Measured before paint on every step, and again whenever the viewport,
-    // a scroll position, the control or the callout changes size, or the
-    // dialog it sits in finishes animating in.
+    // Scrolled into view and measured before paint on every step, and
+    // measured again whenever the viewport, a scroll position, the control,
+    // the callout or the page changes size, or the dialog it sits in finishes
+    // animating in. A change of layout (a refetch growing the page above the
+    // control) can carry the control out of view after it was scrolled to:
+    // then it is scrolled back, at most once a frame and only when it is
+    // really out. A scroll alone (the person's own) only measures.
     useLayoutEffect(() => {
         if (!shown || step === null) return;
         const control = controlOf(step);
-        if (control) {
-            const body = inDialog && scope ? scrollParentWithin(control, scope) : null;
+        const body = control && inDialog && scope ? scrollParentWithin(control, scope) : null;
+        const reveal = () => {
+            if (!control) return;
             if (body) scrollIntoContainer(control, body);
-            // Optional call: jsdom has no scrollIntoView. A fixed tab bar or a
-            // sticky header is already in view, and this does nothing to them.
-            else if (!inDialog) control.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
-        }
+            // Clear of the phone tab bar and a sticky header; a control in
+            // that chrome (the app tour's tab-bar stops) stays where it is.
+            else if (!inDialog) revealOnPage(control);
+        };
+        reveal();
         measure();
-        window.addEventListener('resize', measure);
+        let cancelFrame: (() => void) | null = null;
+        const relayout = () => {
+            measure();
+            if (cancelFrame !== null || !control) return;
+            cancelFrame = nextFrame(() => {
+                cancelFrame = null;
+                if (!control.isConnected) return;
+                const out = body ? outOfContainer(control, body) : !inDialog && outOfPageBand(control);
+                if (!out) return;
+                reveal();
+                measure();
+            });
+        };
+        relayoutRef.current = relayout;
+        window.addEventListener('resize', relayout);
         window.addEventListener('scroll', measure, true);
         const host = inDialog ? scope : null;
         host?.addEventListener('animationend', measure);
         let observer: ResizeObserver | null = null;
         if (typeof ResizeObserver !== 'undefined') {
-            observer = new ResizeObserver(() => measure());
+            observer = new ResizeObserver(() => relayout());
             if (control) observer.observe(control);
             if (dialogRef.current) observer.observe(dialogRef.current);
             if (inDialog && rootRef.current) observer.observe(rootRef.current);
+            if (body) observer.observe(body);
+            observer.observe(document.documentElement);
+            observer.observe(document.body);
         }
         return () => {
-            window.removeEventListener('resize', measure);
+            relayoutRef.current = null;
+            cancelFrame?.();
+            window.removeEventListener('resize', relayout);
             window.removeEventListener('scroll', measure, true);
             host?.removeEventListener('animationend', measure);
             observer?.disconnect();
@@ -859,7 +935,8 @@ export function Spotlight({
                 return;
             }
             if (settled()) return;
-            measure();
+            if (relayoutRef.current) relayoutRef.current();
+            else measure();
             refresh();
         });
         observer.observe(document.body, { childList: true, subtree: true, attributes: true, characterData: true });

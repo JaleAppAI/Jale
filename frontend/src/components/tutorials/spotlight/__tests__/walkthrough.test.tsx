@@ -23,11 +23,14 @@ import type { SpotlightDone, SpotlightIntro, SpotlightStep } from '../steps';
 const KEY = 'tutorial.employer_post_job.guide';
 const COUNTER = `${KEY}.counter`;
 
+/** How far the page has been scrolled (a `window.scrollBy` stub moves it); fixed chrome stays put. */
+let pageScroll = 0;
+
 function boxOf(element: Element): { top: number; left: number; width: number; height: number } {
     const raw = element.getAttribute('data-box');
     if (raw) {
         const [top, left, width, height] = raw.split(',').map(Number);
-        return { top, left, width, height };
+        return { top: top - (element.closest('[data-fixed]') ? 0 : pageScroll), left, width, height };
     }
     if (element.getAttribute('role') === 'dialog' && element.closest('[data-spotlight]')) {
         return { top: 0, left: 0, width: 326, height: 160 };
@@ -54,6 +57,7 @@ beforeEach(() => {
     Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 });
     document.body.style.overflow = '';
     document.documentElement.style.overflow = '';
+    pageScroll = 0;
 });
 
 afterEach(() => {
@@ -1154,7 +1158,156 @@ describe('another dialog opened over the walkthrough', () => {
         click('Cancel');
         await flush();
         await flush(120);
-        // With the dialog gone the wait ran out, and nothing was left.
-        expect(onDismiss).toHaveBeenCalledWith('completed');
+        // With the dialog gone the wait ran out: the last step never showed.
+        expect(onDismiss).toHaveBeenCalledWith('skipped');
+    });
+});
+
+/** `document.elementsFromPoint` over the `data-box` boxes: fixed chrome on top, the innermost element first. */
+function stubHitTesting(): () => void {
+    const at = (x: number, y: number): Element[] => {
+        const hits = Array.from(document.querySelectorAll<HTMLElement>('[data-box]')).filter((element) => {
+            const r = element.getBoundingClientRect();
+            return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+        });
+        const fixed = (element: Element) => Number(element.closest('[data-fixed]') !== null);
+        return hits.sort((a, b) => fixed(b) - fixed(a) || (a.contains(b) ? 1 : b.contains(a) ? -1 : 0));
+    };
+    Object.defineProperty(document, 'elementsFromPoint', { configurable: true, value: at });
+    const scroll = vi.spyOn(window, 'scrollBy').mockImplementation(((x: number | ScrollToOptions, y?: number) => {
+        pageScroll += typeof x === 'number' ? (y ?? 0) : (x.top ?? 0);
+    }) as typeof window.scrollBy);
+    return () => {
+        scroll.mockRestore();
+        delete (document as unknown as { elementsFromPoint?: unknown }).elementsFromPoint;
+        document.documentElement.style.removeProperty('--jale-tab-bar-offset');
+    };
+}
+
+/** A field near the bottom of an 800px viewport, under a fixed 64px bar; and a tab in that bar. */
+function renderUnderBar(steps: SpotlightStep[], resolve: 'lazy' | 'start' = 'lazy') {
+    // The page first: a tour cuts its steps to what is on screen as it starts.
+    render(
+        <>
+            <div data-guide="r.field" data-box="760,40,300,40">
+                <input aria-label="Near the bottom" />
+            </div>
+            <nav data-fixed="" style={{ position: 'fixed' }} data-box="736,0,1280,64">
+                <button type="button" data-tour="tab.home" data-box="736,0,200,64">
+                    Home
+                </button>
+            </nav>
+        </>,
+    );
+    render(
+        <Intl>
+            <Spotlight
+                name="test-guide"
+                resolve={resolve}
+                steps={steps}
+                waitMs={50}
+                counterKey={COUNTER}
+                onDismiss={() => {}}
+                onUnavailable={() => {}}
+            />
+        </Intl>,
+    );
+}
+
+const FIELD: SpotlightStep = { id: 'field', target: { guide: 'r.field' }, mode: 'next', ready: () => true, ...copy('title') };
+
+/** What is on top at the middle of `element`, as the page draws it. */
+const onTopAtMiddle = (element: Element) => {
+    const r = element.getBoundingClientRect();
+    return document.elementsFromPoint(r.left + r.width / 2, r.top + r.height / 2)[0] ?? null;
+};
+
+describe('a control on the page, under the phone tab bar', () => {
+    it('is scrolled clear of the bar the page says it has', async () => {
+        const restore = stubHitTesting();
+        document.documentElement.style.setProperty('--jale-tab-bar-offset', '64px');
+        renderUnderBar([FIELD]);
+        await flush();
+        const field = document.querySelector('[data-guide="r.field"]') as HTMLElement;
+        expect(stepOf()).toBe('field');
+        expect(field.getBoundingClientRect().bottom).toBeLessThanOrEqual(800 - 64);
+        expect(field.contains(onTopAtMiddle(field))).toBe(true);
+        restore();
+    });
+
+    it('is scrolled clear of a fixed bar found on top of it, with no offset given', async () => {
+        const restore = stubHitTesting();
+        renderUnderBar([FIELD]);
+        await flush();
+        const field = document.querySelector('[data-guide="r.field"]') as HTMLElement;
+        expect(field.contains(onTopAtMiddle(field))).toBe(true);
+        expect(field.getBoundingClientRect().bottom).toBeLessThanOrEqual(736);
+        restore();
+    });
+
+    it('leaves a control in the bar itself where it is (the app tour’s tab-bar stops)', async () => {
+        const restore = stubHitTesting();
+        const scrollBy = vi.mocked(window.scrollBy);
+        renderUnderBar([{ id: 'home', target: { tour: 'tab.home' }, titleKey: `${KEY}.intro_title`, bodyKey: `${KEY}.intro_body` }], 'start');
+        await flush();
+        expect(stepOf()).toBe('home');
+        expect(scrollBy).not.toHaveBeenCalled();
+        restore();
+    });
+});
+
+describe('a control the page moves after it was scrolled to', () => {
+    it('is scrolled back into view when the page grows above it', async () => {
+        const restore = stubHitTesting();
+        document.documentElement.style.setProperty('--jale-tab-bar-offset', '64px');
+        renderUnderBar([FIELD]);
+        await flush();
+        const field = document.querySelector('[data-guide="r.field"]') as HTMLElement;
+        expect(field.getBoundingClientRect().bottom).toBeLessThanOrEqual(736);
+        // A refetch draws more above it: it is now below the viewport.
+        act(() => {
+            field.setAttribute('data-box', `${1100 + pageScroll},40,300,40`);
+        });
+        expect(field.getBoundingClientRect().top).toBeGreaterThan(800);
+        await flush(50);
+        const rect = field.getBoundingClientRect();
+        expect(rect.top).toBeGreaterThanOrEqual(0);
+        expect(rect.bottom).toBeLessThanOrEqual(736);
+        expect(field.contains(onTopAtMiddle(field))).toBe(true);
+        restore();
+    });
+});
+
+describe('ending on the page it started on', () => {
+    afterEach(() => {
+        window.history.replaceState(null, '', '/');
+    });
+
+    it('a change of page ends it at once, as skipped', async () => {
+        const { onDismiss, show } = renderGuide([TITLE, TRADE], {}, { waitMs: 10_000 });
+        await flush();
+        expect(stepOf()).toBe('title');
+        // A link: the address changes and the new page draws.
+        act(() => {
+            window.history.pushState(null, '', '/elsewhere');
+        });
+        show({ fields: { trade: true } });
+        await flush();
+        expect(onDismiss).toHaveBeenCalledTimes(1);
+        expect(onDismiss).toHaveBeenCalledWith('skipped');
+    });
+
+    it('a last step passed over because its control never came ends it as skipped, with no closing card', async () => {
+        const MISSING: SpotlightStep = { ...TRADE, id: 'missing', target: { guide: 't.missing' } };
+        const { onDismiss } = renderGuide([TITLE, MISSING], {}, {
+            waitMs: 30,
+            done: { titleKey: `${KEY}.intro_title`, bodyKey: `${KEY}.intro_body` },
+        });
+        await flush();
+        type('#title', 'Framer');
+        press('next');
+        await flush(60);
+        expect(stepOf()).toBeNull();
+        expect(onDismiss).toHaveBeenCalledWith('skipped');
     });
 });
