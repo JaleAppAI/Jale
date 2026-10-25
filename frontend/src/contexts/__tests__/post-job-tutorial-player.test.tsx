@@ -19,16 +19,18 @@ import {
 
 /*
  * E2 with the real tutorial machinery: the progress store, the overlay
- * coordinator, the lazily loaded player and the real posting tour, in front
- * of the real "Post a job" button and the real plan gate. Only the wizard's
- * body is a stand-in: a plain dialog that notes where focus was when it
- * opened.
+ * coordinator, the lazily loaded guides chunk, the real post-job guide and
+ * the spotlight engine, in front of the real "Post a job" button and the real
+ * plan gate. Only the wizard's body is a stand-in: a dialog with the guide's
+ * first field (`post.title`), noting where focus was when it opened.
  *
  *  - From a page that does not hold the jobs (Q3), the first press reads
- *    them, plays the tour for an employer with none, and only then opens the
- *    wizard, with focus back on the button and one dialog at a time.
+ *    them and opens the wizard at once, with focus on the button as it opens;
+ *    for an employer with no job, the guide then starts INSIDE the wizard. One
+ *    dialog on screen throughout: the guide is drawn in the wizard's panel.
+ *  - Ending the guide never closes the wizard, and Escape ends the guide only.
  *  - The plan gate comes first: when it refuses, the limit dialog shows and
- *    the tour never does, then or after.
+ *    the guide never does, then or after.
  */
 
 const wizard = vi.hoisted(() => ({
@@ -51,8 +53,11 @@ vi.mock('@/components/employer/PostJobModal', async () => {
             }
             wasOpen.current = open;
             return (
-                <Modal open={open} onClose={onClose} title="Job form">
-                    <button type="button">Job title</button>
+                <Modal open={open} onClose={onClose} title="Job form" data-guide="post.wizard">
+                    <div data-guide="post.title">
+                        <label htmlFor="stand-in-title">Job title</label>
+                        <input id="stand-in-title" />
+                    </div>
                 </Modal>
             );
         },
@@ -141,8 +146,9 @@ const activeJob = {
     created_at: '2026-08-01T00:00:00Z',
 } as unknown as Job;
 
-const tourTitle = () => message('tutorial.employer_post_job.title');
-const tourDialog = () => screen.queryByRole('dialog', { name: tourTitle() });
+const guideIntro = () =>
+    screen.queryByRole('dialog', { name: message('tutorial.employer_post_job.guide.intro_title') });
+const guideLayer = () => document.querySelector('[data-spotlight]');
 const wizardDialog = () => screen.queryByRole('dialog', { name: 'Job form' });
 const postButton = () => screen.getByRole('button', { name: message('employer_dashboard.jobs.post_job') });
 const posts = () => tutorialCalls().filter(([method]) => method === 'POST');
@@ -200,44 +206,42 @@ beforeEach(() => {
     serveTutorials([]);
 });
 
-describe('"Post a job" with the real posting tour', () => {
-    it('from a page that holds no jobs, the first press reads them, plays the tour, then opens the wizard with focus on the button', async () => {
+describe('"Post a job" with the real post-job guide', () => {
+    it('from a page that holds no jobs, the first press reads them, opens the wizard, then starts the guide inside it', async () => {
         const snapshot = serveSnapshot([], plan(3));
         renderPage();
         await settle();
         const dialogs = watchDialogs();
 
         const button = press();
-        expect(tourDialog()).toBeNull();
         expect(wizardDialog()).toBeNull();
 
         await snapshot.answer();
-        const tour = await screen.findByRole('dialog', { name: tourTitle() });
-        expect(wizardDialog()).toBeNull();
-        expect(wizard.opens).toEqual([]);
-        expect(within(tour).getByRole('heading', { level: 2 }).textContent).toBe(
-            message('tutorial.employer_post_job.slides.steps.title'),
-        );
-
-        for (let turn = 0; turn < 3; turn += 1) {
-            act(() => {
-                fireEvent.click(within(tour).getByRole('button', { name: message('tutorial.common.next') }));
-            });
-        }
-        act(() => {
-            fireEvent.click(within(tour).getByRole('button', { name: message('tutorial.common.got_it') }));
-        });
-
         await waitFor(() => expect(wizardDialog()).not.toBeNull());
-        expect(tourDialog()).toBeNull();
+        // The wizard opened first, from the press, with focus on the button and nothing else up.
         expect(wizard.opens).toHaveLength(1);
         expect(wizard.opens[0].active).toBe(button);
         expect(wizard.opens[0].dialogs).toBe(0);
-        expect(posts().map(([, , body]) => body)).toEqual([{ tutorial_id: 'employer_post_job', outcome: 'completed' }]);
+
+        const intro = await screen.findByRole('dialog', {
+            name: message('tutorial.employer_post_job.guide.intro_title'),
+        });
+        expect(wizardDialog()?.contains(intro)).toBe(true);
+        expect(within(intro).getByRole('button', { name: message('tutorial.common.guide.employer.start') })).toBe(
+            document.activeElement,
+        );
+
+        act(() => {
+            fireEvent.click(within(intro).getByRole('button', { name: message('tutorial.common.guide.self') }));
+        });
+        await settle();
+        expect(guideLayer()).toBeNull();
+        expect(wizardDialog()).not.toBeNull();
+        expect(posts().map(([, , body]) => body)).toEqual([{ tutorial_id: 'employer_post_job', outcome: 'skipped' }]);
 
         // Closing the wizard hands focus back to the button that opened it.
         act(() => {
-            fireEvent.keyDown(document, { key: 'Escape' });
+            fireEvent.keyDown(document.activeElement ?? document, { key: 'Escape' });
         });
         await settle();
         expect(wizardDialog()).toBeNull();
@@ -247,31 +251,42 @@ describe('"Post a job" with the real posting tour', () => {
         dialogs.stop();
     });
 
-    it('skipping the tour still opens the wizard, and the next press goes straight to it', async () => {
+    it('Escape during the guide ends the guide only; the next press opens the wizard with no guide', async () => {
         const first = serveSnapshot([], plan(3));
         renderPage();
         await settle();
 
-        const button = press();
+        press();
         await first.answer();
-        const tour = await screen.findByRole('dialog', { name: tourTitle() });
-        act(() => {
-            fireEvent.click(within(tour).getByRole('button', { name: message('tutorial.common.skip') }));
+        const intro = await screen.findByRole('dialog', {
+            name: message('tutorial.employer_post_job.guide.intro_title'),
         });
-        await waitFor(() => expect(wizardDialog()).not.toBeNull());
-        expect(wizard.opens[0].active).toBe(button);
+        act(() => {
+            fireEvent.click(within(intro).getByRole('button', { name: message('tutorial.common.guide.employer.start') }));
+        });
+        await settle();
+        expect(document.querySelector('[data-spotlight] [data-step="title"]')).not.toBeNull();
+
+        act(() => {
+            fireEvent.keyDown(document.activeElement ?? document, { key: 'Escape' });
+        });
+        await settle();
+        expect(guideLayer()).toBeNull();
+        expect(wizardDialog()).not.toBeNull();
         expect(posts().map(([, , body]) => body)).toEqual([{ tutorial_id: 'employer_post_job', outcome: 'skipped' }]);
 
         act(() => {
-            fireEvent.keyDown(document, { key: 'Escape' });
+            fireEvent.keyDown(document.activeElement ?? document, { key: 'Escape' });
         });
         await settle();
+        expect(wizardDialog()).toBeNull();
 
         const again = serveSnapshot([], plan(3));
         press();
         await again.answer();
         await waitFor(() => expect(wizardDialog()).not.toBeNull());
-        expect(tourDialog()).toBeNull();
+        await settle();
+        expect(guideIntro()).toBeNull();
         expect(posts()).toHaveLength(1);
     });
 
@@ -283,7 +298,8 @@ describe('"Post a job" with the real posting tour', () => {
         press();
         await snapshot.answer();
         await waitFor(() => expect(wizardDialog()).not.toBeNull());
-        expect(tourDialog()).toBeNull();
+        await settle();
+        expect(guideIntro()).toBeNull();
         expect(posts()).toEqual([]);
     });
 
@@ -296,11 +312,12 @@ describe('"Post a job" with the real posting tour', () => {
         press();
         await snapshot.answer();
         await waitFor(() => expect(wizardDialog()).not.toBeNull());
-        expect(tourDialog()).toBeNull();
+        await settle();
+        expect(guideIntro()).toBeNull();
         expect(posts()).toEqual([]);
     });
 
-    it('never plays with the limit dialog: the gate refuses first, and the tour stays shut after it closes', async () => {
+    it('never plays with the limit dialog: the gate refuses first, and the guide stays shut after it closes', async () => {
         // A plan with no posting slot at all: the gate refuses an employer with no job.
         const snapshot = serveSnapshot([], plan(0));
         renderPage();
@@ -313,7 +330,7 @@ describe('"Post a job" with the real posting tour', () => {
 
         const limit = screen.getByRole('dialog');
         expect(limit).toBeTruthy();
-        expect(tourDialog()).toBeNull();
+        expect(guideIntro()).toBeNull();
         expect(wizardDialog()).toBeNull();
 
         act(() => {
@@ -322,7 +339,7 @@ describe('"Post a job" with the real posting tour', () => {
         await settle();
 
         expect(screen.queryByRole('dialog')).toBeNull();
-        expect(tourDialog()).toBeNull();
+        expect(guideIntro()).toBeNull();
         expect(wizard.opens).toEqual([]);
         expect(posts()).toEqual([]);
         // The limit dialog hands focus back on the next frame (see `handlePlanLimitClose`).
