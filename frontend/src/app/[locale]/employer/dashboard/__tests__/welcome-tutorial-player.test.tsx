@@ -197,6 +197,12 @@ function toLastSlide(locale: Locale = 'en') {
 
 const posts = () => tutorialCalls().filter(([method]) => method === 'POST');
 
+beforeAll(async () => {
+    // The tour's lazy chunk, fetched once up front: a cold first import
+    // would otherwise spend the first test's wait on module transforms.
+    await import('@/components/tutorials/AppTourHost');
+});
+
 let rectsSpy: ReturnType<typeof vi.spyOn>;
 beforeAll(() => {
     // jsdom does no layout; one rect per element keeps focusables in the dialog's trap.

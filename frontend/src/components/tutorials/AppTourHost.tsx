@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect } from 'react';
 import type { TourId, TutorialOutcome } from '@/lib/api/tutorials';
+import { AppTour } from './AppTour';
 
 export type AppTourHostProps = {
     id: TourId;
@@ -14,14 +14,9 @@ export type AppTourHostProps = {
 /**
  * The app tour overlay's chunk: what the progress provider fetches with
  * `React.lazy` when a tour id is about to play. Nothing else may import this
- * module statically.
- *
- * Contract stub from the hotfix base: no tour is drawn yet, so a tour play
- * ends at once and records nothing.
+ * module statically, and it is the only module that imports the tour's UI
+ * (`AppTour` and its step model), so none of it reaches a page's own bundle.
  */
-export default function AppTourHost({ onUnavailable }: AppTourHostProps) {
-    useEffect(() => {
-        onUnavailable();
-    }, [onUnavailable]);
-    return null;
+export default function AppTourHost({ id, onDismiss, onUnavailable }: AppTourHostProps) {
+    return <AppTour id={id} onDismiss={onDismiss} onUnavailable={onUnavailable} />;
 }
