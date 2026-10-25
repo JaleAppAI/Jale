@@ -68,10 +68,15 @@ function ahead(panel: string): boolean {
     return now !== -1 && now < STEPPER_PANELS.indexOf(panel);
 }
 
-/** Finish is on screen and can be pressed. */
+/** Something is still missing on Check & finish: the link back to it shows. */
+function missingShown(): boolean {
+    return onPanel('review') && guideTarget('details.review.fix') !== null;
+}
+
+/** Finish is on screen and can be pressed (never while something is missing). */
 function finishLive(): boolean {
     const finish = guideTarget('details.review.finish');
-    return onPanel('review') && finish !== null && !finish.hasAttribute('disabled');
+    return onPanel('review') && !missingShown() && finish !== null && !finish.hasAttribute('disabled');
 }
 
 function attribute(name: string, attr: string): string | null {
@@ -288,10 +293,14 @@ const guide: WalkthroughGuide = {
             mode: 'next',
             ...copy('review_summary', false),
         },
+        // The last step of its branch: the guide cannot walk the earlier steps
+        // again, so it says it ends here, and ends when the link is tapped.
+        // Finish and the completion screen below never apply while something
+        // is missing, so the counter's total ends on this step.
         {
             id: 'review_missing',
             target: { guide: 'details.review.fix' },
-            when: () => onPanel('review') && guideTarget('details.review.fix') !== null,
+            when: missingShown,
             mode: 'action',
             advanceWhen: () => !onPanel('review'),
             ...copy('review_missing'),

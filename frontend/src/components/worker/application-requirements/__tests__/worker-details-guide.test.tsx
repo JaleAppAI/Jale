@@ -809,9 +809,17 @@ describe('worker_details guide — Check & finish', () => {
     await expectStep('review_summary');
     await next();
     await expectStep('review_missing');
+    // The last step of this branch: the count ends here, and the copy says the guide does too.
+    const counter = callout()?.textContent?.match(/Your details · (\d+) of (\d+)/);
+    expect(counter?.[1]).toBeDefined();
+    expect(counter?.[1]).toBe(counter?.[2]);
+    expect(callout()).toHaveTextContent('This guide ends here; you can finish on your own');
     expect(screen.getByRole('button', { name: 'Go to Details' })).toBeInTheDocument();
     await press(screen.getByRole('button', { name: 'Go to Details' }));
     await vi.waitFor(() => expect(onDismiss).toHaveBeenCalledWith('completed'));
+    // Nothing after it: no Finish or completion step comes up on the way out.
+    expect(callout()).toBeNull();
+    expect(onDismiss).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('button', { name: /Details/, current: 'step' })).toBeInTheDocument();
   });
 });

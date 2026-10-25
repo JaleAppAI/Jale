@@ -2888,7 +2888,7 @@
           },
           "review_missing": {
             "title": "Todavía falta algo",
-            "body": "{input, select, touch {Toca} other {Haz clic en}} el enlace debajo del aviso para abrir el paso que lo necesita. Ahí termina la guía: arréglalo, vuelve a Revisar y terminar y {input, select, touch {toca} other {haz clic en}} Terminar.",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} el enlace debajo del aviso para volver y completarlo. Aquí termina esta guía; puedes terminar por tu cuenta: vuelve a Revisar y terminar y {input, select, touch {toca} other {haz clic en}} Terminar.",
             "wait": "{input, select, touch {Toca} other {Haz clic en}} el enlace para ir a arreglarlo."
           },
           "review_finish": {

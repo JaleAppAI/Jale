@@ -2888,7 +2888,7 @@
           },
           "review_missing": {
             "title": "Something is still missing",
-            "body": "{input, select, touch {Tap} other {Click}} the link under the message to open the step that needs it. The guide ends there: fix it, come back to Check & finish and {input, select, touch {tap} other {click}} Finish.",
+            "body": "{input, select, touch {Tap} other {Click}} the link under the message to go back and fill it in. This guide ends here; you can finish on your own: come back to Check & finish and {input, select, touch {tap} other {click}} Finish.",
             "wait": "{input, select, touch {Tap} other {Click}} the link to go and fix it."
           },
           "review_finish": {
