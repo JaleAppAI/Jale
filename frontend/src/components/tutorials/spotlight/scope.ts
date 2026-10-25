@@ -72,3 +72,21 @@ export function openPopupsOf(target: Element): HTMLElement[] {
 export function ownsOpenPopup(element: Element | null): boolean {
     return element instanceof HTMLElement && element.getAttribute('aria-expanded') === 'true';
 }
+
+/** A modal dialog, of any kind. */
+const MODAL_DIALOG = '[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]';
+
+/**
+ * Whether a modal dialog other than the walkthrough's own is open: one that
+ * is not a walkthrough's callout, and does not hold `scope` (the dialog the
+ * walkthrough runs in, if any). A confirm or a form opened over the step.
+ */
+export function modalOver(scope: HTMLElement | null): boolean {
+    const own = scope !== null && scope !== document.body ? scope : null;
+    for (const dialog of Array.from(document.querySelectorAll(MODAL_DIALOG))) {
+        if (dialog.closest('[data-spotlight]') !== null) continue;
+        if (own !== null && dialog.contains(own)) continue;
+        return true;
+    }
+    return false;
+}

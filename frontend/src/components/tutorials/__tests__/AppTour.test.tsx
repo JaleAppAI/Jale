@@ -61,6 +61,7 @@ beforeEach(() => {
     });
     setViewport(1280, 800);
     document.body.style.overflow = '';
+    document.documentElement.style.overflow = '';
 });
 
 afterEach(() => {
@@ -405,11 +406,15 @@ describe('app tour: a dialog the page cannot be used behind', () => {
         expect(document.activeElement).toBe(opener);
     });
 
-    it('locks the page’s scroll while open and restores it after', () => {
+    it('locks the page’s scroll while open and restores it after, leaving the body’s to the dialogs', () => {
+        document.documentElement.style.overflow = 'auto';
         document.body.style.overflow = 'auto';
         const { close } = renderTour(pages.employerDesktop);
-        expect(document.body.style.overflow).toBe('hidden');
+        // Its own hold is on the root element; a dialog's is on the body.
+        expect(document.documentElement.style.overflow).toBe('hidden');
+        expect(document.body.style.overflow).toBe('auto');
         close();
+        expect(document.documentElement.style.overflow).toBe('auto');
         expect(document.body.style.overflow).toBe('auto');
     });
 

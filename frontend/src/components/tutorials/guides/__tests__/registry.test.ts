@@ -60,6 +60,8 @@ describe('guides registry', () => {
         // Only the Other box is conditional; the wizard's Next completes on the screen changing.
         expect(guide?.steps.filter((step) => step.when).map((step) => step.id)).toEqual(['trade_other']);
         expect(guide?.steps.find((step) => step.id === 'next')?.advanceWhen).toBeTypeOf('function');
+        // It runs in the wizard, opened with it.
+        expect(guide?.host).toEqual({ guide: 'post.wizard' });
     });
 
     it('speaks usted to the employer, and says Tap or Click by the pointer', () => {
