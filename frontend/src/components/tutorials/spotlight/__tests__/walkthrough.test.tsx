@@ -64,6 +64,9 @@ beforeEach(() => {
 afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+    // What a hit-testing test set up, even when it failed before undoing it.
+    delete (document as unknown as { elementsFromPoint?: unknown }).elementsFromPoint;
+    document.documentElement.style.removeProperty('--jale-tab-bar-offset');
 });
 
 /** Lets the page-watching observers and short waits run. */
@@ -1339,7 +1342,7 @@ describe('a control whose list opens under the phone tab bar', () => {
         render(
             <>
                 <div data-guide="r.city" data-box="680,40,300,40">
-                    <input aria-label="City" role="combobox" aria-expanded="false" />
+                    <input aria-label="City" role="combobox" aria-expanded="false" aria-controls="city-options" />
                 </div>
                 <nav data-fixed="" style={{ position: 'fixed' }} data-box="736,0,1280,64">
                     <button type="button" data-box="736,0,200,64">
