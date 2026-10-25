@@ -83,12 +83,15 @@ describe('guides registry', () => {
             // The plan-limit dialog, the edit dialog, the template editor
             ['limit', 'next', { guide: 'limit.body' }],
             ['limit_actions', 'action', { guide: 'limit.actions' }],
-            ['edit_form', 'next', { guide: 'edit.form' }],
+            ['edit_form', 'next', { guide: 'edit.title' }],
             ['edit_locked', 'next', { guide: 'edit.questions' }],
             ['edit_workers', 'next', { guide: 'edit.workers' }],
             ['edit_save', 'action', { guide: 'edit.save' }],
             ['tpl_name', 'next', { guide: 'tpl.name' }],
-            ['tpl_form', 'next', { guide: 'tpl.form' }],
+            ['tpl_form', 'next', { guide: 'tpl.title' }],
+            ['tpl_city', 'auto', { guide: 'tpl.city' }],
+            ['tpl_trade', 'auto', { guide: 'tpl.trade' }],
+            ['tpl_trade_other', 'next', { guide: 'tpl.trade_other' }],
             ['tpl_save', 'action', { guide: 'tpl.save' }],
         ]);
         // Every step names the place it belongs to; the wizard's Next steps complete on the screen changing.

@@ -44,7 +44,7 @@ import type { WalkthroughGuide } from './types';
 const KEY = 'tutorial.employer_post_job.guide';
 
 /** The steps that say what they wait for (a step that is always ready shows no wait line). */
-const WAITS: ReadonlySet<string> = new Set(['city', 'city_check', 'done', 'edit_save', 'edit_workers', 'limit_actions', 'next', 'next_details', 'pay', 'post_again', 'post_error', 'questions', 'submit', 'template_limit', 'template_name', 'template_taken', 'times', 'title', 'tpl_name', 'tpl_save', 'trade', 'trade_other', 'workers']);
+const WAITS: ReadonlySet<string> = new Set(['city', 'city_check', 'done', 'edit_save', 'edit_workers', 'limit_actions', 'next', 'next_details', 'pay', 'post_again', 'post_error', 'questions', 'submit', 'template_limit', 'template_name', 'template_taken', 'times', 'title', 'tpl_city', 'tpl_form', 'tpl_name', 'tpl_save', 'tpl_trade', 'tpl_trade_other', 'trade', 'trade_other', 'workers']);
 
 function keys(id: string) {
     return {
@@ -376,8 +376,7 @@ const LIMIT_DIALOG: readonly SpotlightStep[] = [
 const EDIT: readonly SpotlightStep[] = [
     {
         id: 'edit_form',
-        // The whole form, so every field can be changed with the guide up.
-        target: { guide: 'edit.form' },
+        target: { guide: 'edit.title' },
         when: inEdit,
         mode: 'next',
         ...keys('edit_form'),
@@ -423,13 +422,41 @@ const TEMPLATE_EDITOR: readonly SpotlightStep[] = [
         ready: hasText,
         ...keys('tpl_name'),
     },
+    // What Save template needs, one field at a time like the wizard: a
+    // title, a city picked from the list, and a trade (typed, for Other).
     {
         id: 'tpl_form',
-        // The whole form: the title, trade and city it needs are filled in here.
-        target: { guide: 'tpl.form' },
+        target: { guide: 'tpl.title' },
         when: inTemplateEditor,
         mode: 'next',
+        ready: hasText,
         ...keys('tpl_form'),
+    },
+    {
+        id: 'tpl_city',
+        target: { guide: 'tpl.city' },
+        when: inTemplateEditor,
+        mode: 'auto',
+        placement: 'top',
+        advanceWhen: isPicked,
+        ready: (control) => isPicked(control) || (locationDatasetFailed() && hasText(control)),
+        ...keys('tpl_city'),
+    },
+    {
+        id: 'tpl_trade',
+        target: { guide: 'tpl.trade' },
+        when: inTemplateEditor,
+        mode: 'auto',
+        advanceWhen: hasText,
+        ...keys('tpl_trade'),
+    },
+    {
+        id: 'tpl_trade_other',
+        target: { guide: 'tpl.trade_other' },
+        when: () => inTemplateEditor() && valueOf('tpl.trade') === 'other',
+        mode: 'next',
+        ready: hasText,
+        ...keys('tpl_trade_other'),
     },
     {
         id: 'tpl_save',

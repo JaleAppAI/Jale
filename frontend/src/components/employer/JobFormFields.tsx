@@ -64,9 +64,10 @@ interface JobFormFieldsProps {
   shiftPeriodsError?: string | null;
   /**
    * A step-by-step guide's prefix for this form's hooks (`data-guide`):
-   * `<guide>.title`, `<guide>.workers` and `<guide>.questions` (the questions,
-   * with `data-locked` while the lock holds). `edit` in the edit dialog,
-   * `tpl` in the template editor.
+   * `<guide>.title`, `<guide>.city`, `<guide>.trade`, `<guide>.trade_other`,
+   * `<guide>.workers` and `<guide>.questions` (the questions, with
+   * `data-locked` while the lock holds). `edit` in the edit dialog, `tpl` in
+   * the template editor.
    */
   guide?: string;
 }
@@ -138,13 +139,14 @@ export function JobFormFields({
         />
       </Field>
       <div className="grid gap-3 md:grid-cols-2">
-        <Field label={t('modal.location')} required>
+        <Field label={t('modal.location')} required guide={mark('city')}>
           {/* Same warning ring PostJobModal's step 1 draws, for the same
               reason and from the same copy key: the field can hold a perfectly
               plausible location string with no city behind it. */}
           <div className={locationInvalid ? 'rounded-[10px] ring-2 ring-[var(--jale-warning)]' : undefined}>
             <LocationPicker
               value={form.location}
+              picked={form.city_key !== null}
               onChange={onLocationChange}
               invalid={locationInvalid}
               describedBy={locationInvalid ? locationHelperId : undefined}
@@ -165,6 +167,8 @@ export function JobFormFields({
         </Field>
       </div>
       <TradeCategoryField
+        tradeGuide={mark('trade')}
+        otherGuide={mark('trade_other')}
         tradeCategory={form.trade_category}
         tradeCategoryOther={form.trade_category_other}
         onTradeCategoryChange={(value) => onUpdate('trade_category', value)}

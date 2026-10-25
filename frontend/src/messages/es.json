@@ -2912,12 +2912,28 @@
           },
           "tpl_form": {
             "title": "Llene el empleo",
-            "body": "Los mismos datos que al publicar un empleo, en un solo formulario y sin fecha de inicio. Son obligatorios un título, un oficio y una ciudad elegida de la lista."
+            "body": "Los mismos datos que al publicar un empleo, en un solo formulario y sin fecha de inicio. Necesita un título, una ciudad elegida de la lista y un oficio: empiece por el título.",
+            "wait": "Escriba un título para continuar."
           },
           "tpl_save": {
             "title": "Guarde la plantilla",
             "body": "{input, select, touch {Toque} other {Haga clic en}} Guardar plantilla cuando termine. Si falta algo, una línea en rojo arriba de los botones dice qué.",
             "wait": "{input, select, touch {Toque} other {Haga clic en}} Guardar plantilla para terminar."
+          },
+          "tpl_city": {
+            "title": "Elija la ciudad de la lista",
+            "body": "{input, select, touch {Empiece a escribir la ciudad en Ubicación y tóquela en la lista.} other {Empiece a escribir la ciudad en Ubicación y haga clic en ella en la lista.}} Una ciudad escrita que no se elige de la lista no cuenta.",
+            "wait": "{input, select, touch {Toque una ciudad de la lista} other {Haga clic en una ciudad de la lista}} para continuar."
+          },
+          "tpl_trade_other": {
+            "title": "Escriba el oficio",
+            "body": "Eligió Otro, así que apareció un recuadro nuevo. Escriba ahí el oficio, como “Soldador”.",
+            "wait": "Escriba el oficio para continuar."
+          },
+          "tpl_trade": {
+            "title": "Elija el oficio",
+            "body": "Abra la lista Oficio y elija el oficio. Si no aparece, elija Otro.",
+            "wait": "Elija uno para continuar."
           }
         }
       }

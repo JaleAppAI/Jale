@@ -152,12 +152,12 @@ function type(name: string, value: string) {
     });
 }
 
-async function pickCity() {
-    const city = mark('post.city')?.querySelector<HTMLInputElement>('[role="combobox"]') as HTMLInputElement;
+async function pickCity(where = 'post.city') {
+    const city = mark(where)?.querySelector<HTMLInputElement>('[role="combobox"]') as HTMLInputElement;
     act(() => city.focus());
     fireEvent.change(city, { target: { value: 'Hay' } });
     fireEvent.mouseDown(await screen.findByRole('option', { name: 'Hayward, CA' }, { timeout: 4000 }));
-    await waitFor(() => expect(mark('post.city')?.querySelector('[data-picked]')).not.toBeNull(), { timeout: 4000 });
+    await waitFor(() => expect(mark(where)?.querySelector('[data-picked]')).not.toBeNull(), { timeout: 4000 });
     await flush();
 }
 
@@ -689,10 +689,6 @@ describe('the post-job guide in the edit dialog', () => {
         await press('start');
         await reach('edit_form');
         expect(counter()).toMatch(/1 of 2$/);
-        // The step holds the whole form, so anything can be changed with the guide up.
-        const form = (guide.steps.find((step) => step.id === 'edit_form')?.target as { guide: string }).guide;
-        expect(mark(form)?.contains(mark('edit.workers'))).toBe(true);
-        expect(mark(form)?.querySelector('[data-field="location"], [role="combobox"]')).not.toBeNull();
         await press('next');
         await reach('edit_save');
         expect(action('next')).toBeNull();
@@ -738,32 +734,75 @@ describe('the post-job guide in the edit dialog', () => {
 });
 
 describe('the post-job guide in the template editor', () => {
-    it('asks for the name first, then the job, then Save template', async () => {
-        const view = renderWithGuide(
+    function openEditor() {
+        return renderWithGuide(
             <Closable dialog={(open, close) => <TemplateEditModal open={open} template={null} onClose={close} onSaved={vi.fn()} />} />,
             { id: 'employer_post_job', mode: 'always' },
         );
+    }
+
+    it('takes the name, then each field Save template needs, one at a time, and Save template finishes it', async () => {
+        const view = openEditor();
         await reach('intro');
         await press('start');
         await reach('tpl_name');
+        expect(counter()).toMatch(/1 of 5$/);
         expect(action('next')).toBeDisabled();
         type('tpl.name', 'Roofer');
         await flush();
         await press('next');
         await reach('tpl_form');
-        // The step holds the whole form: the trade and the city it needs can be filled in with the guide up.
-        const form = (guide.steps.find((step) => step.id === 'tpl_form')?.target as { guide: string }).guide;
-        expect(mark(form)?.contains(mark('tpl.title'))).toBe(true);
-        expect(mark(form)?.querySelector('[data-field="location"], [role="combobox"]')).not.toBeNull();
-        expect(mark(form)?.querySelector('select')).not.toBeNull();
+        expect(action('next')).toBeDisabled();
+        type('tpl.title', 'Roofer');
+        await flush();
         await press('next');
+        await reach('tpl_city');
+        await pickCity('tpl.city');
+        await reach('tpl_trade');
+        type('tpl.trade', 'carpenter');
         await reach('tpl_save');
         // Save template is the way out: no Got it of its own.
         expect(action('next')).toBeNull();
         act(() => {
+            fireEvent.click(mark('tpl.save') as HTMLElement);
+        });
+        await waitFor(() => expect(saveJobTemplate).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(view.onDismiss).toHaveBeenCalledWith('completed'));
+    });
+
+    it('asks for the typed trade when Other is picked', async () => {
+        openEditor();
+        await reach('intro');
+        await press('start');
+        await reach('tpl_name');
+        type('tpl.name', 'Welding');
+        await flush();
+        await press('next');
+        await reach('tpl_form');
+        type('tpl.title', 'Welder');
+        await flush();
+        await press('next');
+        await reach('tpl_city');
+        await pickCity('tpl.city');
+        await reach('tpl_trade');
+        type('tpl.trade', 'other');
+        await reach('tpl_trade_other');
+        expect(counter()).toMatch(/5 of 6$/);
+        expect(action('next')).toBeDisabled();
+        type('tpl.trade_other', 'Welder');
+        await flush();
+        expect(action('next')).not.toBeDisabled();
+    });
+
+    it('is finished by Cancel too', async () => {
+        const view = openEditor();
+        await reach('intro');
+        await press('start');
+        await reach('tpl_name');
+        act(() => {
             fireEvent.click(screen.getByRole('button', { name: message('employer_dashboard.modal.cancel') }));
         });
-        await waitFor(() => expect(view.onDismiss).toHaveBeenCalledWith('completed'));
+        await waitFor(() => expect(view.onDismiss).toHaveBeenCalled());
     });
 });
 

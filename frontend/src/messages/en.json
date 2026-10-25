@@ -2912,12 +2912,28 @@
           },
           "tpl_form": {
             "title": "Fill in the job",
-            "body": "The same fields as posting a job, on one form, with no start date. A title, a trade and a city picked from the list are required."
+            "body": "The same fields as posting a job, on one form, with no start date. It needs a title, a city picked from the list and a trade: start with the title.",
+            "wait": "Type a title to continue."
           },
           "tpl_save": {
             "title": "Save the template",
             "body": "{input, select, touch {Tap} other {Click}} Save template when you’re done. If something is missing, a red line above the buttons says what.",
             "wait": "{input, select, touch {Tap} other {Click}} Save template to finish."
+          },
+          "tpl_city": {
+            "title": "Pick the city from the list",
+            "body": "{input, select, touch {Start typing the city in Location, then tap it in the list.} other {Start typing the city in Location, then click it in the list.}} A city you type but don’t pick doesn’t count.",
+            "wait": "{input, select, touch {Tap} other {Click}} a city in the list to continue."
+          },
+          "tpl_trade_other": {
+            "title": "Type the trade",
+            "body": "You picked Other, so a new box appeared. Type the trade there, like “Welder”.",
+            "wait": "Type the trade to continue."
+          },
+          "tpl_trade": {
+            "title": "Pick the trade",
+            "body": "Open the Trade list and choose the trade. If it isn’t there, pick Other.",
+            "wait": "Pick one to continue."
           }
         }
       }
