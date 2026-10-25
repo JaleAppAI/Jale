@@ -734,12 +734,13 @@ export class ApiStack extends cdk.Stack {
     apiDb.grantRead(workerProfileUpdateLambda.function);
     props.aliasGeneratorFn.grantInvoke(workerProfileUpdateLambda.function);
 
-    // Tutorial progress (sprint 29, contract K1) — employer and worker auth,
-    // DB access. One function serves GET/POST /employer/tutorials and
-    // /worker/tutorials: the path picks the role, and each path's authorizer
-    // pins its pool. Configured like the pay-reference function: no
-    // REQUIRED_TOS_VERSION, because the handler does not call
-    // checkCompliance() (UI state, shown before worker onboarding finishes).
+    // Tutorial progress and guide settings (sprint 29 contracts K1 and
+    // K1-v2) — employer and worker auth, DB access. One function serves
+    // GET/POST/PATCH /employer/tutorials and /worker/tutorials: the path picks
+    // the role, and each path's authorizer pins its pool. Configured like the
+    // pay-reference function: no REQUIRED_TOS_VERSION, because the handler
+    // does not call checkCompliance() (UI state, shown before worker
+    // onboarding finishes).
     const tutorialProgressFunction = new JaleLambdaFunction(this, 'TutorialProgressFunction', {
       entry: path.join(__dirname, '../../lambda/api/tutorial-progress.ts'),
       description: 'Tutorial progress endpoint',
@@ -920,14 +921,19 @@ export class ApiStack extends cdk.Stack {
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
 
-    // GET  /worker/tutorials — the worker's tutorial progress
-    // POST /worker/tutorials — record how an auto-opened tutorial was dismissed
+    // GET   /worker/tutorials — the worker's tutorial progress and guide settings
+    // POST  /worker/tutorials — record how an auto-opened tutorial or the app tour was dismissed
+    // PATCH /worker/tutorials — save the worker's guide settings
     const workerTutorialsResource = workerResource.addResource('tutorials');
     workerTutorialsResource.addMethod('GET', lambdaIntegration(tutorialProgressFunction.function), {
       authorizer: workerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
     workerTutorialsResource.addMethod('POST', lambdaIntegration(tutorialProgressFunction.function), {
+      authorizer: workerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+    workerTutorialsResource.addMethod('PATCH', lambdaIntegration(tutorialProgressFunction.function), {
       authorizer: workerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
@@ -1099,14 +1105,19 @@ export class ApiStack extends cdk.Stack {
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
 
-    // GET  /employer/tutorials — the employer's tutorial progress
-    // POST /employer/tutorials — record how an auto-opened tutorial was dismissed
+    // GET   /employer/tutorials — the employer's tutorial progress and guide settings
+    // POST  /employer/tutorials — record how an auto-opened tutorial or the app tour was dismissed
+    // PATCH /employer/tutorials — save the employer's guide settings
     const employerTutorialsResource = this.employerResource.addResource('tutorials');
     employerTutorialsResource.addMethod('GET', lambdaIntegration(tutorialProgressFunction.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
     employerTutorialsResource.addMethod('POST', lambdaIntegration(tutorialProgressFunction.function), {
+      authorizer: employerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+    employerTutorialsResource.addMethod('PATCH', lambdaIntegration(tutorialProgressFunction.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });

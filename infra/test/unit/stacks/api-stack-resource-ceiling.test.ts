@@ -174,7 +174,11 @@ const CEILING = 470;
 // four Methods and two OPTIONS preflights, four Lambda::Permissions, and the
 // one function serving both (Function, execution Role, its default Policy and
 // log group): 16 resources, leaving 17 of headroom against the 470 gate.
-const MEASURED_RESOURCES = 453;
+// → 457 once the K1-v2 guide settings (hotfix 2026-10-23) added PATCH on
+// `/employer/tutorials` and `/worker/tutorials`: two Methods and their two
+// Lambda::Permissions, on the existing Resources, preflights and function:
+// 4 resources, leaving 13 of headroom against the 470 gate.
+const MEASURED_RESOURCES = 457;
 
 /**
  * Every `AWS::ApiGateway::Method` in the template, grouped by the resource it
@@ -529,6 +533,9 @@ describe('JaleApiStack resource ceiling (real bin/jale-app.ts composition)', () 
     ['POST', '/employer/tutorials', 'EmployerAuthorizer'],
     ['GET', '/worker/tutorials', 'WorkerAuthorizer'],
     ['POST', '/worker/tutorials', 'WorkerAuthorizer'],
+    // K1-v2 guide settings: PATCH on the same two routes and function.
+    ['PATCH', '/employer/tutorials', 'EmployerAuthorizer'],
+    ['PATCH', '/worker/tutorials', 'WorkerAuthorizer'],
   ];
 
   /**

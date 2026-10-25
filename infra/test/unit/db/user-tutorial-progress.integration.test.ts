@@ -352,7 +352,8 @@ describeInProfiles([...ALL_PROFILES], 'migration 130: user_tutorial_progress', (
     it('answers the empty list, keeps the first outcome, and reads it back with the stored time', async () => {
       const a = await person('employer');
 
-      expect(await call('/employer/tutorials', a.sub, 'GET')).toEqual({ statusCode: 200, body: { tutorials: [] } });
+      expect(await call('/employer/tutorials', a.sub, 'GET'))
+        .toEqual({ statusCode: 200, body: { tutorials: [], settings: { always_show: false, muted: [] } } });
       const first = await call('/employer/tutorials', a.sub, 'POST', { tutorial_id: 'employer_welcome', outcome: 'skipped' });
       const second = await call('/employer/tutorials', a.sub, 'POST', { tutorial_id: 'employer_welcome', outcome: 'completed' });
       const read = await call('/employer/tutorials', a.sub, 'GET');
@@ -363,7 +364,7 @@ describeInProfiles([...ALL_PROFILES], 'migration 130: user_tutorial_progress', (
       const stored = { tutorial_id: 'employer_welcome', outcome: 'skipped', recorded_at: (row.recorded_at as Date).toISOString() };
       expect(first).toEqual({ statusCode: 200, body: { tutorial: stored } });
       expect(second).toEqual({ statusCode: 200, body: { tutorial: stored } });
-      expect(read).toEqual({ statusCode: 200, body: { tutorials: [stored] } });
+      expect(read).toEqual({ statusCode: 200, body: { tutorials: [stored], settings: { always_show: false, muted: [] } } });
       expect(await rowsOf(a)).toEqual([{ tutorial_id: 'employer_welcome', outcome: 'skipped' }]);
     });
 

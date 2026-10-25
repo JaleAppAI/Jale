@@ -6,12 +6,13 @@ import { handler } from '../../../../lambda/api/tutorial-progress';
 import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
 import { corsHeaders } from '../../../../lambda/lib/http';
 
-// The tutorial progress handler (contract K1.2 and K1.3) against an in-memory
-// stand-in for the database. The stand-in answers the handler's statements by
+// The tutorial progress handler (contracts K1.2, K1.3 and K1-v2) against an
+// in-memory stand-in for the database. The stand-in answers the handler's statements by
 // their text and applies their WHERE clauses, so a statement that loses its
 // caller or role filter returns the other rows. The DB suite
-// (test/unit/db/user-tutorial-progress.integration.test.ts) runs the same
-// statements on PostgreSQL as the request login.
+// suites (test/unit/db/user-tutorial-progress.integration.test.ts and
+// user-tutorial-settings.integration.test.ts) run the same statements on
+// PostgreSQL as the request login.
 
 jest.mock('../../../../lambda/lib/db');
 
@@ -30,8 +31,14 @@ interface StoredRow {
   recorded_at: Date;
 }
 
+interface StoredSettings {
+  always_show: boolean;
+  muted: string[];
+}
+
 let users: Map<string, string>;
 let stored: StoredRow[];
+let settings: Map<string, StoredSettings>;
 let statements: string[];
 let failOn: RegExp | null;
 let clock: number;
@@ -68,6 +75,26 @@ async function fakeQuery(sql: string, params: unknown[] = []): Promise<{ rows: u
     }
     if (text.endsWith('ORDER BY tutorial_id')) rows = [...rows].sort((a, b) => a.tutorial_id.localeCompare(b.tutorial_id));
     return { rows: rows.map(({ user_id: _u, ...rest }) => rest), rowCount: rows.length };
+  }
+  if (text === 'SELECT always_show, muted FROM user_tutorial_settings WHERE user_id = $1') {
+    const row = settings.get(params[0] as string);
+    return row ? { rows: [{ always_show: row.always_show, muted: [...row.muted] }], rowCount: 1 } : { rows: [], rowCount: 0 };
+  }
+  if (text.startsWith('INSERT INTO user_tutorial_settings (user_id, always_show, muted, updated_at)')) {
+    // The upsert: a field sent as NULL keeps the stored value (or the default
+    // on the first write); a field sent replaces it.
+    expect(text).toBe(
+      'INSERT INTO user_tutorial_settings (user_id, always_show, muted, updated_at) '
+      + "VALUES ($1, COALESCE($2::boolean, false), COALESCE($3::text[], '{}'), now()) "
+      + 'ON CONFLICT (user_id) DO UPDATE SET always_show = COALESCE($2::boolean, user_tutorial_settings.always_show), '
+      + 'muted = COALESCE($3::text[], user_tutorial_settings.muted), updated_at = now() '
+      + 'RETURNING always_show, muted',
+    );
+    const [userId, alwaysShow, muted] = params as [string, boolean | null, string[] | null];
+    const current = settings.get(userId) ?? { always_show: false, muted: [] };
+    const next = { always_show: alwaysShow ?? current.always_show, muted: muted ? [...muted] : current.muted };
+    settings.set(userId, next);
+    return { rows: [{ always_show: next.always_show, muted: [...next.muted] }], rowCount: 1 };
   }
   throw new Error(`unexpected statement: ${text}`);
 }
@@ -121,6 +148,7 @@ beforeEach(() => {
   jest.resetAllMocks();
   users = new Map([[EMPLOYER_SUB, EMPLOYER_USER_ID], [WORKER_SUB, WORKER_USER_ID]]);
   stored = [];
+  settings = new Map();
   statements = [];
   failOn = null;
   clock = Date.parse('2026-10-22T15:00:00.000Z');
@@ -135,6 +163,8 @@ afterEach(() => {
   logSpy.mockRestore();
   errorSpy.mockRestore();
 });
+
+const DEFAULT_SETTINGS = { always_show: false, muted: [] };
 
 describe('GET tutorial progress', () => {
   it('answers the employer records only, ordered by id, with ISO times, on the employer path', async () => {
@@ -154,6 +184,7 @@ describe('GET tutorial progress', () => {
           { tutorial_id: 'employer_applicants', outcome: 'completed', recorded_at: '2026-10-21T11:30:00.000Z' },
           { tutorial_id: 'employer_welcome', outcome: 'skipped', recorded_at: '2026-10-20T10:00:00.000Z' },
         ],
+        settings: DEFAULT_SETTINGS,
       },
     });
   });
@@ -166,21 +197,70 @@ describe('GET tutorial progress', () => {
 
     expect(parsed(res)).toEqual({
       status: 200,
-      body: { tutorials: [{ tutorial_id: 'worker_onboarding', outcome: 'completed', recorded_at: '2026-10-21T09:00:00.000Z' }] },
+      body: {
+        tutorials: [{ tutorial_id: 'worker_onboarding', outcome: 'completed', recorded_at: '2026-10-21T09:00:00.000Z' }],
+        settings: DEFAULT_SETTINGS,
+      },
     });
   });
 
-  it('answers an empty list when nothing is recorded', async () => {
-    expect(parsed(await handler(makeEvent()))).toEqual({ status: 200, body: { tutorials: [] } });
+  it("includes the role's app tour record, and never the other role's", async () => {
+    seed(EMPLOYER_USER_ID, 'employer_app_tour', 'skipped', '2026-10-21T08:00:00.000Z');
+    seed(EMPLOYER_USER_ID, 'worker_app_tour', 'completed', '2026-10-21T08:30:00.000Z');
+    seed(WORKER_USER_ID, 'worker_app_tour', 'completed', '2026-10-21T09:00:00.000Z');
+    seed(WORKER_USER_ID, 'employer_app_tour', 'completed', '2026-10-21T09:30:00.000Z');
+
+    expect(parsed(await handler(makeEvent())).body.tutorials).toEqual([
+      { tutorial_id: 'employer_app_tour', outcome: 'skipped', recorded_at: '2026-10-21T08:00:00.000Z' },
+    ]);
+    expect(parsed(await handler(workerEvent())).body.tutorials).toEqual([
+      { tutorial_id: 'worker_app_tour', outcome: 'completed', recorded_at: '2026-10-21T09:00:00.000Z' },
+    ]);
   });
 
-  it('sets the caller context inside the transaction before the first read, and commits', async () => {
+  it('answers an empty list and the default settings when nothing is recorded', async () => {
+    expect(parsed(await handler(makeEvent()))).toEqual({ status: 200, body: { tutorials: [], settings: DEFAULT_SETTINGS } });
+  });
+
+  it('answers the stored settings', async () => {
+    settings.set(EMPLOYER_USER_ID, { always_show: true, muted: ['employer_post_job'] });
+
+    expect(parsed(await handler(makeEvent()))).toEqual({
+      status: 200,
+      body: { tutorials: [], settings: { always_show: true, muted: ['employer_post_job'] } },
+    });
+  });
+
+  it("answers muted filtered to the role's tutorial ids, in the role's list order", async () => {
+    // A tour id, the other role's ids, an unknown id and a repeat are never
+    // answered; the rest come back in EMPLOYER_TUTORIAL_IDS order.
+    settings.set(EMPLOYER_USER_ID, {
+      always_show: false,
+      muted: ['employer_messages', 'worker_apply', 'employer_app_tour', 'employer_welcome', 'employer_billing', 'employer_messages'],
+    });
+    settings.set(WORKER_USER_ID, {
+      always_show: true,
+      muted: ['worker_profile', 'employer_welcome', 'worker_app_tour', 'worker_onboarding'],
+    });
+
+    expect(parsed(await handler(makeEvent())).body.settings).toEqual({
+      always_show: false, muted: ['employer_welcome', 'employer_messages'],
+    });
+    expect(parsed(await handler(workerEvent())).body.settings).toEqual({
+      always_show: true, muted: ['worker_onboarding', 'worker_profile'],
+    });
+  });
+
+  it('sets the caller context inside the transaction before the first read, reads both in it, and commits', async () => {
     await handler(makeEvent());
 
     expect(mockSetRlsContext).toHaveBeenCalledTimes(1);
     expect(mockSetRlsContext.mock.calls[0][1]).toBe(EMPLOYER_SUB);
     expect(statements.slice(0, 3)).toEqual(['BEGIN', 'SET CALLER', 'SELECT id FROM users WHERE cognito_sub = $1']);
-    expect(statements[statements.length - 1]).toBe('COMMIT');
+    expect(statements.slice(3, 5).map((s) => s.split(' FROM ')[1]?.split(' ')[0])).toEqual([
+      'user_tutorial_progress', 'user_tutorial_settings',
+    ]);
+    expect(statements.slice(5)).toEqual(['COMMIT']);
     expect(mockRelease).toHaveBeenCalledTimes(1);
   });
 
@@ -191,6 +271,7 @@ describe('GET tutorial progress', () => {
 
     expect(parsed(res)).toEqual({ status: 404, body: { error: 'not_found' } });
     expect(statements.some((s) => s.includes('user_tutorial_progress'))).toBe(false);
+    expect(statements.some((s) => s.includes('user_tutorial_settings'))).toBe(false);
     expect(statements[statements.length - 1]).toBe('ROLLBACK');
     expect(mockRelease).toHaveBeenCalledTimes(1);
   });
@@ -232,6 +313,24 @@ describe('POST tutorial progress', () => {
   });
 
   it.each([
+    ['the employer app tour on the employer path', () => makeEvent({ method: 'POST', body: { tutorial_id: 'employer_app_tour', outcome: 'skipped' } }), EMPLOYER_USER_ID],
+    ['the worker app tour on the worker path', () => workerEvent({ method: 'POST', body: { tutorial_id: 'worker_app_tour', outcome: 'skipped' } }), WORKER_USER_ID],
+  ])('records %s like a tutorial, first outcome kept', async (_name, event, userId) => {
+    const first = parsed(await handler(event()));
+    const tourId = first.body.tutorial?.tutorial_id;
+
+    expect(first).toEqual({
+      status: 200,
+      body: { tutorial: { tutorial_id: expect.stringMatching(/_app_tour$/), outcome: 'skipped', recorded_at: '2026-10-22T15:00:01.000Z' } },
+    });
+    const completed = await handler({ ...event(), body: JSON.stringify({ tutorial_id: tourId, outcome: 'completed' }) });
+    expect(parsed(completed)).toEqual(first);
+    expect(stored).toEqual([{ user_id: userId, tutorial_id: tourId, outcome: 'skipped', recorded_at: new Date('2026-10-22T15:00:01.000Z') }]);
+  });
+
+  it.each([
+    ['the worker app tour on the employer path', makeEvent({ method: 'POST', body: { tutorial_id: 'worker_app_tour', outcome: 'completed' } })],
+    ['the employer app tour on the worker path', workerEvent({ method: 'POST', body: { tutorial_id: 'employer_app_tour', outcome: 'completed' } })],
     ['a worker id on the employer path', makeEvent({ method: 'POST', body: { tutorial_id: 'worker_apply', outcome: 'completed' } })],
     ['an employer id on the worker path', workerEvent({ method: 'POST', body: { tutorial_id: 'employer_welcome', outcome: 'completed' } })],
     ['an unknown id', makeEvent({ method: 'POST', body: { tutorial_id: 'employer_billing', outcome: 'completed' } })],
@@ -310,11 +409,178 @@ describe('POST tutorial progress', () => {
   });
 });
 
+describe('PATCH guide settings (K1-v2)', () => {
+  const patch = (body: unknown) => makeEvent({ method: 'PATCH', body });
+  const workerPatch = (body: unknown) => workerEvent({ method: 'PATCH', body });
+
+  it('saves always_show alone, starting from the defaults, and answers the stored settings', async () => {
+    const res = await handler(patch({ always_show: true }));
+
+    expect(res.headers).toEqual(corsHeaders());
+    expect(parsed(res)).toEqual({ status: 200, body: { settings: { always_show: true, muted: [] } } });
+    expect(settings.get(EMPLOYER_USER_ID)).toEqual({ always_show: true, muted: [] });
+    expect(statements[statements.length - 1]).toBe('COMMIT');
+  });
+
+  it('sends a field that is absent as NULL, so the stored value is kept', async () => {
+    settings.set(EMPLOYER_USER_ID, { always_show: true, muted: ['employer_welcome'] });
+
+    expect(parsed(await handler(patch({ muted: ['employer_messages'] })))).toEqual({
+      status: 200, body: { settings: { always_show: true, muted: ['employer_messages'] } },
+    });
+    expect(parsed(await handler(patch({ always_show: false })))).toEqual({
+      status: 200, body: { settings: { always_show: false, muted: ['employer_messages'] } },
+    });
+    const upserts = mockQuery.mock.calls.filter(([sql]) => /^\s*INSERT INTO user_tutorial_settings/.test(sql));
+    expect(upserts.map(([, params]) => params)).toEqual([
+      [EMPLOYER_USER_ID, null, ['employer_messages']],
+      [EMPLOYER_USER_ID, false, null],
+    ]);
+  });
+
+  it('saves muted alone, and both fields together', async () => {
+    expect(parsed(await handler(workerPatch({ muted: ['worker_details'] })))).toEqual({
+      status: 200, body: { settings: { always_show: false, muted: ['worker_details'] } },
+    });
+    expect(parsed(await handler(workerPatch({ always_show: true, muted: ['worker_apply', 'worker_profile'] })))).toEqual({
+      status: 200, body: { settings: { always_show: true, muted: ['worker_apply', 'worker_profile'] } },
+    });
+    expect(settings.get(WORKER_USER_ID)).toEqual({ always_show: true, muted: ['worker_apply', 'worker_profile'] });
+    expect(settings.has(EMPLOYER_USER_ID)).toBe(false);
+  });
+
+  it("replaces the stored list: an empty muted clears it, sent as an empty array, not NULL", async () => {
+    settings.set(EMPLOYER_USER_ID, { always_show: true, muted: ['employer_welcome', 'employer_post_job'] });
+
+    expect(parsed(await handler(patch({ muted: [] })))).toEqual({
+      status: 200, body: { settings: { always_show: true, muted: [] } },
+    });
+    const upsert = mockQuery.mock.calls.find(([sql]) => /^\s*INSERT INTO user_tutorial_settings/.test(sql));
+    expect(upsert?.[1]).toEqual([EMPLOYER_USER_ID, null, []]);
+  });
+
+  it("de-duplicates muted and stores it in the role's list order", async () => {
+    const res = await handler(patch({ muted: ['employer_messages', 'employer_welcome', 'employer_messages', 'employer_welcome'] }));
+
+    expect(parsed(res)).toEqual({ status: 200, body: { settings: { always_show: false, muted: ['employer_welcome', 'employer_messages'] } } });
+    expect(settings.get(EMPLOYER_USER_ID)?.muted).toEqual(['employer_welcome', 'employer_messages']);
+  });
+
+  it('ignores unknown fields', async () => {
+    expect(parsed(await handler(patch({ always_show: true, theme: 'dark' })))).toEqual({
+      status: 200, body: { settings: { always_show: true, muted: [] } },
+    });
+  });
+
+  it("answers the stored row filtered like GET, when an earlier list holds ids this role no longer lists", async () => {
+    settings.set(EMPLOYER_USER_ID, { always_show: false, muted: ['employer_retired_guide', 'employer_post_job'] });
+
+    expect(parsed(await handler(patch({ always_show: true })))).toEqual({
+      status: 200, body: { settings: { always_show: true, muted: ['employer_post_job'] } },
+    });
+  });
+
+  it.each([
+    ['the employer app tour in muted', patch({ muted: ['employer_app_tour'] })],
+    ['the worker app tour in muted on the worker path', workerPatch({ muted: ['worker_app_tour'] })],
+    ['a worker id on the employer path', patch({ muted: ['employer_welcome', 'worker_apply'] })],
+    ['an employer id on the worker path', workerPatch({ muted: ['employer_welcome'] })],
+    ['an unknown id', patch({ muted: ['employer_billing'] })],
+    ['muted as a string', patch({ muted: 'employer_welcome' })],
+    ['muted as an object', patch({ muted: { 0: 'employer_welcome' } })],
+    ['muted as null', patch({ muted: null })],
+    ['a number in muted', patch({ muted: ['employer_welcome', 7] })],
+    ['null in muted', patch({ muted: [null] })],
+    ['a nested array in muted', patch({ muted: [['employer_welcome']] })],
+    ['always_show as a string', patch({ always_show: 'true' })],
+    ['always_show as a number', patch({ always_show: 1 })],
+    ['always_show as null', patch({ always_show: null })],
+    ['a valid always_show with an invalid muted', patch({ always_show: true, muted: ['worker_apply'] })],
+    ['an empty object', patch({})],
+    ['only unknown fields', patch({ theme: 'dark' })],
+    ['an empty body', patch('')],
+    ['a body that is not JSON', patch('always_show=true')],
+    ['a truncated JSON body', patch('{"always_show": tru')],
+    ['a JSON array', patch(JSON.stringify([{ always_show: true }]))],
+    ['a JSON string', patch(JSON.stringify('always_show'))],
+    ['JSON true', patch('true')],
+    ['JSON null', patch('null')],
+  ])('answers 400 invalid_settings for %s and touches no database', async (_name, event) => {
+    expect(parsed(await handler(event))).toEqual({ status: 400, body: { error: 'invalid_settings' } });
+    expect(settings.size).toBe(0);
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('answers 400 invalid_settings for no body at all', async () => {
+    const event = makeEvent({ method: 'PATCH' });
+    expect(event.body).toBeNull();
+    expect(parsed(await handler(event))).toEqual({ status: 400, body: { error: 'invalid_settings' } });
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  /** A valid settings patch padded with an ignored field to exactly `bytes` bytes of UTF-8. */
+  function paddedSettings(bytes: number, pad = 'x'): string {
+    const base = { always_show: true, note: '' };
+    const filler = bytes - Buffer.byteLength(JSON.stringify(base), 'utf8');
+    const width = Buffer.byteLength(pad, 'utf8');
+    const body = JSON.stringify({ ...base, note: pad.repeat(Math.floor(filler / width)) + 'x'.repeat(filler % width) });
+    expect(Buffer.byteLength(body, 'utf8')).toBe(bytes);
+    return body;
+  }
+
+  it('accepts a body of exactly 1 KiB', async () => {
+    expect(parsed(await handler(patch(paddedSettings(1024))))).toEqual({
+      status: 200, body: { settings: { always_show: true, muted: [] } },
+    });
+  });
+
+  it('answers 400 invalid_settings for a body over 1 KiB, counted in bytes', async () => {
+    expect(parsed(await handler(patch(paddedSettings(1025))))).toEqual({ status: 400, body: { error: 'invalid_settings' } });
+    const wide = paddedSettings(1026, '€');
+    expect(wide.length).toBeLessThan(1024);
+    expect(parsed(await handler(patch(wide)))).toEqual({ status: 400, body: { error: 'invalid_settings' } });
+    expect(settings.size).toBe(0);
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('answers 404 not_found when the caller has no users row, and writes nothing', async () => {
+    users.delete(EMPLOYER_SUB);
+
+    expect(parsed(await handler(patch({ always_show: true })))).toEqual({ status: 404, body: { error: 'not_found' } });
+    expect(settings.size).toBe(0);
+    expect(statements.some((s) => s.includes('user_tutorial_settings'))).toBe(false);
+    expect(statements[statements.length - 1]).toBe('ROLLBACK');
+    expect(mockRelease).toHaveBeenCalledTimes(1);
+  });
+
+  it('sets the caller context inside the transaction before the upsert, and commits', async () => {
+    await handler(workerPatch({ always_show: true }));
+
+    expect(mockSetRlsContext.mock.calls[0][1]).toBe(WORKER_SUB);
+    expect(statements.slice(0, 3)).toEqual(['BEGIN', 'SET CALLER', 'SELECT id FROM users WHERE cognito_sub = $1']);
+    expect(statements[3]).toMatch(/^INSERT INTO user_tutorial_settings /);
+    expect(statements.slice(4)).toEqual(['COMMIT']);
+  });
+
+  it('answers 500 internal_error, rolls back and releases when the upsert fails', async () => {
+    failOn = /^INSERT INTO user_tutorial_settings/;
+
+    const res = await handler(patch({ always_show: true }));
+
+    expect(res.headers).toEqual(corsHeaders());
+    expect(parsed(res)).toEqual({ status: 500, body: { error: 'internal_error' } });
+    expect(statements[statements.length - 1]).toBe('ROLLBACK');
+    expect(statements).not.toContain('COMMIT');
+    expect(mockRelease).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('requests the handler refuses before the database', () => {
   it.each([
     ['GET', makeEvent({ sub: null })],
     ['POST', makeEvent({ sub: null, method: 'POST', body: { tutorial_id: 'employer_welcome', outcome: 'completed' } })],
     ['GET with an empty sub', makeEvent({ sub: '' })],
+    ['PATCH', makeEvent({ sub: null, method: 'PATCH', body: { always_show: true } })],
   ])('answers 401 unauthorized when the caller has no sub (%s)', async (_name, event) => {
     expect(parsed(await handler(event))).toEqual({ status: 401, body: { error: 'unauthorized' } });
     expect(mockGetDbPool).not.toHaveBeenCalled();
@@ -325,8 +591,8 @@ describe('requests the handler refuses before the database', () => {
     expect(mockGetDbPool).not.toHaveBeenCalled();
   });
 
-  it('answers 405 method_not_allowed for any other method', async () => {
-    const res = await handler(makeEvent({ method: 'DELETE' }));
+  it.each(['DELETE', 'PUT'])('answers 405 method_not_allowed for any other method (%s)', async (method) => {
+    const res = await handler(makeEvent({ method, body: { always_show: true } }));
     expect(res.headers).toEqual(corsHeaders());
     expect(parsed(res)).toEqual({ status: 405, body: { error: 'method_not_allowed' } });
     expect(mockGetDbPool).not.toHaveBeenCalled();
@@ -345,7 +611,7 @@ describe('failures and logging', () => {
     expect(mockRelease).toHaveBeenCalledTimes(1);
   });
 
-  it('writes one TutorialProgress line per request with role, method and outcome code, and never the sub', async () => {
+  it('writes one TutorialProgress line per request with role, method and outcome code, and never the sub or the settings', async () => {
     await handler(makeEvent());
     await handler(makeEvent({ method: 'POST', body: { tutorial_id: 'employer_welcome', outcome: 'completed' } }));
     await handler(makeEvent({ method: 'POST', body: { tutorial_id: 'employer_welcome', outcome: 'skipped' } }));
@@ -353,8 +619,14 @@ describe('failures and logging', () => {
     await handler(makeEvent({ sub: null }));
     users.delete(WORKER_SUB);
     await handler(workerEvent());
+    await handler(makeEvent({ method: 'PATCH', body: { always_show: true, muted: ['employer_welcome'] } }));
+    await handler(makeEvent({ method: 'PATCH', body: { muted: ['employer_app_tour'] } }));
+    await handler(workerEvent({ method: 'PATCH', body: { always_show: true } }));
+    await handler(makeEvent({ method: 'PUT' }));
     failOn = /^SELECT id FROM users/;
     await handler(makeEvent());
+    failOn = /^INSERT INTO user_tutorial_settings/;
+    await handler(makeEvent({ method: 'PATCH', body: { always_show: false } }));
 
     expect(progressLines()).toEqual([
       { event: 'TutorialProgress', role: 'employer', method: 'GET', outcome: 'read' },
@@ -363,18 +635,25 @@ describe('failures and logging', () => {
       { event: 'TutorialProgress', role: 'worker', method: 'POST', outcome: 'invalid_tutorial' },
       { event: 'TutorialProgress', role: 'employer', method: 'GET', outcome: 'unauthorized' },
       { event: 'TutorialProgress', role: 'worker', method: 'GET', outcome: 'not_found' },
+      { event: 'TutorialProgress', role: 'employer', method: 'PATCH', outcome: 'settings_saved' },
+      { event: 'TutorialProgress', role: 'employer', method: 'PATCH', outcome: 'invalid_settings' },
+      { event: 'TutorialProgress', role: 'worker', method: 'PATCH', outcome: 'not_found' },
+      { event: 'TutorialProgress', role: 'employer', method: 'PUT', outcome: 'method_not_allowed' },
       { event: 'TutorialProgress', role: 'employer', method: 'GET', outcome: 'internal_error', error: 'connection lost' },
+      { event: 'TutorialProgress', role: 'employer', method: 'PATCH', outcome: 'internal_error', error: 'connection lost' },
     ]);
     const all = loggedLines().join('\n');
     expect(all).not.toContain(EMPLOYER_SUB);
     expect(all).not.toContain(WORKER_SUB);
+    expect(all).not.toContain('employer_welcome');
   });
 });
 
-// K1.1: the backend keeps the same two id lists as the frontend client. The
-// client module cannot be imported across the package boundary, so its text
-// is read and the two array literals compared.
-describe('the id lists match the frontend client (contract K1.1)', () => {
+// K1.1 and K1-v2: the backend keeps the same four id lists as the frontend
+// client (two tutorial lists, two tour lists). The client module cannot be
+// imported across the package boundary, so its text is read and the array
+// literals compared.
+describe('the id lists match the frontend client (contracts K1.1 and K1-v2)', () => {
   const clientPath = path.resolve(__dirname, '../../../../../frontend/src/lib/api/tutorials.ts');
 
   function listIn(source: string, name: string): string[] {
@@ -393,5 +672,17 @@ describe('the id lists match the frontend client (contract K1.1)', () => {
     expect(worker).toEqual(['worker_onboarding', 'worker_apply', 'worker_details', 'worker_profile']);
     expect(backend.EMPLOYER_TUTORIAL_IDS).toEqual(employer);
     expect(backend.WORKER_TUTORIAL_IDS).toEqual(worker);
+  });
+
+  it('lists the same employer and worker tour ids, one per role', () => {
+    const source = fs.readFileSync(clientPath, 'utf8');
+    const backend = tutorialProgress as unknown as Record<string, unknown>;
+    const employer = listIn(source, 'EMPLOYER_TOUR_IDS');
+    const worker = listIn(source, 'WORKER_TOUR_IDS');
+
+    expect(employer).toEqual(['employer_app_tour']);
+    expect(worker).toEqual(['worker_app_tour']);
+    expect(backend.EMPLOYER_TOUR_IDS).toEqual(employer);
+    expect(backend.WORKER_TOUR_IDS).toEqual(worker);
   });
 });
