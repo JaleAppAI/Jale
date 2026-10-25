@@ -847,17 +847,21 @@ export function Spotlight({
         if (!shown || step === null) return;
         const control = controlOf(step);
         const body = control && inDialog && scope ? scrollParentWithin(control, scope) : null;
+        // An interactive control's open popup (a combobox's list) is part of
+        // it here too: the two are scrolled into view together.
+        const popupsNow = () => (control && isInteractive(step) ? openPopupsOf(control) : []);
         const reveal = () => {
             if (!control) return;
+            const popups = popupsNow();
             if (body) {
-                scrollIntoContainer(control, body);
+                scrollIntoContainer(control, body, popups);
                 // And on, so the callout fits beside it in the body as well.
                 const callout = dialogRef.current;
-                if (callout) scrollToFitCallout(control, body, callout.getBoundingClientRect().height);
+                if (callout) scrollToFitCallout(control, body, callout.getBoundingClientRect().height, popups);
             }
             // Clear of the phone tab bar and a sticky header; a control in
             // that chrome (the app tour's tab-bar stops) stays where it is.
-            else if (!inDialog) revealOnPage(control, dialogRef.current?.getBoundingClientRect().height ?? 0);
+            else if (!inDialog) revealOnPage(control, dialogRef.current?.getBoundingClientRect().height ?? 0, popups);
         };
         reveal();
         measure();
@@ -868,7 +872,8 @@ export function Spotlight({
             cancelFrame = nextFrame(() => {
                 cancelFrame = null;
                 if (!control.isConnected) return;
-                const out = body ? outOfContainer(control, body) : !inDialog && outOfPageBand(control);
+                const popups = popupsNow();
+                const out = body ? outOfContainer(control, body, popups) : !inDialog && outOfPageBand(control, popups);
                 if (!out) return;
                 reveal();
                 measure();
