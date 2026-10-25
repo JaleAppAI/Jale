@@ -57,6 +57,23 @@ function onPanel(panel: string): boolean {
     return detailsPanel() === panel;
 }
 
+/**
+ * On the stepper, short of `panel`: the counter then counts that panel's fixed
+ * steps ahead of time, so its total does not end on "Save this step". Only
+ * for a step that is reached through an action step completing on its own
+ * panel, so it is never reached while still ahead.
+ */
+function ahead(panel: string): boolean {
+    const now = STEPPER_PANELS.indexOf(detailsPanel() ?? '');
+    return now !== -1 && now < STEPPER_PANELS.indexOf(panel);
+}
+
+/** Finish is on screen and can be pressed. */
+function finishLive(): boolean {
+    const finish = guideTarget('details.review.finish');
+    return onPanel('review') && finish !== null && !finish.hasAttribute('disabled');
+}
+
 function attribute(name: string, attr: string): string | null {
     return guideTarget(name)?.getAttribute(attr) ?? null;
 }
@@ -254,7 +271,8 @@ const guide: WalkthroughGuide = {
         {
             id: 'documents_continue',
             target: { guide: 'details.documents.continue' },
-            when: () => onPanel('documents'),
+            // Reached only once "Save and continue" has opened Documents.
+            when: () => onPanel('documents') || ahead('documents'),
             mode: 'action',
             placement: 'top',
             advanceWhen: () => onPanel('review'),
@@ -265,7 +283,8 @@ const guide: WalkthroughGuide = {
         {
             id: 'review_summary',
             target: { guide: 'details.review.summary' },
-            when: () => onPanel('review'),
+            // Reached only once Continue has opened Check & finish.
+            when: () => onPanel('review') || ahead('review'),
             mode: 'next',
             ...copy('review_summary', false),
         },
@@ -280,10 +299,7 @@ const guide: WalkthroughGuide = {
         {
             id: 'review_finish',
             target: { guide: 'details.review.finish' },
-            when: () => {
-                const finish = guideTarget('details.review.finish');
-                return onPanel('review') && finish !== null && !finish.hasAttribute('disabled');
-            },
+            when: finishLive,
             mode: 'action',
             placement: 'top',
             advanceWhen: () => onPanel('complete'),
@@ -294,7 +310,8 @@ const guide: WalkthroughGuide = {
         {
             id: 'complete',
             target: { guide: 'details.complete.back' },
-            when: () => onPanel('complete'),
+            // Counted from a live Finish on; reached only once Finish has sent.
+            when: () => onPanel('complete') || finishLive(),
             mode: 'next',
             placement: 'top',
             ...copy('complete', false),

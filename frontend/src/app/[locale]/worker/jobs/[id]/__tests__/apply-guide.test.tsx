@@ -216,13 +216,17 @@ describe('W2 guide: applying, inside the apply screen', () => {
     it('walks a job with no questions: nothing to answer, documents later, Send, applied', async () => {
         await openAndStart();
         await expectStep('no_questions');
+        // "You applied!" is counted from the start: the total never ends on Send.
+        expect(callout()).toHaveTextContent('Applying · 1 of 4');
         act(() => guideButton('Next').click());
         await expectStep('later');
         act(() => guideButton('Next').click());
         await expectStep('send');
+        expect(callout()).toHaveTextContent('Applying · 3 of 4');
         act(() => guided('apply.send').click());
 
         await expectStep('sent');
+        expect(callout()).toHaveTextContent('Applying · 4 of 4');
         expect(guided('apply.applied')).toHaveTextContent(en.worker_job_detail.already_applied);
         act(() => guideButton('Got it').click());
         await settle();

@@ -242,7 +242,10 @@ describe('worker_profile guide — steps', () => {
             ['cities', 'next', { guide: 'profile.cities' }],
             ['documents', 'next', { guide: 'profile.documents' }],
             ['save', 'action', { guide: 'profile.save' }],
+            ['saved', 'next', { guide: 'profile.saved' }],
         ]);
+        // No static closing card: "Profile saved" is a step that needs the page's own Saved notice.
+        expect(guide.done).toBeUndefined();
         // Every step names when it applies, so none waits for a control that has gone.
         expect(guide.steps.every((s) => typeof s.when === 'function')).toBe(true);
     });
@@ -251,7 +254,8 @@ describe('worker_profile guide — steps', () => {
         renderGuide(FULL, { editFirst: true });
         for (const s of guide.steps) {
             if (!('guide' in s.target) || s.id === 'edit') continue;
-            if (s.id === 'trade_other') continue;
+            // Shown only while Other is picked / only after a save, when the form has gone.
+            if (s.id === 'trade_other' || s.id === 'saved') continue;
             expect(document.querySelectorAll(`[data-guide="${s.target.guide}"]`), s.id).toHaveLength(1);
         }
     });
@@ -449,9 +453,27 @@ describe('worker_profile guide — Save', () => {
         expect(updateWorkerProfile).toHaveBeenCalledTimes(1);
         expect(control('profile.form')).toBeNull();
         expect(control('profile.saved')).not.toBeNull();
+        expect(stepOf()).toBe('saved');
         expect(callout()).toHaveTextContent(en.tutorial.worker_profile.guide.done.title);
-        await press('done');
+        await press('next');
         expect(onDismiss).toHaveBeenCalledWith('completed');
+    });
+
+    it('never says "Profile saved" when the form closes without a save', async () => {
+        const { onDismiss } = renderGuide(FULL, { waitMs: 50 });
+        await startAndEdit();
+        await nextUntil('save');
+        // Cancel (or a tap that leaves the page) closes the form with nothing sent.
+        act(() => {
+            fireEvent.click(control('profile.cancel') as HTMLElement);
+        });
+        await flush(200);
+        expect(updateWorkerProfile).not.toHaveBeenCalled();
+        expect(control('profile.form')).toBeNull();
+        expect(control('profile.saved')).toBeNull();
+        expect(document.body).not.toHaveTextContent(en.tutorial.worker_profile.guide.done.title);
+        expect(callout()).toBeNull();
+        expect(onDismiss).toHaveBeenCalled();
     });
 
     it('walks a brand-new profile from Edit to Saved in order', async () => {

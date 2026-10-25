@@ -101,7 +101,15 @@ const guide: WalkthroughGuide = {
             advanceWhen: () => !screenUp(),
             ...copy('send'),
         },
-        { id: 'sent', target: { guide: 'apply.applied' }, mode: 'next', when: applied, ...copy('sent', { wait: false }) },
+        {
+            id: 'sent',
+            target: { guide: 'apply.applied' },
+            mode: 'next',
+            // Counted while the screen is up (it is what Send leads to); reached
+            // only once the screen has gone, when it needs the Applied status.
+            when: () => applied() || screenUp(),
+            ...copy('sent', { wait: false }),
+        },
         {
             id: 'closed',
             target: { guide: 'apply.closed' },

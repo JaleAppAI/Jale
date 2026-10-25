@@ -30,6 +30,10 @@ import type { WalkthroughGuide } from './types';
  *  - Documents: the card, with its Upload and Replace buttons in reach.
  *  - Save: completes when the form is gone and "Saved" shows. A "Please
  *    add: …" warning keeps the form, so the step stays.
+ *  - Saved: the closing word, pointed at the page's own "Saved" notice. A
+ *    step, not a static closing card, so it shows only when the save
+ *    happened: a worker who cancels, or leaves the page, is never told the
+ *    profile was saved.
  *
  * Every form step applies only while the form is up, so once Save has
  * closed it nothing is left waiting for a control that went with it.
@@ -156,11 +160,15 @@ const guide: WalkthroughGuide = {
             advanceWhen: () => !formUp() && guideTarget('profile.saved') !== null,
             ...step('save'),
         },
+        {
+            id: 'saved',
+            target: { guide: 'profile.saved' },
+            when: () => !formUp() && guideTarget('profile.saved') !== null,
+            mode: 'next',
+            titleKey: `${KEY}.done.title`,
+            bodyKey: `${KEY}.done.body`,
+        },
     ],
-    done: {
-        titleKey: `${KEY}.done.title`,
-        bodyKey: `${KEY}.done.body`,
-    },
 };
 
 export default guide;

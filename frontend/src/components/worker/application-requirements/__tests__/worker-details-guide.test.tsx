@@ -380,7 +380,8 @@ describe('worker_details guide — where it starts', () => {
     await start(askingFields(['date_available']), 'es');
     await expectStep('overview');
     expect(callout()).toHaveTextContent('Tres pasos');
-    expect(callout()).toHaveTextContent('Tus datos · 1 de 3');
+    // The overview, the date, Save and continue, then Continue and the summary counted ahead.
+    expect(callout()).toHaveTextContent('Tus datos · 1 de 5');
   });
 });
 
