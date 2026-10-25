@@ -257,6 +257,35 @@ describe('worker job page — the W2 guide', () => {
         expect(tutorial.handle.maybeAutoOpen).not.toHaveBeenCalled();
     });
 
+    it('keeps done undefined, and never asks, when the read fails, even as the apply screen opens', async () => {
+        getApplications.mockRejectedValue(new Error('offline'));
+        seed = job();
+        renderIntl(<WorkerJobDetailPage />);
+
+        await waitFor(() => expect(getApplications).toHaveBeenCalled());
+        await act(async () => {});
+        fireEvent.click(screen.getByRole('button', { name: message('worker_job_detail.apply') }));
+        expect(await screen.findByTestId('apply-flow')).toBeInTheDocument();
+        await act(async () => {});
+        expect(doneSequence()).toEqual([undefined]);
+        expect(tutorial.handle.runWithHost).not.toHaveBeenCalled();
+        expect(tutorial.handle.maybeAutoOpen).not.toHaveBeenCalled();
+    });
+
+    it('asks only once however often the page renders', async () => {
+        getApplications.mockResolvedValue(pageOf([]));
+        seed = job();
+        const { rerender } = renderIntl(<WorkerJobDetailPage />);
+        fireEvent.click(screen.getByRole('button', { name: message('worker_job_detail.apply') }));
+        expect(await screen.findByTestId('apply-flow')).toBeInTheDocument();
+        await waitFor(() => expect(tutorial.handle.runWithHost).toHaveBeenCalledTimes(1));
+
+        rerender(<WorkerJobDetailPage />);
+        rerender(<WorkerJobDetailPage />);
+        await act(async () => {});
+        expect(tutorial.handle.runWithHost).toHaveBeenCalledTimes(1);
+    });
+
     it('asks for it as the profile gate opens, and carries it into the screen the gate opens', async () => {
         getApplications.mockResolvedValue(pageOf([]));
         apiFetch.mockResolvedValue(profileResponse({ full_name: 'Test Worker', skills: [], availability: null, location: null }));
