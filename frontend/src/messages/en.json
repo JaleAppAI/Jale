@@ -2752,6 +2752,33 @@
         "reply": "Reply",
         "window_chip": "Reply window open"
       }
+    },
+    "tour": {
+      "employer": {
+        "welcome_title": "Welcome to Jale",
+        "welcome_body": "A quick look at where everything is. It takes less than a minute.",
+        "start": "Show me around",
+        "not_now": "Not now",
+        "dashboard_body": "Your jobs at a glance: what is open and who applied.",
+        "post_job_title": "Post a job",
+        "post_job_body": "Start here. Only 4 things are required: title, trade, city and workers needed.",
+        "messages_body": "Write to workers here. They answer on WhatsApp, and their replies show up in the thread.",
+        "applicants_body": "Everyone who applied to your jobs, with their trade, experience and trust score.",
+        "templates_body": "Save a job you post often and reuse it.",
+        "billing_body": "Your plan and how many open jobs it allows.",
+        "settings_body": "Your company profile and account details.",
+        "help_body": "All guides live here. Replay any of them, or have them show every time you start a task."
+      },
+      "worker": {
+        "welcome_title": "You’re all set",
+        "welcome_body": "Here’s where everything is. It takes less than a minute.",
+        "start": "Show me around",
+        "not_now": "Not now",
+        "find_jobs_body": "Jobs for your trade near you. Applying takes a minute.",
+        "applications_body": "Every job you applied to. You’ll see when an employer writes to you or asks for your details.",
+        "profile_body": "This is what employers see. Add your documents once and they’re used on every application.",
+        "help_body": "All guides live here. Watch any of them again whenever you want."
+      }
     }
   }
 }

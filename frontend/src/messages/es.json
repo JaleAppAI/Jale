@@ -2752,6 +2752,33 @@
         "reply": "Responder",
         "window_chip": "Ventana de respuesta abierta"
       }
+    },
+    "tour": {
+      "employer": {
+        "welcome_title": "Le damos la bienvenida a Jale",
+        "welcome_body": "Un vistazo rápido a dónde está cada cosa. Toma menos de un minuto.",
+        "start": "Muéstreme",
+        "not_now": "Ahora no",
+        "dashboard_body": "Sus empleos de un vistazo: lo que está abierto y quién se postuló.",
+        "post_job_title": "Publicar un empleo",
+        "post_job_body": "Empiece aquí. Solo 4 datos son obligatorios: título, oficio, ciudad y número de trabajadores.",
+        "messages_body": "Escriba aquí a los trabajadores. Responden por WhatsApp y sus respuestas aparecen en la conversación.",
+        "applicants_body": "Todas las personas que se postularon a sus empleos, con su oficio, su experiencia y su puntaje de confianza.",
+        "templates_body": "Guarde un empleo que publica seguido y vuelva a usarlo.",
+        "billing_body": "Su plan y cuántos empleos abiertos permite.",
+        "settings_body": "El perfil de su empresa y los datos de su cuenta.",
+        "help_body": "Aquí están todas las guías. Vuelva a ver cualquiera, o haga que aparezcan cada vez que empiece una tarea."
+      },
+      "worker": {
+        "welcome_title": "¡Todo listo!",
+        "welcome_body": "Te mostramos dónde está cada cosa. Toma menos de un minuto.",
+        "start": "Muéstrame",
+        "not_now": "Ahora no",
+        "find_jobs_body": "Trabajos de tu oficio cerca de ti. Postularte toma un minuto.",
+        "applications_body": "Cada trabajo al que te postulaste. Verás cuando un empleador te escriba o te pida tus datos.",
+        "profile_body": "Esto es lo que ven los empleadores. Agrega tus documentos una vez y se usan en cada postulación.",
+        "help_body": "Aquí están todas las guías. Vuelve a ver cualquiera cuando quieras."
+      }
     }
   }
 }
