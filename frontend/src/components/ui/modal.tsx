@@ -65,6 +65,8 @@ export function Modal({
     initialFocusRef,
     footer,
     children,
+    'data-guide': guide,
+    footerGuide,
 }: {
     open: boolean;
     onClose: () => void;
@@ -80,6 +82,10 @@ export function Modal({
     initialFocusRef?: React.RefObject<HTMLElement | null>;
     footer?: React.ReactNode;
     children: React.ReactNode;
+    /** A step-by-step guide's hook on the panel (`data-guide`, see `components/tutorials/spotlight`). */
+    'data-guide'?: string;
+    /** The same hook on the pinned footer, when there is one. */
+    footerGuide?: string;
 }) {
     const t = useTranslations('common');
     const generatedTitleId = useId();
@@ -140,6 +146,12 @@ export function Modal({
 
         function onKeyDown(event: KeyboardEvent) {
             if (event.key === 'Escape') {
+                // An Escape a layer above the dialog already handled is not
+                // the dialog's: a step-by-step guide drawn inside this panel
+                // marks the one it leaves to a combobox closing its own list
+                // (`components/tutorials/spotlight/Spotlight.tsx`), and that
+                // must not also close the dialog and discard what was typed.
+                if (event.defaultPrevented) return;
                 if (!closeOnEscape) return;
                 event.preventDefault();
                 event.stopPropagation();
@@ -216,6 +228,7 @@ export function Modal({
                 aria-modal="true"
                 aria-labelledby={titleId}
                 tabIndex={-1}
+                data-guide={guide}
                 className={[
                     'anim-fade-in flex w-full flex-col overflow-hidden outline-none',
                     'max-h-[92vh] rounded-[var(--radius-card)] bg-[var(--jale-card)] shadow-[var(--shadow-modal)]',
@@ -241,7 +254,10 @@ export function Modal({
                 <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
 
                 {footer ? (
-                    <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-[var(--jale-divider)] bg-[var(--jale-card)] px-5 py-3">
+                    <div
+                        data-guide={footerGuide}
+                        className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-[var(--jale-divider)] bg-[var(--jale-card)] px-5 py-3"
+                    >
                         {footer}
                     </div>
                 ) : null}

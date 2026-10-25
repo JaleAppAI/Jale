@@ -5,6 +5,8 @@
 
 export type Box = { top: number; left: number; width: number; height: number };
 export type Size = { width: number; height: number };
+/** A vertical stretch of the viewport, top and bottom edges in px. */
+export type Band = { top: number; bottom: number };
 /** Which side of the target the callout sits on. */
 export type Side = 'top' | 'bottom' | 'right';
 export type Placement = {
@@ -54,34 +56,50 @@ export function cutoutFor(target: Box): Box {
  *
  * The callout then slides along that side to stay inside the viewport, and the
  * arrow follows the target's centre.
+ *
+ * `band` narrows the vertical room the callout may use (inside a dialog: its
+ * scrolling body, so the callout keeps off the header and the pinned footer).
+ * Without it the band is the whole viewport, as for the app tour. Sideways the
+ * callout always has the whole viewport.
+ *
+ * `hole` is the cutout to keep clear when it is bigger than the target's own
+ * (a combobox whose list is open); the arrow still points at the target.
  */
-export function placeCallout(target: Box, callout: Size, viewport: Size, hint?: Side): Placement {
-    const hole = cutoutFor(target);
+export function placeCallout(
+    target: Box,
+    callout: Size,
+    viewport: Size,
+    hint?: Side,
+    band: Band = { top: 0, bottom: viewport.height },
+    hole: Box = cutoutFor(target),
+): Placement {
     const holeBottom = hole.top + hole.height;
     const holeRight = hole.left + hole.width;
     const centerX = target.left + target.width / 2;
     const centerY = target.top + target.height / 2;
+    const bandHeight = band.bottom - band.top;
 
     const fits: Record<Side, boolean> = {
-        top: hole.top - CALLOUT_GAP - callout.height >= VIEWPORT_GUTTER,
-        bottom: holeBottom + CALLOUT_GAP + callout.height <= viewport.height - VIEWPORT_GUTTER,
+        top: hole.top - CALLOUT_GAP - callout.height >= band.top + VIEWPORT_GUTTER,
+        bottom: holeBottom + CALLOUT_GAP + callout.height <= band.bottom - VIEWPORT_GUTTER,
         right: holeRight + CALLOUT_GAP + callout.width <= viewport.width - VIEWPORT_GUTTER,
     };
     const inLeftRail = centerX < viewport.width / 3 && target.width < viewport.width / 3;
 
     let side: Side;
     if (hint && fits[hint]) side = hint;
-    else if (centerY > viewport.height * 0.6 && fits.top) side = 'top';
+    else if (centerY - band.top > bandHeight * 0.6 && fits.top) side = 'top';
     else if (inLeftRail && fits.right) side = 'right';
     else if (fits.bottom) side = 'bottom';
     else if (fits.top) side = 'top';
-    else side = viewport.height - holeBottom >= hole.top ? 'bottom' : 'top';
+    else side = band.bottom - holeBottom >= hole.top - band.top ? 'bottom' : 'top';
 
-    const maxTop = viewport.height - VIEWPORT_GUTTER - callout.height;
+    const minTop = band.top + VIEWPORT_GUTTER;
+    const maxTop = band.bottom - VIEWPORT_GUTTER - callout.height;
     const maxLeft = viewport.width - VIEWPORT_GUTTER - callout.width;
 
     if (side === 'right') {
-        const top = clamp(centerY - callout.height / 2, VIEWPORT_GUTTER, maxTop);
+        const top = clamp(centerY - callout.height / 2, minTop, maxTop);
         return {
             side,
             top,
@@ -94,8 +112,23 @@ export function placeCallout(target: Box, callout: Size, viewport: Size, hint?: 
     const rawTop = side === 'bottom' ? holeBottom + CALLOUT_GAP : hole.top - CALLOUT_GAP - callout.height;
     return {
         side,
-        top: clamp(rawTop, VIEWPORT_GUTTER, maxTop),
+        top: clamp(rawTop, minTop, maxTop),
         left,
         arrow: clamp(centerX - left, ARROW_INSET, callout.width - ARROW_INSET),
     };
+}
+
+/** The smallest box holding every box given (the first when there is one). */
+export function unionBox(first: Box, ...rest: Box[]): Box {
+    let top = first.top;
+    let left = first.left;
+    let bottom = first.top + first.height;
+    let right = first.left + first.width;
+    for (const box of rest) {
+        top = Math.min(top, box.top);
+        left = Math.min(left, box.left);
+        bottom = Math.max(bottom, box.top + box.height);
+        right = Math.max(right, box.left + box.width);
+    }
+    return { top, left, width: right - left, height: bottom - top };
 }

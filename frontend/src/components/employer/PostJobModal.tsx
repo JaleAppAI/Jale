@@ -585,6 +585,9 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       // carry, and the one this modal most needed: Escape and the header X are
       // deliberate, a mis-aimed click is not.
       closeOnOverlay={false}
+      // The step-by-step guide's hooks (E2, `components/tutorials/guides`).
+      data-guide="post.wizard"
+      footerGuide="post.footer"
       footer={posted ? <JobPostedFooter onClose={handleClose} /> : (
         <div className="flex w-full items-center gap-2">
           {/* Every non-submit button here is EXPLICITLY type="button". They sit
@@ -609,7 +612,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
               the button the step form's DEFAULT submitter, so Enter in any
               field does what pressing it does -- one code path, not two. */}
           {step < 3 ? (
-            <Button type="submit" form={formId} variant="primary" className="flex-1">
+            <Button type="submit" form={formId} variant="primary" className="flex-1" data-guide="post.next">
               {t('modal.next')}
             </Button>
           ) : (
@@ -693,7 +696,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
         <p className="mt-1 text-sm text-[var(--jale-ink-2)]">{stepHint}</p>
       </div>
 
-      <form id={formId} ref={formRef} onSubmit={handleStepSubmit}>
+      <form id={formId} ref={formRef} onSubmit={handleStepSubmit} data-guide="post.form" data-step={step}>
       {/*
         The form's DEFAULT BUTTON, and the reason Enter works at all.
 
@@ -741,7 +744,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
               </Link>
             </div>
           )}
-          <Field label={t('modal.job_title')} htmlFor={titleId} required>
+          <Field label={t('modal.job_title')} htmlFor={titleId} required guide="post.title">
             <Input
               id={titleId}
               data-field="title"
@@ -754,13 +757,14 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
             {underField('title') && <FieldMessage id={fieldErrorId}>{underField('title')}</FieldMessage>}
           </Field>
           <div className="grid gap-3 md:grid-cols-2">
-            <Field label={t('modal.location')} required>
+            <Field label={t('modal.location')} required guide="post.city">
               <div
                 data-field="location"
                 className={checkCity || cityMissing ? 'rounded-[10px] ring-2 ring-[var(--jale-warning)]' : undefined}
               >
                 <LocationPicker
                   value={form.location}
+                  picked={form.city_key !== null}
                   placeholder={t('modal.location_placeholder')}
                   invalid={cityMissing || underField('location') !== null}
                   describedBy={cityMissing ? cityHelperId : underField('location') ? fieldErrorId : undefined}
@@ -800,6 +804,8 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
             </Field>
           </div>
           <TradeCategoryField
+            tradeGuide="post.trade"
+            otherGuide="post.trade_other"
             tradeCategory={form.trade_category}
             tradeCategoryOther={form.trade_category_other}
             onTradeCategoryChange={(value) => update('trade_category', value)}
@@ -862,7 +868,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
             <Field label={t('modal.start_date')}>
               <Input type="date" value={form.start_date} onChange={(e) => update('start_date', e.target.value)} />
             </Field>
-            <Field label={t('modal.number_of_workers_needed')} htmlFor={workersId} required>
+            <Field label={t('modal.number_of_workers_needed')} htmlFor={workersId} required guide="post.workers">
               <Input
                 id={workersId}
                 data-field="number_of_workers_needed"
@@ -1064,9 +1070,9 @@ function FieldMessage({ id, children }: { id: string; children: React.ReactNode 
   return <p id={id} className="text-xs font-medium text-[var(--jale-danger-text)]">{children}</p>;
 }
 
-function Field({ label, htmlFor, required, children }: { label: string; htmlFor?: string; required?: boolean; children: React.ReactNode }) {
+function Field({ label, htmlFor, required, guide, children }: { label: string; htmlFor?: string; required?: boolean; guide?: string; children: React.ReactNode }) {
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex flex-col gap-1.5" data-guide={guide}>
       <label htmlFor={htmlFor} className="text-xs font-semibold uppercase tracking-wider text-[var(--jale-ink-2)]">
         {label}{required ? ' *' : ''}
       </label>

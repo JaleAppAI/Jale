@@ -6,6 +6,7 @@ import {
     roleOfTutorial,
     useTutorialProgress,
     type PlayMode,
+    type PlayRequest,
     type TutorialProgressValue,
     type TutorialVars,
 } from './progress';
@@ -29,7 +30,16 @@ import type { TutorialHandle, UseTutorialOptions } from './types';
  *
  * "Every time" is every page view for a page's own tutorial
  * (`maybeAutoOpen`), and every press for one that plays before a host
- * (`runBeforeHost`).
+ * (`runBeforeHost`) or inside it (`runWithHost`).
+ *
+ * WALKTHROUGHS. A task with a step-by-step guide plays the guide rather than
+ * the slides: `maybeAutoOpen` does when the page says so (`walkthrough`), and
+ * `runWithHost` always does. `runWithHost` opens the host FIRST, from the
+ * caller's own handler, and then queues the guide `inHost`: the host is the
+ * one overlay the guide may open over, and the guide shows once its first
+ * control does. When the guide may not play, only the host opens. With
+ * `replay` (Help's "Guide me through it") it plays whatever the history, and
+ * records nothing.
  *
  * TIMING (ruling R4).
  *  - `maybeAutoOpen` before the read has answered is HELD, not dropped: one
@@ -48,7 +58,7 @@ import type { TutorialHandle, UseTutorialOptions } from './types';
  * `done` from a ref, so host effects that depend on it do not re-run.
  *
  * WITHOUT THE PROVIDER (tests, any tree outside the app layout) the handle is
- * inert: nothing opens, and `runBeforeHost` simply opens the host.
+ * inert: nothing opens, and `runBeforeHost` and `runWithHost` simply open the host.
  */
 
 /**
@@ -72,11 +82,12 @@ const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : us
 
 export function useTutorial(id: TutorialId, options: UseTutorialOptions): TutorialHandle {
     const progress = useTutorialProgress();
+    const renderer: PlayRequest['renderer'] = options.walkthrough ? 'walkthrough' : undefined;
 
     // Latest values for the stable handle's methods.
-    const latest = useRef({ progress, done: options.done });
+    const latest = useRef({ progress, done: options.done, renderer });
     useIsomorphicLayoutEffect(() => {
-        latest.current = { progress, done: options.done };
+        latest.current = { progress, done: options.done, renderer };
     });
 
     // Per call site: who asks (for cancelling a queued play), the one held
@@ -105,6 +116,7 @@ export function useTutorial(id: TutorialId, options: UseTutorialOptions): Tutori
                 vars,
                 mode,
                 source,
+                renderer: latest.current.renderer,
                 onRefused: () => {
                     declined.current = true;
                 },
@@ -142,6 +154,16 @@ export function useTutorial(id: TutorialId, options: UseTutorialOptions): Tutori
                     current.cancel(source);
                     openHost();
                 }
+            },
+            runWithHost(openHost, vars, runOptions) {
+                // The host first, synchronously: the person pressed its button.
+                openHost();
+                const { progress: current, done } = latest.current;
+                if (current === null) return;
+                current.rememberVars(id, vars);
+                const mode = runOptions?.replay ? 'replay' : autoPlayMode(current, id, done);
+                if (mode === null) return;
+                current.play({ id, vars, mode, source, renderer: 'walkthrough', inHost: true });
             },
             replay(vars) {
                 const current = latest.current.progress;

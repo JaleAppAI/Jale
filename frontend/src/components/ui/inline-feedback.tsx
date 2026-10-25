@@ -42,6 +42,7 @@ export function InlineFeedback({
     dismissLabel,
     className = '',
     children,
+    'data-guide': guide,
 }: {
     tone: FeedbackTone;
     onDismiss?: () => void;
@@ -58,12 +59,15 @@ export function InlineFeedback({
     dismissLabel?: string;
     className?: string;
     children: React.ReactNode;
+    /** A step-by-step guide's hook (`data-guide`, see `components/tutorials/spotlight`). */
+    'data-guide'?: string;
 }) {
     const t = useTranslations('common');
 
     return (
         <div
             role={feedbackRole(tone)}
+            data-guide={guide}
             className={[
                 'flex items-start gap-2 rounded-[var(--radius-input)] px-3.5 py-2.5 text-sm font-medium',
                 feedbackToneClasses[tone],
