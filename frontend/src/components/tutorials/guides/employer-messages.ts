@@ -66,7 +66,12 @@ const STEPS: readonly SpotlightStep[] = [
     },
     {
         id: 'thread',
-        target: target('msg.transcript'),
+        // The newest message (the transcript itself while it is empty): the
+        // transcript fills the pane, and a callout beside it would cover it.
+        target: () => {
+            const transcript = inScope('msg.transcript');
+            return (transcript?.lastElementChild as HTMLElement | null) ?? transcript;
+        },
         when: () => has('msg.transcript'),
         mode: 'next',
         ...keys('thread'),

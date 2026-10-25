@@ -415,6 +415,24 @@ describe('the messages guide', () => {
         expect(resolve()).toBe(screen.getByTestId('list'));
     });
 
+    it('points the thread step at the newest message, not the whole transcript', () => {
+        const thread = messagesGuide.steps.find((step) => step.id === 'thread');
+        renderWithGuide(
+            <ConversationThread
+                conversation={conversation}
+                messages={[
+                    { id: 'm1', sender_type: 'employer', body: 'Can you start Monday?', status: 'delivered', created_at: '2026-09-01T00:00:00Z' },
+                    { id: 'm2', sender_type: 'worker', body: 'Yes, I can.', status: 'received', created_at: '2026-09-01T01:00:00Z' },
+                ] as never}
+                onSend={vi.fn()}
+            />,
+            { id: 'employer_messages' },
+        );
+        const target = (thread?.target as () => HTMLElement | null)();
+        expect(target?.textContent).toContain('Yes, I can.');
+        expect(target?.textContent).not.toContain('Can you start Monday?');
+    });
+
     it('shows the drawer’s Close without letting it be pressed: putting the drawer away would end the guide’s page', async () => {
         renderWithGuide(
             <main>
