@@ -19,12 +19,12 @@ describe('placeCallout with a band', () => {
     });
 
     it('goes above when below would run into the footer, though the viewport has room', () => {
-        const target = { top: 560, left: 30, width: 330, height: 70 };
-        // Without the band it would sit below (the viewport reaches 844).
-        expect(placeCallout(target, callout, viewport).side).toBe('top');
+        const target = { top: 540, left: 30, width: 330, height: 70 };
+        // Without the band it would sit below, as asked (the viewport reaches 844).
+        expect(placeCallout(target, callout, viewport, 'bottom').side).toBe('bottom');
         const inBand = placeCallout(target, callout, viewport, 'bottom', { top: 90, bottom: 740 });
         expect(inBand.side).toBe('top');
-        expect(inBand.top + callout.height).toBeLessThanOrEqual(560 - CUTOUT_PAD - CALLOUT_GAP);
+        expect(inBand.top + callout.height).toBeLessThanOrEqual(540 - CUTOUT_PAD - CALLOUT_GAP);
     });
 
     it('never leaves the band, even when neither side fits', () => {

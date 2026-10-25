@@ -243,8 +243,11 @@ describe('lazy walkthrough: finding the controls', () => {
     });
 
     it('is unavailable, with nothing drawn and no outcome, when the first control never shows', async () => {
-        const { onUnavailable, onDismiss } = renderGuide([TITLE, TRADE], { fields: {} }, { waitMs: 30 });
-        await flush(60);
+        const { onUnavailable, onDismiss } = renderGuide([TITLE, TRADE], { fields: {} }, { waitMs: 60 });
+        await flush();
+        // It waits first: the host may still be opening.
+        expect(onUnavailable).not.toHaveBeenCalled();
+        await flush(90);
         expect(onUnavailable).toHaveBeenCalledTimes(1);
         expect(onDismiss).not.toHaveBeenCalled();
         expect(callout()).toBeNull();
