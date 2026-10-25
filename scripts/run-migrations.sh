@@ -682,6 +682,7 @@ MIGRATIONS=(
   "134_org_team_members.sql"
   "135_org_team_carry_overs.sql"
   "136_retire_per_person_billing.sql"
+  "137_user_tutorial_settings.sql"
 )
 
 WORKDIR="$(mktemp -d)"
