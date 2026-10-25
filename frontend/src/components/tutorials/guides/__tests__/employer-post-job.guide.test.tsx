@@ -689,6 +689,10 @@ describe('the post-job guide in the edit dialog', () => {
         await press('start');
         await reach('edit_form');
         expect(counter()).toMatch(/1 of 2$/);
+        // The step holds the whole form, so anything can be changed with the guide up.
+        const form = (guide.steps.find((step) => step.id === 'edit_form')?.target as { guide: string }).guide;
+        expect(mark(form)?.contains(mark('edit.workers'))).toBe(true);
+        expect(mark(form)?.querySelector('[data-field="location"], [role="combobox"]')).not.toBeNull();
         await press('next');
         await reach('edit_save');
         expect(action('next')).toBeNull();
@@ -747,6 +751,11 @@ describe('the post-job guide in the template editor', () => {
         await flush();
         await press('next');
         await reach('tpl_form');
+        // The step holds the whole form: the trade and the city it needs can be filled in with the guide up.
+        const form = (guide.steps.find((step) => step.id === 'tpl_form')?.target as { guide: string }).guide;
+        expect(mark(form)?.contains(mark('tpl.title'))).toBe(true);
+        expect(mark(form)?.querySelector('[data-field="location"], [role="combobox"]')).not.toBeNull();
+        expect(mark(form)?.querySelector('select')).not.toBeNull();
         await press('next');
         await reach('tpl_save');
         // Save template is the way out: no Got it of its own.

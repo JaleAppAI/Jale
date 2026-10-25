@@ -269,7 +269,7 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
                 </div>
             }
         >
-            <form id={formId} ref={formRef} onSubmit={handleFormSubmit} className="grid gap-4">
+            <form id={formId} ref={formRef} onSubmit={handleFormSubmit} className="grid gap-4" data-guide="edit.form">
                 {/* The form's default button, so Enter in any field saves --
                     the footer's Save is not a descendant and cannot serve as
                     one everywhere. See PostJobModal for the full note. */}

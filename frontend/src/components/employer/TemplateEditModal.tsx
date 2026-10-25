@@ -225,7 +225,7 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
         </div>
       }
     >
-      <form id={formId} ref={formRef} onSubmit={handleFormSubmit} className="grid gap-4">
+      <form id={formId} ref={formRef} onSubmit={handleFormSubmit} className="grid gap-4" data-guide="tpl.form">
         {/* The form's default button, so Enter in any field saves. See
             PostJobModal's copy of this comment for why it cannot simply be
             the footer's Save. */}

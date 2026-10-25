@@ -376,7 +376,8 @@ const LIMIT_DIALOG: readonly SpotlightStep[] = [
 const EDIT: readonly SpotlightStep[] = [
     {
         id: 'edit_form',
-        target: { guide: 'edit.title' },
+        // The whole form, so every field can be changed with the guide up.
+        target: { guide: 'edit.form' },
         when: inEdit,
         mode: 'next',
         ...keys('edit_form'),
@@ -424,7 +425,8 @@ const TEMPLATE_EDITOR: readonly SpotlightStep[] = [
     },
     {
         id: 'tpl_form',
-        target: { guide: 'tpl.title' },
+        // The whole form: the title, trade and city it needs are filled in here.
+        target: { guide: 'tpl.form' },
         when: inTemplateEditor,
         mode: 'next',
         ...keys('tpl_form'),
