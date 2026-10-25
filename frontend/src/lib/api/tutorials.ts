@@ -7,8 +7,9 @@ import { ApiError, parseApiError } from './errors';
  * that was dismissed once does not return on another device or browser.
  *
  * The ids are stored by the backend, so an id is never renamed once released.
- * The two lists below are the whole vocabulary; the backend keeps the same two
- * lists and rejects anything else, including an id of the other role.
+ * The lists below (two tutorial lists, two tour lists) are the whole
+ * vocabulary; the backend keeps the same lists and rejects anything else,
+ * including an id of the other role.
  */
 export const EMPLOYER_TUTORIAL_IDS = [
   'employer_welcome',
@@ -24,16 +25,56 @@ export const WORKER_TUTORIAL_IDS = [
   'worker_profile',
 ] as const;
 
+/**
+ * The app tours (K1-v2): one per role, recorded like a tutorial (completed or
+ * skipped, first outcome wins) but drawn by the tour overlay, not the slide
+ * player. They are not tutorials: Help does not list them as guides, and they
+ * can never be muted. The backend keeps the same two lists.
+ */
+export const EMPLOYER_TOUR_IDS = ['employer_app_tour'] as const;
+
+export const WORKER_TOUR_IDS = ['worker_app_tour'] as const;
+
 export type EmployerTutorialId = (typeof EMPLOYER_TUTORIAL_IDS)[number];
 export type WorkerTutorialId = (typeof WORKER_TUTORIAL_IDS)[number];
 export type TutorialId = EmployerTutorialId | WorkerTutorialId;
+export type TourId = (typeof EMPLOYER_TOUR_IDS)[number] | (typeof WORKER_TOUR_IDS)[number];
+/** Anything the progress endpoint records an outcome for. */
+export type ProgressId = TutorialId | TourId;
 export type TutorialOutcome = 'completed' | 'skipped';
 export type TutorialRecord = {
-  tutorial_id: TutorialId;
+  tutorial_id: ProgressId;
   outcome: TutorialOutcome;
   /** ISO 8601. */
   recorded_at: string;
 };
+
+/**
+ * The account's guide settings (K1-v2), kept per account on the server.
+ *  - `always_show`: guides open every time their task starts, not only the
+ *    first time.
+ *  - `muted`: tutorials the person turned off with "Don't show this again".
+ *    Only this role's tutorial ids; a tour id is never muted.
+ * An account with no stored settings reads as `DEFAULT_TUTORIAL_SETTINGS`.
+ */
+export type TutorialSettings = {
+  always_show: boolean;
+  muted: TutorialId[];
+};
+
+export const DEFAULT_TUTORIAL_SETTINGS: Readonly<TutorialSettings> = Object.freeze({
+  always_show: false,
+  muted: [],
+});
+
+/** What `GET /{role}/tutorials` answers (K1-v2). */
+export type TutorialProgress = {
+  tutorials: TutorialRecord[];
+  settings: TutorialSettings;
+};
+
+/** `PATCH /{role}/tutorials`: either field, or both. `muted` replaces the whole list. */
+export type TutorialSettingsPatch = Partial<TutorialSettings>;
 
 /** Which signed-in shell is asking. It picks the path, and so the authorizer. */
 export type TutorialRole = 'employer' | 'worker';
@@ -71,7 +112,7 @@ export async function getTutorialProgress(
 export async function recordTutorialOutcome(
   token: string,
   role: TutorialRole,
-  tutorialId: TutorialId,
+  tutorialId: ProgressId,
   outcome: TutorialOutcome,
 ): Promise<TutorialRecord> {
   const res = await apiFetch(

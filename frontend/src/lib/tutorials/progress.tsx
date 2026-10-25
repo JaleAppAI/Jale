@@ -19,13 +19,20 @@ import { usePathname } from '@/i18n/navigation';
 import { locales } from '@/i18n/locales';
 import { accountKeyFromIdToken } from '@/lib/account-key';
 import {
+    DEFAULT_TUTORIAL_SETTINGS,
+    EMPLOYER_TOUR_IDS,
     EMPLOYER_TUTORIAL_IDS,
+    WORKER_TOUR_IDS,
     getTutorialProgress,
     recordTutorialOutcome,
+    type ProgressId,
+    type TourId,
     type TutorialId,
     type TutorialOutcome,
     type TutorialRecord,
     type TutorialRole,
+    type TutorialSettings,
+    type TutorialSettingsPatch,
 } from '@/lib/api/tutorials';
 import { useOverlayRegistry } from './overlay';
 import { clearRecordFailed, readRecordFailed, writeRecordFailed } from './storage';
@@ -72,7 +79,12 @@ import type { TutorialSceneProps } from './types';
  *    AFTER the player has unmounted: Modal's cleanups have already handed the
  *    scroll lock and the focus back, so the host opens from the real button
  *    and locks the page afresh;
- *  - only AUTO plays record their outcome. Replays never do.
+ *  - only AUTO plays record their outcome, and ALWAYS plays (guides shown
+ *    every time, K1-v2) record one only when the account has none yet, so
+ *    the first outcome still wins. Replays never record;
+ *  - a tour id (`EMPLOYER_TOUR_IDS`, `WORKER_TOUR_IDS`) plays in the app
+ *    tour overlay (`AppTourHost`), every other id in the slide player. Each
+ *    has its own lazy chunk.
  *
  * THE PLAYER'S OWN CHUNK. The player, every tutorial's content and the scene
  * kit load with `React.lazy` (`TutorialHost`), first when the progress read
@@ -98,11 +110,18 @@ export type TutorialProgressValue = {
     role: TutorialRole | null;
     status: TutorialProgressStatus;
     /** True once this account has an outcome for `id`, including one recorded in this session. */
-    hasRecord(id: TutorialId): boolean;
+    hasRecord(id: ProgressId): boolean;
     /** True when saving `id`'s outcome failed earlier in this browser session. */
-    isFlagged(id: TutorialId): boolean;
+    isFlagged(id: ProgressId): boolean;
     /** Records how an AUTO-OPENED play of `id` was dismissed. Replays never call this. */
-    recordOutcome(id: TutorialId, outcome: TutorialOutcome): void;
+    recordOutcome(id: ProgressId, outcome: TutorialOutcome): void;
+    /**
+     * The account's guide settings (K1-v2): `DEFAULT_TUTORIAL_SETTINGS` until
+     * the read answers, and whenever it failed.
+     */
+    settings: TutorialSettings;
+    /** Saves a settings change (optimistic; rolled back if the save fails). */
+    updateSettings(patch: TutorialSettingsPatch): void;
     /** Queues a play; false (and nothing queued) when another is already pending or up. */
     play(request: PlayRequest): boolean;
     /** Drops a play `source` queued that has not shown yet (its page went away). */
@@ -119,10 +138,15 @@ export type TutorialProgressValue = {
 export type TutorialVars = TutorialSceneProps['vars'];
 
 export type PlayRequest = {
-    id: TutorialId;
+    /** A tutorial plays in the slide player; a tour id plays in the app tour overlay. */
+    id: ProgressId;
     vars?: TutorialVars;
-    /** `auto` plays obey the overlay rule and record their outcome; `replay` plays do neither. */
-    mode: 'auto' | 'replay';
+    /**
+     * `auto` plays obey the overlay rule and record their outcome. `always`
+     * plays (the "every time" setting) obey the overlay rule too, and record
+     * only when the account has no outcome yet. `replay` plays do neither.
+     */
+    mode: PlayMode;
     /** Runs once the play's dialog has gone, or at once if it is refused: the host it plays before. */
     then?: () => void;
     /** Called when the play is refused at the last check. */
@@ -130,6 +154,8 @@ export type PlayRequest = {
     /** Who asked, for `cancel`. */
     source?: object;
 };
+
+export type PlayMode = 'auto' | 'always' | 'replay';
 
 type Play = PlayRequest & { seq: number };
 type PlayState = { readonly pending: Play | null; readonly active: Play | null };
@@ -202,8 +228,10 @@ function createPlayStore() {
 }
 
 type TutorialHostModule = typeof import('@/components/tutorials/TutorialHost');
+type AppTourHostModule = typeof import('@/components/tutorials/AppTourHost');
 
 let hostModule: Promise<TutorialHostModule> | null = null;
+let tourModule: Promise<AppTourHostModule> | null = null;
 
 /** The player's chunk, fetched once; a failed fetch is forgotten so the next play retries. */
 function loadTutorialHost(): Promise<TutorialHostModule> {
@@ -214,7 +242,29 @@ function loadTutorialHost(): Promise<TutorialHostModule> {
     return hostModule;
 }
 
+/** The app tour's chunk, on the same terms as the player's. */
+function loadAppTourHost(): Promise<AppTourHostModule> {
+    tourModule ??= import('@/components/tutorials/AppTourHost').catch((error: unknown) => {
+        tourModule = null;
+        throw error;
+    });
+    return tourModule;
+}
+
 const TutorialHost = lazy(loadTutorialHost);
+const AppTourHost = lazy(loadAppTourHost);
+
+const TOUR_IDS: readonly ProgressId[] = [...EMPLOYER_TOUR_IDS, ...WORKER_TOUR_IDS];
+
+/** True for an app tour id: it plays in the tour overlay, not the slide player. */
+export function isTourId(id: ProgressId): id is TourId {
+    return TOUR_IDS.includes(id);
+}
+
+/** The chunk that draws `id`'s play. */
+function loadRendererFor(id: ProgressId): Promise<unknown> {
+    return isTourId(id) ? loadAppTourHost() : loadTutorialHost();
+}
 
 const TutorialProgressContext = createContext<TutorialProgressValue | null>(null);
 
@@ -224,7 +274,7 @@ export function useTutorialProgress(): TutorialProgressValue | null {
 }
 
 type Entry =
-    | { state: 'ready'; records: ReadonlyMap<TutorialId, TutorialRecord> }
+    | { state: 'ready'; records: ReadonlyMap<ProgressId, TutorialRecord> }
     | { state: 'failed' };
 
 /** The shell a route belongs to, from its locale-free path. */
@@ -238,16 +288,18 @@ export function shellRoleFromPath(pathname: string | null | undefined): Tutorial
     return null;
 }
 
-/** Whose tutorial `id` is: the contract's id lists, not the route it is shown on. */
-export function roleOfTutorial(id: TutorialId): TutorialRole {
-    return (EMPLOYER_TUTORIAL_IDS as readonly TutorialId[]).includes(id) ? 'employer' : 'worker';
+const EMPLOYER_PROGRESS_IDS: readonly ProgressId[] = [...EMPLOYER_TUTORIAL_IDS, ...EMPLOYER_TOUR_IDS];
+
+/** Whose tutorial or tour `id` is: the contract's id lists, not the route it is shown on. */
+export function roleOfTutorial(id: ProgressId): TutorialRole {
+    return EMPLOYER_PROGRESS_IDS.includes(id) ? 'employer' : 'worker';
 }
 
 function roleOfKey(key: string): string {
     return key.slice(0, key.indexOf(':'));
 }
 
-function flagKey(role: TutorialRole | null, account: string | null, id: TutorialId): string {
+function flagKey(role: TutorialRole | null, account: string | null, id: ProgressId): string {
     return `${role ?? '-'}:${account ?? '-'}:${id}`;
 }
 
@@ -359,7 +411,7 @@ export function TutorialProgressProvider({ children }: { children: ReactNode }) 
         const decide = (loaded: boolean) => {
             if (!current) return;
             const refused = plays.settle(
-                (play) => !loaded || (play.mode === 'auto' && (overlays?.isPresent() ?? false)),
+                (play) => !loaded || (play.mode !== 'replay' && (overlays?.isPresent() ?? false)),
             );
             if (refused) {
                 refused.onRefused?.();
@@ -367,7 +419,7 @@ export function TutorialProgressProvider({ children }: { children: ReactNode }) 
                 refused.then?.();
             }
         };
-        loadTutorialHost().then(
+        loadRendererFor(pending.id).then(
             () => decide(true),
             () => decide(false),
         );
@@ -384,16 +436,16 @@ export function TutorialProgressProvider({ children }: { children: ReactNode }) 
     }, [playState, plays]);
 
     const hasRecord = useCallback(
-        (id: TutorialId) => entry?.state === 'ready' && entry.records.has(id),
+        (id: ProgressId) => entry?.state === 'ready' && entry.records.has(id),
         [entry],
     );
 
     const isFlagged = useCallback(
-        (id: TutorialId) => flagsRef.current.has(flagKey(role, account, id)) || readRecordFailed(id, account),
+        (id: ProgressId) => flagsRef.current.has(flagKey(role, account, id)) || readRecordFailed(id, account),
         [role, account],
     );
 
-    const recordOutcome = useCallback((id: TutorialId, outcome: TutorialOutcome) => {
+    const recordOutcome = useCallback((id: ProgressId, outcome: TutorialOutcome) => {
         // The role comes from the tutorial, not from the route: the player
         // stays up across a navigation, so Skip or Got it may be pressed on a
         // page outside the shell (a browser Back to the landing page), and the
@@ -438,12 +490,30 @@ export function TutorialProgressProvider({ children }: { children: ReactNode }) 
     }, []);
     const varsFor = useCallback((id: TutorialId) => varsRef.current.get(id), []);
 
+    // The settings (K1-v2). Contract stub from the hotfix base: the
+    // defaults, and a save that does nothing. The settings lane reads them
+    // with the progress and saves them with PATCH.
+    const settings: TutorialSettings = DEFAULT_TUTORIAL_SETTINGS;
+    const updateSettings = useCallback((patch: TutorialSettingsPatch) => {
+        void patch;
+    }, []);
+
+    /** True when this account already has an outcome for `id`, as of this instant. */
+    const recordedNow = useCallback((id: ProgressId) => {
+        const { role: servingRole, loadKey: servingKey, entries: known } = latest.current;
+        if (servingRole !== roleOfTutorial(id) || servingKey === null) return false;
+        const current = known[servingKey];
+        return current?.state === 'ready' && current.records.has(id);
+    }, []);
+
     const onDismiss = useCallback(
         (outcome: TutorialOutcome) => {
             const ended = plays.finish();
             if (ended?.mode === 'auto') recordOutcome(ended.id, outcome);
+            // An "every time" play records only the first outcome ever.
+            else if (ended?.mode === 'always' && !recordedNow(ended.id)) recordOutcome(ended.id, outcome);
         },
-        [plays, recordOutcome],
+        [plays, recordOutcome, recordedNow],
     );
 
     // A tutorial with nothing to show: the play ends, recording nothing.
@@ -459,6 +529,8 @@ export function TutorialProgressProvider({ children }: { children: ReactNode }) 
             hasRecord,
             isFlagged,
             recordOutcome,
+            settings,
+            updateSettings,
             play,
             cancel,
             isBusy,
@@ -466,7 +538,22 @@ export function TutorialProgressProvider({ children }: { children: ReactNode }) 
             rememberVars,
             varsFor,
         }),
-        [shellRole, role, status, hasRecord, isFlagged, recordOutcome, play, cancel, isBusy, isOverlayPresent, rememberVars, varsFor],
+        [
+            shellRole,
+            role,
+            status,
+            hasRecord,
+            isFlagged,
+            recordOutcome,
+            settings,
+            updateSettings,
+            play,
+            cancel,
+            isBusy,
+            isOverlayPresent,
+            rememberVars,
+            varsFor,
+        ],
     );
 
     const active = playState.active;
@@ -476,13 +563,22 @@ export function TutorialProgressProvider({ children }: { children: ReactNode }) 
             {children}
             {active !== null ? (
                 <Suspense fallback={null}>
-                    <TutorialHost
-                        key={active.seq}
-                        id={active.id}
-                        vars={active.vars}
-                        onDismiss={onDismiss}
-                        onUnavailable={onUnavailable}
-                    />
+                    {isTourId(active.id) ? (
+                        <AppTourHost
+                            key={active.seq}
+                            id={active.id}
+                            onDismiss={onDismiss}
+                            onUnavailable={onUnavailable}
+                        />
+                    ) : (
+                        <TutorialHost
+                            key={active.seq}
+                            id={active.id}
+                            vars={active.vars}
+                            onDismiss={onDismiss}
+                            onUnavailable={onUnavailable}
+                        />
+                    )}
                 </Suspense>
             ) : null}
         </TutorialProgressContext>

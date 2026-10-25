@@ -97,6 +97,7 @@ function HelpEntry({
                 aria-label={label}
                 title={label}
                 aria-haspopup="dialog"
+                data-tour="help"
                 onClick={onOpen}
                 className={[
                     'relative inline-flex shrink-0 cursor-pointer items-center justify-center whitespace-nowrap rounded-full font-bold',

@@ -175,6 +175,7 @@ function TabLink({
             <Link
                 href={item.href}
                 aria-current={active ? 'page' : undefined}
+                data-nav-key={item.key}
                 className={[
                     // min-h keeps every tab at the 48px touch minimum even where
                     // the label wraps to one short line.
