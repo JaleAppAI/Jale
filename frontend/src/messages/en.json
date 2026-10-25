@@ -2596,8 +2596,7 @@
           },
           "q1_lock": {
             "title": "Three questions employers read",
-            "body": "Next come three questions, answered in your own words. Until you finish question 3 you can go back and change them; after that they lock.",
-            "wait": ""
+            "body": "Next come three questions, answered in your own words. Until you finish question 3 you can go back and change them; after that they lock."
           },
           "answer": {
             "title": "Answer in your own words",
@@ -2616,8 +2615,7 @@
           },
           "q3_lock": {
             "title": "This is the last one",
-            "body": "After you {input, select, touch {tap} other {click}} Complete your questions, your three answers lock and you can’t change them.",
-            "wait": ""
+            "body": "After you {input, select, touch {tap} other {click}} Complete your questions, your three answers lock and you can’t change them."
           },
           "q3_complete": {
             "title": "Finish your questions",
@@ -2626,8 +2624,7 @@
           },
           "done": {
             "title": "You’re all set",
-            "body": "This is what employers see. We’re reading your answers to find your skills; you don’t have to wait. Use the button below to go on.",
-            "wait": ""
+            "body": "This is what employers see. We’re reading your answers to find your skills; you don’t have to wait. Use the button below to go on."
           }
         }
       }
@@ -2673,7 +2670,55 @@
         "h_details": "They want to hire you",
         "whatsapp": "WhatsApp · Jale",
         "emp_msg": "Hi, can you start Monday at 7 AM?",
-        "my_reply": "Yes, I’ll be there"
+        "my_reply": "Yes, I’ll be there",
+        "answer": "Yes, I bring my own drill and level."
+      },
+      "guide": {
+        "intro_title": "Want help applying?",
+        "intro_body": "{input, select, touch {We’ll show you what to tap and what to write, one step at a time. About 2 minutes.} other {We’ll show you what to click and what to write, one step at a time. About 2 minutes.}}",
+        "counter": "Applying · {current} of {total}",
+        "steps": {
+          "from_gate": {
+            "title": "Your profile is saved",
+            "body": "You haven’t applied yet. Answer below, then {input, select, touch {tap} other {click}} Send application to apply."
+          },
+          "answer_first": {
+            "title": "Answer in your own words",
+            "body": "{input, select, touch {Tap} other {Click}} the box and write your answer, the way you’d say it out loud. One line is enough; up to 1000 characters.",
+            "wait": "Write something (up to 1000 characters) to continue."
+          },
+          "answer_more": {
+            "title": "One more question",
+            "body": "Answer this one the same way. You can change your answers until you send.",
+            "wait": "Write something (up to 1000 characters) to continue."
+          },
+          "no_questions": {
+            "title": "No questions for this job",
+            "body": "This employer asks nothing, so you only need to send your application."
+          },
+          "later": {
+            "title": "No documents now",
+            "body": "You don’t upload anything to apply. The employer asks for documents only if they want to hire you."
+          },
+          "send": {
+            "title": "Send your application",
+            "body": "{input, select, touch {Tap} other {Click}} Send application. That is what applies; nothing is sent before it.",
+            "wait": "{input, select, touch {Tap} other {Click}} Send application to finish."
+          },
+          "sent": {
+            "title": "You applied!",
+            "body": "Your application shows Applied while the employer reviews it. When the employer writes to you, the message arrives on WhatsApp."
+          },
+          "closed": {
+            "title": "This job closed",
+            "body": "The employer stopped taking applications for this job, so your application wasn’t sent. Other jobs are still open."
+          },
+          "left": {
+            "title": "Your answers are kept",
+            "body": "What you typed stays here while you’re on this page. {input, select, touch {Tap} other {Click}} this button when you’re ready to finish and send.",
+            "wait": "{input, select, touch {Tap} other {Click}} the button to go back to your application."
+          }
+        }
       }
     },
     "worker_details": {

@@ -37,11 +37,12 @@ const KEY = 'tutorial.worker_onboarding.guide';
 const SCREENS = ['terms', 'about', 'trade', 'work', 'q1', 'q2', 'q3', 'done'] as const;
 type Screen = (typeof SCREENS)[number];
 
-function copy(id: string) {
+/** A step's copy; `wait: false` for a step that never waits (it has no wait line). */
+function copy(id: string, { wait = true }: { wait?: boolean } = {}) {
     return {
         titleKey: `${KEY}.steps.${id}.title`,
         bodyKey: `${KEY}.steps.${id}.body`,
-        waitKey: `${KEY}.steps.${id}.wait`,
+        ...(wait ? { waitKey: `${KEY}.steps.${id}.wait` } : {}),
     };
 }
 
@@ -117,11 +118,11 @@ function questionSteps(question: 1 | 2 | 3): SpotlightStep[] {
     });
     const steps: SpotlightStep[] = [];
     if (question === 1) {
-        steps.push({ id: 'q1_lock', target: { guide: 'onb.q1.lock' }, mode: 'next', when: () => notPassed('q1'), ...copy('q1_lock') });
+        steps.push({ id: 'q1_lock', target: { guide: 'onb.q1.lock' }, mode: 'next', when: () => notPassed('q1'), ...copy('q1_lock', { wait: false }) });
     }
     steps.push(answer(`q${question}_answer_voice`, true), answer(`q${question}_answer`, false));
     if (question === 3) {
-        steps.push({ id: 'q3_lock', target: { guide: 'onb.q3.lock' }, mode: 'next', when: () => notPassed('q3'), ...copy('q3_lock') });
+        steps.push({ id: 'q3_lock', target: { guide: 'onb.q3.lock' }, mode: 'next', when: () => notPassed('q3'), ...copy('q3_lock', { wait: false }) });
         steps.push(continueStep('q3_complete', 'q3', 'onb.q3.next'));
     } else {
         steps.push(continueStep(`q${question}_next`, screen, `onb.q${question}.next`, copy('question_next')));
@@ -230,7 +231,7 @@ const guide: WalkthroughGuide = {
             target: { guide: 'onb.done.profile' },
             mode: 'next',
             when: () => notPassed('done'),
-            ...copy('done'),
+            ...copy('done', { wait: false }),
         },
     ],
 };

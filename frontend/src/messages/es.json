@@ -2596,8 +2596,7 @@
           },
           "q1_lock": {
             "title": "Tres preguntas que leen los empleadores",
-            "body": "Ahora vienen tres preguntas que contestas con tus propias palabras. Hasta terminar la pregunta 3 puedes regresar y cambiarlas; después se bloquean.",
-            "wait": ""
+            "body": "Ahora vienen tres preguntas que contestas con tus propias palabras. Hasta terminar la pregunta 3 puedes regresar y cambiarlas; después se bloquean."
           },
           "answer": {
             "title": "Contesta con tus propias palabras",
@@ -2616,8 +2615,7 @@
           },
           "q3_lock": {
             "title": "Es la última",
-            "body": "Cuando {input, select, touch {toques} other {hagas clic en}} Completa tus preguntas, tus tres respuestas se bloquean y ya no puedes cambiarlas.",
-            "wait": ""
+            "body": "Cuando {input, select, touch {toques} other {hagas clic en}} Completa tus preguntas, tus tres respuestas se bloquean y ya no puedes cambiarlas."
           },
           "q3_complete": {
             "title": "Termina tus preguntas",
@@ -2626,8 +2624,7 @@
           },
           "done": {
             "title": "Todo listo",
-            "body": "Esto es lo que ven los empleadores. Estamos leyendo tus respuestas para encontrar tus habilidades; no tienes que esperar. Usa el botón de abajo para seguir.",
-            "wait": ""
+            "body": "Esto es lo que ven los empleadores. Estamos leyendo tus respuestas para encontrar tus habilidades; no tienes que esperar. Usa el botón de abajo para seguir."
           }
         }
       }
@@ -2673,7 +2670,55 @@
         "h_details": "Quieren contratarte",
         "whatsapp": "WhatsApp · Jale",
         "emp_msg": "Hola, ¿puedes empezar el lunes a las 7 a. m.?",
-        "my_reply": "Sí, ahí estaré"
+        "my_reply": "Sí, ahí estaré",
+        "answer": "Sí, llevo mi propio taladro y nivel."
+      },
+      "guide": {
+        "intro_title": "¿Te ayudamos a postularte?",
+        "intro_body": "{input, select, touch {Te mostramos qué tocar y qué escribir, paso a paso. Unos 2 minutos.} other {Te mostramos dónde hacer clic y qué escribir, paso a paso. Unos 2 minutos.}}",
+        "counter": "Postularte · {current} de {total}",
+        "steps": {
+          "from_gate": {
+            "title": "Tu perfil está guardado",
+            "body": "Todavía no te has postulado. Contesta abajo y luego {input, select, touch {toca} other {haz clic en}} Enviar postulación para postularte."
+          },
+          "answer_first": {
+            "title": "Contesta con tus propias palabras",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} el recuadro y escribe tu respuesta, como lo dirías en voz alta. Con una línea basta; hasta 1000 caracteres.",
+            "wait": "Escribe algo (hasta 1000 caracteres) para continuar."
+          },
+          "answer_more": {
+            "title": "Una pregunta más",
+            "body": "Contesta esta igual. Puedes cambiar tus respuestas hasta que envíes.",
+            "wait": "Escribe algo (hasta 1000 caracteres) para continuar."
+          },
+          "no_questions": {
+            "title": "Este empleo no tiene preguntas",
+            "body": "Este empleador no pregunta nada, así que solo tienes que enviar tu postulación."
+          },
+          "later": {
+            "title": "Sin documentos por ahora",
+            "body": "No subes nada para postularte. El empleador pide documentos solo si decide contratarte."
+          },
+          "send": {
+            "title": "Envía tu postulación",
+            "body": "{input, select, touch {Toca} other {Haz clic en}} Enviar postulación. Eso es lo que te postula; no se envía nada antes.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} Enviar postulación para terminar."
+          },
+          "sent": {
+            "title": "¡Te postulaste!",
+            "body": "Tu postulación dice Aplicado mientras el empleador la revisa. Cuando el empleador te escriba, el mensaje llega por WhatsApp."
+          },
+          "closed": {
+            "title": "Este trabajo se cerró",
+            "body": "El empleador dejó de recibir postulaciones para este trabajo, así que tu postulación no se envió. Hay otros trabajos abiertos."
+          },
+          "left": {
+            "title": "Tus respuestas se guardan",
+            "body": "Lo que escribiste se queda aquí mientras estés en esta página. {input, select, touch {Toca} other {Haz clic en}} este botón cuando quieras terminar y enviar.",
+            "wait": "{input, select, touch {Toca} other {Haz clic en}} el botón para volver a tu postulación."
+          }
+        }
       }
     },
     "worker_details": {

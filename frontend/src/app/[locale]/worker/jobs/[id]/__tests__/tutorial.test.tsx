@@ -8,16 +8,17 @@ import type { TutorialHandle, UseTutorialOptions } from '@/lib/tutorials/types';
 import { message, renderIntl } from '@/components/worker/onboarding/__tests__/render-intl';
 
 /*
- * W2, the applying tutorial: how the job page asks for it.
+ * W2, the applying guide: how the job page asks for it.
  *
  * Its K1.5 "has done the task" signal is "the worker has any application",
  * which this page does not otherwise load -- so it reads ONE application of
  * its own. Until that read answers, `done` is `undefined` (still loading),
- * and if it fails it stays `undefined`: no signal, no auto-open on this page
- * view. Once it answers, the page asks the tutorial to open itself once. A
- * worker who arrived with `?apply=1` -- straight from the onboarding summary,
- * mid-apply -- is never asked. Whether it opens is the hook's decision, so the
- * hook is replaced here by a recorder.
+ * and if it fails it stays `undefined`. The page asks for the step-by-step
+ * guide (`walkthrough`), and asks for it INSIDE the apply screen, as that
+ * screen opens (`runWithHost`): from Apply, from the profile gate's save, and
+ * from an `?apply=1` arrival. Nothing opens over the job page itself any
+ * more. Whether the guide plays is the hook's decision, so the hook is
+ * replaced here by a recorder.
  *
  * The harness is the sibling `apply-param.test.tsx` one.
  */
@@ -82,13 +83,19 @@ vi.mock('@/components/worker/ShareJobPanel', () => ({
 
 // The gate, visible only while it is open.
 vi.mock('@/components/worker/ProfileCompleteModal', () => ({
-    ProfileCompleteModal: ({ open }: { open: boolean }) => (open ? <div data-testid="profile-gate" /> : null),
+    ProfileCompleteModal: ({ open, onSubmit }: { open: boolean; onSubmit: (values: unknown) => Promise<void> }) => (open ? (
+        <div data-testid="profile-gate">
+            <button type="button" onClick={() => void onSubmit({ full_name: 'Test Worker', skills: ['framing'], availability: 'full_time', location: 'San Antonio, TX' })}>
+                save and apply
+            </button>
+        </div>
+    ) : null),
 }));
 
 // The flow itself is another suite's business: a marker, plus its way back.
 vi.mock('@/components/worker/apply-flow/ApplyFlow', () => ({
-    ApplyFlow: ({ onBackToDetails }: { onBackToDetails: () => void }) => (
-        <div data-testid="apply-flow">
+    ApplyFlow: ({ onBackToDetails, cameFromGate }: { onBackToDetails: () => void; cameFromGate?: boolean }) => (
+        <div data-testid="apply-flow" data-from-gate={cameFromGate ? '' : undefined}>
             <button type="button" onClick={onBackToDetails}>back to details</button>
         </div>
     ),
@@ -194,8 +201,8 @@ beforeEach(() => {
     visit('');
 });
 
-describe('worker job page — the W2 tutorial', () => {
-    it('asks for worker_apply with done undefined until the read answers, then asks once', async () => {
+describe('worker job page — the W2 guide', () => {
+    it('asks for worker_apply as a step-by-step guide, done undefined until the read answers', async () => {
         const read = deferred<ApplicationsPage>();
         getApplications.mockReturnValue(read.promise);
         seed = job();
@@ -203,13 +210,11 @@ describe('worker job page — the W2 tutorial', () => {
         renderIntl(<WorkerJobDetailPage />);
 
         expect(tutorial.useTutorial.mock.calls.every(([id]) => id === 'worker_apply')).toBe(true);
+        expect(tutorial.useTutorial.mock.calls.every(([, options]) => options.walkthrough === true)).toBe(true);
         expect(doneSequence()).toEqual([undefined]);
-        expect(tutorial.handle.maybeAutoOpen).not.toHaveBeenCalled();
 
         await act(async () => { read.resolve(pageOf([])); });
-
         expect(doneSequence()).toEqual([undefined, false]);
-        expect(tutorial.handle.maybeAutoOpen).toHaveBeenCalledTimes(1);
     });
 
     it('reads a single application, no more', async () => {
@@ -231,18 +236,40 @@ describe('worker job page — the W2 tutorial', () => {
         await waitFor(() => expect(doneSequence()).toEqual([undefined, true]));
     });
 
-    it('keeps done undefined, and never asks, when the read fails', async () => {
-        getApplications.mockRejectedValue(new Error('offline'));
+    it('opens nothing over the job page itself', async () => {
+        getApplications.mockResolvedValue(pageOf([]));
         seed = job();
         renderIntl(<WorkerJobDetailPage />);
 
-        await waitFor(() => expect(getApplications).toHaveBeenCalled());
-        await act(async () => {});
-        expect(doneSequence()).toEqual([undefined]);
+        await waitFor(() => expect(doneSequence()).toEqual([undefined, false]));
+        expect(tutorial.handle.maybeAutoOpen).not.toHaveBeenCalled();
+        expect(tutorial.handle.runWithHost).not.toHaveBeenCalled();
+    });
+
+    it('asks for the guide inside the apply screen as Apply opens it', async () => {
+        getApplications.mockResolvedValue(pageOf([]));
+        seed = job();
+        renderIntl(<WorkerJobDetailPage />);
+
+        fireEvent.click(screen.getByRole('button', { name: message('worker_job_detail.apply') }));
+        expect(await screen.findByTestId('apply-flow')).not.toHaveAttribute('data-from-gate');
+        expect(tutorial.handle.runWithHost).toHaveBeenCalledTimes(1);
         expect(tutorial.handle.maybeAutoOpen).not.toHaveBeenCalled();
     });
 
-    it('never asks on an arrival with ?apply=1', async () => {
+    it('asks for it after the profile gate, and marks the screen as opened by the gate', async () => {
+        getApplications.mockResolvedValue(pageOf([]));
+        apiFetch.mockResolvedValue(profileResponse({ full_name: 'Test Worker', skills: [], availability: null, location: null }));
+        seed = job();
+        renderIntl(<WorkerJobDetailPage />);
+
+        fireEvent.click(screen.getByRole('button', { name: message('worker_job_detail.apply') }));
+        fireEvent.click(await screen.findByRole('button', { name: 'save and apply' }));
+        expect(await screen.findByTestId('apply-flow')).toHaveAttribute('data-from-gate');
+        expect(tutorial.handle.runWithHost).toHaveBeenCalledTimes(1);
+    });
+
+    it('asks for it on an ?apply=1 arrival, inside the flow the arrival opens', async () => {
         getApplications.mockResolvedValue(pageOf([]));
         seed = job();
         visit('?apply=1');
@@ -250,49 +277,28 @@ describe('worker job page — the W2 tutorial', () => {
         renderIntl(<WorkerJobDetailPage />);
 
         expect(await screen.findByTestId('apply-flow')).toBeInTheDocument();
-        await waitFor(() => expect(doneSequence()).toEqual([undefined, false]));
+        expect(tutorial.handle.runWithHost).toHaveBeenCalledTimes(1);
         expect(tutorial.handle.maybeAutoOpen).not.toHaveBeenCalled();
     });
 
-    it('never asks after an ?apply=1 arrival, even once the worker is back on the details', async () => {
-        // The read answers only after the worker has left the flow, so neither
-        // `applying` nor the apply view is still blocking at that moment: only
-        // the arrival itself can keep the tutorial shut.
-        const read = deferred<ApplicationsPage>();
-        getApplications.mockReturnValue(read.promise);
-        seed = job();
-        visit('?apply=1');
-
-        renderIntl(<WorkerJobDetailPage />);
-
-        fireEvent.click(await screen.findByRole('button', { name: 'back to details' }));
-        expect(await screen.findByRole('button', { name: message('worker_job_detail.apply') })).toBeInTheDocument();
-        expect(screen.queryByTestId('apply-flow')).toBeNull();
-        expect(tutorial.handle.maybeAutoOpen).not.toHaveBeenCalled();
-
-        await act(async () => { read.resolve(pageOf([])); });
-
-        expect(doneSequence()).toEqual([undefined, false]);
-        expect(tutorial.handle.maybeAutoOpen).not.toHaveBeenCalled();
-    });
-
-    it('does not ask on a job that can no longer take an application', async () => {
+    it('never asks on a job that can no longer take an application', async () => {
         getApplications.mockResolvedValue(pageOf([]));
         seed = job({ status: 'closed' });
+        visit('?apply=1');
         renderIntl(<WorkerJobDetailPage />);
 
         await waitFor(() => expect(doneSequence()).toEqual([undefined, false]));
-        expect(tutorial.handle.maybeAutoOpen).not.toHaveBeenCalled();
+        expect(screen.queryByTestId('apply-flow')).toBeNull();
+        expect(tutorial.handle.runWithHost).not.toHaveBeenCalled();
     });
 
-    it('asks only once however often the page renders', async () => {
-        getApplications.mockResolvedValue(pageOf([]));
-        seed = job();
-        const { rerender } = renderIntl(<WorkerJobDetailPage />);
-        await waitFor(() => expect(tutorial.handle.maybeAutoOpen).toHaveBeenCalledTimes(1));
+    it('never asks once the worker has applied: there is no Apply button to start from', async () => {
+        getApplications.mockResolvedValue(pageOf([{ application_id: 'app-1', status: 'pending' }]));
+        seed = job({ already_applied: true, application_status: 'pending' });
+        renderIntl(<WorkerJobDetailPage />);
 
-        rerender(<WorkerJobDetailPage />);
-        rerender(<WorkerJobDetailPage />);
-        expect(tutorial.handle.maybeAutoOpen).toHaveBeenCalledTimes(1);
+        await waitFor(() => expect(doneSequence()).toEqual([undefined, true]));
+        expect(screen.queryByRole('button', { name: message('worker_job_detail.apply') })).toBeNull();
+        expect(tutorial.handle.runWithHost).not.toHaveBeenCalled();
     });
 });

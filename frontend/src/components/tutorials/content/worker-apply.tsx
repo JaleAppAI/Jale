@@ -9,7 +9,6 @@ import {
   SceneFrame,
   SceneLabel,
   SceneRow,
-  SceneToggle,
   SlideIn,
   TapPulse,
 } from '@/components/tutorials/scene';
@@ -26,7 +25,7 @@ import {
 
 const NAMESPACE = 'tutorial.worker_apply';
 
-/** Apply is tapped, a quick question answered, and the application is in. */
+/** Apply is tapped, a quick question answered in the worker's own words, and the application is in. */
 function ApplyScene() {
   const t = useTranslations(`${NAMESPACE}.scene`);
   return (
@@ -39,14 +38,10 @@ function ApplyScene() {
       <SlideIn>
         <SceneFrame>
           <span className="font-bold">{t('prompt')}</span>
-          <div className="flex gap-1.5">
-            <SceneToggle step={2} className="flex-1">
-              {t('yes')}
-            </SceneToggle>
-            <SceneToggle on={false} className="flex-1">
-              {t('no')}
-            </SceneToggle>
-          </div>
+          {/* The employer's questions are answered in words, never Yes/No. */}
+          <SlideIn as="span" step={2} className="rounded-lg border border-[var(--jale-divider)] px-2 py-1.5 leading-snug">
+            {t('answer')}
+          </SlideIn>
         </SceneFrame>
       </SlideIn>
       <SlideIn as="span" step={3} className="self-center">
