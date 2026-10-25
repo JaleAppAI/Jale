@@ -45,8 +45,8 @@ const FOCUSABLE_SELECTOR = [
 /**
  * Focusable descendants in DOM order, skipping anything not actually rendered
  * (`display:none`, a collapsed section) — those would otherwise become dead
- * stops in the tab cycle. Shared with the app tour's callout, which keeps the
- * same Tab cycle without being a `Modal`.
+ * stops in the tab cycle. Shared with the spotlight walkthrough's callout, which
+ * keeps the same Tab cycle without being a `Modal`.
  */
 export function focusableWithin(root: HTMLElement): HTMLElement[] {
     return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
