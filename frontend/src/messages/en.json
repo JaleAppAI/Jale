@@ -2576,7 +2576,7 @@
             "wait": "Type your trade in 2 to 60 characters to continue."
           },
           "trade_back": {
-            "title": "Tap Back first",
+            "title": "{input, select, touch {Tap} other {Click}} Back first",
             "body": "Your typed trade is waiting to be saved, so to pick one from the list, {input, select, touch {tap} other {click}} Back at the top first. Then pick your trade and {input, select, touch {tap} other {click}} Continue.",
             "wait": "{input, select, touch {Tap} other {Click}} Back, then pick your trade."
           },

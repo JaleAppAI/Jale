@@ -2576,7 +2576,7 @@
             "wait": "Escribe tu oficio en 2 a 60 caracteres para continuar."
           },
           "trade_back": {
-            "title": "Primero toca Atrás",
+            "title": "Primero {input, select, touch {toca} other {haz clic en}} Atrás",
             "body": "Tu oficio escrito está esperando a guardarse, así que para elegir uno de la lista, primero {input, select, touch {toca} other {haz clic en}} Atrás arriba. Luego elige tu oficio y {input, select, touch {toca} other {haz clic en}} Continuar.",
             "wait": "{input, select, touch {Toca} other {Haz clic en}} Atrás y luego elige tu oficio."
           },

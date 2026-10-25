@@ -377,6 +377,8 @@ describe('W1 guide: trade', () => {
         press('onb.trade.list', 'Carpenter');
         guideNext();
         await expectStep('trade_back');
+        // The title names the gesture of this input, as the bodies do (a mouse here).
+        expect(callout()?.querySelector('h2')).toHaveTextContent('Click Back first');
         expect(guided('onb.trade.continue')).toBeDisabled();
 
         act(() => guided('onb.trade.back').click());
