@@ -64,6 +64,9 @@ beforeEach(() => {
 afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+    // What a hit-testing test set up, even when it failed before undoing it.
+    delete (document as unknown as { elementsFromPoint?: unknown }).elementsFromPoint;
+    document.documentElement.style.removeProperty('--jale-tab-bar-offset');
 });
 
 /** Lets the page-watching observers and short waits run. */
@@ -1327,6 +1330,65 @@ describe('a control the page moves after it was scrolled to', () => {
         expect(rect.top).toBeGreaterThanOrEqual(0);
         expect(rect.bottom).toBeLessThanOrEqual(736);
         expect(field.contains(onTopAtMiddle(field))).toBe(true);
+        restore();
+    });
+});
+
+describe('a control whose list opens under the phone tab bar', () => {
+    it('is scrolled with its list above the bar, so an option can be tapped', async () => {
+        const restore = stubHitTesting();
+        document.documentElement.style.setProperty('--jale-tab-bar-offset', '64px');
+        const CITY_FIELD: SpotlightStep = { id: 'city', target: { guide: 'r.city' }, mode: 'auto', advanceWhen: () => false, ...copy('city') };
+        render(
+            <>
+                <div data-guide="r.city" data-box="680,40,300,40">
+                    <input aria-label="City" role="combobox" aria-expanded="false" aria-controls="city-options" />
+                </div>
+                <nav data-fixed="" style={{ position: 'fixed' }} data-box="736,0,1280,64">
+                    <button type="button" data-box="736,0,200,64">
+                        Home
+                    </button>
+                </nav>
+            </>,
+        );
+        render(
+            <Intl>
+                <Spotlight
+                    name="test-guide"
+                    resolve="lazy"
+                    steps={[CITY_FIELD]}
+                    waitMs={50}
+                    counterKey={COUNTER}
+                    onDismiss={() => {}}
+                    onUnavailable={() => {}}
+                />
+            </Intl>,
+        );
+        await flush();
+        expect(stepOf()).toBe('city');
+        expect(vi.mocked(window.scrollBy)).not.toHaveBeenCalled();
+
+        // The person types: the suggestions open below the field, the first one under the bar.
+        act(() => {
+            const list = document.createElement('ul');
+            list.id = 'city-options';
+            list.setAttribute('role', 'listbox');
+            list.setAttribute('data-box', `${724 + pageScroll},40,300,200`);
+            const option = document.createElement('li');
+            option.setAttribute('role', 'option');
+            option.setAttribute('data-box', `${724 + pageScroll},40,300,40`);
+            option.textContent = 'El Paso, TX';
+            list.append(option);
+            document.querySelector('[data-guide="r.city"]')?.append(list);
+            const input = screen.getByRole('combobox', { name: 'City' });
+            input.setAttribute('aria-expanded', 'true');
+            input.setAttribute('aria-controls', 'city-options');
+        });
+        await flush(50);
+        const option = screen.getByRole('option', { name: 'El Paso, TX' });
+        const list = screen.getByRole('listbox');
+        expect(list.getBoundingClientRect().bottom).toBeLessThanOrEqual(736);
+        expect(option.contains(onTopAtMiddle(option))).toBe(true);
         restore();
     });
 });
