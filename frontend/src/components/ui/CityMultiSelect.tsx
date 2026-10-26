@@ -148,7 +148,7 @@ export function CityMultiSelect({
         />
       )}
       {!atMax && showUnpicked && (
-        <p id={errorId} className="text-xs font-semibold text-[var(--jale-danger)]">
+        <p id={errorId} role="alert" className="text-xs font-semibold text-[var(--jale-danger)]">
           {tCommon('city_multi_unpicked')}
         </p>
       )}

@@ -76,7 +76,9 @@ describe('ProfileEditForm: a city typed but not picked', () => {
         expect(onSave).not.toHaveBeenCalled();
         expect(screen.getByText(unpicked())).toBeInTheDocument();
         expect(citiesBox()).toHaveAttribute('aria-invalid', 'true');
-        expect(screen.getByRole('alert')).toHaveTextContent(message('worker_profile.edit.preferred_cities_label'));
+        const alerts = screen.getAllByRole('alert').map((el) => el.textContent);
+        expect(alerts).toContain(unpicked());
+        expect(alerts.some((text) => text?.includes(message('worker_profile.edit.preferred_cities_label')))).toBe(true);
     });
 
     it('says so once the worker leaves the box, and not while they type', async () => {

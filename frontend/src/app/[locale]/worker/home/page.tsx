@@ -444,10 +444,11 @@ export default function WorkerHomePage() {
   async function saveCities() {
     if (!idToken) return;
     // A city typed and never picked is not in the list: refuse Done rather
-    // than filter without it, say why on the box, and put the worker back in it.
+    // than filter without it, and say why on the box. Focus stays where it
+    // is: back in the box, the suggestion list would reopen over Done, and a
+    // second tap there would pick a city nobody chose.
     if (citiesPending) {
       setCitiesRefused(true);
-      citiesPanelRef.current?.querySelector<HTMLInputElement>('input')?.focus();
       return;
     }
     setCitiesRefused(false);
